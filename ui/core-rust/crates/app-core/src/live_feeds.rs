@@ -1233,7 +1233,7 @@ fn validate_live_feeds_schema(label: &str, schema_version: u32) -> AppResult<()>
         return Ok(());
     }
     Err(invalid_live_feed(format!(
-        "unsupported {label} schema {schema_version}; required {LIVE_FEEDS_SCHEMA_VERSION}"
+        "{label} has schema_version {schema_version}; client requires schema_version {LIVE_FEEDS_SCHEMA_VERSION}"
     )))
 }
 

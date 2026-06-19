@@ -410,6 +410,8 @@ struct LiveFeedConnectionSessionState {
     last_heard_epoch_ms: Option<i64>,
     last_error_epoch_ms: Option<i64>,
     last_error_message: Option<String>,
+    last_resource_error_epoch_ms: Option<i64>,
+    last_resource_error_message: Option<String>,
 }
 
 #[derive(Clone, Default)]
@@ -1134,13 +1136,36 @@ fn live_feed_product_from_resource_id(resource_id: &str) -> Option<&str> {
     None
 }
 
+fn live_feed_resource_failure_detail(resource_id: &str, message: &str) -> String {
+    if resource_id == "live_feeds/current" {
+        return format!("Live feed index unavailable: {message}");
+    }
+    if let Some(product) = live_feed_product_from_resource_id(resource_id) {
+        return format!(
+            "{} live feed unavailable: {message}",
+            product.to_ascii_uppercase()
+        );
+    }
+    format!("Live feed resource {resource_id} unavailable: {message}")
+}
+
+fn record_live_feed_resource_error(session: &mut UiSession, message: String) {
+    session.live_feed_connection.last_resource_error_epoch_ms = Some(session.wall_clock_epoch_ms);
+    session.live_feed_connection.last_resource_error_message = Some(message);
+}
+
+fn clear_live_feed_resource_error(session: &mut UiSession) {
+    session.live_feed_connection.last_resource_error_epoch_ms = None;
+    session.live_feed_connection.last_resource_error_message = None;
+}
+
 fn record_live_feed_fetch_failure(
     session: &mut UiSession,
     resource_id: &str,
     message: &str,
 ) -> bool {
     if resource_id == "live_feeds/current" {
-        let detail = format!("Live feed index unavailable: {message}");
+        let detail = live_feed_resource_failure_detail(resource_id, message);
         let mut changed = false;
         if session.map_layer_state.metars.visible {
             changed |= upsert_data_status_record(
@@ -1170,12 +1195,11 @@ fn record_live_feed_fetch_failure(
     let Some(product) = live_feed_product_from_resource_id(resource_id) else {
         return false;
     };
-    let label = product.to_ascii_uppercase();
     upsert_data_status_record(
         session,
         live_feed_unavailable_status_record(
             product,
-            format!("{label} live feed unavailable: {message}"),
+            live_feed_resource_failure_detail(resource_id, message),
         ),
     )
 }
@@ -2390,57 +2414,91 @@ fn live_feed_connection_status_page_row(session: &UiSession) -> UiDataStatusPage
             UiDataStatusPageTimeDisplay::Ago,
         ));
     }
-    if let Some(last_error) = connection.last_error_epoch_ms {
+    let last_error_epoch = connection
+        .last_resource_error_epoch_ms
+        .or(connection.last_error_epoch_ms);
+    let last_error_message = connection
+        .last_resource_error_message
+        .as_deref()
+        .or(connection.last_error_message.as_deref());
+    if let Some(last_error) = last_error_epoch {
         facts.push(status_time_fact(
             "Last error",
             utc_from_epoch_ms(last_error),
             UiDataStatusPageTimeDisplay::Ago,
         ));
     }
-    if let Some(message) = connection.last_error_message.as_deref() {
+    if let Some(message) = last_error_message {
         facts.push(status_fact("Error", message.to_string()));
     }
-    let (value, severity, detail) = match connection.mode {
-        LiveFeedConnectionMode::Unknown => (
-            "UNKNOWN",
-            UiStatusSeverity::Info,
-            "No live-feed connection state has been reported.".to_string(),
-        ),
-        LiveFeedConnectionMode::Connecting => (
-            "CONNECTING",
-            UiStatusSeverity::Info,
-            "The live-feed event stream is connecting.".to_string(),
-        ),
-        LiveFeedConnectionMode::Connected => {
-            let heard = connection
-                .last_heard_epoch_ms
-                .map(|epoch| {
-                    format!(
-                        " Last server event was at {}.",
-                        format_status_utc(utc_from_epoch_ms(epoch))
-                    )
-                })
-                .unwrap_or_default();
-            (
-                "CONNECTED",
-                UiStatusSeverity::Ok,
-                format!("The live-feed event stream is connected.{heard}"),
-            )
-        }
-        LiveFeedConnectionMode::Error => (
+    let resource_error_message = connection.last_resource_error_message.as_ref();
+    let (value, severity, detail) = if let Some(message) = resource_error_message {
+        (
             "ERROR",
             UiStatusSeverity::Unavailable,
-            connection
-                .last_error_message
-                .as_ref()
-                .map(|message| format!("The live-feed event stream reported an error: {message}."))
-                .unwrap_or_else(|| "The live-feed event stream reported an error.".to_string()),
-        ),
-        LiveFeedConnectionMode::Closed => (
-            "CLOSED",
-            UiStatusSeverity::Unavailable,
-            "The live-feed event stream is closed.".to_string(),
-        ),
+            match connection.mode {
+                LiveFeedConnectionMode::Connected => format!(
+                    "The live-feed event stream is connected, but live-feed data is unavailable: {message}"
+                ),
+                LiveFeedConnectionMode::Closed => {
+                    format!("The live-feed event stream is closed. Last live-feed error: {message}")
+                }
+                _ => format!("Live-feed data is unavailable: {message}"),
+            },
+        )
+    } else {
+        match connection.mode {
+            LiveFeedConnectionMode::Unknown => (
+                "UNKNOWN",
+                UiStatusSeverity::Info,
+                "No live-feed connection state has been reported.".to_string(),
+            ),
+            LiveFeedConnectionMode::Connecting => (
+                "CONNECTING",
+                UiStatusSeverity::Info,
+                "The live-feed event stream is connecting.".to_string(),
+            ),
+            LiveFeedConnectionMode::Connected => {
+                let heard = connection
+                    .last_heard_epoch_ms
+                    .map(|epoch| {
+                        format!(
+                            " Last server event was at {}.",
+                            format_status_utc(utc_from_epoch_ms(epoch))
+                        )
+                    })
+                    .unwrap_or_default();
+                (
+                    "CONNECTED",
+                    UiStatusSeverity::Ok,
+                    format!("The live-feed event stream is connected.{heard}"),
+                )
+            }
+            LiveFeedConnectionMode::Error => (
+                "ERROR",
+                UiStatusSeverity::Unavailable,
+                connection
+                    .last_error_message
+                    .as_ref()
+                    .map(|message| {
+                        format!("The live-feed event stream reported an error: {message}.")
+                    })
+                    .unwrap_or_else(|| "The live-feed event stream reported an error.".to_string()),
+            ),
+            LiveFeedConnectionMode::Closed => (
+                "CLOSED",
+                UiStatusSeverity::Unavailable,
+                connection
+                    .last_error_message
+                    .as_ref()
+                    .map(|message| {
+                        format!(
+                            "The live-feed event stream is closed. Last live-feed error: {message}"
+                        )
+                    })
+                    .unwrap_or_else(|| "The live-feed event stream is closed.".to_string()),
+            ),
+        }
     };
     status_page_row(
         "live_feed:connection",
@@ -5310,9 +5368,18 @@ pub fn ingest_live_feed_sse_events_in_session_at_epoch_ms(
             epoch_ms,
         );
     }
-    let affected = session
-        .live_feeds
-        .ingest_sse_events(events.iter().cloned())?;
+    let affected = match session.live_feeds.ingest_sse_events(events.iter().cloned()) {
+        Ok(affected) => affected,
+        Err(err) => {
+            record_live_feed_resource_error(
+                session,
+                format!("Failed to ingest live-feed server event: {}", err.message),
+            );
+            return Ok(session
+                .live_feeds
+                .sync_outcome_with_invalidations_at_epoch_ms(session.wall_clock_epoch_ms));
+        }
+    };
     Ok(session
         .live_feeds
         .sync_products_outcome_with_invalidations(affected.iter().map(String::as_str)))
@@ -5349,8 +5416,27 @@ pub fn ingest_resource_in_session_at_epoch_ms(
                 epoch_ms,
             );
         }
-        session.live_feeds.ingest_resource(resource_id, bytes)?;
-        install_live_feed_payloads(session)?;
+        if let Err(err) = session.live_feeds.ingest_resource(resource_id, bytes) {
+            session
+                .live_feeds
+                .record_resource_failure(resource_id, session.wall_clock_epoch_ms);
+            let detail = live_feed_resource_failure_detail(resource_id, &err.message);
+            record_live_feed_resource_error(session, detail);
+            record_live_feed_fetch_failure(session, resource_id, &err.message);
+            sync_live_feed_overlay_status_records(session);
+            return Ok(());
+        }
+        if let Err(err) = install_live_feed_payloads(session) {
+            session
+                .live_feeds
+                .record_resource_failure(resource_id, session.wall_clock_epoch_ms);
+            let detail = live_feed_resource_failure_detail(resource_id, &err.message);
+            record_live_feed_resource_error(session, detail);
+            record_live_feed_fetch_failure(session, resource_id, &err.message);
+            sync_live_feed_overlay_status_records(session);
+            return Ok(());
+        }
+        clear_live_feed_resource_error(session);
         return Ok(());
     }
     if resource_id.starts_with(LIVE_OBSTACLE_HAD_RESOURCE_PREFIX) {
@@ -5723,6 +5809,10 @@ pub fn report_session_resource_failure_in_session_at_epoch_ms(
         session
             .live_feeds
             .record_resource_failure(resource_id, session.wall_clock_epoch_ms);
+        record_live_feed_resource_error(
+            session,
+            live_feed_resource_failure_detail(resource_id, message),
+        );
         record_live_feed_fetch_failure(session, resource_id, message);
         sync_live_feed_overlay_status_records(session);
     } else if resource_id.starts_with("terrain/source/")
@@ -11556,11 +11646,13 @@ mod tests {
         .expect("install durable TFRs before current catalog");
 
         let mut cache_catalog = crate::LiveFeedsState::default();
+        let live_feeds_schema_version = crate::live_feeds::LIVE_FEEDS_SCHEMA_VERSION;
         cache_catalog
             .ingest_resource(
                 "live_feeds/current",
                 format!(
                     r#"{{
+                        "schema_version": {live_feeds_schema_version},
                         "products": {{
                             "tafs": {{
                                 "current": "taf-v1",
@@ -13769,6 +13861,56 @@ mod tests {
             server.link_url.as_deref(),
             Some("http://aerobag-dev.iac.jonh.net:9085/live-feeds/status.html")
         );
+    }
+
+    #[test]
+    fn data_status_page_open_live_feed_connection_reports_resource_error() {
+        let init = create_current_test_session();
+        ingest_resource_in_session_at_epoch_ms(
+            init.handle,
+            "live_feeds/current",
+            br#"{
+                "schema_version": 1,
+                "products": {}
+            }"#,
+            utc("2026-05-20T12:01:00Z").timestamp_millis(),
+        )
+        .expect("unsupported live-feed resource should be captured as status");
+
+        let snapshot = report_live_feed_connection_event_in_session(
+            init.handle,
+            LiveFeedConnectionEvent {
+                kind: LiveFeedConnectionEventKind::Connected,
+                message: None,
+                source_url: Some("http://aerobag-dev.iac.jonh.net:9085".to_string()),
+                status_url: Some(
+                    "http://aerobag-dev.iac.jonh.net:9085/live-feeds/status.html".to_string(),
+                ),
+            },
+            utc("2026-05-20T12:02:00Z").timestamp_millis(),
+        )
+        .expect("connected");
+        let row = snapshot
+            .data_status_page_state
+            .rows
+            .iter()
+            .find(|row| row.id == "live_feed:connection")
+            .expect("connection row");
+
+        assert_eq!(row.value, "ERROR");
+        assert_eq!(row.severity, UiStatusSeverity::Unavailable);
+        assert!(row.detail.contains(
+            "The live-feed event stream is connected, but live-feed data is unavailable"
+        ));
+        assert!(row
+            .detail
+            .contains("current manifest has schema_version 1; client requires schema_version 2"));
+        assert!(row.facts.iter().any(|fact| {
+            fact.label == "Error"
+                && fact.value.contains(
+                    "current manifest has schema_version 1; client requires schema_version 2",
+                )
+        }));
     }
 
     #[test]

@@ -915,7 +915,7 @@ fn validate_live_feeds_schema(label: &str, schema_version: u32) -> AppResult<()>
         return Ok(());
     }
     Err(cache_error(format!(
-        "unsupported {label} schema {schema_version}; required {}",
+        "{label} has schema_version {schema_version}; client requires schema_version {}",
         crate::live_feeds::LIVE_FEEDS_SCHEMA_VERSION
     )))
 }

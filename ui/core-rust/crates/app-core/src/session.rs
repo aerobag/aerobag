@@ -5558,6 +5558,17 @@ fn install_live_feed_installed_state(
     Ok(())
 }
 
+pub fn sync_live_feed_catalog_in_session(
+    handle: u32,
+    live_feeds: &crate::LiveFeedsState,
+) -> AppResult<UiSessionSnapshot> {
+    let mut sessions = lock_sessions();
+    let session = session_mut(&mut sessions, handle)?;
+    session.live_feeds.merge_catalog_from(live_feeds);
+    sync_live_feed_overlay_status_records(session);
+    snapshot_for_changed_session(session)
+}
+
 fn installed_live_feed_state_manifest(
     installed: &crate::LiveFeedInstalledState,
 ) -> Option<serde_json::Value> {
@@ -11479,6 +11490,114 @@ mod tests {
                 .find(|fact| fact.label == "Collected At")
                 .map(|fact| fact.value.as_str()),
             Some("2026-05-03 00:05 UTC")
+        );
+    }
+
+    #[test]
+    fn live_feed_cache_catalog_sync_adds_metadata_after_durable_startup_install() {
+        let init =
+            create_ui_session(FlightPlan::default(), &[], None, None).expect("create session");
+        let taf_state = serde_json::json!({
+            "schema_version": 1,
+            "version_label": "taf-v1",
+            "taf_count": 1,
+            "tafs_by_station": {
+                "KAAA": {
+                    "raw_text": "TAF KAAA 010000Z 0100/0124 00000KT P6SM SCT020",
+                    "issued_at_utc": "2026-05-03T00:00:00.000Z",
+                    "station_id": "KAAA",
+                    "longitude": 0.0,
+                    "latitude": 0.0
+                }
+            }
+        });
+        let taf_bytes = serde_json::to_vec(&taf_state).expect("TAF state bytes");
+        let taf_sha256 = format!("{:x}", Sha256::digest(&taf_bytes));
+        let tfr_state = serde_json::json!({
+            "schema_version": 1,
+            "version_label": "tfr-v1",
+            "notam_count": 0,
+            "area_group_count": 0,
+            "areas": []
+        });
+        let tfr_bytes = serde_json::to_vec(&tfr_state).expect("TFR state bytes");
+        let tfr_sha256 = format!("{:x}", Sha256::digest(&tfr_bytes));
+
+        install_live_feed_installed_state_in_session(
+            init.handle,
+            &crate::LiveFeedInstalledState {
+                product: "tafs".to_string(),
+                version: "taf-v1".to_string(),
+                state_sha256: taf_sha256.clone(),
+                payload: crate::LiveFeedInstalledPayload::Json { bytes: taf_bytes },
+            },
+        )
+        .expect("install durable TAFs before current catalog");
+        install_live_feed_installed_state_in_session(
+            init.handle,
+            &crate::LiveFeedInstalledState {
+                product: "tfrs".to_string(),
+                version: "tfr-v1".to_string(),
+                state_sha256: tfr_sha256.clone(),
+                payload: crate::LiveFeedInstalledPayload::Json { bytes: tfr_bytes },
+            },
+        )
+        .expect("install durable TFRs before current catalog");
+
+        let mut cache_catalog = crate::LiveFeedsState::default();
+        cache_catalog
+            .ingest_resource(
+                "live_feeds/current",
+                format!(
+                    r#"{{
+                        "products": {{
+                            "tafs": {{
+                                "current": "taf-v1",
+                                "version_manifest_url": "versions/tafs/taf-v1.json",
+                                "state_url": "states/tafs/taf-v1.json",
+                                "state_sha256": "{taf_sha256}",
+                                "collected_at_utc": "2026-05-03T00:05:00Z"
+                            }},
+                            "tfrs": {{
+                                "current": "tfr-v1",
+                                "version_manifest_url": "versions/tfrs/tfr-v1.json",
+                                "state_url": "states/tfrs/tfr-v1.json",
+                                "state_sha256": "{tfr_sha256}",
+                                "collected_at_utc": "2026-05-03T00:06:00Z"
+                            }}
+                        }}
+                    }}"#
+                )
+                .as_bytes(),
+            )
+            .expect("cache current catalog");
+
+        let snapshot = sync_live_feed_catalog_in_session(init.handle, &cache_catalog)
+            .expect("sync cache catalog into session");
+        let rows = &snapshot.data_status_page_state.rows;
+        let tafs = rows
+            .iter()
+            .find(|row| row.id == "live_feed:tafs")
+            .expect("TAF data-status row");
+        assert_eq!(tafs.value, "OK");
+        assert_eq!(
+            tafs.facts
+                .iter()
+                .find(|fact| fact.label == "Collected At")
+                .map(|fact| fact.value.as_str()),
+            Some("2026-05-03 00:05 UTC")
+        );
+        let tfrs = rows
+            .iter()
+            .find(|row| row.id == "live_feed:tfrs")
+            .expect("TFR data-status row");
+        assert_eq!(tfrs.value, "OK");
+        assert_eq!(
+            tfrs.facts
+                .iter()
+                .find(|fact| fact.label == "Collected At")
+                .map(|fact| fact.value.as_str()),
+            Some("2026-05-03 00:06 UTC")
         );
     }
 

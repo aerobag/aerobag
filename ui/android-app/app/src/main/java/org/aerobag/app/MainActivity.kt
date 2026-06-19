@@ -2231,6 +2231,15 @@ internal fun AerobagApp(retainedModel: AerobagRetainedModel) {
             Log.w("AndroidLiveFeeds", "failed to report live-feed connection ${event.kind}", error)
         }
     }
+    fun syncLiveFeedCatalog() {
+        runCatching {
+            uiSession.syncLiveFeedCacheCatalog(liveFeedCache)
+        }.onSuccess {
+            applySessionSnapshot(it)
+        }.onFailure { error ->
+            Log.w("AndroidLiveFeeds", "failed to sync live-feed catalog", error)
+        }
+    }
     LaunchedEffect(uiSession, liveFeedCache, context, prefs) {
         val appContext = context.applicationContext
         withContext(Dispatchers.IO) {
@@ -2252,7 +2261,11 @@ internal fun AerobagApp(retainedModel: AerobagRetainedModel) {
                     promoteLiveFeed(summary)
                 }
             },
-            onChanged = {},
+            onChanged = {
+                withContext(Dispatchers.Main) {
+                    syncLiveFeedCatalog()
+                }
+            },
             onConnectionEvent = { event ->
                 withContext(Dispatchers.Main) {
                     reportLiveFeedConnection(event)

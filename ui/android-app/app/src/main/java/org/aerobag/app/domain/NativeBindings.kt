@@ -36,6 +36,8 @@ interface NativeBridge {
 
     fun liveFeedCacheInstallProductInSessionJson(handle: Long, sessionHandle: Long, product: String): String
 
+    fun liveFeedCacheSyncCatalogInSessionJson(handle: Long, sessionHandle: Long): String
+
     fun destroyLiveFeedCache(handle: Long)
 
     fun initializeOfflinePackagesJson(inputJson: String): String
@@ -535,6 +537,8 @@ object NativeBindings : NativeBridge {
     external override fun liveFeedCacheInstalledPayloadBytes(handle: Long, product: String): ByteArray
 
     external override fun liveFeedCacheInstallProductInSessionJson(handle: Long, sessionHandle: Long, product: String): String
+
+    external override fun liveFeedCacheSyncCatalogInSessionJson(handle: Long, sessionHandle: Long): String
 
     external override fun destroyLiveFeedCache(handle: Long)
 

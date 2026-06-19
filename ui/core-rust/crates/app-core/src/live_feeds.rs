@@ -783,6 +783,28 @@ impl LiveFeedsState {
         }
     }
 
+    pub fn merge_catalog_from(&mut self, source: &Self) {
+        if source.current_loaded {
+            self.current_loaded = true;
+            self.products
+                .retain(|product, _| source.products.contains_key(product));
+        }
+        for (product, source_entry) in &source.products {
+            let entry = self.products.entry(product.clone()).or_default();
+            entry.current_version = source_entry.current_version.clone();
+            entry.version_manifest_url = source_entry.version_manifest_url.clone();
+            entry.state_url = source_entry.state_url.clone();
+            entry.expected_state_sha256 = source_entry.expected_state_sha256.clone();
+            entry.published_at_utc = source_entry.published_at_utc.clone();
+            entry.collected_at_utc = source_entry.collected_at_utc.clone();
+            entry.state_kind = source_entry.state_kind.clone();
+            entry.state_ref = source_entry.state_ref.clone();
+            entry.install_state_ref = source_entry.install_state_ref.clone();
+            entry.delta_from_previous = source_entry.delta_from_previous.clone();
+            entry.version_manifest = source_entry.version_manifest.clone();
+        }
+    }
+
     pub fn durable_missing_requests(
         &self,
         installed: impl IntoIterator<Item = LiveFeedDurableInstalledProduct>,

@@ -1381,6 +1381,25 @@ pub fn live_feed_cache_install_product_in_session_json(
     serde_json::to_string(&snapshot).map_err(|err| err.to_string())
 }
 
+pub fn live_feed_cache_sync_catalog_in_session_json(
+    handle: u64,
+    session_handle: u64,
+) -> Result<String, String> {
+    let live_feeds = {
+        let caches = live_feed_caches()
+            .lock()
+            .map_err(|_| "live feed cache store poisoned".to_string())?;
+        caches
+            .get(&(handle as u32))
+            .ok_or_else(|| format!("invalid live feed cache handle: {handle}"))?
+            .live_feeds_state()
+            .clone()
+    };
+    let snapshot = app_core::sync_live_feed_catalog_in_session(session_handle as u32, &live_feeds)
+        .map_err(|err| err.to_string())?;
+    serde_json::to_string(&snapshot).map_err(|err| err.to_string())
+}
+
 pub fn destroy_live_feed_cache_json(handle: u64) -> Result<(), String> {
     live_feed_caches()
         .lock()
@@ -2179,6 +2198,19 @@ pub extern "system" fn Java_org_aerobag_app_domain_NativeBindings_liveFeedCacheI
         )
     });
     return_string(&mut env, result)
+}
+
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_org_aerobag_app_domain_NativeBindings_liveFeedCacheSyncCatalogInSessionJson(
+    mut env: JNIEnv,
+    _class: JClass,
+    handle: i64,
+    session_handle: i64,
+) -> jstring {
+    return_string(
+        &mut env,
+        live_feed_cache_sync_catalog_in_session_json(handle as u64, session_handle as u64),
+    )
 }
 
 #[unsafe(no_mangle)]

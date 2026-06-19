@@ -146,6 +146,10 @@ impl LiveFeedCache {
         self.installed.values()
     }
 
+    pub fn live_feeds_state(&self) -> &LiveFeedsState {
+        &self.live_feeds
+    }
+
     pub fn installed_summary(&self, product: &str) -> Option<LiveFeedInstalledSummary> {
         self.installed
             .get(product)

@@ -657,6 +657,13 @@ class NativeUiSession internal constructor(
         return snapshot
     }
 
+    fun syncLiveFeedCacheCatalog(cache: LiveFeedCache): UiSessionSnapshot {
+        snapshot = json.decodeFromJsonElement<WireUiSessionSnapshot>(
+            json.parseToJsonElement(cache.syncCatalogInSessionJson(handle)),
+        ).toUi()
+        return snapshot
+    }
+
     fun projectFlightPlanRoute(): List<FlightPlanRouteSegment> {
         val store = navKvStore ?: return emptyList()
         return json.decodeFromJsonElement<List<WireFlightPlanRouteSegment>>(

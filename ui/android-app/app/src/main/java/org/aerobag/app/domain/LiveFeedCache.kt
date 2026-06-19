@@ -112,6 +112,9 @@ class LiveFeedCache(
     fun installProductInSessionJson(sessionHandle: Long, product: String): String =
         bridge.liveFeedCacheInstallProductInSessionJson(handle, sessionHandle, product)
 
+    fun syncCatalogInSessionJson(sessionHandle: Long): String =
+        bridge.liveFeedCacheSyncCatalogInSessionJson(handle, sessionHandle)
+
     fun pumpOnce(
         fetch: (LiveFeedCacheRequest) -> ByteArray,
         persist: (LiveFeedInstalledSummary, ByteArray) -> Unit,
@@ -200,6 +203,7 @@ class AndroidLiveFeedClient(
                     val summary = cache.installFetchedBytes(request, bytes)
                     retryGate.recordSuccess(request.id)
                     if (summary == null) {
+                        onChanged()
                         madeProgress = true
                         continue
                     }

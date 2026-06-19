@@ -391,32 +391,36 @@ impl LiveFeedCache {
                 });
                 continue;
             }
+            let full_ref = driver.full_payload_ref(version);
             if let Some(delta) = self.applicable_delta(product, version, driver) {
+                if full_ref.is_none_or(|full_ref| delta.bytes <= full_ref.bytes) {
+                    requests.push(LiveFeedCacheRequest {
+                        id: format!(
+                            "live_feed_cache/delta/{}/{}/{}",
+                            product, delta.from_version, delta.to_version
+                        ),
+                        url: live_feed_address(&delta.url),
+                        kind: LiveFeedCacheRequestKind::Delta {
+                            product: product.clone(),
+                            from_version: delta.from_version.clone(),
+                            to_version: delta.to_version.clone(),
+                            payload_kind: Some(driver.delta_payload_kind().to_string()),
+                        },
+                    });
+                    continue;
+                }
+            }
+            if let Some(full_ref) = full_ref {
                 requests.push(LiveFeedCacheRequest {
-                    id: format!(
-                        "live_feed_cache/delta/{}/{}/{}",
-                        product, delta.from_version, delta.to_version
-                    ),
-                    url: live_feed_address(&delta.url),
-                    kind: LiveFeedCacheRequestKind::Delta {
+                    id: format!("live_feed_cache/full/{product}/{}", current.current),
+                    url: live_feed_address(&full_ref.url),
+                    kind: LiveFeedCacheRequestKind::Full {
                         product: product.clone(),
-                        from_version: delta.from_version.clone(),
-                        to_version: delta.to_version.clone(),
-                        payload_kind: Some(driver.delta_payload_kind().to_string()),
+                        version: current.current.clone(),
+                        payload_kind: full_ref.kind.clone(),
                     },
                 });
-                continue;
             }
-            let full_ref = version.install_state.as_ref().unwrap_or(&version.state);
-            requests.push(LiveFeedCacheRequest {
-                id: format!("live_feed_cache/full/{product}/{}", current.current),
-                url: live_feed_address(&full_ref.url),
-                kind: LiveFeedCacheRequestKind::Full {
-                    product: product.clone(),
-                    version: current.current.clone(),
-                    payload_kind: full_ref.kind.clone(),
-                },
-            });
         }
         requests
     }
@@ -447,10 +451,11 @@ impl LiveFeedCache {
             } => {
                 let version_manifest = self.version_for(product, version)?.clone();
                 let driver = registry.required_driver(product)?;
-                let full_ref = version_manifest
-                    .install_state
-                    .as_ref()
-                    .unwrap_or(&version_manifest.state);
+                let full_ref = driver.full_payload_ref(&version_manifest).ok_or_else(|| {
+                    cache_error(format!(
+                        "{product}/{version} does not advertise an installable full payload"
+                    ))
+                })?;
                 let installed = driver.install_full(&version_manifest, full_ref, payload)?;
                 self.installed.insert(product.clone(), installed.clone());
                 Ok(Some(installed))
@@ -646,6 +651,18 @@ impl LiveFeedProductDriver {
             Self::RecordJson { .. } => "record_json_delta",
             Self::NavKv { .. } => "nav_kv_delta",
             Self::FullJson { .. } | Self::OpaqueFull { .. } => "none",
+        }
+    }
+
+    fn full_payload_ref<'a>(
+        &self,
+        version: &'a LiveFeedCacheVersion,
+    ) -> Option<&'a LiveFeedPayloadRef> {
+        match self {
+            Self::NavKv { .. } => version.install_state.as_ref(),
+            Self::RecordJson { .. } | Self::FullJson { .. } | Self::OpaqueFull { .. } => {
+                version.install_state.as_ref().or(Some(&version.state))
+            }
         }
     }
 
@@ -1263,6 +1280,12 @@ mod tests {
         )
     }
 
+    fn version_manifest_with_state_bytes(manifest: &[u8], bytes: u64) -> Vec<u8> {
+        let mut value: Value = serde_json::from_slice(manifest).unwrap();
+        value["state"]["bytes"] = serde_json::json!(bytes);
+        serde_json::to_vec(&value).unwrap()
+    }
+
     #[test]
     fn product_registry_describes_record_json_delta_schema() {
         let registry = live_feed_product_registry();
@@ -1332,6 +1355,8 @@ mod tests {
         };
         let (v2_manifest, _, _) =
             json_version_manifest("metars", "v2", &v2, Some(delta_ref.clone()));
+        let v2_manifest =
+            version_manifest_with_state_bytes(&v2_manifest, delta_bytes.len() as u64 + 1024);
         cache
             .ingest_current(&current_manifest("metars", "v2", &v2_sha))
             .unwrap();
@@ -1358,6 +1383,67 @@ mod tests {
             .unwrap();
         assert_eq!(installed.version, "v2");
         assert_eq!(installed.state_sha256, v2_sha);
+    }
+
+    #[test]
+    fn record_json_cache_prefers_full_state_when_smaller_than_delta() {
+        let registry = live_feed_product_registry();
+        let v1 = metar_state("v1", &[("KSEA", "old")]);
+        let (v1_manifest, v1_bytes, v1_sha) = json_version_manifest("metars", "v1", &v1, None);
+        let mut cache = LiveFeedCache::default();
+        cache
+            .ingest_current(&current_manifest("metars", "v1", &v1_sha))
+            .unwrap();
+        cache
+            .ingest_version_manifest("metars", "v1", &v1_manifest)
+            .unwrap();
+        let request = cache.missing_requests(&registry).remove(0);
+        cache
+            .install_fetched_payload(&registry, &request, LiveFeedFetchedPayload::Bytes(v1_bytes))
+            .unwrap();
+
+        let v2 = metar_state("v2", &[("KSEA", "new")]);
+        let v2_sha = canonical_json_sha256(&v2).unwrap();
+        let delta = serde_json::json!({
+            "schema_version": 1,
+            "product": "metars",
+            "from_version": "v1",
+            "to_version": "v2",
+            "top_level_changed": {},
+            "top_level_removed": [],
+            "changed": {
+                "KSEA": {"station_id": "KSEA", "raw_text": "new"}
+            },
+            "removed": []
+        });
+        let delta_bytes = serde_json::to_vec(&delta).unwrap();
+        let delta_ref = LiveFeedDeltaRef {
+            from_version: "v1".to_string(),
+            from_state_sha256: v1_sha,
+            to_version: "v2".to_string(),
+            to_state_sha256: v2_sha.clone(),
+            url: "deltas/metars/v1__v2.json".to_string(),
+            bytes: 10_000_000,
+            blob_sha256: sha256_hex(&delta_bytes),
+        };
+        let (v2_manifest, _, _) =
+            json_version_manifest("metars", "v2", &v2, Some(delta_ref.clone()));
+        cache
+            .ingest_current(&current_manifest("metars", "v2", &v2_sha))
+            .unwrap();
+        cache
+            .ingest_version_manifest("metars", "v2", &v2_manifest)
+            .unwrap();
+
+        let request = cache.missing_requests(&registry).remove(0);
+        assert_eq!(
+            request.kind,
+            LiveFeedCacheRequestKind::Full {
+                product: "metars".to_string(),
+                version: "v2".to_string(),
+                payload_kind: None,
+            }
+        );
     }
 
     #[test]
@@ -1414,6 +1500,8 @@ mod tests {
             blob_sha256: sha256_hex(&delta_bytes),
         };
         let (v2_manifest, _, _) = json_version_manifest("tafs", "v2", &v2, Some(delta_ref));
+        let v2_manifest =
+            version_manifest_with_state_bytes(&v2_manifest, delta_bytes.len() as u64 + 1024);
         cache
             .ingest_current(&current_manifest("tafs", "v2", &v2_sha))
             .unwrap();
@@ -1555,7 +1643,7 @@ mod tests {
             "install_state": {
                 "kind": "nav_kv_package",
                 "url": "packages/obstacles/v2.zip",
-                "bytes": 123,
+                "bytes": delta_bytes.len() + 1024,
                 "blob_sha256": "unused",
                 "state_sha256": second_sha
             },
@@ -1613,5 +1701,128 @@ mod tests {
             .pairs(|page| pages.get(page as usize).cloned())
             .unwrap();
         assert_eq!(pairs, second_pairs);
+    }
+
+    #[test]
+    fn nav_kv_cache_prefers_full_package_when_smaller_than_delta() {
+        let registry = live_feed_product_registry();
+        let first_pairs = vec![NavKvPair {
+            key: "obstacle/tile/z01/x000001/y000001".to_string(),
+            value: b"old-a".to_vec(),
+        }];
+        let first = build_nav_kv_strict(first_pairs.clone(), 1024).unwrap();
+        let first_sha = nav_kv_canonical_sha256_from_pairs(&first_pairs);
+        let first_manifest = serde_json::to_vec(&serde_json::json!({
+            "schema_version": 1,
+            "product_id": "obstacles",
+            "version_label": "v1",
+            "encoding": format!("had-nav-kv-v{NAV_KV_VERSION}"),
+            "page_count": first.pages.len(),
+            "state_sha256": first_sha
+        }))
+        .unwrap();
+        let version_manifest = serde_json::to_vec(&serde_json::json!({
+            "schema_version": 1,
+            "product": "obstacles",
+            "version": "v1",
+            "state": {
+                "kind": "nav_kv",
+                "url": "states/obstacles/v1/manifest.json",
+                "bytes": 123,
+                "blob_sha256": "unused",
+                "state_sha256": first_sha
+            },
+            "install_state": {
+                "kind": "nav_kv_package",
+                "url": "packages/obstacles/v1.zip",
+                "bytes": 123,
+                "blob_sha256": "unused",
+                "state_sha256": first_sha
+            }
+        }))
+        .unwrap();
+        let mut cache = LiveFeedCache::default();
+        cache
+            .ingest_current(&current_manifest("obstacles", "v1", &first_sha))
+            .unwrap();
+        cache
+            .ingest_version_manifest("obstacles", "v1", &version_manifest)
+            .unwrap();
+        let request = cache.missing_requests(&registry).remove(0);
+        cache
+            .install_fetched_payload(
+                &registry,
+                &request,
+                LiveFeedFetchedPayload::NavKvMembers {
+                    manifest: first_manifest,
+                    root: first.root_bytes,
+                    pages: first.pages,
+                },
+            )
+            .unwrap();
+
+        let second_pairs = vec![NavKvPair {
+            key: "obstacle/tile/z01/x000001/y000001".to_string(),
+            value: b"new-a".to_vec(),
+        }];
+        let second_sha = nav_kv_canonical_sha256_from_pairs(&second_pairs);
+        let delta_value = serde_json::json!({
+            "schema_version": 1,
+            "product": "obstacles",
+            "from_version": "v1",
+            "to_version": "v2",
+            "from_state_sha256": first_sha,
+            "to_state_sha256": second_sha,
+            "entries": [{
+                "key": "obstacle/tile/z01/x000001/y000001",
+                "value": b"new-a".to_vec(),
+            }]
+        });
+        let delta_bytes = serde_json::to_vec(&delta_value).unwrap();
+        let second_manifest = serde_json::to_vec(&serde_json::json!({
+            "schema_version": 1,
+            "product": "obstacles",
+            "version": "v2",
+            "state": {
+                "kind": "nav_kv",
+                "url": "states/obstacles/v2/manifest.json",
+                "bytes": 123,
+                "blob_sha256": "unused",
+                "state_sha256": second_sha
+            },
+            "install_state": {
+                "kind": "nav_kv_package",
+                "url": "packages/obstacles/v2.zip",
+                "bytes": 10,
+                "blob_sha256": "unused",
+                "state_sha256": second_sha
+            },
+            "delta_from_previous": {
+                "from_version": "v1",
+                "from_state_sha256": first_sha,
+                "to_version": "v2",
+                "to_state_sha256": second_sha,
+                "url": "deltas/obstacles/v1__v2.nav-kv-delta.json",
+                "bytes": 10_000_000,
+                "blob_sha256": sha256_hex(&delta_bytes)
+            }
+        }))
+        .unwrap();
+        cache
+            .ingest_current(&current_manifest("obstacles", "v2", &second_sha))
+            .unwrap();
+        cache
+            .ingest_version_manifest("obstacles", "v2", &second_manifest)
+            .unwrap();
+
+        let request = cache.missing_requests(&registry).remove(0);
+        assert_eq!(
+            request.kind,
+            LiveFeedCacheRequestKind::Full {
+                product: "obstacles".to_string(),
+                version: "v2".to_string(),
+                payload_kind: Some("nav_kv_package".to_string()),
+            }
+        );
     }
 }

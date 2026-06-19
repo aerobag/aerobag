@@ -5,7 +5,10 @@ import android.net.ConnectivityManager
 import android.net.NetworkCapabilities
 import android.os.SystemClock
 import android.util.Log
+import java.io.ByteArrayOutputStream
 import java.io.File
+import java.io.IOException
+import java.io.InputStream
 import java.net.HttpURLConnection
 import java.net.SocketTimeoutException
 import java.net.URL
@@ -26,6 +29,7 @@ private const val LiveFeedCacheDirectoryName = "live-feeds"
 private const val LiveFeedSseConnectTimeoutMs = 5_000
 private const val LiveFeedSseIdleTimeoutMs = 65_000
 private const val LiveFeedFailedRequestRetryDelayMs = 5 * 60_000L
+internal const val LiveFeedMaxInMemoryFetchBytes = 64L * 1024L * 1024L
 
 @Serializable
 data class LiveFeedCacheRequest(
@@ -303,7 +307,25 @@ class AndroidLiveFeedClient(
             readTimeout = 20_000
         }
         return try {
-            connection.inputStream.buffered().use { it.readBytes() }.also {
+            val contentLength = connection.contentLengthLong
+            Log.i(
+                TAG,
+                "fetch live-feed start url=$resolved contentLength=$contentLength maxBytes=$LiveFeedMaxInMemoryFetchBytes",
+            )
+            if (contentLength > LiveFeedMaxInMemoryFetchBytes) {
+                throw LiveFeedResponseTooLargeException(
+                    url = resolved,
+                    maxBytes = LiveFeedMaxInMemoryFetchBytes,
+                    observedBytes = contentLength,
+                )
+            }
+            connection.inputStream.buffered().use {
+                readLiveFeedBytesBounded(
+                    input = it,
+                    maxBytes = LiveFeedMaxInMemoryFetchBytes,
+                    url = resolved,
+                )
+            }.also {
                 diagnosticLogInfo(TAG) {
                     "fetched live-feed bytes=${it.size} elapsedMs=${SystemClock.elapsedRealtime() - startMs} url=$resolved"
                 }
@@ -316,6 +338,37 @@ class AndroidLiveFeedClient(
     companion object {
         private const val TAG = "AndroidLiveFeeds"
     }
+}
+
+class LiveFeedResponseTooLargeException(
+    url: String,
+    maxBytes: Long,
+    observedBytes: Long,
+) : IOException("live-feed response too large: observedBytes=$observedBytes maxBytes=$maxBytes url=$url")
+
+internal fun readLiveFeedBytesBounded(
+    input: InputStream,
+    maxBytes: Long,
+    url: String,
+): ByteArray {
+    require(maxBytes <= Int.MAX_VALUE) { "maxBytes must fit in a ByteArray" }
+    val output = ByteArrayOutputStream()
+    val buffer = ByteArray(DEFAULT_BUFFER_SIZE)
+    var totalBytes = 0L
+    while (true) {
+        val bytesRead = input.read(buffer)
+        if (bytesRead == -1) break
+        totalBytes += bytesRead.toLong()
+        if (totalBytes > maxBytes) {
+            throw LiveFeedResponseTooLargeException(
+                url = url,
+                maxBytes = maxBytes,
+                observedBytes = totalBytes,
+            )
+        }
+        output.write(buffer, 0, bytesRead)
+    }
+    return output.toByteArray()
 }
 
 internal class LiveFeedRequestRetryGate(

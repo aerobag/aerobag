@@ -1398,6 +1398,13 @@ pub fn restore_direct_to_in_session(session_handle: u32) -> Result<String, JsVal
 }
 
 #[wasm_bindgen]
+pub fn restore_direct_to_in_session_outcome(session_handle: u32) -> Result<String, JsValue> {
+    let outcome = app_core::session::restore_direct_to_in_session_outcome(session_handle)
+        .map_err(|err| JsValue::from_str(&err.to_string()))?;
+    serde_json::to_string(&outcome).map_err(|err| JsValue::from_str(&err.to_string()))
+}
+
+#[wasm_bindgen]
 pub fn perform_flight_plan_row_action_in_session(
     session_handle: u32,
     row_uid: &str,

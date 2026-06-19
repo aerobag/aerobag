@@ -783,6 +783,7 @@ type WasmModule = {
   ): Promise<string> | string;
   load_plate_procedure_in_session(sessionHandle: number, loadId: string): Promise<string> | string;
   restore_direct_to_in_session(sessionHandle: number): Promise<string> | string;
+  restore_direct_to_in_session_outcome(sessionHandle: number): Promise<string> | string;
   perform_flight_plan_row_action_in_session(sessionHandle: number, rowUid: string, actionUid: string): Promise<string> | string;
   perform_status_action_in_session(sessionHandle: number, actionId: string): Promise<string> | string;
   activate_next_leg_in_session(sessionHandle: number): Promise<string> | string;
@@ -1014,14 +1015,11 @@ export class WasmAppCoreAdapter implements AppCoreAdapter {
         return operation();
       }
     };
-    const runFlightPlanMutation = async (
-      reason: string,
-      operation: () => Promise<string> | string,
-    ) => {
+    const runFlightPlanMutation = async (operation: () => Promise<string> | string) => {
       snapshot = await withSessionRetry(async () =>
         runSessionOperation<UiSessionSnapshot>(operation),
       );
-      return syncGuidanceGeometry(reason);
+      return snapshot;
     };
     await debugTiming("startup.session.sync_guidance_geometry.initial", () => syncGuidanceGeometry());
     return {
@@ -1068,13 +1066,11 @@ export class WasmAppCoreAdapter implements AppCoreAdapter {
         ),
       performMapSelectionAction: async (action) => {
         return runFlightPlanMutation(
-          "map_selection_action",
           () => this.module.perform_map_selection_action_in_session(handle, action),
         );
       },
       insertWaypointAtFlightPlanRow: async (rowUid, before, waypoint) => {
         return runFlightPlanMutation(
-          "insert_waypoint_at_flight_plan_row",
           () => this.module.insert_waypoint_at_flight_plan_row_in_session(
               handle,
               rowUid,
@@ -1105,13 +1101,11 @@ export class WasmAppCoreAdapter implements AppCoreAdapter {
       },
       appendFlightPlanEntry: async (input) => {
         return runFlightPlanMutation(
-          "append_flight_plan_entry",
           () => this.module.append_flight_plan_entry_in_session(handle, input),
         );
       },
       insertAirwayAtFlightPlanRow: async (rowUid, presentation, entryIndex, exitIndex) => {
         return runFlightPlanMutation(
-          "insert_airway_at_flight_plan_row",
           () => this.module.insert_airway_at_flight_plan_row_in_session(
               handle,
               rowUid,
@@ -1125,7 +1119,6 @@ export class WasmAppCoreAdapter implements AppCoreAdapter {
         const trace = { row_uid: rowUid, airport_id: airportId, procedure_id: procedureId, kind, runway_transition: runwayTransition, enroute_transition: enrouteTransition };
         return debugTiming("plan.procedure.select.session_mutation", () =>
           runFlightPlanMutation(
-            "select_procedure_at_flight_plan_row",
             () => this.module.select_procedure_at_flight_plan_row_in_session(
                 handle,
                 rowUid,
@@ -1140,19 +1133,16 @@ export class WasmAppCoreAdapter implements AppCoreAdapter {
       },
       loadPlateProcedure: async (loadId) => {
         return runFlightPlanMutation(
-          "load_plate_procedure",
           () => this.module.load_plate_procedure_in_session(handle, loadId),
         );
       },
       restoreDirectTo: async () => {
-        snapshot = await withSessionRetry(async () =>
-          parseSessionSnapshot(this.module.restore_direct_to_in_session(handle)),
+        return runFlightPlanMutation(
+          () => this.module.restore_direct_to_in_session_outcome(handle),
         );
-        return syncGuidanceGeometry("restore_direct_to");
       },
       performFlightPlanRowAction: async (rowUid, actionUid) => {
         return runFlightPlanMutation(
-          "perform_flight_plan_row_action",
           () => this.module.perform_flight_plan_row_action_in_session(handle, rowUid, actionUid),
         );
       },

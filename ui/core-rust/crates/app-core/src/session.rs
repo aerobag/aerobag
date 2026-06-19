@@ -4890,6 +4890,14 @@ pub fn restore_direct_to_in_session(handle: u32) -> AppResult<UiSessionSnapshot>
     snapshot_for_changed_session(session)
 }
 
+pub fn restore_direct_to_in_session_outcome(handle: u32) -> AppResult<HadOperationOutcome> {
+    let mut sessions = lock_sessions();
+    let session = session_mut(&mut sessions, handle)?;
+    let plan = session_plan(session)?;
+    let next_plan = crate::restore_direct_to(&plan)?;
+    commit_session_flight_plan_with_invalidations_outcome(session, next_plan)
+}
+
 pub fn attach_nav_kv_store_to_session(
     handle: u32,
     store_id: u32,
@@ -14795,6 +14803,46 @@ mod tests {
             .guidance
             .as_ref()
             .is_some_and(|guidance| guidance.can_restore_direct_to));
+    }
+
+    #[test]
+    fn restore_direct_to_outcome_invalidates_flight_plan_route() {
+        let direct_to_plan = crate::activate_direct_to(
+            &sample_guided_plan(),
+            LatLon {
+                lat: 37.44,
+                lon: -122.15,
+            },
+            NavRef::Fix("OFFPL".to_string()),
+        )
+        .expect("activate off-plan direct-to");
+        let init = create_ui_session(direct_to_plan, &[], None, None).expect("create session");
+
+        let outcome =
+            restore_direct_to_in_session_outcome(init.handle).expect("restore direct-to outcome");
+        let HadOperationOutcome::Complete {
+            result,
+            invalidations,
+        } = outcome
+        else {
+            panic!("restore direct-to unexpectedly needed resources");
+        };
+        let snapshot: UiSessionSnapshot = serde_json::from_value(result).expect("snapshot result");
+
+        assert!(invalidations.contains(&UiInvalidation::SessionSnapshot));
+        assert!(invalidations.contains(&UiInvalidation::FlightPlanRoute));
+        assert!(invalidations.contains(&UiInvalidation::MapOverlay));
+        assert_eq!(snapshot.session_revision, 1);
+        assert_eq!(
+            snapshot
+                .app_state
+                .active_plan
+                .as_ref()
+                .and_then(|plan| plan.guidance.as_ref())
+                .expect("restored guidance")
+                .sequencing_mode,
+            SequencingMode::FollowPlan
+        );
     }
 
     #[test]

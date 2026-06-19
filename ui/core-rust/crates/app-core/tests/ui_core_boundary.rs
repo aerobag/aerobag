@@ -238,6 +238,7 @@ fn platform_adapters_use_paged_loops_for_paged_session_exports() {
         "insert_airway_at_flight_plan_row_in_session",
         "select_procedure_at_flight_plan_row_in_session",
         "load_plate_procedure_in_session",
+        "restore_direct_to_in_session_outcome",
         "perform_flight_plan_row_action_in_session",
         "sync_guidance_geometry_in_session",
         "project_flight_plan_route_in_session",
@@ -262,7 +263,9 @@ fn platform_adapters_use_paged_loops_for_paged_session_exports() {
             continue;
         };
         let window = &web[index.saturating_sub(220)..web.len().min(index + 420)];
-        if !window.contains("runCoreHadSessionOperation") && !window.contains("runSessionOperation")
+        if !window.contains("runCoreHadSessionOperation")
+            && !window.contains("runSessionOperation")
+            && !window.contains("runFlightPlanMutation")
         {
             violations.push(format!(
                 "web calls {export} without runCoreHadSessionOperation"
@@ -291,7 +294,7 @@ fn platform_adapters_use_paged_loops_for_paged_session_exports() {
         };
         let window = &android[index.saturating_sub(220)..android.len().min(index + 420)];
         if !window.contains("runPagedSessionOperationElement")
-            && !window.contains("runPagedMutationAndRefresh")
+            && !window.contains("runPagedSnapshot")
         {
             violations.push(format!(
                 "android calls {export} without runPagedSessionOperationElement"

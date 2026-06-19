@@ -49,6 +49,7 @@ declare module "@generated/app_wasm.js" {
   export const select_procedure_at_flight_plan_row_in_session: (...args: unknown[]) => string;
   export const load_plate_procedure_in_session: (...args: unknown[]) => string;
   export const restore_direct_to_in_session: (...args: unknown[]) => string;
+  export const restore_direct_to_in_session_outcome: (...args: unknown[]) => string;
   export const select_airport_in_session: (...args: unknown[]) => string;
   export const select_chart_in_session: (...args: unknown[]) => string;
   export const ingest_point_tiles_in_session: (...args: unknown[]) => void;

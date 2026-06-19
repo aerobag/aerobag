@@ -4,7 +4,7 @@ use std::{
     collections::BTreeSet,
     env, fs,
     fs::File,
-    io::{Cursor, Read},
+    io::Read,
     path::{Path, PathBuf},
 };
 use zip::ZipArchive;
@@ -124,15 +124,9 @@ fn read_dir_page(dir: &Path, page_index: u32) -> anyhow::Result<Vec<u8>> {
 }
 
 fn decode_xz_if_needed(bytes: &[u8]) -> anyhow::Result<Vec<u8>> {
-    const XZ_MAGIC: &[u8] = b"\xfd7zXZ\0";
-    if !bytes.starts_with(XZ_MAGIC) {
-        return Ok(bytes.to_vec());
-    }
-    let mut input = Cursor::new(bytes);
-    let mut decoded = Vec::new();
-    lzma_rs::xz_decompress(&mut input, &mut decoded)
-        .map_err(|err| anyhow::anyhow!("xz decompression failed: {err}"))?;
-    Ok(decoded)
+    nav_kv_package::decode_xz_if_needed(bytes)
+        .map(|bytes| bytes.into_owned())
+        .map_err(anyhow::Error::msg)
 }
 
 fn query_had_zip(path: &Path, key: &str) -> anyhow::Result<Option<Vec<u8>>> {
@@ -153,5 +147,9 @@ fn read_zip_member(archive: &mut ZipArchive<File>, name: &str) -> anyhow::Result
     let mut bytes = Vec::new();
     file.read_to_end(&mut bytes)
         .with_context(|| format!("failed to read zip member {name}"))?;
-    Ok(bytes)
+    if name.starts_with("page_") {
+        decode_xz_if_needed(&bytes).with_context(|| format!("failed to decode zip member {name}"))
+    } else {
+        Ok(bytes)
+    }
 }

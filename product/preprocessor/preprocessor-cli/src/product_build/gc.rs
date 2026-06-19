@@ -445,7 +445,11 @@ mod tests {
         let config = test_config(build_root.clone());
         let current_artifacts = vec![
             current_manifest("nav6-sunset-abc", "20260609T000000Z", "NAV6"),
-            current_manifest("master-def", "20260609T000010Z", "NAV9"),
+            current_manifest(
+                "master-def",
+                "20260609T000010Z",
+                product_contracts::NAV_DB_CONTRACT_ID,
+            ),
         ];
         fs::create_dir_all(build_root.join("published")).unwrap();
         fs::write(

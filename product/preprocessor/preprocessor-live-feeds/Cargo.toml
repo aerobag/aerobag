@@ -9,6 +9,7 @@ anyhow.workspace = true
 chrono.workspace = true
 had-nav-kv = { path = "../../../crates/had-nav-kv" }
 image.workspace = true
+nav-kv-package = { path = "../../../crates/nav-kv-package" }
 preprocessor-core = { path = "../preprocessor-core" }
 preprocessor-fetch = { path = "../preprocessor-fetch" }
 preprocessor-vectors = { path = "../preprocessor-vectors" }

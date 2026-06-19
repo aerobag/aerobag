@@ -5808,7 +5808,11 @@ fn ingest_live_obstacle_had_resource(
             message: format!("obstacle HAD page arrived before root: {resource_id}"),
         });
     };
-    store.insert_page(page_index, bytes.to_vec());
+    let page_bytes = nav_kv_package::decode_xz_if_needed(bytes).map_err(|message| AppError {
+        kind: AppErrorKind::InvalidManifest,
+        message: format!("failed to decode obstacle HAD page {resource_id}: {message}"),
+    })?;
+    store.insert_page(page_index, page_bytes.into_owned());
     clear_data_status_record(session, LIVE_FEED_OBSTACLES_STATUS_ID);
     Ok(())
 }
@@ -10652,6 +10656,7 @@ mod tests {
             "live_feeds/current",
             format!(
                 r#"{{
+                    "schema_version": 2,
                     "products": {{
                         "obstacles": {{
                             "current": "{version}",
@@ -10671,6 +10676,7 @@ mod tests {
             &format!("live_feeds/version/obstacles/{version}"),
             format!(
                 r#"{{
+                    "schema_version": 2,
                     "product": "obstacles",
                     "version": "{version}",
                     "state": {{
@@ -11081,6 +11087,7 @@ mod tests {
                 .ingest_resource(
                     "live_feeds/current",
                     br#"{
+                        "schema_version": 2,
                         "products": {
                             "metars": {
                                 "current": "v1",
@@ -11256,6 +11263,7 @@ mod tests {
                     "live_feeds/current",
                     format!(
                         r#"{{
+                            "schema_version": 2,
                             "products": {{
                                 "metars": {{
                                     "current": "v1",
@@ -11328,6 +11336,7 @@ mod tests {
             "live_feeds/current",
             format!(
                 r#"{{
+                    "schema_version": 2,
                     "products": {{
                         "tafs": {{
                             "current": "v1",
@@ -11347,10 +11356,11 @@ mod tests {
             "live_feeds/version/tafs/v1",
             format!(
                 r#"{{
-                    "schema_version": 1,
+                    "schema_version": 2,
                     "product": "tafs",
                     "version": "v1",
                     "state": {{
+                        "kind": "json",
                         "url": "states/tafs/v1.json",
                         "bytes": {},
                         "blob_sha256": "{state_sha256}",
@@ -11434,6 +11444,7 @@ mod tests {
             "live_feeds/current",
             format!(
                 r#"{{
+                    "schema_version": 2,
                     "products": {{
                         "tafs": {{
                             "current": "v1",
@@ -12322,6 +12333,7 @@ mod tests {
                 "live_feeds/current",
                 format!(
                     r#"{{
+                    "schema_version": 2,
                     "products": {{
                         "tfrs": {{
                             "current": "bad",
@@ -12342,9 +12354,11 @@ mod tests {
                 "live_feeds/version/tfrs/bad",
                 format!(
                     r#"{{
+                    "schema_version": 2,
                     "product": "tfrs",
                     "version": "bad",
                     "state": {{
+                        "kind": "json",
                         "url": "states/tfrs/bad.json",
                         "state_sha256": "{}"
                     }}
@@ -12470,6 +12484,7 @@ mod tests {
             "live_feeds/current",
             format!(
                 r#"{{
+                    "schema_version": 2,
                     "products": {{
                         "obstacles": {{
                             "current": "v1",
@@ -12488,6 +12503,7 @@ mod tests {
             "live_feeds/version/obstacles/v1",
             format!(
                 r#"{{
+                    "schema_version": 2,
                     "product": "obstacles",
                     "version": "v1",
                     "state": {{
@@ -12609,6 +12625,7 @@ mod tests {
             "live_feeds/current",
             format!(
                 r#"{{
+                    "schema_version": 2,
                     "products": {{
                         "obstacles": {{
                             "current": "v2",
@@ -12954,8 +12971,12 @@ mod tests {
         let init =
             create_ui_session(FlightPlan::default(), &[], None, None).expect("create session");
         set_map_layer_visibility_in_session(init.handle, "nexrad", true).expect("show nexrad");
-        ingest_resource_in_session(init.handle, "live_feeds/current", br#"{"products":{}}"#)
-            .expect("ingest empty current manifest");
+        ingest_resource_in_session(
+            init.handle,
+            "live_feeds/current",
+            br#"{"schema_version":2,"products":{}}"#,
+        )
+        .expect("ingest empty current manifest");
 
         let outcome = get_nexrad_overlay_in_session(
             init.handle,
@@ -13326,6 +13347,7 @@ mod tests {
             "live_feeds/current",
             format!(
                 r#"{{
+                    "schema_version": 2,
                     "products": {{
                         "obstacles": {{
                             "current": "v1",
@@ -13344,6 +13366,7 @@ mod tests {
             "live_feeds/version/obstacles/v1",
             format!(
                 r#"{{
+                    "schema_version": 2,
                     "product": "obstacles",
                     "version": "v1",
                     "state": {{

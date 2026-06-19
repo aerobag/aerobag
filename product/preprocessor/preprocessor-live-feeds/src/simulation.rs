@@ -495,11 +495,12 @@ fn precomputed_simulated_delta(
         return Ok(None);
     };
     let delta_path = fixture_root.join(&delta_ref.url);
-    let fixture_delta: FixtureRecordDelta = serde_json::from_slice(
-        &fs::read(&delta_path)
-            .with_context(|| format!("failed to read {}", delta_path.display()))?,
-    )
-    .with_context(|| format!("failed to parse {}", delta_path.display()))?;
+    let delta_bytes = fs::read(&delta_path)
+        .with_context(|| format!("failed to read {}", delta_path.display()))?;
+    let delta_bytes = nav_kv_package::decode_xz_if_needed(&delta_bytes)
+        .map_err(|err| anyhow::anyhow!("failed to decode {}: {err}", delta_path.display()))?;
+    let fixture_delta: FixtureRecordDelta = serde_json::from_slice(delta_bytes.as_ref())
+        .with_context(|| format!("failed to parse {}", delta_path.display()))?;
     if fixture_delta.product != event.product {
         bail!(
             "fixture delta {} is for product {}, expected {}",

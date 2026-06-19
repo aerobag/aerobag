@@ -1444,24 +1444,10 @@ fn write_xz_files_parallel(jobs: Vec<XzFileJob>, xz_jobs: usize) -> anyhow::Resu
 }
 
 fn write_xz_file_deterministic(source: &Path, target: &Path) -> anyhow::Result<()> {
-    let output = Command::new("xz")
-        .arg("--format=xz")
-        .arg("--check=crc64")
-        .arg("-6")
-        .arg("--stdout")
-        .arg("--threads=1")
-        .arg(source)
-        .output()
-        .with_context(|| format!("failed to run xz for {}", source.display()))?;
-    if !output.status.success() {
-        bail!(
-            "xz failed for {}: {}",
-            source.display(),
-            String::from_utf8_lossy(&output.stderr).trim()
-        );
-    }
-    fs::write(target, output.stdout)
-        .with_context(|| format!("failed to write {}", target.display()))
+    let bytes = fs::read(source).with_context(|| format!("failed to read {}", source.display()))?;
+    let encoded = nav_kv_package::xz_compress_bytes(&bytes)
+        .map_err(|err| anyhow::anyhow!("failed to xz-compress {}: {err}", source.display()))?;
+    fs::write(target, encoded).with_context(|| format!("failed to write {}", target.display()))
 }
 
 fn prepare_package_unpack_source_root(

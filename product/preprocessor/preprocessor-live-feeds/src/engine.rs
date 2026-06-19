@@ -20,6 +20,8 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use sha2::{Digest, Sha256};
 
+pub const LIVE_FEEDS_SCHEMA_VERSION: u32 = 2;
+
 pub trait Clock {
     fn now_utc(&self) -> DateTime<Utc>;
 }
@@ -282,6 +284,8 @@ pub struct LivePayloadRef {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct LiveDeltaRef {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub kind: Option<String>,
     pub from_version: String,
     pub from_state_sha256: String,
     pub to_version: String,
@@ -615,7 +619,7 @@ pub fn live_feed_invalidation_from_update(
     update: &PublishedLiveFeedUpdate,
 ) -> LiveFeedInvalidation {
     LiveFeedInvalidation {
-        schema_version: 1,
+        schema_version: LIVE_FEEDS_SCHEMA_VERSION,
         product: update.product.clone(),
         version: update.version.clone(),
         version_manifest_url: update.version_manifest_url.clone(),
@@ -714,17 +718,20 @@ impl<C: Clock> FileLiveFeedPublisher<C> {
         changed_count_if_no_delta: usize,
     ) -> anyhow::Result<PublishedLiveFeedUpdate> {
         let state_dir = self.root.join("states").join(&product);
-        let state_path = state_dir.join(format!("{version}.json"));
+        let state_path = state_dir.join(format!("{version}.json.xz"));
         fs::create_dir_all(&state_dir)
             .with_context(|| format!("failed to create {}", state_dir.display()))?;
-        copy_file_if_missing(&source_path, &state_path)?;
+        let _ = source_path;
+        if !state_path.is_file() {
+            write_xz_json_pretty_file(&state_path, &state_value)?;
+        }
         self.publish_state_common(
             product,
             version,
             state_path,
             state_value,
             state_sha256,
-            state_payload_kind,
+            state_payload_kind.or_else(|| Some("json_xz".to_string())),
             status_timestamps,
             delta_policy,
             precomputed_delta,
@@ -758,6 +765,9 @@ impl<C: Clock> FileLiveFeedPublisher<C> {
         }
         if !state_path.is_file() {
             copy_file_if_missing(&manifest_path, &state_path)?;
+        }
+        if state_payload_kind.as_deref() == Some("nav_kv") {
+            xz_nav_kv_state_dir_pages(&state_dir, &manifest_value)?;
         }
         self.publish_state_common(
             product,
@@ -798,7 +808,7 @@ impl<C: Clock> FileLiveFeedPublisher<C> {
         let collected_at_utc = status_timestamps.collected_at_text();
         let mut current =
             read_live_feeds_current(&self.root)?.unwrap_or(LiveFeedsCurrentManifest {
-                schema_version: 1,
+                schema_version: LIVE_FEEDS_SCHEMA_VERSION,
                 generated_at_utc: self
                     .clock
                     .now_utc()
@@ -897,11 +907,12 @@ impl<C: Clock> FileLiveFeedPublisher<C> {
             let product_delta_dir = self.root.join("deltas").join(&product);
             fs::create_dir_all(&product_delta_dir)
                 .with_context(|| format!("failed to create {}", product_delta_dir.display()))?;
-            let path = product_delta_dir.join(format!("{}__{}.json", previous.current, version));
-            write_json_pretty_file(&path, &delta)?;
+            let path = product_delta_dir.join(format!("{}__{}.json.xz", previous.current, version));
+            write_xz_json_pretty_file(&path, &delta)?;
             let bytes =
                 fs::read(&path).with_context(|| format!("failed to read {}", path.display()))?;
             delta_ref = Some(LiveDeltaRef {
+                kind: Some("record_json_delta_xz".to_string()),
                 from_version: previous.current.clone(),
                 from_state_sha256: previous.state_sha256.clone(),
                 to_version: version.clone(),
@@ -956,10 +967,10 @@ impl<C: Clock> FileLiveFeedPublisher<C> {
             fs::create_dir_all(&product_delta_dir)
                 .with_context(|| format!("failed to create {}", product_delta_dir.display()))?;
             let path = product_delta_dir.join(format!(
-                "{}__{}.nav-kv-delta.json",
+                "{}__{}.nav-kv-delta.json.xz",
                 previous.current, version
             ));
-            write_json_pretty_file(
+            write_xz_json_pretty_file(
                 &path,
                 &live_feed_nav_kv_delta_from_delta(
                     &product,
@@ -973,6 +984,7 @@ impl<C: Clock> FileLiveFeedPublisher<C> {
             let bytes =
                 fs::read(&path).with_context(|| format!("failed to read {}", path.display()))?;
             delta_ref = Some(LiveDeltaRef {
+                kind: Some("nav_kv_delta_xz".to_string()),
                 from_version: previous.current.clone(),
                 from_state_sha256: previous.state_sha256.clone(),
                 to_version: version.clone(),
@@ -1019,7 +1031,7 @@ impl<C: Clock> FileLiveFeedPublisher<C> {
         write_json_pretty_file(
             &version_manifest_path,
             &LiveFeedVersionManifest {
-                schema_version: 1,
+                schema_version: LIVE_FEEDS_SCHEMA_VERSION,
                 product: product.clone(),
                 version: version.clone(),
                 previous: previous_version,
@@ -1073,9 +1085,23 @@ impl<C: Clock> FileLiveFeedPublisher<C> {
         let package_dir = self.root.join("packages").join(product);
         let package_path = package_dir.join(format!("{version}.zip"));
         if !package_path.is_file() {
-            let members = zip_members_for_dir(state_root)?;
-            write_deterministic_zip(&package_path, &members)
-                .with_context(|| format!("failed to write {}", package_path.display()))?;
+            if kind == "nav_kv_package" {
+                let (manifest, root, pages) = read_nav_kv_members_from_dir(product, state_root)?;
+                let bytes = nav_kv_package::write_stored_xz_package_bytes(&manifest, &root, &pages)
+                    .map_err(|err| {
+                        anyhow::anyhow!("failed to encode {product} nav_kv package: {err}")
+                    })?;
+                if let Some(parent) = package_path.parent() {
+                    fs::create_dir_all(parent)
+                        .with_context(|| format!("failed to create {}", parent.display()))?;
+                }
+                fs::write(&package_path, bytes)
+                    .with_context(|| format!("failed to write {}", package_path.display()))?;
+            } else {
+                let members = zip_members_for_dir(state_root)?;
+                write_deterministic_zip(&package_path, &members)
+                    .with_context(|| format!("failed to write {}", package_path.display()))?;
+            }
         }
         let bytes = fs::read(&package_path)
             .with_context(|| format!("failed to read {}", package_path.display()))?;
@@ -1133,7 +1159,7 @@ pub fn build_record_delta(
     removed.sort();
 
     Ok(LiveFeedRecordDelta {
-        schema_version: 1,
+        schema_version: LIVE_FEEDS_SCHEMA_VERSION,
         product: product.to_string(),
         from_version: from_version.to_string(),
         to_version: to_version.to_string(),
@@ -1203,7 +1229,7 @@ fn live_feed_nav_kv_delta_from_delta(
     delta: &NavKvDelta,
 ) -> LiveFeedNavKvDelta {
     LiveFeedNavKvDelta {
-        schema_version: 1,
+        schema_version: LIVE_FEEDS_SCHEMA_VERSION,
         product: product.to_string(),
         from_version: from_version.to_string(),
         to_version: to_version.to_string(),
@@ -1226,8 +1252,60 @@ pub(crate) fn read_nav_kv_pairs_from_dir(state_dir: &Path) -> anyhow::Result<Vec
         fs::read(&root_path).with_context(|| format!("failed to read {}", root_path.display()))?;
     let root = NavKvRoot::parse(&root_bytes)
         .map_err(|err| anyhow::anyhow!("failed to parse {}: {err}", root_path.display()))?;
-    root.pairs(|page| fs::read(state_dir.join(format!("page_{page:04}"))).ok())
+    root.pairs(|page| read_nav_kv_page_from_dir(state_dir, page).ok())
         .ok_or_else(|| anyhow::anyhow!("failed to read HAD pages under {}", state_dir.display()))
+}
+
+fn read_nav_kv_members_from_dir(
+    product: &str,
+    state_dir: &Path,
+) -> anyhow::Result<(Vec<u8>, Vec<u8>, Vec<Vec<u8>>)> {
+    let manifest_path = state_dir.join("manifest.json");
+    let manifest = fs::read(&manifest_path)
+        .with_context(|| format!("failed to read {}", manifest_path.display()))?;
+    let manifest_value: Value = serde_json::from_slice(&manifest)
+        .with_context(|| format!("failed to decode {}", manifest_path.display()))?;
+    let page_count = nav_kv_manifest_page_count(product, &manifest_value)?;
+    let root_path = state_dir.join("root");
+    let root =
+        fs::read(&root_path).with_context(|| format!("failed to read {}", root_path.display()))?;
+    let mut pages = Vec::new();
+    for page in 0..page_count {
+        pages.push(read_nav_kv_page_from_dir(state_dir, page)?);
+    }
+    Ok((manifest, root, pages))
+}
+
+fn xz_nav_kv_state_dir_pages(state_dir: &Path, manifest_value: &Value) -> anyhow::Result<()> {
+    let page_count = nav_kv_manifest_page_count("nav_kv", manifest_value)?;
+    for page in 0..page_count {
+        let path = state_dir.join(format!("page_{page:04}"));
+        let bytes =
+            fs::read(&path).with_context(|| format!("failed to read {}", path.display()))?;
+        if nav_kv_package::is_xz(&bytes) {
+            continue;
+        }
+        let encoded = nav_kv_package::xz_compress_bytes(&bytes)
+            .map_err(|err| anyhow::anyhow!("failed to encode {}: {err}", path.display()))?;
+        fs::write(&path, encoded).with_context(|| format!("failed to write {}", path.display()))?;
+    }
+    Ok(())
+}
+
+fn read_nav_kv_page_from_dir(state_dir: &Path, page: u32) -> anyhow::Result<Vec<u8>> {
+    let path = state_dir.join(format!("page_{page:04}"));
+    let bytes = fs::read(&path).with_context(|| format!("failed to read {}", path.display()))?;
+    nav_kv_package::decode_xz_if_needed(&bytes)
+        .map(|page| page.into_owned())
+        .map_err(|err| anyhow::anyhow!("failed to decode {}: {err}", path.display()))
+}
+
+fn nav_kv_manifest_page_count(product: &str, manifest_value: &Value) -> anyhow::Result<u32> {
+    manifest_value
+        .get("page_count")
+        .and_then(Value::as_u64)
+        .and_then(|value| u32::try_from(value).ok())
+        .ok_or_else(|| anyhow::anyhow!("{product} nav_kv manifest missing page_count"))
 }
 
 fn state_object(state: &Value) -> anyhow::Result<&serde_json::Map<String, Value>> {
@@ -1241,10 +1319,11 @@ pub fn read_live_feeds_current(root: &Path) -> anyhow::Result<Option<LiveFeedsCu
     if !path.is_file() {
         return Ok(None);
     }
-    let current = serde_json::from_slice(
+    let current: LiveFeedsCurrentManifest = serde_json::from_slice(
         &fs::read(&path).with_context(|| format!("failed to read {}", path.display()))?,
     )
     .with_context(|| format!("failed to parse {}", path.display()))?;
+    validate_live_feeds_schema("current manifest", current.schema_version)?;
     Ok(Some(current))
 }
 
@@ -1255,6 +1334,13 @@ pub fn write_live_feeds_current_manifest(
     let path = root.join("current.json");
     write_json_pretty_file(&path, current)?;
     Ok(path)
+}
+
+fn validate_live_feeds_schema(label: &str, schema_version: u32) -> anyhow::Result<()> {
+    if schema_version == LIVE_FEEDS_SCHEMA_VERSION {
+        return Ok(());
+    }
+    bail!("unsupported {label} schema {schema_version}; required {LIVE_FEEDS_SCHEMA_VERSION}")
 }
 
 pub fn canonical_json_sha256(value: &Value) -> anyhow::Result<String> {
@@ -1271,10 +1357,11 @@ pub fn sha256_hex(bytes: &[u8]) -> String {
 }
 
 pub fn read_json_value(path: &Path) -> anyhow::Result<Value> {
-    serde_json::from_slice(
-        &fs::read(path).with_context(|| format!("failed to read {}", path.display()))?,
-    )
-    .with_context(|| format!("failed to parse {}", path.display()))
+    let bytes = fs::read(path).with_context(|| format!("failed to read {}", path.display()))?;
+    let bytes = nav_kv_package::decode_xz_if_needed(&bytes)
+        .map_err(|err| anyhow::anyhow!("failed to decode {}: {err}", path.display()))?;
+    serde_json::from_slice(bytes.as_ref())
+        .with_context(|| format!("failed to parse {}", path.display()))
 }
 
 pub fn write_json_pretty_file(path: &Path, value: &impl Serialize) -> anyhow::Result<()> {
@@ -1287,6 +1374,17 @@ pub fn write_json_pretty_file(path: &Path, value: &impl Serialize) -> anyhow::Re
         serde_json::to_vec_pretty(value).context("failed to encode JSON")?,
     )
     .with_context(|| format!("failed to write {}", path.display()))
+}
+
+pub fn write_xz_json_pretty_file(path: &Path, value: &impl Serialize) -> anyhow::Result<()> {
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent)
+            .with_context(|| format!("failed to create {}", parent.display()))?;
+    }
+    let bytes = serde_json::to_vec_pretty(value).context("failed to encode JSON")?;
+    let encoded = nav_kv_package::xz_compress_bytes(&bytes)
+        .map_err(|err| anyhow::anyhow!("failed to xz-compress {}: {err}", path.display()))?;
+    fs::write(path, encoded).with_context(|| format!("failed to write {}", path.display()))
 }
 
 pub fn fixture_cache_key(parts: &[FixtureCacheKeyPart]) -> String {
@@ -1748,14 +1846,16 @@ mod tests {
             .get("winds-aloft")
             .expect("winds-aloft current entry");
         assert_eq!(entry.current, "v1");
-        assert_eq!(entry.state_url, "states/winds-aloft/v1.json");
+        assert_eq!(entry.state_url, "states/winds-aloft/v1.json.xz");
         assert_eq!(entry.state_sha256, canonical_json_sha256(&state_value)?);
 
         let version_manifest_path = root.join("versions").join("winds-aloft").join("v1.json");
         let version_manifest: LiveFeedVersionManifest =
             serde_json::from_slice(&fs::read(version_manifest_path)?)?;
+        assert_eq!(version_manifest.schema_version, LIVE_FEEDS_SCHEMA_VERSION);
         assert_eq!(version_manifest.product, "winds-aloft");
         assert_eq!(version_manifest.previous, None);
+        assert_eq!(version_manifest.state.kind.as_deref(), Some("json_xz"));
         assert!(version_manifest.delta_from_previous.is_none());
         Ok(())
     }
@@ -1846,7 +1946,7 @@ mod tests {
         let delta_path = result
             .delta_path
             .expect("second publish should write HAD delta");
-        let delta: LiveFeedNavKvDelta = serde_json::from_slice(&fs::read(delta_path)?)?;
+        let delta: LiveFeedNavKvDelta = serde_json::from_value(read_json_value(&delta_path)?)?;
         assert_eq!(
             delta
                 .entries
@@ -1865,8 +1965,36 @@ mod tests {
         );
         let version_manifest: LiveFeedVersionManifest =
             serde_json::from_slice(&fs::read(live_root.join("versions/obstacles/v2.json"))?)?;
+        assert_eq!(version_manifest.schema_version, LIVE_FEEDS_SCHEMA_VERSION);
         assert_eq!(version_manifest.state.kind.as_deref(), Some("nav_kv"));
         assert_eq!(version_manifest.state.state_sha256, second.state_sha256);
+        assert_eq!(
+            version_manifest
+                .delta_from_previous
+                .as_ref()
+                .and_then(|delta| delta.kind.as_deref()),
+            Some("nav_kv_delta_xz")
+        );
+        let install_url = version_manifest
+            .install_state
+            .as_ref()
+            .expect("obstacle install package")
+            .url
+            .clone();
+        let package_path = live_root.join(install_url);
+        let mut archive = ZipArchive::new(fs::File::open(&package_path)?)?;
+        for index in 0..archive.len() {
+            let name = archive.by_index(index)?.name().to_string();
+            assert!(
+                !name.ends_with(".zip"),
+                "obstacle install package must not contain nested zip member {name}"
+            );
+        }
+        let mut encoded_page = Vec::new();
+        let mut page_member = archive.by_name("page_0000")?;
+        assert_eq!(page_member.compression(), CompressionMethod::Stored);
+        page_member.read_to_end(&mut encoded_page)?;
+        assert!(nav_kv_package::is_xz(&encoded_page));
         Ok(())
     }
 
@@ -1915,7 +2043,7 @@ mod tests {
         fs::remove_file(first_update.state_path)?;
 
         let precomputed_delta = LiveFeedRecordDelta {
-            schema_version: 1,
+            schema_version: LIVE_FEEDS_SCHEMA_VERSION,
             product: "metars".to_string(),
             from_version: "v1".to_string(),
             to_version: "v2".to_string(),
@@ -1949,7 +2077,7 @@ mod tests {
         })?;
 
         let delta_path = result.delta_path.expect("precomputed delta path");
-        let delta: LiveFeedRecordDelta = serde_json::from_slice(&fs::read(delta_path)?)?;
+        let delta: LiveFeedRecordDelta = serde_json::from_value(read_json_value(&delta_path)?)?;
         assert_eq!(delta.changed.keys().cloned().collect::<Vec<_>>(), vec!["B"]);
         assert_eq!(result.changed_count, 1);
         Ok(())
@@ -2055,9 +2183,9 @@ mod tests {
         let delta_path = result.delta_path.expect("TAF delta path");
         assert_eq!(
             delta_path,
-            root.join("deltas").join("tafs").join("v1__v2.json")
+            root.join("deltas").join("tafs").join("v1__v2.json.xz")
         );
-        let delta: LiveFeedRecordDelta = serde_json::from_slice(&fs::read(&delta_path)?)?;
+        let delta: LiveFeedRecordDelta = serde_json::from_value(read_json_value(&delta_path)?)?;
         assert_eq!(delta.product, "tafs");
         assert_eq!(
             delta.changed.keys().cloned().collect::<Vec<_>>(),
@@ -2072,7 +2200,14 @@ mod tests {
                 .delta_from_previous
                 .as_ref()
                 .map(|delta| delta.url.as_str()),
-            Some("deltas/tafs/v1__v2.json")
+            Some("deltas/tafs/v1__v2.json.xz")
+        );
+        assert_eq!(
+            version_manifest
+                .delta_from_previous
+                .as_ref()
+                .and_then(|delta| delta.kind.as_deref()),
+            Some("record_json_delta_xz")
         );
         Ok(())
     }

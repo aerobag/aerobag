@@ -1,7 +1,4 @@
-use std::{
-    collections::BTreeMap,
-    io::{Read, Write},
-};
+use std::collections::BTreeMap;
 
 use had_nav_kv::{
     apply_nav_kv_delta, build_nav_kv_strict, nav_kv_canonical_sha256_from_pairs, NavKvDelta,
@@ -91,6 +88,7 @@ pub enum LiveFeedProductDriver {
 
 #[derive(Debug, Clone, PartialEq, Deserialize)]
 struct LiveFeedRecordDelta {
+    schema_version: u32,
     product: String,
     from_version: String,
     to_version: String,
@@ -106,6 +104,7 @@ struct LiveFeedRecordDelta {
 
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
 struct LiveFeedNavKvDelta {
+    schema_version: u32,
     product: String,
     from_version: String,
     to_version: String,
@@ -429,7 +428,10 @@ impl LiveFeedProductDriver {
                     &bytes,
                     required_blob_sha256("full state", product, payload_ref)?,
                 )?;
-                let value: Value = serde_json::from_slice(&bytes).map_err(cache_json_error)?;
+                let decoded_bytes =
+                    decode_live_feed_cache_payload(payload_ref.kind.as_deref(), &bytes)?;
+                let value: Value =
+                    serde_json::from_slice(decoded_bytes.as_ref()).map_err(cache_json_error)?;
                 let actual_state_sha256 = canonical_json_sha256(&value)?;
                 if actual_state_sha256 != payload_ref.state_sha256 {
                     return Err(cache_error(format!(
@@ -441,7 +443,9 @@ impl LiveFeedProductDriver {
                     product: product.clone(),
                     version: version.to_string(),
                     state_sha256: actual_state_sha256,
-                    payload: LiveFeedInstalledPayload::Json { bytes },
+                    payload: LiveFeedInstalledPayload::Json {
+                        bytes: decoded_bytes.into_owned(),
+                    },
                 })
             }
             Self::NavKv { product } => {
@@ -589,8 +593,11 @@ impl LiveFeedProductDriver {
                 };
                 let from_state: Value =
                     serde_json::from_slice(state_bytes).map_err(cache_json_error)?;
+                let decoded_bytes =
+                    decode_live_feed_cache_payload(delta_ref.kind.as_deref(), bytes)?;
                 let delta: LiveFeedRecordDelta =
-                    serde_json::from_slice(bytes).map_err(cache_json_error)?;
+                    serde_json::from_slice(decoded_bytes.as_ref()).map_err(cache_json_error)?;
+                validate_live_feeds_schema("record delta", delta.schema_version)?;
                 let next = apply_record_json_delta(
                     records_key,
                     count_key.as_deref(),
@@ -637,8 +644,11 @@ impl LiveFeedProductDriver {
                 let current_pairs = root
                     .pairs(|page| pages.get(page as usize).cloned())
                     .ok_or_else(|| cache_error(format!("failed to read {product} nav_kv pairs")))?;
+                let decoded_bytes =
+                    decode_live_feed_cache_payload(delta_ref.kind.as_deref(), bytes)?;
                 let delta: LiveFeedNavKvDelta =
-                    serde_json::from_slice(bytes).map_err(cache_json_error)?;
+                    serde_json::from_slice(decoded_bytes.as_ref()).map_err(cache_json_error)?;
+                validate_live_feeds_schema("nav_kv delta", delta.schema_version)?;
                 if delta.product != *product
                     || delta.from_version != delta_ref.from_version
                     || delta.to_version != delta_ref.to_version
@@ -820,69 +830,15 @@ fn updated_nav_kv_manifest_bytes(
 }
 
 fn write_nav_kv_zip_bytes(manifest: &[u8], root: &[u8], pages: &[Vec<u8>]) -> AppResult<Vec<u8>> {
-    let cursor = std::io::Cursor::new(Vec::new());
-    let mut writer = zip::ZipWriter::new(cursor);
-    write_zip_member(&mut writer, "manifest.json", manifest)?;
-    write_zip_member(&mut writer, "root", root)?;
-    for (index, page) in pages.iter().enumerate() {
-        write_zip_member(&mut writer, &format!("page_{index:04}"), page)?;
-    }
-    writer
-        .finish()
-        .map(|cursor| cursor.into_inner())
-        .map_err(|err| cache_error(format!("failed to finish nav_kv zip: {err}")))
-}
-
-fn write_zip_member<W: std::io::Write + std::io::Seek>(
-    writer: &mut zip::ZipWriter<W>,
-    name: &str,
-    bytes: &[u8],
-) -> AppResult<()> {
-    let options = zip::write::SimpleFileOptions::default()
-        .compression_method(zip::CompressionMethod::Deflated)
-        .last_modified_time(zip::DateTime::default());
-    writer
-        .start_file(name, options)
-        .map_err(|err| cache_error(format!("failed to add {name} to zip: {err}")))?;
-    writer
-        .write_all(bytes)
-        .map_err(|err| cache_error(format!("failed to write {name} to zip: {err}")))
+    nav_kv_package::write_stored_xz_package_bytes(manifest, root, pages).map_err(cache_error)
 }
 
 fn read_nav_kv_members_from_zip(
     product: &str,
     bytes: &[u8],
 ) -> AppResult<(Vec<u8>, Vec<u8>, Vec<Vec<u8>>)> {
-    let cursor = std::io::Cursor::new(bytes);
-    let mut archive = zip::ZipArchive::new(cursor)
-        .map_err(|err| cache_error(format!("failed to read {product} nav_kv zip: {err}")))?;
-    let manifest = read_zip_member(&mut archive, "manifest.json")?;
-    let root = read_zip_member(&mut archive, "root")?;
-    let manifest_value: serde_json::Value =
-        serde_json::from_slice(&manifest).map_err(cache_json_error)?;
-    let page_count = manifest_value
-        .get("page_count")
-        .and_then(Value::as_u64)
-        .ok_or_else(|| cache_error(format!("{product} nav_kv manifest missing page_count")))?;
-    let mut pages = Vec::new();
-    for page in 0..page_count {
-        pages.push(read_zip_member(&mut archive, &format!("page_{page:04}"))?);
-    }
-    Ok((manifest, root, pages))
-}
-
-fn read_zip_member<R: std::io::Read + std::io::Seek>(
-    archive: &mut zip::ZipArchive<R>,
-    name: &str,
-) -> AppResult<Vec<u8>> {
-    let mut member = archive
-        .by_name(name)
-        .map_err(|err| cache_error(format!("zip missing {name}: {err}")))?;
-    let mut bytes = Vec::new();
-    member
-        .read_to_end(&mut bytes)
-        .map_err(|err| cache_error(format!("failed to read zip member {name}: {err}")))?;
-    Ok(bytes)
+    let members = nav_kv_package::read_package_bytes(product, bytes).map_err(cache_error)?;
+    Ok((members.manifest, members.root, members.pages))
 }
 
 fn apply_record_json_delta(
@@ -954,6 +910,28 @@ fn canonical_json_sha256(value: &Value) -> AppResult<String> {
     Ok(sha256_hex(&bytes))
 }
 
+fn validate_live_feeds_schema(label: &str, schema_version: u32) -> AppResult<()> {
+    if schema_version == crate::live_feeds::LIVE_FEEDS_SCHEMA_VERSION {
+        return Ok(());
+    }
+    Err(cache_error(format!(
+        "unsupported {label} schema {schema_version}; required {}",
+        crate::live_feeds::LIVE_FEEDS_SCHEMA_VERSION
+    )))
+}
+
+fn decode_live_feed_cache_payload<'a>(
+    payload_kind: Option<&str>,
+    bytes: &'a [u8],
+) -> AppResult<std::borrow::Cow<'a, [u8]>> {
+    match payload_kind {
+        Some("json_xz") | Some("record_json_delta_xz") | Some("nav_kv_delta_xz") => {
+            nav_kv_package::decode_xz_if_needed(bytes).map_err(cache_error)
+        }
+        _ => Ok(std::borrow::Cow::Borrowed(bytes)),
+    }
+}
+
 fn sha256_hex(bytes: &[u8]) -> String {
     format!("{:x}", Sha256::digest(bytes))
 }
@@ -973,6 +951,8 @@ fn cache_error(message: String) -> AppError {
 mod tests {
     use super::*;
     use had_nav_kv::NavKvPair;
+    use std::io::{Cursor, Read};
+    use zip::CompressionMethod;
 
     fn metar_state(version: &str, records: &[(&str, &str)]) -> Value {
         let mut metars = serde_json::Map::new();
@@ -994,16 +974,21 @@ mod tests {
 
     fn current_manifest(product: &str, version: &str, state_sha256: &str) -> Vec<u8> {
         serde_json::to_vec(&serde_json::json!({
+            "schema_version": crate::live_feeds::LIVE_FEEDS_SCHEMA_VERSION,
             "products": {
                 product: {
                     "current": version,
                     "version_manifest_url": format!("versions/{product}/{version}.json"),
-                    "state_url": format!("states/{product}/{version}.json"),
+                    "state_url": format!("states/{product}/{version}.json.xz"),
                     "state_sha256": state_sha256
                 }
             }
         }))
         .unwrap()
+    }
+
+    fn xz_json_bytes(value: &Value) -> Vec<u8> {
+        nav_kv_package::xz_compress_bytes(&serde_json::to_vec(value).unwrap()).unwrap()
     }
 
     fn json_version_manifest(
@@ -1012,14 +997,15 @@ mod tests {
         state: &Value,
         delta: Option<LiveFeedDeltaRef>,
     ) -> (Vec<u8>, Vec<u8>, String) {
-        let state_bytes = serde_json::to_vec(state).unwrap();
+        let state_bytes = xz_json_bytes(state);
         let state_sha256 = canonical_json_sha256(state).unwrap();
         let manifest = serde_json::json!({
-            "schema_version": 1,
+            "schema_version": crate::live_feeds::LIVE_FEEDS_SCHEMA_VERSION,
             "product": product,
             "version": version,
             "state": {
-                "url": format!("states/{product}/{version}.json"),
+                "kind": "json_xz",
+                "url": format!("states/{product}/{version}.json.xz"),
                 "bytes": state_bytes.len(),
                 "blob_sha256": sha256_hex(&state_bytes),
                 "state_sha256": state_sha256
@@ -1084,7 +1070,7 @@ mod tests {
         let v2 = metar_state("v2", &[("KSEA", "new"), ("KPAE", "new")]);
         let v2_sha = canonical_json_sha256(&v2).unwrap();
         let delta = serde_json::json!({
-            "schema_version": 1,
+            "schema_version": crate::live_feeds::LIVE_FEEDS_SCHEMA_VERSION,
             "product": "metars",
             "from_version": "v1",
             "to_version": "v2",
@@ -1096,13 +1082,14 @@ mod tests {
             },
             "removed": ["KOLM"]
         });
-        let delta_bytes = serde_json::to_vec(&delta).unwrap();
+        let delta_bytes = xz_json_bytes(&delta);
         let delta_ref = LiveFeedDeltaRef {
+            kind: Some("record_json_delta_xz".to_string()),
             from_version: "v1".to_string(),
             from_state_sha256: v1_sha,
             to_version: "v2".to_string(),
             to_state_sha256: v2_sha.clone(),
-            url: "deltas/metars/v1__v2.json".to_string(),
+            url: "deltas/metars/v1__v2.json.xz".to_string(),
             bytes: Some(delta_bytes.len() as u64),
             blob_sha256: Some(sha256_hex(&delta_bytes)),
         };
@@ -1123,7 +1110,7 @@ mod tests {
                 product: "metars".to_string(),
                 from_version: "v1".to_string(),
                 to_version: "v2".to_string(),
-                payload_kind: Some("record_json_delta".to_string())
+                payload_kind: Some("record_json_delta_xz".to_string())
             }
         );
         let installed = cache
@@ -1158,7 +1145,7 @@ mod tests {
         let v2 = metar_state("v2", &[("KSEA", "new")]);
         let v2_sha = canonical_json_sha256(&v2).unwrap();
         let delta = serde_json::json!({
-            "schema_version": 1,
+            "schema_version": crate::live_feeds::LIVE_FEEDS_SCHEMA_VERSION,
             "product": "metars",
             "from_version": "v1",
             "to_version": "v2",
@@ -1169,13 +1156,14 @@ mod tests {
             },
             "removed": []
         });
-        let delta_bytes = serde_json::to_vec(&delta).unwrap();
+        let delta_bytes = xz_json_bytes(&delta);
         let delta_ref = LiveFeedDeltaRef {
+            kind: Some("record_json_delta_xz".to_string()),
             from_version: "v1".to_string(),
             from_state_sha256: v1_sha,
             to_version: "v2".to_string(),
             to_state_sha256: v2_sha.clone(),
-            url: "deltas/metars/v1__v2.json".to_string(),
+            url: "deltas/metars/v1__v2.json.xz".to_string(),
             bytes: Some(10_000_000),
             blob_sha256: Some(sha256_hex(&delta_bytes)),
         };
@@ -1194,7 +1182,7 @@ mod tests {
             LiveFeedCacheRequestKind::Full {
                 product: "metars".to_string(),
                 version: "v2".to_string(),
-                payload_kind: None,
+                payload_kind: Some("json_xz".to_string()),
             }
         );
     }
@@ -1231,7 +1219,7 @@ mod tests {
         });
         let v2_sha = canonical_json_sha256(&v2).unwrap();
         let delta = serde_json::json!({
-            "schema_version": 1,
+            "schema_version": crate::live_feeds::LIVE_FEEDS_SCHEMA_VERSION,
             "product": "tafs",
             "from_version": "v1",
             "to_version": "v2",
@@ -1242,13 +1230,14 @@ mod tests {
             },
             "removed": []
         });
-        let delta_bytes = serde_json::to_vec(&delta).unwrap();
+        let delta_bytes = xz_json_bytes(&delta);
         let delta_ref = LiveFeedDeltaRef {
+            kind: Some("record_json_delta_xz".to_string()),
             from_version: "v1".to_string(),
             from_state_sha256: v1_sha,
             to_version: "v2".to_string(),
             to_state_sha256: v2_sha.clone(),
-            url: "deltas/tafs/v1__v2.json".to_string(),
+            url: "deltas/tafs/v1__v2.json.xz".to_string(),
             bytes: Some(delta_bytes.len() as u64),
             blob_sha256: Some(sha256_hex(&delta_bytes)),
         };
@@ -1268,7 +1257,7 @@ mod tests {
                 product: "tafs".to_string(),
                 from_version: "v1".to_string(),
                 to_version: "v2".to_string(),
-                payload_kind: Some("record_json_delta".to_string())
+                payload_kind: Some("record_json_delta_xz".to_string())
             }
         );
         let installed = cache
@@ -1318,7 +1307,7 @@ mod tests {
         }))
         .unwrap();
         let version_manifest = serde_json::to_vec(&serde_json::json!({
-            "schema_version": 1,
+            "schema_version": crate::live_feeds::LIVE_FEEDS_SCHEMA_VERSION,
             "product": "obstacles",
             "version": "v1",
             "state": {
@@ -1368,7 +1357,7 @@ mod tests {
         let nav_delta = had_nav_kv::build_nav_kv_delta(&first_pairs, &second_pairs).unwrap();
         let second_sha = nav_kv_canonical_sha256_from_pairs(&second_pairs);
         let delta_value = serde_json::json!({
-            "schema_version": 1,
+            "schema_version": crate::live_feeds::LIVE_FEEDS_SCHEMA_VERSION,
             "product": "obstacles",
             "from_version": "v1",
             "to_version": "v2",
@@ -1381,9 +1370,9 @@ mod tests {
                 })
             }).collect::<Vec<_>>()
         });
-        let delta_bytes = serde_json::to_vec(&delta_value).unwrap();
+        let delta_bytes = xz_json_bytes(&delta_value);
         let second_manifest = serde_json::to_vec(&serde_json::json!({
-            "schema_version": 1,
+            "schema_version": crate::live_feeds::LIVE_FEEDS_SCHEMA_VERSION,
             "product": "obstacles",
             "version": "v2",
             "state": {
@@ -1401,11 +1390,12 @@ mod tests {
                 "state_sha256": second_sha
             },
             "delta_from_previous": {
+                "kind": "nav_kv_delta_xz",
                 "from_version": "v1",
                 "from_state_sha256": first_sha,
                 "to_version": "v2",
                 "to_state_sha256": second_sha,
-                "url": "deltas/obstacles/v1__v2.nav-kv-delta.json",
+                "url": "deltas/obstacles/v1__v2.nav-kv-delta.json.xz",
                 "bytes": delta_bytes.len(),
                 "blob_sha256": sha256_hex(&delta_bytes)
             }
@@ -1424,7 +1414,7 @@ mod tests {
                 product: "obstacles".to_string(),
                 from_version: "v1".to_string(),
                 to_version: "v2".to_string(),
-                payload_kind: Some("nav_kv_delta".to_string())
+                payload_kind: Some("nav_kv_delta_xz".to_string())
             }
         );
         let installed = cache
@@ -1437,23 +1427,46 @@ mod tests {
             .unwrap();
         assert_eq!(installed.version, "v2");
         assert_eq!(installed.state_sha256, second_sha);
+        let summary = installed.summary();
+        let persisted = installed.payload_bytes().unwrap();
+        let mut archive = zip::ZipArchive::new(Cursor::new(&persisted)).unwrap();
+        let mut encoded_page = Vec::new();
+        let mut page_member = archive.by_name("page_0000").unwrap();
+        assert_eq!(page_member.compression(), CompressionMethod::Stored);
+        page_member.read_to_end(&mut encoded_page).unwrap();
+        assert!(nav_kv_package::is_xz(&encoded_page));
+
         let LiveFeedInstalledPayload::NavKv {
             manifest,
             root,
             pages,
-        } = installed.payload
+        } = &installed.payload
         else {
             panic!("expected nav_kv payload");
         };
-        let manifest: Value = serde_json::from_slice(&manifest).unwrap();
+        let manifest: Value = serde_json::from_slice(manifest).unwrap();
         assert_eq!(manifest["product_id"], "obstacles");
         assert_eq!(manifest["version_label"], "v2");
         assert_eq!(manifest["state_sha256"], second_sha);
-        let root = NavKvRoot::parse(&root).unwrap();
+        let root = NavKvRoot::parse(root).unwrap();
         let pairs = root
             .pairs(|page| pages.get(page as usize).cloned())
             .unwrap();
         assert_eq!(pairs, second_pairs);
+
+        let mut reloaded = LiveFeedCache::default();
+        reloaded
+            .ingest_installed_payload_bytes(&registry, &summary, &persisted)
+            .unwrap();
+        let reinstalled = reloaded.installed("obstacles").unwrap();
+        let LiveFeedInstalledPayload::NavKv { root, pages, .. } = &reinstalled.payload else {
+            panic!("expected reloaded nav_kv payload");
+        };
+        let root = NavKvRoot::parse(root).unwrap();
+        let reloaded_pairs = root
+            .pairs(|page| pages.get(page as usize).cloned())
+            .unwrap();
+        assert_eq!(reloaded_pairs, second_pairs);
     }
 
     #[test]
@@ -1475,7 +1488,7 @@ mod tests {
         }))
         .unwrap();
         let version_manifest = serde_json::to_vec(&serde_json::json!({
-            "schema_version": 1,
+            "schema_version": crate::live_feeds::LIVE_FEEDS_SCHEMA_VERSION,
             "product": "obstacles",
             "version": "v1",
             "state": {
@@ -1520,7 +1533,7 @@ mod tests {
         }];
         let second_sha = nav_kv_canonical_sha256_from_pairs(&second_pairs);
         let delta_value = serde_json::json!({
-            "schema_version": 1,
+            "schema_version": crate::live_feeds::LIVE_FEEDS_SCHEMA_VERSION,
             "product": "obstacles",
             "from_version": "v1",
             "to_version": "v2",
@@ -1531,9 +1544,9 @@ mod tests {
                 "value": b"new-a".to_vec(),
             }]
         });
-        let delta_bytes = serde_json::to_vec(&delta_value).unwrap();
+        let delta_bytes = xz_json_bytes(&delta_value);
         let second_manifest = serde_json::to_vec(&serde_json::json!({
-            "schema_version": 1,
+            "schema_version": crate::live_feeds::LIVE_FEEDS_SCHEMA_VERSION,
             "product": "obstacles",
             "version": "v2",
             "state": {
@@ -1551,11 +1564,12 @@ mod tests {
                 "state_sha256": second_sha
             },
             "delta_from_previous": {
+                "kind": "nav_kv_delta_xz",
                 "from_version": "v1",
                 "from_state_sha256": first_sha,
                 "to_version": "v2",
                 "to_state_sha256": second_sha,
-                "url": "deltas/obstacles/v1__v2.nav-kv-delta.json",
+                "url": "deltas/obstacles/v1__v2.nav-kv-delta.json.xz",
                 "bytes": 10_000_000,
                 "blob_sha256": sha256_hex(&delta_bytes)
             }

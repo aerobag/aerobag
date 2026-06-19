@@ -1,7 +1,6 @@
 use std::{
     borrow::Cow,
     collections::{HashMap, HashSet},
-    io::Cursor,
 };
 
 use procedure_geometry_types as pgt;
@@ -809,17 +808,13 @@ pub fn decode_nav_db_page_resource_bytes<'a>(
     resource_id: &str,
     resource_bytes: &'a [u8],
 ) -> Result<Cow<'a, [u8]>, String> {
-    const XZ_MAGIC: &[u8] = b"\xfd7zXZ\0";
     let is_nav_db_page_resource = nav_kv_page_index_from_resource_id(resource_id).is_some()
         || nav_db_artifact_page_resource_id(resource_id);
-    if !is_nav_db_page_resource || !resource_bytes.starts_with(XZ_MAGIC) {
+    if !is_nav_db_page_resource {
         return Ok(Cow::Borrowed(resource_bytes));
     }
-    let mut input = Cursor::new(resource_bytes);
-    let mut decoded = Vec::new();
-    lzma_rs::xz_decompress(&mut input, &mut decoded)
-        .map_err(|err| format!("failed to xz-decode nav-db page {resource_id}: {err}"))?;
-    Ok(Cow::Owned(decoded))
+    nav_kv_package::decode_xz_if_needed(resource_bytes)
+        .map_err(|err| format!("{resource_id}: {err}"))
 }
 
 fn nav_db_artifact_page_resource_id(resource_id: &str) -> bool {

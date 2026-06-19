@@ -1103,6 +1103,21 @@ pub(super) fn build_nav_kv_artifact(
                     })?;
                     page_filenames.push(page_filename);
                 }
+                let manifest_bytes = serde_json::to_vec_pretty(&serde_json::json!({
+                    "schema_version": 1,
+                    "product_id": "nav-db",
+                    "contract_id": NAV_DB_CONTRACT_ID,
+                    "encoding": format!("had-nav-kv-v{}", NAV_KV_STORAGE_FORMAT),
+                    "root": root_filename,
+                    "page_path_template": "page_{page:04}",
+                    "page_count": built.pages.len(),
+                    "page_size": built.page_size,
+                    "logical_bytes_len": built.logical_bytes_len,
+                    "value_bytes_len": built.value_bytes_len,
+                }))
+                .context("failed to encode nav-db package manifest")?;
+                fs::write(source_dir.join("manifest.json"), &manifest_bytes)
+                    .context("failed to write nav-db package manifest")?;
                 let published_source_dir = config
                     .build_root
                     .join("private-work")
@@ -1115,13 +1130,15 @@ pub(super) fn build_nav_kv_artifact(
                     })?;
                 }
                 hardlink_dir_recursive(&source_dir, &published_source_dir)?;
-                let mut zip_entries = vec![root_filename];
-                let page_entry_names = page_filenames
-                    .iter()
-                    .map(String::as_str)
-                    .collect::<Vec<_>>();
-                zip_entries.extend(page_entry_names.iter().copied());
-                zip_directory_deterministic(&nav_db_zip_source_path, &source_dir, &zip_entries)?;
+                let zip_bytes = nav_kv_package::write_stored_xz_package_bytes(
+                    &manifest_bytes,
+                    &built.root_bytes,
+                    &built.pages,
+                )
+                .map_err(|err| anyhow::anyhow!("failed to write nav-db package bytes: {err}"))?;
+                fs::write(&nav_db_zip_source_path, zip_bytes).with_context(|| {
+                    format!("failed to write {}", nav_db_zip_source_path.display())
+                })?;
                 let outputs = BTreeMap::from([(
                     "nav_db_zip".to_string(),
                     relative_artifact_path(&nav_db_zip_source_path, &config.build_root),

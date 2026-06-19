@@ -32,7 +32,7 @@ Example shape:
   {
     "schema_version": 1,
     "contracts": {
-      "nav-db": "NAV9",
+      "nav-db": "NAV10",
       "tpp": "TPP1"
     },
     "artifact_roots": {
@@ -49,7 +49,7 @@ Example shape:
 
 Each list member is a complete publication candidate for one exact set of
 product contract identifiers. Clients choose a member by exact contract match;
-they must not order or compare contract identifiers numerically. `NAV9` is a
+they must not order or compare contract identifiers numerically. `NAV10` is a
 different exact contract from `NAV6`, not "greater than" it for selection
 purposes.
 
@@ -121,7 +121,7 @@ identity, product family, contract id, region/cycle metadata when applicable,
 optional metadata. Clients follow `relative_path`; they do not infer public
 filenames from package ids.
 
-Package contract ids use a product-family prefix, such as `NAV9`, `TPP1`,
+Package contract ids use a product-family prefix, such as `NAV10`, `TPP1`,
 `CSUP1`, `SEC1`, and `TER2`. The same string appears in package filenames and
 manifest content so the package hash self-describes the declared contract.
 

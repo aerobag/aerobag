@@ -51,7 +51,7 @@ dependencies = [
  "flate2",
  "had-key",
  "had-nav-kv",
- "lzma-rs",
+ "nav-kv-package",
  "postcard",
  "procedure-geometry-types",
  "product-contracts",
@@ -783,6 +783,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "nav-kv-package"
+version = "0.1.0"
+dependencies = [
+ "lzma-rs",
+ "serde_json",
+ "zip",
+]
+
+[[package]]
 name = "num-traits"
 version = "0.2.19"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -853,7 +862,7 @@ dependencies = [
  "geo",
  "had-key",
  "libc",
- "lzma-rs",
+ "nav-kv-package",
  "preprocessor-charts",
  "preprocessor-core",
  "preprocessor-csup",
@@ -936,6 +945,7 @@ dependencies = [
  "chrono",
  "had-nav-kv",
  "image",
+ "nav-kv-package",
  "preprocessor-core",
  "preprocessor-fetch",
  "preprocessor-vectors",

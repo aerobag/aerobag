@@ -539,3 +539,74 @@ Representative page size:
 page_0046 gzip  7,824 B
 page_0046 xz    6,092 B
 ```
+
+### Shared XZ Nav-KV Package Plan
+
+Goal: make cycle nav-db and live-feed nav-kv products use one page/container
+contract instead of parallel formats. This should improve WAN and durable-cache
+size without putting decompression on the normal query path.
+
+Status: implemented in the shared `nav-kv-package` crate. Cycle nav-db is now
+contract `NAV10`, cycle/live nav-kv packages use Stored zip members with xz
+`page_####` payloads, live-feed schema is now `2`, and large live-feed JSON
+full/delta payloads are xz-compressed at publication time. Core decodes xz pages
+before inserting them into HAD stores and durable obstacle delta rebuilds persist
+back into the same Stored-zip/xz-page package shape.
+
+Target nav-kv package/page contract:
+
+```text
+zip member method: Stored
+manifest.json: raw JSON
+root: raw HAD root bytes
+page_####: xz-compressed raw HAD page bytes
+dataset hash: canonical sorted K/V pairs, not compressed bytes
+```
+
+The cycle-side nav-db product contract must be bumped when this lands. The
+current shared constant is `product_contracts::NAV_DB_CONTRACT_ID` in
+`crates/product-contracts/src/lib.rs`; producers and core consumers both select
+against that token. The low-level HAD storage version in `crates/had-nav-kv`
+does not need to change unless the root/page binary layout changes.
+
+Implementation sequence:
+
+1. Remove the accidental nested `obstacles_*.zip` from live-feed obstacle
+   install packages. The live-feed package writer should construct the member
+   list explicitly instead of zipping every file in the build directory.
+2. Extract common nav-kv package helpers for deterministic xz page encoding,
+   Stored-zip writing, zip reading, and page-byte decode. The decode helper
+   should accept already-raw pages and xz pages by magic so callers do not need
+   separate branches.
+3. Use those helpers for cycle nav-db unpacked pages, cycle nav-db package
+   generation, live obstacle unpacked page publication, and live obstacle
+   durable package generation.
+4. Update core persisted-cache writing so a tablet-style client that applies an
+   obstacle delta rebuilds raw nav-kv pages and then persists the result as the
+   same Stored-zip/xz-page package format.
+5. Bump the live-feeds contract/schema and route all live-feed current,
+   version, state, delta, prepared/off-thread, and persisted-cache entry points
+   through a common schema check before product-specific decoding. Unsupported
+   schemas must fail before a stale client tries to interpret compressed bytes.
+6. Under the new live-feeds contract, xz-compress remaining large live-feed
+   payloads: METAR/TAF/TFR/winds-aloft full JSON, their deltas, obstacle
+   nav-kv deltas, and obstacle nav-kv pages.
+
+Required tests:
+
+- Cycle nav-db package generation writes `page_####` members as xz bytes and
+  uses Stored zip entries.
+- Cycle nav-db package/open code rejects the previous contract and accepts the
+  bumped `NAV_DB_CONTRACT_ID`.
+- Web-style page faults decode xz nav-kv pages before insertion into
+  `NavKvStore`.
+- `had-query` and `had-validate` can read the common package format.
+- Live obstacle packages do not contain nested `obstacles_*.zip` members.
+- Live-feed schema validation rejects unsupported current/version/state/delta
+  manifests before payload-specific decoding.
+- Obstacle nav-kv deltas still apply over logical K/V pairs and verify the
+  target `state_sha256`.
+- Tablet-style durable flow: install an obstacle full package, apply a delta,
+  persist the locally reconstructed xz-page package, reload the persisted
+  package in a fresh cache/session, and query enough output to prove the
+  post-delta state is present and deleted records stay deleted.

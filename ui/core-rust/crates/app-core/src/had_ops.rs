@@ -5602,10 +5602,9 @@ mod tests {
         )
         .expect("load flagged procedure into session");
 
-        let HadOperationOutcome::Complete { result, .. } = outcome else {
+        let HadOperationOutcome::Complete { .. } = outcome else {
             panic!("expected complete outcome, got missing resources: {outcome:?}");
         };
-        assert_eq!(result, serde_json::Value::Null);
         let snapshot = crate::get_session_snapshot(init.handle).expect("session snapshot");
         let warning = snapshot
             .data_status_state

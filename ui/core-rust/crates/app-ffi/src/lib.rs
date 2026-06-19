@@ -1266,8 +1266,7 @@ pub fn live_feed_cache_missing_requests_json(handle: u64) -> Result<String, Stri
     let cache = caches
         .get(&(handle as u32))
         .ok_or_else(|| format!("invalid live feed cache handle: {handle}"))?;
-    serde_json::to_string(&cache.missing_requests(&app_core::live_feed_product_registry()))
-        .map_err(|err| err.to_string())
+    serde_json::to_string(&cache.missing_requests()).map_err(|err| err.to_string())
 }
 
 pub fn live_feed_cache_install_fetched_bytes_json(

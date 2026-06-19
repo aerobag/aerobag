@@ -5548,7 +5548,26 @@ fn install_live_feed_installed_state(
             });
         }
     }
+    session.live_feeds.mark_durable_product_loaded(
+        installed.product.clone(),
+        installed.version.clone(),
+        installed.state_sha256.clone(),
+        installed_live_feed_state_manifest(installed),
+    );
+    sync_live_feed_overlay_status_records(session);
     Ok(())
+}
+
+fn installed_live_feed_state_manifest(
+    installed: &crate::LiveFeedInstalledState,
+) -> Option<serde_json::Value> {
+    match &installed.payload {
+        crate::LiveFeedInstalledPayload::Json { bytes } => serde_json::from_slice(bytes).ok(),
+        crate::LiveFeedInstalledPayload::NavKv { manifest, .. } => {
+            serde_json::from_slice(manifest).ok()
+        }
+        crate::LiveFeedInstalledPayload::Opaque { .. } => None,
+    }
 }
 
 #[cfg(test)]
@@ -11344,6 +11363,91 @@ mod tests {
             "TAF KAAA 010000Z 0100/0124 00000KT P6SM SCT020"
         );
         drop(sessions);
+
+        let snapshot = get_session_snapshot_at_epoch_ms(
+            init.handle,
+            utc("2026-05-03T00:10:00Z").timestamp_millis(),
+        )
+        .expect("snapshot");
+        let data_status = snapshot
+            .data_status_page_state
+            .rows
+            .iter()
+            .find(|row| row.id == "live_feed:tafs")
+            .expect("TAF data-status row");
+        assert_eq!(data_status.label, "TAFs");
+        assert_eq!(data_status.value, "OK");
+        assert_eq!(data_status.severity, UiStatusSeverity::Ok);
+        assert_eq!(data_status.detail, "TAFs is loaded.");
+        assert_eq!(
+            data_status
+                .facts
+                .iter()
+                .find(|fact| fact.label == "Version")
+                .map(|fact| fact.value.as_str()),
+            Some("v1")
+        );
+        assert_eq!(
+            data_status
+                .facts
+                .iter()
+                .find(|fact| fact.label == "Collected At")
+                .map(|fact| fact.value.as_str()),
+            Some("2026-05-03 00:05 UTC")
+        );
+    }
+
+    #[test]
+    fn durable_live_feed_tafs_install_uses_same_data_status_metadata() {
+        let init =
+            create_ui_session(FlightPlan::default(), &[], None, None).expect("create session");
+        let state = serde_json::json!({
+            "schema_version": 1,
+            "version_label": "v1",
+            "taf_count": 1,
+            "tafs_by_station": {
+                "KAAA": {
+                    "raw_text": "TAF KAAA 010000Z 0100/0124 00000KT P6SM SCT020",
+                    "issued_at_utc": "2026-05-03T00:00:00.000Z",
+                    "station_id": "KAAA",
+                    "longitude": 0.0,
+                    "latitude": 0.0
+                }
+            }
+        });
+        let state_bytes = serde_json::to_vec(&state).expect("state bytes");
+        let state_sha256 = format!("{:x}", Sha256::digest(&state_bytes));
+
+        ingest_resource_in_session(
+            init.handle,
+            "live_feeds/current",
+            format!(
+                r#"{{
+                    "products": {{
+                        "tafs": {{
+                            "current": "v1",
+                            "version_manifest_url": "versions/tafs/v1.json",
+                            "state_url": "states/tafs/v1.json",
+                            "state_sha256": "{state_sha256}",
+                            "collected_at_utc": "2026-05-03T00:05:00Z"
+                        }}
+                    }}
+                }}"#
+            )
+            .as_bytes(),
+        )
+        .expect("current manifest");
+
+        install_live_feed_installed_state_in_session(
+            init.handle,
+            &crate::LiveFeedInstalledState {
+                product: "tafs".to_string(),
+                version: "v1".to_string(),
+                state_sha256,
+                payload: crate::LiveFeedInstalledPayload::Json { bytes: state_bytes },
+            },
+        )
+        .expect("install durable tafs");
 
         let snapshot = get_session_snapshot_at_epoch_ms(
             init.handle,

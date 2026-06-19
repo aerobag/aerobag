@@ -11,93 +11,17 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use sha2::{Digest, Sha256};
 
-use crate::{AppError, AppErrorKind, AppResult};
+use crate::{AppError, AppErrorKind, AppResult, LiveFeedDurableInstalledProduct, LiveFeedsState};
 
-const CURRENT_RESOURCE_ID: &str = "live_feed_cache/current";
-const CURRENT_ADDRESS: &str = "/live-feeds/current.json";
-const LIVE_FEEDS_PREFIX: &str = "/live-feeds/";
+pub use crate::live_feeds::{
+    LiveFeedCacheRequest, LiveFeedCacheRequestKind, LiveFeedDeltaRef, LiveFeedPayloadRef,
+};
 
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
 pub struct LiveFeedCache {
-    current_loaded: bool,
-    current: BTreeMap<String, LiveFeedCacheCurrentEntry>,
-    versions: BTreeMap<String, LiveFeedCacheVersion>,
+    #[serde(skip)]
+    live_feeds: LiveFeedsState,
     installed: BTreeMap<String, LiveFeedInstalledState>,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct LiveFeedCacheCurrentEntry {
-    pub current: String,
-    pub version_manifest_url: String,
-    pub state_url: String,
-    pub state_sha256: String,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub published_at_utc: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub collected_at_utc: Option<String>,
-}
-
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub struct LiveFeedCacheVersion {
-    pub schema_version: u32,
-    pub product: String,
-    pub version: String,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub previous: Option<String>,
-    pub state: LiveFeedPayloadRef,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub install_state: Option<LiveFeedPayloadRef>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub delta_from_previous: Option<LiveFeedDeltaRef>,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct LiveFeedPayloadRef {
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub kind: Option<String>,
-    pub url: String,
-    pub bytes: u64,
-    pub blob_sha256: String,
-    pub state_sha256: String,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct LiveFeedDeltaRef {
-    pub from_version: String,
-    pub from_state_sha256: String,
-    pub to_version: String,
-    pub to_state_sha256: String,
-    pub url: String,
-    pub bytes: u64,
-    pub blob_sha256: String,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct LiveFeedCacheRequest {
-    pub id: String,
-    pub url: String,
-    pub kind: LiveFeedCacheRequestKind,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(tag = "kind", rename_all = "snake_case")]
-pub enum LiveFeedCacheRequestKind {
-    Current,
-    Version {
-        product: String,
-        version: String,
-    },
-    Full {
-        product: String,
-        version: String,
-        payload_kind: Option<String>,
-    },
-    Delta {
-        product: String,
-        from_version: String,
-        to_version: String,
-        payload_kind: Option<String>,
-    },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -166,26 +90,6 @@ pub enum LiveFeedProductDriver {
 }
 
 #[derive(Debug, Clone, PartialEq, Deserialize)]
-struct CurrentManifest {
-    products: BTreeMap<String, LiveFeedCacheCurrentEntry>,
-}
-
-#[derive(Debug, Clone, PartialEq, Deserialize)]
-struct LiveFeedCurrentEvent {
-    product: String,
-    version: String,
-    version_manifest_url: String,
-    #[serde(default)]
-    state_url: Option<String>,
-    #[serde(default)]
-    state_sha256: Option<String>,
-    #[serde(default)]
-    published_at_utc: Option<String>,
-    #[serde(default)]
-    collected_at_utc: Option<String>,
-}
-
-#[derive(Debug, Clone, PartialEq, Deserialize)]
 struct LiveFeedRecordDelta {
     product: String,
     from_version: String,
@@ -227,13 +131,11 @@ struct NavKvInstallManifest {
 
 impl LiveFeedCache {
     pub fn with_installed(installed: impl IntoIterator<Item = LiveFeedInstalledState>) -> Self {
-        Self {
-            installed: installed
-                .into_iter()
-                .map(|state| (state.product.clone(), state))
-                .collect(),
-            ..Self::default()
+        let mut cache = Self::default();
+        for state in installed {
+            cache.remember_installed_state(state);
         }
+        cache
     }
 
     pub fn installed(&self, product: &str) -> Option<&LiveFeedInstalledState> {
@@ -266,58 +168,19 @@ impl LiveFeedCache {
     ) -> AppResult<()> {
         let driver = registry.required_driver(&summary.product)?;
         let installed = driver.install_persisted(summary, bytes)?;
-        self.installed.insert(summary.product.clone(), installed);
+        self.remember_installed_state(installed);
         Ok(())
     }
 
     pub fn ingest_current(&mut self, bytes: &[u8]) -> AppResult<()> {
-        let current: CurrentManifest = serde_json::from_slice(bytes).map_err(cache_json_error)?;
-        self.current_loaded = true;
-        for entry in current.products.values() {
-            validate_live_feed_relative_url(&entry.version_manifest_url)?;
-            validate_live_feed_relative_url(&entry.state_url)?;
-        }
-        self.current = current.products;
-        self.versions.retain(|product, version| {
-            self.current
-                .get(product)
-                .is_some_and(|entry| entry.current == version.version)
-        });
-        Ok(())
+        self.live_feeds.ingest_resource("live_feeds/current", bytes)
     }
 
     pub fn ingest_sse_event(&mut self, event: &crate::LiveFeedSseEvent) -> AppResult<bool> {
-        let event_name = event.event.as_deref().unwrap_or("message");
-        if !matches!(event_name, "live-feed-current" | "message") {
-            return Ok(false);
-        }
-        let payload: LiveFeedCurrentEvent =
-            serde_json::from_str(&event.data).map_err(cache_json_error)?;
-        validate_live_feed_relative_url(&payload.version_manifest_url)?;
-        let state_url = payload.state_url.unwrap_or_default();
-        if !state_url.is_empty() {
-            validate_live_feed_relative_url(&state_url)?;
-        }
-        let state_sha256 = payload.state_sha256.unwrap_or_default();
-        let entry = LiveFeedCacheCurrentEntry {
-            current: payload.version,
-            version_manifest_url: payload.version_manifest_url,
-            state_url,
-            state_sha256,
-            published_at_utc: payload.published_at_utc,
-            collected_at_utc: payload.collected_at_utc,
-        };
-        let changed = self.current.get(&payload.product) != Some(&entry);
-        self.current_loaded = true;
-        self.current.insert(payload.product.clone(), entry);
-        self.versions.retain(|product, version| {
-            product != &payload.product || {
-                self.current
-                    .get(product)
-                    .is_some_and(|entry| entry.current == version.version)
-            }
-        });
-        Ok(changed)
+        Ok(!self
+            .live_feeds
+            .ingest_sse_events(std::iter::once(event.clone()))?
+            .is_empty())
     }
 
     pub fn ingest_version_manifest(
@@ -326,103 +189,19 @@ impl LiveFeedCache {
         version: &str,
         bytes: &[u8],
     ) -> AppResult<()> {
-        let manifest: LiveFeedCacheVersion =
-            serde_json::from_slice(bytes).map_err(cache_json_error)?;
-        if manifest.product != product || manifest.version != version {
-            return Err(cache_error(format!(
-                "version manifest for {product}/{version} contained {}/{}",
-                manifest.product, manifest.version
-            )));
-        }
-        validate_live_feed_relative_url(&manifest.state.url)?;
-        if let Some(install_state) = &manifest.install_state {
-            validate_live_feed_relative_url(&install_state.url)?;
-        }
-        if let Some(delta) = &manifest.delta_from_previous {
-            validate_live_feed_relative_url(&delta.url)?;
-        }
-        self.versions.insert(product.to_string(), manifest);
-        Ok(())
+        self.live_feeds
+            .ingest_resource(&format!("live_feeds/version/{product}/{version}"), bytes)
     }
 
-    pub fn missing_requests(
-        &self,
-        registry: &LiveFeedProductRegistry,
-    ) -> Vec<LiveFeedCacheRequest> {
-        if !self.current_loaded {
-            return vec![LiveFeedCacheRequest {
-                id: CURRENT_RESOURCE_ID.to_string(),
-                url: CURRENT_ADDRESS.to_string(),
-                kind: LiveFeedCacheRequestKind::Current,
-            }];
-        }
-
-        let mut requests = Vec::new();
-        for (product, current) in &self.current {
-            let Some(driver) = registry.driver(product) else {
-                continue;
-            };
-            if self
-                .installed
-                .get(product)
-                .is_some_and(|installed| installed.version == current.current)
-            {
-                continue;
-            }
-            let Some(version) = self.versions.get(product) else {
-                requests.push(LiveFeedCacheRequest {
-                    id: format!("live_feed_cache/version/{product}/{}", current.current),
-                    url: live_feed_address(&current.version_manifest_url),
-                    kind: LiveFeedCacheRequestKind::Version {
-                        product: product.clone(),
-                        version: current.current.clone(),
-                    },
-                });
-                continue;
-            };
-            if version.version != current.current {
-                requests.push(LiveFeedCacheRequest {
-                    id: format!("live_feed_cache/version/{product}/{}", current.current),
-                    url: live_feed_address(&current.version_manifest_url),
-                    kind: LiveFeedCacheRequestKind::Version {
-                        product: product.clone(),
-                        version: current.current.clone(),
-                    },
-                });
-                continue;
-            }
-            let full_ref = driver.full_payload_ref(version);
-            if let Some(delta) = self.applicable_delta(product, version, driver) {
-                if full_ref.is_none_or(|full_ref| delta.bytes <= full_ref.bytes) {
-                    requests.push(LiveFeedCacheRequest {
-                        id: format!(
-                            "live_feed_cache/delta/{}/{}/{}",
-                            product, delta.from_version, delta.to_version
-                        ),
-                        url: live_feed_address(&delta.url),
-                        kind: LiveFeedCacheRequestKind::Delta {
-                            product: product.clone(),
-                            from_version: delta.from_version.clone(),
-                            to_version: delta.to_version.clone(),
-                            payload_kind: Some(driver.delta_payload_kind().to_string()),
-                        },
-                    });
-                    continue;
+    pub fn missing_requests(&self) -> Vec<LiveFeedCacheRequest> {
+        self.live_feeds
+            .durable_missing_requests(self.installed.values().map(|installed| {
+                LiveFeedDurableInstalledProduct {
+                    product: installed.product.clone(),
+                    version: installed.version.clone(),
+                    state_sha256: installed.state_sha256.clone(),
                 }
-            }
-            if let Some(full_ref) = full_ref {
-                requests.push(LiveFeedCacheRequest {
-                    id: format!("live_feed_cache/full/{product}/{}", current.current),
-                    url: live_feed_address(&full_ref.url),
-                    kind: LiveFeedCacheRequestKind::Full {
-                        product: product.clone(),
-                        version: current.current.clone(),
-                        payload_kind: full_ref.kind.clone(),
-                    },
-                });
-            }
-        }
-        requests
+            }))
     }
 
     pub fn install_fetched_payload(
@@ -436,28 +215,28 @@ impl LiveFeedCache {
                 let LiveFeedFetchedPayload::Bytes(bytes) = payload else {
                     return Err(cache_error("current manifest must be bytes".to_string()));
                 };
-                self.ingest_current(&bytes)?;
+                self.live_feeds
+                    .ingest_durable_request_resource(request, &bytes)?;
                 Ok(None)
             }
             LiveFeedCacheRequestKind::Version { product, version } => {
                 let LiveFeedFetchedPayload::Bytes(bytes) = payload else {
                     return Err(cache_error("version manifest must be bytes".to_string()));
                 };
-                self.ingest_version_manifest(product, version, &bytes)?;
+                let _ = (product, version);
+                self.live_feeds
+                    .ingest_durable_request_resource(request, &bytes)?;
                 Ok(None)
             }
             LiveFeedCacheRequestKind::Full {
                 product, version, ..
             } => {
-                let version_manifest = self.version_for(product, version)?.clone();
                 let driver = registry.required_driver(product)?;
-                let full_ref = driver.full_payload_ref(&version_manifest).ok_or_else(|| {
-                    cache_error(format!(
-                        "{product}/{version} does not advertise an installable full payload"
-                    ))
-                })?;
-                let installed = driver.install_full(&version_manifest, full_ref, payload)?;
-                self.installed.insert(product.clone(), installed.clone());
+                let full_ref = self
+                    .live_feeds
+                    .durable_full_payload_ref_for_request(product, version)?;
+                let installed = driver.install_full(product, version, full_ref, payload)?;
+                self.remember_installed_state(installed.clone());
                 Ok(Some(installed))
             }
             LiveFeedCacheRequestKind::Delta {
@@ -466,22 +245,20 @@ impl LiveFeedCache {
                 to_version,
                 ..
             } => {
-                let version_manifest = self.version_for(product, to_version)?.clone();
-                let delta = version_manifest
-                    .delta_from_previous
-                    .as_ref()
-                    .ok_or_else(|| {
-                        cache_error(format!("version {product}/{to_version} has no delta"))
-                    })?;
-                if delta.from_version != *from_version || delta.to_version != *to_version {
-                    return Err(cache_error(format!(
-                        "requested delta {product}/{from_version}/{to_version} does not match manifest"
-                    )));
-                }
+                let delta = self.live_feeds.durable_delta_ref_for_request(
+                    product,
+                    from_version,
+                    to_version,
+                )?;
                 let LiveFeedFetchedPayload::Bytes(bytes) = payload else {
                     return Err(cache_error("delta payload must be bytes".to_string()));
                 };
-                verify_blob_sha256("delta", &bytes, &delta.blob_sha256)?;
+                let expected_blob_sha256 = delta.blob_sha256.as_ref().ok_or_else(|| {
+                    cache_error(format!(
+                        "delta {product}/{from_version}/{to_version} missing blob_sha256"
+                    ))
+                })?;
+                verify_blob_sha256("delta", &bytes, expected_blob_sha256)?;
                 let current = self.installed.get(product).ok_or_else(|| {
                     cache_error(format!(
                         "cannot apply {product} delta without installed state"
@@ -489,44 +266,20 @@ impl LiveFeedCache {
                 })?;
                 let driver = registry.required_driver(product)?;
                 let installed = driver.apply_delta(current, delta, &bytes)?;
-                self.installed.insert(product.clone(), installed.clone());
+                self.remember_installed_state(installed.clone());
                 Ok(Some(installed))
             }
         }
     }
 
-    fn version_for(&self, product: &str, version: &str) -> AppResult<&LiveFeedCacheVersion> {
-        let manifest = self.versions.get(product).ok_or_else(|| {
-            cache_error(format!("missing version manifest for {product}/{version}"))
-        })?;
-        if manifest.version != version {
-            return Err(cache_error(format!(
-                "loaded version manifest for {product} is {}, expected {version}",
-                manifest.version
-            )));
-        }
-        Ok(manifest)
-    }
-
-    fn applicable_delta<'a>(
-        &'a self,
-        product: &str,
-        version: &'a LiveFeedCacheVersion,
-        driver: &LiveFeedProductDriver,
-    ) -> Option<&'a LiveFeedDeltaRef> {
-        if !driver.supports_delta() {
-            return None;
-        }
-        let installed = self.installed.get(product)?;
-        let delta = version.delta_from_previous.as_ref()?;
-        if installed.version == delta.from_version
-            && installed.state_sha256 == delta.from_state_sha256
-            && version.version == delta.to_version
-        {
-            Some(delta)
-        } else {
-            None
-        }
+    fn remember_installed_state(&mut self, installed: LiveFeedInstalledState) {
+        self.live_feeds.mark_durable_product_loaded(
+            installed.product.clone(),
+            installed.version.clone(),
+            installed.state_sha256.clone(),
+            state_manifest_for_installed(&installed),
+        );
+        self.installed.insert(installed.product.clone(), installed);
     }
 }
 
@@ -550,6 +303,14 @@ impl LiveFeedInstalledState {
                 pages,
             } => write_nav_kv_zip_bytes(&manifest, root, pages),
         }
+    }
+}
+
+fn state_manifest_for_installed(installed: &LiveFeedInstalledState) -> Option<Value> {
+    match &installed.payload {
+        LiveFeedInstalledPayload::Json { bytes } => serde_json::from_slice(bytes).ok(),
+        LiveFeedInstalledPayload::NavKv { manifest, .. } => serde_json::from_slice(manifest).ok(),
+        LiveFeedInstalledPayload::Opaque { .. } => None,
     }
 }
 
@@ -631,10 +392,6 @@ impl LiveFeedProductDriver {
         }
     }
 
-    fn supports_delta(&self) -> bool {
-        matches!(self, Self::RecordJson { .. } | Self::NavKv { .. })
-    }
-
     fn record_json_delta_schema(&self) -> Option<(&str, Option<&str>)> {
         match self {
             Self::RecordJson {
@@ -646,38 +403,28 @@ impl LiveFeedProductDriver {
         }
     }
 
-    fn delta_payload_kind(&self) -> &'static str {
-        match self {
-            Self::RecordJson { .. } => "record_json_delta",
-            Self::NavKv { .. } => "nav_kv_delta",
-            Self::FullJson { .. } | Self::OpaqueFull { .. } => "none",
-        }
-    }
-
-    fn full_payload_ref<'a>(
-        &self,
-        version: &'a LiveFeedCacheVersion,
-    ) -> Option<&'a LiveFeedPayloadRef> {
-        match self {
-            Self::NavKv { .. } => version.install_state.as_ref(),
-            Self::RecordJson { .. } | Self::FullJson { .. } | Self::OpaqueFull { .. } => {
-                version.install_state.as_ref().or(Some(&version.state))
-            }
-        }
-    }
-
     fn install_full(
         &self,
-        version: &LiveFeedCacheVersion,
+        product_id: &str,
+        version: &str,
         payload_ref: &LiveFeedPayloadRef,
         payload: LiveFeedFetchedPayload,
     ) -> AppResult<LiveFeedInstalledState> {
         match self {
             Self::RecordJson { product, .. } | Self::FullJson { product } => {
+                if product != product_id {
+                    return Err(cache_error(format!(
+                        "live-feed driver {product} cannot install {product_id}"
+                    )));
+                }
                 let LiveFeedFetchedPayload::Bytes(bytes) = payload else {
                     return Err(cache_error(format!("{product} full state must be bytes")));
                 };
-                verify_blob_sha256("full state", &bytes, &payload_ref.blob_sha256)?;
+                verify_blob_sha256(
+                    "full state",
+                    &bytes,
+                    required_blob_sha256("full state", product, payload_ref)?,
+                )?;
                 let value: Value = serde_json::from_slice(&bytes).map_err(cache_json_error)?;
                 let actual_state_sha256 = canonical_json_sha256(&value)?;
                 if actual_state_sha256 != payload_ref.state_sha256 {
@@ -688,12 +435,17 @@ impl LiveFeedProductDriver {
                 }
                 Ok(LiveFeedInstalledState {
                     product: product.clone(),
-                    version: version.version.clone(),
+                    version: version.to_string(),
                     state_sha256: actual_state_sha256,
                     payload: LiveFeedInstalledPayload::Json { bytes },
                 })
             }
             Self::NavKv { product } => {
+                if product != product_id {
+                    return Err(cache_error(format!(
+                        "live-feed driver {product} cannot install {product_id}"
+                    )));
+                }
                 let (manifest, root, pages) = match payload {
                     LiveFeedFetchedPayload::NavKvMembers {
                         manifest,
@@ -704,28 +456,30 @@ impl LiveFeedProductDriver {
                         verify_blob_sha256(
                             "nav_kv full package",
                             &bytes,
-                            &payload_ref.blob_sha256,
+                            required_blob_sha256("nav_kv full package", product, payload_ref)?,
                         )?;
                         read_nav_kv_members_from_zip(product, &bytes)?
                     }
                 };
-                verify_nav_kv_state(
-                    product,
-                    &version.version,
-                    payload_ref,
-                    manifest,
-                    root,
-                    pages,
-                )
+                verify_nav_kv_state(product, version, payload_ref, manifest, root, pages)
             }
             Self::OpaqueFull { product } => {
+                if product != product_id {
+                    return Err(cache_error(format!(
+                        "live-feed driver {product} cannot install {product_id}"
+                    )));
+                }
                 let LiveFeedFetchedPayload::Bytes(bytes) = payload else {
                     return Err(cache_error(format!("{product} full state must be bytes")));
                 };
-                verify_blob_sha256("full state", &bytes, &payload_ref.blob_sha256)?;
+                verify_blob_sha256(
+                    "full state",
+                    &bytes,
+                    required_blob_sha256("full state", product, payload_ref)?,
+                )?;
                 Ok(LiveFeedInstalledState {
                     product: product.clone(),
-                    version: version.version.clone(),
+                    version: version.to_string(),
                     state_sha256: payload_ref.state_sha256.clone(),
                     payload: LiveFeedInstalledPayload::Opaque { bytes },
                 })
@@ -772,8 +526,8 @@ impl LiveFeedProductDriver {
                 let payload_ref = LiveFeedPayloadRef {
                     kind: Some("nav_kv_package".to_string()),
                     url: String::new(),
-                    bytes: bytes.len() as u64,
-                    blob_sha256: sha256_hex(bytes),
+                    bytes: Some(bytes.len() as u64),
+                    blob_sha256: Some(sha256_hex(bytes)),
                     state_sha256: summary.state_sha256.clone(),
                 };
                 verify_nav_kv_state(
@@ -1006,6 +760,17 @@ fn verify_nav_kv_state(
     })
 }
 
+fn required_blob_sha256<'a>(
+    label: &str,
+    product: &str,
+    payload_ref: &'a LiveFeedPayloadRef,
+) -> AppResult<&'a str> {
+    payload_ref
+        .blob_sha256
+        .as_deref()
+        .ok_or_else(|| cache_error(format!("{product} {label} payload is missing blob_sha256")))
+}
+
 fn updated_nav_kv_manifest_bytes(
     product: &str,
     version: &str,
@@ -1180,22 +945,6 @@ fn verify_blob_sha256(label: &str, bytes: &[u8], expected: &str) -> AppResult<()
     }
 }
 
-fn live_feed_address(relative_url: &str) -> String {
-    format!(
-        "{LIVE_FEEDS_PREFIX}{}",
-        relative_url.trim_start_matches('/')
-    )
-}
-
-fn validate_live_feed_relative_url(url: &str) -> AppResult<()> {
-    if url.starts_with('/') || url.contains("://") || url.split('/').any(|part| part == "..") {
-        return Err(cache_error(format!(
-            "live feed URL must be package-relative: {url}"
-        )));
-    }
-    Ok(())
-}
-
 fn canonical_json_sha256(value: &Value) -> AppResult<String> {
     let bytes = serde_json::to_vec(value).map_err(cache_json_error)?;
     Ok(sha256_hex(&bytes))
@@ -1313,7 +1062,7 @@ mod tests {
             .ingest_current(&current_manifest("metars", "v1", &v1_sha))
             .unwrap();
         assert_eq!(
-            cache.missing_requests(&registry)[0].kind,
+            cache.missing_requests()[0].kind,
             LiveFeedCacheRequestKind::Version {
                 product: "metars".to_string(),
                 version: "v1".to_string()
@@ -1322,7 +1071,7 @@ mod tests {
         cache
             .ingest_version_manifest("metars", "v1", &v1_manifest)
             .unwrap();
-        let request = cache.missing_requests(&registry).remove(0);
+        let request = cache.missing_requests().remove(0);
         cache
             .install_fetched_payload(&registry, &request, LiveFeedFetchedPayload::Bytes(v1_bytes))
             .unwrap();
@@ -1350,8 +1099,8 @@ mod tests {
             to_version: "v2".to_string(),
             to_state_sha256: v2_sha.clone(),
             url: "deltas/metars/v1__v2.json".to_string(),
-            bytes: delta_bytes.len() as u64,
-            blob_sha256: sha256_hex(&delta_bytes),
+            bytes: Some(delta_bytes.len() as u64),
+            blob_sha256: Some(sha256_hex(&delta_bytes)),
         };
         let (v2_manifest, _, _) =
             json_version_manifest("metars", "v2", &v2, Some(delta_ref.clone()));
@@ -1363,7 +1112,7 @@ mod tests {
         cache
             .ingest_version_manifest("metars", "v2", &v2_manifest)
             .unwrap();
-        let request = cache.missing_requests(&registry).remove(0);
+        let request = cache.missing_requests().remove(0);
         assert_eq!(
             request.kind,
             LiveFeedCacheRequestKind::Delta {
@@ -1397,7 +1146,7 @@ mod tests {
         cache
             .ingest_version_manifest("metars", "v1", &v1_manifest)
             .unwrap();
-        let request = cache.missing_requests(&registry).remove(0);
+        let request = cache.missing_requests().remove(0);
         cache
             .install_fetched_payload(&registry, &request, LiveFeedFetchedPayload::Bytes(v1_bytes))
             .unwrap();
@@ -1423,8 +1172,8 @@ mod tests {
             to_version: "v2".to_string(),
             to_state_sha256: v2_sha.clone(),
             url: "deltas/metars/v1__v2.json".to_string(),
-            bytes: 10_000_000,
-            blob_sha256: sha256_hex(&delta_bytes),
+            bytes: Some(10_000_000),
+            blob_sha256: Some(sha256_hex(&delta_bytes)),
         };
         let (v2_manifest, _, _) =
             json_version_manifest("metars", "v2", &v2, Some(delta_ref.clone()));
@@ -1435,7 +1184,7 @@ mod tests {
             .ingest_version_manifest("metars", "v2", &v2_manifest)
             .unwrap();
 
-        let request = cache.missing_requests(&registry).remove(0);
+        let request = cache.missing_requests().remove(0);
         assert_eq!(
             request.kind,
             LiveFeedCacheRequestKind::Full {
@@ -1464,7 +1213,7 @@ mod tests {
         cache
             .ingest_version_manifest("tafs", "v1", &v1_manifest)
             .unwrap();
-        let request = cache.missing_requests(&registry).remove(0);
+        let request = cache.missing_requests().remove(0);
         cache
             .install_fetched_payload(&registry, &request, LiveFeedFetchedPayload::Bytes(v1_bytes))
             .unwrap();
@@ -1496,8 +1245,8 @@ mod tests {
             to_version: "v2".to_string(),
             to_state_sha256: v2_sha.clone(),
             url: "deltas/tafs/v1__v2.json".to_string(),
-            bytes: delta_bytes.len() as u64,
-            blob_sha256: sha256_hex(&delta_bytes),
+            bytes: Some(delta_bytes.len() as u64),
+            blob_sha256: Some(sha256_hex(&delta_bytes)),
         };
         let (v2_manifest, _, _) = json_version_manifest("tafs", "v2", &v2, Some(delta_ref));
         let v2_manifest =
@@ -1508,7 +1257,7 @@ mod tests {
         cache
             .ingest_version_manifest("tafs", "v2", &v2_manifest)
             .unwrap();
-        let request = cache.missing_requests(&registry).remove(0);
+        let request = cache.missing_requests().remove(0);
         assert_eq!(
             request.kind,
             LiveFeedCacheRequestKind::Delta {
@@ -1591,7 +1340,7 @@ mod tests {
         cache
             .ingest_version_manifest("obstacles", "v1", &version_manifest)
             .unwrap();
-        let request = cache.missing_requests(&registry).remove(0);
+        let request = cache.missing_requests().remove(0);
         assert_eq!(
             request.kind,
             LiveFeedCacheRequestKind::Full {
@@ -1664,7 +1413,7 @@ mod tests {
         cache
             .ingest_version_manifest("obstacles", "v2", &second_manifest)
             .unwrap();
-        let request = cache.missing_requests(&registry).remove(0);
+        let request = cache.missing_requests().remove(0);
         assert_eq!(
             request.kind,
             LiveFeedCacheRequestKind::Delta {
@@ -1748,7 +1497,7 @@ mod tests {
         cache
             .ingest_version_manifest("obstacles", "v1", &version_manifest)
             .unwrap();
-        let request = cache.missing_requests(&registry).remove(0);
+        let request = cache.missing_requests().remove(0);
         cache
             .install_fetched_payload(
                 &registry,
@@ -1815,7 +1564,7 @@ mod tests {
             .ingest_version_manifest("obstacles", "v2", &second_manifest)
             .unwrap();
 
-        let request = cache.missing_requests(&registry).remove(0);
+        let request = cache.missing_requests().remove(0);
         assert_eq!(
             request.kind,
             LiveFeedCacheRequestKind::Full {

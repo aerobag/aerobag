@@ -31,6 +31,8 @@ struct LiveFeedProductState {
     published_at_utc: Option<String>,
     collected_at_utc: Option<String>,
     state_kind: Option<String>,
+    state_ref: Option<LiveFeedPayloadRef>,
+    install_state_ref: Option<LiveFeedPayloadRef>,
     delta_from_previous: Option<LiveFeedDeltaRef>,
     version_manifest: Option<Value>,
     state_manifest: Option<Value>,
@@ -77,32 +79,75 @@ struct CurrentProduct {
     collected_at_utc: Option<String>,
 }
 
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct LiveFeedPayloadRef {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub kind: Option<String>,
+    pub url: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub bytes: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub blob_sha256: Option<String>,
+    pub state_sha256: String,
+}
+
 #[derive(Debug, Deserialize)]
 struct VersionManifest {
     product: String,
     version: String,
     #[serde(default)]
+    install_state: Option<LiveFeedPayloadRef>,
+    #[serde(default)]
     delta_from_previous: Option<LiveFeedDeltaRef>,
-    state: VersionStateRef,
+    state: LiveFeedPayloadRef,
 }
 
-#[derive(Debug, Deserialize)]
-struct VersionStateRef {
-    #[serde(default)]
-    kind: Option<String>,
-    url: String,
-    state_sha256: String,
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct LiveFeedDeltaRef {
+    pub from_version: String,
+    pub from_state_sha256: String,
+    pub to_version: String,
+    pub to_state_sha256: String,
+    pub url: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub bytes: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub blob_sha256: Option<String>,
 }
 
-#[derive(Debug, Clone, PartialEq, Deserialize)]
-struct LiveFeedDeltaRef {
-    from_version: String,
-    from_state_sha256: String,
-    to_version: String,
-    to_state_sha256: String,
-    url: String,
-    #[serde(default)]
-    blob_sha256: Option<String>,
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct LiveFeedDurableInstalledProduct {
+    pub product: String,
+    pub version: String,
+    pub state_sha256: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct LiveFeedCacheRequest {
+    pub id: String,
+    pub url: String,
+    pub kind: LiveFeedCacheRequestKind,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum LiveFeedCacheRequestKind {
+    Current,
+    Version {
+        product: String,
+        version: String,
+    },
+    Full {
+        product: String,
+        version: String,
+        payload_kind: Option<String>,
+    },
+    Delta {
+        product: String,
+        from_version: String,
+        to_version: String,
+        payload_kind: Option<String>,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq, Deserialize)]
@@ -331,15 +376,24 @@ impl LiveFeedsState {
                     manifest.product, manifest.version
                 )));
             }
+            validate_relative_url(&manifest.state.url)?;
+            if let Some(install_state) = &manifest.install_state {
+                validate_relative_url(&install_state.url)?;
+            }
+            if let Some(delta) = &manifest.delta_from_previous {
+                validate_relative_url(&delta.url)?;
+            }
             let entry = self.products.entry(product).or_default();
             if entry.current_version.as_deref() != Some(version.as_str()) {
                 self.resource_failure_retry_after_epoch_ms
                     .remove(resource_id);
                 return Ok(());
             }
-            entry.state_url = Some(manifest.state.url);
-            entry.expected_state_sha256 = Some(manifest.state.state_sha256);
-            entry.state_kind = manifest.state.kind;
+            entry.state_url = Some(manifest.state.url.clone());
+            entry.expected_state_sha256 = Some(manifest.state.state_sha256.clone());
+            entry.state_kind = manifest.state.kind.clone();
+            entry.state_ref = Some(manifest.state);
+            entry.install_state_ref = manifest.install_state;
             entry.delta_from_previous = manifest.delta_from_previous;
             entry.version_manifest =
                 Some(serde_json::from_slice(bytes).map_err(invalid_live_feed_json)?);
@@ -679,6 +733,9 @@ impl LiveFeedsState {
             }
             entry.published_at_utc = published_at_utc;
             entry.collected_at_utc = collected_at_utc;
+            if entry.loaded_version.as_deref() == Some(version.as_str()) {
+                entry.loaded_version = Some(version);
+            }
             return Ok(());
         }
         entry.current_version = Some(version);
@@ -688,9 +745,184 @@ impl LiveFeedsState {
         entry.published_at_utc = published_at_utc;
         entry.collected_at_utc = collected_at_utc;
         entry.state_kind = None;
+        entry.state_ref = None;
+        entry.install_state_ref = None;
         entry.delta_from_previous = None;
         entry.version_manifest = None;
         Ok(())
+    }
+
+    pub fn mark_durable_product_loaded(
+        &mut self,
+        product: String,
+        version: String,
+        state_sha256: String,
+        state_manifest: Option<Value>,
+    ) {
+        let entry = self.products.entry(product).or_default();
+        if entry.current_version.is_none() {
+            entry.current_version = Some(version.clone());
+        }
+        if self.current_loaded && entry.current_version.as_deref() != Some(version.as_str()) {
+            return;
+        }
+        if self.current_loaded
+            && entry
+                .expected_state_sha256
+                .as_deref()
+                .is_some_and(|expected| expected != state_sha256)
+        {
+            return;
+        }
+        entry.loaded_version = Some(version);
+        if entry.expected_state_sha256.is_none() {
+            entry.expected_state_sha256 = Some(state_sha256);
+        }
+        if state_manifest.is_some() {
+            entry.state_manifest = state_manifest;
+        }
+    }
+
+    pub fn durable_missing_requests(
+        &self,
+        installed: impl IntoIterator<Item = LiveFeedDurableInstalledProduct>,
+    ) -> Vec<LiveFeedCacheRequest> {
+        if !self.current_loaded {
+            return vec![LiveFeedCacheRequest {
+                id: CURRENT_RESOURCE_ID.to_string(),
+                url: CURRENT_ADDRESS.to_string(),
+                kind: LiveFeedCacheRequestKind::Current,
+            }];
+        }
+
+        let installed_by_product = installed
+            .into_iter()
+            .map(|installed| (installed.product.clone(), installed))
+            .collect::<HashMap<_, _>>();
+        let mut requests = Vec::new();
+        let mut products = self.products.keys().map(String::as_str).collect::<Vec<_>>();
+        products.sort();
+        products.dedup();
+        for product in products {
+            let Some(entry) = self.products.get(product) else {
+                continue;
+            };
+            let Some(version) = &entry.current_version else {
+                continue;
+            };
+            if installed_by_product
+                .get(product)
+                .is_some_and(|installed| entry.installed_product_is_current(installed))
+            {
+                continue;
+            }
+            if entry.version_manifest.is_none() {
+                if let Some(url) = &entry.version_manifest_url {
+                    requests.push(LiveFeedCacheRequest {
+                        id: format!("live_feeds/version/{product}/{version}"),
+                        url: live_feed_address(url),
+                        kind: LiveFeedCacheRequestKind::Version {
+                            product: product.to_string(),
+                            version: version.clone(),
+                        },
+                    });
+                }
+                continue;
+            }
+            let full_ref = entry.durable_full_payload_ref(product);
+            if let Some(delta) =
+                entry.durable_applicable_delta(product, installed_by_product.get(product))
+            {
+                if durable_delta_is_preferred(delta, full_ref) {
+                    requests.push(LiveFeedCacheRequest {
+                        id: format!(
+                            "live_feeds/delta/{}/{}/{}",
+                            product, delta.from_version, delta.to_version
+                        ),
+                        url: live_feed_address(&delta.url),
+                        kind: LiveFeedCacheRequestKind::Delta {
+                            product: product.to_string(),
+                            from_version: delta.from_version.clone(),
+                            to_version: delta.to_version.clone(),
+                            payload_kind: Some(durable_delta_payload_kind(product).to_string()),
+                        },
+                    });
+                    continue;
+                }
+            }
+            if let Some(full_ref) = full_ref {
+                requests.push(LiveFeedCacheRequest {
+                    id: format!("live_feeds/full/{product}/{version}"),
+                    url: live_feed_address(&full_ref.url),
+                    kind: LiveFeedCacheRequestKind::Full {
+                        product: product.to_string(),
+                        version: version.clone(),
+                        payload_kind: full_ref.kind.clone(),
+                    },
+                });
+            }
+        }
+        requests
+    }
+
+    pub fn ingest_durable_request_resource(
+        &mut self,
+        request: &LiveFeedCacheRequest,
+        bytes: &[u8],
+    ) -> AppResult<()> {
+        match &request.kind {
+            LiveFeedCacheRequestKind::Current => self.ingest_resource(CURRENT_RESOURCE_ID, bytes),
+            LiveFeedCacheRequestKind::Version { product, version } => {
+                self.ingest_resource(&format!("live_feeds/version/{product}/{version}"), bytes)
+            }
+            LiveFeedCacheRequestKind::Full { .. } | LiveFeedCacheRequestKind::Delta { .. } => {
+                Ok(())
+            }
+        }
+    }
+
+    pub fn durable_full_payload_ref_for_request(
+        &self,
+        product: &str,
+        version: &str,
+    ) -> AppResult<&LiveFeedPayloadRef> {
+        let entry = self
+            .products
+            .get(product)
+            .ok_or_else(|| invalid_live_feed(format!("missing live-feed product {product}")))?;
+        if entry.current_version.as_deref() != Some(version) {
+            return Err(invalid_live_feed(format!(
+                "{product} current version is {:?}, expected {version}",
+                entry.current_version
+            )));
+        }
+        entry.durable_full_payload_ref(product).ok_or_else(|| {
+            invalid_live_feed(format!(
+                "{product}/{version} does not advertise an installable durable payload"
+            ))
+        })
+    }
+
+    pub fn durable_delta_ref_for_request(
+        &self,
+        product: &str,
+        from_version: &str,
+        to_version: &str,
+    ) -> AppResult<&LiveFeedDeltaRef> {
+        let entry = self
+            .products
+            .get(product)
+            .ok_or_else(|| invalid_live_feed(format!("missing live-feed product {product}")))?;
+        let delta = entry
+            .delta_from_previous
+            .as_ref()
+            .ok_or_else(|| invalid_live_feed(format!("{product}/{to_version} has no delta")))?;
+        if delta.from_version != from_version || delta.to_version != to_version {
+            return Err(invalid_live_feed(format!(
+                "requested delta {product}/{from_version}/{to_version} does not match manifest"
+            )));
+        }
+        Ok(delta)
     }
 
     fn missing_resources(&self) -> Vec<CoreResourceRequest> {
@@ -841,6 +1073,69 @@ impl LiveFeedProductState {
         } else {
             None
         }
+    }
+
+    fn installed_product_is_current(&self, installed: &LiveFeedDurableInstalledProduct) -> bool {
+        self.current_version
+            .as_deref()
+            .is_some_and(|version| installed.version == version)
+            && self
+                .expected_state_sha256
+                .as_deref()
+                .is_none_or(|expected| installed.state_sha256 == expected)
+    }
+
+    fn durable_applicable_delta(
+        &self,
+        product: &str,
+        installed: Option<&LiveFeedDurableInstalledProduct>,
+    ) -> Option<&LiveFeedDeltaRef> {
+        if !supports_durable_delta(product) {
+            return None;
+        }
+        let installed = installed?;
+        let delta = self.delta_from_previous.as_ref()?;
+        if installed.version == delta.from_version
+            && installed.state_sha256 == delta.from_state_sha256
+            && self.current_version.as_deref() == Some(delta.to_version.as_str())
+        {
+            Some(delta)
+        } else {
+            None
+        }
+    }
+
+    fn durable_full_payload_ref(&self, product: &str) -> Option<&LiveFeedPayloadRef> {
+        if product == "obstacles" || self.state_ref.as_ref()?.kind.as_deref() == Some("nav_kv") {
+            self.install_state_ref.as_ref()
+        } else {
+            self.install_state_ref.as_ref().or(self.state_ref.as_ref())
+        }
+    }
+}
+
+fn durable_delta_is_preferred(
+    delta: &LiveFeedDeltaRef,
+    full_ref: Option<&LiveFeedPayloadRef>,
+) -> bool {
+    let Some(full_ref) = full_ref else {
+        return true;
+    };
+    match (delta.bytes, full_ref.bytes) {
+        (Some(delta_bytes), Some(full_bytes)) => delta_bytes <= full_bytes,
+        _ => false,
+    }
+}
+
+fn supports_durable_delta(product: &str) -> bool {
+    supports_record_delta(product) || product == "obstacles"
+}
+
+fn durable_delta_payload_kind(product: &str) -> &'static str {
+    if product == "obstacles" {
+        "nav_kv_delta"
+    } else {
+        "record_json_delta"
     }
 }
 
@@ -1490,6 +1785,36 @@ mod tests {
 
         assert!(state.has_product_current_version("metars"));
         assert!(!state.has_product_current_version("obstacles"));
+    }
+
+    #[test]
+    fn durable_loaded_product_cannot_override_current_state_hash() {
+        let mut state = LiveFeedsState::default();
+        state
+            .ingest_resource(
+                "live_feeds/current",
+                br#"{
+                    "products": {
+                        "tafs": {
+                            "current": "v1",
+                            "version_manifest_url": "versions/tafs/v1.json",
+                            "state_url": "states/tafs/v1.json",
+                            "state_sha256": "expected"
+                        }
+                    }
+                }"#,
+            )
+            .expect("current manifest");
+
+        state.mark_durable_product_loaded(
+            "tafs".to_string(),
+            "v1".to_string(),
+            "wrong".to_string(),
+            Some(serde_json::json!({"version_label": "v1"})),
+        );
+
+        assert_eq!(state.product_loaded_version("tafs"), None);
+        assert_eq!(state.product_state_manifest("tafs"), None);
     }
 
     #[test]

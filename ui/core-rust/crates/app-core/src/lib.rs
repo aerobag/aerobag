@@ -65,15 +65,16 @@ pub use had_ops::{
 };
 pub use ids::{AirportId, ChartFamilyId, ChartId, PackageId, PlateId, RegionId};
 pub use live_feed_cache::{
-    live_feed_product_registry, LiveFeedCache, LiveFeedCacheCurrentEntry, LiveFeedCacheRequest,
-    LiveFeedCacheRequestKind, LiveFeedCacheVersion, LiveFeedDeltaRef, LiveFeedFetchedPayload,
-    LiveFeedInstalledPayload, LiveFeedInstalledState, LiveFeedInstalledSummary, LiveFeedPayloadRef,
-    LiveFeedProductDriver, LiveFeedProductRegistry,
+    live_feed_product_registry, LiveFeedCache, LiveFeedFetchedPayload, LiveFeedInstalledPayload,
+    LiveFeedInstalledState, LiveFeedInstalledSummary, LiveFeedProductDriver,
+    LiveFeedProductRegistry,
 };
 pub use live_feeds::{
     decode_prepared_metar_live_feed, prepare_metar_live_feed_delta_resource,
-    prepare_metar_live_feed_state_resource, LiveFeedSseEvent, LiveFeedsSnapshot, LiveFeedsState,
-    PreparedMetarLiveFeed, PreparedMetarLiveFeedEnvelope, PreparedMetarTile,
+    prepare_metar_live_feed_state_resource, LiveFeedCacheRequest, LiveFeedCacheRequestKind,
+    LiveFeedDeltaRef, LiveFeedDurableInstalledProduct, LiveFeedPayloadRef, LiveFeedSseEvent,
+    LiveFeedsSnapshot, LiveFeedsState, PreparedMetarLiveFeed, PreparedMetarLiveFeedEnvelope,
+    PreparedMetarTile,
 };
 pub use map_follow::MapFollowUiState;
 pub use map_overlay::{

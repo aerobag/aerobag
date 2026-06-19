@@ -490,6 +490,7 @@ internal fun defaultUiDebugState() = UiDebugState(
     offlineSimulatedClockButtons = false,
     badAutopilot = false,
     gpsCapture = false,
+    debugLogToDeveloperServer = false,
 )
 internal val PackageManagementJson = Json {
     encodeDefaults = true

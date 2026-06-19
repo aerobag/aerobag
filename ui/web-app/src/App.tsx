@@ -125,10 +125,14 @@ import type {
 import { airwayExitCandidatesFromPresentation } from "./domain/airwayPresentation";
 import {
   debugLog,
+  DebugLogDeveloperServerPath,
   debugTiming,
   installGlobalErrorLogging,
   perfDebugLog,
+  readPersistedDebugLogDeveloperServerUploadEnabled,
+  setDebugLogDeveloperServerUploadEnabled,
   VERBOSE_PERF_DEBUG_LOGS,
+  writePersistedDebugLogDeveloperServerUploadEnabled,
 } from "./domain/debugLog";
 import { TerrainOverlayRenderer } from "./domain/terrainOverlayRenderer";
 
@@ -1611,6 +1615,7 @@ function defaultUiDebugState(): UiDebugState {
     sequencing_finish_lines: false,
     bad_autopilot: false,
     gps_capture: false,
+    debug_log_to_developer_server: readPersistedDebugLogDeveloperServerUploadEnabled(),
   };
 }
 
@@ -1813,6 +1818,10 @@ export default function App() {
     setStartupFatalError(fatal);
   }, [sessionStartMs]);
   const setDebugFlag = useCallback(async (flagId: DebugFlagId, enabled: boolean) => {
+    if (flagId === "debug_log_to_developer_server") {
+      writePersistedDebugLogDeveloperServerUploadEnabled(enabled);
+      setDebugLogDeveloperServerUploadEnabled(enabled);
+    }
     if (uiSession === null) {
       setSessionSnapshot((snapshot) => ({
         ...snapshot,
@@ -2367,6 +2376,10 @@ export default function App() {
       window.removeEventListener("unhandledrejection", handleUnhandledRejection);
     };
   }, [reportStartupFatalError]);
+
+  useEffect(() => {
+    setDebugLogDeveloperServerUploadEnabled(sessionSnapshot.debug_state.debug_log_to_developer_server);
+  }, [sessionSnapshot.debug_state.debug_log_to_developer_server]);
 
   useEffect(() => {
     let cancelled = false;
@@ -3119,7 +3132,7 @@ export default function App() {
         <DataStatusPage
           page={page}
           state={sessionSnapshot.data_status_page_state}
-          dataSourcesRow={dataSourcesStatusRow()}
+          dataSourcesRow={dataSourcesStatusRow(sessionSnapshot.debug_state)}
           mostRecentChartOrPlatePage={mostRecentChartOrPlatePage}
           onOpenRecentChartOrPlate={navigateToMostRecentChartOrPlate}
           onSelectPage={navigateToPage}
@@ -9295,27 +9308,36 @@ function DataStatusPageRowArticle(props: {
   );
 }
 
-function dataSourcesStatusRow(): UiDataStatusPageState["rows"][number] {
+function dataSourcesStatusRow(debugState: UiDebugState): UiDataStatusPageState["rows"][number] {
   const cycleDataBaseUrl = webCycleDataBaseUrl();
   const liveFeedsBaseUrl = webLiveFeedsBaseUrl();
+  const facts: UiDataStatusPageState["rows"][number]["facts"] = [
+    {
+      label: "Cycle Data",
+      value: cycleDataBaseUrl,
+      link_url: cycleDataBaseUrl,
+    },
+    {
+      label: "Live Feeds",
+      value: liveFeedsBaseUrl,
+      link_url: liveFeedsBaseUrl,
+    },
+  ];
+  if (debugState.debug_log_to_developer_server) {
+    const debugLogSinkUrl = webDebugLogSinkUrl();
+    facts.push({
+      label: "Debug log sink",
+      value: debugLogSinkUrl,
+      link_url: debugLogSinkUrl,
+    });
+  }
   return {
     id: "data_sources",
     label: "Data Sources",
     value: "Config",
     severity: "info",
     detail: "Base URLs used for remote aviation data.",
-    facts: [
-      {
-        label: "Cycle Data",
-        value: cycleDataBaseUrl,
-        link_url: cycleDataBaseUrl,
-      },
-      {
-        label: "Live Feeds",
-        value: liveFeedsBaseUrl,
-        link_url: liveFeedsBaseUrl,
-      },
-    ],
+    facts,
   };
 }
 
@@ -9332,6 +9354,11 @@ function webLiveFeedsBaseUrl(): string {
       ? window.location.origin.replace(/\/+$/, "")
       : "";
   return root ? `${root}/live-feeds` : "/live-feeds";
+}
+
+function webDebugLogSinkUrl(): string {
+  const origin = typeof window !== "undefined" ? window.location.origin.replace(/\/+$/, "") : "";
+  return origin ? `${origin}${DebugLogDeveloperServerPath}` : DebugLogDeveloperServerPath;
 }
 
 function renderDataStatusFactValue(
@@ -9425,6 +9452,7 @@ function CommonDebugPanel(props: {
     { id: "sequencing_finish_lines", label: "sequencing finish lines" },
     { id: "bad_autopilot", label: "Bad Autopilot" },
     { id: "gps_capture", label: "capture GPS samples" },
+    { id: "debug_log_to_developer_server", label: "debug log to developer server" },
   ];
 
   return (

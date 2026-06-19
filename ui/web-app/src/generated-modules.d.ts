@@ -93,7 +93,6 @@ declare module "@generated/app_wasm.js" {
   export const resolve_metar_manifest_in_session: (...args: unknown[]) => string;
   export const resolve_nav_db_artifact_candidates_in_session: (...args: unknown[]) => string;
   export const resolve_chart_asset_resource_in_session: (...args: unknown[]) => string;
-  export const metar_bakeoff_run: (...args: unknown[]) => string;
 }
 
 declare module "*.svg" {

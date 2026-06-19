@@ -1911,6 +1911,7 @@ private data class WireUiDebugState(
     val offline_simulated_clock_buttons: Boolean = false,
     val bad_autopilot: Boolean = false,
     val gps_capture: Boolean = false,
+    val debug_log_to_developer_server: Boolean = false,
 )
 
 @kotlinx.serialization.Serializable
@@ -2123,6 +2124,7 @@ data class UiDebugState(
     val offlineSimulatedClockButtons: Boolean,
     val badAutopilot: Boolean,
     val gpsCapture: Boolean,
+    val debugLogToDeveloperServer: Boolean,
 )
 
 data class UiPlaybackPanelState(
@@ -2290,6 +2292,7 @@ private fun WireUiDebugState.toUi() = UiDebugState(
     offlineSimulatedClockButtons = offline_simulated_clock_buttons,
     badAutopilot = bad_autopilot,
     gpsCapture = gps_capture,
+    debugLogToDeveloperServer = debug_log_to_developer_server,
 )
 
 private fun WireUiPlaybackPanelState.toUi() = UiPlaybackPanelState(

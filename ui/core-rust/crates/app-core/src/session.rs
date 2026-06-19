@@ -162,6 +162,8 @@ pub struct UiDebugState {
     pub bad_autopilot: bool,
     #[serde(default)]
     pub gps_capture: bool,
+    #[serde(default)]
+    pub debug_log_to_developer_server: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
@@ -5027,6 +5029,9 @@ pub fn set_debug_flag_in_session(
         }
         "sequencing_finish_lines" => session.debug_state.sequencing_finish_lines = enabled,
         "gps_capture" => session.debug_state.gps_capture = enabled,
+        "debug_log_to_developer_server" => {
+            session.debug_state.debug_log_to_developer_server = enabled
+        }
         "bad_autopilot" => {
             session.debug_state.bad_autopilot = enabled;
             if !enabled {
@@ -8782,6 +8787,7 @@ fn default_debug_state() -> UiDebugState {
         sequencing_finish_lines: false,
         bad_autopilot: false,
         gps_capture: false,
+        debug_log_to_developer_server: false,
     }
 }
 
@@ -14920,6 +14926,23 @@ mod tests {
         let action = &available.categories[0].items[0].actions[0];
         assert!(action.enabled);
         assert_eq!(action.session_action.as_deref(), Some("direct-to-action"));
+        assert!(action.flight_plan_row_action.is_none());
+    }
+
+    #[test]
+    fn debug_log_to_developer_server_is_core_owned_and_default_off() {
+        let init =
+            create_ui_session(lat_lon_preview_plan(), &[], None, None).expect("create session");
+        assert!(!init.snapshot.debug_state.debug_log_to_developer_server);
+
+        let enabled = set_debug_flag_in_session(init.handle, "debug_log_to_developer_server", true)
+            .expect("enable developer-server debug log");
+        assert!(enabled.debug_state.debug_log_to_developer_server);
+
+        let disabled =
+            set_debug_flag_in_session(init.handle, "debug_log_to_developer_server", false)
+                .expect("disable developer-server debug log");
+        assert!(!disabled.debug_state.debug_log_to_developer_server);
     }
 
     #[test]

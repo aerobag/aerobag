@@ -16,11 +16,27 @@ const queue: DebugLogRecord[] = [];
 const observers = new Set<(record: DebugLogRecord) => void>();
 const flushDelayMs = 250;
 const maxFlushBatchSize = 1000;
+const debugLogDeveloperServerUploadStorageKey = "aerobag.web.debugLogToDeveloperServer.v1";
 let flushScheduled = false;
 let flushInFlight = false;
 let browserInstanceId = resolveBrowserInstanceId();
+let developerServerUploadEnabled = readPersistedDebugLogDeveloperServerUploadEnabled();
 
 export const VERBOSE_PERF_DEBUG_LOGS = false;
+export const DebugLogDeveloperServerPath = "/__debug_log";
+
+export function setDebugLogDeveloperServerUploadEnabled(enabled: boolean): void {
+  const wasEnabled = developerServerUploadEnabled;
+  developerServerUploadEnabled = enabled;
+  if (!enabled) {
+    queue.splice(0, queue.length);
+    return;
+  }
+  if (!wasEnabled) {
+    debugLog("LOGGING_ENABLED", pageIdentityForDebugLog());
+  }
+  scheduleFlush();
+}
 
 function scheduleFlush() {
   if (
@@ -40,6 +56,10 @@ function scheduleFlush() {
 }
 
 async function flushQueue() {
+  if (!developerServerUploadEnabled) {
+    queue.splice(0, queue.length);
+    return;
+  }
   if (queue.length === 0) {
     return;
   }
@@ -50,7 +70,7 @@ async function flushQueue() {
   flushInFlight = true;
   const batch = queue.splice(0, Math.min(queue.length, maxFlushBatchSize));
   try {
-    await fetch("/__debug_log", {
+    await fetch(DebugLogDeveloperServerPath, {
       method: "POST",
       headers: {
         "Content-Type": "application/json",
@@ -86,7 +106,6 @@ export function debugLog(tag: string, data?: unknown) {
     ...(runId ? { run_id: runId } : {}),
     data,
   };
-  queue.push(record);
   for (const observer of observers) {
     try {
       observer(record);
@@ -94,10 +113,16 @@ export function debugLog(tag: string, data?: unknown) {
       // Diagnostics must never perturb the code path being measured.
     }
   }
-  scheduleFlush();
+  if (developerServerUploadEnabled) {
+    queue.push(record);
+    scheduleFlush();
+  }
 }
 
 export function isDebugLogEnabled(): boolean {
+  if (developerServerUploadEnabled) {
+    return true;
+  }
   if (
     typeof __AEROBAG_DEBUG_LOG_ENABLED__ !== "undefined"
     && __AEROBAG_DEBUG_LOG_ENABLED__
@@ -128,6 +153,28 @@ export async function flushDebugLogNow(): Promise<void> {
   await flushQueue();
 }
 
+export function readPersistedDebugLogDeveloperServerUploadEnabled(): boolean {
+  if (typeof window === "undefined") {
+    return false;
+  }
+  try {
+    return window.localStorage.getItem(debugLogDeveloperServerUploadStorageKey) === "1";
+  } catch {
+    return false;
+  }
+}
+
+export function writePersistedDebugLogDeveloperServerUploadEnabled(enabled: boolean): void {
+  if (typeof window === "undefined") {
+    return;
+  }
+  try {
+    window.localStorage.setItem(debugLogDeveloperServerUploadStorageKey, enabled ? "1" : "0");
+  } catch {
+    // A failed persistence write must not affect the debug flag itself.
+  }
+}
+
 export function getBrowserInstanceId(): string {
   return browserInstanceId;
 }
@@ -143,6 +190,22 @@ export function setBrowserInstanceId(nextId: string): void {
 function currentDebugRunId(): string | null {
   const candidate = (globalThis as unknown as { __aerobagPerfRunId?: unknown }).__aerobagPerfRunId;
   return typeof candidate === "string" && candidate.length > 0 ? candidate : null;
+}
+
+function pageIdentityForDebugLog() {
+  const navigationEntry =
+    typeof performance !== "undefined"
+      ? performance.getEntriesByType("navigation")[0]
+      : null;
+  return {
+    href: typeof location !== "undefined" ? location.href : "",
+    userAgent: typeof navigator !== "undefined" ? navigator.userAgent : "",
+    html_start_ms: (globalThis as unknown as { __aerobag_html_start?: number }).__aerobag_html_start ?? null,
+    enabled_at_ms: typeof performance !== "undefined" ? Math.round(performance.now()) : null,
+    navigation: navigationEntry && "toJSON" in navigationEntry
+      ? (navigationEntry as PerformanceNavigationTiming).toJSON()
+      : null,
+  };
 }
 
 function resolveBrowserInstanceId(): string {

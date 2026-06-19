@@ -9,11 +9,8 @@ crate-type = ["cdylib", "rlib"]
 
 [dependencies]
 app-core = { path = "../app-core" }
-bincode = "1.3"
 console_error_panic_hook = "0.1"
-postcard = { version = "1", features = ["alloc"] }
 serde.workspace = true
 serde_json.workspace = true
-sha2.workspace = true
 wasm-bindgen.workspace = true
 js-sys = "0.3"

@@ -767,7 +767,7 @@ impl LiveFeedsState {
                     invalidations.push(UiInvalidation::NexradOverlay);
                     invalidations.push(UiInvalidation::DebugPanel);
                 }
-                "metars" | "tfrs" | "pireps" | "obstacles" => {
+                "metars" | "tafs" | "tfrs" | "pireps" | "obstacles" => {
                     invalidations.push(UiInvalidation::MapOverlay);
                     invalidations.push(UiInvalidation::DebugPanel);
                 }

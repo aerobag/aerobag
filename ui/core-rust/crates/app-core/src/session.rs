@@ -5413,6 +5413,16 @@ fn install_live_feed_installed_state(
             rebuild_metar_tile_cache(session);
             clear_data_status_record(session, LIVE_FEED_METARS_STATUS_ID);
         }
+        ("tafs", crate::LiveFeedInstalledPayload::Json { bytes }) => {
+            let payload: TafProductPayload =
+                serde_json::from_slice(bytes).map_err(|err| AppError {
+                    kind: AppErrorKind::InvalidManifest,
+                    message: format!("failed to parse installed TAF live feed: {err}"),
+                })?;
+            session.taf_payload = Some(payload);
+            let status_id = live_feed_unavailable_status_record("tafs", String::new()).id;
+            clear_data_status_record(session, &status_id);
+        }
         ("tfrs", crate::LiveFeedInstalledPayload::Json { bytes }) => {
             let payload: TfrProductPayload =
                 serde_json::from_slice(bytes).map_err(|err| AppError {
@@ -5715,6 +5725,11 @@ fn install_live_feed_payloads(session: &mut UiSession) -> AppResult<()> {
             session.prepared_metar_feed = None;
             clear_data_status_record(session, LIVE_FEED_METARS_STATUS_ID);
         }
+        if !session.live_feeds.has_product_current_version("tafs") {
+            session.taf_payload = None;
+            let status_id = live_feed_unavailable_status_record("tafs", String::new()).id;
+            clear_data_status_record(session, &status_id);
+        }
         if !session.live_feeds.has_product_current_version("tfrs") {
             session.tfr_payload = None;
             clear_data_status_record(session, LIVE_FEED_TFRS_STATUS_ID);
@@ -5750,6 +5765,33 @@ fn install_live_feed_payloads(session: &mut UiSession) -> AppResult<()> {
                         live_feed_unavailable_status_record(
                             "metars",
                             format!("METAR live feed unavailable: failed to parse state: {err}"),
+                        ),
+                    );
+                }
+            }
+        }
+    }
+    let loaded_tafs_version = session.live_feeds.product_loaded_version("tafs");
+    let tafs_installed = session
+        .taf_payload
+        .as_ref()
+        .and_then(|payload| loaded_tafs_version.map(|version| payload.version_label == version))
+        .unwrap_or(false);
+    if !tafs_installed {
+        if let Some(tafs_value) = session.live_feeds.product_state_manifest("tafs").cloned() {
+            match serde_json::from_value::<TafProductPayload>(tafs_value) {
+                Ok(payload) => {
+                    session.taf_payload = Some(payload);
+                    let status_id = live_feed_unavailable_status_record("tafs", String::new()).id;
+                    clear_data_status_record(session, &status_id);
+                }
+                Err(err) => {
+                    session.taf_payload = None;
+                    upsert_data_status_record(
+                        session,
+                        live_feed_unavailable_status_record(
+                            "tafs",
+                            format!("TAF live feed unavailable: failed to parse state: {err}"),
                         ),
                     );
                 }
@@ -11103,6 +11145,78 @@ mod tests {
         assert_eq!(overlay.visible_metars.len(), 1);
         assert_eq!(overlay.visible_metars[0].station_id, "KAAA");
         assert_eq!(overlay.visible_metars[0].flight_category, "mvfr");
+    }
+
+    #[test]
+    fn live_feed_tafs_install_weather_inspector_payload() {
+        let init =
+            create_ui_session(FlightPlan::default(), &[], None, None).expect("create session");
+        let state = serde_json::json!({
+            "schema_version": 1,
+            "version_label": "v1",
+            "taf_count": 1,
+            "tafs_by_station": {
+                "KAAA": {
+                    "raw_text": "TAF KAAA 010000Z 0100/0124 00000KT P6SM SCT020",
+                    "issued_at_utc": "2026-05-03T00:00:00.000Z",
+                    "station_id": "KAAA",
+                    "longitude": 0.0,
+                    "latitude": 0.0
+                }
+            }
+        });
+        let state_bytes = serde_json::to_vec(&state).expect("state bytes");
+        let state_sha256 = format!("{:x}", Sha256::digest(&state_bytes));
+
+        ingest_resource_in_session(
+            init.handle,
+            "live_feeds/current",
+            format!(
+                r#"{{
+                    "products": {{
+                        "tafs": {{
+                            "current": "v1",
+                            "version_manifest_url": "versions/tafs/v1.json",
+                            "state_url": "states/tafs/v1.json",
+                            "state_sha256": "{state_sha256}"
+                        }}
+                    }}
+                }}"#
+            )
+            .as_bytes(),
+        )
+        .expect("current manifest");
+        ingest_resource_in_session(
+            init.handle,
+            "live_feeds/version/tafs/v1",
+            format!(
+                r#"{{
+                    "schema_version": 1,
+                    "product": "tafs",
+                    "version": "v1",
+                    "state": {{
+                        "url": "states/tafs/v1.json",
+                        "bytes": {},
+                        "blob_sha256": "{state_sha256}",
+                        "state_sha256": "{state_sha256}"
+                    }}
+                }}"#,
+                state_bytes.len()
+            )
+            .as_bytes(),
+        )
+        .expect("version manifest");
+        ingest_resource_in_session(init.handle, "live_feeds/state/tafs/v1", &state_bytes)
+            .expect("tafs state");
+
+        let sessions = lock_sessions();
+        let session = sessions.get(&init.handle).expect("session");
+        let taf_payload = session.taf_payload.as_ref().expect("TAF payload");
+        assert_eq!(taf_payload.version_label, "v1");
+        assert_eq!(
+            taf_payload.tafs_by_station["KAAA"].raw_text,
+            "TAF KAAA 010000Z 0100/0124 00000KT P6SM SCT020"
+        );
     }
 
     #[test]

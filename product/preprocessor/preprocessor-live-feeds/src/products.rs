@@ -16,17 +16,17 @@ use serde_json::Value;
 use sha2::{Digest, Sha256};
 
 use crate::{
-    build_metar_dataset, build_tfr_dataset,
+    build_metar_dataset, build_taf_dataset, build_tfr_dataset,
     engine::{
         read_json_value, sha256_hex, write_json_pretty_file, BuiltLiveFeedState, DeltaPolicy,
         LiveFeedStatePayload, ProductBuilder, UpstreamEvent,
     },
-    metar_content_fingerprint, BuildMetarRequest, BuildTfrRequest,
+    metar_content_fingerprint, taf_content_fingerprint, BuildMetarRequest, BuildTafRequest,
+    BuildTfrRequest,
 };
 
 const METAR_XML_URL: &str = "https://aviationweather.gov/data/cache/metars.cache.xml.gz";
 const TAF_XML_URL: &str = "https://aviationweather.gov/data/cache/tafs.cache.xml.gz";
-const PIREP_XML_URL: &str = "https://aviationweather.gov/data/cache/aircraftreports.cache.xml.gz";
 const TFR_LIST_URL: &str = "https://tfr.faa.gov/tfrapi/exportTfrList";
 const TFR_GRAPHICS_URL: &str = concat!(
     "https://tfr.faa.gov/geoserver/TFR/ows?",
@@ -289,12 +289,8 @@ impl ProductBuilder for MetarLiveFeedBuilder {
         let input_dir = fresh_dir(&scratch_dir.join("input"))?;
         let output_dir = fresh_dir(&scratch_dir.join("output"))?;
         let provenance_dir = scratch_dir.join("meta").join("provenance").join("metars");
-        let requests = vec![
-            PrefetchRequest::new(METAR_XML_URL).with_logical_file_name("metars.cache.xml.gz"),
-            PrefetchRequest::new(TAF_XML_URL).with_logical_file_name("tafs.cache.xml.gz"),
-            PrefetchRequest::new(PIREP_XML_URL)
-                .with_logical_file_name("aircraftreports.cache.xml.gz"),
-        ];
+        let requests =
+            vec![PrefetchRequest::new(METAR_XML_URL).with_logical_file_name("metars.cache.xml.gz")];
         prefetch_archives_with_provenance(
             &requests,
             &input_dir,
@@ -303,23 +299,12 @@ impl ProductBuilder for MetarLiveFeedBuilder {
             &provenance_dir,
             "metars",
         )?;
-        for file_name in [
-            "metars.cache.xml.gz",
-            "tafs.cache.xml.gz",
-            "aircraftreports.cache.xml.gz",
-        ] {
-            run_gzip_decompress(&input_dir.join(file_name))?;
-        }
+        run_gzip_decompress(&input_dir.join("metars.cache.xml.gz"))?;
         let metar_xml_path = input_dir.join("metars.cache.xml");
-        let taf_xml_path = input_dir.join("tafs.cache.xml");
-        let pirep_xml_path = input_dir.join("aircraftreports.cache.xml");
-        let fingerprint =
-            metar_content_fingerprint(&metar_xml_path, &taf_xml_path, &pirep_xml_path)?;
+        let fingerprint = metar_content_fingerprint(&metar_xml_path)?;
         let version = content_version_label(&fingerprint);
         let result = build_metar_dataset(&BuildMetarRequest {
             metar_xml_path,
-            taf_xml_path,
-            pirep_xml_path,
             output_dir,
             version_label: version.clone(),
             generated_at_utc,
@@ -335,6 +320,66 @@ impl ProductBuilder for MetarLiveFeedBuilder {
                 count_key: Some("metar_count".to_string()),
             },
             result.metar_count,
+        ))
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct TafLiveFeedBuilder {
+    fetch: LiveFeedFetchConfig,
+}
+
+impl TafLiveFeedBuilder {
+    pub fn new(fetch: LiveFeedFetchConfig) -> Self {
+        Self { fetch }
+    }
+}
+
+impl ProductBuilder for TafLiveFeedBuilder {
+    fn product_id(&self) -> &str {
+        "tafs"
+    }
+
+    fn build_state(
+        &self,
+        event: &UpstreamEvent,
+        scratch_dir: &Path,
+    ) -> anyhow::Result<BuiltLiveFeedState> {
+        let generated_at_utc = normalized_event_time(event.observed_at_utc);
+        let input_dir = fresh_dir(&scratch_dir.join("input"))?;
+        let output_dir = fresh_dir(&scratch_dir.join("output"))?;
+        let provenance_dir = scratch_dir.join("meta").join("provenance").join("tafs");
+        let requests =
+            vec![PrefetchRequest::new(TAF_XML_URL).with_logical_file_name("tafs.cache.xml.gz")];
+        prefetch_archives_with_provenance(
+            &requests,
+            &input_dir,
+            self.fetch.fetch_jobs,
+            self.fetch.fetch_cache.as_ref(),
+            &provenance_dir,
+            "tafs",
+        )?;
+        run_gzip_decompress(&input_dir.join("tafs.cache.xml.gz"))?;
+        let taf_xml_path = input_dir.join("tafs.cache.xml");
+        let fingerprint = taf_content_fingerprint(&taf_xml_path)?;
+        let version = content_version_label(&fingerprint);
+        let result = build_taf_dataset(&BuildTafRequest {
+            taf_xml_path,
+            output_dir,
+            version_label: version.clone(),
+            generated_at_utc,
+        })?;
+        let state_value = read_json_value(&result.structured_json_path)?;
+        Ok(json_live_feed_state(
+            "tafs",
+            version,
+            result.structured_json_path,
+            state_value,
+            DeltaPolicy::KeyedRecords {
+                records_key: "tafs_by_station".to_string(),
+                count_key: Some("taf_count".to_string()),
+            },
+            result.taf_count,
         ))
     }
 }

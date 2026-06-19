@@ -575,7 +575,7 @@ pub fn live_feed_event_scratch_dir(
 pub fn default_poll_interval(product_id: &str) -> Option<StdDuration> {
     match product_id {
         "nexrad" => Some(StdDuration::from_secs(60)),
-        "metars" | "tfrs" => Some(StdDuration::from_secs(5 * 60)),
+        "metars" | "tafs" | "tfrs" => Some(StdDuration::from_secs(5 * 60)),
         "winds-aloft" => Some(StdDuration::from_secs(60 * 60)),
         "obstacles" => Some(StdDuration::from_secs(6 * 60 * 60)),
         _ => None,
@@ -2163,6 +2163,10 @@ mod tests {
         );
         assert_eq!(
             default_poll_interval("metars"),
+            Some(StdDuration::from_secs(5 * 60))
+        );
+        assert_eq!(
+            default_poll_interval("tafs"),
             Some(StdDuration::from_secs(5 * 60))
         );
         assert_eq!(

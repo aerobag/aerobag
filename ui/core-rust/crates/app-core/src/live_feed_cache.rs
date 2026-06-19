@@ -586,6 +586,11 @@ pub fn live_feed_product_registry() -> LiveFeedProductRegistry {
             records_key: "metars_by_station".to_string(),
             count_key: Some("metar_count".to_string()),
         },
+        LiveFeedProductDriver::RecordJson {
+            product: "tafs".to_string(),
+            records_key: "tafs_by_station".to_string(),
+            count_key: Some("taf_count".to_string()),
+        },
         LiveFeedProductDriver::FullJson {
             product: "tfrs".to_string(),
         },
@@ -1258,6 +1263,10 @@ mod tests {
                 Some("metar_count".to_string())
             ))
         );
+        assert_eq!(
+            registry.record_json_delta_schema("tafs"),
+            Some(("tafs_by_station".to_string(), Some("taf_count".to_string())))
+        );
         assert_eq!(registry.record_json_delta_schema("tfrs"), None);
     }
 
@@ -1324,6 +1333,88 @@ mod tests {
             request.kind,
             LiveFeedCacheRequestKind::Delta {
                 product: "metars".to_string(),
+                from_version: "v1".to_string(),
+                to_version: "v2".to_string(),
+                payload_kind: Some("record_json_delta".to_string())
+            }
+        );
+        let installed = cache
+            .install_fetched_payload(
+                &registry,
+                &request,
+                LiveFeedFetchedPayload::Bytes(delta_bytes),
+            )
+            .unwrap()
+            .unwrap();
+        assert_eq!(installed.version, "v2");
+        assert_eq!(installed.state_sha256, v2_sha);
+    }
+
+    #[test]
+    fn taf_record_json_cache_installs_full_then_delta() {
+        let registry = live_feed_product_registry();
+        let v1 = serde_json::json!({
+            "version_label": "v1",
+            "taf_count": 1,
+            "tafs_by_station": {
+                "KSEA": {"station_id": "KSEA", "raw_text": "old"}
+            }
+        });
+        let (v1_manifest, v1_bytes, v1_sha) = json_version_manifest("tafs", "v1", &v1, None);
+        let mut cache = LiveFeedCache::default();
+        cache
+            .ingest_current(&current_manifest("tafs", "v1", &v1_sha))
+            .unwrap();
+        cache
+            .ingest_version_manifest("tafs", "v1", &v1_manifest)
+            .unwrap();
+        let request = cache.missing_requests(&registry).remove(0);
+        cache
+            .install_fetched_payload(&registry, &request, LiveFeedFetchedPayload::Bytes(v1_bytes))
+            .unwrap();
+
+        let v2 = serde_json::json!({
+            "version_label": "v2",
+            "taf_count": 1,
+            "tafs_by_station": {
+                "KSEA": {"station_id": "KSEA", "raw_text": "new"}
+            }
+        });
+        let v2_sha = canonical_json_sha256(&v2).unwrap();
+        let delta = serde_json::json!({
+            "schema_version": 1,
+            "product": "tafs",
+            "from_version": "v1",
+            "to_version": "v2",
+            "top_level_changed": {},
+            "top_level_removed": [],
+            "changed": {
+                "KSEA": {"station_id": "KSEA", "raw_text": "new"}
+            },
+            "removed": []
+        });
+        let delta_bytes = serde_json::to_vec(&delta).unwrap();
+        let delta_ref = LiveFeedDeltaRef {
+            from_version: "v1".to_string(),
+            from_state_sha256: v1_sha,
+            to_version: "v2".to_string(),
+            to_state_sha256: v2_sha.clone(),
+            url: "deltas/tafs/v1__v2.json".to_string(),
+            bytes: delta_bytes.len() as u64,
+            blob_sha256: sha256_hex(&delta_bytes),
+        };
+        let (v2_manifest, _, _) = json_version_manifest("tafs", "v2", &v2, Some(delta_ref));
+        cache
+            .ingest_current(&current_manifest("tafs", "v2", &v2_sha))
+            .unwrap();
+        cache
+            .ingest_version_manifest("tafs", "v2", &v2_manifest)
+            .unwrap();
+        let request = cache.missing_requests(&registry).remove(0);
+        assert_eq!(
+            request.kind,
+            LiveFeedCacheRequestKind::Delta {
+                product: "tafs".to_string(),
                 from_version: "v1".to_string(),
                 to_version: "v2".to_string(),
                 payload_kind: Some("record_json_delta".to_string())

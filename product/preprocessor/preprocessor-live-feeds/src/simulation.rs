@@ -441,6 +441,13 @@ impl ProductBuilder for CompiledFixtureStateBuilder {
                 },
                 json_count(&state_value, "metar_count", "metars_by_station"),
             ),
+            "tafs" => (
+                DeltaPolicy::KeyedRecords {
+                    records_key: "tafs_by_station".to_string(),
+                    count_key: Some("taf_count".to_string()),
+                },
+                json_count(&state_value, "taf_count", "tafs_by_station"),
+            ),
             "tfrs" => (
                 DeltaPolicy::None,
                 state_value
@@ -478,7 +485,7 @@ fn precomputed_simulated_delta(
     event: &UpstreamEvent,
     state_value: &Value,
 ) -> anyhow::Result<Option<LiveFeedRecordDelta>> {
-    if event.product != "metars" {
+    if !matches!(event.product.as_str(), "metars" | "tafs") {
         return Ok(None);
     }
     let Some(previous_source_id) = event.previous_source_id.as_ref() else {

@@ -51,6 +51,7 @@ dependencies = [
  "flate2",
  "had-key",
  "had-nav-kv",
+ "lzma-rs",
  "postcard",
  "procedure-geometry-types",
  "product-contracts",

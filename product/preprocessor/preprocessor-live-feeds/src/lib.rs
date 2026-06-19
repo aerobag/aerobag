@@ -15,7 +15,8 @@ pub mod engine;
 pub mod products;
 pub mod simulation;
 
-const METAR_PRODUCT_CONTRACT_VERSION: u32 = 8;
+const METAR_PRODUCT_CONTRACT_VERSION: u32 = 9;
+const TAF_PRODUCT_CONTRACT_VERSION: u32 = 1;
 const METAR_TREND_TOKENS: &[&str] = &["BECMG", "TEMPO", "INTER", "NOSIG", "PROB30", "PROB40"];
 
 #[derive(Debug, Clone)]
@@ -38,8 +39,6 @@ pub struct BuildTfrResult {
 #[derive(Debug, Clone)]
 pub struct BuildMetarRequest {
     pub metar_xml_path: PathBuf,
-    pub taf_xml_path: PathBuf,
-    pub pirep_xml_path: PathBuf,
     pub output_dir: PathBuf,
     pub version_label: String,
     pub generated_at_utc: DateTime<Utc>,
@@ -51,6 +50,22 @@ pub struct BuildMetarResult {
     pub structured_json_path: PathBuf,
     pub zip_path: PathBuf,
     pub metar_count: usize,
+}
+
+#[derive(Debug, Clone)]
+pub struct BuildTafRequest {
+    pub taf_xml_path: PathBuf,
+    pub output_dir: PathBuf,
+    pub version_label: String,
+    pub generated_at_utc: DateTime<Utc>,
+}
+
+#[derive(Debug, Clone)]
+pub struct BuildTafResult {
+    pub manifest_path: PathBuf,
+    pub structured_json_path: PathBuf,
+    pub zip_path: PathBuf,
+    pub taf_count: usize,
 }
 
 #[derive(Debug, Clone)]
@@ -104,16 +119,34 @@ struct MetarManifestFiles {
     manifest: String,
     structured_json: String,
     metars: String,
-    tafs: String,
-    pireps: String,
     zip: String,
 }
 
 #[derive(Debug, Clone, Serialize)]
 struct MetarManifestCounts {
     metars: usize,
+}
+
+#[derive(Debug, Clone, Serialize)]
+struct TafManifest {
+    schema_version: u32,
+    version_label: String,
+    generated_at_utc: String,
+    files: TafManifestFiles,
+    counts: TafManifestCounts,
+}
+
+#[derive(Debug, Clone, Serialize)]
+struct TafManifestFiles {
+    manifest: String,
+    structured_json: String,
+    tafs: String,
+    zip: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
+struct TafManifestCounts {
     tafs: usize,
-    pireps: usize,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -233,15 +266,6 @@ enum TafTextMode {
     StationId,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum PirepTextMode {
-    RawText,
-    ObservationTime,
-    Latitude,
-    Longitude,
-    ReportType,
-}
-
 #[derive(Debug, Clone, Serialize)]
 pub struct StructuredMetarDataset {
     schema_version: u32,
@@ -309,8 +333,11 @@ pub struct StructuredPirepRecord {
 #[derive(Debug, Clone, Serialize)]
 struct MetarProductModel {
     metars_by_station: BTreeMap<String, StructuredMetarRecord>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+struct TafProductModel {
     tafs_by_station: BTreeMap<String, StructuredTafRecord>,
-    pireps: Vec<StructuredPirepRecord>,
 }
 
 #[derive(Debug, Clone)]
@@ -328,15 +355,6 @@ struct ParsedTafRecord {
     raw_text: String,
     issue_time: String,
     station_id: String,
-    longitude: String,
-    latitude: String,
-}
-
-#[derive(Debug, Clone)]
-struct ParsedPirepRecord {
-    raw_text: String,
-    observation_time: String,
-    report_type: String,
     longitude: String,
     latitude: String,
 }
@@ -570,20 +588,12 @@ pub fn build_metar_dataset(request: &BuildMetarRequest) -> anyhow::Result<BuildM
     fs::create_dir_all(&request.output_dir)
         .with_context(|| format!("failed to create {}", request.output_dir.display()))?;
 
-    let model = metar_product_model(
-        &request.metar_xml_path,
-        &request.taf_xml_path,
-        &request.pirep_xml_path,
-    )?;
+    let model = metar_product_model(&request.metar_xml_path)?;
     let content_timestamp = metar_product_content_timestamp(&model, request.generated_at_utc)?;
     let content_timestamp_text = content_timestamp.to_rfc3339();
     let metar_count = model.metars_by_station.len();
-    let taf_count = model.tafs_by_station.len();
-    let pirep_count = model.pireps.len();
 
     let structured_json_path = request.output_dir.join("metars.json");
-    let tafs_json_path = request.output_dir.join("tafs.json");
-    let pireps_json_path = request.output_dir.join("pireps.json");
     let canonical_manifest_path = request.output_dir.join("manifest.json");
     let manifest_path = request
         .output_dir
@@ -603,29 +613,6 @@ pub fn build_metar_dataset(request: &BuildMetarRequest) -> anyhow::Result<BuildM
             metars_by_station: model.metars_by_station.clone(),
         },
     )?;
-    write_json_pretty(
-        &tafs_json_path,
-        &StructuredTafDataset {
-            schema_version: 1,
-            version_label: request.version_label.clone(),
-            taf_count,
-            tafs_by_station: model.tafs_by_station.clone(),
-        },
-    )?;
-    write_json_pretty(
-        &pireps_json_path,
-        &StructuredPirepDataset {
-            schema_version: 1,
-            version_label: request.version_label.clone(),
-            pirep_count,
-            pireps: model.pireps.clone(),
-        },
-    )?;
-    let mut zip_members = vec![
-        ("metars.json".to_string(), structured_json_path.clone()),
-        ("tafs.json".to_string(), tafs_json_path.clone()),
-        ("pireps.json".to_string(), pireps_json_path.clone()),
-    ];
     let manifest = MetarManifest {
         schema_version: METAR_PRODUCT_CONTRACT_VERSION,
         version_label: request.version_label.clone(),
@@ -634,8 +621,6 @@ pub fn build_metar_dataset(request: &BuildMetarRequest) -> anyhow::Result<BuildM
             manifest: "manifest.json".to_string(),
             structured_json: "metars.json".to_string(),
             metars: "metars.json".to_string(),
-            tafs: "tafs.json".to_string(),
-            pireps: "pireps.json".to_string(),
             zip: zip_path
                 .file_name()
                 .and_then(|name| name.to_str())
@@ -644,18 +629,17 @@ pub fn build_metar_dataset(request: &BuildMetarRequest) -> anyhow::Result<BuildM
         },
         counts: MetarManifestCounts {
             metars: metar_count,
-            tafs: taf_count,
-            pireps: pirep_count,
         },
     };
     write_json_pretty(&canonical_manifest_path, &manifest)?;
     write_json_pretty(&manifest_path, &manifest)?;
-    zip_members.push(("manifest.json".to_string(), canonical_manifest_path));
-    let zip_member_refs = zip_members
-        .iter()
-        .map(|(relative_path, path)| (relative_path.as_str(), path.as_path()))
-        .collect::<Vec<_>>();
-    write_zip(&zip_path, &zip_member_refs)?;
+    write_zip(
+        &zip_path,
+        &[
+            ("metars.json", &structured_json_path),
+            ("manifest.json", &canonical_manifest_path),
+        ],
+    )?;
 
     Ok(BuildMetarResult {
         manifest_path,
@@ -665,22 +649,84 @@ pub fn build_metar_dataset(request: &BuildMetarRequest) -> anyhow::Result<BuildM
     })
 }
 
-pub fn metar_content_fingerprint(
-    metar_xml_path: &Path,
-    taf_xml_path: &Path,
-    pirep_xml_path: &Path,
-) -> anyhow::Result<String> {
-    let model = metar_product_model(metar_xml_path, taf_xml_path, pirep_xml_path)?;
+pub fn build_taf_dataset(request: &BuildTafRequest) -> anyhow::Result<BuildTafResult> {
+    if request.output_dir.exists() {
+        fs::remove_dir_all(&request.output_dir)
+            .with_context(|| format!("failed to clear {}", request.output_dir.display()))?;
+    }
+    fs::create_dir_all(&request.output_dir)
+        .with_context(|| format!("failed to create {}", request.output_dir.display()))?;
+
+    let model = taf_product_model(&request.taf_xml_path)?;
+    let content_timestamp = taf_product_content_timestamp(&model, request.generated_at_utc)?;
+    let taf_count = model.tafs_by_station.len();
+    let structured_json_path = request.output_dir.join("tafs.json");
+    let canonical_manifest_path = request.output_dir.join("manifest.json");
+    let manifest_path = request
+        .output_dir
+        .join(format!("tafs_{}.manifest.json", request.version_label));
+    let zip_path = request
+        .output_dir
+        .join(format!("tafs_{}.zip", request.version_label));
+
+    write_json_pretty(
+        &structured_json_path,
+        &StructuredTafDataset {
+            schema_version: 1,
+            version_label: request.version_label.clone(),
+            taf_count,
+            tafs_by_station: model.tafs_by_station.clone(),
+        },
+    )?;
+    let manifest = TafManifest {
+        schema_version: TAF_PRODUCT_CONTRACT_VERSION,
+        version_label: request.version_label.clone(),
+        generated_at_utc: content_timestamp.to_rfc3339(),
+        files: TafManifestFiles {
+            manifest: "manifest.json".to_string(),
+            structured_json: "tafs.json".to_string(),
+            tafs: "tafs.json".to_string(),
+            zip: zip_path
+                .file_name()
+                .and_then(|name| name.to_str())
+                .unwrap_or_default()
+                .to_string(),
+        },
+        counts: TafManifestCounts { tafs: taf_count },
+    };
+    write_json_pretty(&canonical_manifest_path, &manifest)?;
+    write_json_pretty(&manifest_path, &manifest)?;
+    write_zip(
+        &zip_path,
+        &[
+            ("tafs.json", &structured_json_path),
+            ("manifest.json", &canonical_manifest_path),
+        ],
+    )?;
+
+    Ok(BuildTafResult {
+        manifest_path,
+        structured_json_path,
+        zip_path,
+        taf_count,
+    })
+}
+
+pub fn metar_content_fingerprint(metar_xml_path: &Path) -> anyhow::Result<String> {
+    let model = metar_product_model(metar_xml_path)?;
     let bytes = serde_json::to_vec(&(METAR_PRODUCT_CONTRACT_VERSION, model))
         .context("failed to encode canonical METAR model")?;
     Ok(format!("{:x}", Sha256::digest(&bytes)))
 }
 
-fn metar_product_model(
-    metar_xml_path: &Path,
-    taf_xml_path: &Path,
-    pirep_xml_path: &Path,
-) -> anyhow::Result<MetarProductModel> {
+pub fn taf_content_fingerprint(taf_xml_path: &Path) -> anyhow::Result<String> {
+    let model = taf_product_model(taf_xml_path)?;
+    let bytes = serde_json::to_vec(&(TAF_PRODUCT_CONTRACT_VERSION, model))
+        .context("failed to encode canonical TAF model")?;
+    Ok(format!("{:x}", Sha256::digest(&bytes)))
+}
+
+fn metar_product_model(metar_xml_path: &Path) -> anyhow::Result<MetarProductModel> {
     let mut metars_by_station = BTreeMap::new();
     for mut record in structured_metar_records(metar_xml_path)? {
         let station_id = record.station_id.trim().to_ascii_uppercase();
@@ -702,6 +748,10 @@ fn metar_product_model(
             metars_by_station.insert(station_id, record);
         }
     }
+    Ok(MetarProductModel { metars_by_station })
+}
+
+fn taf_product_model(taf_xml_path: &Path) -> anyhow::Result<TafProductModel> {
     let mut tafs_by_station = BTreeMap::new();
     for mut record in structured_taf_records(taf_xml_path)? {
         let station_id = record.station_id.trim().to_ascii_uppercase();
@@ -720,12 +770,7 @@ fn metar_product_model(
             tafs_by_station.insert(station_id, record);
         }
     }
-    let pireps = structured_pirep_records(pirep_xml_path)?;
-    Ok(MetarProductModel {
-        metars_by_station,
-        tafs_by_station,
-        pireps,
-    })
+    Ok(TafProductModel { tafs_by_station })
 }
 
 fn metar_product_content_timestamp(
@@ -737,18 +782,6 @@ fn metar_product_content_timestamp(
         .metars_by_station
         .values()
         .map(|record| record.observed_at_utc.as_str())
-        .chain(
-            model
-                .tafs_by_station
-                .values()
-                .map(|record| record.issued_at_utc.as_str()),
-        )
-        .chain(
-            model
-                .pireps
-                .iter()
-                .map(|record| record.observed_at_utc.as_str()),
-        )
     {
         let value = value.trim();
         if value.is_empty() {
@@ -756,6 +789,30 @@ fn metar_product_content_timestamp(
         }
         let parsed = DateTime::parse_from_rfc3339(value)
             .with_context(|| format!("failed to parse METAR source timestamp {value:?}"))?
+            .with_timezone(&Utc);
+        if latest.is_none_or(|current| parsed > current) {
+            latest = Some(parsed);
+        }
+    }
+    Ok(latest.unwrap_or(fallback))
+}
+
+fn taf_product_content_timestamp(
+    model: &TafProductModel,
+    fallback: DateTime<Utc>,
+) -> anyhow::Result<DateTime<Utc>> {
+    let mut latest = None;
+    for value in model
+        .tafs_by_station
+        .values()
+        .map(|record| record.issued_at_utc.as_str())
+    {
+        let value = value.trim();
+        if value.is_empty() {
+            continue;
+        }
+        let parsed = DateTime::parse_from_rfc3339(value)
+            .with_context(|| format!("failed to parse TAF source timestamp {value:?}"))?
             .with_timezone(&Utc);
         if latest.is_none_or(|current| parsed > current) {
             latest = Some(parsed);
@@ -832,66 +889,7 @@ fn structured_taf_records(input_xml_path: &Path) -> anyhow::Result<Vec<Structure
         .collect()
 }
 
-fn structured_pirep_records(input_xml_path: &Path) -> anyhow::Result<Vec<StructuredPirepRecord>> {
-    let mut records = parse_pirep_records(input_xml_path)?;
-    records.sort_by(|left, right| {
-        (
-            &left.observation_time,
-            &left.raw_text,
-            &left.report_type,
-            &left.longitude,
-            &left.latitude,
-        )
-            .cmp(&(
-                &right.observation_time,
-                &right.raw_text,
-                &right.report_type,
-                &right.longitude,
-                &right.latitude,
-            ))
-    });
-    records
-        .into_iter()
-        .scan(
-            BTreeMap::<String, usize>::new(),
-            |occurrence_counts, record| -> Option<anyhow::Result<StructuredPirepRecord>> {
-                let result = (|| -> anyhow::Result<StructuredPirepRecord> {
-                    let hazards = parse_pirep_hazards(&record.raw_text);
-                    let identity = serde_json::to_vec(&(
-                        &record.observation_time,
-                        &record.raw_text,
-                        &record.report_type,
-                        &record.longitude,
-                        &record.latitude,
-                    ))
-                    .context("failed to encode PIREP identity")?;
-                    let digest = format!("{:x}", Sha256::digest(identity));
-                    let base_id = format!("pirep:{}", &digest[..16]);
-                    let count = occurrence_counts.entry(base_id.clone()).or_insert(0);
-                    let id = if *count == 0 {
-                        base_id
-                    } else {
-                        format!("{base_id}:{}", *count)
-                    };
-                    *count += 1;
-                    Ok(StructuredPirepRecord {
-                        id,
-                        raw_text: record.raw_text,
-                        observed_at_utc: record.observation_time,
-                        report_type: empty_to_none(record.report_type),
-                        longitude: parse_optional_f64(&record.longitude)?,
-                        latitude: parse_optional_f64(&record.latitude)?,
-                        symbol: hazards.symbol().to_string(),
-                        icing: hazards.icing.as_str().to_string(),
-                        turbulence: hazards.turbulence.as_str().to_string(),
-                    })
-                })();
-                Some(result)
-            },
-        )
-        .collect()
-}
-
+#[cfg(test)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 enum PirepHazardSeverity {
     None,
@@ -901,6 +899,7 @@ enum PirepHazardSeverity {
     Severe,
 }
 
+#[cfg(test)]
 impl PirepHazardSeverity {
     fn as_str(self) -> &'static str {
         match self {
@@ -917,12 +916,14 @@ impl PirepHazardSeverity {
     }
 }
 
+#[cfg(test)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 struct PirepHazards {
     icing: PirepHazardSeverity,
     turbulence: PirepHazardSeverity,
 }
 
+#[cfg(test)]
 impl PirepHazards {
     fn symbol(self) -> &'static str {
         match (self.icing.actionable(), self.turbulence.actionable()) {
@@ -940,6 +941,7 @@ impl PirepHazards {
     }
 }
 
+#[cfg(test)]
 fn pirep_symbol(severity: PirepHazardSeverity, hazard: &'static str) -> &'static str {
     match (severity, hazard) {
         (PirepHazardSeverity::Light, "icing") => "light-icing",
@@ -952,6 +954,7 @@ fn pirep_symbol(severity: PirepHazardSeverity, hazard: &'static str) -> &'static
     }
 }
 
+#[cfg(test)]
 fn parse_pirep_hazards(raw_text: &str) -> PirepHazards {
     let sections = pirep_hazard_sections(raw_text);
     let mut icing = PirepHazardSeverity::None;
@@ -970,6 +973,7 @@ fn parse_pirep_hazards(raw_text: &str) -> PirepHazards {
     PirepHazards { icing, turbulence }
 }
 
+#[cfg(test)]
 fn pirep_hazard_sections(raw_text: &str) -> Vec<String> {
     let upper = raw_text.to_ascii_uppercase();
     let slash_sections = upper
@@ -983,6 +987,7 @@ fn pirep_hazard_sections(raw_text: &str) -> Vec<String> {
     }
 }
 
+#[cfg(test)]
 fn pirep_hazard_tokens(section: &str) -> Vec<String> {
     section
         .split(|ch: char| !ch.is_ascii_alphanumeric())
@@ -991,12 +996,14 @@ fn pirep_hazard_tokens(section: &str) -> Vec<String> {
         .collect()
 }
 
+#[cfg(test)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum PirepHazardKind {
     Icing,
     Turbulence,
 }
 
+#[cfg(test)]
 fn pirep_section_hazards(tokens: &[String]) -> PirepHazards {
     let anchors = tokens
         .iter()
@@ -1033,6 +1040,7 @@ fn pirep_section_hazards(tokens: &[String]) -> PirepHazards {
     PirepHazards { icing, turbulence }
 }
 
+#[cfg(test)]
 fn pirep_hazard_kind(token: &str) -> Option<PirepHazardKind> {
     match token {
         "IC" | "ICE" | "ICING" | "RIME" | "CLRICE" | "MXD" | "MXDICE" => {
@@ -1043,6 +1051,7 @@ fn pirep_hazard_kind(token: &str) -> Option<PirepHazardKind> {
     }
 }
 
+#[cfg(test)]
 fn pirep_hazard_severity(tokens: &[String]) -> PirepHazardSeverity {
     let mut saw_negative = false;
     let mut best = PirepHazardSeverity::Unknown;
@@ -1718,93 +1727,6 @@ fn push_taf_text(current: &mut ParsedTafRecord, mode: Option<TafTextMode>, text:
         Some(TafTextMode::Latitude) => current.latitude.push_str(text),
         Some(TafTextMode::Longitude) => current.longitude.push_str(text),
         Some(TafTextMode::StationId) => current.station_id.push_str(text),
-        None => {}
-    }
-}
-
-fn parse_pirep_records(path: &Path) -> anyhow::Result<Vec<ParsedPirepRecord>> {
-    let xml =
-        fs::read_to_string(path).with_context(|| format!("failed to read {}", path.display()))?;
-    let mut reader = Reader::from_str(&xml);
-    let mut buffer = Vec::new();
-    let mut records = Vec::new();
-    let mut in_report = false;
-    let mut mode = None;
-    let mut current = ParsedPirepRecord {
-        raw_text: String::new(),
-        observation_time: String::new(),
-        report_type: String::new(),
-        longitude: String::new(),
-        latitude: String::new(),
-    };
-
-    loop {
-        match reader.read_event_into(&mut buffer) {
-            Ok(Event::Start(event)) => match event.name().as_ref() {
-                b"AircraftReport" => {
-                    in_report = true;
-                    current = ParsedPirepRecord {
-                        raw_text: String::new(),
-                        observation_time: String::new(),
-                        report_type: String::new(),
-                        longitude: String::new(),
-                        latitude: String::new(),
-                    };
-                    mode = None;
-                }
-                b"raw_text" if in_report => mode = Some(PirepTextMode::RawText),
-                b"observation_time" if in_report => mode = Some(PirepTextMode::ObservationTime),
-                b"latitude" if in_report => mode = Some(PirepTextMode::Latitude),
-                b"longitude" if in_report => mode = Some(PirepTextMode::Longitude),
-                b"report_type" if in_report => mode = Some(PirepTextMode::ReportType),
-                _ => {}
-            },
-            Ok(Event::End(event)) => match event.name().as_ref() {
-                b"AircraftReport" if in_report => {
-                    if !current.raw_text.is_empty() {
-                        records.push(current.clone());
-                    }
-                    in_report = false;
-                    mode = None;
-                }
-                b"raw_text" | b"observation_time" | b"latitude" | b"longitude" | b"report_type" => {
-                    mode = None
-                }
-                _ => {}
-            },
-            Ok(Event::Text(event)) if in_report => {
-                let text = event
-                    .xml_content()
-                    .context("failed to decode aircraft report XML text")?
-                    .into_owned();
-                push_pirep_text(&mut current, mode, &text);
-            }
-            Ok(Event::CData(event)) if in_report => {
-                let text = event
-                    .xml_content()
-                    .context("failed to decode aircraft report XML cdata")?
-                    .into_owned();
-                push_pirep_text(&mut current, mode, &text);
-            }
-            Ok(Event::Eof) => break,
-            Ok(_) => {}
-            Err(error) => {
-                return Err(error).with_context(|| format!("failed to parse {}", path.display()));
-            }
-        }
-        buffer.clear();
-    }
-
-    Ok(records)
-}
-
-fn push_pirep_text(current: &mut ParsedPirepRecord, mode: Option<PirepTextMode>, text: &str) {
-    match mode {
-        Some(PirepTextMode::RawText) => current.raw_text.push_str(text),
-        Some(PirepTextMode::ObservationTime) => current.observation_time.push_str(text),
-        Some(PirepTextMode::Latitude) => current.latitude.push_str(text),
-        Some(PirepTextMode::Longitude) => current.longitude.push_str(text),
-        Some(PirepTextMode::ReportType) => current.report_type.push_str(text),
         None => {}
     }
 }
@@ -2492,14 +2414,10 @@ mod tests {
         let second = temp.path().join("second.xml");
         let taf_first = temp.path().join("taf-first.xml");
         let taf_second = temp.path().join("taf-second.xml");
-        let pirep_first = temp.path().join("pirep-first.xml");
-        let pirep_second = temp.path().join("pirep-second.xml");
         let record_a = r#"<METAR><raw_text>METAR KAAA 160400Z 00000KT 10SM CLR 10/08 A3000</raw_text><station_id>KAAA</station_id><observation_time>2026-04-16T04:00:00.000Z</observation_time><latitude>1.0</latitude><longitude>2.0</longitude><flight_category>VFR</flight_category></METAR>"#;
         let record_b = r#"<METAR><raw_text>METAR KBBB 160355Z 18005KT 10SM SCT020 BKN025 12/09 A3001</raw_text><station_id>KBBB</station_id><observation_time>2026-04-16T03:55:00.000Z</observation_time><latitude>3.0</latitude><longitude>4.0</longitude><flight_category>MVFR</flight_category></METAR>"#;
         let taf_a = r#"<TAF><raw_text>TAF KAAA 160400Z 1604/1704 P6SM SKC</raw_text><station_id>KAAA</station_id><issue_time>2026-04-16T04:00:00.000Z</issue_time><latitude>1.0</latitude><longitude>2.0</longitude></TAF>"#;
         let taf_b = r#"<TAF><raw_text>TAF KBBB 160355Z 1604/1704 P6SM BKN025</raw_text><station_id>KBBB</station_id><issue_time>2026-04-16T03:55:00.000Z</issue_time><latitude>3.0</latitude><longitude>4.0</longitude></TAF>"#;
-        let pirep_a = r#"<AircraftReport><observation_time>2026-04-16T04:00:00.000Z</observation_time><latitude>1.5</latitude><longitude>2.5</longitude><report_type>PIREP</report_type><raw_text>KAAA UA /OV KAAA/TM 0400/FL050/SK CLR</raw_text></AircraftReport>"#;
-        let pirep_b = r#"<AircraftReport><observation_time>2026-04-16T03:55:00.000Z</observation_time><latitude>3.5</latitude><longitude>4.5</longitude><report_type>AIREP</report_type><raw_text>ARP TEST 0355 F350</raw_text></AircraftReport>"#;
         fs::write(
             &first,
             format!(
@@ -2520,19 +2438,15 @@ mod tests {
             &taf_second,
             format!(r#"<?xml version="1.0"?><response><data>{taf_a}{taf_b}</data></response>"#),
         )?;
-        fs::write(
-            &pirep_first,
-            format!(r#"<?xml version="1.0"?><response><data>{pirep_b}{pirep_a}</data></response>"#),
-        )?;
-        fs::write(
-            &pirep_second,
-            format!(r#"<?xml version="1.0"?><response><data>{pirep_a}{pirep_b}</data></response>"#),
-        )?;
 
-        let first_fingerprint = metar_content_fingerprint(&first, &taf_first, &pirep_first)?;
-        let second_fingerprint = metar_content_fingerprint(&second, &taf_second, &pirep_second)?;
+        let first_fingerprint = metar_content_fingerprint(&first)?;
+        let second_fingerprint = metar_content_fingerprint(&second)?;
         assert_eq!(first_fingerprint, second_fingerprint);
         let version_label = first_fingerprint.chars().take(16).collect::<String>();
+        let first_taf_fingerprint = taf_content_fingerprint(&taf_first)?;
+        let second_taf_fingerprint = taf_content_fingerprint(&taf_second)?;
+        assert_eq!(first_taf_fingerprint, second_taf_fingerprint);
+        let taf_version_label = first_taf_fingerprint.chars().take(16).collect::<String>();
         let generated_at_utc = DateTime::parse_from_rfc3339("2026-04-16T04:00:00Z")
             .expect("valid fixture timestamp")
             .with_timezone(&Utc);
@@ -2541,18 +2455,26 @@ mod tests {
             .with_timezone(&Utc);
         let first_result = build_metar_dataset(&BuildMetarRequest {
             metar_xml_path: first,
-            taf_xml_path: taf_first,
-            pirep_xml_path: pirep_first,
             output_dir: temp.path().join("first-out"),
             version_label: version_label.clone(),
             generated_at_utc,
         })?;
         let second_result = build_metar_dataset(&BuildMetarRequest {
             metar_xml_path: second,
-            taf_xml_path: taf_second,
-            pirep_xml_path: pirep_second,
             output_dir: temp.path().join("second-out"),
             version_label,
+            generated_at_utc: later_generated_at_utc,
+        })?;
+        let first_taf_result = build_taf_dataset(&BuildTafRequest {
+            taf_xml_path: taf_first,
+            output_dir: temp.path().join("first-taf-out"),
+            version_label: taf_version_label.clone(),
+            generated_at_utc,
+        })?;
+        let second_taf_result = build_taf_dataset(&BuildTafRequest {
+            taf_xml_path: taf_second,
+            output_dir: temp.path().join("second-taf-out"),
+            version_label: taf_version_label,
             generated_at_utc: later_generated_at_utc,
         })?;
 
@@ -2617,70 +2539,62 @@ mod tests {
         );
         assert_eq!(
             manifest
-                .pointer("/files/tafs")
+                .pointer("/files/metars")
                 .and_then(|value| value.as_str()),
-            Some("tafs.json"),
+            Some("metars.json"),
         );
-        assert_eq!(
-            manifest
-                .pointer("/files/pireps")
-                .and_then(|value| value.as_str()),
-            Some("pireps.json"),
-        );
+        assert!(manifest.pointer("/files/tafs").is_none());
+        assert!(manifest.pointer("/files/pireps").is_none());
         assert!(manifest.get("map_view").is_none());
         assert!(manifest.pointer("/counts/tile_count").is_none());
         assert!(manifest
             .pointer("/counts/max_wx_records_per_tile")
             .is_none());
         assert!(manifest.pointer("/counts/important_metars").is_none());
-
         assert_eq!(
             manifest
-                .pointer("/counts/tafs")
-                .and_then(|value| value.as_u64()),
-            Some(2),
-        );
-        assert_eq!(
-            manifest
-                .pointer("/counts/pireps")
+                .pointer("/counts/metars")
                 .and_then(|value| value.as_u64()),
             Some(2),
         );
 
+        assert_eq!(
+            fs::read(&first_taf_result.structured_json_path)?,
+            fs::read(&second_taf_result.structured_json_path)?,
+        );
+        assert_eq!(
+            fs::read(&first_taf_result.zip_path)?,
+            fs::read(&second_taf_result.zip_path)?,
+        );
         let tafs: Value = serde_json::from_slice(&fs::read(
-            first_result.zip_path.parent().unwrap().join("tafs.json"),
+            first_taf_result
+                .zip_path
+                .parent()
+                .unwrap()
+                .join("tafs.json"),
         )?)?;
+        assert_eq!(
+            tafs.pointer("/taf_count").and_then(|value| value.as_u64()),
+            Some(2)
+        );
         assert_eq!(
             tafs.pointer("/tafs_by_station/KAAA/issued_at_utc")
                 .and_then(|value| value.as_str()),
             Some("2026-04-16T04:00:00.000Z"),
         );
-        let pireps: Value = serde_json::from_slice(&fs::read(
-            first_result.zip_path.parent().unwrap().join("pireps.json"),
-        )?)?;
+        let taf_manifest: Value =
+            serde_json::from_slice(&fs::read(&first_taf_result.manifest_path)?)?;
         assert_eq!(
-            pireps
-                .pointer("/pireps/0/report_type")
+            taf_manifest
+                .pointer("/files/tafs")
                 .and_then(|value| value.as_str()),
-            Some("AIREP"),
+            Some("tafs.json"),
         );
         assert_eq!(
-            pireps
-                .pointer("/pireps/0/symbol")
-                .and_then(|value| value.as_str()),
-            Some("generic"),
-        );
-        assert_eq!(
-            pireps
-                .pointer("/pireps/0/icing")
-                .and_then(|value| value.as_str()),
-            Some("none"),
-        );
-        assert_eq!(
-            pireps
-                .pointer("/pireps/0/turbulence")
-                .and_then(|value| value.as_str()),
-            Some("none"),
+            taf_manifest
+                .pointer("/counts/tafs")
+                .and_then(|value| value.as_u64()),
+            Some(2),
         );
 
         let zip_listing = Command::new("unzip")
@@ -2691,6 +2605,8 @@ mod tests {
         assert!(zip_listing.status.success());
         let zip_listing = String::from_utf8(zip_listing.stdout)?;
         assert!(zip_listing.lines().any(|line| line == "manifest.json"));
+        assert!(!zip_listing.lines().any(|line| line == "tafs.json"));
+        assert!(!zip_listing.lines().any(|line| line == "pireps.json"));
         assert!(!zip_listing
             .lines()
             .any(|line| line.starts_with("points/wx/")));

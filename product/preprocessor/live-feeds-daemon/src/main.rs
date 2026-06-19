@@ -25,7 +25,8 @@ use preprocessor_live_feeds::{
     },
     products::{
         LiveFeedFetchConfig, MetarLiveFeedBuilder, NexradSourceGridLiveFeedBuilder,
-        ObstaclesLiveFeedBuilder, TfrLiveFeedBuilder, WindsAloftLiveFeedBuilder,
+        ObstaclesLiveFeedBuilder, TafLiveFeedBuilder, TfrLiveFeedBuilder,
+        WindsAloftLiveFeedBuilder,
     },
     simulation::{
         fixture_loop_duration, next_fixture_loop_virtual_zero, timeline_from_live_feed_root,
@@ -875,6 +876,11 @@ fn production_tasks(fetch: LiveFeedFetchConfig) -> Vec<Box<dyn LiveFeedPollingTa
             "metars",
             fetch.clone(),
             MetarLiveFeedBuilder::new(fetch.clone()),
+        ),
+        production_task(
+            "tafs",
+            fetch.clone(),
+            TafLiveFeedBuilder::new(fetch.clone()),
         ),
         production_task(
             "nexrad",

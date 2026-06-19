@@ -14,6 +14,7 @@ pub struct CycleProductFreshnessPolicy {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct LiveFeedFreshnessPolicies {
     pub metars: AgeFreshnessPolicy,
+    pub tafs: AgeFreshnessPolicy,
     pub nexrad: AgeFreshnessPolicy,
     pub obstacles: AgeFreshnessPolicy,
     pub tfrs: AgeFreshnessPolicy,
@@ -49,6 +50,10 @@ pub const DATA_FRESHNESS_POLICIES: DataFreshnessPolicies = DataFreshnessPolicies
         metars: AgeFreshnessPolicy {
             info_after_ms: None,
             warning_after_ms: Some(30 * MINUTE_MS),
+        },
+        tafs: AgeFreshnessPolicy {
+            info_after_ms: None,
+            warning_after_ms: Some(8 * HOUR_MS),
         },
         nexrad: AgeFreshnessPolicy {
             info_after_ms: None,
@@ -143,6 +148,10 @@ mod tests {
         assert_eq!(
             DATA_FRESHNESS_POLICIES.live_feeds.metars.warning_after_ms,
             Some(30 * MINUTE_MS)
+        );
+        assert_eq!(
+            DATA_FRESHNESS_POLICIES.live_feeds.tafs.warning_after_ms,
+            Some(8 * HOUR_MS)
         );
         assert_eq!(
             DATA_FRESHNESS_POLICIES.live_feeds.nexrad.warning_after_ms,

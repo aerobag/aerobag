@@ -80,6 +80,10 @@ struct LiveFeedSseEvent {
     version_manifest_url: String,
     state_url: String,
     state_sha256: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    published_at_utc: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    collected_at_utc: Option<String>,
 }
 
 #[derive(Clone)]
@@ -1099,6 +1103,8 @@ fn write_sse_event(writer: &mut impl Write, event: &LiveFeedSseEvent) -> anyhow:
             "version_manifest_url": event.version_manifest_url,
             "state_url": event.state_url,
             "state_sha256": event.state_sha256,
+            "published_at_utc": event.published_at_utc,
+            "collected_at_utc": event.collected_at_utc,
         }))
         .context("failed to encode SSE payload")?
     )
@@ -1113,6 +1119,8 @@ fn live_feed_sse_event_from_invalidation(invalidation: LiveFeedInvalidation) -> 
         version_manifest_url: invalidation.version_manifest_url,
         state_url: invalidation.state_url,
         state_sha256: invalidation.state_sha256,
+        published_at_utc: invalidation.published_at_utc,
+        collected_at_utc: invalidation.collected_at_utc,
     }
 }
 
@@ -1193,6 +1201,14 @@ fn list_live_feed_event_frames(root: &Path) -> anyhow::Result<Vec<Vec<LiveFeedSs
                 version_manifest_url: version_manifest_url.to_string(),
                 state_url: state_url.to_string(),
                 state_sha256: state_sha256.to_string(),
+                published_at_utc: entry
+                    .get("published_at_utc")
+                    .and_then(serde_json::Value::as_str)
+                    .map(str::to_string),
+                collected_at_utc: entry
+                    .get("collected_at_utc")
+                    .and_then(serde_json::Value::as_str)
+                    .map(str::to_string),
             });
         }
     }
@@ -1599,6 +1615,8 @@ mod tests {
             version_manifest_url: "versions/metars/m1.json".to_string(),
             state_url: "states/metars/m1.json".to_string(),
             state_sha256: "a".repeat(64),
+            published_at_utc: None,
+            collected_at_utc: None,
         }];
         let mut bytes = Vec::new();
         write_sse_frame(&mut bytes, &frame)?;
@@ -1820,6 +1838,7 @@ mod tests {
             },
             state_sha256: None,
             state_payload_kind: None,
+            status_timestamps: Default::default(),
             delta_policy: DeltaPolicy::KeyedRecords {
                 records_key: "records".to_string(),
                 count_key: Some("record_count".to_string()),

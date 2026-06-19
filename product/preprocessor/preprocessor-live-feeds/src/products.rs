@@ -19,7 +19,7 @@ use crate::{
     build_metar_dataset, build_taf_dataset, build_tfr_dataset,
     engine::{
         read_json_value, sha256_hex, write_json_pretty_file, BuiltLiveFeedState, DeltaPolicy,
-        LiveFeedStatePayload, ProductBuilder, UpstreamEvent,
+        LiveFeedStatePayload, LiveFeedStatusTimestamps, ProductBuilder, UpstreamEvent,
     },
     metar_content_fingerprint, taf_content_fingerprint, BuildMetarRequest, BuildTafRequest,
     BuildTfrRequest,
@@ -81,10 +81,27 @@ pub fn json_live_feed_state(
         },
         state_sha256: None,
         state_payload_kind: None,
+        status_timestamps: Default::default(),
         delta_policy,
         precomputed_delta: None,
         changed_count_if_no_delta,
     }
+}
+
+fn with_collected_at(
+    mut state: BuiltLiveFeedState,
+    collected_at_utc: DateTime<Utc>,
+) -> BuiltLiveFeedState {
+    state.status_timestamps.collected_at_utc = Some(collected_at_utc);
+    state
+}
+
+fn with_status_timestamps(
+    mut state: BuiltLiveFeedState,
+    status_timestamps: LiveFeedStatusTimestamps,
+) -> BuiltLiveFeedState {
+    state.status_timestamps = status_timestamps;
+    state
 }
 
 pub fn directory_live_feed_state(
@@ -105,6 +122,7 @@ pub fn directory_live_feed_state(
         },
         state_sha256: None,
         state_payload_kind: None,
+        status_timestamps: Default::default(),
         delta_policy: DeltaPolicy::None,
         precomputed_delta: None,
         changed_count_if_no_delta,
@@ -131,6 +149,7 @@ pub fn nav_kv_live_feed_state(
         },
         state_sha256: Some(state_sha256),
         state_payload_kind: Some("nav_kv".to_string()),
+        status_timestamps: Default::default(),
         delta_policy: DeltaPolicy::NavKv { pairs },
         precomputed_delta: None,
         changed_count_if_no_delta,
@@ -310,16 +329,19 @@ impl ProductBuilder for MetarLiveFeedBuilder {
             generated_at_utc,
         })?;
         let state_value = read_json_value(&result.structured_json_path)?;
-        Ok(json_live_feed_state(
-            "metars",
-            version,
-            result.structured_json_path,
-            state_value,
-            DeltaPolicy::KeyedRecords {
-                records_key: "metars_by_station".to_string(),
-                count_key: Some("metar_count".to_string()),
-            },
-            result.metar_count,
+        Ok(with_collected_at(
+            json_live_feed_state(
+                "metars",
+                version,
+                result.structured_json_path,
+                state_value,
+                DeltaPolicy::KeyedRecords {
+                    records_key: "metars_by_station".to_string(),
+                    count_key: Some("metar_count".to_string()),
+                },
+                result.metar_count,
+            ),
+            generated_at_utc,
         ))
     }
 }
@@ -370,16 +392,19 @@ impl ProductBuilder for TafLiveFeedBuilder {
             generated_at_utc,
         })?;
         let state_value = read_json_value(&result.structured_json_path)?;
-        Ok(json_live_feed_state(
-            "tafs",
-            version,
-            result.structured_json_path,
-            state_value,
-            DeltaPolicy::KeyedRecords {
-                records_key: "tafs_by_station".to_string(),
-                count_key: Some("taf_count".to_string()),
-            },
-            result.taf_count,
+        Ok(with_collected_at(
+            json_live_feed_state(
+                "tafs",
+                version,
+                result.structured_json_path,
+                state_value,
+                DeltaPolicy::KeyedRecords {
+                    records_key: "tafs_by_station".to_string(),
+                    count_key: Some("taf_count".to_string()),
+                },
+                result.taf_count,
+            ),
+            generated_at_utc,
         ))
     }
 }
@@ -430,13 +455,16 @@ impl ProductBuilder for TfrLiveFeedBuilder {
             generated_at_utc,
         })?;
         let state_value = read_json_value(&result.structured_json_path)?;
-        Ok(json_live_feed_state(
-            "tfrs",
-            version,
-            result.structured_json_path,
-            state_value,
-            DeltaPolicy::None,
-            result.area_group_count,
+        Ok(with_collected_at(
+            json_live_feed_state(
+                "tfrs",
+                version,
+                result.structured_json_path,
+                state_value,
+                DeltaPolicy::None,
+                result.area_group_count,
+            ),
+            generated_at_utc,
         ))
     }
 }
@@ -559,15 +587,18 @@ impl ProductBuilder for ObstaclesLiveFeedBuilder {
             .parent()
             .context("obstacle HAD manifest has no parent")?
             .to_path_buf();
-        Ok(nav_kv_live_feed_state(
-            "obstacles",
-            version,
-            state_source_dir,
-            result.manifest_path,
-            state_value,
-            result.state_sha256,
-            result.had_pairs,
-            result.had_page_paths.len(),
+        Ok(with_collected_at(
+            nav_kv_live_feed_state(
+                "obstacles",
+                version,
+                state_source_dir,
+                result.manifest_path,
+                state_value,
+                result.state_sha256,
+                result.had_pairs,
+                result.had_page_paths.len(),
+            ),
+            normalized_event_time(event.observed_at_utc),
         ))
     }
 }
@@ -629,7 +660,13 @@ impl ProductBuilder for NexradSourceGridLiveFeedBuilder {
         )?;
         let manifest_path = output_dir.join("manifest.json");
         let manifest_value = read_json_value(&manifest_path)?;
-        nexrad_live_feed_state(version, output_dir, manifest_path, manifest_value)
+        Ok(with_status_timestamps(
+            nexrad_live_feed_state(version, output_dir, manifest_path, manifest_value)?,
+            LiveFeedStatusTimestamps {
+                published_at_utc: Some(observed_at),
+                collected_at_utc: Some(normalized_event_time(event.observed_at_utc)),
+            },
+        ))
     }
 }
 

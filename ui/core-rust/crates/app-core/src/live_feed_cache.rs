@@ -31,6 +31,10 @@ pub struct LiveFeedCacheCurrentEntry {
     pub version_manifest_url: String,
     pub state_url: String,
     pub state_sha256: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub published_at_utc: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub collected_at_utc: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -175,6 +179,10 @@ struct LiveFeedCurrentEvent {
     state_url: Option<String>,
     #[serde(default)]
     state_sha256: Option<String>,
+    #[serde(default)]
+    published_at_utc: Option<String>,
+    #[serde(default)]
+    collected_at_utc: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Deserialize)]
@@ -296,6 +304,8 @@ impl LiveFeedCache {
             version_manifest_url: payload.version_manifest_url,
             state_url,
             state_sha256,
+            published_at_utc: payload.published_at_utc,
+            collected_at_utc: payload.collected_at_utc,
         };
         let changed = self.current.get(&payload.product) != Some(&entry);
         self.current_loaded = true;

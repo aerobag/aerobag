@@ -201,9 +201,28 @@ pub struct BuiltLiveFeedState {
     pub payload: LiveFeedStatePayload,
     pub state_sha256: Option<String>,
     pub state_payload_kind: Option<String>,
+    pub status_timestamps: LiveFeedStatusTimestamps,
     pub delta_policy: DeltaPolicy,
     pub precomputed_delta: Option<LiveFeedRecordDelta>,
     pub changed_count_if_no_delta: usize,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct LiveFeedStatusTimestamps {
+    pub published_at_utc: Option<DateTime<Utc>>,
+    pub collected_at_utc: Option<DateTime<Utc>>,
+}
+
+impl LiveFeedStatusTimestamps {
+    fn published_at_text(&self) -> Option<String> {
+        self.published_at_utc
+            .map(|value| value.to_rfc3339_opts(SecondsFormat::Secs, true))
+    }
+
+    fn collected_at_text(&self) -> Option<String> {
+        self.collected_at_utc
+            .map(|value| value.to_rfc3339_opts(SecondsFormat::Secs, true))
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -231,6 +250,10 @@ pub struct LiveFeedCurrentEntry {
     pub version_manifest_url: String,
     pub state_url: String,
     pub state_sha256: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub published_at_utc: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub collected_at_utc: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -307,6 +330,8 @@ pub struct PublishedLiveFeedUpdate {
     pub version_manifest_url: String,
     pub state_url: String,
     pub state_sha256: String,
+    pub published_at_utc: Option<String>,
+    pub collected_at_utc: Option<String>,
     pub delta_path: Option<PathBuf>,
     pub changed_count: usize,
     pub removed_count: usize,
@@ -320,6 +345,10 @@ pub struct LiveFeedInvalidation {
     pub version_manifest_url: String,
     pub state_url: String,
     pub state_sha256: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub published_at_utc: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub collected_at_utc: Option<String>,
 }
 
 pub trait LiveFeedPublisher {
@@ -592,6 +621,8 @@ pub fn live_feed_invalidation_from_update(
         version_manifest_url: update.version_manifest_url.clone(),
         state_url: update.state_url.clone(),
         state_sha256: update.state_sha256.clone(),
+        published_at_utc: update.published_at_utc.clone(),
+        collected_at_utc: update.collected_at_utc.clone(),
     }
 }
 
@@ -629,6 +660,7 @@ impl<C: Clock> LiveFeedPublisher for FileLiveFeedPublisher<C> {
             payload,
             state_sha256,
             state_payload_kind,
+            status_timestamps,
             delta_policy,
             precomputed_delta,
             changed_count_if_no_delta,
@@ -641,6 +673,7 @@ impl<C: Clock> LiveFeedPublisher for FileLiveFeedPublisher<C> {
                 value,
                 state_sha256,
                 state_payload_kind,
+                status_timestamps,
                 delta_policy,
                 precomputed_delta,
                 changed_count_if_no_delta,
@@ -657,6 +690,7 @@ impl<C: Clock> LiveFeedPublisher for FileLiveFeedPublisher<C> {
                 manifest_value,
                 state_sha256,
                 state_payload_kind,
+                status_timestamps,
                 delta_policy,
                 precomputed_delta,
                 changed_count_if_no_delta,
@@ -674,6 +708,7 @@ impl<C: Clock> FileLiveFeedPublisher<C> {
         state_value: Value,
         state_sha256: Option<String>,
         state_payload_kind: Option<String>,
+        status_timestamps: LiveFeedStatusTimestamps,
         delta_policy: DeltaPolicy,
         precomputed_delta: Option<LiveFeedRecordDelta>,
         changed_count_if_no_delta: usize,
@@ -690,6 +725,7 @@ impl<C: Clock> FileLiveFeedPublisher<C> {
             state_value,
             state_sha256,
             state_payload_kind,
+            status_timestamps,
             delta_policy,
             precomputed_delta,
             changed_count_if_no_delta,
@@ -706,6 +742,7 @@ impl<C: Clock> FileLiveFeedPublisher<C> {
         manifest_value: Value,
         state_sha256: Option<String>,
         state_payload_kind: Option<String>,
+        status_timestamps: LiveFeedStatusTimestamps,
         delta_policy: DeltaPolicy,
         precomputed_delta: Option<LiveFeedRecordDelta>,
         changed_count_if_no_delta: usize,
@@ -729,6 +766,7 @@ impl<C: Clock> FileLiveFeedPublisher<C> {
             manifest_value,
             state_sha256,
             state_payload_kind,
+            status_timestamps,
             delta_policy,
             precomputed_delta,
             changed_count_if_no_delta,
@@ -744,6 +782,7 @@ impl<C: Clock> FileLiveFeedPublisher<C> {
         state_value: Value,
         state_sha256: Option<String>,
         state_payload_kind: Option<String>,
+        status_timestamps: LiveFeedStatusTimestamps,
         delta_policy: DeltaPolicy,
         precomputed_delta: Option<LiveFeedRecordDelta>,
         changed_count_if_no_delta: usize,
@@ -755,8 +794,18 @@ impl<C: Clock> FileLiveFeedPublisher<C> {
         let state_sha256 = state_sha256
             .map(Ok)
             .unwrap_or_else(|| canonical_json_sha256(&state_value))?;
-        let previous_entry = read_live_feeds_current(&self.root)?
-            .and_then(|current| current.products.get(&product).cloned());
+        let published_at_utc = status_timestamps.published_at_text();
+        let collected_at_utc = status_timestamps.collected_at_text();
+        let mut current =
+            read_live_feeds_current(&self.root)?.unwrap_or(LiveFeedsCurrentManifest {
+                schema_version: 1,
+                generated_at_utc: self
+                    .clock
+                    .now_utc()
+                    .to_rfc3339_opts(SecondsFormat::Secs, true),
+                products: BTreeMap::new(),
+            });
+        let previous_entry = current.products.get(&product).cloned();
 
         if let Some(previous) = previous_entry.as_ref() {
             if previous.current == version {
@@ -768,15 +817,34 @@ impl<C: Clock> FileLiveFeedPublisher<C> {
                         state_sha256
                     );
                 }
+                let next_entry = LiveFeedCurrentEntry {
+                    current: version.clone(),
+                    version_manifest_url: previous.version_manifest_url.clone(),
+                    state_url: previous.state_url.clone(),
+                    state_sha256: previous.state_sha256.clone(),
+                    published_at_utc: published_at_utc.clone(),
+                    collected_at_utc: collected_at_utc.clone(),
+                };
+                let metadata_changed = previous != &next_entry;
+                if metadata_changed {
+                    current.generated_at_utc = self
+                        .clock
+                        .now_utc()
+                        .to_rfc3339_opts(SecondsFormat::Secs, true);
+                    current.products.insert(product.clone(), next_entry);
+                    write_live_feeds_current_manifest(&self.root, &current)?;
+                }
                 return Ok(PublishedLiveFeedUpdate {
                     product,
                     version,
-                    unchanged: true,
+                    unchanged: !metadata_changed,
                     state_path,
                     version_manifest_path: self.root.join(&previous.version_manifest_url),
                     version_manifest_url: previous.version_manifest_url.clone(),
                     state_url: previous.state_url.clone(),
                     state_sha256: previous.state_sha256.clone(),
+                    published_at_utc,
+                    collected_at_utc,
                     delta_path: None,
                     changed_count: 0,
                     removed_count: 0,
@@ -960,15 +1028,6 @@ impl<C: Clock> FileLiveFeedPublisher<C> {
                 delta_from_previous: delta_ref,
             },
         )?;
-        let mut current =
-            read_live_feeds_current(&self.root)?.unwrap_or(LiveFeedsCurrentManifest {
-                schema_version: 1,
-                generated_at_utc: self
-                    .clock
-                    .now_utc()
-                    .to_rfc3339_opts(SecondsFormat::Secs, true),
-                products: BTreeMap::new(),
-            });
         current.generated_at_utc = self
             .clock
             .now_utc()
@@ -980,6 +1039,8 @@ impl<C: Clock> FileLiveFeedPublisher<C> {
                 version_manifest_url: version_manifest_url.clone(),
                 state_url: state_url.clone(),
                 state_sha256: state_sha256.clone(),
+                published_at_utc: published_at_utc.clone(),
+                collected_at_utc: collected_at_utc.clone(),
             },
         );
         write_live_feeds_current_manifest(&self.root, &current)?;
@@ -993,6 +1054,8 @@ impl<C: Clock> FileLiveFeedPublisher<C> {
             version_manifest_url,
             state_url,
             state_sha256,
+            published_at_utc,
+            collected_at_utc,
             delta_path,
             changed_count,
             removed_count,
@@ -1668,6 +1731,7 @@ mod tests {
             },
             state_sha256: None,
             state_payload_kind: None,
+            status_timestamps: Default::default(),
             delta_policy: DeltaPolicy::None,
             precomputed_delta: None,
             changed_count_if_no_delta: 1,
@@ -1754,6 +1818,7 @@ mod tests {
             },
             state_sha256: Some(first.state_sha256),
             state_payload_kind: Some("nav_kv".to_string()),
+            status_timestamps: Default::default(),
             delta_policy: DeltaPolicy::NavKv {
                 pairs: first_pairs.clone(),
             },
@@ -1770,6 +1835,7 @@ mod tests {
             },
             state_sha256: Some(second.state_sha256.clone()),
             state_payload_kind: Some("nav_kv".to_string()),
+            status_timestamps: Default::default(),
             delta_policy: DeltaPolicy::NavKv {
                 pairs: second_pairs.clone(),
             },
@@ -1838,6 +1904,7 @@ mod tests {
             },
             state_sha256: None,
             state_payload_kind: None,
+            status_timestamps: Default::default(),
             delta_policy: DeltaPolicy::KeyedRecords {
                 records_key: "records".to_string(),
                 count_key: Some("record_count".to_string()),
@@ -1872,6 +1939,7 @@ mod tests {
             },
             state_sha256: None,
             state_payload_kind: None,
+            status_timestamps: Default::default(),
             delta_policy: DeltaPolicy::KeyedRecords {
                 records_key: "records".to_string(),
                 count_key: Some("record_count".to_string()),
@@ -1911,6 +1979,7 @@ mod tests {
                 },
                 state_sha256: None,
                 state_payload_kind: None,
+                status_timestamps: Default::default(),
                 delta_policy: DeltaPolicy::KeyedRecords {
                     records_key: "records".to_string(),
                     count_key: Some("record_count".to_string()),
@@ -1939,6 +2008,7 @@ mod tests {
                 },
                 state_sha256: None,
                 state_payload_kind: None,
+                status_timestamps: Default::default(),
                 delta_policy: DeltaPolicy::KeyedRecords {
                     records_key: "records".to_string(),
                     count_key: Some("record_count".to_string()),
@@ -2120,6 +2190,62 @@ mod tests {
                 .products["metars"]
                 .current,
             "v1"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn repeated_version_with_new_collection_time_updates_current_metadata() -> anyhow::Result<()> {
+        let temp = tempdir()?;
+        let live_root = temp.path().join("live-feeds");
+        let publisher = FileLiveFeedPublisher::new(
+            live_root.clone(),
+            FixedClock::new(Utc.with_ymd_and_hms(2026, 5, 18, 4, 5, 6).unwrap()),
+        );
+        let broker = RecordingBroker::default();
+        let first_collected = Utc.with_ymd_and_hms(2026, 5, 18, 4, 0, 0).unwrap();
+        let second_collected = Utc.with_ymd_and_hms(2026, 5, 18, 4, 5, 0).unwrap();
+        let mut first_state = json_state(
+            temp.path(),
+            "metars",
+            "metars-v1",
+            "v1",
+            "records",
+            &[("A", 1)],
+        )?;
+        first_state.status_timestamps.collected_at_utc = Some(first_collected);
+        let mut products = vec![StaticProductTask::state("metars", first_state)];
+
+        let first = run_live_feed_publish_tick(&mut products, &publisher, &broker);
+        assert!(first.failures.is_empty());
+        assert_eq!(first.published.len(), 1);
+        assert!(!first.published[0].unchanged);
+        assert_eq!(broker.events().len(), 1);
+
+        let mut second_state = json_state(
+            temp.path(),
+            "metars",
+            "metars-v1-again",
+            "v1",
+            "records",
+            &[("A", 1)],
+        )?;
+        second_state.status_timestamps.collected_at_utc = Some(second_collected);
+        let mut products = vec![StaticProductTask::state("metars", second_state)];
+        let second = run_live_feed_publish_tick(&mut products, &publisher, &broker);
+
+        assert!(second.failures.is_empty());
+        assert_eq!(second.published.len(), 1);
+        assert!(!second.published[0].unchanged);
+        assert_eq!(
+            broker.events().len(),
+            2,
+            "metadata-only current changes should still reach clients"
+        );
+        let current = read_live_feeds_current(&live_root)?.expect("current");
+        assert_eq!(
+            current.products["metars"].collected_at_utc.as_deref(),
+            Some("2026-05-18T04:05:00Z")
         );
         Ok(())
     }
@@ -2334,6 +2460,7 @@ mod tests {
             payload: LiveFeedStatePayload::JsonFile { path, value },
             state_sha256: None,
             state_payload_kind: None,
+            status_timestamps: Default::default(),
             delta_policy: DeltaPolicy::KeyedRecords {
                 records_key: records_key.to_string(),
                 count_key: Some("record_count".to_string()),

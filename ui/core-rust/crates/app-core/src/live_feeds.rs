@@ -28,6 +28,8 @@ struct LiveFeedProductState {
     version_manifest_url: Option<String>,
     state_url: Option<String>,
     expected_state_sha256: Option<String>,
+    published_at_utc: Option<String>,
+    collected_at_utc: Option<String>,
     state_kind: Option<String>,
     delta_from_previous: Option<LiveFeedDeltaRef>,
     version_manifest: Option<Value>,
@@ -69,6 +71,10 @@ struct CurrentProduct {
     state_url: Option<String>,
     #[serde(default)]
     state_sha256: Option<String>,
+    #[serde(default)]
+    published_at_utc: Option<String>,
+    #[serde(default)]
+    collected_at_utc: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -154,6 +160,10 @@ struct LiveFeedCurrentEvent {
     state_url: Option<String>,
     #[serde(default)]
     state_sha256: Option<String>,
+    #[serde(default)]
+    published_at_utc: Option<String>,
+    #[serde(default)]
+    collected_at_utc: Option<String>,
 }
 
 impl LiveFeedsState {
@@ -281,6 +291,8 @@ impl LiveFeedsState {
                 payload.version_manifest_url,
                 payload.state_url,
                 payload.state_sha256,
+                payload.published_at_utc,
+                payload.collected_at_utc,
             )?;
         }
         Ok(affected)
@@ -303,6 +315,8 @@ impl LiveFeedsState {
                     entry.version_manifest_url,
                     entry.state_url,
                     entry.state_sha256,
+                    entry.published_at_utc,
+                    entry.collected_at_utc,
                 )?;
             }
             return Ok(());
@@ -589,6 +603,30 @@ impl LiveFeedsState {
         entry.loaded_version.as_deref()
     }
 
+    pub fn product_published_at_utc(&self, product: &str) -> Option<&str> {
+        let entry = self.products.get(product)?;
+        if !entry
+            .current_version
+            .as_deref()
+            .is_some_and(|version| entry.loaded_version.as_deref() == Some(version))
+        {
+            return None;
+        }
+        entry.published_at_utc.as_deref()
+    }
+
+    pub fn product_collected_at_utc(&self, product: &str) -> Option<&str> {
+        let entry = self.products.get(product)?;
+        if !entry
+            .current_version
+            .as_deref()
+            .is_some_and(|version| entry.loaded_version.as_deref() == Some(version))
+        {
+            return None;
+        }
+        entry.collected_at_utc.as_deref()
+    }
+
     pub fn product_state_url(&self, product: &str) -> Option<&str> {
         let entry = self.products.get(product)?;
         if !entry
@@ -623,6 +661,8 @@ impl LiveFeedsState {
         version_manifest_url: String,
         state_url: Option<String>,
         state_sha256: Option<String>,
+        published_at_utc: Option<String>,
+        collected_at_utc: Option<String>,
     ) -> AppResult<()> {
         validate_relative_url(&version_manifest_url)?;
         if let Some(url) = &state_url {
@@ -637,12 +677,16 @@ impl LiveFeedsState {
             if state_sha256.is_some() {
                 entry.expected_state_sha256 = state_sha256;
             }
+            entry.published_at_utc = published_at_utc;
+            entry.collected_at_utc = collected_at_utc;
             return Ok(());
         }
         entry.current_version = Some(version);
         entry.version_manifest_url = Some(version_manifest_url);
         entry.state_url = state_url;
         entry.expected_state_sha256 = state_sha256;
+        entry.published_at_utc = published_at_utc;
+        entry.collected_at_utc = collected_at_utc;
         entry.state_kind = None;
         entry.delta_from_previous = None;
         entry.version_manifest = None;

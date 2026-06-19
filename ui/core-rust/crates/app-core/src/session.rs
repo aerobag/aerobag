@@ -581,6 +581,7 @@ fn lock_sessions() -> MutexGuard<'static, HashMap<u32, UiSession>> {
 
 const PROCEDURE_GEOMETRY_STATUS_PREFIX: &str = "procedure_geometry:";
 const LIVE_FEED_METARS_STATUS_ID: &str = "live_feed:metars_unavailable";
+const LIVE_FEED_TAFS_STATUS_ID: &str = "live_feed:tafs_unavailable";
 const LIVE_FEED_NEXRAD_STATUS_ID: &str = "live_feed:nexrad_unavailable";
 const LIVE_FEED_TFRS_STATUS_ID: &str = "live_feed:tfrs_unavailable";
 const LIVE_FEED_OBSTACLES_STATUS_ID: &str = "live_feed:obstacles_unavailable";
@@ -733,7 +734,7 @@ fn sync_live_feed_product_status_record(
     payload_loaded: bool,
     product: &str,
     generic_detail: &str,
-    observed_utc: Option<DateTime<Utc>>,
+    collected_utc: Option<DateTime<Utc>>,
     freshness_policy: crate::freshness::AgeFreshnessPolicy,
 ) -> Vec<UiInvalidation> {
     let status_id = live_feed_unavailable_status_record(product, String::new()).id;
@@ -753,7 +754,7 @@ fn sync_live_feed_product_status_record(
             &status_id,
             &label,
             &label,
-            observed_utc,
+            collected_utc,
             freshness_policy,
         );
         return if changed {
@@ -783,15 +784,17 @@ fn sync_live_feed_overlay_status_records(session: &mut UiSession) -> Vec<UiInval
         metars_status.loaded,
         "metars",
         "METAR live feed unavailable: no current METAR product is loaded",
-        metars_status.observed_utc,
+        metars_status.collected_utc,
         DATA_FRESHNESS_POLICIES.live_feeds.metars,
     ));
 
     let tfrs_visible = session.map_layer_state.vectors.visible;
-    let tfrs_observed_utc = session
-        .tfr_payload
-        .as_ref()
-        .and_then(|payload| payload.generated_at_utc);
+    let tfrs_collected_utc = live_feed_status_timestamp(session, "tfrs").or_else(|| {
+        session
+            .tfr_payload
+            .as_ref()
+            .and_then(|payload| payload.generated_at_utc)
+    });
     let tfrs_loaded = session.tfr_payload.is_some();
     invalidations.extend(sync_live_feed_product_status_record(
         session,
@@ -799,15 +802,17 @@ fn sync_live_feed_overlay_status_records(session: &mut UiSession) -> Vec<UiInval
         tfrs_loaded,
         "tfrs",
         "TFR live feed unavailable: no current TFR product is loaded",
-        tfrs_observed_utc,
+        tfrs_collected_utc,
         DATA_FRESHNESS_POLICIES.live_feeds.tfrs,
     ));
 
     let obstacles_visible = session.map_layer_state.vectors.visible;
-    let obstacles_observed_utc = session
-        .live_feeds
-        .product_state_manifest("obstacles")
-        .and_then(json_generated_at_utc);
+    let obstacles_collected_utc = live_feed_status_timestamp(session, "obstacles").or_else(|| {
+        session
+            .live_feeds
+            .product_state_manifest("obstacles")
+            .and_then(json_generated_at_utc)
+    });
     let obstacles_loaded = session.obstacle_had.is_some();
     invalidations.extend(sync_live_feed_product_status_record(
         session,
@@ -815,7 +820,7 @@ fn sync_live_feed_overlay_status_records(session: &mut UiSession) -> Vec<UiInval
         obstacles_loaded,
         "obstacles",
         "Obstacle live feed unavailable: no current obstacle product is loaded",
-        obstacles_observed_utc,
+        obstacles_collected_utc,
         DATA_FRESHNESS_POLICIES.live_feeds.obstacles,
     ));
 
@@ -833,7 +838,7 @@ fn json_generated_at_utc(value: &serde_json::Value) -> Option<DateTime<Utc>> {
 #[derive(Debug, Clone)]
 struct LiveFeedProductStatusSource {
     loaded: bool,
-    observed_utc: Option<DateTime<Utc>>,
+    collected_utc: Option<DateTime<Utc>>,
     loaded_version: Option<String>,
 }
 
@@ -841,18 +846,45 @@ fn metar_live_feed_status_source(session: &UiSession) -> LiveFeedProductStatusSo
     if let Some(payload) = session.metar_payload.as_ref() {
         return LiveFeedProductStatusSource {
             loaded: true,
-            observed_utc: payload.observed_at_utc.or(payload.generated_at_utc),
+            collected_utc: live_feed_status_timestamp(session, "metars")
+                .or(payload.generated_at_utc),
             loaded_version: Some(payload.version_label.clone()),
         };
     }
     LiveFeedProductStatusSource {
         loaded: false,
-        observed_utc: None,
+        collected_utc: None,
         loaded_version: session
             .live_feeds
             .product_loaded_version("metars")
             .map(str::to_string),
     }
+}
+
+fn taf_live_feed_status_source(session: &UiSession) -> LiveFeedProductStatusSource {
+    if let Some(payload) = session.taf_payload.as_ref() {
+        return LiveFeedProductStatusSource {
+            loaded: true,
+            collected_utc: live_feed_status_timestamp(session, "tafs").or(payload.generated_at_utc),
+            loaded_version: Some(payload.version_label.clone()),
+        };
+    }
+    LiveFeedProductStatusSource {
+        loaded: false,
+        collected_utc: None,
+        loaded_version: session
+            .live_feeds
+            .product_loaded_version("tafs")
+            .map(str::to_string),
+    }
+}
+
+fn live_feed_status_timestamp(session: &UiSession, product: &str) -> Option<DateTime<Utc>> {
+    session
+        .live_feeds
+        .product_published_at_utc(product)
+        .or_else(|| session.live_feeds.product_collected_at_utc(product))
+        .and_then(parse_utc_instant)
 }
 
 fn terrain_status_record(detail: String) -> DataStatusRecord {
@@ -1046,6 +1078,14 @@ fn live_feed_unavailable_status_record(product: &str, detail: String) -> DataSta
             true,
             detail,
         ),
+        "tafs" => DataStatusRecord::new(
+            LIVE_FEED_TAFS_STATUS_ID,
+            "TAFS",
+            Some("UNAVAIL".to_string()),
+            UiStatusSeverity::Unavailable,
+            true,
+            detail,
+        ),
         "nexrad" => DataStatusRecord::new(
             LIVE_FEED_NEXRAD_STATUS_ID,
             "NEXRAD",
@@ -1214,7 +1254,7 @@ fn live_feed_stale_status_record(
     status_id: &str,
     label: &str,
     product_name: &str,
-    observed_utc: DateTime<Utc>,
+    _collected_utc: DateTime<Utc>,
     violation: FreshnessViolation,
 ) -> DataStatusRecord {
     DataStatusRecord::new(
@@ -1224,7 +1264,7 @@ fn live_feed_stale_status_record(
         freshness_status_severity(violation),
         true,
         format!(
-            "{product_name} data is {} old; source timestamp {observed_utc}.",
+            "{product_name} data is {} old.",
             format_age(violation.age_ms)
         ),
     )
@@ -1236,20 +1276,20 @@ fn sync_live_feed_age_status_record(
     status_id: &str,
     label: &str,
     product_name: &str,
-    observed_utc: Option<DateTime<Utc>>,
+    collected_utc: Option<DateTime<Utc>>,
     policy: crate::freshness::AgeFreshnessPolicy,
 ) -> bool {
     if !visible {
         return clear_data_status_record(session, status_id);
     }
-    let Some(observed_utc) = observed_utc else {
+    let Some(collected_utc) = collected_utc else {
         return clear_data_status_record(session, status_id);
     };
     let now_utc = session_wall_clock_utc(session);
-    if let Some(violation) = evaluate_age(policy, observed_utc, now_utc) {
+    if let Some(violation) = evaluate_age(policy, collected_utc, now_utc) {
         upsert_data_status_record(
             session,
-            live_feed_stale_status_record(status_id, label, product_name, observed_utc, violation),
+            live_feed_stale_status_record(status_id, label, product_name, collected_utc, violation),
         )
     } else {
         clear_data_status_record(session, status_id)
@@ -1717,6 +1757,7 @@ fn sync_package_ui_warning_status_records(session: &mut UiSession) -> bool {
 
 fn project_data_status_page_state(session: &UiSession) -> UiDataStatusPageState {
     let metars_status = metar_live_feed_status_source(session);
+    let tafs_status = taf_live_feed_status_source(session);
     let mut rows = vec![
         publication_status_page_row(session),
         expected_contract_versions_status_page_row(),
@@ -1757,10 +1798,12 @@ fn project_data_status_page_state(session: &UiSession) -> UiDataStatusPageState 
             "tfrs",
             "TFRs",
             session.tfr_payload.is_some(),
-            session
-                .tfr_payload
-                .as_ref()
-                .and_then(|payload| payload.generated_at_utc),
+            live_feed_status_timestamp(session, "tfrs").or_else(|| {
+                session
+                    .tfr_payload
+                    .as_ref()
+                    .and_then(|payload| payload.generated_at_utc)
+            }),
             DATA_FRESHNESS_POLICIES.live_feeds.tfrs,
             session
                 .live_feeds
@@ -1772,16 +1815,26 @@ fn project_data_status_page_state(session: &UiSession) -> UiDataStatusPageState 
             "metars",
             "METARs",
             metars_status.loaded,
-            metars_status.observed_utc,
+            metars_status.collected_utc,
             DATA_FRESHNESS_POLICIES.live_feeds.metars,
             metars_status.loaded_version,
+        ),
+        live_feed_product_status_page_row(
+            session,
+            "tafs",
+            "TAFs",
+            tafs_status.loaded,
+            tafs_status.collected_utc,
+            DATA_FRESHNESS_POLICIES.live_feeds.tafs,
+            tafs_status.loaded_version,
         ),
         live_feed_product_status_page_row(
             session,
             "nexrad",
             "NEXRAD",
             nexrad_status_manifest(session).is_some(),
-            nexrad_status_manifest(session).and_then(json_observed_at_utc),
+            live_feed_status_timestamp(session, "nexrad")
+                .or_else(|| nexrad_status_manifest(session).and_then(json_observed_at_utc)),
             DATA_FRESHNESS_POLICIES.live_feeds.nexrad,
             session
                 .nexrad_installed
@@ -1803,10 +1856,12 @@ fn project_data_status_page_state(session: &UiSession) -> UiDataStatusPageState 
                     .live_feeds
                     .product_state_manifest("obstacles")
                     .is_some(),
-            session
-                .live_feeds
-                .product_state_manifest("obstacles")
-                .and_then(json_generated_at_utc),
+            live_feed_status_timestamp(session, "obstacles").or_else(|| {
+                session
+                    .live_feeds
+                    .product_state_manifest("obstacles")
+                    .and_then(json_generated_at_utc)
+            }),
             DATA_FRESHNESS_POLICIES.live_feeds.obstacles,
             session
                 .obstacle_had
@@ -2402,7 +2457,7 @@ fn live_feed_product_status_page_row(
     product: &str,
     label: &str,
     loaded: bool,
-    observed_utc: Option<DateTime<Utc>>,
+    collected_utc: Option<DateTime<Utc>>,
     policy: crate::freshness::AgeFreshnessPolicy,
     loaded_version: Option<String>,
 ) -> UiDataStatusPageRow {
@@ -2411,10 +2466,10 @@ fn live_feed_product_status_page_row(
     if let Some(version) = loaded_version {
         facts.push(status_fact("Version", version));
     }
-    if let Some(observed) = observed_utc {
+    if let Some(collected) = collected_utc {
         facts.push(status_time_fact(
-            "Observed",
-            observed,
+            "Collected At",
+            collected,
             UiDataStatusPageTimeDisplay::Old,
         ));
     }
@@ -2437,26 +2492,23 @@ fn live_feed_product_status_page_row(
             facts,
         );
     }
-    let Some(observed_utc) = observed_utc else {
+    let Some(collected_utc) = collected_utc else {
         return status_page_row(
             format!("live_feed:{product}"),
             label,
             "LOADED",
             UiStatusSeverity::Info,
-            format!("{label} is loaded, but no source timestamp is available."),
+            format!("{label} is loaded."),
             facts,
         );
     };
-    if let Some(violation) = evaluate_age(policy, observed_utc, now_utc) {
+    if let Some(violation) = evaluate_age(policy, collected_utc, now_utc) {
         return status_page_row(
             format!("live_feed:{product}"),
             label,
             "OLD",
             freshness_status_severity(violation),
-            format!(
-                "{label} data timestamp is {}.",
-                format_status_utc(observed_utc)
-            ),
+            format!("{label} data is {} old.", format_age(violation.age_ms)),
             facts,
         );
     }
@@ -2465,10 +2517,7 @@ fn live_feed_product_status_page_row(
         label,
         "OK",
         UiStatusSeverity::Ok,
-        format!(
-            "{label} data timestamp is {}.",
-            format_status_utc(observed_utc)
-        ),
+        format!("{label} is loaded."),
         facts,
     )
 }
@@ -11254,7 +11303,8 @@ mod tests {
                             "current": "v1",
                             "version_manifest_url": "versions/tafs/v1.json",
                             "state_url": "states/tafs/v1.json",
-                            "state_sha256": "{state_sha256}"
+                            "state_sha256": "{state_sha256}",
+                            "collected_at_utc": "2026-05-03T00:05:00Z"
                         }}
                     }}
                 }}"#
@@ -11292,6 +11342,39 @@ mod tests {
         assert_eq!(
             taf_payload.tafs_by_station["KAAA"].raw_text,
             "TAF KAAA 010000Z 0100/0124 00000KT P6SM SCT020"
+        );
+        drop(sessions);
+
+        let snapshot = get_session_snapshot_at_epoch_ms(
+            init.handle,
+            utc("2026-05-03T00:10:00Z").timestamp_millis(),
+        )
+        .expect("snapshot");
+        let data_status = snapshot
+            .data_status_page_state
+            .rows
+            .iter()
+            .find(|row| row.id == "live_feed:tafs")
+            .expect("TAF data-status row");
+        assert_eq!(data_status.label, "TAFs");
+        assert_eq!(data_status.value, "OK");
+        assert_eq!(data_status.severity, UiStatusSeverity::Ok);
+        assert_eq!(data_status.detail, "TAFs is loaded.");
+        assert_eq!(
+            data_status
+                .facts
+                .iter()
+                .find(|fact| fact.label == "Version")
+                .map(|fact| fact.value.as_str()),
+            Some("v1")
+        );
+        assert_eq!(
+            data_status
+                .facts
+                .iter()
+                .find(|fact| fact.label == "Collected At")
+                .map(|fact| fact.value.as_str()),
+            Some("2026-05-03 00:05 UTC")
         );
     }
 
@@ -12877,7 +12960,7 @@ mod tests {
     }
 
     #[test]
-    fn loaded_metar_feed_uses_observed_at_for_freshness_status() {
+    fn loaded_metar_feed_uses_top_level_timestamp_for_freshness_status() {
         let init = create_ui_session_at_epoch_ms(
             FlightPlan::default(),
             &[],
@@ -12892,9 +12975,9 @@ mod tests {
             let session = session_mut(&mut sessions, init.handle).expect("session");
             session.metar_payload = Some(MetarProductPayload {
                 schema_version: 3,
-                version_label: "observed-metars".to_string(),
-                generated_at_utc: None,
-                observed_at_utc: Some(utc("2026-05-20T11:55:00Z")),
+                version_label: "fresh-metars".to_string(),
+                generated_at_utc: Some(utc("2026-05-20T11:55:00Z")),
+                observed_at_utc: None,
                 metar_count: Some(0),
                 metars_by_station: HashMap::new(),
                 pireps: Vec::new(),
@@ -12905,7 +12988,7 @@ mod tests {
 
         assert!(
             !has_data_status_box(&snapshot, LIVE_FEED_METARS_STATUS_ID),
-            "fresh METAR data with observed_at_utc should not raise a chart warning"
+            "fresh METAR data with a top-level timestamp should not raise a chart warning"
         );
         let data_status = snapshot
             .data_status_page_state
@@ -13478,7 +13561,7 @@ mod tests {
             .data_status_page_state
             .rows
             .iter()
-            .take(11)
+            .take(12)
             .map(|row| row.id.as_str())
             .collect::<Vec<_>>();
 
@@ -13494,6 +13577,7 @@ mod tests {
                 "live_feed:connection",
                 "live_feed:tfrs",
                 "live_feed:metars",
+                "live_feed:tafs",
                 "live_feed:nexrad",
                 "live_feed:obstacles",
             ]

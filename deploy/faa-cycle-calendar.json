@@ -1,0 +1,61 @@
+{
+  "schema_version": 1,
+  "cycles": [
+    {
+      "cycle": "2601",
+      "effective_date": "2026-01-22"
+    },
+    {
+      "cycle": "2602",
+      "effective_date": "2026-02-19"
+    },
+    {
+      "cycle": "2603",
+      "effective_date": "2026-03-19"
+    },
+    {
+      "cycle": "2604",
+      "effective_date": "2026-04-16"
+    },
+    {
+      "cycle": "2605",
+      "effective_date": "2026-05-14"
+    },
+    {
+      "cycle": "2606",
+      "effective_date": "2026-06-11"
+    },
+    {
+      "cycle": "2607",
+      "effective_date": "2026-07-09"
+    },
+    {
+      "cycle": "2608",
+      "effective_date": "2026-08-06"
+    },
+    {
+      "cycle": "2609",
+      "effective_date": "2026-09-03"
+    },
+    {
+      "cycle": "2610",
+      "effective_date": "2026-10-01"
+    },
+    {
+      "cycle": "2611",
+      "effective_date": "2026-10-29"
+    },
+    {
+      "cycle": "2612",
+      "effective_date": "2026-11-26"
+    },
+    {
+      "cycle": "2613",
+      "effective_date": "2026-12-24"
+    },
+    {
+      "cycle": "2701",
+      "effective_date": "2027-01-21"
+    }
+  ]
+}

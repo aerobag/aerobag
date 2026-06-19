@@ -1714,7 +1714,10 @@ mod tests {
 
     #[test]
     fn generic_metar_delta_fixture_reconstructs_three_hour_capture() -> anyhow::Result<()> {
-        let states = metar_delta_fixture_states()?;
+        let Some(states) = metar_delta_fixture_states()? else {
+            eprintln!("skipping large-fixture METAR delta test: set AEROBAG_TEST_ARTIFACTS_ROOT");
+            return Ok(());
+        };
 
         println!(
             "{:<17} {:>10} {:>10} {:>10} {:>10} {:>8} {:>8} {:>8} {:>8}",
@@ -2737,8 +2740,9 @@ mod tests {
         })
     }
 
-    fn metar_delta_fixture_states() -> anyhow::Result<Vec<Value>> {
+    fn metar_delta_fixture_states() -> anyhow::Result<Option<Vec<Value>>> {
         let test_artifacts_root = std::env::var_os("AEROBAG_TEST_ARTIFACTS_ROOT")
+            .or_else(|| std::env::var_os("AEROBAG_TEST_ARTIFACTS"))
             .map(PathBuf::from)
             .unwrap_or_else(|| {
                 PathBuf::from(env!("CARGO_MANIFEST_DIR"))
@@ -2749,6 +2753,9 @@ mod tests {
                     .join("aerobag-test-artifacts")
             });
         let fixture_root = test_artifacts_root.join("metars").join("delta-three-hour");
+        if !fixture_root.is_dir() {
+            return Ok(None);
+        }
         let mut zip_paths = fs::read_dir(&fixture_root)
             .with_context(|| format!("failed to read {}", fixture_root.display()))?
             .collect::<Result<Vec<_>, _>>()?
@@ -2761,10 +2768,12 @@ mod tests {
             zip_paths.len() >= 20,
             "expected about two dozen METAR fixture states"
         );
-        zip_paths
-            .iter()
-            .map(|path| read_metars_json_from_zip(path))
-            .collect::<anyhow::Result<Vec<_>>>()
+        Ok(Some(
+            zip_paths
+                .iter()
+                .map(|path| read_metars_json_from_zip(path))
+                .collect::<anyhow::Result<Vec<_>>>()?,
+        ))
     }
 
     fn read_metars_json_from_zip(path: &Path) -> anyhow::Result<Value> {

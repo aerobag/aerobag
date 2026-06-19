@@ -19,9 +19,9 @@ use preprocessor_live_feeds::{
     engine::{
         default_poll_interval, run_upstream_live_feed_publish_tick,
         write_live_feeds_current_manifest, CompiledFixtureCache, FileLiveFeedPublisher, FixedClock,
-        FixtureCacheKeyPart, IntervalLiveFeedSource, LiveFeedInvalidation, LiveFeedPollingTask,
-        LiveFeedSourceAndBuilder, LiveFeedTickResult, LiveFeedVersionManifest,
-        LiveFeedsCurrentManifest, PublishedLiveFeedUpdate, SseBroker, SystemClock,
+        FixtureCacheKeyPart, LiveFeedInvalidation, LiveFeedPollingTask, LiveFeedSourceAndBuilder,
+        LiveFeedTaskPhase, LiveFeedTickResult, LiveFeedVersionManifest, LiveFeedsCurrentManifest,
+        ProductBuilder, PublishedLiveFeedUpdate, SseBroker, SystemClock, UpstreamEvent,
         LIVE_FEEDS_SCHEMA_VERSION,
     },
     products::{
@@ -103,6 +103,20 @@ struct DaemonStatusState {
 #[derive(Default)]
 struct ProductStatusHistory {
     last_update_at_utc: Option<chrono::DateTime<Utc>>,
+    nominal_interval_seconds: Option<u64>,
+    last_attempt_at_utc: Option<chrono::DateTime<Utc>>,
+    last_success_at_utc: Option<chrono::DateTime<Utc>>,
+    last_published_at_utc: Option<String>,
+    last_source_timestamp_utc: Option<String>,
+    last_failure_at_utc: Option<chrono::DateTime<Utc>>,
+    last_failure_phase: Option<String>,
+    last_error: Option<String>,
+    current_version: Option<String>,
+    current_error_count: u64,
+    current_warning_count: u64,
+    consecutive_failure_count: u32,
+    quality: Option<serde_json::Value>,
+    attempts: VecDeque<ProductAttemptSample>,
     samples: VecDeque<ProductUpdateSample>,
 }
 
@@ -130,7 +144,39 @@ struct CdfSummary {
 
 #[derive(Debug, Clone, Serialize)]
 struct ProductStatusSnapshot {
+    nominal_interval_seconds: Option<u64>,
+    last_attempt_at_utc: Option<chrono::DateTime<Utc>>,
+    last_success_at_utc: Option<chrono::DateTime<Utc>>,
+    last_published_at_utc: Option<String>,
+    last_source_timestamp_utc: Option<String>,
+    last_failure_at_utc: Option<chrono::DateTime<Utc>>,
+    last_failure_phase: Option<String>,
+    last_error: Option<String>,
+    current_version: Option<String>,
+    current_error_count: u64,
+    current_warning_count: u64,
+    consecutive_failure_count: u32,
+    quality: Option<serde_json::Value>,
+    attempts: Vec<ProductAttemptSample>,
     samples: Vec<ProductUpdateSample>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+struct ProductAttemptSample {
+    attempted_at_utc: chrono::DateTime<Utc>,
+    result: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    version: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    unchanged: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    published_at_utc: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    source_timestamp_utc: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    phase: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    error: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -183,25 +229,22 @@ impl DaemonStatus {
         push_limited(&mut state.client_update_latency_ms, latency_ms);
     }
 
+    fn register_product(&self, product: &str, nominal_interval: Duration) {
+        let mut state = self.inner.lock().expect("live-feed status lock");
+        let history = state.products.entry(product.to_string()).or_default();
+        history.nominal_interval_seconds = Some(nominal_interval.as_secs());
+    }
+
     fn record_tick_result(&self, result: &LiveFeedTickResult) {
         for update in &result.published {
-            self.record_product_seen(update);
-            if !update.unchanged {
-                self.record_product_update(update);
-            }
+            self.record_product_success(update);
+        }
+        for failure in &result.failures {
+            self.record_product_failure(failure);
         }
     }
 
-    fn record_product_seen(&self, update: &PublishedLiveFeedUpdate) {
-        self.inner
-            .lock()
-            .expect("live-feed status lock")
-            .products
-            .entry(update.product.clone())
-            .or_default();
-    }
-
-    fn record_product_update(&self, update: &PublishedLiveFeedUpdate) {
+    fn record_product_success(&self, update: &PublishedLiveFeedUpdate) {
         let observed_at_utc = Utc::now();
         let delta_bytes = update
             .delta_path
@@ -209,8 +252,36 @@ impl DaemonStatus {
             .and_then(|path| fs::metadata(path).ok())
             .map(|metadata| metadata.len());
         let state_bytes = state_bytes_for_status(&update.state_path).ok();
+        let quality = quality_facts_for_status(update).ok().flatten();
         let mut state = self.inner.lock().expect("live-feed status lock");
         let history = state.products.entry(update.product.clone()).or_default();
+        history.last_attempt_at_utc = Some(observed_at_utc);
+        history.last_success_at_utc = Some(observed_at_utc);
+        history.last_published_at_utc = update.published_at_utc.clone();
+        history.last_source_timestamp_utc = update.collected_at_utc.clone();
+        history.current_version = Some(update.version.clone());
+        history.current_error_count = 0;
+        history.current_warning_count = 0;
+        history.consecutive_failure_count = 0;
+        if quality.is_some() {
+            history.quality = quality;
+        }
+        push_limited(
+            &mut history.attempts,
+            ProductAttemptSample {
+                attempted_at_utc: observed_at_utc,
+                result: "success".to_string(),
+                version: Some(update.version.clone()),
+                unchanged: Some(update.unchanged),
+                published_at_utc: update.published_at_utc.clone(),
+                source_timestamp_utc: update.collected_at_utc.clone(),
+                phase: None,
+                error: None,
+            },
+        );
+        if update.unchanged {
+            return;
+        }
         let update_interval_ms = history
             .last_update_at_utc
             .and_then(|last| checked_duration_ms(observed_at_utc.signed_duration_since(last)));
@@ -225,6 +296,34 @@ impl DaemonStatus {
                 state_bytes,
                 changed_count: update.changed_count,
                 removed_count: update.removed_count,
+            },
+        );
+    }
+
+    fn record_product_failure(
+        &self,
+        failure: &preprocessor_live_feeds::engine::FailedLiveFeedTask,
+    ) {
+        let observed_at_utc = Utc::now();
+        let phase = live_feed_phase_name(failure.phase).to_string();
+        let mut state = self.inner.lock().expect("live-feed status lock");
+        let history = state.products.entry(failure.product.clone()).or_default();
+        history.last_attempt_at_utc = Some(observed_at_utc);
+        history.last_failure_at_utc = Some(observed_at_utc);
+        history.last_failure_phase = Some(phase.clone());
+        history.last_error = Some(failure.error.clone());
+        history.consecutive_failure_count = history.consecutive_failure_count.saturating_add(1);
+        push_limited(
+            &mut history.attempts,
+            ProductAttemptSample {
+                attempted_at_utc: observed_at_utc,
+                result: "failure".to_string(),
+                version: None,
+                unchanged: None,
+                published_at_utc: None,
+                source_timestamp_utc: None,
+                phase: Some(phase),
+                error: Some(failure.error.clone()),
             },
         );
     }
@@ -244,6 +343,20 @@ impl DaemonStatus {
                 (
                     product.clone(),
                     ProductStatusSnapshot {
+                        nominal_interval_seconds: history.nominal_interval_seconds,
+                        last_attempt_at_utc: history.last_attempt_at_utc,
+                        last_success_at_utc: history.last_success_at_utc,
+                        last_published_at_utc: history.last_published_at_utc.clone(),
+                        last_source_timestamp_utc: history.last_source_timestamp_utc.clone(),
+                        last_failure_at_utc: history.last_failure_at_utc,
+                        last_failure_phase: history.last_failure_phase.clone(),
+                        last_error: history.last_error.clone(),
+                        current_version: history.current_version.clone(),
+                        current_error_count: history.current_error_count,
+                        current_warning_count: history.current_warning_count,
+                        consecutive_failure_count: history.consecutive_failure_count,
+                        quality: history.quality.clone(),
+                        attempts: history.attempts.iter().cloned().collect(),
                         samples: history.samples.iter().cloned().collect(),
                     },
                 )
@@ -329,6 +442,29 @@ fn state_bytes_for_status(state_path: &Path) -> anyhow::Result<u64> {
         })
         .unwrap_or(0);
     Ok(bytes.saturating_add(referenced_bytes))
+}
+
+fn quality_facts_for_status(
+    update: &PublishedLiveFeedUpdate,
+) -> anyhow::Result<Option<serde_json::Value>> {
+    if update.product != "nexrad" {
+        return Ok(None);
+    }
+    let value: serde_json::Value = serde_json::from_slice(
+        &fs::read(&update.state_path)
+            .with_context(|| format!("failed to read {}", update.state_path.display()))?,
+    )
+    .with_context(|| format!("failed to parse {}", update.state_path.display()))?;
+    Ok(value.get("quality").cloned())
+}
+
+fn live_feed_phase_name(phase: LiveFeedTaskPhase) -> &'static str {
+    match phase {
+        LiveFeedTaskPhase::Poll => "poll",
+        LiveFeedTaskPhase::Build => "build",
+        LiveFeedTaskPhase::Publish => "publish",
+        LiveFeedTaskPhase::Announce => "announce",
+    }
 }
 
 fn cdf_summary(mut samples: Vec<u64>) -> CdfSummary {
@@ -563,14 +699,21 @@ fn start_live_feed_driver(
     thread::spawn(move || {
         let publisher = FileLiveFeedPublisher::new(live_root, SystemClock);
         let mut tasks = production_tasks(fetch);
+        for task in &tasks {
+            status.register_product(task.product_id(), task.nominal_interval());
+        }
         loop {
+            let now = Utc::now();
             let result = run_upstream_live_feed_publish_tick(
-                Utc::now(),
+                now,
                 &mut tasks,
                 &scratch_root,
                 &publisher,
                 &broker,
             );
+            for task in &mut tasks {
+                task.observe_tick_result(now, &result);
+            }
             status.record_tick_result(&result);
             log_tick_result("production", &result);
             thread::sleep(poll_interval);
@@ -885,54 +1028,125 @@ fn path_is_retained(path: &Path, retained: &BTreeSet<PathBuf>) -> bool {
     retained.contains(path) || retained.iter().any(|retained| retained.starts_with(path))
 }
 
-fn production_tasks(fetch: LiveFeedFetchConfig) -> Vec<Box<dyn LiveFeedPollingTask + Send>> {
+struct ProductionLiveFeedTask {
+    product_id: String,
+    nominal_interval: Duration,
+    next_due_at_utc: Option<chrono::DateTime<Utc>>,
+    consecutive_failures: u32,
+    builder: Box<dyn ProductBuilder + Send>,
+}
+
+impl ProductionLiveFeedTask {
+    fn new(
+        product_id: impl Into<String>,
+        nominal_interval: Duration,
+        builder: Box<dyn ProductBuilder + Send>,
+    ) -> Self {
+        Self {
+            product_id: product_id.into(),
+            nominal_interval,
+            next_due_at_utc: None,
+            consecutive_failures: 0,
+            builder,
+        }
+    }
+
+    fn nominal_interval(&self) -> Duration {
+        self.nominal_interval
+    }
+
+    fn observe_tick_result(&mut self, now: chrono::DateTime<Utc>, result: &LiveFeedTickResult) {
+        let succeeded = result
+            .published
+            .iter()
+            .any(|update| update.product == self.product_id);
+        let failed = result
+            .failures
+            .iter()
+            .any(|failure| failure.product == self.product_id);
+        if succeeded {
+            self.consecutive_failures = 0;
+            self.next_due_at_utc = Some(now + chrono_duration_from_std(self.nominal_interval));
+        } else if failed {
+            self.consecutive_failures = self.consecutive_failures.saturating_add(1);
+            self.next_due_at_utc = Some(
+                now + chrono_duration_from_std(failure_retry_delay(
+                    self.nominal_interval,
+                    self.consecutive_failures,
+                )),
+            );
+        }
+    }
+}
+
+impl LiveFeedPollingTask for ProductionLiveFeedTask {
+    fn product_id(&self) -> &str {
+        &self.product_id
+    }
+
+    fn poll_due(&mut self, now: chrono::DateTime<Utc>) -> anyhow::Result<Vec<UpstreamEvent>> {
+        if self.next_due_at_utc.is_some_and(|next_due| now < next_due) {
+            return Ok(Vec::new());
+        }
+        Ok(vec![UpstreamEvent {
+            product: self.product_id.clone(),
+            source_id: format!(
+                "{}:{}",
+                self.product_id,
+                now.to_rfc3339_opts(chrono::SecondsFormat::Secs, true)
+            ),
+            previous_source_id: None,
+            observed_at_utc: now,
+            payload_path: None,
+        }])
+    }
+
+    fn build_state(
+        &self,
+        event: &UpstreamEvent,
+        scratch_dir: &Path,
+    ) -> anyhow::Result<preprocessor_live_feeds::engine::BuiltLiveFeedState> {
+        if self.builder.product_id() != self.product_id {
+            bail!(
+                "production task {} is wired to builder {}",
+                self.product_id,
+                self.builder.product_id()
+            );
+        }
+        self.builder.build_state(event, scratch_dir)
+    }
+}
+
+fn failure_retry_delay(nominal_interval: Duration, consecutive_failures: u32) -> Duration {
+    let exponent = consecutive_failures.saturating_sub(1).min(3);
+    let seconds = 30_u64.saturating_mul(1_u64 << exponent);
+    Duration::from_secs(seconds).min(nominal_interval)
+}
+
+fn chrono_duration_from_std(duration: Duration) -> chrono::Duration {
+    chrono::Duration::from_std(duration).unwrap_or_else(|_| chrono::Duration::seconds(i64::MAX))
+}
+
+fn production_tasks(fetch: LiveFeedFetchConfig) -> Vec<ProductionLiveFeedTask> {
     vec![
-        production_task(
-            "metars",
-            fetch.clone(),
-            MetarLiveFeedBuilder::new(fetch.clone()),
-        ),
-        production_task(
-            "tafs",
-            fetch.clone(),
-            TafLiveFeedBuilder::new(fetch.clone()),
-        ),
+        production_task("metars", MetarLiveFeedBuilder::new(fetch.clone())),
+        production_task("tafs", TafLiveFeedBuilder::new(fetch.clone())),
         production_task(
             "nexrad",
-            fetch.clone(),
             NexradSourceGridLiveFeedBuilder::new(fetch.clone(), false),
         ),
-        production_task(
-            "tfrs",
-            fetch.clone(),
-            TfrLiveFeedBuilder::new(fetch.clone()),
-        ),
-        production_task(
-            "winds-aloft",
-            fetch.clone(),
-            WindsAloftLiveFeedBuilder::new(fetch.clone()),
-        ),
-        production_task(
-            "obstacles",
-            fetch.clone(),
-            ObstaclesLiveFeedBuilder::new(fetch),
-        ),
+        production_task("tfrs", TfrLiveFeedBuilder::new(fetch.clone())),
+        production_task("winds-aloft", WindsAloftLiveFeedBuilder::new(fetch.clone())),
+        production_task("obstacles", ObstaclesLiveFeedBuilder::new(fetch)),
     ]
 }
 
-fn production_task<B>(
-    product: &str,
-    _fetch: LiveFeedFetchConfig,
-    builder: B,
-) -> Box<dyn LiveFeedPollingTask + Send>
+fn production_task<B>(product: &str, builder: B) -> ProductionLiveFeedTask
 where
     B: preprocessor_live_feeds::engine::ProductBuilder + Send + 'static,
 {
     let interval = default_poll_interval(product).unwrap_or_else(|| Duration::from_secs(5 * 60));
-    Box::new(LiveFeedSourceAndBuilder::new(
-        IntervalLiveFeedSource::new(product, interval),
-        builder,
-    ))
+    ProductionLiveFeedTask::new(product, interval, Box::new(builder))
 }
 
 fn live_feed_fetch_config(config: &DaemonConfig) -> anyhow::Result<LiveFeedFetchConfig> {
@@ -1834,7 +2048,173 @@ mod tests {
 
         let snapshot = status.snapshot();
         let metars = snapshot.products.get("metars").expect("METAR status");
+        assert_eq!(metars.current_version.as_deref(), Some("v1"));
+        assert!(metars.last_attempt_at_utc.is_some());
+        assert!(metars.last_success_at_utc.is_some());
+        assert_eq!(metars.consecutive_failure_count, 0);
+        assert_eq!(metars.attempts.len(), 1);
+        assert_eq!(metars.attempts[0].result, "success");
+        assert_eq!(metars.attempts[0].unchanged, Some(true));
         assert!(metars.samples.is_empty());
+    }
+
+    #[test]
+    fn status_records_live_feed_failures() {
+        let status = DaemonStatus::default();
+        status.record_tick_result(&LiveFeedTickResult {
+            published: Vec::new(),
+            failures: vec![preprocessor_live_feeds::engine::FailedLiveFeedTask {
+                product: "metars".to_string(),
+                phase: LiveFeedTaskPhase::Build,
+                error: "builder exploded".to_string(),
+            }],
+        });
+
+        let snapshot = status.snapshot();
+        let metars = snapshot.products.get("metars").expect("METAR status");
+        assert!(metars.last_attempt_at_utc.is_some());
+        assert!(metars.last_failure_at_utc.is_some());
+        assert_eq!(metars.last_failure_phase.as_deref(), Some("build"));
+        assert_eq!(metars.last_error.as_deref(), Some("builder exploded"));
+        assert_eq!(metars.consecutive_failure_count, 1);
+        assert_eq!(metars.attempts.len(), 1);
+        assert_eq!(metars.attempts[0].result, "failure");
+        assert_eq!(metars.attempts[0].phase.as_deref(), Some("build"));
+        assert_eq!(
+            metars.attempts[0].error.as_deref(),
+            Some("builder exploded")
+        );
+    }
+
+    #[test]
+    fn status_exposes_nexrad_quality_facts() -> anyhow::Result<()> {
+        let temp = tempdir()?;
+        let manifest_path = temp.path().join("manifest.json");
+        fs::write(
+            &manifest_path,
+            r#"{
+              "schema_version": 1,
+              "quality": {
+                "palette_error_max": 4.2,
+                "palette_error_p95": 1.7,
+                "poor_color_match_count": 3
+              }
+            }"#,
+        )?;
+        let status = DaemonStatus::default();
+        status.record_tick_result(&LiveFeedTickResult {
+            published: vec![PublishedLiveFeedUpdate {
+                product: "nexrad".to_string(),
+                version: "n1".to_string(),
+                unchanged: false,
+                state_path: manifest_path,
+                version_manifest_path: PathBuf::from("versions/nexrad/n1.json"),
+                version_manifest_url: "versions/nexrad/n1.json".to_string(),
+                state_url: "states/nexrad/n1/manifest.json".to_string(),
+                state_sha256: "sha".to_string(),
+                published_at_utc: Some("2026-06-19T18:57:16Z".to_string()),
+                collected_at_utc: Some("2026-06-19T18:56:41Z".to_string()),
+                delta_path: None,
+                changed_count: 0,
+                removed_count: 0,
+            }],
+            failures: Vec::new(),
+        });
+
+        let snapshot = status.snapshot();
+        let nexrad = snapshot.products.get("nexrad").expect("NEXRAD status");
+        assert_eq!(nexrad.current_version.as_deref(), Some("n1"));
+        let quality = nexrad.quality.as_ref().expect("NEXRAD quality");
+        assert_eq!(quality["palette_error_max"], 4.2);
+        assert_eq!(quality["palette_error_p95"], 1.7);
+        assert_eq!(quality["poor_color_match_count"], 3);
+        Ok(())
+    }
+
+    #[test]
+    fn production_live_feed_task_retries_failures_before_nominal_interval() -> anyhow::Result<()> {
+        let start =
+            chrono::DateTime::parse_from_rfc3339("2026-06-19T18:00:00Z")?.with_timezone(&Utc);
+        let mut task = ProductionLiveFeedTask::new(
+            "metars",
+            Duration::from_secs(300),
+            Box::new(NoopProductBuilder {
+                product: "metars".to_string(),
+            }),
+        );
+
+        assert_eq!(task.poll_due(start)?.len(), 1);
+        task.observe_tick_result(
+            start,
+            &LiveFeedTickResult {
+                published: Vec::new(),
+                failures: vec![preprocessor_live_feeds::engine::FailedLiveFeedTask {
+                    product: "metars".to_string(),
+                    phase: LiveFeedTaskPhase::Poll,
+                    error: "network down".to_string(),
+                }],
+            },
+        );
+        assert!(task
+            .poll_due(start + chrono::Duration::seconds(29))?
+            .is_empty());
+        assert_eq!(
+            task.poll_due(start + chrono::Duration::seconds(30))?.len(),
+            1
+        );
+
+        let retry_time = start + chrono::Duration::seconds(30);
+        task.observe_tick_result(
+            retry_time,
+            &LiveFeedTickResult {
+                published: Vec::new(),
+                failures: vec![preprocessor_live_feeds::engine::FailedLiveFeedTask {
+                    product: "metars".to_string(),
+                    phase: LiveFeedTaskPhase::Build,
+                    error: "still down".to_string(),
+                }],
+            },
+        );
+        assert!(task
+            .poll_due(retry_time + chrono::Duration::seconds(59))?
+            .is_empty());
+        assert_eq!(
+            task.poll_due(retry_time + chrono::Duration::seconds(60))?
+                .len(),
+            1
+        );
+
+        let success_time = retry_time + chrono::Duration::seconds(60);
+        task.observe_tick_result(
+            success_time,
+            &LiveFeedTickResult {
+                published: vec![PublishedLiveFeedUpdate {
+                    product: "metars".to_string(),
+                    version: "m1".to_string(),
+                    unchanged: false,
+                    state_path: PathBuf::from("states/metars/m1.json"),
+                    version_manifest_path: PathBuf::from("versions/metars/m1.json"),
+                    version_manifest_url: "versions/metars/m1.json".to_string(),
+                    state_url: "states/metars/m1.json".to_string(),
+                    state_sha256: "sha".to_string(),
+                    published_at_utc: None,
+                    collected_at_utc: None,
+                    delta_path: None,
+                    changed_count: 1,
+                    removed_count: 0,
+                }],
+                failures: Vec::new(),
+            },
+        );
+        assert!(task
+            .poll_due(success_time + chrono::Duration::seconds(299))?
+            .is_empty());
+        assert_eq!(
+            task.poll_due(success_time + chrono::Duration::seconds(300))?
+                .len(),
+            1
+        );
+        Ok(())
     }
 
     #[test]
@@ -1912,6 +2292,24 @@ mod tests {
 
         fn build_state(&mut self) -> anyhow::Result<BuiltLiveFeedState> {
             self.state.take().context("static task was called twice")
+        }
+    }
+
+    struct NoopProductBuilder {
+        product: String,
+    }
+
+    impl ProductBuilder for NoopProductBuilder {
+        fn product_id(&self) -> &str {
+            &self.product
+        }
+
+        fn build_state(
+            &self,
+            _event: &UpstreamEvent,
+            _scratch_dir: &Path,
+        ) -> anyhow::Result<BuiltLiveFeedState> {
+            bail!("NoopProductBuilder should not build state in this test")
         }
     }
 

@@ -13,5 +13,7 @@
   ],
   "build_profile": "production",
   "live_feeds_listen": "127.0.0.1:8095",
+  "pipeline_health_listen": "127.0.0.1:8098",
+  "pipeline_health_poll_seconds": 60,
   "nginx_server_name": "_"
 }

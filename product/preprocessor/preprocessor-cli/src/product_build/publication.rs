@@ -285,6 +285,10 @@ pub(super) fn product_artifacts_filename() -> &'static str {
     "product_artifacts.json"
 }
 
+pub(super) fn product_facts_filename() -> &'static str {
+    "product-facts.json"
+}
+
 pub(super) fn write_current_artifacts_json(
     path: &Path,
     manifests: &[CurrentArtifactsManifest],
@@ -569,6 +573,7 @@ pub(super) fn write_build_status_html(
     current_artifacts_path: &Path,
 ) -> anyhow::Result<()> {
     let status = build_status_document(&config.packaged_dir, current_artifacts_path)?;
+    write_product_facts_json(&config.packaged_dir, current_artifacts_path, &status)?;
     let html = render_build_status_html(&status)?;
     let packaged_path = config.packaged_dir.join("build-status.html");
     fs::write(&packaged_path, &html)
@@ -580,6 +585,193 @@ pub(super) fn write_build_status_html(
             .with_context(|| format!("failed to write {}", unpacked_path.display()))?;
     }
     Ok(())
+}
+
+pub(super) fn write_product_facts_json(
+    build_root: &Path,
+    current_artifacts_path: &Path,
+    status: &BuildStatusDocument,
+) -> anyhow::Result<()> {
+    let facts =
+        product_facts_document(build_root, current_artifacts_path, &status.generated_at_utc)?;
+    let facts_path = build_root.join(product_facts_filename());
+    write_public_json_atomic(
+        &facts_path,
+        &serde_json::to_vec_pretty(&facts).context("failed to encode product facts")?,
+    )
+}
+
+pub(super) fn product_facts_document(
+    build_root: &Path,
+    current_artifacts_path: &Path,
+    generated_at_utc: &str,
+) -> anyhow::Result<ProductFactsDocument> {
+    let current = load_current_artifacts_manifest(current_artifacts_path)?;
+    let build_diagnostics = load_build_diagnostics(build_root, &current)?;
+    let mut products = Vec::new();
+    for bundle_ref in &current.bundles {
+        let bundle_path = build_root.join(&bundle_ref.filename);
+        let bundle = load_bundle_manifest(&bundle_path)?;
+        for package in &bundle.packages {
+            let diagnostics = product_diagnostic_counts(&bundle, package, &build_diagnostics);
+            products.push(product_facts_product(&bundle, package, diagnostics));
+        }
+    }
+    products.sort_by(|left, right| {
+        (
+            left.cycle.as_deref().unwrap_or(""),
+            left.family.as_str(),
+            left.region_id.as_deref().unwrap_or(""),
+            left.product_id.as_str(),
+        )
+            .cmp(&(
+                right.cycle.as_deref().unwrap_or(""),
+                right.family.as_str(),
+                right.region_id.as_deref().unwrap_or(""),
+                right.product_id.as_str(),
+            ))
+    });
+    Ok(ProductFactsDocument {
+        schema_version: 1,
+        generated_at_utc: generated_at_utc.to_string(),
+        build: ProductFactsBuild {
+            status: "pass".to_string(),
+            completed_at_utc: generated_at_utc.to_string(),
+            current_artifacts: filename_string(current_artifacts_path)?,
+        },
+        products,
+    })
+}
+
+fn product_facts_product(
+    bundle: &BundleManifest,
+    package: &BundlePackageArtifact,
+    mut diagnostics: ProductFactsDiagnostics,
+) -> ProductFactsProduct {
+    if package.family_id == "nav-db" {
+        diagnostics.procedure_geometry_warning_count +=
+            package_metadata_usize(package, "procedure_geometry_warning_count");
+        diagnostics.procedure_geometry_error_count +=
+            package_metadata_usize(package, "procedure_geometry_error_count");
+    }
+    ProductFactsProduct {
+        product_id: package.id.clone(),
+        family: package.family_id.clone(),
+        contract: package.contract_id.clone(),
+        region_id: package.region_id.clone(),
+        cycle: package.cycle.clone().or_else(|| non_empty(&bundle.cycle)),
+        cycle_version: package
+            .cycle_version
+            .clone()
+            .or_else(|| non_empty(&bundle.cycle_version)),
+        effective_date: package.effective_date.clone(),
+        expiration_date: package.expiration_date.clone(),
+        source_generated_at_utc: package.source_generated_at_utc.clone(),
+        source_fetched_at_utc: package.source_fetched_at_utc.clone(),
+        published_at_utc: package.published_at_utc.clone(),
+        error_count: diagnostics.error_count(),
+        warning_count: diagnostics.warning_count(),
+        diagnostics,
+    }
+}
+
+fn package_metadata_usize(package: &BundlePackageArtifact, key: &str) -> usize {
+    package
+        .metadata
+        .get(key)
+        .and_then(serde_json::Value::as_u64)
+        .map(|value| value as usize)
+        .unwrap_or(0)
+}
+
+fn non_empty(value: &str) -> Option<String> {
+    (!value.is_empty()).then(|| value.to_string())
+}
+
+fn load_build_diagnostics(
+    build_root: &Path,
+    current: &CurrentArtifactsManifest,
+) -> anyhow::Result<Vec<BuildDiagnosticEntry>> {
+    let Some(diagnostics) = &current.diagnostics else {
+        return Ok(Vec::new());
+    };
+    let path = build_root.join(&diagnostics.filename);
+    let manifest: BuildDiagnosticsManifest = serde_json::from_slice(
+        &fs::read(&path).with_context(|| format!("failed to read {}", path.display()))?,
+    )
+    .with_context(|| format!("failed to parse {}", path.display()))?;
+    Ok(manifest.errors)
+}
+
+fn product_diagnostic_counts(
+    bundle: &BundleManifest,
+    package: &BundlePackageArtifact,
+    diagnostics: &[BuildDiagnosticEntry],
+) -> ProductFactsDiagnostics {
+    let mut counts = ProductFactsDiagnostics::default();
+    for diagnostic in diagnostics
+        .iter()
+        .filter(|diagnostic| diagnostic_applies_to_package(diagnostic, bundle, package))
+    {
+        let is_error = diagnostic.severity.eq_ignore_ascii_case("ERROR");
+        let product = diagnostic.product.as_str();
+        let code = diagnostic.code.as_str();
+        if product == "vectors" {
+            if is_error {
+                counts.vector_validator_error_count += 1;
+            } else {
+                counts.vector_validator_warning_count += 1;
+            }
+        } else if product == "procedure_geometry"
+            || product == "procedure-geometry"
+            || code.starts_with("procedure_geometry")
+            || code.starts_with("procedure-geometry")
+        {
+            if is_error {
+                counts.procedure_geometry_error_count += 1;
+            } else {
+                counts.procedure_geometry_warning_count += 1;
+            }
+        } else if is_error {
+            counts.other_error_count += 1;
+        } else {
+            counts.other_warning_count += 1;
+        }
+    }
+    counts
+}
+
+fn diagnostic_applies_to_package(
+    diagnostic: &BuildDiagnosticEntry,
+    bundle: &BundleManifest,
+    package: &BundlePackageArtifact,
+) -> bool {
+    let package_cycle = package.cycle.as_deref().unwrap_or(&bundle.cycle);
+    if diagnostic
+        .cycle
+        .as_deref()
+        .is_some_and(|cycle| cycle != package_cycle)
+    {
+        return false;
+    }
+    match diagnostic.product.as_str() {
+        "vectors" | "procedure_geometry" | "procedure-geometry" => package.family_id == "nav-db",
+        product => product == package.id || product == package.family_id,
+    }
+}
+
+impl ProductFactsDiagnostics {
+    fn error_count(&self) -> usize {
+        self.procedure_geometry_error_count
+            + self.vector_validator_error_count
+            + self.other_error_count
+    }
+
+    fn warning_count(&self) -> usize {
+        self.procedure_geometry_warning_count
+            + self.vector_validator_warning_count
+            + self.other_warning_count
+    }
 }
 
 pub(super) fn build_status_document(

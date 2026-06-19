@@ -432,6 +432,57 @@ struct BuildStatusProduct {
     published_at_utc: Option<String>,
 }
 
+#[derive(Debug, Clone, Serialize)]
+struct ProductFactsDocument {
+    schema_version: u32,
+    generated_at_utc: String,
+    build: ProductFactsBuild,
+    products: Vec<ProductFactsProduct>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+struct ProductFactsBuild {
+    status: String,
+    completed_at_utc: String,
+    current_artifacts: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
+struct ProductFactsProduct {
+    product_id: String,
+    family: String,
+    contract: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    region_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    cycle: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    cycle_version: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    effective_date: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    expiration_date: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    source_generated_at_utc: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    source_fetched_at_utc: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    published_at_utc: Option<String>,
+    error_count: usize,
+    warning_count: usize,
+    diagnostics: ProductFactsDiagnostics,
+}
+
+#[derive(Debug, Clone, Default, Serialize)]
+struct ProductFactsDiagnostics {
+    procedure_geometry_warning_count: usize,
+    procedure_geometry_error_count: usize,
+    vector_validator_warning_count: usize,
+    vector_validator_error_count: usize,
+    other_warning_count: usize,
+    other_error_count: usize,
+}
+
 #[derive(Debug, Clone)]
 struct BuiltNavDbArtifacts {
     node_record: NodeRecord,
@@ -3949,7 +4000,10 @@ mod tests {
                 effective_date: Some("2026-04-16".to_string()),
                 expiration_date: Some("2026-05-14".to_string()),
                 warning_text: None,
-                metadata: BTreeMap::new(),
+                metadata: BTreeMap::from([(
+                    "procedure_geometry_warning_count".to_string(),
+                    serde_json::json!(2),
+                )]),
             }],
             ancillary: vec![],
         };
@@ -3980,10 +4034,43 @@ mod tests {
                 size_bytes: 1,
             }],
             startup_prefetch: None,
-            diagnostics: None,
+            diagnostics: Some(CurrentDiagnosticsEntry {
+                filename: "build_errors_20260503.json".to_string(),
+                error_count: 1,
+            }),
         };
         let current_path = root.join("product_artifacts.json");
         fs::write(&current_path, serde_json::to_vec_pretty(&current).unwrap()).unwrap();
+        fs::write(
+            root.join("build_errors_20260503.json"),
+            serde_json::to_vec_pretty(&BuildDiagnosticsManifest {
+                schema_version: 1,
+                generated_at_utc: "2026-05-03T18:02:00Z".to_string(),
+                error_count: 1,
+                errors: vec![
+                    BuildDiagnosticEntry {
+                        product: "vectors".to_string(),
+                        cycle: Some("2604".to_string()),
+                        severity: "ERROR".to_string(),
+                        code: "saa_feature_count_mismatch".to_string(),
+                        message: "SAA count mismatch".to_string(),
+                        expected: Some(2),
+                        actual: Some(1),
+                    },
+                    BuildDiagnosticEntry {
+                        product: "vectors".to_string(),
+                        cycle: Some("2604".to_string()),
+                        severity: "WARNING".to_string(),
+                        code: "vector_warning".to_string(),
+                        message: "vector warning".to_string(),
+                        expected: None,
+                        actual: None,
+                    },
+                ],
+            })
+            .unwrap(),
+        )
+        .unwrap();
         fs::write(root.join("bundle_cycle_stale_empty.json"), []).unwrap();
 
         let status = build_status_document(root, &current_path).unwrap();
@@ -3998,6 +4085,36 @@ mod tests {
         assert!(html.contains("Aerobag Build Status"));
         assert!(html.contains("bundle_cycle_stale_empty.json"));
         assert!(html.contains("nav_db_"));
+
+        let facts = product_facts_document(root, &current_path, "2026-05-03T18:03:00Z").unwrap();
+        assert_eq!(facts.schema_version, 1);
+        assert_eq!(facts.build.status, "pass");
+        assert_eq!(facts.products.len(), 1);
+        assert_eq!(
+            facts.products[0].product_id,
+            format!("NAV_DB_{NAV_DB_CONTRACT_ID}_2604_01")
+        );
+        assert_eq!(facts.products[0].family, "nav-db");
+        assert_eq!(
+            facts.products[0].source_fetched_at_utc.as_deref(),
+            Some("2026-04-15T23:00:00Z")
+        );
+        assert_eq!(facts.products[0].error_count, 1);
+        assert_eq!(facts.products[0].warning_count, 3);
+        assert_eq!(
+            facts.products[0]
+                .diagnostics
+                .procedure_geometry_warning_count,
+            2
+        );
+        assert_eq!(
+            facts.products[0].diagnostics.vector_validator_error_count,
+            1
+        );
+        assert_eq!(
+            facts.products[0].diagnostics.vector_validator_warning_count,
+            1
+        );
     }
 
     #[test]

@@ -10,6 +10,7 @@ pub(super) fn nav_kv_family_warning_text(family_id: &str) -> Option<String> {
 }
 
 const NAV_COORDINATE_DECIMAL_SCALE: f64 = 10_000_000.0;
+const NAV_DB_DIAGNOSTICS_FORMAT: &str = "nav-db-diagnostics-v1";
 
 pub(super) fn round_nav_coordinate(value: f64) -> f64 {
     let rounded = (value * NAV_COORDINATE_DECIMAL_SCALE).round() / NAV_COORDINATE_DECIMAL_SCALE;
@@ -1034,6 +1035,10 @@ pub(super) fn build_nav_kv_artifact(
             NAV_DB_CONTRACT_ID.to_string(),
         ),
         (
+            "nav_db_diagnostics_format".to_string(),
+            NAV_DB_DIAGNOSTICS_FORMAT.to_string(),
+        ),
+        (
             "nav_kv_builder".to_string(),
             source_fingerprints::nav_kv_builder_fingerprint()?,
         ),
@@ -1043,6 +1048,7 @@ pub(super) fn build_nav_kv_artifact(
     let source_dir = output_dir.join("nav_db");
     let root_filename = "root";
     let nav_db_zip_source_path = output_dir.join(format!("nav_db_{cycle}.zip"));
+    let diagnostics_path = output_dir.join("diagnostics.json");
     let record =
         match claim_or_wait_for_node(&prepared, std::slice::from_ref(&nav_db_zip_source_path))? {
             NodeCacheState::CacheHit(record) => record,
@@ -1088,6 +1094,9 @@ pub(super) fn build_nav_kv_artifact(
                     wmm_metadata_path,
                     magvar_decimal_year,
                 )?);
+                let diagnostics = nav_db_build_diagnostics_from_pairs(&pairs)?;
+                fs::write(&diagnostics_path, serde_json::to_vec_pretty(&diagnostics)?)
+                    .with_context(|| format!("failed to write {}", diagnostics_path.display()))?;
                 let built = build_nav_kv_sorted(pairs, 64 * 1024)
                     .map_err(|err| anyhow::anyhow!("failed to build nav_kv: {err}"))?;
                 let root_source_path = source_dir.join(root_filename);
@@ -1139,10 +1148,16 @@ pub(super) fn build_nav_kv_artifact(
                 fs::write(&nav_db_zip_source_path, zip_bytes).with_context(|| {
                     format!("failed to write {}", nav_db_zip_source_path.display())
                 })?;
-                let outputs = BTreeMap::from([(
-                    "nav_db_zip".to_string(),
-                    relative_artifact_path(&nav_db_zip_source_path, &config.build_root),
-                )]);
+                let outputs = BTreeMap::from([
+                    (
+                        "nav_db_zip".to_string(),
+                        relative_artifact_path(&nav_db_zip_source_path, &config.build_root),
+                    ),
+                    (
+                        "diagnostics".to_string(),
+                        relative_artifact_path(&diagnostics_path, &config.build_root),
+                    ),
+                ]);
                 write_node_record(
                     prepared,
                     inputs,
@@ -1154,6 +1169,11 @@ pub(super) fn build_nav_kv_artifact(
                 )?
             }
         };
+    let diagnostics: NavDbBuildDiagnostics = serde_json::from_slice(
+        &fs::read(&diagnostics_path)
+            .with_context(|| format!("failed to read {}", diagnostics_path.display()))?,
+    )
+    .with_context(|| format!("failed to parse {}", diagnostics_path.display()))?;
     let nav_db_sha256 = output_sha_or_hash(&record, "nav_db_zip", &nav_db_zip_source_path)?;
     let nav_db_published_filename =
         format!("nav_db_{NAV_DB_CONTRACT_ID}_{cycle}_{PACKAGE_CYCLE_VERSION}_{nav_db_sha256}.zip");
@@ -1208,9 +1228,65 @@ pub(super) fn build_nav_kv_artifact(
                     NAV_DB_STARTUP_PREFETCH_MEMBERS_METADATA_KEY.to_string(),
                     serde_json::json!(startup_prefetch_members),
                 ),
+                (
+                    "procedure_geometry_warning_count".to_string(),
+                    serde_json::json!(diagnostics.procedure_geometry_warning_count),
+                ),
+                (
+                    "procedure_geometry_error_count".to_string(),
+                    serde_json::json!(diagnostics.procedure_geometry_error_count),
+                ),
+                (
+                    "procedure_geometry_records_with_data_quality".to_string(),
+                    serde_json::json!(diagnostics.procedure_geometry_records_with_data_quality),
+                ),
             ]),
         },
     })
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+struct NavDbBuildDiagnostics {
+    schema_version: u32,
+    procedure_geometry_warning_count: usize,
+    procedure_geometry_error_count: usize,
+    procedure_geometry_records_with_data_quality: usize,
+    procedure_geometry_data_quality_messages: BTreeMap<String, usize>,
+}
+
+fn nav_db_build_diagnostics_from_pairs(
+    pairs: &[NavKvPair],
+) -> anyhow::Result<NavDbBuildDiagnostics> {
+    let mut diagnostics = NavDbBuildDiagnostics {
+        schema_version: 1,
+        ..Default::default()
+    };
+    for pair in pairs
+        .iter()
+        .filter(|pair| pair.key.starts_with("procedure/geometry/"))
+    {
+        let value: serde_json::Value = serde_json::from_slice(&pair.value)
+            .with_context(|| format!("failed to decode {}", pair.key))?;
+        let annotations = value
+            .get("data_quality")
+            .and_then(|value| value.as_array())
+            .map(Vec::as_slice)
+            .unwrap_or(&[]);
+        if annotations.is_empty() {
+            continue;
+        }
+        diagnostics.procedure_geometry_records_with_data_quality += 1;
+        diagnostics.procedure_geometry_warning_count += annotations.len();
+        for annotation in annotations {
+            if let Some(message) = annotation.get("message").and_then(|value| value.as_str()) {
+                *diagnostics
+                    .procedure_geometry_data_quality_messages
+                    .entry(message.to_string())
+                    .or_default() += 1;
+            }
+        }
+    }
+    Ok(diagnostics)
 }
 
 fn nav_db_startup_prefetch_members(nav_db_zip_path: &Path) -> anyhow::Result<Vec<String>> {

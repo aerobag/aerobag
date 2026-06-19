@@ -16,6 +16,10 @@ from typing import Any
 REPO_ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_CONFIG = REPO_ROOT / "deploy" / "aerobag-prod.json"
 BUILD_WATCH_SCRIPT = REPO_ROOT / "product" / "preprocessor" / "scripts" / "watch_build_log.py"
+PIPELINE_HEALTH_SCRIPT = (
+    REPO_ROOT / "product" / "preprocessor" / "scripts" / "pipeline_health.py"
+)
+FAA_CYCLE_CALENDAR = REPO_ROOT / "deploy" / "faa-cycle-calendar.json"
 
 SYSTEMD_DIR = "/etc/systemd/system"
 NGINX_SITE = "/etc/nginx/sites-available/aerobag.conf"
@@ -27,6 +31,7 @@ REPO_PACKAGE_MANIFEST = "deploy/prod-packages.txt"
 BOOTSTRAP_PACKAGES = ["ca-certificates", "git", "rsync"]
 CLIENT_DEBUG_LISTEN = "127.0.0.1:8096"
 BUILD_WATCH_LISTEN = "127.0.0.1:8097"
+PIPELINE_HEALTH_LISTEN = "127.0.0.1:8098"
 ANDROID_SDK_ROOT = "/usr/lib/android-sdk"
 ANDROID_NDK_VERSION = "26.3.11579264"
 
@@ -171,6 +176,8 @@ def load_config(path: Path) -> dict[str, Any]:
     if config["build_profile"] not in {"production", "validation"}:
         raise SystemExit("build_profile must be production or validation")
     config.setdefault("additional_publication_refs", [])
+    config.setdefault("pipeline_health_listen", PIPELINE_HEALTH_LISTEN)
+    config.setdefault("pipeline_health_poll_seconds", 60)
     return config
 
 
@@ -354,6 +361,8 @@ def env_file(config: dict[str, Any]) -> str:
         "AEROBAG_BUILD_WATCH_LOG": (
             f"{artifact_root}/private-work/orchestrator-logs/published/master.log"
         ),
+        "AEROBAG_PIPELINE_HEALTH_LISTEN": config["pipeline_health_listen"],
+        "AEROBAG_PIPELINE_HEALTH_POLL_SECONDS": str(config["pipeline_health_poll_seconds"]),
         "ANDROID_HOME": ANDROID_SDK_ROOT,
         "ANDROID_SDK_ROOT": ANDROID_SDK_ROOT,
         "PATH": "/root/.cargo/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin",
@@ -614,6 +623,7 @@ def main() -> int:
             "aerobag-live-feeds.service": service_state("aerobag-live-feeds.service"),
             "aerobag-client-debug-log.service": service_state("aerobag-client-debug-log.service"),
             "aerobag-build-watch.service": service_state("aerobag-build-watch.service"),
+            "aerobag-pipeline-health.service": service_state("aerobag-pipeline-health.service"),
             "aerobag-build-product.service": service_state("aerobag-build-product.service"),
             "aerobag-build-product.timer": service_state("aerobag-build-product.timer"),
             "aerobag-health.timer": service_state("aerobag-health.timer"),
@@ -744,6 +754,10 @@ def build_watch_script() -> str:
     return BUILD_WATCH_SCRIPT.read_text(encoding="utf-8")
 
 
+def pipeline_health_script() -> str:
+    return PIPELINE_HEALTH_SCRIPT.read_text(encoding="utf-8")
+
+
 def nginx_config(config: dict[str, Any]) -> str:
     web_dist = config["web_dist"]
     published_root = f"{config['artifact_root']}/published"
@@ -775,6 +789,12 @@ def nginx_config(config: dict[str, Any]) -> str:
 
     location /build-watch/ {{
         proxy_pass http://{BUILD_WATCH_LISTEN}/;
+        proxy_http_version 1.1;
+        proxy_buffering off;
+    }}
+
+    location /pipeline-health/ {{
+        proxy_pass http://{config['pipeline_health_listen']};
         proxy_http_version 1.1;
         proxy_buffering off;
     }}
@@ -897,6 +917,24 @@ WantedBy=multi-user.target
 """
 
 
+def pipeline_health_unit() -> str:
+    return """[Unit]
+Description=Aerobag preprocessing pipeline health monitor
+After=network.target aerobag-live-feeds.service aerobag-build-watch.service
+Wants=aerobag-live-feeds.service aerobag-build-watch.service
+
+[Service]
+Type=simple
+EnvironmentFile=/etc/aerobag/env
+ExecStart=/bin/bash -lc 'source /etc/aerobag/env; exec /usr/local/bin/aerobag-pipeline-health --calendar /etc/aerobag/faa-cycle-calendar.json --listen "$AEROBAG_PIPELINE_HEALTH_LISTEN" --poll-seconds "$AEROBAG_PIPELINE_HEALTH_POLL_SECONDS"'
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target
+"""
+
+
 def health_unit() -> str:
     return """[Unit]
 Description=Write Aerobag machine-readable health status
@@ -945,6 +983,19 @@ def write_remote_config(
         "/usr/local/bin/aerobag-build-watch",
         build_watch_script(),
         mode="0755",
+        dry_run=dry_run,
+    )
+    write_remote_file(
+        config,
+        "/usr/local/bin/aerobag-pipeline-health",
+        pipeline_health_script(),
+        mode="0755",
+        dry_run=dry_run,
+    )
+    write_remote_file(
+        config,
+        "/etc/aerobag/faa-cycle-calendar.json",
+        FAA_CYCLE_CALENDAR.read_text(encoding="utf-8"),
         dry_run=dry_run,
     )
     if include_build_config:
@@ -1010,6 +1061,12 @@ def write_remote_config(
     )
     write_remote_file(
         config,
+        f"{SYSTEMD_DIR}/aerobag-pipeline-health.service",
+        pipeline_health_unit(),
+        dry_run=dry_run,
+    )
+    write_remote_file(
+        config,
         f"{SYSTEMD_DIR}/aerobag-health.service",
         health_unit(),
         dry_run=dry_run,
@@ -1033,6 +1090,7 @@ def prepare_remote_paths(config: dict[str, Any], *, dry_run: bool) -> None:
         config["ui_target_root"],
         config["cargo_target_dir"],
         f"{config['data_root']}/health",
+        f"{config['data_root']}/health/pipeline-health",
         f"{config['data_root']}/client-debug",
     ]
     command = "set -euo pipefail\n" + "\n".join(
@@ -1051,7 +1109,7 @@ def reload_services(config: dict[str, Any], *, dry_run: bool) -> None:
         systemctl daemon-reload
         systemctl enable nginx.service
         systemctl restart nginx.service
-        systemctl enable aerobag-live-feeds.service aerobag-client-debug-log.service aerobag-build-watch.service aerobag-build-product.timer aerobag-health.timer
+        systemctl enable aerobag-live-feeds.service aerobag-client-debug-log.service aerobag-build-watch.service aerobag-pipeline-health.service aerobag-build-product.timer aerobag-health.timer
         """
     ).strip()
     run_ssh(config, command, dry_run=dry_run)
@@ -1065,6 +1123,7 @@ def start_runtime(config: dict[str, Any], *, skip_build: bool, dry_run: bool) ->
             systemctl restart aerobag-live-feeds.service
             systemctl restart aerobag-client-debug-log.service
             systemctl restart aerobag-build-watch.service
+            systemctl restart aerobag-pipeline-health.service
             systemctl start aerobag-health.service || true
             systemctl start aerobag-build-product.timer
             systemctl start aerobag-health.timer
@@ -1079,6 +1138,7 @@ def start_runtime(config: dict[str, Any], *, skip_build: bool, dry_run: bool) ->
         systemctl restart aerobag-live-feeds.service
         systemctl restart aerobag-client-debug-log.service
         systemctl restart aerobag-build-watch.service
+        systemctl restart aerobag-pipeline-health.service
         systemctl start --no-block aerobag-build-product.service
         systemctl start aerobag-build-product.timer
         systemctl start aerobag-health.timer

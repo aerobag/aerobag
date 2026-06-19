@@ -10,6 +10,7 @@ from osgeo import gdal
 from PIL import Image, ImageDraw
 
 TRANSPARENT_INDEX = 0
+POOR_COLOR_MATCH_THRESHOLD = 8
 
 
 def open_source(source_gz, output_dir):
@@ -79,15 +80,26 @@ def quantize_rgba_to_fixed_palette_indices(rgba, palette):
     indices = np.zeros(rgba.shape[:2], dtype=np.uint8)
     opaque = rgba[:, :, 3] > 0
     if not np.any(opaque):
-        return indices
+        return indices, {
+            'palette_error_max': 0.0,
+            'palette_error_p95': 0.0,
+            'poor_color_match_count': 0,
+        }
     colors = rgba[:, :, :3][opaque]
     unique, inverse = np.unique(colors.reshape(-1, 3), axis=0, return_inverse=True)
     palette_i16 = palette[1:, :].astype(np.int16)
     unique_i16 = unique.astype(np.int16)
     distances = np.max(np.abs(unique_i16[:, None, :] - palette_i16[None, :, :]), axis=2)
-    mapped_unique = (np.argmin(distances, axis=1) + 1).astype(np.uint8)
+    nearest = np.argmin(distances, axis=1)
+    nearest_errors = distances[np.arange(distances.shape[0]), nearest]
+    pixel_errors = nearest_errors[inverse]
+    mapped_unique = (nearest + 1).astype(np.uint8)
     indices[opaque] = mapped_unique[inverse]
-    return indices
+    return indices, {
+        'palette_error_max': float(np.max(pixel_errors)),
+        'palette_error_p95': float(np.percentile(pixel_errors, 95)),
+        'poor_color_match_count': int(np.count_nonzero(pixel_errors > POOR_COLOR_MATCH_THRESHOLD)),
+    }
 
 
 def save_fixed_palette_png(indices, path, palette):
@@ -206,7 +218,7 @@ def write_tiles(rgba, output_dir, res, tile_size, geo_transform, debug_lat_lon_g
             pixel_lat * stride,
         ]
         level = composite_lat_lon_grid_under_radar(level, level_geo_transform)
-    level_indices = quantize_rgba_to_fixed_palette_indices(level, palette)
+    level_indices, quality = quantize_rgba_to_fixed_palette_indices(level, palette)
     height, width = level.shape[:2]
     tile_cols = (width + tile_size - 1) // tile_size
     tile_rows = (height + tile_size - 1) // tile_size
@@ -226,6 +238,7 @@ def write_tiles(rgba, output_dir, res, tile_size, geo_transform, debug_lat_lon_g
         'height': height,
         'tile_cols': tile_cols,
         'tile_rows': tile_rows,
+        'quality': quality,
     }
 
 
@@ -259,6 +272,12 @@ def main():
         write_tiles(rgba, output_dir, res, args.tile_size, geo_transform, args.debug_lat_lon_grid, palette)
         for res in sorted(set(args.res_level))
     ]
+    quality = {
+        'palette_error_max': max((level['quality']['palette_error_max'] for level in levels), default=0.0),
+        'palette_error_p95': max((level['quality']['palette_error_p95'] for level in levels), default=0.0),
+        'poor_color_match_count': sum(level['quality']['poor_color_match_count'] for level in levels),
+        'poor_color_match_threshold': POOR_COLOR_MATCH_THRESHOLD,
+    }
     manifest = {
         'schema_version': 1,
         'product': 'nexrad',
@@ -273,6 +292,7 @@ def main():
             'sha256': palette_sha256,
         },
         'tile_size': args.tile_size,
+        'quality': quality,
         'debug_lat_lon_grid': args.debug_lat_lon_grid,
         'res-levels': [level['res'] for level in levels],
         'source_grid': {

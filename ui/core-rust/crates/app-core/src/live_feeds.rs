@@ -997,14 +997,11 @@ fn prepare_metar_live_feed(payload: &MetarProductPayload) -> PreparedMetarLiveFe
 }
 
 fn supports_record_delta(product: &str) -> bool {
-    matches!(product, "metars")
+    record_delta_schema(product).is_some()
 }
 
-fn record_delta_schema(product: &str) -> Option<(&'static str, &'static str)> {
-    match product {
-        "metars" => Some(("metars_by_station", "metar_count")),
-        _ => None,
-    }
+fn record_delta_schema(product: &str) -> Option<(String, Option<String>)> {
+    crate::live_feed_product_registry().record_json_delta_schema(product)
 }
 
 fn apply_live_feed_record_delta(
@@ -1041,7 +1038,7 @@ fn apply_live_feed_record_delta(
     }
     let record_count = {
         let records = result
-            .get_mut(records_key)
+            .get_mut(records_key.as_str())
             .and_then(Value::as_object_mut)
             .ok_or_else(|| invalid_live_feed(format!("state missing {records_key} object")))?;
         for station_id in &delta.removed {
@@ -1056,8 +1053,10 @@ fn apply_live_feed_record_delta(
         .get_mut("version_label")
         .ok_or_else(|| invalid_live_feed("live feed state missing version_label".to_string()))?;
     *version = Value::String(delta.to_version.clone());
-    if let Some(count) = result.get_mut(count_key) {
-        *count = serde_json::json!(record_count);
+    if let Some(count_key) = count_key {
+        if let Some(count) = result.get_mut(count_key.as_str()) {
+            *count = serde_json::json!(record_count);
+        }
     }
     Ok(result)
 }

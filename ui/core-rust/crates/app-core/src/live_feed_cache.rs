@@ -562,6 +562,14 @@ impl LiveFeedProductRegistry {
         self.drivers.get(product)
     }
 
+    pub fn record_json_delta_schema(&self, product: &str) -> Option<(String, Option<String>)> {
+        self.driver(product)
+            .and_then(LiveFeedProductDriver::record_json_delta_schema)
+            .map(|(records_key, count_key)| {
+                (records_key.to_string(), count_key.map(str::to_string))
+            })
+    }
+
     fn required_driver(&self, product: &str) -> AppResult<&LiveFeedProductDriver> {
         self.driver(product).ok_or_else(|| {
             cache_error(format!(
@@ -571,7 +579,7 @@ impl LiveFeedProductRegistry {
     }
 }
 
-pub fn android_live_feed_product_registry() -> LiveFeedProductRegistry {
+pub fn live_feed_product_registry() -> LiveFeedProductRegistry {
     LiveFeedProductRegistry::new([
         LiveFeedProductDriver::RecordJson {
             product: "metars".to_string(),
@@ -605,6 +613,17 @@ impl LiveFeedProductDriver {
 
     fn supports_delta(&self) -> bool {
         matches!(self, Self::RecordJson { .. } | Self::NavKv { .. })
+    }
+
+    fn record_json_delta_schema(&self) -> Option<(&str, Option<&str>)> {
+        match self {
+            Self::RecordJson {
+                records_key,
+                count_key,
+                ..
+            } => Some((records_key, count_key.as_deref())),
+            Self::NavKv { .. } | Self::FullJson { .. } | Self::OpaqueFull { .. } => None,
+        }
     }
 
     fn delta_payload_kind(&self) -> &'static str {
@@ -1230,8 +1249,21 @@ mod tests {
     }
 
     #[test]
+    fn product_registry_describes_record_json_delta_schema() {
+        let registry = live_feed_product_registry();
+        assert_eq!(
+            registry.record_json_delta_schema("metars"),
+            Some((
+                "metars_by_station".to_string(),
+                Some("metar_count".to_string())
+            ))
+        );
+        assert_eq!(registry.record_json_delta_schema("tfrs"), None);
+    }
+
+    #[test]
     fn record_json_cache_installs_full_then_delta() {
-        let registry = android_live_feed_product_registry();
+        let registry = live_feed_product_registry();
         let v1 = metar_state("v1", &[("KSEA", "old"), ("KOLM", "old")]);
         let (v1_manifest, v1_bytes, v1_sha) = json_version_manifest("metars", "v1", &v1, None);
         let mut cache = LiveFeedCache::default();
@@ -1311,7 +1343,7 @@ mod tests {
 
     #[test]
     fn nav_kv_cache_installs_full_then_delta_with_deletes() {
-        let registry = android_live_feed_product_registry();
+        let registry = live_feed_product_registry();
         let first_pairs = vec![
             NavKvPair {
                 key: "obstacle/tile/z01/x000001/y000001".to_string(),

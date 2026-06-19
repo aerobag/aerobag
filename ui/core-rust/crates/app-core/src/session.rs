@@ -5387,26 +5387,6 @@ fn record_live_feed_connection_event(
     }
 }
 
-pub fn ingest_prepared_metar_live_feed_resource_in_session(
-    handle: u32,
-    resource_id: &str,
-    bytes: &[u8],
-) -> AppResult<()> {
-    let envelope = crate::decode_prepared_metar_live_feed(bytes)?;
-    let envelope_version = envelope.version.clone();
-    let mut sessions = lock_sessions();
-    let session = session_mut(&mut sessions, handle)?;
-    session
-        .live_feeds
-        .ingest_prepared_metar_live_feed(resource_id, &envelope)?;
-    if session.live_feeds.product_loaded_version("metars") != Some(envelope_version.as_str()) {
-        return Ok(());
-    }
-    install_prepared_metar_live_feed(session, envelope)?;
-    clear_data_status_record(session, LIVE_FEED_METARS_STATUS_ID);
-    Ok(())
-}
-
 pub fn install_live_feed_installed_state_in_session(
     handle: u32,
     installed: &crate::LiveFeedInstalledState,
@@ -5495,6 +5475,7 @@ fn install_live_feed_installed_state(
     Ok(())
 }
 
+#[cfg(test)]
 fn install_prepared_metar_live_feed(
     session: &mut UiSession,
     envelope: crate::PreparedMetarLiveFeedEnvelope,
@@ -5524,6 +5505,7 @@ fn install_prepared_metar_live_feed(
     Ok(())
 }
 
+#[cfg(test)]
 fn parse_prepared_metar_timestamp(
     value: Option<&str>,
     label: &str,

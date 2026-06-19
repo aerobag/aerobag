@@ -1261,7 +1261,7 @@ pub fn live_feed_cache_missing_requests_json(handle: u64) -> Result<String, Stri
     let cache = caches
         .get(&(handle as u32))
         .ok_or_else(|| format!("invalid live feed cache handle: {handle}"))?;
-    serde_json::to_string(&cache.missing_requests(&app_core::android_live_feed_product_registry()))
+    serde_json::to_string(&cache.missing_requests(&app_core::live_feed_product_registry()))
         .map_err(|err| err.to_string())
 }
 
@@ -1280,7 +1280,7 @@ pub fn live_feed_cache_install_fetched_bytes_json(
         .ok_or_else(|| format!("invalid live feed cache handle: {handle}"))?;
     let installed = cache
         .install_fetched_payload(
-            &app_core::android_live_feed_product_registry(),
+            &app_core::live_feed_product_registry(),
             &request,
             app_core::LiveFeedFetchedPayload::Bytes(bytes.to_vec()),
         )
@@ -1336,11 +1336,7 @@ pub fn live_feed_cache_ingest_installed_payload_bytes(
         .get_mut(&(handle as u32))
         .ok_or_else(|| format!("invalid live feed cache handle: {handle}"))?;
     cache
-        .ingest_installed_payload_bytes(
-            &app_core::android_live_feed_product_registry(),
-            &summary,
-            bytes,
-        )
+        .ingest_installed_payload_bytes(&app_core::live_feed_product_registry(), &summary, bytes)
         .map_err(|err| err.to_string())
 }
 

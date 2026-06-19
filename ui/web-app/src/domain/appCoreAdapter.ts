@@ -32,7 +32,6 @@ import type { NexradOverlayQueryResult } from "../generated/nexradOverlayWire";
 import { viewportCenterLatLon, type MapViewportState } from "./mapViewport";
 import { attachNavKvStoreToSession, resolveChartAssetUrl, runCoreHadOperation, runCoreHadSessionOperation, type UiInvalidation, type UiInvalidationListener } from "./navKv";
 import { debugLog, debugTiming, installRustDebugLogBridge, perfDebugLog } from "./debugLog";
-import { isMetarLiveFeedPayloadResource, prepareMetarLiveFeedResource, resetMetarLiveFeedPrep } from "./metarLiveFeedPrep";
 
 declare const __AEROBAG_LIVE_FEEDS_ORIGIN__: string | null;
 
@@ -796,7 +795,6 @@ type WasmModule = {
   ingest_airspace_features_in_session(handle: number, featuresJson: string): Promise<void> | void;
   ingest_airspace_label_tiles_in_session(handle: number, tilesJson: string): Promise<void> | void;
   ingest_resource_in_session(handle: number, resourceId: string, resourceBytes: Uint8Array): Promise<void> | void;
-  ingest_prepared_metar_live_feed_resource_in_session(handle: number, resourceId: string, preparedResourceBytes: Uint8Array): Promise<void> | void;
   report_session_resource_failure_in_session(handle: number, resourceId: string, message: string): Promise<string> | string;
   report_session_resource_failure_in_session_at_epoch_ms(handle: number, resourceId: string, message: string, nowEpochMs: number): Promise<string> | string;
   get_map_overlay_in_session(handle: number, viewportJson: string, widthPx: number, heightPx: number, nowEpochMs: number): Promise<string> | string;
@@ -878,15 +876,6 @@ export class WasmAppCoreAdapter implements AppCoreAdapter {
       resourceId: string,
       resourceBytes: Uint8Array,
     ) => {
-      if (isMetarLiveFeedPayloadResource(resourceId)) {
-        const preparedBytes = await prepareMetarLiveFeedResource(resourceId, resourceBytes);
-        await this.module.ingest_prepared_metar_live_feed_resource_in_session(
-          sessionHandle,
-          resourceId,
-          preparedBytes,
-        );
-        return;
-      }
       await this.module.ingest_resource_in_session(sessionHandle, resourceId, resourceBytes);
     };
     const runSessionOperationForHandle = <T>(
@@ -930,7 +919,6 @@ export class WasmAppCoreAdapter implements AppCoreAdapter {
         debugLog("startup.session.core_profile", { timings: createdEnvelope.timings });
       }
       const created = createdEnvelope.result ?? createdEnvelope;
-      await debugTiming("startup.session.reset_metar_prep", () => resetMetarLiveFeedPrep());
       await debugTiming("startup.session.set_resource_policy", () =>
         module.set_resource_policy_in_session(created.handle, JSON.stringify("public_unpacked")),
       );

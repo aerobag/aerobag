@@ -367,12 +367,8 @@ internal fun HomePage(
     onSelectPage: (AppPage) -> Unit,
     onOpenPlan: () -> Unit,
     onOpenRecentChartOrPlate: () -> Unit = {},
-    initialOfflinePackagesOpen: Boolean = false,
     offlinePackagesControllerHandle: Long,
-    forceOfflinePackagesOpen: Boolean = false,
-    bootstrapMessage: String? = null,
     onOfflinePackagesClosed: (() -> Unit)? = null,
-    onRuntimeMaybeAvailable: (() -> Unit)? = null,
 ) {
     val uiTheme = LocalAerobagUiTheme.current
     val context = LocalContext.current
@@ -387,9 +383,6 @@ internal fun HomePage(
         mutableStateOf(readPackageSourceBaseUrl(context.applicationContext, prefs))
     }
     val offlinePackagesRouted = page == AppPage.OfflinePackages
-    var offlinePackagesOpen by remember(page) {
-        mutableStateOf(forceOfflinePackagesOpen || initialOfflinePackagesOpen || offlinePackagesRouted)
-    }
     val regionOptions = remember { offlineRegionOptions() }
     val regionIds = remember(regionOptions) { regionOptions.map { it.id } }
     val productIds = remember { OfflineProductOptions.map { it.id } }
@@ -540,18 +533,12 @@ internal fun HomePage(
                     )
                 }
                 navDbStatusRefreshToken += 1
-                onRuntimeMaybeAvailable?.invoke()
             }
             null -> Unit
         }
     }
-    LaunchedEffect(forceOfflinePackagesOpen, offlinePackagesRouted) {
-        if (forceOfflinePackagesOpen || offlinePackagesRouted) {
-            offlinePackagesOpen = true
-        }
-    }
-    LaunchedEffect(forceOfflinePackagesOpen, offlinePackagesOpen, offlinePackagesRouted) {
-        if (forceOfflinePackagesOpen || offlinePackagesOpen || offlinePackagesRouted) {
+    LaunchedEffect(offlinePackagesRouted) {
+        if (offlinePackagesRouted) {
             launchOfflinePackageOperation {
                 dispatchOfflinePackagesController(OfflinePackagesControllerEventWire.EnsureLibrary)
             }
@@ -626,33 +613,18 @@ internal fun HomePage(
             )
         }
 
-        if (offlinePackagesOpen || forceOfflinePackagesOpen || offlinePackagesRouted) {
-            if (!forceOfflinePackagesOpen && !offlinePackagesRouted) {
-                Scrim { offlinePackagesOpen = false }
-            }
-            val offlinePanelModifier =
-                if (offlinePackagesRouted) {
-                    Modifier
-                        .fillMaxSize()
-                        .padding(
-                            start = ThumbGap,
-                            end = ThumbGap,
-                            top = ThumbSize + (ThumbGap * 2f),
-                            bottom = ThumbGap,
-                        )
-                        .zIndex(1f)
-                } else {
-                    Modifier
-                        .align(Alignment.Center)
-                        .padding(ThumbGap * 1.4f)
-                        .zIndex(1f)
-                }
+        if (offlinePackagesRouted) {
+            val offlinePanelModifier = Modifier
+                .fillMaxSize()
+                .padding(
+                    start = ThumbGap,
+                    end = ThumbGap,
+                    top = ThumbSize + (ThumbGap * 2f),
+                    bottom = ThumbGap,
+                )
+                .zIndex(1f)
             val controllerUiState = offlinePackagesControllerResult?.uiState
-            val navDbStatus by produceState<org.aerobag.app.domain.NavDbStatus?>(initialValue = null, context, navDbStatusRefreshToken, offlinePackagesOpen, forceOfflinePackagesOpen, offlinePackagesRouted) {
-                if (!offlinePackagesOpen && !forceOfflinePackagesOpen && !offlinePackagesRouted) {
-                    value = null
-                    return@produceState
-                }
+            val navDbStatus by produceState<org.aerobag.app.domain.NavDbStatus?>(initialValue = null, context, navDbStatusRefreshToken, offlinePackagesRouted) {
                 value = withContext(Dispatchers.IO) {
                     AndroidRuntimeContent.inspectNavDbStatus(context.applicationContext)
                 }
@@ -676,7 +648,6 @@ internal fun HomePage(
                 val libraryRefreshCancelEnabled = controllerUiState?.refreshCancelEnabled ?: packageOperationActive
                 OfflinePackagesLibraryPanel(
                     message = listOfNotNull(
-                        bootstrapMessage,
                         controllerUiState?.libraryErrorMessage,
                         if (libraryRefreshInFlight) {
                             "Refreshing package library..."
@@ -712,29 +683,18 @@ internal fun HomePage(
                         activePackageConnections.disconnectAll()
                         offlinePackageOperationJob?.cancel(CancellationException("offline package refresh canceled"))
                     },
-                    closeEnabled = !forceOfflinePackagesOpen,
-                    onClose = {
-                        if (!forceOfflinePackagesOpen && !offlinePackagesRouted) {
-                            offlinePackagesOpen = false
-                            onOfflinePackagesClosed?.invoke()
-                        }
-                    },
+                    closeEnabled = false,
+                    onClose = { onOfflinePackagesClosed?.invoke() },
                     showCloseButton = false,
                     modifier = offlinePanelModifier,
                 )
             } else if (controllerUiState.plannerUiState == null) {
                 OfflinePackagesErrorPanel(
                     message = listOfNotNull(
-                        bootstrapMessage,
                         controllerUiState.libraryErrorMessage ?: "Loading offline package planner...",
                     ).joinToString("\n\n"),
-                    closeEnabled = !forceOfflinePackagesOpen,
-                    onClose = {
-                        if (!forceOfflinePackagesOpen && !offlinePackagesRouted) {
-                            offlinePackagesOpen = false
-                            onOfflinePackagesClosed?.invoke()
-                        }
-                    },
+                    closeEnabled = false,
+                    onClose = { onOfflinePackagesClosed?.invoke() },
                     showCloseButton = false,
                     modifier = offlinePanelModifier,
                 )
@@ -826,13 +786,8 @@ internal fun HomePage(
                         offlinePackageOperationJob?.cancel(CancellationException("offline package operation canceled"))
                     },
                     syncInFlight = controllerUiState.syncInFlight,
-                    closeEnabled = !forceOfflinePackagesOpen,
-                    onClose = {
-                        if (!forceOfflinePackagesOpen && !offlinePackagesRouted) {
-                            offlinePackagesOpen = false
-                            onOfflinePackagesClosed?.invoke()
-                        }
-                    },
+                    closeEnabled = false,
+                    onClose = { onOfflinePackagesClosed?.invoke() },
                     showCloseButton = false,
                     modifier = offlinePanelModifier,
                 )

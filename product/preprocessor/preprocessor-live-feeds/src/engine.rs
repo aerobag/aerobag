@@ -775,7 +775,7 @@ impl<C: Clock> FileLiveFeedPublisher<C> {
             state_path,
             manifest_value,
             state_sha256,
-            state_payload_kind,
+            state_payload_kind.or_else(|| Some("json".to_string())),
             status_timestamps,
             delta_policy,
             precomputed_delta,
@@ -1856,6 +1856,65 @@ mod tests {
         assert_eq!(version_manifest.product, "winds-aloft");
         assert_eq!(version_manifest.previous, None);
         assert_eq!(version_manifest.state.kind.as_deref(), Some("json_xz"));
+        assert!(version_manifest.delta_from_previous.is_none());
+        Ok(())
+    }
+
+    #[test]
+    fn file_publisher_labels_directory_manifest_state() -> anyhow::Result<()> {
+        let temp = tempdir()?;
+        let root = temp.path().join("live-feeds");
+        let publisher = FileLiveFeedPublisher::new(
+            root.clone(),
+            FixedClock::new(Utc.with_ymd_and_hms(2026, 5, 18, 1, 2, 3).unwrap()),
+        );
+        let source_root = temp.path().join("nexrad-state");
+        fs::create_dir_all(source_root.join("tiles/z00"))?;
+        let manifest_path = source_root.join("manifest.json");
+        let manifest_value = serde_json::json!({
+            "schema_version": 1,
+            "product": "nexrad",
+            "state_id": "v1",
+            "levels": []
+        });
+        write_json_pretty_file(&manifest_path, &manifest_value)?;
+        write_json_pretty_file(
+            &source_root.join("tiles/z00/tile.json"),
+            &serde_json::json!({"tile": true}),
+        )?;
+
+        let result = publisher.publish(BuiltLiveFeedState {
+            product: "nexrad".to_string(),
+            version: "v1".to_string(),
+            payload: LiveFeedStatePayload::Directory {
+                root: source_root,
+                manifest_path,
+                manifest_value: manifest_value.clone(),
+            },
+            state_sha256: None,
+            state_payload_kind: None,
+            status_timestamps: Default::default(),
+            delta_policy: DeltaPolicy::None,
+            precomputed_delta: None,
+            changed_count_if_no_delta: 1,
+        })?;
+
+        assert_eq!(result.product, "nexrad");
+        assert_eq!(result.version, "v1");
+
+        let version_manifest_path = root.join("versions").join("nexrad").join("v1.json");
+        let version_manifest: LiveFeedVersionManifest =
+            serde_json::from_slice(&fs::read(version_manifest_path)?)?;
+        assert_eq!(version_manifest.schema_version, LIVE_FEEDS_SCHEMA_VERSION);
+        assert_eq!(version_manifest.state.kind.as_deref(), Some("json"));
+        assert_eq!(version_manifest.state.url, "states/nexrad/v1/manifest.json");
+        assert_eq!(
+            version_manifest
+                .install_state
+                .as_ref()
+                .and_then(|state| state.kind.as_deref()),
+            Some("directory_package")
+        );
         assert!(version_manifest.delta_from_previous.is_none());
         Ok(())
     }

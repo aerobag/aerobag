@@ -1345,6 +1345,14 @@ mod tests {
             assert_eq!(version_manifest.product, "nexrad");
             assert_eq!(version_manifest.version, version);
             assert!(version_manifest.previous.is_none());
+            assert_eq!(version_manifest.state.kind.as_deref(), Some("json"));
+            assert_eq!(
+                version_manifest
+                    .install_state
+                    .as_ref()
+                    .and_then(|state| state.kind.as_deref()),
+                Some("directory_package")
+            );
             assert!(version_manifest.delta_from_previous.is_none());
 
             if let Some(previous) = previous_version.as_deref() {

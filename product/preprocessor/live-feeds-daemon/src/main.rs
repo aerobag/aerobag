@@ -22,6 +22,7 @@ use preprocessor_live_feeds::{
         FixtureCacheKeyPart, IntervalLiveFeedSource, LiveFeedInvalidation, LiveFeedPollingTask,
         LiveFeedSourceAndBuilder, LiveFeedTickResult, LiveFeedVersionManifest,
         LiveFeedsCurrentManifest, PublishedLiveFeedUpdate, SseBroker, SystemClock,
+        LIVE_FEEDS_SCHEMA_VERSION,
     },
     products::{
         LiveFeedFetchConfig, MetarLiveFeedBuilder, NexradSourceGridLiveFeedBuilder,
@@ -717,7 +718,7 @@ fn reset_simulation_current_manifest(live_root: &Path) -> anyhow::Result<()> {
     write_live_feeds_current_manifest(
         live_root,
         &LiveFeedsCurrentManifest {
-            schema_version: 1,
+            schema_version: LIVE_FEEDS_SCHEMA_VERSION,
             generated_at_utc: Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Secs, true),
             products: BTreeMap::new(),
         },
@@ -1034,11 +1035,7 @@ fn write_sse_stream(
     let frames = list_live_feed_event_frames(live_root)?;
     let mut sent_events = 0_usize;
     if frames.is_empty() {
-        writeln!(
-            writer,
-            "event: live-feed-heartbeat\ndata: {{\"schema_version\":1,\"products\":[]}}\n"
-        )
-        .context("failed to write empty SSE heartbeat")?;
+        write_sse_heartbeat(writer).context("failed to write empty SSE heartbeat")?;
         writer.flush().context("failed to flush SSE heartbeat")?;
         if event_limit == Some(0) {
             return Ok(());
@@ -1072,16 +1069,25 @@ fn write_sse_stream(
                 }
             }
             Err(RecvTimeoutError::Timeout) => {
-                writeln!(
-                    writer,
-                    "event: live-feed-heartbeat\ndata: {{\"schema_version\":1,\"products\":[]}}\n"
-                )
-                .context("failed to write SSE heartbeat")?;
+                write_sse_heartbeat(writer).context("failed to write SSE heartbeat")?;
                 writer.flush().context("failed to flush SSE heartbeat")?;
             }
             Err(RecvTimeoutError::Disconnected) => return Ok(()),
         }
     }
+}
+
+fn write_sse_heartbeat(writer: &mut impl Write) -> anyhow::Result<()> {
+    writeln!(
+        writer,
+        "event: live-feed-heartbeat\ndata: {}\n",
+        serde_json::to_string(&serde_json::json!({
+            "schema_version": LIVE_FEEDS_SCHEMA_VERSION,
+            "products": [],
+        }))
+        .context("failed to encode SSE heartbeat")?
+    )
+    .context("failed to write SSE heartbeat")
 }
 
 fn write_sse_headers(writer: &mut impl Write) -> anyhow::Result<()> {
@@ -1107,7 +1113,7 @@ fn write_sse_event(writer: &mut impl Write, event: &LiveFeedSseEvent) -> anyhow:
         writer,
         "data: {}\n",
         serde_json::to_string(&serde_json::json!({
-            "schema_version": 1,
+            "schema_version": LIVE_FEEDS_SCHEMA_VERSION,
             "product": event.product,
             "version": event.version,
             "version_manifest_url": event.version_manifest_url,
@@ -1633,6 +1639,7 @@ mod tests {
         let text = String::from_utf8(bytes)?;
         assert!(text.contains("id: metars:m1\n"));
         assert!(text.contains("event: live-feed-current\n"));
+        assert!(text.contains("\"schema_version\":2"), "{text}");
         assert!(text.contains("\"product\":\"metars\""));
         Ok(())
     }
@@ -1686,6 +1693,7 @@ mod tests {
         }
         let current: LiveFeedsCurrentManifest =
             serde_json::from_slice(&fs::read(temp.path().join("current.json"))?)?;
+        assert_eq!(current.schema_version, LIVE_FEEDS_SCHEMA_VERSION);
         assert!(current.products.is_empty());
         Ok(())
     }
@@ -1713,15 +1721,21 @@ mod tests {
                 temp.path()
                     .join("states")
                     .join("metars")
-                    .join(format!("{version}.json"))
+                    .join(format!("{version}.json.xz"))
                     .is_file(),
                 "{version} state should be retained"
             );
         }
         assert!(!temp.path().join("versions/metars/v007.json").exists());
-        assert!(!temp.path().join("states/metars/v007.json").exists());
-        assert!(!temp.path().join("deltas/metars/v001__v002.json").exists());
-        assert!(temp.path().join("deltas/metars/v009__v010.json").is_file());
+        assert!(!temp.path().join("states/metars/v007.json.xz").exists());
+        assert!(!temp
+            .path()
+            .join("deltas/metars/v001__v002.json.xz")
+            .exists());
+        assert!(temp
+            .path()
+            .join("deltas/metars/v009__v010.json.xz")
+            .is_file());
         assert!(temp.path().join("versions/nexrad/v001.json").is_file());
         let current: LiveFeedsCurrentManifest =
             serde_json::from_slice(&fs::read(temp.path().join("current.json"))?)?;
@@ -1767,6 +1781,7 @@ mod tests {
             "{response}"
         );
         assert!(response.contains("event: live-feed-current"), "{response}");
+        assert!(response.contains("\"schema_version\":2"), "{response}");
         assert!(response.contains("\"product\":\"metars\""), "{response}");
         Ok(())
     }

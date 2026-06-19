@@ -111,6 +111,18 @@ The deploy installs these systemd units:
   health status every minute.
 - `nginx.service`: public HTTP server on port 80.
 
+The generated live-feeds unit runs the daemon in production mode by omitting
+simulation/fixture flags:
+
+```bash
+"$CARGO_TARGET_DIR/release/aerobag-live-feedsd" \
+  --live-root "$ARTIFACT_ROOT/live-feeds" \
+  --scratch-root "$ARTIFACT_ROOT/private-work/live-feeds" \
+  --fetch-cache-root "$ARTIFACT_ROOT/cache/fetch" \
+  --fetch-cache-mode fill \
+  --listen "$AEROBAG_LIVE_FEEDS_LISTEN"
+```
+
 Manual product rebuild:
 
 ```bash

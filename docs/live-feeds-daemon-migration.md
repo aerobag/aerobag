@@ -43,9 +43,10 @@ Publication ordering is part of the contract:
 
 3. Add `CycleDataProvider`.
    Live feeds ask for current shared cycle-derived datasets, such as towered
-   METAR station IDs, through an interface. In production the provider reads
-   the public cycle publication rooted at `--publication-root`; it must not
-   read the cycle build cache.
+   METAR station IDs, through an explicit interface. The production daemon CLI
+   does not take a cycle publication root; product builders that need
+   cycle-derived data must receive that dependency explicitly and must not read
+   the cycle build cache.
 
 4. Split live-feed scratch space by product.
    Use `private-work/live-feeds/<product>/...` for transient production work.

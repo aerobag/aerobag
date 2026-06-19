@@ -111,6 +111,7 @@ describe("loadBestAvailableAdapter", () => {
       set_resource_policy_in_session: async () => snapshotJson,
       configure_platform_capabilities_in_session: async () => snapshotJson,
       load_raster_map_catalog_in_session: async () => JSON.stringify({ state: "complete", result: JSON.parse(snapshotJson) }),
+      resolve_chart_asset_resource_in_session: async () => JSON.stringify({ kind: "unavailable", message: "mock chart asset" }),
       select_map_family_in_session: async () => snapshotJson,
       select_raster_map_in_session: async () => snapshotJson,
       insert_waypoint_at_flight_plan_row_in_session: async () => JSON.stringify({ state: "complete", result: JSON.parse(snapshotJson) }),

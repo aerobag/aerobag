@@ -139,6 +139,154 @@ type SurfaceSize = {
   height: number;
 };
 
+type WebIdleReason = "active" | "document-hidden" | "inactivity";
+
+type WebIdleState = {
+  idle: boolean;
+  reason: WebIdleReason;
+  lastActivityEpochMs: number;
+  enteredIdleEpochMs: number | null;
+};
+
+const WebIdleTimeoutMs = 60 * 60 * 1000;
+
+function initialWebIdleState(): WebIdleState {
+  const now = Date.now();
+  if (typeof document !== "undefined" && document.visibilityState !== "visible") {
+    return {
+      idle: true,
+      reason: "document-hidden",
+      lastActivityEpochMs: now,
+      enteredIdleEpochMs: now,
+    };
+  }
+  return {
+    idle: false,
+    reason: "active",
+    lastActivityEpochMs: now,
+    enteredIdleEpochMs: null,
+  };
+}
+
+function sameWebIdleState(left: WebIdleState, right: WebIdleState): boolean {
+  return left.idle === right.idle
+    && left.reason === right.reason
+    && left.lastActivityEpochMs === right.lastActivityEpochMs
+    && left.enteredIdleEpochMs === right.enteredIdleEpochMs;
+}
+
+function useWebIdleState(timeoutMs = WebIdleTimeoutMs): WebIdleState {
+  const [idleState, setIdleState] = useState<WebIdleState>(initialWebIdleState);
+  const lastActivityEpochMsRef = useRef(idleState.lastActivityEpochMs);
+
+  useEffect(() => {
+    lastActivityEpochMsRef.current = idleState.lastActivityEpochMs;
+  }, [idleState.lastActivityEpochMs]);
+
+  useEffect(() => {
+    if (typeof window === "undefined" || typeof document === "undefined") {
+      return;
+    }
+
+    let idleTimer: number | null = null;
+
+    const clearIdleTimer = () => {
+      if (idleTimer === null) {
+        return;
+      }
+      window.clearTimeout(idleTimer);
+      idleTimer = null;
+    };
+
+    const enterIdle = (reason: Exclude<WebIdleReason, "active">) => {
+      clearIdleTimer();
+      const now = Date.now();
+      const next: WebIdleState = {
+        idle: true,
+        reason,
+        lastActivityEpochMs: lastActivityEpochMsRef.current,
+        enteredIdleEpochMs: now,
+      };
+      setIdleState((current) => sameWebIdleState(current, next) ? current : next);
+    };
+
+    const scheduleIdleTimer = () => {
+      clearIdleTimer();
+      if (document.visibilityState !== "visible") {
+        return;
+      }
+      const remainingMs = Math.max(0, lastActivityEpochMsRef.current + timeoutMs - Date.now());
+      idleTimer = window.setTimeout(() => {
+        enterIdle("inactivity");
+      }, remainingMs);
+    };
+
+    const markActive = () => {
+      if (document.visibilityState !== "visible") {
+        return;
+      }
+      const now = Date.now();
+      lastActivityEpochMsRef.current = now;
+      const next: WebIdleState = {
+        idle: false,
+        reason: "active",
+        lastActivityEpochMs: now,
+        enteredIdleEpochMs: null,
+      };
+      setIdleState((current) => current.idle ? next : current);
+      scheduleIdleTimer();
+    };
+
+    const handleVisibilityChange = () => {
+      if (document.visibilityState === "visible") {
+        markActive();
+      } else {
+        enterIdle("document-hidden");
+      }
+    };
+    const handleFocus = () => markActive();
+    const handleBlur = () => scheduleIdleTimer();
+    const handleActivity = () => markActive();
+    const activityOptions: AddEventListenerOptions = { capture: true, passive: true };
+
+    document.addEventListener("visibilitychange", handleVisibilityChange);
+    window.addEventListener("focus", handleFocus);
+    window.addEventListener("blur", handleBlur);
+    window.addEventListener("pointerdown", handleActivity, activityOptions);
+    window.addEventListener("keydown", handleActivity, { capture: true });
+    window.addEventListener("wheel", handleActivity, activityOptions);
+    window.addEventListener("touchstart", handleActivity, activityOptions);
+
+    if (document.visibilityState !== "visible") {
+      enterIdle("document-hidden");
+    } else {
+      markActive();
+    }
+
+    return () => {
+      clearIdleTimer();
+      document.removeEventListener("visibilitychange", handleVisibilityChange);
+      window.removeEventListener("focus", handleFocus);
+      window.removeEventListener("blur", handleBlur);
+      window.removeEventListener("pointerdown", handleActivity, activityOptions);
+      window.removeEventListener("keydown", handleActivity, { capture: true });
+      window.removeEventListener("wheel", handleActivity, activityOptions);
+      window.removeEventListener("touchstart", handleActivity, activityOptions);
+    };
+  }, [timeoutMs]);
+
+  useEffect(() => {
+    debugLog("web.idle.state", {
+      idle: idleState.idle,
+      reason: idleState.reason,
+      last_activity_epoch_ms: idleState.lastActivityEpochMs,
+      entered_idle_epoch_ms: idleState.enteredIdleEpochMs,
+    });
+  }, [idleState]);
+
+  return idleState;
+}
+
 type UiInvalidationRevisions = Record<UiInvalidation, number>;
 
 function initialUiInvalidationRevisions(): UiInvalidationRevisions {
@@ -1524,6 +1672,7 @@ export default function App() {
     [initialRecentAirportIds, persistedUiState.selectedAirportId, persistedUiState.selectedChartId],
   );
   const [uiSession, setUiSession] = useState<UiSession | null>(null);
+  const webIdleState = useWebIdleState();
   const [uiInvalidationRevisions, setUiInvalidationRevisions] = useState<UiInvalidationRevisions>(
     initialUiInvalidationRevisions,
   );
@@ -2250,6 +2399,10 @@ export default function App() {
     if (!uiSession) {
       return;
     }
+    if (webIdleState.idle) {
+      debugLog("live_feeds.subscription.idle", { reason: webIdleState.reason });
+      return;
+    }
     let cancelled = false;
     void uiSession.startLiveFeedSubscription().catch((error) => {
       debugLog("live_feeds.subscription.failed", { message: error instanceof Error ? error.message : String(error) });
@@ -2262,7 +2415,7 @@ export default function App() {
         }
       });
     };
-  }, [uiSession]);
+  }, [uiSession, webIdleState.idle, webIdleState.reason]);
 
   useEffect(() => {
     if (!sessionSnapshot.raster_map) {

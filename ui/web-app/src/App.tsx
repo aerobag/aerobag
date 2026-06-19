@@ -1678,6 +1678,7 @@ export default function App() {
   );
   const sessionSnapshotRefreshInFlightRef = useRef(false);
   const sessionSnapshotRefreshTimerRef = useRef<number | null>(null);
+  const explicitSessionSnapshotVersionRef = useRef(0);
   const cycleProductFreshnessTimerRef = useRef<number | null>(null);
   const [sessionSnapshot, setSessionSnapshot] = useState<UiSessionSnapshot>({
     app_state: {
@@ -1748,6 +1749,14 @@ export default function App() {
     raster_map: null,
     next_cycle_product_freshness_check_epoch_ms: null,
   });
+  const applyExplicitSessionSnapshot = useCallback((nextSnapshot: UiSessionSnapshot, source: string) => {
+    explicitSessionSnapshotVersionRef.current += 1;
+    debugLog("session.snapshot.explicit_apply", {
+      source,
+      version: explicitSessionSnapshotVersionRef.current,
+    });
+    setSessionSnapshot(nextSnapshot);
+  }, []);
   const [playbackSourcePath, setPlaybackSourcePath] = useState(defaultPlaybackTracePath);
   const [debugWarningActive, setDebugWarningActive] = useState(false);
   const [derivedChartPageState, setDerivedChartPageState] = useState<DerivedChartPageState>(initialChartPageState);
@@ -1908,8 +1917,17 @@ export default function App() {
       return;
     }
     sessionSnapshotRefreshInFlightRef.current = true;
+    const explicitVersionAtStart = explicitSessionSnapshotVersionRef.current;
     debugLog("session.snapshot.refresh.start", { reason });
     void uiSession.snapshot().then((nextSnapshot) => {
+      if (explicitSessionSnapshotVersionRef.current !== explicitVersionAtStart) {
+        debugLog("session.snapshot.refresh.stale_skip", {
+          reason,
+          started_explicit_version: explicitVersionAtStart,
+          current_explicit_version: explicitSessionSnapshotVersionRef.current,
+        });
+        return;
+      }
       setSessionSnapshot(nextSnapshot);
     }).catch((error: unknown) => {
       debugLog("session.snapshot.refresh.error", { reason, error: errorMessage(error) });
@@ -2851,6 +2869,7 @@ export default function App() {
           onPlaybackSnapshotChange={setSessionSnapshot}
           onSituationControlInput={applySituationControlInput}
           uiSession={uiSession}
+          onExplicitSessionSnapshot={applyExplicitSessionSnapshot}
           debugOpen={debugOpen}
           onDebugToggle={() => setDebugOpen((open) => !open)}
           onDebugFlagChange={(flagId, enabled) => void setDebugFlag(flagId, enabled)}
@@ -2932,27 +2951,27 @@ export default function App() {
           onActivateNextLeg={async () => {
             if (!uiSession) return;
             const nextSnapshot = await uiSession.activateNextLeg();
-            setSessionSnapshot(nextSnapshot);
+            applyExplicitSessionSnapshot(nextSnapshot, "activate_next_leg");
           }}
           onSuspendSequencing={async () => {
             if (!uiSession) return;
             const nextSnapshot = await uiSession.suspendSequencing();
-            setSessionSnapshot(nextSnapshot);
+            applyExplicitSessionSnapshot(nextSnapshot, "suspend_sequencing");
           }}
           onUnsuspendSequencing={async () => {
             if (!uiSession) return;
             const nextSnapshot = await uiSession.unsuspendSequencing();
-            setSessionSnapshot(nextSnapshot);
+            applyExplicitSessionSnapshot(nextSnapshot, "unsuspend_sequencing");
           }}
           onSequenceActiveLeg={async () => {
             if (!uiSession) return;
             const nextSnapshot = await uiSession.sequenceActiveLeg();
-            setSessionSnapshot(nextSnapshot);
+            applyExplicitSessionSnapshot(nextSnapshot, "sequence_active_leg");
           }}
           onRestoreDirectTo={async () => {
             if (!uiSession) return;
             const nextSnapshot = await uiSession.restoreDirectTo();
-            setSessionSnapshot(nextSnapshot);
+            applyExplicitSessionSnapshot(nextSnapshot, "restore_direct_to");
           }}
           onPerformFlightPlanRowAction={async (rowUid, actionUid) => {
             if (!uiSession) return;
@@ -3116,6 +3135,7 @@ function MapPage(props: {
   onPlaybackSnapshotChange: Dispatch<SetStateAction<UiSessionSnapshot>>;
   onSituationControlInput: (input: SituationControlInput) => void;
   uiSession: UiSession | null;
+  onExplicitSessionSnapshot: (nextSnapshot: UiSessionSnapshot, source: string) => void;
   debugOpen: boolean;
   onDebugToggle: () => void;
   onDebugFlagChange: (flagId: DebugFlagId, enabled: boolean) => void;
@@ -5416,6 +5436,8 @@ function MapPage(props: {
                         action.flight_plan_row_action.row_uid,
                         action.flight_plan_row_action.action_uid,
                       );
+                      const nextSnapshot = await uiSession.snapshot();
+                      props.onExplicitSessionSnapshot(nextSnapshot, "map_selection_row_action");
                       setMapSelection(null);
                     } catch (error) {
                       debugLog("map.selection.row_action.failed", {
@@ -5431,7 +5453,8 @@ function MapPage(props: {
                       if (!uiSession) {
                         throw new Error("map selection session action requires live core session");
                       }
-                      await uiSession.performMapSelectionAction(action.session_action);
+                      const nextSnapshot = await uiSession.performMapSelectionAction(action.session_action);
+                      props.onExplicitSessionSnapshot(nextSnapshot, "map_selection_session_action");
                       setMapSelection(null);
                     } catch (error) {
                       debugLog("map.selection.session_action.failed", {

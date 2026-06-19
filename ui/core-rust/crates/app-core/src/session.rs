@@ -7301,12 +7301,40 @@ fn materialize_map_selection_in_session(
         &flight_plan_points,
         &mut availability,
     );
+    let selection = map_selection_with_session_action_availability(
+        selection,
+        session.app_state.ownship.render.position.is_some(),
+    );
     if !missing_pages.is_empty() {
         return Ok(MapSelectionMaterialization::NeedResources(
             nav_kv_page_resources(missing_pages),
         ));
     }
     Ok(MapSelectionMaterialization::Complete(selection))
+}
+
+fn map_selection_with_session_action_availability(
+    mut selection: MapSelectionQueryResult,
+    has_ownship_position: bool,
+) -> MapSelectionQueryResult {
+    if has_ownship_position {
+        return selection;
+    }
+
+    for action in selection
+        .categories
+        .iter_mut()
+        .flat_map(|category| category.items.iter_mut())
+        .flat_map(|item| item.actions.iter_mut())
+        .filter(|action| action.id == "direct_to")
+    {
+        action.enabled = false;
+        action.detail_text = Some("Direct-to requires ownship position.".to_string());
+        action.session_action = None;
+        action.flight_plan_row_action = None;
+    }
+
+    selection
 }
 
 pub fn get_terrain_overlay_in_session(
@@ -10262,7 +10290,8 @@ mod tests {
     use super::*;
     use crate::{
         AirportId, FlightPlan, GuidanceState, LegDisplayElement, LegDisplayPath,
-        LegDisplayPathStyle, NavRef, OwnshipSourceId, OwnshipSourceKind, PathTermination,
+        LegDisplayPathStyle, MapSelectionAction, MapSelectionCategory, MapSelectionHighlight,
+        MapSelectionItem, NavRef, OwnshipSourceId, OwnshipSourceKind, PathTermination,
         PointVectorRecord, ProcedureLegProvenance, ProcedureSegmentRole, ResolvedLeg,
         ResolvedLegSource, RouteComponent, SequencingMode, Situation, SituationPosition,
         SituationSample,
@@ -14678,6 +14707,111 @@ mod tests {
             "GPS, Plan Preview, and Replay should keep their relative menu order",
         );
         assert_enabled_situation_controls(&gps, &[]);
+    }
+
+    #[test]
+    fn restore_direct_to_in_session_returns_to_follow_plan_guidance() {
+        let direct_to_plan = crate::activate_direct_to(
+            &sample_guided_plan(),
+            LatLon {
+                lat: 37.44,
+                lon: -122.15,
+            },
+            NavRef::Fix("OFFPL".to_string()),
+        )
+        .expect("activate off-plan direct-to");
+        let init = create_ui_session(direct_to_plan, &[], None, None).expect("create session");
+        let direct_to_guidance = init
+            .snapshot
+            .app_state
+            .active_plan
+            .as_ref()
+            .and_then(|plan| plan.guidance.as_ref())
+            .expect("direct-to guidance");
+        assert_eq!(direct_to_guidance.sequencing_mode, SequencingMode::DirectTo);
+        assert!(direct_to_guidance.direct_to.is_some());
+        assert!(init
+            .snapshot
+            .app_ui_state
+            .active_plan
+            .as_ref()
+            .expect("direct-to plan UI")
+            .guidance
+            .as_ref()
+            .is_some_and(|guidance| guidance.can_restore_direct_to));
+
+        let restored = restore_direct_to_in_session(init.handle).expect("restore direct-to");
+        let guidance = restored
+            .app_state
+            .active_plan
+            .as_ref()
+            .and_then(|plan| plan.guidance.as_ref())
+            .expect("restored guidance");
+
+        assert_eq!(guidance.sequencing_mode, SequencingMode::FollowPlan);
+        assert_eq!(guidance.active_leg_index, 0);
+        assert!(guidance.direct_to.is_none());
+        assert!(!restored
+            .app_ui_state
+            .active_plan
+            .as_ref()
+            .expect("restored plan UI")
+            .guidance
+            .as_ref()
+            .is_some_and(|guidance| guidance.can_restore_direct_to));
+    }
+
+    #[test]
+    fn map_selection_direct_to_requires_ownship_position() {
+        let selection = MapSelectionQueryResult {
+            click_lat: 47.49,
+            click_lon: -122.76,
+            categories: vec![MapSelectionCategory {
+                id: "points".to_string(),
+                label: "Points".to_string(),
+                items: vec![MapSelectionItem {
+                    id: "airport:KPWT".to_string(),
+                    label: "KPWT".to_string(),
+                    sublabel: "Airport".to_string(),
+                    description: None,
+                    detail_text: None,
+                    highlight: MapSelectionHighlight::Spot {
+                        lat: 47.49,
+                        lon: -122.76,
+                    },
+                    nav_ref: Some(NavRef::Airport("KPWT".to_string())),
+                    symbol_feature: None,
+                    metar_feature: None,
+                    pirep_feature: None,
+                    airspace_icon: None,
+                    actions: vec![MapSelectionAction {
+                        id: "direct_to".to_string(),
+                        label: "Direct-to".to_string(),
+                        enabled: true,
+                        display_only: false,
+                        detail_text: None,
+                        airspace_limit: None,
+                        session_action: Some("direct-to-action".to_string()),
+                        flight_plan_row_action: None,
+                    }],
+                }],
+            }],
+        };
+
+        let unavailable = map_selection_with_session_action_availability(selection.clone(), false);
+        let action = &unavailable.categories[0].items[0].actions[0];
+        assert!(!action.enabled);
+        assert_eq!(
+            action.detail_text.as_deref(),
+            Some("Direct-to requires ownship position.")
+        );
+        assert!(action.session_action.is_none());
+        assert!(action.flight_plan_row_action.is_none());
+
+        let available = map_selection_with_session_action_availability(selection, true);
+        let action = &available.categories[0].items[0].actions[0];
+        assert!(action.enabled);
+        assert_eq!(action.session_action.as_deref(), Some("direct-to-action"));
     }
 
     #[test]

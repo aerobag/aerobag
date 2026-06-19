@@ -608,7 +608,7 @@ export interface UiSession {
   restoreDirectTo(): Promise<UiSessionSnapshot>;
   performFlightPlanRowAction(rowUid: string, actionUid: string): Promise<void>;
   performStatusAction(actionId: string): Promise<UiSessionSnapshot>;
-  performMapSelectionAction(action: string): Promise<void>;
+  performMapSelectionAction(action: string): Promise<UiSessionSnapshot>;
   activateNextLeg(): Promise<UiSessionSnapshot>;
   suspendSequencing(): Promise<UiSessionSnapshot>;
   unsuspendSequencing(): Promise<UiSessionSnapshot>;
@@ -1062,6 +1062,8 @@ export class WasmAppCoreAdapter implements AppCoreAdapter {
             this.module.perform_map_selection_action_in_session(handle, action),
           ),
         );
+        snapshot = await syncGuidanceGeometry("map_selection_action");
+        return snapshot;
       },
       insertWaypointAtFlightPlanRow: async (rowUid, before, waypoint) => {
         await withSessionRetry(async () =>

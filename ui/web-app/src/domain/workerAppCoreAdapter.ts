@@ -331,7 +331,7 @@ function workerBackedSession(client: AppCoreWorkerClient, sessionId: number, ini
     restoreDirectTo: () => updateSnapshot(call("restoreDirectTo")),
     performFlightPlanRowAction: (...args) => updateSnapshotVoid(call("performFlightPlanRowAction", args)),
     performStatusAction: (...args) => updateSnapshot(call("performStatusAction", args)),
-    performMapSelectionAction: (...args) => updateSnapshotVoid(call("performMapSelectionAction", args)),
+    performMapSelectionAction: (...args) => updateSnapshot(call("performMapSelectionAction", args)),
     activateNextLeg: () => updateSnapshot(call("activateNextLeg")),
     suspendSequencing: () => updateSnapshot(call("suspendSequencing")),
     unsuspendSequencing: () => updateSnapshot(call("unsuspendSequencing")),

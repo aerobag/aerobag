@@ -1034,17 +1034,32 @@ mod tests {
     }
 
     fn nexrad_three_hour_fixture_root() -> anyhow::Result<Option<PathBuf>> {
-        let Some(root) = std::env::var_os("AEROBAG_TEST_ARTIFACTS_ROOT")
+        let root = if let Some(root) = std::env::var_os("AEROBAG_TEST_ARTIFACTS_ROOT")
             .or_else(|| std::env::var_os("AEROBAG_TEST_ARTIFACTS"))
-        else {
-            eprintln!("skipping large-fixture NEXRAD test: AEROBAG_TEST_ARTIFACTS_ROOT is not set");
-            return Ok(None);
+        {
+            PathBuf::from(root)
+        } else {
+            let default_root = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+                .join("..")
+                .join("..")
+                .join("..")
+                .join("..")
+                .join("aerobag-test-artifacts");
+            if !default_root.exists() {
+                eprintln!(
+                    "skipping large-fixture NEXRAD test: AEROBAG_TEST_ARTIFACTS_ROOT is not set and {} is absent",
+                    default_root.display()
+                );
+                return Ok(None);
+            }
+            default_root
         };
-        let fixture_root = PathBuf::from(root)
-            .join("nexrad")
-            .join("source-grid-three-hour");
+        let fixture_root = root.join("nexrad").join("source-grid-three-hour");
         if !fixture_root.join("manifest.json").is_file() {
-            bail!("test artifacts do not contain nexrad/source-grid-three-hour/manifest.json");
+            bail!(
+                "test artifacts do not contain nexrad/source-grid-three-hour/manifest.json under {}",
+                root.display()
+            );
         }
         Ok(Some(fixture_root))
     }

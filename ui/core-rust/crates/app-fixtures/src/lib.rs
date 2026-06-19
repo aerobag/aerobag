@@ -19,9 +19,12 @@ pub fn sample_geometry_json() -> String {
 }
 
 pub fn fixture_snapshot_root() -> PathBuf {
-    std::env::var_os("AEROBAG_FIXTURE_SNAPSHOT_ROOT")
-        .map(PathBuf::from)
-        .unwrap_or_else(|| PathBuf::from("/root/aerobag-artifacts-snapshot"))
+    fixture_publication_root().unwrap_or_else(|| {
+        panic!(
+            "no fixture publication root configured; set AEROBAG_ARTIFACT_READ_PATH \
+             or keep .aerobag-artifact-read-path in the repo root"
+        )
+    })
 }
 
 pub fn fixture_published_unpacked_root() -> PathBuf {
@@ -34,20 +37,22 @@ pub fn fixture_published_unpacked_root() -> PathBuf {
         );
         return path;
     }
-    let root = fixture_snapshot_root().join("published_unpacked");
+    let current = selected_supported_current_artifacts_manifest();
+    let root = fixture_snapshot_root().join(current.artifact_roots.unpacked.as_str());
     assert!(
         root.is_dir(),
-        "fixture published_unpacked root missing: {}",
+        "fixture published unpacked root missing: {}",
         root.display()
     );
     root
 }
 
 pub fn fixture_published_packaged_root() -> PathBuf {
-    let root = fixture_snapshot_root().join("published_packaged");
+    let current = selected_supported_current_artifacts_manifest();
+    let root = fixture_snapshot_root().join(current.artifact_roots.packaged.as_str());
     assert!(
         root.is_dir(),
-        "fixture published_packaged root missing: {}",
+        "fixture published packaged root missing: {}",
         root.display()
     );
     root
@@ -63,37 +68,13 @@ pub fn fixture_nav_db_package_zip_path() -> PathBuf {
         );
         return path;
     }
-    if let Some((package_zip_path, _)) = current_nav_db_artifact_paths() {
-        assert!(
-            package_zip_path.is_file(),
-            "current nav-db package zip missing: {}",
-            package_zip_path.display()
-        );
-        return package_zip_path;
-    }
-    let root = fixture_published_packaged_root();
-    let mut matches = fs::read_dir(&root)
-        .unwrap_or_else(|err| panic!("read {}: {err}", root.display()))
-        .filter_map(|entry| entry.ok().map(|entry| entry.path()))
-        .filter(|path| {
-            path.is_file()
-                && path
-                    .file_name()
-                    .and_then(|name| name.to_str())
-                    .is_some_and(|name| name.starts_with("nav_db_") && name.ends_with(".zip"))
-        })
-        .collect::<Vec<_>>();
-    matches.sort_by_key(|path| {
-        fs::metadata(path)
-            .and_then(|metadata| metadata.modified())
-            .ok()
-    });
+    let (package_zip_path, _) = current_nav_db_artifact_paths();
     assert!(
-        !matches.is_empty(),
-        "expected at least one nav_db zip under {}, found 0",
-        root.display(),
+        package_zip_path.is_file(),
+        "current nav-db package zip missing: {}",
+        package_zip_path.display()
     );
-    matches.pop().expect("nav_db match after non-empty check")
+    package_zip_path
 }
 
 pub fn load_fixture_nav_kv_pages() -> (Vec<u8>, Vec<Vec<u8>>) {
@@ -106,12 +87,10 @@ pub fn load_fixture_nav_kv_pages() -> (Vec<u8>, Vec<Vec<u8>>) {
         );
         return load_nav_kv_pages_from_dir(&path);
     }
-    if let Some((_, unpacked_dir)) = current_nav_db_artifact_paths() {
-        if unpacked_dir.is_dir() {
-            return load_nav_kv_pages_from_dir(&unpacked_dir);
-        }
+    let (zip_path, unpacked_dir) = current_nav_db_artifact_paths();
+    if unpacked_dir.is_dir() {
+        return load_nav_kv_pages_from_dir(&unpacked_dir);
     }
-    let zip_path = fixture_nav_db_package_zip_path();
     load_nav_kv_pages_from_zip(&zip_path)
 }
 
@@ -195,38 +174,111 @@ fn decode_nav_kv_page_for_fixture(page_name: &str, page_bytes: Vec<u8>) -> Vec<u
         .into_owned()
 }
 
-fn current_nav_db_artifact_paths() -> Option<(PathBuf, PathBuf)> {
-    let artifact_root = artifact_read_root()?;
-    let current_artifacts_json =
-        fs::read_to_string(artifact_root.join("current_artifacts.json")).ok()?;
-    let current = app_core::select_supported_current_artifacts_manifests(
-        app_core::decode_current_artifacts_manifest_list(&current_artifacts_json).ok()?,
-    )
-    .ok()?
-    .into_iter()
-    .next()?;
+fn current_nav_db_artifact_paths() -> (PathBuf, PathBuf) {
+    let artifact_root = fixture_snapshot_root();
+    let current = selected_supported_current_artifacts_manifest();
     let unpacked_root = artifact_root.join(current.artifact_roots.unpacked.as_str());
     let packaged_root = artifact_root.join(current.artifact_roots.packaged.as_str());
     let cycle_bundle = current
         .bundles
         .iter()
-        .find(|bundle| bundle.bundle_type == "cycle")?;
+        .find(|bundle| bundle.bundle_type == "cycle")
+        .unwrap_or_else(|| {
+            panic!(
+                "current_artifacts.json under {} has no cycle bundle for supported nav-db contract {}",
+                artifact_root.display(),
+                app_core::REQUIRED_NAV_DB_CONTRACT_ID
+            )
+        });
     let bundle_relative_path = if cycle_bundle.relative_path.is_empty() {
         cycle_bundle.filename.as_str()
     } else {
         cycle_bundle.relative_path.as_str()
     };
+    let bundle_path = unpacked_root.join(bundle_relative_path);
     let bundle: app_core::BundleManifest =
-        serde_json::from_slice(&fs::read(unpacked_root.join(bundle_relative_path)).ok()?).ok()?;
+        serde_json::from_slice(&fs::read(&bundle_path).unwrap_or_else(|err| {
+            panic!("read current cycle bundle {}: {err}", bundle_path.display())
+        }))
+        .unwrap_or_else(|err| {
+            panic!(
+                "parse current cycle bundle {}: {err}",
+                bundle_path.display()
+            )
+        });
     let nav_db = bundle
         .packages
         .iter()
-        .find(|package| package.family_id == "nav-db")?;
-    let unpacked_dir = nav_db.relative_path.strip_suffix(".zip")?;
-    Some((
+        .find(|package| package.family_id == "nav-db")
+        .unwrap_or_else(|| {
+            panic!(
+                "current cycle bundle {} has no nav-db package",
+                bundle_path.display()
+            )
+        });
+    let unpacked_dir = nav_db
+        .relative_path
+        .strip_suffix(".zip")
+        .unwrap_or_else(|| {
+            panic!(
+                "current nav-db package relative_path is not a zip filename: {}",
+                nav_db.relative_path
+            )
+        });
+    (
         packaged_root.join(nav_db.relative_path.as_str()),
         unpacked_root.join(unpacked_dir),
-    ))
+    )
+}
+
+fn selected_supported_current_artifacts_manifest() -> app_core::CurrentArtifactsManifest {
+    let artifact_root = fixture_publication_root().unwrap_or_else(|| {
+        panic!(
+            "no fixture publication root configured; set AEROBAG_ARTIFACT_READ_PATH \
+             or keep .aerobag-artifact-read-path in the repo root"
+        )
+    });
+    let current_artifacts_json = fs::read_to_string(artifact_root.join("current_artifacts.json"))
+        .unwrap_or_else(|err| {
+            panic!(
+                "read fixture current_artifacts.json under {}: {err}",
+                artifact_root.display()
+            )
+        });
+    let manifests = app_core::decode_current_artifacts_manifest_list(&current_artifacts_json)
+        .unwrap_or_else(|err| {
+            panic!(
+                "decode fixture current_artifacts.json under {}: {err}",
+                artifact_root.display()
+            )
+        });
+    app_core::select_supported_current_artifacts_manifests(manifests)
+        .unwrap_or_else(|err| {
+            panic!(
+                "select supported fixture current_artifacts.json under {}: {err}",
+                artifact_root.display()
+            )
+        })
+        .into_iter()
+        .next()
+        .unwrap_or_else(|| {
+            panic!(
+                "fixture current_artifacts.json under {} has no manifest supported by this app; \
+                 required nav-db contract {}; run the product build to publish current artifacts",
+                artifact_root.display(),
+                app_core::REQUIRED_NAV_DB_CONTRACT_ID
+            )
+        })
+}
+
+fn fixture_publication_root() -> Option<PathBuf> {
+    if let Some(value) = std::env::var_os("AEROBAG_FIXTURE_PUBLICATION_ROOT") {
+        return Some(PathBuf::from(value));
+    }
+    if let Some(value) = std::env::var_os("AEROBAG_FIXTURE_SNAPSHOT_ROOT") {
+        return Some(PathBuf::from(value));
+    }
+    artifact_read_root()
 }
 
 fn artifact_read_root() -> Option<PathBuf> {

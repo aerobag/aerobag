@@ -41,16 +41,8 @@ pub fn emit_source_urls(
 pub fn discover_published_cycles(
     fetch_cache: Option<&FetchCacheConfig>,
 ) -> anyhow::Result<Vec<String>> {
-    let published_chart_effective_dates = discover_published_chart_effective_dates(fetch_cache)?;
-    let mut cycles = discover_published_tpp_cycles(fetch_cache)?
-        .into_iter()
-        .filter(|cycle| {
-            chart_effective_date_for_cycle(cycle, &published_chart_effective_dates).is_ok()
-        })
-        .collect::<Vec<_>>();
-    cycles.sort();
-    cycles.dedup();
-    Ok(cycles)
+    let catalog = SourceCatalog::fetch(fetch_cache)?;
+    discover_published_cycles_from_catalog(&catalog)
 }
 
 pub fn cycle_effective_date(cycle_code: &str) -> anyhow::Result<NaiveDate> {
@@ -71,19 +63,36 @@ fn build_records(
     target_cycle: Option<&str>,
     fetch_cache: Option<&FetchCacheConfig>,
 ) -> anyhow::Result<Vec<(String, Vec<BTreeMap<String, Value>>)>> {
+    let catalog = SourceCatalog::fetch(fetch_cache)?;
     let cycle = match target_cycle {
         Some(cycle) => cycle.to_string(),
-        None => discover_published_cycles(fetch_cache)?
+        None => discover_published_cycles_from_catalog(&catalog)?
             .into_iter()
             .last()
             .context("no published FAA cycles discovered")?,
     };
-    let published_chart_effective_dates = discover_published_chart_effective_dates(fetch_cache)?;
+    let published_chart_effective_dates = discover_published_chart_effective_dates(&catalog)?;
+    let records = build_records_for_cycle(&cycle, &catalog, &published_chart_effective_dates)?;
+    let missing = missing_required_source_groups(&records);
+    if !missing.is_empty() {
+        bail!(
+            "cycle {cycle} source discovery is incomplete; missing source URLs for {}",
+            missing.join(", ")
+        );
+    }
+    Ok(records)
+}
+
+fn build_records_for_cycle(
+    cycle: &str,
+    catalog: &SourceCatalog,
+    published_chart_effective_dates: &BTreeSet<NaiveDate>,
+) -> anyhow::Result<Vec<(String, Vec<BTreeMap<String, Value>>)>> {
     let charts_effective =
         chart_effective_date_for_cycle(&cycle, &published_chart_effective_dates)?;
     let charts_start = format_effective_date(charts_effective, CycleFormat::Charts);
     let iso_start = format_effective_date(charts_effective, CycleFormat::Iso);
-    let current_start = format_effective_date(cycle_effective_date(&cycle)?, CycleFormat::Iso);
+    let current_start = format_effective_date(cycle_effective_date(cycle)?, CycleFormat::Iso);
     let current_compact = current_start.replace('-', "");
 
     let mut records = vec![
@@ -94,7 +103,7 @@ fn build_records(
                     "charts-sec",
                     VFR_URL,
                     format!("^http.*{charts_start}/sectional-files/.*.zip$"),
-                    fetch_cache,
+                    &catalog.vfr,
                     &|href| {
                         href.starts_with("http")
                             && href.contains(&format!("{charts_start}/sectional-files/"))
@@ -105,7 +114,7 @@ fn build_records(
                     "charts-sec",
                     VFR_URL,
                     format!("^http.*{charts_start}/Caribbean/.*.zip$"),
-                    fetch_cache,
+                    &catalog.vfr,
                     &|href| {
                         href.starts_with("http")
                             && href.contains(&format!("{charts_start}/Caribbean/"))
@@ -120,7 +129,7 @@ fn build_records(
                 "charts-tac",
                 VFR_URL,
                 format!("^http.*{charts_start}.*_TAC.zip$"),
-                fetch_cache,
+                &catalog.vfr,
                 &|href| href.starts_with("http") && href.contains(&charts_start) && href.ends_with("_TAC.zip"),
             )?],
         ),
@@ -131,7 +140,7 @@ fn build_records(
                     "charts-enr-l",
                     IFR_URL,
                     format!("^http.*{charts_start}/enr_l.*.zip$"),
-                    fetch_cache,
+                    &catalog.ifr,
                     &|href| {
                         href.starts_with("http")
                             && href.contains(&format!("{charts_start}/enr_l"))
@@ -142,7 +151,7 @@ fn build_records(
                     "charts-enr-l",
                     IFR_URL,
                     format!("^http.*{charts_start}/enr_akl.*.zip$"),
-                    fetch_cache,
+                    &catalog.ifr,
                     &|href| {
                         href.starts_with("http")
                             && href.contains(&format!("{charts_start}/enr_akl"))
@@ -153,7 +162,7 @@ fn build_records(
                     "charts-enr-l",
                     IFR_URL,
                     format!("^http.*{charts_start}/enr_p.*.zip$"),
-                    fetch_cache,
+                    &catalog.ifr,
                     &|href| {
                         href.starts_with("http")
                             && href.contains(&format!("{charts_start}/enr_p"))
@@ -169,7 +178,7 @@ fn build_records(
                     "charts-enr-h",
                     IFR_URL,
                     format!("^http.*{charts_start}/enr_h.*.zip$"),
-                    fetch_cache,
+                    &catalog.ifr,
                     &|href| {
                         href.starts_with("http")
                             && href.contains(&format!("{charts_start}/enr_h"))
@@ -180,7 +189,7 @@ fn build_records(
                     "charts-enr-h",
                     IFR_URL,
                     format!("^http.*{charts_start}/enr_akh.*.zip$"),
-                    fetch_cache,
+                    &catalog.ifr,
                     &|href| {
                         href.starts_with("http")
                             && href.contains(&format!("{charts_start}/enr_akh"))
@@ -191,7 +200,7 @@ fn build_records(
                     "charts-enr-h",
                     IFR_URL,
                     format!("^http.*{charts_start}/enr_p.*.zip$"),
-                    fetch_cache,
+                    &catalog.ifr,
                     &|href| {
                         href.starts_with("http")
                             && href.contains(&format!("{charts_start}/enr_p"))
@@ -206,7 +215,7 @@ fn build_records(
                 "csup",
                 DAFD_URL,
                 format!("^http.*DCS_{}.zip$", iso_start.replace('-', "")),
-                fetch_cache,
+                &catalog.dafd,
                 &|href| href.starts_with("http") && href.ends_with(&format!("DCS_{}.zip", iso_start.replace('-', ""))),
             )?],
         ),
@@ -240,7 +249,7 @@ fn build_records(
                 label,
                 DTPP_URL,
                 format!("^http.*DDTPP[A-E]+_{}.zip$", &current_compact[2..]),
-                fetch_cache,
+                &catalog.dtpp,
                 &|href| {
                     href.starts_with("http")
                         && href.ends_with(".zip")
@@ -254,17 +263,35 @@ fn build_records(
     Ok(records)
 }
 
+struct SourceCatalog {
+    vfr: Vec<String>,
+    ifr: Vec<String>,
+    dafd: Vec<String>,
+    dtpp: Vec<String>,
+}
+
+impl SourceCatalog {
+    fn fetch(fetch_cache: Option<&FetchCacheConfig>) -> anyhow::Result<Self> {
+        Ok(Self {
+            vfr: extract_href_links(&fetch_url_bytes(VFR_URL, fetch_cache)?)?,
+            ifr: extract_href_links(&fetch_url_bytes(IFR_URL, fetch_cache)?)?,
+            dafd: extract_href_links(&fetch_url_bytes(DAFD_URL, fetch_cache)?)?,
+            dtpp: extract_href_links(&fetch_url_bytes(DTPP_URL, fetch_cache)?)?,
+        })
+    }
+}
+
 fn list_crawl_record(
     label: &str,
     url: &str,
     pattern: String,
-    fetch_cache: Option<&FetchCacheConfig>,
+    hrefs: &[String],
     predicate: &dyn Fn(&str) -> bool,
 ) -> anyhow::Result<BTreeMap<String, Value>> {
-    let hrefs = extract_href_links(&fetch_url_bytes(url, fetch_cache)?)?;
     let mut results = hrefs
-        .into_iter()
+        .iter()
         .filter(|href| predicate(href))
+        .cloned()
         .collect::<BTreeSet<_>>()
         .into_iter()
         .map(Value::String)
@@ -278,6 +305,49 @@ fn list_crawl_record(
     record.insert("results".to_string(), Value::Array(results));
     record.insert("url".to_string(), Value::String(url.to_string()));
     Ok(record)
+}
+
+fn discover_published_cycles_from_catalog(catalog: &SourceCatalog) -> anyhow::Result<Vec<String>> {
+    let published_chart_effective_dates = discover_published_chart_effective_dates(catalog)?;
+    let mut cycles = discover_published_tpp_cycles(catalog)?
+        .into_iter()
+        .filter(|cycle| {
+            let Ok(records) =
+                build_records_for_cycle(cycle, catalog, &published_chart_effective_dates)
+            else {
+                return false;
+            };
+            missing_required_source_groups(&records).is_empty()
+        })
+        .collect::<Vec<_>>();
+    cycles.sort();
+    cycles.dedup();
+    Ok(cycles)
+}
+
+fn missing_required_source_groups(
+    records_by_label: &[(String, Vec<BTreeMap<String, Value>>)],
+) -> Vec<String> {
+    let mut missing = Vec::new();
+    for (label, records) in records_by_label {
+        for record in records {
+            if record.get("event").and_then(Value::as_str) != Some("list_crawl") {
+                continue;
+            }
+            let has_results = record
+                .get("results")
+                .and_then(Value::as_array)
+                .is_some_and(|results| !results.is_empty());
+            if !has_results {
+                let pattern = record
+                    .get("match")
+                    .and_then(Value::as_str)
+                    .unwrap_or("<unknown match>");
+                missing.push(format!("{label} ({pattern})"));
+            }
+        }
+    }
+    missing
 }
 
 fn source_url_record(label: &str, url: String) -> BTreeMap<String, Value> {
@@ -460,12 +530,9 @@ fn extract_href_links(html: &[u8]) -> anyhow::Result<Vec<String>> {
     Ok(links)
 }
 
-fn discover_published_tpp_cycles(
-    fetch_cache: Option<&FetchCacheConfig>,
-) -> anyhow::Result<BTreeSet<String>> {
-    let hrefs = extract_href_links(&fetch_url_bytes(DTPP_URL, fetch_cache)?)?;
+fn discover_published_tpp_cycles(catalog: &SourceCatalog) -> anyhow::Result<BTreeSet<String>> {
     let mut cycles = BTreeSet::new();
-    for href in hrefs {
+    for href in &catalog.dtpp {
         if !href.starts_with("http") || !href.ends_with(".zip") || !href.contains("DDTPP") {
             continue;
         }
@@ -479,21 +546,17 @@ fn discover_published_tpp_cycles(
 }
 
 fn discover_published_chart_effective_dates(
-    fetch_cache: Option<&FetchCacheConfig>,
+    catalog: &SourceCatalog,
 ) -> anyhow::Result<BTreeSet<NaiveDate>> {
     let mut dates = BTreeSet::new();
-    for url in [VFR_URL, IFR_URL] {
-        let hrefs = extract_href_links(&fetch_url_bytes(url, fetch_cache)?)?;
-        for href in hrefs {
-            for segment in href.split('/') {
-                if let Ok(date) = NaiveDate::parse_from_str(segment, "%m-%d-%Y") {
-                    dates.insert(date);
-                }
+    for href in catalog.vfr.iter().chain(catalog.ifr.iter()) {
+        for segment in href.split('/') {
+            if let Ok(date) = NaiveDate::parse_from_str(segment, "%m-%d-%Y") {
+                dates.insert(date);
             }
         }
     }
-    let hrefs = extract_href_links(&fetch_url_bytes(DAFD_URL, fetch_cache)?)?;
-    for href in hrefs {
+    for href in &catalog.dafd {
         if let Some(compact) = extract_prefix_date_token(&href, "DCS_", ".zip") {
             if let Ok(date) = NaiveDate::parse_from_str(&compact, "%Y%m%d") {
                 dates.insert(date);
@@ -621,6 +684,68 @@ mod tests {
         assert_eq!(
             chart_effective_date_for_cycle("2605", &published).unwrap(),
             NaiveDate::from_ymd_opt(2026, 5, 14).unwrap()
+        );
+    }
+
+    #[test]
+    fn source_discovery_excludes_cycle_until_every_required_family_is_available() {
+        let catalog = SourceCatalog {
+            vfr: vec![
+                "https://aeronav.faa.gov/visual/06-11-2026/sectional-files/Seattle.zip".to_string(),
+                "https://aeronav.faa.gov/visual/06-11-2026/Caribbean/Caribbean_1_VFR.zip"
+                    .to_string(),
+                "https://aeronav.faa.gov/visual/06-11-2026/tac-files/Seattle_TAC.zip".to_string(),
+                "https://aeronav.faa.gov/visual/07-09-2026/sectional-files/Seattle.zip".to_string(),
+                "https://aeronav.faa.gov/visual/07-09-2026/Caribbean/Caribbean_1_VFR.zip"
+                    .to_string(),
+                "https://aeronav.faa.gov/visual/07-09-2026/tac-files/Seattle_TAC.zip".to_string(),
+            ],
+            ifr: vec![
+                "https://aeronav.faa.gov/enroute/06-11-2026/enr_l01.zip".to_string(),
+                "https://aeronav.faa.gov/enroute/06-11-2026/enr_akl01.zip".to_string(),
+                "https://aeronav.faa.gov/enroute/06-11-2026/enr_p01.zip".to_string(),
+                "https://aeronav.faa.gov/enroute/06-11-2026/enr_h01.zip".to_string(),
+                "https://aeronav.faa.gov/enroute/06-11-2026/enr_akh01.zip".to_string(),
+            ],
+            dafd: vec![
+                "https://aeronav.faa.gov/Upload_313-d/supplements/DCS_20260611.zip".to_string(),
+                "https://aeronav.faa.gov/Upload_313-d/supplements/DCS_20260709.zip".to_string(),
+            ],
+            dtpp: vec![
+                "https://aeronav.faa.gov/upload_313-d/terminal/DDTPPA_260611.zip".to_string(),
+                "https://aeronav.faa.gov/upload_313-d/terminal/DDTPPA_260709.zip".to_string(),
+            ],
+        };
+
+        assert_eq!(
+            discover_published_cycles_from_catalog(&catalog).unwrap(),
+            vec!["2606".to_string()]
+        );
+    }
+
+    #[test]
+    fn missing_required_source_groups_reports_empty_crawls() {
+        let mut missing_record = BTreeMap::new();
+        missing_record.insert("event".to_string(), Value::String("list_crawl".to_string()));
+        missing_record.insert(
+            "match".to_string(),
+            Value::String("^http.*missing.zip$".to_string()),
+        );
+        missing_record.insert("results".to_string(), Value::Array(Vec::new()));
+
+        let mut direct_record = BTreeMap::new();
+        direct_record.insert("event".to_string(), Value::String("source_url".to_string()));
+        direct_record.insert(
+            "url".to_string(),
+            Value::String("https://example.test/direct.zip".to_string()),
+        );
+
+        assert_eq!(
+            missing_required_source_groups(&[(
+                "charts-enr-l".to_string(),
+                vec![missing_record, direct_record],
+            )]),
+            vec!["charts-enr-l (^http.*missing.zip$)".to_string()]
         );
     }
 }

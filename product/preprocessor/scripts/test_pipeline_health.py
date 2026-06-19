@@ -63,6 +63,7 @@ class PipelineHealthTests(unittest.TestCase):
                 "faa_cycle_calendar": {"error": None, "payload": {"cycles": []}},
                 "product_facts": [
                     {
+                        "path": "/artifacts/current/product-facts.json",
                         "payload": {
                             "products": [
                                 {
@@ -84,6 +85,7 @@ class PipelineHealthTests(unittest.TestCase):
                     "inputs": {
                         "product_facts": [
                             {
+                                "path": "/artifacts/previous/product-facts.json",
                                 "payload": {
                                     "products": [
                                         {
@@ -108,11 +110,83 @@ class PipelineHealthTests(unittest.TestCase):
             datetime(2026, 6, 19, 12, 0, 0, tzinfo=timezone.utc),
         )
 
-        errors = metric(evaluation, "cycle_product.NAV_DB_NAV10_2607_01.error_count")
-        warnings = metric(evaluation, "cycle_product.NAV_DB_NAV10_2607_01.warning_count")
+        errors = metric(evaluation, "cycle_product.error_count")
+        warnings = metric(evaluation, "cycle_product.warning_count")
         self.assertEqual(errors["severity"], "warning")
-        self.assertIn("increased from 1 to 2", errors["message"])
+        self.assertIn("previous distinct publication: 1", errors["message"])
         self.assertEqual(warnings["severity"], "ok")
+
+    def test_product_facts_compare_against_distinct_publication(self) -> None:
+        current_facts = {
+            "inputs": {
+                "current_artifacts": {"error": None, "payload": []},
+                "deploy_health": {"error": None, "payload": {}},
+                "live_feeds_status": {"error": None, "payload": {"products": {}}},
+                "build_watch": {"error": None, "payload": {}},
+                "faa_cycle_calendar": {"error": None, "payload": {"cycles": []}},
+                "product_facts": [
+                    {
+                        "path": "/artifacts/current/product-facts.json",
+                        "payload": {
+                            "products": [
+                                {
+                                    "product_id": "NAV_DB_NAV10_2607_01",
+                                    "family": "nav-db",
+                                    "cycle": "2607",
+                                    "error_count": 2,
+                                    "warning_count": 4,
+                                }
+                            ]
+                        },
+                    }
+                ],
+            }
+        }
+        previous = [
+            {
+                "facts": {
+                    "inputs": {
+                        "product_facts": [
+                            {
+                                "path": "/artifacts/baseline/product-facts.json",
+                                "payload": {
+                                    "products": [
+                                        {
+                                            "product_id": "NAV_DB_NAV10_2606_01",
+                                            "family": "nav-db",
+                                            "cycle": "2606",
+                                            "error_count": 1,
+                                            "warning_count": 4,
+                                        }
+                                    ]
+                                },
+                            }
+                        ]
+                    }
+                }
+            },
+            {"facts": current_facts},
+        ]
+
+        evaluation = pipeline_health.evaluate_health(
+            current_facts,
+            previous,
+            datetime(2026, 6, 19, 12, 0, 0, tzinfo=timezone.utc),
+        )
+
+        errors = metric(evaluation, "cycle_product.error_count")
+        self.assertEqual(errors["severity"], "warning")
+        self.assertIn("previous distinct publication: 1", errors["message"])
+
+    def test_current_response_reports_sample_age(self) -> None:
+        record = {"sampled_at_utc": "2026-06-19T12:00:00Z"}
+
+        age = pipeline_health.sample_age_seconds(
+            record,
+            datetime(2026, 6, 19, 12, 0, 3, tzinfo=timezone.utc),
+        )
+
+        self.assertEqual(age, 3)
 
     def test_calendar_alerts_when_expected_cycle_is_missing(self) -> None:
         facts = {

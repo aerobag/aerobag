@@ -20,7 +20,8 @@ from urllib.request import urlopen
 SCHEMA_VERSION = 1
 DEFAULT_LISTEN = "127.0.0.1:8098"
 DEFAULT_POLL_SECONDS = 60
-HISTORY_LIMIT = 10_000
+HISTORY_LIMIT = 120_000
+DASHBOARD_SERIES_LIMIT = 40_320
 
 LIVE_FEED_STALE_THRESHOLDS: dict[str, tuple[int, int]] = {
     "tafs": (60 * 60, 3 * 60 * 60),
@@ -504,30 +505,28 @@ def add_product_fact_metrics(
     facts: dict[str, Any],
     previous_records: list[dict[str, Any]],
 ) -> None:
-    previous_counts = latest_product_counts(previous_records)
-    for product in iter_current_product_facts(facts):
-        product_id = product.get("product_id")
-        family = product.get("family")
-        region = product.get("region_id") or ""
-        key = f"{family}:{region}"
-        for count_name in ["error_count", "warning_count"]:
-            value = int(product.get(count_name) or 0)
-            previous = previous_counts.get(key, {}).get(count_name)
-            increased = previous is not None and value > previous
-            severity = "warning" if value > 0 and (previous is None or increased) else "ok"
-            add_metric(
-                metrics,
-                metric_id=f"cycle_product.{product_id}.{count_name}",
-                label=f"{product_id} {count_name}",
-                value=value,
-                severity=severity,
-                warning_threshold=(previous + 1) if previous is not None else 1,
-                message=(
-                    f"{product_id} {count_name} increased from {previous} to {value}"
-                    if increased
-                    else f"{product_id} {count_name}: {value}"
-                ),
-            )
+    counts = aggregate_product_counts(facts)
+    previous_counts = latest_distinct_product_counts(previous_records, facts)
+    for count_name, label in [
+        ("error_count", "Cycle product errors"),
+        ("warning_count", "Cycle product warnings"),
+    ]:
+        value = counts[count_name]
+        previous = previous_counts.get(count_name) if previous_counts is not None else None
+        increased = previous is not None and value > previous
+        message = f"{label}: {value}"
+        if previous is not None:
+            message = f"{label}: {value} (previous distinct publication: {previous})"
+        add_metric(
+            metrics,
+            metric_id=f"cycle_product.{count_name}",
+            label=label,
+            value=value,
+            unit="count",
+            severity="warning" if increased else "ok",
+            warning_threshold=(previous + 1) if previous is not None else None,
+            message=message,
+        )
 
 
 def iter_current_product_facts(facts: dict[str, Any]) -> list[dict[str, Any]]:
@@ -540,23 +539,45 @@ def iter_current_product_facts(facts: dict[str, Any]) -> list[dict[str, Any]]:
     return products
 
 
-def latest_product_counts(previous_records: list[dict[str, Any]]) -> dict[str, dict[str, int]]:
+def aggregate_product_counts(facts: dict[str, Any]) -> dict[str, int]:
+    counts = {"error_count": 0, "warning_count": 0}
+    for product in iter_current_product_facts(facts):
+        counts["error_count"] += int(product.get("error_count") or 0)
+        counts["warning_count"] += int(product.get("warning_count") or 0)
+    return counts
+
+
+def product_facts_publication_key(facts: dict[str, Any]) -> tuple[str, ...]:
+    keys: list[str] = []
+    for entry in facts.get("inputs", {}).get("product_facts", []):
+        if not isinstance(entry, dict):
+            continue
+        path = entry.get("path")
+        if isinstance(path, str):
+            keys.append(path)
+            continue
+        payload = entry.get("payload")
+        generated_at = payload.get("generated_at_utc") if isinstance(payload, dict) else None
+        if isinstance(generated_at, str):
+            keys.append(generated_at)
+    return tuple(sorted(keys))
+
+
+def latest_distinct_product_counts(
+    previous_records: list[dict[str, Any]], current_facts: dict[str, Any]
+) -> dict[str, int] | None:
+    current_key = product_facts_publication_key(current_facts)
     for record in reversed(previous_records):
         facts = record.get("facts")
         if not isinstance(facts, dict):
             continue
-        counts: dict[str, dict[str, int]] = {}
-        for product in iter_current_product_facts(facts):
-            family = product.get("family")
-            region = product.get("region_id") or ""
-            if isinstance(family, str):
-                counts[f"{family}:{region}"] = {
-                    "error_count": int(product.get("error_count") or 0),
-                    "warning_count": int(product.get("warning_count") or 0),
-                }
-        if counts:
+        previous_key = product_facts_publication_key(facts)
+        if current_key and previous_key == current_key:
+            continue
+        counts = aggregate_product_counts(facts)
+        if counts["error_count"] or counts["warning_count"] or previous_key:
             return counts
-    return {}
+    return None
 
 
 def add_cycle_calendar_metrics(
@@ -657,6 +678,57 @@ def run_sample(config: MonitorConfig) -> dict[str, Any]:
     return record
 
 
+def sample_age_seconds(record: dict[str, Any], now: datetime) -> int | None:
+    sampled_at = parse_time(record.get("sampled_at_utc"))
+    if sampled_at is None:
+        return None
+    return max(0, int((now - sampled_at).total_seconds()))
+
+
+def current_record_for_response(config: MonitorConfig) -> dict[str, Any]:
+    current_path = config.health_root / "pipeline-health-current.json"
+    if not current_path.exists():
+        record = run_sample(config)
+    else:
+        payload, error = read_json_file(current_path)
+        record = payload if isinstance(payload, dict) and error is None else run_sample(config)
+    served_at = utc_now()
+    response = dict(record)
+    response["served_at_utc"] = iso_utc(served_at)
+    response["sample_age_seconds"] = sample_age_seconds(record, served_at)
+    return response
+
+
+def compact_metric_series(records: list[dict[str, Any]]) -> dict[str, Any]:
+    samples: list[dict[str, Any]] = []
+    for record in records:
+        evaluation = record.get("evaluation")
+        if not isinstance(evaluation, dict):
+            continue
+        metrics = evaluation.get("metrics")
+        if not isinstance(metrics, list):
+            continue
+        metric_values: dict[str, dict[str, Any]] = {}
+        for metric in metrics:
+            if not isinstance(metric, dict) or not isinstance(metric.get("id"), str):
+                continue
+            metric_values[metric["id"]] = {
+                "value": metric.get("value"),
+                "severity": metric.get("severity", "ok"),
+            }
+        samples.append(
+            {
+                "sampled_at_utc": record.get("sampled_at_utc"),
+                "metrics": metric_values,
+            }
+        )
+    return {
+        "schema_version": SCHEMA_VERSION,
+        "generated_at_utc": iso_utc(utc_now()),
+        "samples": samples,
+    }
+
+
 def parse_listen(value: str) -> tuple[str, int]:
     if ":" not in value:
         return value or "127.0.0.1", 8098
@@ -697,10 +769,13 @@ def serve(config: MonitorConfig) -> None:
                 self._send(200, dashboard_html(), "text/html; charset=utf-8", send_body)
                 return
             if path == "/pipeline-health/current.json":
-                current_path = config.health_root / "pipeline-health-current.json"
-                if not current_path.exists():
-                    run_sample(config)
-                self._send_file(current_path, "application/json", send_body)
+                record = current_record_for_response(config)
+                self._send(
+                    200,
+                    json.dumps(record, indent=2, sort_keys=True) + "\n",
+                    "application/json",
+                    send_body,
+                )
                 return
             if path == "/pipeline-health/history.json":
                 query = parse_qs(urlparse(self.path).query)
@@ -709,6 +784,18 @@ def serve(config: MonitorConfig) -> None:
                 self._send(
                     200,
                     json.dumps(records[-limit:], indent=2, sort_keys=True) + "\n",
+                    "application/json",
+                    send_body,
+                )
+                return
+            if path == "/pipeline-health/series.json":
+                query = parse_qs(urlparse(self.path).query)
+                limit = int(query.get("limit", [str(DASHBOARD_SERIES_LIMIT)])[0])
+                records = read_history(config.health_root / "pipeline-health.jsonl", limit)
+                self._send(
+                    200,
+                    json.dumps(compact_metric_series(records[-limit:]), indent=2, sort_keys=True)
+                    + "\n",
                     "application/json",
                     send_body,
                 )
@@ -736,8 +823,12 @@ def serve(config: MonitorConfig) -> None:
             if send_body:
                 self.wfile.write(payload)
 
+    class PipelineHealthServer(ThreadingHTTPServer):
+        allow_reuse_address = True
+        daemon_threads = True
+
     print(f"pipeline health serving on http://{host}:{port}/pipeline-health/", flush=True)
-    ThreadingHTTPServer((host, port), Handler).serve_forever()
+    PipelineHealthServer((host, port), Handler).serve_forever()
 
 
 def dashboard_html() -> str:
@@ -753,20 +844,34 @@ def dashboard_html() -> str:
     * { box-sizing: border-box; }
     body { margin:0; min-height:100vh; background:var(--bg); color:var(--text); font:14px/1.45 ui-sans-serif, system-ui, sans-serif; letter-spacing:0; }
     main { padding:20px; max-width:1500px; margin:0 auto; }
-    header { display:flex; justify-content:space-between; gap:16px; align-items:flex-start; margin-bottom:16px; }
+    header { display:flex; justify-content:space-between; gap:16px; align-items:flex-start; margin-bottom:16px; flex-wrap:wrap; }
     h1 { margin:0; font-size:24px; }
     h2 { margin:0 0 10px; font-size:16px; }
     .muted { color:var(--muted); }
+    .meta { display:flex; gap:10px; flex-wrap:wrap; margin-top:6px; }
     .pill { display:inline-flex; align-items:center; border:1px solid var(--line); border-radius:999px; padding:4px 10px; font-weight:700; text-transform:uppercase; }
+    .tag { display:inline-flex; align-items:center; border:1px solid var(--line); border-radius:999px; padding:4px 10px; color:var(--muted); }
     .ok { color:var(--ok); border-color:color-mix(in srgb, var(--ok) 55%, var(--line)); }
     .warning { color:var(--warn); border-color:color-mix(in srgb, var(--warn) 55%, var(--line)); }
     .critical { color:var(--crit); border-color:color-mix(in srgb, var(--crit) 55%, var(--line)); }
-    .grid { display:grid; grid-template-columns:repeat(auto-fit, minmax(360px, 1fr)); gap:12px; }
     section { background:var(--panel); border:1px solid var(--line); border-radius:8px; padding:14px; }
     table { width:100%; border-collapse:collapse; }
     th, td { border-bottom:1px solid var(--line); padding:6px 8px; text-align:left; vertical-align:top; }
     th { color:var(--muted); font-weight:600; }
-    .plot { height:300px; }
+    .alerts { margin-bottom:12px; }
+    .metric-list { display:flex; flex-direction:column; gap:10px; }
+    .metric-row { display:grid; grid-template-columns:minmax(280px, 360px) minmax(0, 1fr); gap:12px; align-items:stretch; background:var(--panel); border:1px solid var(--line); border-radius:8px; padding:12px; }
+    .metric-title { display:flex; align-items:center; justify-content:space-between; gap:10px; margin-bottom:8px; }
+    .metric-title h3 { margin:0; font-size:15px; }
+    .metric-id { color:var(--muted); overflow-wrap:anywhere; font-size:12px; margin-bottom:10px; }
+    .metric-value { font-size:24px; font-weight:700; margin-bottom:6px; }
+    .metric-message { color:var(--muted); overflow-wrap:anywhere; }
+    .plot { min-height:150px; height:150px; }
+    @media (max-width: 820px) {
+      main { padding:12px; }
+      .metric-row { grid-template-columns:1fr; }
+      .plot { height:190px; }
+    }
   </style>
 </head>
 <body>
@@ -774,36 +879,71 @@ def dashboard_html() -> str:
   <header>
     <div>
       <h1>Pipeline Health</h1>
-      <div id="generated" class="muted">Loading...</div>
+      <div class="meta">
+        <span id="sampleAge" class="tag">sample age ...</span>
+        <span id="sampledAt" class="tag">sampled ...</span>
+        <span id="servedAt" class="tag">served ...</span>
+      </div>
     </div>
     <div id="topline" class="pill">...</div>
   </header>
-  <div class="grid">
-    <section>
-      <h2>Alerts</h2>
-      <div id="alerts"></div>
-    </section>
-    <section>
-      <h2>Metrics</h2>
-      <div id="metrics"></div>
-    </section>
-  </div>
-  <section style="margin-top:12px">
-    <h2>Live Feed Staleness</h2>
-    <div id="stalePlot" class="plot"></div>
+  <section class="alerts">
+    <h2>Alerts</h2>
+    <div id="alerts"></div>
   </section>
+  <div id="metricRows" class="metric-list"></div>
 </main>
 <script>
 const cls = (severity) => severity === "critical" ? "critical" : severity === "warning" ? "warning" : "ok";
+const severityRank = { ok: 0, warning: 1, critical: 2 };
 const esc = (value) => String(value ?? "").replace(/[&<>"']/g, (ch) => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[ch]));
 async function loadJson(path) {
   const response = await fetch(path, { cache: "no-store" });
   if (!response.ok) throw new Error(`${path}: ${response.status}`);
   return response.json();
 }
+function graphValue(value) {
+  if (typeof value === "number" && Number.isFinite(value)) return value;
+  if (typeof value === "boolean") return value ? 1 : 0;
+  return null;
+}
+function formatValue(metric) {
+  const value = metric?.value;
+  if (value === null || value === undefined) return "missing";
+  if (typeof value === "boolean") return value ? "true" : "false";
+  if (typeof value === "number") {
+    if (Math.abs(value) >= 1000) return value.toLocaleString();
+    return String(value);
+  }
+  return String(value);
+}
+function formatAge(seconds) {
+  if (typeof seconds !== "number") return "unknown";
+  if (seconds < 60) return `${seconds}s`;
+  if (seconds < 3600) return `${Math.floor(seconds / 60)}m ${seconds % 60}s`;
+  const hours = Math.floor(seconds / 3600);
+  const minutes = Math.floor((seconds % 3600) / 60);
+  return `${hours}h ${minutes}m`;
+}
+function graphableMetrics(metrics, series) {
+  const idsWithSeries = new Set();
+  for (const sample of series.samples || []) {
+    for (const [id, metric] of Object.entries(sample.metrics || {})) {
+      if (graphValue(metric?.value) !== null) idsWithSeries.add(id);
+    }
+  }
+  return (metrics || [])
+    .filter((metric) => graphValue(metric.value) !== null || idsWithSeries.has(metric.id))
+    .sort((a, b) => {
+      const severity = (severityRank[b.severity || "ok"] || 0) - (severityRank[a.severity || "ok"] || 0);
+      return severity || String(a.id).localeCompare(String(b.id));
+    });
+}
 function renderCurrent(record) {
   const evaln = record.evaluation;
-  document.getElementById("generated").textContent = evaln.generated_at_utc;
+  document.getElementById("sampleAge").textContent = `data age ${formatAge(record.sample_age_seconds)}`;
+  document.getElementById("sampledAt").textContent = `sampled ${record.sampled_at_utc || evaln.generated_at_utc}`;
+  document.getElementById("servedAt").textContent = `served ${record.served_at_utc || "unknown"}`;
   const top = document.getElementById("topline");
   top.textContent = evaln.top_line_status;
   top.className = `pill ${cls(evaln.top_line_status)}`;
@@ -811,42 +951,63 @@ function renderCurrent(record) {
   document.getElementById("alerts").innerHTML = alerts.length
     ? `<table><thead><tr><th>Severity</th><th>Metric</th><th>Message</th></tr></thead><tbody>${alerts.map((a) => `<tr><td class="${cls(a.severity)}">${esc(a.severity)}</td><td>${esc(a.metric_id)}</td><td>${esc(a.message)}</td></tr>`).join("")}</tbody></table>`
     : `<div class="muted">No alerts.</div>`;
-  const rows = (evaln.metrics || []).map((m) => `<tr><td class="${cls(m.severity)}">${esc(m.severity)}</td><td>${esc(m.id)}</td><td>${esc(m.value)}</td><td>${esc(m.unit || "")}</td><td>${esc(m.message)}</td></tr>`).join("");
-  document.getElementById("metrics").innerHTML = `<table><thead><tr><th>Status</th><th>Metric</th><th>Value</th><th>Unit</th><th>Message</th></tr></thead><tbody>${rows}</tbody></table>`;
 }
-function renderHistory(history) {
+function renderMetricRows(current, series) {
+  const metrics = graphableMetrics(current.evaluation?.metrics || [], series);
+  const container = document.getElementById("metricRows");
+  container.innerHTML = metrics.length
+    ? metrics.map((metric, index) => `<section class="metric-row">
+        <div>
+          <div class="metric-title"><h3>${esc(metric.label || metric.id)}</h3><span class="pill ${cls(metric.severity)}">${esc(metric.severity || "ok")}</span></div>
+          <div class="metric-id">${esc(metric.id)}</div>
+          <div class="metric-value">${esc(formatValue(metric))}${metric.unit ? ` <span class="muted">${esc(metric.unit)}</span>` : ""}</div>
+          <div class="metric-message">${esc(metric.message || "")}</div>
+        </div>
+        <div id="metricPlot${index}" class="plot"></div>
+      </section>`).join("")
+    : `<section><div class="muted">No graphable metrics yet.</div></section>`;
   if (!window.Plotly) return;
-  const products = ["metars", "tafs", "nexrad", "tfrs", "obstacles"];
-  const traces = products.map((product) => {
+  metrics.forEach((metric, index) => {
     const x = [], y = [];
-    for (const record of history) {
-      const metric = (record.evaluation?.metrics || []).find((m) => m.id === `live_feed.${product}.stale_seconds`);
-      if (metric && typeof metric.value === "number") {
-        x.push(record.sampled_at_utc);
-        y.push(metric.value / 60);
+    for (const sample of series.samples || []) {
+      const value = graphValue(sample.metrics?.[metric.id]?.value);
+      if (value !== null && sample.sampled_at_utc) {
+        x.push(sample.sampled_at_utc);
+        y.push(value);
       }
     }
-    return { type:"scatter", mode:"lines", name:product, x, y };
-  }).filter((trace) => trace.x.length);
-  Plotly.react("stalePlot", traces, {
-    paper_bgcolor:"#171b19", plot_bgcolor:"#171b19", font:{color:"#edf3ee"},
-    margin:{l:55,r:20,t:12,b:45}, xaxis:{type:"date", gridcolor:"#303833"}, yaxis:{title:"minutes stale", gridcolor:"#303833", rangemode:"tozero"},
-    legend:{orientation:"h"}
-  }, { responsive:true, displaylogo:false });
+    const traces = [{ type:"scatter", mode:"lines", name:metric.id, x, y, line:{color:"#50d890", width:2} }];
+    if (typeof metric.warning_threshold === "number" && x.length) {
+      traces.push({ type:"scatter", mode:"lines", name:"warning", x:[x[0], x[x.length - 1]], y:[metric.warning_threshold, metric.warning_threshold], line:{color:"#f0c85a", width:1, dash:"dot"} });
+    }
+    if (typeof metric.critical_threshold === "number" && x.length) {
+      traces.push({ type:"scatter", mode:"lines", name:"critical", x:[x[0], x[x.length - 1]], y:[metric.critical_threshold, metric.critical_threshold], line:{color:"#ff6b6b", width:1, dash:"dot"} });
+    }
+    Plotly.react(`metricPlot${index}`, traces, {
+      paper_bgcolor:"#171b19",
+      plot_bgcolor:"#171b19",
+      font:{color:"#edf3ee", size:11},
+      margin:{l:48,r:12,t:8,b:32},
+      xaxis:{type:"date", gridcolor:"#303833"},
+      yaxis:{title:metric.unit || "", gridcolor:"#303833", rangemode:"tozero"},
+      showlegend:traces.length > 1,
+      legend:{orientation:"h", x:0, y:1.18}
+    }, { responsive:true, displaylogo:false });
+  });
 }
 async function refresh() {
-  const [current, history] = await Promise.all([
+  const [current, series] = await Promise.all([
     loadJson("/pipeline-health/current.json"),
-    loadJson("/pipeline-health/history.json?limit=240"),
+    loadJson("/pipeline-health/series.json"),
   ]);
   renderCurrent(current);
-  renderHistory(history);
+  renderMetricRows(current, series);
 }
 refresh().catch((error) => {
-  document.getElementById("generated").textContent = String(error);
+  document.getElementById("sampleAge").textContent = String(error);
 });
 setInterval(() => refresh().catch((error) => {
-  document.getElementById("generated").textContent = String(error);
+  document.getElementById("sampleAge").textContent = String(error);
 }), 30000);
 </script>
 </body>

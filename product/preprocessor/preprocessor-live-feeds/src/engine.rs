@@ -2025,6 +2025,59 @@ mod tests {
     }
 
     #[test]
+    fn file_publisher_writes_taf_keyed_record_delta() -> anyhow::Result<()> {
+        let temp = tempdir()?;
+        let root = temp.path().join("live-feeds");
+        let publisher = FileLiveFeedPublisher::new(
+            root.clone(),
+            FixedClock::new(Utc.with_ymd_and_hms(2026, 5, 18, 1, 2, 3).unwrap()),
+        );
+
+        publisher.publish(json_state_with_count_key(
+            temp.path(),
+            "tafs",
+            "tafs-v1",
+            "v1",
+            "tafs_by_station",
+            "taf_count",
+            &[("KSEA", 1), ("KPAE", 2)],
+        )?)?;
+        let result = publisher.publish(json_state_with_count_key(
+            temp.path(),
+            "tafs",
+            "tafs-v2",
+            "v2",
+            "tafs_by_station",
+            "taf_count",
+            &[("KSEA", 3), ("KBFI", 4)],
+        )?)?;
+
+        let delta_path = result.delta_path.expect("TAF delta path");
+        assert_eq!(
+            delta_path,
+            root.join("deltas").join("tafs").join("v1__v2.json")
+        );
+        let delta: LiveFeedRecordDelta = serde_json::from_slice(&fs::read(&delta_path)?)?;
+        assert_eq!(delta.product, "tafs");
+        assert_eq!(
+            delta.changed.keys().cloned().collect::<Vec<_>>(),
+            vec!["KBFI", "KSEA"]
+        );
+        assert_eq!(delta.removed, vec!["KPAE"]);
+
+        let version_manifest: LiveFeedVersionManifest =
+            serde_json::from_slice(&fs::read(root.join("versions/tafs/v2.json"))?)?;
+        assert_eq!(
+            version_manifest
+                .delta_from_previous
+                .as_ref()
+                .map(|delta| delta.url.as_str()),
+            Some("deltas/tafs/v1__v2.json")
+        );
+        Ok(())
+    }
+
+    #[test]
     fn publish_tick_continues_after_one_product_fails() -> anyhow::Result<()> {
         let temp = tempdir()?;
         let root = temp.path().join("live-feeds");
@@ -2445,9 +2498,29 @@ mod tests {
         records_key: &str,
         records: &[(&str, i64)],
     ) -> anyhow::Result<BuiltLiveFeedState> {
+        json_state_with_count_key(
+            root,
+            product,
+            file_stem,
+            version,
+            records_key,
+            "record_count",
+            records,
+        )
+    }
+
+    fn json_state_with_count_key(
+        root: &Path,
+        product: &str,
+        file_stem: &str,
+        version: &str,
+        records_key: &str,
+        count_key: &str,
+        records: &[(&str, i64)],
+    ) -> anyhow::Result<BuiltLiveFeedState> {
         let value = serde_json::json!({
             "version_label": version,
-            "record_count": records.len(),
+            count_key: records.len(),
             records_key: records.iter().map(|(id, value)| {
                 (id.to_string(), serde_json::json!({"value": value}))
             }).collect::<serde_json::Map<_, _>>()
@@ -2463,7 +2536,7 @@ mod tests {
             status_timestamps: Default::default(),
             delta_policy: DeltaPolicy::KeyedRecords {
                 records_key: records_key.to_string(),
-                count_key: Some("record_count".to_string()),
+                count_key: Some(count_key.to_string()),
             },
             precomputed_delta: None,
             changed_count_if_no_delta: records.len(),

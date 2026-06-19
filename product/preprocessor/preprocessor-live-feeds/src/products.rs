@@ -88,6 +88,28 @@ pub fn json_live_feed_state(
     }
 }
 
+pub fn keyed_record_json_live_feed_state(
+    product: &str,
+    version: String,
+    state_source_path: PathBuf,
+    state_value: Value,
+    records_key: &str,
+    count_key: Option<&str>,
+    changed_count_if_no_delta: usize,
+) -> BuiltLiveFeedState {
+    json_live_feed_state(
+        product,
+        version,
+        state_source_path,
+        state_value,
+        DeltaPolicy::KeyedRecords {
+            records_key: records_key.to_string(),
+            count_key: count_key.map(str::to_string),
+        },
+        changed_count_if_no_delta,
+    )
+}
+
 fn with_collected_at(
     mut state: BuiltLiveFeedState,
     collected_at_utc: DateTime<Utc>,
@@ -330,15 +352,13 @@ impl ProductBuilder for MetarLiveFeedBuilder {
         })?;
         let state_value = read_json_value(&result.structured_json_path)?;
         Ok(with_collected_at(
-            json_live_feed_state(
+            keyed_record_json_live_feed_state(
                 "metars",
                 version,
                 result.structured_json_path,
                 state_value,
-                DeltaPolicy::KeyedRecords {
-                    records_key: "metars_by_station".to_string(),
-                    count_key: Some("metar_count".to_string()),
-                },
+                "metars_by_station",
+                Some("metar_count"),
                 result.metar_count,
             ),
             generated_at_utc,
@@ -393,15 +413,13 @@ impl ProductBuilder for TafLiveFeedBuilder {
         })?;
         let state_value = read_json_value(&result.structured_json_path)?;
         Ok(with_collected_at(
-            json_live_feed_state(
+            keyed_record_json_live_feed_state(
                 "tafs",
                 version,
                 result.structured_json_path,
                 state_value,
-                DeltaPolicy::KeyedRecords {
-                    records_key: "tafs_by_station".to_string(),
-                    count_key: Some("taf_count".to_string()),
-                },
+                "tafs_by_station",
+                Some("taf_count"),
                 result.taf_count,
             ),
             generated_at_utc,

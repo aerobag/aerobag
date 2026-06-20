@@ -498,6 +498,7 @@ internal fun FlightPlanDataRow(
                 alpha = uiTheme.controls.buttonBg.alpha,
             )
         }
+    val procedureGroupCell = row.rowKind == "group" && row.componentKind == RouteComponentViewKind.Procedure
     Row(modifier = modifier.then(rowBoundsModifier), horizontalArrangement = Arrangement.spacedBy(PlanGridGap)) {
         Box(modifier = Modifier.width(ThumbSize * 2.5f).height(cellHeight)) {
             if (row.rowKind == "summary") {
@@ -525,19 +526,24 @@ internal fun FlightPlanDataRow(
                     backgroundColor = defaultButtonColor,
                     selected = selected,
                     selectedColor = selectedButtonColor,
-                    maxLines = 2,
+                    maxLines = if (procedureGroupCell) 3 else 2,
                     textModifier =
-                        Modifier
-                            .padding(end = ThumbSize * 0.78f),
+                        if (procedureGroupCell) {
+                            Modifier.fillMaxWidth()
+                        } else {
+                            Modifier.padding(end = ThumbSize * 0.78f)
+                        },
                     onClick = onWaypointClick,
                 )
-                PlanWaypointSymbol(
-                    feature = row.symbolFeature,
-                    modifier = Modifier
-                        .align(Alignment.CenterEnd)
-                        .padding(end = ThumbSize * 0.12f)
-                        .alpha(1f),
-                )
+                if (!procedureGroupCell) {
+                    PlanWaypointSymbol(
+                        feature = row.symbolFeature,
+                        modifier = Modifier
+                            .align(Alignment.CenterEnd)
+                            .padding(end = ThumbSize * 0.12f)
+                            .alpha(1f),
+                    )
+                }
             }
         }
         row.dataCells.forEach { cell ->

@@ -1544,17 +1544,20 @@ function WaypointButtonContent(props: {
   symbolFeature: NavSymbolFeature | null | undefined;
   details?: Array<string | null | undefined>;
   indented?: boolean;
+  fullWidthLabel?: boolean;
 }) {
   const details = (props.details ?? []).filter((detail): detail is string => Boolean(detail?.trim()));
   return (
     <>
-      <span className={`planStructuredLabel${props.indented ? " isIndented" : ""}${details.length > 0 ? " hasDetails" : ""}`}>
+      <span
+        className={`planStructuredLabel${props.indented ? " isIndented" : ""}${details.length > 0 ? " hasDetails" : ""}${props.fullWidthLabel ? " isFullWidth" : ""}`}
+      >
         <span className="waypointButtonTitle">{props.label}</span>
         {details.map((detail, index) => (
           <span key={`${index}:${detail}`} className="waypointButtonDetail">{detail}</span>
         ))}
       </span>
-      <PlanWaypointSymbol feature={props.symbolFeature ?? null} />
+      {props.fullWidthLabel ? null : <PlanWaypointSymbol feature={props.symbolFeature ?? null} />}
     </>
   );
 }
@@ -7289,93 +7292,98 @@ function FlightPlanPage(props: {
                 {planDataColumns.map((column) => (
                   <div key={column.id} className="planHeader">{column.label}</div>
                 ))}
-                {displayRows.map((row, index) => (
-                  <Fragment key={row.id}>
-                    {row.rowKind === "summary" ? (
-                      <div
-                        key={`${row.id}:waypoint`}
-                        data-testid={`plan-row-${row.rowUid}`}
-                        ref={(node) => {
-                          if (row.refKey === null) {
-                            return;
-                          }
-                          if (node) {
-                            structuredRowRefs.current.set(row.refKey, node);
-                          } else {
-                            structuredRowRefs.current.delete(row.refKey);
-                          }
-                        }}
-                        className="planWaypointCell planStructuredWaypointCell planSummaryCell"
-                      >
-                        {row.label}
-                      </div>
-                    ) : (
-                      <button
-                        key={`${row.id}:waypoint`}
-                        type="button"
-                        data-testid={`plan-row-${row.rowUid}`}
-                        ref={(node) => {
-                          if (row.refKey === null) {
-                            return;
-                          }
-                          if (node) {
-                            structuredRowRefs.current.set(row.refKey, node);
-                          } else {
-                            structuredRowRefs.current.delete(row.refKey);
-                          }
-                        }}
-                        className={[
-                          "planWaypointCell",
-                          "planWaypointButton",
-                          selectedWaypointIndex === index ? "isSelected" : "",
-                          row.active ? "isActiveLeg" : "",
-                          !row.enabled ? "isDisabled" : "",
-                          row.syntheticDirectTo ? "isSyntheticDirectTo" : "",
-                          "planStructuredWaypointCell",
-                          row.rowKind === "group" ? "isGroupHeader" : "",
-                          row.depth > 0 ? "isChildRow" : "",
-                          row.rowKind === "discontinuity" ? "isDiscontinuityItem" : "",
-                        ].filter(Boolean).join(" ")}
-                        onClick={(event) => {
-                          if (!row.enabled && !row.syntheticDirectTo) {
-                            return;
-                          }
-                          const page = pageRef.current;
-                          if (page) {
-                            const pageRect = page.getBoundingClientRect();
-                            const rowRect = event.currentTarget.getBoundingClientRect();
-                            setSelectedWaypointAnchor({
-                              top: rowRect.top - pageRect.top,
-                              height: rowRect.height,
-                            });
-                          }
-                          setSelectedWaypointUid(row.rowUid);
-                          setAirwayPicker(null);
-                          setProcedurePicker(null);
-                        }}
-                      >
-                        <WaypointButtonContent
-                          label={row.label}
-                          symbolFeature={row.symbolFeature}
-                          indented={row.depth > 0}
-                        />
-                      </button>
-                    )}
-                    {row.dataCells.map((cell, cellIndex) => (
-                      <div
-                        key={`${row.id}:data:${planDataColumns[cellIndex]?.id ?? cellIndex}`}
-                        className={[
-                          "planCell",
-                          row.depth > 0 ? "planStructuredDataCell isChildRow" : "",
-                          row.rowKind === "summary" ? "planSummaryCell" : "",
-                          cell.tone === "muted" ? "isMuted" : "",
-                        ].filter(Boolean).join(" ")}
-                      >
-                        {cell.value ?? "\u2014"}
-                      </div>
-                    ))}
-                  </Fragment>
-                ))}
+                {displayRows.map((row, index) => {
+                  const procedureGroupCell = row.rowKind === "group" && row.componentKind === "procedure";
+                  return (
+                    <Fragment key={row.id}>
+                      {row.rowKind === "summary" ? (
+                        <div
+                          key={`${row.id}:waypoint`}
+                          data-testid={`plan-row-${row.rowUid}`}
+                          ref={(node) => {
+                            if (row.refKey === null) {
+                              return;
+                            }
+                            if (node) {
+                              structuredRowRefs.current.set(row.refKey, node);
+                            } else {
+                              structuredRowRefs.current.delete(row.refKey);
+                            }
+                          }}
+                          className="planWaypointCell planStructuredWaypointCell planSummaryCell"
+                        >
+                          {row.label}
+                        </div>
+                      ) : (
+                        <button
+                          key={`${row.id}:waypoint`}
+                          type="button"
+                          data-testid={`plan-row-${row.rowUid}`}
+                          ref={(node) => {
+                            if (row.refKey === null) {
+                              return;
+                            }
+                            if (node) {
+                              structuredRowRefs.current.set(row.refKey, node);
+                            } else {
+                              structuredRowRefs.current.delete(row.refKey);
+                            }
+                          }}
+                          className={[
+                            "planWaypointCell",
+                            "planWaypointButton",
+                            selectedWaypointIndex === index ? "isSelected" : "",
+                            row.active ? "isActiveLeg" : "",
+                            !row.enabled ? "isDisabled" : "",
+                            row.syntheticDirectTo ? "isSyntheticDirectTo" : "",
+                            "planStructuredWaypointCell",
+                            row.rowKind === "group" ? "isGroupHeader" : "",
+                            procedureGroupCell ? "isProcedureCell" : "",
+                            row.depth > 0 ? "isChildRow" : "",
+                            row.rowKind === "discontinuity" ? "isDiscontinuityItem" : "",
+                          ].filter(Boolean).join(" ")}
+                          onClick={(event) => {
+                            if (!row.enabled && !row.syntheticDirectTo) {
+                              return;
+                            }
+                            const page = pageRef.current;
+                            if (page) {
+                              const pageRect = page.getBoundingClientRect();
+                              const rowRect = event.currentTarget.getBoundingClientRect();
+                              setSelectedWaypointAnchor({
+                                top: rowRect.top - pageRect.top,
+                                height: rowRect.height,
+                              });
+                            }
+                            setSelectedWaypointUid(row.rowUid);
+                            setAirwayPicker(null);
+                            setProcedurePicker(null);
+                          }}
+                        >
+                          <WaypointButtonContent
+                            label={row.label}
+                            symbolFeature={row.symbolFeature}
+                            indented={row.depth > 0}
+                            fullWidthLabel={procedureGroupCell}
+                          />
+                        </button>
+                      )}
+                      {row.dataCells.map((cell, cellIndex) => (
+                        <div
+                          key={`${row.id}:data:${planDataColumns[cellIndex]?.id ?? cellIndex}`}
+                          className={[
+                            "planCell",
+                            row.depth > 0 ? "planStructuredDataCell isChildRow" : "",
+                            row.rowKind === "summary" ? "planSummaryCell" : "",
+                            cell.tone === "muted" ? "isMuted" : "",
+                          ].filter(Boolean).join(" ")}
+                        >
+                          {cell.value ?? "\u2014"}
+                        </div>
+                      ))}
+                    </Fragment>
+                  );
+                })}
               </div>
             </div>
           </div>
@@ -7500,7 +7508,7 @@ function FlightPlanPage(props: {
           />
           <section
             ref={waypointModalRef}
-            className={`waypointModal${airportInsert ? " isAirportInsert" : ""}`}
+            className={`waypointModal${airportInsert ? " isAirportInsert" : ""}${procedurePicker && procedurePicker.selectedProcedureId === null ? " isProcedureChoice" : ""}`}
             aria-label="Waypoint actions"
             style={waypointModalTop === null ? undefined : {
               top: `${waypointModalTop}px`,
@@ -7589,7 +7597,7 @@ function FlightPlanPage(props: {
                 ) : null}
               </form>
             ) : procedurePicker ? (
-              <div className="waypointActionTray">
+              <div className="waypointActionTray procedureChoiceTray">
                 <div className="planGuidanceSummary">
                   APPROACH {procedurePicker.airportId}
                 </div>
@@ -7600,12 +7608,12 @@ function FlightPlanPage(props: {
                     <div className="planGuidanceSummary">Loading…</div>
                   </div>
                 ) : procedurePicker.selectedProcedureId === null ? (
-                  <>
+                  <div className="procedureChoiceGrid">
                     {procedurePicker.procedures.map((procedure) => (
                       <button
                         key={procedure.procedure_id}
                         type="button"
-                        className="trayButton airwayChoiceButton"
+                        className="trayButton airwayChoiceButton procedureChoiceButton"
                         onPointerDown={stopPointer}
                         onPointerUp={stopPointer}
                         onClick={async () => {
@@ -7645,10 +7653,10 @@ function FlightPlanPage(props: {
                           }
                         }}
                       >
-                        {procedure.procedure_id}
+                        {procedure.display_label}
                       </button>
                     ))}
-                  </>
+                  </div>
                 ) : procedurePicker.options ? (
                   <>
                     {procedurePicker.options.valid_choices.map((choice, index) => (

@@ -175,6 +175,7 @@ export type ProcedureDiscontinuity = "vectors" | "hold" | string;
 export type ProcedureSegment = {
   airport_id: string;
   procedure_id: string;
+  display_label?: string | null;
   kind: ProcedureKind;
   runway_transition: string | null;
   enroute_transition: string | null;
@@ -185,6 +186,7 @@ export type ProcedureSegment = {
 export type ProcedureSummary = {
   airport_id: string;
   procedure_id: string;
+  display_label: string;
   kind: ProcedureKind;
 };
 

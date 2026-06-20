@@ -195,6 +195,7 @@ sealed interface ProcedureDiscontinuity {
 data class ProcedureSegment(
     val airportId: String,
     val procedureId: String,
+    val displayLabel: String? = null,
     val kind: ProcedureKind,
     val runwayTransition: String?,
     val enrouteTransition: String?,
@@ -204,6 +205,7 @@ data class ProcedureSegment(
 data class ProcedureSummary(
     val airportId: String,
     val procedureId: String,
+    val displayLabel: String,
     val kind: ProcedureKind,
 )
 

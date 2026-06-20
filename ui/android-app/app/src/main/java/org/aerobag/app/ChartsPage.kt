@@ -1382,6 +1382,7 @@ internal fun MenuPanelRow(
     testTag: String? = null,
     modifier: Modifier = Modifier,
     width: Dp = Dp.Unspecified,
+    maxLines: Int = 2,
     onSelect: () -> Unit,
 ) {
     val uiTheme = LocalAerobagUiTheme.current
@@ -1442,7 +1443,7 @@ internal fun MenuPanelRow(
                     text = renderedLabel,
                     modifier = Modifier.weight(1f),
                     style = renderedLabelStyle,
-                    maxLines = 2,
+                    maxLines = maxLines,
                     overflow = TextOverflow.Ellipsis,
                     color = rowTextColor,
                 )
@@ -1459,7 +1460,7 @@ internal fun MenuPanelRow(
                 text = renderedLabel,
                 modifier = Modifier.padding(horizontal = 12.dp),
                 style = renderedLabelStyle,
-                maxLines = 2,
+                maxLines = maxLines,
                 overflow = TextOverflow.Ellipsis,
                 color = rowTextColor,
             )

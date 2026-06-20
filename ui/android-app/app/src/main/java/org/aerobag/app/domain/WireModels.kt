@@ -1098,6 +1098,7 @@ object WireProcedureDiscontinuitySerializer : KSerializer<WireProcedureDiscontin
 data class WireProcedureSegment(
     val airport_id: String,
     val procedure_id: String,
+    val display_label: String? = null,
     val kind: WireProcedureKind,
     val runway_transition: String? = null,
     val enroute_transition: String? = null,
@@ -1108,6 +1109,7 @@ data class WireProcedureSegment(
 data class WireProcedureSummary(
     val airport_id: String,
     val procedure_id: String,
+    val display_label: String,
     val kind: WireProcedureKind,
 )
 

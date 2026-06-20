@@ -2851,6 +2851,7 @@ private fun WireProcedureKind.toUi() = when (this) {
 private fun WireProcedureSummary.toUi() = ProcedureSummary(
     airportId = airport_id,
     procedureId = procedure_id,
+    displayLabel = display_label,
     kind = kind.toUi(),
 )
 
@@ -2877,6 +2878,7 @@ private fun WireProcedureOptions.toUi() = ProcedureOptions(
 private fun ProcedureSegment.toWire() = WireProcedureSegment(
     airport_id = airportId,
     procedure_id = procedureId,
+    display_label = displayLabel,
     kind = kind.toWire(),
     runway_transition = runwayTransition,
     enroute_transition = enrouteTransition,
@@ -2886,6 +2888,7 @@ private fun ProcedureSegment.toWire() = WireProcedureSegment(
 private fun WireProcedureSegment.toUi() = ProcedureSegment(
     airportId = airport_id,
     procedureId = procedure_id,
+    displayLabel = display_label,
     kind = kind.toUi(),
     runwayTransition = runway_transition,
     enrouteTransition = enroute_transition,

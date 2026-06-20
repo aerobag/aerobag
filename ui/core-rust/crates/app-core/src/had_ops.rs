@@ -2585,7 +2585,11 @@ pub(crate) fn materialize_procedure(
     };
     expand_procedure_geometry_segments(store, &mut record)?;
     pgt::populate_derived_procedure_geometry_fields(&mut record);
-    materialized_procedure_from_geometry_record(record, component_index).map_err(Into::into)
+    let display_label = procedure_display_label(store, airport_id, procedure_id, &kind)?;
+    let mut materialized = materialized_procedure_from_geometry_record(record, component_index)
+        .map_err(HadReadError::from)?;
+    materialized.procedure.display_label = Some(display_label);
+    Ok(materialized)
 }
 
 fn expand_procedure_geometry_segments(
@@ -2632,14 +2636,61 @@ fn list_procedures_from_geometry(
         .collect::<Vec<_>>();
     procedure_ids.sort();
     procedure_ids.dedup();
-    Ok(procedure_ids
-        .into_iter()
-        .map(|procedure_id| ProcedureSummary {
+    let mut missing_pages = HadReadPageCollector::default();
+    let mut procedures = Vec::new();
+    for procedure_id in procedure_ids {
+        let Some(display_label) = missing_pages.collect(procedure_display_label(
+            store,
+            airport_id,
+            &procedure_id,
+            &kind,
+        ))?
+        else {
+            continue;
+        };
+        procedures.push(ProcedureSummary {
             airport_id: airport_id.trim().to_string(),
             procedure_id,
+            display_label,
             kind: kind.clone(),
-        })
-        .collect())
+        });
+    }
+    let pages = missing_pages.into_pages();
+    if !pages.is_empty() {
+        return Err(HadReadError::NeedPages(pages));
+    }
+    Ok(procedures)
+}
+
+pub(crate) fn procedure_display_label(
+    store: &NavKvStore,
+    airport_id: &str,
+    procedure_id: &str,
+    kind: &ProcedureKind,
+) -> Result<String, HadReadError> {
+    if *kind != ProcedureKind::Approach {
+        return Ok(procedure_id.trim().to_string());
+    }
+    let rows = read_required::<Vec<CifpTppMatchRow>>(
+        store,
+        NavKvQuery::PlateCifpMatch {
+            airport_id: airport_id.to_string(),
+            cifp_id: procedure_id.to_string(),
+        },
+        "approach plate match",
+    )?;
+    let matched = crate::select_preferred_cifp_tpp_match(rows).ok_or_else(|| {
+        HadReadError::Fatal(format!(
+            "approach {airport_id} {procedure_id} has no preferred plate label"
+        ))
+    })?;
+    let label = matched.plate_label.trim();
+    if label.is_empty() {
+        return Err(HadReadError::Fatal(format!(
+            "approach {airport_id} {procedure_id} has an empty plate label"
+        )));
+    }
+    Ok(label.to_string())
 }
 
 fn describe_procedure_options_from_geometry_keys(
@@ -2781,6 +2832,7 @@ fn materialized_procedure_from_geometry_record(
         procedure: ProcedureSegment {
             airport_id: AirportId(record.key.airport_id.trim().to_string()),
             procedure_id: record.key.procedure_id.trim().to_string(),
+            display_label: None,
             kind,
             runway_transition: record.key.runway_transition,
             enroute_transition: record.key.enroute_transition,
@@ -4296,6 +4348,24 @@ mod tests {
         store
     }
 
+    fn procedure_plate_match_value(
+        airport_id: &str,
+        procedure_id: &str,
+        plate_label: &str,
+    ) -> serde_json::Value {
+        serde_json::json!([{
+            "airport_id": airport_id,
+            "cifp_id": procedure_id,
+            "plate_id": format!("Plate:{airport_id}:IAP-{procedure_id}.png"),
+            "plate_label": plate_label,
+            "package_id": "tpp-test",
+            "public": 1,
+            "priority": 0,
+            "match_kind": "unique",
+            "is_primary": 1
+        }])
+    }
+
     #[test]
     fn procedure_geometry_materialization_rehydrates_omitted_wire_fields() {
         let key = crate::navkv::procedure_geometry_key(
@@ -4305,21 +4375,27 @@ mod tests {
             None,
             Some("TRANS"),
         );
-        let store = test_nav_kv_store(&[(
-            &key,
-            serde_json::json!({
-                "leg_bundles": [{
-                    "role": "common",
-                    "from": { "kind": "airport", "value": "KAAA" },
-                    "to": { "kind": "fix", "value": "FIXA" },
-                    "path_termination": "track_to_fix",
-                    "path": { "elements": [] }
-                }],
-                "data_quality": [{
-                    "message": "Procedure encoding is suspicious; read plate."
-                }]
-            }),
-        )]);
+        let store = test_nav_kv_store(&[
+            (
+                "plate/cifp/KAAA/RNAV-A",
+                procedure_plate_match_value("KAAA", "RNAV-A", "RNAV-A"),
+            ),
+            (
+                &key,
+                serde_json::json!({
+                    "leg_bundles": [{
+                        "role": "common",
+                        "from": { "kind": "airport", "value": "KAAA" },
+                        "to": { "kind": "fix", "value": "FIXA" },
+                        "path_termination": "track_to_fix",
+                        "path": { "elements": [] }
+                    }],
+                    "data_quality": [{
+                        "message": "Procedure encoding is suspicious; read plate."
+                    }]
+                }),
+            ),
+        ]);
 
         let options = describe_procedure_options(&store, "KAAA", "RNAV-A", ProcedureKind::Approach)
             .expect("describe key-only procedure choices");
@@ -4347,6 +4423,10 @@ mod tests {
             AirportId("KAAA".to_string())
         );
         assert_eq!(materialized.procedure.procedure_id, "RNAV-A");
+        assert_eq!(
+            materialized.procedure.display_label.as_deref(),
+            Some("RNAV-A")
+        );
         assert_eq!(
             materialized.procedure.enroute_transition,
             Some("TRANS".to_string())
@@ -4388,6 +4468,10 @@ mod tests {
         );
         let segment_key = pgt::procedure_geometry_segment_navdb_key(segment_ref);
         let store = test_nav_kv_store(&[
+            (
+                "plate/cifp/KAAA/RNAV-A",
+                procedure_plate_match_value("KAAA", "RNAV-A", "RNAV-A"),
+            ),
             (
                 &geometry_key,
                 serde_json::json!({
@@ -5648,6 +5732,146 @@ mod tests {
         assert!(
             procedure_ids.contains(&"R26"),
             "KHVR geometry procedures should include R26: {procedure_ids:?}"
+        );
+    }
+
+    #[test]
+    fn generated_nav_kv_labels_ksea_h34lz_from_plate_match() {
+        let store = load_current_nav_kv_store();
+
+        let outcome = run_had_operation(
+            &store,
+            HadOperation::ListProcedures {
+                airport_id: "KSEA".to_string(),
+                procedure_kind: ProcedureKind::Approach,
+            },
+        )
+        .expect("list KSEA approaches through generated nav_kv");
+
+        let HadOperationOutcome::Complete { result, .. } = outcome else {
+            panic!("expected complete outcome, got missing resources: {outcome:?}");
+        };
+        let procedures = serde_json::from_value::<Vec<ProcedureSummary>>(result)
+            .expect("decode KSEA approach summaries");
+        let h34lz = procedures
+            .iter()
+            .find(|procedure| procedure.procedure_id == "H34LZ")
+            .unwrap_or_else(|| panic!("KSEA approaches should include H34LZ: {procedures:?}"));
+
+        assert_eq!(h34lz.display_label, "RNAV (RNP) Z 34L");
+    }
+
+    #[test]
+    fn generated_nav_kv_materializes_ksea_i34r_jipox_with_base_label() {
+        let store = load_current_nav_kv_store();
+
+        let options = describe_procedure_options(&store, "KSEA", "I34R", ProcedureKind::Approach)
+            .expect("describe KSEA I34R choices");
+        assert!(
+            options.valid_choices.contains(&crate::ProcedureSpecChoice {
+                runway_transition: None,
+                enroute_transition: Some("JIPOX".to_string())
+            }),
+            "KSEA I34R should offer JIPOX: {:?}",
+            options.valid_choices
+        );
+
+        let materialized = materialize_procedure(
+            &store,
+            "KSEA",
+            "I34R",
+            ProcedureKind::Approach,
+            None,
+            Some("JIPOX"),
+            1,
+        )
+        .expect("materialize KSEA I34R JIPOX");
+        assert_eq!(
+            materialized.procedure.display_label.as_deref(),
+            Some("ILS or LOC 34R")
+        );
+        assert_eq!(
+            materialized.procedure.enroute_transition.as_deref(),
+            Some("JIPOX")
+        );
+    }
+
+    #[test]
+    fn list_approaches_uses_plate_label_from_cifp_match() {
+        let (root, pages) = fixture(
+            &[
+                (
+                    "plate/cifp/KSEA/H34LZ",
+                    br#"[{
+                        "airport_id": "KSEA",
+                        "cifp_id": "H34LZ",
+                        "plate_id": "Plate:KSEA:IAP-RNAV-RNP-Z-34L.png",
+                        "plate_label": "RNAV (RNP) Z 34L",
+                        "package_id": "tpp-nw",
+                        "public": 1,
+                        "priority": 0,
+                        "match_kind": "unique",
+                        "is_primary": 1
+                    }]"#
+                    .as_slice(),
+                ),
+                (
+                    "procedure/geometry/KSEA/APPROACH/H34LZ/_/_",
+                    br#"{}"#.as_slice(),
+                ),
+            ],
+            4096,
+        );
+        let mut store = NavKvStore::new(root);
+        for (index, page) in pages.into_iter().enumerate() {
+            store.insert_page(index as u32, page);
+        }
+
+        let outcome = run_had_operation(
+            &store,
+            HadOperation::ListProcedures {
+                airport_id: "KSEA".to_string(),
+                procedure_kind: ProcedureKind::Approach,
+            },
+        )
+        .expect("list KSEA approaches through nav_kv");
+        let HadOperationOutcome::Complete { result, .. } = outcome else {
+            panic!("expected complete outcome, got missing resources: {outcome:?}");
+        };
+        let procedures =
+            serde_json::from_value::<Vec<ProcedureSummary>>(result).expect("decode procedures");
+
+        assert_eq!(procedures.len(), 1);
+        assert_eq!(procedures[0].procedure_id, "H34LZ");
+        assert_eq!(procedures[0].display_label, "RNAV (RNP) Z 34L");
+    }
+
+    #[test]
+    fn list_approaches_requires_plate_label() {
+        let (root, pages) = fixture(
+            &[(
+                "procedure/geometry/KSEA/APPROACH/H34LZ/_/_",
+                br#"{}"#.as_slice(),
+            )],
+            4096,
+        );
+        let mut store = NavKvStore::new(root);
+        for (index, page) in pages.into_iter().enumerate() {
+            store.insert_page(index as u32, page);
+        }
+
+        let err = run_had_operation(
+            &store,
+            HadOperation::ListProcedures {
+                airport_id: "KSEA".to_string(),
+                procedure_kind: ProcedureKind::Approach,
+            },
+        )
+        .expect_err("approach list should require plate/cifp label data");
+        assert!(
+            err.message
+                .contains("HAD missing required approach plate match"),
+            "unexpected error: {err:?}"
         );
     }
 

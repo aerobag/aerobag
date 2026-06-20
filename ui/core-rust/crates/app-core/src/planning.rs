@@ -59,6 +59,8 @@ pub struct AirwaySegment {
 pub struct ProcedureSegment {
     pub airport_id: AirportId,
     pub procedure_id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub display_label: Option<String>,
     pub kind: ProcedureKind,
     pub runway_transition: Option<String>,
     pub enroute_transition: Option<String>,
@@ -4590,22 +4592,13 @@ fn component_summary(component: &RouteComponent) -> String {
     match component {
         RouteComponent::Waypoint { waypoint } => nav_ref_label(waypoint),
         RouteComponent::Airway { airway } => airway.name.clone(),
-        RouteComponent::Procedure { procedure } => {
-            let mut summary = procedure.procedure_id.clone();
-            if let Some(transition) = procedure.enroute_transition.as_deref() {
-                if !transition.is_empty() {
-                    summary.push(' ');
-                    summary.push_str(transition);
-                }
-            }
-            if let Some(runway) = procedure.runway_transition.as_deref() {
-                if !runway.is_empty() {
-                    summary.push(' ');
-                    summary.push_str(runway);
-                }
-            }
-            summary
-        }
+        RouteComponent::Procedure { procedure } => procedure
+            .display_label
+            .as_deref()
+            .map(str::trim)
+            .filter(|label| !label.is_empty())
+            .unwrap_or(procedure.procedure_id.as_str())
+            .to_string(),
     }
 }
 
@@ -5297,6 +5290,7 @@ mod tests {
                 procedure: ProcedureSegment {
                     airport_id: AirportId("KAAA".to_string()),
                     procedure_id: "STAR1".to_string(),
+                    display_label: None,
                     kind: ProcedureKind::Star,
                     runway_transition: Some("RW10".to_string()),
                     enroute_transition: Some("FOO".to_string()),
@@ -5338,6 +5332,7 @@ mod tests {
                 procedure: ProcedureSegment {
                     airport_id: AirportId("KAAA".to_string()),
                     procedure_id: "STAR1".to_string(),
+                    display_label: None,
                     kind: ProcedureKind::Star,
                     runway_transition: Some("RW10".to_string()),
                     enroute_transition: Some("FOO".to_string()),
@@ -5471,6 +5466,7 @@ mod tests {
             ProcedureSegment {
                 airport_id: AirportId("CYQG".to_string()),
                 procedure_id: "AUTTO1".to_string(),
+                display_label: None,
                 kind: ProcedureKind::Sid,
                 runway_transition: None,
                 enroute_transition: Some("COLTS".to_string()),
@@ -5514,6 +5510,7 @@ mod tests {
             ProcedureSegment {
                 airport_id: AirportId("CYQG".to_string()),
                 procedure_id: "AUTTO1".to_string(),
+                display_label: None,
                 kind: ProcedureKind::Sid,
                 runway_transition: None,
                 enroute_transition: Some("PICUP".to_string()),
@@ -6250,6 +6247,7 @@ mod tests {
                     procedure: ProcedureSegment {
                         airport_id: AirportId("47N".to_string()),
                         procedure_id: "CENTR1".to_string(),
+                        display_label: None,
                         kind: ProcedureKind::Star,
                         runway_transition: Some("RW07".to_string()),
                         enroute_transition: None,
@@ -6576,6 +6574,7 @@ mod tests {
                 procedure: ProcedureSegment {
                     airport_id: AirportId("KHVR".to_string()),
                     procedure_id: "R26".to_string(),
+                    display_label: None,
                     kind: ProcedureKind::Approach,
                     runway_transition: None,
                     enroute_transition: Some("ISITE".to_string()),
@@ -6642,6 +6641,7 @@ mod tests {
                     procedure: ProcedureSegment {
                         airport_id: AirportId("KAAA".to_string()),
                         procedure_id: "STAR1".to_string(),
+                        display_label: None,
                         kind: ProcedureKind::Star,
                         runway_transition: Some("RW10".to_string()),
                         enroute_transition: Some("FOO".to_string()),
@@ -6895,6 +6895,31 @@ mod tests {
             NavRef::Airport("KRNT".to_string())
         );
         assert_eq!(ui.resolved_legs[0].to, NavRef::Navaid("SEA".to_string()));
+    }
+
+    #[test]
+    fn project_ui_state_uses_procedure_display_label_for_group_summary() {
+        let procedure = ProcedureSegment {
+            airport_id: AirportId("KSEA".to_string()),
+            procedure_id: "I34R".to_string(),
+            display_label: Some("ILS or LOC 34R".to_string()),
+            kind: ProcedureKind::Approach,
+            runway_transition: None,
+            enroute_transition: Some("JIPOX".to_string()),
+            terminal_discontinuity: None,
+            data_quality: Vec::new(),
+        };
+        let plan = FlightPlan {
+            route_components: vec![RouteComponent::Procedure { procedure }],
+            ..FlightPlan::default()
+        }
+        .normalized();
+
+        let ui = project_ui_state(&plan);
+
+        assert_eq!(ui.components.len(), 1);
+        assert_eq!(ui.components[0].summary, "ILS or LOC 34R");
+        assert_eq!(ui.display_rows[0].label, "ILS or LOC 34R");
     }
 
     #[test]
@@ -7569,6 +7594,7 @@ mod tests {
         let procedure = ProcedureSegment {
             airport_id: AirportId("KRNT".to_string()),
             procedure_id: "R16".to_string(),
+            display_label: None,
             kind: ProcedureKind::Approach,
             runway_transition: None,
             enroute_transition: Some("JAWBN".to_string()),
@@ -7628,6 +7654,7 @@ mod tests {
                     procedure: ProcedureSegment {
                         airport_id: AirportId("KUAO".to_string()),
                         procedure_id: "I35".to_string(),
+                        display_label: None,
                         kind: ProcedureKind::Approach,
                         runway_transition: Some("RW35".to_string()),
                         enroute_transition: Some("FOO".to_string()),

@@ -128,6 +128,7 @@ pub struct AirwayPresentationPlan {
 pub struct ProcedureSummary {
     pub airport_id: String,
     pub procedure_id: String,
+    pub display_label: String,
     pub kind: ProcedureKind,
 }
 

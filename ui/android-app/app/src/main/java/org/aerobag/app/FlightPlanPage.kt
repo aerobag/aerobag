@@ -410,6 +410,12 @@ internal fun FlightPlanPage(
     val selectedRowBounds = selectedRow?.let { structuredRowBounds[it.id] }
     val waypointTrayStart = planWaypointTrayStart
     val selectedRowActionMatrix = selectedRow?.actionMatrix.orEmpty()
+    fun procedurePickerRowCount(picker: AndroidProcedurePickerState): Int =
+        when {
+            picker.loading || picker.error != null -> 2
+            picker.selectedProcedureId == null -> 1 + (picker.procedures.size + 1) / 2
+            else -> 1 + (picker.options?.validChoices?.size ?: 0)
+        }
     fun estimateTrayHeightDp(rowCount: Int): Dp =
         ThumbGap * 2 + (ThumbSize + 3.dp) * rowCount
     val waypointTrayTop =
@@ -423,11 +429,7 @@ internal fun FlightPlanPage(
                         airportInsert != null -> 5
                         procedurePicker != null -> {
                             val picker = procedurePicker!!
-                            when {
-                                picker.loading || picker.error != null -> 2
-                                picker.selectedProcedureId == null -> 1 + picker.procedures.size
-                                else -> 1 + (picker.options?.validChoices?.size ?: 0)
-                            }
+                            procedurePickerRowCount(picker)
                         }
                         airwayPicker != null -> {
                             val picker = airwayPicker!!
@@ -457,11 +459,7 @@ internal fun FlightPlanPage(
                         airportInsert != null -> 5
                         procedurePicker != null -> {
                             val picker = procedurePicker!!
-                            when {
-                                picker.loading || picker.error != null -> 2
-                                picker.selectedProcedureId == null -> 1 + picker.procedures.size
-                                else -> 1 + (picker.options?.validChoices?.size ?: 0)
-                            }
+                            procedurePickerRowCount(picker)
                         }
                         airwayPicker != null -> {
                             val picker = airwayPicker!!
@@ -482,6 +480,8 @@ internal fun FlightPlanPage(
         }
     val waypointActionGap = 3.dp
     val waypointTrayWidth = waypointActionButtonWidth * 2f + waypointActionGap + 6.dp
+    val procedureChoiceButtonWidth = ThumbSize * 3f
+    val procedureTrayWidth = procedureChoiceButtonWidth * 2f + waypointActionGap + 6.dp
     val structuredArrow =
         remember(rows, guidance?.activeFromRowUid, guidance?.activeToRowUid, structuredSurfaceBounds, structuredRowBounds.toMap(), density) {
             val surfaceBounds = structuredSurfaceBounds ?: return@remember null
@@ -961,7 +961,7 @@ internal fun FlightPlanPage(
                         .align(Alignment.TopStart)
                         .padding(top = waypointTrayTop, start = waypointTrayStart, end = ThumbGap)
                         .zIndex(5f),
-                    width = waypointTrayWidth,
+                    width = if (picker.selectedProcedureId == null) procedureTrayWidth else waypointTrayWidth,
                 ) {
                     MenuPanelRow(label = "APPROACH ${picker.airportId}", active = false, enabled = false, onSelect = {})
                     if (picker.error != null) {
@@ -970,32 +970,38 @@ internal fun FlightPlanPage(
                     if (picker.loading) {
                         MenuPanelRow(label = "Loading…", active = false, enabled = false, onSelect = {})
                     } else if (picker.selectedProcedureId == null) {
-                        picker.procedures.forEach { procedure ->
-                            MenuPanelRow(
-                                label = procedure.procedureId,
-                                active = false,
-                                enabled = true,
-                                onSelect = {
-                                    procedurePicker = picker.copy(loading = true, error = null)
-                                    runCatching {
-                                        appCore.describeProcedureOptions(
-                                            picker.airportId,
-                                            procedure.procedureId,
-                                            ProcedureKind.Approach,
-                                        )
-                                    }.onSuccess { options ->
-                                        procedurePicker =
-                                            picker.copy(
-                                                loading = false,
-                                                selectedProcedureId = procedure.procedureId,
-                                                options = options,
-                                            )
-                                    }.onFailure { error ->
-                                        Log.e("AerobagProcedure", "describeProcedureOptions failed airport=${picker.airportId} procedure=${procedure.procedureId}", error)
-                                        procedurePicker = picker.copy(loading = false, error = error.message ?: error.toString())
-                                    }
-                                },
-                            )
+                        picker.procedures.chunked(2).forEach { rowProcedures ->
+                            Row(horizontalArrangement = Arrangement.spacedBy(waypointActionGap)) {
+                                rowProcedures.forEach { procedure ->
+                                    MenuPanelRow(
+                                        label = procedure.displayLabel,
+                                        active = false,
+                                        enabled = true,
+                                        width = procedureChoiceButtonWidth,
+                                        maxLines = 1,
+                                        onSelect = {
+                                            procedurePicker = picker.copy(loading = true, error = null)
+                                            runCatching {
+                                                appCore.describeProcedureOptions(
+                                                    picker.airportId,
+                                                    procedure.procedureId,
+                                                    ProcedureKind.Approach,
+                                                )
+                                            }.onSuccess { options ->
+                                                procedurePicker =
+                                                    picker.copy(
+                                                        loading = false,
+                                                        selectedProcedureId = procedure.procedureId,
+                                                        options = options,
+                                                    )
+                                            }.onFailure { error ->
+                                                Log.e("AerobagProcedure", "describeProcedureOptions failed airport=${picker.airportId} procedure=${procedure.procedureId}", error)
+                                                procedurePicker = picker.copy(loading = false, error = error.message ?: error.toString())
+                                            }
+                                        },
+                                    )
+                                }
+                            }
                         }
                     } else {
                         picker.options?.validChoices?.forEach { choice ->

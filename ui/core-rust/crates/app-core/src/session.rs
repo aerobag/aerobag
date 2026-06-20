@@ -4715,7 +4715,7 @@ pub fn load_plate_procedure_in_session(
     let procedure_component_index = replace_component_index
         .or(start_component_index)
         .unwrap_or(airport_component_index);
-    let built = match materialize_procedure(
+    let mut built = match materialize_procedure(
         store,
         &command.airport_id,
         &command.procedure_id,
@@ -4737,6 +4737,14 @@ pub fn load_plate_procedure_in_session(
             });
         }
     };
+    if let Some(display_label) = command
+        .display_label
+        .as_deref()
+        .map(str::trim)
+        .filter(|label| !label.is_empty())
+    {
+        built.procedure.display_label = Some(display_label.to_string());
+    }
     let mutation = if let Some(replace_component_index) = replace_component_index {
         crate::replace_procedure_materialized_ui(&plan, replace_component_index, built)?
     } else if let Some(start_component_index) = start_component_index {
@@ -14334,6 +14342,7 @@ mod tests {
                 procedure: crate::ProcedureSegment {
                     airport_id: AirportId("KAAA".to_string()),
                     procedure_id: "RNAV-A".to_string(),
+                    display_label: None,
                     kind: ProcedureKind::Approach,
                     runway_transition: None,
                     enroute_transition: Some("TRANS".to_string()),
@@ -14662,6 +14671,7 @@ mod tests {
                 procedure: crate::ProcedureSegment {
                     airport_id: crate::AirportId("KAAA".to_string()),
                     procedure_id: "TEST".to_string(),
+                    display_label: None,
                     kind: ProcedureKind::Approach,
                     runway_transition: None,
                     enroute_transition: None,
@@ -16144,6 +16154,7 @@ mod tests {
                     procedure: crate::ProcedureSegment {
                         airport_id: crate::AirportId("KAAA".to_string()),
                         procedure_id: "TEST".to_string(),
+                        display_label: None,
                         kind: ProcedureKind::Approach,
                         runway_transition: None,
                         enroute_transition: None,
@@ -16375,6 +16386,7 @@ mod tests {
                 procedure: crate::ProcedureSegment {
                     airport_id: AirportId("KAAA".to_string()),
                     procedure_id: "TEST".to_string(),
+                    display_label: None,
                     kind: ProcedureKind::Approach,
                     runway_transition: None,
                     enroute_transition: None,
@@ -16491,6 +16503,7 @@ mod tests {
                 procedure: crate::ProcedureSegment {
                     airport_id: AirportId("KAAA".to_string()),
                     procedure_id: "TEST".to_string(),
+                    display_label: None,
                     kind: ProcedureKind::Approach,
                     runway_transition: None,
                     enroute_transition: None,
@@ -16708,6 +16721,7 @@ mod tests {
                 procedure: crate::ProcedureSegment {
                     airport_id: AirportId("KAAA".to_string()),
                     procedure_id: "TEST".to_string(),
+                    display_label: None,
                     kind: ProcedureKind::Approach,
                     runway_transition: None,
                     enroute_transition: None,
@@ -16862,6 +16876,7 @@ mod tests {
                     procedure: crate::ProcedureSegment {
                         airport_id: AirportId("KAAA".to_string()),
                         procedure_id: "TEST".to_string(),
+                        display_label: None,
                         kind: ProcedureKind::Approach,
                         runway_transition: None,
                         enroute_transition: None,
@@ -17048,6 +17063,7 @@ mod tests {
                 procedure: crate::ProcedureSegment {
                     airport_id: AirportId("KAAA".to_string()),
                     procedure_id: "TEST".to_string(),
+                    display_label: None,
                     kind: ProcedureKind::Approach,
                     runway_transition: None,
                     enroute_transition: None,

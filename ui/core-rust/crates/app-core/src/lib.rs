@@ -330,6 +330,8 @@ pub struct ProcedureLoadCommand {
     pub row_uid: String,
     pub airport_id: String,
     pub procedure_id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub display_label: Option<String>,
     pub kind: ProcedureKind,
     pub runway_transition: Option<String>,
     pub enroute_transition: Option<String>,
@@ -956,22 +958,40 @@ pub fn list_approach_procedures_from_match_rows(
     airport_id: &str,
     rows: Vec<CifpTppMatchRow>,
 ) -> AppResult<Vec<ProcedureSummary>> {
-    let mut procedure_ids = rows
+    let mut rows_by_procedure = std::collections::BTreeMap::<String, Vec<CifpTppMatchRow>>::new();
+    for row in rows
         .into_iter()
         .filter(|row| row.airport_id.trim() == airport_id.trim())
-        .map(|row| row.cifp_id.trim().to_string())
-        .filter(|cifp_id| !cifp_id.is_empty())
-        .collect::<Vec<_>>();
-    procedure_ids.sort();
-    procedure_ids.dedup();
-    Ok(procedure_ids
-        .into_iter()
-        .map(|procedure_id| ProcedureSummary {
+    {
+        let procedure_id = row.cifp_id.trim();
+        if !procedure_id.is_empty() {
+            rows_by_procedure
+                .entry(procedure_id.to_string())
+                .or_default()
+                .push(row);
+        }
+    }
+    let mut summaries = Vec::new();
+    for (procedure_id, rows) in rows_by_procedure {
+        let matched = select_preferred_cifp_tpp_match(rows).ok_or_else(|| AppError {
+            kind: AppErrorKind::InvalidCatalog,
+            message: format!("approach {airport_id} {procedure_id} has no preferred plate label"),
+        })?;
+        let display_label = matched.plate_label.trim();
+        if display_label.is_empty() {
+            return Err(AppError {
+                kind: AppErrorKind::InvalidCatalog,
+                message: format!("approach {airport_id} {procedure_id} has an empty plate label"),
+            });
+        }
+        summaries.push(ProcedureSummary {
             airport_id: airport_id.trim().to_string(),
             procedure_id,
+            display_label: display_label.to_string(),
             kind: ProcedureKind::Approach,
-        })
-        .collect())
+        });
+    }
+    Ok(summaries)
 }
 
 pub fn describe_plate_procedure_load_options(
@@ -1000,15 +1020,14 @@ pub fn describe_plate_procedure_load_options(
             .unwrap_or_else(|| target.valid_choices.clone());
         let include_procedure_id = choices.len() > 1 || target.valid_choices.len() > 1;
         for choice in choices {
-            let label = format_procedure_load_option_label(
-                &target.procedure_id,
-                &choice,
-                include_procedure_id,
-            );
+            let display_label = preferred.plate_label.trim().to_string();
+            let label =
+                format_procedure_load_option_label(&display_label, &choice, include_procedure_id);
             let command = ProcedureLoadCommand {
                 row_uid: target.row_uid.clone(),
                 airport_id: target.airport_id.clone(),
                 procedure_id: target.procedure_id.clone(),
+                display_label: Some(display_label),
                 kind: target.kind.clone(),
                 runway_transition: choice.runway_transition,
                 enroute_transition: choice.enroute_transition,

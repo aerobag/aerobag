@@ -4330,11 +4330,10 @@ function MapPage(props: {
       const nextSnapshot = await uiSession.setMapLayerVisibility(layerId, visible);
       onPlaybackSnapshotChange(nextSnapshot);
       await new Promise((resolve) => window.setTimeout(resolve, 300));
-      trayGroup.close("layers");
     } finally {
       setLayerToggleBusyId((current) => (current === layerId ? null : current));
     }
-  }, [layerToggleBusyId, onPlaybackSnapshotChange, trayGroup, uiSession]);
+  }, [layerToggleBusyId, onPlaybackSnapshotChange, uiSession]);
   const routeScreenSegments = useMemo(() => {
     if (surfaceSize.width <= 0 || surfaceSize.height <= 0) {
       return [];

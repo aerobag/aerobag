@@ -1008,9 +1008,6 @@ enum ProductTaskValue {
         source_version: String,
         source_fetched_at_utc: Option<String>,
     },
-    CurrentArtifacts {
-        path: PathBuf,
-    },
 }
 
 type ProductTaskCompletion = GraphTaskCompletion<ProductTaskValue>;

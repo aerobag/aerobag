@@ -57,10 +57,6 @@ pub fn build_product(config: &ProductBuildConfig) -> anyhow::Result<ProductBuild
         ShadedReliefWideBuild,
         ShadedReliefPublish { region: Region },
         ShadedReliefWidePublish,
-        CurrentArtifacts,
-        ProductUnpack,
-        ValidatePackagedContract,
-        ValidateUnpackedContract,
     }
 
     fn cycle_task_id(cycle: &str, name: &str) -> String {
@@ -77,9 +73,16 @@ pub fn build_product(config: &ProductBuildConfig) -> anyhow::Result<ProductBuild
                 | ProductScheduledTaskKind::TerrainWidePublish
                 | ProductScheduledTaskKind::ShadedReliefPublish { .. }
                 | ProductScheduledTaskKind::ShadedReliefWidePublish
-                | ProductScheduledTaskKind::CurrentArtifacts
-                | ProductScheduledTaskKind::ProductUnpack
         )
+    }
+
+    fn product_task_failure_scope(task_id: &str) -> Option<String> {
+        let (cycle, _) = task_id.split_once(':')?;
+        if cycle.chars().all(|ch| ch.is_ascii_digit()) {
+            Some(cycle.to_string())
+        } else {
+            None
+        }
     }
 
     let result = (|| -> anyhow::Result<ProductBuildResult> {
@@ -417,50 +420,7 @@ pub fn build_product(config: &ProductBuildConfig) -> anyhow::Result<ProductBuild
                 )
             }));
         }
-        pending_tasks.push(GraphScheduledTask {
-            id: "current-artifacts".to_string(),
-            deps: current_artifacts_deps,
-            weight: 1,
-            kind: ProductScheduledTaskKind::CurrentArtifacts,
-        });
-        let mut product_unpack_deps = vec![
-            "current-artifacts".to_string(),
-            "publish-world-basemap".to_string(),
-        ];
-        if include_static_terrain_products() {
-            product_unpack_deps.extend(
-                config.profile.terrain_regions().iter().map(|region| {
-                    format!("publish-terrain-{}", region.code().to_ascii_lowercase())
-                }),
-            );
-            product_unpack_deps.extend(config.profile.terrain_regions().iter().map(|region| {
-                format!(
-                    "publish-shaded-relief-{}",
-                    region.code().to_ascii_lowercase()
-                )
-            }));
-        }
-        pending_tasks.push(GraphScheduledTask {
-            id: "product-unpack".to_string(),
-            deps: product_unpack_deps,
-            weight: 1,
-            kind: ProductScheduledTaskKind::ProductUnpack,
-        });
-        pending_tasks.push(GraphScheduledTask {
-            id: "validate-packaged-contract".to_string(),
-            deps: vec!["current-artifacts".to_string()],
-            weight: 1,
-            kind: ProductScheduledTaskKind::ValidatePackagedContract,
-        });
-        pending_tasks.push(GraphScheduledTask {
-            id: "validate-unpacked-contract".to_string(),
-            deps: vec![
-                "product-unpack".to_string(),
-                "validate-packaged-contract".to_string(),
-            ],
-            weight: 1,
-            kind: ProductScheduledTaskKind::ValidateUnpackedContract,
-        });
+        let publish_ready_task_ids = current_artifacts_deps;
 
         master_log.log(format!(
             "product-scheduler-ready tasks={} work_unit_budget={} chart_and_data_weight=4 csup_weight=2 tpp_weight={} tpp_render_jobs_per_run={} light_weight=1 resource_index_weight=2",
@@ -468,10 +428,11 @@ pub fn build_product(config: &ProductBuildConfig) -> anyhow::Result<ProductBuild
         ))?;
 
         let config_for_tasks = config.clone();
-        let (task_values, task_node_records) = run_weighted_task_graph(
+        let graph_outcome = run_weighted_task_graph_fail_slow_with_failure_scopes(
             "product-scheduler",
             pending_tasks,
             work_unit_budget,
+            product_task_failure_scope,
             |message| master_log.log(message),
             move |kind, task_values_snapshot, task_node_records_snapshot| {
                 let config = config_for_tasks.clone();
@@ -1849,166 +1810,135 @@ pub fn build_product(config: &ProductBuildConfig) -> anyhow::Result<ProductBuild
                             completion_detail: "published".to_string(),
                         })
                     }
-                    ProductScheduledTaskKind::CurrentArtifacts => {
-                        let as_of_utc = Utc::now();
-                        let diagnostics = write_product_build_diagnostics(
-                            &config.packaged_dir,
-                            as_of_utc.date_naive(),
-                            &task_values_snapshot,
-                        )?;
-                        let current_artifacts_path = write_current_artifacts_manifest(
-                            &config.packaged_dir,
-                            as_of_utc,
-                            diagnostics.clone(),
-                        )?;
-                        cleanup_published_packaged_root(
-                            &config.packaged_dir,
-                            &current_artifacts_path,
-                        )?;
-                        let diagnostic_error_count = diagnostics
-                            .as_ref()
-                            .map(|value| value.error_count)
-                            .unwrap_or(0);
-                        let completion_detail = if diagnostic_error_count > 0 {
-                            format!("published ERROR diagnostic_errors={diagnostic_error_count}")
-                        } else {
-                            "published diagnostic_errors=0".to_string()
-                        };
-                        Ok(ProductTaskCompletion {
-                            node_records: vec![],
-                            value: ProductTaskValue::CurrentArtifacts {
-                                path: current_artifacts_path,
-                            },
-                            completion_detail,
-                        })
-                    }
-                    ProductScheduledTaskKind::ProductUnpack => {
-                        let current_artifacts_path =
-                            match task_values_snapshot.get("current-artifacts") {
-                                Some(ProductTaskValue::CurrentArtifacts { path }) => path.clone(),
-                                _ => bail!("missing current artifacts output"),
-                            };
-                        let current_artifacts =
-                            load_current_artifacts_manifest(&current_artifacts_path)?;
-                        for bundle_ref in current_artifacts
-                            .bundles
-                            .iter()
-                            .filter(|bundle| bundle.bundle_type == "cycle")
-                        {
-                            let bundle_manifest_path =
-                                config.packaged_dir.join(&bundle_ref.filename);
-                            let bundle_manifest = load_bundle_manifest(&bundle_manifest_path)?;
-                            let cycle = bundle_manifest.cycle.clone();
-                            let mut cycle_config = config.clone();
-                            cycle_config.target_cycle = Some(cycle.clone());
-                            let build_manifest_path =
-                                internal_build_manifest_path(&cycle_config, &cycle)?;
-                            let _: BuildManifest = serde_json::from_slice(
-                                &fs::read(&build_manifest_path).with_context(|| {
-                                    format!("failed to read {}", build_manifest_path.display())
-                                })?,
-                            )
-                            .with_context(|| {
-                                format!("failed to parse {}", build_manifest_path.display())
-                            })?;
-                            sync_unpacked_metadata(
-                                &cycle_config,
-                                &bundle_manifest,
-                                &bundle_manifest_path,
-                                Some(&task_values_snapshot),
-                            )?;
-                        }
-                        let static_products = static_product_task_ids(&config)
-                            .iter()
-                            .map(|task_id| match task_values_snapshot.get(task_id) {
-                                Some(ProductTaskValue::PublishedStandaloneProduct {
-                                    id,
-                                    unpack_source_root,
-                                    published_zip,
-                                    sha256,
-                                    ..
-                                }) => {
-                                    let unpack_strategy =
-                                        static_product_unpacked_strategy(id, unpack_source_root)?;
-                                    Ok(PublishedZipArtifact {
-                                        unpack_strategy,
-                                        published_zip_path: published_zip.clone(),
-                                        checksum_sha256: sha256.clone(),
-                                    })
-                                }
-                                _ => {
-                                    bail!("missing published static product output for {}", task_id)
-                                }
-                            })
-                            .collect::<anyhow::Result<Vec<_>>>()?;
-                        let mut zip_artifacts = Vec::new();
-                        zip_artifacts.extend(static_products);
-                        sync_product_level_unpacked(
-                            &config.packaged_dir,
-                            &current_artifacts_path,
-                            &zip_artifacts,
-                        )?;
-                        Ok(ProductTaskCompletion {
-                            node_records: vec![],
-                            value: ProductTaskValue::None,
-                            completion_detail: "synced".to_string(),
-                        })
-                    }
-                    ProductScheduledTaskKind::ValidatePackagedContract => {
-                        let current_artifacts_path =
-                            match task_values_snapshot.get("current-artifacts") {
-                                Some(ProductTaskValue::CurrentArtifacts { path }) => path.clone(),
-                                _ => bail!("missing current artifacts output"),
-                            };
-                        validate_packaged_contract(&config.packaged_dir, &current_artifacts_path)?;
-                        Ok(ProductTaskCompletion {
-                            node_records: vec![],
-                            value: ProductTaskValue::None,
-                            completion_detail: "validated".to_string(),
-                        })
-                    }
-                    ProductScheduledTaskKind::ValidateUnpackedContract => {
-                        let current_artifacts_path =
-                            match task_values_snapshot.get("current-artifacts") {
-                                Some(ProductTaskValue::CurrentArtifacts { path }) => path.clone(),
-                                _ => bail!("missing current artifacts output"),
-                            };
-                        let unpacked_root = published_unpacked_root(&config)?;
-                        validate_unpacked_contract(
-                            &config.packaged_dir,
-                            &unpacked_root,
-                            &current_artifacts_path,
-                        )?;
-                        Ok(ProductTaskCompletion {
-                            node_records: vec![],
-                            value: ProductTaskValue::None,
-                            completion_detail: "validated".to_string(),
-                        })
-                    }
                 }
             },
         )?;
+        let task_values = graph_outcome.task_values;
+        let task_node_records = graph_outcome.task_node_records;
 
         let mut cycle_manifest_paths = cycles
             .iter()
-            .map(
+            .filter_map(
                 |cycle| match task_values.get(&cycle_task_id(cycle, "bundle-manifest")) {
-                    Some(ProductTaskValue::CycleManifest { path }) => Ok(path.clone()),
-                    _ => bail!("missing cycle manifest for {cycle}"),
+                    Some(ProductTaskValue::CycleManifest { path }) => Some(path.clone()),
+                    _ => None,
                 },
             )
-            .collect::<anyhow::Result<Vec<_>>>()?;
+            .collect::<Vec<_>>();
         cycle_manifest_paths.sort();
-        let product_artifacts_path = match task_values.get("current-artifacts") {
-            Some(ProductTaskValue::CurrentArtifacts { path }) => path.clone(),
-            _ => bail!("missing current artifacts output"),
-        };
+        if cycle_manifest_paths.is_empty() {
+            bail!(
+                "no cycle manifest completed; failed_tasks={} skipped_tasks={}",
+                graph_outcome.failures.len(),
+                graph_outcome.skipped_tasks.len()
+            );
+        }
+        for task_id in &publish_ready_task_ids {
+            if !task_values.contains_key(task_id) {
+                master_log.log(format!(
+                    "product-scheduler-finalize missing_publish_ready_task {task_id}"
+                ))?;
+            }
+        }
+        master_log.log(format!(
+            "product-scheduler-finalize successful_cycles={} failed_tasks={} skipped_tasks={}",
+            cycle_manifest_paths.len(),
+            graph_outcome.failures.len(),
+            graph_outcome.skipped_tasks.len()
+        ))?;
+
+        let as_of_utc = Utc::now();
+        let diagnostics = write_product_build_diagnostics(
+            &config.packaged_dir,
+            as_of_utc.date_naive(),
+            &task_values,
+        )?;
+        let product_artifacts_path =
+            write_current_artifacts_manifest(&config.packaged_dir, as_of_utc, diagnostics.clone())?;
+        cleanup_published_packaged_root(&config.packaged_dir, &product_artifacts_path)?;
+        let diagnostic_error_count = diagnostics
+            .as_ref()
+            .map(|value| value.error_count)
+            .unwrap_or(0);
+        if diagnostic_error_count > 0 {
+            master_log.log(format!(
+                "product-scheduler-finalize current-artifacts published ERROR diagnostic_errors={diagnostic_error_count}"
+            ))?;
+        } else {
+            master_log.log(
+                "product-scheduler-finalize current-artifacts published diagnostic_errors=0",
+            )?;
+        }
+
+        let current_artifacts = load_current_artifacts_manifest(&product_artifacts_path)?;
+        for bundle_ref in current_artifacts
+            .bundles
+            .iter()
+            .filter(|bundle| bundle.bundle_type == "cycle")
+        {
+            let bundle_manifest_path = config.packaged_dir.join(&bundle_ref.filename);
+            let bundle_manifest = load_bundle_manifest(&bundle_manifest_path)?;
+            let cycle = bundle_manifest.cycle.clone();
+            let mut cycle_config = config.clone();
+            cycle_config.target_cycle = Some(cycle.clone());
+            let built_this_run =
+                task_values.contains_key(&cycle_task_id(&cycle, "bundle-manifest"));
+            sync_unpacked_metadata(
+                &cycle_config,
+                &bundle_manifest,
+                &bundle_manifest_path,
+                built_this_run.then_some(&task_values),
+            )?;
+        }
+        let static_products = static_product_task_ids(config)
+            .iter()
+            .map(|task_id| match task_values.get(task_id) {
+                Some(ProductTaskValue::PublishedStandaloneProduct {
+                    id,
+                    unpack_source_root,
+                    published_zip,
+                    sha256,
+                    ..
+                }) => {
+                    let unpack_strategy = static_product_unpacked_strategy(id, unpack_source_root)?;
+                    Ok(PublishedZipArtifact {
+                        unpack_strategy,
+                        published_zip_path: published_zip.clone(),
+                        checksum_sha256: sha256.clone(),
+                    })
+                }
+                _ => bail!("missing published static product output for {}", task_id),
+            })
+            .collect::<anyhow::Result<Vec<_>>>()?;
+        sync_product_level_unpacked(
+            &config.packaged_dir,
+            &product_artifacts_path,
+            &static_products,
+        )?;
+        validate_packaged_contract(&config.packaged_dir, &product_artifacts_path)?;
+        let unpacked_root = published_unpacked_root(config)?;
+        validate_unpacked_contract(
+            &config.packaged_dir,
+            &unpacked_root,
+            &product_artifacts_path,
+        )?;
         record_gc_roots(config, "full", &task_node_records)?;
 
-        Ok(ProductBuildResult {
+        let build_result = ProductBuildResult {
             cycle_manifest_paths,
             product_artifacts_path,
-        })
+        };
+        if !graph_outcome.failures.is_empty() || !graph_outcome.skipped_tasks.is_empty() {
+            write_build_status_html(config, &build_result.product_artifacts_path)?;
+            bail!(
+                "product publication completed with failed attempted tasks; product_artifacts={} failed_tasks={} skipped_tasks={}",
+                build_result.product_artifacts_path.display(),
+                graph_outcome.failures.len(),
+                graph_outcome.skipped_tasks.len()
+            );
+        }
+
+        Ok(build_result)
     })();
 
     match result {

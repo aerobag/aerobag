@@ -15,6 +15,14 @@ pub(super) struct GraphTaskCompletion<V> {
     pub(super) completion_detail: String,
 }
 
+#[derive(Debug, Clone)]
+pub(super) struct GraphRunOutcome<V> {
+    pub(super) task_values: BTreeMap<String, V>,
+    pub(super) task_node_records: BTreeMap<String, Vec<NodeRecord>>,
+    pub(super) failures: BTreeMap<String, String>,
+    pub(super) skipped_tasks: BTreeSet<String>,
+}
+
 struct GraphCompletionGuard<V> {
     tx: crossbeam_channel::Sender<(String, usize, anyhow::Result<GraphTaskCompletion<V>>)>,
     task_id: String,
@@ -62,11 +70,86 @@ impl<V> Drop for GraphCompletionGuard<V> {
 
 pub(super) fn run_weighted_task_graph<K, V, RunTask, Log>(
     graph_name: &str,
+    pending_tasks: Vec<GraphScheduledTask<K>>,
+    work_unit_budget: usize,
+    log: Log,
+    run_task: RunTask,
+) -> anyhow::Result<(BTreeMap<String, V>, BTreeMap<String, Vec<NodeRecord>>)>
+where
+    K: Clone + Send + 'static,
+    V: Clone + Send + 'static,
+    RunTask: Fn(
+            K,
+            BTreeMap<String, V>,
+            BTreeMap<String, Vec<NodeRecord>>,
+        ) -> anyhow::Result<GraphTaskCompletion<V>>
+        + Clone
+        + Send
+        + 'static,
+    Log: FnMut(String) -> anyhow::Result<()>,
+{
+    let outcome = run_weighted_task_graph_impl(
+        graph_name,
+        pending_tasks,
+        work_unit_budget,
+        log,
+        run_task,
+        GraphFailurePolicy::FailFast,
+    )?;
+    Ok((outcome.task_values, outcome.task_node_records))
+}
+
+pub(super) fn run_weighted_task_graph_fail_slow_with_failure_scopes<
+    K,
+    V,
+    FailureScope,
+    RunTask,
+    Log,
+>(
+    graph_name: &str,
+    pending_tasks: Vec<GraphScheduledTask<K>>,
+    work_unit_budget: usize,
+    failure_scope: FailureScope,
+    log: Log,
+    run_task: RunTask,
+) -> anyhow::Result<GraphRunOutcome<V>>
+where
+    K: Clone + Send + 'static,
+    V: Clone + Send + 'static,
+    FailureScope: Fn(&str) -> Option<String> + Clone + Send + 'static,
+    RunTask: Fn(
+            K,
+            BTreeMap<String, V>,
+            BTreeMap<String, Vec<NodeRecord>>,
+        ) -> anyhow::Result<GraphTaskCompletion<V>>
+        + Clone
+        + Send
+        + 'static,
+    Log: FnMut(String) -> anyhow::Result<()>,
+{
+    run_weighted_task_graph_impl(
+        graph_name,
+        pending_tasks,
+        work_unit_budget,
+        log,
+        run_task,
+        GraphFailurePolicy::FailSlow(Box::new(failure_scope)),
+    )
+}
+
+enum GraphFailurePolicy {
+    FailFast,
+    FailSlow(Box<dyn Fn(&str) -> Option<String> + Send>),
+}
+
+fn run_weighted_task_graph_impl<K, V, RunTask, Log>(
+    graph_name: &str,
     mut pending_tasks: Vec<GraphScheduledTask<K>>,
     work_unit_budget: usize,
     mut log: Log,
     run_task: RunTask,
-) -> anyhow::Result<(BTreeMap<String, V>, BTreeMap<String, Vec<NodeRecord>>)>
+    failure_policy: GraphFailurePolicy,
+) -> anyhow::Result<GraphRunOutcome<V>>
 where
     K: Clone + Send + 'static,
     V: Clone + Send + 'static,
@@ -95,9 +178,52 @@ where
     let mut completed_ids = std::collections::BTreeSet::<String>::new();
     let mut task_values = BTreeMap::<String, V>::new();
     let mut task_node_records = BTreeMap::<String, Vec<NodeRecord>>::new();
+    let mut failures = BTreeMap::<String, String>::new();
+    let mut failed_ids = BTreeSet::<String>::new();
+    let mut failed_scopes = BTreeSet::<String>::new();
+    let mut skipped_tasks = BTreeSet::<String>::new();
     let mut worker_threads = BTreeMap::<String, thread::JoinHandle<anyhow::Result<()>>>::new();
 
     while running_jobs > 0 || !pending_tasks.is_empty() {
+        if matches!(failure_policy, GraphFailurePolicy::FailSlow(_)) {
+            let mut index = 0_usize;
+            while index < pending_tasks.len() {
+                let failed_dep = pending_tasks[index]
+                    .deps
+                    .iter()
+                    .find(|dep| failed_ids.contains(*dep) || skipped_tasks.contains(*dep))
+                    .cloned();
+                let failed_scope = match &failure_policy {
+                    GraphFailurePolicy::FailFast => None,
+                    GraphFailurePolicy::FailSlow(scope_for_task) => {
+                        scope_for_task(&pending_tasks[index].id)
+                            .filter(|scope| failed_scopes.contains(scope))
+                    }
+                };
+                if failed_dep.is_some() || failed_scope.is_some() {
+                    let task = pending_tasks.remove(index);
+                    let skip_reason = if let Some(failed_dep) = failed_dep {
+                        format!("failed_dep={failed_dep}")
+                    } else {
+                        format!(
+                            "failed_scope={}",
+                            failed_scope.expect("failed scope should exist")
+                        )
+                    };
+                    log(format!(
+                        "{graph_name}-skip {} skipped={}/{} {}",
+                        task.id,
+                        skipped_tasks.len() + 1,
+                        total_tasks,
+                        skip_reason
+                    ))?;
+                    skipped_tasks.insert(task.id);
+                } else {
+                    index += 1;
+                }
+            }
+        }
+
         let mut launched_any = false;
         let mut index = 0_usize;
         while index < pending_tasks.len() {
@@ -209,10 +335,159 @@ where
             }
             Err(err) => {
                 log(format!("{graph_name}-complete {task_id} FAIL error={err}"))?;
-                return Err(err);
+                if matches!(failure_policy, GraphFailurePolicy::FailFast) {
+                    return Err(err);
+                }
+                if let GraphFailurePolicy::FailSlow(scope_for_task) = &failure_policy {
+                    if let Some(scope) = scope_for_task(&task_id) {
+                        failed_scopes.insert(scope);
+                    }
+                }
+                failed_ids.insert(task_id.clone());
+                failures.insert(task_id, err.to_string());
             }
         }
     }
 
-    Ok((task_values, task_node_records))
+    Ok(GraphRunOutcome {
+        task_values,
+        task_node_records,
+        failures,
+        skipped_tasks,
+    })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[derive(Debug, Clone)]
+    enum TestTask {
+        Pass(&'static str),
+        Fail,
+    }
+
+    #[test]
+    fn fail_slow_continues_independent_tasks_and_skips_dependents() {
+        let tasks = vec![
+            GraphScheduledTask {
+                id: "a".to_string(),
+                deps: vec![],
+                weight: 1,
+                kind: TestTask::Pass("a"),
+            },
+            GraphScheduledTask {
+                id: "b".to_string(),
+                deps: vec![],
+                weight: 1,
+                kind: TestTask::Fail,
+            },
+            GraphScheduledTask {
+                id: "c".to_string(),
+                deps: vec!["a".to_string()],
+                weight: 1,
+                kind: TestTask::Pass("c"),
+            },
+            GraphScheduledTask {
+                id: "d".to_string(),
+                deps: vec!["b".to_string()],
+                weight: 1,
+                kind: TestTask::Pass("d"),
+            },
+            GraphScheduledTask {
+                id: "e".to_string(),
+                deps: vec![],
+                weight: 1,
+                kind: TestTask::Pass("e"),
+            },
+        ];
+        let outcome = run_weighted_task_graph_fail_slow_with_failure_scopes(
+            "test",
+            tasks,
+            2,
+            |_| None,
+            |_| Ok(()),
+            |kind, _, _| match kind {
+                TestTask::Pass(value) => Ok(GraphTaskCompletion {
+                    node_records: vec![],
+                    value: value.to_string(),
+                    completion_detail: "ok".to_string(),
+                }),
+                TestTask::Fail => anyhow::bail!("synthetic failure"),
+            },
+        )
+        .unwrap();
+
+        assert_eq!(
+            outcome.task_values.keys().cloned().collect::<Vec<_>>(),
+            vec!["a", "c", "e"]
+        );
+        assert_eq!(
+            outcome.failures.keys().cloned().collect::<Vec<_>>(),
+            vec!["b"]
+        );
+        assert_eq!(
+            outcome.skipped_tasks.iter().cloned().collect::<Vec<_>>(),
+            vec!["d"]
+        );
+    }
+
+    #[test]
+    fn fail_slow_failure_scopes_skip_pending_tasks_in_failed_scope() {
+        let tasks = vec![
+            GraphScheduledTask {
+                id: "2606:a".to_string(),
+                deps: vec![],
+                weight: 1,
+                kind: TestTask::Pass("2606:a"),
+            },
+            GraphScheduledTask {
+                id: "2607:a".to_string(),
+                deps: vec![],
+                weight: 1,
+                kind: TestTask::Fail,
+            },
+            GraphScheduledTask {
+                id: "2607:b".to_string(),
+                deps: vec![],
+                weight: 1,
+                kind: TestTask::Pass("2607:b"),
+            },
+            GraphScheduledTask {
+                id: "static".to_string(),
+                deps: vec![],
+                weight: 1,
+                kind: TestTask::Pass("static"),
+            },
+        ];
+        let outcome = run_weighted_task_graph_fail_slow_with_failure_scopes(
+            "test",
+            tasks,
+            1,
+            |task_id| task_id.split_once(':').map(|(scope, _)| scope.to_string()),
+            |_| Ok(()),
+            |kind, _, _| match kind {
+                TestTask::Pass(value) => Ok(GraphTaskCompletion {
+                    node_records: vec![],
+                    value: value.to_string(),
+                    completion_detail: "ok".to_string(),
+                }),
+                TestTask::Fail => anyhow::bail!("synthetic failure"),
+            },
+        )
+        .unwrap();
+
+        assert_eq!(
+            outcome.task_values.keys().cloned().collect::<Vec<_>>(),
+            vec!["2606:a", "static"]
+        );
+        assert_eq!(
+            outcome.failures.keys().cloned().collect::<Vec<_>>(),
+            vec!["2607:a"]
+        );
+        assert_eq!(
+            outcome.skipped_tasks.iter().cloned().collect::<Vec<_>>(),
+            vec!["2607:b"]
+        );
+    }
 }

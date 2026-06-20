@@ -1356,7 +1356,8 @@ button {
 }
 
 .mapSelectionItem.isSelected {
-  background: color-mix(in srgb, var(--theme-button-unchecked) 72%, white);
+  border-color: color-mix(in srgb, var(--theme-button-checked) 78%, black);
+  background: var(--theme-button-checked);
 }
 
 .mapSelectionItemLabel {

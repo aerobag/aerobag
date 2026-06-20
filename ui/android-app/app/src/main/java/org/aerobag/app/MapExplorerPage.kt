@@ -57,6 +57,7 @@ import androidx.compose.foundation.layout.ColumnScope
 import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.PaddingValues
+import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.WindowInsets
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
@@ -2945,7 +2946,8 @@ internal fun MapSelectionTray(
     val uiTheme = LocalAerobagUiTheme.current
     val selectedItem = state.selectedItem
     val actionSlots = selectedItem?.actions.orEmpty()
-    val visibleActions = if (selectedItem?.detailText != null) actionSlots.take(3) else actionSlots.take(6)
+    val firstActionRow = actionSlots.take(3)
+    val secondActionRow = actionSlots.drop(3).take(3)
     Surface(
         modifier = modifier
             .testTag("parity:map-selection-tray")
@@ -3004,33 +3006,76 @@ internal fun MapSelectionTray(
                         maxLines = 1,
                         overflow = TextOverflow.Ellipsis,
                     )
-                    Column(verticalArrangement = Arrangement.spacedBy(ThumbGap * 0.45f)) {
-                        visibleActions.chunked(3).forEach { rowActions ->
-                            Row(horizontalArrangement = Arrangement.spacedBy(ThumbGap * 0.45f)) {
-                                rowActions.forEach { action ->
-                                    MapSelectionActionButton(
-                                        action = action,
-                                        enabled = action.enabled && !action.displayOnly,
-                                        onClick = {
-                                            if (selectedItem != null) onSelectAction(selectedItem, action)
-                                        },
-                                    )
-                                }
-                            }
-                        }
-                    }
-                    selectedItem?.detailText?.let { detail ->
-                        Text(
-                            text = detail,
-                            style = MaterialTheme.typography.labelMedium.copy(fontSize = 14.sp),
-                            color = uiTheme.controls.panelFg,
-                            maxLines = 2,
-                            overflow = TextOverflow.Ellipsis,
+                    MapSelectionActionRow(
+                        actions = firstActionRow,
+                        selectedItem = selectedItem,
+                        onSelectAction = onSelectAction,
+                    )
+                    if (selectedItem?.detailText != null) {
+                        MapSelectionInlineDetailText(selectedItem.detailText)
+                    } else {
+                        MapSelectionActionRow(
+                            actions = secondActionRow,
+                            selectedItem = selectedItem,
+                            onSelectAction = onSelectAction,
                         )
                     }
                 }
             }
         }
+    }
+}
+
+@Composable
+internal fun MapSelectionActionRow(
+    actions: List<MapSelectionAction>,
+    selectedItem: MapSelectionItem?,
+    onSelectAction: (MapSelectionItem, MapSelectionAction) -> Unit,
+) {
+    Row(
+        modifier = Modifier.height(ThumbSize),
+        horizontalArrangement = Arrangement.spacedBy(ThumbGap * 0.45f),
+    ) {
+        repeat(3) { index ->
+            val action = actions.getOrNull(index)
+            if (action == null) {
+                Spacer(modifier = Modifier.width(ThumbSize * 1.2f).height(ThumbSize))
+            } else {
+                MapSelectionActionButton(
+                    action = action,
+                    enabled = action.enabled && !action.displayOnly,
+                    onClick = {
+                        if (selectedItem != null) onSelectAction(selectedItem, action)
+                    },
+                )
+            }
+        }
+    }
+}
+
+@Composable
+internal fun MapSelectionInlineDetailText(detail: String) {
+    val uiTheme = LocalAerobagUiTheme.current
+    Surface(
+        modifier = Modifier
+            .fillMaxWidth()
+            .height(ThumbSize),
+        shape = RoundedCornerShape(ThumbRadius),
+        color = Color.White.copy(alpha = 0.82f),
+        contentColor = uiTheme.controls.panelFg,
+    ) {
+        Text(
+            text = detail,
+            modifier = Modifier.padding(horizontal = ThumbSize * 0.08f, vertical = ThumbSize * 0.07f),
+            style = MaterialTheme.typography.labelSmall.copy(
+                fontSize = 12.sp,
+                fontWeight = FontWeight.Bold,
+                lineHeight = 13.sp,
+            ),
+            color = uiTheme.controls.panelFg,
+            maxLines = 4,
+            overflow = TextOverflow.Clip,
+        )
     }
 }
 

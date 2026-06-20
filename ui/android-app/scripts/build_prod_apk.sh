@@ -78,11 +78,13 @@ fi
 APK_FILENAME="aerobag-android-$SHORT_COMMIT.apk"
 APK_URL="/downloads/$APK_FILENAME"
 cp "$APK_SOURCE" "$DOWNLOAD_DIR/$APK_FILENAME"
+APK_SIZE_BYTES="$(stat -c%s "$DOWNLOAD_DIR/$APK_FILENAME")"
 
 cat > "$DOWNLOAD_DIR/android-apk.json" <<EOF
 {
   "apk_url": "$APK_URL",
   "filename": "$APK_FILENAME",
+  "apk_size_bytes": $APK_SIZE_BYTES,
   "git_commit": "$GIT_COMMIT",
   "cert_sha256": "$CERT_SHA256",
   "version_code": $ANDROID_VERSION_CODE,

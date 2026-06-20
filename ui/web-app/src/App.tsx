@@ -1076,6 +1076,7 @@ type PersistedWebUiState = {
 type AndroidApkDownloadMetadata = {
   apk_url: string;
   filename: string;
+  apk_size_bytes: number;
   git_commit: string;
   version_code: number;
   version_name: string;
@@ -9224,6 +9225,9 @@ function AboutPage(props: {
         if (
           typeof parsed.apk_url !== "string" ||
           typeof parsed.filename !== "string" ||
+          typeof parsed.apk_size_bytes !== "number" ||
+          !Number.isFinite(parsed.apk_size_bytes) ||
+          parsed.apk_size_bytes < 0 ||
           typeof parsed.git_commit !== "string" ||
           typeof parsed.version_name !== "string" ||
           typeof parsed.built_at_utc !== "string" ||
@@ -9252,6 +9256,7 @@ function AboutPage(props: {
   }, []);
 
   const shortCommit = metadata?.git_commit.slice(0, 8) ?? "";
+  const apkSize = metadata ? formatApkSize(metadata.apk_size_bytes) : "";
   const apkUnavailableTitle = loading
     ? "Checking Android download metadata..."
     : `Android APK is not published in this static tree${metadataError ? `: ${metadataError}` : "."}`;
@@ -9259,41 +9264,49 @@ function AboutPage(props: {
     <section className="appPage aboutPage">
       <div className="aboutPagePanel">
         <div className="aboutActionRow">
-          {metadata ? (
-            <a
-              className="aboutActionButton"
-              href={metadata.apk_url}
-              title={`Download ${metadata.filename} (${metadata.version_name}, ${shortCommit})`}
-            >
-              Android APK
-            </a>
-          ) : (
-            <button type="button" className="aboutActionButton" disabled title={apkUnavailableTitle}>
-              Android APK
+          <div className="aboutActionColumn">
+            {metadata ? (
+              <a
+                className="aboutActionButton"
+                href={metadata.apk_url}
+                title={`Download ${metadata.filename} (${metadata.version_name}, ${shortCommit})`}
+              >
+                Android APK
+              </a>
+            ) : (
+              <button type="button" className="aboutActionButton" disabled title={apkUnavailableTitle}>
+                Android APK
+              </button>
+            )}
+            {metadata ? (
+              <dl className="aboutMetadata">
+                <div>
+                  <dt>APK size</dt>
+                  <dd>{apkSize}</dd>
+                </div>
+                <div>
+                  <dt>Android Version</dt>
+                  <dd>{metadata.version_name}</dd>
+                </div>
+                <div>
+                  <dt>Build</dt>
+                  <dd>{shortCommit}</dd>
+                </div>
+                <div>
+                  <dt>Published</dt>
+                  <dd>{metadata.built_at_utc}</dd>
+                </div>
+              </dl>
+            ) : (
+              <p className="aboutDownloadUnavailable">{apkUnavailableTitle}</p>
+            )}
+          </div>
+          <div className="aboutActionColumn">
+            <button type="button" className="aboutActionButton aboutWebActionButton" onClick={props.onOpenApp}>
+              Open Web App
             </button>
-          )}
-          <button type="button" className="aboutActionButton" onClick={props.onOpenApp}>
-            Open Web App
-          </button>
+          </div>
         </div>
-        {metadata ? (
-          <dl className="aboutMetadata">
-            <div>
-              <dt>Android Version</dt>
-              <dd>{metadata.version_name}</dd>
-            </div>
-            <div>
-              <dt>Build</dt>
-              <dd>{shortCommit}</dd>
-            </div>
-            <div>
-              <dt>Published</dt>
-              <dd>{metadata.built_at_utc}</dd>
-            </div>
-          </dl>
-        ) : (
-          <p className="aboutDownloadUnavailable">{apkUnavailableTitle}</p>
-        )}
 
         <div className="aboutReadmeRegion">
           <article
@@ -9304,6 +9317,11 @@ function AboutPage(props: {
       </div>
     </section>
   );
+}
+
+function formatApkSize(bytes: number): string {
+  const megabytes = bytes / 1_000_000;
+  return `${megabytes >= 10 ? megabytes.toFixed(0) : megabytes.toFixed(1)} MB`;
 }
 
 function DataStatusPage(props: {

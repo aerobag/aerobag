@@ -1,6 +1,7 @@
 use std::{
     borrow::Cow,
     collections::{HashMap, HashSet},
+    ops::Range,
 };
 
 use procedure_geometry_types as pgt;
@@ -1323,6 +1324,7 @@ pub(crate) fn flight_plan_ui_state(
     let route = missing_pages
         .collect(project_flight_plan_route(store, &plan))?
         .unwrap_or_default();
+    let route_segment_ranges = route_segment_ranges_by_leg_index(&plan, route.len());
     let active_row_index = ui_state
         .guidance
         .as_ref()
@@ -1347,27 +1349,27 @@ pub(crate) fn flight_plan_ui_state(
             None => None,
         };
         if let Some(leg_index) = row.leg_index {
-            if let Some(leg) = plan.resolved_legs.get(leg_index) {
-                let mut matching_segments = route.iter().filter(|segment| segment.leg_id == leg.id);
-                if let Some(first_segment) = matching_segments.next() {
-                    distance_nm = Some(
-                        first_segment.distance_nm
-                            + matching_segments
-                                .map(|segment| segment.distance_nm)
-                                .sum::<f64>(),
-                    );
-                    course_deg = missing_pages
-                        .collect(true_to_magnetic_course_deg_optional(
-                            store,
-                            first_segment.course_deg,
-                            crate::great_circle_intermediate(
-                                first_segment.from,
-                                first_segment.to,
-                                0.5,
-                            ),
-                        ))?
-                        .flatten();
-                }
+            // Airway materialization can produce duplicate resolved-leg ids across components.
+            // The route projection preserves resolved-leg order, so row enrichment must use
+            // the row's leg index instead of grouping by the non-unique string id.
+            let mut leg_segments = route_segment_ranges
+                .get(leg_index)
+                .and_then(|range| range.clone())
+                .map(|range| route[range].iter())
+                .into_iter()
+                .flatten();
+            if let Some(first_segment) = leg_segments.next() {
+                distance_nm = Some(
+                    first_segment.distance_nm
+                        + leg_segments.map(|segment| segment.distance_nm).sum::<f64>(),
+                );
+                course_deg = missing_pages
+                    .collect(true_to_magnetic_course_deg_optional(
+                        store,
+                        first_segment.course_deg,
+                        crate::great_circle_intermediate(first_segment.from, first_segment.to, 0.5),
+                    ))?
+                    .flatten();
             }
         }
         let row_has_data = row.row_kind != crate::FlightPlanDisplayRowKind::Group;
@@ -1458,6 +1460,36 @@ pub(crate) fn flight_plan_ui_state(
         return Err(HadReadError::NeedPages(pages));
     }
     Ok(ui_state)
+}
+
+fn route_segment_ranges_by_leg_index(
+    plan: &FlightPlan,
+    route_segment_count: usize,
+) -> Vec<Option<Range<usize>>> {
+    let mut offset = 0usize;
+    plan.resolved_legs
+        .iter()
+        .map(|leg| {
+            let segment_count = projected_route_segment_count_for_leg(leg);
+            let end = offset.saturating_add(segment_count);
+            if end <= route_segment_count {
+                let range = offset..end;
+                offset = end;
+                Some(range)
+            } else {
+                offset = route_segment_count;
+                None
+            }
+        })
+        .collect()
+}
+
+fn projected_route_segment_count_for_leg(leg: &ResolvedLeg) -> usize {
+    leg.procedure_provenance
+        .as_ref()
+        .and_then(|provenance| provenance.display_path.as_ref())
+        .map(|path| path.elements.len())
+        .unwrap_or(1)
 }
 
 fn flight_plan_summary_row(
@@ -6469,6 +6501,63 @@ mod tests {
             crate::planning::flight_plan_row_actions(sea_row)
                 .any(|action| action.id == FlightPlanRowActionId::ActivateLeg && action.enabled),
             "SEA airway child row should activate PAE -> SEA"
+        );
+    }
+
+    #[test]
+    fn chained_airway_handoff_row_distance_uses_inbound_leg() {
+        let store = load_current_nav_kv_store();
+        let plan = FlightPlan {
+            id: "route".to_string(),
+            name: "Route".to_string(),
+            legs: Vec::new(),
+            route_components: Vec::new(),
+            route_component_uids: Vec::new(),
+            route_component_uid_counter: 0,
+            resolved_legs: Vec::new(),
+            guidance: None,
+            departure: None,
+            destination: None,
+            alternate: None,
+            cruise_altitude_ft: None,
+            notes: None,
+            updated_at_epoch_ms: 0,
+            version: 1,
+        };
+        let mutation = append_flight_plan_entry(&store, &plan, "KPAE PAE V23 SEA V2 ELN KYKM")
+            .expect("append chained airway route");
+        let sea_leg = mutation
+            .plan
+            .resolved_legs
+            .iter()
+            .find(|leg| {
+                leg.from == NavRef::Navaid("PAE".to_string())
+                    && leg.to == NavRef::Navaid("SEA".to_string())
+            })
+            .expect("PAE to SEA leg");
+        let sea_row = mutation
+            .ui_state
+            .display_rows
+            .iter()
+            .find(|row| {
+                row.depth == 1
+                    && row.component_kind == Some(crate::RouteComponentViewKind::Airway)
+                    && row.label == "SEA"
+            })
+            .expect("visible SEA airway child row");
+        let distance_cell = sea_row
+            .data_cells
+            .iter()
+            .find(|cell| cell.id == "waypoint_distance")
+            .expect("SEA distance cell");
+        let from = nav_ref_position(&store, &sea_leg.from, None).expect("PAE position");
+        let to = nav_ref_position(&store, &sea_leg.to, None).expect("SEA position");
+        let expected_distance =
+            crate::flight_data::format_nm(crate::great_circle_distance_nm(from, to));
+
+        assert_eq!(
+            distance_cell.value.as_deref(),
+            Some(expected_distance.as_str())
         );
     }
 

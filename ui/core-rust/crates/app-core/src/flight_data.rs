@@ -154,6 +154,8 @@ impl FlightDataComputer {
         }
 
         let ete = cumulative_distance_nm.and_then(|distance| self.format_ete(distance));
+        let eta =
+            eta.or_else(|| cumulative_distance_nm.and_then(|distance| self.format_eta(distance)));
         let fuel = cumulative_distance_nm.and_then(|distance| self.format_fuel(distance));
 
         vec![
@@ -181,7 +183,11 @@ impl FlightDataComputer {
                 "DIST nm",
                 total_distance_nm.map(format_nm),
             ),
-            cell("final_eta", "ETA", None),
+            cell(
+                "final_eta",
+                "ETA",
+                total_distance_nm.and_then(|distance| self.format_eta(distance)),
+            ),
             cell(
                 "waypoint_ete",
                 "ETE",
@@ -374,6 +380,11 @@ mod tests {
     }
 
     #[test]
+    fn whole_nm_distances_round_to_nearest_mile() {
+        assert_eq!(format_nm(180.8), "181");
+    }
+
+    #[test]
     fn flight_plan_columns_are_banner_cell_subset() {
         let possible_columns = possible_columns();
         for column in flight_plan_columns() {
@@ -472,7 +483,7 @@ mod tests {
             true,
             Some(30.0),
             Some(30.0),
-            computer.format_eta_at(30.0, noon_utc),
+            None,
             None,
             FlightDataCellTone::Normal,
         );
@@ -480,8 +491,14 @@ mod tests {
             .iter()
             .find(|cell| cell.id == "final_eta")
             .and_then(|cell| cell.value.as_deref());
+        let summary_cells = computer.flight_plan_summary_cells(Some(30.0));
+        let summary_eta = summary_cells
+            .iter()
+            .find(|cell| cell.id == "final_eta")
+            .and_then(|cell| cell.value.as_deref());
 
         assert_eq!(final_eta, Some("12:15"));
         assert_eq!(row_eta, final_eta);
+        assert_eq!(summary_eta, final_eta);
     }
 }

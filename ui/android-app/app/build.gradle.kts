@@ -1,3 +1,4 @@
+import org.gradle.api.GradleException
 import org.gradle.api.tasks.Exec
 import java.nio.file.Files
 import java.nio.file.StandardCopyOption
@@ -103,10 +104,20 @@ fun readIntegerBuildConfig(key: String, defaultValue: Int): Int {
     return rawValue.toIntOrNull()
         ?: throw IllegalArgumentException("$key must be an integer, got '$rawValue'")
 }
+
+fun readRequiredBuildConfig(key: String): String =
+    System.getenv(key)
+        ?: readInstanceConfigValue(key)
+        ?: throw GradleException("$key must be set")
+
 val androidVersionCode = readIntegerBuildConfig("ANDROID_VERSION_CODE", 1)
 val androidVersionName = System.getenv("ANDROID_VERSION_NAME")
     ?: readInstanceConfigValue("ANDROID_VERSION_NAME")
     ?: "0.1.0"
+val androidSigningKeystore = File(readRequiredBuildConfig("AEROBAG_ANDROID_KEYSTORE"))
+val androidSigningKeystorePassword = readRequiredBuildConfig("AEROBAG_ANDROID_KEYSTORE_PASSWORD")
+val androidSigningKeyAlias = readRequiredBuildConfig("AEROBAG_ANDROID_KEY_ALIAS")
+val androidSigningKeyPassword = readRequiredBuildConfig("AEROBAG_ANDROID_KEY_PASSWORD")
 val androidBuildRustRelease = readBooleanBuildConfig("ANDROID_BUILD_RUST_RELEASE", false)
 val androidRustProfileArgs = if (androidBuildRustRelease) listOf("--release") else emptyList()
 val androidRustProfileDir = if (androidBuildRustRelease) "release" else "debug"
@@ -257,8 +268,21 @@ android {
         }
     }
 
+    signingConfigs {
+        create("aerobag") {
+            storeFile = androidSigningKeystore
+            storePassword = androidSigningKeystorePassword
+            keyAlias = androidSigningKeyAlias
+            keyPassword = androidSigningKeyPassword
+        }
+    }
+
     buildTypes {
+        debug {
+            signingConfig = signingConfigs.getByName("aerobag")
+        }
         release {
+            signingConfig = signingConfigs.getByName("aerobag")
             isMinifyEnabled = false
             proguardFiles(
                 getDefaultProguardFile("proguard-android-optimize.txt"),

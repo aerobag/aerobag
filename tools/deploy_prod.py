@@ -4,6 +4,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import shutil
 import shlex
 import subprocess
 import tempfile
@@ -37,6 +38,19 @@ PIPELINE_HEALTH_LISTEN = "127.0.0.1:8098"
 ANDROID_SDK_ROOT = "/usr/lib/android-sdk"
 ANDROID_NDK_VERSION = "26.3.11579264"
 LIVE_FEEDS_CONTRACT_PATH = "v2"
+ANDROID_SIGNING_EXPECTED_CERT_SHA256 = (
+    "09d7edbf70e51b1b6296097876bd39d19b4e71364e82166030228b5674224be1"
+)
+ANDROID_SIGNING_KEYSTORE_PASSWORD = "android"
+ANDROID_SIGNING_KEY_ALIAS = "androiddebugkey"
+ANDROID_SIGNING_KEY_PASSWORD = "android"
+DEFAULT_ANDROID_SIGNING_SOURCE_KEYSTORE = Path(
+    "/root/aerobag-secrets/android/aerobag-app.keystore"
+)
+DEFAULT_ANDROID_SIGNING_BOOTSTRAP_KEYSTORE = Path("/root/.android/debug.keystore")
+DEFAULT_ANDROID_SIGNING_PROD_KEYSTORE = (
+    "/opt/aerobag/secrets/android/aerobag-app.keystore"
+)
 
 
 def parse_args() -> argparse.Namespace:
@@ -181,6 +195,25 @@ def load_config(path: Path) -> dict[str, Any]:
     config.setdefault("additional_publication_refs", [])
     config.setdefault("pipeline_health_listen", PIPELINE_HEALTH_LISTEN)
     config.setdefault("pipeline_health_poll_seconds", 60)
+    config.setdefault(
+        "android_signing_source_keystore",
+        os.fspath(DEFAULT_ANDROID_SIGNING_SOURCE_KEYSTORE),
+    )
+    config.setdefault(
+        "android_signing_bootstrap_keystore",
+        os.fspath(DEFAULT_ANDROID_SIGNING_BOOTSTRAP_KEYSTORE),
+    )
+    config.setdefault("android_signing_prod_keystore", DEFAULT_ANDROID_SIGNING_PROD_KEYSTORE)
+    config.setdefault(
+        "android_signing_expected_cert_sha256",
+        ANDROID_SIGNING_EXPECTED_CERT_SHA256,
+    )
+    config.setdefault(
+        "android_signing_keystore_password",
+        ANDROID_SIGNING_KEYSTORE_PASSWORD,
+    )
+    config.setdefault("android_signing_key_alias", ANDROID_SIGNING_KEY_ALIAS)
+    config.setdefault("android_signing_key_password", ANDROID_SIGNING_KEY_PASSWORD)
     return config
 
 
@@ -225,6 +258,114 @@ def local_ref_sha(ref: str, *, dry_run: bool) -> str:
         dry_run=dry_run,
     )
     return result.stdout.strip() if result.stdout else "<dry-run>"
+
+
+def normalize_cert_fingerprint(value: str) -> str:
+    return "".join(ch for ch in value.lower() if ch in "0123456789abcdef")
+
+
+def android_keystore_cert_sha256(
+    keystore: Path,
+    *,
+    storepass: str,
+    alias: str,
+    dry_run: bool,
+) -> str:
+    if dry_run:
+        return ANDROID_SIGNING_EXPECTED_CERT_SHA256
+    result = run_local(
+        [
+            "keytool",
+            "-list",
+            "-v",
+            "-keystore",
+            keystore,
+            "-storepass",
+            storepass,
+            "-alias",
+            alias,
+        ],
+        cwd=REPO_ROOT,
+        capture=True,
+        dry_run=dry_run,
+    )
+    for line in result.stdout.splitlines():
+        if "SHA256:" in line:
+            return normalize_cert_fingerprint(line.split("SHA256:", 1)[1])
+    raise SystemExit(f"could not find SHA256 fingerprint in {keystore}")
+
+
+def ensure_local_android_signing_key(config: dict[str, Any], *, dry_run: bool) -> Path:
+    source = Path(config["android_signing_source_keystore"]).expanduser()
+    bootstrap = Path(config["android_signing_bootstrap_keystore"]).expanduser()
+    expected = normalize_cert_fingerprint(config["android_signing_expected_cert_sha256"])
+    if not source.exists():
+        if not bootstrap.exists():
+            if dry_run:
+                print(f"+ would install local Android signing key {bootstrap} -> {source}", flush=True)
+                return source
+            raise SystemExit(
+                f"missing Android signing keystore {source}; bootstrap key {bootstrap} also missing"
+            )
+        print(f"+ install local Android signing key {bootstrap} -> {source}", flush=True)
+        if not dry_run:
+            source.parent.mkdir(parents=True, mode=0o700, exist_ok=True)
+            shutil.copy2(bootstrap, source)
+            os.chmod(source, 0o600)
+    fingerprint = android_keystore_cert_sha256(
+        source,
+        storepass=config["android_signing_keystore_password"],
+        alias=config["android_signing_key_alias"],
+        dry_run=dry_run,
+    )
+    if fingerprint != expected:
+        raise SystemExit(
+            f"Android signing keystore {source} has SHA256 {fingerprint}; expected {expected}"
+        )
+    return source
+
+
+def install_android_signing_key(config: dict[str, Any], *, dry_run: bool) -> None:
+    source = ensure_local_android_signing_key(config, dry_run=dry_run)
+    target = config["android_signing_prod_keystore"]
+    target_dir = os.path.dirname(target)
+    expected = normalize_cert_fingerprint(config["android_signing_expected_cert_sha256"])
+    run_ssh(
+        config,
+        textwrap.dedent(
+            f"""
+            set -euo pipefail
+            install -d -m 0700 {shell_quote(target_dir)}
+            """
+        ).strip(),
+        dry_run=dry_run,
+    )
+    run_local(
+        ["rsync", "-az", "--chmod=F600", source, f"{ssh_target(config)}:{target}"],
+        cwd=REPO_ROOT,
+        dry_run=dry_run,
+    )
+    run_ssh(
+        config,
+        textwrap.dedent(
+            f"""
+            set -euo pipefail
+            key={shell_quote(target)}
+            fingerprint="$(keytool -list -v -keystore "$key" -storepass {shell_quote(config["android_signing_keystore_password"])} -alias {shell_quote(config["android_signing_key_alias"])} | awk -F'SHA256: ' '/SHA256:/ {{ gsub(":", "", $2); print tolower($2); exit }}')"
+            if [ "$fingerprint" != {shell_quote(expected)} ]; then
+              echo "remote Android signing key fingerprint mismatch: $fingerprint" >&2
+              exit 1
+            fi
+            implicit=/root/.android/debug.keystore
+            if [ -f "$implicit" ] && ! cmp -s "$implicit" "$key"; then
+              quarantine=/root/.android/aerobag-quarantined
+              install -d -m 0700 "$quarantine"
+              mv "$implicit" "$quarantine/debug.keystore.$(date -u +%Y%m%dT%H%M%SZ)"
+            fi
+            """
+        ).strip(),
+        dry_run=dry_run,
+    )
 
 
 def install_bootstrap_packages(config: dict[str, Any], *, dry_run: bool) -> None:
@@ -368,6 +509,13 @@ def env_file(config: dict[str, Any]) -> str:
         "AEROBAG_PIPELINE_HEALTH_POLL_SECONDS": str(config["pipeline_health_poll_seconds"]),
         "ANDROID_HOME": ANDROID_SDK_ROOT,
         "ANDROID_SDK_ROOT": ANDROID_SDK_ROOT,
+        "AEROBAG_ANDROID_KEYSTORE": config["android_signing_prod_keystore"],
+        "AEROBAG_ANDROID_KEYSTORE_PASSWORD": config["android_signing_keystore_password"],
+        "AEROBAG_ANDROID_KEY_ALIAS": config["android_signing_key_alias"],
+        "AEROBAG_ANDROID_KEY_PASSWORD": config["android_signing_key_password"],
+        "AEROBAG_ANDROID_EXPECTED_CERT_SHA256": config[
+            "android_signing_expected_cert_sha256"
+        ],
         "PATH": "/root/.cargo/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin",
     }
     return "".join(f"{key}={shell_quote(value)}\n" for key, value in values.items())
@@ -498,6 +646,8 @@ def build_web_android_script() -> str:
 set -euo pipefail
 source /etc/aerobag/env
 export PATH CARGO_TARGET_DIR AEROBAG_UI_TARGET_ROOT AEROBAG_ARTIFACT_WRITE_PATH AEROBAG_ARTIFACT_READ_PATH
+export ANDROID_HOME ANDROID_SDK_ROOT
+export AEROBAG_ANDROID_KEYSTORE AEROBAG_ANDROID_KEYSTORE_PASSWORD AEROBAG_ANDROID_KEY_ALIAS AEROBAG_ANDROID_KEY_PASSWORD AEROBAG_ANDROID_EXPECTED_CERT_SHA256
 
 /usr/local/bin/aerobag-ensure-android-sdk
 
@@ -1227,6 +1377,7 @@ def deploy(config: dict[str, Any], args: argparse.Namespace) -> None:
         )
 
     install_repo_packages(config, dry_run=args.dry_run)
+    install_android_signing_key(config, dry_run=args.dry_run)
     write_remote_file(
         config,
         DEPLOY_CONFIG_FILE,

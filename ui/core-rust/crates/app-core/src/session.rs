@@ -171,10 +171,24 @@ pub struct UiDebugState {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
 pub struct PlatformDisplayPolicyCapability {}
 
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ClientBuildInfo {
+    pub platform: String,
+    pub version: String,
+    #[serde(default)]
+    pub built_at_utc: Option<String>,
+    #[serde(default)]
+    pub commit: Option<String>,
+    #[serde(default)]
+    pub dirty: bool,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
 pub struct PlatformCapabilities {
     #[serde(default)]
     pub display_policy: Option<PlatformDisplayPolicyCapability>,
+    #[serde(default)]
+    pub client_build: Option<ClientBuildInfo>,
 }
 
 pub trait SettingsStorage: Send + Sync {
@@ -1797,6 +1811,7 @@ fn project_data_status_page_state(session: &UiSession) -> UiDataStatusPageState 
     let metars_status = metar_live_feed_status_source(session);
     let tafs_status = taf_live_feed_status_source(session);
     let mut rows = vec![
+        client_build_status_page_row(session),
         publication_status_page_row(session),
         expected_contract_versions_status_page_row(),
         nav_db_status_page_row(session),
@@ -1915,7 +1930,7 @@ fn project_data_status_page_state(session: &UiSession) -> UiDataStatusPageState 
     ];
     rows.extend(package_warning_status_page_rows(session));
     UiDataStatusPageState {
-        title: "Data status".to_string(),
+        title: "Status".to_string(),
         summary: data_status_page_summary(&rows),
         rows,
     }
@@ -1957,7 +1972,7 @@ fn data_status_page_summary(rows: &[UiDataStatusPageRow]) -> String {
         .filter(|row| matches!(row.severity, UiStatusSeverity::Caution))
         .count();
     if warnings + unavailable + cautions == 0 {
-        return "All tracked data is usable.".to_string();
+        return "All tracked systems are usable.".to_string();
     }
     let mut parts = Vec::new();
     if warnings > 0 {
@@ -1973,6 +1988,59 @@ fn data_status_page_summary(rows: &[UiDataStatusPageRow]) -> String {
         ));
     }
     parts.join(", ")
+}
+
+fn client_build_status_page_row(session: &UiSession) -> UiDataStatusPageRow {
+    let Some(build) = session.platform_capabilities.client_build.as_ref() else {
+        return status_page_row(
+            "client",
+            "Client",
+            "UNKNOWN",
+            UiStatusSeverity::Info,
+            "Client build identity was not provided by this platform.",
+            Vec::new(),
+        );
+    };
+
+    let mut facts = vec![status_fact("Platform", build.platform.clone())];
+    if let Some(built_at_utc) = build.built_at_utc.as_deref() {
+        if let Some(instant) = parse_utc_instant(built_at_utc) {
+            facts.push(status_time_fact(
+                "Built",
+                instant,
+                UiDataStatusPageTimeDisplay::Ago,
+            ));
+        } else {
+            facts.push(status_fact("Built", built_at_utc.to_string()));
+        }
+    }
+    if let Some(commit) = build.commit.as_deref().filter(|commit| !commit.is_empty()) {
+        facts.push(status_fact("Commit", commit.to_string()));
+    }
+    if build.dirty {
+        facts.push(status_fact("Worktree", "dirty"));
+    }
+
+    let detail = if build.dirty {
+        format!(
+            "Running the {} client build {} from a dirty worktree.",
+            build.platform, build.version
+        )
+    } else {
+        format!(
+            "Running the {} client build {}.",
+            build.platform, build.version
+        )
+    };
+
+    status_page_row(
+        "client",
+        "Client",
+        build.version.clone(),
+        UiStatusSeverity::Ok,
+        detail,
+        facts,
+    )
 }
 
 fn cycle_package_group_status_page_row(
@@ -8900,7 +8968,7 @@ fn default_data_status_state() -> UiDataStatusState {
 
 fn default_data_status_page_state() -> UiDataStatusPageState {
     UiDataStatusPageState {
-        title: "Data status".to_string(),
+        title: "Status".to_string(),
         summary: "Status will appear after core session data loads.".to_string(),
         rows: Vec::new(),
     }
@@ -10655,6 +10723,7 @@ mod tests {
             init.handle,
             PlatformCapabilities {
                 display_policy: Some(PlatformDisplayPolicyCapability::default()),
+                ..PlatformCapabilities::default()
             },
             Some(storage.clone()),
         )
@@ -10702,6 +10771,7 @@ mod tests {
             next.handle,
             PlatformCapabilities {
                 display_policy: Some(PlatformDisplayPolicyCapability::default()),
+                ..PlatformCapabilities::default()
             },
             Some(storage),
         )
@@ -14056,6 +14126,66 @@ mod tests {
     }
 
     #[test]
+    fn data_status_page_reports_client_build_identity() {
+        let init = create_current_test_session();
+        let snapshot = configure_platform_capabilities_in_session(
+            init.handle,
+            PlatformCapabilities {
+                client_build: Some(ClientBuildInfo {
+                    platform: "Web".to_string(),
+                    version: "0.1.202606201031+a04240eb.dirty".to_string(),
+                    built_at_utc: Some("2026-06-20T10:31:42Z".to_string()),
+                    commit: Some("a04240ebcafefeed".to_string()),
+                    dirty: true,
+                }),
+                ..PlatformCapabilities::default()
+            },
+            None,
+        )
+        .expect("configure platform capabilities");
+        let row = snapshot
+            .data_status_page_state
+            .rows
+            .iter()
+            .find(|row| row.id == "client")
+            .expect("client row");
+
+        assert_eq!(snapshot.data_status_page_state.title, "Status");
+        assert_eq!(row.label, "Client");
+        assert_eq!(row.value, "0.1.202606201031+a04240eb.dirty");
+        assert_eq!(row.severity, UiStatusSeverity::Ok);
+        assert!(row.detail.contains("dirty worktree"));
+        assert_eq!(
+            row.facts
+                .iter()
+                .find(|fact| fact.label == "Platform")
+                .map(|fact| fact.value.as_str()),
+            Some("Web")
+        );
+        assert_eq!(
+            row.facts
+                .iter()
+                .find(|fact| fact.label == "Built")
+                .map(|fact| fact.value.as_str()),
+            Some("2026-06-20 10:31 UTC")
+        );
+        assert_eq!(
+            row.facts
+                .iter()
+                .find(|fact| fact.label == "Commit")
+                .map(|fact| fact.value.as_str()),
+            Some("a04240ebcafefeed")
+        );
+        assert_eq!(
+            row.facts
+                .iter()
+                .find(|fact| fact.label == "Worktree")
+                .map(|fact| fact.value.as_str()),
+            Some("dirty")
+        );
+    }
+
+    #[test]
     fn data_status_page_orders_core_tiles_for_scanability() {
         let init = create_current_test_session();
 
@@ -14064,13 +14194,14 @@ mod tests {
             .data_status_page_state
             .rows
             .iter()
-            .take(12)
+            .take(13)
             .map(|row| row.id.as_str())
             .collect::<Vec<_>>();
 
         assert_eq!(
             row_ids,
             vec![
+                "client",
                 "publication:current_artifacts",
                 "contracts:expected",
                 "nav_db",

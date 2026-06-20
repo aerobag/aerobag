@@ -55,8 +55,8 @@ const snapshotJson = JSON.stringify({
     launcher_severity: "info",
   },
   data_status_page_state: {
-    title: "Data status",
-    summary: "All tracked data is usable.",
+    title: "Status",
+    summary: "All tracked systems are usable.",
     rows: [],
   },
   settings_page_state: {

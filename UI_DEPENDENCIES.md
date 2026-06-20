@@ -151,7 +151,7 @@ Current important web rendering assumptions:
 ## Android Prototype
 
 Required for source/build:
-- Java 17
+- Java 17+ full JDK with `jlink`
 - modern Gradle wrapper
 - Android SDK
 - Android build-tools
@@ -175,6 +175,12 @@ Actions taken:
 - confirmed installed:
   - `openjdk 17.0.18`
   - distro `gradle 4.4.1`
+
+Production dependency note:
+- prod installs `openjdk-21-jdk`; `openjdk-21-jre-headless` is insufficient
+  because Android Gradle's platform-module transform calls `jlink`
+- Android helper scripts check this before invoking Gradle and report a direct
+  JDK requirement instead of failing later in `JdkImageTransform`
 
 Important note:
 - distro `gradle` here is `4.4.1`, which is too old for a modern Jetpack Compose Android app

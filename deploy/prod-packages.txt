@@ -15,7 +15,7 @@ ghostscript
 libimage-exiftool-perl
 poppler-utils
 sqlite3
-openjdk-21-jre-headless
+openjdk-21-jdk
 nodejs
 npm
 rustup

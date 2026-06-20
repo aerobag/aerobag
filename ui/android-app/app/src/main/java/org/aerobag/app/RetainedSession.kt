@@ -5,6 +5,7 @@ import android.util.Log
 import androidx.lifecycle.ViewModel
 import org.aerobag.app.domain.FlightPlan
 import org.aerobag.app.domain.MapViewportState
+import org.aerobag.app.domain.ClientBuildInfo
 import org.aerobag.app.domain.NativeAppCoreAdapter
 import org.aerobag.app.domain.NativeUiSession
 import org.aerobag.app.domain.RuntimeContent
@@ -73,6 +74,13 @@ internal class AerobagRetainedModel : ViewModel() {
             runtimeContent.installedPackageIds,
             settingsStore = AndroidCoreSettingsStore(context.applicationContext),
             displayPolicySettingsAvailable = true,
+            clientBuildInfo = ClientBuildInfo(
+                platform = "Android",
+                version = BuildConfig.VERSION_NAME,
+                builtAtUtc = BuildConfig.AEROBAG_BUILT_AT_UTC,
+                commit = BuildConfig.AEROBAG_GIT_COMMIT,
+                dirty = BuildConfig.AEROBAG_BUILD_DIRTY,
+            ),
         )
         return AerobagRetainedCoreSession(
             runtimeContent = runtimeContent,

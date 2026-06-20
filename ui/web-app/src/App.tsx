@@ -800,7 +800,7 @@ const HOME_GRID_BUTTONS: Array<{ id: string; label: string; page: AppPage; iconS
   { id: "plate", label: "PLATE", page: "charts", iconSrc: PAGE_PLATE_ICON_SRC },
   { id: "flight-plan", label: "FLIGHT\nPLAN", page: "plan" },
   // Three columns, row 2.
-  { id: "data-status", label: "DATA\nSTATUS", page: "data" },
+  { id: "data-status", label: "STATUS", page: "data" },
   { id: "about", label: "ABOUT", page: "about" },
 ];
 
@@ -1048,7 +1048,7 @@ const pageOptions: Array<{ id: AppPage; label: string; launcherLabel: string; ic
   { id: "map", label: "CHART", launcherLabel: "CHART", iconSrc: PAGE_CHART_ICON_SRC },
   { id: "charts", label: "PLATE", launcherLabel: "PLATE", iconSrc: PAGE_PLATE_ICON_SRC },
   { id: "plan", label: "FLIGHT PLAN", launcherLabel: "PLAN", iconSrc: PAGE_PLAN_ICON_SRC },
-  { id: "data", label: "DATA STATUS", launcherLabel: "DATA" },
+  { id: "data", label: "STATUS", launcherLabel: "STATUS" },
   { id: "home", label: "HOME", launcherLabel: "HOME", iconSrc: PAGE_HOME_ICON_SRC },
 ];
 
@@ -1781,7 +1781,7 @@ export default function App() {
       launcher_severity: "info",
     },
     data_status_page_state: {
-      title: "Data status",
+      title: "Status",
       summary: "Status will appear after core session data loads.",
       rows: [],
     },
@@ -9842,7 +9842,7 @@ function DataStatusDock(props: {
         type="button"
         className={`dataStatusLauncher statusSeverity-${severity}${props.open ? " isOpen" : ""}${hasLauncherCount ? "" : " isQuiet"}`}
         aria-expanded={props.open}
-        aria-label="Data status"
+        aria-label="Status"
         onPointerDown={stopPointer}
         onPointerUp={stopPointer}
         onDoubleClick={stopDoubleClick}

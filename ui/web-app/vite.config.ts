@@ -1,6 +1,7 @@
 import fs from "node:fs";
 import path from "node:path";
 import zlib from "node:zlib";
+import { execFileSync } from "node:child_process";
 import { defineConfig, type Plugin } from "vite";
 import react from "@vitejs/plugin-react";
 
@@ -81,6 +82,66 @@ function loadProductContracts(): Record<string, string> {
 }
 
 const productContracts = loadProductContracts();
+
+type ClientBuildInfo = {
+  platform: string;
+  version: string;
+  built_at_utc: string;
+  commit: string;
+  dirty: boolean;
+};
+
+function gitOutput(args: string[]): string | null {
+  try {
+    const output = execFileSync("git", ["-C", repoRoot, ...args], {
+      encoding: "utf8",
+      stdio: ["ignore", "pipe", "ignore"],
+    }).trim();
+    return output || null;
+  } catch {
+    return null;
+  }
+}
+
+function compactUtcMinute(date: Date): string {
+  const pad = (value: number) => value.toString().padStart(2, "0");
+  return [
+    date.getUTCFullYear().toString(),
+    pad(date.getUTCMonth() + 1),
+    pad(date.getUTCDate()),
+    pad(date.getUTCHours()),
+    pad(date.getUTCMinutes()),
+  ].join("");
+}
+
+function isoUtcSecond(date: Date): string {
+  return date.toISOString().replace(/\.\d{3}Z$/, "Z");
+}
+
+function loadClientBuildInfo(platform: string): ClientBuildInfo {
+  const builtAt = new Date();
+  const commit = process.env.AEROBAG_GIT_COMMIT
+    ?? gitOutput(["rev-parse", "HEAD"])
+    ?? "unknown";
+  const shortCommit = process.env.AEROBAG_SHORT_COMMIT
+    ?? gitOutput(["rev-parse", "--short=8", "HEAD"])
+    ?? (commit === "unknown" ? "unknown" : commit.slice(0, 8));
+  const dirty = process.env.AEROBAG_BUILD_DIRTY === undefined
+    ? (gitOutput(["status", "--porcelain"]) ?? "").length > 0
+    : /^(1|true|yes|on)$/i.test(process.env.AEROBAG_BUILD_DIRTY);
+  const buildId = `${shortCommit}${dirty ? ".dirty" : ""}`;
+  const version = process.env.AEROBAG_VERSION_NAME
+    ?? `0.1.${process.env.AEROBAG_BUILD_STAMP_UTC ?? compactUtcMinute(builtAt)}+${buildId}`;
+  return {
+    platform,
+    version,
+    built_at_utc: process.env.AEROBAG_BUILT_AT_UTC ?? isoUtcSecond(builtAt),
+    commit,
+    dirty,
+  };
+}
+
+const clientBuildInfo = loadClientBuildInfo("Web");
 
 function appendRequestLog(entry: Record<string, unknown>) {
   fs.appendFileSync(requestLogPath, `${JSON.stringify({ ts: Date.now(), ...entry })}\n`);
@@ -269,6 +330,7 @@ export default defineConfig({
   define: {
     __AEROBAG_DEBUG_LOG_ENABLED__: JSON.stringify(webDebugLogEnabled),
     __AEROBAG_LIVE_FEEDS_ORIGIN__: JSON.stringify(liveFeedsOrigin),
+    __AEROBAG_CLIENT_BUILD_INFO__: JSON.stringify(clientBuildInfo),
   },
   resolve: {
     preserveSymlinks: true,

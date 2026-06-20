@@ -341,6 +341,14 @@ data class TerrainOverlayScheduleDecision(
     val workBatch: List<TerrainOverlayTileRequest>,
 )
 
+data class ClientBuildInfo(
+    val platform: String,
+    val version: String,
+    val builtAtUtc: String?,
+    val commit: String?,
+    val dirty: Boolean,
+)
+
 private val NativeAppCoreJson = Json {
     encodeDefaults = true
     ignoreUnknownKeys = true
@@ -371,6 +379,7 @@ class NativeAppCoreAdapter(
         installedPackageIds: List<String> = emptyList(),
         settingsStore: CoreSettingsStore? = null,
         displayPolicySettingsAvailable: Boolean = false,
+        clientBuildInfo: ClientBuildInfo? = null,
     ): NativeUiSession {
         val resultJson = bridge.createUiSessionJson(
             json.encodeToString(plan.toWire()),
@@ -396,6 +405,18 @@ class NativeAppCoreAdapter(
                     } else {
                         JsonNull
                     },
+                )
+                put(
+                    "client_build",
+                    clientBuildInfo?.let { buildInfo ->
+                        buildJsonObject {
+                            put("platform", buildInfo.platform)
+                            put("version", buildInfo.version)
+                            buildInfo.builtAtUtc?.let { put("built_at_utc", it) }
+                            buildInfo.commit?.let { put("commit", it) }
+                            put("dirty", buildInfo.dirty)
+                        }
+                    } ?: JsonNull,
                 )
             }.toString(),
             settingsStore = settingsStore ?: NoopCoreSettingsStore,

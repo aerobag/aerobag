@@ -34,6 +34,7 @@ import { attachNavKvStoreToSession, resolveChartAssetUrl, runCoreHadOperation, r
 import { debugLog, debugTiming, installRustDebugLogBridge, perfDebugLog } from "./debugLog";
 
 declare const __AEROBAG_LIVE_FEEDS_ORIGIN__: string | null;
+declare const __AEROBAG_CLIENT_BUILD_INFO__: ClientBuildInfo;
 
 export type {
   NexradOverlayQueryResult,
@@ -198,6 +199,14 @@ export type UiDisplayPolicy = {
   keep_screen_on: boolean;
   dim_after_ms: number | null;
   dim_brightness: number;
+};
+
+export type ClientBuildInfo = {
+  platform: string;
+  version: string;
+  built_at_utc?: string | null;
+  commit?: string | null;
+  dirty: boolean;
 };
 
 export type MapLayerId =
@@ -939,7 +948,10 @@ export class WasmAppCoreAdapter implements AppCoreAdapter {
       await debugTiming("startup.session.configure_platform", () =>
         module.configure_platform_capabilities_in_session(
           created.handle,
-          JSON.stringify({ display_policy: null }),
+          JSON.stringify({
+            display_policy: null,
+            client_build: __AEROBAG_CLIENT_BUILD_INFO__,
+          }),
         ),
       );
       await debugTiming("startup.session.attach_nav_kv", () => attachNavKvStoreToSession(created.handle));

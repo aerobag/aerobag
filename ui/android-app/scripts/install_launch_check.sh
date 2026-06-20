@@ -61,6 +61,7 @@ APP_DIR="$ROOT/ui/android-app"
 APP_ID="org.aerobag.app"
 ACTIVITY="$APP_ID/.MainActivity"
 TARGET_ROOT_FILE="$ROOT/ui/target-root.txt"
+source "$APP_DIR/scripts/require_android_jdk.sh"
 cleanup_repo_local_tool_dirs() {
   rm -rf "$APP_DIR/.gradle" "$APP_DIR/.kotlin"
 }

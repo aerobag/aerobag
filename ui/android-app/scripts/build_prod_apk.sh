@@ -4,6 +4,7 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 APP_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
 REPO_ROOT="$(cd "$APP_DIR/../.." && pwd)"
+source "$SCRIPT_DIR/require_android_jdk.sh"
 
 if [ -n "${AEROBAG_UI_TARGET_ROOT:-}" ]; then
   UI_TARGET_ROOT="$AEROBAG_UI_TARGET_ROOT"
@@ -18,12 +19,31 @@ fi
 
 WEB_DIST="${AEROBAG_WEB_DIST:-$UI_TARGET_ROOT/web/dist}"
 DOWNLOAD_DIR="$WEB_DIST/downloads"
-GIT_COMMIT="$(git -C "$REPO_ROOT" rev-parse HEAD)"
-SHORT_COMMIT="$(git -C "$REPO_ROOT" rev-parse --short=8 HEAD)"
+GIT_COMMIT="$(git -C "$REPO_ROOT" rev-parse HEAD 2>/dev/null || true)"
+if [ -z "$GIT_COMMIT" ]; then
+  GIT_COMMIT="unknown"
+fi
+SHORT_COMMIT="$(git -C "$REPO_ROOT" rev-parse --short=8 HEAD 2>/dev/null || true)"
+if [ -z "$SHORT_COMMIT" ]; then
+  SHORT_COMMIT="$GIT_COMMIT"
+fi
+if [ "$SHORT_COMMIT" != "unknown" ]; then
+  SHORT_COMMIT="${SHORT_COMMIT:0:8}"
+fi
 BUILT_AT_UTC="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+BUILD_STAMP_UTC="$(date -u +%Y%m%d%H%M)"
+if [ -n "$(git -C "$REPO_ROOT" status --porcelain 2>/dev/null || true)" ]; then
+  BUILD_DIRTY=1
+  BUILD_DIRTY_JSON=true
+  BUILD_ID="$SHORT_COMMIT.dirty"
+else
+  BUILD_DIRTY=0
+  BUILD_DIRTY_JSON=false
+  BUILD_ID="$SHORT_COMMIT"
+fi
 
 ANDROID_VERSION_CODE="${ANDROID_VERSION_CODE:-$(($(date -u +%s) / 60))}"
-ANDROID_VERSION_NAME="${ANDROID_VERSION_NAME:-0.1.0-$SHORT_COMMIT}"
+ANDROID_VERSION_NAME="${ANDROID_VERSION_NAME:-0.1.$BUILD_STAMP_UTC+$BUILD_ID}"
 ANDROID_PACKAGE_SOURCE_BASE_URL="${ANDROID_PACKAGE_SOURCE_BASE_URL:-https://aerobag.org/packages/}"
 ANDROID_LIVE_FEED_SOURCE_BASE_URL="${ANDROID_LIVE_FEED_SOURCE_BASE_URL:-https://aerobag.org}"
 ANDROID_TARGET_ABIS="${ANDROID_TARGET_ABIS:-arm64-v8a}"
@@ -42,6 +62,11 @@ env \
   ANDROID_HOME="$ANDROID_HOME" \
   ANDROID_SDK_ROOT="$ANDROID_SDK_ROOT" \
   AEROBAG_UI_TARGET_ROOT="$UI_TARGET_ROOT" \
+  AEROBAG_GIT_COMMIT="$GIT_COMMIT" \
+  AEROBAG_SHORT_COMMIT="$SHORT_COMMIT" \
+  AEROBAG_BUILT_AT_UTC="$BUILT_AT_UTC" \
+  AEROBAG_BUILD_STAMP_UTC="$BUILD_STAMP_UTC" \
+  AEROBAG_BUILD_DIRTY="$BUILD_DIRTY" \
   ANDROID_VERSION_CODE="$ANDROID_VERSION_CODE" \
   ANDROID_VERSION_NAME="$ANDROID_VERSION_NAME" \
   ANDROID_PACKAGE_SOURCE_BASE_URL="$ANDROID_PACKAGE_SOURCE_BASE_URL" \
@@ -87,6 +112,7 @@ cat > "$DOWNLOAD_DIR/android-apk.json" <<EOF
   "apk_size_bytes": $APK_SIZE_BYTES,
   "git_commit": "$GIT_COMMIT",
   "cert_sha256": "$CERT_SHA256",
+  "dirty": $BUILD_DIRTY_JSON,
   "version_code": $ANDROID_VERSION_CODE,
   "version_name": "$ANDROID_VERSION_NAME",
   "built_at_utc": "$BUILT_AT_UTC"

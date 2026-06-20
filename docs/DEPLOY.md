@@ -45,6 +45,9 @@ The deploy script installs only a tiny bootstrap set before the checkout exists:
 `ca-certificates`, `git`, and `rsync`.
 
 Production APK builds use the Android SDK under `/usr/lib/android-sdk`.
+They require a full JDK, not just a JRE, because Android Gradle transforms use
+`jlink` while processing platform modules. Prod installs `openjdk-21-jdk` from
+`deploy/prod-packages.txt`; local builds may also use a full Java 17 JDK.
 `deploy_prod.py` installs the Android command-line tools, platform 34,
 build-tools 34.0.0, platform-tools, accepts SDK licenses, installs NDK
 `26.3.11579264`, installs the Rust `x86_64-linux-android` and
@@ -180,6 +183,10 @@ npm run build:release
 cd /opt/aerobag/ui/android-app
 ./scripts/build_prod_apk.sh
 ```
+
+`build_prod_apk.sh` verifies that `JAVA_HOME` resolves to a full JDK with
+`jlink` before invoking Gradle. On prod that should be
+`/usr/lib/jvm/java-21-openjdk-amd64`.
 
 Release-like WASM builds require Binaryen `version_129` or newer. The pinned
 `install:wasm-opt` step installs it under `$AEROBAG_UI_TARGET_ROOT/tools/`,

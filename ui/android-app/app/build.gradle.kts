@@ -2,6 +2,9 @@ import org.gradle.api.GradleException
 import org.gradle.api.tasks.Exec
 import java.nio.file.Files
 import java.nio.file.StandardCopyOption
+import java.time.Instant
+import java.time.ZoneOffset
+import java.time.format.DateTimeFormatter
 
 plugins {
     id("com.android.application")
@@ -110,10 +113,45 @@ fun readRequiredBuildConfig(key: String): String =
         ?: readInstanceConfigValue(key)
         ?: throw GradleException("$key must be set")
 
-val androidVersionCode = readIntegerBuildConfig("ANDROID_VERSION_CODE", 1)
+fun buildConfigStringLiteral(value: String): String =
+    "\"" + value.replace("\\", "\\\\").replace("\"", "\\\"") + "\""
+
+fun gitOutput(vararg args: String): String? {
+    return runCatching {
+        val process = ProcessBuilder(listOf("git", "-C", repoRoot.absolutePath, *args))
+            .redirectErrorStream(false)
+            .start()
+        val output = process.inputStream.bufferedReader().readText().trim()
+        if (process.waitFor() == 0 && output.isNotEmpty()) output else null
+    }.getOrNull()
+}
+
+val androidBuildInstant = Instant.now()
+val androidBuildStampUtc = System.getenv("AEROBAG_BUILD_STAMP_UTC")
+    ?: DateTimeFormatter.ofPattern("yyyyMMddHHmm")
+        .withZone(ZoneOffset.UTC)
+        .format(androidBuildInstant)
+val androidBuiltAtUtc = System.getenv("AEROBAG_BUILT_AT_UTC")
+    ?: DateTimeFormatter.ISO_INSTANT.format(androidBuildInstant)
+val androidGitCommit = System.getenv("AEROBAG_GIT_COMMIT")
+    ?: gitOutput("rev-parse", "HEAD")
+    ?: "unknown"
+val androidShortCommit = System.getenv("AEROBAG_SHORT_COMMIT")
+    ?: gitOutput("rev-parse", "--short=8", "HEAD")
+    ?: if (androidGitCommit == "unknown") "unknown" else androidGitCommit.take(8)
+val androidBuildDirty = System.getenv("AEROBAG_BUILD_DIRTY")
+    ?.let { it.lowercase() in setOf("1", "true", "yes", "on") }
+    ?: ((gitOutput("status", "--porcelain") ?: "").isNotEmpty())
+val androidBuildId = androidShortCommit + if (androidBuildDirty) ".dirty" else ""
+val defaultAndroidVersionName = "0.1.$androidBuildStampUtc+$androidBuildId"
+val androidVersionCode = readIntegerBuildConfig(
+    "ANDROID_VERSION_CODE",
+    (androidBuildInstant.epochSecond / 60).toInt(),
+)
 val androidVersionName = System.getenv("ANDROID_VERSION_NAME")
     ?: readInstanceConfigValue("ANDROID_VERSION_NAME")
-    ?: "0.1.0"
+    ?: System.getenv("AEROBAG_VERSION_NAME")
+    ?: defaultAndroidVersionName
 val androidSigningKeystore = File(readRequiredBuildConfig("AEROBAG_ANDROID_KEYSTORE"))
 val androidSigningKeystorePassword = readRequiredBuildConfig("AEROBAG_ANDROID_KEYSTORE_PASSWORD")
 val androidSigningKeyAlias = readRequiredBuildConfig("AEROBAG_ANDROID_KEY_ALIAS")
@@ -256,6 +294,9 @@ android {
         targetSdk = 34
         versionCode = androidVersionCode
         versionName = androidVersionName
+        buildConfigField("String", "AEROBAG_BUILT_AT_UTC", buildConfigStringLiteral(androidBuiltAtUtc))
+        buildConfigField("String", "AEROBAG_GIT_COMMIT", buildConfigStringLiteral(androidGitCommit))
+        buildConfigField("boolean", "AEROBAG_BUILD_DIRTY", androidBuildDirty.toString())
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
         vectorDrawables {
@@ -299,6 +340,7 @@ android {
         jvmTarget = "17"
     }
     buildFeatures {
+        buildConfig = true
         compose = true
     }
     androidResources {

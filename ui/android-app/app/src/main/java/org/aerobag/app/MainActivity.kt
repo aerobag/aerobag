@@ -1117,7 +1117,7 @@ internal val PageOptions = listOf(
     PageTrayOption(AppPage.Charts, "PLATE", "PLATE", R.drawable.page_plate_icon),
     PageTrayOption(AppPage.Plan, "FLIGHT PLAN", "PLAN", R.drawable.page_plan1_icon),
     PageTrayOption(AppPage.Home, "HOME", "HOME", R.drawable.page_home_icon),
-    PageTrayOption(AppPage.DataStatus, "DATA STATUS", "DATA"),
+    PageTrayOption(AppPage.DataStatus, "STATUS", "STATUS"),
     PageTrayOption(AppPage.Settings, "SETTINGS", "SET"),
     PageTrayOption(AppPage.OfflinePackages, "OFFLINE PACKAGES", "PKG"),
 )
@@ -1146,7 +1146,7 @@ internal val HomeGridButtons = listOf(
     HomeGridButton("plate", "PLATE", targetPage = AppPage.Charts, enabled = true, iconResId = R.drawable.page_plate_icon),
     HomeGridButton("flight-plan", "FLIGHT\nPLAN", targetPage = AppPage.Plan, enabled = true),
     // Three columns, row 2.
-    HomeGridButton("data-status", "DATA\nSTATUS", targetPage = AppPage.DataStatus, enabled = true),
+    HomeGridButton("data-status", "STATUS", targetPage = AppPage.DataStatus, enabled = true),
     HomeGridButton("settings", "SETTINGS", targetPage = AppPage.Settings, enabled = true),
     // Three columns, row 3.
     HomeGridButton("offline-packages", "OFFLINE\nPACKAGES", targetPage = AppPage.OfflinePackages, enabled = true),

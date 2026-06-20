@@ -130,6 +130,75 @@ button {
   overflow-wrap: anywhere;
 }
 
+.disclaimerModalScrim {
+  position: fixed;
+  inset: 0;
+  z-index: 1100;
+  display: grid;
+  place-items: center;
+  padding: max(1rem, var(--safe-top)) max(1rem, var(--safe-right)) max(1rem, var(--safe-bottom)) max(1rem, var(--safe-left));
+  background: rgba(5, 12, 16, 0.74);
+}
+
+.disclaimerModal {
+  width: min(48rem, 100%);
+  max-height: min(88vh, calc(var(--app-height) - 2rem));
+  display: flex;
+  flex-direction: column;
+  gap: 1rem;
+  border: 3px solid #fff;
+  border-radius: 14px;
+  background:
+    linear-gradient(180deg, rgba(255, 250, 241, 0.98), rgba(243, 239, 228, 0.98));
+  color: var(--ink);
+  box-shadow: 0 32px 90px rgba(0, 0, 0, 0.48);
+  padding: clamp(1rem, 3vw, 1.75rem);
+}
+
+.disclaimerModal h1 {
+  margin: 0;
+  color: #8d1f16;
+  font-size: clamp(1.35rem, 4vw, 2.15rem);
+  line-height: 1.02;
+  letter-spacing: -0.04em;
+  text-transform: uppercase;
+}
+
+.disclaimerModalText {
+  overflow: auto;
+  color: #111;
+  font-size: clamp(1rem, 2.35vw, 1.35rem);
+  line-height: 1.36;
+}
+
+.disclaimerModalText p {
+  margin: 0;
+}
+
+.disclaimerModalText strong {
+  color: #8d1f16;
+  font-weight: 950;
+}
+
+.disclaimerAcceptButton {
+  align-self: stretch;
+  min-height: calc(var(--thumb) * 0.95);
+  border: 2px solid rgba(19, 33, 41, 0.82);
+  border-radius: var(--thumb-radius);
+  background: var(--theme-button-selected-bg);
+  color: var(--theme-button-selected-fg);
+  font-size: calc(var(--thumb) * 0.28);
+  font-weight: 950;
+  text-transform: uppercase;
+  letter-spacing: 0.02em;
+}
+
+.disclaimerAcceptButton:disabled {
+  border-color: rgba(19, 33, 41, 0.22);
+  background: var(--theme-disabled-button);
+  color: rgba(19, 33, 41, 0.42);
+}
+
 .pageLayer {
   position: absolute;
   inset: 0;

@@ -43,6 +43,7 @@ import androidx.compose.foundation.gestures.awaitEachGesture
 import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.gestures.detectTransformGestures
 import androidx.compose.foundation.horizontalScroll
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.text.BasicTextField
 import androidx.compose.foundation.text.KeyboardActions
 import androidx.compose.foundation.text.KeyboardOptions
@@ -78,6 +79,7 @@ import androidx.compose.foundation.lazy.grid.items as lazyGridItems
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.Button
+import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.Checkbox
@@ -277,6 +279,7 @@ import org.aerobag.app.domain.UiDataStatusPageState
 import org.aerobag.app.domain.UiDataStatusPageTimeDisplay
 import org.aerobag.app.domain.UiDataStatusState
 import org.aerobag.app.domain.UiDebugState
+import org.aerobag.app.domain.UiDisclaimerState
 import org.aerobag.app.domain.UiDisplayPolicy
 import org.aerobag.app.domain.UiMapLayerToggleState
 import org.aerobag.app.domain.UiSettingsPageRow
@@ -2071,6 +2074,77 @@ internal fun situationControlInputForKeyEvent(event: AndroidKeyEvent): Situation
     }
 
 @Composable
+internal fun DisclaimerConsentModal(
+    state: UiDisclaimerState,
+    onAccept: () -> Unit,
+) {
+    val uiTheme = LocalAerobagUiTheme.current
+    val scrollState = rememberScrollState()
+    Box(
+        modifier = Modifier
+            .fillMaxSize()
+            .zIndex(OverlayPlaneModal)
+            .background(Color.Black.copy(alpha = 0.74f))
+            .clickable(
+                indication = null,
+                interactionSource = remember { MutableInteractionSource() },
+            ) {},
+        contentAlignment = Alignment.Center,
+    ) {
+        Column(
+            modifier = Modifier
+                .fillMaxWidth(0.90f)
+                .widthIn(max = ThumbSize * 8.5f)
+                .heightIn(max = ThumbSize * 7.2f)
+                .clip(RoundedCornerShape(18.dp))
+                .background(Color(0xFFFFFAF1))
+                .border(3.dp, Color.White, RoundedCornerShape(18.dp))
+                .clickable(
+                    indication = null,
+                    interactionSource = remember { MutableInteractionSource() },
+                ) {}
+                .padding(ThumbSize * 0.34f),
+            verticalArrangement = Arrangement.spacedBy(ThumbSize * 0.22f),
+        ) {
+            Text(
+                text = "BEFORE YOU USE AEROBAG",
+                color = Color(0xFF8D1F16),
+                fontSize = 27.sp,
+                fontWeight = FontWeight.Black,
+                lineHeight = 29.sp,
+            )
+            Text(
+                text = state.text,
+                modifier = Modifier
+                    .weight(1f, fill = false)
+                    .verticalScroll(scrollState),
+                color = Color(0xFF111111),
+                fontSize = 21.sp,
+                lineHeight = 27.sp,
+                fontWeight = FontWeight.SemiBold,
+            )
+            Button(
+                onClick = onAccept,
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .height(ThumbSize * 0.95f),
+                colors = ButtonDefaults.buttonColors(
+                    containerColor = uiTheme.controls.buttonSelectedBg,
+                    contentColor = uiTheme.controls.buttonFg,
+                ),
+            ) {
+                Text(
+                    text = state.acceptLabel.uppercase(),
+                    fontSize = 18.sp,
+                    fontWeight = FontWeight.Black,
+                    textAlign = TextAlign.Center,
+                )
+            }
+        }
+    }
+}
+
+@Composable
 internal fun AerobagApp(retainedModel: AerobagRetainedModel) {
     val context = LocalContext.current
     val appContext = context.applicationContext
@@ -2529,6 +2603,9 @@ internal fun AerobagApp(retainedModel: AerobagRetainedModel) {
         val previous = pageHistory.lastOrNull() ?: return@BackHandler
         restoreSnapshot(previous, pageHistory.dropLast(1))
     }
+    BackHandler(enabled = sessionSnapshot.disclaimerState.required) {
+        // Agreement is mandatory; do not let system back bypass it.
+    }
 
     CompositionLocalProvider(LocalAerobagUiTheme provides uiTheme) {
         Box(modifier = Modifier.fillMaxSize()) {
@@ -2767,6 +2844,16 @@ internal fun AerobagApp(retainedModel: AerobagRetainedModel) {
                     uptimeLabel = uptimeLabel,
                     debugState = sessionSnapshot.debugState,
                     onDebugFlagChange = ::setDebugFlag,
+                )
+            }
+            if (sessionSnapshot.disclaimerState.required) {
+                DisclaimerConsentModal(
+                    state = sessionSnapshot.disclaimerState,
+                    onAccept = {
+                        runCatching { uiSession.acceptDisclaimer(sessionSnapshot.disclaimerState.agreementId) }
+                            .onSuccess { applySessionSnapshot(it) }
+                            .onFailure { error -> Log.w("AerobagDisclaimer", "failed to accept disclaimer", error) }
+                    },
                 )
             }
         }

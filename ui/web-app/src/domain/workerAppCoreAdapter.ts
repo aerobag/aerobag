@@ -42,7 +42,12 @@ type WorkerSessionInvalidation = {
   invalidations: UiInvalidation[];
 };
 
-type WorkerMessage = WorkerCallResponse | WorkerResponseReady | WorkerSessionInvalidation;
+type WorkerCoreSettingsChanged = {
+  kind: "coreSettingsChanged";
+  settingsJson: string | null;
+};
+
+type WorkerMessage = WorkerCallResponse | WorkerResponseReady | WorkerSessionInvalidation | WorkerCoreSettingsChanged;
 
 type WorkerErrorPayload = {
   name?: string;
@@ -132,6 +137,10 @@ class AppCoreWorkerClient {
   private handleMessage(message: WorkerMessage): void {
     if (message.kind === "sessionInvalidation") {
       this.sessionInvalidationListeners.get(message.sessionId)?.(message.invalidations);
+      return;
+    }
+    if (message.kind === "coreSettingsChanged") {
+      writePersistedCoreSettingsJson(message.settingsJson);
       return;
     }
     if (message.kind === "responseReady") {
@@ -286,7 +295,10 @@ function workerBackedAdapter(client: AppCoreWorkerClient): AppCoreAdapter {
     loadSituationRingCandidates,
     emptyFlightPlan: () => client.callAdapter("emptyFlightPlan"),
     createUiSession: async (...args) => {
-      const marker = await client.callAdapter<WorkerSessionMarker>("createUiSession", args);
+      const marker = await client.callAdapter<WorkerSessionMarker>("createUiSession", [
+        ...args,
+        readPersistedCoreSettingsJson(),
+      ]);
       return workerBackedSession(client, marker.__aerobagWorkerSessionId, marker.initialSnapshot);
     },
     deriveChartPageState: (...args) => client.callAdapter("deriveChartPageState", args),
@@ -353,6 +365,7 @@ function workerBackedSession(client: AppCoreWorkerClient, sessionId: number, ini
     setMapLayerVisibility: (...args) => updateSnapshot(call("setMapLayerVisibility", args)),
     setMapLayerEnabled: (...args) => updateSnapshot(call("setMapLayerEnabled", args)),
     setDebugFlag: (...args) => updateSnapshot(call("setDebugFlag", args)),
+    acceptDisclaimer: (...args) => updateSnapshot(call("acceptDisclaimer", args)),
     loadRasterMapCatalog: () => updateSnapshot(call("loadRasterMapCatalog")),
     resolveChartAssetUrl: (...args) => call("resolveChartAssetUrl", args),
     selectMapFamily: (...args) => updateSnapshot(call("selectMapFamily", args)),
@@ -391,4 +404,26 @@ function workerError(payload: WorkerErrorPayload): Error {
     error.stack = payload.stack;
   }
   return error;
+}
+
+const webCoreSettingsStorageKey = "aerobag.core.settings.v1";
+
+function readPersistedCoreSettingsJson(): string | null {
+  try {
+    return window.localStorage.getItem(webCoreSettingsStorageKey);
+  } catch {
+    return null;
+  }
+}
+
+function writePersistedCoreSettingsJson(settingsJson: string | null): void {
+  try {
+    if (settingsJson === null || settingsJson.length === 0) {
+      window.localStorage.removeItem(webCoreSettingsStorageKey);
+      return;
+    }
+    window.localStorage.setItem(webCoreSettingsStorageKey, settingsJson);
+  } catch {
+    // Losing a persistence write should not make the live session unusable.
+  }
 }

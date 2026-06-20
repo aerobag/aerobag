@@ -180,13 +180,14 @@ pub use raster_tiles::{
     RasterTileResource, RasterTileSource,
 };
 pub use session::{
-    activate_next_leg_in_session, append_flight_plan_entry_in_session,
-    apply_situation_control_input_in_session, attach_nav_kv_store_to_session,
-    attach_nav_kv_store_to_session_with_open_result, configure_platform_capabilities_in_session,
-    create_ui_session, create_ui_session_at_epoch_ms, create_ui_session_profiled,
-    create_ui_session_profiled_at_epoch_ms, destroy_session, disengage_map_follow_in_session,
-    drain_session_resource_effects, engage_map_follow_in_session, get_map_overlay_in_session,
-    get_map_overlay_in_session_at_epoch_ms, get_map_overlay_in_session_with_point_display_scale,
+    accept_disclaimer_in_session, activate_next_leg_in_session,
+    append_flight_plan_entry_in_session, apply_situation_control_input_in_session,
+    attach_nav_kv_store_to_session, attach_nav_kv_store_to_session_with_open_result,
+    configure_platform_capabilities_in_session, create_ui_session, create_ui_session_at_epoch_ms,
+    create_ui_session_profiled, create_ui_session_profiled_at_epoch_ms, destroy_session,
+    disengage_map_follow_in_session, drain_session_resource_effects, engage_map_follow_in_session,
+    get_map_overlay_in_session, get_map_overlay_in_session_at_epoch_ms,
+    get_map_overlay_in_session_with_point_display_scale,
     get_map_overlay_in_session_with_point_display_scale_at_epoch_ms,
     get_map_selection_for_nav_ref_in_session_with_point_display_scale_at_epoch_ms,
     get_map_selection_in_session, get_map_selection_in_session_at_epoch_ms,
@@ -240,10 +241,10 @@ pub use session::{
     update_ownship_source_status_in_session, update_ownship_source_status_in_session_outcome,
     DisplayDimTimeout, GuidanceLegGeometry, LiveFeedConnectionEvent, LiveFeedConnectionEventKind,
     PlatformCapabilities, PlatformDisplayPolicyCapability, SettingsPreferences, SettingsStorage,
-    SettingsStorageHandle, UiChartPageState, UiDebugState, UiDisplayPolicy, UiMapLayerState,
-    UiMapLayerToggleState, UiPlaybackPanelState, UiSessionInitResult, UiSessionResourceEffect,
-    UiSessionSnapshot, UiSettingsAction, UiSettingsPageRow, UiSettingsPageState,
-    UiSettingsSliderStop,
+    SettingsStorageHandle, UiChartPageState, UiDebugState, UiDisclaimerState, UiDisplayPolicy,
+    UiMapLayerState, UiMapLayerToggleState, UiPlaybackPanelState, UiSessionInitResult,
+    UiSessionResourceEffect, UiSessionSnapshot, UiSettingsAction, UiSettingsPageRow,
+    UiSettingsPageState, UiSettingsSliderStop,
 };
 pub use situation::{Situation, SituationPosition};
 pub use state::{

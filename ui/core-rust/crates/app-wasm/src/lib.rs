@@ -6,11 +6,19 @@ use std::{
     },
 };
 
+#[cfg(target_arch = "wasm32")]
+use std::sync::Arc;
+
 use serde::Serialize;
 use wasm_bindgen::prelude::*;
+#[cfg(target_arch = "wasm32")]
+use wasm_bindgen::JsCast;
 
 #[cfg(target_arch = "wasm32")]
 use js_sys::{Function, Reflect};
+
+#[cfg(target_arch = "wasm32")]
+const WEB_CORE_SETTINGS_STORAGE_KEY: &str = "aerobag.core.settings.v1";
 
 #[cfg(target_arch = "wasm32")]
 #[wasm_bindgen]
@@ -102,6 +110,104 @@ fn lock_session_snapshot_refresh_schedulers(
     session_snapshot_refresh_schedulers()
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner())
+}
+
+#[cfg(target_arch = "wasm32")]
+struct WebCoreSettingsStorage;
+
+#[cfg(target_arch = "wasm32")]
+impl app_core::SettingsStorage for WebCoreSettingsStorage {
+    fn read_settings(&self) -> app_core::AppResult<Option<Vec<u8>>> {
+        read_web_core_settings()
+            .map(|value| value.map(String::into_bytes))
+            .map_err(|message| app_core::AppError {
+                kind: app_core::AppErrorKind::Internal,
+                message,
+            })
+    }
+
+    fn write_settings(&self, bytes: &[u8]) -> app_core::AppResult<()> {
+        let value = std::str::from_utf8(bytes).map_err(|err| app_core::AppError {
+            kind: app_core::AppErrorKind::Internal,
+            message: err.to_string(),
+        })?;
+        write_web_core_settings(value).map_err(|message| app_core::AppError {
+            kind: app_core::AppErrorKind::Internal,
+            message,
+        })
+    }
+}
+
+fn web_core_settings_storage() -> Option<app_core::SettingsStorageHandle> {
+    #[cfg(not(target_arch = "wasm32"))]
+    return None;
+
+    #[cfg(target_arch = "wasm32")]
+    Some(Arc::new(WebCoreSettingsStorage))
+}
+
+#[cfg(target_arch = "wasm32")]
+fn web_local_storage() -> Option<JsValue> {
+    let global = js_sys::global();
+    let storage = Reflect::get(&global, &JsValue::from_str("localStorage")).ok()?;
+    if storage.is_null() || storage.is_undefined() {
+        None
+    } else {
+        Some(storage)
+    }
+}
+
+#[cfg(target_arch = "wasm32")]
+fn read_web_core_settings() -> Result<Option<String>, String> {
+    let value = if let Some(storage) = web_local_storage() {
+        let get_item = Reflect::get(&storage, &JsValue::from_str("getItem"))
+            .map_err(|err| format!("localStorage.getItem lookup failed: {err:?}"))?
+            .dyn_into::<Function>()
+            .map_err(|_| "localStorage.getItem is not callable".to_string())?;
+        get_item
+            .call1(&storage, &JsValue::from_str(WEB_CORE_SETTINGS_STORAGE_KEY))
+            .map_err(|err| format!("localStorage.getItem failed: {err:?}"))?
+    } else {
+        Reflect::get(
+            &js_sys::global(),
+            &JsValue::from_str("__aerobagCoreSettingsJson"),
+        )
+        .map_err(|err| format!("worker core settings lookup failed: {err:?}"))?
+    };
+    if value.is_null() || value.is_undefined() {
+        Ok(None)
+    } else {
+        value
+            .as_string()
+            .map(Some)
+            .ok_or_else(|| "localStorage core settings value is not a string".to_string())
+    }
+}
+
+#[cfg(target_arch = "wasm32")]
+fn write_web_core_settings(value: &str) -> Result<(), String> {
+    if let Some(storage) = web_local_storage() {
+        let set_item = Reflect::get(&storage, &JsValue::from_str("setItem"))
+            .map_err(|err| format!("localStorage.setItem lookup failed: {err:?}"))?
+            .dyn_into::<Function>()
+            .map_err(|_| "localStorage.setItem is not callable".to_string())?;
+        set_item
+            .call2(
+                &storage,
+                &JsValue::from_str(WEB_CORE_SETTINGS_STORAGE_KEY),
+                &JsValue::from_str(value),
+            )
+            .map(|_| ())
+            .map_err(|err| format!("localStorage.setItem failed: {err:?}"))
+    } else {
+        Reflect::set(
+            &js_sys::global(),
+            &JsValue::from_str("__aerobagCoreSettingsJson"),
+            &JsValue::from_str(value),
+        )
+        .map(|_| ())
+        .map_err(|err| format!("worker core settings write failed: {err:?}"))
+    }
 }
 
 fn nav_db_open_controllers() -> &'static Mutex<HashMap<u32, app_core::NavDbOpenController>> {
@@ -815,7 +921,18 @@ pub fn configure_platform_capabilities_in_session(
 ) -> Result<String, JsValue> {
     let capabilities: app_core::PlatformCapabilities = serde_json::from_str(capabilities_json)
         .map_err(|err| JsValue::from_str(&err.to_string()))?;
-    let snapshot = app_core::configure_platform_capabilities_in_session(handle, capabilities, None)
+    let snapshot = app_core::configure_platform_capabilities_in_session(
+        handle,
+        capabilities,
+        web_core_settings_storage(),
+    )
+    .map_err(|err| JsValue::from_str(&err.to_string()))?;
+    serde_json::to_string(&snapshot).map_err(|err| JsValue::from_str(&err.to_string()))
+}
+
+#[wasm_bindgen]
+pub fn accept_disclaimer_in_session(handle: u32, agreement_id: &str) -> Result<String, JsValue> {
+    let snapshot = app_core::accept_disclaimer_in_session(handle, agreement_id)
         .map_err(|err| JsValue::from_str(&err.to_string()))?;
     serde_json::to_string(&snapshot).map_err(|err| JsValue::from_str(&err.to_string()))
 }

@@ -34,6 +34,11 @@ type WorkerSessionInvalidation = {
   invalidations: UiInvalidation[];
 };
 
+type WorkerCoreSettingsChanged = {
+  kind: "coreSettingsChanged";
+  settingsJson: string | null;
+};
+
 type WorkerErrorPayload = {
   name?: string;
   message: string;
@@ -47,7 +52,7 @@ type WorkerSessionMarker = {
 
 type WorkerRuntime = {
   addEventListener(type: "message", listener: (event: MessageEvent<WorkerCallRequest>) => void): void;
-  postMessage(message: WorkerCallResponse | WorkerResponseReady | WorkerSessionInvalidation, transfer?: Transferable[]): void;
+  postMessage(message: WorkerCallResponse | WorkerResponseReady | WorkerSessionInvalidation | WorkerCoreSettingsChanged, transfer?: Transferable[]): void;
 };
 
 const ctx = self as unknown as WorkerRuntime;
@@ -140,7 +145,9 @@ async function dispatchCall(message: WorkerCallRequest): Promise<unknown> {
 async function callAdapterMethod(method: string, args: unknown[]): Promise<unknown> {
   const adapter = await ensureAdapter();
   if (method === "createUiSession") {
-    const session = await callMethod<UiSession>(adapter, method, args);
+    const sessionArgs = args.slice(0, 4);
+    setWorkerCoreSettingsJson(typeof args[4] === "string" ? args[4] : null);
+    const session = await callMethod<UiSession>(adapter, method, sessionArgs);
     const sessionId = nextSessionId++;
     sessions.set(sessionId, session);
     session.setInvalidationListener((invalidations) => {
@@ -164,7 +171,14 @@ async function callSessionMethod(
     throw new Error("session invalidation listener is controlled by the worker proxy");
   }
   try {
-    return await callMethod(session, method, args);
+    const result = await callMethod(session, method, args);
+    if (method === "acceptDisclaimer" || method === "performSettingsAction") {
+      ctx.postMessage({
+        kind: "coreSettingsChanged",
+        settingsJson: workerCoreSettingsJson(),
+      });
+    }
+    return result;
   } finally {
     if (method === "destroy") {
       sessions.delete(sessionId);
@@ -264,6 +278,15 @@ function serializeError(error: unknown): WorkerErrorPayload {
     };
   }
   return { message: String(error) };
+}
+
+function setWorkerCoreSettingsJson(settingsJson: string | null): void {
+  (globalThis as unknown as { __aerobagCoreSettingsJson?: string | null }).__aerobagCoreSettingsJson = settingsJson;
+}
+
+function workerCoreSettingsJson(): string | null {
+  const value = (globalThis as unknown as { __aerobagCoreSettingsJson?: unknown }).__aerobagCoreSettingsJson;
+  return typeof value === "string" && value.length > 0 ? value : null;
 }
 
 type PendingWorkerCall = {

@@ -8,6 +8,11 @@ declare module "@shared-bootstrap" {
   export default value;
 }
 
+declare module "@shared/*.html?raw" {
+  const value: string;
+  export default value;
+}
+
 declare module "@generated/app_wasm.js" {
   const init: (...args: unknown[]) => Promise<unknown>;
   export default init;
@@ -50,6 +55,7 @@ declare module "@generated/app_wasm.js" {
   export const load_plate_procedure_in_session: (...args: unknown[]) => string;
   export const restore_direct_to_in_session: (...args: unknown[]) => string;
   export const restore_direct_to_in_session_outcome: (...args: unknown[]) => string;
+  export const accept_disclaimer_in_session: (...args: unknown[]) => string;
   export const select_airport_in_session: (...args: unknown[]) => string;
   export const select_chart_in_session: (...args: unknown[]) => string;
   export const ingest_point_tiles_in_session: (...args: unknown[]) => void;

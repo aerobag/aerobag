@@ -65,6 +65,13 @@ const snapshotJson = JSON.stringify({
     rows: [],
   },
   display_policy: null,
+  disclaimer_state: {
+    agreement_id: "no-warranty-v1",
+    required: true,
+    html: "<p><strong>NO WARRANTY</strong>: test</p>",
+    text: "NO WARRANTY: test",
+    accept_label: "I understand and agree",
+  },
 });
 
 describe("loadBestAvailableAdapter", () => {
@@ -108,6 +115,7 @@ describe("loadBestAvailableAdapter", () => {
       set_map_layer_visibility_in_session: async () => snapshotJson,
       set_map_layer_enabled_in_session: async () => snapshotJson,
       set_debug_flag_in_session: async () => snapshotJson,
+      accept_disclaimer_in_session: async () => snapshotJson,
       set_resource_policy_in_session: async () => snapshotJson,
       configure_platform_capabilities_in_session: async () => snapshotJson,
       load_raster_map_catalog_in_session: async () => JSON.stringify({ state: "complete", result: JSON.parse(snapshotJson) }),

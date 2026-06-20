@@ -63,6 +63,8 @@ use crate::{
 
 const WORLD_MERCATOR_MAX_LATITUDE: f64 = 85.051_128_78;
 const SETTINGS_PERSISTENCE_VERSION: u32 = 1;
+const NO_WARRANTY_DISCLAIMER_HTML: &str = include_str!("../../../../shared/no-warranty.html");
+const NO_WARRANTY_DISCLAIMER_AGREEMENT_ID: &str = "no-warranty-v1";
 const DISPLAY_DIM_TIMEOUT_ROW_ID: &str = "display_dim_timeout";
 const DISPLAY_DIM_TIMEOUT_ACTION_ID: &str = "display_dim_timeout";
 const DISPLAY_DIM_BRIGHTNESS: f32 = 0.05;
@@ -208,6 +210,8 @@ impl Default for DisplayDimTimeout {
 pub struct SettingsPreferences {
     #[serde(default)]
     pub display_dim_timeout: DisplayDimTimeout,
+    #[serde(default)]
+    pub accepted_disclaimer_agreement_ids: BTreeSet<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -238,6 +242,15 @@ pub struct UiDisplayPolicy {
     pub keep_screen_on: bool,
     pub dim_after_ms: Option<u64>,
     pub dim_brightness: f32,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct UiDisclaimerState {
+    pub agreement_id: String,
+    pub required: bool,
+    pub html: String,
+    pub text: String,
+    pub accept_label: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -272,6 +285,7 @@ pub struct UiSessionSnapshot {
     pub data_status_page_state: UiDataStatusPageState,
     pub settings_page_state: UiSettingsPageState,
     pub display_policy: Option<UiDisplayPolicy>,
+    pub disclaimer_state: UiDisclaimerState,
     pub debug_state: UiDebugState,
     pub raster_map: Option<crate::RasterMapUiState>,
     pub next_cycle_product_freshness_check_epoch_ms: Option<i64>,
@@ -2827,6 +2841,7 @@ fn create_ui_session_inner(
         data_status_page_state,
         settings_page_state,
         display_policy: None,
+        disclaimer_state: project_disclaimer_state(&settings_preferences),
         debug_state: debug_state.clone(),
         raster_map: None,
         next_cycle_product_freshness_check_epoch_ms: None,
@@ -3092,6 +3107,26 @@ pub fn perform_settings_action_in_session(
         }
         _ => return Err(invalid_settings_action(&action.action_id)),
     }
+    snapshot_for_changed_session(session)
+}
+
+pub fn accept_disclaimer_in_session(
+    handle: u32,
+    agreement_id: &str,
+) -> AppResult<UiSessionSnapshot> {
+    let mut sessions = lock_sessions();
+    let session = session_mut(&mut sessions, handle)?;
+    if agreement_id != NO_WARRANTY_DISCLAIMER_AGREEMENT_ID {
+        return Err(AppError {
+            kind: AppErrorKind::UnsupportedOperation,
+            message: format!("unsupported disclaimer agreement id: {agreement_id}"),
+        });
+    }
+    session
+        .settings_preferences
+        .accepted_disclaimer_agreement_ids
+        .insert(agreement_id.to_string());
+    write_settings_preferences_to_storage(session)?;
     snapshot_for_changed_session(session)
 }
 
@@ -8754,6 +8789,7 @@ fn try_snapshot_for_session(session: &UiSession) -> Result<UiSessionSnapshot, Ha
         data_status_page_state,
         settings_page_state,
         display_policy,
+        disclaimer_state: project_disclaimer_state(&session.settings_preferences),
         debug_state,
         raster_map,
         next_cycle_product_freshness_check_epoch_ms: session
@@ -8924,6 +8960,27 @@ fn project_display_policy(session: &UiSession) -> Option<UiDisplayPolicy> {
                 .dim_after_ms(),
             dim_brightness: DISPLAY_DIM_BRIGHTNESS,
         })
+}
+
+fn project_disclaimer_state(preferences: &SettingsPreferences) -> UiDisclaimerState {
+    UiDisclaimerState {
+        agreement_id: NO_WARRANTY_DISCLAIMER_AGREEMENT_ID.to_string(),
+        required: !preferences
+            .accepted_disclaimer_agreement_ids
+            .contains(NO_WARRANTY_DISCLAIMER_AGREEMENT_ID),
+        html: NO_WARRANTY_DISCLAIMER_HTML.to_string(),
+        text: no_warranty_disclaimer_text(),
+        accept_label: "I understand and agree".to_string(),
+    }
+}
+
+fn no_warranty_disclaimer_text() -> String {
+    let stripped = NO_WARRANTY_DISCLAIMER_HTML
+        .replace("<p>", "")
+        .replace("</p>", "")
+        .replace("<strong>", "")
+        .replace("</strong>", "");
+    stripped.split_whitespace().collect::<Vec<_>>().join(" ")
 }
 
 fn load_settings_preferences_from_storage(session: &mut UiSession) -> AppResult<()> {
@@ -10657,6 +10714,48 @@ mod tests {
                 .and_then(|policy| policy.dim_after_ms),
             Some(30_000)
         );
+    }
+
+    #[test]
+    fn disclaimer_agreement_uses_core_owned_storage() {
+        let storage: SettingsStorageHandle = Arc::new(MemorySettingsStorage::default());
+        let init =
+            create_ui_session(FlightPlan::default(), &[], None, None).expect("create session");
+        let snapshot = configure_platform_capabilities_in_session(
+            init.handle,
+            PlatformCapabilities::default(),
+            Some(storage.clone()),
+        )
+        .expect("configure platform capabilities");
+
+        assert!(snapshot.disclaimer_state.required);
+        assert_eq!(snapshot.disclaimer_state.agreement_id, "no-warranty-v1");
+        assert!(snapshot.disclaimer_state.text.contains("NO WARRANTY"));
+
+        let snapshot =
+            accept_disclaimer_in_session(init.handle, "no-warranty-v1").expect("accept disclaimer");
+        assert!(!snapshot.disclaimer_state.required);
+
+        let persisted = storage
+            .read_settings()
+            .expect("read settings")
+            .expect("persisted bytes");
+        let persisted_json: serde_json::Value =
+            serde_json::from_slice(&persisted).expect("persisted json");
+        assert_eq!(
+            persisted_json["preferences"]["accepted_disclaimer_agreement_ids"][0],
+            "no-warranty-v1"
+        );
+
+        let next =
+            create_ui_session(FlightPlan::default(), &[], None, None).expect("create session");
+        let next_snapshot = configure_platform_capabilities_in_session(
+            next.handle,
+            PlatformCapabilities::default(),
+            Some(storage),
+        )
+        .expect("configure platform capabilities");
+        assert!(!next_snapshot.disclaimer_state.required);
     }
 
     struct TestObstacleHad {

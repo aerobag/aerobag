@@ -327,6 +327,11 @@ interface NativeBridge {
         actionJson: String,
     ): String
 
+    fun acceptDisclaimerInSessionJson(
+        handle: Long,
+        agreementId: String,
+    ): String
+
     fun loadPlateProcedureInSessionJson(
         handle: Long,
         loadId: String,
@@ -830,6 +835,11 @@ object NativeBindings : NativeBridge {
     external override fun performSettingsActionInSessionJson(
         handle: Long,
         actionJson: String,
+    ): String
+
+    external override fun acceptDisclaimerInSessionJson(
+        handle: Long,
+        agreementId: String,
     ): String
 
     external override fun loadPlateProcedureInSessionJson(

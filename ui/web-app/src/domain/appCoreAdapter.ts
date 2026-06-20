@@ -92,9 +92,18 @@ export type UiSessionSnapshot = {
   data_status_page_state: UiDataStatusPageState;
   settings_page_state: UiSettingsPageState;
   display_policy: UiDisplayPolicy | null;
+  disclaimer_state: UiDisclaimerState;
   debug_state: UiDebugState;
   raster_map?: RasterMapUiState | null;
   next_cycle_product_freshness_check_epoch_ms?: number | null;
+};
+
+export type UiDisclaimerState = {
+  agreement_id: string;
+  required: boolean;
+  html: string;
+  text: string;
+  accept_label: string;
 };
 
 export type DebugFlagId = "tile_labels" | "nexrad_tile_labels" | "fast_tiles" | "offline_simulated_clock_buttons" | "sequencing_finish_lines" | "bad_autopilot" | "gps_capture" | "debug_log_to_developer_server";
@@ -635,6 +644,7 @@ export interface UiSession {
   setMapLayerVisibility(layerId: MapLayerId, visible: boolean): Promise<UiSessionSnapshot>;
   setMapLayerEnabled(layerId: MapLayerId, enabled: boolean): Promise<UiSessionSnapshot>;
   setDebugFlag(flagId: DebugFlagId, enabled: boolean): Promise<UiSessionSnapshot>;
+  acceptDisclaimer(agreementId: string): Promise<UiSessionSnapshot>;
   loadRasterMapCatalog(): Promise<UiSessionSnapshot>;
   resolveChartAssetUrl(chartId: string, assetKind: "asset" | "thumbnail"): Promise<string>;
   selectMapFamily(familyId: ChartFamilyId): Promise<UiSessionSnapshot>;
@@ -762,6 +772,7 @@ type WasmModule = {
   set_map_layer_visibility_in_session(handle: number, layerIdJson: string, visible: boolean): Promise<string> | string;
   set_map_layer_enabled_in_session(handle: number, layerIdJson: string, enabled: boolean): Promise<string> | string;
   set_debug_flag_in_session(handle: number, flagIdJson: string, enabled: boolean): Promise<string> | string;
+  accept_disclaimer_in_session(handle: number, agreementId: string): Promise<string> | string;
   load_raster_map_catalog_in_session(handle: number): Promise<string> | string;
   sync_guidance_geometry_in_session(handle: number): Promise<string> | string;
   project_flight_plan_route_in_session(handle: number): Promise<string> | string;
@@ -1252,6 +1263,12 @@ export class WasmAppCoreAdapter implements AppCoreAdapter {
           parseSessionSnapshot(
             this.module.set_debug_flag_in_session(handle, JSON.stringify(flagId), enabled),
           ),
+        );
+        return snapshot;
+      },
+      acceptDisclaimer: async (agreementId) => {
+        snapshot = await withSessionRetry(async () =>
+          parseSessionSnapshot(this.module.accept_disclaimer_in_session(handle, agreementId)),
         );
         return snapshot;
       },
@@ -1802,6 +1819,7 @@ async function loadBestAvailableAdapterUncached(
     "set_map_layer_visibility_in_session",
     "set_map_layer_enabled_in_session",
     "set_debug_flag_in_session",
+    "accept_disclaimer_in_session",
     "load_raster_map_catalog_in_session",
     "resolve_chart_asset_resource_in_session",
     "sync_guidance_geometry_in_session",

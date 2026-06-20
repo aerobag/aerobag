@@ -965,6 +965,11 @@ class NativeUiSession internal constructor(
         return snapshot
     }
 
+    fun acceptDisclaimer(agreementId: String): UiSessionSnapshot {
+        snapshot = decodeSnapshot(bridge.acceptDisclaimerInSessionJson(handle, agreementId))
+        return snapshot
+    }
+
     fun activateNextLeg(): UiSessionSnapshot {
         snapshot = decodeSnapshot(bridge.activateNextLegInSessionJson(handle))
         return syncGuidanceGeometry()
@@ -1911,6 +1916,15 @@ private data class WireUiDisplayPolicy(
 )
 
 @kotlinx.serialization.Serializable
+private data class WireUiDisclaimerState(
+    val agreement_id: String = "no-warranty-v1",
+    val required: Boolean = true,
+    val html: String = "",
+    val text: String = "",
+    val accept_label: String = "I understand and agree",
+)
+
+@kotlinx.serialization.Serializable
 private data class WireUiDebugState(
     val tile_labels: Boolean = false,
     val nexrad_tile_labels: Boolean = false,
@@ -1941,6 +1955,7 @@ private data class WireUiSessionSnapshot(
     val data_status_page_state: WireUiDataStatusPageState,
     val settings_page_state: WireUiSettingsPageState = WireUiSettingsPageState(),
     val display_policy: WireUiDisplayPolicy? = null,
+    val disclaimer_state: WireUiDisclaimerState = WireUiDisclaimerState(),
     val debug_state: WireUiDebugState = WireUiDebugState(),
     val raster_map: WireRasterMapUiState? = null,
     val next_cycle_product_freshness_check_epoch_ms: Long? = null,
@@ -2022,6 +2037,7 @@ data class UiSessionSnapshot(
     val dataStatusPageState: UiDataStatusPageState,
     val settingsPageState: UiSettingsPageState,
     val displayPolicy: UiDisplayPolicy?,
+    val disclaimerState: UiDisclaimerState,
     val debugState: UiDebugState,
     val rasterMap: RasterMapUiState?,
     val nextCycleProductFreshnessCheckEpochMs: Long?,
@@ -2122,6 +2138,14 @@ data class UiDisplayPolicy(
     val keepScreenOn: Boolean,
     val dimAfterMs: Long?,
     val dimBrightness: Float,
+)
+
+data class UiDisclaimerState(
+    val agreementId: String,
+    val required: Boolean,
+    val html: String,
+    val text: String,
+    val acceptLabel: String,
 )
 
 data class UiDebugState(
@@ -2292,6 +2316,14 @@ private fun WireUiDisplayPolicy.toUi() = UiDisplayPolicy(
     dimBrightness = dim_brightness,
 )
 
+private fun WireUiDisclaimerState.toUi() = UiDisclaimerState(
+    agreementId = agreement_id,
+    required = required,
+    html = html,
+    text = text,
+    acceptLabel = accept_label,
+)
+
 private fun WireUiDebugState.toUi() = UiDebugState(
     tileLabels = tile_labels,
     nexradTileLabels = nexrad_tile_labels,
@@ -2320,6 +2352,7 @@ private fun WireUiSessionSnapshot.toUi() = UiSessionSnapshot(
     dataStatusPageState = data_status_page_state.toUi(),
     settingsPageState = settings_page_state.toUi(),
     displayPolicy = display_policy?.toUi(),
+    disclaimerState = disclaimer_state.toUi(),
     debugState = debug_state.toUi(),
     rasterMap = raster_map?.toUi(),
     nextCycleProductFreshnessCheckEpochMs = next_cycle_product_freshness_check_epoch_ms,

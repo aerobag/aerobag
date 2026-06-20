@@ -284,6 +284,15 @@ pub fn perform_settings_action_in_session_json(
     serde_json::to_string(&snapshot).map_err(|err| err.to_string())
 }
 
+pub fn accept_disclaimer_in_session_json(
+    handle: u64,
+    agreement_id: &str,
+) -> Result<String, String> {
+    let snapshot = app_core::accept_disclaimer_in_session(handle as u32, agreement_id)
+        .map_err(|err| err.to_string())?;
+    serde_json::to_string(&snapshot).map_err(|err| err.to_string())
+}
+
 pub fn load_plate_procedure_in_session_json(handle: u64, load_id: &str) -> Result<String, String> {
     let outcome =
         app_core::session::load_plate_procedure_in_session(handle as u32, load_id.to_string())
@@ -2397,6 +2406,20 @@ pub extern "system" fn Java_org_aerobag_app_domain_NativeBindings_performSetting
     let result = (|| {
         let action_json = get_java_string(&mut env, action_json)?;
         perform_settings_action_in_session_json(handle as u64, &action_json)
+    })();
+    return_string(&mut env, result)
+}
+
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_org_aerobag_app_domain_NativeBindings_acceptDisclaimerInSessionJson(
+    mut env: JNIEnv,
+    _class: JClass,
+    handle: i64,
+    agreement_id: JString,
+) -> jstring {
+    let result = (|| {
+        let agreement_id = get_java_string(&mut env, agreement_id)?;
+        accept_disclaimer_in_session_json(handle as u64, &agreement_id)
     })();
     return_string(&mut env, result)
 }

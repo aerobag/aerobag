@@ -29,6 +29,7 @@ import type {
 } from "./domain/types";
 import uiTheme from "@shared-ui-theme";
 import aboutReadmeHtml from "./content/about-readme.html?raw";
+import noWarrantyHtml from "@shared/no-warranty.html?raw";
 import planViewIcon from "./assets/plan-view-icon.svg";
 import {
   airportCircleMarkerPath,
@@ -75,6 +76,7 @@ import {
   type UiMapLayerState,
   type UiMapLayerToggleState,
   type UiDebugState,
+  type UiDisclaimerState,
   type UiPlaybackPanelState,
   type UiDataStatusPageState,
   type UiDataStatusState,
@@ -137,6 +139,14 @@ import {
 import { TerrainOverlayRenderer } from "./domain/terrainOverlayRenderer";
 
 declare const __AEROBAG_LIVE_FEEDS_ORIGIN__: string | null;
+
+const defaultDisclaimerText = noWarrantyHtml
+  .replace(/<\/p>/g, "")
+  .replace(/<p>/g, "")
+  .replace(/<\/strong>/g, "")
+  .replace(/<strong>/g, "")
+  .replace(/\s+/g, " ")
+  .trim();
 
 type SurfaceSize = {
   width: number;
@@ -539,6 +549,32 @@ function StartupFatalErrorModal({ error }: { error: StartupFatalError }) {
             <dd>{Math.round(error.elapsedMs / 1000)}s</dd>
           </div>
         </dl>
+      </section>
+    </div>
+  );
+}
+
+function DisclaimerModal(props: {
+  state: UiDisclaimerState;
+  acceptingDisabled: boolean;
+  onAccept: () => void;
+}) {
+  return (
+    <div className="disclaimerModalScrim" role="alertdialog" aria-modal="true" aria-labelledby="disclaimer-modal-title">
+      <section className="disclaimerModal">
+        <h1 id="disclaimer-modal-title">Before You Use Aerobag</h1>
+        <div
+          className="disclaimerModalText"
+          dangerouslySetInnerHTML={{ __html: props.state.html }}
+        />
+        <button
+          type="button"
+          className="disclaimerAcceptButton"
+          disabled={props.acceptingDisabled}
+          onClick={props.onAccept}
+        >
+          {props.state.accept_label}
+        </button>
       </section>
     </div>
   );
@@ -1754,6 +1790,13 @@ export default function App() {
       rows: [],
     },
     display_policy: null,
+    disclaimer_state: {
+      agreement_id: "no-warranty-v1",
+      required: true,
+      html: noWarrantyHtml,
+      text: defaultDisclaimerText,
+      accept_label: "I understand and agree",
+    },
     debug_state: initialDebugState,
     raster_map: null,
     next_cycle_product_freshness_check_epoch_ms: null,
@@ -1840,6 +1883,15 @@ export default function App() {
     }
     applySessionSnapshot(await uiSession.applySituationControlInput(input, Date.now()), "situation_control_input");
   }, [applySessionSnapshot, uiSession]);
+  const acceptDisclaimer = useCallback(async () => {
+    if (!uiSession) {
+      return;
+    }
+    applySessionSnapshot(
+      await uiSession.acceptDisclaimer(sessionSnapshot.disclaimer_state.agreement_id),
+      "accept_disclaimer",
+    );
+  }, [applySessionSnapshot, sessionSnapshot.disclaimer_state.agreement_id, uiSession]);
   const reportStartupVisualReady = useCallback(() => {
     if (startupVisualReadyRef.current) {
       return;
@@ -3141,6 +3193,13 @@ export default function App() {
           onSelectPage={navigateToPage}
         />
       </div>
+      {sessionSnapshot.disclaimer_state.required ? (
+        <DisclaimerModal
+          state={sessionSnapshot.disclaimer_state}
+          acceptingDisabled={!uiSession}
+          onAccept={() => void acceptDisclaimer()}
+        />
+      ) : null}
     </main>
   );
 }
@@ -9239,7 +9298,7 @@ function AboutPage(props: {
         <div className="aboutReadmeRegion">
           <article
             className="aboutReadmeContent"
-            dangerouslySetInnerHTML={{ __html: aboutReadmeHtml }}
+            dangerouslySetInnerHTML={{ __html: `${noWarrantyHtml}\n${aboutReadmeHtml}` }}
           />
         </div>
       </div>

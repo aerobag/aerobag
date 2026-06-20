@@ -156,7 +156,7 @@ pub(super) fn build_chart_process_node(
         family,
         source_repo,
         source_urls,
-        source_fetch_record.fingerprint.as_str(),
+        source_content_fingerprint(source_fetch_record)?,
         cpu_jobs,
     )?;
     let prepared = prepare_node_at(
@@ -220,10 +220,15 @@ fn build_single_source_fetch_node(
         )?;
         fs::write(&marker, b"ok")
             .with_context(|| format!("failed to write {}", marker.display()))?;
+        let source_content_fingerprint = hash_tree(&source_root)?;
         Ok(BTreeMap::from([
             (
                 "source_root".to_string(),
                 relative_artifact_path(&source_root, &config.build_root),
+            ),
+            (
+                "source_content_fingerprint".to_string(),
+                source_content_fingerprint,
             ),
             (
                 "provenance_dir".to_string(),
@@ -291,7 +296,7 @@ pub(super) fn build_chart_package_nodes(
         family,
         &config.chart_cutline_root,
         &source_urls_path,
-        source_fetch_record.fingerprint.as_str(),
+        source_content_fingerprint(source_fetch_record)?,
         config.cpu_jobs.min(8).max(1),
     )?;
     let process_prepared = prepare_node_at(
@@ -587,7 +592,10 @@ pub(super) fn build_csup_process_node(
 ) -> anyhow::Result<NodeRecord> {
     let source_fetch_root =
         resolve_artifact_path(config, output_path(source_fetch_record, "source_root")?);
-    let inputs = csup_process_inputs(source_urls, source_fetch_record.fingerprint.as_str())?;
+    let inputs = csup_process_inputs(
+        source_urls,
+        source_content_fingerprint(source_fetch_record)?,
+    )?;
     let prepared = prepare_node_at(
         &build_shared_node_dir(config, "csup-process")?,
         "csup-process",
@@ -628,8 +636,10 @@ pub(super) fn build_csup_package_nodes(
     let contract_id = product_contract_id_for_family("csup")?;
     let artifact_version = contract_artifact_version(contract_id, version_label);
     let source_urls_path = source_urls_dir.join("csup/source_urls.jsonl");
-    let process_inputs =
-        csup_process_inputs(&source_urls_path, source_fetch_record.fingerprint.as_str())?;
+    let process_inputs = csup_process_inputs(
+        &source_urls_path,
+        source_content_fingerprint(source_fetch_record)?,
+    )?;
     let process_prepared = prepare_node_at(
         &build_shared_node_dir(config, "csup-process")?,
         "csup-process",
@@ -1019,6 +1029,10 @@ fn prefetch_request_file_name(request: &PrefetchRequest) -> anyhow::Result<Strin
 }
 
 fn tpp_source_content_fingerprint(record: &NodeRecord) -> anyhow::Result<&str> {
+    source_content_fingerprint(record)
+}
+
+fn source_content_fingerprint(record: &NodeRecord) -> anyhow::Result<&str> {
     record
         .outputs
         .get("source_content_fingerprint")
@@ -1221,7 +1235,7 @@ pub(super) fn chart_process_inputs(
     family: ChartFamily,
     source_repo: &Path,
     source_urls: &Path,
-    source_fetch_fingerprint: &str,
+    source_content_fingerprint: &str,
     cpu_jobs: usize,
 ) -> anyhow::Result<BTreeMap<String, String>> {
     Ok(BTreeMap::from([
@@ -1230,8 +1244,8 @@ pub(super) fn chart_process_inputs(
         ("source_urls".to_string(), hash_file(source_urls)?),
         ("cpu_jobs".to_string(), cpu_jobs.to_string()),
         (
-            "source_fetch_fingerprint".to_string(),
-            source_fetch_fingerprint.to_string(),
+            "source_content_fingerprint".to_string(),
+            source_content_fingerprint.to_string(),
         ),
         (
             "chart_render_lib".to_string(),
@@ -1247,13 +1261,13 @@ pub(super) fn chart_process_inputs(
 
 pub(super) fn csup_process_inputs(
     source_urls: &Path,
-    source_fetch_fingerprint: &str,
+    source_content_fingerprint: &str,
 ) -> anyhow::Result<BTreeMap<String, String>> {
     Ok(BTreeMap::from([
         ("source_urls".to_string(), hash_file(source_urls)?),
         (
-            "source_fetch_fingerprint".to_string(),
-            source_fetch_fingerprint.to_string(),
+            "source_content_fingerprint".to_string(),
+            source_content_fingerprint.to_string(),
         ),
         (
             "csup_lib".to_string(),
@@ -1967,6 +1981,29 @@ mod tests {
         }
     }
 
+    fn write_source_fetch_record(source_content_fingerprint: &str) -> NodeRecord {
+        NodeRecord {
+            name: "charts-enr-h-fetch".to_string(),
+            fingerprint: "fetch-node-fingerprint".to_string(),
+            inputs: BTreeMap::new(),
+            outputs: BTreeMap::from([
+                (
+                    "source_root".to_string(),
+                    "cache/nodes/charts-enr-h-fetch/test/source".to_string(),
+                ),
+                (
+                    "source_content_fingerprint".to_string(),
+                    source_content_fingerprint.to_string(),
+                ),
+            ]),
+            output_details: BTreeMap::new(),
+            cache_hit: true,
+            started_at_utc: "2026-06-02T00:00:00Z".to_string(),
+            finished_at_utc: "2026-06-02T00:00:00Z".to_string(),
+            elapsed_ms: 0,
+        }
+    }
+
     #[test]
     fn tpp_fetch_inputs_do_not_depend_on_tpp_render_library() {
         let temp = tempdir().unwrap();
@@ -2005,5 +2042,55 @@ mod tests {
             Some("source-content")
         );
         assert!(!inputs.contains_key("source_fetch_fingerprint"));
+    }
+
+    #[test]
+    fn chart_process_inputs_use_source_content_fingerprint() {
+        let temp = tempdir().unwrap();
+        let source_repo = temp.path().join("cutlines");
+        let source_urls = temp.path().join("source_urls.jsonl");
+        fs::create_dir_all(&source_repo).unwrap();
+        fs::write(source_repo.join("cutline.geojson"), b"{}").unwrap();
+        fs::write(&source_urls, b"").unwrap();
+
+        let inputs = chart_process_inputs(
+            ChartFamily::EnrH,
+            &source_repo,
+            &source_urls,
+            "source-content",
+            8,
+        )
+        .unwrap();
+
+        assert_eq!(
+            inputs.get("source_content_fingerprint").map(String::as_str),
+            Some("source-content")
+        );
+        assert!(!inputs.contains_key("source_fetch_fingerprint"));
+    }
+
+    #[test]
+    fn csup_process_inputs_use_source_content_fingerprint() {
+        let temp = tempdir().unwrap();
+        let source_urls = temp.path().join("source_urls.jsonl");
+        fs::write(&source_urls, b"").unwrap();
+
+        let inputs = csup_process_inputs(&source_urls, "source-content").unwrap();
+
+        assert_eq!(
+            inputs.get("source_content_fingerprint").map(String::as_str),
+            Some("source-content")
+        );
+        assert!(!inputs.contains_key("source_fetch_fingerprint"));
+    }
+
+    #[test]
+    fn source_content_fingerprint_reads_fetch_output() {
+        let record = write_source_fetch_record("source-content");
+
+        assert_eq!(
+            source_content_fingerprint(&record).unwrap(),
+            "source-content"
+        );
     }
 }

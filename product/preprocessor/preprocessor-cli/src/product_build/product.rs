@@ -534,13 +534,14 @@ pub fn build_product(config: &ProductBuildConfig) -> anyhow::Result<ProductBuild
                             &source_urls.join(format!("charts-{family_id}/source_urls.jsonl")),
                             cycle_config.fetch_jobs,
                         )?;
+                        let cache_hit = record.cache_hit;
                         Ok(ProductTaskCompletion {
                             node_records: vec![normalize_node_record_paths(
                                 record.clone(),
                                 &cycle_config.packaged_dir,
                             )],
                             value: ProductTaskValue::ChartFetch { record },
-                            completion_detail: "cache_or_rebuild".to_string(),
+                            completion_detail: format!("cache_hit={cache_hit}"),
                         })
                     }
                     ProductScheduledTaskKind::ChartProcess { cycle, family } => {
@@ -566,13 +567,14 @@ pub fn build_product(config: &ProductBuildConfig) -> anyhow::Result<ProductBuild
                             source_fetch,
                             cycle_config.cpu_jobs.min(8).max(1),
                         )?;
+                        let cache_hit = record.cache_hit;
                         Ok(ProductTaskCompletion {
                             node_records: vec![normalize_node_record_paths(
                                 record,
                                 &cycle_config.packaged_dir,
                             )],
                             value: ProductTaskValue::None,
-                            completion_detail: "cache_or_rebuild".to_string(),
+                            completion_detail: format!("cache_hit={cache_hit}"),
                         })
                     }
                     ProductScheduledTaskKind::CsupFetch { cycle } => {
@@ -588,13 +590,14 @@ pub fn build_product(config: &ProductBuildConfig) -> anyhow::Result<ProductBuild
                             &source_urls.join("csup/source_urls.jsonl"),
                             cycle_config.fetch_jobs,
                         )?;
+                        let cache_hit = record.cache_hit;
                         Ok(ProductTaskCompletion {
                             node_records: vec![normalize_node_record_paths(
                                 record.clone(),
                                 &cycle_config.packaged_dir,
                             )],
                             value: ProductTaskValue::CsupFetch { record },
-                            completion_detail: "cache_or_rebuild".to_string(),
+                            completion_detail: format!("cache_hit={cache_hit}"),
                         })
                     }
                     ProductScheduledTaskKind::CsupProcess { cycle } => {
@@ -616,6 +619,7 @@ pub fn build_product(config: &ProductBuildConfig) -> anyhow::Result<ProductBuild
                             &source_urls.join("csup/source_urls.jsonl"),
                             source_fetch,
                         )?;
+                        let cache_hit = record.cache_hit;
                         let work_dir =
                             resolve_artifact_path(&cycle_config, output_path(&record, "work_dir")?);
                         Ok(ProductTaskCompletion {
@@ -624,7 +628,7 @@ pub fn build_product(config: &ProductBuildConfig) -> anyhow::Result<ProductBuild
                                 &cycle_config.packaged_dir,
                             )],
                             value: ProductTaskValue::CsupProcess { record, work_dir },
-                            completion_detail: "cache_or_rebuild".to_string(),
+                            completion_detail: format!("cache_hit={cache_hit}"),
                         })
                     }
                     ProductScheduledTaskKind::CsupRender { cycle, region } => {
@@ -653,13 +657,14 @@ pub fn build_product(config: &ProductBuildConfig) -> anyhow::Result<ProductBuild
                             &source_urls,
                             cycle_config.cpu_jobs.max(1),
                         )?;
+                        let cache_hit = record.cache_hit;
                         Ok(ProductTaskCompletion {
                             node_records: vec![normalize_node_record_paths(
                                 record,
                                 &cycle_config.packaged_dir,
                             )],
                             value: ProductTaskValue::None,
-                            completion_detail: "cache_or_rebuild".to_string(),
+                            completion_detail: format!("cache_hit={cache_hit}"),
                         })
                     }
                     ProductScheduledTaskKind::TppRender { cycle, region } => {
@@ -689,13 +694,14 @@ pub fn build_product(config: &ProductBuildConfig) -> anyhow::Result<ProductBuild
                         };
                         let record =
                             build_tpp_render_node(&cycle_config, &request, Some(source_fetch))?;
+                        let cache_hit = record.cache_hit;
                         Ok(ProductTaskCompletion {
                             node_records: vec![normalize_node_record_paths(
                                 record,
                                 &cycle_config.packaged_dir,
                             )],
                             value: ProductTaskValue::None,
-                            completion_detail: "cache_or_rebuild".to_string(),
+                            completion_detail: format!("cache_hit={cache_hit}"),
                         })
                     }
                     ProductScheduledTaskKind::TppFetch { cycle } => {
@@ -707,13 +713,14 @@ pub fn build_product(config: &ProductBuildConfig) -> anyhow::Result<ProductBuild
                         let mut cycle_config = config.clone();
                         cycle_config.target_cycle = Some(cycle);
                         let record = build_tpp_fetch_node(&cycle_config, &source_urls)?;
+                        let cache_hit = record.cache_hit;
                         Ok(ProductTaskCompletion {
                             node_records: vec![normalize_node_record_paths(
                                 record.clone(),
                                 &cycle_config.packaged_dir,
                             )],
                             value: ProductTaskValue::TppFetch { record },
-                            completion_detail: "cache_or_rebuild".to_string(),
+                            completion_detail: format!("cache_hit={cache_hit}"),
                         })
                     }
                     ProductScheduledTaskKind::DataBase { cycle } => {

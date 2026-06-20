@@ -3088,17 +3088,18 @@ internal fun MapSelectionItemButton(
     onClick: () -> Unit,
 ) {
     val uiTheme = LocalAerobagUiTheme.current
+    val containerColor = if (selected) uiTheme.controls.buttonChecked else uiTheme.controls.buttonUnchecked
     Surface(
         modifier = Modifier
             .size(ThumbSize)
             .testTag(testTag)
             .clickable(onClick = onClick),
         shape = RoundedCornerShape(ThumbRadius),
-        color = if (selected) lerp(uiTheme.controls.buttonUnchecked, Color.White, 0.28f) else uiTheme.controls.buttonUnchecked,
+        color = containerColor,
         contentColor = uiTheme.controls.buttonFg,
         border = BorderStroke(
             if (selected) 2.dp else 1.dp,
-            if (selected) uiTheme.controls.buttonFg else lerp(uiTheme.controls.buttonUnchecked, Color.Black, 0.22f),
+            if (selected) uiTheme.controls.buttonFg else lerp(containerColor, Color.Black, 0.22f),
         ),
     ) {
         Column(
@@ -3245,6 +3246,11 @@ internal fun MapSelectionActionButton(
     onClick: () -> Unit,
 ) {
     val uiTheme = LocalAerobagUiTheme.current
+    val containerColor = when {
+        action.displayOnly -> uiTheme.controls.buttonChecked
+        enabled -> uiTheme.controls.buttonUnchecked
+        else -> uiTheme.controls.buttonDisabled
+    }
     Surface(
         modifier = Modifier
             .width(ThumbSize * 1.2f)
@@ -3258,15 +3264,11 @@ internal fun MapSelectionActionButton(
             }
             .then(if (enabled) Modifier.clickable(onClick = onClick) else Modifier),
         shape = RoundedCornerShape(ThumbRadius),
-        color = when {
-            action.displayOnly -> uiTheme.controls.mapSelectionDisplayBg
-            enabled -> uiTheme.controls.buttonUnchecked
-            else -> uiTheme.controls.panelMuted
-        },
-        contentColor = if (action.displayOnly) uiTheme.controls.mapSelectionDisplayFg else uiTheme.controls.buttonFg,
+        color = containerColor,
+        contentColor = uiTheme.controls.buttonFg,
         border = BorderStroke(
             1.dp,
-            if (action.displayOnly) uiTheme.controls.panelBorder else lerp(uiTheme.controls.buttonUnchecked, Color.Black, 0.22f),
+            lerp(containerColor, Color.Black, 0.22f),
         ),
     ) {
         Box(modifier = Modifier.fillMaxSize().padding(4.dp), contentAlignment = Alignment.Center) {

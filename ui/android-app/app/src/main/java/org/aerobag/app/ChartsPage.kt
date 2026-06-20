@@ -763,6 +763,7 @@ internal fun ChartPlateToggleButton(
         CompactSquareButton(
             label = option.launcherLabel,
             modifier = Modifier.matchParentSize(),
+            selected = currentPage == AppPage.Map || currentPage == AppPage.Charts,
             iconResId = option.iconResId,
             onClick = { onSelectPage(targetPage) },
         )
@@ -1168,7 +1169,8 @@ internal fun ChartViewerSelectors(
                 label = "FLDR",
                 modifier = Modifier.size(ThumbSize),
                 testTag = "parity:plate-folder-button",
-                enabled = !trayOpen && !folderOpen,
+                enabled = !trayOpen,
+                selected = folderOpen,
                 onClick = onToggleFolder,
             )
         }
@@ -1295,6 +1297,7 @@ internal fun MenuDock(
             iconResId = launcherIconResId,
             maxLines = style.launcherMaxLines,
             enabled = !disabled,
+            selected = open && !situationLauncher,
             backgroundColor = if (situationLauncher) uiTheme.controls.situationStatusBg else null,
             foregroundColor = if (situationLauncher) launcherForegroundColor ?: uiTheme.controls.situationStatusFg else null,
             accentColor = launcherAccentColor,

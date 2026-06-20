@@ -53,6 +53,54 @@ class PipelineHealthTests(unittest.TestCase):
         self.assertEqual(failure_rate["value"], 0.666667)
         self.assertEqual(failure_rate["severity"], "critical")
 
+    def test_live_feed_failure_rate_exposes_failure_details(self) -> None:
+        now = datetime(2026, 6, 19, 12, 0, 0, tzinfo=timezone.utc)
+        facts = {
+            "inputs": {
+                "current_artifacts": {"error": None, "payload": []},
+                "deploy_health": {"error": None, "payload": {}},
+                "live_feeds_status": {
+                    "error": None,
+                    "payload": {
+                        "products": {
+                            "metars": {
+                                "nominal_interval_seconds": 300,
+                                "last_source_timestamp_utc": "2026-06-19T11:59:00Z",
+                                "last_failure_at_utc": "2026-06-19T11:00:00Z",
+                                "last_failure_phase": "build",
+                                "last_error": "gzip failed",
+                                "consecutive_failure_count": 0,
+                                "attempts": [
+                                    {
+                                        "attempted_at_utc": "2026-06-19T11:00:00Z",
+                                        "result": "failure",
+                                        "phase": "build",
+                                        "error": "gzip failed",
+                                    },
+                                    {"result": "success"},
+                                    {"result": "success"},
+                                ],
+                            }
+                        }
+                    },
+                },
+                "build_watch": {"error": None, "payload": {}},
+                "faa_cycle_calendar": {"error": None, "payload": {"cycles": []}},
+                "product_facts": [],
+            }
+        }
+
+        evaluation = pipeline_health.evaluate_health(facts, [], now)
+
+        failure_rate = metric(evaluation, "live_feed.metars.recent_failure_rate")
+        self.assertEqual(failure_rate["value"], 0.333333)
+        self.assertEqual(failure_rate["severity"], "warning")
+        self.assertEqual(failure_rate["details"]["last_error"], "gzip failed")
+        self.assertEqual(
+            failure_rate["details"]["failures"][0]["attempted_at_utc"],
+            "2026-06-19T11:00:00Z",
+        )
+
     def test_product_facts_compare_against_previous_history(self) -> None:
         current_facts = {
             "inputs": {
@@ -188,7 +236,7 @@ class PipelineHealthTests(unittest.TestCase):
 
         self.assertEqual(age, 3)
 
-    def test_calendar_alerts_when_expected_cycle_is_missing(self) -> None:
+    def test_calendar_warns_when_unpublished_cycle_is_inside_publication_window(self) -> None:
         facts = {
             "inputs": {
                 "current_artifacts": {"error": None, "payload": []},
@@ -206,13 +254,59 @@ class PipelineHealthTests(unittest.TestCase):
                 "product_facts": [],
             }
         }
-        now = datetime(2026, 6, 23, 12, 0, 0, tzinfo=timezone.utc)
+        now = datetime(2026, 6, 20, 0, 0, 0, tzinfo=timezone.utc)
 
         evaluation = pipeline_health.evaluate_health(facts, [], now)
 
-        missing = metric(evaluation, "cycle_calendar.2607.missing_seconds")
-        self.assertEqual(missing["severity"], "critical")
+        countdown = metric(evaluation, "cycle_calendar.2607.seconds_until_effective")
+        self.assertEqual(countdown["value"], 19 * 24 * 60 * 60)
+        self.assertEqual(countdown["severity"], "warning")
+        self.assertIn("effective in 19d", countdown["message"])
+
+    def test_calendar_hides_unpublished_cycle_before_publication_window(self) -> None:
+        facts = calendar_facts([{"cycle": "2607", "effective_date": "2026-07-09"}])
+        now = datetime(2026, 6, 18, 12, 0, 0, tzinfo=timezone.utc)
+
+        evaluation = pipeline_health.evaluate_health(facts, [], now)
+
+        self.assertFalse(
+            has_metric(evaluation, "cycle_calendar.2607.seconds_until_effective")
+        )
+
+    def test_calendar_marks_unpublished_cycle_critical_inside_final_window(self) -> None:
+        facts = calendar_facts([{"cycle": "2607", "effective_date": "2026-07-09"}])
+        now = datetime(2026, 6, 24, 0, 0, 0, tzinfo=timezone.utc)
+
+        evaluation = pipeline_health.evaluate_health(facts, [], now)
+
+        countdown = metric(evaluation, "cycle_calendar.2607.seconds_until_effective")
+        self.assertEqual(countdown["value"], 15 * 24 * 60 * 60)
+        self.assertEqual(countdown["severity"], "critical")
         self.assertEqual(evaluation["top_line_status"], "critical")
+
+    def test_calendar_published_cycle_clears_countdown(self) -> None:
+        facts = calendar_facts(
+            [{"cycle": "2607", "effective_date": "2026-07-09"}],
+            product_facts=[
+                {
+                    "payload": {
+                        "products": [
+                            {
+                                "product_id": "NAV_DB_NAV11_2607_01",
+                                "cycle": "2607",
+                            }
+                        ]
+                    }
+                }
+            ],
+        )
+        now = datetime(2026, 6, 24, 0, 0, 0, tzinfo=timezone.utc)
+
+        evaluation = pipeline_health.evaluate_health(facts, [], now)
+
+        countdown = metric(evaluation, "cycle_calendar.2607.seconds_until_effective")
+        self.assertEqual(countdown["value"], 0)
+        self.assertEqual(countdown["severity"], "ok")
 
     def test_collect_product_facts_resolves_packaged_roots(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -248,6 +342,30 @@ def metric(evaluation: dict, metric_id: str) -> dict:
         if item["id"] == metric_id:
             return item
     raise AssertionError(f"missing metric {metric_id}")
+
+
+def has_metric(evaluation: dict, metric_id: str) -> bool:
+    return any(item["id"] == metric_id for item in evaluation["metrics"])
+
+
+def calendar_facts(
+    cycles: list[dict],
+    *,
+    product_facts: list[dict] | None = None,
+) -> dict:
+    return {
+        "inputs": {
+            "current_artifacts": {"error": None, "payload": []},
+            "deploy_health": {"error": None, "payload": {}},
+            "live_feeds_status": {"error": None, "payload": {"products": {}}},
+            "build_watch": {"error": None, "payload": {}},
+            "faa_cycle_calendar": {
+                "error": None,
+                "payload": {"cycles": cycles},
+            },
+            "product_facts": product_facts or [],
+        }
+    }
 
 
 if __name__ == "__main__":

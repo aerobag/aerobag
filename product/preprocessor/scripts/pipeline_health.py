@@ -39,6 +39,9 @@ LIVE_FEED_DISPLAY_NAMES = {
     "nexrad": "NEXRAD",
 }
 
+SECONDS_PER_DAY = 24 * 60 * 60
+CYCLE_PUBLICATION_WARNING_SECONDS = 20 * SECONDS_PER_DAY
+CYCLE_PUBLICATION_CRITICAL_SECONDS = 15 * SECONDS_PER_DAY
 SEVERITY_RANK = {"ok": 0, "warning": 1, "critical": 2}
 
 
@@ -72,6 +75,26 @@ def parse_date(value: object) -> date | None:
         return date.fromisoformat(value)
     except ValueError:
         return None
+
+
+def utc_midnight(value: date) -> datetime:
+    return datetime(value.year, value.month, value.day, tzinfo=timezone.utc)
+
+
+def human_duration(seconds: int) -> str:
+    seconds = max(0, seconds)
+    days, remainder = divmod(seconds, SECONDS_PER_DAY)
+    hours, remainder = divmod(remainder, 60 * 60)
+    minutes, _ = divmod(remainder, 60)
+    if days > 0:
+        if hours > 0:
+            return f"{days}d {hours}h"
+        return f"{days}d"
+    if hours > 0:
+        if minutes > 0:
+            return f"{hours}h {minutes}m"
+        return f"{hours}h"
+    return f"{minutes}m"
 
 
 def read_env_file(path: Path = Path("/etc/aerobag/env")) -> dict[str, str]:
@@ -287,6 +310,7 @@ def add_metric(
     message: str | None = None,
     warning_threshold: Any | None = None,
     critical_threshold: Any | None = None,
+    details: Any | None = None,
 ) -> None:
     metric = {
         "id": metric_id,
@@ -301,6 +325,8 @@ def add_metric(
         metric["warning_threshold"] = warning_threshold
     if critical_threshold is not None:
         metric["critical_threshold"] = critical_threshold
+    if details is not None:
+        metric["details"] = details
     metrics.append(metric)
 
 
@@ -454,15 +480,38 @@ def add_live_feed_metrics(
         attempts = status.get("attempts")
         if isinstance(attempts, list) and attempts:
             attempt_count = len(attempts)
-            failure_count = sum(
-                1
+            failed_attempts = [
+                attempt
                 for attempt in attempts
                 if isinstance(attempt, dict) and attempt.get("result") == "failure"
-            )
+            ]
+            failure_count = len(failed_attempts)
             failure_rate = failure_count / attempt_count
+            last_failure_time = parse_time(status.get("last_failure_at_utc"))
+            last_failure_age_seconds = (
+                max(0, int((now - last_failure_time).total_seconds()))
+                if last_failure_time is not None
+                else None
+            )
             severity = "critical" if attempt_count >= 3 and failure_rate >= 0.5 else (
                 "warning" if failure_count > 0 else "ok"
             )
+            detail_failures = [
+                {
+                    "attempted_at_utc": attempt.get("attempted_at_utc"),
+                    "phase": attempt.get("phase"),
+                    "error": attempt.get("error"),
+                }
+                for attempt in failed_attempts[-10:]
+                if isinstance(attempt, dict)
+            ]
+            if last_failure_age_seconds is None:
+                failure_message = f"{display} recent failures: {failure_count}/{attempt_count} attempts"
+            else:
+                failure_message = (
+                    f"{display} recent failures: {failure_count}/{attempt_count} attempts; "
+                    f"last failure {last_failure_age_seconds} seconds ago"
+                )
             add_metric(
                 metrics,
                 metric_id=f"live_feed.{product}.recent_failure_rate",
@@ -472,9 +521,16 @@ def add_live_feed_metrics(
                 severity=severity,
                 warning_threshold=0.0,
                 critical_threshold=0.5,
-                message=(
-                    f"{display} recent failures: {failure_count}/{attempt_count} attempts"
-                ),
+                message=failure_message,
+                details={
+                    "attempt_count": attempt_count,
+                    "failure_count": failure_count,
+                    "last_failure_at_utc": status.get("last_failure_at_utc"),
+                    "last_failure_phase": status.get("last_failure_phase"),
+                    "last_error": status.get("last_error"),
+                    "last_failure_age_seconds": last_failure_age_seconds,
+                    "failures": detail_failures,
+                },
             )
         if product == "nexrad":
             quality = status.get("quality")
@@ -592,7 +648,6 @@ def add_cycle_calendar_metrics(
         for product in iter_current_product_facts(facts)
         if product.get("cycle")
     }
-    now_date = now.date()
     for entry in cycles:
         if not isinstance(entry, dict):
             continue
@@ -600,33 +655,43 @@ def add_cycle_calendar_metrics(
         effective = parse_date(entry.get("effective_date"))
         if not isinstance(cycle, str) or effective is None:
             continue
-        due_date = effective - timedelta(days=20)
-        if due_date > now_date:
+        effective_at = utc_midnight(effective)
+        seconds_until_effective = int((effective_at - now).total_seconds())
+        if seconds_until_effective > CYCLE_PUBLICATION_WARNING_SECONDS:
             continue
-        if effective < now_date - timedelta(days=35):
+        if effective_at < now - timedelta(days=35):
             continue
+        metric_id = f"cycle_calendar.{cycle}.seconds_until_effective"
         if cycle in published_cycles:
             add_metric(
                 metrics,
-                metric_id=f"cycle_calendar.{cycle}.published",
-                label=f"FAA cycle {cycle} published",
-                value=True,
+                metric_id=metric_id,
+                label=f"FAA cycle {cycle} publication countdown",
+                value=0,
+                unit="seconds",
                 severity="ok",
-                message=f"FAA cycle {cycle} is published",
+                message=f"FAA cycle {cycle} is published; no looming deadline",
             )
             continue
-        late_seconds = max(0, int((now_date - due_date).days * 24 * 60 * 60))
-        severity = threshold_severity(late_seconds, 24 * 60 * 60, 3 * 24 * 60 * 60)
+        value = max(0, seconds_until_effective)
+        severity = (
+            "critical"
+            if value <= CYCLE_PUBLICATION_CRITICAL_SECONDS
+            else "warning"
+        )
         add_metric(
             metrics,
-            metric_id=f"cycle_calendar.{cycle}.missing_seconds",
-            label=f"FAA cycle {cycle} missing",
-            value=late_seconds,
+            metric_id=metric_id,
+            label=f"FAA cycle {cycle} publication countdown",
+            value=value,
             unit="seconds",
             severity=severity,
-            warning_threshold=24 * 60 * 60,
-            critical_threshold=3 * 24 * 60 * 60,
-            message=f"FAA cycle {cycle} is not published {late_seconds} seconds after due date",
+            warning_threshold=CYCLE_PUBLICATION_WARNING_SECONDS,
+            critical_threshold=CYCLE_PUBLICATION_CRITICAL_SECONDS,
+            message=(
+                f"FAA cycle {cycle} is not published; "
+                f"effective in {human_duration(value)}"
+            ),
         )
 
 
@@ -842,7 +907,7 @@ def dashboard_html() -> str:
   <style>
     :root { color-scheme: dark; --bg:#101312; --panel:#171b19; --line:#303833; --text:#edf3ee; --muted:#a9b5ad; --ok:#50d890; --warn:#f0c85a; --crit:#ff6b6b; }
     * { box-sizing: border-box; }
-    body { margin:0; min-height:100vh; background:var(--bg); color:var(--text); font:14px/1.45 ui-sans-serif, system-ui, sans-serif; letter-spacing:0; }
+    body { margin:0; min-height:100vh; background:var(--bg); color:var(--text); font:14px/1.45 ui-sans-serif, system-ui, sans-serif; letter-spacing:0; user-select:text; }
     main { padding:20px; max-width:1500px; margin:0 auto; }
     header { display:flex; justify-content:space-between; gap:16px; align-items:flex-start; margin-bottom:16px; flex-wrap:wrap; }
     h1 { margin:0; font-size:24px; }
@@ -866,7 +931,12 @@ def dashboard_html() -> str:
     .metric-id { color:var(--muted); overflow-wrap:anywhere; font-size:12px; margin-bottom:10px; }
     .metric-value { font-size:24px; font-weight:700; margin-bottom:6px; }
     .metric-message { color:var(--muted); overflow-wrap:anywhere; }
-    .plot { min-height:150px; height:150px; }
+    .metric-details { grid-column:1 / -1; margin-top:2px; color:var(--muted); user-select:text; }
+    .metric-details summary { cursor:pointer; color:var(--text); }
+    .metric-details table { margin-top:8px; font-size:12px; }
+    .metric-details td:last-child { overflow-wrap:anywhere; }
+    .plot { min-height:150px; height:150px; user-select:none; }
+    .plot * { user-select:none; }
     @media (max-width: 820px) {
       main { padding:12px; }
       .metric-row { grid-template-columns:1fr; }
@@ -912,6 +982,7 @@ function formatValue(metric) {
   if (value === null || value === undefined) return "missing";
   if (typeof value === "boolean") return value ? "true" : "false";
   if (typeof value === "number") {
+    if (metric?.unit === "seconds") return formatAge(Math.floor(value));
     if (Math.abs(value) >= 1000) return value.toLocaleString();
     return String(value);
   }
@@ -919,11 +990,30 @@ function formatValue(metric) {
 }
 function formatAge(seconds) {
   if (typeof seconds !== "number") return "unknown";
+  if (seconds >= 86400) return `${(seconds / 86400).toFixed(1)} days`;
   if (seconds < 60) return `${seconds}s`;
   if (seconds < 3600) return `${Math.floor(seconds / 60)}m ${seconds % 60}s`;
   const hours = Math.floor(seconds / 3600);
   const minutes = Math.floor((seconds % 3600) / 60);
   return `${hours}h ${minutes}m`;
+}
+function renderMetricDetails(metric) {
+  const details = metric?.details;
+  const failures = Array.isArray(details?.failures) ? details.failures : [];
+  if (!failures.length && !details?.last_error) return "";
+  const rows = failures.map((failure) => `<tr>
+    <td>${esc(failure.attempted_at_utc || "")}</td>
+    <td>${esc(failure.phase || "")}</td>
+    <td>${esc(failure.error || "")}</td>
+  </tr>`).join("");
+  const last = details?.last_error
+    ? `<div class="metric-message">Last failure: ${esc(details.last_failure_at_utc || "")} ${details.last_failure_age_seconds === null || details.last_failure_age_seconds === undefined ? "" : `(${esc(formatAge(details.last_failure_age_seconds))} ago)`}</div>
+       <div class="metric-message">${esc(details.last_error)}</div>`
+    : "";
+  const table = rows
+    ? `<table><thead><tr><th>Attempted</th><th>Phase</th><th>Error</th></tr></thead><tbody>${rows}</tbody></table>`
+    : "";
+  return `<details class="metric-details"><summary>Failure details</summary>${last}${table}</details>`;
 }
 function graphableMetrics(metrics, series) {
   const idsWithSeries = new Set();
@@ -964,6 +1054,7 @@ function renderMetricRows(current, series) {
           <div class="metric-message">${esc(metric.message || "")}</div>
         </div>
         <div id="metricPlot${index}" class="plot"></div>
+        ${renderMetricDetails(metric)}
       </section>`).join("")
     : `<section><div class="muted">No graphable metrics yet.</div></section>`;
   if (!window.Plotly) return;

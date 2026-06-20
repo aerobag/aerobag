@@ -594,6 +594,7 @@ fn prefetch_one(
         }
     }
 
+    validate_download_is_usable(&archive_path)?;
     let sha256 = hash_file(&archive_path)?;
     if let Some(fetch_cache) = fetch_cache {
         let layout = CacheLayout::new(&fetch_cache.root);
@@ -735,6 +736,8 @@ fn fetch_network_with_cache_once(
             archive_path.display()
         )
     })?;
+    validate_download_is_usable(archive_path)
+        .with_context(|| format!("downloaded invalid data from {network_url}"))?;
     store_cached_download_with_headers(
         layout,
         cache_key,
@@ -870,6 +873,8 @@ fn fetch_network_once(
             archive_path.display()
         )
     })?;
+    validate_download_is_usable(&archive_path)
+        .with_context(|| format!("downloaded invalid data from {url}"))?;
     let _ = fs::remove_file(&cookies_path);
     Ok(())
 }
@@ -919,6 +924,12 @@ fn restore_cached_download(
             archive_path.display()
         )
     })?;
+    if validate_download_is_usable(archive_path).is_err() {
+        let _ = fs::remove_file(archive_path);
+        let _ = fs::remove_file(&metadata_path);
+        let _ = fs::remove_file(&blob_path);
+        return Ok(false);
+    }
     if let Some(expected_name) = metadata.get("file").and_then(|value| value.as_str()) {
         if expected_name != file_name {
             bail!("cache filename mismatch for {url}: expected {expected_name}, got {file_name}");
@@ -1139,6 +1150,12 @@ fn temporary_download_path(path: &Path) -> PathBuf {
 }
 
 fn existing_download_is_usable(path: &Path) -> bool {
+    let Ok(metadata) = fs::metadata(path) else {
+        return false;
+    };
+    if metadata.len() == 0 {
+        return false;
+    }
     if path
         .extension()
         .and_then(|value| value.to_str())
@@ -1147,7 +1164,56 @@ fn existing_download_is_usable(path: &Path) -> bool {
     {
         return list_zip_members(path).is_ok();
     }
+    if path
+        .extension()
+        .and_then(|value| value.to_str())
+        .map(|value| value.eq_ignore_ascii_case("gz"))
+        .unwrap_or(false)
+    {
+        return gzip_test(path).is_ok();
+    }
     true
+}
+
+fn validate_download_is_usable(path: &Path) -> anyhow::Result<()> {
+    let metadata =
+        fs::metadata(path).with_context(|| format!("failed to stat {}", path.display()))?;
+    if metadata.len() == 0 {
+        bail!("downloaded file is empty: {}", path.display());
+    }
+    if path
+        .extension()
+        .and_then(|value| value.to_str())
+        .map(|value| value.eq_ignore_ascii_case("zip"))
+        .unwrap_or(false)
+    {
+        let _ = list_zip_members(path)?;
+    }
+    if path
+        .extension()
+        .and_then(|value| value.to_str())
+        .map(|value| value.eq_ignore_ascii_case("gz"))
+        .unwrap_or(false)
+    {
+        gzip_test(path)?;
+    }
+    Ok(())
+}
+
+fn gzip_test(path: &Path) -> anyhow::Result<()> {
+    let output = Command::new("gzip")
+        .arg("-t")
+        .arg(path)
+        .output()
+        .with_context(|| format!("failed to run gzip -t on {}", path.display()))?;
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
+        if stderr.is_empty() {
+            bail!("gzip validation failed for {}", path.display());
+        }
+        bail!("gzip validation failed for {}: {}", path.display(), stderr);
+    }
+    Ok(())
 }
 
 #[cfg(test)]
@@ -1293,5 +1359,67 @@ mod tests {
         assert_ne!(source_metadata.ino(), destination_metadata.ino());
         assert_eq!(source_metadata.nlink(), 1);
         let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn gz_download_must_be_nonempty_and_valid() {
+        let root = std::env::temp_dir().join(format!(
+            "preprocessor-fetch-gz-validation-test-{}",
+            std::process::id()
+        ));
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(&root).unwrap();
+        let empty = root.join("empty.xml.gz");
+        let invalid = root.join("invalid.xml.gz");
+        fs::write(&empty, b"").unwrap();
+        fs::write(&invalid, b"not gzip").unwrap();
+
+        assert!(!existing_download_is_usable(&empty));
+        assert!(!existing_download_is_usable(&invalid));
+        assert!(validate_download_is_usable(&empty).is_err());
+        assert!(validate_download_is_usable(&invalid).is_err());
+
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn invalid_gz_cache_restore_is_evicted_as_cache_miss() -> anyhow::Result<()> {
+        let root = std::env::temp_dir().join(format!(
+            "preprocessor-fetch-invalid-gz-cache-test-{}",
+            std::process::id()
+        ));
+        let _ = fs::remove_dir_all(&root);
+        let layout = CacheLayout::new(root.join("cache"));
+        fs::create_dir_all(layout.blobs_dir())?;
+        fs::create_dir_all(layout.http_dir())?;
+        let url = "https://example.invalid/metars.cache.xml.gz";
+        let sha256 = hash_text("");
+        let blob_path = layout.blob_path(&sha256);
+        let metadata_path = layout.http_metadata_path(url);
+        fs::write(&blob_path, b"")?;
+        fs::write(
+            &metadata_path,
+            serde_json::to_vec(&serde_json::json!({
+                "file": "metars.cache.xml.gz",
+                "sha256": sha256,
+                "url": url,
+            }))?,
+        )?;
+        let output_dir = root.join("output");
+        fs::create_dir_all(&output_dir)?;
+        let output_path = output_dir.join("metars.cache.xml.gz");
+
+        assert!(!restore_cached_download(
+            &layout,
+            url,
+            "metars.cache.xml.gz",
+            &output_path,
+        )?);
+        assert!(!output_path.exists());
+        assert!(!metadata_path.exists());
+        assert!(!blob_path.exists());
+
+        let _ = fs::remove_dir_all(&root);
+        Ok(())
     }
 }

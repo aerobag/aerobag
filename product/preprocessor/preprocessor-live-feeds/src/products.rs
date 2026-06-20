@@ -895,13 +895,17 @@ fn fresh_dir(path: &Path) -> anyhow::Result<PathBuf> {
 }
 
 fn run_gzip_decompress(path: &Path) -> anyhow::Result<()> {
-    let status = Command::new("gzip")
+    let output = Command::new("gzip")
         .arg("-d")
         .arg(path)
-        .status()
+        .output()
         .with_context(|| format!("failed to run gzip on {}", path.display()))?;
-    if !status.success() {
-        bail!("gzip failed for {}", path.display());
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
+        if stderr.is_empty() {
+            bail!("gzip failed for {}", path.display());
+        }
+        bail!("gzip failed for {}: {}", path.display(), stderr);
     }
     Ok(())
 }

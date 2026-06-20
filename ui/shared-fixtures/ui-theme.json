@@ -1,9 +1,9 @@
 {
   "controls": {
-    "button_bg": "#234f77",
-    "button_selected_bg": "#4b6f90",
+    "button_checked": "#234f77",
+    "button_unchecked": "#4b6f90",
     "header_button": "#4a6d8e",
-    "disabled_button": "#8da1b3",
+    "button_disabled": "#8da1b3",
     "button_fg": "#f7fbff",
     "panel_bg": "#fefcf7",
     "panel_border": "#d7d1c5",

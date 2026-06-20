@@ -264,7 +264,7 @@ private fun DataStatusBoxRow(
                 actions.forEach { action ->
                     val actionBg = when (action.style) {
                         UiStatusActionStyle.Hush -> uiTheme.controls.panelFg.copy(alpha = 0.88f)
-                        UiStatusActionStyle.Normal -> uiTheme.controls.buttonBg
+                        UiStatusActionStyle.Normal -> uiTheme.controls.buttonUnchecked
                     }
                     Surface(
                         modifier = Modifier
@@ -363,7 +363,7 @@ internal fun DataStatusPage(
                     bottom = ThumbGap,
                 )
                 .clip(RoundedCornerShape(ThumbRadius))
-                .background(uiTheme.controls.buttonBg.copy(alpha = 0.84f))
+                .background(uiTheme.controls.buttonUnchecked.copy(alpha = 0.84f))
                 .padding(ThumbSize * 0.28f),
             verticalArrangement = Arrangement.spacedBy(ThumbSize * 0.2f),
         ) {

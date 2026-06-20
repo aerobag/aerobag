@@ -1044,9 +1044,9 @@ internal fun AndroidChartSearchBox(
                                         onSuggestionClick(suggestion)
                                     },
                             shape = RoundedCornerShape(ThumbRadius),
-                            color = uiTheme.controls.buttonBg,
+                            color = uiTheme.controls.buttonUnchecked,
                             contentColor = uiTheme.controls.buttonFg,
-                            border = BorderStroke(1.dp, lerp(uiTheme.controls.buttonBg, Color.Black, 0.22f)),
+                            border = BorderStroke(1.dp, lerp(uiTheme.controls.buttonUnchecked, Color.Black, 0.22f)),
                         ) {
                             Row(
                                 modifier = Modifier.fillMaxSize().padding(horizontal = ThumbGap),
@@ -1390,11 +1390,11 @@ internal fun MenuPanelRow(
     val isOn = toggleState?.enabled == true && toggleState.visible
     val isOff = toggleState?.enabled == true && !toggleState.visible
     val rowBackground = when {
-        !enabled -> uiTheme.controls.disabledButton
-        isOn -> uiTheme.controls.buttonSelectedBg
-        isOff -> lerp(uiTheme.controls.buttonBg, Color.Black, 0.12f)
-        active -> uiTheme.controls.buttonSelectedBg
-        else -> uiTheme.controls.buttonBg
+        !enabled -> uiTheme.controls.buttonDisabled
+        isOn -> uiTheme.controls.buttonChecked
+        isOff -> uiTheme.controls.buttonUnchecked
+        active -> uiTheme.controls.buttonChecked
+        else -> uiTheme.controls.buttonUnchecked
     }
     val rowTextColor = uiTheme.controls.buttonFg
     val renderedLabel = buttonLabel(label)

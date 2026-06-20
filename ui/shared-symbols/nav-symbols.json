@@ -61,7 +61,7 @@
       {
         "path": "map_selection_spot_peg",
         "paint": "map_selection_spot_peg",
-        "fill": "button_bg",
+        "fill": "button_unchecked",
         "stroke": "ink_75",
         "stroke_width": 2,
         "line_join": "round"

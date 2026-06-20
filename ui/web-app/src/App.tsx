@@ -734,10 +734,10 @@ type TrayOption = {
 
 type UiThemeJson = {
   controls: {
-    button_bg: string;
-    button_selected_bg: string;
+    button_checked: string;
+    button_unchecked: string;
     header_button: string;
-    disabled_button: string;
+    button_disabled: string;
     button_fg: string;
     panel_bg: string;
     panel_border: string;
@@ -1404,8 +1404,8 @@ function navSymbolColor(token: string | null | undefined): string | undefined {
       return "rgba(8, 18, 24, 0.75)";
     case "class_c_magenta":
       return "var(--theme-class-c-magenta)";
-    case "button_bg":
-      return "var(--theme-button-bg)";
+    case "button_unchecked":
+      return "var(--theme-button-unchecked)";
     case "white_90":
       return "rgba(255, 255, 255, 0.9)";
     case "white_68":
@@ -2799,10 +2799,10 @@ export default function App() {
   const themeVars = useMemo(
     () =>
       ({
-        "--theme-button-bg": controlTheme.button_bg,
-        "--theme-button-selected-bg": controlTheme.button_selected_bg,
+        "--theme-button-checked": controlTheme.button_checked,
+        "--theme-button-unchecked": controlTheme.button_unchecked,
         "--theme-header-button": controlTheme.header_button,
-        "--theme-disabled-button": controlTheme.disabled_button,
+        "--theme-button-disabled": controlTheme.button_disabled,
         "--theme-button-fg": controlTheme.button_fg,
         "--theme-panel-bg": controlTheme.panel_bg,
         "--theme-panel-border": controlTheme.panel_border,
@@ -6125,11 +6125,6 @@ function MapPage(props: {
           <TrayDock
             launcherLabel={selectedFamily?.launcher_label ?? "---"}
             launcherImageSrc={chartFamilyIconSrc(selectedFamily?.id)}
-            launcherStyle={chartFamilyIconSrc(selectedFamily?.id)
-              ? {
-                  backgroundColor: "var(--theme-button-bg)",
-                }
-              : undefined}
             open={trayGroup.isOpen("family")}
             onToggle={() => trayGroup.toggle("family")}
             ariaLabel="Chart family"
@@ -6149,9 +6144,6 @@ function MapPage(props: {
           <TrayDock
             launcherLabel="LAYERS"
             launcherImageSrc={layerIconSrc("vectors")}
-            launcherStyle={{
-              backgroundColor: "var(--theme-button-bg)",
-            }}
             open={trayGroup.isOpen("layers")}
             onToggle={() => trayGroup.toggle("layers")}
             ariaLabel="Layers"
@@ -7964,6 +7956,7 @@ function ChartPlateToggleButton(props: {
   onSelectPage: (page: AppPage) => void;
 }) {
   const chartSelected = props.page === "map";
+  const active = props.page === "map" || props.page === "charts";
   const option = chartSelected
     ? pageOptions.find((entry) => entry.id === "map")
     : pageOptions.find((entry) => entry.id === "charts");
@@ -7971,7 +7964,7 @@ function ChartPlateToggleButton(props: {
   return (
     <button
       type="button"
-      className="chartButton pageToggleButton"
+      className={`chartButton pageToggleButton${active ? " isOpen" : ""}`}
       data-testid={chartSelected ? "page-button-plate" : "page-button-chart"}
       onPointerDown={stopPointer}
       onPointerUp={stopPointer}
@@ -8090,9 +8083,9 @@ function TrayDock(props: {
         top: Math.min(Math.max(minInset, launcherRect.bottom + gap), maxTop),
       });
       setTrayThemeStyle({
-        ["--theme-button-bg" as string]: launcherStyle.getPropertyValue("--theme-button-bg"),
-        ["--theme-button-selected-bg" as string]: launcherStyle.getPropertyValue("--theme-button-selected-bg"),
-        ["--theme-disabled-button" as string]: launcherStyle.getPropertyValue("--theme-disabled-button"),
+        ["--theme-button-unchecked" as string]: launcherStyle.getPropertyValue("--theme-button-unchecked"),
+        ["--theme-button-checked" as string]: launcherStyle.getPropertyValue("--theme-button-checked"),
+        ["--theme-button-disabled" as string]: launcherStyle.getPropertyValue("--theme-button-disabled"),
         ["--theme-button-fg" as string]: launcherStyle.getPropertyValue("--theme-button-fg"),
       });
     }

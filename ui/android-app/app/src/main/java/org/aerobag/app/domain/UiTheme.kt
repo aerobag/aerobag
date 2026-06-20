@@ -13,10 +13,10 @@ data class UiTheme(
 )
 
 data class ControlsTheme(
-    val buttonBg: Color,
-    val buttonSelectedBg: Color,
+    val buttonChecked: Color,
+    val buttonUnchecked: Color,
     val headerButton: Color,
-    val disabledButton: Color,
+    val buttonDisabled: Color,
     val buttonFg: Color,
     val panelBg: Color,
     val panelBorder: Color,
@@ -70,10 +70,10 @@ private data class WireUiTheme(
 
 @Serializable
 private data class WireControlsTheme(
-    val button_bg: String,
-    val button_selected_bg: String,
+    val button_checked: String,
+    val button_unchecked: String,
     val header_button: String,
-    val disabled_button: String,
+    val button_disabled: String,
     val button_fg: String,
     val panel_bg: String,
     val panel_border: String,
@@ -132,10 +132,10 @@ object UiThemeLoader {
         val wire = json.decodeFromString<WireUiTheme>(payload)
         return UiTheme(
             controls = ControlsTheme(
-                buttonBg = wire.controls.button_bg.toColor(),
-                buttonSelectedBg = wire.controls.button_selected_bg.toColor(),
+                buttonChecked = wire.controls.button_checked.toColor(),
+                buttonUnchecked = wire.controls.button_unchecked.toColor(),
                 headerButton = wire.controls.header_button.toColor(),
-                disabledButton = wire.controls.disabled_button.toColor(),
+                buttonDisabled = wire.controls.button_disabled.toColor(),
                 buttonFg = wire.controls.button_fg.toColor(),
                 panelBg = wire.controls.panel_bg.toColor(),
                 panelBorder = wire.controls.panel_border.toColor(),

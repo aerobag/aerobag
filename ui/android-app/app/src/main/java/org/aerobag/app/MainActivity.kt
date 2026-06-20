@@ -2129,7 +2129,7 @@ internal fun DisclaimerConsentModal(
                     .fillMaxWidth()
                     .height(ThumbSize * 0.95f),
                 colors = ButtonDefaults.buttonColors(
-                    containerColor = uiTheme.controls.buttonSelectedBg,
+                    containerColor = uiTheme.controls.buttonChecked,
                     contentColor = uiTheme.controls.buttonFg,
                 ),
             ) {

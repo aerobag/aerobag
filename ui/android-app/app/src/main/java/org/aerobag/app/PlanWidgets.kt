@@ -486,16 +486,16 @@ internal fun FlightPlanDataRow(
     val defaultButtonColor =
         when {
             row.rowKind == "group" -> uiTheme.controls.headerButton
-            else -> uiTheme.controls.buttonBg
+            else -> uiTheme.controls.buttonUnchecked
         }
     val selectedButtonColor =
         when {
             row.active -> Color(0xFF9B3A88)
             else -> Color(
-                red = uiTheme.controls.buttonBg.red * 0.74f,
-                green = uiTheme.controls.buttonBg.green * 0.74f,
-                blue = uiTheme.controls.buttonBg.blue * 0.74f,
-                alpha = uiTheme.controls.buttonBg.alpha,
+                red = uiTheme.controls.buttonUnchecked.red * 0.74f,
+                green = uiTheme.controls.buttonUnchecked.green * 0.74f,
+                blue = uiTheme.controls.buttonUnchecked.blue * 0.74f,
+                alpha = uiTheme.controls.buttonUnchecked.alpha,
             )
         }
     val procedureGroupCell = row.rowKind == "group" && row.componentKind == RouteComponentViewKind.Procedure

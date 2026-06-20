@@ -185,7 +185,7 @@ button {
   min-height: calc(var(--thumb) * 0.95);
   border: 2px solid rgba(19, 33, 41, 0.82);
   border-radius: var(--thumb-radius);
-  background: var(--theme-button-selected-bg);
+  background: var(--theme-button-checked);
   color: var(--theme-button-selected-fg);
   font-size: calc(var(--thumb) * 0.28);
   font-weight: 950;
@@ -195,7 +195,7 @@ button {
 
 .disclaimerAcceptButton:disabled {
   border-color: rgba(19, 33, 41, 0.22);
-  background: var(--theme-disabled-button);
+  background: var(--theme-button-disabled);
   color: rgba(19, 33, 41, 0.42);
 }
 
@@ -337,7 +337,7 @@ button {
 }
 
 .mapSelectionSpotPeg {
-  fill: var(--theme-button-bg);
+  fill: var(--theme-button-unchecked);
   stroke: rgba(8, 18, 24, 0.75);
   stroke-width: 2px;
   stroke-linejoin: round;
@@ -1085,7 +1085,7 @@ button {
   border: 0;
   border-radius: var(--thumb-radius);
   padding: 0 calc(var(--thumb) * 0.32);
-  background: var(--theme-button-selected-bg);
+  background: var(--theme-button-checked);
   color: var(--theme-button-selected-fg);
   font: inherit;
   font-size: calc(var(--thumb) * 0.32);
@@ -1191,7 +1191,7 @@ button {
 }
 
 .aboutReadmeContent a {
-  color: color-mix(in srgb, var(--theme-button-selected-bg) 76%, black);
+  color: color-mix(in srgb, var(--theme-button-checked) 76%, black);
   font-weight: 700;
 }
 
@@ -1242,7 +1242,7 @@ button {
   width: 100%;
   height: 100%;
   padding: 0 calc(var(--thumb) * 0.2);
-  border: 1px solid color-mix(in srgb, var(--theme-button-bg) 78%, black);
+  border: 1px solid color-mix(in srgb, var(--theme-button-unchecked) 78%, black);
   border-radius: var(--thumb-radius);
   background: rgba(252, 248, 241, 0.96);
   box-shadow: var(--shadow);
@@ -1344,9 +1344,9 @@ button {
   width: var(--thumb);
   height: var(--thumb);
   padding: calc(var(--thumb) * 0.08);
-  border: 1px solid color-mix(in srgb, var(--theme-button-bg) 78%, black);
+  border: 1px solid color-mix(in srgb, var(--theme-button-unchecked) 78%, black);
   border-radius: var(--thumb-radius);
-  background: var(--theme-button-bg);
+  background: var(--theme-button-unchecked);
   color: var(--theme-button-fg);
   box-shadow: var(--shadow);
   display: flex;
@@ -1356,7 +1356,7 @@ button {
 }
 
 .mapSelectionItem.isSelected {
-  background: color-mix(in srgb, var(--theme-button-bg) 72%, white);
+  background: color-mix(in srgb, var(--theme-button-unchecked) 72%, white);
 }
 
 .mapSelectionItemLabel {
@@ -1458,9 +1458,9 @@ button {
   width: var(--thumb);
   height: var(--thumb);
   padding: calc(var(--thumb) * 0.08);
-  border: 1px solid color-mix(in srgb, var(--theme-button-bg) 78%, black);
+  border: 1px solid color-mix(in srgb, var(--theme-button-unchecked) 78%, black);
   border-radius: var(--thumb-radius);
-  background: var(--theme-button-bg);
+  background: var(--theme-button-unchecked);
   color: var(--theme-button-fg);
   font-size: calc(var(--thumb) * 0.14);
   font-weight: 800;
@@ -1509,8 +1509,8 @@ button {
 }
 
 .mapSelectionAction:disabled {
-  background: var(--theme-disabled-button);
-  border-color: color-mix(in srgb, var(--theme-disabled-button) 78%, black);
+  background: var(--theme-button-disabled);
+  border-color: color-mix(in srgb, var(--theme-button-disabled) 78%, black);
 }
 
 .mapSelectionAction.isDisplayOnly {
@@ -1527,16 +1527,16 @@ button {
   width: var(--thumb);
   height: var(--thumb);
   padding: 0;
-  border: 1px solid color-mix(in srgb, var(--theme-button-bg) 78%, black);
+  border: 1px solid color-mix(in srgb, var(--theme-button-unchecked) 78%, black);
   border-radius: var(--thumb-radius);
-  background-color: var(--theme-button-bg);
+  background-color: var(--theme-button-unchecked);
   background-image:
     linear-gradient(
       to bottom,
       transparent 0,
       transparent 50%,
-      var(--tray-accent, var(--theme-button-bg)) 50%,
-      var(--tray-accent, var(--theme-button-bg)) 100%
+      var(--tray-accent, var(--theme-button-unchecked)) 50%,
+      var(--tray-accent, var(--theme-button-unchecked)) 100%
     );
   box-shadow: var(--shadow);
   color: var(--theme-button-fg);
@@ -1579,14 +1579,14 @@ button {
 }
 
 .chartButton.isOpen {
-  background-color: var(--theme-button-selected-bg);
+  background-color: var(--theme-button-checked);
   background-image:
     linear-gradient(
       to bottom,
       transparent 0,
       transparent 50%,
-      var(--tray-accent, var(--theme-button-selected-bg)) 50%,
-      var(--tray-accent, var(--theme-button-selected-bg)) 100%
+      var(--tray-accent, var(--theme-button-checked)) 50%,
+      var(--tray-accent, var(--theme-button-checked)) 100%
     );
 }
 
@@ -1597,15 +1597,15 @@ button {
 
 .chartButton.isDisabled,
 .chartButton:disabled {
-  border-color: color-mix(in srgb, var(--theme-disabled-button) 78%, black);
-  background-color: var(--theme-disabled-button);
+  border-color: color-mix(in srgb, var(--theme-button-disabled) 78%, black);
+  background-color: var(--theme-button-disabled);
   background-image:
     linear-gradient(
       to bottom,
-      var(--theme-disabled-button) 0,
-      var(--theme-disabled-button) 50%,
-      var(--tray-accent, var(--theme-disabled-button)) 50%,
-      var(--tray-accent, var(--theme-disabled-button)) 100%
+      var(--theme-button-disabled) 0,
+      var(--theme-button-disabled) 50%,
+      var(--tray-accent, var(--theme-button-disabled)) 50%,
+      var(--tray-accent, var(--theme-button-disabled)) 100%
     );
   color: var(--theme-button-fg);
 }
@@ -1733,15 +1733,15 @@ button {
   min-width: calc(var(--thumb) * 2.15);
   height: var(--thumb);
   padding: 0 calc(var(--thumb) * 0.22);
-  border: 1px solid color-mix(in srgb, var(--theme-button-bg) 78%, black);
+  border: 1px solid color-mix(in srgb, var(--theme-button-unchecked) 78%, black);
   border-radius: var(--thumb-radius);
   background:
     linear-gradient(
       to bottom,
-      var(--theme-button-bg) 0,
-      var(--theme-button-bg) 50%,
-      var(--tray-accent, var(--theme-button-bg)) 50%,
-      var(--tray-accent, var(--theme-button-bg)) 100%
+      var(--theme-button-unchecked) 0,
+      var(--theme-button-unchecked) 50%,
+      var(--tray-accent, var(--theme-button-unchecked)) 50%,
+      var(--tray-accent, var(--theme-button-unchecked)) 100%
     );
   color: var(--theme-button-fg);
   text-align: left;
@@ -1770,7 +1770,7 @@ button {
   height: calc(var(--thumb) * 0.72);
   border-radius: calc(var(--thumb-radius) * 0.84);
   background: rgba(255, 255, 255, 0.82);
-  box-shadow: inset 0 0 0 8px var(--theme-button-bg);
+  box-shadow: inset 0 0 0 8px var(--theme-button-unchecked);
   overflow: hidden;
 }
 
@@ -1799,8 +1799,8 @@ button {
   height: calc(var(--thumb) * 0.42);
   margin-left: auto;
   border-radius: 999px;
-  background: color-mix(in srgb, var(--theme-button-bg) 48%, white);
-  box-shadow: inset 0 0 0 2px color-mix(in srgb, var(--theme-button-bg) 78%, black);
+  background: var(--theme-button-unchecked);
+  box-shadow: inset 0 0 0 2px color-mix(in srgb, var(--theme-button-unchecked) 78%, black);
   transition: background-color 160ms ease, box-shadow 160ms ease;
 }
 
@@ -1818,7 +1818,8 @@ button {
 }
 
 .trayButtonToggle.isOn {
-  background: color-mix(in srgb, var(--theme-button-bg) 84%, white);
+  background: var(--theme-button-checked);
+  box-shadow: inset 0 0 0 2px color-mix(in srgb, var(--theme-button-checked) 78%, black);
 }
 
 .trayButtonToggle.isOn .trayButtonToggleKnob {
@@ -1873,10 +1874,10 @@ button {
   background:
     linear-gradient(
       to bottom,
-      var(--theme-button-selected-bg) 0,
-      var(--theme-button-selected-bg) 50%,
-      var(--tray-accent, var(--theme-button-selected-bg)) 50%,
-      var(--tray-accent, var(--theme-button-selected-bg)) 100%
+      var(--theme-button-checked) 0,
+      var(--theme-button-checked) 50%,
+      var(--tray-accent, var(--theme-button-checked)) 50%,
+      var(--tray-accent, var(--theme-button-checked)) 100%
     );
   border-color: transparent;
   color: var(--theme-button-fg);
@@ -1886,10 +1887,10 @@ button {
   background:
     linear-gradient(
       to bottom,
-      var(--theme-button-selected-bg) 0,
-      var(--theme-button-selected-bg) 50%,
-      var(--tray-accent, var(--theme-button-selected-bg)) 50%,
-      var(--tray-accent, var(--theme-button-selected-bg)) 100%
+      var(--theme-button-checked) 0,
+      var(--theme-button-checked) 50%,
+      var(--tray-accent, var(--theme-button-checked)) 50%,
+      var(--tray-accent, var(--theme-button-checked)) 100%
     );
   border-color: transparent;
   color: var(--theme-button-fg);
@@ -1899,10 +1900,10 @@ button {
   background:
     linear-gradient(
       to bottom,
-      color-mix(in srgb, var(--theme-button-bg) 88%, black) 0,
-      color-mix(in srgb, var(--theme-button-bg) 88%, black) 50%,
-      color-mix(in srgb, var(--tray-accent, var(--theme-button-bg)) 88%, black) 50%,
-      color-mix(in srgb, var(--tray-accent, var(--theme-button-bg)) 88%, black) 100%
+      var(--theme-button-unchecked) 0,
+      var(--theme-button-unchecked) 50%,
+      var(--tray-accent, var(--theme-button-unchecked)) 50%,
+      var(--tray-accent, var(--theme-button-unchecked)) 100%
     );
   color: var(--theme-button-fg);
 }
@@ -1916,14 +1917,14 @@ button {
 }
 
 .trayButton:disabled {
-  border-color: color-mix(in srgb, var(--theme-disabled-button) 78%, black);
+  border-color: color-mix(in srgb, var(--theme-button-disabled) 78%, black);
   background:
     linear-gradient(
       to bottom,
-      var(--theme-disabled-button) 0,
-      var(--theme-disabled-button) 50%,
-      var(--tray-accent, var(--theme-disabled-button)) 50%,
-      var(--tray-accent, var(--theme-disabled-button)) 100%
+      var(--theme-button-disabled) 0,
+      var(--theme-button-disabled) 50%,
+      var(--tray-accent, var(--theme-button-disabled)) 50%,
+      var(--tray-accent, var(--theme-button-disabled)) 100%
     );
   color: var(--theme-button-fg);
 }
@@ -1973,9 +1974,9 @@ button {
   width: var(--thumb);
   height: var(--thumb);
   padding: 0;
-  border: 1px solid color-mix(in srgb, var(--theme-button-bg) 78%, black);
+  border: 1px solid color-mix(in srgb, var(--theme-button-unchecked) 78%, black);
   border-radius: var(--thumb-radius);
-  background: var(--theme-button-bg);
+  background: var(--theme-button-unchecked);
   box-shadow: var(--shadow);
   color: var(--theme-button-fg);
   font-size: calc(var(--thumb) * 0.22);
@@ -2492,9 +2493,9 @@ button {
   position: relative;
   width: var(--thumb);
   height: var(--thumb);
-  border: 1px solid color-mix(in srgb, var(--theme-button-bg) 78%, black);
+  border: 1px solid color-mix(in srgb, var(--theme-button-unchecked) 78%, black);
   border-radius: var(--thumb-radius);
-  background: var(--theme-button-bg);
+  background: var(--theme-button-unchecked);
   box-shadow: var(--shadow);
   color: var(--theme-button-fg);
   font-size: calc(var(--thumb) * 0.2);
@@ -2510,8 +2511,8 @@ button {
 }
 
 .centerHereButton:disabled {
-  background: var(--theme-disabled-button);
-  border-color: color-mix(in srgb, var(--theme-disabled-button) 72%, black);
+  background: var(--theme-button-disabled);
+  border-color: color-mix(in srgb, var(--theme-button-disabled) 72%, black);
   color: var(--theme-button-fg);
 }
 
@@ -2536,9 +2537,9 @@ button {
   flex: 0 0 calc(var(--thumb) * 0.42);
   width: calc(var(--thumb) * 0.42);
   height: calc(var(--thumb) * 0.42);
-  border: 1px solid color-mix(in srgb, var(--theme-button-bg) 78%, black);
+  border: 1px solid color-mix(in srgb, var(--theme-button-unchecked) 78%, black);
   border-radius: calc(var(--thumb-radius) * 0.46);
-  background: var(--theme-button-bg);
+  background: var(--theme-button-unchecked);
   color: var(--theme-button-fg);
   font-size: calc(var(--thumb) * 0.22);
   font-weight: 800;
@@ -2548,7 +2549,7 @@ button {
 .zoomControlSlider {
   flex: 1 1 auto;
   min-width: 0;
-  accent-color: var(--theme-button-bg);
+  accent-color: var(--theme-button-unchecked);
 }
 
 .pageChrome {
@@ -2876,22 +2877,22 @@ button {
   justify-content: space-between;
   gap: calc(var(--thumb) * 0.08);
   text-align: left;
-  border-color: color-mix(in srgb, var(--theme-button-bg) 78%, black);
-  background: var(--theme-button-bg);
+  border-color: color-mix(in srgb, var(--theme-button-unchecked) 78%, black);
+  background: var(--theme-button-unchecked);
   color: var(--theme-button-fg);
   font-size: calc(var(--thumb) * 0.24);
   font-weight: 700;
 }
 
 .planWaypointButton.isSelected {
-  background: color-mix(in srgb, var(--theme-button-bg) 84%, black);
-  border-color: color-mix(in srgb, var(--theme-button-bg) 68%, black);
+  background: color-mix(in srgb, var(--theme-button-unchecked) 84%, black);
+  border-color: color-mix(in srgb, var(--theme-button-unchecked) 68%, black);
 }
 
 .planWaypointButton.isDisabled {
   color: color-mix(in srgb, var(--theme-button-fg) 48%, #87919a);
-  background: color-mix(in srgb, var(--theme-button-bg) 42%, #59636c);
-  border-color: color-mix(in srgb, var(--theme-button-bg) 30%, #4f5962);
+  background: color-mix(in srgb, var(--theme-button-unchecked) 42%, #59636c);
+  border-color: color-mix(in srgb, var(--theme-button-unchecked) 30%, #4f5962);
   opacity: 0.72;
 }
 
@@ -3044,9 +3045,9 @@ button {
 .planEntryInputShell {
   position: relative;
   min-height: var(--thumb);
-  border: 1px solid color-mix(in srgb, var(--theme-button-bg) 76%, black);
+  border: 1px solid color-mix(in srgb, var(--theme-button-unchecked) 76%, black);
   border-radius: var(--thumb-radius);
-  background: color-mix(in srgb, white 88%, var(--theme-button-bg) 12%);
+  background: color-mix(in srgb, white 88%, var(--theme-button-unchecked) 12%);
   overflow: hidden;
 }
 

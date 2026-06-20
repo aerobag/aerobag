@@ -71,7 +71,7 @@ export const mapSelectionSpotSymbol = [
   {
     "path": "M 0 0 C -9 -9 -12 -16 -12 -23 C -12 -29.627 -6.627 -35 0 -35 C 6.627 -35 12 -29.627 12 -23 C 12 -16 9 -9 0 0 Z",
     "paint": "map_selection_spot_peg",
-    "fill": "button_bg",
+    "fill": "button_unchecked",
     "stroke": "ink_75",
     "stroke_width": 2,
     "line_cap": null,

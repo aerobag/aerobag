@@ -74,7 +74,7 @@ internal fun SettingsPage(
                     bottom = ThumbGap,
                 )
                 .clip(RoundedCornerShape(ThumbRadius))
-                .background(uiTheme.controls.buttonBg.copy(alpha = 0.84f))
+                .background(uiTheme.controls.buttonUnchecked.copy(alpha = 0.84f))
                 .padding(ThumbSize * 0.3f),
             verticalArrangement = Arrangement.spacedBy(ThumbSize * 0.25f),
         ) {

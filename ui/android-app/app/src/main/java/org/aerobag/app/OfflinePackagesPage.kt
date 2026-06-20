@@ -721,7 +721,7 @@ internal fun OfflinePackageAllSection(
             enabled = false,
             onCycleClick = null,
             showSelectionIcon = false,
-            backgroundOverride = lerp(uiTheme.controls.buttonBg, Color.Gray, 0.34f),
+            backgroundOverride = lerp(uiTheme.controls.buttonUnchecked, Color.Gray, 0.34f),
         )
     }
 }
@@ -820,9 +820,9 @@ internal fun OfflinePackagePlanRow(
 ) {
     val uiTheme = LocalAerobagUiTheme.current
     val background = backgroundOverride ?: when (row.selection) {
-            OfflinePackageSelection.Play -> lerp(uiTheme.controls.buttonBg, Color.White, 0.14f)
-            OfflinePackageSelection.Pause -> lerp(uiTheme.controls.buttonBg, Color(0xFFFFC166), 0.18f)
-            OfflinePackageSelection.Unselected -> uiTheme.controls.buttonBg
+            OfflinePackageSelection.Play -> lerp(uiTheme.controls.buttonUnchecked, Color.White, 0.14f)
+            OfflinePackageSelection.Pause -> lerp(uiTheme.controls.buttonUnchecked, Color(0xFFFFC166), 0.18f)
+            OfflinePackageSelection.Unselected -> uiTheme.controls.buttonUnchecked
         }
     val progressFraction = row.syncProgressPerMille?.coerceIn(0, 1000)?.toFloat()?.div(1000f)
     Row(

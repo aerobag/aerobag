@@ -500,9 +500,9 @@ internal fun buttonContainerColor(
     backgroundColor: Color? = null,
     selectedColor: Color? = null,
 ): Color = when {
-    !enabled -> uiTheme.controls.disabledButton
-    selected -> selectedColor ?: uiTheme.controls.buttonSelectedBg
-    else -> backgroundColor ?: uiTheme.controls.buttonBg
+    !enabled -> uiTheme.controls.buttonDisabled
+    selected -> selectedColor ?: uiTheme.controls.buttonChecked
+    else -> backgroundColor ?: uiTheme.controls.buttonUnchecked
 }
 
 internal fun buttonLabel(label: String): String = label.uppercase()
@@ -612,7 +612,7 @@ internal fun LayerToggle(
         label = "layerToggleOffset",
     )
     val trackColor by animateColorAsState(
-        targetValue = if (visible) lerp(uiTheme.controls.buttonBg, Color.White, 0.84f) else lerp(uiTheme.controls.buttonBg, Color.White, 0.48f),
+        targetValue = if (visible) uiTheme.controls.buttonChecked else uiTheme.controls.buttonUnchecked,
         label = "layerToggleTrack",
     )
     Box(
@@ -621,7 +621,7 @@ internal fun LayerToggle(
             .height(ThumbSize * 0.42f)
             .clip(RoundedCornerShape(999.dp))
             .background(trackColor.copy(alpha = if (enabled) 1f else 0.45f))
-            .border(2.dp, lerp(uiTheme.controls.buttonBg, Color.Black, 0.22f), RoundedCornerShape(999.dp)),
+            .border(2.dp, lerp(trackColor, Color.Black, 0.22f), RoundedCornerShape(999.dp)),
     ) {
         Box(
             modifier = Modifier

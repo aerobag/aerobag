@@ -3094,11 +3094,11 @@ internal fun MapSelectionItemButton(
             .testTag(testTag)
             .clickable(onClick = onClick),
         shape = RoundedCornerShape(ThumbRadius),
-        color = if (selected) lerp(uiTheme.controls.buttonBg, Color.White, 0.28f) else uiTheme.controls.buttonBg,
+        color = if (selected) lerp(uiTheme.controls.buttonUnchecked, Color.White, 0.28f) else uiTheme.controls.buttonUnchecked,
         contentColor = uiTheme.controls.buttonFg,
         border = BorderStroke(
             if (selected) 2.dp else 1.dp,
-            if (selected) uiTheme.controls.buttonFg else lerp(uiTheme.controls.buttonBg, Color.Black, 0.22f),
+            if (selected) uiTheme.controls.buttonFg else lerp(uiTheme.controls.buttonUnchecked, Color.Black, 0.22f),
         ),
     ) {
         Column(
@@ -3222,7 +3222,7 @@ internal fun navSymbolColor(token: String?, uiTheme: UiTheme, dynamicColors: Map
     "ink_70" -> Color(0xB3081218)
     "ink_75" -> Color(0xBF081218)
     "class_c_magenta" -> uiTheme.aviation.classCMagenta
-    "button_bg" -> uiTheme.controls.buttonBg
+    "button_unchecked" -> uiTheme.controls.buttonUnchecked
     else -> dynamicColors[token]
 }
 
@@ -3260,13 +3260,13 @@ internal fun MapSelectionActionButton(
         shape = RoundedCornerShape(ThumbRadius),
         color = when {
             action.displayOnly -> uiTheme.controls.mapSelectionDisplayBg
-            enabled -> uiTheme.controls.buttonBg
+            enabled -> uiTheme.controls.buttonUnchecked
             else -> uiTheme.controls.panelMuted
         },
         contentColor = if (action.displayOnly) uiTheme.controls.mapSelectionDisplayFg else uiTheme.controls.buttonFg,
         border = BorderStroke(
             1.dp,
-            if (action.displayOnly) uiTheme.controls.panelBorder else lerp(uiTheme.controls.buttonBg, Color.Black, 0.22f),
+            if (action.displayOnly) uiTheme.controls.panelBorder else lerp(uiTheme.controls.buttonUnchecked, Color.Black, 0.22f),
         ),
     ) {
         Box(modifier = Modifier.fillMaxSize().padding(4.dp), contentAlignment = Alignment.Center) {

@@ -24,7 +24,10 @@ use preprocessor_charts::{
 use preprocessor_core::nav_kv::{
     build_nav_kv_sorted, NavKvPair, NavKvRoot, NAVKV_STORAGE_FORMAT as NAV_KV_STORAGE_FORMAT,
 };
-use preprocessor_core::{ChartFamily, Region, RegionBounds};
+use preprocessor_core::{
+    xz_compress_bytes_with_system_xz, xz_compress_file_with_system_xz, ChartFamily, Region,
+    RegionBounds,
+};
 use preprocessor_csup::{
     package_csup_region_versioned_to, prepare_csup_inputs, render_csup_region,
     stage_work_dir_for_product,
@@ -1495,10 +1498,12 @@ fn write_xz_files_parallel(jobs: Vec<XzFileJob>, xz_jobs: usize) -> anyhow::Resu
 }
 
 fn write_xz_file_deterministic(source: &Path, target: &Path) -> anyhow::Result<()> {
-    let bytes = fs::read(source).with_context(|| format!("failed to read {}", source.display()))?;
-    let encoded = nav_kv_package::xz_compress_bytes(&bytes)
-        .map_err(|err| anyhow::anyhow!("failed to xz-compress {}: {err}", source.display()))?;
+    let encoded = xz_compress_file_with_system_xz(source)?;
     fs::write(target, encoded).with_context(|| format!("failed to write {}", target.display()))
+}
+
+pub(super) fn producer_xz_compress_bytes(bytes: &[u8]) -> Result<Vec<u8>, String> {
+    xz_compress_bytes_with_system_xz(bytes).map_err(|err| err.to_string())
 }
 
 fn prepare_package_unpack_source_root(

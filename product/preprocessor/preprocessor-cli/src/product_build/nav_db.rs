@@ -1139,10 +1139,11 @@ pub(super) fn build_nav_kv_artifact(
                     })?;
                 }
                 hardlink_dir_recursive(&source_dir, &published_source_dir)?;
-                let zip_bytes = nav_kv_package::write_stored_xz_package_bytes(
+                let zip_bytes = nav_kv_package::write_stored_xz_package_bytes_with_encoder(
                     &manifest_bytes,
                     &built.root_bytes,
                     &built.pages,
+                    producer_xz_compress_bytes,
                 )
                 .map_err(|err| anyhow::anyhow!("failed to write nav-db package bytes: {err}"))?;
                 fs::write(&nav_db_zip_source_path, zip_bytes).with_context(|| {

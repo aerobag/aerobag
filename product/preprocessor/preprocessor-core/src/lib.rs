@@ -1,9 +1,70 @@
 use serde::{Deserialize, Serialize};
-use std::path::{Path, PathBuf};
+use std::{
+    fs,
+    path::{Path, PathBuf},
+    process::Command,
+    sync::atomic::{AtomicU64, Ordering},
+};
+
+use anyhow::{bail, Context};
 
 pub const PACKAGE_ASSET_MANIFEST_NAME: &str = "package-assets.json";
 
 pub use had_nav_kv as nav_kv;
+
+static XZ_TEMP_COUNTER: AtomicU64 = AtomicU64::new(0);
+
+pub fn xz_compress_file_with_system_xz(source: &Path) -> anyhow::Result<Vec<u8>> {
+    let output = Command::new("xz")
+        .arg("--format=xz")
+        .arg("--check=crc64")
+        .arg("-6")
+        .arg("--stdout")
+        .arg("--threads=1")
+        .arg(source)
+        .output()
+        .with_context(|| format!("failed to run xz for {}", source.display()))?;
+    if !output.status.success() {
+        bail!(
+            "xz failed for {}: {}",
+            source.display(),
+            String::from_utf8_lossy(&output.stderr).trim()
+        );
+    }
+    Ok(output.stdout)
+}
+
+pub fn xz_compress_bytes_with_system_xz(bytes: &[u8]) -> anyhow::Result<Vec<u8>> {
+    let counter = XZ_TEMP_COUNTER.fetch_add(1, Ordering::Relaxed);
+    let path =
+        std::env::temp_dir().join(format!("aerobag-xz-input-{}-{counter}", std::process::id()));
+    fs::write(&path, bytes).with_context(|| format!("failed to write {}", path.display()))?;
+    let result = xz_compress_file_with_system_xz(&path);
+    let remove_result = fs::remove_file(&path);
+    if let Err(err) = remove_result {
+        if result.is_ok() {
+            return Err(err).with_context(|| format!("failed to remove {}", path.display()));
+        }
+    }
+    result
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn system_xz_bytes_materially_compress_repetitive_payload() {
+        let raw = b"ABCD".repeat(16 * 1024);
+        let encoded = xz_compress_bytes_with_system_xz(&raw).unwrap();
+        assert!(
+            encoded.len() < raw.len() / 4,
+            "system xz did not materially compress fixture: raw={} encoded={}",
+            raw.len(),
+            encoded.len()
+        );
+    }
+}
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct PackageAssetManifest {

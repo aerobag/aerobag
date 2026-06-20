@@ -830,7 +830,7 @@ fn updated_nav_kv_manifest_bytes(
 }
 
 fn write_nav_kv_zip_bytes(manifest: &[u8], root: &[u8], pages: &[Vec<u8>]) -> AppResult<Vec<u8>> {
-    nav_kv_package::write_stored_xz_package_bytes(manifest, root, pages).map_err(cache_error)
+    nav_kv_package::write_stored_xz_framed_package_bytes(manifest, root, pages).map_err(cache_error)
 }
 
 fn read_nav_kv_members_from_zip(
@@ -988,7 +988,7 @@ mod tests {
     }
 
     fn xz_json_bytes(value: &Value) -> Vec<u8> {
-        nav_kv_package::xz_compress_bytes(&serde_json::to_vec(value).unwrap()).unwrap()
+        nav_kv_package::xz_frame_uncompressed_bytes(&serde_json::to_vec(value).unwrap()).unwrap()
     }
 
     fn json_version_manifest(

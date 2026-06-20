@@ -15,6 +15,7 @@ use had_nav_kv::{
     apply_nav_kv_delta, build_nav_kv_delta, nav_kv_canonical_sha256_from_pairs, NavKvDelta,
     NavKvPair, NavKvRoot,
 };
+use preprocessor_core::xz_compress_bytes_with_system_xz;
 use preprocessor_zip::{write_deterministic_zip, ZipSource};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -1087,10 +1088,15 @@ impl<C: Clock> FileLiveFeedPublisher<C> {
         if !package_path.is_file() {
             if kind == "nav_kv_package" {
                 let (manifest, root, pages) = read_nav_kv_members_from_dir(product, state_root)?;
-                let bytes = nav_kv_package::write_stored_xz_package_bytes(&manifest, &root, &pages)
-                    .map_err(|err| {
-                        anyhow::anyhow!("failed to encode {product} nav_kv package: {err}")
-                    })?;
+                let bytes = nav_kv_package::write_stored_xz_package_bytes_with_encoder(
+                    &manifest,
+                    &root,
+                    &pages,
+                    producer_xz_compress_bytes,
+                )
+                .map_err(|err| {
+                    anyhow::anyhow!("failed to encode {product} nav_kv package: {err}")
+                })?;
                 if let Some(parent) = package_path.parent() {
                     fs::create_dir_all(parent)
                         .with_context(|| format!("failed to create {}", parent.display()))?;
@@ -1285,7 +1291,7 @@ fn xz_nav_kv_state_dir_pages(state_dir: &Path, manifest_value: &Value) -> anyhow
         if nav_kv_package::is_xz(&bytes) {
             continue;
         }
-        let encoded = nav_kv_package::xz_compress_bytes(&bytes)
+        let encoded = producer_xz_compress_bytes(&bytes)
             .map_err(|err| anyhow::anyhow!("failed to encode {}: {err}", path.display()))?;
         fs::write(&path, encoded).with_context(|| format!("failed to write {}", path.display()))?;
     }
@@ -1382,9 +1388,13 @@ pub fn write_xz_json_pretty_file(path: &Path, value: &impl Serialize) -> anyhow:
             .with_context(|| format!("failed to create {}", parent.display()))?;
     }
     let bytes = serde_json::to_vec_pretty(value).context("failed to encode JSON")?;
-    let encoded = nav_kv_package::xz_compress_bytes(&bytes)
+    let encoded = producer_xz_compress_bytes(&bytes)
         .map_err(|err| anyhow::anyhow!("failed to xz-compress {}: {err}", path.display()))?;
     fs::write(path, encoded).with_context(|| format!("failed to write {}", path.display()))
+}
+
+fn producer_xz_compress_bytes(bytes: &[u8]) -> Result<Vec<u8>, String> {
+    xz_compress_bytes_with_system_xz(bytes).map_err(|err| err.to_string())
 }
 
 pub fn fixture_cache_key(parts: &[FixtureCacheKeyPart]) -> String {

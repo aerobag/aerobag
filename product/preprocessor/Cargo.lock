@@ -889,6 +889,7 @@ dependencies = [
 name = "preprocessor-core"
 version = "0.1.0"
 dependencies = [
+ "anyhow",
  "had-nav-kv",
  "serde",
 ]

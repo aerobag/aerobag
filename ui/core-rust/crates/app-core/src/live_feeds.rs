@@ -1614,9 +1614,10 @@ mod tests {
         delta: Value,
     ) {
         let v1_bytes =
-            nav_kv_package::xz_compress_bytes(&serde_json::to_vec(&v1).unwrap()).unwrap();
+            nav_kv_package::xz_frame_uncompressed_bytes(&serde_json::to_vec(&v1).unwrap()).unwrap();
         let delta_bytes =
-            nav_kv_package::xz_compress_bytes(&serde_json::to_vec(&delta).unwrap()).unwrap();
+            nav_kv_package::xz_frame_uncompressed_bytes(&serde_json::to_vec(&delta).unwrap())
+                .unwrap();
         let mut state = LiveFeedsState::default();
         state
             .ingest_resource(
@@ -1987,7 +1988,8 @@ mod tests {
         state
             .ingest_resource(
                 "live_feeds/state/tfrs/v1",
-                &nav_kv_package::xz_compress_bytes(&serde_json::to_vec(&tfrs).unwrap()).unwrap(),
+                &nav_kv_package::xz_frame_uncompressed_bytes(&serde_json::to_vec(&tfrs).unwrap())
+                    .unwrap(),
             )
             .unwrap();
         assert_eq!(state.product_state_manifest("tfrs"), Some(&tfrs));

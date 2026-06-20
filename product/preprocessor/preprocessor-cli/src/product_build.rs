@@ -1897,10 +1897,7 @@ fn product_cycles_to_build(config: &ProductBuildConfig) -> anyhow::Result<Vec<St
         mode: FetchCacheMode::parse(&config.fetch_cache_mode)?,
     }))?
     .into_iter()
-    .filter(|cycle| match cycle_effective_date(cycle) {
-        Ok(effective) => effective + chrono::Duration::days(28) >= as_of_date,
-        Err(_) => false,
-    })
+    .filter(|cycle| product_cycle_is_currently_publishable(cycle, as_of_date))
     .collect::<Vec<_>>();
     cycles.sort();
     cycles.dedup();
@@ -1908,6 +1905,15 @@ fn product_cycles_to_build(config: &ProductBuildConfig) -> anyhow::Result<Vec<St
         anyhow::bail!("no published FAA cycles are currently buildable");
     }
     Ok(cycles)
+}
+
+fn product_cycle_is_currently_publishable(cycle: &str, as_of_date: NaiveDate) -> bool {
+    match cycle_effective_date(cycle) {
+        Ok(effective) => {
+            effective <= as_of_date && effective + chrono::Duration::days(28) >= as_of_date
+        }
+        Err(_) => false,
+    }
 }
 
 mod static_products;
@@ -2306,6 +2312,16 @@ mod tests {
         assert_eq!(nav_db::nav_db_warning_text(), None);
         assert_eq!(nav_db::nav_kv_family_warning_text("enr-h"), None);
         assert_eq!(nav_db::nav_kv_family_warning_text("sec"), None);
+    }
+
+    #[test]
+    fn automatic_product_build_excludes_future_cycles() {
+        let before_2607 = NaiveDate::from_ymd_opt(2026, 6, 20).unwrap();
+        let on_2607 = NaiveDate::from_ymd_opt(2026, 7, 9).unwrap();
+
+        assert!(product_cycle_is_currently_publishable("2606", before_2607));
+        assert!(!product_cycle_is_currently_publishable("2607", before_2607));
+        assert!(product_cycle_is_currently_publishable("2607", on_2607));
     }
 
     #[test]

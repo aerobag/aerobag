@@ -221,6 +221,7 @@ import org.aerobag.app.domain.AirspaceLimitGlyph
 import org.aerobag.app.domain.AirspaceScreenPoint
 import org.aerobag.app.domain.LatLonPoint
 import org.aerobag.app.domain.MapChartFamily
+import org.aerobag.app.domain.MapDisplayFrame
 import org.aerobag.app.domain.MapLayerId
 import org.aerobag.app.domain.MapFollowUiState
 import org.aerobag.app.domain.MapOverlayQueryResult
@@ -288,6 +289,7 @@ import org.aerobag.app.domain.viewportCenterLatLon
 import org.aerobag.app.domain.worldToLatLon
 import org.aerobag.app.domain.zoomAroundPoint
 import org.aerobag.app.domain.zoomImageAroundPoint
+import org.aerobag.app.generated.NexradOverlayScreenPoint
 import org.aerobag.app.generated.NexradOverlayTile
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.jsonPrimitive
@@ -344,6 +346,13 @@ import kotlin.math.sin
 internal data class NexradOverlayImage(
     val tile: NexradOverlayTile,
     val bitmap: androidx.compose.ui.graphics.ImageBitmap,
+)
+
+internal data class NexradOverlayFrame(
+    val images: List<NexradOverlayImage>,
+    val viewport: MapViewportState,
+    val surfaceWidthPx: Float,
+    val surfaceHeightPx: Float,
 )
 
 private const val TerrainTileBitmapCacheMaxEntries = 256
@@ -509,7 +518,7 @@ internal fun MapExplorerPage(
     var committedOverlayViewport by remember(uiSession) { mutableStateOf<MapViewportState?>(null) }
     var committedOverlaySurfaceUnits by remember(uiSession) { mutableStateOf<OverlaySurfaceUnits?>(null) }
     var mapOverlayError by remember(uiSession) { mutableStateOf<String?>(null) }
-    var nexradImages by remember(uiSession) { mutableStateOf<List<NexradOverlayImage>>(emptyList()) }
+    var nexradFrame by remember(uiSession) { mutableStateOf<NexradOverlayFrame?>(null) }
     var terrainOverlay by remember(uiSession) { mutableStateOf<List<TerrainOverlayImage>>(emptyList()) }
     var terrainOverlayError by remember(uiSession) { mutableStateOf<String?>(null) }
     val terrainTileBitmapCache = remember(uiSession) {
@@ -523,9 +532,13 @@ internal fun MapExplorerPage(
     val terrainRenderRequests = remember(uiSession) {
         Channel<Unit>(Channel.CONFLATED)
     }
-    DisposableEffect(terrainRenderRequests) {
+    val nexradRenderRequests = remember(uiSession) {
+        Channel<Unit>(Channel.CONFLATED)
+    }
+    DisposableEffect(terrainRenderRequests, nexradRenderRequests) {
         onDispose {
             terrainRenderRequests.close()
+            nexradRenderRequests.close()
         }
     }
     var flightPlanRoute by remember(plan.id, plan.version) { mutableStateOf<List<FlightPlanRouteSegment>>(emptyList()) }
@@ -556,11 +569,19 @@ internal fun MapExplorerPage(
     val currentViewport = viewportState.value
     val surfaceWidthPx = surfaceSize.width.toFloat()
     val surfaceHeightPx = surfaceSize.height.toFloat()
+    val mapLayerState = sessionSnapshot.mapLayerState
     val terrainViewportState = rememberUpdatedState(currentViewport)
     val terrainSurfaceSizeState = rememberUpdatedState(surfaceSize)
     val terrainSurfaceWidthPxState = rememberUpdatedState(surfaceWidthPx)
     val terrainSurfaceHeightPxState = rememberUpdatedState(surfaceHeightPx)
     val terrainMapVisibleState = rememberUpdatedState(page == AppPage.Map)
+    val nexradViewportState = rememberUpdatedState(currentViewport)
+    val nexradSurfaceSizeState = rememberUpdatedState(surfaceSize)
+    val nexradSurfaceWidthPxState = rememberUpdatedState(surfaceWidthPx)
+    val nexradSurfaceHeightPxState = rememberUpdatedState(surfaceHeightPx)
+    val nexradVisibleState = rememberUpdatedState(page == AppPage.Map && mapLayerState.nexrad.visible)
+    val nexradEnabledState = rememberUpdatedState(mapLayerState.nexrad.enabled)
+    val nexradDevServerBaseUrlState = rememberUpdatedState(devServerBaseUrl)
     val surfaceWidthDp = remember(surfaceSize, density) { with(density) { surfaceSize.width.toDp().value } }
     val surfaceHeightDp = remember(surfaceSize, density) { with(density) { surfaceSize.height.toDp().value } }
     val situationDockLowered = surfaceWidthDp.dp < SituationDockOverlapWidth
@@ -604,7 +625,6 @@ internal fun MapExplorerPage(
             }
         }
     }
-    val mapLayerState = sessionSnapshot.mapLayerState
     val terrainVisibleState = rememberUpdatedState(mapLayerState.terrainWarning.visible)
     val menuTrayOpen = chartTrayOpen || layerTrayOpen || dataStatusTrayOpen || situationTrayOpen
     val trayOptions = remember(mapFamilyOptions) {
@@ -1256,57 +1276,85 @@ internal fun MapExplorerPage(
         committedOverlaySurfaceUnits = OverlaySurfaceUnits(overlayWidthPx, overlayHeightPx)
         mapOverlayError = null
     }
-    LaunchedEffect(uiSession, liveFeedGeneration, currentViewport, surfaceSize, mapLayerState.nexrad.visible, mapLayerState.nexrad.enabled, devServerBaseUrl) {
-        val effectStartMs = SystemClock.elapsedRealtime()
-        if (surfaceSize.width <= 0 || surfaceSize.height <= 0) {
-            nexradImages = emptyList()
-            return@LaunchedEffect
-        }
-        if (!mapLayerState.nexrad.visible || !mapLayerState.nexrad.enabled) {
-            perfLogInfo(MapLayerLogTag) { "nexrad hidden cachedImages=${nexradImages.size} elapsedMs=${SystemClock.elapsedRealtime() - effectStartMs}" }
-            return@LaunchedEffect
-        }
-        runCatching {
-            var imageBytes = 0L
-            var fetchMs = 0L
-            var decodeMs = 0L
-            val overlay = withContext(Dispatchers.IO) {
-                uiSession.queryNexradOverlay(
-                    currentViewport,
-                    surfaceSize.width.toDouble(),
-                    surfaceSize.height.toDouble(),
-                ) { resource ->
-                    val fetchStartMs = SystemClock.elapsedRealtime()
-                    fetchCoreResource(context, resource, devServerBaseUrl).also {
-                        fetchMs += SystemClock.elapsedRealtime() - fetchStartMs
-                    }
-                }
+    LaunchedEffect(uiSession, nexradRenderRequests) {
+        for (ignored in nexradRenderRequests) {
+            val effectStartMs = SystemClock.elapsedRealtime()
+            val latestSurfaceSize = nexradSurfaceSizeState.value
+            if (latestSurfaceSize.width <= 0 || latestSurfaceSize.height <= 0) {
+                nexradFrame = null
+                perfLogInfo(MapLayerLogTag) { "nexrad skipped reason=empty-surface elapsedMs=${SystemClock.elapsedRealtime() - effectStartMs}" }
+                continue
             }
-            val images = withContext(Dispatchers.IO) {
-                overlay.tiles.map { tile ->
-                    val bytes = uiSession.nexradTileBytes(tile.src) { resource ->
+            if (!nexradVisibleState.value || !nexradEnabledState.value) {
+                perfLogInfo(MapLayerLogTag) { "nexrad hidden cachedImages=${nexradFrame?.images?.size ?: 0} elapsedMs=${SystemClock.elapsedRealtime() - effectStartMs}" }
+                continue
+            }
+            val latestViewport = nexradViewportState.value
+            val latestSurfaceWidthPx = nexradSurfaceWidthPxState.value
+            val latestSurfaceHeightPx = nexradSurfaceHeightPxState.value
+            val latestDevServerBaseUrl = nexradDevServerBaseUrlState.value
+            try {
+                var imageBytes = 0L
+                var fetchMs = 0L
+                var decodeMs = 0L
+                val overlay = withContext(Dispatchers.IO) {
+                    uiSession.queryNexradOverlay(
+                        latestViewport,
+                        latestSurfaceSize.width.toDouble(),
+                        latestSurfaceSize.height.toDouble(),
+                    ) { resource ->
                         val fetchStartMs = SystemClock.elapsedRealtime()
-                        fetchCoreResource(context, resource, devServerBaseUrl).also {
+                        fetchCoreResource(context, resource, latestDevServerBaseUrl).also {
                             fetchMs += SystemClock.elapsedRealtime() - fetchStartMs
                         }
                     }
-                    imageBytes += bytes.size
-                    val decodeStartMs = SystemClock.elapsedRealtime()
-                    val bitmap = BitmapFactory.decodeByteArray(bytes, 0, bytes.size)
-                        ?: error("failed to decode nexrad tile ${tile.src}")
-                    decodeMs += SystemClock.elapsedRealtime() - decodeStartMs
-                    NexradOverlayImage(tile = tile, bitmap = bitmap.asImageBitmap())
                 }
+                if (overlay.tiles.isEmpty()) {
+                    nexradFrame = null
+                    perfLogInfo(MapLayerLogTag) {
+                        "nexrad empty status=${overlay.status.state} elapsedMs=${SystemClock.elapsedRealtime() - effectStartMs}"
+                    }
+                    continue
+                }
+                val images = withContext(Dispatchers.IO) {
+                    overlay.tiles.map { tile ->
+                        val bytes = uiSession.nexradTileBytes(tile.src) { resource ->
+                            val fetchStartMs = SystemClock.elapsedRealtime()
+                            fetchCoreResource(context, resource, latestDevServerBaseUrl).also {
+                                fetchMs += SystemClock.elapsedRealtime() - fetchStartMs
+                            }
+                        }
+                        imageBytes += bytes.size
+                        val decodeStartMs = SystemClock.elapsedRealtime()
+                        val bitmap = BitmapFactory.decodeByteArray(bytes, 0, bytes.size)
+                            ?: error("failed to decode nexrad tile ${tile.src}")
+                        decodeMs += SystemClock.elapsedRealtime() - decodeStartMs
+                        NexradOverlayImage(tile = tile, bitmap = bitmap.asImageBitmap())
+                    }
+                }
+                nexradFrame = NexradOverlayFrame(
+                    images = images,
+                    viewport = latestViewport,
+                    surfaceWidthPx = latestSurfaceWidthPx,
+                    surfaceHeightPx = latestSurfaceHeightPx,
+                )
+                perfLogInfo(MapLayerLogTag) {
+                    "nexrad frame-ready tiles=${images.size} res=${overlay.stats.res} imageBytes=$imageBytes fetchMs=$fetchMs decodeMs=$decodeMs elapsedMs=${SystemClock.elapsedRealtime() - effectStartMs}"
+                }
+            } catch (error: CancellationException) {
+                throw error
+            } catch (error: Throwable) {
+                Log.w("AerobagLayers", "nexrad unavailable; retaining previous frame", error)
             }
-            perfLogInfo(MapLayerLogTag) {
-                "nexrad loaded tiles=${images.size} res=${overlay.stats.res} imageBytes=$imageBytes fetchMs=$fetchMs decodeMs=$decodeMs elapsedMs=${SystemClock.elapsedRealtime() - effectStartMs}"
-            }
-            images
-        }.onSuccess { images ->
-            nexradImages = images
-        }.onFailure { error ->
-            nexradImages = emptyList()
-            Log.w("AerobagLayers", "nexrad unavailable", error)
+        }
+    }
+    LaunchedEffect(uiSession, liveFeedGeneration, currentViewport, surfaceSize, mapLayerState.nexrad.visible, mapLayerState.nexrad.enabled, page, devServerBaseUrl) {
+        if (surfaceSize.width <= 0 || surfaceSize.height <= 0) {
+            nexradFrame = null
+            return@LaunchedEffect
+        }
+        if (page == AppPage.Map && mapLayerState.nexrad.visible && mapLayerState.nexrad.enabled) {
+            nexradRenderRequests.trySend(Unit)
         }
     }
     LaunchedEffect(uiSession, terrainRenderRequests, devServerBaseUrl) {
@@ -1473,14 +1521,14 @@ internal fun MapExplorerPage(
             toSurface = OverlaySurfaceUnits(surfaceWidthPx, surfaceHeightPx),
         )
     }
-    LaunchedEffect(currentViewport, surfaceWidthPx, surfaceHeightPx, tiles, nexradImages, terrainOverlay) {
+    LaunchedEffect(currentViewport, surfaceWidthPx, surfaceHeightPx, tiles, nexradFrame, terrainOverlay) {
         if (surfaceWidthPx <= 0f || surfaceHeightPx <= 0f) return@LaunchedEffect
         if (!VerbosePerfLogs) return@LaunchedEffect
         val topLeftWorld = screenToWorldOffset(currentViewport, 0f, 0f, surfaceWidthPx, surfaceHeightPx)
         val bottomRightWorld = screenToWorldOffset(currentViewport, surfaceWidthPx, surfaceHeightPx, surfaceWidthPx, surfaceHeightPx)
         val sampleTile = tiles.firstOrNull()
         val sampleTerrain = terrainOverlay.firstOrNull()
-        val sampleNexrad = nexradImages.firstOrNull()
+        val sampleNexrad = nexradFrame?.images?.firstOrNull()
         val nexradMessage =
             if (sampleNexrad == null) {
                 "nexrad=none"
@@ -1726,7 +1774,7 @@ internal fun MapExplorerPage(
             tileLabels = debugState.tileLabels,
             tileLabelPaint = tileLabelPaint,
             tileLabelBackgroundPaint = tileLabelBackgroundPaint,
-            nexradImages = if (mapLayerState.nexrad.visible) nexradImages else emptyList(),
+            nexradFrame = if (mapLayerState.nexrad.visible) nexradFrame else null,
             terrainOverlay = terrainOverlay,
             viewport = currentViewport,
             surfaceWidthPx = surfaceWidthPx,
@@ -2025,7 +2073,7 @@ private fun RasterImageLayers(
     tileLabels: Boolean,
     tileLabelPaint: Paint,
     tileLabelBackgroundPaint: Paint,
-    nexradImages: List<NexradOverlayImage>,
+    nexradFrame: NexradOverlayFrame?,
     terrainOverlay: List<TerrainOverlayImage>,
     viewport: MapViewportState,
     surfaceWidthPx: Float,
@@ -2061,13 +2109,28 @@ private fun RasterImageLayers(
                 }
             }
         }
-        if (nexradImages.isNotEmpty() && surfaceWidthPx > 0f && surfaceHeightPx > 0f) {
+        if (nexradFrame != null && nexradFrame.images.isNotEmpty() && surfaceWidthPx > 0f && surfaceHeightPx > 0f) {
             val paint = Paint().apply {
                 isAntiAlias = true
                 isFilterBitmap = true
                 alpha = (0.82f * 255f).roundToInt().coerceIn(0, 255)
             }
-            nexradImages.forEach { image ->
+            val fromFrame = MapDisplayFrame(
+                viewport = nexradFrame.viewport,
+                widthPx = nexradFrame.surfaceWidthPx,
+                heightPx = nexradFrame.surfaceHeightPx,
+            )
+            val toFrame = MapDisplayFrame(
+                viewport = viewport,
+                widthPx = surfaceWidthPx,
+                heightPx = surfaceHeightPx,
+            )
+            fun transformNexradPoint(point: NexradOverlayScreenPoint) =
+                toFrame.transformScreenPointFrom(
+                    from = fromFrame,
+                    point = ScreenPoint(point.x.toFloat(), point.y.toFloat()),
+                )
+            nexradFrame.images.forEach { image ->
                 val tile = image.tile
                 val bitmap = image.bitmap.asAndroidBitmap()
                 val source = floatArrayOf(
@@ -2080,24 +2143,19 @@ private fun RasterImageLayers(
                     tile.sourceX.toFloat(),
                     (tile.sourceY + tile.sourceHeight).toFloat(),
                 )
-                val destination = floatArrayOf(
-                    tile.corners.nw.x.toFloat(),
-                    tile.corners.nw.y.toFloat(),
-                    tile.corners.ne.x.toFloat(),
-                    tile.corners.ne.y.toFloat(),
-                    tile.corners.se.x.toFloat(),
-                    tile.corners.se.y.toFloat(),
-                    tile.corners.sw.x.toFloat(),
-                    tile.corners.sw.y.toFloat(),
-                )
+                val nw = transformNexradPoint(tile.corners.nw)
+                val ne = transformNexradPoint(tile.corners.ne)
+                val se = transformNexradPoint(tile.corners.se)
+                val sw = transformNexradPoint(tile.corners.sw)
+                val destination = floatArrayOf(nw.x, nw.y, ne.x, ne.y, se.x, se.y, sw.x, sw.y)
                 val matrix = Matrix().apply {
                     setPolyToPoly(source, 0, destination, 0, 4)
                 }
                 val clipPath = AndroidPath().apply {
-                    moveTo(tile.corners.nw.x.toFloat(), tile.corners.nw.y.toFloat())
-                    lineTo(tile.corners.ne.x.toFloat(), tile.corners.ne.y.toFloat())
-                    lineTo(tile.corners.se.x.toFloat(), tile.corners.se.y.toFloat())
-                    lineTo(tile.corners.sw.x.toFloat(), tile.corners.sw.y.toFloat())
+                    moveTo(nw.x, nw.y)
+                    lineTo(ne.x, ne.y)
+                    lineTo(se.x, se.y)
+                    lineTo(sw.x, sw.y)
                     close()
                 }
                 drawContext.canvas.nativeCanvas.apply {

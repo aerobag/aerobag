@@ -9,7 +9,6 @@
   "web_dist": "/mnt/aerobag-data/ui-target/web/dist",
   "checkout_ref": "master",
   "additional_publication_refs": [
-    "nav6-sunset"
   ],
   "build_profile": "production",
   "live_feeds_listen": "127.0.0.1:8095",

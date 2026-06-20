@@ -442,6 +442,7 @@ pub fn materialize_procedure_from_records(
             procedure: ProcedureSegment {
                 airport_id: AirportId(airport_id.trim().to_string()),
                 procedure_id: procedure_id.trim().to_string(),
+                display_label: None,
                 kind,
                 runway_transition: None,
                 enroute_transition: requested.enroute_transition,
@@ -534,6 +535,7 @@ pub fn materialize_procedure_from_records(
         procedure: ProcedureSegment {
             airport_id: AirportId(airport_id.trim().to_string()),
             procedure_id: procedure_id.trim().to_string(),
+            display_label: None,
             kind,
             runway_transition: requested.runway_transition,
             enroute_transition: requested.enroute_transition,

@@ -1,7 +1,7 @@
 ---
 id: TASK-21
 title: Account for nav-db storage usage
-state: medium
+state: done
 assignee: []
 created_date: '2026-05-12 16:20'
 labels:

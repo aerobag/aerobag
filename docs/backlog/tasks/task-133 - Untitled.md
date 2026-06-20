@@ -6,7 +6,7 @@ created_date: '2026-06-03 15:15'
 labels:
   - cat:weather
 dependencies: []
-state: medium
+state: done
 ordinal: 133000
 ---
 ## Description

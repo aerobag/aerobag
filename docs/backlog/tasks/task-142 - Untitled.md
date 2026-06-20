@@ -1,17 +1,16 @@
 ---
-id: TASK-135
-title: Layout tweaks
+id: TASK-142
+title: Keep screen on, optional setting dims display to save power
 assignee: []
-created_date: '2026-06-14 15:30'
+created_date: '2026-06-18 05:57'
 labels:
   - cat:android
 dependencies: []
 state: done
-ordinal: 135000
+ordinal: 142000
 ---
 ## Description
 
 <!-- SECTION:DESCRIPTION:BEGIN -->
-Font doesn't fit on data grid when there's data on it.
-LAYER/S
+
 <!-- SECTION:DESCRIPTION:END -->

@@ -12,6 +12,8 @@ ordinal: 130000
 ## Description
 
 <!-- SECTION:DESCRIPTION:BEGIN -->
+Goal: don't burn server resources serving clients nobody is using; don't burn client resources fetching data the user isn't looking at.
+
 If a web page is unfocused or hasn't experienced a click or drag in an hour, make it idle. Idle pages should disconnect from the live feed so we're not burning resources.
 
 (Maybe someday we'll support a "lightweight idle" for displaying metars..)

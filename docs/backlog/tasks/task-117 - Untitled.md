@@ -6,7 +6,7 @@ created_date: '2026-05-15 21:38'
 labels:
   - cat:core
 dependencies: []
-state: medium
+state: done
 ordinal: 117000
 ---
 ## Description

@@ -1,7 +1,7 @@
 ---
 id: TASK-29
 title: Scrub development seeding and staging cruft
-state: medium
+state: done
 assignee: []
 created_date: '2026-05-12 16:20'
 labels:

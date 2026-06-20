@@ -6,7 +6,7 @@ created_date: '2026-06-14 15:30'
 labels:
   - cat:android
 dependencies: []
-state: medium
+state: done
 ordinal: 136000
 ---
 ## Description

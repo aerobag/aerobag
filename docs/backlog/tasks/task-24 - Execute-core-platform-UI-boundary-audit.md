@@ -1,7 +1,7 @@
 ---
 id: TASK-24
 title: Audit core/platform UI boundary
-state: medium
+state: done
 assignee: []
 created_date: '2026-05-12 16:20'
 updated_date: 2026-05-12 21:10

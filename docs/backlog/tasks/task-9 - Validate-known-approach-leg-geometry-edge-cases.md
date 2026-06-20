@@ -17,7 +17,7 @@ ordinal: 9000
 ## Description
 
 <!-- SECTION:DESCRIPTION:BEGIN -->
-`CEC ILS or LOC RWY 12` Instead of intercepting CEC R-166, we fly direct CHIDE
+`CEC ILS or LOC RWY 12` Instead of intercepting CEC R-166, we fly direct CHIDE. -- still open
 
 HYR ILS 21 has an "OBBEY JODES" intersection and a "DAIVE TARRO". I thought we eliminated that case
 <!-- SECTION:DESCRIPTION:END -->

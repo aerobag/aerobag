@@ -12,6 +12,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
+from admin_index import admin_index_html
+
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_CONFIG = REPO_ROOT / "deploy" / "aerobag-prod.json"
@@ -368,6 +370,22 @@ def env_file(config: dict[str, Any]) -> str:
         "PATH": "/root/.cargo/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin",
     }
     return "".join(f"{key}={shell_quote(value)}\n" for key, value in values.items())
+
+
+def public_front_door(config: dict[str, Any]) -> str:
+    server_name = config["nginx_server_name"]
+    host = config["ssh_host"] if server_name == "_" else server_name
+    return f"http://{host}"
+
+
+def prod_admin_index(config: dict[str, Any]) -> str:
+    artifact_root = config["artifact_root"]
+    return admin_index_html(
+        title="Aerobag Prod",
+        front_door=public_front_door(config),
+        cycle_products_root=f"{artifact_root}/published",
+        live_feed_output_root=f"{artifact_root}/live-feeds",
+    )
 
 
 def ensure_toolchain_script() -> str:
@@ -762,6 +780,7 @@ def nginx_config(config: dict[str, Any]) -> str:
     web_dist = config["web_dist"]
     published_root = f"{config['artifact_root']}/published"
     health_root = f"{config['data_root']}/health"
+    admin_root = f"{config['data_root']}/admin"
     server_name = config["nginx_server_name"]
     icons_root = f"{config['source_root']}/ui/icons"
     return f"""server {{
@@ -797,6 +816,16 @@ def nginx_config(config: dict[str, Any]) -> str:
         proxy_pass http://{config['pipeline_health_listen']};
         proxy_http_version 1.1;
         proxy_buffering off;
+    }}
+
+    location = /admin {{
+        return 302 /admin/;
+    }}
+
+    location /admin/ {{
+        alias {admin_root}/;
+        index index.html;
+        add_header Cache-Control "no-cache";
     }}
 
     location = /packages/current_artifacts.json {{
@@ -966,6 +995,12 @@ def write_remote_config(
     write_remote_file(config, ENV_FILE, env_file(config), dry_run=dry_run)
     write_remote_file(
         config,
+        f"{config['data_root']}/admin/index.html",
+        prod_admin_index(config),
+        dry_run=dry_run,
+    )
+    write_remote_file(
+        config,
         "/usr/local/bin/aerobag-write-health",
         health_script(),
         mode="0755",
@@ -1089,6 +1124,7 @@ def prepare_remote_paths(config: dict[str, Any], *, dry_run: bool) -> None:
         f"{config['artifact_root']}/live-feeds",
         config["ui_target_root"],
         config["cargo_target_dir"],
+        f"{config['data_root']}/admin",
         f"{config['data_root']}/health",
         f"{config['data_root']}/health/pipeline-health",
         f"{config['data_root']}/client-debug",

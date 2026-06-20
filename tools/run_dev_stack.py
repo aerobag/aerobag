@@ -18,6 +18,8 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import urlparse
 
+from admin_index import admin_index_html
+
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 PREPROCESSOR_MANIFEST = REPO_ROOT / "product" / "preprocessor" / "Cargo.toml"
@@ -431,6 +433,8 @@ def make_handler(stack: DevStack):
                     self.send_text(503, "pipeline-health disabled\n", send_body)
                 else:
                     self.proxy(config.pipeline_health_listen, path, parsed.query, send_body)
+            elif path in {"/admin", "/admin/"}:
+                self.send_html(200, index_html(config), send_body)
             else:
                 self.serve_web_or_index(path, send_body)
 
@@ -542,30 +546,12 @@ def make_handler(stack: DevStack):
 
 
 def index_html(config: DevStackConfig) -> str:
-    return f"""<!doctype html>
-<meta charset="utf-8">
-<title>Aerobag Dev Stack</title>
-<style>
-body {{ margin: 32px; font: 15px/1.45 system-ui, sans-serif; color: #17201b; background: #f7f7f4; }}
-main {{ max-width: 880px; }}
-a {{ color: #075985; }}
-code {{ background: #e7e5df; padding: 1px 4px; border-radius: 4px; }}
-li {{ margin: 8px 0; }}
-</style>
-<main>
-  <h1>Aerobag Dev Stack</h1>
-  <p>Front door: <code>{display_url(config.listen)}</code></p>
-  <ul>
-    <li><a href="/pipeline-health/">Pipeline Health</a></li>
-    <li><a href="/build-watch/">Build Watch</a></li>
-    <li><a href="/live-feeds/status.html">Live-Feed Status</a></li>
-    <li><a href="/health.json">Dev Stack Health JSON</a></li>
-    <li><a href="/packages/current_artifacts.json">Current Artifacts JSON</a></li>
-  </ul>
-  <p>Cycle products are served from <code>{config.published_root}</code>.</p>
-  <p>Dev live-feed output is isolated at <code>{config.live_root}</code>.</p>
-</main>
-"""
+    return admin_index_html(
+        title="Aerobag Dev Stack",
+        front_door=display_url(config.listen),
+        cycle_products_root=str(config.published_root),
+        live_feed_output_root=str(config.live_root),
+    )
 
 
 def parse_args() -> argparse.Namespace:

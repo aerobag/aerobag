@@ -5,6 +5,11 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 APP_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
 REPO_ROOT="$(cd "$APP_DIR/../.." && pwd)"
 source "$SCRIPT_DIR/require_android_jdk.sh"
+cleanup_repo_local_tool_dirs() {
+  rm -rf "$APP_DIR/.gradle" "$APP_DIR/.kotlin"
+}
+
+trap cleanup_repo_local_tool_dirs EXIT
 
 if [ -n "${AEROBAG_UI_TARGET_ROOT:-}" ]; then
   UI_TARGET_ROOT="$AEROBAG_UI_TARGET_ROOT"
@@ -55,10 +60,14 @@ AEROBAG_ANDROID_KEY_PASSWORD="${AEROBAG_ANDROID_KEY_PASSWORD:-android}"
 AEROBAG_ANDROID_EXPECTED_CERT_SHA256="${AEROBAG_ANDROID_EXPECTED_CERT_SHA256:-09d7edbf70e51b1b6296097876bd39d19b4e71364e82166030228b5674224be1}"
 ANDROID_HOME="${ANDROID_HOME:-${ANDROID_SDK_ROOT:-/usr/lib/android-sdk}}"
 ANDROID_SDK_ROOT="${ANDROID_SDK_ROOT:-$ANDROID_HOME}"
+GRADLE_USER_HOME="${GRADLE_USER_HOME:-$UI_TARGET_ROOT/android/gradle-user-home}"
+PROJECT_CACHE_DIR="${PROJECT_CACHE_DIR:-$UI_TARGET_ROOT/android/project-cache}"
 
-mkdir -p "$DOWNLOAD_DIR"
+mkdir -p "$DOWNLOAD_DIR" "$GRADLE_USER_HOME" "$PROJECT_CACHE_DIR"
 
 env \
+  GRADLE_USER_HOME="$GRADLE_USER_HOME" \
+  JAVA_TOOL_OPTIONS="$JAVA_TOOL_OPTIONS" \
   ANDROID_HOME="$ANDROID_HOME" \
   ANDROID_SDK_ROOT="$ANDROID_SDK_ROOT" \
   AEROBAG_UI_TARGET_ROOT="$UI_TARGET_ROOT" \
@@ -77,7 +86,7 @@ env \
   AEROBAG_ANDROID_KEYSTORE_PASSWORD="$AEROBAG_ANDROID_KEYSTORE_PASSWORD" \
   AEROBAG_ANDROID_KEY_ALIAS="$AEROBAG_ANDROID_KEY_ALIAS" \
   AEROBAG_ANDROID_KEY_PASSWORD="$AEROBAG_ANDROID_KEY_PASSWORD" \
-  "$APP_DIR/gradlew" -p "$APP_DIR" :app:assembleRelease
+  "$APP_DIR/gradlew" --project-cache-dir "$PROJECT_CACHE_DIR" --no-daemon -p "$APP_DIR" :app:assembleRelease
 
 APK_SOURCE="$UI_TARGET_ROOT/android/build/app/outputs/apk/release/app-release.apk"
 if [ ! -f "$APK_SOURCE" ]; then

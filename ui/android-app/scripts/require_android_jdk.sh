@@ -52,3 +52,16 @@ EOF
 }
 
 aerobag_select_android_jdk
+
+aerobag_append_java_tool_option() {
+  local option="$1"
+  if [[ " ${JAVA_TOOL_OPTIONS:-} " == *" $option "* ]]; then
+    return 0
+  fi
+  export JAVA_TOOL_OPTIONS="${JAVA_TOOL_OPTIONS:+$JAVA_TOOL_OPTIONS }$option"
+}
+
+# Java 21 updates can leave Gradle daemons with a stale spawn helper.  The
+# Android scripts also pass --no-daemon; this launch mechanism keeps subprocess
+# creation reliable when Gradle starts cargo/node/javac after a JDK replacement.
+aerobag_append_java_tool_option "-Djdk.lang.Process.launchMechanism=VFORK"

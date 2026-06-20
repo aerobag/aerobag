@@ -244,7 +244,7 @@ It reports:
 - deployed commit and configured publication refs
 - systemd active/enabled states
 - `published/current_artifacts.json` age, manifest count, and contract summary
-- `live-feeds/current.json` age
+- `live-feeds/v2/current.json` age
 - most recent orchestrator log path
 
 The live-feeds daemon also serves:
@@ -252,7 +252,8 @@ The live-feeds daemon also serves:
 ```text
 /live-feeds/status.json
 /live-feeds/status.html
-/live-feeds/events
+/live-feeds/v2/current.json
+/live-feeds/v2/events
 ```
 
 Browser debug logs are written as JSON lines under:

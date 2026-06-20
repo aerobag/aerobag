@@ -9,10 +9,10 @@ of truth; SSE only tells clients that a newer version is available.
 For each product:
 
 ```text
-/live-feeds/current.json
-/live-feeds/versions/<product>/<version>.json
-/live-feeds/states/<product>/<version>.json
-/live-feeds/deltas/<product>/<from>__<to>.json
+/live-feeds/v2/current.json
+/live-feeds/v2/versions/<product>/<version>.json
+/live-feeds/v2/states/<product>/<version>.json
+/live-feeds/v2/deltas/<product>/<from>__<to>.json
 ```
 
 `current.json` maps product id to the current version and version manifest URL.

@@ -33,7 +33,7 @@ use crate::{
         nav_ref_position, nav_symbol_feature, suggest_waypoint_identifiers, CoreResourceRequest,
         CoreResourceSource, HadOperationOutcome, HadReadError, UiInvalidation,
     },
-    live_feeds::{LiveFeedSseEvent, LiveFeedsState},
+    live_feeds::{LiveFeedSseEvent, LiveFeedsState, LIVE_FEEDS_BASE_PATH},
     map_follow::{MapFollowSessionState, MapFollowUiState},
     map_overlay::{
         nearest_available_layer_zoom, obstacle_layer_config_from_live_manifest_value,
@@ -6511,9 +6511,9 @@ fn live_feed_state_member_address(state_url: &str, member_path: &str) -> String 
         .unwrap_or("");
     let member = member_path.trim_start_matches('/');
     if base.is_empty() {
-        format!("/live-feeds/{member}")
+        format!("{LIVE_FEEDS_BASE_PATH}/{member}")
     } else {
-        format!("/live-feeds/{base}/{member}")
+        format!("{LIVE_FEEDS_BASE_PATH}/{base}/{member}")
     }
 }
 
@@ -7812,7 +7812,7 @@ fn nexrad_installed_member_path(src: &str) -> Option<String> {
     let src = src.trim_start_matches('/');
     let (_, rest) = src.split_once("/tiles/")?;
     // The installed package is rooted at the state directory, while web URLs include
-    // live-feeds/states/nexrad/<state-id>/.
+    // live-feeds/v2/states/nexrad/<state-id>/.
     Some(format!("tiles/{rest}"))
 }
 
@@ -7855,9 +7855,13 @@ fn nexrad_tile_resource_request(src: &str) -> AppResult<CoreResourceRequest> {
 
 fn nexrad_tile_resource_id(src: &str) -> AppResult<String> {
     let src = normalize_nexrad_tile_src(src)?;
+    let prefix = format!(
+        "{}/states/nexrad/",
+        LIVE_FEEDS_BASE_PATH.trim_start_matches('/')
+    );
     let suffix = src
         .trim_start_matches('/')
-        .strip_prefix("live-feeds/states/nexrad/")
+        .strip_prefix(&prefix)
         .ok_or_else(|| AppError {
             kind: AppErrorKind::InvalidManifest,
             message: format!("NEXRAD tile URL {src} is not a live-feed NEXRAD state tile"),
@@ -7867,13 +7871,17 @@ fn nexrad_tile_resource_id(src: &str) -> AppResult<String> {
 
 fn nexrad_tile_src_from_resource_id(resource_id: &str) -> Option<String> {
     let suffix = resource_id.strip_prefix(NEXRAD_TILE_RESOURCE_PREFIX)?;
-    let src = format!("/live-feeds/states/nexrad/{suffix}");
+    let src = format!("{LIVE_FEEDS_BASE_PATH}/states/nexrad/{suffix}");
     normalize_nexrad_tile_src(&src).ok()
 }
 
 fn normalize_nexrad_tile_src(src: &str) -> AppResult<String> {
     let trimmed = src.trim_start_matches('/');
-    let Some(rest) = trimmed.strip_prefix("live-feeds/states/nexrad/") else {
+    let prefix = format!(
+        "{}/states/nexrad/",
+        LIVE_FEEDS_BASE_PATH.trim_start_matches('/')
+    );
+    let Some(rest) = trimmed.strip_prefix(&prefix) else {
         return Err(AppError {
             kind: AppErrorKind::InvalidManifest,
             message: format!("NEXRAD tile URL {src} is not a live-feed NEXRAD state tile"),
@@ -8022,7 +8030,7 @@ fn nexrad_overlay_query(
             let image_width = manifest.tile_size.min(level.width - tile_level_x0);
             let image_height = manifest.tile_size.min(level.height - tile_level_y0);
             let src = format!(
-                "/live-feeds/states/nexrad/{}/tiles/res{}/{}/{}.png",
+                "{LIVE_FEEDS_BASE_PATH}/states/nexrad/{}/tiles/res{}/{}/{}.png",
                 manifest.state_id, level.res, x, y
             );
             let mut stack = vec![(0, 0, image_width, image_height)];
@@ -12636,7 +12644,7 @@ mod tests {
         assert_eq!(
             effects[0].resource.source,
             crate::CoreResourceSource::PublicUrl {
-                url: "/live-feeds/states/obstacles/v1/root".to_string(),
+                url: format!("{LIVE_FEEDS_BASE_PATH}/states/obstacles/v1/root"),
             }
         );
         ingest_resource_in_session(init.handle, "live_obstacle_had/v1/root", &built.root_bytes)
@@ -12912,7 +12920,7 @@ mod tests {
         let snapshot = report_session_resource_failure_in_session(
             init.handle,
             "live_feeds/current",
-            "failed to fetch /live-feeds/current.json: 404",
+            "failed to fetch /live-feeds/v2/current.json: 404",
         )
         .expect("report failure");
 
@@ -13037,7 +13045,7 @@ mod tests {
     fn nexrad_tile_prepare_faults_and_caches_live_feed_tile_resource() {
         let init =
             create_ui_session(FlightPlan::default(), &[], None, None).expect("create session");
-        let src = "/live-feeds/states/nexrad/state-v1/tiles/res3/0/0.png";
+        let src = "/live-feeds/v2/states/nexrad/state-v1/tiles/res3/0/0.png";
 
         let outcome = prepare_nexrad_tile_in_session(init.handle, src).expect("prepare tile");
         let HadOperationOutcome::NeedResources { resources } = outcome else {

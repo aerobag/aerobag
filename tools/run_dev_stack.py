@@ -30,6 +30,7 @@ DEFAULT_FRONT_DOOR = "0.0.0.0:18080"
 DEFAULT_LIVE_FEEDS = "127.0.0.1:18095"
 DEFAULT_BUILD_WATCH = "127.0.0.1:18097"
 DEFAULT_PIPELINE_HEALTH = "127.0.0.1:18098"
+LIVE_FEEDS_CONTRACT_PATH = "v2"
 
 
 def utc_now_text() -> str:
@@ -148,6 +149,10 @@ class DevStackConfig:
         return self.stack_root / "live-feeds"
 
     @property
+    def live_contract_root(self) -> Path:
+        return self.live_root / LIVE_FEEDS_CONTRACT_PATH
+
+    @property
     def scratch_root(self) -> Path:
         return self.artifact_root / "private-work" / "dev-stack" / "live-feeds"
 
@@ -224,6 +229,7 @@ class DevStack:
         for path in [
             self.config.stack_root,
             self.config.live_root,
+            self.config.live_contract_root,
             self.config.scratch_root,
             self.config.fetch_cache_root,
             self.config.health_root,
@@ -334,6 +340,7 @@ class DevStack:
             "mode": "dev-stack",
             "artifact_root": str(self.config.artifact_root),
             "published_root": str(self.config.published_root),
+            "live_contract_root": str(self.config.live_contract_root),
             "front_door": display_url(self.config.listen),
             "services": {
                 child.name: {
@@ -550,7 +557,7 @@ def index_html(config: DevStackConfig) -> str:
         title="Aerobag Dev Stack",
         front_door=display_url(config.listen),
         cycle_products_root=str(config.published_root),
-        live_feed_output_root=str(config.live_root),
+        live_feed_output_root=str(config.live_contract_root),
     )
 
 
@@ -622,6 +629,7 @@ def print_config(config: DevStackConfig) -> None:
                 "published_root": str(config.published_root),
                 "stack_root": str(config.stack_root),
                 "live_root": str(config.live_root),
+                "live_contract_root": str(config.live_contract_root),
                 "target_dir": str(config.target_dir),
                 "live_feeds_listen": config.live_feeds_listen,
                 "build_watch_listen": config.build_watch_listen,

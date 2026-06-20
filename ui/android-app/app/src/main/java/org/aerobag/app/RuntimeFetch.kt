@@ -400,6 +400,8 @@ internal fun normalizeLiveFeedSourceRootUrl(configured: String): String =
     configured
         .trim()
         .trimEnd('/')
+        .removeSuffix("/live-feeds/v2/events")
+        .removeSuffix("/live-feeds/v2")
         .removeSuffix("/live-feeds/events")
         .removeSuffix("/live-feeds")
 

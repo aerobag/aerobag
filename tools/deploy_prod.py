@@ -36,6 +36,7 @@ BUILD_WATCH_LISTEN = "127.0.0.1:8097"
 PIPELINE_HEALTH_LISTEN = "127.0.0.1:8098"
 ANDROID_SDK_ROOT = "/usr/lib/android-sdk"
 ANDROID_NDK_VERSION = "26.3.11579264"
+LIVE_FEEDS_CONTRACT_PATH = "v2"
 
 
 def parse_args() -> argparse.Namespace:
@@ -384,7 +385,7 @@ def prod_admin_index(config: dict[str, Any]) -> str:
         title="Aerobag Prod",
         front_door=public_front_door(config),
         cycle_products_root=f"{artifact_root}/published",
-        live_feed_output_root=f"{artifact_root}/live-feeds",
+        live_feed_output_root=f"{artifact_root}/live-feeds/{LIVE_FEEDS_CONTRACT_PATH}",
     )
 
 
@@ -629,7 +630,7 @@ def main() -> int:
             deploy_config = {"error": str(exc)}
 
     current_path = artifact_root / "published" / "current_artifacts.json"
-    live_current = artifact_root / "live-feeds" / "current.json"
+    live_current = artifact_root / "live-feeds" / "v2" / "current.json"
     payload = {
         "schema_version": 1,
         "generated_at_utc": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
@@ -1122,6 +1123,7 @@ def prepare_remote_paths(config: dict[str, Any], *, dry_run: bool) -> None:
         f"{config['artifact_root']}/published",
         f"{config['artifact_root']}/private-work",
         f"{config['artifact_root']}/live-feeds",
+        f"{config['artifact_root']}/live-feeds/{LIVE_FEEDS_CONTRACT_PATH}",
         config["ui_target_root"],
         config["cargo_target_dir"],
         f"{config['data_root']}/admin",

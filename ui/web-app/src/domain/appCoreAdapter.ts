@@ -1904,6 +1904,7 @@ type LiveFeedSubscription = {
 };
 
 const LiveFeedEventSourceReconnectDelayMs = 5_000;
+const LiveFeedEventsPath = "/live-feeds/v2/events";
 
 function liveFeedSourceUrl(): string {
   const configured = __AEROBAG_LIVE_FEEDS_ORIGIN__?.trim();
@@ -1919,6 +1920,11 @@ function liveFeedSourceUrl(): string {
 function liveFeedStatusUrl(sourceUrl: string): string {
   const origin = sourceUrl.replace(/\/+$/, "");
   return origin ? `${origin}/live-feeds/status.html` : "/live-feeds/status.html";
+}
+
+function liveFeedEventsUrl(sourceUrl: string): string {
+  const origin = sourceUrl.replace(/\/+$/, "");
+  return origin ? `${origin}${LiveFeedEventsPath}` : LiveFeedEventsPath;
 }
 
 function createLiveFeedSubscription(
@@ -1984,7 +1990,7 @@ function createLiveFeedSubscription(
     }
     clearReconnectTimer();
     reportEvent("connecting");
-    const nextEvents = new EventSource("/live-feeds/events");
+    const nextEvents = new EventSource(liveFeedEventsUrl(liveFeedSourceUrl()));
     events = nextEvents;
     const isCurrent = () => !closed && events === nextEvents;
     nextEvents.addEventListener("live-feed-current", (event) => {

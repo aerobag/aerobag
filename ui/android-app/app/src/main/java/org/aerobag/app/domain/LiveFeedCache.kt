@@ -29,6 +29,7 @@ private const val LiveFeedCacheDirectoryName = "live-feeds"
 private const val LiveFeedSseConnectTimeoutMs = 5_000
 private const val LiveFeedSseIdleTimeoutMs = 65_000
 private const val LiveFeedFailedRequestRetryDelayMs = 5 * 60_000L
+private const val LiveFeedEventsPath = "/live-feeds/v2/events"
 internal const val LiveFeedMaxInMemoryFetchBytes = 64L * 1024L * 1024L
 
 @Serializable
@@ -238,7 +239,7 @@ class AndroidLiveFeedClient(
         onChanged: suspend () -> Unit,
         onConnectionEvent: suspend (LiveFeedConnectionEvent) -> Unit,
     ) = withContext(Dispatchers.IO) {
-        val url = resolveLiveFeedUrl("/live-feeds/events", sourceRootUrl)
+        val url = resolveLiveFeedUrl(LiveFeedEventsPath, sourceRootUrl)
         val statusUrl = liveFeedStatusUrl(sourceRootUrl)
         onConnectionEvent(
             LiveFeedConnectionEvent(

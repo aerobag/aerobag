@@ -40,6 +40,22 @@ const STATUS_HISTORY_LIMIT: usize = 256;
 const SIMULATION_RETAIN_VERSIONS_PER_PRODUCT: usize = 8;
 const SIMULATION_PUBLICATION_DIRS: &[&str] = &["states", "versions", "deltas", "packages"];
 
+fn live_feeds_contract_dir_name() -> String {
+    format!("v{LIVE_FEEDS_SCHEMA_VERSION}")
+}
+
+fn live_feeds_contract_request_prefix() -> String {
+    format!("/live-feeds/{}/", live_feeds_contract_dir_name())
+}
+
+fn live_feeds_contract_request_path(relative: &str) -> String {
+    format!("{}{relative}", live_feeds_contract_request_prefix())
+}
+
+fn live_feeds_contract_root(live_root: &Path) -> PathBuf {
+    live_root.join(live_feeds_contract_dir_name())
+}
+
 fn usage() -> &'static str {
     "usage:
   aerobag-live-feedsd --live-root <path> --listen <addr> [--scratch-root <path>] [--event-interval-ms <n>]
@@ -48,7 +64,8 @@ fn usage() -> &'static str {
 
 The daemon owns live-feed polling, publication, static live-feed payload
 serving, and SSE invalidation. Vite may proxy /live-feeds to this process in
-dev, but Vite must not synthesize live-feed events."
+dev, but Vite must not synthesize live-feed events. --live-root is the durable
+base directory; this daemon publishes the active contract below a vN child."
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -620,6 +637,10 @@ fn main() -> anyhow::Result<()> {
 
 fn validate_config(config: &DaemonConfig) -> anyhow::Result<()> {
     ensure_parent(&config.live_root, "--live-root")?;
+    ensure_parent(
+        &live_feeds_contract_root(&config.live_root),
+        "--live-root contract root",
+    )?;
     ensure_parent(&config.scratch_root, "--scratch-root")?;
     ensure_parent(&config.fetch_cache_root, "--fetch-cache-root")?;
     FetchCacheMode::parse(&config.fetch_cache_mode)?;
@@ -662,8 +683,9 @@ fn run_server(config: DaemonConfig) -> anyhow::Result<()> {
     let status = DaemonStatus::default();
     start_live_feed_driver(&config, broker.clone(), status.clone())?;
     eprintln!(
-        "aerobag-live-feedsd serving {} on http://{}",
+        "aerobag-live-feedsd serving {} under /live-feeds/{}/ on http://{}",
         config.live_root.display(),
+        live_feeds_contract_dir_name(),
         config.listen
     );
     for stream in listener.incoming() {
@@ -692,7 +714,7 @@ fn start_live_feed_driver(
     if let Some(simulation) = &config.simulation {
         return start_simulation_driver(config, simulation, broker, status);
     }
-    let live_root = config.live_root.clone();
+    let live_root = live_feeds_contract_root(&config.live_root);
     let scratch_root = config.scratch_root.join("live-feed-build");
     let poll_interval = Duration::from_millis(config.poll_loop_interval_ms);
     let fetch = live_feed_fetch_config(config)?;
@@ -731,10 +753,11 @@ fn start_simulation_driver(
     let fixture_root = simulation
         .fixture_root
         .clone()
-        .unwrap_or_else(|| config.live_root.clone());
-    if fixture_root == config.live_root {
+        .unwrap_or_else(|| live_feeds_contract_root(&config.live_root));
+    let live_root = live_feeds_contract_root(&config.live_root);
+    if fixture_root == live_root {
         bail!(
-            "simulation --fixture-root must be separate from --live-root so generated output can be reset safely"
+            "simulation --fixture-root must be separate from the versioned live-feed output root so generated output can be reset safely"
         );
     }
     let timeline = timeline_from_live_feed_root(&fixture_root, "daemon-simulation")?;
@@ -744,7 +767,6 @@ fn start_simulation_driver(
         .map(|event| event.product.clone())
         .collect::<std::collections::BTreeSet<_>>();
     let loop_duration = fixture_loop_duration(&timeline, simulation.speedup)?;
-    let live_root = config.live_root.clone();
     let scratch_root = config.scratch_root.join("live-feed-simulation");
     let poll_interval = Duration::from_millis(config.poll_loop_interval_ms.min(1_000));
     let speedup = simulation.speedup;
@@ -1202,21 +1224,28 @@ fn handle_connection(
     if request_path == "/live-feeds/status" || request_path == "/live-feeds/status.html" {
         return serve_status_html(&mut stream, method);
     }
-    if request_path == "/live-feeds/events" {
+    let contract_events_path = live_feeds_contract_request_path("events");
+    if request_path == contract_events_path {
         if method == "HEAD" {
             return write_sse_headers(&mut stream);
         }
         return write_sse_stream(
             &mut stream,
-            &config.live_root,
+            &live_feeds_contract_root(&config.live_root),
             Duration::from_millis(config.event_interval_ms),
             broker,
             status,
             config.sse_event_limit,
         );
     }
-    if let Some(relative) = request_path.strip_prefix("/live-feeds/") {
-        return serve_live_feed_file(&mut stream, method, &config.live_root, relative);
+    let contract_prefix = live_feeds_contract_request_prefix();
+    if let Some(relative) = request_path.strip_prefix(&contract_prefix) {
+        return serve_live_feed_file(
+            &mut stream,
+            method,
+            &live_feeds_contract_root(&config.live_root),
+            relative,
+        );
     }
     write_status(&mut stream, 404, "not found")
 }
@@ -1960,13 +1989,14 @@ mod tests {
     #[test]
     fn server_serves_static_live_feed_payloads() -> anyhow::Result<()> {
         let temp = tempdir()?;
-        let state_path = temp.path().join("states/metars/m1.json");
+        let contract_root = live_feeds_contract_root(temp.path());
+        let state_path = contract_root.join("states/metars/m1.json");
         fs::create_dir_all(state_path.parent().expect("state parent"))?;
         fs::write(&state_path, b"{\"version_label\":\"m1\"}")?;
 
         let response = request_once(
             temp.path(),
-            "GET /live-feeds/states/metars/m1.json HTTP/1.1\r\nHost: localhost\r\n\r\n",
+            "GET /live-feeds/v2/states/metars/m1.json HTTP/1.1\r\nHost: localhost\r\n\r\n",
         )?;
         assert!(response.starts_with("HTTP/1.1 200 OK"), "{response}");
         assert!(
@@ -1983,11 +2013,11 @@ mod tests {
     #[test]
     fn server_serves_sse_events_from_shared_live_feed_manifests() -> anyhow::Result<()> {
         let temp = tempdir()?;
-        publish_json_version(temp.path(), "metars", "m1")?;
+        publish_json_version(&live_feeds_contract_root(temp.path()), "metars", "m1")?;
 
         let response = request_once(
             temp.path(),
-            "GET /live-feeds/events HTTP/1.1\r\nHost: localhost\r\n\r\n",
+            "GET /live-feeds/v2/events HTTP/1.1\r\nHost: localhost\r\n\r\n",
         )?;
         assert!(response.starts_with("HTTP/1.1 200 OK"), "{response}");
         assert!(

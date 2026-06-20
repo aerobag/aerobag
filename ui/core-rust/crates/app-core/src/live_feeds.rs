@@ -10,10 +10,12 @@ use crate::{
 };
 
 const CURRENT_RESOURCE_ID: &str = "live_feeds/current";
-const CURRENT_ADDRESS: &str = "/live-feeds/current.json";
-const LIVE_FEEDS_PREFIX: &str = "/live-feeds/";
-const FAILED_RESOURCE_RETRY_DELAY_MS: i64 = 5 * 60 * 1000;
 pub const LIVE_FEEDS_SCHEMA_VERSION: u32 = 2;
+pub const LIVE_FEEDS_BASE_PATH: &str = "/live-feeds/v2";
+pub const LIVE_FEEDS_EVENTS_PATH: &str = "/live-feeds/v2/events";
+const CURRENT_ADDRESS: &str = "/live-feeds/v2/current.json";
+const LIVE_FEEDS_PREFIX: &str = "/live-feeds/v2/";
+const FAILED_RESOURCE_RETRY_DELAY_MS: i64 = 5 * 60 * 1000;
 
 #[derive(Debug, Clone, PartialEq, Default)]
 pub struct LiveFeedsState {
@@ -1721,7 +1723,7 @@ mod tests {
         assert_eq!(
             resources[0].source,
             crate::CoreResourceSource::PublicUrl {
-                url: format!("/live-feeds/deltas/{product}/v1__v2.json.xz"),
+                url: format!("{LIVE_FEEDS_BASE_PATH}/deltas/{product}/v1__v2.json.xz"),
             }
         );
 
@@ -1772,7 +1774,7 @@ mod tests {
         assert_eq!(
             resources[0].source,
             crate::CoreResourceSource::PublicUrl {
-                url: "/live-feeds/current.json".to_string(),
+                url: CURRENT_ADDRESS.to_string(),
             }
         );
     }
@@ -1821,7 +1823,7 @@ mod tests {
         assert_eq!(
             resources[0].source,
             crate::CoreResourceSource::PublicUrl {
-                url: "/live-feeds/versions/nexrad/v1.json".to_string(),
+                url: format!("{LIVE_FEEDS_BASE_PATH}/versions/nexrad/v1.json"),
             }
         );
     }

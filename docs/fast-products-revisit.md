@@ -84,7 +84,7 @@ they do not know product names, schemas, delta rules, cadence, or publication co
 For recovery and startup, also publish a small current-state document:
 
 ```text
-/live-feeds/current.json
+/live-feeds/v2/current.json
 ```
 
 `current.json` is the durable source of truth for the latest version of each product. On startup,
@@ -520,4 +520,3 @@ Interpretation:
   NEXRAD.
 
 ------------------------------------------------------------------------------
-

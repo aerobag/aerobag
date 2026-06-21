@@ -1078,6 +1078,7 @@ class NativeUiSession internal constructor(
         return snapshot
     }
 
+    @RawUiSessionWorkApi
     fun queryMapOverlay(
         viewport: MapViewportState,
         widthPx: Double,
@@ -1108,6 +1109,7 @@ class NativeUiSession internal constructor(
         )
     }
 
+    @RawUiSessionWorkApi
     fun queryMapSelection(
         viewport: MapViewportState,
         widthPx: Double,
@@ -1132,6 +1134,7 @@ class NativeUiSession internal constructor(
         ).toUi()
     }
 
+    @RawUiSessionWorkApi
     fun queryMapSelectionForNavRef(
         viewport: MapViewportState,
         widthPx: Double,

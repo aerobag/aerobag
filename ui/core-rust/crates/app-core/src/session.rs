@@ -7602,16 +7602,50 @@ fn materialize_map_selection_in_session(
         &flight_plan_points,
         &mut availability,
     );
-    let selection = map_selection_with_session_action_availability(
-        selection,
-        session.app_state.ownship.render.position.is_some(),
-    );
+    let ownship_position = session.app_state.ownship.render.position;
+    let selection = map_selection_with_ownship_distances(selection, ownship_position);
+    let selection =
+        map_selection_with_session_action_availability(selection, ownship_position.is_some());
     if !missing_pages.is_empty() {
         return Ok(MapSelectionMaterialization::NeedResources(
             nav_kv_page_resources(missing_pages),
         ));
     }
     Ok(MapSelectionMaterialization::Complete(selection))
+}
+
+fn map_selection_with_ownship_distances(
+    mut selection: MapSelectionQueryResult,
+    ownship_position: Option<LatLon>,
+) -> MapSelectionQueryResult {
+    let Some(ownship_position) = ownship_position else {
+        return selection;
+    };
+
+    for item in selection
+        .categories
+        .iter_mut()
+        .flat_map(|category| category.items.iter_mut())
+    {
+        let Some(point_position) = item.position else {
+            continue;
+        };
+        let distance_nm = crate::great_circle_distance_nm(ownship_position, point_position);
+        if !distance_nm.is_finite() {
+            continue;
+        }
+        let distance = format!("{}nm", crate::flight_data::format_nm(distance_nm));
+        item.description = Some(
+            item.description
+                .take()
+                .map(|description| description.trim().to_string())
+                .filter(|description| !description.is_empty())
+                .map(|description| format!("{description} · {distance}"))
+                .unwrap_or(distance),
+        );
+    }
+
+    selection
 }
 
 fn map_selection_with_session_action_availability(
@@ -15608,6 +15642,7 @@ mod tests {
                     label: "KPWT".to_string(),
                     sublabel: "Airport".to_string(),
                     description: None,
+                    position: None,
                     detail_text: None,
                     highlight: MapSelectionHighlight::Spot {
                         lat: 47.49,
@@ -15647,6 +15682,92 @@ mod tests {
         assert!(action.enabled);
         assert_eq!(action.session_action.as_deref(), Some("direct-to-action"));
         assert!(action.flight_plan_row_action.is_none());
+    }
+
+    fn test_map_selection_item(
+        id: &str,
+        description: Option<&str>,
+        position: Option<LatLon>,
+    ) -> MapSelectionItem {
+        MapSelectionItem {
+            id: id.to_string(),
+            label: id.to_string(),
+            sublabel: String::new(),
+            description: description.map(str::to_string),
+            position,
+            detail_text: None,
+            highlight: MapSelectionHighlight::Spot { lat: 0.0, lon: 0.0 },
+            nav_ref: None,
+            symbol_feature: None,
+            metar_feature: None,
+            pirep_feature: None,
+            airspace_icon: None,
+            actions: Vec::new(),
+        }
+    }
+
+    fn test_map_selection_with_items(items: Vec<MapSelectionItem>) -> MapSelectionQueryResult {
+        MapSelectionQueryResult {
+            click_lat: 0.0,
+            click_lon: 0.0,
+            categories: vec![MapSelectionCategory {
+                id: "test".to_string(),
+                label: "Test".to_string(),
+                items,
+            }],
+        }
+    }
+
+    #[test]
+    fn map_selection_appends_ownship_distance_to_point_description() {
+        let ownship = LatLon { lat: 0.0, lon: 0.0 };
+        let point = LatLon { lat: 0.0, lon: 0.3 };
+        let selection = test_map_selection_with_items(vec![test_map_selection_item(
+            "KAPC",
+            Some("Elev 36"),
+            Some(point),
+        )]);
+
+        let selection = map_selection_with_ownship_distances(selection, Some(ownship));
+        let expected_distance =
+            crate::flight_data::format_nm(crate::great_circle_distance_nm(ownship, point));
+        assert_eq!(
+            selection.categories[0].items[0].description,
+            Some(format!("Elev 36 · {expected_distance}nm"))
+        );
+    }
+
+    #[test]
+    fn map_selection_uses_common_tenths_format_for_near_point_distance() {
+        let ownship = LatLon { lat: 0.0, lon: 0.0 };
+        let point = LatLon { lat: 0.0, lon: 0.1 };
+        let selection =
+            test_map_selection_with_items(vec![test_map_selection_item("SPOT", None, Some(point))]);
+
+        let selection = map_selection_with_ownship_distances(selection, Some(ownship));
+        assert_eq!(
+            selection.categories[0].items[0].description,
+            Some(format!(
+                "{}nm",
+                crate::flight_data::format_nm(crate::great_circle_distance_nm(ownship, point))
+            ))
+        );
+    }
+
+    #[test]
+    fn map_selection_does_not_add_distance_to_boundary_description() {
+        let selection = test_map_selection_with_items(vec![test_map_selection_item(
+            "class-b",
+            Some("SFC-100"),
+            None,
+        )]);
+
+        let selection =
+            map_selection_with_ownship_distances(selection, Some(LatLon { lat: 0.0, lon: 0.0 }));
+        assert_eq!(
+            selection.categories[0].items[0].description.as_deref(),
+            Some("SFC-100")
+        );
     }
 
     #[test]

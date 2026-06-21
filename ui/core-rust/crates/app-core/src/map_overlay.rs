@@ -759,6 +759,8 @@ pub struct MapSelectionItem {
     pub sublabel: String,
     #[serde(default)]
     pub description: Option<String>,
+    #[serde(skip)]
+    pub position: Option<LatLon>,
     #[serde(default)]
     pub detail_text: Option<String>,
     pub highlight: MapSelectionHighlight,
@@ -2837,6 +2839,10 @@ fn selection_item_for_point(
         label,
         sublabel: record.kind.trim().to_ascii_uppercase(),
         description: selection_item_description(record, is_airport),
+        position: Some(LatLon {
+            lat: record.lat,
+            lon: record.lon,
+        }),
         detail_text: None,
         highlight: MapSelectionHighlight::FeatureRef {
             id: record.id.clone(),
@@ -2950,6 +2956,7 @@ fn selection_item_for_flight_plan_point(
         label,
         sublabel: point.symbol.kind.trim().to_ascii_uppercase(),
         description: None,
+        position: Some(point.position),
         detail_text: None,
         highlight: MapSelectionHighlight::FeatureRef {
             id: format!("flight-plan:{}", nav_ref_overlay_key(nav_ref)),
@@ -3022,6 +3029,7 @@ fn spot_selection_item(click: LatLon, plan: Option<&FlightPlan>) -> MapSelection
         label: "SPOT".to_string(),
         sublabel: coordinates.clone(),
         description: Some(coordinates),
+        position: Some(click),
         detail_text: None,
         highlight: MapSelectionHighlight::Spot {
             lat: click.lat,
@@ -3050,6 +3058,10 @@ fn selection_item_for_metar(
         label: record.station_id.trim().to_ascii_uppercase(),
         sublabel: normalized_metar_flight_category(record).to_ascii_uppercase(),
         description: record.observed_at_utc.clone(),
+        position: Some(LatLon {
+            lat: record.latitude,
+            lon: record.longitude,
+        }),
         detail_text: Some(record.raw_text.clone()),
         highlight: MapSelectionHighlight::Metar {
             station_id: record.station_id.clone(),
@@ -3083,6 +3095,10 @@ fn selection_item_for_pirep(
             .unwrap_or("PIREP")
             .to_ascii_uppercase(),
         description: record.observed_at_utc.clone(),
+        position: Some(LatLon {
+            lat: record.latitude,
+            lon: record.longitude,
+        }),
         detail_text: Some(record.raw_text.clone()),
         highlight: MapSelectionHighlight::Pirep {
             id: record.id.clone(),
@@ -3134,6 +3150,7 @@ fn selection_item_for_airspace(feature: &AirspaceFeaturePayload) -> MapSelection
         label: airspace_selection_label(feature),
         sublabel: feature.ident.trim().to_string(),
         description: None,
+        position: None,
         detail_text: None,
         highlight: MapSelectionHighlight::FeatureRef {
             id: feature.id.clone(),
@@ -3192,6 +3209,7 @@ fn selection_item_for_offline_region_group(regions: &[&OfflineRegionRecord]) -> 
         label: first.region_id.to_ascii_uppercase(),
         sublabel: description.clone(),
         description: Some(description),
+        position: None,
         detail_text: Some(offline_region_group_detail_text(regions)),
         highlight: MapSelectionHighlight::OfflineRegion {
             id: first.id.clone(),
@@ -3405,6 +3423,7 @@ fn selection_item_for_tfr(area: &TfrAreaPayload) -> MapSelectionItem {
         label: "TFR".to_string(),
         sublabel: area.notam_id.trim().to_string(),
         description: None,
+        position: None,
         detail_text: None,
         highlight: MapSelectionHighlight::FeatureRef {
             id: format!("tfr:{}:{}", area.notam_id.trim(), area.area_index),
@@ -5325,6 +5344,7 @@ mod tests {
             label: id.to_string(),
             sublabel: String::new(),
             description: None,
+            position: None,
             detail_text: None,
             highlight: MapSelectionHighlight::Spot { lat: 0.0, lon: 0.0 },
             nav_ref,

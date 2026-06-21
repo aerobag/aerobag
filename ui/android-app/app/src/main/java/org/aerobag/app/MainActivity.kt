@@ -1957,6 +1957,9 @@ class MainActivity : ComponentActivity() {
             Log.w("AerobagGpsCapture", "failed to configure GPS capture log path", error)
         }
         val retainedModel = ViewModelProvider(this)[AerobagRetainedModel::class.java]
+        val perfScenario = androidPerfScenarioFromIntentValue(
+            intent?.getStringExtra(AndroidPerfScenarioExtra),
+        )
         requestAndroidGps()
         setContent {
             MaterialTheme {
@@ -1966,7 +1969,7 @@ class MainActivity : ComponentActivity() {
                         .semantics { testTagsAsResourceId = true },
                     color = Color(0xFFF3EFE4),
                 ) {
-                    AerobagApp(retainedModel)
+                    AerobagApp(retainedModel, perfScenario)
                 }
             }
         }
@@ -2145,7 +2148,10 @@ internal fun DisclaimerConsentModal(
 }
 
 @Composable
-internal fun AerobagApp(retainedModel: AerobagRetainedModel) {
+internal fun AerobagApp(
+    retainedModel: AerobagRetainedModel,
+    perfScenario: AndroidPerfScenario? = null,
+) {
     val context = LocalContext.current
     val appContext = context.applicationContext
     val prefs = remember(context) { context.applicationContext.getSharedPreferences(UiPrefsName, Context.MODE_PRIVATE) }
@@ -2247,6 +2253,12 @@ internal fun AerobagApp(retainedModel: AerobagRetainedModel) {
         mutableStateOf(
             retainedModel.page ?: readStoredPage(prefs),
         )
+    }
+    LaunchedEffect(perfScenario?.id) {
+        if (perfScenario != null) {
+            Log.i(AndroidPerfScenarioTag, "startup scenario=${perfScenario.id}")
+            page = AppPage.Map
+        }
     }
     var pageHistory by remember { mutableStateOf(retainedModel.pageHistory) }
     val initialRasterMapState = remember(uiSession) {
@@ -2633,6 +2645,7 @@ internal fun AerobagApp(retainedModel: AerobagRetainedModel) {
                         viewport = mapViewport,
                         decodedTileBitmapCache = decodedTileBitmapCache,
                         debugState = sessionSnapshot.debugState,
+                        perfScenario = perfScenario,
                         pageTilePaintTiming = pageTilePaintTiming,
                         ownshipControls = appUiState.ownship.controls,
                         onPageTilePaintTimingComplete = { completedId ->

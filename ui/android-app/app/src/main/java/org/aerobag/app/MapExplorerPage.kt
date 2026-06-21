@@ -469,6 +469,7 @@ internal fun MapExplorerPage(
     viewport: MapViewportState,
     decodedTileBitmapCache: DecodedTileBitmapCache,
     debugState: UiDebugState,
+    perfScenario: AndroidPerfScenario? = null,
     pageTilePaintTiming: PageTilePaintTiming?,
     ownshipControls: OwnshipControlModel,
     onPageTilePaintTimingComplete: (Long) -> Unit,
@@ -782,6 +783,135 @@ internal fun MapExplorerPage(
         onViewportChange(nextViewport)
         if (syncFollow) {
             syncFollowStateForViewport(nextViewport)
+        }
+    }
+
+    var perfScenarioStarted by remember(perfScenario?.id, uiSession) { mutableStateOf(false) }
+    LaunchedEffect(perfScenario?.id, uiSession, surfaceSize, selectedMapId) {
+        val scenario = perfScenario ?: return@LaunchedEffect
+        if (scenario.id != AndroidPerfScenarioMapSelectionFreeze || perfScenarioStarted) {
+            return@LaunchedEffect
+        }
+        if (surfaceWidthPx <= 0f || surfaceHeightPx <= 0f) {
+            return@LaunchedEffect
+        }
+        perfScenarioStarted = true
+        val watchdog = AndroidMainThreadStallWatchdog(scenario)
+        watchdog.start()
+        val scenarioStartMs = SystemClock.elapsedRealtime()
+        try {
+            fun forcePerfSelection(selectionViewport: MapViewportState, stepLabel: String) {
+                val clickStartedMs = SystemClock.elapsedRealtime()
+                val (lat, lon) = worldToLatLon(selectionViewport.centerWorldX, selectionViewport.centerWorldY)
+                Log.i(
+                    AndroidPerfScenarioTag,
+                    "selection_start scenario=${scenario.id} step=$stepLabel lat=${"%.5f".format(lat)} lon=${"%.5f".format(lon)}",
+                )
+                val result = uiSession.queryMapSelection(
+                    selectionViewport,
+                    surfaceWidthPx.toDouble(),
+                    surfaceHeightPx.toDouble(),
+                    LatLonPoint(lat = lat, lon = lon),
+                    density.density.toDouble(),
+                )
+                val elapsedMs = SystemClock.elapsedRealtime() - clickStartedMs
+                val itemCount = result.categories.sumOf { it.items.size }
+                val logLine =
+                    "selection_done scenario=${scenario.id} elapsedMs=$elapsedMs thresholdMs=${scenario.slowSelectionThresholdMs} categories=${result.categories.size} items=$itemCount"
+                if (elapsedMs > scenario.slowSelectionThresholdMs) {
+                    Log.w(AndroidPerfScenarioTag, "threshold_violation kind=slow_selection $logLine")
+                } else {
+                    Log.i(AndroidPerfScenarioTag, logLine)
+                }
+                mapSelection = MapSelectionUiState(
+                    point = Offset(surfaceWidthPx / 2f, surfaceHeightPx / 2f),
+                    result = result,
+                    selectedItem = null,
+                )
+            }
+
+            Log.i(
+                AndroidPerfScenarioTag,
+                "start scenario=${scenario.id} surface=${surfaceSize.width}x${surfaceSize.height} density=${density.density} map=$selectedMapId",
+            )
+            val sfo = latLonToWorld(37.6213, -122.3790)
+            val baseViewport = MapViewportState(
+                centerWorldX = sfo.x,
+                centerWorldY = sfo.y,
+                zoom = clampZoom(9.8, selectedMap.minZoom, selectedMap.maxZoom),
+            )
+            updateViewport(baseViewport, syncFollow = false)
+            delay(750)
+            val overlayJobs = (0 until scenario.overlayFanout).map { worker ->
+                launch(Dispatchers.IO) {
+                    val workerViewport = dragViewport(
+                        baseViewport.copy(zoom = baseViewport.zoom + ((worker % 5) - 2) * 0.04),
+                        (((worker % 6) - 3) * 120).toFloat(),
+                        (((worker % 7) - 3) * 100).toFloat(),
+                    )
+                    val overlayStartedMs = SystemClock.elapsedRealtime()
+                    Log.i(
+                        AndroidPerfScenarioTag,
+                        "overlay_start scenario=${scenario.id} worker=$worker zoom=${"%.2f".format(workerViewport.zoom)}",
+                    )
+                    runCatching {
+                        uiSession.queryMapOverlay(
+                            workerViewport,
+                            surfaceWidthPx.toDouble(),
+                            surfaceHeightPx.toDouble(),
+                            density.density.toDouble(),
+                        ) { resource ->
+                            fetchCoreResource(context.applicationContext, resource, devServerBaseUrl)
+                        }
+                    }.onSuccess { outcome ->
+                        val overlay = outcome.overlay
+                        Log.i(
+                            AndroidPerfScenarioTag,
+                            "overlay_done scenario=${scenario.id} worker=$worker elapsedMs=${SystemClock.elapsedRealtime() - overlayStartedMs} features=${overlay.visibleFeatures.size} airspace=${overlay.airspacePaths.size} labels=${overlay.airspaceLabels.size} metars=${overlay.visibleMetars.size} pireps=${overlay.visiblePireps.size}",
+                        )
+                    }.onFailure { error ->
+                        Log.w(
+                            AndroidPerfScenarioTag,
+                            "overlay_failed scenario=${scenario.id} worker=$worker elapsedMs=${SystemClock.elapsedRealtime() - overlayStartedMs}: ${error.message}",
+                            error,
+                        )
+                    }
+                }
+            }
+            delay(75)
+            forcePerfSelection(baseViewport, "after_overlay_burst")
+            var lastViewport = baseViewport
+            repeat(90) { step ->
+                val dxPx = (((step % 12) - 6) * 42).toFloat()
+                val dyPx = (((step % 10) - 5) * 38).toFloat()
+                val zoom = baseViewport.zoom + ((step % 5) - 2) * 0.03
+                lastViewport = dragViewport(baseViewport.copy(zoom = zoom), dxPx, dyPx)
+                updateViewport(lastViewport, syncFollow = false)
+                if (step == 24) {
+                    forcePerfSelection(lastViewport, step.toString())
+                }
+                delay(35)
+            }
+            overlayJobs.forEach { it.join() }
+            delay(1_500)
+            Log.i(
+                AndroidPerfScenarioTag,
+                "done scenario=${scenario.id} elapsedMs=${SystemClock.elapsedRealtime() - scenarioStartMs}",
+            )
+        } catch (error: CancellationException) {
+            Log.i(
+                AndroidPerfScenarioTag,
+                "cancelled scenario=${scenario.id} elapsedMs=${SystemClock.elapsedRealtime() - scenarioStartMs}",
+            )
+            throw error
+        } catch (error: Throwable) {
+            Log.e(
+                AndroidPerfScenarioTag,
+                "failed scenario=${scenario.id} elapsedMs=${SystemClock.elapsedRealtime() - scenarioStartMs}: ${error.message}",
+                error,
+            )
+        } finally {
+            watchdog.stop()
         }
     }
 

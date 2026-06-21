@@ -185,9 +185,9 @@ import kotlinx.coroutines.Job
 import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.asCoroutineDispatcher
+import kotlinx.coroutines.awaitAll
 import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.coroutineScope
-import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.launch
@@ -489,6 +489,12 @@ internal fun MapExplorerPage(
     val activity = context as? MainActivity
     val density = LocalDensity.current
     val json = remember { Json { ignoreUnknownKeys = true } }
+    val sessionWorkRunner = remember(uiSession) { UiSessionWorkRunner(uiSession) }
+    DisposableEffect(sessionWorkRunner) {
+        onDispose {
+            sessionWorkRunner.close()
+        }
+    }
     val devServerBaseUrl = remember(context) { loadAndroidDevServerBaseUrl(context.applicationContext) }
     val focusRequester = remember { FocusRequester() }
     var chartTrayOpen by remember { mutableStateOf(false) }
@@ -800,19 +806,19 @@ internal fun MapExplorerPage(
         watchdog.start()
         val scenarioStartMs = SystemClock.elapsedRealtime()
         try {
-            fun forcePerfSelection(selectionViewport: MapViewportState, stepLabel: String) {
+            suspend fun forcePerfSelection(selectionViewport: MapViewportState, stepLabel: String) {
                 val clickStartedMs = SystemClock.elapsedRealtime()
                 val (lat, lon) = worldToLatLon(selectionViewport.centerWorldX, selectionViewport.centerWorldY)
                 Log.i(
                     AndroidPerfScenarioTag,
                     "selection_start scenario=${scenario.id} step=$stepLabel lat=${"%.5f".format(lat)} lon=${"%.5f".format(lon)}",
                 )
-                val result = uiSession.queryMapSelection(
-                    selectionViewport,
-                    surfaceWidthPx.toDouble(),
-                    surfaceHeightPx.toDouble(),
-                    LatLonPoint(lat = lat, lon = lon),
-                    density.density.toDouble(),
+                val result = sessionWorkRunner.queryMapSelection(
+                    viewport = selectionViewport,
+                    widthPx = surfaceWidthPx.toDouble(),
+                    heightPx = surfaceHeightPx.toDouble(),
+                    click = LatLonPoint(lat = lat, lon = lon),
+                    pointDisplayScale = density.density.toDouble(),
                 )
                 val elapsedMs = SystemClock.elapsedRealtime() - clickStartedMs
                 val itemCount = result.categories.sumOf { it.items.size }
@@ -842,41 +848,51 @@ internal fun MapExplorerPage(
             )
             updateViewport(baseViewport, syncFollow = false)
             delay(750)
-            val overlayJobs = (0 until scenario.overlayFanout).map { worker ->
-                launch(Dispatchers.IO) {
-                    val workerViewport = dragViewport(
-                        baseViewport.copy(zoom = baseViewport.zoom + ((worker % 5) - 2) * 0.04),
-                        (((worker % 6) - 3) * 120).toFloat(),
-                        (((worker % 7) - 3) * 100).toFloat(),
-                    )
-                    val overlayStartedMs = SystemClock.elapsedRealtime()
-                    Log.i(
-                        AndroidPerfScenarioTag,
-                        "overlay_start scenario=${scenario.id} worker=$worker zoom=${"%.2f".format(workerViewport.zoom)}",
-                    )
-                    runCatching {
-                        uiSession.queryMapOverlay(
-                            workerViewport,
-                            surfaceWidthPx.toDouble(),
-                            surfaceHeightPx.toDouble(),
-                            density.density.toDouble(),
-                        ) { resource ->
-                            fetchCoreResource(context.applicationContext, resource, devServerBaseUrl)
-                        }
-                    }.onSuccess { outcome ->
+            val overlayCompletions = (0 until scenario.overlayFanout).map { worker ->
+                val completion = CompletableDeferred<Unit>()
+                val workerViewport = dragViewport(
+                    baseViewport.copy(zoom = baseViewport.zoom + ((worker % 5) - 2) * 0.04),
+                    (((worker % 6) - 3) * 120).toFloat(),
+                    (((worker % 7) - 3) * 100).toFloat(),
+                )
+                val overlayStartedMs = SystemClock.elapsedRealtime()
+                Log.i(
+                    AndroidPerfScenarioTag,
+                    "overlay_start scenario=${scenario.id} worker=$worker zoom=${"%.2f".format(workerViewport.zoom)}",
+                )
+                sessionWorkRunner.submitOverlay(
+                    viewport = workerViewport,
+                    widthPx = surfaceWidthPx.toDouble(),
+                    heightPx = surfaceHeightPx.toDouble(),
+                    pointDisplayScale = density.density.toDouble(),
+                    fetchResource = { resource ->
+                        fetchCoreResource(context.applicationContext, resource, devServerBaseUrl)
+                    },
+                    onResult = { outcome ->
                         val overlay = outcome.overlay
                         Log.i(
                             AndroidPerfScenarioTag,
                             "overlay_done scenario=${scenario.id} worker=$worker elapsedMs=${SystemClock.elapsedRealtime() - overlayStartedMs} features=${overlay.visibleFeatures.size} airspace=${overlay.airspacePaths.size} labels=${overlay.airspaceLabels.size} metars=${overlay.visibleMetars.size} pireps=${overlay.visiblePireps.size}",
                         )
-                    }.onFailure { error ->
+                        completion.complete(Unit)
+                    },
+                    onError = { error ->
                         Log.w(
                             AndroidPerfScenarioTag,
                             "overlay_failed scenario=${scenario.id} worker=$worker elapsedMs=${SystemClock.elapsedRealtime() - overlayStartedMs}: ${error.message}",
                             error,
                         )
-                    }
-                }
+                        completion.complete(Unit)
+                    },
+                    onDropped = { reason ->
+                        Log.i(
+                            AndroidPerfScenarioTag,
+                            "overlay_dropped scenario=${scenario.id} worker=$worker elapsedMs=${SystemClock.elapsedRealtime() - overlayStartedMs}: $reason",
+                        )
+                        completion.complete(Unit)
+                    },
+                )
+                completion
             }
             delay(75)
             forcePerfSelection(baseViewport, "after_overlay_burst")
@@ -892,7 +908,7 @@ internal fun MapExplorerPage(
                 }
                 delay(35)
             }
-            overlayJobs.forEach { it.join() }
+            overlayCompletions.awaitAll()
             delay(1_500)
             Log.i(
                 AndroidPerfScenarioTag,
@@ -951,45 +967,46 @@ internal fun MapExplorerPage(
             recenterOnNavRef(navRef)
             return
         }
-        runCatching {
-            val inspection = uiSession.queryMapSelectionForNavRef(
-                currentViewport,
-                surfaceWidthPx.toDouble(),
-                surfaceHeightPx.toDouble(),
-                navRef,
-                density.density.toDouble(),
-            )
-            val center = latLonToWorld(inspection.position.lat, inspection.position.lon)
-            val nextViewport = currentViewport.copy(
-                centerWorldX = center.x,
-                centerWorldY = center.y,
-                zoom = inspection.targetZoom,
-            )
-            updateViewport(nextViewport)
-            val point = worldToScreen(
-                nextViewport,
-                Offset(center.x.toFloat(), center.y.toFloat()),
-                surfaceWidthPx,
-                surfaceHeightPx,
-            )
-            mapSelection = MapSelectionUiState(
-                point = point,
-                result = inspection.selection,
-                selectedItem = mapSelectionItemById(inspection.selection, inspection.selectedItemId),
-            )
-            chartTrayOpen = false
-            layerTrayOpen = false
-            dataStatusTrayOpen = false
-            situationTrayOpen = false
-            chartSearchText = ""
-            chartSearchOpen = false
-            chartSearchLoading = false
-            chartSearchError = null
-            chartSearchSuggestions = emptyList()
-        }.onFailure { error ->
-            chartSearchLoading = false
-            chartSearchError = "Search failed: ${error.message ?: error.toString()}"
-        }
+        sessionWorkRunner.submitMapSelectionForNavRef(
+            viewport = currentViewport,
+            widthPx = surfaceWidthPx.toDouble(),
+            heightPx = surfaceHeightPx.toDouble(),
+            navRef = navRef,
+            pointDisplayScale = density.density.toDouble(),
+            onResult = { inspection ->
+                val center = latLonToWorld(inspection.position.lat, inspection.position.lon)
+                val nextViewport = currentViewport.copy(
+                    centerWorldX = center.x,
+                    centerWorldY = center.y,
+                    zoom = inspection.targetZoom,
+                )
+                updateViewport(nextViewport)
+                val point = worldToScreen(
+                    nextViewport,
+                    Offset(center.x.toFloat(), center.y.toFloat()),
+                    surfaceWidthPx,
+                    surfaceHeightPx,
+                )
+                mapSelection = MapSelectionUiState(
+                    point = point,
+                    result = inspection.selection,
+                    selectedItem = mapSelectionItemById(inspection.selection, inspection.selectedItemId),
+                )
+                chartTrayOpen = false
+                layerTrayOpen = false
+                dataStatusTrayOpen = false
+                situationTrayOpen = false
+                chartSearchText = ""
+                chartSearchOpen = false
+                chartSearchLoading = false
+                chartSearchError = null
+                chartSearchSuggestions = emptyList()
+            },
+            onError = { error ->
+                chartSearchLoading = false
+                chartSearchError = "Search failed: ${error.message ?: error.toString()}"
+            },
+        )
     }
 
     fun submitChartSearch() {
@@ -1371,41 +1388,34 @@ internal fun MapExplorerPage(
         }
         val overlayWidthPx = surfaceSize.width.toFloat()
         val overlayHeightPx = surfaceSize.height.toFloat()
-        val overlayOutcome = try {
-            currentCoroutineContext().ensureActive()
-            val overlayStartMs = SystemClock.elapsedRealtime()
-            val outcome = withContext(Dispatchers.IO) {
-                uiSession.queryMapOverlay(
-                    currentViewport,
-                    overlayWidthPx.toDouble(),
-                    overlayHeightPx.toDouble(),
-                    density.density.toDouble(),
-                ) { resource ->
-                    fetchCoreResource(context, resource, devServerBaseUrl)
+        val overlayStartMs = SystemClock.elapsedRealtime()
+        sessionWorkRunner.submitOverlay(
+            viewport = currentViewport,
+            widthPx = overlayWidthPx.toDouble(),
+            heightPx = overlayHeightPx.toDouble(),
+            pointDisplayScale = density.density.toDouble(),
+            fetchResource = { resource ->
+                fetchCoreResource(context, resource, devServerBaseUrl)
+            },
+            onResult = { outcome ->
+                if (outcome.invalidations.contains("session_snapshot")) {
+                    onSessionSnapshotChange(uiSession.refreshSnapshot())
                 }
+                val overlay = outcome.overlay
+                perfLogInfo(MapLayerLogTag) {
+                    val (centerLat, centerLon) = viewportCenterLatLon(currentViewport)
+                    "overlay center=${"%.3f".format(centerLat)},${"%.3f".format(centerLon)} zoom=${"%.2f".format(currentViewport.zoom)} size=${surfaceSize.width}x${surfaceSize.height} vectorsVisible=${mapLayerState.vectors.visible} metarsVisible=${mapLayerState.metars.visible} offlineRegionsVisible=${mapLayerState.offlineRegions.visible} features=${overlay.visibleFeatures.size} airspace=${overlay.airspacePaths.size} airspaceLabels=${overlay.airspaceLabels.size} offlineRegions=${overlay.offlineRegions.size} metars=${overlay.visibleMetars.size} pireps=${overlay.visiblePireps.size} invalidations=${outcome.invalidations} elapsedMs=${SystemClock.elapsedRealtime() - overlayStartMs}"
+                }
+                committedMapOverlay = outcome.overlay
+                committedOverlayViewport = currentViewport
+                committedOverlaySurfaceUnits = OverlaySurfaceUnits(overlayWidthPx, overlayHeightPx)
+                mapOverlayError = null
+            },
+            onError = { error ->
+                mapOverlayError = error.message ?: error::class.java.simpleName
+                Log.e(MapLayerLogTag, "overlay failed: $mapOverlayError", error)
             }
-            currentCoroutineContext().ensureActive()
-            if (outcome.invalidations.contains("session_snapshot")) {
-                onSessionSnapshotChange(uiSession.refreshSnapshot())
-            }
-            val overlay = outcome.overlay
-            perfLogInfo(MapLayerLogTag) {
-                val (centerLat, centerLon) = viewportCenterLatLon(currentViewport)
-                "overlay center=${"%.3f".format(centerLat)},${"%.3f".format(centerLon)} zoom=${"%.2f".format(currentViewport.zoom)} size=${surfaceSize.width}x${surfaceSize.height} vectorsVisible=${mapLayerState.vectors.visible} metarsVisible=${mapLayerState.metars.visible} offlineRegionsVisible=${mapLayerState.offlineRegions.visible} features=${overlay.visibleFeatures.size} airspace=${overlay.airspacePaths.size} airspaceLabels=${overlay.airspaceLabels.size} offlineRegions=${overlay.offlineRegions.size} metars=${overlay.visibleMetars.size} pireps=${overlay.visiblePireps.size} invalidations=${outcome.invalidations} elapsedMs=${SystemClock.elapsedRealtime() - overlayStartMs}"
-            }
-            outcome
-        } catch (error: CancellationException) {
-            mapOverlayError = null
-            throw error
-        } catch (error: Throwable) {
-            mapOverlayError = error.message ?: error::class.java.simpleName
-            Log.e(MapLayerLogTag, "overlay failed: $mapOverlayError", error)
-            return@LaunchedEffect
-        }
-        committedMapOverlay = overlayOutcome.overlay
-        committedOverlayViewport = currentViewport
-        committedOverlaySurfaceUnits = OverlaySurfaceUnits(overlayWidthPx, overlayHeightPx)
-        mapOverlayError = null
+        )
     }
     LaunchedEffect(uiSession, nexradRenderRequests) {
         for (ignored in nexradRenderRequests) {
@@ -1704,6 +1714,32 @@ internal fun MapExplorerPage(
             mapSelectionTrayBounds = null
         }
     }
+    fun requestMapSelection(point: Offset) {
+        val world = screenToWorld(
+            viewportState.value,
+            ScreenPoint(point.x, point.y),
+            surfaceWidthPx,
+            surfaceHeightPx,
+        )
+        val (lat, lon) = worldToLatLon(world.x, world.y)
+        sessionWorkRunner.submitMapSelection(
+            viewport = viewportState.value,
+            widthPx = surfaceWidthPx.toDouble(),
+            heightPx = surfaceHeightPx.toDouble(),
+            click = LatLonPoint(lat = lat, lon = lon),
+            pointDisplayScale = density.density.toDouble(),
+            onResult = { result ->
+                mapSelection = MapSelectionUiState(point = point, result = result, selectedItem = null)
+                chartTrayOpen = false
+                layerTrayOpen = false
+                dataStatusTrayOpen = false
+                situationTrayOpen = false
+            },
+            onError = { error ->
+                Log.w("AerobagSelection", "map selection failed", error)
+            },
+        )
+    }
     fun mapInputBlockedAt(position: Offset): Boolean {
         if (menuTrayOpen) {
             return true
@@ -1840,30 +1876,7 @@ internal fun MapExplorerPage(
                             syncFollowStateForViewport(viewportState.value)
                         } else if (loggedGestureSeed && dragLastPosition != null) {
                             val point = dragLastPosition
-                            val world = screenToWorld(
-                                viewportState.value,
-                                ScreenPoint(point.x, point.y),
-                                surfaceWidthPx,
-                                surfaceHeightPx,
-                            )
-                            val (lat, lon) = worldToLatLon(world.x, world.y)
-                            runCatching {
-                                uiSession.queryMapSelection(
-                                    viewportState.value,
-                                    surfaceWidthPx.toDouble(),
-                                    surfaceHeightPx.toDouble(),
-                                    LatLonPoint(lat = lat, lon = lon),
-                                    density.density.toDouble(),
-                                )
-                            }.onSuccess { result ->
-                                mapSelection = MapSelectionUiState(point = point, result = result, selectedItem = null)
-                                chartTrayOpen = false
-                                layerTrayOpen = false
-                                dataStatusTrayOpen = false
-                                situationTrayOpen = false
-                            }.onFailure { error ->
-                                Log.w("AerobagSelection", "map selection failed", error)
-                            }
+                            requestMapSelection(point)
                         }
                         mapGestureActive = false
                     }

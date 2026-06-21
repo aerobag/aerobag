@@ -1201,6 +1201,9 @@ static OFFLINE_PACKAGES_CONTROLLERS: OnceLock<
 > = OnceLock::new();
 static NEXT_LIVE_FEED_CACHE_HANDLE: AtomicU32 = AtomicU32::new(1);
 static LIVE_FEED_CACHES: OnceLock<Mutex<HashMap<u32, app_core::LiveFeedCache>>> = OnceLock::new();
+static NEXT_UI_SESSION_WORK_SCHEDULER_HANDLE: AtomicU32 = AtomicU32::new(1);
+static UI_SESSION_WORK_SCHEDULERS: OnceLock<Mutex<HashMap<u32, app_core::UiSessionWorkScheduler>>> =
+    OnceLock::new();
 
 struct StoredNavKvStore {
     store: app_core::NavKvStore,
@@ -1222,6 +1225,10 @@ fn offline_packages_controllers(
 
 fn live_feed_caches() -> &'static Mutex<HashMap<u32, app_core::LiveFeedCache>> {
     LIVE_FEED_CACHES.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+fn ui_session_work_schedulers() -> &'static Mutex<HashMap<u32, app_core::UiSessionWorkScheduler>> {
+    UI_SESSION_WORK_SCHEDULERS.get_or_init(|| Mutex::new(HashMap::new()))
 }
 
 pub fn create_offline_packages_controller_json(
@@ -1275,6 +1282,51 @@ pub fn create_live_feed_cache_json(installed_states_json: Option<&str>) -> Resul
             app_core::LiveFeedCache::with_installed(installed_states),
         );
     Ok(handle as u64)
+}
+
+pub fn create_ui_session_work_scheduler() -> Result<u64, String> {
+    let handle = NEXT_UI_SESSION_WORK_SCHEDULER_HANDLE.fetch_add(1, Ordering::Relaxed);
+    ui_session_work_schedulers()
+        .lock()
+        .map_err(|_| "ui session work scheduler store poisoned".to_string())?
+        .insert(handle, app_core::UiSessionWorkScheduler::default());
+    Ok(handle as u64)
+}
+
+pub fn ui_session_work_scheduler_request_json(
+    handle: u64,
+    request_json: &str,
+) -> Result<String, String> {
+    let request: app_core::UiSessionWorkRequest =
+        serde_json::from_str(request_json).map_err(|err| err.to_string())?;
+    let mut schedulers = ui_session_work_schedulers()
+        .lock()
+        .map_err(|_| "ui session work scheduler store poisoned".to_string())?;
+    let scheduler = schedulers
+        .get_mut(&(handle as u32))
+        .ok_or_else(|| format!("invalid ui session work scheduler handle: {handle}"))?;
+    serde_json::to_string(&scheduler.request(request)).map_err(|err| err.to_string())
+}
+
+pub fn ui_session_work_scheduler_complete_json(
+    handle: u64,
+    request_id: u64,
+) -> Result<String, String> {
+    let mut schedulers = ui_session_work_schedulers()
+        .lock()
+        .map_err(|_| "ui session work scheduler store poisoned".to_string())?;
+    let scheduler = schedulers
+        .get_mut(&(handle as u32))
+        .ok_or_else(|| format!("invalid ui session work scheduler handle: {handle}"))?;
+    serde_json::to_string(&scheduler.complete(request_id)).map_err(|err| err.to_string())
+}
+
+pub fn destroy_ui_session_work_scheduler(handle: u64) -> Result<(), String> {
+    ui_session_work_schedulers()
+        .lock()
+        .map_err(|_| "ui session work scheduler store poisoned".to_string())?
+        .remove(&(handle as u32));
+    Ok(())
 }
 
 pub fn live_feed_cache_missing_requests_json(handle: u64) -> Result<String, String> {
@@ -2113,6 +2165,58 @@ pub extern "system" fn Java_org_aerobag_app_domain_NativeBindings_destroyOffline
     handle: i64,
 ) {
     if let Err(message) = destroy_offline_packages_controller_json(handle as u64) {
+        let _ = env.throw_new("java/lang/RuntimeException", message);
+    }
+}
+
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_org_aerobag_app_domain_NativeBindings_createUiSessionWorkScheduler(
+    mut env: JNIEnv,
+    _class: JClass,
+) -> i64 {
+    match create_ui_session_work_scheduler() {
+        Ok(handle) => handle as i64,
+        Err(message) => {
+            let _ = env.throw_new("java/lang/RuntimeException", message);
+            0
+        }
+    }
+}
+
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_org_aerobag_app_domain_NativeBindings_uiSessionWorkSchedulerRequestJson(
+    mut env: JNIEnv,
+    _class: JClass,
+    handle: i64,
+    request_json: JString,
+) -> jstring {
+    let result = (|| {
+        let request = get_java_string(&mut env, request_json)?;
+        ui_session_work_scheduler_request_json(handle as u64, &request)
+    })();
+    return_string(&mut env, result)
+}
+
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_org_aerobag_app_domain_NativeBindings_uiSessionWorkSchedulerCompleteJson(
+    mut env: JNIEnv,
+    _class: JClass,
+    handle: i64,
+    request_id: i64,
+) -> jstring {
+    return_string(
+        &mut env,
+        ui_session_work_scheduler_complete_json(handle as u64, request_id as u64),
+    )
+}
+
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_org_aerobag_app_domain_NativeBindings_destroyUiSessionWorkScheduler(
+    mut env: JNIEnv,
+    _class: JClass,
+    handle: i64,
+) {
+    if let Err(message) = destroy_ui_session_work_scheduler(handle as u64) {
         let _ = env.throw_new("java/lang/RuntimeException", message);
     }
 }

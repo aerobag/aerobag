@@ -261,6 +261,8 @@ pub use terrain::{
 pub use ui_work_scheduler::{
     SessionSnapshotRefreshDecision, SessionSnapshotRefreshPriority,
     SessionSnapshotRefreshScheduler, SessionSnapshotRefreshSchedulerConfig,
+    UiSessionWorkCompletionDecision, UiSessionWorkKind, UiSessionWorkRequest,
+    UiSessionWorkRequestDecision, UiSessionWorkResultAction, UiSessionWorkScheduler,
 };
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]

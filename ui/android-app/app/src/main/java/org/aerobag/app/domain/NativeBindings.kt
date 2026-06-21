@@ -12,6 +12,14 @@ interface NativeBridge {
 
     fun destroyOfflinePackagesController(handle: Long)
 
+    fun createUiSessionWorkScheduler(): Long
+
+    fun uiSessionWorkSchedulerRequestJson(handle: Long, requestJson: String): String
+
+    fun uiSessionWorkSchedulerCompleteJson(handle: Long, requestId: Long): String
+
+    fun destroyUiSessionWorkScheduler(handle: Long)
+
     fun createLiveFeedCache(installedStatesJson: String): Long
 
     fun liveFeedCacheMissingRequestsJson(handle: Long): String
@@ -521,6 +529,14 @@ object NativeBindings : NativeBridge {
     external override fun dispatchOfflinePackagesControllerJson(handle: Long, inputJson: String): String
 
     external override fun destroyOfflinePackagesController(handle: Long)
+
+    external override fun createUiSessionWorkScheduler(): Long
+
+    external override fun uiSessionWorkSchedulerRequestJson(handle: Long, requestJson: String): String
+
+    external override fun uiSessionWorkSchedulerCompleteJson(handle: Long, requestId: Long): String
+
+    external override fun destroyUiSessionWorkScheduler(handle: Long)
 
     external override fun createLiveFeedCache(installedStatesJson: String): Long
 

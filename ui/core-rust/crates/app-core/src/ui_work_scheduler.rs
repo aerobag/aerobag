@@ -2,6 +2,179 @@ use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
+pub enum UiSessionWorkKind {
+    MapOverlay,
+    MapSelection,
+    MapSelectionForNavRef,
+}
+
+impl UiSessionWorkKind {
+    fn is_input_priority(self) -> bool {
+        matches!(
+            self,
+            UiSessionWorkKind::MapSelection | UiSessionWorkKind::MapSelectionForNavRef
+        )
+    }
+
+    fn is_viewport_coalesced(self) -> bool {
+        matches!(self, UiSessionWorkKind::MapOverlay)
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct UiSessionWorkRequest {
+    pub id: u64,
+    pub kind: UiSessionWorkKind,
+    pub coalesce_key: Option<String>,
+    pub requested_at_ms: u64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum UiSessionWorkRequestDecision {
+    Start { request: UiSessionWorkRequest },
+    Queued { replaced_request_id: Option<u64> },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum UiSessionWorkResultAction {
+    Land,
+    Drop { reason: String },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct UiSessionWorkCompletionDecision {
+    pub result_action: UiSessionWorkResultAction,
+    pub next: Option<UiSessionWorkRequest>,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct UiSessionWorkScheduler {
+    active_input: Option<UiSessionWorkRequest>,
+    active_overlay: Option<UiSessionWorkRequest>,
+    pending_input: Option<UiSessionWorkRequest>,
+    pending_overlay: Option<UiSessionWorkRequest>,
+}
+
+impl UiSessionWorkScheduler {
+    pub fn request(&mut self, request: UiSessionWorkRequest) -> UiSessionWorkRequestDecision {
+        if request.kind.is_input_priority() {
+            if self.active_input.is_none() {
+                self.active_input = Some(request.clone());
+                return UiSessionWorkRequestDecision::Start { request };
+            }
+            let replaced_request_id = self.pending_input.replace(request).map(|old| old.id);
+            return UiSessionWorkRequestDecision::Queued {
+                replaced_request_id,
+            };
+        }
+        if request.kind.is_viewport_coalesced() {
+            if self.active_overlay.is_none() && self.active_input.is_none() {
+                self.active_overlay = Some(request.clone());
+                return UiSessionWorkRequestDecision::Start { request };
+            }
+            let replaced_request_id = self.pending_overlay.replace(request).map(|old| old.id);
+            return UiSessionWorkRequestDecision::Queued {
+                replaced_request_id,
+            };
+        }
+        if self.active_input.is_none() {
+            self.active_input = Some(request.clone());
+            return UiSessionWorkRequestDecision::Start { request };
+        }
+        let replaced_request_id = self.pending_input.replace(request).map(|old| old.id);
+        UiSessionWorkRequestDecision::Queued {
+            replaced_request_id,
+        }
+    }
+
+    pub fn complete(&mut self, request_id: u64) -> UiSessionWorkCompletionDecision {
+        if self
+            .active_input
+            .as_ref()
+            .is_some_and(|active| active.id == request_id)
+        {
+            let active = self
+                .active_input
+                .take()
+                .expect("active input checked above");
+            return self.complete_active_request(active);
+        }
+        if self
+            .active_overlay
+            .as_ref()
+            .is_some_and(|active| active.id == request_id)
+        {
+            let active = self
+                .active_overlay
+                .take()
+                .expect("active overlay checked above");
+            return self.complete_active_request(active);
+        }
+        if self.active_input.is_none() && self.active_overlay.is_none() {
+            return UiSessionWorkCompletionDecision {
+                result_action: UiSessionWorkResultAction::Drop {
+                    reason: "no_active_request".to_string(),
+                },
+                next: None,
+            };
+        }
+        UiSessionWorkCompletionDecision {
+            result_action: UiSessionWorkResultAction::Drop {
+                reason: "request_is_not_active".to_string(),
+            },
+            next: None,
+        }
+    }
+
+    fn complete_active_request(
+        &mut self,
+        active: UiSessionWorkRequest,
+    ) -> UiSessionWorkCompletionDecision {
+        let result_action = if active.kind.is_input_priority() && self.pending_input.is_some() {
+            UiSessionWorkResultAction::Drop {
+                reason: "superseded_by_newer_input".to_string(),
+            }
+        } else if active.kind.is_viewport_coalesced() && self.pending_overlay.is_some() {
+            UiSessionWorkResultAction::Drop {
+                reason: "superseded_by_newer_overlay".to_string(),
+            }
+        } else {
+            UiSessionWorkResultAction::Land
+        };
+        let next = self.next_request_to_start();
+        UiSessionWorkCompletionDecision {
+            result_action,
+            next,
+        }
+    }
+
+    fn next_request_to_start(&mut self) -> Option<UiSessionWorkRequest> {
+        if self.active_input.is_none() {
+            if let Some(next_input) = self.pending_input.take() {
+                self.active_input = Some(next_input.clone());
+                return Some(next_input);
+            }
+        }
+        if self.active_input.is_none() && self.active_overlay.is_none() {
+            if let Some(next_overlay) = self.pending_overlay.take() {
+                self.active_overlay = Some(next_overlay.clone());
+                return Some(next_overlay);
+            }
+        }
+        None
+    }
+
+    pub fn active_request(&self) -> Option<&UiSessionWorkRequest> {
+        self.active_input
+            .as_ref()
+            .or_else(|| self.active_overlay.as_ref())
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
 pub enum SessionSnapshotRefreshPriority {
     Timely,
     LowPriority,
@@ -172,6 +345,157 @@ impl Default for SessionSnapshotRefreshScheduler {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn work_request(id: u64, kind: UiSessionWorkKind) -> UiSessionWorkRequest {
+        UiSessionWorkRequest {
+            id,
+            kind,
+            coalesce_key: Some(format!("{kind:?}")),
+            requested_at_ms: id * 10,
+        }
+    }
+
+    #[test]
+    fn session_work_starts_first_request_immediately() {
+        let mut scheduler = UiSessionWorkScheduler::default();
+        let request = work_request(1, UiSessionWorkKind::MapOverlay);
+        assert_eq!(
+            scheduler.request(request.clone()),
+            UiSessionWorkRequestDecision::Start {
+                request: request.clone()
+            }
+        );
+        assert_eq!(scheduler.active_request(), Some(&request));
+    }
+
+    #[test]
+    fn session_work_coalesces_overlay_to_latest_pending_request() {
+        let mut scheduler = UiSessionWorkScheduler::default();
+        assert!(matches!(
+            scheduler.request(work_request(1, UiSessionWorkKind::MapOverlay)),
+            UiSessionWorkRequestDecision::Start { .. }
+        ));
+        assert_eq!(
+            scheduler.request(work_request(2, UiSessionWorkKind::MapOverlay)),
+            UiSessionWorkRequestDecision::Queued {
+                replaced_request_id: None
+            }
+        );
+        assert_eq!(
+            scheduler.request(work_request(3, UiSessionWorkKind::MapOverlay)),
+            UiSessionWorkRequestDecision::Queued {
+                replaced_request_id: Some(2)
+            }
+        );
+        assert_eq!(
+            scheduler.complete(1),
+            UiSessionWorkCompletionDecision {
+                result_action: UiSessionWorkResultAction::Drop {
+                    reason: "superseded_by_newer_overlay".to_string(),
+                },
+                next: Some(work_request(3, UiSessionWorkKind::MapOverlay)),
+            }
+        );
+        assert_eq!(
+            scheduler.complete(3),
+            UiSessionWorkCompletionDecision {
+                result_action: UiSessionWorkResultAction::Land,
+                next: None,
+            }
+        );
+    }
+
+    #[test]
+    fn session_work_prioritizes_pending_input_over_pending_overlay() {
+        let mut scheduler = UiSessionWorkScheduler::default();
+        assert!(matches!(
+            scheduler.request(work_request(1, UiSessionWorkKind::MapOverlay)),
+            UiSessionWorkRequestDecision::Start { .. }
+        ));
+        assert_eq!(
+            scheduler.request(work_request(2, UiSessionWorkKind::MapOverlay)),
+            UiSessionWorkRequestDecision::Queued {
+                replaced_request_id: None
+            }
+        );
+        assert_eq!(
+            scheduler.request(work_request(3, UiSessionWorkKind::MapSelection)),
+            UiSessionWorkRequestDecision::Start {
+                request: work_request(3, UiSessionWorkKind::MapSelection)
+            }
+        );
+        assert_eq!(
+            scheduler.complete(1),
+            UiSessionWorkCompletionDecision {
+                result_action: UiSessionWorkResultAction::Drop {
+                    reason: "superseded_by_newer_overlay".to_string(),
+                },
+                next: None,
+            }
+        );
+        assert_eq!(
+            scheduler.complete(3),
+            UiSessionWorkCompletionDecision {
+                result_action: UiSessionWorkResultAction::Land,
+                next: Some(work_request(2, UiSessionWorkKind::MapOverlay)),
+            }
+        );
+    }
+
+    #[test]
+    fn session_work_drops_superseded_input_result() {
+        let mut scheduler = UiSessionWorkScheduler::default();
+        assert!(matches!(
+            scheduler.request(work_request(1, UiSessionWorkKind::MapSelection)),
+            UiSessionWorkRequestDecision::Start { .. }
+        ));
+        assert_eq!(
+            scheduler.request(work_request(2, UiSessionWorkKind::MapSelectionForNavRef)),
+            UiSessionWorkRequestDecision::Queued {
+                replaced_request_id: None
+            }
+        );
+        assert_eq!(
+            scheduler.complete(1),
+            UiSessionWorkCompletionDecision {
+                result_action: UiSessionWorkResultAction::Drop {
+                    reason: "superseded_by_newer_input".to_string(),
+                },
+                next: Some(work_request(2, UiSessionWorkKind::MapSelectionForNavRef)),
+            }
+        );
+    }
+
+    #[test]
+    fn session_work_starts_input_while_overlay_is_active() {
+        let mut scheduler = UiSessionWorkScheduler::default();
+        assert_eq!(
+            scheduler.request(work_request(1, UiSessionWorkKind::MapOverlay)),
+            UiSessionWorkRequestDecision::Start {
+                request: work_request(1, UiSessionWorkKind::MapOverlay)
+            }
+        );
+        assert_eq!(
+            scheduler.request(work_request(2, UiSessionWorkKind::MapSelection)),
+            UiSessionWorkRequestDecision::Start {
+                request: work_request(2, UiSessionWorkKind::MapSelection)
+            }
+        );
+        assert_eq!(
+            scheduler.complete(2),
+            UiSessionWorkCompletionDecision {
+                result_action: UiSessionWorkResultAction::Land,
+                next: None,
+            }
+        );
+        assert_eq!(
+            scheduler.complete(1),
+            UiSessionWorkCompletionDecision {
+                result_action: UiSessionWorkResultAction::Land,
+                next: None,
+            }
+        );
+    }
 
     fn scheduler() -> SessionSnapshotRefreshScheduler {
         SessionSnapshotRefreshScheduler::default()

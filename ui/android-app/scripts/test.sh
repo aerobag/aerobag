@@ -31,6 +31,8 @@ AEROBAG_ANDROID_KEY_PASSWORD="${AEROBAG_ANDROID_KEY_PASSWORD:-android}"
 
 mkdir -p "$GRADLE_USER_HOME" "$PROJECT_CACHE_DIR"
 
+python3 "$APP_DIR/scripts/check_slow_ui_calls.py"
+
 (
   cd "$ROOT"
   env \

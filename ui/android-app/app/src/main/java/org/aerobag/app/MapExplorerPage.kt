@@ -242,6 +242,9 @@ import org.aerobag.app.domain.OwnshipControlModel
 import org.aerobag.app.domain.OwnshipMode
 import org.aerobag.app.domain.OwnshipRenderState
 import org.aerobag.app.domain.OwnshipSelection
+import org.aerobag.app.domain.OwnshipSourceKind
+import org.aerobag.app.domain.OwnshipSourceRegistration
+import org.aerobag.app.domain.OwnshipSourceStatusUpdate
 import org.aerobag.app.domain.PackageZipStore
 import org.aerobag.app.domain.PlaybackStatus
 import org.aerobag.app.domain.PlaybackUiState
@@ -261,6 +264,8 @@ import org.aerobag.app.domain.ScreenPoint
 import org.aerobag.app.domain.SequencingMode
 import org.aerobag.app.domain.SituationControlInput
 import org.aerobag.app.domain.SituationRingCandidate
+import org.aerobag.app.domain.SituationSample
+import org.aerobag.app.domain.SourceConnectionState
 import org.aerobag.app.domain.TileStorageKind
 import org.aerobag.app.domain.TerrainOverlayQueryResult
 import org.aerobag.app.domain.TerrainOverlayTileRequest
@@ -354,9 +359,27 @@ internal data class NexradOverlayFrame(
     val viewport: MapViewportState,
     val surfaceWidthPx: Float,
     val surfaceHeightPx: Float,
+    val decodedImageCount: Int,
+    val decodedBytes: Long,
 )
 
 private const val TerrainTileBitmapCacheMaxEntries = 256
+private const val PerfScenarioKorsOwnshipSourceId = "perf:kors-terrain-ownship"
+private const val PerfScenarioKorsStressCenterLat = 48.6760
+private const val PerfScenarioKorsStressCenterLon = -122.8600
+private const val PerfScenarioKorsStressZoom = 10.8
+private const val PerfScenarioKorsStressAltitudeMslFt = 1_000.0
+
+private fun estimatedImageBitmapBytes(bitmap: androidx.compose.ui.graphics.ImageBitmap): Long =
+    bitmap.width.toLong() * bitmap.height.toLong() * 4L
+
+private fun terrainBitmapCacheStats(
+    cache: LinkedHashMap<String, androidx.compose.ui.graphics.ImageBitmap>,
+): Pair<Int, Long> = cache.size to cache.values.sumOf(::estimatedImageBitmapBytes)
+
+private fun nexradFrameStats(frame: NexradOverlayFrame?): Pair<Int, Long> {
+    return (frame?.decodedImageCount ?: 0) to (frame?.decodedBytes ?: 0L)
+}
 
 private fun terrainOverlayImageForRequest(
     request: TerrainOverlayTileRequest,
@@ -792,6 +815,20 @@ internal fun MapExplorerPage(
         }
     }
 
+    fun currentPerfCacheStats(): AndroidPerfCacheStats {
+        val rasterStats = decodedTileBitmapCache.stats()
+        val (terrainEntries, terrainBytes) = terrainBitmapCacheStats(terrainTileBitmapCache)
+        val (nexradEntries, nexradBytes) = nexradFrameStats(nexradFrame)
+        return AndroidPerfCacheStats(
+            rasterDecodedEntries = rasterStats.entries,
+            rasterDecodedBytes = rasterStats.bytes,
+            terrainEntries = terrainEntries,
+            terrainBytes = terrainBytes,
+            nexradEntries = nexradEntries,
+            nexradBytes = nexradBytes,
+        )
+    }
+
     var perfScenarioStarted by remember(perfScenario?.id, uiSession) { mutableStateOf(false) }
     LaunchedEffect(perfScenario?.id, uiSession, surfaceSize, selectedMapId) {
         val scenario = perfScenario ?: return@LaunchedEffect
@@ -910,6 +947,137 @@ internal fun MapExplorerPage(
             }
             overlayCompletions.awaitAll()
             delay(1_500)
+            Log.i(
+                AndroidPerfScenarioTag,
+                "done scenario=${scenario.id} elapsedMs=${SystemClock.elapsedRealtime() - scenarioStartMs}",
+            )
+        } catch (error: CancellationException) {
+            Log.i(
+                AndroidPerfScenarioTag,
+                "cancelled scenario=${scenario.id} elapsedMs=${SystemClock.elapsedRealtime() - scenarioStartMs}",
+            )
+            throw error
+        } catch (error: Throwable) {
+            Log.e(
+                AndroidPerfScenarioTag,
+                "failed scenario=${scenario.id} elapsedMs=${SystemClock.elapsedRealtime() - scenarioStartMs}: ${error.message}",
+                error,
+            )
+        } finally {
+            watchdog.stop()
+        }
+    }
+
+    var memoryStressScenarioStarted by remember(perfScenario?.id, uiSession) { mutableStateOf(false) }
+    LaunchedEffect(perfScenario?.id, uiSession, surfaceSize, selectedMapId) {
+        val scenario = perfScenario ?: return@LaunchedEffect
+        if (scenario.id != AndroidPerfScenarioTerrainNexradMemoryStress || memoryStressScenarioStarted) {
+            return@LaunchedEffect
+        }
+        if (surfaceWidthPx <= 0f || surfaceHeightPx <= 0f) {
+            return@LaunchedEffect
+        }
+        memoryStressScenarioStarted = true
+        val watchdog = AndroidMainThreadStallWatchdog(scenario)
+        watchdog.start()
+        val scenarioStartMs = SystemClock.elapsedRealtime()
+        try {
+            val scenarioNowMs = System.currentTimeMillis()
+            onSessionSnapshotChange(
+                uiSession.registerOwnshipSource(
+                    OwnshipSourceRegistration(
+                        sourceId = PerfScenarioKorsOwnshipSourceId,
+                        sourceKind = OwnshipSourceKind.FlightPlanSimulator,
+                        displayName = "Perf KORS Ownship",
+                        selectable = true,
+                        autoEligible = false,
+                    ),
+                ),
+            )
+            onSessionSnapshotChange(
+                uiSession.updateOwnshipSourceStatus(
+                    OwnshipSourceStatusUpdate(
+                        sourceId = PerfScenarioKorsOwnshipSourceId,
+                        connectionState = SourceConnectionState.Connected,
+                        enabled = true,
+                        statusLabel = "KORS terrain perf",
+                    ),
+                ),
+            )
+            onSessionSnapshotChange(
+                uiSession.pushSituationSample(
+                    SituationSample(
+                        sourceId = PerfScenarioKorsOwnshipSourceId,
+                        sourceKind = OwnshipSourceKind.FlightPlanSimulator,
+                        eventTimeEpochMs = scenarioNowMs,
+                        receivedTimeEpochMs = scenarioNowMs,
+                        position = LatLonPoint(
+                            lat = PerfScenarioKorsStressCenterLat,
+                            lon = PerfScenarioKorsStressCenterLon,
+                        ),
+                        horizontalAccuracyM = 5.0,
+                        verticalAccuracyM = 10.0,
+                        trackDegTrue = 315.0,
+                        headingDegTrue = 315.0,
+                        groundSpeedKt = 120.0,
+                        altitudeMslFt = PerfScenarioKorsStressAltitudeMslFt,
+                    ),
+                ),
+            )
+            onSessionSnapshotChange(uiSession.selectOwnshipSource(OwnshipSelection.Source(PerfScenarioKorsOwnshipSourceId)))
+            delay(250)
+            val scenarioSnapshot = uiSession.refreshSnapshot()
+            onSessionSnapshotChange(scenarioSnapshot)
+            Log.i(
+                AndroidPerfScenarioTag,
+                "start scenario=${scenario.id} surface=${surfaceSize.width}x${surfaceSize.height} density=${density.density} map=$selectedMapId terrainLayerEnabled=${mapLayerState.terrainWarning.enabled} nexradLayerEnabled=${mapLayerState.nexrad.enabled} snapshotOwnshipTerrainBucketFt=${scenarioSnapshot.appUiState.ownship.render.terrainAltitudeBucketFt} syntheticOwnship=${PerfScenarioKorsStressCenterLat},${PerfScenarioKorsStressCenterLon} altitudeMslFt=$PerfScenarioKorsStressAltitudeMslFt",
+            )
+            if (mapLayerState.terrainWarning.enabled && !mapLayerState.terrainWarning.visible) {
+                onSessionSnapshotChange(uiSession.setMapLayerVisibility(MapLayerId.TerrainWarning, true))
+            }
+            if (mapLayerState.nexrad.enabled && !mapLayerState.nexrad.visible) {
+                onSessionSnapshotChange(uiSession.setMapLayerVisibility(MapLayerId.Nexrad, true))
+            }
+            val center = latLonToWorld(PerfScenarioKorsStressCenterLat, PerfScenarioKorsStressCenterLon)
+            val baseViewport = MapViewportState(
+                centerWorldX = center.x,
+                centerWorldY = center.y,
+                zoom = clampZoom(PerfScenarioKorsStressZoom, selectedMap.minZoom, selectedMap.maxZoom),
+            )
+            updateViewport(baseViewport, syncFollow = false)
+            delay(500)
+            val baselineSample = logAndroidPerfMemorySample(scenario, "initial", currentPerfCacheStats())
+            val scenarioEndMs = scenarioStartMs + scenario.memoryStressDurationMs
+            var sampleIndex = 0
+            while (SystemClock.elapsedRealtime() < scenarioEndMs) {
+                val angle = sampleIndex.toDouble() * 0.57
+                val dxPx = (cos(angle) * 420.0 + sin(angle * 0.41) * 160.0).toFloat()
+                val dyPx = (sin(angle) * 360.0 + cos(angle * 0.37) * 140.0).toFloat()
+                val nextViewport = dragViewport(
+                    baseViewport.copy(zoom = baseViewport.zoom + ((sampleIndex % 5) - 2) * 0.12),
+                    dxPx,
+                    dyPx,
+                )
+                updateViewport(nextViewport, syncFollow = false)
+                nexradRenderRequests.trySend(Unit)
+                terrainRenderRequests.trySend(Unit)
+                delay(scenario.memorySampleIntervalMs)
+                val sample = logAndroidPerfMemorySample(
+                    scenario,
+                    "stress_$sampleIndex",
+                    currentPerfCacheStats(),
+                )
+                val growthBytes = sample.footprintBytes - baselineSample.footprintBytes
+                if (growthBytes > scenario.memoryGrowthThresholdBytes) {
+                    Log.w(
+                        AndroidPerfScenarioTag,
+                        "threshold_violation scenario=${scenario.id} kind=memory_growth growthBytes=$growthBytes thresholdBytes=${scenario.memoryGrowthThresholdBytes}",
+                    )
+                }
+                sampleIndex += 1
+            }
+            delay(1_000)
+            logAndroidPerfMemorySample(scenario, "final", currentPerfCacheStats())
             Log.i(
                 AndroidPerfScenarioTag,
                 "done scenario=${scenario.id} elapsedMs=${SystemClock.elapsedRealtime() - scenarioStartMs}",
@@ -1457,20 +1625,27 @@ internal fun MapExplorerPage(
                     }
                     continue
                 }
+                val decodedImagesBySrc = LinkedHashMap<String, androidx.compose.ui.graphics.ImageBitmap>()
+                var decodedImageBytes = 0L
                 val images = withContext(Dispatchers.IO) {
                     overlay.tiles.map { tile ->
-                        val bytes = uiSession.nexradTileBytes(tile.src) { resource ->
-                            val fetchStartMs = SystemClock.elapsedRealtime()
-                            fetchCoreResource(context, resource, latestDevServerBaseUrl).also {
-                                fetchMs += SystemClock.elapsedRealtime() - fetchStartMs
+                        val bitmap = decodedImagesBySrc.getOrPut(tile.src) {
+                            val bytes = uiSession.nexradTileBytes(tile.src) { resource ->
+                                val fetchStartMs = SystemClock.elapsedRealtime()
+                                fetchCoreResource(context, resource, latestDevServerBaseUrl).also {
+                                    fetchMs += SystemClock.elapsedRealtime() - fetchStartMs
+                                }
+                            }
+                            imageBytes += bytes.size
+                            val decodeStartMs = SystemClock.elapsedRealtime()
+                            val decoded = BitmapFactory.decodeByteArray(bytes, 0, bytes.size)
+                                ?: error("failed to decode nexrad tile ${tile.src}")
+                            decodeMs += SystemClock.elapsedRealtime() - decodeStartMs
+                            decoded.asImageBitmap().also { image ->
+                                decodedImageBytes += estimatedImageBitmapBytes(image)
                             }
                         }
-                        imageBytes += bytes.size
-                        val decodeStartMs = SystemClock.elapsedRealtime()
-                        val bitmap = BitmapFactory.decodeByteArray(bytes, 0, bytes.size)
-                            ?: error("failed to decode nexrad tile ${tile.src}")
-                        decodeMs += SystemClock.elapsedRealtime() - decodeStartMs
-                        NexradOverlayImage(tile = tile, bitmap = bitmap.asImageBitmap())
+                        NexradOverlayImage(tile = tile, bitmap = bitmap)
                     }
                 }
                 nexradFrame = NexradOverlayFrame(
@@ -1478,9 +1653,11 @@ internal fun MapExplorerPage(
                     viewport = latestViewport,
                     surfaceWidthPx = latestSurfaceWidthPx,
                     surfaceHeightPx = latestSurfaceHeightPx,
+                    decodedImageCount = decodedImagesBySrc.size,
+                    decodedBytes = decodedImageBytes,
                 )
                 perfLogInfo(MapLayerLogTag) {
-                    "nexrad frame-ready tiles=${images.size} res=${overlay.stats.res} imageBytes=$imageBytes fetchMs=$fetchMs decodeMs=$decodeMs elapsedMs=${SystemClock.elapsedRealtime() - effectStartMs}"
+                    "nexrad frame-ready pieces=${images.size} decodedImages=${decodedImagesBySrc.size} res=${overlay.stats.res} imageBytes=$imageBytes decodedBytes=$decodedImageBytes fetchMs=$fetchMs decodeMs=$decodeMs elapsedMs=${SystemClock.elapsedRealtime() - effectStartMs}"
                 }
             } catch (error: CancellationException) {
                 throw error

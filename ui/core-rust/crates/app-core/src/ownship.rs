@@ -513,7 +513,7 @@ fn resolve_state(
 
     let selected = match &policy.selection {
         OwnshipSelectionPolicy::Manual { source_id } => sources.iter_mut().find(|source| {
-            source.source_id == *source_id && is_candidate(source, now_epoch_ms, policy)
+            source.source_id == *source_id && is_manual_candidate(source, now_epoch_ms)
         }),
         OwnshipSelectionPolicy::Auto => {
             if let Some(found) =
@@ -593,6 +593,16 @@ fn pick_by_priority<'a>(
         }
     }
     None
+}
+
+fn is_manual_candidate(source: &OwnshipSourceStatus, now_epoch_ms: i64) -> bool {
+    source.enabled
+        && source.selectable
+        && source
+            .latest_sample
+            .as_ref()
+            .is_some_and(|sample| sample.position.is_some())
+        && is_fresh(source, now_epoch_ms)
 }
 
 fn is_candidate(source: &OwnshipSourceStatus, now_epoch_ms: i64, policy: &OwnshipPolicy) -> bool {
@@ -1088,6 +1098,54 @@ mod tests {
         );
 
         assert_eq!(state.resolved.mode, OwnshipMode::None);
+    }
+
+    #[test]
+    fn manual_selection_can_use_selectable_non_auto_source() {
+        let state = register_source(
+            &OwnshipState::default(),
+            OwnshipSourceRegistration {
+                source_id: OwnshipSourceId("sim".to_string()),
+                source_kind: OwnshipSourceKind::FlightPlanSimulator,
+                display_name: "Sim".to_string(),
+                selectable: true,
+                auto_eligible: false,
+            },
+        );
+        let state = push_sample(
+            &state,
+            SituationSample {
+                source_id: OwnshipSourceId("sim".to_string()),
+                source_kind: OwnshipSourceKind::FlightPlanSimulator,
+                event_time_epoch_ms: 2_000,
+                received_time_epoch_ms: 2_000,
+                position: Some(LatLon {
+                    lat: 48.676,
+                    lon: -122.86,
+                }),
+                horizontal_accuracy_m: None,
+                vertical_accuracy_m: None,
+                track_deg_true: Some(315.0),
+                heading_deg_true: Some(315.0),
+                ground_speed_kt: Some(120.0),
+                altitude_msl_ft: Some(1_000.0),
+                pressure_altitude_ft: None,
+                vertical_speed_fpm: None,
+            },
+        );
+        let state = select_source(
+            &state,
+            OwnshipSelectionCommand::Source {
+                source_id: OwnshipSourceId("sim".to_string()),
+            },
+        );
+
+        assert_eq!(
+            state.resolved.active_source_id,
+            Some(OwnshipSourceId("sim".to_string()))
+        );
+        assert_eq!(state.resolved.mode, OwnshipMode::Simulated);
+        assert_eq!(state.render.terrain_altitude_bucket_ft, Some(1_000.0));
     }
 
     #[test]

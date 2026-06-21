@@ -1384,12 +1384,14 @@ pub(crate) fn flight_plan_ui_state(
             true
         };
         if use_live_distances && Some(row_index) == active_row_index {
-            if let (Some(ownship_position), Some(leg_index)) =
-                (live_data.ownship_position, row.leg_index)
-            {
-                if let Some(leg) = plan.resolved_legs.get(leg_index) {
+            if let Some(ownship_position) = live_data.ownship_position {
+                let destination_ref = row
+                    .leg_index
+                    .and_then(|leg_index| plan.resolved_legs.get(leg_index).map(|leg| &leg.to))
+                    .or(row.destination_anchor.as_ref());
+                if let Some(destination_ref) = destination_ref {
                     let destination_position =
-                        missing_pages.collect(nav_ref_position(store, &leg.to, None))?;
+                        missing_pages.collect(nav_ref_position(store, destination_ref, None))?;
                     distance_nm = destination_position.map(|position| {
                         crate::great_circle_distance_nm(ownship_position, position)
                     });
@@ -4737,6 +4739,50 @@ mod tests {
         assert_eq!(
             row_cell(summary_row, "waypoint_ete").value.as_deref(),
             row_cell(ccc_row, "waypoint_ete").value.as_deref()
+        );
+    }
+
+    #[test]
+    fn flight_plan_ui_state_projects_live_distance_for_off_plan_direct_to_spot() {
+        let store = test_nav_kv_store(&[]);
+        let ownship = LatLon {
+            lat: 47.60,
+            lon: -122.30,
+        };
+        let target = LatLon {
+            lat: 47.67,
+            lon: -122.12,
+        };
+        let plan = crate::activate_direct_to(&FlightPlan::empty(), ownship, NavRef::LatLon(target))
+            .expect("activate off-plan direct-to");
+        let ui_state = flight_plan_ui_state(
+            &store,
+            plan.clone(),
+            crate::planning::project_ui_state(&plan),
+            crate::FlightDataComputer::default(),
+            FlightPlanLiveData {
+                ownship_position: Some(ownship),
+                now_epoch_ms: Some(12 * 60 * 60 * 1000),
+            },
+        )
+        .expect("project direct-to flight plan ui state");
+        let direct_row = ui_state
+            .display_rows
+            .iter()
+            .find(|row| row.synthetic_direct_to)
+            .expect("synthetic direct-to row");
+        let distance_cell = direct_row
+            .data_cells
+            .iter()
+            .find(|cell| cell.id == "waypoint_distance")
+            .expect("distance cell");
+        let expected_distance =
+            crate::flight_data::format_nm(crate::great_circle_distance_nm(ownship, target));
+
+        assert_eq!(direct_row.nav_ref, Some(NavRef::LatLon(target)));
+        assert_eq!(
+            distance_cell.value.as_deref(),
+            Some(expected_distance.as_str())
         );
     }
 

@@ -95,10 +95,20 @@ internal data class AndroidPerfMemorySample(
     val nativeFreeBytes: Long,
     val totalPssKb: Int,
     val totalPrivateDirtyKb: Int,
+    val summaryJavaHeapKb: Int,
+    val summaryNativeHeapKb: Int,
+    val summaryGraphicsKb: Int,
+    val summaryCodeKb: Int,
+    val summaryStackKb: Int,
+    val summaryPrivateOtherKb: Int,
+    val summarySystemKb: Int,
 ) {
     val footprintBytes: Long
         get() = totalPssKb.toLong() * 1024L
 }
+
+private fun Debug.MemoryInfo.summaryKb(key: String): Int =
+    getMemoryStat(key)?.toIntOrNull() ?: 0
 
 internal fun androidPerfMemorySample(): AndroidPerfMemorySample {
     val runtime = Runtime.getRuntime()
@@ -113,6 +123,13 @@ internal fun androidPerfMemorySample(): AndroidPerfMemorySample {
         nativeFreeBytes = Debug.getNativeHeapFreeSize(),
         totalPssKb = memoryInfo.totalPss,
         totalPrivateDirtyKb = memoryInfo.totalPrivateDirty,
+        summaryJavaHeapKb = memoryInfo.summaryKb("summary.java-heap"),
+        summaryNativeHeapKb = memoryInfo.summaryKb("summary.native-heap"),
+        summaryGraphicsKb = memoryInfo.summaryKb("summary.graphics"),
+        summaryCodeKb = memoryInfo.summaryKb("summary.code"),
+        summaryStackKb = memoryInfo.summaryKb("summary.stack"),
+        summaryPrivateOtherKb = memoryInfo.summaryKb("summary.private-other"),
+        summarySystemKb = memoryInfo.summaryKb("summary.system"),
     )
 }
 
@@ -128,6 +145,10 @@ internal fun logAndroidPerfMemorySample(
             "javaUsedBytes=${sample.javaUsedBytes} javaTotalBytes=${sample.javaTotalBytes} javaMaxBytes=${sample.javaMaxBytes} " +
             "nativeAllocatedBytes=${sample.nativeAllocatedBytes} nativeHeapBytes=${sample.nativeHeapBytes} nativeFreeBytes=${sample.nativeFreeBytes} " +
             "totalPssKb=${sample.totalPssKb} totalPrivateDirtyKb=${sample.totalPrivateDirtyKb} " +
+            "summaryJavaHeapKb=${sample.summaryJavaHeapKb} summaryNativeHeapKb=${sample.summaryNativeHeapKb} " +
+            "summaryGraphicsKb=${sample.summaryGraphicsKb} summaryCodeKb=${sample.summaryCodeKb} " +
+            "summaryStackKb=${sample.summaryStackKb} summaryPrivateOtherKb=${sample.summaryPrivateOtherKb} " +
+            "summarySystemKb=${sample.summarySystemKb} " +
             "rasterDecodedEntries=${cacheStats.rasterDecodedEntries} rasterDecodedBytes=${cacheStats.rasterDecodedBytes} " +
             "terrainEntries=${cacheStats.terrainEntries} terrainBytes=${cacheStats.terrainBytes} " +
             "nexradEntries=${cacheStats.nexradEntries} nexradBytes=${cacheStats.nexradBytes}",

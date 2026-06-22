@@ -381,6 +381,13 @@ private fun nexradFrameStats(frame: NexradOverlayFrame?): Pair<Int, Long> {
     return (frame?.decodedImageCount ?: 0) to (frame?.decodedBytes ?: 0L)
 }
 
+private fun rasterLocalBitmapCacheStats(
+    cache: Map<org.aerobag.app.domain.RenderTileKey, androidx.compose.ui.graphics.ImageBitmap?>,
+): Pair<Int, Long> {
+    val bitmaps = cache.values.filterNotNull()
+    return bitmaps.size to bitmaps.sumOf(::estimatedImageBitmapBytes)
+}
+
 private fun terrainOverlayImageForRequest(
     request: TerrainOverlayTileRequest,
     bitmap: androidx.compose.ui.graphics.ImageBitmap,
@@ -1266,6 +1273,10 @@ internal fun MapExplorerPage(
     val tileBitmapCache = remember(selectedMapId, debugState.fastTiles) {
         mutableStateMapOf<org.aerobag.app.domain.RenderTileKey, androidx.compose.ui.graphics.ImageBitmap?>()
     }
+    val visibleTileKeys = remember(tiles) {
+        tiles.mapTo(LinkedHashSet()) { tile -> renderTileKey(tile) }
+    }
+    val latestVisibleTileKeysState = rememberUpdatedState(visibleTileKeys)
     val rasterTileBitmapLoaderScope = rememberCoroutineScope()
     val rasterTileBitmapLoader = remember(context.applicationContext, rasterTileBitmapLoaderScope) {
         RasterTileBitmapLoader(context.applicationContext, rasterTileBitmapLoaderScope)
@@ -1281,6 +1292,8 @@ internal fun MapExplorerPage(
         }
     }
     LaunchedEffect(tiles, selectedMapId, debugState.fastTiles) {
+        val staleLocalKeys = tileBitmapCache.keys.filter { key -> key !in visibleTileKeys }
+        staleLocalKeys.forEach { key -> tileBitmapCache.remove(key) }
         var decodedCacheHits = 0
         tiles.forEach { tile ->
             val renderKey = renderTileKey(tile)
@@ -1295,7 +1308,8 @@ internal fun MapExplorerPage(
         val missingTiles = tiles.filter { tile -> !tileBitmapCache.containsKey(renderTileKey(tile)) }
         perfLogInfo(TileBudgetLogTag) {
             val decodedCacheStats = decodedTileBitmapCache.stats()
-            "visible map=$selectedMapId total=${tiles.size} missing=${missingTiles.size} localCache=${tileBitmapCache.size} decodedLru=${decodedCacheStats.entries}/${decodedCacheStats.bytes}B lruHits=$decodedCacheHits fastTiles=${debugState.fastTiles} groups=[${formatTileBudgetSummary(tiles)}]"
+            val (localBitmapEntries, localBitmapBytes) = rasterLocalBitmapCacheStats(tileBitmapCache)
+            "visible map=$selectedMapId total=${tiles.size} missing=${missingTiles.size} localCache=${tileBitmapCache.size}/${localBitmapBytes}B localBitmaps=$localBitmapEntries pruned=${staleLocalKeys.size} decodedLru=${decodedCacheStats.entries}/${decodedCacheStats.bytes}B lruHits=$decodedCacheHits fastTiles=${debugState.fastTiles} groups=[${formatTileBudgetSummary(tiles)}]"
         }
         if (missingTiles.isEmpty()) {
             pageTilePaintTiming?.takeIf { tiles.isNotEmpty() }?.let { timing ->
@@ -1343,6 +1357,9 @@ internal fun MapExplorerPage(
                         generationId,
                         request.missingTiles,
                     ) { loaded ->
+                        if (request.id != latestRasterTileLoadRequestIdState.value || loaded.result.key !in latestVisibleTileKeysState.value) {
+                            return@loadVisibleTileBitmaps
+                        }
                         tileBitmapCache[loaded.result.key] = loaded.result.bitmap
                         val bitmap = loaded.result.bitmap
                         if (bitmap != null) {

@@ -10,16 +10,6 @@ pub(super) fn build_terrain_product(
     geoid_source_fetched_at_utc: Option<String>,
 ) -> anyhow::Result<(PathBuf, String, Option<String>, NodeRecord)> {
     let region_id = region.code().to_ascii_lowercase();
-    let input_dir = config
-        .build_root
-        .join("private-work")
-        .join("terrain")
-        .join(&region_id)
-        .join("input");
-    let dem_dir = input_dir.join("dems");
-    fs::create_dir_all(&dem_dir)
-        .with_context(|| format!("failed to create {}", dem_dir.display()))?;
-
     let provenance_dir = config
         .build_root
         .join("meta")
@@ -65,6 +55,11 @@ pub(super) fn build_terrain_product(
             ));
         }
     }
+    let scratch = scoped_scratch_dir(&config.build_root, "terrain", &region_id)?;
+    let input_dir = scratch.path().join("input");
+    let dem_dir = input_dir.join("dems");
+    fs::create_dir_all(&dem_dir)
+        .with_context(|| format!("failed to create {}", dem_dir.display()))?;
     let dem_selection = prefetch_terrain_dems_with_fallback(
         &mut dem_candidates,
         &dem_dir,
@@ -950,15 +945,6 @@ pub(super) fn build_shaded_relief_product(
 )> {
     let region_id = region.code().to_ascii_lowercase();
     let overlays = prepare_shaded_relief_overlay_sources(config)?;
-    let input_dir = config
-        .build_root
-        .join("private-work")
-        .join("shaded-relief")
-        .join(&region_id)
-        .join("input");
-    let dem_dir = input_dir.join("dems");
-    fs::create_dir_all(&dem_dir)
-        .with_context(|| format!("failed to create {}", dem_dir.display()))?;
 
     let provenance_dir = config
         .build_root
@@ -1008,6 +994,11 @@ pub(super) fn build_shaded_relief_product(
             ));
         }
     }
+    let scratch = scoped_scratch_dir(&config.build_root, "shaded-relief", &region_id)?;
+    let input_dir = scratch.path().join("input");
+    let dem_dir = input_dir.join("dems");
+    fs::create_dir_all(&dem_dir)
+        .with_context(|| format!("failed to create {}", dem_dir.display()))?;
     let dem_selection = prefetch_terrain_dems_with_fallback(
         &mut dem_candidates,
         &dem_dir,
@@ -1762,12 +1753,8 @@ pub(super) fn terrain_tnmaccess_request(region: Region) -> PrefetchRequest {
 pub(super) fn build_terrain_discovery_index(
     config: &ProductBuildConfig,
 ) -> anyhow::Result<(PathBuf, Option<String>, NodeRecord)> {
-    let discovery_dir = config
-        .build_root
-        .join("private-work")
-        .join("terrain")
-        .join("global-discovery")
-        .join("input");
+    let scratch = scoped_scratch_dir(&config.build_root, "terrain", "global-discovery")?;
+    let discovery_dir = scratch.path().join("input");
     fs::create_dir_all(&discovery_dir)
         .with_context(|| format!("failed to create {}", discovery_dir.display()))?;
     let provenance_dir = config

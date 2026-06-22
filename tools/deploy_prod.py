@@ -503,7 +503,7 @@ def env_file(config: dict[str, Any]) -> str:
         "AEROBAG_CLIENT_DEBUG_ROOT": f"{config['data_root']}/client-debug",
         "AEROBAG_BUILD_WATCH_LISTEN": BUILD_WATCH_LISTEN,
         "AEROBAG_BUILD_WATCH_LOG": (
-            f"{artifact_root}/private-work/orchestrator-logs/published/master.log"
+            f"{artifact_root}/logs/orchestrator/published/master.log"
         ),
         "AEROBAG_PIPELINE_HEALTH_LISTEN": config["pipeline_health_listen"],
         "AEROBAG_PIPELINE_HEALTH_POLL_SECONDS": str(config["pipeline_health_poll_seconds"]),
@@ -619,7 +619,7 @@ set -euo pipefail
 source /etc/aerobag/env
 export PATH CARGO_TARGET_DIR AEROBAG_UI_TARGET_ROOT AEROBAG_ARTIFACT_WRITE_PATH AEROBAG_ARTIFACT_READ_PATH
 
-mkdir -p "$ARTIFACT_ROOT" "$ARTIFACT_ROOT/cache" "$ARTIFACT_ROOT/published" "$ARTIFACT_ROOT/private-work" "$AEROBAG_UI_TARGET_ROOT" "$CARGO_TARGET_DIR"
+mkdir -p "$ARTIFACT_ROOT" "$ARTIFACT_ROOT/cache" "$ARTIFACT_ROOT/published" "$ARTIFACT_ROOT/logs" "$ARTIFACT_ROOT/locks" "$ARTIFACT_ROOT/state" "$ARTIFACT_ROOT/scratch" "$ARTIFACT_ROOT/worktrees" "$AEROBAG_UI_TARGET_ROOT" "$CARGO_TARGET_DIR"
 
 /usr/local/bin/aerobag-ensure-toolchain
 
@@ -752,7 +752,7 @@ def current_artifacts_summary(path: Path) -> dict[str, object]:
 def latest_build_log(artifact_root: Path) -> dict[str, object] | None:
     candidates = [
         Path(path)
-        for path in glob.glob(str(artifact_root / "private-work" / "orchestrator-logs" / "**" / "*.log"), recursive=True)
+        for path in glob.glob(str(artifact_root / "logs" / "orchestrator" / "**" / "*.log"), recursive=True)
     ]
     existing = [path for path in candidates if path.is_file()]
     if not existing:
@@ -988,7 +988,7 @@ def nginx_config(config: dict[str, Any]) -> str:
         return 404;
     }}
 
-    location /packages/private-work/ {{
+    location ~ ^/packages/(locks|logs|scratch|state|worktrees)/ {{
         return 404;
     }}
 
@@ -1054,7 +1054,7 @@ Wants=network-online.target
 [Service]
 Type=simple
 EnvironmentFile=/etc/aerobag/env
-ExecStart=/bin/bash -lc 'source /etc/aerobag/env; exec "$CARGO_TARGET_DIR/release/aerobag-live-feedsd" --live-root "$ARTIFACT_ROOT/live-feeds" --scratch-root "$ARTIFACT_ROOT/private-work/live-feeds" --fetch-cache-root "$ARTIFACT_ROOT/cache/fetch" --fetch-cache-mode fill --listen "$AEROBAG_LIVE_FEEDS_LISTEN"'
+ExecStart=/bin/bash -lc 'source /etc/aerobag/env; exec "$CARGO_TARGET_DIR/release/aerobag-live-feedsd" --live-root "$ARTIFACT_ROOT/live-feeds" --scratch-root "$ARTIFACT_ROOT/scratch/live-feeds" --fetch-cache-root "$ARTIFACT_ROOT/cache/fetch" --fetch-cache-mode fill --listen "$AEROBAG_LIVE_FEEDS_LISTEN"'
 Restart=always
 RestartSec=10
 
@@ -1271,7 +1271,11 @@ def prepare_remote_paths(config: dict[str, Any], *, dry_run: bool) -> None:
         config["artifact_root"],
         f"{config['artifact_root']}/cache",
         f"{config['artifact_root']}/published",
-        f"{config['artifact_root']}/private-work",
+        f"{config['artifact_root']}/logs",
+        f"{config['artifact_root']}/locks",
+        f"{config['artifact_root']}/state",
+        f"{config['artifact_root']}/scratch",
+        f"{config['artifact_root']}/worktrees",
         f"{config['artifact_root']}/live-feeds",
         f"{config['artifact_root']}/live-feeds/{LIVE_FEEDS_CONTRACT_PATH}",
         config["ui_target_root"],

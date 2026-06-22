@@ -35,7 +35,8 @@ Important fields:
 - `additional_publication_refs`: older product-contract branches to include in
   the merged cycle publication, such as `nav6-sunset`.
 - `artifact_root`: the persistent product build root. It owns `cache/`,
-  `private-work/`, `live-feeds/`, and `published/`.
+  `live-feeds/`, `published/`, `logs/`, `locks/`, `state/`, `scratch/`, and
+  `worktrees/`.
 - `ui_target_root`: persistent web build workspace and final static output.
 - `cargo_target_dir`: persistent Rust target dir shared across deploys.
 
@@ -78,9 +79,13 @@ The prod container uses:
 ```text
 /opt/aerobag                                      git checkout
 /mnt/aerobag-data/artifacts/cache                build/fetch cache
-/mnt/aerobag-data/artifacts/private-work         build logs and work dirs
 /mnt/aerobag-data/artifacts/live-feeds           live-feed publication
+/mnt/aerobag-data/artifacts/logs                 build/watch logs
+/mnt/aerobag-data/artifacts/locks                publication locks
 /mnt/aerobag-data/artifacts/published            public cycle publication root
+/mnt/aerobag-data/artifacts/scratch              transient build scratch
+/mnt/aerobag-data/artifacts/state                operational manifests and markers
+/mnt/aerobag-data/artifacts/worktrees            multi-version build worktrees
 /mnt/aerobag-data/ui-target/web/dist             static web app
 /var/cache/aerobag-build/target                  Rust build cache
 /etc/aerobag/deployed-rev                        deployed checkout commit
@@ -120,7 +125,7 @@ simulation/fixture flags:
 ```bash
 "$CARGO_TARGET_DIR/release/aerobag-live-feedsd" \
   --live-root "$ARTIFACT_ROOT/live-feeds" \
-  --scratch-root "$ARTIFACT_ROOT/private-work/live-feeds" \
+  --scratch-root "$ARTIFACT_ROOT/scratch/live-feeds" \
   --fetch-cache-root "$ARTIFACT_ROOT/cache/fetch" \
   --fetch-cache-mode fill \
   --listen "$AEROBAG_LIVE_FEEDS_LISTEN"
@@ -140,7 +145,7 @@ Inspect build progress:
 ```bash
 ssh root@aerobag-prod.iac.jonh.net \
   /opt/aerobag/product/preprocessor/scripts/watch_build_log.py \
-  /mnt/aerobag-data/artifacts/private-work/orchestrator-logs/published/master.log
+  /mnt/aerobag-data/artifacts/logs/orchestrator/published/master.log
 ```
 
 Or use the web dashboard:
@@ -230,7 +235,9 @@ Prod serves:
 - `/__debug_log`: proxied to the client debug log receiver
 - `/build-watch/`: proxied to the build log dashboard
 
-The nginx config blocks `/packages/cache/` and `/packages/private-work/`.
+The nginx config blocks internal `/packages/cache/`, `/packages/logs/`,
+`/packages/locks/`, `/packages/scratch/`, `/packages/state/`, and
+`/packages/worktrees/` paths.
 
 ## Health
 

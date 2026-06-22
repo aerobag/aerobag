@@ -353,7 +353,8 @@ Required publication assertions:
 - Every `relative_path` exists in `published_packaged`.
 - Every package `size_bytes` matches the filesystem.
 - Embedded filename hashes match the recorded `checksum_sha256`.
-- JSON metadata contains no internal `cache/`, `work/`, `private-work/`, or node-cache paths.
+- JSON metadata contains no internal `cache/`, `locks/`, `logs/`, `scratch/`,
+  `state/`, `work/`, `worktrees/`, legacy `private-work/`, or node-cache paths.
 
 Required unpacked assertions:
 

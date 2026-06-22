@@ -68,17 +68,6 @@ pub(super) fn artifact_root_from_publish_dir(publish_dir: &Path) -> anyhow::Resu
         })
 }
 
-pub(super) fn build_node_root(config: &ProductBuildConfig, name: &str) -> anyhow::Result<PathBuf> {
-    let root = config
-        .build_root
-        .join("private-work")
-        .join("publish-nodes")
-        .join(config.profile.as_str())
-        .join(name);
-    fs::create_dir_all(&root).with_context(|| format!("failed to create {}", root.display()))?;
-    Ok(root)
-}
-
 pub(super) fn build_shared_node_dir(
     config: &ProductBuildConfig,
     name: &str,
@@ -86,6 +75,71 @@ pub(super) fn build_shared_node_dir(
     let root = config.build_root.join("cache").join("nodes").join(name);
     fs::create_dir_all(&root).with_context(|| format!("failed to create {}", root.display()))?;
     Ok(root)
+}
+
+pub(super) fn build_logs_root(config: &ProductBuildConfig) -> PathBuf {
+    config.build_root.join("logs")
+}
+
+pub(super) fn build_state_root(build_root: &Path) -> PathBuf {
+    build_root.join("state")
+}
+
+pub(super) fn build_scratch_root(build_root: &Path) -> PathBuf {
+    build_root.join("scratch")
+}
+
+pub(super) fn orchestrator_log_root(config: &ProductBuildConfig) -> anyhow::Result<PathBuf> {
+    let root = build_logs_root(config)
+        .join("orchestrator")
+        .join("published");
+    fs::create_dir_all(&root).with_context(|| format!("failed to create {}", root.display()))?;
+    Ok(root)
+}
+
+pub(super) fn build_manifests_root(build_root: &Path) -> PathBuf {
+    build_state_root(build_root).join("build-manifests")
+}
+
+pub(super) fn published_unpacked_state_root(build_root: &Path) -> PathBuf {
+    build_state_root(build_root).join("published-unpacked")
+}
+
+pub(super) struct ScopedScratchDir {
+    path: PathBuf,
+}
+
+impl ScopedScratchDir {
+    pub(super) fn path(&self) -> &Path {
+        &self.path
+    }
+}
+
+impl Drop for ScopedScratchDir {
+    fn drop(&mut self) {
+        let _ = fs::remove_dir_all(&self.path);
+    }
+}
+
+pub(super) fn scoped_scratch_dir(
+    build_root: &Path,
+    category: &str,
+    label: &str,
+) -> anyhow::Result<ScopedScratchDir> {
+    let root = build_scratch_root(build_root).join(category);
+    fs::create_dir_all(&root).with_context(|| format!("failed to create {}", root.display()))?;
+    for attempt in 0..1000 {
+        let path = root.join(format!("{}-{}-{attempt}", label, std::process::id()));
+        match fs::create_dir(&path) {
+            Ok(()) => return Ok(ScopedScratchDir { path }),
+            Err(err) if err.kind() == std::io::ErrorKind::AlreadyExists => continue,
+            Err(err) => {
+                return Err(err)
+                    .with_context(|| format!("failed to create scratch dir {}", path.display()));
+            }
+        }
+    }
+    anyhow::bail!("failed to allocate scratch dir under {}", root.display())
 }
 
 pub(super) fn preprocessor_workspace_root() -> PathBuf {

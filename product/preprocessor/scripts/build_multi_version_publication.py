@@ -37,7 +37,7 @@ def parse_args() -> argparse.Namespace:
         default=None,
         help=(
             "directory for persistent git worktrees "
-            "(default: artifact-root/private-work/multi-version-worktrees)"
+            "(default: artifact-root/worktrees/multi-version)"
         ),
     )
     parser.add_argument(
@@ -247,7 +247,7 @@ def main() -> int:
     worktree_root = (
         args.worktree_root.resolve()
         if args.worktree_root is not None
-        else root / "private-work" / "multi-version-worktrees"
+        else root / "worktrees" / "multi-version"
     )
     worktree_root.mkdir(parents=True, exist_ok=True)
     target_dir.mkdir(parents=True, exist_ok=True)

@@ -154,7 +154,7 @@ class DevStackConfig:
 
     @property
     def scratch_root(self) -> Path:
-        return self.artifact_root / "private-work" / "dev-stack" / "live-feeds"
+        return self.artifact_root / "scratch" / "dev-stack" / "live-feeds"
 
     @property
     def fetch_cache_root(self) -> Path:
@@ -172,8 +172,8 @@ class DevStackConfig:
     def build_log_path(self) -> Path:
         return (
             self.artifact_root
-            / "private-work"
-            / "orchestrator-logs"
+            / "logs"
+            / "orchestrator"
             / "published"
             / "master.log"
         )

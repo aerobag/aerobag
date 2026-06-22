@@ -1186,7 +1186,7 @@ def main() -> int:
     parser.add_argument(
         "log_path",
         nargs="?",
-        default="/root/aerobag-artifacts/private-work/orchestrator-logs/published/master.log",
+        default="/root/aerobag-artifacts/logs/orchestrator/published/master.log",
         help="Path to master.log",
     )
     parser.add_argument(

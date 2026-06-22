@@ -1127,18 +1127,6 @@ pub(super) fn build_nav_kv_artifact(
                 .context("failed to encode nav-db package manifest")?;
                 fs::write(source_dir.join("manifest.json"), &manifest_bytes)
                     .context("failed to write nav-db package manifest")?;
-                let published_source_dir = config
-                    .build_root
-                    .join("private-work")
-                    .join("nav-kv")
-                    .join(config.profile.as_str())
-                    .join(cycle);
-                if published_source_dir.exists() {
-                    fs::remove_dir_all(&published_source_dir).with_context(|| {
-                        format!("failed to remove {}", published_source_dir.display())
-                    })?;
-                }
-                hardlink_dir_recursive(&source_dir, &published_source_dir)?;
                 let zip_bytes = nav_kv_package::write_stored_xz_package_bytes_with_encoder(
                     &manifest_bytes,
                     &built.root_bytes,

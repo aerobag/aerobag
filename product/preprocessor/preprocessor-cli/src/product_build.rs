@@ -224,9 +224,6 @@ pub struct BuildCacheGcReport {
     pub scratch_files: usize,
     pub scratch_bytes: u64,
     pub scratch_active_nodes: usize,
-    pub private_scratch_files: usize,
-    pub private_scratch_bytes: u64,
-    pub private_scratch_active_nodes: usize,
     pub by_node_name: BTreeMap<String, BuildCacheGcBucket>,
 }
 
@@ -1182,11 +1179,7 @@ fn internal_build_manifest_path(
     bundle_cycle: &str,
 ) -> anyhow::Result<PathBuf> {
     let publish_key = publish_path_key(&config.publish_dir, &config.build_root);
-    let dir = config
-        .build_root
-        .join("private-work")
-        .join("build-manifests")
-        .join(publish_key);
+    let dir = build_manifests_root(&config.build_root).join(publish_key);
     fs::create_dir_all(&dir).with_context(|| format!("failed to create {}", dir.display()))?;
     Ok(dir.join(format!("build-manifest_{bundle_cycle}.json")))
 }
@@ -1220,10 +1213,7 @@ fn unpacked_marker_path(unpacked_root: &Path, published_filename: &str) -> anyho
     })?;
     let build_root = artifact_root_from_publish_dir(publish_dir)?;
     let publish_key = publish_path_key(publish_dir, &build_root);
-    let marker_dir = build_root
-        .join("private-work")
-        .join("published-unpacked-state")
-        .join(publish_key);
+    let marker_dir = published_unpacked_state_root(&build_root).join(publish_key);
     fs::create_dir_all(&marker_dir)
         .with_context(|| format!("failed to create {}", marker_dir.display()))?;
     Ok(marker_dir.join(format!("{published_filename}.source-zip-sha256")))
@@ -1311,35 +1301,6 @@ fn unpacked_marker_value(zip_sha256: &str, marker_suffix: Option<&str>) -> Strin
         Some(suffix) => format!("{zip_sha256} {suffix}"),
         None => zip_sha256.to_string(),
     }
-}
-
-fn hardlink_dir_recursive(source_dir: &Path, output_dir: &Path) -> anyhow::Result<()> {
-    fs::create_dir_all(output_dir)
-        .with_context(|| format!("failed to create {}", output_dir.display()))?;
-    let mut entries = fs::read_dir(source_dir)
-        .with_context(|| format!("failed to read {}", source_dir.display()))?
-        .collect::<Result<Vec<_>, _>>()
-        .with_context(|| format!("failed to iterate {}", source_dir.display()))?;
-    entries.sort_by_key(|entry| entry.path());
-    for entry in entries {
-        let source = entry.path();
-        let output = output_dir.join(entry.file_name());
-        let file_type = entry
-            .file_type()
-            .with_context(|| format!("failed to stat {}", source.display()))?;
-        if file_type.is_dir() {
-            hardlink_dir_recursive(&source, &output)?;
-        } else if file_type.is_file() {
-            fs::hard_link(&source, &output).with_context(|| {
-                format!(
-                    "failed to hardlink {} to {}",
-                    source.display(),
-                    output.display()
-                )
-            })?;
-        }
-    }
-    Ok(())
 }
 
 fn unpacked_dir_has_files(path: &Path) -> anyhow::Result<bool> {

@@ -3,13 +3,7 @@ use super::*;
 pub fn build_product(config: &ProductBuildConfig) -> anyhow::Result<ProductBuildResult> {
     fs::create_dir_all(&config.packaged_dir)
         .with_context(|| format!("failed to create {}", config.packaged_dir.display()))?;
-    let log_root = config
-        .build_root
-        .join("private-work")
-        .join("orchestrator-logs")
-        .join("published");
-    fs::create_dir_all(&log_root)
-        .with_context(|| format!("failed to create {}", log_root.display()))?;
+    let log_root = orchestrator_log_root(config)?;
     let mut master_log = MasterLog::create(&log_root.join("master.log"))?;
     master_log.log(format!(
         "begin pid={} profile={} build_root={} publish_dir={} publish_label={} publish_timestamp={} scheduler=product_weighted_dag scheduler_version=2 fetch_jobs={} cpu_jobs={} max_heavy_jobs={} fetch_cache_mode={}",

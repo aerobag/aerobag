@@ -49,7 +49,7 @@ Publication ordering is part of the contract:
    the cycle build cache.
 
 4. Split live-feed scratch space by product.
-   Use `private-work/live-feeds/<product>/...` for transient production work.
+   Use `scratch/live-feeds/<product>/...` for transient production work.
    Do not use the cycle-package build cache for live-feed product output.
 
 5. Add fixture compilation cache.
@@ -57,7 +57,7 @@ Publication ordering is part of the contract:
    states and deltas once:
 
    ```text
-   private-work/live-feeds-fixtures/<fixture-cache-key>/
+   scratch/live-feeds-fixtures/<fixture-cache-key>/
      manifest.json
      timeline.json
      states/<product>/<version>/...

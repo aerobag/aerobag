@@ -223,7 +223,7 @@ where
     F: FnMut(&str),
 {
     let build_root = build_root.as_ref();
-    let lock_dir = build_root.join("private-work").join("publication-locks");
+    let lock_dir = build_root.join("locks").join("publication");
     fs::create_dir_all(&lock_dir)
         .with_context(|| format!("failed to create {}", lock_dir.display()))?;
     let lock_path = lock_dir.join(format!("{lock_name}.lock"));

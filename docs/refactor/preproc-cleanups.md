@@ -17,7 +17,7 @@ Reduce copy/paste in the preprocessor build pipeline without changing published 
    - Risk: package manifests and cache roots are contract-sensitive, so refactor only after step 1 is stable.
 
 3. Done: Factor live-feed product builder skeleton.
-   - TFR, METAR, and NEXRAD repeat timestamped private-work setup, provenance writing, fetch-cache wiring, node-cache wrapping, and output tuple creation.
+   - TFR, METAR, and NEXRAD repeat timestamped scratch setup, provenance writing, fetch-cache wiring, node-cache wrapping, and output tuple creation.
    - Desired helper: common live-feed workspace/provenance/cache wrapper while keeping product-specific URL selection and parsing separate.
 
 4. Done: Move small shared utilities out of product crates.

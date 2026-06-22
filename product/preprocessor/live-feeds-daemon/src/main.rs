@@ -592,8 +592,8 @@ impl DaemonConfig {
 
         let live_root = live_root.context("missing --live-root")?;
         let listen = listen.context("missing --listen")?;
-        let scratch_root = scratch_root.unwrap_or_else(|| live_root.join("../private-work"));
-        let fetch_cache_root = fetch_cache_root.unwrap_or_else(|| scratch_root.join("fetch-cache"));
+        let scratch_root = scratch_root.unwrap_or_else(|| live_root.join("../scratch/live-feeds"));
+        let fetch_cache_root = fetch_cache_root.unwrap_or_else(|| live_root.join("../cache/fetch"));
         let simulation = if simulation {
             let fixture_cache =
                 fixture_cache.unwrap_or_else(|| scratch_root.join("live-feeds-fixtures"));
@@ -2349,8 +2349,8 @@ mod tests {
         let config = DaemonConfig {
             live_root: root.to_path_buf(),
             listen: addr,
-            scratch_root: root.join("../private-work"),
-            fetch_cache_root: root.join("../private-work/fetch-cache"),
+            scratch_root: root.join("../scratch/live-feeds"),
+            fetch_cache_root: root.join("../cache/fetch"),
             fetch_cache_mode: "offline".to_string(),
             fetch_jobs: 1,
             poll_loop_interval_ms: 1,

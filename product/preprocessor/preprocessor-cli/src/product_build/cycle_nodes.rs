@@ -1727,7 +1727,7 @@ pub(super) fn build_resource_index_node(
     tpp_sources: Vec<AssetSource>,
     csup_sources: Vec<AssetSource>,
 ) -> anyhow::Result<NodeRecord> {
-    let node_root = build_node_root(config, "resource-index")?;
+    let node_root = build_shared_node_dir(config, "resource-index")?;
     let chart_json = chart_sources
         .iter()
         .map(|source| {

@@ -1871,7 +1871,12 @@ pub(super) fn validate_no_internal_paths_in_value(
         serde_json::Value::String(text) => {
             for forbidden in [
                 "cache/",
+                "locks/",
+                "logs/",
                 "private-work/",
+                "scratch/",
+                "state/",
+                "worktrees/",
                 "work/",
                 "published_packaged/production",
             ] {

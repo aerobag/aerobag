@@ -335,12 +335,46 @@ pub(super) fn node_fetch_cache_refs(
     if node_provenance_dir.is_dir() {
         roots.push(node_provenance_dir);
     }
+    roots.extend(legacy_external_fetch_provenance_roots(node_dir));
 
     let mut refs = BTreeMap::<(String, String, String), FetchCacheRef>::new();
     for root in roots {
         collect_fetch_cache_refs_from_provenance_dir(&root, &mut refs)?;
     }
     Ok(refs.into_values().collect())
+}
+
+fn legacy_external_fetch_provenance_roots(node_dir: &Path) -> Vec<PathBuf> {
+    let Some(node_name) = node_dir
+        .parent()
+        .and_then(|path| path.file_name())
+        .and_then(|name| name.to_str())
+    else {
+        return Vec::new();
+    };
+    let Some(build_root) = node_dir
+        .parent()
+        .and_then(Path::parent)
+        .and_then(Path::parent)
+        .and_then(Path::parent)
+    else {
+        return Vec::new();
+    };
+    let provenance_root = build_root.join("meta").join("provenance");
+    let provenance_name = if node_name == "static-terrain-discovery" {
+        Some("terrain-discovery".to_string())
+    } else if let Some(region_id) = node_name.strip_prefix("static-terrain-") {
+        (region_id != WIDE_ANGLE_REGION_ID).then(|| format!("terrain-{region_id}"))
+    } else if let Some(region_id) = node_name.strip_prefix("static-shaded-relief-") {
+        (region_id != WIDE_ANGLE_REGION_ID).then(|| format!("shaded-relief-{region_id}"))
+    } else if let Some(region_id) = node_name.strip_prefix("static-water-mask-") {
+        Some(format!("water-mask-{region_id}"))
+    } else {
+        None
+    };
+    provenance_name
+        .map(|name| vec![provenance_root.join(name)])
+        .unwrap_or_default()
 }
 
 fn collect_fetch_cache_refs_from_provenance_dir(

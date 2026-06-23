@@ -560,6 +560,7 @@ pub(super) fn build_world_basemap_product(
     Option<String>,
     Vec<TileLevelRecord>,
     NodeRecord,
+    Vec<NodeRecord>,
 )> {
     let sources = build_world_basemap_source_node(config)?;
     let source_fingerprint = sources.source_fingerprint.clone();
@@ -584,6 +585,7 @@ pub(super) fn build_world_basemap_product(
             source_fetched_at_utc,
             tile_levels,
             record,
+            vec![sources.node_record],
         ));
     }
     let _build_lock =
@@ -596,6 +598,7 @@ pub(super) fn build_world_basemap_product(
                     source_fetched_at_utc,
                     tile_levels,
                     record,
+                    vec![sources.node_record],
                 ));
             }
             NodeCacheState::Build(lock) => lock,
@@ -642,6 +645,7 @@ pub(super) fn build_world_basemap_product(
         source_fetched_at_utc,
         tile_levels,
         record,
+        vec![sources.node_record],
     ))
 }
 
@@ -650,6 +654,7 @@ pub(super) struct WorldBasemapSources {
     boundaries_shp: PathBuf,
     source_fingerprint: String,
     source_fetched_at_utc: Option<String>,
+    node_record: NodeRecord,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -699,11 +704,14 @@ pub(super) fn build_world_basemap_source_node(
     let _build_lock = match claim_or_wait_for_node(&prepared, &expected_outputs)? {
         NodeCacheState::CacheHit(_) => {
             let manifest = read_cached_source_manifest(&manifest_path)?;
+            let record = try_load_node_record(&prepared, &expected_outputs)?
+                .context("world basemap source cache hit missing node record")?;
             return Ok(WorldBasemapSources {
                 land_shp,
                 boundaries_shp,
                 source_fingerprint: manifest.source_fingerprint,
                 source_fetched_at_utc: manifest.source_fetched_at_utc,
+                node_record: record,
             });
         }
         NodeCacheState::Build(lock) => lock,
@@ -757,7 +765,7 @@ pub(super) fn build_world_basemap_source_node(
             relative_artifact_path(&input_dir, &config.build_root),
         ),
     ]);
-    write_node_record(
+    let node_record = write_node_record(
         prepared,
         inputs,
         outputs,
@@ -771,6 +779,7 @@ pub(super) fn build_world_basemap_source_node(
         boundaries_shp,
         source_fingerprint: manifest.source_fingerprint,
         source_fetched_at_utc: manifest.source_fetched_at_utc,
+        node_record,
     })
 }
 
@@ -946,6 +955,7 @@ pub(super) fn build_shaded_relief_product(
     Option<String>,
     Vec<TileLevelRecord>,
     NodeRecord,
+    Vec<NodeRecord>,
 )> {
     let region_id = region.code().to_ascii_lowercase();
     let overlays = prepare_shaded_relief_overlay_sources(config)?;
@@ -995,6 +1005,7 @@ pub(super) fn build_shaded_relief_product(
                 source_fetched_at_utc,
                 tile_levels,
                 record,
+                vec![overlays.node_record],
             ));
         }
     }
@@ -1055,6 +1066,7 @@ pub(super) fn build_shaded_relief_product(
                 source_fetched_at_utc,
                 tile_levels,
                 record,
+                vec![overlays.node_record],
             ));
         }
         NodeCacheState::Build(lock) => lock,
@@ -1119,6 +1131,7 @@ pub(super) fn build_shaded_relief_product(
         source_fetched_at_utc,
         tile_levels,
         record,
+        vec![overlays.node_record],
     ))
 }
 
@@ -1126,6 +1139,7 @@ pub(super) struct ShadedReliefOverlaySources {
     state_borders_shp: PathBuf,
     primary_roads_shp: PathBuf,
     source_fingerprint: String,
+    pub(super) node_record: NodeRecord,
 }
 
 pub(super) fn prepare_shaded_relief_overlay_sources(
@@ -1172,10 +1186,13 @@ pub(super) fn prepare_shaded_relief_overlay_sources(
     let _build_lock = match claim_or_wait_for_node(&prepared, &expected_outputs)? {
         NodeCacheState::CacheHit(_) => {
             let manifest = read_cached_source_manifest(&manifest_path)?;
+            let record = try_load_node_record(&prepared, &expected_outputs)?
+                .context("shaded relief overlay source cache hit missing node record")?;
             return Ok(ShadedReliefOverlaySources {
                 state_borders_shp,
                 primary_roads_shp,
                 source_fingerprint: manifest.source_fingerprint,
+                node_record: record,
             });
         }
         NodeCacheState::Build(lock) => lock,
@@ -1245,7 +1262,7 @@ pub(super) fn prepare_shaded_relief_overlay_sources(
             relative_artifact_path(&input_dir, &config.build_root),
         ),
     ]);
-    write_node_record(
+    let node_record = write_node_record(
         prepared,
         inputs,
         outputs,
@@ -1258,6 +1275,7 @@ pub(super) fn prepare_shaded_relief_overlay_sources(
         state_borders_shp,
         primary_roads_shp,
         source_fingerprint: manifest.source_fingerprint,
+        node_record,
     })
 }
 

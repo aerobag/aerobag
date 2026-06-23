@@ -79,6 +79,23 @@ pub fn build_product(config: &ProductBuildConfig) -> anyhow::Result<ProductBuild
         }
     }
 
+    fn static_build_record_task_ids(config: &ProductBuildConfig) -> Vec<String> {
+        let mut task_ids = vec!["wmm-source".to_string(), "build-world-basemap".to_string()];
+        if include_static_terrain_products() {
+            task_ids.push("geoid-source".to_string());
+            task_ids.push("terrain-discovery".to_string());
+            for region in config.profile.terrain_regions() {
+                let region_id = region.code().to_ascii_lowercase();
+                task_ids.push(format!("build-terrain-{region_id}"));
+                task_ids.push(format!("build-water-mask-{region_id}"));
+                task_ids.push(format!("build-shaded-relief-{region_id}"));
+            }
+            task_ids.push(format!("build-terrain-{WIDE_ANGLE_REGION_ID}"));
+            task_ids.push(format!("build-shaded-relief-{WIDE_ANGLE_REGION_ID}"));
+        }
+        task_ids
+    }
+
     let result = (|| -> anyhow::Result<ProductBuildResult> {
         let cycles = product_cycles_to_build(config)?;
         let chart_families = [
@@ -1208,12 +1225,24 @@ pub fn build_product(config: &ProductBuildConfig) -> anyhow::Result<ProductBuild
                                 }
                                 _ => bail!("missing source urls for cycle {cycle}"),
                             };
+                        let static_build_record_task_ids =
+                            static_build_record_task_ids(&cycle_config);
                         let mut node_records = task_node_records_snapshot
                             .iter()
-                            .filter(|(task_id, _)| task_id.starts_with(&format!("{cycle}:")))
+                            .filter(|(task_id, _)| {
+                                task_id.starts_with(&format!("{cycle}:"))
+                                    || static_build_record_task_ids.contains(task_id)
+                            })
                             .flat_map(|(_, records)| records.clone())
                             .collect::<Vec<_>>();
-                        node_records.sort_by(|left, right| left.name.cmp(&right.name));
+                        node_records.sort_by(|left, right| {
+                            left.name
+                                .cmp(&right.name)
+                                .then_with(|| left.fingerprint.cmp(&right.fingerprint))
+                        });
+                        node_records.dedup_by(|left, right| {
+                            left.name == right.name && left.fingerprint == right.fingerprint
+                        });
                         let build_manifest = BuildManifest {
                             schema_version: 1,
                             profile: cycle_config.profile.as_str().to_string(),
@@ -1291,8 +1320,14 @@ pub fn build_product(config: &ProductBuildConfig) -> anyhow::Result<ProductBuild
                         })
                     }
                     ProductScheduledTaskKind::WorldBasemapBuild => {
-                        let (zip_path, source_version, source_fetched_at_utc, tile_levels, record) =
-                            build_world_basemap_product(&config)?;
+                        let (
+                            zip_path,
+                            source_version,
+                            source_fetched_at_utc,
+                            tile_levels,
+                            record,
+                            mut source_records,
+                        ) = build_world_basemap_product(&config)?;
                         let cache_hit = record.cache_hit;
                         let (zip_sha256, zip_size_bytes) = node_output_file_detail(&record, "zip");
                         let unpack_source_root = zip_path
@@ -1301,8 +1336,9 @@ pub fn build_product(config: &ProductBuildConfig) -> anyhow::Result<ProductBuild
                                 format!("world basemap zip has no parent: {}", zip_path.display())
                             })?
                             .to_path_buf();
+                        source_records.push(record);
                         Ok(ProductTaskCompletion {
-                            node_records: vec![record],
+                            node_records: source_records,
                             value: ProductTaskValue::BuiltStaticTileProduct {
                                 zip_path,
                                 unpack_source_root,
@@ -1490,15 +1526,21 @@ pub fn build_product(config: &ProductBuildConfig) -> anyhow::Result<ProductBuild
                             }) => (mask_tiles_dir.clone(), source_version.clone()),
                             _ => bail!("missing water mask output for {}", region.code()),
                         };
-                        let (zip_path, source_version, source_fetched_at_utc, tile_levels, record) =
-                            build_shaded_relief_product(
-                                &config,
-                                region,
-                                &index_path,
-                                source_fetched_at_utc,
-                                &water_mask_dir,
-                                &water_mask_version,
-                            )?;
+                        let (
+                            zip_path,
+                            source_version,
+                            source_fetched_at_utc,
+                            tile_levels,
+                            record,
+                            mut source_records,
+                        ) = build_shaded_relief_product(
+                            &config,
+                            region,
+                            &index_path,
+                            source_fetched_at_utc,
+                            &water_mask_dir,
+                            &water_mask_version,
+                        )?;
                         let cache_hit = record.cache_hit;
                         let (zip_sha256, zip_size_bytes) = node_output_file_detail(&record, "zip");
                         let unpack_source_root = zip_path
@@ -1507,8 +1549,9 @@ pub fn build_product(config: &ProductBuildConfig) -> anyhow::Result<ProductBuild
                                 format!("shaded relief zip has no parent: {}", zip_path.display())
                             })?
                             .join("package");
+                        source_records.push(record);
                         Ok(ProductTaskCompletion {
-                            node_records: vec![record],
+                            node_records: source_records,
                             value: ProductTaskValue::BuiltStaticTileProduct {
                                 zip_path,
                                 unpack_source_root,
@@ -1523,6 +1566,7 @@ pub fn build_product(config: &ProductBuildConfig) -> anyhow::Result<ProductBuild
                     }
                     ProductScheduledTaskKind::ShadedReliefWideBuild => {
                         let overlays = prepare_shaded_relief_overlay_sources(&config)?;
+                        let overlay_record = overlays.node_record.clone();
                         let mut regional_products = Vec::new();
                         for region in config.profile.terrain_regions() {
                             let region_id = region.code().to_ascii_lowercase();
@@ -1576,7 +1620,7 @@ pub fn build_product(config: &ProductBuildConfig) -> anyhow::Result<ProductBuild
                             })?
                             .to_path_buf();
                         Ok(ProductTaskCompletion {
-                            node_records: vec![record],
+                            node_records: vec![overlay_record, record],
                             value: ProductTaskValue::BuiltStaticTileProduct {
                                 zip_path,
                                 unpack_source_root,

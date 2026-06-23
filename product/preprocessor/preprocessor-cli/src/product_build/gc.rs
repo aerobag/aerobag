@@ -116,22 +116,35 @@ pub(super) fn record_gc_roots_from_build_manifest(
 pub(super) fn bootstrap_gc_roots_from_build_manifests(
     config: &ProductBuildConfig,
 ) -> anyhow::Result<PathBuf> {
-    let current_artifacts_path = config
-        .build_root
-        .join("published")
-        .join(current_artifacts_latest_alias_filename());
-    let current_artifacts: Vec<CurrentArtifactsManifest> = serde_json::from_slice(
-        &fs::read(&current_artifacts_path)
-            .with_context(|| format!("failed to read {}", current_artifacts_path.display()))?,
-    )
-    .with_context(|| format!("failed to parse {}", current_artifacts_path.display()))?;
-    if current_artifacts.is_empty() {
-        bail!(
-            "{} must contain at least one manifest",
-            current_artifacts_path.display()
-        );
+    let current_build_manifests = current_build_manifests(config)?;
+    let mut records = BTreeMap::<String, Vec<NodeRecord>>::new();
+    for current in current_build_manifests.manifests {
+        let publish_key = current.publish_key;
+        for manifest in current.manifests {
+            records
+                .entry(format!("{}:{}:build-manifest", publish_key, manifest.cycle))
+                .or_default()
+                .extend(manifest.nodes);
+        }
     }
+    record_gc_roots(config, "full", &records)
+}
 
+#[derive(Debug)]
+struct CurrentBuildManifests {
+    current_artifacts_path: PathBuf,
+    manifests: Vec<CurrentBuildManifestSet>,
+}
+
+#[derive(Debug)]
+struct CurrentBuildManifestSet {
+    publish_key: String,
+    manifests: Vec<BuildManifest>,
+}
+
+fn current_build_manifests(config: &ProductBuildConfig) -> anyhow::Result<CurrentBuildManifests> {
+    let current_artifacts_path = current_artifacts_path(&config.build_root);
+    let current_artifacts = load_current_artifacts_list(&current_artifacts_path)?;
     let build_manifests_root = build_manifests_root(&config.build_root);
     let mut manifest_dirs = BTreeMap::new();
     for manifest in &current_artifacts {
@@ -140,7 +153,7 @@ pub(super) fn bootstrap_gc_roots_from_build_manifests(
         manifest_dirs.insert(publish_key.clone(), build_manifests_root.join(publish_key));
     }
 
-    let mut records = BTreeMap::<String, Vec<NodeRecord>>::new();
+    let mut manifests = Vec::new();
     for (publish_key, manifest_dir) in manifest_dirs {
         if !manifest_dir.is_dir() {
             bail!(
@@ -149,7 +162,7 @@ pub(super) fn bootstrap_gc_roots_from_build_manifests(
                 manifest_dir.display()
             );
         }
-        let mut found = false;
+        let mut build_manifests = Vec::new();
         for entry in fs::read_dir(&manifest_dir)
             .with_context(|| format!("failed to read {}", manifest_dir.display()))?
         {
@@ -166,72 +179,101 @@ pub(super) fn bootstrap_gc_roots_from_build_manifests(
                 &fs::read(&path).with_context(|| format!("failed to read {}", path.display()))?,
             )
             .with_context(|| format!("failed to parse {}", path.display()))?;
-            found = true;
-            records
-                .entry(format!("{}:{}:build-manifest", publish_key, manifest.cycle))
-                .or_default()
-                .extend(manifest.nodes);
+            build_manifests.push(manifest);
         }
-        if !found {
+        if build_manifests.is_empty() {
             bail!(
                 "no build-manifest_*.json files found in {}",
                 manifest_dir.display()
             );
         }
+        manifests.push(CurrentBuildManifestSet {
+            publish_key,
+            manifests: build_manifests,
+        });
     }
-    record_gc_roots(config, "full", &records)
+    Ok(CurrentBuildManifests {
+        current_artifacts_path,
+        manifests,
+    })
+}
+
+fn current_artifacts_path(build_root: &Path) -> PathBuf {
+    build_root
+        .join("published")
+        .join(current_artifacts_latest_alias_filename())
+}
+
+fn load_current_artifacts_list(path: &Path) -> anyhow::Result<Vec<CurrentArtifactsManifest>> {
+    let current_artifacts: Vec<CurrentArtifactsManifest> = serde_json::from_slice(
+        &fs::read(path).with_context(|| format!("failed to read {}", path.display()))?,
+    )
+    .with_context(|| format!("failed to parse {}", path.display()))?;
+    if current_artifacts.is_empty() {
+        bail!("{} must contain at least one manifest", path.display());
+    }
+    Ok(current_artifacts)
 }
 
 fn publish_dir_for_current_artifacts_manifest(
     config: &ProductBuildConfig,
     manifest: &CurrentArtifactsManifest,
 ) -> anyhow::Result<PathBuf> {
-    let packaged_root = manifest.artifact_roots.packaged.trim();
+    publish_dir_from_artifact_root(
+        &config.build_root,
+        &manifest.artifact_roots.packaged,
+        "packaged",
+    )
+}
+
+fn publish_dir_from_artifact_root(
+    build_root: &Path,
+    artifact_root: &str,
+    expected_leaf: &str,
+) -> anyhow::Result<PathBuf> {
+    let packaged_root = artifact_root.trim();
     let relative_packaged_root = packaged_root.trim_matches('/');
     if relative_packaged_root.is_empty() {
-        bail!("current_artifacts artifact_roots.packaged must not be empty");
+        bail!("current_artifacts artifact root must not be empty");
     }
     let relative_packaged_path = Path::new(relative_packaged_root);
     if relative_packaged_path.is_absolute() {
         bail!(
-            "current_artifacts artifact_roots.packaged must be relative: {}",
-            manifest.artifact_roots.packaged
+            "current_artifacts artifact root must be relative: {}",
+            artifact_root
         );
     }
     for component in relative_packaged_path.components() {
         if !matches!(component, std::path::Component::Normal(_)) {
             bail!(
-                "current_artifacts artifact_roots.packaged contains an invalid path component: {}",
-                manifest.artifact_roots.packaged
+                "current_artifacts artifact root contains an invalid path component: {}",
+                artifact_root
             );
         }
     }
     if relative_packaged_path
         .file_name()
         .and_then(|name| name.to_str())
-        != Some("packaged")
+        != Some(expected_leaf)
     {
         bail!(
-            "current_artifacts artifact_roots.packaged must end with packaged/: {}",
-            manifest.artifact_roots.packaged
+            "current_artifacts artifact root must end with {expected_leaf}/: {}",
+            artifact_root
         );
     }
     let relative_publish_dir = relative_packaged_path.parent().ok_or_else(|| {
         anyhow::anyhow!(
-            "current_artifacts artifact_roots.packaged has no publish directory: {}",
-            manifest.artifact_roots.packaged
+            "current_artifacts artifact root has no publish directory: {}",
+            artifact_root
         )
     })?;
     if relative_publish_dir.as_os_str().is_empty() {
         bail!(
-            "current_artifacts artifact_roots.packaged has no publish directory: {}",
-            manifest.artifact_roots.packaged
+            "current_artifacts artifact root has no publish directory: {}",
+            artifact_root
         );
     }
-    Ok(config
-        .build_root
-        .join("published")
-        .join(relative_publish_dir))
+    Ok(build_root.join("published").join(relative_publish_dir))
 }
 
 pub fn gc_build_cache(config: &BuildCacheGcConfig) -> anyhow::Result<BuildCacheGcReport> {
@@ -335,6 +377,352 @@ pub fn gc_build_cache(config: &BuildCacheGcConfig) -> anyhow::Result<BuildCacheG
     Ok(report)
 }
 
+pub fn gc_publication(config: &PublicationGcConfig) -> anyhow::Result<PublicationGcReport> {
+    let current_artifacts_path = current_artifacts_path(&config.build_root);
+    let current_artifacts = load_current_artifacts_list(&current_artifacts_path)?;
+    let mut current_publish_roots = BTreeSet::<PathBuf>::new();
+    for manifest in &current_artifacts {
+        current_publish_roots.insert(publish_dir_from_artifact_root(
+            &config.build_root,
+            &manifest.artifact_roots.packaged,
+            "packaged",
+        )?);
+        current_publish_roots.insert(publish_dir_from_artifact_root(
+            &config.build_root,
+            &manifest.artifact_roots.unpacked,
+            "unpacked",
+        )?);
+    }
+
+    let published_root = config.build_root.join("published");
+    let publish_roots = discover_publish_roots(&published_root)?;
+    let grace = Duration::from_secs(config.grace_hours.saturating_mul(3600));
+    let now = SystemTime::now();
+    let mut report = PublicationGcReport {
+        current_artifacts_path,
+        current_publish_roots: current_publish_roots.len(),
+        scanned_publish_roots: 0,
+        grace_roots: 0,
+        evictable_roots: 0,
+        reclaimed_bytes: 0,
+        candidates: Vec::new(),
+    };
+    let mut candidate_roots = Vec::new();
+    for publish_root in publish_roots {
+        report.scanned_publish_roots += 1;
+        if current_publish_roots.contains(&publish_root) {
+            continue;
+        }
+        if is_younger_than(&publish_root, now, grace)? {
+            report.grace_roots += 1;
+            continue;
+        }
+        report.evictable_roots += 1;
+        candidate_roots.push(publish_root);
+    }
+    let candidate_sizes = hardlink_reclaimable_sizes(&candidate_roots)?;
+    for (publish_root, bytes) in candidate_roots.iter().zip(candidate_sizes) {
+        report.reclaimed_bytes = report.reclaimed_bytes.saturating_add(bytes);
+        report.candidates.push(PublicationGcCandidate {
+            path: publish_root.clone(),
+            bytes,
+        });
+    }
+    if config.mode == BuildCacheGcMode::Execute {
+        for publish_root in candidate_roots {
+            fs::remove_dir_all(&publish_root)
+                .with_context(|| format!("failed to remove {}", publish_root.display()))?;
+            remove_empty_publish_parent(&published_root, &publish_root)?;
+        }
+    }
+    Ok(report)
+}
+
+#[derive(Clone, Copy)]
+struct InodeEntry {
+    nlink: u64,
+    size: u64,
+    count: u64,
+    first_root: usize,
+}
+
+fn hardlink_reclaimable_sizes(roots: &[PathBuf]) -> anyhow::Result<Vec<u64>> {
+    let mut inodes = BTreeMap::<(u64, u64), InodeEntry>::new();
+    for (root_index, root) in roots.iter().enumerate() {
+        collect_candidate_inodes(root, root_index, &mut inodes)?;
+    }
+    let mut sizes = vec![0_u64; roots.len()];
+    for entry in inodes.values() {
+        if entry.nlink <= entry.count {
+            sizes[entry.first_root] = sizes[entry.first_root].saturating_add(entry.size);
+        }
+    }
+    Ok(sizes)
+}
+
+fn collect_candidate_inodes(
+    path: &Path,
+    root_index: usize,
+    inodes: &mut BTreeMap<(u64, u64), InodeEntry>,
+) -> anyhow::Result<()> {
+    let metadata =
+        fs::symlink_metadata(path).with_context(|| format!("failed to stat {}", path.display()))?;
+    if metadata.is_file() {
+        let key = (metadata.dev(), metadata.ino());
+        inodes
+            .entry(key)
+            .and_modify(|entry| entry.count = entry.count.saturating_add(1))
+            .or_insert(InodeEntry {
+                nlink: metadata.nlink(),
+                size: metadata.len(),
+                count: 1,
+                first_root: root_index,
+            });
+        return Ok(());
+    }
+    if !metadata.is_dir() {
+        return Ok(());
+    }
+    for entry in fs::read_dir(path).with_context(|| format!("failed to read {}", path.display()))? {
+        let entry = entry?;
+        collect_candidate_inodes(&entry.path(), root_index, inodes)?;
+    }
+    Ok(())
+}
+
+pub fn gc_fetch_cache(config: &FetchCacheGcConfig) -> anyhow::Result<FetchCacheGcReport> {
+    let current = current_build_manifests(&ProductBuildConfig {
+        chart_cutline_root: PathBuf::new(),
+        build_root: config.build_root.clone(),
+        publish_dir: config
+            .build_root
+            .join("published")
+            .join("gc")
+            .join("00000000T000000Z"),
+        packaged_dir: config
+            .build_root
+            .join("published")
+            .join("gc")
+            .join("00000000T000000Z")
+            .join("packaged"),
+        profile: ProductBuildProfile::Production,
+        publish_label: "gc".to_string(),
+        publish_timestamp: "00000000T000000Z".to_string(),
+        target_cycle: None,
+        fetch_jobs: 1,
+        cpu_jobs: 1,
+        max_heavy_jobs: 1,
+        fetch_cache_root: config.build_root.join("cache").join("fetch"),
+        fetch_cache_mode: "cache-first".to_string(),
+    })?;
+    let fetch_root = config.build_root.join("cache").join("fetch");
+    let layout = CacheLayout::new(&fetch_root);
+    let mut rooted_shas = BTreeSet::<String>::new();
+    let mut rooted_metadata_paths = BTreeSet::<PathBuf>::new();
+    let mut rooted_fetch_refs = 0usize;
+    let mut build_manifest_count = 0usize;
+    for set in &current.manifests {
+        build_manifest_count += set.manifests.len();
+        for manifest in &set.manifests {
+            for node in &manifest.nodes {
+                for fetch_ref in &node.fetch_cache_refs {
+                    rooted_fetch_refs += 1;
+                    rooted_shas.insert(fetch_ref.sha256.clone());
+                    rooted_metadata_paths.insert(layout.http_metadata_path(&fetch_ref.cache_key));
+                }
+            }
+        }
+    }
+    let grace = Duration::from_secs(config.grace_hours.saturating_mul(3600));
+    let now = SystemTime::now();
+    let mut grace_shas = BTreeSet::<String>::new();
+    let mut report = FetchCacheGcReport {
+        current_artifacts_path: current.current_artifacts_path,
+        build_manifests: build_manifest_count,
+        rooted_fetch_refs,
+        rooted_blobs: rooted_shas.len(),
+        scanned_metadata: 0,
+        scanned_blobs: 0,
+        grace_metadata: 0,
+        grace_blobs: 0,
+        evictable_metadata: 0,
+        evictable_blobs: 0,
+        reclaimed_bytes: 0,
+        candidates: Vec::new(),
+        missing_fetch_refs: rooted_fetch_refs == 0,
+    };
+    if rooted_fetch_refs == 0 {
+        if config.mode == BuildCacheGcMode::Execute {
+            bail!(
+                "current build manifests contain no fetch_cache_refs; run a product build with fetch-dependency recording before executing fetch-cache GC"
+            );
+        }
+        return Ok(report);
+    }
+
+    for metadata_path in fetch_metadata_paths(&layout.http_dir())? {
+        report.scanned_metadata += 1;
+        let metadata = read_fetch_metadata(&metadata_path)?;
+        let sha = metadata
+            .get("sha256")
+            .and_then(|value| value.as_str())
+            .map(ToOwned::to_owned);
+        if rooted_metadata_paths.contains(&metadata_path) {
+            continue;
+        }
+        if is_younger_than(&metadata_path, now, grace)? {
+            report.grace_metadata += 1;
+            if let Some(sha) = sha {
+                grace_shas.insert(sha);
+            }
+            continue;
+        }
+        let bytes = file_size(&metadata_path)?;
+        report.evictable_metadata += 1;
+        report.reclaimed_bytes = report.reclaimed_bytes.saturating_add(bytes);
+        report.candidates.push(FetchCacheGcCandidate {
+            kind: FetchCacheGcCandidateKind::Metadata,
+            path: metadata_path.clone(),
+            bytes,
+        });
+        if config.mode == BuildCacheGcMode::Execute {
+            fs::remove_file(&metadata_path)
+                .with_context(|| format!("failed to remove {}", metadata_path.display()))?;
+        }
+    }
+
+    let blob_dir = layout.blobs_dir();
+    if blob_dir.is_dir() {
+        for entry in fs::read_dir(&blob_dir)
+            .with_context(|| format!("failed to read {}", blob_dir.display()))?
+        {
+            let entry = entry?;
+            if !entry.file_type()?.is_file() {
+                continue;
+            }
+            let blob_path = entry.path();
+            let sha = entry.file_name().to_string_lossy().to_string();
+            report.scanned_blobs += 1;
+            if rooted_shas.contains(&sha) || grace_shas.contains(&sha) {
+                continue;
+            }
+            if is_younger_than(&blob_path, now, grace)? {
+                report.grace_blobs += 1;
+                continue;
+            }
+            let bytes = file_size(&blob_path)?;
+            report.evictable_blobs += 1;
+            report.reclaimed_bytes = report.reclaimed_bytes.saturating_add(bytes);
+            report.candidates.push(FetchCacheGcCandidate {
+                kind: FetchCacheGcCandidateKind::Blob,
+                path: blob_path.clone(),
+                bytes,
+            });
+            if config.mode == BuildCacheGcMode::Execute {
+                fs::remove_file(&blob_path)
+                    .with_context(|| format!("failed to remove {}", blob_path.display()))?;
+            }
+        }
+    }
+    report.candidates.sort_by(|left, right| {
+        right
+            .bytes
+            .cmp(&left.bytes)
+            .then_with(|| left.path.cmp(&right.path))
+    });
+    Ok(report)
+}
+
+fn fetch_metadata_paths(http_dir: &Path) -> anyhow::Result<Vec<PathBuf>> {
+    let mut paths = Vec::new();
+    if !http_dir.is_dir() {
+        return Ok(paths);
+    }
+    collect_fetch_metadata_paths(http_dir, &mut paths)?;
+    paths.sort();
+    Ok(paths)
+}
+
+fn collect_fetch_metadata_paths(dir: &Path, paths: &mut Vec<PathBuf>) -> anyhow::Result<()> {
+    for entry in fs::read_dir(dir).with_context(|| format!("failed to read {}", dir.display()))? {
+        let entry = entry?;
+        let path = entry.path();
+        let file_type = entry
+            .file_type()
+            .with_context(|| format!("failed to stat {}", path.display()))?;
+        if file_type.is_dir() {
+            collect_fetch_metadata_paths(&path, paths)?;
+        } else if file_type.is_file()
+            && path.extension().and_then(|value| value.to_str()) == Some("json")
+        {
+            paths.push(path);
+        }
+    }
+    Ok(())
+}
+
+fn read_fetch_metadata(path: &Path) -> anyhow::Result<serde_json::Value> {
+    serde_json::from_slice(
+        &fs::read(path).with_context(|| format!("failed to read {}", path.display()))?,
+    )
+    .with_context(|| format!("failed to parse {}", path.display()))
+}
+
+fn file_size(path: &Path) -> anyhow::Result<u64> {
+    Ok(fs::metadata(path)
+        .with_context(|| format!("failed to stat {}", path.display()))?
+        .len())
+}
+
+fn discover_publish_roots(published_root: &Path) -> anyhow::Result<Vec<PathBuf>> {
+    let mut roots = Vec::new();
+    if !published_root.is_dir() {
+        return Ok(roots);
+    }
+    for entry in fs::read_dir(published_root)
+        .with_context(|| format!("failed to read {}", published_root.display()))?
+    {
+        let entry = entry?;
+        if !entry.file_type()?.is_dir() {
+            continue;
+        }
+        let path = entry.path();
+        if is_publish_root(&path) {
+            roots.push(path);
+            continue;
+        }
+        for child in
+            fs::read_dir(&path).with_context(|| format!("failed to read {}", path.display()))?
+        {
+            let child = child?;
+            if child.file_type()?.is_dir() && is_publish_root(&child.path()) {
+                roots.push(child.path());
+            }
+        }
+    }
+    roots.sort();
+    Ok(roots)
+}
+
+fn is_publish_root(path: &Path) -> bool {
+    path.join("packaged").is_dir() || path.join("unpacked").is_dir()
+}
+
+fn remove_empty_publish_parent(published_root: &Path, publish_root: &Path) -> anyhow::Result<()> {
+    let Some(parent) = publish_root.parent() else {
+        return Ok(());
+    };
+    if parent == published_root {
+        return Ok(());
+    }
+    match fs::remove_dir(parent) {
+        Ok(()) => Ok(()),
+        Err(err) if err.kind() == std::io::ErrorKind::DirectoryNotEmpty => Ok(()),
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(err) => Err(err).with_context(|| format!("failed to remove {}", parent.display())),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -393,7 +781,20 @@ mod tests {
             inputs: BTreeMap::new(),
             outputs: BTreeMap::new(),
             output_details: BTreeMap::new(),
+            fetch_cache_refs: Vec::new(),
         }
+    }
+
+    fn node_record_with_fetch_ref(name: &str, fingerprint: &str, sha256: &str) -> NodeRecord {
+        let mut record = node_record(name, fingerprint);
+        record.fetch_cache_refs.push(FetchCacheRef {
+            cache_key: format!("https://example.test/{sha256}.zip"),
+            url: format!("https://example.test/{sha256}.zip"),
+            file: format!("{sha256}.zip"),
+            sha256: sha256.to_string(),
+            size_bytes: Some(4),
+        });
+        record
     }
 
     fn write_build_manifest(
@@ -471,6 +872,240 @@ mod tests {
             .collect::<BTreeSet<_>>();
         assert!(rooted.contains(&("nav-db", "nav6-fingerprint")));
         assert!(rooted.contains(&("nav-db", "nav9-fingerprint")));
+    }
+
+    #[test]
+    fn publication_gc_keeps_all_current_versions_and_evicts_unreferenced_roots() {
+        let temp = tempdir().unwrap();
+        let build_root = temp.path().join("artifacts");
+        let current_artifacts = vec![
+            current_manifest("nav6-sunset-abc", "20260609T000000Z", "NAV6"),
+            current_manifest(
+                "master-def",
+                "20260609T000010Z",
+                product_contracts::NAV_DB_CONTRACT_ID,
+            ),
+        ];
+        fs::create_dir_all(build_root.join("published")).unwrap();
+        fs::write(
+            build_root
+                .join("published")
+                .join(current_artifacts_latest_alias_filename()),
+            serde_json::to_vec_pretty(&current_artifacts).unwrap(),
+        )
+        .unwrap();
+        for (label, timestamp) in [
+            ("nav6-sunset-abc", "20260609T000000Z"),
+            ("master-def", "20260609T000010Z"),
+            ("master-old", "20260601T000000Z"),
+        ] {
+            let root = build_root.join("published").join(label).join(timestamp);
+            fs::create_dir_all(root.join("packaged")).unwrap();
+            fs::create_dir_all(root.join("unpacked")).unwrap();
+            fs::write(root.join("packaged").join("sentinel"), b"data").unwrap();
+        }
+
+        let report = gc_publication(&PublicationGcConfig {
+            build_root: build_root.clone(),
+            mode: BuildCacheGcMode::DryRun,
+            grace_hours: 0,
+        })
+        .unwrap();
+        assert_eq!(report.current_publish_roots, 2);
+        assert_eq!(report.scanned_publish_roots, 3);
+        assert_eq!(report.evictable_roots, 1);
+        assert_eq!(
+            report.candidates[0].path,
+            build_root
+                .join("published")
+                .join("master-old")
+                .join("20260601T000000Z")
+        );
+
+        let report = gc_publication(&PublicationGcConfig {
+            build_root: build_root.clone(),
+            mode: BuildCacheGcMode::Execute,
+            grace_hours: 0,
+        })
+        .unwrap();
+        assert_eq!(report.evictable_roots, 1);
+        assert!(!build_root
+            .join("published")
+            .join("master-old")
+            .join("20260601T000000Z")
+            .exists());
+        assert!(build_root
+            .join("published")
+            .join("master-def")
+            .join("20260609T000010Z")
+            .exists());
+    }
+
+    #[test]
+    fn fetch_cache_gc_keeps_manifest_referenced_blobs_and_evicts_unreferenced_entries() {
+        let temp = tempdir().unwrap();
+        let build_root = temp.path().join("artifacts");
+        let current_artifacts = vec![current_manifest(
+            "master-def",
+            "20260609T000010Z",
+            product_contracts::NAV_DB_CONTRACT_ID,
+        )];
+        fs::create_dir_all(build_root.join("published")).unwrap();
+        fs::write(
+            build_root
+                .join("published")
+                .join(current_artifacts_latest_alias_filename()),
+            serde_json::to_vec_pretty(&current_artifacts).unwrap(),
+        )
+        .unwrap();
+        write_build_manifest(
+            &build_root,
+            "master-def",
+            "20260609T000010Z",
+            "2606",
+            vec![node_record_with_fetch_ref(
+                "chart-fetch",
+                "fetch-fp",
+                "keep",
+            )],
+        );
+
+        let fetch_root = build_root.join("cache").join("fetch");
+        let layout = CacheLayout::new(&fetch_root);
+        fs::create_dir_all(layout.blobs_dir()).unwrap();
+        fs::create_dir_all(layout.http_dir()).unwrap();
+        fs::write(layout.blob_path("keep"), b"keep").unwrap();
+        fs::write(layout.blob_path("drop"), b"drop").unwrap();
+        fs::write(
+            layout.http_metadata_path("https://example.test/keep.zip"),
+            serde_json::to_vec_pretty(&serde_json::json!({
+                "cache_key": "https://example.test/keep.zip",
+                "sha256": "keep",
+                "url": "https://example.test/keep.zip",
+                "file": "keep.zip",
+                "size": 4,
+            }))
+            .unwrap(),
+        )
+        .unwrap();
+        fs::write(
+            layout.http_metadata_path("https://example.test/old-alias.zip"),
+            serde_json::to_vec_pretty(&serde_json::json!({
+                "cache_key": "https://example.test/old-alias.zip",
+                "sha256": "keep",
+                "url": "https://example.test/old-alias.zip",
+                "file": "old-alias.zip",
+                "size": 4,
+            }))
+            .unwrap(),
+        )
+        .unwrap();
+        fs::write(
+            layout.http_metadata_path("https://example.test/drop.zip"),
+            serde_json::to_vec_pretty(&serde_json::json!({
+                "cache_key": "https://example.test/drop.zip",
+                "sha256": "drop",
+                "url": "https://example.test/drop.zip",
+                "file": "drop.zip",
+                "size": 4,
+            }))
+            .unwrap(),
+        )
+        .unwrap();
+
+        let report = gc_fetch_cache(&FetchCacheGcConfig {
+            build_root: build_root.clone(),
+            mode: BuildCacheGcMode::DryRun,
+            grace_hours: 0,
+        })
+        .unwrap();
+        assert_eq!(report.build_manifests, 1);
+        assert_eq!(report.rooted_fetch_refs, 1);
+        assert_eq!(report.rooted_blobs, 1);
+        assert_eq!(report.evictable_blobs, 1);
+        assert_eq!(report.evictable_metadata, 2);
+
+        let report = gc_fetch_cache(&FetchCacheGcConfig {
+            build_root: build_root.clone(),
+            mode: BuildCacheGcMode::Execute,
+            grace_hours: 0,
+        })
+        .unwrap();
+        assert_eq!(report.evictable_blobs, 1);
+        assert!(layout.blob_path("keep").exists());
+        assert!(!layout.blob_path("drop").exists());
+        assert!(layout
+            .http_metadata_path("https://example.test/keep.zip")
+            .exists());
+        assert!(!layout
+            .http_metadata_path("https://example.test/old-alias.zip")
+            .exists());
+        assert!(!layout
+            .http_metadata_path("https://example.test/drop.zip")
+            .exists());
+    }
+
+    #[test]
+    fn fetch_cache_gc_requires_manifests_with_fetch_refs_before_execute() {
+        let temp = tempdir().unwrap();
+        let build_root = temp.path().join("artifacts");
+        let current_artifacts = vec![current_manifest(
+            "master-def",
+            "20260609T000010Z",
+            product_contracts::NAV_DB_CONTRACT_ID,
+        )];
+        fs::create_dir_all(build_root.join("published")).unwrap();
+        fs::write(
+            build_root
+                .join("published")
+                .join(current_artifacts_latest_alias_filename()),
+            serde_json::to_vec_pretty(&current_artifacts).unwrap(),
+        )
+        .unwrap();
+        write_build_manifest(
+            &build_root,
+            "master-def",
+            "20260609T000010Z",
+            "2606",
+            vec![node_record("old-fetch-node", "old-fp")],
+        );
+
+        let fetch_root = build_root.join("cache").join("fetch");
+        let layout = CacheLayout::new(&fetch_root);
+        fs::create_dir_all(layout.blobs_dir()).unwrap();
+        fs::create_dir_all(layout.http_dir()).unwrap();
+        fs::write(layout.blob_path("drop"), b"drop").unwrap();
+        fs::write(
+            layout.http_metadata_path("https://example.test/drop.zip"),
+            serde_json::to_vec_pretty(&serde_json::json!({
+                "sha256": "drop",
+                "url": "https://example.test/drop.zip",
+                "file": "drop.zip",
+            }))
+            .unwrap(),
+        )
+        .unwrap();
+
+        let report = gc_fetch_cache(&FetchCacheGcConfig {
+            build_root: build_root.clone(),
+            mode: BuildCacheGcMode::DryRun,
+            grace_hours: 0,
+        })
+        .unwrap();
+        assert!(report.missing_fetch_refs);
+        assert_eq!(report.scanned_blobs, 0);
+        assert_eq!(report.scanned_metadata, 0);
+        assert!(report.candidates.is_empty());
+
+        let error = gc_fetch_cache(&FetchCacheGcConfig {
+            build_root,
+            mode: BuildCacheGcMode::Execute,
+            grace_hours: 0,
+        })
+        .unwrap_err();
+        assert!(error
+            .to_string()
+            .contains("current build manifests contain no fetch_cache_refs"));
     }
 }
 

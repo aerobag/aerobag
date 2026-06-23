@@ -494,6 +494,10 @@ pub(super) fn build_wmm_source_node(config: &ProductBuildConfig) -> anyhow::Resu
                 "metadata".to_string(),
                 relative_artifact_path(&metadata_path, &config.build_root),
             ),
+            (
+                "provenance_dir".to_string(),
+                relative_artifact_path(&provenance_dir, &config.build_root),
+            ),
         ]))
     })?;
     Ok(BuiltWmmSource {
@@ -579,6 +583,10 @@ pub(super) fn build_egm2008_geoid_source_node(
             (
                 "metadata".to_string(),
                 relative_artifact_path(&metadata_path, &config.build_root),
+            ),
+            (
+                "provenance_dir".to_string(),
+                relative_artifact_path(&provenance_dir, &config.build_root),
             ),
         ]))
     })?;

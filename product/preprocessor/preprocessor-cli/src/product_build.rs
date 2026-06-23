@@ -3,7 +3,10 @@ use std::{
     env, fs,
     fs::{File, OpenOptions},
     io::{BufRead, Read, Write},
-    os::unix::{ffi::OsStrExt, fs::PermissionsExt},
+    os::unix::{
+        ffi::OsStrExt,
+        fs::{MetadataExt, PermissionsExt},
+    },
     panic::{self, AssertUnwindSafe},
     path::{Path, PathBuf},
     process::Command,
@@ -37,9 +40,9 @@ use preprocessor_data::{
 };
 use preprocessor_fetch::{
     copy_source_urls_provenance, hash_file, prefetch_archives_with_provenance,
-    prefetch_requests_with_provenance, read_source_prefetch_requests_jsonl, read_source_urls_jsonl,
-    write_package_outputs_jsonl, CacheLayout, FetchCacheConfig, FetchCacheMode,
-    PackageOutputRecord, PrefetchRequest,
+    prefetch_requests_with_provenance, read_download_records, read_source_prefetch_requests_jsonl,
+    read_source_urls_jsonl, write_package_outputs_jsonl, CacheLayout, FetchCacheConfig,
+    FetchCacheMode, PackageOutputRecord, PrefetchRequest,
 };
 use preprocessor_procedure_geometry::{
     build_procedure_geometry_records, procedure_kinds_from_lists,
@@ -153,12 +156,24 @@ struct NodeRecord {
     outputs: BTreeMap<String, String>,
     #[serde(default)]
     output_details: BTreeMap<String, NodeOutputDetail>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    fetch_cache_refs: Vec<FetchCacheRef>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 struct NodeOutputDetail {
     path: String,
     sha256: Option<String>,
+    size_bytes: Option<u64>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, PartialOrd, Ord)]
+struct FetchCacheRef {
+    cache_key: String,
+    url: String,
+    file: String,
+    sha256: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     size_bytes: Option<u64>,
 }
 
@@ -231,6 +246,67 @@ pub struct BuildCacheGcReport {
 pub struct BuildCacheGcBucket {
     pub count: usize,
     pub bytes: u64,
+}
+
+#[derive(Debug, Clone)]
+pub struct PublicationGcConfig {
+    pub build_root: PathBuf,
+    pub mode: BuildCacheGcMode,
+    pub grace_hours: u64,
+}
+
+#[derive(Debug, Clone)]
+pub struct PublicationGcReport {
+    pub current_artifacts_path: PathBuf,
+    pub current_publish_roots: usize,
+    pub scanned_publish_roots: usize,
+    pub grace_roots: usize,
+    pub evictable_roots: usize,
+    pub reclaimed_bytes: u64,
+    pub candidates: Vec<PublicationGcCandidate>,
+}
+
+#[derive(Debug, Clone)]
+pub struct PublicationGcCandidate {
+    pub path: PathBuf,
+    pub bytes: u64,
+}
+
+#[derive(Debug, Clone)]
+pub struct FetchCacheGcConfig {
+    pub build_root: PathBuf,
+    pub mode: BuildCacheGcMode,
+    pub grace_hours: u64,
+}
+
+#[derive(Debug, Clone)]
+pub struct FetchCacheGcReport {
+    pub current_artifacts_path: PathBuf,
+    pub build_manifests: usize,
+    pub rooted_fetch_refs: usize,
+    pub rooted_blobs: usize,
+    pub scanned_metadata: usize,
+    pub scanned_blobs: usize,
+    pub grace_metadata: usize,
+    pub grace_blobs: usize,
+    pub evictable_metadata: usize,
+    pub evictable_blobs: usize,
+    pub reclaimed_bytes: u64,
+    pub candidates: Vec<FetchCacheGcCandidate>,
+    pub missing_fetch_refs: bool,
+}
+
+#[derive(Debug, Clone)]
+pub struct FetchCacheGcCandidate {
+    pub kind: FetchCacheGcCandidateKind,
+    pub path: PathBuf,
+    pub bytes: u64,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FetchCacheGcCandidateKind {
+    Metadata,
+    Blob,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -1885,8 +1961,8 @@ use publication::*;
 pub use publication::{merge_current_artifacts_manifests, publish_discovery_manifest};
 
 mod gc;
-pub use gc::gc_build_cache;
 use gc::*;
+pub use gc::{gc_build_cache, gc_fetch_cache, gc_publication};
 
 mod config;
 pub(crate) use config::default_artifact_write_path;
@@ -2477,6 +2553,7 @@ mod tests {
                     "cache/nodes/nav-db/abc/output/nav_db_2605.zip".to_string(),
                 )]),
                 output_details: BTreeMap::new(),
+                fetch_cache_refs: Vec::new(),
             }],
         };
 

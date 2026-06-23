@@ -2001,6 +2001,7 @@ mod tests {
             started_at_utc: "2026-06-02T00:00:00Z".to_string(),
             finished_at_utc: "2026-06-02T00:00:00Z".to_string(),
             elapsed_ms: 0,
+            fetch_cache_refs: Vec::new(),
         }
     }
 

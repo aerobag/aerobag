@@ -142,6 +142,10 @@ pub(super) fn build_terrain_product(
             "zip".to_string(),
             relative_artifact_path(&zip_path, &config.build_root),
         ),
+        (
+            "provenance_dir".to_string(),
+            relative_artifact_path(&provenance_dir, &config.build_root),
+        ),
     ]);
     let record = write_node_record(
         prepared,
@@ -1095,6 +1099,10 @@ pub(super) fn build_shaded_relief_product(
             "zip".to_string(),
             relative_artifact_path(&zip_path, &config.build_root),
         ),
+        (
+            "provenance_dir".to_string(),
+            relative_artifact_path(&provenance_dir, &config.build_root),
+        ),
     ]);
     let record = write_node_record(
         prepared,
@@ -1847,10 +1855,16 @@ pub(super) fn build_terrain_discovery_index(
         serde_json::to_vec_pretty(&index).context("failed to encode terrain DEM index")?,
     )
     .with_context(|| format!("failed to write {}", index_path.display()))?;
-    let outputs = BTreeMap::from([(
-        "index".to_string(),
-        relative_artifact_path(&index_path, &config.build_root),
-    )]);
+    let outputs = BTreeMap::from([
+        (
+            "index".to_string(),
+            relative_artifact_path(&index_path, &config.build_root),
+        ),
+        (
+            "provenance_dir".to_string(),
+            relative_artifact_path(&provenance_dir, &config.build_root),
+        ),
+    ]);
     let record = write_node_record(
         prepared,
         inputs,

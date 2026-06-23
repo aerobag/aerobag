@@ -17,6 +17,9 @@ pub(super) fn try_load_node_record(
     if expected_outputs.iter().all(|path| path.exists()) {
         let mut cached = record;
         cached.cache_hit = true;
+        if cached.fetch_cache_refs.is_empty() {
+            cached.fetch_cache_refs = node_fetch_cache_refs(&prepared.dir, &cached.outputs)?;
+        }
         return Ok(Some(cached));
     }
     Ok(None)
@@ -296,6 +299,7 @@ pub(super) fn write_node_record(
     elapsed_ms: u64,
 ) -> anyhow::Result<NodeRecord> {
     let output_details = node_output_details(&prepared.dir, &outputs)?;
+    let fetch_cache_refs = node_fetch_cache_refs(&prepared.dir, &outputs)?;
     let record = NodeRecord {
         name: prepared.name,
         fingerprint: prepared.fingerprint,
@@ -306,6 +310,7 @@ pub(super) fn write_node_record(
         inputs,
         outputs,
         output_details,
+        fetch_cache_refs,
     };
     fs::write(
         &prepared.record_path,
@@ -313,6 +318,67 @@ pub(super) fn write_node_record(
     )
     .with_context(|| format!("failed to write {}", prepared.record_path.display()))?;
     Ok(record)
+}
+
+pub(super) fn node_fetch_cache_refs(
+    node_dir: &Path,
+    outputs: &BTreeMap<String, String>,
+) -> anyhow::Result<Vec<FetchCacheRef>> {
+    let mut roots = Vec::new();
+    if let Some(provenance_dir) = outputs
+        .get("provenance_dir")
+        .and_then(|value| resolve_recorded_output_path(node_dir, value))
+    {
+        roots.push(provenance_dir);
+    }
+    let node_provenance_dir = node_dir.join("meta").join("provenance");
+    if node_provenance_dir.is_dir() {
+        roots.push(node_provenance_dir);
+    }
+
+    let mut refs = BTreeMap::<(String, String, String), FetchCacheRef>::new();
+    for root in roots {
+        collect_fetch_cache_refs_from_provenance_dir(&root, &mut refs)?;
+    }
+    Ok(refs.into_values().collect())
+}
+
+fn collect_fetch_cache_refs_from_provenance_dir(
+    dir: &Path,
+    refs: &mut BTreeMap<(String, String, String), FetchCacheRef>,
+) -> anyhow::Result<()> {
+    if !dir.is_dir() {
+        return Ok(());
+    }
+    for entry in fs::read_dir(dir).with_context(|| format!("failed to read {}", dir.display()))? {
+        let entry = entry?;
+        let path = entry.path();
+        let file_type = entry
+            .file_type()
+            .with_context(|| format!("failed to stat {}", path.display()))?;
+        if file_type.is_dir() {
+            collect_fetch_cache_refs_from_provenance_dir(&path, refs)?;
+            continue;
+        }
+        if path.file_name().and_then(|name| name.to_str()) != Some("downloads.jsonl") {
+            continue;
+        }
+        for record in read_download_records(&path)? {
+            let key = (
+                record.sha256.clone(),
+                record.cache_key.clone(),
+                record.file.clone(),
+            );
+            refs.entry(key).or_insert(FetchCacheRef {
+                cache_key: record.cache_key,
+                url: record.url,
+                file: record.file,
+                sha256: record.sha256,
+                size_bytes: record.size,
+            });
+        }
+    }
+    Ok(())
 }
 
 pub(super) fn node_output_details(

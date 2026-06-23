@@ -199,9 +199,11 @@ fn source_prefetch_request_from_json(value: &serde_json::Value) -> anyhow::Resul
 
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
 pub struct DownloadRecord {
+    pub cache_key: String,
     pub url: String,
     pub file: String,
     pub sha256: String,
+    pub size: Option<u64>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
@@ -248,10 +250,16 @@ pub fn read_download_records(path: impl AsRef<Path>) -> anyhow::Result<BTreeSet<
         let Some(sha256) = value.get("sha256").and_then(|value| value.as_str()) else {
             continue;
         };
+        let cache_key = value
+            .get("cache_key")
+            .and_then(|value| value.as_str())
+            .unwrap_or(url);
         rows.insert(DownloadRecord {
+            cache_key: cache_key.to_string(),
             url: url.to_string(),
             file: file.to_string(),
             sha256: sha256.to_string(),
+            size: value.get("size").and_then(|value| value.as_u64()),
         });
     }
     Ok(rows)
@@ -495,6 +503,7 @@ struct PrefetchProvenanceRecorder {
 impl PrefetchProvenanceRecorder {
     fn record_download(
         &self,
+        cache_key: &str,
         url: &str,
         file_name: &str,
         sha256: &str,
@@ -503,6 +512,7 @@ impl PrefetchProvenanceRecorder {
     ) -> anyhow::Result<()> {
         let value = serde_json::json!({
             "downloaded": source == "network",
+            "cache_key": cache_key,
             "event": "download",
             "file": file_name,
             "label": self.label,
@@ -604,7 +614,14 @@ fn prefetch_one(
         .with_context(|| format!("failed to stat {}", archive_path.display()))?
         .len();
     if let Some(recorder) = recorder {
-        recorder.record_download(&request.url, file_name, &sha256, size, source)?;
+        recorder.record_download(
+            &request.cache_key,
+            &request.url,
+            file_name,
+            &sha256,
+            size,
+            source,
+        )?;
     }
 
     if archive_path
@@ -741,6 +758,7 @@ fn fetch_network_with_cache_once(
     store_cached_download_with_headers(
         layout,
         cache_key,
+        network_url,
         file_name,
         archive_path,
         parse_http_validators(&headers_path)?,
@@ -940,7 +958,8 @@ fn restore_cached_download(
 
 fn store_cached_download_with_headers(
     layout: &CacheLayout,
-    url: &str,
+    cache_key: &str,
+    source_url: &str,
     file_name: &str,
     archive_path: &Path,
     validators: HttpValidators,
@@ -964,19 +983,20 @@ fn store_cached_download_with_headers(
         .with_context(|| format!("failed to stat {}", archive_path.display()))?
         .len();
     let metadata = serde_json::json!({
+        "cache_key": cache_key,
         "etag": validators.etag,
         "file": file_name,
         "fetched_at_utc": Utc::now().format("%Y-%m-%dT%H:%M:%SZ").to_string(),
         "last_modified": validators.last_modified,
         "sha256": sha256,
         "size": size,
-        "url": url,
+        "url": source_url,
     });
     fs::write(
-        layout.http_metadata_path(url),
+        layout.http_metadata_path(cache_key),
         serde_json::to_vec_pretty(&metadata).context("failed to encode cache metadata")?,
     )
-    .with_context(|| format!("failed to write cache metadata for {url}"))?;
+    .with_context(|| format!("failed to write cache metadata for {cache_key}"))?;
     Ok(())
 }
 

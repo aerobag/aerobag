@@ -481,6 +481,10 @@ pub(super) fn build_water_mask_product(
             "zip".to_string(),
             relative_artifact_path(&zip_path, &config.build_root),
         ),
+        (
+            "provenance_dir".to_string(),
+            relative_artifact_path(&output_dir.join("provenance"), &config.build_root),
+        ),
     ]);
     let record = write_node_record(
         prepared,

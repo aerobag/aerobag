@@ -1073,7 +1073,7 @@ const SHADED_RELIEF_STATE_BORDERS_URL: &str =
     "https://naturalearth.s3.amazonaws.com/50m_cultural/ne_50m_admin_1_states_provinces_lines.zip";
 const SHADED_RELIEF_PRIMARY_ROADS_URL: &str =
     "https://www2.census.gov/geo/tiger/TIGER2025/PRIMARYROADS/tl_2025_us_primaryroads.zip";
-const WATER_MASK_PIPELINE_VERSION: &str = "v2";
+const WATER_MASK_PIPELINE_VERSION: &str = "v3";
 const TERRAIN_TILE_WORKERS: u32 = 16;
 const SHADED_RELIEF_TILE_WORKERS: u32 = 16;
 const WATER_MASK_FETCH_WORKERS: u32 = 2;

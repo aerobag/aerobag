@@ -347,8 +347,10 @@ pub(super) fn node_fetch_cache_refs(
     for root in roots {
         collect_fetch_cache_refs_from_provenance_dir(&root, false, &mut refs)?;
     }
-    for root in legacy_roots {
-        collect_fetch_cache_refs_from_provenance_dir(&root, true, &mut refs)?;
+    if refs.is_empty() {
+        for root in legacy_roots {
+            collect_fetch_cache_refs_from_provenance_dir(&root, true, &mut refs)?;
+        }
     }
     Ok(refs.into_values().collect())
 }
@@ -488,4 +490,46 @@ pub(super) fn load_existing_node_record(
         );
     }
     Ok(record)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use tempfile::tempdir;
+
+    #[test]
+    fn node_fetch_cache_refs_ignores_legacy_provenance_when_node_provenance_exists() {
+        let temp = tempdir().expect("tempdir");
+        let build_root = temp.path().join("artifacts");
+        let node_dir = build_root
+            .join("cache")
+            .join("nodes")
+            .join("static-water-mask-ak")
+            .join("fingerprint");
+        let provenance_dir = node_dir.join("output").join("provenance");
+        fs::create_dir_all(&provenance_dir).expect("provenance dir");
+        fs::write(
+            provenance_dir.join("downloads.jsonl"),
+            r#"{"cache_key":"cache-key","downloaded":false,"event":"download","file":"source.json","label":"water-mask-ak-page","sha256":"abc123","size":12,"source":"cache","url":"https://example.test/source.json"}"#,
+        )
+        .expect("node provenance");
+
+        let legacy_dir = build_root
+            .join("meta")
+            .join("provenance")
+            .join("water-mask-ak");
+        fs::create_dir_all(&legacy_dir).expect("legacy dir");
+        fs::write(legacy_dir.join("downloads.jsonl"), [0xff, 0xfe, 0xfd])
+            .expect("legacy malformed provenance");
+
+        let outputs = BTreeMap::from([(
+            "provenance_dir".to_string(),
+            "cache/nodes/static-water-mask-ak/fingerprint/output/provenance".to_string(),
+        )]);
+
+        let refs = node_fetch_cache_refs(&node_dir, &outputs).expect("fetch refs");
+
+        assert_eq!(refs.len(), 1);
+        assert_eq!(refs[0].cache_key, "cache-key");
+    }
 }

@@ -626,10 +626,6 @@ cd "$SOURCE_ROOT"
   --target-dir "$CARGO_TARGET_DIR" \\
   {refs}
 
-"$CARGO_TARGET_DIR/release/preprocessor-cli" gc \\
-  --build-root "$ARTIFACT_ROOT" \\
-  --execute
-
 /usr/local/bin/aerobag-write-health
 """
 

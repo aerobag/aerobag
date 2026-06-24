@@ -293,6 +293,14 @@ def main() -> int:
             merge_command.extend(["--manifest", str(manifest)])
         result = run(merge_command, cwd=repo_root / PREPROCESSOR_DIR, env=env, capture=True)
         print(result.stdout, end="" if result.stdout.endswith("\n") else "\n")
+
+        gc_command = [
+            str(merge_binary),
+            "gc",
+            "--build-root",
+            str(build_root),
+        ]
+        run(gc_command, cwd=repo_root / PREPROCESSOR_DIR, env=env)
     finally:
         if args.keep_worktrees and not args.remove_worktrees:
             print(f"kept worktrees under {worktree_root}", flush=True)

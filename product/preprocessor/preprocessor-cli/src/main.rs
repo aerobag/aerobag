@@ -42,9 +42,10 @@ use product_build::{
     audit_procedure_geometry_from_sqlite, build_cycle, build_product, default_artifact_write_path,
     explain_product_build, gc_build_cache, gc_fetch_cache, gc_publication,
     maybe_reexec_build_cycle_under_cgroup, merge_current_artifacts_manifests,
-    publish_discovery_manifest, BuildCacheGcConfig, BuildCacheGcMode, FetchCacheGcCandidateKind,
-    FetchCacheGcConfig, ProcedureGeometryAuditFilter, ProductBuildConfig, ProductBuildProfile,
-    PublicationGcConfig,
+    publish_discovery_manifest, BuildCacheGcConfig, BuildCacheGcMode, BuildCacheGcReport,
+    FetchCacheGcCandidateKind, FetchCacheGcConfig, FetchCacheGcReport,
+    ProcedureGeometryAuditFilter, ProductBuildConfig, ProductBuildProfile, PublicationGcConfig,
+    PublicationGcReport,
 };
 use sha2::{Digest, Sha256};
 
@@ -53,6 +54,7 @@ fn usage() -> &'static str {
   preprocessor-cli build-product [--profile <validation|production>] [--cycle <YYCC>] [--source-root <path>] [--build-root <path>] [--publish-label <label>] [--publish-timestamp <YYYYMMDDTHHMMSSZ>] [--fetch-jobs <count>] [--cpu-jobs <count>] [--max-heavy-jobs <count>]
   preprocessor-cli merge-current-artifacts [--profile <validation|production>] [--source-root <path>] [--build-root <path>] [--as-of-utc <RFC3339 UTC>] --manifest <path> [--manifest <path>]...
   preprocessor-cli publish-discovery-manifest [--profile <validation|production>] [--source-root <path>] [--build-root <path>] --as-of-utc <RFC3339 UTC> --bundle <filename> [--bundle <filename>]...
+  preprocessor-cli gc [--profile <validation|production>] [--build-root <path>] [--dry-run|--execute] [--grace-hours <count>]
   preprocessor-cli analyze-obstacle-thresholds --input-dir <path> [--cap <count>] [--min-zoom <z>] [--max-zoom <z>] [--step-ft <count>]
   preprocessor-cli normalize-swim-notams --input-jsonl <path> --output-dir <path> --version-label <label>
 
@@ -87,6 +89,7 @@ fn long_usage() -> &'static str {
   preprocessor-cli build-cycle [--profile <validation|production>] [--cycle <YYCC>] [--source-root <path>] [--build-root <path>] [--publish-label <label>] [--publish-timestamp <YYYYMMDDTHHMMSSZ>] [--fetch-jobs <count>] [--cpu-jobs <count>] [--max-heavy-jobs <count>]
   preprocessor-cli build-product [--profile <validation|production>] [--cycle <YYCC>] [--source-root <path>] [--build-root <path>] [--publish-label <label>] [--publish-timestamp <YYYYMMDDTHHMMSSZ>] [--fetch-jobs <count>] [--cpu-jobs <count>] [--max-heavy-jobs <count>]
   preprocessor-cli publish-discovery-manifest [--profile <validation|production>] [--source-root <path>] [--build-root <path>] --as-of-utc <RFC3339 UTC> --bundle <filename> [--bundle <filename>]...
+  preprocessor-cli gc [--profile <validation|production>] [--build-root <path>] [--dry-run|--execute] [--grace-hours <count>]
   preprocessor-cli gc-build-cache [--profile <validation|production>] [--build-root <path>] [--dry-run|--execute] [--grace-hours <count>] [--bootstrap-from-build-manifests]
   preprocessor-cli gc-publication [--build-root <path>] [--dry-run|--execute] [--grace-hours <count>]
   preprocessor-cli gc-fetch-cache [--build-root <path>] [--dry-run|--execute] [--grace-hours <count>]
@@ -1569,6 +1572,60 @@ fn work_kind_name(value: WorkKind) -> &'static str {
     }
 }
 
+struct FullGcConfig {
+    build_root: PathBuf,
+    profile: ProductBuildProfile,
+    mode: BuildCacheGcMode,
+    grace_hours: u64,
+}
+
+fn full_gc_config_from_args(args: &[String]) -> anyhow::Result<FullGcConfig> {
+    let mut base = ProductBuildConfig::from_env_and_args(&[])?;
+    let mut mode = BuildCacheGcMode::Execute;
+    let mut grace_hours = 24_u64;
+    let mut index = 0;
+    while index < args.len() {
+        match args[index].as_str() {
+            "--profile" => {
+                let value = args.get(index + 1).context("missing value for --profile")?;
+                base.profile = ProductBuildProfile::parse(value)
+                    .ok_or_else(|| anyhow::anyhow!("unsupported profile: {value}"))?;
+                index += 2;
+            }
+            "--build-root" => {
+                base.build_root = PathBuf::from(
+                    args.get(index + 1)
+                        .context("missing value for --build-root")?,
+                );
+                index += 2;
+            }
+            "--dry-run" => {
+                mode = BuildCacheGcMode::DryRun;
+                index += 1;
+            }
+            "--execute" => {
+                mode = BuildCacheGcMode::Execute;
+                index += 1;
+            }
+            "--grace-hours" => {
+                grace_hours = args
+                    .get(index + 1)
+                    .context("missing value for --grace-hours")?
+                    .parse()
+                    .context("failed to parse --grace-hours")?;
+                index += 2;
+            }
+            other => anyhow::bail!("unknown gc argument: {other}"),
+        }
+    }
+    Ok(FullGcConfig {
+        build_root: base.build_root,
+        profile: base.profile,
+        mode,
+        grace_hours,
+    })
+}
+
 fn build_cache_gc_config_from_args(args: &[String]) -> anyhow::Result<BuildCacheGcConfig> {
     let mut base = ProductBuildConfig::from_env_and_args(&[])?;
     let mut mode = BuildCacheGcMode::DryRun;
@@ -1680,6 +1737,110 @@ fn basic_gc_args(
     Ok((build_root, mode, grace_hours))
 }
 
+fn gc_mode_name(mode: BuildCacheGcMode) -> &'static str {
+    if mode == BuildCacheGcMode::Execute {
+        "execute"
+    } else {
+        "dry-run"
+    }
+}
+
+fn print_build_cache_gc_report(mode: BuildCacheGcMode, report: BuildCacheGcReport) {
+    println!("roots {}", report.roots_path.display());
+    println!("mode {}", gc_mode_name(mode));
+    println!("rooted_nodes {}", report.rooted_nodes);
+    println!("scanned_nodes {}", report.scanned_nodes);
+    println!("active_nodes {}", report.active_nodes);
+    println!("stale_lock_nodes {}", report.stale_lock_nodes);
+    println!("grace_nodes {}", report.grace_nodes);
+    println!("evictable_nodes {}", report.evictable_nodes);
+    println!("reclaimable_bytes {}", report.reclaimed_bytes);
+    println!(
+        "reclaimable_gib {:.2}",
+        report.reclaimed_bytes as f64 / 1024.0 / 1024.0 / 1024.0
+    );
+    println!("scratch_files {}", report.scratch_files);
+    println!("scratch_reclaimable_bytes {}", report.scratch_bytes);
+    println!(
+        "scratch_reclaimable_gib {:.2}",
+        report.scratch_bytes as f64 / 1024.0 / 1024.0 / 1024.0
+    );
+    println!("scratch_active_nodes {}", report.scratch_active_nodes);
+    for (node_name, bucket) in report.by_node_name {
+        println!(
+            "candidate {} count={} bytes={} gib={:.2}",
+            node_name,
+            bucket.count,
+            bucket.bytes,
+            bucket.bytes as f64 / 1024.0 / 1024.0 / 1024.0
+        );
+    }
+}
+
+fn print_publication_gc_report(mode: BuildCacheGcMode, report: PublicationGcReport) {
+    println!(
+        "current_artifacts {}",
+        report.current_artifacts_path.display()
+    );
+    println!("mode {}", gc_mode_name(mode));
+    println!("current_publish_roots {}", report.current_publish_roots);
+    println!("scanned_publish_roots {}", report.scanned_publish_roots);
+    println!("grace_roots {}", report.grace_roots);
+    println!("evictable_roots {}", report.evictable_roots);
+    println!("reclaimable_bytes {}", report.reclaimed_bytes);
+    println!(
+        "reclaimable_gib {:.2}",
+        report.reclaimed_bytes as f64 / 1024.0 / 1024.0 / 1024.0
+    );
+    for candidate in report.candidates {
+        println!(
+            "candidate {} bytes={} gib={:.2}",
+            candidate.path.display(),
+            candidate.bytes,
+            candidate.bytes as f64 / 1024.0 / 1024.0 / 1024.0
+        );
+    }
+}
+
+fn print_fetch_cache_gc_report(mode: BuildCacheGcMode, report: FetchCacheGcReport) {
+    println!(
+        "current_artifacts {}",
+        report.current_artifacts_path.display()
+    );
+    println!("mode {}", gc_mode_name(mode));
+    println!("build_manifests {}", report.build_manifests);
+    println!("rooted_fetch_refs {}", report.rooted_fetch_refs);
+    println!("rooted_blobs {}", report.rooted_blobs);
+    println!("missing_fetch_refs {}", report.missing_fetch_refs);
+    println!("scanned_metadata {}", report.scanned_metadata);
+    println!("scanned_blobs {}", report.scanned_blobs);
+    println!("grace_metadata {}", report.grace_metadata);
+    println!("grace_blobs {}", report.grace_blobs);
+    println!("evictable_metadata {}", report.evictable_metadata);
+    println!("evictable_blobs {}", report.evictable_blobs);
+    println!("reclaimable_bytes {}", report.reclaimed_bytes);
+    println!(
+        "reclaimable_gib {:.2}",
+        report.reclaimed_bytes as f64 / 1024.0 / 1024.0 / 1024.0
+    );
+    for candidate in report.candidates.iter().take(50) {
+        let kind = match candidate.kind {
+            FetchCacheGcCandidateKind::Metadata => "metadata",
+            FetchCacheGcCandidateKind::Blob => "blob",
+        };
+        println!(
+            "candidate {} {} bytes={} gib={:.2}",
+            kind,
+            candidate.path.display(),
+            candidate.bytes,
+            candidate.bytes as f64 / 1024.0 / 1024.0 / 1024.0
+        );
+    }
+    if report.candidates.len() > 50 {
+        println!("candidate_truncated {}", report.candidates.len() - 50);
+    }
+}
+
 fn main() -> anyhow::Result<()> {
     let args: Vec<String> = env::args().collect();
     if matches!(args.get(1).map(String::as_str), Some("--help" | "-h")) {
@@ -1708,6 +1869,7 @@ fn main() -> anyhow::Result<()> {
                 | "build-obstacles-from-input"
                 | "build-cycle"
                 | "build-product"
+                | "gc"
                 | "audit-terrain-airports"
                 | "run-chart"
         )
@@ -2636,128 +2798,55 @@ fn main() -> anyhow::Result<()> {
             )?;
             println!("{}", path.display());
         }
+        Some("gc") => {
+            let config = full_gc_config_from_args(&args[2..])?;
+            println!("gc mode {}", gc_mode_name(config.mode));
+            println!("gc build_root {}", config.build_root.display());
+            println!("gc grace_hours {}", config.grace_hours);
+
+            println!("gc step fetch-cache");
+            let fetch_report = gc_fetch_cache(&FetchCacheGcConfig {
+                build_root: config.build_root.clone(),
+                mode: config.mode,
+                grace_hours: config.grace_hours,
+            })?;
+            print_fetch_cache_gc_report(config.mode, fetch_report);
+
+            println!("gc step publication");
+            let publication_report = gc_publication(&PublicationGcConfig {
+                build_root: config.build_root.clone(),
+                mode: config.mode,
+                grace_hours: config.grace_hours,
+            })?;
+            print_publication_gc_report(config.mode, publication_report);
+
+            println!("gc step build-cache");
+            let build_cache_report = gc_build_cache(&BuildCacheGcConfig {
+                build_root: config.build_root,
+                profile: config.profile,
+                mode: config.mode,
+                grace_hours: config.grace_hours,
+                bootstrap_from_build_manifests: true,
+            })?;
+            print_build_cache_gc_report(config.mode, build_cache_report);
+        }
         Some("gc-build-cache") => {
             let config = build_cache_gc_config_from_args(&args[2..])?;
             let mode = config.mode;
             let report = gc_build_cache(&config)?;
-            println!("roots {}", report.roots_path.display());
-            println!(
-                "mode {}",
-                if mode == BuildCacheGcMode::Execute {
-                    "execute"
-                } else {
-                    "dry-run"
-                }
-            );
-            println!("rooted_nodes {}", report.rooted_nodes);
-            println!("scanned_nodes {}", report.scanned_nodes);
-            println!("active_nodes {}", report.active_nodes);
-            println!("stale_lock_nodes {}", report.stale_lock_nodes);
-            println!("grace_nodes {}", report.grace_nodes);
-            println!("evictable_nodes {}", report.evictable_nodes);
-            println!("reclaimable_bytes {}", report.reclaimed_bytes);
-            println!(
-                "reclaimable_gib {:.2}",
-                report.reclaimed_bytes as f64 / 1024.0 / 1024.0 / 1024.0
-            );
-            println!("scratch_files {}", report.scratch_files);
-            println!("scratch_reclaimable_bytes {}", report.scratch_bytes);
-            println!(
-                "scratch_reclaimable_gib {:.2}",
-                report.scratch_bytes as f64 / 1024.0 / 1024.0 / 1024.0
-            );
-            println!("scratch_active_nodes {}", report.scratch_active_nodes);
-            for (node_name, bucket) in report.by_node_name {
-                println!(
-                    "candidate {} count={} bytes={} gib={:.2}",
-                    node_name,
-                    bucket.count,
-                    bucket.bytes,
-                    bucket.bytes as f64 / 1024.0 / 1024.0 / 1024.0
-                );
-            }
+            print_build_cache_gc_report(mode, report);
         }
         Some("gc-publication") => {
             let config = publication_gc_config_from_args(&args[2..])?;
             let mode = config.mode;
             let report = gc_publication(&config)?;
-            println!(
-                "current_artifacts {}",
-                report.current_artifacts_path.display()
-            );
-            println!(
-                "mode {}",
-                if mode == BuildCacheGcMode::Execute {
-                    "execute"
-                } else {
-                    "dry-run"
-                }
-            );
-            println!("current_publish_roots {}", report.current_publish_roots);
-            println!("scanned_publish_roots {}", report.scanned_publish_roots);
-            println!("grace_roots {}", report.grace_roots);
-            println!("evictable_roots {}", report.evictable_roots);
-            println!("reclaimable_bytes {}", report.reclaimed_bytes);
-            println!(
-                "reclaimable_gib {:.2}",
-                report.reclaimed_bytes as f64 / 1024.0 / 1024.0 / 1024.0
-            );
-            for candidate in report.candidates {
-                println!(
-                    "candidate {} bytes={} gib={:.2}",
-                    candidate.path.display(),
-                    candidate.bytes,
-                    candidate.bytes as f64 / 1024.0 / 1024.0 / 1024.0
-                );
-            }
+            print_publication_gc_report(mode, report);
         }
         Some("gc-fetch-cache") => {
             let config = fetch_cache_gc_config_from_args(&args[2..])?;
             let mode = config.mode;
             let report = gc_fetch_cache(&config)?;
-            println!(
-                "current_artifacts {}",
-                report.current_artifacts_path.display()
-            );
-            println!(
-                "mode {}",
-                if mode == BuildCacheGcMode::Execute {
-                    "execute"
-                } else {
-                    "dry-run"
-                }
-            );
-            println!("build_manifests {}", report.build_manifests);
-            println!("rooted_fetch_refs {}", report.rooted_fetch_refs);
-            println!("rooted_blobs {}", report.rooted_blobs);
-            println!("missing_fetch_refs {}", report.missing_fetch_refs);
-            println!("scanned_metadata {}", report.scanned_metadata);
-            println!("scanned_blobs {}", report.scanned_blobs);
-            println!("grace_metadata {}", report.grace_metadata);
-            println!("grace_blobs {}", report.grace_blobs);
-            println!("evictable_metadata {}", report.evictable_metadata);
-            println!("evictable_blobs {}", report.evictable_blobs);
-            println!("reclaimable_bytes {}", report.reclaimed_bytes);
-            println!(
-                "reclaimable_gib {:.2}",
-                report.reclaimed_bytes as f64 / 1024.0 / 1024.0 / 1024.0
-            );
-            for candidate in report.candidates.iter().take(50) {
-                let kind = match candidate.kind {
-                    FetchCacheGcCandidateKind::Metadata => "metadata",
-                    FetchCacheGcCandidateKind::Blob => "blob",
-                };
-                println!(
-                    "candidate {} {} bytes={} gib={:.2}",
-                    kind,
-                    candidate.path.display(),
-                    candidate.bytes,
-                    candidate.bytes as f64 / 1024.0 / 1024.0 / 1024.0
-                );
-            }
-            if report.candidates.len() > 50 {
-                println!("candidate_truncated {}", report.candidates.len() - 50);
-            }
+            print_fetch_cache_gc_report(mode, report);
         }
         Some("audit-terrain-airports") => {
             audit_terrain_airports_command(&args[2..])?;
@@ -2939,5 +3028,28 @@ mod tests {
             command.csup_sources[0].unpack_source_root,
             PathBuf::from("/tmp/csup-unpack")
         );
+    }
+
+    #[test]
+    fn parse_full_gc_defaults_to_execute() {
+        let args = vec!["--build-root".to_string(), "/tmp/artifacts".to_string()];
+        let config = full_gc_config_from_args(&args).expect("parse gc");
+        assert_eq!(config.build_root, PathBuf::from("/tmp/artifacts"));
+        assert_eq!(config.mode, BuildCacheGcMode::Execute);
+        assert_eq!(config.grace_hours, 24);
+    }
+
+    #[test]
+    fn parse_full_gc_accepts_dry_run_and_grace_hours() {
+        let args = vec![
+            "--build-root".to_string(),
+            "/tmp/artifacts".to_string(),
+            "--dry-run".to_string(),
+            "--grace-hours".to_string(),
+            "0".to_string(),
+        ];
+        let config = full_gc_config_from_args(&args).expect("parse gc");
+        assert_eq!(config.mode, BuildCacheGcMode::DryRun);
+        assert_eq!(config.grace_hours, 0);
     }
 }

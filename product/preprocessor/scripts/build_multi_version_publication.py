@@ -300,7 +300,7 @@ def main() -> int:
             "--build-root",
             str(build_root),
         ]
-        run(gc_command, cwd=repo_root / PREPROCESSOR_DIR, env=env)
+        run(gc_command, cwd=repo_root / PREPROCESSOR_DIR, env=env, capture=True)
     finally:
         if args.keep_worktrees and not args.remove_worktrees:
             print(f"kept worktrees under {worktree_root}", flush=True)

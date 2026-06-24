@@ -14,7 +14,6 @@ impl ProductBuildConfig {
             .to_path_buf();
         let mut build_root = default_artifact_write_path(&repo_root);
 
-        let mut profile = ProductBuildProfile::Production;
         let mut chart_cutline_root = repo_root
             .join("third_party")
             .join("apps4av")
@@ -37,12 +36,6 @@ impl ProductBuildConfig {
         let mut index = 0;
         while index < args.len() {
             match args[index].as_str() {
-                "--profile" => {
-                    let value = args.get(index + 1).context("missing value for --profile")?;
-                    profile = ProductBuildProfile::parse(value)
-                        .ok_or_else(|| anyhow::anyhow!("unsupported profile: {value}"))?;
-                    index += 2;
-                }
                 "--chart-cutline-root" => {
                     chart_cutline_root = PathBuf::from(
                         args.get(index + 1)
@@ -135,7 +128,6 @@ impl ProductBuildConfig {
             build_root,
             publish_dir,
             packaged_dir,
-            profile,
             publish_label,
             publish_timestamp,
             target_cycle,

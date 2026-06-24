@@ -6,9 +6,8 @@ pub fn build_product(config: &ProductBuildConfig) -> anyhow::Result<ProductBuild
     let log_root = orchestrator_log_root(config)?;
     let mut master_log = MasterLog::create(&log_root.join("master.log"))?;
     master_log.log(format!(
-        "begin pid={} profile={} build_root={} publish_dir={} publish_label={} publish_timestamp={} scheduler=product_weighted_dag scheduler_version=2 fetch_jobs={} cpu_jobs={} max_heavy_jobs={} fetch_cache_mode={}",
+        "begin pid={} build_root={} publish_dir={} publish_label={} publish_timestamp={} scheduler=product_weighted_dag scheduler_version=2 fetch_jobs={} cpu_jobs={} max_heavy_jobs={} fetch_cache_mode={}",
         std::process::id(),
-        config.profile.as_str(),
         config.build_root.display(),
         config.publish_dir.display(),
         config.publish_label,
@@ -79,12 +78,12 @@ pub fn build_product(config: &ProductBuildConfig) -> anyhow::Result<ProductBuild
         }
     }
 
-    fn static_build_record_task_ids(config: &ProductBuildConfig) -> Vec<String> {
+    fn static_build_record_task_ids(_config: &ProductBuildConfig) -> Vec<String> {
         let mut task_ids = vec!["wmm-source".to_string(), "build-world-basemap".to_string()];
         if include_static_terrain_products() {
             task_ids.push("geoid-source".to_string());
             task_ids.push("terrain-discovery".to_string());
-            for region in config.profile.terrain_regions() {
+            for region in Region::ALL.iter() {
                 let region_id = region.code().to_ascii_lowercase();
                 task_ids.push(format!("build-terrain-{region_id}"));
                 task_ids.push(format!("build-water-mask-{region_id}"));
@@ -173,7 +172,7 @@ pub fn build_product(config: &ProductBuildConfig) -> anyhow::Result<ProductBuild
                 },
             });
             let mut csup_render_ids = Vec::new();
-            for region in Region::ALL {
+            for region in Region::ALL.iter() {
                 let task_id = cycle_task_id(
                     cycle,
                     &format!("csup-render-{}", region.code().to_ascii_lowercase()),
@@ -185,7 +184,7 @@ pub fn build_product(config: &ProductBuildConfig) -> anyhow::Result<ProductBuild
                     weight: 2,
                     kind: ProductScheduledTaskKind::CsupRender {
                         cycle: cycle.clone(),
-                        region,
+                        region: *region,
                     },
                 });
             }
@@ -211,7 +210,7 @@ pub fn build_product(config: &ProductBuildConfig) -> anyhow::Result<ProductBuild
                 },
             });
             let mut tpp_package_ids = Vec::new();
-            for region in config.profile.tpp_regions() {
+            for region in Region::ALL.iter() {
                 let region_id = region.code().to_ascii_lowercase();
                 let render_id = cycle_task_id(cycle, &format!("tpp-{region_id}"));
                 let package_id = cycle_task_id(cycle, &format!("tpp-{region_id}-package"));
@@ -292,7 +291,7 @@ pub fn build_product(config: &ProductBuildConfig) -> anyhow::Result<ProductBuild
             ];
             nav_db_deps.extend(static_product_task_ids(config));
             if include_static_terrain_products() {
-                nav_db_deps.extend(config.profile.terrain_regions().iter().map(|region| {
+                nav_db_deps.extend(Region::ALL.iter().map(|region| {
                     format!("build-shaded-relief-{}", region.code().to_ascii_lowercase())
                 }));
             }
@@ -339,7 +338,7 @@ pub fn build_product(config: &ProductBuildConfig) -> anyhow::Result<ProductBuild
                 weight: 1,
                 kind: ProductScheduledTaskKind::TerrainDiscovery,
             });
-            for region in config.profile.terrain_regions() {
+            for region in Region::ALL.iter() {
                 let region_id = region.code().to_ascii_lowercase();
                 pending_tasks.push(GraphScheduledTask {
                     id: format!("build-terrain-{region_id}"),
@@ -375,9 +374,7 @@ pub fn build_product(config: &ProductBuildConfig) -> anyhow::Result<ProductBuild
                     kind: ProductScheduledTaskKind::ShadedReliefPublish { region: *region },
                 });
             }
-            let terrain_wide_deps = config
-                .profile
-                .terrain_regions()
+            let terrain_wide_deps = Region::ALL
                 .iter()
                 .map(|region| format!("build-terrain-{}", region.code().to_ascii_lowercase()))
                 .collect::<Vec<_>>();
@@ -393,9 +390,7 @@ pub fn build_product(config: &ProductBuildConfig) -> anyhow::Result<ProductBuild
                 weight: 1,
                 kind: ProductScheduledTaskKind::TerrainWidePublish,
             });
-            let shaded_relief_wide_deps = config
-                .profile
-                .terrain_regions()
+            let shaded_relief_wide_deps = Region::ALL
                 .iter()
                 .map(|region| format!("build-shaded-relief-{}", region.code().to_ascii_lowercase()))
                 .collect::<Vec<_>>();
@@ -419,12 +414,12 @@ pub fn build_product(config: &ProductBuildConfig) -> anyhow::Result<ProductBuild
             .collect::<Vec<_>>();
         if include_static_terrain_products() {
             current_artifacts_deps.extend(
-                config.profile.terrain_regions().iter().map(|region| {
+                Region::ALL.iter().map(|region| {
                     format!("publish-terrain-{}", region.code().to_ascii_lowercase())
                 }),
             );
             current_artifacts_deps.push(format!("publish-terrain-{WIDE_ANGLE_REGION_ID}"));
-            current_artifacts_deps.extend(config.profile.terrain_regions().iter().map(|region| {
+            current_artifacts_deps.extend(Region::ALL.iter().map(|region| {
                 format!(
                     "publish-shaded-relief-{}",
                     region.code().to_ascii_lowercase()
@@ -481,9 +476,7 @@ pub fn build_product(config: &ProductBuildConfig) -> anyhow::Result<ProductBuild
                         .into_iter()
                         .collect::<BTreeMap<_, _>>();
                         let csup_version = csup_version_label(&source_urls_dir)?;
-                        let tpp_versions = config
-                            .profile
-                            .tpp_regions()
+                        let tpp_versions = Region::ALL
                             .iter()
                             .map(|region| {
                                 Ok((
@@ -502,9 +495,7 @@ pub fn build_product(config: &ProductBuildConfig) -> anyhow::Result<ProductBuild
                                 chart_versions["enr-l"],
                                 chart_versions["enr-h"],
                                 csup_version,
-                                config
-                                    .profile
-                                    .tpp_regions()
+                                Region::ALL
                                     .iter()
                                     .map(|region| {
                                         let key = region.code().to_ascii_lowercase();
@@ -935,9 +926,7 @@ pub fn build_product(config: &ProductBuildConfig) -> anyhow::Result<ProductBuild
                                 ),
                                 _ => bail!("missing data-base output for cycle {cycle}"),
                             };
-                        let tpp_sources = config
-                            .profile
-                            .tpp_regions()
+                        let tpp_sources = Region::ALL
                             .iter()
                             .map(|region| {
                                 let key = cycle_task_id(
@@ -1058,9 +1047,7 @@ pub fn build_product(config: &ProductBuildConfig) -> anyhow::Result<ProductBuild
                             Some(ProductTaskValue::CsupSource(source)) => source.clone(),
                             _ => bail!("missing csup package source for cycle {cycle}"),
                         }];
-                        let tpp_sources = config
-                            .profile
-                            .tpp_regions()
+                        let tpp_sources = Region::ALL
                             .iter()
                             .map(|region| {
                                 let key = cycle_task_id(
@@ -1245,7 +1232,6 @@ pub fn build_product(config: &ProductBuildConfig) -> anyhow::Result<ProductBuild
                         });
                         let build_manifest = BuildManifest {
                             schema_version: 1,
-                            profile: cycle_config.profile.as_str().to_string(),
                             cycle: source_urls.clone(),
                             build_root: cycle_config.build_root.display().to_string(),
                             generated_at_utc: manifest_generated_at(&node_records),
@@ -1435,7 +1421,7 @@ pub fn build_product(config: &ProductBuildConfig) -> anyhow::Result<ProductBuild
                     }
                     ProductScheduledTaskKind::TerrainWideBuild => {
                         let mut regional_products = Vec::new();
-                        for region in config.profile.terrain_regions() {
+                        for region in Region::ALL.iter() {
                             let region_id = region.code().to_ascii_lowercase();
                             let task_id = format!("build-terrain-{region_id}");
                             match task_values_snapshot.get(&task_id) {
@@ -1568,7 +1554,7 @@ pub fn build_product(config: &ProductBuildConfig) -> anyhow::Result<ProductBuild
                         let overlays = prepare_shaded_relief_overlay_sources(&config)?;
                         let overlay_record = overlays.node_record.clone();
                         let mut regional_products = Vec::new();
-                        for region in config.profile.terrain_regions() {
+                        for region in Region::ALL.iter() {
                             let region_id = region.code().to_ascii_lowercase();
                             let task_id = format!("build-shaded-relief-{region_id}");
                             match task_values_snapshot.get(&task_id) {

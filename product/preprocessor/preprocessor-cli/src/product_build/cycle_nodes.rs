@@ -353,7 +353,7 @@ pub(super) fn build_chart_package_nodes(
         wide_zip_path.clone(),
         wide_manifest_path.clone(),
     ]);
-    for region in Region::ALL {
+    for region in Region::ALL.iter() {
         expected_outputs.push(package_root.join(format!(
             "{}_{}_{}.zip",
             region.code(),
@@ -384,12 +384,12 @@ pub(super) fn build_chart_package_nodes(
             fs::create_dir_all(&package_root)
                 .with_context(|| format!("failed to create {}", package_root.display()))?;
             let mut package_records = Vec::new();
-            for region in Region::ALL {
+            for region in Region::ALL.iter() {
                 let record = package_family_region_versioned_to(
                     family,
                     &work_dir,
                     &package_root,
-                    region,
+                    *region,
                     version_label,
                     &artifact_version,
                 )?;
@@ -677,11 +677,11 @@ pub(super) fn build_csup_package_nodes(
             )?,
         ),
     ]);
-    for region in Region::ALL {
+    for region in Region::ALL.iter() {
         let render_node_name = format!("csup-render-{}", region.code().to_ascii_lowercase());
         let render_inputs = csup_render_inputs(
             &process_record.fingerprint,
-            region,
+            *region,
             config.cpu_jobs.max(1),
             version_label,
         )?;
@@ -706,7 +706,7 @@ pub(super) fn build_csup_package_nodes(
     let unpack_source_root = prepared.dir.join("unpack-source");
     let aggregate_path = package_root.join("package_outputs.jsonl");
     let mut expected_outputs = vec![aggregate_path.clone(), unpack_source_root.clone()];
-    for region in Region::ALL {
+    for region in Region::ALL.iter() {
         expected_outputs.push(package_root.join(format!(
             "{}_CSUP_{}.zip",
             region.code(),
@@ -735,11 +735,11 @@ pub(super) fn build_csup_package_nodes(
             fs::create_dir_all(&package_root)
                 .with_context(|| format!("failed to create {}", package_root.display()))?;
             let mut package_records = Vec::new();
-            for region in Region::ALL {
+            for region in Region::ALL.iter() {
                 package_records.push(package_csup_region_versioned_to(
                     &work_dir,
                     &package_root,
-                    region,
+                    *region,
                     version_label,
                     &artifact_version,
                 )?);
@@ -886,7 +886,7 @@ pub(super) fn build_tpp_fetch_node(
             .with_context(|| format!("failed to create {}", source_root.display()))?;
         fs::create_dir_all(&provenance_dir)
             .with_context(|| format!("failed to create {}", provenance_dir.display()))?;
-        for region in config.profile.tpp_regions() {
+        for region in Region::ALL.iter() {
             let region_id = region.code().to_ascii_lowercase();
             let source_urls_path =
                 source_urls_dir.join(format!("tpp-{region_id}/source_urls.jsonl"));
@@ -940,7 +940,7 @@ fn tpp_fetch_inputs(
 ) -> anyhow::Result<(BTreeMap<String, String>, Vec<PrefetchRequest>)> {
     let mut source_url_hashes = BTreeMap::new();
     let mut requests = Vec::new();
-    for region in config.profile.tpp_regions() {
+    for region in Region::ALL.iter() {
         let region_id = region.code().to_ascii_lowercase();
         let source_urls_path = source_urls_dir.join(format!("tpp-{region_id}/source_urls.jsonl"));
         source_url_hashes.insert(region_id, hash_file(&source_urls_path)?);
@@ -1960,7 +1960,6 @@ mod tests {
             build_root,
             publish_dir: publish_dir.clone(),
             packaged_dir: publish_dir.join("packaged"),
-            profile: ProductBuildProfile::Validation,
             publish_label: "test".to_string(),
             publish_timestamp: "20260602T000000Z".to_string(),
             target_cycle: Some("2605".to_string()),
@@ -1973,7 +1972,7 @@ mod tests {
     }
 
     fn write_tpp_source_urls(root: &Path) {
-        for region in ProductBuildProfile::Validation.tpp_regions() {
+        for region in Region::ALL.iter() {
             let region_id = region.code().to_ascii_lowercase();
             let dir = root.join(format!("tpp-{region_id}"));
             fs::create_dir_all(&dir).unwrap();

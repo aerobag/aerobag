@@ -1807,9 +1807,7 @@ pub(super) fn build_terrain_discovery_index(
     fs::create_dir_all(&discovery_dir)
         .with_context(|| format!("failed to create {}", discovery_dir.display()))?;
     let fetch_cache = terrain_fetch_cache_config(config)?;
-    let discovery_requests = config
-        .profile
-        .terrain_regions()
+    let discovery_requests = Region::ALL
         .iter()
         .map(|region| terrain_tnmaccess_request(*region))
         .collect::<Vec<_>>();
@@ -1824,7 +1822,7 @@ pub(super) fn build_terrain_discovery_index(
 
     let mut by_cell = BTreeMap::<String, Vec<TerrainDemCandidate>>::new();
     let mut discovery_hashes = BTreeMap::new();
-    for region in config.profile.terrain_regions() {
+    for region in Region::ALL.iter() {
         let region_id = region.code().to_ascii_lowercase();
         let path = discovery_dir.join(format!("terrain_{region_id}_tnmaccess.json"));
         discovery_hashes.insert(region_id, hash_file(&path)?);
@@ -1840,9 +1838,7 @@ pub(super) fn build_terrain_discovery_index(
         ("product_id".to_string(), "terrain-discovery".to_string()),
         (
             "regions".to_string(),
-            config
-                .profile
-                .terrain_regions()
+            Region::ALL
                 .iter()
                 .map(|region| region.code())
                 .collect::<Vec<_>>()
@@ -1877,9 +1873,7 @@ pub(super) fn build_terrain_discovery_index(
         .with_context(|| format!("failed to create {}", output_dir.display()))?;
     let index = TerrainDemIndex {
         schema_version: 1,
-        regions: config
-            .profile
-            .terrain_regions()
+        regions: Region::ALL
             .iter()
             .map(|region| region.code().to_string())
             .collect(),

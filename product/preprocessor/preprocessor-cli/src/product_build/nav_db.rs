@@ -47,7 +47,7 @@ pub(super) struct StaticRasterCatalogEntry {
 
 pub(super) fn collect_static_raster_tile_levels(
     task_values: &BTreeMap<String, ProductTaskValue>,
-    config: &ProductBuildConfig,
+    _config: &ProductBuildConfig,
 ) -> anyhow::Result<Vec<StaticRasterCatalogEntry>> {
     let mut entries = Vec::new();
     let world_levels = match task_values.get("build-world-basemap") {
@@ -98,7 +98,7 @@ pub(super) fn collect_static_raster_tile_levels(
             },
             levels: wide_tile_levels,
         });
-        for region in config.profile.terrain_regions() {
+        for region in Region::ALL.iter() {
             let region_id = region.code().to_ascii_lowercase();
             let task_id = format!("build-shaded-relief-{region_id}");
             let tile_levels = match task_values.get(&task_id) {
@@ -1475,9 +1475,9 @@ pub(super) fn build_offline_region_catalog(
     chart_cutline_polygon_sets: &BTreeMap<String, ChartCutlinePolygonSetRecord>,
 ) -> OfflineRegionCatalogRecord {
     let mut regions = Vec::new();
-    for region in Region::ALL {
+    for region in Region::ALL.iter() {
         regions.push(chart_offline_region_record(
-            region,
+            *region,
             resource_index,
             chart_cutline_polygon_sets,
         ));

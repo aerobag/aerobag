@@ -90,50 +90,12 @@ const EGM2008_INTERPOLATION_GRID_URL: &str =
     "https://earth-info.nga.mil/php/download.php?file=egm-08interpolation";
 const EGM2008_GRID_MEMBER: &str = "Und_min2.5x2.5_egm2008_isw=82_WGS84_TideFree_SE";
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-pub enum ProductBuildProfile {
-    Validation,
-    Production,
-}
-
-impl ProductBuildProfile {
-    pub fn parse(value: &str) -> Option<Self> {
-        match value {
-            "validation" => Some(Self::Validation),
-            "production" => Some(Self::Production),
-            _ => None,
-        }
-    }
-
-    pub fn as_str(self) -> &'static str {
-        match self {
-            Self::Validation => "validation",
-            Self::Production => "production",
-        }
-    }
-
-    fn tpp_regions(self) -> &'static [Region] {
-        match self {
-            Self::Validation => &[Region::Ne, Region::Nw],
-            Self::Production => &Region::ALL,
-        }
-    }
-
-    fn terrain_regions(self) -> &'static [Region] {
-        match self {
-            Self::Validation => &[Region::Nw],
-            Self::Production => &Region::ALL,
-        }
-    }
-}
-
 #[derive(Debug, Clone)]
 pub struct ProductBuildConfig {
     pub chart_cutline_root: PathBuf,
     pub build_root: PathBuf,
     pub publish_dir: PathBuf,
     pub packaged_dir: PathBuf,
-    pub profile: ProductBuildProfile,
     pub publish_label: String,
     pub publish_timestamp: String,
     pub target_cycle: Option<String>,
@@ -180,7 +142,6 @@ struct FetchCacheRef {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 struct BuildManifest {
     schema_version: u32,
-    profile: String,
     cycle: String,
     build_root: String,
     generated_at_utc: String,
@@ -192,7 +153,6 @@ struct BuildManifest {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 struct GcRootsManifest {
     schema_version: u32,
-    profile: String,
     build_root: String,
     updated_at_utc: String,
     node_roots: BTreeMap<String, GcNodeRoot>,
@@ -220,7 +180,6 @@ pub enum BuildCacheGcMode {
 #[derive(Debug, Clone)]
 pub struct BuildCacheGcConfig {
     pub build_root: PathBuf,
-    pub profile: ProductBuildProfile,
     pub mode: BuildCacheGcMode,
     pub grace_hours: u64,
     pub bootstrap_from_build_manifests: bool,
@@ -660,18 +619,16 @@ pub struct ProductBuildResult {
     pub product_artifacts_path: PathBuf,
 }
 
-fn static_product_task_ids(config: &ProductBuildConfig) -> Vec<String> {
+fn static_product_task_ids(_config: &ProductBuildConfig) -> Vec<String> {
     let mut task_ids = vec!["publish-world-basemap".to_string()];
     if include_static_terrain_products() {
         task_ids.extend(
-            config
-                .profile
-                .terrain_regions()
+            Region::ALL
                 .iter()
                 .map(|region| format!("publish-terrain-{}", region.code().to_ascii_lowercase())),
         );
         task_ids.push(format!("publish-terrain-{WIDE_ANGLE_REGION_ID}"));
-        task_ids.extend(config.profile.terrain_regions().iter().map(|region| {
+        task_ids.extend(Region::ALL.iter().map(|region| {
             format!(
                 "publish-shaded-relief-{}",
                 region.code().to_ascii_lowercase()
@@ -1154,7 +1111,6 @@ const RASTER_BASEMAP_MAX_DISPLAY_ZOOM: f64 = 12.5;
 
 pub fn explain_product_build(config: &ProductBuildConfig) -> anyhow::Result<String> {
     let mut lines = Vec::new();
-    lines.push(format!("profile {}", config.profile.as_str()));
     lines.push(format!("build_root {}", config.build_root.display()));
     lines.push(format!("publish_dir {}", config.publish_dir.display()));
     lines.push(format!("packaged_dir {}", config.packaged_dir.display()));
@@ -1174,7 +1130,7 @@ pub fn explain_product_build(config: &ProductBuildConfig) -> anyhow::Result<Stri
         lines.push(format!("  charts-{family}"));
     }
     lines.push("  csup".to_string());
-    for region in config.profile.tpp_regions() {
+    for region in Region::ALL.iter() {
         lines.push(format!("  tpp-{}", region.code().to_ascii_lowercase()));
     }
     lines.push("  data-input-staging".to_string());
@@ -2522,7 +2478,6 @@ mod tests {
                 .join("master")
                 .join("20260514T000000Z")
                 .join("packaged"),
-            profile: ProductBuildProfile::Production,
             publish_label: "master".to_string(),
             publish_timestamp: "20260514T000000Z".to_string(),
             target_cycle: Some("2605".to_string()),
@@ -2534,7 +2489,6 @@ mod tests {
         };
         let build_manifest = BuildManifest {
             schema_version: 1,
-            profile: "production".to_string(),
             cycle: "2605".to_string(),
             build_root: build_root.display().to_string(),
             generated_at_utc: "2026-05-14T00:00:00Z".to_string(),

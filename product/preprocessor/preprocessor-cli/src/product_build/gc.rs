@@ -14,7 +14,10 @@ pub(super) fn gc_roots_path(config: &ProductBuildConfig) -> PathBuf {
         .build_root
         .join("cache")
         .join("gc_roots")
-        .join(format!("{}_build_roots.json", config.profile.as_str()))
+        // Historical filename. There is no configurable production/validation
+        // profile anymore; keep the path stable so GC does not discard the
+        // existing node-root history and force needless rebuilds.
+        .join("production_build_roots.json")
 }
 
 pub(super) fn load_gc_roots(
@@ -29,7 +32,6 @@ pub(super) fn load_gc_roots(
     }
     Ok(GcRootsManifest {
         schema_version: 1,
-        profile: config.profile.as_str().to_string(),
         build_root: config.build_root.display().to_string(),
         updated_at_utc: utc_now_string(),
         node_roots: BTreeMap::new(),
@@ -65,7 +67,6 @@ pub(super) fn record_gc_roots(
     let mut roots = load_gc_roots(&roots_path, config)?;
     let now = utc_now_string();
     roots.schema_version = 1;
-    roots.profile = config.profile.as_str().to_string();
     roots.build_root = config.build_root.display().to_string();
     roots.updated_at_utc = now.clone();
     let prefix = format!("{scope}:");
@@ -287,7 +288,6 @@ pub fn gc_build_cache(config: &BuildCacheGcConfig) -> anyhow::Result<BuildCacheG
         build_root: config.build_root.clone(),
         publish_dir: publish_dir.clone(),
         packaged_dir: publish_dir.join("packaged"),
-        profile: config.profile,
         publish_label: "gc".to_string(),
         publish_timestamp: "00000000T000000Z".to_string(),
         target_cycle: None,
@@ -505,7 +505,6 @@ pub fn gc_fetch_cache(config: &FetchCacheGcConfig) -> anyhow::Result<FetchCacheG
             .join("gc")
             .join("00000000T000000Z")
             .join("packaged"),
-        profile: ProductBuildProfile::Production,
         publish_label: "gc".to_string(),
         publish_timestamp: "00000000T000000Z".to_string(),
         target_cycle: None,
@@ -738,7 +737,6 @@ mod tests {
             build_root,
             publish_dir: publish_dir.clone(),
             packaged_dir: publish_dir.join("packaged"),
-            profile: ProductBuildProfile::Production,
             publish_label: "gc".to_string(),
             publish_timestamp: "00000000T000000Z".to_string(),
             target_cycle: None,
@@ -810,7 +808,6 @@ mod tests {
         fs::create_dir_all(&manifest_dir).unwrap();
         let manifest = BuildManifest {
             schema_version: 1,
-            profile: "production".to_string(),
             cycle: cycle.to_string(),
             build_root: build_root.display().to_string(),
             generated_at_utc: "2026-06-09T00:00:01Z".to_string(),

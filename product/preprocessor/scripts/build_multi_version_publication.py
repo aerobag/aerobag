@@ -53,12 +53,6 @@ def parse_args() -> argparse.Namespace:
         help="artifact root passed to build-product; it owns cache/ and published/",
     )
     parser.add_argument(
-        "--profile",
-        choices=["production", "validation"],
-        default=None,
-        help="product build profile passed to build-product",
-    )
-    parser.add_argument(
         "--release",
         action="store_true",
         help="build and run release preprocessor-cli binaries from the shared target dir",
@@ -197,7 +191,6 @@ def build_ref(
     build_root: Path,
     publish_label: str,
     publish_timestamp: str,
-    profile: str | None,
     release: bool,
     build_args: list[str],
 ) -> Path:
@@ -220,8 +213,6 @@ def build_ref(
         "--publish-timestamp",
         publish_timestamp,
     ]
-    if profile:
-        command.extend(["--profile", profile])
     command.extend(build_args)
     result = run(command, cwd=worktree / PREPROCESSOR_DIR, env=env, capture=True)
     print(result.stdout, end="" if result.stdout.endswith("\n") else "\n")
@@ -283,7 +274,6 @@ def main() -> int:
                 build_root=build_root,
                 publish_label=ref_name,
                 publish_timestamp=timestamp,
-                profile=args.profile,
                 release=args.release,
                 build_args=build_args,
             )
@@ -297,8 +287,6 @@ def main() -> int:
             "--build-root",
             str(build_root),
         ]
-        if args.profile:
-            merge_command.extend(["--profile", args.profile])
         if args.as_of_utc:
             merge_command.extend(["--as-of-utc", args.as_of_utc])
         for manifest in manifests:

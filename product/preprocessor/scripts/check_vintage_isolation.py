@@ -247,15 +247,13 @@ def run_build_once(
         "product/preprocessor/Cargo.toml",
         "--",
         "build-cycle",
-        "--profile",
-        "validation",
     ]
     subprocess.run(cmd, cwd=repo_root, env=env, check=True)
 
 
 def print_cache_summary(artifact_root: Path, label: str) -> None:
-    manifest_dir = artifact_root / "product-builds" / "validation"
-    manifests = sorted(manifest_dir.glob("build-manifest_*.json"))
+    manifest_dir = artifact_root / "cache" / "build-manifests"
+    manifests = sorted(manifest_dir.glob("**/build-manifest_*.json"))
     if not manifests:
         print(f"{label} cache summary unavailable: missing build-manifest_*.json under {manifest_dir}")
         return
@@ -331,24 +329,24 @@ def main() -> int:
     print("running older vintage build...")
     run_build(repo_root, artifact_root, older_root, "2026-01-23", "older vintage")
     fetch_before = snapshot_tree(artifact_root / "cache" / "fetch")
-    shared_before = snapshot_tree(artifact_root / "product-builds" / "shared")
+    nodes_before = snapshot_tree(artifact_root / "cache" / "nodes")
 
     print("running current vintage build...")
     run_build(repo_root, artifact_root, current_root, "2026-04-10", "current vintage")
     fetch_after = snapshot_tree(artifact_root / "cache" / "fetch")
-    shared_after = snapshot_tree(artifact_root / "product-builds" / "shared")
+    nodes_after = snapshot_tree(artifact_root / "cache" / "nodes")
 
     assert_superset(fetch_before, fetch_after, "fetch cache")
-    assert_superset(shared_before, shared_after, "shared build tree")
+    assert_superset(nodes_before, nodes_after, "node cache")
 
     summary = {
         "artifact_root": str(artifact_root),
         "fetch_before": len(fetch_before),
         "fetch_after": len(fetch_after),
-        "shared_before": len(shared_before),
-        "shared_after": len(shared_after),
+        "nodes_before": len(nodes_before),
+        "nodes_after": len(nodes_after),
         "new_fetch_paths": len(fetch_after) - len(fetch_before),
-        "new_shared_paths": len(shared_after) - len(shared_before),
+        "new_node_paths": len(nodes_after) - len(nodes_before),
     }
     summary_path = artifact_root / "vintage_isolation_summary.json"
     summary_path.write_text(json.dumps(summary, indent=2, sort_keys=True) + "\n")

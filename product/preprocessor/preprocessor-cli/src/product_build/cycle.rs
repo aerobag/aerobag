@@ -6,9 +6,8 @@ pub fn build_cycle(config: &ProductBuildConfig) -> anyhow::Result<PathBuf> {
     let log_root = orchestrator_log_root(config)?;
     let mut master_log = MasterLog::create(&log_root.join("master.log"))?;
     master_log.log(format!(
-        "begin pid={} profile={} build_root={} publish_dir={} publish_label={} publish_timestamp={} scheduler=weighted_dag scheduler_version=2 max_heavy_jobs={} cpu_jobs={} fetch_jobs={} fetch_cache_mode={}",
+        "begin pid={} build_root={} publish_dir={} publish_label={} publish_timestamp={} scheduler=weighted_dag scheduler_version=2 max_heavy_jobs={} cpu_jobs={} fetch_jobs={} fetch_cache_mode={}",
         std::process::id(),
-        config.profile.as_str(),
         config.build_root.display(),
         config.publish_dir.display(),
         config.publish_label,
@@ -52,9 +51,7 @@ pub fn build_cycle(config: &ProductBuildConfig) -> anyhow::Result<PathBuf> {
         .into_iter()
         .collect::<BTreeMap<_, _>>();
         let csup_version = csup_version_label(&source_urls_dir)?;
-        let tpp_versions = config
-            .profile
-            .tpp_regions()
+        let tpp_versions = Region::ALL
             .iter()
             .map(|region| {
                 Ok((
@@ -73,9 +70,7 @@ pub fn build_cycle(config: &ProductBuildConfig) -> anyhow::Result<PathBuf> {
             chart_versions["enr-l"],
             chart_versions["enr-h"],
             csup_version,
-            config
-                .profile
-                .tpp_regions()
+            Region::ALL
                 .iter()
                 .map(|region| {
                     let key = region.code().to_ascii_lowercase();
@@ -116,7 +111,7 @@ pub fn build_cycle(config: &ProductBuildConfig) -> anyhow::Result<PathBuf> {
                 weight: 1,
                 kind: ScheduledTaskKind::ChartPackage { family },
             });
-            for region in Region::ALL {
+            for region in Region::ALL.iter() {
                 pending_tasks.push(GraphScheduledTask {
                     id: format!(
                         "charts-{}-unpack-{}",
@@ -125,7 +120,10 @@ pub fn build_cycle(config: &ProductBuildConfig) -> anyhow::Result<PathBuf> {
                     ),
                     deps: vec![format!("charts-{family_id}-package")],
                     weight: 1,
-                    kind: ScheduledTaskKind::ChartUnpack { family, region },
+                    kind: ScheduledTaskKind::ChartUnpack {
+                        family,
+                        region: *region,
+                    },
                 });
             }
         }
@@ -142,7 +140,7 @@ pub fn build_cycle(config: &ProductBuildConfig) -> anyhow::Result<PathBuf> {
             kind: ScheduledTaskKind::CsupProcess,
         });
         let mut csup_render_ids = Vec::new();
-        for region in Region::ALL {
+        for region in Region::ALL.iter() {
             let region_id = region.code().to_ascii_lowercase();
             let task_id = format!("csup-render-{region_id}");
             csup_render_ids.push(task_id.clone());
@@ -150,7 +148,7 @@ pub fn build_cycle(config: &ProductBuildConfig) -> anyhow::Result<PathBuf> {
                 id: task_id,
                 deps: vec!["csup-process".to_string()],
                 weight: 2,
-                kind: ScheduledTaskKind::CsupRender { region },
+                kind: ScheduledTaskKind::CsupRender { region: *region },
             });
         }
         pending_tasks.push(GraphScheduledTask {
@@ -163,12 +161,12 @@ pub fn build_cycle(config: &ProductBuildConfig) -> anyhow::Result<PathBuf> {
             weight: 1,
             kind: ScheduledTaskKind::CsupPackage,
         });
-        for region in Region::ALL {
+        for region in Region::ALL.iter() {
             pending_tasks.push(GraphScheduledTask {
                 id: format!("csup-unpack-{}", region.code().to_ascii_lowercase()),
                 deps: vec!["csup-package".to_string()],
                 weight: 1,
-                kind: ScheduledTaskKind::CsupUnpack { region },
+                kind: ScheduledTaskKind::CsupUnpack { region: *region },
             });
         }
         pending_tasks.push(GraphScheduledTask {
@@ -178,7 +176,7 @@ pub fn build_cycle(config: &ProductBuildConfig) -> anyhow::Result<PathBuf> {
             kind: ScheduledTaskKind::TppFetch,
         });
         let mut tpp_package_ids = Vec::new();
-        for region in config.profile.tpp_regions() {
+        for region in Region::ALL.iter() {
             let region_id = region.code().to_ascii_lowercase();
             let render_id = format!("tpp-{region_id}");
             let package_id = format!("tpp-{region_id}-package");
@@ -443,9 +441,7 @@ pub fn build_cycle(config: &ProductBuildConfig) -> anyhow::Result<PathBuf> {
                             ),
                             _ => unreachable!("data-base dependency should have completed"),
                         };
-                        let tpp_sources = config
-                            .profile
-                            .tpp_regions()
+                        let tpp_sources = Region::ALL
                             .iter()
                             .map(|region| {
                                 let region_id = region.code().to_ascii_lowercase();
@@ -617,9 +613,7 @@ pub fn build_cycle(config: &ProductBuildConfig) -> anyhow::Result<PathBuf> {
                             Some(TaskValue::CsupSource(source)) => source.clone(),
                             _ => bail!("missing csup package source"),
                         }];
-                        let tpp_sources = config
-                            .profile
-                            .tpp_regions()
+                        let tpp_sources = Region::ALL
                             .iter()
                             .map(|region| {
                                 let region_id = region.code().to_ascii_lowercase();
@@ -789,7 +783,6 @@ pub fn build_cycle(config: &ProductBuildConfig) -> anyhow::Result<PathBuf> {
 
         let build_manifest = BuildManifest {
             schema_version: 1,
-            profile: config.profile.as_str().to_string(),
             cycle: bundle_cycle.clone(),
             build_root: config.build_root.display().to_string(),
             generated_at_utc: manifest_generated_at(&node_records),

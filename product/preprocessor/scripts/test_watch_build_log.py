@@ -82,7 +82,7 @@ class WatchBuildLogTests(unittest.TestCase):
     def test_publish_label_is_parsed_from_begin_line(self) -> None:
         state = watch_build_log.BuildState()
         state.apply_line(
-            "+0:00 begin pid=123 profile=production build_root=/tmp/build "
+            "+0:00 begin pid=123 build_root=/tmp/build "
             "publish_dir=/tmp/build/published/nav6-sunset/20260602T000000Z "
             "publish_label=nav6-sunset scheduler=product_weighted_dag"
         )
@@ -92,7 +92,7 @@ class WatchBuildLogTests(unittest.TestCase):
     def test_publish_label_falls_back_to_publish_dir(self) -> None:
         state = watch_build_log.BuildState()
         state.apply_line(
-            "+0:00 begin pid=123 profile=production "
+            "+0:00 begin pid=123 "
             "build_root=/tmp/pub publish_dir=/tmp/pub/published/nav6-sunset-c641d0f2/20260602T000000Z "
             "scheduler=product_weighted_dag"
         )
@@ -112,7 +112,7 @@ class WatchBuildLogTests(unittest.TestCase):
     def test_json_snapshot_reports_progress_and_liveness(self) -> None:
         state = watch_build_log.BuildState()
         state.apply_line(
-            "2026-06-09T21:00:00+00:00 +0:00 begin pid=1 profile=production "
+            "2026-06-09T21:00:00+00:00 +0:00 begin pid=1 "
             "build_root=/tmp/build publish_dir=/tmp/build/published/master/20260609T210000Z "
             "publish_label=master scheduler=product_weighted_dag"
         )

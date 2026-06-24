@@ -44,17 +44,16 @@ use product_build::{
     maybe_reexec_build_cycle_under_cgroup, merge_current_artifacts_manifests,
     publish_discovery_manifest, BuildCacheGcConfig, BuildCacheGcMode, BuildCacheGcReport,
     FetchCacheGcCandidateKind, FetchCacheGcConfig, FetchCacheGcReport,
-    ProcedureGeometryAuditFilter, ProductBuildConfig, ProductBuildProfile, PublicationGcConfig,
-    PublicationGcReport,
+    ProcedureGeometryAuditFilter, ProductBuildConfig, PublicationGcConfig, PublicationGcReport,
 };
 use sha2::{Digest, Sha256};
 
 fn usage() -> &'static str {
     "usage:
-  preprocessor-cli build-product [--profile <validation|production>] [--cycle <YYCC>] [--source-root <path>] [--build-root <path>] [--publish-label <label>] [--publish-timestamp <YYYYMMDDTHHMMSSZ>] [--fetch-jobs <count>] [--cpu-jobs <count>] [--max-heavy-jobs <count>]
-  preprocessor-cli merge-current-artifacts [--profile <validation|production>] [--source-root <path>] [--build-root <path>] [--as-of-utc <RFC3339 UTC>] --manifest <path> [--manifest <path>]...
-  preprocessor-cli publish-discovery-manifest [--profile <validation|production>] [--source-root <path>] [--build-root <path>] --as-of-utc <RFC3339 UTC> --bundle <filename> [--bundle <filename>]...
-  preprocessor-cli gc [--profile <validation|production>] [--build-root <path>] [--dry-run|--execute] [--grace-hours <count>]
+  preprocessor-cli build-product [--cycle <YYCC>] [--source-root <path>] [--build-root <path>] [--publish-label <label>] [--publish-timestamp <YYYYMMDDTHHMMSSZ>] [--fetch-jobs <count>] [--cpu-jobs <count>] [--max-heavy-jobs <count>]
+  preprocessor-cli merge-current-artifacts [--source-root <path>] [--build-root <path>] [--as-of-utc <RFC3339 UTC>] --manifest <path> [--manifest <path>]...
+  preprocessor-cli publish-discovery-manifest [--source-root <path>] [--build-root <path>] --as-of-utc <RFC3339 UTC> --bundle <filename> [--bundle <filename>]...
+  preprocessor-cli gc [--build-root <path>] [--dry-run|--execute] [--grace-hours <count>]
   preprocessor-cli analyze-obstacle-thresholds --input-dir <path> [--cap <count>] [--min-zoom <z>] [--max-zoom <z>] [--step-ft <count>]
   preprocessor-cli normalize-swim-notams --input-jsonl <path> --output-dir <path> --version-label <label>
 
@@ -86,14 +85,14 @@ fn long_usage() -> &'static str {
   preprocessor-cli analyze-obstacle-thresholds --input-dir <path> [--cap <count>] [--min-zoom <z>] [--max-zoom <z>] [--step-ft <count>]
   preprocessor-cli normalize-swim-notams --input-jsonl <path> --output-dir <path> --version-label <label>
   preprocessor-cli build-resource-index --nav-db-zip <path> --output <path> [--chart-source <family-id>:<package_outputs_jsonl>:<asset_root>:<package_root>:<unpack_source_root>]... [--tpp-source <package_outputs_jsonl>:<asset_root>:<package_root>:<unpack_source_root>]... [--csup-source <package_outputs_jsonl>:<asset_root>:<package_root>:<unpack_source_root>]...
-  preprocessor-cli build-cycle [--profile <validation|production>] [--cycle <YYCC>] [--source-root <path>] [--build-root <path>] [--publish-label <label>] [--publish-timestamp <YYYYMMDDTHHMMSSZ>] [--fetch-jobs <count>] [--cpu-jobs <count>] [--max-heavy-jobs <count>]
-  preprocessor-cli build-product [--profile <validation|production>] [--cycle <YYCC>] [--source-root <path>] [--build-root <path>] [--publish-label <label>] [--publish-timestamp <YYYYMMDDTHHMMSSZ>] [--fetch-jobs <count>] [--cpu-jobs <count>] [--max-heavy-jobs <count>]
-  preprocessor-cli publish-discovery-manifest [--profile <validation|production>] [--source-root <path>] [--build-root <path>] --as-of-utc <RFC3339 UTC> --bundle <filename> [--bundle <filename>]...
-  preprocessor-cli gc [--profile <validation|production>] [--build-root <path>] [--dry-run|--execute] [--grace-hours <count>]
-  preprocessor-cli gc-build-cache [--profile <validation|production>] [--build-root <path>] [--dry-run|--execute] [--grace-hours <count>] [--bootstrap-from-build-manifests]
+  preprocessor-cli build-cycle [--cycle <YYCC>] [--source-root <path>] [--build-root <path>] [--publish-label <label>] [--publish-timestamp <YYYYMMDDTHHMMSSZ>] [--fetch-jobs <count>] [--cpu-jobs <count>] [--max-heavy-jobs <count>]
+  preprocessor-cli build-product [--cycle <YYCC>] [--source-root <path>] [--build-root <path>] [--publish-label <label>] [--publish-timestamp <YYYYMMDDTHHMMSSZ>] [--fetch-jobs <count>] [--cpu-jobs <count>] [--max-heavy-jobs <count>]
+  preprocessor-cli publish-discovery-manifest [--source-root <path>] [--build-root <path>] --as-of-utc <RFC3339 UTC> --bundle <filename> [--bundle <filename>]...
+  preprocessor-cli gc [--build-root <path>] [--dry-run|--execute] [--grace-hours <count>]
+  preprocessor-cli gc-build-cache [--build-root <path>] [--dry-run|--execute] [--grace-hours <count>] [--bootstrap-from-build-manifests]
   preprocessor-cli gc-publication [--build-root <path>] [--dry-run|--execute] [--grace-hours <count>]
   preprocessor-cli gc-fetch-cache [--build-root <path>] [--dry-run|--execute] [--grace-hours <count>]
-  preprocessor-cli explain-product-build [--profile <validation|production>] [--source-root <path>] [--build-root <path>] [--fetch-jobs <count>] [--cpu-jobs <count>] [--max-heavy-jobs <count>]
+  preprocessor-cli explain-product-build [--source-root <path>] [--build-root <path>] [--fetch-jobs <count>] [--cpu-jobs <count>] [--max-heavy-jobs <count>]
   preprocessor-cli run-chart --family <sec|tac|enr-l|enr-h> --source-repo <path> --run-root <path> [--prefetch-source-urls <path>] [--fetch-jobs <count>]"
 }
 
@@ -1574,7 +1573,6 @@ fn work_kind_name(value: WorkKind) -> &'static str {
 
 struct FullGcConfig {
     build_root: PathBuf,
-    profile: ProductBuildProfile,
     mode: BuildCacheGcMode,
     grace_hours: u64,
 }
@@ -1586,12 +1584,6 @@ fn full_gc_config_from_args(args: &[String]) -> anyhow::Result<FullGcConfig> {
     let mut index = 0;
     while index < args.len() {
         match args[index].as_str() {
-            "--profile" => {
-                let value = args.get(index + 1).context("missing value for --profile")?;
-                base.profile = ProductBuildProfile::parse(value)
-                    .ok_or_else(|| anyhow::anyhow!("unsupported profile: {value}"))?;
-                index += 2;
-            }
             "--build-root" => {
                 base.build_root = PathBuf::from(
                     args.get(index + 1)
@@ -1620,7 +1612,6 @@ fn full_gc_config_from_args(args: &[String]) -> anyhow::Result<FullGcConfig> {
     }
     Ok(FullGcConfig {
         build_root: base.build_root,
-        profile: base.profile,
         mode,
         grace_hours,
     })
@@ -1634,12 +1625,6 @@ fn build_cache_gc_config_from_args(args: &[String]) -> anyhow::Result<BuildCache
     let mut index = 0;
     while index < args.len() {
         match args[index].as_str() {
-            "--profile" => {
-                let value = args.get(index + 1).context("missing value for --profile")?;
-                base.profile = ProductBuildProfile::parse(value)
-                    .ok_or_else(|| anyhow::anyhow!("unsupported profile: {value}"))?;
-                index += 2;
-            }
             "--build-root" => {
                 base.build_root = PathBuf::from(
                     args.get(index + 1)
@@ -1672,7 +1657,6 @@ fn build_cache_gc_config_from_args(args: &[String]) -> anyhow::Result<BuildCache
     }
     Ok(BuildCacheGcConfig {
         build_root: base.build_root,
-        profile: base.profile,
         mode,
         grace_hours,
         bootstrap_from_build_manifests,
@@ -2765,8 +2749,8 @@ fn main() -> anyhow::Result<()> {
             let mut index = 2;
             while index < args.len() {
                 match args[index].as_str() {
-                    "--profile" | "--source-root" | "--build-root" | "--fetch-jobs"
-                    | "--cpu-jobs" | "--max-heavy-jobs" | "--cycle" => {
+                    "--source-root" | "--build-root" | "--fetch-jobs" | "--cpu-jobs"
+                    | "--max-heavy-jobs" | "--cycle" => {
                         index += 2;
                     }
                     "--as-of-utc" => {
@@ -2823,7 +2807,6 @@ fn main() -> anyhow::Result<()> {
             println!("gc step build-cache");
             let build_cache_report = gc_build_cache(&BuildCacheGcConfig {
                 build_root: config.build_root,
-                profile: config.profile,
                 mode: config.mode,
                 grace_hours: config.grace_hours,
                 bootstrap_from_build_manifests: true,

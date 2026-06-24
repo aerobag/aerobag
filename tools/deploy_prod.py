@@ -183,15 +183,12 @@ def load_config(path: Path) -> dict[str, Any]:
         "cargo_target_dir",
         "web_dist",
         "checkout_ref",
-        "build_profile",
         "live_feeds_listen",
         "nginx_server_name",
     ]
     missing = [key for key in required if key not in config]
     if missing:
         raise SystemExit(f"{path} missing required keys: {', '.join(missing)}")
-    if config["build_profile"] not in {"production", "validation"}:
-        raise SystemExit("build_profile must be production or validation")
     config.setdefault("additional_publication_refs", [])
     config.setdefault("pipeline_health_listen", PIPELINE_HEALTH_LISTEN)
     config.setdefault("pipeline_health_poll_seconds", 60)
@@ -613,7 +610,6 @@ test -x "$ANDROID_HOME/ndk/$REQUIRED_NDK/toolchains/llvm/prebuilt/linux-x86_64/b
 
 def build_product_script(config: dict[str, Any]) -> str:
     refs = " ".join(shell_quote(ref) for ref in publication_refs(config))
-    profile = shell_quote(config["build_profile"])
     return f"""#!/usr/bin/env bash
 set -euo pipefail
 source /etc/aerobag/env
@@ -626,15 +622,12 @@ mkdir -p "$ARTIFACT_ROOT" "$ARTIFACT_ROOT/cache" "$ARTIFACT_ROOT/published" "$AR
 cd "$SOURCE_ROOT"
 "$SOURCE_ROOT/product/preprocessor/scripts/build_multi_version_publication.py" \\
   --release \\
-  --profile {profile} \\
   --build-root "$ARTIFACT_ROOT" \\
   --target-dir "$CARGO_TARGET_DIR" \\
   {refs}
 
-"$CARGO_TARGET_DIR/release/preprocessor-cli" gc-build-cache \\
-  --profile {profile} \\
+"$CARGO_TARGET_DIR/release/preprocessor-cli" gc \\
   --build-root "$ARTIFACT_ROOT" \\
-  --bootstrap-from-build-manifests \\
   --execute
 
 /usr/local/bin/aerobag-write-health

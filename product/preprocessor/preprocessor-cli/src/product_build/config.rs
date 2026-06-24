@@ -160,34 +160,115 @@ pub(super) fn env_path(name: &str) -> Option<PathBuf> {
     env::var(name).ok().map(PathBuf::from)
 }
 
-pub(crate) fn default_artifact_write_path(repo_root: &Path) -> PathBuf {
-    if let Some(path) = env_path("AEROBAG_ARTIFACT_WRITE_PATH") {
-        return if path.is_absolute() {
-            path
-        } else {
-            repo_root.join(path)
-        };
-    }
-    {
-        let config_path = repo_root.join(".aerobag-artifact-write-path");
-        let raw = fs::read_to_string(&config_path).unwrap_or_else(|error| {
-            panic!(
-                "artifact write-path config missing at {} and AEROBAG_ARTIFACT_WRITE_PATH is unset: {error}",
-                config_path.display()
-            )
-        });
-        let configured = raw.trim();
-        assert!(
-            !configured.is_empty(),
-            "artifact write-path config at {} is empty",
+const ARTIFACT_WRITE_PATH_CONFIG: &str = ".aerobag-artifact-write-path";
+
+fn resolve_artifact_write_path(base: &Path, path: PathBuf) -> PathBuf {
+    let path = if path.is_absolute() {
+        path
+    } else {
+        base.join(path)
+    };
+    normalize_absolute_path(&path)
+}
+
+fn artifact_write_path_from_config(config_root: &Path) -> PathBuf {
+    let config_path = config_root.join(ARTIFACT_WRITE_PATH_CONFIG);
+    let raw = fs::read_to_string(&config_path).unwrap_or_else(|error| {
+        panic!(
+            "artifact write-path config missing at {} and AEROBAG_ARTIFACT_WRITE_PATH is unset: {error}",
             config_path.display()
+        )
+    });
+    let configured = raw.trim();
+    assert!(
+        !configured.is_empty(),
+        "artifact write-path config at {} is empty",
+        config_path.display()
+    );
+    resolve_artifact_write_path(config_root, PathBuf::from(configured))
+}
+
+fn artifact_write_path_config_root_from(start: &Path) -> Option<PathBuf> {
+    start
+        .ancestors()
+        .find(|ancestor| ancestor.join(ARTIFACT_WRITE_PATH_CONFIG).is_file())
+        .map(Path::to_path_buf)
+}
+
+fn default_artifact_write_path_from_inputs(
+    compiled_repo_root: &Path,
+    runtime_current_dir: Option<&Path>,
+    env_value: Option<PathBuf>,
+) -> PathBuf {
+    if let Some(path) = env_value {
+        return resolve_artifact_write_path(compiled_repo_root, path);
+    }
+
+    if let Some(config_root) = runtime_current_dir.and_then(artifact_write_path_config_root_from) {
+        return artifact_write_path_from_config(&config_root);
+    }
+
+    artifact_write_path_from_config(compiled_repo_root)
+}
+
+pub(crate) fn default_artifact_write_path(repo_root: &Path) -> PathBuf {
+    default_artifact_write_path_from_inputs(
+        repo_root,
+        env::current_dir().ok().as_deref(),
+        env_path("AEROBAG_ARTIFACT_WRITE_PATH"),
+    )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use tempfile::tempdir;
+
+    #[test]
+    fn default_artifact_write_path_prefers_runtime_checkout_pointer() {
+        let temp = tempdir().expect("tempdir");
+        let compiled_root = temp.path().join("compiled");
+        let runtime_root = temp.path().join("runtime");
+        let runtime_child = runtime_root.join("product").join("preprocessor");
+        fs::create_dir_all(&compiled_root).expect("compiled root");
+        fs::create_dir_all(&runtime_child).expect("runtime child");
+        fs::write(
+            compiled_root.join(ARTIFACT_WRITE_PATH_CONFIG),
+            "compiled-artifacts\n",
+        )
+        .expect("compiled config");
+        fs::write(
+            runtime_root.join(ARTIFACT_WRITE_PATH_CONFIG),
+            "../runtime-artifacts\n",
+        )
+        .expect("runtime config");
+
+        let path =
+            default_artifact_write_path_from_inputs(&compiled_root, Some(&runtime_child), None);
+
+        assert_eq!(path, temp.path().join("runtime-artifacts"));
+    }
+
+    #[test]
+    fn default_artifact_write_path_env_overrides_runtime_checkout_pointer() {
+        let temp = tempdir().expect("tempdir");
+        let compiled_root = temp.path().join("compiled");
+        let runtime_root = temp.path().join("runtime");
+        fs::create_dir_all(&compiled_root).expect("compiled root");
+        fs::create_dir_all(&runtime_root).expect("runtime root");
+        fs::write(
+            runtime_root.join(ARTIFACT_WRITE_PATH_CONFIG),
+            "runtime-artifacts\n",
+        )
+        .expect("runtime config");
+
+        let path = default_artifact_write_path_from_inputs(
+            &compiled_root,
+            Some(&runtime_root),
+            Some(PathBuf::from("env-artifacts")),
         );
-        let path = PathBuf::from(configured);
-        if path.is_absolute() {
-            path
-        } else {
-            repo_root.join(path)
-        }
+
+        assert_eq!(path, compiled_root.join("env-artifacts"));
     }
 }
 

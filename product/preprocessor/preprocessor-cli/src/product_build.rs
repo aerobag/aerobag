@@ -40,9 +40,9 @@ use preprocessor_data::{
 };
 use preprocessor_fetch::{
     copy_source_urls_provenance, hash_file, prefetch_archives_with_provenance,
-    prefetch_requests_with_provenance, read_download_records, read_source_prefetch_requests_jsonl,
-    read_source_urls_jsonl, write_package_outputs_jsonl, CacheLayout, FetchCacheConfig,
-    FetchCacheMode, PackageOutputRecord, PrefetchRequest,
+    prefetch_requests_with_provenance, read_download_records, read_download_records_lossy,
+    read_source_prefetch_requests_jsonl, read_source_urls_jsonl, write_package_outputs_jsonl,
+    CacheLayout, FetchCacheConfig, FetchCacheMode, PackageOutputRecord, PrefetchRequest,
 };
 use preprocessor_procedure_geometry::{
     build_procedure_geometry_records, procedure_kinds_from_lists,

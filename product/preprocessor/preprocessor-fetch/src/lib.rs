@@ -231,13 +231,42 @@ pub fn read_source_url_set(path: impl AsRef<Path>) -> anyhow::Result<BTreeSet<St
 pub fn read_download_records(path: impl AsRef<Path>) -> anyhow::Result<BTreeSet<DownloadRecord>> {
     let text = fs::read_to_string(path.as_ref())
         .with_context(|| format!("failed to read {}", path.as_ref().display()))?;
+    read_download_records_from_text(&text, false)
+        .with_context(|| format!("failed to parse {}", path.as_ref().display()))
+}
+
+pub fn read_download_records_lossy(
+    path: impl AsRef<Path>,
+) -> anyhow::Result<BTreeSet<DownloadRecord>> {
+    let text = fs::read_to_string(path.as_ref())
+        .with_context(|| format!("failed to read {}", path.as_ref().display()))?;
+    read_download_records_from_text(&text, true)
+}
+
+fn read_download_records_from_text(
+    text: &str,
+    skip_malformed: bool,
+) -> anyhow::Result<BTreeSet<DownloadRecord>> {
     let mut rows = BTreeSet::new();
-    for line in text.lines() {
+    for (line_index, line) in text.lines().enumerate() {
         if line.trim().is_empty() {
             continue;
         }
-        let value: serde_json::Value =
-            serde_json::from_str(line).context("failed to parse downloads jsonl line")?;
+        let value: serde_json::Value = match serde_json::from_str(line) {
+            Ok(value) => value,
+            Err(error) if skip_malformed => {
+                eprintln!(
+                    "warning: skipping malformed downloads jsonl line {}: {error}",
+                    line_index + 1
+                );
+                continue;
+            }
+            Err(error) => {
+                return Err(error).with_context(|| {
+                    format!("failed to parse downloads jsonl line {}", line_index + 1)
+                });
+            }
+        };
         if value.get("event").and_then(|value| value.as_str()) != Some("download") {
             continue;
         }

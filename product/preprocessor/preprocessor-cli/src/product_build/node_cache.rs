@@ -325,21 +325,30 @@ pub(super) fn node_fetch_cache_refs(
     outputs: &BTreeMap<String, String>,
 ) -> anyhow::Result<Vec<FetchCacheRef>> {
     let mut roots = Vec::new();
+    let mut legacy_roots = legacy_external_fetch_provenance_roots(node_dir);
     if let Some(provenance_dir) = outputs
         .get("provenance_dir")
         .and_then(|value| resolve_recorded_output_path(node_dir, value))
     {
-        roots.push(provenance_dir);
+        if provenance_dir.starts_with(node_dir) {
+            roots.push(provenance_dir);
+        } else {
+            legacy_roots.push(provenance_dir);
+        }
     }
     let node_provenance_dir = node_dir.join("meta").join("provenance");
     if node_provenance_dir.is_dir() {
         roots.push(node_provenance_dir);
     }
-    roots.extend(legacy_external_fetch_provenance_roots(node_dir));
+    legacy_roots.sort();
+    legacy_roots.dedup();
 
     let mut refs = BTreeMap::<(String, String, String), FetchCacheRef>::new();
     for root in roots {
-        collect_fetch_cache_refs_from_provenance_dir(&root, &mut refs)?;
+        collect_fetch_cache_refs_from_provenance_dir(&root, false, &mut refs)?;
+    }
+    for root in legacy_roots {
+        collect_fetch_cache_refs_from_provenance_dir(&root, true, &mut refs)?;
     }
     Ok(refs.into_values().collect())
 }
@@ -379,6 +388,7 @@ fn legacy_external_fetch_provenance_roots(node_dir: &Path) -> Vec<PathBuf> {
 
 fn collect_fetch_cache_refs_from_provenance_dir(
     dir: &Path,
+    skip_malformed: bool,
     refs: &mut BTreeMap<(String, String, String), FetchCacheRef>,
 ) -> anyhow::Result<()> {
     if !dir.is_dir() {
@@ -391,13 +401,18 @@ fn collect_fetch_cache_refs_from_provenance_dir(
             .file_type()
             .with_context(|| format!("failed to stat {}", path.display()))?;
         if file_type.is_dir() {
-            collect_fetch_cache_refs_from_provenance_dir(&path, refs)?;
+            collect_fetch_cache_refs_from_provenance_dir(&path, skip_malformed, refs)?;
             continue;
         }
         if path.file_name().and_then(|name| name.to_str()) != Some("downloads.jsonl") {
             continue;
         }
-        for record in read_download_records(&path)? {
+        let records = if skip_malformed {
+            read_download_records_lossy(&path)?
+        } else {
+            read_download_records(&path)?
+        };
+        for record in records {
             let key = (
                 record.sha256.clone(),
                 record.cache_key.clone(),

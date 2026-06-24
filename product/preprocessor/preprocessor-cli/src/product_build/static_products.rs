@@ -10,11 +10,6 @@ pub(super) fn build_terrain_product(
     geoid_source_fetched_at_utc: Option<String>,
 ) -> anyhow::Result<(PathBuf, String, Option<String>, NodeRecord)> {
     let region_id = region.code().to_ascii_lowercase();
-    let provenance_dir = config
-        .build_root
-        .join("meta")
-        .join("provenance")
-        .join(format!("terrain-{region_id}"));
     let fetch_cache = terrain_fetch_cache_config(config)?;
     let mut dem_candidates = terrain_dem_candidates_for_region(terrain_index_path, region)?;
     if dem_candidates.is_empty() {
@@ -58,6 +53,10 @@ pub(super) fn build_terrain_product(
     let scratch = scoped_scratch_dir(&config.build_root, "terrain", &region_id)?;
     let input_dir = scratch.path().join("input");
     let dem_dir = input_dir.join("dems");
+    let run_provenance_dir = scratch
+        .path()
+        .join("provenance")
+        .join(format!("terrain-{region_id}"));
     fs::create_dir_all(&dem_dir)
         .with_context(|| format!("failed to create {}", dem_dir.display()))?;
     let dem_selection = prefetch_terrain_dems_with_fallback(
@@ -65,7 +64,7 @@ pub(super) fn build_terrain_product(
         &dem_dir,
         config.fetch_jobs,
         &fetch_cache,
-        &provenance_dir,
+        &run_provenance_dir,
         &format!("terrain-{region_id}-dem"),
     )?;
     let dem_paths = terrain_dem_paths_from_requests(&dem_dir, &dem_selection.requests)?;
@@ -133,6 +132,16 @@ pub(super) fn build_terrain_product(
         &dem_selection,
     )?;
     zip_directory_deterministic(&zip_path, &output_dir, &["manifest.json", "tiles"])?;
+    let provenance_dir = prepared
+        .dir
+        .join("meta")
+        .join("provenance")
+        .join(format!("terrain-{region_id}"));
+    if provenance_dir.exists() {
+        fs::remove_dir_all(&provenance_dir)
+            .with_context(|| format!("failed to clear {}", provenance_dir.display()))?;
+    }
+    copy_dir_recursive(&run_provenance_dir, &provenance_dir)?;
     let outputs = BTreeMap::from([
         (
             "manifest".to_string(),
@@ -224,6 +233,10 @@ pub(super) fn build_terrain_wide_product(
         (
             "zip".to_string(),
             relative_artifact_path(&zip_path, &config.build_root),
+        ),
+        (
+            "provenance_dir".to_string(),
+            relative_artifact_path(&output_dir.join("provenance"), &config.build_root),
         ),
     ]);
     let record = write_node_record(
@@ -960,11 +973,6 @@ pub(super) fn build_shaded_relief_product(
     let region_id = region.code().to_ascii_lowercase();
     let overlays = prepare_shaded_relief_overlay_sources(config)?;
 
-    let provenance_dir = config
-        .build_root
-        .join("meta")
-        .join("provenance")
-        .join(format!("shaded-relief-{region_id}"));
     let fetch_cache = terrain_fetch_cache_config(config)?;
     let mut dem_candidates = terrain_dem_candidates_for_region(terrain_index_path, region)?;
     if dem_candidates.is_empty() {
@@ -1012,6 +1020,10 @@ pub(super) fn build_shaded_relief_product(
     let scratch = scoped_scratch_dir(&config.build_root, "shaded-relief", &region_id)?;
     let input_dir = scratch.path().join("input");
     let dem_dir = input_dir.join("dems");
+    let run_provenance_dir = scratch
+        .path()
+        .join("provenance")
+        .join(format!("shaded-relief-{region_id}"));
     fs::create_dir_all(&dem_dir)
         .with_context(|| format!("failed to create {}", dem_dir.display()))?;
     let dem_selection = prefetch_terrain_dems_with_fallback(
@@ -1019,7 +1031,7 @@ pub(super) fn build_shaded_relief_product(
         &dem_dir,
         config.fetch_jobs,
         &fetch_cache,
-        &provenance_dir,
+        &run_provenance_dir,
         &format!("shaded-relief-{region_id}-dem"),
     )?;
     let dem_paths = terrain_dem_paths_from_requests(&dem_dir, &dem_selection.requests)?;
@@ -1102,6 +1114,16 @@ pub(super) fn build_shaded_relief_product(
     )?;
     let tile_levels = read_static_tile_manifest_levels(&package_dir.join("manifest.json"))?;
     zip_directory_deterministic(&zip_path, &package_dir, &["manifest.json", "tiles"])?;
+    let provenance_dir = prepared
+        .dir
+        .join("meta")
+        .join("provenance")
+        .join(format!("shaded-relief-{region_id}"));
+    if provenance_dir.exists() {
+        fs::remove_dir_all(&provenance_dir)
+            .with_context(|| format!("failed to clear {}", provenance_dir.display()))?;
+    }
+    copy_dir_recursive(&run_provenance_dir, &provenance_dir)?;
     let outputs = BTreeMap::from([
         (
             "manifest".to_string(),
@@ -1781,13 +1803,9 @@ pub(super) fn build_terrain_discovery_index(
 ) -> anyhow::Result<(PathBuf, Option<String>, NodeRecord)> {
     let scratch = scoped_scratch_dir(&config.build_root, "terrain", "global-discovery")?;
     let discovery_dir = scratch.path().join("input");
+    let run_provenance_dir = scratch.path().join("provenance").join("terrain-discovery");
     fs::create_dir_all(&discovery_dir)
         .with_context(|| format!("failed to create {}", discovery_dir.display()))?;
-    let provenance_dir = config
-        .build_root
-        .join("meta")
-        .join("provenance")
-        .join("terrain-discovery");
     let fetch_cache = terrain_fetch_cache_config(config)?;
     let discovery_requests = config
         .profile
@@ -1800,7 +1818,7 @@ pub(super) fn build_terrain_discovery_index(
         &discovery_dir,
         config.fetch_jobs,
         Some(&fetch_cache),
-        &provenance_dir,
+        &run_provenance_dir,
         "terrain-discovery",
     )?;
 
@@ -1873,6 +1891,16 @@ pub(super) fn build_terrain_discovery_index(
         serde_json::to_vec_pretty(&index).context("failed to encode terrain DEM index")?,
     )
     .with_context(|| format!("failed to write {}", index_path.display()))?;
+    let provenance_dir = prepared
+        .dir
+        .join("meta")
+        .join("provenance")
+        .join("terrain-discovery");
+    if provenance_dir.exists() {
+        fs::remove_dir_all(&provenance_dir)
+            .with_context(|| format!("failed to clear {}", provenance_dir.display()))?;
+    }
+    copy_dir_recursive(&run_provenance_dir, &provenance_dir)?;
     let outputs = BTreeMap::from([
         (
             "index".to_string(),
@@ -2624,11 +2652,7 @@ pub(super) fn water_mask_cached_source_dir(
     let source_dir = output_dir.join("source-pages");
     fs::create_dir_all(&source_dir)
         .with_context(|| format!("failed to create {}", source_dir.display()))?;
-    let provenance_dir = config
-        .build_root
-        .join("meta")
-        .join("provenance")
-        .join(format!("water-mask-{region_id}"));
+    let provenance_dir = output_dir.join("provenance");
     let fetch_cache = static_source_fetch_cache_config(config)?;
     let ids_requests = WATER_MASK_NHD_LAYERS
         .iter()

@@ -401,6 +401,16 @@ pub enum LiveFeedConnectionEventKind {
     Message,
     Error,
     Closed,
+    NetworkStatus,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum LiveFeedNetworkStatus {
+    Unmetered,
+    Metered,
+    NoActiveNetwork,
+    Unknown,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -412,6 +422,8 @@ pub struct LiveFeedConnectionEvent {
     pub source_url: Option<String>,
     #[serde(default)]
     pub status_url: Option<String>,
+    #[serde(default)]
+    pub network_status: Option<LiveFeedNetworkStatus>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -440,6 +452,7 @@ struct LiveFeedConnectionSessionState {
     last_error_message: Option<String>,
     last_resource_error_epoch_ms: Option<i64>,
     last_resource_error_message: Option<String>,
+    network_status: Option<LiveFeedNetworkStatus>,
 }
 
 #[derive(Clone, Default)]
@@ -2496,12 +2509,26 @@ fn live_feed_connection_status_page_row(session: &UiSession) -> UiDataStatusPage
             UiDataStatusPageTimeDisplay::Ago,
         ));
     }
+    if let Some(status) = connection.network_status {
+        facts.push(status_fact(
+            "Network",
+            live_feed_network_status_label(status),
+        ));
+    }
     let last_error_epoch = connection
         .last_resource_error_epoch_ms
         .or(connection.last_error_epoch_ms);
+    let network_issue = live_feed_network_status_issue(connection.network_status);
     let last_error_message = connection
         .last_resource_error_message
         .as_deref()
+        .or_else(|| {
+            if matches!(connection.mode, LiveFeedConnectionMode::Error) {
+                network_issue
+            } else {
+                None
+            }
+        })
         .or(connection.last_error_message.as_deref());
     if let Some(last_error) = last_error_epoch {
         facts.push(status_time_fact(
@@ -2527,6 +2554,16 @@ fn live_feed_connection_status_page_row(session: &UiSession) -> UiDataStatusPage
                 }
                 _ => format!("Live-feed data is unavailable: {message}"),
             },
+        )
+    } else if let Some(message) = network_issue {
+        (
+            match connection.network_status {
+                Some(LiveFeedNetworkStatus::Metered) => "METERED",
+                Some(LiveFeedNetworkStatus::NoActiveNetwork) => "NO NETWORK",
+                _ => "NETWORK",
+            },
+            UiStatusSeverity::Unavailable,
+            message.to_string(),
         )
     } else {
         match connection.mode {
@@ -2590,6 +2627,27 @@ fn live_feed_connection_status_page_row(session: &UiSession) -> UiDataStatusPage
         detail,
         facts,
     )
+}
+
+fn live_feed_network_status_label(status: LiveFeedNetworkStatus) -> &'static str {
+    match status {
+        LiveFeedNetworkStatus::Unmetered => "Unmetered",
+        LiveFeedNetworkStatus::Metered => "Metered",
+        LiveFeedNetworkStatus::NoActiveNetwork => "No active network",
+        LiveFeedNetworkStatus::Unknown => "Unknown",
+    }
+}
+
+fn live_feed_network_status_issue(status: Option<LiveFeedNetworkStatus>) -> Option<&'static str> {
+    match status {
+        Some(LiveFeedNetworkStatus::Metered) => Some(
+            "The active network is metered. Live feeds are allowed, but this network condition can explain live-feed connectivity failures.",
+        ),
+        Some(LiveFeedNetworkStatus::NoActiveNetwork) => {
+            Some("Android reports no active network for live feeds.")
+        }
+        _ => None,
+    }
 }
 
 fn live_feed_product_status_page_row(
@@ -5447,6 +5505,7 @@ pub fn ingest_live_feed_sse_event_in_session_at_epoch_ms(
             message: None,
             source_url: None,
             status_url: None,
+            network_status: None,
         },
         epoch_ms,
     );
@@ -5475,6 +5534,7 @@ pub fn ingest_live_feed_sse_events_in_session_at_epoch_ms(
                 message: None,
                 source_url: None,
                 status_url: None,
+                network_status: None,
             },
             epoch_ms,
         );
@@ -5523,6 +5583,7 @@ pub fn ingest_resource_in_session_at_epoch_ms(
                     message: None,
                     source_url: None,
                     status_url: None,
+                    network_status: None,
                 },
                 epoch_ms,
             );
@@ -5618,6 +5679,9 @@ fn record_live_feed_connection_event(
     if event.status_url.is_some() {
         session.live_feed_connection.status_url = event.status_url;
     }
+    if event.network_status.is_some() {
+        session.live_feed_connection.network_status = event.network_status;
+    }
     match event.kind {
         LiveFeedConnectionEventKind::Connecting => {
             session.live_feed_connection.mode = LiveFeedConnectionMode::Connecting;
@@ -5647,6 +5711,7 @@ fn record_live_feed_connection_event(
             session.live_feed_connection.mode = LiveFeedConnectionMode::Closed;
             session.live_feed_connection.last_state_change_epoch_ms = Some(at);
         }
+        LiveFeedConnectionEventKind::NetworkStatus => {}
     }
 }
 
@@ -14044,6 +14109,7 @@ mod tests {
                 status_url: Some(
                     "http://aerobag-dev.iac.jonh.net:9085/live-feeds/status.html".to_string(),
                 ),
+                network_status: Some(LiveFeedNetworkStatus::Unmetered),
             },
             utc("2026-05-20T12:00:00Z").timestamp_millis(),
         )
@@ -14055,6 +14121,7 @@ mod tests {
                 message: None,
                 source_url: None,
                 status_url: None,
+                network_status: None,
             },
             utc("2026-05-20T12:03:00Z").timestamp_millis(),
         )
@@ -14080,6 +14147,92 @@ mod tests {
             server.link_url.as_deref(),
             Some("http://aerobag-dev.iac.jonh.net:9085/live-feeds/status.html")
         );
+        assert!(row
+            .facts
+            .iter()
+            .any(|fact| fact.label == "Network" && fact.value == "Unmetered"));
+    }
+
+    #[test]
+    fn data_status_page_prefers_metered_network_context_over_dns_error() {
+        let init = create_current_test_session();
+        let snapshot = report_live_feed_connection_event_in_session(
+            init.handle,
+            LiveFeedConnectionEvent {
+                kind: LiveFeedConnectionEventKind::Error,
+                message: Some(
+                    "Unable to resolve host \"aerobag.org\": No address associated with hostname"
+                        .to_string(),
+                ),
+                source_url: Some("https://aerobag.org".to_string()),
+                status_url: Some("https://aerobag.org/live-feeds/status.html".to_string()),
+                network_status: Some(LiveFeedNetworkStatus::Metered),
+            },
+            utc("2026-05-20T12:00:00Z").timestamp_millis(),
+        )
+        .expect("metered error");
+        let row = snapshot
+            .data_status_page_state
+            .rows
+            .iter()
+            .find(|row| row.id == "live_feed:connection")
+            .expect("connection row");
+
+        assert_eq!(row.value, "METERED");
+        assert_eq!(row.severity, UiStatusSeverity::Unavailable);
+        assert!(row.detail.contains("active network is metered"));
+        assert!(!row.detail.contains("Unable to resolve host"));
+        assert!(row
+            .facts
+            .iter()
+            .any(|fact| fact.label == "Network" && fact.value == "Metered"));
+        assert!(row
+            .facts
+            .iter()
+            .any(|fact| fact.label == "Error" && fact.value.contains("metered")));
+    }
+
+    #[test]
+    fn data_status_page_reports_metered_network_status_event() {
+        let init = create_current_test_session();
+        report_live_feed_connection_event_in_session(
+            init.handle,
+            LiveFeedConnectionEvent {
+                kind: LiveFeedConnectionEventKind::Connected,
+                message: None,
+                source_url: Some("https://aerobag.org".to_string()),
+                status_url: Some("https://aerobag.org/live-feeds/status.html".to_string()),
+                network_status: Some(LiveFeedNetworkStatus::Unmetered),
+            },
+            utc("2026-05-20T12:00:00Z").timestamp_millis(),
+        )
+        .expect("connected");
+        let snapshot = report_live_feed_connection_event_in_session(
+            init.handle,
+            LiveFeedConnectionEvent {
+                kind: LiveFeedConnectionEventKind::NetworkStatus,
+                message: None,
+                source_url: Some("https://aerobag.org".to_string()),
+                status_url: Some("https://aerobag.org/live-feeds/status.html".to_string()),
+                network_status: Some(LiveFeedNetworkStatus::Metered),
+            },
+            utc("2026-05-20T12:01:00Z").timestamp_millis(),
+        )
+        .expect("metered status");
+        let row = snapshot
+            .data_status_page_state
+            .rows
+            .iter()
+            .find(|row| row.id == "live_feed:connection")
+            .expect("connection row");
+
+        assert_eq!(row.value, "METERED");
+        assert_eq!(row.severity, UiStatusSeverity::Unavailable);
+        assert!(row.detail.contains("active network is metered"));
+        assert!(row
+            .facts
+            .iter()
+            .any(|fact| fact.label == "Network" && fact.value == "Metered"));
     }
 
     #[test]
@@ -14105,6 +14258,7 @@ mod tests {
                 status_url: Some(
                     "http://aerobag-dev.iac.jonh.net:9085/live-feeds/status.html".to_string(),
                 ),
+                network_status: Some(LiveFeedNetworkStatus::Unmetered),
             },
             utc("2026-05-20T12:02:00Z").timestamp_millis(),
         )

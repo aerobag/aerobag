@@ -32,6 +32,18 @@ class LiveFeedCacheTest {
     }
 
     @Test
+    fun retryGateClearsAllCooldownsAfterConnectivityChange() {
+        val gate = LiveFeedRequestRetryGate(retryDelayMs = 300_000)
+
+        gate.recordFailure("live_feed_cache/current", nowMs = 1_000)
+        gate.recordFailure("live_feed_cache/full/tafs/v1", nowMs = 1_000)
+        gate.clearAll()
+
+        assertTrue(gate.shouldAttempt("live_feed_cache/current", nowMs = 2_000))
+        assertTrue(gate.shouldAttempt("live_feed_cache/full/tafs/v1", nowMs = 2_000))
+    }
+
+    @Test
     fun boundedLiveFeedReadAcceptsPayloadAtLimit() {
         val bytes = byteArrayOf(1, 2, 3, 4)
 

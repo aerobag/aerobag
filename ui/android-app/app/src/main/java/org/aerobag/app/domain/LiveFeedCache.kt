@@ -2,6 +2,7 @@ package org.aerobag.app.domain
 
 import android.content.Context
 import android.net.ConnectivityManager
+import android.net.Network
 import android.net.NetworkCapabilities
 import android.os.SystemClock
 import android.util.Log
@@ -13,8 +14,13 @@ import java.net.HttpURLConnection
 import java.net.SocketTimeoutException
 import java.net.URL
 import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.channels.Channel
+import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.isActive
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.Dispatchers
 import kotlinx.serialization.SerialName
@@ -30,6 +36,7 @@ private const val LiveFeedSseConnectTimeoutMs = 5_000
 private const val LiveFeedSseIdleTimeoutMs = 65_000
 private const val LiveFeedFailedRequestRetryDelayMs = 5 * 60_000L
 private const val LiveFeedEventsPath = "/live-feeds/v2/events"
+private const val LiveFeedLogTag = "AndroidLiveFeeds"
 internal const val LiveFeedMaxInMemoryFetchBytes = 64L * 1024L * 1024L
 
 @Serializable
@@ -64,7 +71,24 @@ data class LiveFeedConnectionEvent(
     val sourceUrl: String? = null,
     @SerialName("status_url")
     val statusUrl: String? = null,
+    @SerialName("network_status")
+    val networkStatus: LiveFeedNetworkStatus? = null,
 )
+
+@Serializable
+enum class LiveFeedNetworkStatus {
+    @SerialName("unmetered")
+    Unmetered,
+
+    @SerialName("metered")
+    Metered,
+
+    @SerialName("no_active_network")
+    NoActiveNetwork,
+
+    @SerialName("unknown")
+    Unknown,
+}
 
 class LiveFeedCache(
     installedStatesJson: String = "[]",
@@ -140,52 +164,79 @@ class AndroidLiveFeedClient(
     private val context: Context,
     private val cache: LiveFeedCache,
     private val sourceRootUrl: String,
-    private val policy: LiveFeedFetchPolicy = LiveFeedFetchPolicy.AllowAll,
     private val json: Json = Json {
         encodeDefaults = true
         ignoreUnknownKeys = true
     },
 ) {
     private val retryGate = LiveFeedRequestRetryGate(LiveFeedFailedRequestRetryDelayMs)
+    private val pumpMutex = Mutex()
 
     suspend fun bootstrapAndRun(
         promote: suspend (LiveFeedInstalledSummary) -> Unit,
         onChanged: suspend () -> Unit,
         onConnectionEvent: suspend (LiveFeedConnectionEvent) -> Unit = {},
-    ) {
-        pumpUntilSettled(promote, onChanged)
-        while (kotlin.coroutines.coroutineContext.isActive) {
-            runCatching {
-                readSseLoop(promote, onChanged, onConnectionEvent)
-            }.onFailure { error ->
-                if (error is CancellationException) throw error
-                if (error is SocketTimeoutException) {
-                    diagnosticLogInfo(TAG) {
-                        "live-feed SSE idle for ${LiveFeedSseIdleTimeoutMs}ms; reconnecting"
-                    }
-                } else {
-                    Log.w(TAG, "live-feed SSE loop failed: ${error.message}", error)
-                }
+    ) = coroutineScope {
+        val liveFeedEventsUrl = resolveLiveFeedUrl(LiveFeedEventsPath, sourceRootUrl)
+        val networkChanges = Channel<LiveFeedNetworkStatus>(Channel.CONFLATED)
+        val networkCallback = registerLiveFeedNetworkCallback(context, liveFeedEventsUrl) { status ->
+            networkChanges.trySend(status)
+        }
+        val networkPump = launch {
+            for (status in networkChanges) {
+                retryGate.clearAll()
                 onConnectionEvent(
                     LiveFeedConnectionEvent(
-                        kind = "error",
-                        message = error.message ?: error::class.java.simpleName,
+                        kind = "network_status",
                         sourceUrl = sourceRootUrl,
                         statusUrl = liveFeedStatusUrl(sourceRootUrl),
+                        networkStatus = status,
                     ),
                 )
-                if (error !is SocketTimeoutException) {
-                    delay(5_000)
-                }
                 pumpUntilSettled(promote, onChanged)
             }
+        }
+        try {
+            networkChanges.trySend(detectLiveFeedNetworkStatus(context, liveFeedEventsUrl))
+            pumpUntilSettled(promote, onChanged)
+            while (kotlin.coroutines.coroutineContext.isActive) {
+                runCatching {
+                    readSseLoop(promote, onChanged, onConnectionEvent)
+                }.onFailure { error ->
+                    if (error is CancellationException) throw error
+                    if (error is SocketTimeoutException) {
+                        diagnosticLogInfo(TAG) {
+                            "live-feed SSE idle for ${LiveFeedSseIdleTimeoutMs}ms; reconnecting"
+                        }
+                    } else {
+                        Log.w(TAG, "live-feed SSE loop failed: ${error.message}", error)
+                    }
+                    onConnectionEvent(
+                        LiveFeedConnectionEvent(
+                            kind = "error",
+                            message = error.message ?: error::class.java.simpleName,
+                            sourceUrl = sourceRootUrl,
+                            statusUrl = liveFeedStatusUrl(sourceRootUrl),
+                            networkStatus = detectLiveFeedNetworkStatus(context, sourceRootUrl),
+                        ),
+                    )
+                    if (error !is SocketTimeoutException) {
+                        delay(5_000)
+                    }
+                    pumpUntilSettled(promote, onChanged)
+                }
+            }
+        } finally {
+            networkCallback.close()
+            networkChanges.close()
+            networkPump.cancel()
         }
     }
 
     suspend fun pumpUntilSettled(
         promote: suspend (LiveFeedInstalledSummary) -> Unit,
         onChanged: suspend () -> Unit,
-    ): Int {
+    ): Int = pumpMutex.withLock {
         var installs = 0
         while (kotlin.coroutines.coroutineContext.isActive) {
             val nowMs = SystemClock.elapsedRealtime()
@@ -246,6 +297,7 @@ class AndroidLiveFeedClient(
                 kind = "connecting",
                 sourceUrl = sourceRootUrl,
                 statusUrl = statusUrl,
+                networkStatus = detectLiveFeedNetworkStatus(context, url),
             ),
         )
         val connection = (URL(url).openConnection() as HttpURLConnection).apply {
@@ -260,6 +312,7 @@ class AndroidLiveFeedClient(
                         kind = "connected",
                         sourceUrl = sourceRootUrl,
                         statusUrl = statusUrl,
+                        networkStatus = detectLiveFeedNetworkStatus(context, url),
                     ),
                 )
                 var eventName: String? = null
@@ -296,6 +349,7 @@ class AndroidLiveFeedClient(
                     kind = "closed",
                     sourceUrl = sourceRootUrl,
                     statusUrl = statusUrl,
+                    networkStatus = detectLiveFeedNetworkStatus(context, url),
                 ),
             )
         } finally {
@@ -305,7 +359,6 @@ class AndroidLiveFeedClient(
 
     private fun fetchBytes(url: String): ByteArray {
         val resolved = resolveLiveFeedUrl(url, sourceRootUrl)
-        policy.checkMayFetch(context, resolved)
         val startMs = SystemClock.elapsedRealtime()
         val connection = (URL(resolved).openConnection() as HttpURLConnection).apply {
             connectTimeout = 5_000
@@ -341,7 +394,7 @@ class AndroidLiveFeedClient(
     }
 
     companion object {
-        private const val TAG = "AndroidLiveFeeds"
+        private const val TAG = LiveFeedLogTag
     }
 }
 
@@ -381,40 +434,78 @@ internal class LiveFeedRequestRetryGate(
 ) {
     private val retryNotBeforeMsByRequestId = mutableMapOf<String, Long>()
 
+    @Synchronized
     fun shouldAttempt(requestId: String, nowMs: Long): Boolean =
         nowMs >= (retryNotBeforeMsByRequestId[requestId] ?: Long.MIN_VALUE)
 
+    @Synchronized
     fun recordSuccess(requestId: String) {
         retryNotBeforeMsByRequestId.remove(requestId)
     }
 
+    @Synchronized
     fun recordFailure(requestId: String, nowMs: Long) {
         retryNotBeforeMsByRequestId[requestId] = nowMs + retryDelayMs
     }
+
+    @Synchronized
+    fun clearAll() {
+        retryNotBeforeMsByRequestId.clear()
+    }
 }
 
-sealed interface LiveFeedFetchPolicy {
-    fun checkMayFetch(context: Context, url: String)
+internal fun registerLiveFeedNetworkCallback(
+    context: Context,
+    url: String,
+    onChanged: (LiveFeedNetworkStatus) -> Unit,
+): AutoCloseable {
+    val connectivity = context.getSystemService(Context.CONNECTIVITY_SERVICE) as? ConnectivityManager
+        ?: return AutoCloseable {}
+    val callback = object : ConnectivityManager.NetworkCallback() {
+        override fun onAvailable(network: Network) {
+            onChanged(detectLiveFeedNetworkStatus(context, url))
+        }
 
-    data object AllowAll : LiveFeedFetchPolicy {
-        override fun checkMayFetch(context: Context, url: String) = Unit
+        override fun onLost(network: Network) {
+            onChanged(detectLiveFeedNetworkStatus(context, url))
+        }
+
+        override fun onCapabilitiesChanged(
+            network: Network,
+            networkCapabilities: NetworkCapabilities,
+        ) {
+            onChanged(detectLiveFeedNetworkStatus(context, url))
+        }
     }
-
-    data object UnmeteredOrLocal : LiveFeedFetchPolicy {
-        override fun checkMayFetch(context: Context, url: String) {
-            val host = runCatching { URL(url).host }.getOrNull().orEmpty()
-            if (host == "10.0.2.2" || host == "localhost" || host == "127.0.0.1") {
-                return
-            }
-            val connectivity = context.getSystemService(Context.CONNECTIVITY_SERVICE) as? ConnectivityManager
-                ?: return
-            val network = connectivity.activeNetwork ?: error("live-feed fetch blocked: no active network")
-            val capabilities = connectivity.getNetworkCapabilities(network)
-                ?: error("live-feed fetch blocked: network capabilities unavailable")
-            if (!capabilities.hasCapability(NetworkCapabilities.NET_CAPABILITY_NOT_METERED)) {
-                error("live-feed fetch blocked on metered network")
+    return runCatching {
+        connectivity.registerDefaultNetworkCallback(callback)
+        AutoCloseable {
+            runCatching {
+                connectivity.unregisterNetworkCallback(callback)
+            }.onFailure { error ->
+                Log.w(LiveFeedLogTag, "failed to unregister live-feed network callback", error)
             }
         }
+    }.getOrElse { error ->
+        Log.w(LiveFeedLogTag, "failed to register live-feed network callback", error)
+        AutoCloseable {}
+    }
+}
+
+internal fun detectLiveFeedNetworkStatus(context: Context, url: String): LiveFeedNetworkStatus {
+    val host = runCatching { URL(url).host }.getOrNull().orEmpty()
+    if (host == "10.0.2.2" || host == "localhost" || host == "127.0.0.1") {
+        return LiveFeedNetworkStatus.Unmetered
+    }
+    val connectivity = context.getSystemService(Context.CONNECTIVITY_SERVICE) as? ConnectivityManager
+        ?: return LiveFeedNetworkStatus.Unknown
+    val network = connectivity.activeNetwork ?: return LiveFeedNetworkStatus.NoActiveNetwork
+    val capabilities = connectivity.getNetworkCapabilities(network)
+        ?: return LiveFeedNetworkStatus.Unknown
+    return if (capabilities.hasCapability(NetworkCapabilities.NET_CAPABILITY_NOT_METERED)) {
+        LiveFeedNetworkStatus.Unmetered
+    } else {
+        LiveFeedNetworkStatus.Metered
     }
 }
 

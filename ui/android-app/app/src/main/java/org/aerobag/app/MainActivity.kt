@@ -266,7 +266,6 @@ import org.aerobag.app.domain.AndroidRuntimeContent
 import org.aerobag.app.domain.AndroidLiveFeedClient
 import org.aerobag.app.domain.LiveFeedCacheStore
 import org.aerobag.app.domain.LiveFeedConnectionEvent
-import org.aerobag.app.domain.LiveFeedFetchPolicy
 import org.aerobag.app.domain.LiveFeedInstalledSummary
 import org.aerobag.app.domain.MapDisplayFrame
 import org.aerobag.app.domain.SequencingMode
@@ -2356,7 +2355,6 @@ internal fun AerobagApp(
             context = appContext,
             cache = liveFeedCache,
             sourceRootUrl = sourceRootUrl,
-            policy = LiveFeedFetchPolicy.UnmeteredOrLocal,
         ).bootstrapAndRun(
             promote = { summary ->
                 withContext(Dispatchers.Main) {

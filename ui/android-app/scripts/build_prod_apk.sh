@@ -37,7 +37,9 @@ if [ "$SHORT_COMMIT" != "unknown" ]; then
 fi
 BUILT_AT_UTC="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
 BUILD_STAMP_UTC="$(date -u +%Y%m%d%H%M)"
-if [ -n "$(git -C "$REPO_ROOT" status --porcelain 2>/dev/null || true)" ]; then
+DIRTY_STATUS="$(git -C "$REPO_ROOT" status --porcelain 2>/dev/null || true)"
+if [ -n "$DIRTY_STATUS" ]; then
+  printf 'Android APK build sees dirty checkout:\n%s\n' "$DIRTY_STATUS" >&2
   BUILD_DIRTY=1
   BUILD_DIRTY_JSON=true
   BUILD_ID="$SHORT_COMMIT.dirty"

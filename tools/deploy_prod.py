@@ -49,7 +49,7 @@ DEFAULT_ANDROID_SIGNING_SOURCE_KEYSTORE = Path(
 )
 DEFAULT_ANDROID_SIGNING_BOOTSTRAP_KEYSTORE = Path("/root/.android/debug.keystore")
 DEFAULT_ANDROID_SIGNING_PROD_KEYSTORE = (
-    "/opt/aerobag/secrets/android/aerobag-app.keystore"
+    "/etc/aerobag/secrets/android/aerobag-app.keystore"
 )
 
 

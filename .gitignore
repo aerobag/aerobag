@@ -3,3 +3,6 @@ __pycache__/
 .codex
 node_modules/
 build/
+ui/android-app/.gradle/
+ui/android-app/.kotlin/
+ui/android-app/local.properties

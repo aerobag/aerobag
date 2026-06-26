@@ -352,7 +352,6 @@ import java.util.concurrent.Executors
 import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicInteger
 import java.util.concurrent.atomic.AtomicLong
-import kotlin.math.abs
 import kotlin.math.roundToInt
 import kotlin.math.atan2
 import kotlin.math.cos
@@ -1245,11 +1244,6 @@ internal fun mapViewportFromCore(viewport: CoreMapViewport): MapViewportState {
         zoom = viewport.zoom,
     )
 }
-
-internal fun sameMapViewport(left: MapViewportState, right: MapViewportState): Boolean =
-    abs(left.centerWorldX - right.centerWorldX) < 1e-9 &&
-        abs(left.centerWorldY - right.centerWorldY) < 1e-9 &&
-        abs(left.zoom - right.zoom) < 1e-9
 
 @Composable
 internal fun SituationStatusBadge(

@@ -6214,7 +6214,7 @@ function MapPage(props: {
           <button
             type="button"
             className={`centerHereButton${mapFollowUiState.following ? " isActive" : ""}`}
-            disabled={!mapFollowUiState.can_center_here}
+            disabled={!mapFollowUiState.can_center_here && !mapFollowUiState.following}
             onPointerDown={stopPointer}
             onPointerUp={stopPointer}
             onDoubleClick={stopDoubleClick}
@@ -6222,7 +6222,11 @@ function MapPage(props: {
               if (!uiSession) {
                 return;
               }
-              void uiSession.engageMapFollow(viewport).then(props.onPlaybackSnapshotChange).catch(() => {});
+              followTargetGateRef.current.clear();
+              const nextSnapshot = mapFollowUiState.following
+                ? uiSession.disengageMapFollow(viewportRef.current)
+                : uiSession.engageMapFollow(viewportRef.current);
+              void nextSnapshot.then(props.onPlaybackSnapshotChange).catch(() => {});
             }}
           >
             CTR

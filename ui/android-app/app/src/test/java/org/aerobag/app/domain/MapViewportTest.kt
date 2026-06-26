@@ -127,4 +127,47 @@ class MapViewportTest {
         )
         assertEquals(400.0, nearbyAcrossAntimeridian.y.toDouble(), 1e-4)
     }
+
+    @Test
+    fun mapFollowTargetGateBlocksStaleTargetBetweenSyncAndSnapshotPropagation() {
+        val gate = MapFollowTargetGate()
+        val oldTarget = createInitialViewport(initialViewport, minZoom, maxZoom)
+        val draggedViewport = dragViewport(oldTarget, 120f, 80f)
+        val acknowledgedTarget = dragViewport(oldTarget, 122f, 82f)
+
+        gate.beginSync(draggedViewport)
+        gate.acknowledgeSyncSnapshot(
+            following = true,
+            targetViewport = acknowledgedTarget,
+        )
+
+        assertTrue(gate.shouldApplyTarget(oldTarget).not())
+        assertEquals(acknowledgedTarget, gate.awaitedViewport())
+        assertTrue(gate.shouldApplyTarget(acknowledgedTarget))
+        assertEquals(null, gate.awaitedViewport())
+    }
+
+    @Test
+    fun mapFollowTargetGateAllowsTargetsWhenNoFollowSyncIsPending() {
+        val gate = MapFollowTargetGate()
+        val target = createInitialViewport(initialViewport, minZoom, maxZoom)
+
+        assertTrue(gate.shouldApplyTarget(target))
+    }
+
+    @Test
+    fun mapFollowTargetGateClearsPendingTargetWhenFollowDisengagesDuringSync() {
+        val gate = MapFollowTargetGate()
+        val oldTarget = createInitialViewport(initialViewport, minZoom, maxZoom)
+        val draggedViewport = dragViewport(oldTarget, 120f, 80f)
+
+        gate.beginSync(draggedViewport)
+        gate.acknowledgeSyncSnapshot(
+            following = false,
+            targetViewport = null,
+        )
+
+        assertEquals(null, gate.awaitedViewport())
+        assertTrue(gate.shouldApplyTarget(oldTarget))
+    }
 }

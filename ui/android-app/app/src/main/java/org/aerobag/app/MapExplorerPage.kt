@@ -223,6 +223,7 @@ import org.aerobag.app.domain.AirspaceScreenPoint
 import org.aerobag.app.domain.LatLonPoint
 import org.aerobag.app.domain.MapChartFamily
 import org.aerobag.app.domain.MapDisplayFrame
+import org.aerobag.app.domain.MapFollowTargetGate
 import org.aerobag.app.domain.MapLayerId
 import org.aerobag.app.domain.MapFollowUiState
 import org.aerobag.app.domain.MapOverlayQueryResult
@@ -289,6 +290,7 @@ import org.aerobag.app.domain.kindForLog
 import org.aerobag.app.domain.latLonToWorld
 import org.aerobag.app.domain.preserveViewportForMap
 import org.aerobag.app.domain.renderTileKey
+import org.aerobag.app.domain.sameMapViewport
 import org.aerobag.app.domain.scaleForZoom
 import org.aerobag.app.domain.screenToWorld
 import org.aerobag.app.domain.viewportCenterLatLon
@@ -584,6 +586,7 @@ internal fun MapExplorerPage(
     val selectedMapId = selectedMap.selectedMapId
     val selectedFamilyId = selectedMap.selectedFamilyId
     val viewportState = remember(selectedMapId) { mutableStateOf(viewport) }
+    val followTargetGate = remember(uiSession) { MapFollowTargetGate() }
     var viewportSyncPending by remember(selectedMapId) { mutableStateOf(false) }
     LaunchedEffect(viewport, selectedMapId) {
         val parentMatchesLocal = sameMapViewport(viewport, viewportState.value)
@@ -800,14 +803,24 @@ internal fun MapExplorerPage(
         if (!mapFollowUiState.following || surfaceWidthPx <= 0f || surfaceHeightPx <= 0f) {
             return
         }
+        followTargetGate.beginSync(nextViewport)
         runCatching {
             uiSession.syncMapFollow(
                 nextViewport,
                 surfaceWidthPx.toDouble(),
                 surfaceHeightPx.toDouble(),
             )
-        }.onSuccess(onSessionSnapshotChange)
-            .onFailure { Log.w(MapViewportLogTag, "map follow sync failed", it) }
+        }.onSuccess { snapshot ->
+            followTargetGate.acknowledgeSyncSnapshot(
+                following = snapshot.mapFollowUiState.following,
+                targetViewport = snapshot.mapFollowTargetViewport?.let(::mapViewportFromCore),
+            )
+            onSessionSnapshotChange(snapshot)
+        }
+            .onFailure {
+                followTargetGate.clear()
+                Log.w(MapViewportLogTag, "map follow sync failed", it)
+            }
     }
 
     fun updateViewport(nextViewport: MapViewportState, syncFollow: Boolean = true) {
@@ -1555,6 +1568,7 @@ internal fun MapExplorerPage(
     }
     LaunchedEffect(mapFollowUiState.following, mapFollowTargetViewport, mapGestureActive) {
         if (!mapFollowUiState.following) {
+            followTargetGate.clear()
             return@LaunchedEffect
         }
         if (mapGestureActive) {
@@ -1562,7 +1576,14 @@ internal fun MapExplorerPage(
         }
         val target = mapFollowTargetViewport ?: return@LaunchedEffect
         val nextViewport = mapViewportFromCore(target)
-        if (!sameMapViewport(nextViewport, viewport)) {
+        val awaitedViewport = followTargetGate.awaitedViewport()
+        if (!followTargetGate.shouldApplyTarget(nextViewport)) {
+            perfLogInfo(MapViewportLogTag) {
+                "follow-target stale targetZoom=${"%.2f".format(nextViewport.zoom)} awaitedZoom=${awaitedViewport?.zoom?.let { "%.2f".format(it) }}"
+            }
+            return@LaunchedEffect
+        }
+        if (!sameMapViewport(nextViewport, viewportState.value)) {
             onViewportChange(nextViewport)
         }
     }
@@ -2296,11 +2317,18 @@ internal fun MapExplorerPage(
                 .align(Alignment.BottomEnd)
                 .padding(end = ThumbGap, bottom = ThumbGap)
                 .size(ThumbSize),
-            enabled = mapFollowUiState.canCenterHere,
+            enabled = mapFollowUiState.canCenterHere || mapFollowUiState.following,
             selected = mapFollowUiState.following,
             selectedColor = Color(0xFF0D6F67),
             onClick = {
-                runCatching { uiSession.engageMapFollow(viewport) }.onSuccess(onSessionSnapshotChange)
+                runCatching {
+                    followTargetGate.clear()
+                    if (mapFollowUiState.following) {
+                        uiSession.disengageMapFollow(viewportState.value)
+                    } else {
+                        uiSession.engageMapFollow(viewportState.value)
+                    }
+                }.onSuccess(onSessionSnapshotChange)
             },
         )
 

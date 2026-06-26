@@ -2,6 +2,7 @@ package org.aerobag.app.domain
 
 import kotlinx.serialization.Serializable
 import kotlin.math.PI
+import kotlin.math.abs
 import kotlin.math.asinh
 import kotlin.math.atan
 import kotlin.math.exp
@@ -16,6 +17,7 @@ import kotlin.math.tan
 
 private const val WORLD_SIZE = 256.0
 private const val MAX_LATITUDE = 85.05112878
+private const val VIEWPORT_EPSILON = 1e-9
 
 data class MapViewportState(
     val centerWorldX: Double,
@@ -128,6 +130,48 @@ fun dragViewport(viewport: MapViewportState, dx: Float, dy: Float): MapViewportS
         centerWorldX = viewport.centerWorldX - dx / scale,
         centerWorldY = viewport.centerWorldY - dy / scale,
     )
+}
+
+fun sameMapViewport(left: MapViewportState, right: MapViewportState): Boolean =
+    abs(left.centerWorldX - right.centerWorldX) < VIEWPORT_EPSILON &&
+        abs(left.centerWorldY - right.centerWorldY) < VIEWPORT_EPSILON &&
+        abs(left.zoom - right.zoom) < VIEWPORT_EPSILON
+
+fun isStaleMapFollowTargetViewport(
+    targetViewport: MapViewportState,
+    awaitedTargetViewport: MapViewportState?,
+): Boolean = awaitedTargetViewport != null && !sameMapViewport(targetViewport, awaitedTargetViewport)
+
+class MapFollowTargetGate {
+    private var awaitedTargetViewport: MapViewportState? = null
+
+    fun beginSync(requestedViewport: MapViewportState) {
+        awaitedTargetViewport = requestedViewport
+    }
+
+    fun acknowledgeSyncSnapshot(following: Boolean, targetViewport: MapViewportState?) {
+        if (!following) {
+            awaitedTargetViewport = null
+            return
+        }
+        if (targetViewport != null) {
+            awaitedTargetViewport = targetViewport
+        }
+    }
+
+    fun clear() {
+        awaitedTargetViewport = null
+    }
+
+    fun awaitedViewport(): MapViewportState? = awaitedTargetViewport
+
+    fun shouldApplyTarget(targetViewport: MapViewportState): Boolean {
+        if (isStaleMapFollowTargetViewport(targetViewport, awaitedTargetViewport)) {
+            return false
+        }
+        awaitedTargetViewport = null
+        return true
+    }
 }
 
 fun screenToWorld(

@@ -75,6 +75,7 @@ use paths::*;
 mod source_fingerprints;
 
 const PACKAGE_CYCLE_VERSION: &str = "01";
+const CYCLE_PUBLICATION_LEAD_DAYS: i64 = 20;
 const NAV_DB_STARTUP_PREFETCH_MEMBERS_METADATA_KEY: &str = "startup_prefetch_members";
 const NAV_DB_UNPACKED_PAGE_ENCODING_MARKER: &str = "nav-db-page-xz-v1";
 const WAYPOINT_PREFIX_MAX_RESULTS: usize = 100;
@@ -1903,7 +1904,8 @@ fn product_cycles_to_build(config: &ProductBuildConfig) -> anyhow::Result<Vec<St
 fn product_cycle_is_currently_publishable(cycle: &str, as_of_date: NaiveDate) -> bool {
     match cycle_effective_date(cycle) {
         Ok(effective) => {
-            effective <= as_of_date && effective + chrono::Duration::days(28) >= as_of_date
+            let publication_opens = effective - chrono::Duration::days(CYCLE_PUBLICATION_LEAD_DAYS);
+            publication_opens <= as_of_date && effective + chrono::Duration::days(28) >= as_of_date
         }
         Err(_) => false,
     }
@@ -2308,13 +2310,29 @@ mod tests {
     }
 
     #[test]
-    fn automatic_product_build_excludes_future_cycles() {
-        let before_2607 = NaiveDate::from_ymd_opt(2026, 6, 20).unwrap();
+    fn automatic_product_build_includes_cycles_inside_publication_lead_window() {
+        let before_lead_window = NaiveDate::from_ymd_opt(2026, 6, 18).unwrap();
+        let inside_lead_window = NaiveDate::from_ymd_opt(2026, 6, 20).unwrap();
         let on_2607 = NaiveDate::from_ymd_opt(2026, 7, 9).unwrap();
+        let after_2607_expires = NaiveDate::from_ymd_opt(2026, 8, 7).unwrap();
 
-        assert!(product_cycle_is_currently_publishable("2606", before_2607));
-        assert!(!product_cycle_is_currently_publishable("2607", before_2607));
+        assert!(product_cycle_is_currently_publishable(
+            "2606",
+            inside_lead_window
+        ));
+        assert!(!product_cycle_is_currently_publishable(
+            "2607",
+            before_lead_window
+        ));
+        assert!(product_cycle_is_currently_publishable(
+            "2607",
+            inside_lead_window
+        ));
         assert!(product_cycle_is_currently_publishable("2607", on_2607));
+        assert!(!product_cycle_is_currently_publishable(
+            "2607",
+            after_2607_expires
+        ));
     }
 
     #[test]

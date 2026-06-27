@@ -204,23 +204,21 @@ class AndroidLiveFeedClient(
                     readSseLoop(promote, onChanged, onConnectionEvent)
                 }.onFailure { error ->
                     if (error is CancellationException) throw error
-                    if (error is SocketTimeoutException) {
+                    if (error is LiveFeedSseIdleTimeoutException) {
                         diagnosticLogInfo(TAG) {
                             "live-feed SSE idle for ${LiveFeedSseIdleTimeoutMs}ms; reconnecting"
                         }
                     } else {
                         Log.w(TAG, "live-feed SSE loop failed: ${error.message}", error)
-                    }
-                    onConnectionEvent(
-                        LiveFeedConnectionEvent(
-                            kind = "error",
-                            message = error.message ?: error::class.java.simpleName,
-                            sourceUrl = sourceRootUrl,
-                            statusUrl = liveFeedStatusUrl(sourceRootUrl),
-                            networkStatus = detectLiveFeedNetworkStatus(context, sourceRootUrl),
-                        ),
-                    )
-                    if (error !is SocketTimeoutException) {
+                        onConnectionEvent(
+                            LiveFeedConnectionEvent(
+                                kind = "error",
+                                message = error.message ?: error::class.java.simpleName,
+                                sourceUrl = sourceRootUrl,
+                                statusUrl = liveFeedStatusUrl(sourceRootUrl),
+                                networkStatus = detectLiveFeedNetworkStatus(context, sourceRootUrl),
+                            ),
+                        )
                         delay(5_000)
                     }
                     pumpUntilSettled(promote, onChanged)
@@ -305,8 +303,10 @@ class AndroidLiveFeedClient(
             readTimeout = LiveFeedSseIdleTimeoutMs
             setRequestProperty("Accept", "text/event-stream")
         }
+        var connected = false
         try {
             connection.inputStream.bufferedReader().use { reader ->
+                connected = true
                 onConnectionEvent(
                     LiveFeedConnectionEvent(
                         kind = "connected",
@@ -352,6 +352,11 @@ class AndroidLiveFeedClient(
                     networkStatus = detectLiveFeedNetworkStatus(context, url),
                 ),
             )
+        } catch (error: SocketTimeoutException) {
+            if (connected) {
+                throw LiveFeedSseIdleTimeoutException()
+            }
+            throw error
         } finally {
             connection.disconnect()
         }
@@ -397,6 +402,9 @@ class AndroidLiveFeedClient(
         private const val TAG = LiveFeedLogTag
     }
 }
+
+private class LiveFeedSseIdleTimeoutException :
+    IOException("live-feed SSE idle timeout")
 
 class LiveFeedResponseTooLargeException(
     url: String,

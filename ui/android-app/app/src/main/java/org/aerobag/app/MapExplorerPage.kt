@@ -401,6 +401,50 @@ private fun nexradFrameStats(frame: NexradOverlayFrame?): Pair<Int, Long> {
     return (frame?.decodedImageCount ?: 0) to (frame?.decodedBytes ?: 0L)
 }
 
+private const val TerrainWarningStatusId = "terrain:warning_unavailable"
+private const val TerrainNoPositionWarningDetail = "ownship position is unavailable"
+
+private data class TerrainOverlayDiagnostics(
+    val updatedAtMs: Long = 0L,
+    val status: String = "not-queried",
+    val frameKey: String? = null,
+    val requestCount: Int = 0,
+    val cachedCount: Int = 0,
+    val inFlightCount: Int = 0,
+    val missingCount: Int = 0,
+    val workBatchCount: Int = 0,
+    val altitudeBucketFt: Double? = null,
+    val viewportZoom: Double? = null,
+    val viewportCenterWorldX: Double? = null,
+    val viewportCenterWorldY: Double? = null,
+    val surfaceWidthPx: Int = 0,
+    val surfaceHeightPx: Int = 0,
+    val error: String? = null,
+)
+
+private fun TerrainOverlayQueryResult.toDiagnostics(
+    updatedAtMs: Long,
+    viewport: MapViewportState,
+    surfaceSize: IntSize,
+    error: String? = null,
+) = TerrainOverlayDiagnostics(
+    updatedAtMs = updatedAtMs,
+    status = status.toString(),
+    frameKey = frameKey,
+    requestCount = tileRequests.size,
+    cachedCount = schedule.cachedCount,
+    inFlightCount = schedule.inFlightCount,
+    missingCount = schedule.missingCount,
+    workBatchCount = schedule.workBatch.size,
+    altitudeBucketFt = altitudeBucketFt,
+    viewportZoom = viewport.zoom,
+    viewportCenterWorldX = viewport.centerWorldX,
+    viewportCenterWorldY = viewport.centerWorldY,
+    surfaceWidthPx = surfaceSize.width,
+    surfaceHeightPx = surfaceSize.height,
+    error = error,
+)
+
 private fun rasterLocalBitmapCacheStats(
     cache: Map<org.aerobag.app.domain.RenderTileKey, androidx.compose.ui.graphics.ImageBitmap?>,
 ): Pair<Int, Long> {
@@ -579,6 +623,10 @@ internal fun MapExplorerPage(
     var nexradFrame by remember(uiSession) { mutableStateOf<NexradOverlayFrame?>(null) }
     var terrainOverlay by remember(uiSession) { mutableStateOf<List<TerrainOverlayImage>>(emptyList()) }
     var terrainOverlayError by remember(uiSession) { mutableStateOf<String?>(null) }
+    var terrainLastQueryDiagnostics by remember(uiSession) { mutableStateOf(TerrainOverlayDiagnostics()) }
+    var terrainNoPaintStartedMs by remember(uiSession) { mutableLongStateOf(0L) }
+    var terrainNoPaintLastWarningMs by remember(uiSession) { mutableLongStateOf(0L) }
+    var terrainStaleNoPositionWarningLastMs by remember(uiSession) { mutableLongStateOf(0L) }
     val terrainTileBitmapCache = remember(uiSession) {
         LinkedHashMap<String, androidx.compose.ui.graphics.ImageBitmap>(
             TerrainTileBitmapCacheMaxEntries,
@@ -641,6 +689,12 @@ internal fun MapExplorerPage(
     val nexradVisibleState = rememberUpdatedState(page == AppPage.Map && mapLayerState.nexrad.visible)
     val nexradEnabledState = rememberUpdatedState(mapLayerState.nexrad.enabled)
     val nexradDevServerBaseUrlState = rememberUpdatedState(devServerBaseUrl)
+    val terrainOverlayImageCountState = rememberUpdatedState(terrainOverlay.size)
+    val terrainLastQueryDiagnosticsState = rememberUpdatedState(terrainLastQueryDiagnostics)
+    val terrainOwnshipAltitudeBucketState = rememberUpdatedState(ownship.terrainAltitudeBucketFt)
+    val terrainOwnshipPositionState = rememberUpdatedState(ownship.position)
+    val terrainDataStatusState = rememberUpdatedState(sessionSnapshot.dataStatusState)
+    val terrainOwnshipLauncherLabelState = rememberUpdatedState(ownshipControls.launcherLabel)
     val surfaceWidthDp = remember(surfaceSize, density) { with(density) { surfaceSize.width.toDp().value } }
     val surfaceHeightDp = remember(surfaceSize, density) { with(density) { surfaceSize.height.toDp().value } }
     val situationDockLowered = surfaceWidthDp.dp < SituationDockOverlapWidth
@@ -685,6 +739,82 @@ internal fun MapExplorerPage(
         }
     }
     val terrainVisibleState = rememberUpdatedState(mapLayerState.terrainWarning.visible)
+    LaunchedEffect(uiSession) {
+        while (true) {
+            delay(10_000)
+            val nowMs = SystemClock.elapsedRealtime()
+            val latestSurfaceSize = terrainSurfaceSizeState.value
+            val altitudeBucketFt = terrainOwnshipAltitudeBucketState.value
+            val ownshipPosition = terrainOwnshipPositionState.value
+            val diagnostics = terrainLastQueryDiagnosticsState.value
+            val noPositionTerrainWarning = terrainDataStatusState.value.boxes.firstOrNull { box ->
+                box.id == TerrainWarningStatusId && box.detail.contains(TerrainNoPositionWarningDetail)
+            }
+            if (ownshipPosition != null && altitudeBucketFt != null && noPositionTerrainWarning != null) {
+                if (terrainStaleNoPositionWarningLastMs == 0L || nowMs - terrainStaleNoPositionWarningLastMs >= 60_000L) {
+                    terrainStaleNoPositionWarningLastMs = nowMs
+                    Log.w(
+                        MapLayerLogTag,
+                        "terrain stale-no-position-warning-with-ownship " +
+                            "ownship=${ownshipPosition.lat},${ownshipPosition.lon} " +
+                            "ownshipAltitudeBucketFt=$altitudeBucketFt " +
+                            "ownshipLauncher=${terrainOwnshipLauncherLabelState.value} " +
+                            "warningDetail=${noPositionTerrainWarning.detail} " +
+                            "lastQueryAgeMs=${if (diagnostics.updatedAtMs > 0L) nowMs - diagnostics.updatedAtMs else null} " +
+                            "status=${diagnostics.status} frame=${diagnostics.frameKey} " +
+                            "requests=${diagnostics.requestCount} cached=${diagnostics.cachedCount} " +
+                            "inFlight=${diagnostics.inFlightCount} missing=${diagnostics.missingCount} " +
+                            "workBatch=${diagnostics.workBatchCount} queryAltitudeBucketFt=${diagnostics.altitudeBucketFt} " +
+                            "surface=${diagnostics.surfaceWidthPx}x${diagnostics.surfaceHeightPx} " +
+                            "zoom=${diagnostics.viewportZoom} " +
+                            "centerWorld=${diagnostics.viewportCenterWorldX},${diagnostics.viewportCenterWorldY} " +
+                            "error=${diagnostics.error}",
+                    )
+                }
+            } else {
+                terrainStaleNoPositionWarningLastMs = 0L
+            }
+            val shouldHaveTerrain =
+                terrainMapVisibleState.value &&
+                    terrainVisibleState.value &&
+                    latestSurfaceSize.width > 0 &&
+                    latestSurfaceSize.height > 0 &&
+                    ownshipPosition != null &&
+                    altitudeBucketFt != null
+            if (!shouldHaveTerrain || terrainOverlayImageCountState.value > 0) {
+                terrainNoPaintStartedMs = 0L
+                terrainNoPaintLastWarningMs = 0L
+                continue
+            }
+            if (terrainNoPaintStartedMs == 0L) {
+                terrainNoPaintStartedMs = nowMs
+                continue
+            }
+            val noPaintMs = nowMs - terrainNoPaintStartedMs
+            if (noPaintMs < 60_000L) {
+                continue
+            }
+            if (terrainNoPaintLastWarningMs != 0L && nowMs - terrainNoPaintLastWarningMs < 60_000L) {
+                continue
+            }
+            terrainNoPaintLastWarningMs = nowMs
+            Log.w(
+                MapLayerLogTag,
+                "terrain no-paint-with-altitude durationMs=$noPaintMs " +
+                    "ownship=${ownshipPosition.lat},${ownshipPosition.lon} " +
+                    "ownshipAltitudeBucketFt=$altitudeBucketFt " +
+                    "lastQueryAgeMs=${if (diagnostics.updatedAtMs > 0L) nowMs - diagnostics.updatedAtMs else null} " +
+                    "status=${diagnostics.status} frame=${diagnostics.frameKey} " +
+                    "requests=${diagnostics.requestCount} cached=${diagnostics.cachedCount} " +
+                    "inFlight=${diagnostics.inFlightCount} missing=${diagnostics.missingCount} " +
+                    "workBatch=${diagnostics.workBatchCount} queryAltitudeBucketFt=${diagnostics.altitudeBucketFt} " +
+                    "surface=${diagnostics.surfaceWidthPx}x${diagnostics.surfaceHeightPx} " +
+                    "zoom=${diagnostics.viewportZoom} " +
+                    "centerWorld=${diagnostics.viewportCenterWorldX},${diagnostics.viewportCenterWorldY} " +
+                    "error=${diagnostics.error}",
+            )
+        }
+    }
     val menuTrayOpen = chartTrayOpen || layerTrayOpen || dataStatusTrayOpen || situationTrayOpen
     val trayOptions = remember(mapFamilyOptions) {
         mapFamilyOptions.map { option ->
@@ -1766,10 +1896,25 @@ internal fun MapExplorerPage(
                 } catch (error: Throwable) {
                     terrainOverlay = emptyList()
                     terrainOverlayError = error.message ?: error::class.java.simpleName
+                    terrainLastQueryDiagnostics = TerrainOverlayDiagnostics(
+                        updatedAtMs = SystemClock.elapsedRealtime(),
+                        status = "query-error",
+                        viewportZoom = latestViewport.zoom,
+                        viewportCenterWorldX = latestViewport.centerWorldX,
+                        viewportCenterWorldY = latestViewport.centerWorldY,
+                        surfaceWidthPx = latestSurfaceSize.width,
+                        surfaceHeightPx = latestSurfaceSize.height,
+                        error = terrainOverlayError,
+                    )
                     Log.w("AerobagLayers", "terrain overlay unavailable", error)
                     break
                 }
                 val queryMs = SystemClock.elapsedRealtime() - effectStartMs
+                terrainLastQueryDiagnostics = query.toDiagnostics(
+                    updatedAtMs = SystemClock.elapsedRealtime(),
+                    viewport = latestViewport,
+                    surfaceSize = latestSurfaceSize,
+                )
                 if (query.status !is org.aerobag.app.domain.TerrainOverlayStatus.Ready) {
                     terrainOverlay = emptyList()
                     terrainOverlayError = null
@@ -1793,6 +1938,10 @@ internal fun MapExplorerPage(
                     if (images != null) {
                         terrainOverlay = images
                         terrainOverlayError = null
+                        if (images.isNotEmpty()) {
+                            terrainNoPaintStartedMs = 0L
+                            terrainNoPaintLastWarningMs = 0L
+                        }
                     }
                     perfLogInfo(MapLayerLogTag) {
                         "terrain frame-ready frame=$frameKey requests=${query.tileRequests.size} images=${images?.size ?: 0} cached=${query.schedule.cachedCount} queryMs=$queryMs elapsedMs=${SystemClock.elapsedRealtime() - effectStartMs}"
@@ -1850,6 +1999,12 @@ internal fun MapExplorerPage(
                         throw error
                     } catch (error: Throwable) {
                         terrainOverlayError = error.message ?: error::class.java.simpleName
+                        terrainLastQueryDiagnostics = query.toDiagnostics(
+                            updatedAtMs = SystemClock.elapsedRealtime(),
+                            viewport = latestViewport,
+                            surfaceSize = latestSurfaceSize,
+                            error = terrainOverlayError,
+                        )
                         Log.w("AerobagLayers", "terrain overlay unavailable", error)
                         break
                     } finally {
@@ -1863,7 +2018,7 @@ internal fun MapExplorerPage(
             }
         }
     }
-    LaunchedEffect(uiSession, currentViewport, surfaceSize, mapLayerState.terrainWarning.visible, page, devServerBaseUrl, ownship.terrainAltitudeBucketFt) {
+    LaunchedEffect(uiSession, currentViewport, surfaceSize, mapLayerState.terrainWarning.visible, page, devServerBaseUrl, ownship.terrainAltitudeBucketFt, ownship.position != null) {
         val effectStartMs = SystemClock.elapsedRealtime()
         if (surfaceSize.width <= 0 || surfaceSize.height <= 0 || page != AppPage.Map) {
             terrainOverlay = emptyList()

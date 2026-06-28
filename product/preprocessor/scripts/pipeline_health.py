@@ -27,7 +27,7 @@ HISTORY_TAIL_MAX_BYTES = 16 * 1024 * 1024
 
 LIVE_FEED_STALE_THRESHOLDS: dict[str, tuple[int, int]] = {
     "tafs": (60 * 60, 3 * 60 * 60),
-    "metars": (5 * 60, 30 * 60),
+    "metars": (7 * 60, 30 * 60),
     "obstacles": (2 * 24 * 60 * 60, 7 * 24 * 60 * 60),
     "tfrs": (3 * 60 * 60, 6 * 60 * 60),
     "nexrad": (5 * 60, 15 * 60),

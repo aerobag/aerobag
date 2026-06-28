@@ -47,7 +47,7 @@ class PipelineHealthTests(unittest.TestCase):
         stale = metric(evaluation, "live_feed.metars.stale_seconds")
         self.assertEqual(stale["value"], 600)
         self.assertEqual(stale["severity"], "warning")
-        self.assertEqual(stale["warning_threshold"], 300)
+        self.assertEqual(stale["warning_threshold"], 420)
         self.assertEqual(stale["critical_threshold"], 1800)
         failure_rate = metric(evaluation, "live_feed.metars.recent_failure_rate")
         self.assertEqual(failure_rate["value"], 0.666667)

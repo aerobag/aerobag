@@ -5,7 +5,7 @@ import json
 import sys
 import tempfile
 import unittest
-from datetime import datetime, timezone
+from datetime import date, datetime, timezone
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
@@ -336,6 +336,73 @@ class PipelineHealthTests(unittest.TestCase):
             self.assertIsNone(facts[0]["error"])
             self.assertEqual(facts[0]["payload"]["schema_version"], 1)
 
+    def test_compact_history_record_omits_raw_input_payloads(self) -> None:
+        facts = {
+            "sampled_at_utc": "2026-06-19T12:00:00Z",
+            "inputs": {
+                "product_facts": [],
+                "current_artifacts": {"payload": {"large": "x" * 100_000}},
+                "live_feeds_status": {"payload": {"large": "y" * 100_000}},
+            },
+        }
+        evaluation = {
+            "schema_version": 1,
+            "generated_at_utc": "2026-06-19T12:00:00Z",
+            "top_line_status": "ok",
+            "metrics": [],
+            "alerts": [],
+        }
+
+        record = pipeline_health.compact_history_record(facts, evaluation)
+        encoded = json.dumps(record)
+
+        self.assertNotIn("facts", record)
+        self.assertNotIn("payload", encoded)
+        self.assertLess(len(encoded), 1_000)
+
+    def test_daily_history_reader_bounds_record_count_across_days(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            health_root = Path(temp_dir)
+            write_history_records(
+                pipeline_health.history_path_for_date(health_root, date(2026, 6, 27)),
+                ["old-1", "old-2", "old-3"],
+            )
+            write_history_records(
+                pipeline_health.history_path_for_date(health_root, date(2026, 6, 28)),
+                ["new-1", "new-2"],
+            )
+
+            history = pipeline_health.read_history(
+                health_root,
+                4,
+                now=datetime(2026, 6, 28, 12, 0, 0, tzinfo=timezone.utc),
+            )
+
+            self.assertEqual(
+                [record["sampled_at_utc"] for record in history.records],
+                ["old-2", "old-3", "new-1", "new-2"],
+            )
+            self.assertLessEqual(len(history.records), 4)
+            self.assertEqual(len(history.files), 2)
+
+    def test_history_reader_clamps_requested_limit(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            health_root = Path(temp_dir)
+            path = pipeline_health.history_path_for_date(health_root, date(2026, 6, 28))
+            write_history_records(
+                path,
+                [f"sample-{index}" for index in range(pipeline_health.HISTORY_RECORD_LIMIT + 5)],
+            )
+
+            history = pipeline_health.read_history(
+                health_root,
+                pipeline_health.HISTORY_RECORD_LIMIT + 100,
+                now=datetime(2026, 6, 28, 12, 0, 0, tzinfo=timezone.utc),
+            )
+
+            self.assertEqual(len(history.records), pipeline_health.HISTORY_RECORD_LIMIT)
+            self.assertEqual(history.records[0]["sampled_at_utc"], "sample-5")
+
 
 def metric(evaluation: dict, metric_id: str) -> dict:
     for item in evaluation["metrics"]:
@@ -366,6 +433,31 @@ def calendar_facts(
             "product_facts": product_facts or [],
         }
     }
+
+
+def write_history_records(path: Path, sampled_at_values: list[str]) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with path.open("w", encoding="utf-8") as stream:
+        for sampled_at in sampled_at_values:
+            stream.write(
+                json.dumps(
+                    {
+                        "schema_version": 1,
+                        "sampled_at_utc": sampled_at,
+                        "evaluation": {
+                            "schema_version": 1,
+                            "generated_at_utc": sampled_at,
+                            "top_line_status": "ok",
+                            "metrics": [],
+                            "alerts": [],
+                        },
+                        "product_facts_key": [],
+                        "product_counts": {"error_count": 0, "warning_count": 0},
+                    },
+                    sort_keys=True,
+                )
+                + "\n"
+            )
 
 
 if __name__ == "__main__":

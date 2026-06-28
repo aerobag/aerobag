@@ -6,7 +6,6 @@ import json
 import os
 import threading
 import time
-from collections import deque
 from dataclasses import dataclass
 from datetime import date, datetime, timedelta, timezone
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -20,8 +19,11 @@ from urllib.request import urlopen
 SCHEMA_VERSION = 1
 DEFAULT_LISTEN = "127.0.0.1:8098"
 DEFAULT_POLL_SECONDS = 60
-HISTORY_LIMIT = 120_000
-DASHBOARD_SERIES_LIMIT = 40_320
+HISTORY_RECORD_LIMIT = 24 * 60
+DASHBOARD_SERIES_LIMIT = HISTORY_RECORD_LIMIT
+HISTORY_LOOKBACK_DAYS = 14
+HISTORY_TAIL_CHUNK_BYTES = 64 * 1024
+HISTORY_TAIL_MAX_BYTES = 16 * 1024 * 1024
 
 LIVE_FEED_STALE_THRESHOLDS: dict[str, tuple[int, int]] = {
     "tafs": (60 * 60, 3 * 60 * 60),
@@ -619,18 +621,40 @@ def product_facts_publication_key(facts: dict[str, Any]) -> tuple[str, ...]:
     return tuple(sorted(keys))
 
 
+def record_product_facts_key(record: dict[str, Any]) -> tuple[str, ...]:
+    key = record.get("product_facts_key")
+    if isinstance(key, list) and all(isinstance(item, str) for item in key):
+        return tuple(sorted(key))
+    facts = record.get("facts")
+    if isinstance(facts, dict):
+        return product_facts_publication_key(facts)
+    return ()
+
+
+def record_product_counts(record: dict[str, Any]) -> dict[str, int] | None:
+    counts = record.get("product_counts")
+    if isinstance(counts, dict):
+        return {
+            "error_count": int(counts.get("error_count") or 0),
+            "warning_count": int(counts.get("warning_count") or 0),
+        }
+    facts = record.get("facts")
+    if isinstance(facts, dict):
+        return aggregate_product_counts(facts)
+    return None
+
+
 def latest_distinct_product_counts(
     previous_records: list[dict[str, Any]], current_facts: dict[str, Any]
 ) -> dict[str, int] | None:
     current_key = product_facts_publication_key(current_facts)
     for record in reversed(previous_records):
-        facts = record.get("facts")
-        if not isinstance(facts, dict):
-            continue
-        previous_key = product_facts_publication_key(facts)
+        previous_key = record_product_facts_key(record)
         if current_key and previous_key == current_key:
             continue
-        counts = aggregate_product_counts(facts)
+        counts = record_product_counts(record)
+        if counts is None:
+            continue
         if counts["error_count"] or counts["warning_count"] or previous_key:
             return counts
     return None
@@ -695,28 +719,122 @@ def add_cycle_calendar_metrics(
         )
 
 
-def read_history(path: Path, limit: int = HISTORY_LIMIT) -> list[dict[str, Any]]:
-    if not path.exists():
-        return []
-    records: deque[dict[str, Any]] = deque(maxlen=limit)
-    with path.open("r", encoding="utf-8") as stream:
-        for line in stream:
-            line = line.strip()
-            if not line:
-                continue
-            try:
-                value = json.loads(line)
-            except json.JSONDecodeError:
-                continue
-            if isinstance(value, dict):
-                records.append(value)
-    return list(records)
+@dataclass
+class HistoryRead:
+    records: list[dict[str, Any]]
+    files: list[str]
+    truncated: bool = False
+
+
+def history_path_for_date(health_root: Path, day: date) -> Path:
+    return health_root / f"pipeline_health-{day.isoformat()}.jsonl"
+
+
+def history_paths_newest_first(health_root: Path, now: datetime) -> list[Path]:
+    paths: list[Path] = []
+    for day_offset in range(HISTORY_LOOKBACK_DAYS):
+        path = history_path_for_date(health_root, (now - timedelta(days=day_offset)).date())
+        if path.exists():
+            paths.append(path)
+    return paths
+
+
+def parse_history_line(line: bytes) -> dict[str, Any] | None:
+    line = line.strip()
+    if not line:
+        return None
+    try:
+        value = json.loads(line.decode("utf-8"))
+    except (UnicodeDecodeError, json.JSONDecodeError):
+        return None
+    return value if isinstance(value, dict) else None
+
+
+def read_history_file_tail(
+    path: Path,
+    limit: int,
+    *,
+    max_bytes: int = HISTORY_TAIL_MAX_BYTES,
+) -> HistoryRead:
+    if limit <= 0 or not path.exists():
+        return HistoryRead(records=[], files=[])
+    size = path.stat().st_size
+    position = size
+    bytes_read = 0
+    pending = b""
+    lines: list[bytes] = []
+    while position > 0 and len(lines) < limit and bytes_read < max_bytes:
+        chunk_size = min(HISTORY_TAIL_CHUNK_BYTES, position, max_bytes - bytes_read)
+        if chunk_size <= 0:
+            break
+        position -= chunk_size
+        bytes_read += chunk_size
+        with path.open("rb") as stream:
+            stream.seek(position)
+            chunk = stream.read(chunk_size)
+        parts = (chunk + pending).splitlines()
+        if position > 0 and parts:
+            pending = parts[0]
+            parts = parts[1:]
+        else:
+            pending = b""
+        lines = parts + lines
+    selected = lines[-limit:]
+    records = [
+        record
+        for line in selected
+        if (record := parse_history_line(line)) is not None
+    ]
+    truncated = position > 0 and len(records) < limit
+    return HistoryRead(records=records, files=[str(path)], truncated=truncated)
+
+
+def read_history(
+    health_root: Path,
+    limit: int = HISTORY_RECORD_LIMIT,
+    *,
+    now: datetime | None = None,
+) -> HistoryRead:
+    limit = max(0, min(limit, HISTORY_RECORD_LIMIT))
+    if limit == 0:
+        return HistoryRead(records=[], files=[])
+    now = now or utc_now()
+    chunks: list[HistoryRead] = []
+    remaining = limit
+    for path in history_paths_newest_first(health_root, now):
+        chunk = read_history_file_tail(path, remaining)
+        if chunk.records:
+            chunks.append(chunk)
+            remaining -= len(chunk.records)
+        if remaining <= 0:
+            break
+    records: list[dict[str, Any]] = []
+    files: list[str] = []
+    truncated = False
+    for chunk in reversed(chunks):
+        records.extend(chunk.records)
+        files.extend(chunk.files)
+        truncated = truncated or chunk.truncated
+    return HistoryRead(records=records[-limit:], files=files, truncated=truncated)
 
 
 def append_history(path: Path, record: dict[str, Any]) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     with path.open("a", encoding="utf-8") as stream:
         stream.write(json.dumps(record, sort_keys=True) + "\n")
+
+
+def compact_history_record(
+    facts: dict[str, Any],
+    evaluation: dict[str, Any],
+) -> dict[str, Any]:
+    return {
+        "schema_version": SCHEMA_VERSION,
+        "sampled_at_utc": facts["sampled_at_utc"],
+        "evaluation": evaluation,
+        "product_facts_key": list(product_facts_publication_key(facts)),
+        "product_counts": aggregate_product_counts(facts),
+    }
 
 
 def write_current(path: Path, record: dict[str, Any]) -> None:
@@ -728,16 +846,11 @@ def write_current(path: Path, record: dict[str, Any]) -> None:
 
 def run_sample(config: MonitorConfig) -> dict[str, Any]:
     now = utc_now()
-    history_path = config.health_root / "pipeline-health.jsonl"
-    previous = read_history(history_path)
+    history_path = history_path_for_date(config.health_root, now.date())
+    previous = read_history(config.health_root, now=now).records
     facts = collect_facts(config, now)
     evaluation = evaluate_health(facts, previous, now)
-    record = {
-        "schema_version": SCHEMA_VERSION,
-        "sampled_at_utc": facts["sampled_at_utc"],
-        "facts": facts,
-        "evaluation": evaluation,
-    }
+    record = compact_history_record(facts, evaluation)
     append_history(history_path, record)
     write_current(config.health_root / "pipeline-health-current.json", record)
     return record
@@ -794,6 +907,16 @@ def compact_metric_series(records: list[dict[str, Any]]) -> dict[str, Any]:
     }
 
 
+def parse_record_limit(value: str | None, default: int) -> int:
+    if value is None:
+        return default
+    try:
+        parsed = int(value)
+    except ValueError:
+        return default
+    return max(0, min(parsed, HISTORY_RECORD_LIMIT))
+
+
 def parse_listen(value: str) -> tuple[str, int]:
     if ":" not in value:
         return value or "127.0.0.1", 8098
@@ -844,23 +967,43 @@ def serve(config: MonitorConfig) -> None:
                 return
             if path == "/pipeline-health/history.json":
                 query = parse_qs(urlparse(self.path).query)
-                limit = int(query.get("limit", ["200"])[0])
-                records = read_history(config.health_root / "pipeline-health.jsonl", limit)
+                limit = parse_record_limit(query.get("limit", ["200"])[0], 200)
+                history = read_history(config.health_root, limit)
                 self._send(
                     200,
-                    json.dumps(records[-limit:], indent=2, sort_keys=True) + "\n",
+                    json.dumps(
+                        {
+                            "schema_version": SCHEMA_VERSION,
+                            "generated_at_utc": iso_utc(utc_now()),
+                            "record_limit": limit,
+                            "records_returned": len(history.records),
+                            "history_files": history.files,
+                            "truncated": history.truncated,
+                            "records": history.records,
+                        },
+                        indent=2,
+                        sort_keys=True,
+                    )
+                    + "\n",
                     "application/json",
                     send_body,
                 )
                 return
             if path == "/pipeline-health/series.json":
                 query = parse_qs(urlparse(self.path).query)
-                limit = int(query.get("limit", [str(DASHBOARD_SERIES_LIMIT)])[0])
-                records = read_history(config.health_root / "pipeline-health.jsonl", limit)
+                limit = parse_record_limit(
+                    query.get("limit", [str(DASHBOARD_SERIES_LIMIT)])[0],
+                    DASHBOARD_SERIES_LIMIT,
+                )
+                history = read_history(config.health_root, limit)
+                response = compact_metric_series(history.records)
+                response["record_limit"] = limit
+                response["records_returned"] = len(history.records)
+                response["history_files"] = history.files
+                response["truncated"] = history.truncated
                 self._send(
                     200,
-                    json.dumps(compact_metric_series(records[-limit:]), indent=2, sort_keys=True)
-                    + "\n",
+                    json.dumps(response, indent=2, sort_keys=True) + "\n",
                     "application/json",
                     send_body,
                 )
@@ -886,7 +1029,10 @@ def serve(config: MonitorConfig) -> None:
             self.send_header("Cache-Control", "no-store")
             self.end_headers()
             if send_body:
-                self.wfile.write(payload)
+                try:
+                    self.wfile.write(payload)
+                except (BrokenPipeError, ConnectionResetError):
+                    return
 
     class PipelineHealthServer(ThreadingHTTPServer):
         allow_reuse_address = True
@@ -1089,7 +1235,7 @@ function renderMetricRows(current, series) {
 async function refresh() {
   const [current, series] = await Promise.all([
     loadJson("/pipeline-health/current.json"),
-    loadJson("/pipeline-health/series.json"),
+    loadJson("/pipeline-health/series.json?limit=1440"),
   ]);
   renderCurrent(current);
   renderMetricRows(current, series);

@@ -68,6 +68,7 @@ impl<V> Drop for GraphCompletionGuard<V> {
     }
 }
 
+#[allow(dead_code)]
 pub(super) fn run_weighted_task_graph<K, V, RunTask, Log>(
     graph_name: &str,
     pending_tasks: Vec<GraphScheduledTask<K>>,
@@ -94,11 +95,53 @@ where
         work_unit_budget,
         log,
         run_task,
+        |_, _, _, _, _| Ok(Vec::new()),
         GraphFailurePolicy::FailFast,
     )?;
     Ok((outcome.task_values, outcome.task_node_records))
 }
 
+pub(super) fn run_weighted_task_graph_with_expansion<K, V, RunTask, ExpandTask, Log>(
+    graph_name: &str,
+    pending_tasks: Vec<GraphScheduledTask<K>>,
+    work_unit_budget: usize,
+    log: Log,
+    run_task: RunTask,
+    expand_task: ExpandTask,
+) -> anyhow::Result<(BTreeMap<String, V>, BTreeMap<String, Vec<NodeRecord>>)>
+where
+    K: Clone + Send + 'static,
+    V: Clone + Send + 'static,
+    RunTask: Fn(
+            K,
+            BTreeMap<String, V>,
+            BTreeMap<String, Vec<NodeRecord>>,
+        ) -> anyhow::Result<GraphTaskCompletion<V>>
+        + Clone
+        + Send
+        + 'static,
+    ExpandTask: FnMut(
+        &str,
+        &K,
+        &GraphTaskCompletion<V>,
+        &BTreeMap<String, V>,
+        &BTreeMap<String, Vec<NodeRecord>>,
+    ) -> anyhow::Result<Vec<GraphScheduledTask<K>>>,
+    Log: FnMut(String) -> anyhow::Result<()>,
+{
+    let outcome = run_weighted_task_graph_impl(
+        graph_name,
+        pending_tasks,
+        work_unit_budget,
+        log,
+        run_task,
+        expand_task,
+        GraphFailurePolicy::FailFast,
+    )?;
+    Ok((outcome.task_values, outcome.task_node_records))
+}
+
+#[allow(dead_code)]
 pub(super) fn run_weighted_task_graph_fail_slow_with_failure_scopes<
     K,
     V,
@@ -133,6 +176,55 @@ where
         work_unit_budget,
         log,
         run_task,
+        |_, _, _, _, _| Ok(Vec::new()),
+        GraphFailurePolicy::FailSlow(Box::new(failure_scope)),
+    )
+}
+
+pub(super) fn run_weighted_task_graph_fail_slow_with_failure_scopes_and_expansion<
+    K,
+    V,
+    FailureScope,
+    RunTask,
+    ExpandTask,
+    Log,
+>(
+    graph_name: &str,
+    pending_tasks: Vec<GraphScheduledTask<K>>,
+    work_unit_budget: usize,
+    failure_scope: FailureScope,
+    log: Log,
+    run_task: RunTask,
+    expand_task: ExpandTask,
+) -> anyhow::Result<GraphRunOutcome<V>>
+where
+    K: Clone + Send + 'static,
+    V: Clone + Send + 'static,
+    FailureScope: Fn(&str) -> Option<String> + Clone + Send + 'static,
+    RunTask: Fn(
+            K,
+            BTreeMap<String, V>,
+            BTreeMap<String, Vec<NodeRecord>>,
+        ) -> anyhow::Result<GraphTaskCompletion<V>>
+        + Clone
+        + Send
+        + 'static,
+    ExpandTask: FnMut(
+        &str,
+        &K,
+        &GraphTaskCompletion<V>,
+        &BTreeMap<String, V>,
+        &BTreeMap<String, Vec<NodeRecord>>,
+    ) -> anyhow::Result<Vec<GraphScheduledTask<K>>>,
+    Log: FnMut(String) -> anyhow::Result<()>,
+{
+    run_weighted_task_graph_impl(
+        graph_name,
+        pending_tasks,
+        work_unit_budget,
+        log,
+        run_task,
+        expand_task,
         GraphFailurePolicy::FailSlow(Box::new(failure_scope)),
     )
 }
@@ -142,12 +234,13 @@ enum GraphFailurePolicy {
     FailSlow(Box<dyn Fn(&str) -> Option<String> + Send>),
 }
 
-fn run_weighted_task_graph_impl<K, V, RunTask, Log>(
+fn run_weighted_task_graph_impl<K, V, RunTask, ExpandTask, Log>(
     graph_name: &str,
     mut pending_tasks: Vec<GraphScheduledTask<K>>,
     work_unit_budget: usize,
     mut log: Log,
     run_task: RunTask,
+    mut expand_task: ExpandTask,
     failure_policy: GraphFailurePolicy,
 ) -> anyhow::Result<GraphRunOutcome<V>>
 where
@@ -161,14 +254,25 @@ where
         + Clone
         + Send
         + 'static,
+    ExpandTask: FnMut(
+        &str,
+        &K,
+        &GraphTaskCompletion<V>,
+        &BTreeMap<String, V>,
+        &BTreeMap<String, Vec<NodeRecord>>,
+    ) -> anyhow::Result<Vec<GraphScheduledTask<K>>>,
     Log: FnMut(String) -> anyhow::Result<()>,
 {
-    let total_tasks = pending_tasks.len();
+    let mut total_tasks = pending_tasks.len();
     log(format!(
         "{graph_name}-ready tasks={} work_unit_budget={}",
         total_tasks, work_unit_budget
     ))?;
 
+    let mut known_task_ids = pending_tasks
+        .iter()
+        .map(|task| task.id.clone())
+        .collect::<BTreeSet<_>>();
     let (tx, rx) =
         crossbeam_channel::unbounded::<(String, usize, anyhow::Result<GraphTaskCompletion<V>>)>();
     let mut running_jobs = 0_usize;
@@ -183,6 +287,7 @@ where
     let mut failed_scopes = BTreeSet::<String>::new();
     let mut skipped_tasks = BTreeSet::<String>::new();
     let mut worker_threads = BTreeMap::<String, thread::JoinHandle<anyhow::Result<()>>>::new();
+    let mut running_task_kinds = BTreeMap::<String, K>::new();
 
     while running_jobs > 0 || !pending_tasks.is_empty() {
         if matches!(failure_policy, GraphFailurePolicy::FailSlow(_)) {
@@ -238,6 +343,7 @@ where
             let task = pending_tasks.remove(index);
             let task_id = task.id.clone();
             let task_weight = task.weight;
+            running_task_kinds.insert(task_id.clone(), task.kind.clone());
             launched_tasks += 1;
             log(format!(
                 "{graph_name}-launch {} launched={}/{} completed={}/{} weight={} running_units={}/{}",
@@ -317,12 +423,41 @@ where
                 .join()
                 .map_err(|_| anyhow::anyhow!("failed to join graph worker {task_id}"))??;
         }
+        let task_kind = running_task_kinds
+            .remove(&task_id)
+            .with_context(|| format!("missing running task kind for {task_id}"))?;
         match result {
             Ok(completion) => {
                 completed_tasks += 1;
-                task_node_records.insert(task_id.clone(), completion.node_records.clone());
+                let mut next_task_node_records = task_node_records.clone();
+                next_task_node_records.insert(task_id.clone(), completion.node_records.clone());
+                let mut next_task_values = task_values.clone();
+                next_task_values.insert(task_id.clone(), completion.value.clone());
+                let spawned_tasks = expand_task(
+                    &task_id,
+                    &task_kind,
+                    &completion,
+                    &next_task_values,
+                    &next_task_node_records,
+                )?;
+                if !spawned_tasks.is_empty() {
+                    for task in &spawned_tasks {
+                        if !known_task_ids.insert(task.id.clone()) {
+                            bail!("{graph_name} duplicate dynamic task id {}", task.id);
+                        }
+                    }
+                    total_tasks += spawned_tasks.len();
+                    log(format!(
+                        "{graph_name}-spawn {} count={} total_tasks={}",
+                        task_id,
+                        spawned_tasks.len(),
+                        total_tasks
+                    ))?;
+                    pending_tasks.extend(spawned_tasks);
+                }
+                task_node_records = next_task_node_records;
+                task_values = next_task_values;
                 completed_ids.insert(task_id.clone());
-                task_values.insert(task_id.clone(), completion.value);
                 log(format!(
                     "{graph_name}-complete {} completed={}/{} running_units={}/{} {}",
                     task_id,
@@ -437,6 +572,48 @@ mod tests {
             outcome.skipped_tasks.iter().cloned().collect::<Vec<_>>(),
             vec!["d"]
         );
+    }
+
+    #[test]
+    fn dynamic_expansion_adds_tasks_after_completion() {
+        let tasks = vec![GraphScheduledTask {
+            id: "a".to_string(),
+            deps: vec![],
+            weight: 1,
+            kind: TestTask::Pass("a"),
+        }];
+        let (values, _records) = run_weighted_task_graph_with_expansion(
+            "test",
+            tasks,
+            1,
+            |_| Ok(()),
+            |kind, _, _| match kind {
+                TestTask::Pass(value) => Ok(GraphTaskCompletion {
+                    node_records: vec![],
+                    value: value.to_string(),
+                    completion_detail: "ok".to_string(),
+                }),
+                TestTask::Fail => anyhow::bail!("synthetic failure"),
+                TestTask::FailWithContext => {
+                    Err(anyhow::anyhow!("inner diagnostic").context("outer failure"))
+                }
+            },
+            |task_id, _kind, _completion, _values, _records| {
+                if task_id == "a" {
+                    Ok(vec![GraphScheduledTask {
+                        id: "b".to_string(),
+                        deps: vec!["a".to_string()],
+                        weight: 1,
+                        kind: TestTask::Pass("b"),
+                    }])
+                } else {
+                    Ok(Vec::new())
+                }
+            },
+        )
+        .unwrap();
+
+        assert_eq!(values.keys().cloned().collect::<Vec<_>>(), vec!["a", "b"]);
     }
 
     #[test]

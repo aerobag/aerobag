@@ -52,7 +52,8 @@ use preprocessor_resource_index::{
     ResourceIndex, TileBoundsRecord, TileLevelRecord,
 };
 use preprocessor_tpp::{
-    package_native_tpp_versioned, render_native_tpp, tpp_prefetch_requests, NativeTppRunRequest,
+    package_native_tpp_versioned, plan_tpp_region_render, render_tpp_unit, tpp_prefetch_requests,
+    NativeTppRunRequest, TppRegionRenderPlan, TppRenderUnitPlan,
 };
 use preprocessor_vectors::{
     build_vectors_dataset, expanded_union_polygon_from_closed_ring, simplify_closed_ring,
@@ -917,23 +918,49 @@ enum NodeCacheState {
 
 #[derive(Debug, Clone)]
 enum ScheduledTaskKind {
-    ChartFetch { family: ChartFamily },
-    ChartProcess { family: ChartFamily },
+    ChartFetch {
+        family: ChartFamily,
+    },
+    ChartProcess {
+        family: ChartFamily,
+    },
     CsupFetch,
     CsupProcess,
-    CsupRender { region: Region },
+    CsupRender {
+        region: Region,
+    },
     TppFetch,
-    TppRender { region: Region },
+    TppPlan {
+        region: Region,
+    },
+    TppRenderUnit {
+        region: Region,
+        unit: TppRenderUnitPlan,
+    },
+    TppRenderAssemble {
+        region: Region,
+    },
     DataBase,
     DataMatch,
-    ChartPackage { family: ChartFamily },
+    ChartPackage {
+        family: ChartFamily,
+    },
     CsupPackage,
-    TppPackage { region: Region },
+    TppPackage {
+        region: Region,
+    },
     Vectors,
     ResourceIndex,
-    ChartUnpack { family: ChartFamily, region: Region },
-    CsupUnpack { region: Region },
-    TppUnpack { region: Region },
+    ChartUnpack {
+        family: ChartFamily,
+        region: Region,
+    },
+    CsupUnpack {
+        region: Region,
+    },
+    TppUnpack {
+        region: Region,
+    },
     DataUnpack,
 }
 
@@ -951,6 +978,15 @@ enum TaskValue {
         work_dir: PathBuf,
     },
     TppFetch {
+        record: NodeRecord,
+    },
+    TppPlan {
+        record: NodeRecord,
+        source_work_dir: PathBuf,
+        plan: TppRegionRenderPlan,
+        source_content_fingerprint: String,
+    },
+    TppRender {
         record: NodeRecord,
     },
     ChartSource(ChartSource),
@@ -989,6 +1025,15 @@ enum ProductTaskValue {
         work_dir: PathBuf,
     },
     TppFetch {
+        record: NodeRecord,
+    },
+    TppPlan {
+        record: NodeRecord,
+        source_work_dir: PathBuf,
+        plan: TppRegionRenderPlan,
+        source_content_fingerprint: String,
+    },
+    TppRender {
         record: NodeRecord,
     },
     ChartSource(ChartSource),
@@ -1084,6 +1129,7 @@ const TPP_RENDER_JOBS_PER_RUN: usize = 8;
 const TPP_RENDER_WEIGHT: usize = 1;
 const TPP_CACHE_LAYOUT_VERSION: &str = "v2-cache-nodes";
 const TPP_FETCH_NODE_VERSION: &str = "v2-source-content-fingerprint";
+const TPP_RENDER_NODE_VERSION: &str = "v3-per-output-render-nodes";
 const STATIC_SOURCE_FETCH_NODE_VERSION: &str = "v2-source-content-fingerprint";
 const TERRAIN_PIPELINE_VERSION: &str = "v6-ter2-z9-max-none-ceil64-gradient";
 const SHADED_RELIEF_PIPELINE_VERSION: &str = "v8-wide-angle-split-tile-boxes";

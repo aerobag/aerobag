@@ -1,5 +1,34 @@
 use super::*;
 
+fn tpp_render_tasks_for_plan(
+    plan_task_id: &str,
+    region: Region,
+    plan: &TppRegionRenderPlan,
+) -> Vec<GraphScheduledTask<ScheduledTaskKind>> {
+    let mut render_ids = Vec::with_capacity(plan.units().len());
+    let mut tasks = Vec::with_capacity(plan.units().len() + 1);
+    for unit in plan.units() {
+        let render_id = tpp_render_unit_task_name(region, unit);
+        render_ids.push(render_id.clone());
+        tasks.push(GraphScheduledTask {
+            id: render_id,
+            deps: vec![plan_task_id.to_string()],
+            weight: 1,
+            kind: ScheduledTaskKind::TppRenderUnit {
+                region,
+                unit: unit.clone(),
+            },
+        });
+    }
+    tasks.push(GraphScheduledTask {
+        id: tpp_render_assemble_task_name(region),
+        deps: render_ids,
+        weight: 1,
+        kind: ScheduledTaskKind::TppRenderAssemble { region },
+    });
+    tasks
+}
+
 pub fn build_cycle(config: &ProductBuildConfig) -> anyhow::Result<PathBuf> {
     fs::create_dir_all(&config.packaged_dir)
         .with_context(|| format!("failed to create {}", config.packaged_dir.display()))?;
@@ -178,17 +207,18 @@ pub fn build_cycle(config: &ProductBuildConfig) -> anyhow::Result<PathBuf> {
         let mut tpp_package_ids = Vec::new();
         for region in Region::ALL.iter() {
             let region_id = region.code().to_ascii_lowercase();
-            let render_id = format!("tpp-{region_id}");
+            let plan_id = format!("tpp-{region_id}-plan");
+            let assemble_id = tpp_render_assemble_task_name(*region);
             let package_id = format!("tpp-{region_id}-package");
             pending_tasks.push(GraphScheduledTask {
-                id: render_id.clone(),
+                id: plan_id,
                 deps: vec!["tpp-fetch".to_string()],
                 weight: TPP_RENDER_WEIGHT,
-                kind: ScheduledTaskKind::TppRender { region: *region },
+                kind: ScheduledTaskKind::TppPlan { region: *region },
             });
             pending_tasks.push(GraphScheduledTask {
                 id: package_id.clone(),
-                deps: vec![render_id, "tpp-fetch".to_string()],
+                deps: vec![assemble_id, "tpp-fetch".to_string()],
                 weight: 1,
                 kind: ScheduledTaskKind::TppPackage { region: *region },
             });
@@ -254,12 +284,12 @@ pub fn build_cycle(config: &ProductBuildConfig) -> anyhow::Result<PathBuf> {
         let tpp_versions_for_tasks = tpp_versions.clone();
         let data_version_for_tasks = data_version.clone();
         let bundle_cycle_for_tasks = bundle_cycle.clone();
-        let (_task_values, task_node_records) = run_weighted_task_graph(
+        let (_task_values, task_node_records) = run_weighted_task_graph_with_expansion(
             "cycle-scheduler",
             pending_tasks,
             work_unit_budget,
             |message| master_log.log(message),
-            move |kind, task_values_snapshot, _task_node_records_snapshot| {
+            move |kind, task_values_snapshot, task_node_records_snapshot| {
                 let config = config_for_tasks.clone();
                 let source_urls_dir = source_urls_dir_for_tasks.clone();
                 let chart_versions = chart_versions_for_tasks.clone();
@@ -367,7 +397,7 @@ pub fn build_cycle(config: &ProductBuildConfig) -> anyhow::Result<PathBuf> {
                             completion_detail: "cache_or_rebuild".to_string(),
                         })
                     }
-                    ScheduledTaskKind::TppRender { region } => {
+                    ScheduledTaskKind::TppPlan { region } => {
                         let source_fetch = match task_values_snapshot.get("tpp-fetch") {
                             Some(TaskValue::TppFetch { record }) => record,
                             _ => unreachable!("tpp-fetch dependency should have completed"),
@@ -384,12 +414,79 @@ pub fn build_cycle(config: &ProductBuildConfig) -> anyhow::Result<PathBuf> {
                             render_jobs: TPP_RENDER_JOBS_PER_RUN,
                             fetch_cache: Some(static_source_fetch_cache_config(&config)?),
                         };
-                        build_tpp_render_node(&config, &request, Some(source_fetch)).map(|record| {
-                            TaskCompletion {
-                                node_records: vec![record],
-                                value: TaskValue::None,
-                                completion_detail: "cache_or_rebuild".to_string(),
-                            }
+                        build_tpp_plan_node(&config, &request, Some(source_fetch)).map(
+                            |(record, source_work_dir, plan, source_content_fingerprint)| {
+                                let unit_count = plan.units().len();
+                                let cache_hit = record.cache_hit;
+                                TaskCompletion {
+                                    node_records: vec![record.clone()],
+                                    value: TaskValue::TppPlan {
+                                        record,
+                                        source_work_dir,
+                                        plan,
+                                        source_content_fingerprint,
+                                    },
+                                    completion_detail: format!(
+                                        "units={} cache_hit={}",
+                                        unit_count, cache_hit
+                                    ),
+                                }
+                            },
+                        )
+                    }
+                    ScheduledTaskKind::TppRenderUnit { region, unit } => {
+                        let region_id = region.code().to_ascii_lowercase();
+                        let plan_id = format!("tpp-{region_id}-plan");
+                        let (source_work_dir, source_content_fingerprint) =
+                            match task_values_snapshot.get(&plan_id) {
+                                Some(TaskValue::TppPlan {
+                                    source_work_dir,
+                                    source_content_fingerprint,
+                                    ..
+                                }) => (source_work_dir, source_content_fingerprint),
+                                _ => unreachable!("tpp plan dependency should have completed"),
+                            };
+                        let record = build_tpp_render_unit_node(
+                            &config,
+                            &region_id,
+                            source_content_fingerprint,
+                            source_work_dir,
+                            &unit,
+                        )?;
+                        let cache_hit = record.cache_hit;
+                        Ok(TaskCompletion {
+                            node_records: vec![record],
+                            value: TaskValue::None,
+                            completion_detail: format!("cache_hit={cache_hit}"),
+                        })
+                    }
+                    ScheduledTaskKind::TppRenderAssemble { region } => {
+                        let region_id = region.code().to_ascii_lowercase();
+                        let plan_id = format!("tpp-{region_id}-plan");
+                        let (plan_record, plan) = match task_values_snapshot.get(&plan_id) {
+                            Some(TaskValue::TppPlan { record, plan, .. }) => (record, plan),
+                            _ => unreachable!("tpp plan dependency should have completed"),
+                        };
+                        let unit_records = tpp_render_unit_records_for_plan(
+                            region,
+                            plan,
+                            &task_node_records_snapshot,
+                        )?;
+                        let record = build_tpp_render_assemble_node(
+                            &config,
+                            region,
+                            plan_record,
+                            &unit_records,
+                        )?;
+                        let cache_hit = record.cache_hit;
+                        Ok(TaskCompletion {
+                            node_records: vec![record.clone()],
+                            value: TaskValue::TppRender { record },
+                            completion_detail: format!(
+                                "units={} cache_hit={}",
+                                unit_records.len(),
+                                cache_hit
+                            ),
                         })
                     }
                     ScheduledTaskKind::DataBase => build_data_nodes(
@@ -535,11 +632,15 @@ pub fn build_cycle(config: &ProductBuildConfig) -> anyhow::Result<PathBuf> {
                         })
                     }
                     ScheduledTaskKind::TppPackage { region } => {
-                        let source_fetch = match task_values_snapshot.get("tpp-fetch") {
-                            Some(TaskValue::TppFetch { record }) => record,
-                            _ => unreachable!("tpp-fetch dependency should have completed"),
-                        };
                         let region_id = region.code().to_ascii_lowercase();
+                        let render_record = match task_values_snapshot
+                            .get(&tpp_render_assemble_task_name(region))
+                        {
+                            Some(TaskValue::TppRender { record }) => record,
+                            _ => {
+                                unreachable!("tpp render assemble dependency should have completed")
+                            }
+                        };
                         let started = Instant::now();
                         let (record, source) = build_tpp_package_node(
                             &config,
@@ -548,7 +649,7 @@ pub fn build_cycle(config: &ProductBuildConfig) -> anyhow::Result<PathBuf> {
                             tpp_versions
                                 .get(&region_id)
                                 .expect("tpp region version should exist"),
-                            Some(source_fetch),
+                            render_record,
                         )?;
                         let cache_hit = record.cache_hit;
                         let fingerprint = record.fingerprint.clone();
@@ -767,6 +868,16 @@ pub fn build_cycle(config: &ProductBuildConfig) -> anyhow::Result<PathBuf> {
                         })
                     }
                 }
+            },
+            |task_id, kind, completion, _task_values, _task_node_records| match kind {
+                ScheduledTaskKind::TppPlan { region } => {
+                    let plan = match &completion.value {
+                        TaskValue::TppPlan { plan, .. } => plan,
+                        _ => unreachable!("tpp plan completion should carry plan value"),
+                    };
+                    Ok(tpp_render_tasks_for_plan(task_id, *region, plan))
+                }
+                _ => Ok(Vec::new()),
             },
         )?;
         for records in task_node_records.values() {

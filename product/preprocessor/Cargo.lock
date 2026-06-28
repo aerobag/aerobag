@@ -1012,6 +1012,7 @@ dependencies = [
  "preprocessor-fetch",
  "preprocessor-tools",
  "roxmltree",
+ "serde",
  "serde_json",
  "tempfile",
  "zip",

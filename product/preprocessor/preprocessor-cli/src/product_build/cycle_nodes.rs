@@ -799,17 +799,50 @@ pub(super) fn build_csup_package_nodes(
     ))
 }
 
-pub(super) fn build_tpp_render_node(
+pub(super) fn tpp_render_unit_task_name(region: Region, unit: &TppRenderUnitPlan) -> String {
+    format!(
+        "tpp-{}-render-unit-{}",
+        region.code().to_ascii_lowercase(),
+        unit.id()
+    )
+}
+
+pub(super) fn tpp_render_assemble_task_name(region: Region) -> String {
+    format!("tpp-{}-render-assemble", region.code().to_ascii_lowercase())
+}
+
+pub(super) fn tpp_render_unit_records_for_plan(
+    region: Region,
+    plan: &TppRegionRenderPlan,
+    task_node_records: &BTreeMap<String, Vec<NodeRecord>>,
+) -> anyhow::Result<Vec<NodeRecord>> {
+    plan.units()
+        .iter()
+        .map(|unit| {
+            let task_id = tpp_render_unit_task_name(region, unit);
+            let records = task_node_records
+                .get(&task_id)
+                .with_context(|| format!("missing tpp render unit task record for {task_id}"))?;
+            records
+                .iter()
+                .find(|record| record.name.ends_with("-render-unit"))
+                .cloned()
+                .with_context(|| format!("missing tpp render unit node record for {task_id}"))
+        })
+        .collect()
+}
+
+pub(super) fn build_tpp_plan_node(
     config: &ProductBuildConfig,
     request: &NativeTppRunRequest,
     source_fetch_record: Option<&NodeRecord>,
-) -> anyhow::Result<NodeRecord> {
+) -> anyhow::Result<(NodeRecord, PathBuf, TppRegionRenderPlan, String)> {
     let region_id = request.region.code().to_ascii_lowercase();
     let source_urls = request
         .prefetch_source_urls
         .as_ref()
         .context("tpp build requires source urls")?;
-    let node_name = format!("tpp-{region_id}-render");
+    let node_name = format!("tpp-{region_id}-plan");
     let source_fetch_root = source_fetch_record
         .map(|record| {
             output_path(record, "source_root").map(|path| resolve_artifact_path(config, path))
@@ -825,39 +858,221 @@ pub(super) fn build_tpp_render_node(
         &inputs,
     )?;
     let run_root = prepared.dir.clone();
-    let plates_root = run_root.join(format!("work/tpp-{region_id}/plates"));
+    let work_dir = run_root.join(format!("work/tpp-{region_id}"));
+    let plan_path = run_root.join("meta").join("tpp-render-plan.json");
+    let marker = run_root.join(".plan-complete");
+    let expected = vec![
+        plan_path.clone(),
+        work_dir.join("d-TPP_Metafile.xml"),
+        marker.clone(),
+    ];
+    let _build_lock = match claim_or_wait_for_node(&prepared, &expected)? {
+        NodeCacheState::CacheHit(record) => {
+            let plan = load_tpp_region_render_plan(&plan_path)?;
+            let source_content_fingerprint = source_content_fingerprint
+                .context("tpp plan requires source content fingerprint")?;
+            return Ok((
+                record,
+                work_dir,
+                plan,
+                source_content_fingerprint.to_string(),
+            ));
+        }
+        NodeCacheState::Build(lock) => lock,
+    };
+
+    let source_fetch_root = source_fetch_root.context("tpp render requires fetched source root")?;
+    let source_content_fingerprint =
+        source_content_fingerprint.context("tpp render requires source content fingerprint")?;
+    let started_at_utc = utc_now_string();
+    let started = Instant::now();
+    seed_prefetched_source_tree(&source_fetch_root, &work_dir)?;
+    let plan = plan_tpp_region_render(&work_dir, request.region)?;
+    if let Some(parent) = plan_path.parent() {
+        fs::create_dir_all(parent)
+            .with_context(|| format!("failed to create {}", parent.display()))?;
+    }
+    fs::write(
+        &plan_path,
+        serde_json::to_vec_pretty(&plan).context("failed to encode tpp render plan")?,
+    )
+    .with_context(|| format!("failed to write {}", plan_path.display()))?;
+    fs::write(&marker, b"ok").with_context(|| format!("failed to write {}", marker.display()))?;
+    let outputs = BTreeMap::from([
+        (
+            "work_dir".to_string(),
+            relative_artifact_path(&work_dir, &config.build_root),
+        ),
+        (
+            "source_content_fingerprint".to_string(),
+            source_content_fingerprint.to_string(),
+        ),
+        (
+            "plan".to_string(),
+            relative_artifact_path(&plan_path, &config.build_root),
+        ),
+        (
+            "marker".to_string(),
+            relative_artifact_path(&marker, &config.build_root),
+        ),
+    ]);
+    let region_record = write_node_record(
+        prepared,
+        inputs,
+        outputs,
+        false,
+        started_at_utc,
+        utc_now_string(),
+        started.elapsed().as_millis() as u64,
+    )?;
+    Ok((
+        region_record,
+        work_dir,
+        plan,
+        source_content_fingerprint.to_string(),
+    ))
+}
+
+pub(super) fn build_tpp_render_unit_node(
+    config: &ProductBuildConfig,
+    region_id: &str,
+    source_content_fingerprint: &str,
+    source_root: &Path,
+    unit: &TppRenderUnitPlan,
+) -> anyhow::Result<NodeRecord> {
+    let node_name = format!("tpp-{region_id}-render-unit");
+    let inputs = tpp_render_unit_inputs(region_id, source_content_fingerprint, unit)?;
+    let prepared = prepare_node_at(
+        &build_shared_node_dir(config, &node_name)?,
+        &node_name,
+        &inputs,
+    )?;
+    let work_dir = prepared.dir.join("work");
+    let plates_root = work_dir.join("plates");
+    let marker = prepared.dir.join(".render-complete");
     run_cached_node(
         prepared,
         inputs,
-        std::slice::from_ref(&plates_root),
+        &[plates_root.clone(), marker.clone()],
         |_prepared| {
-            let mut request = request.clone();
-            request.run_root = run_root;
-            if let Some(source_root) = &source_fetch_root {
-                let work_dir = request
-                    .run_root
-                    .join("work")
-                    .join(format!("tpp-{region_id}"));
-                seed_prefetched_source_tree(source_root, &work_dir)?;
-                request.prefetch_source_urls = None;
+            if work_dir.exists() {
+                fs::remove_dir_all(&work_dir)
+                    .with_context(|| format!("failed to remove {}", work_dir.display()))?;
             }
-            let result = render_native_tpp(&request)?;
+            let rendered_plates_root = render_tpp_unit(source_root, &work_dir, unit)?;
+            fs::write(&marker, b"ok")
+                .with_context(|| format!("failed to write {}", marker.display()))?;
             Ok(BTreeMap::from([
+                ("unit_id".to_string(), unit.id().to_string()),
                 (
                     "work_dir".to_string(),
-                    relative_artifact_path(&result.work_dir, &config.build_root),
-                ),
-                (
-                    "provenance_dir".to_string(),
-                    relative_artifact_path(&result.provenance_dir, &config.build_root),
+                    relative_artifact_path(&work_dir, &config.build_root),
                 ),
                 (
                     "plates_root".to_string(),
-                    relative_artifact_path(&plates_root, &config.build_root),
+                    relative_artifact_path(&rendered_plates_root, &config.build_root),
+                ),
+                (
+                    "marker".to_string(),
+                    relative_artifact_path(&marker, &config.build_root),
                 ),
             ]))
         },
     )
+}
+
+pub(super) fn build_tpp_render_assemble_node(
+    config: &ProductBuildConfig,
+    region: Region,
+    plan_record: &NodeRecord,
+    unit_records: &[NodeRecord],
+) -> anyhow::Result<NodeRecord> {
+    let region_id = region.code().to_ascii_lowercase();
+    let node_name = format!("tpp-{region_id}-render");
+    let inputs = tpp_render_assemble_inputs(region, plan_record, unit_records)?;
+    let prepared = prepare_node_at(
+        &build_shared_node_dir(config, &node_name)?,
+        &node_name,
+        &inputs,
+    )?;
+    let run_root = prepared.dir.clone();
+    let work_dir = run_root.join(format!("work/tpp-{region_id}"));
+    let plates_root = work_dir.join("plates");
+    let source_work_dir = resolve_artifact_path(config, output_path(plan_record, "work_dir")?);
+    let plan_path = resolve_artifact_path(config, output_path(plan_record, "plan")?);
+    let child_records_path = run_root.join("meta").join("tpp-render-unit-records.json");
+    let marker = run_root.join(".render-complete");
+    let expected = vec![
+        plates_root.clone(),
+        child_records_path.clone(),
+        marker.clone(),
+    ];
+    let _build_lock = match claim_or_wait_for_node(&prepared, &expected)? {
+        NodeCacheState::CacheHit(record) => return Ok(record),
+        NodeCacheState::Build(lock) => lock,
+    };
+    let started_at_utc = utc_now_string();
+    let started = Instant::now();
+    if work_dir.exists() {
+        fs::remove_dir_all(&work_dir)
+            .with_context(|| format!("failed to remove {}", work_dir.display()))?;
+    }
+    fs::create_dir_all(&plates_root)
+        .with_context(|| format!("failed to create {}", plates_root.display()))?;
+    hard_link_or_copy_file(
+        &source_work_dir.join("d-TPP_Metafile.xml"),
+        &work_dir.join("d-TPP_Metafile.xml"),
+    )?;
+    for unit_record in unit_records {
+        let unit_plates_root =
+            resolve_artifact_path(config, output_path(unit_record, "plates_root")?);
+        if unit_plates_root.is_dir() {
+            hard_link_or_copy_dir_recursive(&unit_plates_root, &plates_root)?;
+        }
+    }
+    fs::write(
+        &child_records_path,
+        serde_json::to_vec_pretty(unit_records)
+            .context("failed to encode tpp render unit node records")?,
+    )
+    .with_context(|| format!("failed to write {}", child_records_path.display()))?;
+    fs::write(&marker, b"ok").with_context(|| format!("failed to write {}", marker.display()))?;
+    let outputs = BTreeMap::from([
+        (
+            "work_dir".to_string(),
+            relative_artifact_path(&work_dir, &config.build_root),
+        ),
+        (
+            "plates_root".to_string(),
+            relative_artifact_path(&plates_root, &config.build_root),
+        ),
+        (
+            "plan".to_string(),
+            relative_artifact_path(&plan_path, &config.build_root),
+        ),
+        (
+            "render_unit_records".to_string(),
+            relative_artifact_path(&child_records_path, &config.build_root),
+        ),
+        (
+            "marker".to_string(),
+            relative_artifact_path(&marker, &config.build_root),
+        ),
+    ]);
+    write_node_record(
+        prepared,
+        inputs,
+        outputs,
+        false,
+        started_at_utc,
+        utc_now_string(),
+        started.elapsed().as_millis() as u64,
+    )
+}
+
+fn load_tpp_region_render_plan(path: &Path) -> anyhow::Result<TppRegionRenderPlan> {
+    let bytes = fs::read(path).with_context(|| format!("failed to read {}", path.display()))?;
+    serde_json::from_slice(&bytes).context("failed to parse tpp render plan")
 }
 
 pub(super) fn build_tpp_fetch_node(
@@ -1050,36 +1265,11 @@ pub(super) fn build_tpp_package_node(
     region: Region,
     source_urls_path: &Path,
     version_label: &str,
-    source_fetch_record: Option<&NodeRecord>,
+    render_record: &NodeRecord,
 ) -> anyhow::Result<(NodeRecord, AssetSource)> {
     let contract_id = product_contract_id_for_family("tpp")?;
     let artifact_version = contract_artifact_version(contract_id, version_label);
     let region_id = region.code().to_ascii_lowercase();
-    let render_request = NativeTppRunRequest {
-        region,
-        source_repo: PathBuf::new(),
-        run_root: PathBuf::new(),
-        prefetch_source_urls: Some(source_urls_path.to_path_buf()),
-        fetch_jobs: config.fetch_jobs,
-        render_jobs: TPP_RENDER_JOBS_PER_RUN,
-        fetch_cache: Some(static_source_fetch_cache_config(config)?),
-    };
-    let render_node_name = format!("tpp-{region_id}-render");
-    let source_content_fingerprint = source_fetch_record
-        .map(tpp_source_content_fingerprint)
-        .transpose()?;
-    let render_inputs = tpp_render_inputs(
-        &render_request,
-        source_urls_path,
-        &region_id,
-        source_content_fingerprint,
-    )?;
-    let render_prepared = prepare_node_at(
-        &build_shared_node_dir(config, &render_node_name)?,
-        &render_node_name,
-        &render_inputs,
-    )?;
-    let render_record = load_existing_node_record(&render_prepared.record_path, &render_node_name)?;
     let asset_root = resolve_artifact_path(config, output_path(&render_record, "work_dir")?);
     let inputs = BTreeMap::from([
         (
@@ -1336,6 +1526,14 @@ pub(super) fn tpp_render_inputs(
         ("source_urls".to_string(), hash_file(source_urls)?),
         ("fetch_jobs".to_string(), request.fetch_jobs.to_string()),
         (
+            "tpp_render_node_version".to_string(),
+            TPP_RENDER_NODE_VERSION.to_string(),
+        ),
+        (
+            "tpp_orchestration".to_string(),
+            hash_file(product_build_cycle_nodes_path())?,
+        ),
+        (
             "cache_layout_version".to_string(),
             TPP_CACHE_LAYOUT_VERSION.to_string(),
         ),
@@ -1347,6 +1545,14 @@ pub(super) fn tpp_render_inputs(
                     .expect("preprocessor-cli should live under workspace root")
                     .join("preprocessor-tpp/src/lib.rs"),
             )?,
+        ),
+        (
+            "find_plate_pages_script".to_string(),
+            hash_file(tpp_crate_path().join("scripts/find_plate_pages.py"))?,
+        ),
+        (
+            "detect_landscape_rotation_script".to_string(),
+            hash_file(tpp_crate_path().join("scripts/detect_landscape_rotation.py"))?,
         ),
         (
             "tools_lib".to_string(),
@@ -1365,6 +1571,102 @@ pub(super) fn tpp_render_inputs(
         );
     }
     Ok(inputs)
+}
+
+fn tpp_render_unit_inputs(
+    region_id: &str,
+    source_content_fingerprint: &str,
+    unit: &TppRenderUnitPlan,
+) -> anyhow::Result<BTreeMap<String, String>> {
+    Ok(BTreeMap::from([
+        ("region".to_string(), region_id.to_string()),
+        ("unit_id".to_string(), unit.id().to_string()),
+        (
+            "source_content_fingerprint".to_string(),
+            source_content_fingerprint.to_string(),
+        ),
+        (
+            "unit_plan".to_string(),
+            hash_text(&serde_json::to_string(unit).context("tpp render unit plan json")?),
+        ),
+        (
+            "tpp_render_node_version".to_string(),
+            TPP_RENDER_NODE_VERSION.to_string(),
+        ),
+        (
+            "tpp_orchestration".to_string(),
+            hash_file(product_build_cycle_nodes_path())?,
+        ),
+        (
+            "tpp_lib".to_string(),
+            hash_file(tpp_crate_path().join("src/lib.rs"))?,
+        ),
+        (
+            "find_plate_pages_script".to_string(),
+            hash_file(tpp_crate_path().join("scripts/find_plate_pages.py"))?,
+        ),
+        (
+            "detect_landscape_rotation_script".to_string(),
+            hash_file(tpp_crate_path().join("scripts/detect_landscape_rotation.py"))?,
+        ),
+        (
+            "tools_lib".to_string(),
+            hash_file(workspace_preprocessor_path().join("preprocessor-tools/src/lib.rs"))?,
+        ),
+    ]))
+}
+
+fn tpp_render_assemble_inputs(
+    region: Region,
+    plan_record: &NodeRecord,
+    unit_records: &[NodeRecord],
+) -> anyhow::Result<BTreeMap<String, String>> {
+    let unit_fingerprints = unit_records
+        .iter()
+        .map(|record| {
+            serde_json::json!({
+                "name": record.name,
+                "fingerprint": record.fingerprint,
+            })
+        })
+        .collect::<Vec<_>>();
+    Ok(BTreeMap::from([
+        ("region".to_string(), region.code().to_ascii_lowercase()),
+        (
+            "plan_fingerprint".to_string(),
+            plan_record.fingerprint.clone(),
+        ),
+        (
+            "render_unit_fingerprints".to_string(),
+            hash_text(
+                &serde_json::to_string(&unit_fingerprints)
+                    .context("tpp render unit fingerprint json")?,
+            ),
+        ),
+        (
+            "tpp_render_node_version".to_string(),
+            TPP_RENDER_NODE_VERSION.to_string(),
+        ),
+        (
+            "tpp_orchestration".to_string(),
+            hash_file(product_build_cycle_nodes_path())?,
+        ),
+    ]))
+}
+
+fn product_build_cycle_nodes_path() -> PathBuf {
+    Path::new(env!("CARGO_MANIFEST_DIR")).join("src/product_build/cycle_nodes.rs")
+}
+
+fn workspace_preprocessor_path() -> PathBuf {
+    Path::new(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .expect("preprocessor-cli should live under workspace root")
+        .to_path_buf()
+}
+
+fn tpp_crate_path() -> PathBuf {
+    workspace_preprocessor_path().join("preprocessor-tpp")
 }
 
 pub(super) fn build_data_nodes(

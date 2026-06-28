@@ -372,6 +372,24 @@ private const val PerfScenarioKorsStressCenterLon = -122.8600
 private const val PerfScenarioKorsStressZoom = 10.8
 private const val PerfScenarioKorsStressAltitudeMslFt = 1_000.0
 
+private fun fetchMapOverlayCoreResource(
+    context: Context,
+    resource: CoreResourceRequest,
+    devServerBaseUrl: String,
+): ByteArray = fetchCoreResource(context, resource, devServerBaseUrl)
+
+private fun fetchNexradCoreResource(
+    context: Context,
+    resource: CoreResourceRequest,
+    devServerBaseUrl: String,
+): ByteArray = fetchCoreResource(context, resource, devServerBaseUrl)
+
+private fun fetchTerrainCoreResource(
+    context: Context,
+    resource: CoreResourceRequest,
+    devServerBaseUrl: String,
+): ByteArray = fetchCoreResource(context, resource, devServerBaseUrl)
+
 private fun estimatedImageBitmapBytes(bitmap: androidx.compose.ui.graphics.ImageBitmap): Long =
     bitmap.width.toLong() * bitmap.height.toLong() * 4L
 
@@ -923,7 +941,7 @@ internal fun MapExplorerPage(
                     heightPx = surfaceHeightPx.toDouble(),
                     pointDisplayScale = density.density.toDouble(),
                     fetchResource = { resource ->
-                        fetchCoreResource(context.applicationContext, resource, devServerBaseUrl)
+                        fetchMapOverlayCoreResource(context.applicationContext, resource, devServerBaseUrl)
                     },
                     onResult = { outcome ->
                         val overlay = outcome.overlay
@@ -1601,7 +1619,7 @@ internal fun MapExplorerPage(
             heightPx = overlayHeightPx.toDouble(),
             pointDisplayScale = density.density.toDouble(),
             fetchResource = { resource ->
-                fetchCoreResource(context, resource, devServerBaseUrl)
+                fetchMapOverlayCoreResource(context, resource, devServerBaseUrl)
             },
             onResult = { outcome ->
                 if (outcome.invalidations.contains("session_snapshot")) {
@@ -1651,7 +1669,7 @@ internal fun MapExplorerPage(
                         latestSurfaceSize.height.toDouble(),
                     ) { resource ->
                         val fetchStartMs = SystemClock.elapsedRealtime()
-                        fetchCoreResource(context, resource, latestDevServerBaseUrl).also {
+                        fetchNexradCoreResource(context, resource, latestDevServerBaseUrl).also {
                             fetchMs += SystemClock.elapsedRealtime() - fetchStartMs
                         }
                     }
@@ -1670,7 +1688,7 @@ internal fun MapExplorerPage(
                         val bitmap = decodedImagesBySrc.getOrPut(tile.src) {
                             val bytes = uiSession.nexradTileBytes(tile.src) { resource ->
                                 val fetchStartMs = SystemClock.elapsedRealtime()
-                                fetchCoreResource(context, resource, latestDevServerBaseUrl).also {
+                                fetchNexradCoreResource(context, resource, latestDevServerBaseUrl).also {
                                     fetchMs += SystemClock.elapsedRealtime() - fetchStartMs
                                 }
                             }
@@ -1742,7 +1760,7 @@ internal fun MapExplorerPage(
                             terrainTileBitmapCache.keys.toList(),
                             terrainTileInFlightKeys.toList(),
                         ) { resource ->
-                            fetchCoreResource(context, resource, devServerBaseUrl)
+                            fetchTerrainCoreResource(context, resource, devServerBaseUrl)
                         }
                     }
                 } catch (error: Throwable) {
@@ -1811,7 +1829,7 @@ internal fun MapExplorerPage(
                             val renderStartMs = SystemClock.elapsedRealtime()
                             uiSession.renderTerrainOverlayTile(request, altitudeBucketFt) { resource ->
                                 val fetchStartMs = SystemClock.elapsedRealtime()
-                                fetchCoreResource(context, resource, devServerBaseUrl).also {
+                                fetchTerrainCoreResource(context, resource, devServerBaseUrl).also {
                                     fetchMs += SystemClock.elapsedRealtime() - fetchStartMs
                                 }
                             }.also {

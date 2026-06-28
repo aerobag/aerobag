@@ -24,11 +24,15 @@ class AllowRule:
     text: str | None
     classification: str
     reason: str
+    context: tuple[str, ...] = ()
 
-    def matches(self, rel_path: str, line: str) -> bool:
+    def matches(self, rel_path: str, line: str, context_lines: tuple[str, ...]) -> bool:
         if not rel_path.endswith(self.path_suffix):
             return False
-        return self.text is None or self.text in line
+        if self.text is not None and self.text not in line:
+            return False
+        context_text = "\n".join(context_lines)
+        return all(required in context_text for required in self.context)
 
 
 @dataclass(frozen=True)
@@ -123,15 +127,74 @@ CHECKS = (
             ),
             AllowRule(
                 "MapExplorerPage.kt",
-                None,
+                "fetchCoreResource(",
                 "background IO/render",
-                "Map resource fetches are inside scheduled map work or conflated render loops.",
+                "Map overlay resource fetches are only exposed through the named overlay worker helper.",
+                ("private fun fetchMapOverlayCoreResource(",),
+            ),
+            AllowRule(
+                "MapExplorerPage.kt",
+                "fetchCoreResource(",
+                "background IO/render",
+                "NEXRAD resource fetches are only exposed through the named NEXRAD worker helper.",
+                ("private fun fetchNexradCoreResource(",),
+            ),
+            AllowRule(
+                "MapExplorerPage.kt",
+                "fetchCoreResource(",
+                "background IO/render",
+                "Terrain resource fetches are only exposed through the named terrain worker helper.",
+                ("private fun fetchTerrainCoreResource(",),
             ),
             AllowRule(
                 "ChartsPage.kt",
                 None,
                 "background IO/render",
                 "Plate asset and thumbnail loads use produceState with Dispatchers.IO.",
+            ),
+        ),
+    ),
+    Check(
+        name="ui_session_resource_work",
+        pattern=re.compile(
+            r"\buiSession\.(?:chartAssetBytes|queryNexradOverlay|nexradTileBytes|queryTerrainOverlay|renderTerrainOverlayTile|queryMapOverlay|queryMapSelection|queryMapSelectionForNavRef)\("
+        ),
+        allow=(
+            AllowRule(
+                "UiSessionWorkRunner.kt",
+                None,
+                "scheduled core work",
+                "Map overlay/selection resource-paging work must go through the session work runner.",
+            ),
+            AllowRule(
+                "ChartsPage.kt",
+                "uiSession.chartAssetBytes(",
+                "background IO/render",
+                "Chart asset bytes are loaded from produceState with Dispatchers.IO.",
+            ),
+            AllowRule(
+                "MapExplorerPage.kt",
+                "uiSession.queryNexradOverlay(",
+                "background IO/render",
+                "NEXRAD overlay queries run inside the conflated NEXRAD render loop.",
+            ),
+            AllowRule(
+                "MapExplorerPage.kt",
+                "uiSession.nexradTileBytes(",
+                "background IO/render",
+                "NEXRAD tile reads run inside the conflated NEXRAD render loop.",
+            ),
+            AllowRule(
+                "MapExplorerPage.kt",
+                "uiSession.queryTerrainOverlay(",
+                "background IO/render",
+                "Terrain overlay queries run inside the conflated terrain render loop.",
+            ),
+            AllowRule(
+                "MapExplorerPage.kt",
+                "uiSession.renderTerrainOverlayTile(",
+                "background IO/render",
+                "Terrain tile rendering runs inside the conflated terrain render loop.",
             ),
         ),
     ),
@@ -206,9 +269,9 @@ def rel(path: Path) -> str:
     return path.relative_to(SRC_ROOT).as_posix()
 
 
-def classify(check: Check, rel_path: str, line: str) -> AllowRule | None:
+def classify(check: Check, rel_path: str, line: str, context_lines: tuple[str, ...]) -> AllowRule | None:
     for rule in check.allow:
-        if rule.matches(rel_path, line):
+        if rule.matches(rel_path, line, context_lines):
             return rule
     return None
 
@@ -218,11 +281,13 @@ def main() -> int:
     counts: Counter[tuple[str, str]] = Counter()
     for path in iter_kotlin_sources():
         rel_path = rel(path)
-        for line_no, line in enumerate(path.read_text().splitlines(), start=1):
+        lines = path.read_text().splitlines()
+        for line_no, line in enumerate(lines, start=1):
+            context_lines = tuple(lines[max(0, line_no - 8):line_no])
             for check in CHECKS:
                 if not check.pattern.search(line):
                     continue
-                rule = classify(check, rel_path, line)
+                rule = classify(check, rel_path, line, context_lines)
                 if rule is None:
                     violations.append(
                         f"{rel_path}:{line_no}: unclassified {check.name}: {line.strip()}"

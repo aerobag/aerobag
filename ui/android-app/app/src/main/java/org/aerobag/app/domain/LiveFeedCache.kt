@@ -99,14 +99,20 @@ class LiveFeedCache(
     },
 ) : AutoCloseable {
     private val handle = bridge.createLiveFeedCache(installedStatesJson)
+    @Volatile
+    private var closed = false
 
-    fun missingRequests(): List<LiveFeedCacheRequest> =
+    val isClosed: Boolean
+        get() = closed
+
+    fun missingRequests(): List<LiveFeedCacheRequest> = withOpenHandle { handle ->
         json.decodeFromString(bridge.liveFeedCacheMissingRequestsJson(handle))
+    }
 
     fun installFetchedBytes(
         request: LiveFeedCacheRequest,
         bytes: ByteArray,
-    ): LiveFeedInstalledSummary? =
+    ): LiveFeedInstalledSummary? = withOpenHandle { handle ->
         json.decodeFromString(
             bridge.liveFeedCacheInstallFetchedBytesJson(
                 handle,
@@ -114,16 +120,19 @@ class LiveFeedCache(
                 bytes,
             ),
         )
+    }
 
-    fun ingestSseEvent(event: LiveFeedSseEvent): Boolean =
+    fun ingestSseEvent(event: LiveFeedSseEvent): Boolean = withOpenHandle { handle ->
         json.decodeFromString(
             bridge.liveFeedCacheIngestSseEventJson(handle, json.encodeToString(event)),
         )
+    }
 
-    fun installedSummary(product: String): LiveFeedInstalledSummary? =
+    fun installedSummary(product: String): LiveFeedInstalledSummary? = withOpenHandle { handle ->
         json.decodeFromString(bridge.liveFeedCacheInstalledSummaryJson(handle, product))
+    }
 
-    fun ingestInstalledPayload(summary: LiveFeedInstalledSummary, payloadBytes: ByteArray) {
+    fun ingestInstalledPayload(summary: LiveFeedInstalledSummary, payloadBytes: ByteArray) = withOpenHandle { handle ->
         bridge.liveFeedCacheIngestInstalledPayloadBytes(
             handle,
             json.encodeToString(summary),
@@ -131,14 +140,17 @@ class LiveFeedCache(
         )
     }
 
-    fun installedPayloadBytes(product: String): ByteArray =
+    fun installedPayloadBytes(product: String): ByteArray = withOpenHandle { handle ->
         bridge.liveFeedCacheInstalledPayloadBytes(handle, product)
+    }
 
-    fun installProductInSessionJson(sessionHandle: Long, product: String): String =
+    fun installProductInSessionJson(sessionHandle: Long, product: String): String = withOpenHandle { handle ->
         bridge.liveFeedCacheInstallProductInSessionJson(handle, sessionHandle, product)
+    }
 
-    fun syncCatalogInSessionJson(sessionHandle: Long): String =
+    fun syncCatalogInSessionJson(sessionHandle: Long): String = withOpenHandle { handle ->
         bridge.liveFeedCacheSyncCatalogInSessionJson(handle, sessionHandle)
+    }
 
     fun pumpOnce(
         fetch: (LiveFeedCacheRequest) -> ByteArray,
@@ -156,8 +168,23 @@ class LiveFeedCache(
     }
 
     override fun close() {
-        bridge.destroyLiveFeedCache(handle)
+        synchronized(this) {
+            if (closed) return
+            closed = true
+            bridge.destroyLiveFeedCache(handle)
+        }
     }
+
+    private inline fun <T> withOpenHandle(block: (Long) -> T): T =
+        synchronized(this) {
+            if (closed) {
+                throw LiveFeedCacheClosedException()
+            }
+            block(handle)
+        }
+
+    class LiveFeedCacheClosedException :
+        CancellationException("live-feed cache is closed")
 }
 
 class AndroidLiveFeedClient(

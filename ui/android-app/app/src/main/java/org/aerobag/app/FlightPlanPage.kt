@@ -602,8 +602,14 @@ internal fun FlightPlanPage(
         routeEntrySubmitting = false
     }
 
-    fun routeEntryNavigationSuppressed(): Boolean =
-        routeEntryFocused || SystemClock.elapsedRealtime() < routeEntrySuppressNavigationUntilMs
+    fun performRouteEntryNavigation(action: () -> Unit) {
+        if (SystemClock.elapsedRealtime() < routeEntrySuppressNavigationUntilMs) {
+            return
+        }
+        keyboardController?.hide()
+        focusManager.clearFocus(force = true)
+        action()
+    }
 
     LaunchedEffect(plan, routeEntryText) {
         val input = routeEntryText.trim()
@@ -676,12 +682,12 @@ internal fun FlightPlanPage(
             currentPage = page,
             chartPlateTargetPage = mostRecentChartOrPlatePage,
             onHomeClick = {
-                if (!routeEntryNavigationSuppressed()) {
+                performRouteEntryNavigation {
                     onSelectPage(AppPage.Home)
                 }
             },
             onOpenChartOrPlate = {
-                if (!routeEntryNavigationSuppressed()) {
+                performRouteEntryNavigation {
                     onOpenRecentChartOrPlate()
                 }
             },
@@ -889,7 +895,7 @@ internal fun FlightPlanPage(
             NavElementDock(
                 navElement = navElement,
                 onClick = {
-                    if (!routeEntryNavigationSuppressed()) {
+                    performRouteEntryNavigation {
                         onOpenRecentChartOrPlate()
                     }
                 },

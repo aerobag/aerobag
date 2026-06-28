@@ -9227,16 +9227,9 @@ fn project_flight_data_banner(
     let mut waypoint_distance_nm = None;
     let mut final_distance_nm = None;
 
-    if let (Some(plan), Some(active_leg)) = (
-        session.app_state.active_plan.as_ref(),
-        session
-            .app_state
-            .active_plan
-            .as_ref()
-            .and_then(crate::active_guidance_leg),
-    ) {
-        if let Some(geometry) =
-            active_leg_geometry(plan, &active_leg, &session.guidance_leg_geometry)
+    if let Some(plan) = session.app_state.active_plan.as_ref() {
+        if let Some(geometry) = active_guidance_projection(plan, &session.guidance_leg_geometry)
+            .and_then(|projection| projection.geometry)
         {
             desired_track_magnetic_deg = active_display_course_deg(&geometry, position, store)?;
             waypoint_distance_nm =
@@ -9460,59 +9453,65 @@ fn project_active_leg_nav_element(
     let Some(plan) = session.app_state.active_plan.as_ref() else {
         return Ok(NavElementUiView::default());
     };
-    let Some(active_leg) = crate::active_guidance_leg(plan) else {
+    let Some(projection) = active_guidance_projection(plan, &session.guidance_leg_geometry) else {
         return Ok(NavElementUiView::default());
     };
-    let Some(geometry) = active_leg_geometry(plan, &active_leg, &session.guidance_leg_geometry)
-    else {
-        return Ok(NavElementUiView {
-            active_leg_summary: format!(
-                "{} -> {}",
-                nav_ref_label(&active_leg.from),
-                nav_ref_label(&active_leg.to)
-            ),
-            cdi_indicator_dots: None,
-            cdi_offscale_readout: None,
-        });
-    };
-    let position = session.app_state.ownship.render.position;
-    let course_deg = active_display_course_deg(&geometry, position, store)?;
-    let cdi_indicator_dots = session
-        .app_state
-        .ownship
-        .render
-        .position
-        .map(|position| cdi_dots_for_guidance_geometry(&geometry, position));
-    let cdi_offscale_readout = cdi_indicator_dots.and_then(cdi_offscale_readout);
-    let active_leg_summary = active_guidance_leg_summary(plan, &active_leg);
-
-    let active_leg_summary = if let Some(course_deg) = course_deg {
-        format!(
-            "{} CRS {}",
-            active_leg_summary,
-            crate::flight_data::format_course_degrees(course_deg)
-        )
-    } else {
-        active_leg_summary
-    };
-
-    Ok(NavElementUiView {
-        active_leg_summary,
-        cdi_indicator_dots,
-        cdi_offscale_readout,
-    })
+    projection.nav_element(session.app_state.ownship.render.position, store)
 }
 
-fn active_guidance_leg_summary(plan: &FlightPlan, active_leg: &PlanLeg) -> String {
-    if active_guidance_detail_is_terminal_hold(plan) {
+#[derive(Debug, Clone)]
+struct ActiveGuidanceProjection {
+    summary: String,
+    geometry: Option<GuidanceLegGeometry>,
+}
+
+impl ActiveGuidanceProjection {
+    fn nav_element(
+        &self,
+        position: Option<LatLon>,
+        store: Option<&NavKvStore>,
+    ) -> Result<NavElementUiView, HadReadError> {
+        let Some(geometry) = self.geometry.as_ref() else {
+            return Ok(NavElementUiView {
+                active_leg_summary: self.summary.clone(),
+                cdi_indicator_dots: None,
+                cdi_offscale_readout: None,
+            });
+        };
+        let course_deg = active_display_course_deg(geometry, position, store)?;
+        let cdi_indicator_dots =
+            position.map(|position| cdi_dots_for_guidance_geometry(geometry, position));
+        let cdi_offscale_readout = cdi_indicator_dots.and_then(cdi_offscale_readout);
+        let active_leg_summary = if let Some(course_deg) = course_deg {
+            format!(
+                "{} CRS {}",
+                self.summary,
+                crate::flight_data::format_course_degrees(course_deg)
+            )
+        } else {
+            self.summary.clone()
+        };
+
+        Ok(NavElementUiView {
+            active_leg_summary,
+            cdi_indicator_dots,
+            cdi_offscale_readout,
+        })
+    }
+}
+
+fn active_guidance_projection(
+    plan: &FlightPlan,
+    geometry_by_leg_id: &HashMap<String, GuidanceLegGeometry>,
+) -> Option<ActiveGuidanceProjection> {
+    let leg = crate::active_guidance_leg(plan)?;
+    let geometry = active_guidance_projection_geometry(plan, &leg, geometry_by_leg_id);
+    let summary = if active_guidance_detail_is_terminal_hold(plan) {
         "HOLD".to_string()
     } else {
-        format!(
-            "{} -> {}",
-            nav_ref_label(&active_leg.from),
-            nav_ref_label(&active_leg.to)
-        )
-    }
+        format!("{} -> {}", nav_ref_label(&leg.from), nav_ref_label(&leg.to))
+    };
+    Some(ActiveGuidanceProjection { summary, geometry })
 }
 
 fn active_guidance_detail_is_terminal_hold(plan: &FlightPlan) -> bool {
@@ -9525,7 +9524,7 @@ fn active_guidance_detail_is_terminal_hold(plan: &FlightPlan) -> bool {
     })
 }
 
-fn active_leg_geometry(
+fn active_guidance_projection_geometry(
     plan: &FlightPlan,
     active_leg: &PlanLeg,
     geometry_by_leg_id: &HashMap<String, GuidanceLegGeometry>,
@@ -9543,36 +9542,19 @@ fn active_leg_geometry(
     }
     let guidance = plan.guidance.as_ref()?;
     if guidance.sequencing_mode == SequencingMode::DirectTo {
-        return guidance.direct_to.as_ref().and_then(|direct_to| {
-            let geometry = if direct_to.target_leg_id.is_some() {
-                guidance
-                    .active_detail_index
-                    .and_then(|detail_index| guidance_detail_id_for_index(plan, detail_index))
-                    .and_then(|detail_id| geometry_by_leg_id.get(&detail_id))
-            } else {
-                geometry_by_leg_id.get("direct-to")
-            }?;
-            Some({
-                let from = match &active_leg.from {
-                    NavRef::LatLon(position) | NavRef::Spot(position) => *position,
-                    _ => geometry.from,
-                };
-                let to = match &active_leg.to {
-                    NavRef::LatLon(position) | NavRef::Spot(position) => *position,
-                    _ => geometry.to,
-                };
-                GuidanceLegGeometry {
-                    leg_id: geometry.leg_id.clone(),
-                    from,
-                    to,
-                    path: if geometry.path.is_empty() {
-                        vec![from, to]
-                    } else {
-                        geometry.path.clone()
-                    },
-                }
+        return {
+            let from = nav_ref_embedded_position(&active_leg.from)?;
+            let to = match nav_ref_embedded_position(&active_leg.to) {
+                Some(position) => position,
+                None => geometry_by_leg_id.get("direct-to")?.to,
+            };
+            Some(GuidanceLegGeometry {
+                leg_id: "direct-to".to_string(),
+                from,
+                to,
+                path: vec![from, to],
             })
-        });
+        };
     }
     guidance
         .active_detail_index
@@ -9845,8 +9827,7 @@ fn active_guidance_detail_geometry(session: &UiSession) -> Option<(String, Guida
     let plan = session.app_state.active_plan.as_ref()?;
     let guidance = plan.guidance.as_ref()?;
     if guidance.sequencing_mode == SequencingMode::DirectTo {
-        let active_leg = crate::active_guidance_leg(plan)?;
-        let geometry = active_leg_geometry(plan, &active_leg, &session.guidance_leg_geometry)?;
+        let geometry = active_guidance_projection(plan, &session.guidance_leg_geometry)?.geometry?;
         return Some((geometry.leg_id.clone(), geometry));
     }
     let active_detail_index = active_guidance_detail_index_for_motion(plan, guidance)?;
@@ -16288,6 +16269,131 @@ mod tests {
             .and_then(|plan| plan.guidance.as_ref())
             .and_then(|guidance| guidance.nav_element.cdi_indicator_dots);
         assert!(dots.is_some(), "expected CDI dots after ownship update");
+    }
+
+    #[test]
+    fn on_plan_direct_to_cdi_uses_direct_segment_not_underlying_leg_path() {
+        let init =
+            create_ui_session(sample_guided_plan(), &[], None, None).expect("create session");
+        let direct_start = LatLon {
+            lat: 47.0,
+            lon: -122.0,
+        };
+        let target = LatLon {
+            lat: 48.0,
+            lon: -122.0,
+        };
+        push_situation_sample_in_session(
+            init.handle,
+            SituationSample {
+                source_id: OwnshipSourceId("test-gps".to_string()),
+                source_kind: OwnshipSourceKind::DeviceGps,
+                event_time_epoch_ms: 1_000,
+                received_time_epoch_ms: 1_000,
+                position: Some(direct_start),
+                horizontal_accuracy_m: None,
+                vertical_accuracy_m: None,
+                track_deg_true: Some(45.0),
+                heading_deg_true: None,
+                ground_speed_kt: Some(120.0),
+                altitude_msl_ft: Some(3000.0),
+                pressure_altitude_ft: None,
+                vertical_speed_fpm: None,
+            },
+        )
+        .expect("push direct-to start");
+        let direct_to = activate_direct_to_nav_ref_in_session_outcome(
+            init.handle,
+            NavRef::Fix("VPDUB".to_string()),
+        )
+        .expect("activate direct-to");
+        assert_session_snapshot_invalidated(direct_to);
+        set_guidance_leg_geometry_in_session(
+            init.handle,
+            vec![
+                GuidanceLegGeometry {
+                    leg_id: "component-0-1#0".to_string(),
+                    from: LatLon {
+                        lat: 48.0,
+                        lon: -123.0,
+                    },
+                    to: target,
+                    path: vec![
+                        LatLon {
+                            lat: 48.0,
+                            lon: -123.0,
+                        },
+                        target,
+                    ],
+                },
+                GuidanceLegGeometry {
+                    leg_id: "direct-to".to_string(),
+                    from: direct_start,
+                    to: target,
+                    path: vec![direct_start, target],
+                },
+            ],
+        )
+        .expect("set guidance geometry");
+        let sample_position = LatLon {
+            lat: 47.5,
+            lon: -121.985,
+        };
+        let after_position = push_situation_sample_in_session(
+            init.handle,
+            SituationSample {
+                source_id: OwnshipSourceId("test-gps".to_string()),
+                source_kind: OwnshipSourceKind::DeviceGps,
+                event_time_epoch_ms: 2_000,
+                received_time_epoch_ms: 2_000,
+                position: Some(sample_position),
+                horizontal_accuracy_m: None,
+                vertical_accuracy_m: None,
+                track_deg_true: Some(45.0),
+                heading_deg_true: None,
+                ground_speed_kt: Some(120.0),
+                altitude_msl_ft: Some(3000.0),
+                pressure_altitude_ft: None,
+                vertical_speed_fpm: None,
+            },
+        )
+        .expect("push sample position");
+        let dots = after_position
+            .app_ui_state
+            .active_plan
+            .as_ref()
+            .and_then(|plan| plan.guidance.as_ref())
+            .and_then(|guidance| guidance.nav_element.cdi_indicator_dots)
+            .expect("direct-to CDI dots");
+        let active_leg_summary = after_position
+            .app_ui_state
+            .active_plan
+            .as_ref()
+            .and_then(|plan| plan.guidance.as_ref())
+            .map(|guidance| guidance.nav_element.active_leg_summary.as_str())
+            .expect("direct-to CDI label");
+        let expected = cdi_dots_for_leg(direct_start, target, sample_position);
+        let stale = cdi_dots_for_leg(
+            LatLon {
+                lat: 48.0,
+                lon: -123.0,
+            },
+            target,
+            sample_position,
+        );
+
+        assert!(
+            active_leg_summary.starts_with("47.0000,-122.0000 -> VPDUB"),
+            "direct-to CDI label must describe the same direct leg used for deviation: {active_leg_summary}"
+        );
+        assert!(
+            (dots - expected).abs() < 1e-4,
+            "direct-to CDI must use direct segment: got {dots}, expected {expected}"
+        );
+        assert!(
+            (dots - stale).abs() > 0.25,
+            "test must distinguish direct-to CDI from stale underlying leg CDI"
+        );
     }
 
     #[test]

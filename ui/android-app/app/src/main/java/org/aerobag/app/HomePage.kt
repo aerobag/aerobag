@@ -458,6 +458,17 @@ internal fun HomePage(
             throw error
         }
         val result = PackageManagementJson.decodeFromString<OfflinePackagesControllerResultWire>(outputJson)
+        Log.i(
+            "OfflinePackages",
+            "controller result event=${event::class.simpleName} source=$packageSourceBaseUrl " +
+                "planner=${result.uiState.plannerUiState != null} " +
+                "libraryLoaded=${result.uiState.libraryLoaded} " +
+                "libraryLoading=${result.uiState.libraryLoading} " +
+                "refreshEnabled=${result.uiState.refreshEnabled} " +
+                "syncEnabled=${result.uiState.syncEnabled} " +
+                "status=${result.uiState.libraryStatusMessage?.lineSequence()?.firstOrNull()} " +
+                "error=${result.uiState.libraryErrorMessage?.lineSequence()?.firstOrNull()}",
+        )
         writeOfflinePackagesStateJson(prefs, result.packagesStateJson)
         writeOfflinePackagesLibraryCacheJson(prefs, result.libraryCacheJson)
         offlinePackagesControllerResult = result
@@ -475,7 +486,11 @@ internal fun HomePage(
                     refreshed
                 } ?: refreshResult.exceptionOrNull()?.let { error ->
                     val canceled = error is CancellationException || offlinePackageCancelRequested
-                    Log.e("OfflinePackages", "library refresh failed", error)
+                    Log.e(
+                        "OfflinePackages",
+                        "library refresh failed source=${command.packageSourceBaseUrl}",
+                        error,
+                    )
                     OfflinePackagesControllerEventWire.LibraryRefreshFailed(
                         if (canceled) {
                             "package library refresh canceled"

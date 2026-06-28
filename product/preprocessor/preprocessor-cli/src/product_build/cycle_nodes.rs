@@ -1026,6 +1026,10 @@ pub(super) fn build_tpp_render_assemble_node(
     }
     fs::create_dir_all(&plates_root)
         .with_context(|| format!("failed to create {}", plates_root.display()))?;
+    if let Some(parent) = child_records_path.parent() {
+        fs::create_dir_all(parent)
+            .with_context(|| format!("failed to create {}", parent.display()))?;
+    }
     hard_link_or_copy_file(
         &plan_work_dir.join("d-TPP_Metafile.xml"),
         &work_dir.join("d-TPP_Metafile.xml"),

@@ -129,7 +129,7 @@ pub fn build_product(config: &ProductBuildConfig) -> anyhow::Result<ProductBuild
             tasks.push(GraphScheduledTask {
                 id: render_id,
                 deps: vec![plan_task_id.to_string()],
-                weight: 1,
+                weight: TPP_RENDER_UNIT_WEIGHT,
                 kind: ProductScheduledTaskKind::TppRenderUnit {
                     cycle: cycle.to_string(),
                     region,
@@ -140,7 +140,7 @@ pub fn build_product(config: &ProductBuildConfig) -> anyhow::Result<ProductBuild
         tasks.push(GraphScheduledTask {
             id: cycle_task_id(cycle, &tpp_render_assemble_task_name(region)),
             deps: render_ids,
-            weight: 1,
+            weight: LIGHT_TASK_WEIGHT,
             kind: ProductScheduledTaskKind::TppRenderAssemble {
                 cycle: cycle.to_string(),
                 region,
@@ -211,12 +211,12 @@ pub fn build_product(config: &ProductBuildConfig) -> anyhow::Result<ProductBuild
             ChartFamily::EnrL,
             ChartFamily::EnrH,
         ];
-        let work_unit_budget = config.max_heavy_jobs.max(1) * 4 + 3;
+        let work_unit_budget = (config.max_heavy_jobs.max(1) * 4 + 3) * SCHEDULER_WEIGHT_SCALE;
         let mut pending_tasks = Vec::new();
         pending_tasks.push(GraphScheduledTask {
             id: "wmm-source".to_string(),
             deps: vec![],
-            weight: 1,
+            weight: LIGHT_TASK_WEIGHT,
             kind: ProductScheduledTaskKind::WmmSource,
         });
 
@@ -224,7 +224,7 @@ pub fn build_product(config: &ProductBuildConfig) -> anyhow::Result<ProductBuild
             pending_tasks.push(GraphScheduledTask {
                 id: cycle_task_id(cycle, "source-urls"),
                 deps: vec![],
-                weight: 1,
+                weight: LIGHT_TASK_WEIGHT,
                 kind: ProductScheduledTaskKind::SourceUrls {
                     cycle: cycle.clone(),
                 },
@@ -237,7 +237,7 @@ pub fn build_product(config: &ProductBuildConfig) -> anyhow::Result<ProductBuild
                 pending_tasks.push(GraphScheduledTask {
                     id: fetch_id.clone(),
                     deps: vec![cycle_task_id(cycle, "source-urls")],
-                    weight: 1,
+                    weight: LIGHT_TASK_WEIGHT,
                     kind: ProductScheduledTaskKind::ChartFetch {
                         cycle: cycle.clone(),
                         family,
@@ -246,7 +246,7 @@ pub fn build_product(config: &ProductBuildConfig) -> anyhow::Result<ProductBuild
                 pending_tasks.push(GraphScheduledTask {
                     id: process_id.clone(),
                     deps: vec![fetch_id.clone()],
-                    weight: 4,
+                    weight: CHART_PROCESS_WEIGHT,
                     kind: ProductScheduledTaskKind::ChartProcess {
                         cycle: cycle.clone(),
                         family,
@@ -255,7 +255,7 @@ pub fn build_product(config: &ProductBuildConfig) -> anyhow::Result<ProductBuild
                 pending_tasks.push(GraphScheduledTask {
                     id: package_id.clone(),
                     deps: vec![process_id, fetch_id],
-                    weight: 1,
+                    weight: LIGHT_TASK_WEIGHT,
                     kind: ProductScheduledTaskKind::ChartPackage {
                         cycle: cycle.clone(),
                         family,
@@ -266,7 +266,7 @@ pub fn build_product(config: &ProductBuildConfig) -> anyhow::Result<ProductBuild
             pending_tasks.push(GraphScheduledTask {
                 id: cycle_task_id(cycle, "csup-fetch"),
                 deps: vec![cycle_task_id(cycle, "source-urls")],
-                weight: 1,
+                weight: LIGHT_TASK_WEIGHT,
                 kind: ProductScheduledTaskKind::CsupFetch {
                     cycle: cycle.clone(),
                 },
@@ -274,7 +274,7 @@ pub fn build_product(config: &ProductBuildConfig) -> anyhow::Result<ProductBuild
             pending_tasks.push(GraphScheduledTask {
                 id: cycle_task_id(cycle, "csup-process"),
                 deps: vec![cycle_task_id(cycle, "csup-fetch")],
-                weight: 1,
+                weight: LIGHT_TASK_WEIGHT,
                 kind: ProductScheduledTaskKind::CsupProcess {
                     cycle: cycle.clone(),
                 },
@@ -289,7 +289,7 @@ pub fn build_product(config: &ProductBuildConfig) -> anyhow::Result<ProductBuild
                 pending_tasks.push(GraphScheduledTask {
                     id: task_id,
                     deps: vec![cycle_task_id(cycle, "csup-process")],
-                    weight: 2,
+                    weight: CSUP_RENDER_WEIGHT,
                     kind: ProductScheduledTaskKind::CsupRender {
                         cycle: cycle.clone(),
                         region: *region,
@@ -303,7 +303,7 @@ pub fn build_product(config: &ProductBuildConfig) -> anyhow::Result<ProductBuild
                     .cloned()
                     .chain(std::iter::once(cycle_task_id(cycle, "csup-fetch")))
                     .collect(),
-                weight: 1,
+                weight: LIGHT_TASK_WEIGHT,
                 kind: ProductScheduledTaskKind::CsupPackage {
                     cycle: cycle.clone(),
                 },
@@ -312,7 +312,7 @@ pub fn build_product(config: &ProductBuildConfig) -> anyhow::Result<ProductBuild
             pending_tasks.push(GraphScheduledTask {
                 id: cycle_task_id(cycle, "tpp-fetch"),
                 deps: vec![cycle_task_id(cycle, "source-urls")],
-                weight: TPP_RENDER_WEIGHT,
+                weight: LIGHT_TASK_WEIGHT,
                 kind: ProductScheduledTaskKind::TppFetch {
                     cycle: cycle.clone(),
                 },
@@ -329,7 +329,7 @@ pub fn build_product(config: &ProductBuildConfig) -> anyhow::Result<ProductBuild
                         cycle_task_id(cycle, "source-urls"),
                         cycle_task_id(cycle, "tpp-fetch"),
                     ],
-                    weight: TPP_RENDER_WEIGHT,
+                    weight: LIGHT_TASK_WEIGHT,
                     kind: ProductScheduledTaskKind::TppPlan {
                         cycle: cycle.clone(),
                         region: *region,
@@ -338,7 +338,7 @@ pub fn build_product(config: &ProductBuildConfig) -> anyhow::Result<ProductBuild
                 pending_tasks.push(GraphScheduledTask {
                     id: package_id.clone(),
                     deps: vec![assemble_id, cycle_task_id(cycle, "tpp-fetch")],
-                    weight: 1,
+                    weight: LIGHT_TASK_WEIGHT,
                     kind: ProductScheduledTaskKind::TppPackage {
                         cycle: cycle.clone(),
                         region: *region,
@@ -350,7 +350,7 @@ pub fn build_product(config: &ProductBuildConfig) -> anyhow::Result<ProductBuild
             pending_tasks.push(GraphScheduledTask {
                 id: cycle_task_id(cycle, "data-base"),
                 deps: vec![cycle_task_id(cycle, "source-urls")],
-                weight: 4,
+                weight: DATA_BASE_WEIGHT,
                 kind: ProductScheduledTaskKind::DataBase {
                     cycle: cycle.clone(),
                 },
@@ -362,7 +362,7 @@ pub fn build_product(config: &ProductBuildConfig) -> anyhow::Result<ProductBuild
                     deps.extend(tpp_package_ids.iter().cloned());
                     deps
                 },
-                weight: 1,
+                weight: LIGHT_TASK_WEIGHT,
                 kind: ProductScheduledTaskKind::DataMatch {
                     cycle: cycle.clone(),
                 },
@@ -370,7 +370,7 @@ pub fn build_product(config: &ProductBuildConfig) -> anyhow::Result<ProductBuild
             pending_tasks.push(GraphScheduledTask {
                 id: cycle_task_id(cycle, "vectors"),
                 deps: vec![cycle_task_id(cycle, "data")],
-                weight: 1,
+                weight: LIGHT_TASK_WEIGHT,
                 kind: ProductScheduledTaskKind::Vectors {
                     cycle: cycle.clone(),
                 },
@@ -387,7 +387,7 @@ pub fn build_product(config: &ProductBuildConfig) -> anyhow::Result<ProductBuild
             pending_tasks.push(GraphScheduledTask {
                 id: cycle_task_id(cycle, "resource-index"),
                 deps: resource_index_deps,
-                weight: 2,
+                weight: RESOURCE_INDEX_WEIGHT,
                 kind: ProductScheduledTaskKind::ResourceIndex {
                     cycle: cycle.clone(),
                 },
@@ -407,7 +407,7 @@ pub fn build_product(config: &ProductBuildConfig) -> anyhow::Result<ProductBuild
             pending_tasks.push(GraphScheduledTask {
                 id: cycle_task_id(cycle, "nav-db"),
                 deps: nav_db_deps,
-                weight: 1,
+                weight: LIGHT_TASK_WEIGHT,
                 kind: ProductScheduledTaskKind::NavDb {
                     cycle: cycle.clone(),
                 },
@@ -415,7 +415,7 @@ pub fn build_product(config: &ProductBuildConfig) -> anyhow::Result<ProductBuild
             pending_tasks.push(GraphScheduledTask {
                 id: cycle_task_id(cycle, "bundle-manifest"),
                 deps: vec![cycle_task_id(cycle, "nav-db")],
-                weight: 1,
+                weight: LIGHT_TASK_WEIGHT,
                 kind: ProductScheduledTaskKind::BundleManifest {
                     cycle: cycle.clone(),
                 },
@@ -425,26 +425,26 @@ pub fn build_product(config: &ProductBuildConfig) -> anyhow::Result<ProductBuild
         pending_tasks.push(GraphScheduledTask {
             id: "build-world-basemap".to_string(),
             deps: vec![],
-            weight: 1,
+            weight: LIGHT_TASK_WEIGHT,
             kind: ProductScheduledTaskKind::WorldBasemapBuild,
         });
         pending_tasks.push(GraphScheduledTask {
             id: "publish-world-basemap".to_string(),
             deps: vec!["build-world-basemap".to_string()],
-            weight: 1,
+            weight: LIGHT_TASK_WEIGHT,
             kind: ProductScheduledTaskKind::WorldBasemapPublish,
         });
         if include_static_terrain_products() {
             pending_tasks.push(GraphScheduledTask {
                 id: "geoid-source".to_string(),
                 deps: vec![],
-                weight: 1,
+                weight: LIGHT_TASK_WEIGHT,
                 kind: ProductScheduledTaskKind::GeoidSource,
             });
             pending_tasks.push(GraphScheduledTask {
                 id: "terrain-discovery".to_string(),
                 deps: vec![],
-                weight: 1,
+                weight: LIGHT_TASK_WEIGHT,
                 kind: ProductScheduledTaskKind::TerrainDiscovery,
             });
             for region in Region::ALL.iter() {
@@ -452,19 +452,19 @@ pub fn build_product(config: &ProductBuildConfig) -> anyhow::Result<ProductBuild
                 pending_tasks.push(GraphScheduledTask {
                     id: format!("build-terrain-{region_id}"),
                     deps: vec!["terrain-discovery".to_string(), "geoid-source".to_string()],
-                    weight: 6,
+                    weight: TERRAIN_BUILD_WEIGHT,
                     kind: ProductScheduledTaskKind::TerrainBuild { region: *region },
                 });
                 pending_tasks.push(GraphScheduledTask {
                     id: format!("publish-terrain-{region_id}"),
                     deps: vec![format!("build-terrain-{region_id}")],
-                    weight: 1,
+                    weight: LIGHT_TASK_WEIGHT,
                     kind: ProductScheduledTaskKind::TerrainPublish { region: *region },
                 });
                 pending_tasks.push(GraphScheduledTask {
                     id: format!("build-water-mask-{region_id}"),
                     deps: vec![],
-                    weight: 4,
+                    weight: WATER_MASK_BUILD_WEIGHT,
                     kind: ProductScheduledTaskKind::WaterMaskBuild { region: *region },
                 });
                 pending_tasks.push(GraphScheduledTask {
@@ -473,13 +473,13 @@ pub fn build_product(config: &ProductBuildConfig) -> anyhow::Result<ProductBuild
                         "terrain-discovery".to_string(),
                         format!("build-water-mask-{region_id}"),
                     ],
-                    weight: 6,
+                    weight: TERRAIN_BUILD_WEIGHT,
                     kind: ProductScheduledTaskKind::ShadedReliefBuild { region: *region },
                 });
                 pending_tasks.push(GraphScheduledTask {
                     id: format!("publish-shaded-relief-{region_id}"),
                     deps: vec![format!("build-shaded-relief-{region_id}")],
-                    weight: 1,
+                    weight: LIGHT_TASK_WEIGHT,
                     kind: ProductScheduledTaskKind::ShadedReliefPublish { region: *region },
                 });
             }
@@ -490,13 +490,13 @@ pub fn build_product(config: &ProductBuildConfig) -> anyhow::Result<ProductBuild
             pending_tasks.push(GraphScheduledTask {
                 id: format!("build-terrain-{WIDE_ANGLE_REGION_ID}"),
                 deps: terrain_wide_deps,
-                weight: 1,
+                weight: LIGHT_TASK_WEIGHT,
                 kind: ProductScheduledTaskKind::TerrainWideBuild,
             });
             pending_tasks.push(GraphScheduledTask {
                 id: format!("publish-terrain-{WIDE_ANGLE_REGION_ID}"),
                 deps: vec![format!("build-terrain-{WIDE_ANGLE_REGION_ID}")],
-                weight: 1,
+                weight: LIGHT_TASK_WEIGHT,
                 kind: ProductScheduledTaskKind::TerrainWidePublish,
             });
             let shaded_relief_wide_deps = Region::ALL
@@ -506,13 +506,13 @@ pub fn build_product(config: &ProductBuildConfig) -> anyhow::Result<ProductBuild
             pending_tasks.push(GraphScheduledTask {
                 id: format!("build-shaded-relief-{WIDE_ANGLE_REGION_ID}"),
                 deps: shaded_relief_wide_deps,
-                weight: 1,
+                weight: LIGHT_TASK_WEIGHT,
                 kind: ProductScheduledTaskKind::ShadedReliefWideBuild,
             });
             pending_tasks.push(GraphScheduledTask {
                 id: format!("publish-shaded-relief-{WIDE_ANGLE_REGION_ID}"),
                 deps: vec![format!("build-shaded-relief-{WIDE_ANGLE_REGION_ID}")],
-                weight: 1,
+                weight: LIGHT_TASK_WEIGHT,
                 kind: ProductScheduledTaskKind::ShadedReliefWidePublish,
             });
         }
@@ -538,8 +538,18 @@ pub fn build_product(config: &ProductBuildConfig) -> anyhow::Result<ProductBuild
         let publish_ready_task_ids = current_artifacts_deps;
 
         master_log.log(format!(
-            "product-scheduler-ready tasks={} work_unit_budget={} chart_and_data_weight=4 csup_weight=2 tpp_weight={} tpp_render_jobs_per_run={} light_weight=1 resource_index_weight=2",
-            pending_tasks.len(), work_unit_budget, TPP_RENDER_WEIGHT, TPP_RENDER_JOBS_PER_RUN
+            "product-scheduler-ready tasks={} work_unit_budget={} weight_scale={} chart_and_data_weight={} csup_weight={} terrain_weight={} water_mask_weight={} tpp_unit_weight={} tpp_render_jobs_per_run={} light_weight={} resource_index_weight={}",
+            pending_tasks.len(),
+            work_unit_budget,
+            SCHEDULER_WEIGHT_SCALE,
+            CHART_PROCESS_WEIGHT,
+            CSUP_RENDER_WEIGHT,
+            TERRAIN_BUILD_WEIGHT,
+            WATER_MASK_BUILD_WEIGHT,
+            TPP_RENDER_UNIT_WEIGHT,
+            TPP_RENDER_JOBS_PER_RUN,
+            LIGHT_TASK_WEIGHT,
+            RESOURCE_INDEX_WEIGHT
         ))?;
 
         let config_for_tasks = config.clone();

@@ -281,20 +281,39 @@ def pid_is_alive(pid: int | None) -> bool | None:
     return Path(f"/proc/{pid}").exists()
 
 
-def format_runtime(now_wall: datetime, launched_wall: str) -> str:
-    if not launched_wall:
+def format_duration(seconds: int | None) -> str:
+    if seconds is None:
         return "?"
-    try:
-        start = datetime.fromisoformat(launched_wall)
-        delta = (now_wall - start).total_seconds()
-    except ValueError:
-        return "?"
-    total = max(int(delta), 0)
+    total = max(seconds, 0)
     hours, rem = divmod(total, 3600)
     minutes, seconds = divmod(rem, 60)
     if hours:
         return f"{hours}:{minutes:02d}:{seconds:02d}"
     return f"{minutes}:{seconds:02d}"
+
+
+def format_runtime(now_wall: datetime, launched_wall: str) -> str:
+    return format_duration(runtime_seconds(now_wall, launched_wall))
+
+
+def task_runtime_seconds(task: TaskState, now_wall: datetime) -> int | None:
+    if not task.launched_wall:
+        return None
+    try:
+        start = datetime.fromisoformat(task.launched_wall)
+        end = (
+            datetime.fromisoformat(task.completed_wall)
+            if task.completed_wall
+            else now_wall
+        )
+        delta = (end - start).total_seconds()
+    except ValueError:
+        return None
+    return max(int(delta), 0)
+
+
+def task_runtime(task: TaskState, now_wall: datetime) -> str:
+    return format_duration(task_runtime_seconds(task, now_wall))
 
 
 def runtime_seconds(now_wall: datetime, launched_wall: str | None) -> int | None:
@@ -309,7 +328,7 @@ def runtime_seconds(now_wall: datetime, launched_wall: str | None) -> int | None
 
 
 def task_snapshot(task: TaskState, now_wall: datetime) -> dict:
-    runtime = runtime_seconds(now_wall, task.launched_wall)
+    runtime = task_runtime_seconds(task, now_wall)
     return {
         "task": task.task,
         "launched_at": task.launched_at,
@@ -320,7 +339,7 @@ def task_snapshot(task: TaskState, now_wall: datetime) -> dict:
         "completed_at": task.completed_at,
         "completed_wall": task.completed_wall,
         "runtime_seconds": runtime,
-        "runtime": format_runtime(now_wall, task.launched_wall),
+        "runtime": task_runtime(task, now_wall),
     }
 
 

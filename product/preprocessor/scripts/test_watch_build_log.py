@@ -3,6 +3,7 @@
 import json
 import tempfile
 import unittest
+from datetime import datetime
 from pathlib import Path
 
 import watch_build_log
@@ -137,6 +138,31 @@ class WatchBuildLogTests(unittest.TestCase):
         self.assertEqual(snapshot["progress"]["pending"], 1)
         self.assertEqual(snapshot["tasks"]["completed"][0]["task"], "nav-db")
         self.assertEqual(snapshot["process"]["alive"], True)
+
+    def test_completed_task_runtime_uses_completion_time_not_now(self) -> None:
+        state = watch_build_log.BuildState()
+        state.apply_line(
+            "2026-06-09T21:00:00+00:00 +0:00 begin pid=1 "
+            "build_root=/tmp/build publish_dir=/tmp/build/published/master/20260609T210000Z"
+        )
+        state.apply_line(
+            "2026-06-09T21:00:02+00:00 +0:02 product-scheduler-launch nav-db "
+            "launched=1/1 completed=0/1 weight=1 running_units=1/4"
+        )
+        state.apply_line(
+            "2026-06-09T21:00:05+00:00 +0:05 product-scheduler-complete nav-db "
+            "completed=1/1 running_units=0/4 published"
+        )
+
+        snapshot = watch_build_log.state_snapshot(
+            state,
+            Path("/tmp/build.log"),
+            now_wall=datetime.fromisoformat("2026-06-09T22:00:00+00:00"),
+        )
+
+        completed = snapshot["tasks"]["completed"][0]
+        self.assertEqual(completed["runtime_seconds"], 3)
+        self.assertEqual(completed["runtime"], "0:03")
 
 
 if __name__ == "__main__":

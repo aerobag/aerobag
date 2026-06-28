@@ -13,7 +13,7 @@ fn tpp_render_tasks_for_plan(
         tasks.push(GraphScheduledTask {
             id: render_id,
             deps: vec![plan_task_id.to_string()],
-            weight: 1,
+            weight: TPP_RENDER_UNIT_WEIGHT,
             kind: ScheduledTaskKind::TppRenderUnit {
                 region,
                 unit: unit.clone(),
@@ -23,7 +23,7 @@ fn tpp_render_tasks_for_plan(
     tasks.push(GraphScheduledTask {
         id: tpp_render_assemble_task_name(region),
         deps: render_ids,
-        weight: 1,
+        weight: LIGHT_TASK_WEIGHT,
         kind: ScheduledTaskKind::TppRenderAssemble { region },
     });
     tasks
@@ -116,7 +116,7 @@ pub fn build_cycle(config: &ProductBuildConfig) -> anyhow::Result<PathBuf> {
             ChartFamily::EnrL,
             ChartFamily::EnrH,
         ];
-        let work_unit_budget = config.max_heavy_jobs.max(1) * 4 + 2;
+        let work_unit_budget = (config.max_heavy_jobs.max(1) * 4 + 2) * SCHEDULER_WEIGHT_SCALE;
         let mut pending_tasks = Vec::new();
         for family in chart_families {
             let family_id = family_slug(family).to_string();
@@ -125,19 +125,19 @@ pub fn build_cycle(config: &ProductBuildConfig) -> anyhow::Result<PathBuf> {
             pending_tasks.push(GraphScheduledTask {
                 id: fetch_id.clone(),
                 deps: vec![],
-                weight: 1,
+                weight: LIGHT_TASK_WEIGHT,
                 kind: ScheduledTaskKind::ChartFetch { family },
             });
             pending_tasks.push(GraphScheduledTask {
                 id: process_id.clone(),
                 deps: vec![fetch_id],
-                weight: 4,
+                weight: CHART_PROCESS_WEIGHT,
                 kind: ScheduledTaskKind::ChartProcess { family },
             });
             pending_tasks.push(GraphScheduledTask {
                 id: format!("charts-{family_id}-package"),
                 deps: vec![process_id, format!("charts-{family_id}-fetch")],
-                weight: 1,
+                weight: LIGHT_TASK_WEIGHT,
                 kind: ScheduledTaskKind::ChartPackage { family },
             });
             for region in Region::ALL.iter() {
@@ -148,7 +148,7 @@ pub fn build_cycle(config: &ProductBuildConfig) -> anyhow::Result<PathBuf> {
                         region.code().to_ascii_lowercase()
                     ),
                     deps: vec![format!("charts-{family_id}-package")],
-                    weight: 1,
+                    weight: LIGHT_TASK_WEIGHT,
                     kind: ScheduledTaskKind::ChartUnpack {
                         family,
                         region: *region,
@@ -159,13 +159,13 @@ pub fn build_cycle(config: &ProductBuildConfig) -> anyhow::Result<PathBuf> {
         pending_tasks.push(GraphScheduledTask {
             id: "csup-fetch".to_string(),
             deps: vec![],
-            weight: 1,
+            weight: LIGHT_TASK_WEIGHT,
             kind: ScheduledTaskKind::CsupFetch,
         });
         pending_tasks.push(GraphScheduledTask {
             id: "csup-process".to_string(),
             deps: vec!["csup-fetch".to_string()],
-            weight: 1,
+            weight: LIGHT_TASK_WEIGHT,
             kind: ScheduledTaskKind::CsupProcess,
         });
         let mut csup_render_ids = Vec::new();
@@ -176,7 +176,7 @@ pub fn build_cycle(config: &ProductBuildConfig) -> anyhow::Result<PathBuf> {
             pending_tasks.push(GraphScheduledTask {
                 id: task_id,
                 deps: vec!["csup-process".to_string()],
-                weight: 2,
+                weight: CSUP_RENDER_WEIGHT,
                 kind: ScheduledTaskKind::CsupRender { region: *region },
             });
         }
@@ -187,21 +187,21 @@ pub fn build_cycle(config: &ProductBuildConfig) -> anyhow::Result<PathBuf> {
                 .cloned()
                 .chain(std::iter::once("csup-fetch".to_string()))
                 .collect(),
-            weight: 1,
+            weight: LIGHT_TASK_WEIGHT,
             kind: ScheduledTaskKind::CsupPackage,
         });
         for region in Region::ALL.iter() {
             pending_tasks.push(GraphScheduledTask {
                 id: format!("csup-unpack-{}", region.code().to_ascii_lowercase()),
                 deps: vec!["csup-package".to_string()],
-                weight: 1,
+                weight: LIGHT_TASK_WEIGHT,
                 kind: ScheduledTaskKind::CsupUnpack { region: *region },
             });
         }
         pending_tasks.push(GraphScheduledTask {
             id: "tpp-fetch".to_string(),
             deps: vec![],
-            weight: TPP_RENDER_WEIGHT,
+            weight: LIGHT_TASK_WEIGHT,
             kind: ScheduledTaskKind::TppFetch,
         });
         let mut tpp_package_ids = Vec::new();
@@ -213,19 +213,19 @@ pub fn build_cycle(config: &ProductBuildConfig) -> anyhow::Result<PathBuf> {
             pending_tasks.push(GraphScheduledTask {
                 id: plan_id,
                 deps: vec!["tpp-fetch".to_string()],
-                weight: TPP_RENDER_WEIGHT,
+                weight: LIGHT_TASK_WEIGHT,
                 kind: ScheduledTaskKind::TppPlan { region: *region },
             });
             pending_tasks.push(GraphScheduledTask {
                 id: package_id.clone(),
                 deps: vec![assemble_id, "tpp-fetch".to_string()],
-                weight: 1,
+                weight: LIGHT_TASK_WEIGHT,
                 kind: ScheduledTaskKind::TppPackage { region: *region },
             });
             pending_tasks.push(GraphScheduledTask {
                 id: format!("tpp-{region_id}-unpack"),
                 deps: vec![package_id.clone()],
-                weight: 1,
+                weight: LIGHT_TASK_WEIGHT,
                 kind: ScheduledTaskKind::TppUnpack { region: *region },
             });
             tpp_package_ids.push(package_id);
@@ -233,7 +233,7 @@ pub fn build_cycle(config: &ProductBuildConfig) -> anyhow::Result<PathBuf> {
         pending_tasks.push(GraphScheduledTask {
             id: "data-base".to_string(),
             deps: vec![],
-            weight: 4,
+            weight: DATA_BASE_WEIGHT,
             kind: ScheduledTaskKind::DataBase,
         });
         pending_tasks.push(GraphScheduledTask {
@@ -243,19 +243,19 @@ pub fn build_cycle(config: &ProductBuildConfig) -> anyhow::Result<PathBuf> {
                 deps.extend(tpp_package_ids.iter().cloned());
                 deps
             },
-            weight: 1,
+            weight: LIGHT_TASK_WEIGHT,
             kind: ScheduledTaskKind::DataMatch,
         });
         pending_tasks.push(GraphScheduledTask {
             id: "vectors".to_string(),
             deps: vec!["data".to_string()],
-            weight: 1,
+            weight: LIGHT_TASK_WEIGHT,
             kind: ScheduledTaskKind::Vectors,
         });
         pending_tasks.push(GraphScheduledTask {
             id: "data-unpack".to_string(),
             deps: vec!["data".to_string()],
-            weight: 1,
+            weight: LIGHT_TASK_WEIGHT,
             kind: ScheduledTaskKind::DataUnpack,
         });
         let mut resource_index_deps = chart_families
@@ -268,13 +268,21 @@ pub fn build_cycle(config: &ProductBuildConfig) -> anyhow::Result<PathBuf> {
         pending_tasks.push(GraphScheduledTask {
             id: "resource-index".to_string(),
             deps: resource_index_deps,
-            weight: 2,
+            weight: RESOURCE_INDEX_WEIGHT,
             kind: ScheduledTaskKind::ResourceIndex,
         });
 
         master_log.log(format!(
-            "scheduler-ready tasks={} work_unit_budget={} chart_and_data_weight=4 csup_weight=2 tpp_weight={} tpp_render_jobs_per_run={} light_weight=1 resource_index_weight=2",
-            pending_tasks.len(), work_unit_budget, TPP_RENDER_WEIGHT, TPP_RENDER_JOBS_PER_RUN
+            "scheduler-ready tasks={} work_unit_budget={} weight_scale={} chart_and_data_weight={} csup_weight={} tpp_unit_weight={} tpp_render_jobs_per_run={} light_weight={} resource_index_weight={}",
+            pending_tasks.len(),
+            work_unit_budget,
+            SCHEDULER_WEIGHT_SCALE,
+            CHART_PROCESS_WEIGHT,
+            CSUP_RENDER_WEIGHT,
+            TPP_RENDER_UNIT_WEIGHT,
+            TPP_RENDER_JOBS_PER_RUN,
+            LIGHT_TASK_WEIGHT,
+            RESOURCE_INDEX_WEIGHT
         ))?;
 
         let config_for_tasks = config.clone();

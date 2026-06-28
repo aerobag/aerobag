@@ -631,6 +631,32 @@ internal fun HomePage(
                     AndroidRuntimeContent.inspectNavDbStatus(context.applicationContext)
                 }
             }
+            LaunchedEffect(
+                offlinePackagesRouted,
+                packageSourceBaseUrl,
+                controllerUiState?.plannerUiState != null,
+                controllerUiState?.libraryLoaded,
+                controllerUiState?.libraryLoading,
+                controllerUiState?.libraryStatusMessage,
+                controllerUiState?.libraryErrorMessage,
+            ) {
+                val uiState = controllerUiState ?: return@LaunchedEffect
+                if (
+                    offlinePackagesRouted &&
+                    uiState.plannerUiState == null &&
+                    !uiState.libraryLoading &&
+                    (uiState.libraryStatusMessage != null || uiState.libraryErrorMessage != null)
+                ) {
+                    Log.w(
+                        "OfflinePackages",
+                        "planner table unavailable source=$packageSourceBaseUrl " +
+                            "libraryLoaded=${uiState.libraryLoaded} " +
+                            "refreshEnabled=${uiState.refreshEnabled} " +
+                            "status=${uiState.libraryStatusMessage} " +
+                            "error=${uiState.libraryErrorMessage}",
+                    )
+                }
+            }
             LaunchedEffect(navDbStatus) {
                 val status = navDbStatus ?: return@LaunchedEffect
                 dispatchOfflinePackagesController(

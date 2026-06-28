@@ -1100,7 +1100,10 @@ fn project_offline_packages_controller_ui_state(
         library_loaded,
         library_loading: state.library_loading,
         library_error_message: state.library_error_message.clone(),
-        library_status_message: format_offline_package_library_status_message(state),
+        library_status_message: format_offline_package_library_status_message(
+            state,
+            package_source_base_url,
+        ),
         sync_in_flight: state.sync_in_flight,
         sync_message: state.sync_message.clone(),
         storage_capacity_label: format_offline_package_storage_capacity_label(storage),
@@ -1117,12 +1120,24 @@ fn project_offline_packages_controller_ui_state(
 
 fn format_offline_package_library_status_message(
     state: &OfflinePackagesControllerState,
+    package_source_base_url: &str,
 ) -> Option<String> {
     let error = state.library_error_message.as_ref()?;
     match state.library_cache.as_ref() {
-        Some(cache) => Some(format!(
-            "Using cached package catalog from {}; refresh failed: {error}",
-            format_epoch_ms_utc(cache.fetched_at_epoch_ms)
+        Some(cache) if cache.package_source_base_url == package_source_base_url
+            && !cache.discovery_manifests.is_empty() =>
+        {
+            Some(format!(
+                "Using cached package catalog from {}; refresh failed: {error}",
+                format_epoch_ms_utc(cache.fetched_at_epoch_ms)
+            ))
+        }
+        Some(cache) if cache.package_source_base_url != package_source_base_url => Some(format!(
+            "Cached package catalog is for {}, but current package source is {}; refresh failed: {error}",
+            cache.package_source_base_url, package_source_base_url
+        )),
+        Some(_) => Some(format!(
+            "Cached package catalog is incomplete, so installed packages cannot be grouped; refresh failed: {error}"
         )),
         None => Some(format!(
             "No compatible package catalog is loaded, so installed packages cannot be grouped: {error}"
@@ -3337,6 +3352,75 @@ mod tests {
             .as_deref()
             .unwrap()
             .contains("Using cached package catalog"));
+    }
+
+    #[test]
+    fn offline_packages_controller_reports_source_mismatched_cached_catalog_without_table() {
+        let discovery = CurrentArtifactsManifest {
+            schema_version: Some(1),
+            contracts: test_contracts(),
+            artifact_roots: test_artifact_roots(),
+            as_of_date: Some("2026-05-20".to_string()),
+            as_of_utc: Some("2026-05-20T12:00:00Z".to_string()),
+            bundles: vec![CurrentArtifactsBundleRef {
+                filename: "bundle_cycle_2605.json".to_string(),
+                relative_path: "bundle_cycle_2605.json".to_string(),
+                id: "cycle-2605".to_string(),
+                bundle_type: "cycle".to_string(),
+                cycle: Some("2605".to_string()),
+                cycle_version: Some("01".to_string()),
+                start_valid: None,
+                end_valid: None,
+                checksum_sha256: None,
+                size_bytes: None,
+            }],
+            startup_prefetch: None,
+        };
+        let result = reduce_offline_packages_controller(&OfflinePackagesControllerInput {
+            state: Some(OfflinePackagesControllerState {
+                packages_state: Some(OfflinePackagesState {
+                    preferences: default_offline_package_preferences(["nw"], ["sec"]),
+                    now_override_epoch_ms: Some(1_778_025_600_000),
+                }),
+                library_cache: Some(OfflinePackagesLibraryCache {
+                    package_source_base_url: "http://old-source.test".to_string(),
+                    fetched_at_epoch_ms: 1_778_025_600_000,
+                    discovery_manifests: vec![discovery],
+                    bundle_manifests_by_filename: BTreeMap::new(),
+                }),
+                tombstoned_installed_filename_messages: BTreeMap::new(),
+                suppressed_fetch_filename_messages: BTreeMap::new(),
+                sync_progress: None,
+                library_loading: true,
+                library_error_message: None,
+                sync_in_flight: false,
+                sync_message: None,
+            }),
+            package_source_base_url: "http://current-source.test".to_string(),
+            discovery_filenames: vec![],
+            region_ids: vec!["nw".to_string()],
+            product_ids: vec!["sec".to_string()],
+            now_epoch_ms: 1_778_025_600_000,
+            installed: vec![installed_with_size("NW_SEC_2605", 52_000_000)],
+            storage: None,
+            event: OfflinePackagesControllerEvent::LibraryRefreshFailed {
+                message: "Failed to connect to current-source.test".to_string(),
+            },
+        });
+
+        assert!(result.ui_state.planner_ui_state.is_none());
+        assert!(!result.ui_state.library_loaded);
+        let message = result
+            .ui_state
+            .library_status_message
+            .as_deref()
+            .expect("library status message");
+        assert!(message.contains("Cached package catalog is for http://old-source.test"));
+        assert!(message.contains("current package source is http://current-source.test"));
+        assert!(
+            !message.contains("Using cached package catalog"),
+            "source-mismatched cache must not claim it is being used"
+        );
     }
 
     #[test]

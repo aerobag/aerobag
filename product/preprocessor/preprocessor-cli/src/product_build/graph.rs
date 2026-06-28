@@ -399,7 +399,7 @@ where
             // wait for a running task to free capacity or satisfy dependencies
         }
 
-        let (task_id, task_weight, result) = loop {
+        let first_completion = loop {
             match rx.recv_timeout(Duration::from_secs(2)) {
                 Ok(message) => break message,
                 Err(RecvTimeoutError::Timeout) => {
@@ -416,73 +416,79 @@ where
                 }
             }
         };
-        running_jobs -= 1;
-        running_units = running_units.saturating_sub(task_weight);
-        if let Some(handle) = worker_threads.remove(&task_id) {
-            handle
-                .join()
-                .map_err(|_| anyhow::anyhow!("failed to join graph worker {task_id}"))??;
+        let mut completions = vec![first_completion];
+        while let Ok(completion) = rx.try_recv() {
+            completions.push(completion);
         }
-        let task_kind = running_task_kinds
-            .remove(&task_id)
-            .with_context(|| format!("missing running task kind for {task_id}"))?;
-        match result {
-            Ok(completion) => {
-                completed_tasks += 1;
-                let mut next_task_node_records = task_node_records.clone();
-                next_task_node_records.insert(task_id.clone(), completion.node_records.clone());
-                let mut next_task_values = task_values.clone();
-                next_task_values.insert(task_id.clone(), completion.value.clone());
-                let spawned_tasks = expand_task(
-                    &task_id,
-                    &task_kind,
-                    &completion,
-                    &next_task_values,
-                    &next_task_node_records,
-                )?;
-                if !spawned_tasks.is_empty() {
-                    for task in &spawned_tasks {
-                        if !known_task_ids.insert(task.id.clone()) {
-                            bail!("{graph_name} duplicate dynamic task id {}", task.id);
+        for (task_id, task_weight, result) in completions {
+            running_jobs -= 1;
+            running_units = running_units.saturating_sub(task_weight);
+            if let Some(handle) = worker_threads.remove(&task_id) {
+                handle
+                    .join()
+                    .map_err(|_| anyhow::anyhow!("failed to join graph worker {task_id}"))??;
+            }
+            let task_kind = running_task_kinds
+                .remove(&task_id)
+                .with_context(|| format!("missing running task kind for {task_id}"))?;
+            match result {
+                Ok(completion) => {
+                    completed_tasks += 1;
+                    let mut next_task_node_records = task_node_records.clone();
+                    next_task_node_records.insert(task_id.clone(), completion.node_records.clone());
+                    let mut next_task_values = task_values.clone();
+                    next_task_values.insert(task_id.clone(), completion.value.clone());
+                    let spawned_tasks = expand_task(
+                        &task_id,
+                        &task_kind,
+                        &completion,
+                        &next_task_values,
+                        &next_task_node_records,
+                    )?;
+                    if !spawned_tasks.is_empty() {
+                        for task in &spawned_tasks {
+                            if !known_task_ids.insert(task.id.clone()) {
+                                bail!("{graph_name} duplicate dynamic task id {}", task.id);
+                            }
+                        }
+                        total_tasks += spawned_tasks.len();
+                        log(format!(
+                            "{graph_name}-spawn {} count={} total_tasks={}",
+                            task_id,
+                            spawned_tasks.len(),
+                            total_tasks
+                        ))?;
+                        pending_tasks.extend(spawned_tasks);
+                    }
+                    task_node_records = next_task_node_records;
+                    task_values = next_task_values;
+                    completed_ids.insert(task_id.clone());
+                    log(format!(
+                        "{graph_name}-complete {} completed={}/{} running_units={}/{} {}",
+                        task_id,
+                        completed_tasks,
+                        total_tasks,
+                        running_units,
+                        work_unit_budget,
+                        completion.completion_detail,
+                    ))?;
+                }
+                Err(err) => {
+                    let error_text = log_error_chain(&err);
+                    log(format!(
+                        "{graph_name}-complete {task_id} FAIL error={error_text}"
+                    ))?;
+                    if matches!(failure_policy, GraphFailurePolicy::FailFast) {
+                        return Err(err);
+                    }
+                    if let GraphFailurePolicy::FailSlow(scope_for_task) = &failure_policy {
+                        if let Some(scope) = scope_for_task(&task_id) {
+                            failed_scopes.insert(scope);
                         }
                     }
-                    total_tasks += spawned_tasks.len();
-                    log(format!(
-                        "{graph_name}-spawn {} count={} total_tasks={}",
-                        task_id,
-                        spawned_tasks.len(),
-                        total_tasks
-                    ))?;
-                    pending_tasks.extend(spawned_tasks);
+                    failed_ids.insert(task_id.clone());
+                    failures.insert(task_id, error_text);
                 }
-                task_node_records = next_task_node_records;
-                task_values = next_task_values;
-                completed_ids.insert(task_id.clone());
-                log(format!(
-                    "{graph_name}-complete {} completed={}/{} running_units={}/{} {}",
-                    task_id,
-                    completed_tasks,
-                    total_tasks,
-                    running_units,
-                    work_unit_budget,
-                    completion.completion_detail,
-                ))?;
-            }
-            Err(err) => {
-                let error_text = log_error_chain(&err);
-                log(format!(
-                    "{graph_name}-complete {task_id} FAIL error={error_text}"
-                ))?;
-                if matches!(failure_policy, GraphFailurePolicy::FailFast) {
-                    return Err(err);
-                }
-                if let GraphFailurePolicy::FailSlow(scope_for_task) = &failure_policy {
-                    if let Some(scope) = scope_for_task(&task_id) {
-                        failed_scopes.insert(scope);
-                    }
-                }
-                failed_ids.insert(task_id.clone());
-                failures.insert(task_id, error_text);
             }
         }
     }

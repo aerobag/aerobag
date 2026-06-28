@@ -2153,7 +2153,7 @@ fn utc_now_string() -> String {
 }
 
 mod process;
-pub use process::maybe_reexec_build_cycle_under_cgroup;
+pub use process::{ensure_nofile_limit, maybe_reexec_build_under_cgroup};
 
 mod logging;
 use logging::*;

@@ -40,11 +40,11 @@ use preprocessor_vectors::{
 };
 use product_build::{
     audit_procedure_geometry_from_sqlite, build_cycle, build_product, default_artifact_write_path,
-    explain_product_build, gc_build_cache, gc_fetch_cache, gc_publication,
-    maybe_reexec_build_cycle_under_cgroup, merge_current_artifacts_manifests,
-    publish_discovery_manifest, BuildCacheGcConfig, BuildCacheGcMode, BuildCacheGcReport,
-    FetchCacheGcCandidateKind, FetchCacheGcConfig, FetchCacheGcReport,
-    ProcedureGeometryAuditFilter, ProductBuildConfig, PublicationGcConfig, PublicationGcReport,
+    ensure_nofile_limit, explain_product_build, gc_build_cache, gc_fetch_cache, gc_publication,
+    maybe_reexec_build_under_cgroup, merge_current_artifacts_manifests, publish_discovery_manifest,
+    BuildCacheGcConfig, BuildCacheGcMode, BuildCacheGcReport, FetchCacheGcCandidateKind,
+    FetchCacheGcConfig, FetchCacheGcReport, ProcedureGeometryAuditFilter, ProductBuildConfig,
+    PublicationGcConfig, PublicationGcReport,
 };
 use sha2::{Digest, Sha256};
 
@@ -2634,14 +2634,16 @@ fn main() -> anyhow::Result<()> {
             println!("zip {}", zip_path.display());
         }
         Some("build-cycle") => {
-            if maybe_reexec_build_cycle_under_cgroup(&args[2..])? {
+            if maybe_reexec_build_under_cgroup("build-cycle", &args[2..])? {
                 return Ok(());
             }
+            ensure_nofile_limit()?;
             let config = ProductBuildConfig::from_env_and_args(&args[2..])?;
             let manifest_path = build_cycle(&config)?;
             println!("{}", manifest_path.display());
         }
         Some("build-product") => {
+            ensure_nofile_limit()?;
             let config = ProductBuildConfig::from_env_and_args(&args[2..])?;
             let result = build_product(&config)?;
             for cycle_manifest_path in result.cycle_manifest_paths {

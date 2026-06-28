@@ -1315,10 +1315,16 @@ pub fn ui_session_work_scheduler_complete_json(
     let mut schedulers = ui_session_work_schedulers()
         .lock()
         .map_err(|_| "ui session work scheduler store poisoned".to_string())?;
-    let scheduler = schedulers
-        .get_mut(&(handle as u32))
-        .ok_or_else(|| format!("invalid ui session work scheduler handle: {handle}"))?;
-    serde_json::to_string(&scheduler.complete(request_id)).map_err(|err| err.to_string())
+    let decision = match schedulers.get_mut(&(handle as u32)) {
+        Some(scheduler) => scheduler.complete(request_id),
+        None => app_core::UiSessionWorkCompletionDecision {
+            result_action: app_core::UiSessionWorkResultAction::Drop {
+                reason: "scheduler_destroyed".to_string(),
+            },
+            next: None,
+        },
+    };
+    serde_json::to_string(&decision).map_err(|err| err.to_string())
 }
 
 pub fn destroy_ui_session_work_scheduler(handle: u64) -> Result<(), String> {
@@ -3831,5 +3837,57 @@ mod tests {
 
         assert!(plan.route_components.is_empty());
         assert!(plan.resolved_legs.is_empty());
+    }
+
+    #[test]
+    fn stale_ui_session_work_completion_after_destroy_drops_result() {
+        let handle = create_ui_session_work_scheduler().unwrap();
+        let request = app_core::UiSessionWorkRequest {
+            id: 1,
+            kind: app_core::UiSessionWorkKind::MapOverlay,
+            coalesce_key: Some("map_overlay".to_string()),
+            requested_at_ms: 1_000,
+        };
+        let request_json = serde_json::to_string(&request).unwrap();
+        let decision: app_core::UiSessionWorkRequestDecision = serde_json::from_str(
+            &ui_session_work_scheduler_request_json(handle, &request_json).unwrap(),
+        )
+        .unwrap();
+        assert!(matches!(
+            decision,
+            app_core::UiSessionWorkRequestDecision::Start { .. }
+        ));
+
+        destroy_ui_session_work_scheduler(handle).unwrap();
+
+        let completion: app_core::UiSessionWorkCompletionDecision =
+            serde_json::from_str(&ui_session_work_scheduler_complete_json(handle, 1).unwrap())
+                .unwrap();
+        assert_eq!(
+            completion,
+            app_core::UiSessionWorkCompletionDecision {
+                result_action: app_core::UiSessionWorkResultAction::Drop {
+                    reason: "scheduler_destroyed".to_string(),
+                },
+                next: None,
+            }
+        );
+    }
+
+    #[test]
+    fn ui_session_work_request_after_destroy_stays_loud() {
+        let handle = create_ui_session_work_scheduler().unwrap();
+        destroy_ui_session_work_scheduler(handle).unwrap();
+        let request = app_core::UiSessionWorkRequest {
+            id: 1,
+            kind: app_core::UiSessionWorkKind::MapOverlay,
+            coalesce_key: Some("map_overlay".to_string()),
+            requested_at_ms: 1_000,
+        };
+        let request_json = serde_json::to_string(&request).unwrap();
+
+        let error = ui_session_work_scheduler_request_json(handle, &request_json)
+            .expect_err("requesting work after destroy should remain an error");
+        assert!(error.contains("invalid ui session work scheduler handle"));
     }
 }

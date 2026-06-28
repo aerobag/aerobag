@@ -202,6 +202,9 @@ class UiSessionWorkRunner(
     }
 
     private fun start(request: WorkRequestWire) {
+        if (closed) {
+            return
+        }
         val payload = payloads[request.id]
         if (payload == null) {
             complete(request.id)
@@ -213,8 +216,15 @@ class UiSessionWorkRunner(
                     payload.run(uiSession)
                 }
             }
+            if (closed) {
+                payloads.remove(request.id)
+                return@launch
+            }
             val completion = complete(request.id)
             payloads.remove(request.id)
+            if (closed) {
+                return@launch
+            }
             when (completion.resultAction) {
                 is ResultAction.Land -> {
                     outcome
@@ -226,12 +236,17 @@ class UiSessionWorkRunner(
                 }
             }
             completion.next?.let { next ->
-                start(next)
+                if (!closed) {
+                    start(next)
+                }
             }
         }
     }
 
     private fun complete(requestId: Long): CompletionDecision {
+        if (closed) {
+            return droppedCompletion("runner_closed")
+        }
         return decodeCompletionDecision(
             bridge.uiSessionWorkSchedulerCompleteJson(
                 schedulerHandle,
@@ -240,6 +255,12 @@ class UiSessionWorkRunner(
         )
     }
 }
+
+private fun droppedCompletion(reason: String): CompletionDecision =
+    CompletionDecision(
+        resultAction = ResultAction.Drop(reason),
+        next = null,
+    )
 
 private sealed class WorkPayload(
     val kind: String,

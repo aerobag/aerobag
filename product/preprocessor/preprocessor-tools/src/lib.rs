@@ -2,7 +2,7 @@ use std::{
     fs,
     io::{BufRead, BufReader, Error as IoError, Read, Seek, SeekFrom, Write},
     path::{Path, PathBuf},
-    process::{Command, Stdio},
+    process::{Command, Output, Stdio},
     thread,
     time::Instant,
 };
@@ -54,6 +54,42 @@ pub struct ToolOutcome {
 }
 
 const TOOL_LOG_TAIL_BYTES: u64 = 4096;
+
+pub fn command_output_diagnostic_summary(output: &Output) -> String {
+    let mut parts = vec![exit_status_summary(output.status)];
+    if !output.stdout.is_empty() {
+        parts.push(format!(
+            "stdout_tail=\"{}\"",
+            escaped_byte_tail(&output.stdout, TOOL_LOG_TAIL_BYTES as usize)
+        ));
+    }
+    if !output.stderr.is_empty() {
+        parts.push(format!(
+            "stderr_tail=\"{}\"",
+            escaped_byte_tail(&output.stderr, TOOL_LOG_TAIL_BYTES as usize)
+        ));
+    }
+    parts.join(" ")
+}
+
+fn exit_status_summary(status: std::process::ExitStatus) -> String {
+    if let Some(code) = status.code() {
+        return format!("exit_code={code}");
+    }
+    #[cfg(unix)]
+    {
+        use std::os::unix::process::ExitStatusExt;
+        if let Some(signal) = status.signal() {
+            return format!("signal={signal}");
+        }
+    }
+    "signal".to_string()
+}
+
+fn escaped_byte_tail(bytes: &[u8], max_bytes: usize) -> String {
+    let start = bytes.len().saturating_sub(max_bytes);
+    escape_log_field(&String::from_utf8_lossy(&bytes[start..]))
+}
 
 impl ToolOutcome {
     pub fn diagnostic_summary(&self) -> String {

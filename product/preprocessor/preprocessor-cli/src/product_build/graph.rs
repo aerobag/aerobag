@@ -368,6 +368,7 @@ mod tests {
     enum TestTask {
         Pass(&'static str),
         Fail,
+        FailWithContext,
     }
 
     #[test]
@@ -417,6 +418,9 @@ mod tests {
                     completion_detail: "ok".to_string(),
                 }),
                 TestTask::Fail => anyhow::bail!("synthetic failure"),
+                TestTask::FailWithContext => {
+                    Err(anyhow::anyhow!("inner diagnostic").context("outer failure"))
+                }
             },
         )
         .unwrap();
@@ -432,6 +436,45 @@ mod tests {
         assert_eq!(
             outcome.skipped_tasks.iter().cloned().collect::<Vec<_>>(),
             vec!["d"]
+        );
+    }
+
+    #[test]
+    fn fail_slow_preserves_nested_failure_diagnostics() {
+        let tasks = vec![GraphScheduledTask {
+            id: "a".to_string(),
+            deps: vec![],
+            weight: 1,
+            kind: TestTask::FailWithContext,
+        }];
+        let outcome = run_weighted_task_graph_fail_slow_with_failure_scopes(
+            "test",
+            tasks,
+            1,
+            |_| None,
+            |_| Ok(()),
+            |kind, _, _| match kind {
+                TestTask::Pass(value) => Ok(GraphTaskCompletion {
+                    node_records: vec![],
+                    value: value.to_string(),
+                    completion_detail: "ok".to_string(),
+                }),
+                TestTask::Fail => anyhow::bail!("synthetic failure"),
+                TestTask::FailWithContext => {
+                    Err(anyhow::anyhow!("inner diagnostic").context("outer failure"))
+                }
+            },
+        )
+        .unwrap();
+
+        let failure = outcome.failures.get("a").expect("task should fail");
+        assert!(
+            failure.contains("outer failure"),
+            "missing outer context: {failure}"
+        );
+        assert!(
+            failure.contains("inner diagnostic"),
+            "missing inner diagnostic: {failure}"
         );
     }
 
@@ -476,6 +519,9 @@ mod tests {
                     completion_detail: "ok".to_string(),
                 }),
                 TestTask::Fail => anyhow::bail!("synthetic failure"),
+                TestTask::FailWithContext => {
+                    Err(anyhow::anyhow!("inner diagnostic").context("outer failure"))
+                }
             },
         )
         .unwrap();

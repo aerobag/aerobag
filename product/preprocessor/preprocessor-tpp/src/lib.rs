@@ -18,7 +18,8 @@ use preprocessor_fetch::{
     read_source_prefetch_requests_jsonl, FetchCacheConfig, PrefetchRequest,
 };
 use preprocessor_tools::{
-    append_pngs_vertical, flatten_png_onto_white, sanitize_label, ToolInvocation,
+    append_pngs_vertical, command_output_diagnostic_summary, flatten_png_onto_white,
+    sanitize_label, ToolInvocation,
 };
 
 mod package;
@@ -917,8 +918,13 @@ fn detect_plate_rotation(pdf_path: &Path, output_name: &str) -> anyhow::Result<P
         .output()
         .with_context(|| format!("failed to run {}", script_path.display()))?;
     if !output.status.success() {
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        bail!("detect_landscape_rotation.py failed: {stderr}");
+        bail!(
+            "detect_landscape_rotation.py failed for {}; command=\"python3 {} {}\" {}",
+            pdf_path.display(),
+            script_path.display(),
+            pdf_path.display(),
+            command_output_diagnostic_summary(&output)
+        );
     }
     let stdout =
         String::from_utf8(output.stdout).context("landscape rotation output was not utf-8")?;
@@ -1067,8 +1073,15 @@ fn find_plate_pages(pdf_path: &Path, apt_id: &str) -> anyhow::Result<Vec<u32>> {
         .output()
         .with_context(|| format!("failed to run {}", script_path.display()))?;
     if !output.status.success() {
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        bail!("find_plate_pages.py failed: {stderr}");
+        bail!(
+            "find_plate_pages.py failed for {} apt_id={}; command=\"python3 {} {} {}\" {}",
+            pdf_path.display(),
+            apt_id,
+            script_path.display(),
+            pdf_path.display(),
+            apt_id,
+            command_output_diagnostic_summary(&output)
+        );
     }
     let stdout = String::from_utf8(output.stdout).context("plate page output was not utf-8")?;
     let mut pages = Vec::new();
@@ -1133,7 +1146,12 @@ fn read_gdalinfo(path: &Path) -> anyhow::Result<String> {
         .output()
         .with_context(|| format!("failed to run gdalinfo on {}", path.display()))?;
     if !output.status.success() {
-        bail!("gdalinfo failed for {}", path.display());
+        bail!(
+            "gdalinfo failed for {}; command=\"gdalinfo {}\" {}",
+            path.display(),
+            path.display(),
+            command_output_diagnostic_summary(&output)
+        );
     }
     String::from_utf8(output.stdout).context("gdalinfo output was not utf-8")
 }

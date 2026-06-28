@@ -19,7 +19,9 @@ use preprocessor_fetch::{
     read_source_prefetch_requests_jsonl, write_package_outputs_jsonl, FetchCacheConfig,
     PackageOutputRecord,
 };
-use preprocessor_tools::{sanitize_label, ToolInvocation, ToolOutcome};
+use preprocessor_tools::{
+    command_output_diagnostic_summary, sanitize_label, ToolInvocation, ToolOutcome,
+};
 use preprocessor_zip::{write_deterministic_zip, ZipSource};
 
 pub const FULL_COVERAGE_ZOOM: u32 = 7;
@@ -643,8 +645,11 @@ for path in glob.glob("*.geojson", root_dir=chart_dir):
             )
         })?;
     if !output.status.success() {
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        bail!("python glob enumeration failed: {stderr}");
+        bail!(
+            "python glob enumeration failed under {}; {}",
+            chart_dir.display(),
+            command_output_diagnostic_summary(&output)
+        );
     }
 
     let mut names: Vec<String> = String::from_utf8(output.stdout)
@@ -1253,8 +1258,12 @@ for path in glob.glob(str(root / f"tiles/{tile_index}/**/*.webp"), recursive=Tru
         .output()
         .with_context(|| format!("failed to enumerate tiles under {}", work_dir.display()))?;
     if !output.status.success() {
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        bail!("python glob enumeration failed: {stderr}");
+        bail!(
+            "python tile enumeration failed under {} tile_index={}; {}",
+            work_dir.display(),
+            tile_index,
+            command_output_diagnostic_summary(&output)
+        );
     }
 
     let stdout = String::from_utf8(output.stdout).context("tile enumeration was not utf-8")?;

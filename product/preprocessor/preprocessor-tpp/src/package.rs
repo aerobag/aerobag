@@ -6,7 +6,9 @@ use preprocessor_core::{
     PackageAssetManifest, PackageAssetRecord, PlateGeoref, Region, PACKAGE_ASSET_MANIFEST_NAME,
 };
 use preprocessor_fetch::{hash_file, write_package_outputs_jsonl, PackageOutputRecord};
-use preprocessor_tools::{write_thumbnail_from_png, ToolInvocation};
+use preprocessor_tools::{
+    command_output_diagnostic_summary, write_thumbnail_from_png, ToolInvocation,
+};
 
 use crate::calculate_cycle;
 
@@ -129,8 +131,11 @@ for state in sys.argv[2:]:
         .output()
         .with_context(|| format!("failed to enumerate plates under {}", asset_root.display()))?;
     if !output.status.success() {
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        bail!("python plate enumeration failed: {stderr}");
+        bail!(
+            "python plate enumeration failed under {}; {}",
+            asset_root.display(),
+            command_output_diagnostic_summary(&output)
+        );
     }
 
     let stdout = String::from_utf8(output.stdout).context("plate enumeration was not utf-8")?;
@@ -472,7 +477,12 @@ fn read_plate_georef_from_png(png_path: &Path) -> anyhow::Result<Option<PlateGeo
         .output()
         .with_context(|| format!("failed to run exiftool on {}", png_path.display()))?;
     if !output.status.success() {
-        bail!("exiftool failed while reading {}", png_path.display());
+        bail!(
+            "exiftool failed while reading {}; command=\"exiftool -s3 -UserComment {}\" {}",
+            png_path.display(),
+            png_path.display(),
+            command_output_diagnostic_summary(&output)
+        );
     }
     let comment = String::from_utf8(output.stdout).context("exiftool output was not utf-8")?;
     parse_plate_georef_comment(comment.trim())

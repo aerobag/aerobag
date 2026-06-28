@@ -869,11 +869,13 @@ pub(super) fn build_tpp_plan_node(
     let _build_lock = match claim_or_wait_for_node(&prepared, &expected)? {
         NodeCacheState::CacheHit(record) => {
             let plan = load_tpp_region_render_plan(&plan_path)?;
+            let source_fetch_root =
+                source_fetch_root.context("tpp plan requires fetched source root")?;
             let source_content_fingerprint = source_content_fingerprint
                 .context("tpp plan requires source content fingerprint")?;
             return Ok((
                 record,
-                work_dir,
+                source_fetch_root,
                 plan,
                 source_content_fingerprint.to_string(),
             ));
@@ -886,7 +888,12 @@ pub(super) fn build_tpp_plan_node(
         source_content_fingerprint.context("tpp render requires source content fingerprint")?;
     let started_at_utc = utc_now_string();
     let started = Instant::now();
-    seed_prefetched_source_tree(&source_fetch_root, &work_dir)?;
+    fs::create_dir_all(&work_dir)
+        .with_context(|| format!("failed to create {}", work_dir.display()))?;
+    hard_link_or_copy_file(
+        &source_fetch_root.join("d-TPP_Metafile.xml"),
+        &work_dir.join("d-TPP_Metafile.xml"),
+    )?;
     let plan = plan_tpp_region_render(&work_dir, request.region)?;
     if let Some(parent) = plan_path.parent() {
         fs::create_dir_all(parent)
@@ -927,7 +934,7 @@ pub(super) fn build_tpp_plan_node(
     )?;
     Ok((
         region_record,
-        work_dir,
+        source_fetch_root,
         plan,
         source_content_fingerprint.to_string(),
     ))
@@ -998,7 +1005,7 @@ pub(super) fn build_tpp_render_assemble_node(
     let run_root = prepared.dir.clone();
     let work_dir = run_root.join(format!("work/tpp-{region_id}"));
     let plates_root = work_dir.join("plates");
-    let source_work_dir = resolve_artifact_path(config, output_path(plan_record, "work_dir")?);
+    let plan_work_dir = resolve_artifact_path(config, output_path(plan_record, "work_dir")?);
     let plan_path = resolve_artifact_path(config, output_path(plan_record, "plan")?);
     let child_records_path = run_root.join("meta").join("tpp-render-unit-records.json");
     let marker = run_root.join(".render-complete");
@@ -1020,7 +1027,7 @@ pub(super) fn build_tpp_render_assemble_node(
     fs::create_dir_all(&plates_root)
         .with_context(|| format!("failed to create {}", plates_root.display()))?;
     hard_link_or_copy_file(
-        &source_work_dir.join("d-TPP_Metafile.xml"),
+        &plan_work_dir.join("d-TPP_Metafile.xml"),
         &work_dir.join("d-TPP_Metafile.xml"),
     )?;
     for unit_record in unit_records {

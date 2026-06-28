@@ -415,14 +415,14 @@ pub fn build_cycle(config: &ProductBuildConfig) -> anyhow::Result<PathBuf> {
                             fetch_cache: Some(static_source_fetch_cache_config(&config)?),
                         };
                         build_tpp_plan_node(&config, &request, Some(source_fetch)).map(
-                            |(record, source_work_dir, plan, source_content_fingerprint)| {
+                            |(record, source_root, plan, source_content_fingerprint)| {
                                 let unit_count = plan.units().len();
                                 let cache_hit = record.cache_hit;
                                 TaskCompletion {
                                     node_records: vec![record.clone()],
                                     value: TaskValue::TppPlan {
                                         record,
-                                        source_work_dir,
+                                        source_root,
                                         plan,
                                         source_content_fingerprint,
                                     },
@@ -437,20 +437,20 @@ pub fn build_cycle(config: &ProductBuildConfig) -> anyhow::Result<PathBuf> {
                     ScheduledTaskKind::TppRenderUnit { region, unit } => {
                         let region_id = region.code().to_ascii_lowercase();
                         let plan_id = format!("tpp-{region_id}-plan");
-                        let (source_work_dir, source_content_fingerprint) =
+                        let (source_root, source_content_fingerprint) =
                             match task_values_snapshot.get(&plan_id) {
                                 Some(TaskValue::TppPlan {
-                                    source_work_dir,
+                                    source_root,
                                     source_content_fingerprint,
                                     ..
-                                }) => (source_work_dir, source_content_fingerprint),
+                                }) => (source_root, source_content_fingerprint),
                                 _ => unreachable!("tpp plan dependency should have completed"),
                             };
                         let record = build_tpp_render_unit_node(
                             &config,
                             &region_id,
                             source_content_fingerprint,
-                            source_work_dir,
+                            source_root,
                             &unit,
                         )?;
                         let cache_hit = record.cache_hit;

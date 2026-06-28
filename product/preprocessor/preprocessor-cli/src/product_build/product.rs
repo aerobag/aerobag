@@ -803,7 +803,7 @@ pub fn build_product(config: &ProductBuildConfig) -> anyhow::Result<ProductBuild
                             render_jobs: TPP_RENDER_JOBS_PER_RUN,
                             fetch_cache: Some(static_source_fetch_cache_config(&cycle_config)?),
                         };
-                        let (record, source_work_dir, plan, source_content_fingerprint) =
+                        let (record, source_root, plan, source_content_fingerprint) =
                             build_tpp_plan_node(&cycle_config, &request, Some(source_fetch))?;
                         let unit_count = plan.units().len();
                         let cache_hit = record.cache_hit;
@@ -814,7 +814,7 @@ pub fn build_product(config: &ProductBuildConfig) -> anyhow::Result<ProductBuild
                             )],
                             value: ProductTaskValue::TppPlan {
                                 record,
-                                source_work_dir,
+                                source_root,
                                 plan,
                                 source_content_fingerprint,
                             },
@@ -833,20 +833,20 @@ pub fn build_product(config: &ProductBuildConfig) -> anyhow::Result<ProductBuild
                         cycle_config.target_cycle = Some(cycle.clone());
                         let region_id = region.code().to_ascii_lowercase();
                         let plan_id = cycle_task_id(&cycle, &format!("tpp-{region_id}-plan"));
-                        let (source_work_dir, source_content_fingerprint) =
+                        let (source_root, source_content_fingerprint) =
                             match task_values_snapshot.get(&plan_id) {
                                 Some(ProductTaskValue::TppPlan {
-                                    source_work_dir,
+                                    source_root,
                                     source_content_fingerprint,
                                     ..
-                                }) => (source_work_dir, source_content_fingerprint),
+                                }) => (source_root, source_content_fingerprint),
                                 _ => bail!("missing tpp plan for cycle {cycle} region {region_id}"),
                             };
                         let record = build_tpp_render_unit_node(
                             &cycle_config,
                             &region_id,
                             source_content_fingerprint,
-                            source_work_dir,
+                            source_root,
                             &unit,
                         )?;
                         let cache_hit = record.cache_hit;

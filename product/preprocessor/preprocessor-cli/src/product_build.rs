@@ -982,7 +982,7 @@ enum TaskValue {
     },
     TppPlan {
         record: NodeRecord,
-        source_work_dir: PathBuf,
+        source_root: PathBuf,
         plan: TppRegionRenderPlan,
         source_content_fingerprint: String,
     },
@@ -1029,7 +1029,7 @@ enum ProductTaskValue {
     },
     TppPlan {
         record: NodeRecord,
-        source_work_dir: PathBuf,
+        source_root: PathBuf,
         plan: TppRegionRenderPlan,
         source_content_fingerprint: String,
     },

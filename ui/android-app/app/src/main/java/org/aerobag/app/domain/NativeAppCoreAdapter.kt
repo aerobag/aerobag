@@ -1229,7 +1229,21 @@ class NativeUiSession internal constructor(
             bridge.resolveChartAssetResourceInSessionJson(handle, chartId, assetKind)
         }.jsonObject
         val source = parseCoreResourceSource(result.getValue("source").jsonObject)
-        return fetchResource(CoreResourceRequest("chart_asset/$assetKind/$chartId", source, false))
+        val resource = CoreResourceRequest("chart_asset/$assetKind/$chartId", source, false)
+        return try {
+            fetchResource(resource).also { bytes ->
+                Log.i(
+                    "AerobagCharts",
+                    "plate asset loaded chart=$chartId kind=$assetKind " +
+                        "source=${source.describeForLog()} bytes=${bytes.size}",
+                )
+            }
+        } catch (error: Throwable) {
+            throw IllegalStateException(
+                "failed to fetch chart asset chart=$chartId kind=$assetKind source=${source.describeForLog()}",
+                error,
+            )
+        }
     }
 
     fun nexradTileBytes(

@@ -598,6 +598,7 @@ fn pick_by_priority<'a>(
 fn is_manual_candidate(source: &OwnshipSourceStatus, now_epoch_ms: i64) -> bool {
     source.enabled
         && source.selectable
+        && source.connection_state == SourceConnectionState::Connected
         && source
             .latest_sample
             .as_ref()
@@ -608,6 +609,7 @@ fn is_manual_candidate(source: &OwnshipSourceStatus, now_epoch_ms: i64) -> bool 
 fn is_candidate(source: &OwnshipSourceStatus, now_epoch_ms: i64, policy: &OwnshipPolicy) -> bool {
     source.enabled
         && source.auto_eligible
+        && source.connection_state == SourceConnectionState::Connected
         && source
             .latest_sample
             .as_ref()
@@ -862,18 +864,28 @@ fn situation_control_handler_for_mode(mode: OwnshipMode) -> Box<dyn SituationCon
 fn source_launcher_label(source: &OwnshipSourceStatus) -> String {
     match source.source_kind {
         OwnshipSourceKind::DeviceGps | OwnshipSourceKind::ExternalGps => {
-            if matches!(source.connection_state, SourceConnectionState::Connected) {
-                "GPS".to_string()
-            } else {
-                "No GPS".to_string()
-            }
+            gps_launcher_label(source).to_string()
         }
         OwnshipSourceKind::ExternalAhrs => "AHARS".to_string(),
-        OwnshipSourceKind::GpxPlayback
-        | OwnshipSourceKind::AdsbTrackPlayback
-        | OwnshipSourceKind::LiveNetworkTrack => "Replay".to_string(),
+        OwnshipSourceKind::GpxPlayback => format!("Replay: {}", gps_launcher_label(source)),
+        OwnshipSourceKind::AdsbTrackPlayback | OwnshipSourceKind::LiveNetworkTrack => {
+            "Replay".to_string()
+        }
         OwnshipSourceKind::FlightPlanSimulator => "Plan Preview".to_string(),
         OwnshipSourceKind::BadAutopilot => "Bad AP".to_string(),
+    }
+}
+
+fn gps_launcher_label(source: &OwnshipSourceStatus) -> &'static str {
+    if source.connection_state == SourceConnectionState::Connected
+        && source
+            .latest_sample
+            .as_ref()
+            .is_some_and(|sample| sample.position.is_some())
+    {
+        "GPS"
+    } else {
+        "No GPS"
     }
 }
 
@@ -883,14 +895,20 @@ fn source_control_tone(source: &OwnshipSourceStatus) -> OwnshipControlTone {
     }
     match source.source_kind {
         OwnshipSourceKind::DeviceGps | OwnshipSourceKind::ExternalGps => {
-            if matches!(source.connection_state, SourceConnectionState::Connected) {
+            if gps_launcher_label(source) == "GPS" {
                 OwnshipControlTone::Ready
             } else {
                 OwnshipControlTone::Unavailable
             }
         }
+        OwnshipSourceKind::GpxPlayback => {
+            if gps_launcher_label(source) == "GPS" {
+                OwnshipControlTone::Neutral
+            } else {
+                OwnshipControlTone::Unavailable
+            }
+        }
         OwnshipSourceKind::ExternalAhrs
-        | OwnshipSourceKind::GpxPlayback
         | OwnshipSourceKind::AdsbTrackPlayback
         | OwnshipSourceKind::LiveNetworkTrack
         | OwnshipSourceKind::FlightPlanSimulator
@@ -1021,6 +1039,58 @@ mod tests {
             state.controls.launcher_text_tone,
             OwnshipLauncherTextTone::Normal
         );
+    }
+
+    #[test]
+    fn searching_gps_stops_projecting_position_immediately() {
+        let state = push_sample(
+            &OwnshipState::default(),
+            SituationSample {
+                source_id: OwnshipSourceId("gps".to_string()),
+                source_kind: OwnshipSourceKind::DeviceGps,
+                event_time_epoch_ms: 1_000,
+                received_time_epoch_ms: 1_000,
+                position: Some(LatLon {
+                    lat: 47.0,
+                    lon: -122.0,
+                }),
+                horizontal_accuracy_m: None,
+                vertical_accuracy_m: None,
+                track_deg_true: Some(90.0),
+                heading_deg_true: None,
+                ground_speed_kt: Some(120.0),
+                altitude_msl_ft: Some(1_000.0),
+                pressure_altitude_ft: None,
+                vertical_speed_fpm: None,
+            },
+        );
+        let state = select_source(
+            &state,
+            OwnshipSelectionCommand::Source {
+                source_id: OwnshipSourceId("gps".to_string()),
+            },
+        );
+        assert_eq!(state.controls.launcher_label, "GPS");
+        assert!(state.render.draw_aircraft);
+
+        let state = update_source_status(
+            &state,
+            OwnshipSourceStatusUpdate {
+                source_id: OwnshipSourceId("gps".to_string()),
+                connection_state: SourceConnectionState::Searching,
+                enabled: true,
+                status_label: "Searching".to_string(),
+            },
+        );
+
+        assert_eq!(state.controls.launcher_label, "No GPS");
+        assert_eq!(
+            state.controls.launcher_text_tone,
+            OwnshipLauncherTextTone::Unavailable
+        );
+        assert_eq!(state.resolved.mode, OwnshipMode::None);
+        assert!(!state.render.draw_aircraft);
+        assert!(!state.render.draw_cdi);
     }
 
     #[test]

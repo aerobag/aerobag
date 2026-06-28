@@ -1602,7 +1602,7 @@ internal fun MapExplorerPage(
             return@LaunchedEffect
         }
         if (!sameMapViewport(nextViewport, viewportState.value)) {
-            onViewportChange(nextViewport)
+            updateViewport(nextViewport, syncFollow = false)
         }
     }
     LaunchedEffect(uiSession, liveFeedGeneration, currentViewport, surfaceSize, density.density, mapLayerState.vectors.visible, mapLayerState.metars.visible, mapLayerState.offlineRegions.visible, devServerBaseUrl) {

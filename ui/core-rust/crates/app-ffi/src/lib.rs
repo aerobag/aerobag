@@ -102,7 +102,9 @@ fn append_gps_capture_log_record(tag: &str, data: &serde_json::Value) {
     else {
         return;
     };
-    let _ = writeln!(file, "{record}");
+    if writeln!(file, "{record}").is_ok() {
+        let _ = file.sync_data();
+    }
 }
 
 pub fn build_flight_plan_json(plan_json: &str) -> Result<String, String> {

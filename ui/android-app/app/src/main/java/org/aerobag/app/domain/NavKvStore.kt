@@ -413,3 +413,14 @@ fun CoreResourceSource.kindForLog(): String =
         is CoreResourceSource.NavKvMember -> "nav_kv_member"
         is CoreResourceSource.Unavailable -> "unavailable"
     }
+
+fun CoreResourceSource.describeForLog(): String =
+    when (this) {
+        is CoreResourceSource.PublicUrl -> "public_url url=$url"
+        is CoreResourceSource.PackageMember ->
+            "package_member packageId=$packageId filename=$filename memberPath=$memberPath"
+        is CoreResourceSource.InstalledArtifactMember ->
+            "installed_artifact_member filename=$filename memberPath=$memberPath"
+        is CoreResourceSource.NavKvMember -> "nav_kv_member memberPath=$memberPath"
+        is CoreResourceSource.Unavailable -> "unavailable message=$message"
+    }

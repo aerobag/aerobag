@@ -195,6 +195,7 @@ import org.aerobag.app.domain.AirwayPresentationPlan
 import org.aerobag.app.domain.AirwaySuggestion
 import org.aerobag.app.domain.WaypointIdentifierSuggestion
 import org.aerobag.app.domain.CoreMapViewport
+import org.aerobag.app.domain.CoreResourceRequest
 import org.aerobag.app.domain.DerivedChartPageState
 import org.aerobag.app.domain.FlightDataBannerModel
 import org.aerobag.app.domain.FlightPlan
@@ -233,6 +234,7 @@ import org.aerobag.app.domain.NavElementUiView
 import org.aerobag.app.domain.OwnshipControlModel
 import org.aerobag.app.domain.OwnshipMode
 import org.aerobag.app.domain.OwnshipRenderState
+import org.aerobag.app.domain.describeForLog
 import org.aerobag.app.domain.PackageZipStore
 import org.aerobag.app.domain.PlaybackStatus
 import org.aerobag.app.domain.PlaybackUiState
@@ -386,11 +388,24 @@ internal fun ChartsPage(
             null
         } else {
             withContext(Dispatchers.IO) {
+                var attemptedResource: CoreResourceRequest? = null
                 runCatching {
                     val bytes = uiSession.chartAssetBytes(chartId, "asset") { resource ->
+                        attemptedResource = resource
                         fetchCoreResource(context, resource, devServerBaseUrl)
                     }
                     BitmapFactory.decodeByteArray(bytes, 0, bytes.size)?.asImageBitmap()
+                        ?: error(
+                            "failed to decode plate asset bytes for $chartId " +
+                                "source=${attemptedResource?.source?.describeForLog() ?: "unresolved"}",
+                        )
+                }.onFailure { error ->
+                    Log.w(
+                        "AerobagCharts",
+                        "plate asset unavailable chart=$chartId " +
+                            "source=${attemptedResource?.source?.describeForLog() ?: "unresolved"}",
+                        error,
+                    )
                 }.getOrNull()
             }
         }
@@ -1198,11 +1213,24 @@ internal fun PlateFolderGrid(
             val thumbnail by produceState<androidx.compose.ui.graphics.ImageBitmap?>(initialValue = null, chart.id, chart.hasThumbnail, uiSession, devServerBaseUrl) {
                 value = if (chart.hasThumbnail) {
                     withContext(Dispatchers.IO) {
+                        var attemptedResource: CoreResourceRequest? = null
                         runCatching {
                             val bytes = uiSession.chartAssetBytes(chart.id, "thumbnail") { resource ->
+                                attemptedResource = resource
                                 fetchCoreResource(context, resource, devServerBaseUrl)
                             }
                             BitmapFactory.decodeByteArray(bytes, 0, bytes.size)?.asImageBitmap()
+                                ?: error(
+                                    "failed to decode plate thumbnail bytes for ${chart.id} " +
+                                        "source=${attemptedResource?.source?.describeForLog() ?: "unresolved"}",
+                                )
+                        }.onFailure { error ->
+                            Log.w(
+                                "AerobagCharts",
+                                "plate thumbnail unavailable chart=${chart.id} " +
+                                    "source=${attemptedResource?.source?.describeForLog() ?: "unresolved"}",
+                                error,
+                            )
                         }.getOrNull()
                     }
                 } else {

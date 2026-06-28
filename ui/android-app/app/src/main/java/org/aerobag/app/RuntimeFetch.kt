@@ -431,13 +431,7 @@ internal fun fetchCoreResource(
         is CoreResourceSource.PackageMember ->
             InstalledPackages.readZipEntryBytes(context, source.packageId, source.memberPath)
         is CoreResourceSource.PublicUrl -> {
-            require(
-                resource.id.startsWith("publication/") ||
-                    resource.id.startsWith("live_feeds/") ||
-                    resource.id.startsWith("chart_asset/"),
-            ) {
-                "Android received public_url for package-backed resource ${resource.id}"
-            }
+            requireAndroidPublicUrlAllowed(resource.id)
             val url = if (source.url.startsWith("/packages/")) {
                 resolvePackageSourceUrl(source.url.removePrefix("/packages/"), publicationRootUrl)
             } else if (source.url.startsWith("/live-feeds/")) {
@@ -451,5 +445,14 @@ internal fun fetchCoreResource(
             error("core resource ${resource.id} is unavailable: ${source.message}")
         is CoreResourceSource.InstalledArtifactMember, is CoreResourceSource.NavKvMember ->
             error("Android session fetch cannot handle ${source.kindForLog()} for ${resource.id}")
+    }
+}
+
+internal fun requireAndroidPublicUrlAllowed(resourceId: String) {
+    require(
+        resourceId.startsWith("publication/") ||
+            resourceId.startsWith("live_feeds/"),
+    ) {
+        "Android received public_url for package-backed resource $resourceId"
     }
 }

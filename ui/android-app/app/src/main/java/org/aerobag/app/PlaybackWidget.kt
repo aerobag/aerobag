@@ -349,10 +349,12 @@ internal fun PlaybackWidget(
     val cursorSeconds = (scrubCursorSeconds ?: committedCursorSeconds).coerceIn(0.0, durationSeconds.takeIf { it > 0.0 } ?: 0.0)
     val summary = playbackUiState.titleLabel
     val panelShape = RoundedCornerShape(ThumbRadius * 0.9f)
+    val rowHeight = ThumbSize * 0.63f
+    val rowGap = ThumbSize * 0.12f
     Surface(
         modifier =
             modifier
-                .widthIn(min = ThumbSize * 2.8f, max = ThumbSize * 5.2f)
+                .widthIn(min = ThumbSize * 4.2f, max = ThumbSize * 7.8f)
                 .consumePointerGestures(),
         shape = panelShape,
         color = Color(0xF0FCF8F1),
@@ -361,12 +363,12 @@ internal fun PlaybackWidget(
         shadowElevation = 6.dp,
     ) {
         Column(
-            modifier = Modifier.padding(ThumbSize * 0.12f),
-            verticalArrangement = Arrangement.spacedBy(ThumbSize * 0.08f),
+            modifier = Modifier.padding(ThumbSize * 0.18f),
+            verticalArrangement = Arrangement.spacedBy(rowGap),
         ) {
             Row(
                 modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.spacedBy(ThumbSize * 0.08f),
+                horizontalArrangement = Arrangement.spacedBy(rowGap),
                 verticalAlignment = Alignment.CenterVertically,
             ) {
                 Text(
@@ -387,7 +389,7 @@ internal fun PlaybackWidget(
             }
             Row(
                 modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.spacedBy(ThumbSize * 0.08f),
+                horizontalArrangement = Arrangement.spacedBy(rowGap),
                 verticalAlignment = Alignment.CenterVertically,
             ) {
                 BasicTextField(
@@ -397,16 +399,16 @@ internal fun PlaybackWidget(
                     textStyle =
                         MaterialTheme.typography.labelSmall.copy(
                             color = Color(0xFF132129),
-                            fontSize = 11.sp,
+                            fontSize = 16.sp,
                         ),
                     modifier =
                         Modifier
                             .weight(1f)
-                            .height(ThumbSize * 0.42f)
+                            .height(rowHeight)
                             .clip(RoundedCornerShape(ThumbRadius * 0.55f))
                             .background(Color.White)
                             .border(1.dp, Color(0x24132129), RoundedCornerShape(ThumbRadius * 0.55f))
-                            .padding(horizontal = ThumbSize * 0.1f, vertical = ThumbSize * 0.11f),
+                            .padding(horizontal = ThumbSize * 0.15f, vertical = ThumbSize * 0.08f),
                 )
                 PlaybackSmallButton(
                     label = "LOAD",
@@ -433,7 +435,7 @@ internal fun PlaybackWidget(
             }
             Row(
                 modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.spacedBy(ThumbSize * 0.08f),
+                horizontalArrangement = Arrangement.spacedBy(rowGap),
                 verticalAlignment = Alignment.CenterVertically,
             ) {
                 PlaybackSmallButton(
@@ -462,7 +464,7 @@ internal fun PlaybackWidget(
                 PlaybackRateRail(
                     value = playbackUiState.rate.toFloat().coerceIn(0.25f, 11f),
                     enabled = playbackUiState.status != PlaybackStatus.Empty,
-                    modifier = Modifier.weight(1f).height(ThumbSize * 0.42f),
+                    modifier = Modifier.weight(1f).height(rowHeight),
                     onValueChange = { nextRate ->
                         scope.launch {
                             runCatching {
@@ -523,12 +525,13 @@ internal fun PlaybackSmallButton(
     enabled: Boolean,
     onClick: () -> Unit,
     icon: PlaybackButtonIcon? = null,
+    height: Dp = ThumbSize * 0.63f,
 ) {
     Surface(
         modifier =
             Modifier
-                .height(ThumbSize * 0.42f)
-                .then(if (icon == null) Modifier.widthIn(min = ThumbSize * 0.86f) else Modifier.width(ThumbSize * 0.42f))
+                .height(height)
+                .then(if (icon == null) Modifier.widthIn(min = height * 2.05f) else Modifier.width(height))
                 .then(
                     if (enabled) {
                         Modifier.clickable(
@@ -546,7 +549,7 @@ internal fun PlaybackSmallButton(
     ) {
         Box(
             contentAlignment = Alignment.Center,
-            modifier = if (icon == null) Modifier.padding(horizontal = ThumbSize * 0.14f) else Modifier.fillMaxSize(),
+            modifier = if (icon == null) Modifier.padding(horizontal = ThumbSize * 0.21f) else Modifier.fillMaxSize(),
         ) {
             if (icon == null) {
                 Text(
@@ -716,7 +719,7 @@ internal fun PlaybackOverview(
         modifier =
             Modifier
                 .fillMaxWidth()
-                .height(ThumbSize * 0.56f)
+                .height(ThumbSize * 0.84f)
                 .clip(shape)
                 .background(Color(0xD1FFFFFF))
                 .border(1.dp, Color(0x1F132129), shape)

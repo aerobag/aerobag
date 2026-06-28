@@ -4,13 +4,15 @@ use serde_json::Value;
 use crate::{
     errors::{AppError, AppErrorKind, AppResult},
     geometry::LatLon,
+    ownship::{OwnshipSourceKind, SourceConnectionState},
     situation::{Situation, SituationPosition},
 };
 
 const DEFAULT_PLAYBACK_RATE: f64 = 1.0;
 const PLAYBACK_TICK_INTERVAL_MS: u32 = 100;
 const PLAYBACK_PREVIEW_BINS: usize = 160;
-const PLAYBACK_GAP_THRESHOLD_SECONDS: f64 = 120.0;
+const ADSB_PLAYBACK_GAP_THRESHOLD_SECONDS: f64 = 120.0;
+const GPS_CAPTURE_GAP_THRESHOLD_SECONDS: f64 = 5.0;
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -78,13 +80,41 @@ pub struct PlaybackPoint {
     pub orientation_deg: Option<f64>,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum PlaybackGapBehavior {
+    Skip,
+    PreserveUnavailable,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct PlaybackStatusEvent {
+    pub elapsed_seconds: f64,
+    pub connection_state: SourceConnectionState,
+    pub status_label: String,
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub struct PlaybackTrace {
+    pub title_label: Option<String>,
     pub registration: Option<String>,
     pub icao: Option<String>,
     pub aircraft_type: Option<String>,
+    pub source_kind: OwnshipSourceKind,
+    pub source_display_name: String,
+    gap_behavior: PlaybackGapBehavior,
+    gap_threshold_seconds: f64,
     pub points: Vec<PlaybackPoint>,
+    pub status_events: Vec<PlaybackStatusEvent>,
     pub gap_spans: Vec<PlaybackGapSpan>,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct PlaybackOwnshipState {
+    pub source_kind: OwnshipSourceKind,
+    pub display_name: String,
+    pub connection_state: SourceConnectionState,
+    pub status_label: String,
+    pub situation: Option<Situation>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -117,9 +147,9 @@ impl PlaybackSessionState {
         &mut self,
         source_path: String,
         trace_json: &str,
-    ) -> AppResult<Situation> {
+    ) -> AppResult<PlaybackOwnshipState> {
         let trace = parse_trace_json(trace_json)?;
-        let initial_situation = situation_at_cursor(&trace, 0.0).unwrap_or_default();
+        let initial_state = ownship_state_at_cursor(&trace, 0.0);
         self.trace = Some(trace);
         self.source_path = Some(source_path);
         self.status = PlaybackStatus::Paused;
@@ -127,20 +157,20 @@ impl PlaybackSessionState {
         self.cursor_seconds = 0.0;
         self.anchor_wallclock_epoch_ms = None;
         self.anchor_cursor_seconds = 0.0;
-        Ok(initial_situation)
+        Ok(initial_state)
     }
 
-    pub fn play(&mut self, now_epoch_ms: f64) -> Option<Situation> {
+    pub fn play(&mut self, now_epoch_ms: f64) -> Option<PlaybackOwnshipState> {
         if self.trace.is_none() {
             return None;
         }
         self.status = PlaybackStatus::Playing;
         self.anchor_wallclock_epoch_ms = Some(now_epoch_ms);
         self.anchor_cursor_seconds = self.cursor_seconds;
-        self.current_situation()
+        self.current_ownship_state()
     }
 
-    pub fn pause(&mut self, now_epoch_ms: f64) -> Option<Situation> {
+    pub fn pause(&mut self, now_epoch_ms: f64) -> Option<PlaybackOwnshipState> {
         if self.trace.is_none() {
             return None;
         }
@@ -148,30 +178,30 @@ impl PlaybackSessionState {
         self.status = PlaybackStatus::Paused;
         self.anchor_wallclock_epoch_ms = None;
         self.anchor_cursor_seconds = self.cursor_seconds;
-        self.current_situation()
+        self.current_ownship_state()
     }
 
-    pub fn seek(&mut self, cursor_seconds: f64, now_epoch_ms: f64) -> Option<Situation> {
+    pub fn seek(&mut self, cursor_seconds: f64, now_epoch_ms: f64) -> Option<PlaybackOwnshipState> {
         let trace = self.trace.as_ref()?;
         self.cursor_seconds = skip_gap_at_or_after(trace, clamp_cursor(trace, cursor_seconds));
         if self.status == PlaybackStatus::Playing {
             self.anchor_wallclock_epoch_ms = Some(now_epoch_ms);
             self.anchor_cursor_seconds = self.cursor_seconds;
         }
-        self.current_situation()
+        self.current_ownship_state()
     }
 
-    pub fn jog(&mut self, delta_seconds: f64, now_epoch_ms: f64) -> Option<Situation> {
+    pub fn jog(&mut self, delta_seconds: f64, now_epoch_ms: f64) -> Option<PlaybackOwnshipState> {
         let trace = self.trace.as_ref()?;
         self.cursor_seconds = move_cursor_skipping_gaps(trace, self.cursor_seconds, delta_seconds);
         if self.status == PlaybackStatus::Playing {
             self.anchor_wallclock_epoch_ms = Some(now_epoch_ms);
             self.anchor_cursor_seconds = self.cursor_seconds;
         }
-        self.current_situation()
+        self.current_ownship_state()
     }
 
-    pub fn set_rate(&mut self, rate: f64, now_epoch_ms: f64) -> Option<Situation> {
+    pub fn set_rate(&mut self, rate: f64, now_epoch_ms: f64) -> Option<PlaybackOwnshipState> {
         let _trace = self.trace.as_ref()?;
         let clamped_rate = if rate.is_finite() {
             rate.clamp(0.1, 16.0)
@@ -184,13 +214,13 @@ impl PlaybackSessionState {
             self.anchor_cursor_seconds = self.cursor_seconds;
         }
         self.rate = clamped_rate;
-        self.current_situation()
+        self.current_ownship_state()
     }
 
-    pub fn tick(&mut self, now_epoch_ms: f64) -> Option<Situation> {
+    pub fn tick(&mut self, now_epoch_ms: f64) -> Option<PlaybackOwnshipState> {
         let duration_seconds = duration_seconds(self.trace.as_ref()?);
         if self.status != PlaybackStatus::Playing {
-            return self.current_situation();
+            return self.current_ownship_state();
         }
         self.advance_cursor(now_epoch_ms);
         if (self.cursor_seconds - duration_seconds).abs() < 1e-6 {
@@ -198,7 +228,7 @@ impl PlaybackSessionState {
             self.anchor_wallclock_epoch_ms = None;
             self.anchor_cursor_seconds = self.cursor_seconds;
         }
-        self.current_situation()
+        self.current_ownship_state()
     }
 
     pub fn ui_state(&self) -> PlaybackUiState {
@@ -209,8 +239,9 @@ impl PlaybackSessionState {
             status: self.status.clone(),
             source_path: self.source_path.clone(),
             title_label: trace
-                .registration
+                .title_label
                 .clone()
+                .or_else(|| trace.registration.clone())
                 .or_else(|| trace.icao.clone())
                 .unwrap_or_else(|| "Trace".to_string()),
             registration: trace.registration.clone(),
@@ -229,9 +260,13 @@ impl PlaybackSessionState {
         }
     }
 
-    pub fn current_situation(&self) -> Option<Situation> {
+    pub fn current_ownship_state(&self) -> Option<PlaybackOwnshipState> {
         let trace = self.trace.as_ref()?;
-        situation_at_cursor(trace, self.cursor_seconds)
+        Some(ownship_state_at_cursor(trace, self.cursor_seconds))
+    }
+
+    pub fn current_situation(&self) -> Option<Situation> {
+        self.current_ownship_state()?.situation
     }
 
     fn advance_cursor(&mut self, now_epoch_ms: f64) {
@@ -256,10 +291,28 @@ impl PlaybackSessionState {
 }
 
 fn parse_trace_json(trace_json: &str) -> AppResult<PlaybackTrace> {
-    let value: Value = serde_json::from_str(trace_json).map_err(|err| AppError {
-        kind: AppErrorKind::InvalidFlightPlan,
-        message: format!("failed to parse playback trace json: {err}"),
-    })?;
+    if looks_like_gps_capture_jsonl(trace_json) {
+        return parse_gps_capture_jsonl(trace_json);
+    }
+    let value: Value = match serde_json::from_str(trace_json) {
+        Ok(value) => value,
+        Err(json_error) => {
+            return parse_gps_capture_jsonl(trace_json).map_err(|gps_error| AppError {
+                kind: AppErrorKind::InvalidFlightPlan,
+                message: format!(
+                    "failed to parse playback trace as ADS-B json ({json_error}) or GPS capture jsonl ({})",
+                    gps_error.message
+                ),
+            });
+        }
+    };
+    if is_gps_capture_value(&value) {
+        return parse_gps_capture_jsonl(trace_json);
+    }
+    parse_adsb_trace_value(value)
+}
+
+fn parse_adsb_trace_value(value: Value) -> AppResult<PlaybackTrace> {
     let Some(object) = value.as_object() else {
         return Err(AppError {
             kind: AppErrorKind::InvalidFlightPlan,
@@ -309,6 +362,141 @@ fn parse_trace_json(trace_json: &str) -> AppResult<PlaybackTrace> {
             orientation_deg: items[5].as_f64(),
         });
     }
+    normalize_playback_trace(
+        raw_points,
+        Vec::new(),
+        None,
+        registration,
+        icao,
+        aircraft_type,
+        OwnshipSourceKind::AdsbTrackPlayback,
+        "ADS-B Trace Playback".to_string(),
+        PlaybackGapBehavior::Skip,
+        ADSB_PLAYBACK_GAP_THRESHOLD_SECONDS,
+    )
+}
+
+fn parse_gps_capture_jsonl(trace_json: &str) -> AppResult<PlaybackTrace> {
+    let mut raw_points = Vec::new();
+    let mut raw_status_events = Vec::new();
+    let mut parsed_lines = 0usize;
+    for line in trace_json
+        .lines()
+        .map(str::trim)
+        .filter(|line| !line.is_empty())
+    {
+        let Ok(value) = serde_json::from_str::<Value>(line) else {
+            continue;
+        };
+        let Some(object) = value.as_object() else {
+            continue;
+        };
+        let logged_at_epoch_ms = object.get("logged_at_epoch_ms").and_then(Value::as_i64);
+        let Some(data) = object.get("data").and_then(Value::as_object) else {
+            continue;
+        };
+        let kind = data.get("kind").and_then(Value::as_str);
+        match kind {
+            Some("sample") => {
+                let Some(sample) = data.get("sample").and_then(Value::as_object) else {
+                    continue;
+                };
+                let event_time_epoch_ms = sample
+                    .get("event_time_epoch_ms")
+                    .and_then(Value::as_i64)
+                    .or(logged_at_epoch_ms);
+                let Some(event_time_epoch_ms) = event_time_epoch_ms else {
+                    continue;
+                };
+                let Some(position) = sample.get("position").and_then(Value::as_object) else {
+                    continue;
+                };
+                let Some(lat) = position
+                    .get("lat")
+                    .and_then(Value::as_f64)
+                    .filter(|value| value.is_finite())
+                else {
+                    continue;
+                };
+                let Some(lon) = position
+                    .get("lon")
+                    .and_then(Value::as_f64)
+                    .filter(|value| value.is_finite())
+                else {
+                    continue;
+                };
+                raw_points.push(PlaybackPoint {
+                    elapsed_seconds: event_time_epoch_ms as f64 / 1000.0,
+                    position: LatLon { lat, lon },
+                    altitude_ft: sample.get("altitude_msl_ft").and_then(Value::as_f64),
+                    speed_kt: sample.get("ground_speed_kt").and_then(Value::as_f64),
+                    orientation_deg: sample
+                        .get("track_deg_true")
+                        .and_then(Value::as_f64)
+                        .or_else(|| sample.get("heading_deg_true").and_then(Value::as_f64)),
+                });
+                raw_status_events.push(PlaybackStatusEvent {
+                    elapsed_seconds: event_time_epoch_ms as f64 / 1000.0,
+                    connection_state: SourceConnectionState::Connected,
+                    status_label: "GPS fix".to_string(),
+                });
+                parsed_lines += 1;
+            }
+            Some("status") => {
+                let Some(update) = data.get("update").and_then(Value::as_object) else {
+                    continue;
+                };
+                let Some(event_time_epoch_ms) = logged_at_epoch_ms else {
+                    continue;
+                };
+                raw_status_events.push(PlaybackStatusEvent {
+                    elapsed_seconds: event_time_epoch_ms as f64 / 1000.0,
+                    connection_state: parse_connection_state(update.get("connection_state"))
+                        .unwrap_or(SourceConnectionState::Unavailable),
+                    status_label: update
+                        .get("status_label")
+                        .and_then(Value::as_str)
+                        .unwrap_or("GPS")
+                        .to_string(),
+                });
+                parsed_lines += 1;
+            }
+            _ => {}
+        }
+    }
+    if parsed_lines == 0 {
+        return Err(AppError {
+            kind: AppErrorKind::InvalidFlightPlan,
+            message: "GPS capture contains no usable ownship capture records".to_string(),
+        });
+    }
+    normalize_playback_trace(
+        raw_points,
+        raw_status_events,
+        Some("GPS Capture".to_string()),
+        None,
+        None,
+        None,
+        OwnshipSourceKind::GpxPlayback,
+        "GPS Capture Playback".to_string(),
+        PlaybackGapBehavior::PreserveUnavailable,
+        GPS_CAPTURE_GAP_THRESHOLD_SECONDS,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+fn normalize_playback_trace(
+    mut raw_points: Vec<PlaybackPoint>,
+    mut raw_status_events: Vec<PlaybackStatusEvent>,
+    title_label: Option<String>,
+    registration: Option<String>,
+    icao: Option<String>,
+    aircraft_type: Option<String>,
+    source_kind: OwnshipSourceKind,
+    source_display_name: String,
+    gap_behavior: PlaybackGapBehavior,
+    gap_threshold_seconds: f64,
+) -> AppResult<PlaybackTrace> {
     if raw_points.is_empty() {
         return Err(AppError {
             kind: AppErrorKind::InvalidFlightPlan,
@@ -316,9 +504,17 @@ fn parse_trace_json(trace_json: &str) -> AppResult<PlaybackTrace> {
         });
     }
     raw_points.sort_by(|a, b| a.elapsed_seconds.total_cmp(&b.elapsed_seconds));
+    raw_points.dedup_by(|a, b| {
+        (a.elapsed_seconds - b.elapsed_seconds).abs() < f64::EPSILON
+            && (a.position.lat - b.position.lat).abs() < f64::EPSILON
+            && (a.position.lon - b.position.lon).abs() < f64::EPSILON
+    });
+    raw_status_events.sort_by(|a, b| a.elapsed_seconds.total_cmp(&b.elapsed_seconds));
     let trace_start_seconds = raw_points
-        .first()
+        .iter()
         .map(|point| point.elapsed_seconds)
+        .chain(raw_status_events.iter().map(|event| event.elapsed_seconds))
+        .min_by(|a, b| a.total_cmp(b))
         .unwrap_or(0.0);
     let points: Vec<PlaybackPoint> = raw_points
         .into_iter()
@@ -327,14 +523,96 @@ fn parse_trace_json(trace_json: &str) -> AppResult<PlaybackTrace> {
             point
         })
         .collect();
-    let gap_spans = find_gap_spans(&points);
+    let status_events: Vec<PlaybackStatusEvent> = raw_status_events
+        .into_iter()
+        .map(|mut event| {
+            event.elapsed_seconds = (event.elapsed_seconds - trace_start_seconds).max(0.0);
+            event
+        })
+        .collect();
+    let gap_spans = find_gap_spans(&points, gap_threshold_seconds);
     Ok(PlaybackTrace {
+        title_label,
         registration,
         icao,
         aircraft_type,
+        source_kind,
+        source_display_name,
+        gap_behavior,
+        gap_threshold_seconds,
         points,
+        status_events,
         gap_spans,
     })
+}
+
+fn looks_like_gps_capture_jsonl(trace_json: &str) -> bool {
+    trace_json.lines().take(8).any(|line| {
+        line.contains("ownship.gps_capture.")
+            || line.contains("\"kind\":\"sample\"")
+            || line.contains("\"kind\":\"status\"")
+    })
+}
+
+fn is_gps_capture_value(value: &Value) -> bool {
+    value
+        .get("tag")
+        .and_then(Value::as_str)
+        .is_some_and(|tag| tag.starts_with("ownship.gps_capture."))
+        || value
+            .get("data")
+            .and_then(|data| data.get("kind"))
+            .and_then(Value::as_str)
+            .is_some_and(|kind| kind == "sample" || kind == "status")
+}
+
+fn parse_connection_state(value: Option<&Value>) -> Option<SourceConnectionState> {
+    match value.and_then(Value::as_str)? {
+        "unavailable" => Some(SourceConnectionState::Unavailable),
+        "searching" => Some(SourceConnectionState::Searching),
+        "connected" => Some(SourceConnectionState::Connected),
+        "stale" => Some(SourceConnectionState::Stale),
+        "failed" => Some(SourceConnectionState::Failed),
+        _ => None,
+    }
+}
+
+fn ownship_state_at_cursor(trace: &PlaybackTrace, cursor_seconds: f64) -> PlaybackOwnshipState {
+    let status_event = status_event_at_cursor(trace, cursor_seconds);
+    let mut connection_state = status_event
+        .map(|event| event.connection_state)
+        .unwrap_or(SourceConnectionState::Connected);
+    let mut status_label = status_event
+        .map(|event| event.status_label.clone())
+        .unwrap_or_else(|| "Connected".to_string());
+    let mut situation = situation_at_cursor(trace, cursor_seconds);
+    if trace.gap_behavior == PlaybackGapBehavior::PreserveUnavailable
+        && connection_state != SourceConnectionState::Connected
+    {
+        situation = None;
+    }
+    if situation.is_none() && connection_state == SourceConnectionState::Connected {
+        connection_state = SourceConnectionState::Stale;
+        status_label = "Stale".to_string();
+    }
+    PlaybackOwnshipState {
+        source_kind: trace.source_kind,
+        display_name: trace.source_display_name.clone(),
+        connection_state,
+        status_label,
+        situation,
+    }
+}
+
+fn status_event_at_cursor(
+    trace: &PlaybackTrace,
+    cursor_seconds: f64,
+) -> Option<&PlaybackStatusEvent> {
+    trace
+        .status_events
+        .iter()
+        .rev()
+        .find(|event| event.elapsed_seconds <= cursor_seconds)
 }
 
 fn duration_seconds(trace: &PlaybackTrace) -> f64 {
@@ -349,18 +627,16 @@ fn clamp_cursor(trace: &PlaybackTrace, cursor_seconds: f64) -> f64 {
     cursor_seconds.clamp(0.0, duration_seconds(trace))
 }
 
-fn find_gap_spans(points: &[PlaybackPoint]) -> Vec<PlaybackGapSpan> {
+fn find_gap_spans(points: &[PlaybackPoint], gap_threshold_seconds: f64) -> Vec<PlaybackGapSpan> {
     points
         .windows(2)
         .filter_map(|window| {
             let start_seconds = window[0].elapsed_seconds;
             let end_seconds = window[1].elapsed_seconds;
-            (end_seconds - start_seconds > PLAYBACK_GAP_THRESHOLD_SECONDS).then_some(
-                PlaybackGapSpan {
-                    start_seconds,
-                    end_seconds,
-                },
-            )
+            (end_seconds - start_seconds > gap_threshold_seconds).then_some(PlaybackGapSpan {
+                start_seconds,
+                end_seconds,
+            })
         })
         .collect()
 }
@@ -378,6 +654,9 @@ fn format_playback_clock(seconds: f64) -> String {
 }
 
 fn skip_gap_at_or_after(trace: &PlaybackTrace, cursor_seconds: f64) -> f64 {
+    if trace.gap_behavior != PlaybackGapBehavior::Skip {
+        return cursor_seconds;
+    }
     for gap in &trace.gap_spans {
         if cursor_seconds > gap.start_seconds && cursor_seconds < gap.end_seconds {
             return gap.end_seconds;
@@ -406,6 +685,9 @@ fn move_cursor_forward_skipping_gaps(
     cursor_seconds: f64,
     mut remaining_seconds: f64,
 ) -> f64 {
+    if trace.gap_behavior != PlaybackGapBehavior::Skip {
+        return clamp_cursor(trace, cursor_seconds + remaining_seconds);
+    }
     let mut cursor = skip_gap_at_or_after(trace, clamp_cursor(trace, cursor_seconds));
     for gap in &trace.gap_spans {
         if gap.end_seconds <= cursor {
@@ -428,6 +710,9 @@ fn move_cursor_backward_skipping_gaps(
     cursor_seconds: f64,
     mut remaining_seconds: f64,
 ) -> f64 {
+    if trace.gap_behavior != PlaybackGapBehavior::Skip {
+        return clamp_cursor(trace, cursor_seconds - remaining_seconds);
+    }
     let mut cursor = clamp_cursor(trace, cursor_seconds);
     for gap in trace.gap_spans.iter().rev() {
         if gap.start_seconds >= cursor {
@@ -486,6 +771,11 @@ fn build_profile(
 fn situation_at_cursor(trace: &PlaybackTrace, cursor_seconds: f64) -> Option<Situation> {
     let first = trace.points.first()?;
     let last = trace.points.last()?;
+    if cursor_seconds < first.elapsed_seconds
+        && trace.gap_behavior == PlaybackGapBehavior::PreserveUnavailable
+    {
+        return None;
+    }
     if cursor_seconds <= first.elapsed_seconds {
         return Some(point_to_situation(first));
     }
@@ -500,7 +790,7 @@ fn situation_at_cursor(trace: &PlaybackTrace, cursor_seconds: f64) -> Option<Sit
     if (upper.elapsed_seconds - lower.elapsed_seconds).abs() < f64::EPSILON {
         return Some(point_to_situation(upper));
     }
-    if upper.elapsed_seconds - lower.elapsed_seconds > PLAYBACK_GAP_THRESHOLD_SECONDS {
+    if upper.elapsed_seconds - lower.elapsed_seconds > trace.gap_threshold_seconds {
         return Some(point_to_situation(lower));
     }
     let t = ((cursor_seconds - lower.elapsed_seconds)
@@ -643,6 +933,97 @@ mod tests {
         assert!(
             (cursor - 30.0).abs() < 1e-6,
             "backward jog should spend remaining distance before the dead region, got {cursor}",
+        );
+    }
+
+    #[test]
+    fn parses_gps_capture_jsonl_as_replay_trace() {
+        let trace = parse_trace_json(
+            r#"{"data":{"kind":"status","source_kind":"device_gps","update":{"connection_state":"searching","status_label":"Searching"}},"logged_at_epoch_ms":1000,"tag":"ownship.gps_capture.status"}
+{"data":{"kind":"status","source_kind":"device_gps","update":{"connection_state":"connected","status_label":"GPS fix 7 m"}},"logged_at_epoch_ms":2000,"tag":"ownship.gps_capture.status"}
+{"data":{"kind":"sample","sample":{"event_time_epoch_ms":2000,"received_time_epoch_ms":2000,"source_kind":"device_gps","position":{"lat":47.0,"lon":-122.0},"altitude_msl_ft":100.0,"ground_speed_kt":30.0,"track_deg_true":90.0}},"logged_at_epoch_ms":2000,"tag":"ownship.gps_capture.sample"}
+{"data":{"kind":"status","source_kind":"device_gps","update":{"connection_state":"searching","status_label":"Searching"}},"logged_at_epoch_ms":5000,"tag":"ownship.gps_capture.status"}
+{"data":{"kind":"status","source_kind":"device_gps","update":{"connection_state":"connected","status_label":"GPS fix 9 m"}},"logged_at_epoch_ms":13000,"tag":"ownship.gps_capture.status"}
+{"data":{"kind":"sample","sample":{"event_time_epoch_ms":13000,"received_time_epoch_ms":13000,"source_kind":"device_gps","position":{"lat":47.1,"lon":-122.1},"altitude_msl_ft":200.0,"ground_speed_kt":40.0,"track_deg_true":100.0}},"logged_at_epoch_ms":13000,"tag":"ownship.gps_capture.sample"}"#,
+        )
+        .unwrap();
+
+        assert_eq!(trace.source_kind, OwnshipSourceKind::GpxPlayback);
+        assert_eq!(trace.title_label.as_deref(), Some("GPS Capture"));
+        assert_eq!(
+            trace.gap_spans,
+            vec![PlaybackGapSpan {
+                start_seconds: 1.0,
+                end_seconds: 12.0,
+            }]
+        );
+        let before_fix = ownship_state_at_cursor(&trace, 0.0);
+        assert_eq!(
+            before_fix.connection_state,
+            SourceConnectionState::Searching
+        );
+        assert!(before_fix.situation.is_none());
+
+        let in_tunnel = ownship_state_at_cursor(&trace, 6.0);
+        assert_eq!(in_tunnel.connection_state, SourceConnectionState::Searching);
+        assert!(in_tunnel.situation.is_none());
+
+        let after_tunnel = ownship_state_at_cursor(&trace, 12.0);
+        assert_eq!(
+            after_tunnel.connection_state,
+            SourceConnectionState::Connected
+        );
+        assert_eq!(
+            after_tunnel.situation.unwrap().position,
+            SituationPosition::LatLon {
+                lat: 47.1,
+                lon: -122.1,
+            }
+        );
+    }
+
+    #[test]
+    fn gps_capture_playback_does_not_skip_gaps() {
+        let mut playback = PlaybackSessionState::default();
+        playback
+            .load_trace_json(
+                "gps.jsonl".to_string(),
+                r#"{"data":{"kind":"status","source_kind":"device_gps","update":{"connection_state":"connected","status_label":"GPS fix"}},"logged_at_epoch_ms":0,"tag":"ownship.gps_capture.status"}
+{"data":{"kind":"sample","sample":{"event_time_epoch_ms":0,"received_time_epoch_ms":0,"source_kind":"device_gps","position":{"lat":10.0,"lon":20.0},"altitude_msl_ft":100.0}},"logged_at_epoch_ms":0,"tag":"ownship.gps_capture.sample"}
+{"data":{"kind":"status","source_kind":"device_gps","update":{"connection_state":"searching","status_label":"Searching"}},"logged_at_epoch_ms":6000,"tag":"ownship.gps_capture.status"}
+{"data":{"kind":"sample","sample":{"event_time_epoch_ms":20000,"received_time_epoch_ms":20000,"source_kind":"device_gps","position":{"lat":11.0,"lon":21.0},"altitude_msl_ft":200.0}},"logged_at_epoch_ms":20000,"tag":"ownship.gps_capture.sample"}"#,
+            )
+            .unwrap();
+
+        playback.play(0.0);
+        let state = playback.tick(7_000.0).unwrap();
+        assert_eq!(playback.ui_state().cursor_seconds, 7.0);
+        assert_eq!(state.connection_state, SourceConnectionState::Searching);
+        assert!(state.situation.is_none());
+    }
+
+    #[test]
+    fn gps_capture_connected_status_keeps_ownship_between_slow_samples() {
+        let mut playback = PlaybackSessionState::default();
+        playback
+            .load_trace_json(
+                "gps.jsonl".to_string(),
+                r#"{"data":{"kind":"status","source_kind":"device_gps","update":{"connection_state":"connected","status_label":"GPS fix"}},"logged_at_epoch_ms":0,"tag":"ownship.gps_capture.status"}
+{"data":{"kind":"sample","sample":{"event_time_epoch_ms":0,"received_time_epoch_ms":0,"source_kind":"device_gps","position":{"lat":10.0,"lon":20.0},"altitude_msl_ft":100.0}},"logged_at_epoch_ms":0,"tag":"ownship.gps_capture.sample"}
+{"data":{"kind":"sample","sample":{"event_time_epoch_ms":6200,"received_time_epoch_ms":6200,"source_kind":"device_gps","position":{"lat":10.1,"lon":20.1},"altitude_msl_ft":120.0}},"logged_at_epoch_ms":6200,"tag":"ownship.gps_capture.sample"}"#,
+            )
+            .unwrap();
+
+        playback.play(0.0);
+        let state = playback.tick(3_000.0).unwrap();
+        assert_eq!(playback.ui_state().cursor_seconds, 3.0);
+        assert_eq!(state.connection_state, SourceConnectionState::Connected);
+        assert_eq!(
+            state.situation.unwrap().position,
+            SituationPosition::LatLon {
+                lat: 10.0,
+                lon: 20.0,
+            },
         );
     }
 }

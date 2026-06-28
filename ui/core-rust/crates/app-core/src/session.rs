@@ -2922,7 +2922,7 @@ fn create_ui_session_inner(
         mark("core_derive_chart_page_state");
     }
     let playback = PlaybackSessionState::default();
-    let map_follow = MapFollowSessionState::default();
+    let mut map_follow = MapFollowSessionState::default();
     if let Some(mark) = mark.as_deref_mut() {
         mark("core_default_session_state");
     }
@@ -2938,8 +2938,8 @@ fn create_ui_session_inner(
     }
     let playback_ui_state = playback.ui_state();
     let playback_panel_state = playback_panel_state_for_app_state(&app_state);
-    let map_follow_ui_state = map_follow.ui_state(&app_state.ownship.render);
-    let map_follow_target_viewport = map_follow.target_viewport(&app_state.ownship.render);
+    let (map_follow_ui_state, map_follow_target_viewport) =
+        map_follow.snapshot_projection(&app_state.ownship.render);
     if let Some(mark) = mark.as_deref_mut() {
         mark("core_project_other_ui_state");
     }
@@ -3991,17 +3991,10 @@ pub fn load_playback_trace_in_session(
 ) -> AppResult<UiSessionSnapshot> {
     let mut sessions = lock_sessions();
     let session = session_mut(&mut sessions, handle)?;
-    let situation = session
+    let playback_state = session
         .playback
         .load_trace_json(source_path.to_string(), trace_json)?;
-    apply_situation_to_ownship(
-        session,
-        PLAYBACK_SOURCE_ID,
-        crate::OwnshipSourceKind::AdsbTrackPlayback,
-        "ADS-B Trace Playback",
-        situation,
-        0,
-    )?;
+    apply_playback_state_to_ownship(session, playback_state, 0)?;
     snapshot_for_changed_session(session)
 }
 
@@ -4013,17 +4006,10 @@ pub fn load_playback_trace_in_session_outcome(
     let mut sessions = lock_sessions();
     let session = session_mut(&mut sessions, handle)?;
     let terrain_key_before = ownship_terrain_refresh_key(session);
-    let situation = session
+    let playback_state = session
         .playback
         .load_trace_json(source_path.to_string(), trace_json)?;
-    apply_situation_to_ownship(
-        session,
-        PLAYBACK_SOURCE_ID,
-        crate::OwnshipSourceKind::AdsbTrackPlayback,
-        "ADS-B Trace Playback",
-        situation,
-        0,
-    )?;
+    apply_playback_state_to_ownship(session, playback_state, 0)?;
     changed_session_snapshot_outcome_with_invalidations(
         session,
         terrain_overlay_invalidations_for_ownship_change(
@@ -4036,15 +4022,8 @@ pub fn load_playback_trace_in_session_outcome(
 pub fn play_playback_in_session(handle: u32, now_epoch_ms: f64) -> AppResult<UiSessionSnapshot> {
     let mut sessions = lock_sessions();
     let session = session_mut(&mut sessions, handle)?;
-    if let Some(situation) = session.playback.play(now_epoch_ms) {
-        apply_situation_to_ownship(
-            session,
-            PLAYBACK_SOURCE_ID,
-            crate::OwnshipSourceKind::AdsbTrackPlayback,
-            "ADS-B Trace Playback",
-            situation,
-            now_epoch_ms as i64,
-        )?;
+    if let Some(playback_state) = session.playback.play(now_epoch_ms) {
+        apply_playback_state_to_ownship(session, playback_state, now_epoch_ms as i64)?;
     }
     snapshot_for_changed_session(session)
 }
@@ -4056,15 +4035,8 @@ pub fn play_playback_in_session_outcome(
     let mut sessions = lock_sessions();
     let session = session_mut(&mut sessions, handle)?;
     let terrain_key_before = ownship_terrain_refresh_key(session);
-    if let Some(situation) = session.playback.play(now_epoch_ms) {
-        apply_situation_to_ownship(
-            session,
-            PLAYBACK_SOURCE_ID,
-            crate::OwnshipSourceKind::AdsbTrackPlayback,
-            "ADS-B Trace Playback",
-            situation,
-            now_epoch_ms as i64,
-        )?;
+    if let Some(playback_state) = session.playback.play(now_epoch_ms) {
+        apply_playback_state_to_ownship(session, playback_state, now_epoch_ms as i64)?;
     }
     changed_session_snapshot_outcome_with_invalidations(
         session,
@@ -4078,15 +4050,8 @@ pub fn play_playback_in_session_outcome(
 pub fn pause_playback_in_session(handle: u32, now_epoch_ms: f64) -> AppResult<UiSessionSnapshot> {
     let mut sessions = lock_sessions();
     let session = session_mut(&mut sessions, handle)?;
-    if let Some(situation) = session.playback.pause(now_epoch_ms) {
-        apply_situation_to_ownship(
-            session,
-            PLAYBACK_SOURCE_ID,
-            crate::OwnshipSourceKind::AdsbTrackPlayback,
-            "ADS-B Trace Playback",
-            situation,
-            now_epoch_ms as i64,
-        )?;
+    if let Some(playback_state) = session.playback.pause(now_epoch_ms) {
+        apply_playback_state_to_ownship(session, playback_state, now_epoch_ms as i64)?;
     }
     snapshot_for_changed_session(session)
 }
@@ -4098,15 +4063,8 @@ pub fn pause_playback_in_session_outcome(
     let mut sessions = lock_sessions();
     let session = session_mut(&mut sessions, handle)?;
     let terrain_key_before = ownship_terrain_refresh_key(session);
-    if let Some(situation) = session.playback.pause(now_epoch_ms) {
-        apply_situation_to_ownship(
-            session,
-            PLAYBACK_SOURCE_ID,
-            crate::OwnshipSourceKind::AdsbTrackPlayback,
-            "ADS-B Trace Playback",
-            situation,
-            now_epoch_ms as i64,
-        )?;
+    if let Some(playback_state) = session.playback.pause(now_epoch_ms) {
+        apply_playback_state_to_ownship(session, playback_state, now_epoch_ms as i64)?;
     }
     changed_session_snapshot_outcome_with_invalidations(
         session,
@@ -4124,15 +4082,8 @@ pub fn seek_playback_in_session(
 ) -> AppResult<UiSessionSnapshot> {
     let mut sessions = lock_sessions();
     let session = session_mut(&mut sessions, handle)?;
-    if let Some(situation) = session.playback.seek(cursor_seconds, now_epoch_ms) {
-        apply_situation_to_ownship(
-            session,
-            PLAYBACK_SOURCE_ID,
-            crate::OwnshipSourceKind::AdsbTrackPlayback,
-            "ADS-B Trace Playback",
-            situation,
-            now_epoch_ms as i64,
-        )?;
+    if let Some(playback_state) = session.playback.seek(cursor_seconds, now_epoch_ms) {
+        apply_playback_state_to_ownship(session, playback_state, now_epoch_ms as i64)?;
     }
     snapshot_for_changed_session(session)
 }
@@ -4145,15 +4096,8 @@ pub fn seek_playback_in_session_outcome(
     let mut sessions = lock_sessions();
     let session = session_mut(&mut sessions, handle)?;
     let terrain_key_before = ownship_terrain_refresh_key(session);
-    if let Some(situation) = session.playback.seek(cursor_seconds, now_epoch_ms) {
-        apply_situation_to_ownship(
-            session,
-            PLAYBACK_SOURCE_ID,
-            crate::OwnshipSourceKind::AdsbTrackPlayback,
-            "ADS-B Trace Playback",
-            situation,
-            now_epoch_ms as i64,
-        )?;
+    if let Some(playback_state) = session.playback.seek(cursor_seconds, now_epoch_ms) {
+        apply_playback_state_to_ownship(session, playback_state, now_epoch_ms as i64)?;
     }
     changed_session_snapshot_outcome_with_invalidations(
         session,
@@ -4171,15 +4115,8 @@ pub fn set_playback_rate_in_session(
 ) -> AppResult<UiSessionSnapshot> {
     let mut sessions = lock_sessions();
     let session = session_mut(&mut sessions, handle)?;
-    if let Some(situation) = session.playback.set_rate(rate, now_epoch_ms) {
-        apply_situation_to_ownship(
-            session,
-            PLAYBACK_SOURCE_ID,
-            crate::OwnshipSourceKind::AdsbTrackPlayback,
-            "ADS-B Trace Playback",
-            situation,
-            now_epoch_ms as i64,
-        )?;
+    if let Some(playback_state) = session.playback.set_rate(rate, now_epoch_ms) {
+        apply_playback_state_to_ownship(session, playback_state, now_epoch_ms as i64)?;
     }
     snapshot_for_changed_session(session)
 }
@@ -4192,15 +4129,8 @@ pub fn set_playback_rate_in_session_outcome(
     let mut sessions = lock_sessions();
     let session = session_mut(&mut sessions, handle)?;
     let terrain_key_before = ownship_terrain_refresh_key(session);
-    if let Some(situation) = session.playback.set_rate(rate, now_epoch_ms) {
-        apply_situation_to_ownship(
-            session,
-            PLAYBACK_SOURCE_ID,
-            crate::OwnshipSourceKind::AdsbTrackPlayback,
-            "ADS-B Trace Playback",
-            situation,
-            now_epoch_ms as i64,
-        )?;
+    if let Some(playback_state) = session.playback.set_rate(rate, now_epoch_ms) {
+        apply_playback_state_to_ownship(session, playback_state, now_epoch_ms as i64)?;
     }
     changed_session_snapshot_outcome_with_invalidations(
         session,
@@ -4214,15 +4144,8 @@ pub fn set_playback_rate_in_session_outcome(
 pub fn tick_playback_in_session(handle: u32, now_epoch_ms: f64) -> AppResult<UiSessionSnapshot> {
     let mut sessions = lock_sessions();
     let session = session_mut(&mut sessions, handle)?;
-    if let Some(situation) = session.playback.tick(now_epoch_ms) {
-        apply_situation_to_ownship(
-            session,
-            PLAYBACK_SOURCE_ID,
-            crate::OwnshipSourceKind::AdsbTrackPlayback,
-            "ADS-B Trace Playback",
-            situation,
-            now_epoch_ms as i64,
-        )?;
+    if let Some(playback_state) = session.playback.tick(now_epoch_ms) {
+        apply_playback_state_to_ownship(session, playback_state, now_epoch_ms as i64)?;
     }
     snapshot_for_changed_session(session)
 }
@@ -4234,15 +4157,8 @@ pub fn tick_playback_in_session_outcome(
     let mut sessions = lock_sessions();
     let session = session_mut(&mut sessions, handle)?;
     let terrain_key_before = ownship_terrain_refresh_key(session);
-    if let Some(situation) = session.playback.tick(now_epoch_ms) {
-        apply_situation_to_ownship(
-            session,
-            PLAYBACK_SOURCE_ID,
-            crate::OwnshipSourceKind::AdsbTrackPlayback,
-            "ADS-B Trace Playback",
-            situation,
-            now_epoch_ms as i64,
-        )?;
+    if let Some(playback_state) = session.playback.tick(now_epoch_ms) {
+        apply_playback_state_to_ownship(session, playback_state, now_epoch_ms as i64)?;
     }
     changed_session_snapshot_outcome_with_invalidations(
         session,
@@ -8781,7 +8697,7 @@ fn commit_session_flight_plan_with_invalidations_outcome(
     match sync_guidance_geometry_for_session(&mut candidate, &started) {
         Ok(()) => {
             advance_session_revision(&mut candidate);
-            match try_snapshot_for_session(&candidate) {
+            match try_snapshot_for_session(&mut candidate) {
                 Ok(snapshot) => {
                     *session = candidate;
                     let snapshot = serde_json::to_value(snapshot).map_err(|err| AppError {
@@ -8825,7 +8741,7 @@ fn snapshot_for_changed_session(session: &mut UiSession) -> AppResult<UiSessionS
     snapshot_for_session(session)
 }
 
-fn snapshot_for_session(session: &UiSession) -> AppResult<UiSessionSnapshot> {
+fn snapshot_for_session(session: &mut UiSession) -> AppResult<UiSessionSnapshot> {
     try_snapshot_for_session(session).map_err(|err| match err {
         HadReadError::NeedPages(pages) => AppError {
             kind: AppErrorKind::Internal,
@@ -8841,7 +8757,7 @@ fn snapshot_for_session(session: &UiSession) -> AppResult<UiSessionSnapshot> {
     })
 }
 
-fn session_snapshot_outcome(session: &UiSession) -> AppResult<HadOperationOutcome> {
+fn session_snapshot_outcome(session: &mut UiSession) -> AppResult<HadOperationOutcome> {
     session_snapshot_outcome_with_invalidations(session, Vec::new())
 }
 
@@ -8858,7 +8774,7 @@ fn changed_session_snapshot_outcome_with_invalidations(
 }
 
 fn session_snapshot_outcome_with_invalidations(
-    session: &UiSession,
+    session: &mut UiSession,
     mut invalidations: Vec<UiInvalidation>,
 ) -> AppResult<HadOperationOutcome> {
     dedupe_invalidations(&mut invalidations);
@@ -8885,7 +8801,7 @@ fn session_snapshot_outcome_with_invalidations(
     }
 }
 
-fn try_snapshot_for_session(session: &UiSession) -> Result<UiSessionSnapshot, HadReadError> {
+fn try_snapshot_for_session(session: &mut UiSession) -> Result<UiSessionSnapshot, HadReadError> {
     let total_started_at = crate::core_clock_ms();
     let app_ui_started_at = crate::core_clock_ms();
     let app_ui_state = project_session_app_ui_state(session)?;
@@ -8903,12 +8819,9 @@ fn try_snapshot_for_session(session: &UiSession) -> Result<UiSessionSnapshot, Ha
     let playback_ui_state = session.playback.ui_state();
     let playback_ms = elapsed_ms(playback_started_at);
     let map_follow_started_at = crate::core_clock_ms();
-    let map_follow_ui_state = session
+    let (map_follow_ui_state, map_follow_target_viewport) = session
         .map_follow
-        .ui_state(&session.app_state.ownship.render);
-    let map_follow_target_viewport = session
-        .map_follow
-        .target_viewport(&session.app_state.ownship.render);
+        .snapshot_projection(&session.app_state.ownship.render);
     let map_follow_ms = elapsed_ms(map_follow_started_at);
     let clone_started_at = crate::core_clock_ms();
     let chart_page_state = session.chart_page_state.clone();
@@ -9477,15 +9390,8 @@ impl SessionSituationSourceHandler for ReplaySituationSourceHandler {
             SituationControlInput::FastForward => 30.0,
             SituationControlInput::SkipForward => 600.0,
         };
-        if let Some(situation) = session.playback.jog(delta_seconds, now_epoch_ms) {
-            apply_situation_to_ownship(
-                session,
-                PLAYBACK_SOURCE_ID,
-                crate::OwnshipSourceKind::AdsbTrackPlayback,
-                "ADS-B Trace Playback",
-                situation,
-                now_epoch_ms as i64,
-            )?;
+        if let Some(playback_state) = session.playback.jog(delta_seconds, now_epoch_ms) {
+            apply_playback_state_to_ownship(session, playback_state, now_epoch_ms as i64)?;
         }
         Ok(())
     }
@@ -10367,6 +10273,74 @@ fn apply_situation_to_ownship(
             altitude_msl_ft: situation.altitude_msl_ft,
             pressure_altitude_ft: None,
             vertical_speed_fpm: None,
+        }),
+    )?;
+    sequence_guidance_by_ownship_position(session)?;
+    Ok(())
+}
+
+fn apply_playback_state_to_ownship(
+    session: &mut UiSession,
+    playback_state: crate::playback::PlaybackOwnshipState,
+    timestamp_epoch_ms: i64,
+) -> AppResult<()> {
+    let source_id = crate::OwnshipSourceId(PLAYBACK_SOURCE_ID.to_string());
+    advance_session_wall_clock(session, timestamp_epoch_ms);
+    session.app_state = state::reduce(
+        &session.app_state,
+        AppEvent::RegisterOwnshipSource(crate::OwnshipSourceRegistration {
+            source_id: source_id.clone(),
+            source_kind: playback_state.source_kind,
+            display_name: playback_state.display_name,
+            selectable: true,
+            auto_eligible: true,
+        }),
+    )?;
+    session.app_state = state::reduce(
+        &session.app_state,
+        AppEvent::SetOwnshipPolicy(crate::OwnshipPolicy {
+            selection: crate::OwnshipSelectionPolicy::Manual {
+                source_id: source_id.clone(),
+            },
+            source_priority: vec![source_id.clone()],
+            allow_auto_replay: true,
+            allow_auto_simulated: true,
+        }),
+    )?;
+    let (position, orientation_deg, speed_kt, altitude_msl_ft) = match playback_state.situation {
+        Some(situation) => (
+            situation.position.lat_lon(),
+            situation.orientation_deg,
+            situation.speed_kt,
+            situation.altitude_msl_ft,
+        ),
+        None => (None, None, None, None),
+    };
+    session.app_state = state::reduce(
+        &session.app_state,
+        AppEvent::PushSituationSample(crate::SituationSample {
+            source_id: source_id.clone(),
+            source_kind: playback_state.source_kind,
+            event_time_epoch_ms: timestamp_epoch_ms,
+            received_time_epoch_ms: timestamp_epoch_ms,
+            position,
+            horizontal_accuracy_m: None,
+            vertical_accuracy_m: None,
+            track_deg_true: orientation_deg,
+            heading_deg_true: None,
+            ground_speed_kt: speed_kt,
+            altitude_msl_ft,
+            pressure_altitude_ft: None,
+            vertical_speed_fpm: None,
+        }),
+    )?;
+    session.app_state = state::reduce(
+        &session.app_state,
+        AppEvent::UpdateOwnshipSourceStatus(crate::OwnshipSourceStatusUpdate {
+            source_id,
+            connection_state: playback_state.connection_state,
+            enabled: true,
+            status_label: playback_state.status_label,
         }),
     )?;
     sequence_guidance_by_ownship_position(session)?;
@@ -15665,6 +15639,179 @@ mod tests {
             "GPS, Plan Preview, and Replay should keep their relative menu order",
         );
         assert_enabled_situation_controls(&gps, &[]);
+    }
+
+    #[test]
+    fn gps_capture_replay_stays_in_replay_source_slot() {
+        let init =
+            create_ui_session(sample_guided_plan(), &[], None, None).expect("create session");
+        push_situation_sample_in_session(
+            init.handle,
+            SituationSample {
+                source_id: OwnshipSourceId("test-gps".to_string()),
+                source_kind: OwnshipSourceKind::DeviceGps,
+                event_time_epoch_ms: 1_000,
+                received_time_epoch_ms: 1_000,
+                position: Some(LatLon {
+                    lat: 47.0,
+                    lon: -122.0,
+                }),
+                horizontal_accuracy_m: None,
+                vertical_accuracy_m: None,
+                track_deg_true: Some(90.0),
+                heading_deg_true: None,
+                ground_speed_kt: Some(30.0),
+                altitude_msl_ft: Some(100.0),
+                pressure_altitude_ft: None,
+                vertical_speed_fpm: None,
+            },
+        )
+        .expect("push gps sample");
+        select_ownship_source_in_session(
+            init.handle,
+            crate::OwnshipSelectionCommand::Source {
+                source_id: OwnshipSourceId(PLAYBACK_SOURCE_ID.to_string()),
+            },
+        )
+        .expect("select Replay");
+
+        let replay = load_playback_trace_in_session(
+            init.handle,
+            "gps.jsonl",
+            r#"{"data":{"kind":"status","source_kind":"device_gps","update":{"connection_state":"connected","status_label":"GPS fix"}},"logged_at_epoch_ms":0,"tag":"ownship.gps_capture.status"}
+{"data":{"kind":"sample","sample":{"event_time_epoch_ms":0,"received_time_epoch_ms":0,"source_kind":"device_gps","position":{"lat":48.0,"lon":-123.0},"altitude_msl_ft":200.0,"ground_speed_kt":40.0,"track_deg_true":100.0}},"logged_at_epoch_ms":0,"tag":"ownship.gps_capture.sample"}"#,
+        )
+        .expect("load GPS capture replay");
+
+        assert!(
+            replay.playback_panel_state.visible,
+            "loading a GPS capture through Replay must not hide the playback panel",
+        );
+        let sources = &replay.app_ui_state.ownship.controls.sources;
+        assert_eq!(
+            sources
+                .iter()
+                .filter(|source| source.label == "GPS")
+                .count(),
+            1,
+            "live GPS should remain the only GPS menu item",
+        );
+        assert_eq!(
+            sources
+                .iter()
+                .filter(|source| source.label == "Replay")
+                .count(),
+            1,
+            "GPS capture playback should occupy the Replay menu item",
+        );
+        let active = sources
+            .iter()
+            .find(|source| source.active)
+            .expect("active ownship source");
+        assert_eq!(active.label, "Replay");
+        assert_eq!(active.source_id.0, PLAYBACK_SOURCE_ID);
+        assert_eq!(active.source_kind, OwnshipSourceKind::GpxPlayback);
+    }
+
+    #[test]
+    fn gps_capture_replay_tick_projects_ownship_render() {
+        let init =
+            create_ui_session(sample_guided_plan(), &[], None, None).expect("create session");
+        let loaded = load_playback_trace_in_session(
+            init.handle,
+            "gps.jsonl",
+            r#"{"data":{"kind":"status","source_kind":"device_gps","update":{"connection_state":"searching","status_label":"Searching"}},"logged_at_epoch_ms":1000,"tag":"ownship.gps_capture.status"}
+{"data":{"kind":"status","source_kind":"device_gps","update":{"connection_state":"connected","status_label":"GPS fix"}},"logged_at_epoch_ms":2000,"tag":"ownship.gps_capture.status"}
+{"data":{"kind":"sample","sample":{"event_time_epoch_ms":2000,"received_time_epoch_ms":2000,"source_kind":"device_gps","position":{"lat":47.0,"lon":-122.0},"altitude_msl_ft":300.0,"ground_speed_kt":42.0,"track_deg_true":90.0}},"logged_at_epoch_ms":2000,"tag":"ownship.gps_capture.sample"}"#,
+        )
+        .expect("load GPS capture replay");
+        assert_eq!(
+            loaded.app_ui_state.ownship.controls.launcher_label,
+            "Replay: No GPS",
+        );
+        assert!(loaded.app_ui_state.ownship.render.position.is_none());
+        assert!(!loaded.app_ui_state.ownship.render.draw_aircraft);
+
+        play_playback_in_session(init.handle, 10_000.0).expect("play replay");
+        let ticked =
+            tick_playback_in_session(init.handle, 11_100.0).expect("tick past first GPS sample");
+        let ownship = &ticked.app_ui_state.ownship.render;
+        assert_eq!(ownship.mode, crate::OwnshipMode::Replay);
+        assert_eq!(
+            ownship.position,
+            Some(LatLon {
+                lat: 47.0,
+                lon: -122.0,
+            }),
+        );
+        assert_eq!(ownship.speed_kt, Some(42.0));
+        assert_eq!(ownship.altitude_msl_ft, Some(300.0));
+        assert_eq!(
+            ticked.app_ui_state.ownship.controls.launcher_label,
+            "Replay: GPS",
+        );
+    }
+
+    #[test]
+    fn gps_capture_replay_follow_does_not_snap_to_stale_viewport_when_gps_is_lost() {
+        let init =
+            create_ui_session(sample_guided_plan(), &[], None, None).expect("create session");
+        let seattle_viewport = MapViewport {
+            center: LatLon {
+                lat: 47.500,
+                lon: -122.300,
+            },
+            zoom: 9.0,
+            rotation_deg: 0.0,
+            pitch_deg: 0.0,
+        };
+        let pass_position = LatLon {
+            lat: 47.339,
+            lon: -121.390,
+        };
+        load_playback_trace_in_session(
+            init.handle,
+            "gps.jsonl",
+            r#"{"data":{"kind":"status","source_kind":"device_gps","update":{"connection_state":"connected","status_label":"GPS fix"}},"logged_at_epoch_ms":0,"tag":"ownship.gps_capture.status"}
+{"data":{"kind":"sample","sample":{"event_time_epoch_ms":0,"received_time_epoch_ms":0,"source_kind":"device_gps","position":{"lat":47.339,"lon":-121.390},"altitude_msl_ft":3000.0,"ground_speed_kt":42.0,"track_deg_true":90.0}},"logged_at_epoch_ms":0,"tag":"ownship.gps_capture.sample"}
+{"data":{"kind":"status","source_kind":"device_gps","update":{"connection_state":"searching","status_label":"Searching"}},"logged_at_epoch_ms":10000,"tag":"ownship.gps_capture.status"}
+{"data":{"kind":"status","source_kind":"device_gps","update":{"connection_state":"connected","status_label":"GPS fix"}},"logged_at_epoch_ms":300000,"tag":"ownship.gps_capture.status"}
+{"data":{"kind":"sample","sample":{"event_time_epoch_ms":300000,"received_time_epoch_ms":300000,"source_kind":"device_gps","position":{"lat":47.350,"lon":-121.410},"altitude_msl_ft":3100.0,"ground_speed_kt":40.0,"track_deg_true":95.0}},"logged_at_epoch_ms":300000,"tag":"ownship.gps_capture.sample"}"#,
+        )
+        .expect("load GPS capture replay");
+
+        let centered = engage_map_follow_in_session(init.handle, seattle_viewport)
+            .expect("engage map follow with GPS fix");
+        let centered_viewport = centered
+            .map_follow_target_viewport
+            .expect("follow target while GPS is connected");
+        assert!(
+            (centered_viewport.center.lat - pass_position.lat).abs() < 1e-6,
+            "follow should target the replayed GPS latitude"
+        );
+        assert!(
+            (centered_viewport.center.lon - pass_position.lon).abs() < 1e-6,
+            "follow should target the replayed GPS longitude"
+        );
+
+        let lost =
+            seek_playback_in_session(init.handle, 10.0, 10_000.0).expect("seek into GPS gap");
+        assert!(lost.app_ui_state.ownship.render.position.is_none());
+        assert!(
+            !lost.map_follow_ui_state.following,
+            "follow should disengage while the GPS source is unavailable"
+        );
+        let lost_viewport = lost
+            .map_follow_target_viewport
+            .expect("viewport target should preserve the last useful map position");
+        assert_eq!(
+            lost_viewport, centered_viewport,
+            "losing GPS must not snap back to the stale viewport from CTR engagement"
+        );
+        assert_ne!(
+            lost_viewport, seattle_viewport,
+            "losing GPS must not send the map back to the engage-time viewport"
+        );
     }
 
     #[test]

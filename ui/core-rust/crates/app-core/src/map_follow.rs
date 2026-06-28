@@ -96,6 +96,28 @@ impl MapFollowSessionState {
             .map(|viewport| self.resolve_viewport(ownship, viewport))
     }
 
+    pub fn snapshot_projection(
+        &mut self,
+        ownship: &OwnshipRenderState,
+    ) -> (MapFollowUiState, Option<MapViewport>) {
+        let target_viewport = self.project_target_viewport(ownship);
+        (self.ui_state(ownship), target_viewport)
+    }
+
+    fn project_target_viewport(&mut self, ownship: &OwnshipRenderState) -> Option<MapViewport> {
+        let viewport = self.current_viewport?;
+        if !self.following {
+            return Some(viewport);
+        }
+        if ownship.position.is_none() {
+            self.following = false;
+            return Some(viewport);
+        }
+        let target = self.resolve_viewport(ownship, viewport);
+        self.current_viewport = Some(target);
+        Some(target)
+    }
+
     fn resolve_viewport(&self, ownship: &OwnshipRenderState, viewport: MapViewport) -> MapViewport {
         if !self.following {
             return viewport;
@@ -167,6 +189,24 @@ mod tests {
             draw_predictor: false,
             draw_cdi: true,
             position: Some(LatLon { lat, lon }),
+            orientation_deg: None,
+            magnetic_variation_deg: None,
+            speed_kt: None,
+            altitude_msl_ft: None,
+            pressure_altitude_ft: None,
+            terrain_altitude_bucket_ft: None,
+        }
+    }
+
+    fn no_ownship() -> OwnshipRenderState {
+        OwnshipRenderState {
+            mode: OwnshipMode::None,
+            banner_text: "NO GPS POSITION".to_string(),
+            banner_severity: OwnshipBannerSeverity::Warning,
+            draw_aircraft: false,
+            draw_predictor: false,
+            draw_cdi: false,
+            position: None,
             orientation_deg: None,
             magnetic_variation_deg: None,
             speed_kt: None,
@@ -248,5 +288,59 @@ mod tests {
         state.engage(viewport);
         state.sync_for_viewport(&ownship(0.0, 0.0), viewport, 800.0, 600.0);
         assert!(!state.following);
+    }
+
+    #[test]
+    fn sync_for_viewport_keeps_viewport_when_ownship_is_lost() {
+        let mut state = MapFollowSessionState::default();
+        let viewport = MapViewport {
+            center: LatLon {
+                lat: 47.5,
+                lon: -122.3,
+            },
+            zoom: 9.0,
+            rotation_deg: 0.0,
+            pitch_deg: 0.0,
+        };
+        state.engage(viewport);
+        state.sync_for_viewport(&no_ownship(), viewport, 800.0, 600.0);
+
+        assert!(!state.following);
+        assert_eq!(state.target_viewport(&no_ownship()), Some(viewport));
+        assert_eq!(
+            state.ui_state(&no_ownship()),
+            MapFollowUiState {
+                can_center_here: false,
+                following: false,
+            }
+        );
+    }
+
+    #[test]
+    fn snapshot_projection_preserves_last_follow_target_when_ownship_is_lost() {
+        let mut state = MapFollowSessionState::default();
+        let viewport = MapViewport {
+            center: LatLon {
+                lat: 47.5,
+                lon: -122.3,
+            },
+            zoom: 9.0,
+            rotation_deg: 0.0,
+            pitch_deg: 0.0,
+        };
+        state.engage(viewport);
+        let (_, centered) = state.snapshot_projection(&ownship(47.339, -121.390));
+        let centered = centered.expect("centered follow target");
+        assert_ne!(centered, viewport);
+
+        let (ui_state, lost_target) = state.snapshot_projection(&no_ownship());
+        assert_eq!(
+            ui_state,
+            MapFollowUiState {
+                can_center_here: false,
+                following: false,
+            }
+        );
+        assert_eq!(lost_target, Some(centered));
     }
 }

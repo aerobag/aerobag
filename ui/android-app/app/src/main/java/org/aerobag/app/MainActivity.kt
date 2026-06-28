@@ -369,7 +369,7 @@ internal val ThumbSize = 56.dp
 internal val ThumbGap = 5.6.dp
 internal val SituationDockOverlapWidth = ThumbSize * 10f
 internal val PlanGridGap = 2.dp
-internal const val DefaultPlaybackTracePath = "/adsb-traces/n550ar/n550ar-2024-09-29.json"
+internal const val DefaultPlaybackTracePath = "/gps-captures/black-tablet-flight-2026-06-27-0800-1700-pdt.jsonl"
 internal const val DefaultAndroidPackageSourceBaseUrl = "aerobag.org"
 internal const val CurrentArtifactsDiscoveryFilename = "current_artifacts.json"
 internal const val PublicationPackageRootPath = "packages"
@@ -480,18 +480,19 @@ internal const val UiPrefsRecentAirportsKey = "recent_airport_ids"
 internal const val UiPrefsOfflinePackagePreferencesKey = "offline_package_preferences"
 internal const val UiPrefsOfflinePackageLibraryCacheKey = "offline_package_library_cache"
 internal const val UiPrefsPackageSourceBaseUrlKey = "package_source_base_url"
+internal const val UiPrefsDebugGpsCaptureKey = "debug_gps_capture"
 internal const val MapViewportLogTag = "MapViewport"
 internal const val MaxViewHistoryDepth = 64
 internal const val OverlayPlaneControls = 10f
 internal const val OverlayPlaneModalScrim = 80f
 internal const val OverlayPlaneModal = 90f
-internal fun defaultUiDebugState() = UiDebugState(
+internal fun defaultUiDebugState(gpsCapture: Boolean = false) = UiDebugState(
     tileLabels = false,
     nexradTileLabels = false,
     fastTiles = false,
     offlineSimulatedClockButtons = false,
     badAutopilot = false,
-    gpsCapture = false,
+    gpsCapture = gpsCapture,
     debugLogToDeveloperServer = false,
 )
 internal val PackageManagementJson = Json {
@@ -1846,6 +1847,13 @@ internal fun readStoredPage(prefs: SharedPreferences): AppPage {
     return runCatching { AppPage.valueOf(stored) }.getOrDefault(AppPage.Map)
 }
 
+internal fun readStoredGpsCaptureDebugFlag(prefs: SharedPreferences): Boolean =
+    prefs.getBoolean(UiPrefsDebugGpsCaptureKey, false)
+
+internal fun writeStoredGpsCaptureDebugFlag(prefs: SharedPreferences, enabled: Boolean) {
+    prefs.edit().putBoolean(UiPrefsDebugGpsCaptureKey, enabled).apply()
+}
+
 internal fun summarizeRuntimeBootstrapFailure(error: Throwable): String {
     val messages = generateSequence(error) { it.cause }
         .mapNotNull { it.message?.trim() }
@@ -2184,7 +2192,7 @@ internal fun AerobagApp(
             pageHistory = emptyList(),
             uptimeLabel = rememberUptimeLabel(SystemClock.elapsedRealtime()),
             bootstrap = bootstrap,
-            debugState = defaultUiDebugState(),
+            debugState = defaultUiDebugState(gpsCapture = readStoredGpsCaptureDebugFlag(prefs)),
             navElement = null,
             onSelectPage = { targetPage -> requestRuntimeReload(targetPage) },
             onOpenPlan = { requestRuntimeReload(AppPage.Plan) },
@@ -2449,6 +2457,9 @@ internal fun AerobagApp(
             )
     }
     LaunchedEffect(uiSession) {
+        if (readStoredGpsCaptureDebugFlag(prefs)) {
+            applySessionSnapshot(uiSession.setDebugFlag("gps_capture", true))
+        }
         applySessionSnapshot(uiSession.registerOwnshipSource(AndroidGpsSource.registration()))
         applySessionSnapshot(uiSession.updateOwnshipSourceStatus(AndroidGpsSource.status.value))
         val startupOwnshipSource = AndroidGpsPower.consumePendingOwnshipSource(appContext)
@@ -2583,6 +2594,9 @@ internal fun AerobagApp(
     }
 
     fun setDebugFlag(flagId: String, enabled: Boolean) {
+        if (flagId == "gps_capture") {
+            writeStoredGpsCaptureDebugFlag(prefs, enabled)
+        }
         applySessionSnapshot(uiSession.setDebugFlag(flagId, enabled))
     }
 

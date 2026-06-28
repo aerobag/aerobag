@@ -19,6 +19,9 @@ const workspaceRoot = path.join(webTargetRoot, "workspace");
 const generatedRoot = path.join(webTargetRoot, "generated");
 const iconsRoot = path.join(repoRoot, "ui", "icons");
 const adsbTraceRoot = path.resolve(repoRoot, "..", "adsb-traces");
+const gpsCaptureRoot = process.env.AEROBAG_GPS_CAPTURE_ROOT
+  ? path.resolve(process.env.AEROBAG_GPS_CAPTURE_ROOT)
+  : path.join("/tmp", "aerobag-gps-captures");
 const liveFeedsOrigin = process.env.AEROBAG_LIVE_FEEDS_ORIGIN ?? null;
 const webDebugLogEnabled = /^(1|true|yes)$/i.test(process.env.AEROBAG_WEB_DEBUG_LOG_ENABLED ?? "");
 const sharedRoot = path.join(repoRoot, "ui", "shared");
@@ -185,7 +188,7 @@ function mountStaticTree(sourceRoot: string, options: { missingStatus?: number; 
             ? "application/vnd.aerobag.terrain"
           : extension === ".db"
             ? "application/vnd.sqlite3"
-          : extension === ".json"
+          : extension === ".json" || extension === ".jsonl"
             ? "application/json"
           : extension === ".html"
             ? "text/html; charset=utf-8"
@@ -280,6 +283,7 @@ function aerobagStaticPlugin(): Plugin {
     server.middlewares.use("/packages", mountStaticTree(artifactReadRoot, { missingStatus: 404, logPrefix: "packages" }));
     server.middlewares.use("/icons", mountStaticTree(iconsRoot, { missingStatus: 404, logPrefix: "icons" }));
     server.middlewares.use("/adsb-traces", mountStaticTree(adsbTraceRoot, { missingStatus: 404, logPrefix: "adsb_traces", direct: true }));
+    server.middlewares.use("/gps-captures", mountStaticTree(gpsCaptureRoot, { missingStatus: 404, logPrefix: "gps_captures", direct: true }));
     for (const legacyPrefix of [
       "/afd",
       "/files",
@@ -362,6 +366,7 @@ export default defineConfig({
         generatedRoot,
         artifactReadRoot,
         ...(fs.existsSync(adsbTraceRoot) ? [adsbTraceRoot] : []),
+        ...(fs.existsSync(gpsCaptureRoot) ? [gpsCaptureRoot] : []),
       ],
     },
   },

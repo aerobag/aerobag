@@ -15867,6 +15867,60 @@ mod tests {
     }
 
     #[test]
+    fn empty_plan_direct_to_projects_route_through_session_api() {
+        let init = create_ui_session(FlightPlan::empty(), &[], None, None).expect("create session");
+        let store = crate::navkv::nav_kv_store_for_test(&[], 256);
+        attach_nav_kv_store_to_session(init.handle, 1, &store).expect("attach nav kv");
+        let start = LatLon {
+            lat: 47.600,
+            lon: -122.300,
+        };
+        let target = LatLon {
+            lat: 47.700,
+            lon: -122.100,
+        };
+        push_situation_sample_in_session(
+            init.handle,
+            SituationSample {
+                source_id: OwnshipSourceId("test-gps".to_string()),
+                source_kind: OwnshipSourceKind::DeviceGps,
+                event_time_epoch_ms: 1_000,
+                received_time_epoch_ms: 1_000,
+                position: Some(start),
+                horizontal_accuracy_m: None,
+                vertical_accuracy_m: None,
+                track_deg_true: Some(45.0),
+                heading_deg_true: None,
+                ground_speed_kt: Some(120.0),
+                altitude_msl_ft: Some(3000.0),
+                pressure_altitude_ft: None,
+                vertical_speed_fpm: None,
+            },
+        )
+        .expect("push ownship");
+        let direct_to =
+            activate_direct_to_nav_ref_in_session_outcome(init.handle, NavRef::LatLon(target))
+                .expect("activate direct-to");
+        assert_session_snapshot_invalidated(direct_to);
+
+        let route = project_flight_plan_route_in_session(init.handle).expect("project route");
+        let HadOperationOutcome::Complete { result, .. } = route else {
+            panic!("empty-plan direct-to route unexpectedly needed resources");
+        };
+        let segments: Vec<crate::FlightPlanRouteSegment> =
+            serde_json::from_value(result).expect("route segments");
+
+        assert_eq!(segments.len(), 1);
+        assert_eq!(segments[0].id, "direct-to");
+        assert_eq!(
+            segments[0].status,
+            crate::FlightPlanRouteSegmentStatus::Active
+        );
+        assert_eq!(segments[0].from, start);
+        assert_eq!(segments[0].to, target);
+    }
+
+    #[test]
     fn restore_direct_to_outcome_invalidates_flight_plan_route() {
         let direct_to_plan = crate::activate_direct_to(
             &sample_guided_plan(),

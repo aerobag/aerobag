@@ -1690,10 +1690,6 @@ internal fun MapExplorerPage(
         mapSelection = null
     }
     LaunchedEffect(uiSession, plan.id, plan.version, plan.guidance, plan.resolvedLegs) {
-        if (plan.resolvedLegs.isEmpty()) {
-            flightPlanRoute = emptyList()
-            return@LaunchedEffect
-        }
         runCatching {
             uiSession.projectFlightPlanRoute()
         }.onSuccess {

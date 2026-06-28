@@ -91,6 +91,24 @@ const EGM2008_INTERPOLATION_GRID_URL: &str =
     "https://earth-info.nga.mil/php/download.php?file=egm-08interpolation";
 const EGM2008_GRID_MEMBER: &str = "Und_min2.5x2.5_egm2008_isw=82_WGS84_TideFree_SE";
 
+fn log_error_chain(error: &anyhow::Error) -> String {
+    log_field(&format!("{error:#}"))
+}
+
+fn log_field(value: &str) -> String {
+    value
+        .chars()
+        .flat_map(|ch| match ch {
+            '\\' => "\\\\".chars().collect::<Vec<_>>(),
+            '\n' => "\\n".chars().collect::<Vec<_>>(),
+            '\r' => "\\r".chars().collect::<Vec<_>>(),
+            '\t' => "\\t".chars().collect::<Vec<_>>(),
+            other if other.is_control() => "?".chars().collect::<Vec<_>>(),
+            other => vec![other],
+        })
+        .collect()
+}
+
 #[derive(Debug, Clone)]
 pub struct ProductBuildConfig {
     pub chart_cutline_root: PathBuf,

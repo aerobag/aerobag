@@ -334,7 +334,10 @@ where
                 ))?;
             }
             Err(err) => {
-                log(format!("{graph_name}-complete {task_id} FAIL error={err}"))?;
+                let error_text = log_error_chain(&err);
+                log(format!(
+                    "{graph_name}-complete {task_id} FAIL error={error_text}"
+                ))?;
                 if matches!(failure_policy, GraphFailurePolicy::FailFast) {
                     return Err(err);
                 }
@@ -344,7 +347,7 @@ where
                     }
                 }
                 failed_ids.insert(task_id.clone());
-                failures.insert(task_id, err.to_string());
+                failures.insert(task_id, error_text);
             }
         }
     }

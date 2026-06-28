@@ -871,7 +871,7 @@ pub fn build_cycle(config: &ProductBuildConfig) -> anyhow::Result<PathBuf> {
             Ok(manifest_path)
         }
         Err(err) => {
-            master_log.log(format!("complete FAIL error={err}"))?;
+            master_log.log(format!("complete FAIL error={}", log_error_chain(&err)))?;
             Err(err)
         }
     }

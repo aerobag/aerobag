@@ -1982,7 +1982,7 @@ pub fn build_product(config: &ProductBuildConfig) -> anyhow::Result<ProductBuild
             Ok(result)
         }
         Err(err) => {
-            master_log.log(format!("complete FAIL error={err}"))?;
+            master_log.log(format!("complete FAIL error={}", log_error_chain(&err)))?;
             Err(err)
         }
     }

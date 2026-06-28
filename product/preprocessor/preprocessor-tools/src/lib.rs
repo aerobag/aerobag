@@ -97,14 +97,19 @@ impl ToolInvocation {
     pub fn run_logged(&self, logs_dir: impl AsRef<Path>) -> anyhow::Result<ToolOutcome> {
         let logs = self.log_paths(logs_dir);
         if let Some(parent) = logs.stdout.parent() {
-            fs::create_dir_all(parent).context("failed to create logs directory")?;
+            fs::create_dir_all(parent)
+                .with_context(|| format!("failed to create logs directory {}", parent.display()))?;
         }
         let image_magick_temp_dir = self.cwd.join(".tmp-imagemagick");
         let needs_image_magick_temp_dir =
             matches!(self.program.as_str(), "mogrify" | "convert" | "magick");
         if needs_image_magick_temp_dir {
-            fs::create_dir_all(&image_magick_temp_dir)
-                .context("failed to create ImageMagick temp directory")?;
+            fs::create_dir_all(&image_magick_temp_dir).with_context(|| {
+                format!(
+                    "failed to create ImageMagick temp directory {}",
+                    image_magick_temp_dir.display()
+                )
+            })?;
         }
 
         let mut command = Command::new(&self.program);
@@ -123,10 +128,10 @@ impl ToolInvocation {
         }
         configure_subprocess_containment(&mut command);
 
-        let mut stdout_file =
-            fs::File::create(&logs.stdout).context("failed to create stdout log")?;
-        let mut stderr_file =
-            fs::File::create(&logs.stderr).context("failed to create stderr log")?;
+        let mut stdout_file = fs::File::create(&logs.stdout)
+            .with_context(|| format!("failed to create stdout log {}", logs.stdout.display()))?;
+        let mut stderr_file = fs::File::create(&logs.stderr)
+            .with_context(|| format!("failed to create stderr log {}", logs.stderr.display()))?;
 
         let start = Instant::now();
         let mut child = command

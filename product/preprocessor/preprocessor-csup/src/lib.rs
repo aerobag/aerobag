@@ -7,7 +7,7 @@ use std::{
     time::Instant,
 };
 
-use anyhow::{bail, Context};
+use anyhow::Context;
 use chrono::{DateTime, Datelike, Duration, TimeZone, Utc};
 use preprocessor_core::{Region, RunPaths};
 use preprocessor_fetch::{
@@ -332,13 +332,13 @@ fn render_airport_pages(work_dir: &Path, airport: &AirportRecord) -> anyhow::Res
             stdin_text: None,
         };
         let outcome = invocation.run_logged(work_dir.join(".rust-logs"))?;
-        if !outcome.success {
-            bail!(
+        invocation.ensure_success(
+            &outcome,
+            &format!(
                 "mogrify failed for airport {} page {}",
-                airport.apt_id,
-                page_index
-            );
-        }
+                airport.apt_id, page_index
+            ),
+        )?;
         collapse_rendered_pdf_pages(work_dir, &apt_dir, &output_base)?;
     }
 

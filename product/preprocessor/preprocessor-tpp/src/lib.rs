@@ -797,9 +797,7 @@ fn render_minimum_plate(
             stdin_text: None,
         };
         let outcome = invocation.run_logged(work_dir.join(".rust-logs"))?;
-        if !outcome.success {
-            bail!("gs failed for {}", pdf_path.display());
-        }
+        invocation.ensure_success(&outcome, &format!("gs failed for {}", pdf_path.display()))?;
     }
 
     Ok(())
@@ -848,9 +846,10 @@ fn render_geotagged_plate(
             stdin_text: None,
         };
         let outcome = invocation.run_logged(work_dir.join(".rust-logs"))?;
-        if !outcome.success {
-            bail!("gdalwarp failed for {}", pdf_path.display());
-        }
+        invocation.ensure_success(
+            &outcome,
+            &format!("gdalwarp failed for {}", pdf_path.display()),
+        )?;
     }
 
     render_png_preserve_alpha(work_dir, &tif_path, png_path)?;
@@ -897,9 +896,10 @@ fn render_basic_png(
         stdin_text: None,
     };
     let outcome = invocation.run_logged(work_dir.join(".rust-logs"))?;
-    if !outcome.success {
-        bail!("mogrify failed for {}", input_path.display());
-    }
+    invocation.ensure_success(
+        &outcome,
+        &format!("mogrify failed for {}", input_path.display()),
+    )?;
     rotate_png_if_needed(work_dir, png_path, rotation)?;
     Ok(())
 }
@@ -960,9 +960,10 @@ fn rotate_png_if_needed(
         stdin_text: None,
     };
     let outcome = invocation.run_logged(work_dir.join(".rust-logs"))?;
-    if !outcome.success {
-        bail!("mogrify rotate failed for {}", png_path.display());
-    }
+    invocation.ensure_success(
+        &outcome,
+        &format!("mogrify rotate failed for {}", png_path.display()),
+    )?;
     Ok(())
 }
 
@@ -1019,9 +1020,10 @@ fn render_png_preserve_alpha(
         stdin_text: None,
     };
     let outcome = invocation.run_logged(work_dir.join(".rust-logs"))?;
-    if !outcome.success {
-        bail!("mogrify failed for {}", input_path.display());
-    }
+    invocation.ensure_success(
+        &outcome,
+        &format!("mogrify failed for {}", input_path.display()),
+    )?;
     Ok(())
 }
 
@@ -1048,9 +1050,10 @@ fn write_user_comment(work_dir: &Path, png_path: &Path, comment: &str) -> anyhow
         stdin_text: None,
     };
     let outcome = invocation.run_logged(work_dir.join(".rust-logs"))?;
-    if !outcome.success {
-        bail!("exiftool failed for {}", png_path.display());
-    }
+    invocation.ensure_success(
+        &outcome,
+        &format!("exiftool failed for {}", png_path.display()),
+    )?;
     Ok(())
 }
 

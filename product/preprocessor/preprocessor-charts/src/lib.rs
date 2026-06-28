@@ -203,13 +203,10 @@ pub fn run_family(request: &ChartRunRequest) -> anyhow::Result<ChartRunResult> {
     };
 
     let outcome = invocation.run_logged(&paths.logs)?;
-    if !outcome.success {
-        bail!(
-            "{} failed with exit code {:?}",
-            request.family.capture_label(),
-            outcome.exit_code
-        );
-    }
+    invocation.ensure_success(
+        &outcome,
+        &format!("{} failed", request.family.capture_label()),
+    )?;
 
     let tile_count = count_tile_files(&work_dir.join("tiles"))?;
 
@@ -708,9 +705,10 @@ fn build_one_vfr_vrt(
         stdin_text: None,
     };
     let translate_outcome = translate.run_logged(&logs_dir)?;
-    if !translate_outcome.success {
-        bail!("gdal_translate failed for {base_name}");
-    }
+    translate.ensure_success(
+        &translate_outcome,
+        &format!("gdal_translate failed for {base_name}"),
+    )?;
 
     let warp = ToolInvocation {
         program: "gdalwarp".to_string(),
@@ -738,9 +736,7 @@ fn build_one_vfr_vrt(
         stdin_text: None,
     };
     let warp_outcome = warp.run_logged(&logs_dir)?;
-    if !warp_outcome.success {
-        bail!("gdalwarp failed for {base_name}");
-    }
+    warp.ensure_success(&warp_outcome, &format!("gdalwarp failed for {base_name}"))?;
 
     if let Some(supplement) = antimeridian_supplement_from_chart_metadata(work_dir, base_name)? {
         build_vfr_antimeridian_supplement_vrt(
@@ -867,9 +863,10 @@ fn build_vfr_antimeridian_supplement_vrt(
         stdin_text: None,
     };
     let warp_outcome = warp.run_logged(&logs_dir)?;
-    if !warp_outcome.success {
-        bail!("gdalwarp failed for {base_name} antimeridian supplement");
-    }
+    warp.ensure_success(
+        &warp_outcome,
+        &format!("gdalwarp failed for {base_name} antimeridian supplement"),
+    )?;
     Ok(())
 }
 
@@ -914,9 +911,7 @@ fn build_one_ifr_vrt(
         stdin_text: None,
     };
     let warp_outcome = warp.run_logged(&logs_dir)?;
-    if !warp_outcome.success {
-        bail!("gdalwarp failed for {base_name}");
-    }
+    warp.ensure_success(&warp_outcome, &format!("gdalwarp failed for {base_name}"))?;
 
     Ok(())
 }
@@ -987,9 +982,7 @@ fn build_main_vrt(work_dir: &Path, chart_name: &str, vrts: &[PathBuf]) -> anyhow
         stdin_text: None,
     };
     let outcome = invocation.run_logged(work_dir.join(".rust-logs"))?;
-    if !outcome.success {
-        bail!("gdalbuildvrt failed for {chart_name}");
-    }
+    invocation.ensure_success(&outcome, &format!("gdalbuildvrt failed for {chart_name}"))?;
     Ok(())
 }
 
@@ -1038,9 +1031,10 @@ fn build_tiles_from_spec(
         stdin_text: None,
     };
     let outcome = invocation.run_logged(work_dir.join(".rust-logs"))?;
-    if !outcome.success {
-        bail!("gdal2tiles failed for {}", spec.family.capture_label());
-    }
+    invocation.ensure_success(
+        &outcome,
+        &format!("gdal2tiles failed for {}", spec.family.capture_label()),
+    )?;
 
     Ok(TileBuildResult {
         family: spec.family,

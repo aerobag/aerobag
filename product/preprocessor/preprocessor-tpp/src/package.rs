@@ -85,9 +85,10 @@ pub(crate) fn package_region_versioned(
         stdin_text: Some(stdin_text),
     };
     let outcome = invocation.run_logged(output_root.join(".rust-logs"))?;
-    if !outcome.success {
-        bail!("zip failed for region {}", region.code());
-    }
+    invocation.ensure_success(
+        &outcome,
+        &format!("zip failed for region {}", region.code()),
+    )?;
 
     write_package_outputs_jsonl(
         provenance_dir,

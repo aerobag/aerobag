@@ -1,6 +1,6 @@
 use std::{
     fs,
-    io::{BufRead, BufReader, Error as IoError, Write},
+    io::{BufRead, BufReader, Error as IoError, Read, Seek, SeekFrom, Write},
     path::{Path, PathBuf},
     process::{Command, Stdio},
     thread,
@@ -51,6 +51,31 @@ pub struct ToolOutcome {
     pub exit_code: Option<i32>,
     pub logs: ToolLogPaths,
     pub elapsed_ms: u128,
+}
+
+const TOOL_LOG_TAIL_BYTES: u64 = 4096;
+
+impl ToolOutcome {
+    pub fn diagnostic_summary(&self) -> String {
+        let mut parts = vec![
+            format!(
+                "exit_code={}",
+                self.exit_code
+                    .map(|code| code.to_string())
+                    .unwrap_or_else(|| "signal".to_string())
+            ),
+            format!("elapsed_ms={}", self.elapsed_ms),
+            format!("stdout_log={}", self.logs.stdout.display()),
+            format!("stderr_log={}", self.logs.stderr.display()),
+        ];
+        if let Some(tail) = escaped_log_tail(&self.logs.stdout) {
+            parts.push(format!("stdout_tail=\"{tail}\""));
+        }
+        if let Some(tail) = escaped_log_tail(&self.logs.stderr) {
+            parts.push(format!("stderr_tail=\"{tail}\""));
+        }
+        parts.join(" ")
+    }
 }
 
 impl ToolInvocation {
@@ -175,6 +200,46 @@ impl ToolInvocation {
             elapsed_ms,
         })
     }
+
+    pub fn ensure_success(&self, outcome: &ToolOutcome, context: &str) -> anyhow::Result<()> {
+        if outcome.success {
+            return Ok(());
+        }
+        anyhow::bail!(
+            "{}; command=\"{}\" {}",
+            context,
+            escape_log_field(&self.render_command_line()),
+            outcome.diagnostic_summary()
+        );
+    }
+}
+
+fn escaped_log_tail(path: &Path) -> Option<String> {
+    let mut file = fs::File::open(path).ok()?;
+    let len = file.metadata().ok()?.len();
+    if len == 0 {
+        return None;
+    }
+    let start = len.saturating_sub(TOOL_LOG_TAIL_BYTES);
+    file.seek(SeekFrom::Start(start)).ok()?;
+    let mut bytes = Vec::new();
+    file.read_to_end(&mut bytes).ok()?;
+    Some(escape_log_field(&String::from_utf8_lossy(&bytes)))
+}
+
+fn escape_log_field(value: &str) -> String {
+    value
+        .chars()
+        .flat_map(|ch| match ch {
+            '\\' => "\\\\".chars().collect::<Vec<_>>(),
+            '"' => "\\\"".chars().collect::<Vec<_>>(),
+            '\n' => "\\n".chars().collect::<Vec<_>>(),
+            '\r' => "\\r".chars().collect::<Vec<_>>(),
+            '\t' => "\\t".chars().collect::<Vec<_>>(),
+            other if other.is_control() => "?".chars().collect::<Vec<_>>(),
+            other => vec![other],
+        })
+        .collect()
 }
 
 #[cfg(unix)]
@@ -234,12 +299,13 @@ pub fn append_pngs_vertical(
         stdin_text: None,
     };
     let outcome = invocation.run_logged(logs_dir)?;
-    if !outcome.success {
-        anyhow::bail!(
+    invocation.ensure_success(
+        &outcome,
+        &format!(
             "convert failed while concatenating PNGs into {}",
             output.display()
-        );
-    }
+        ),
+    )?;
     Ok(())
 }
 

@@ -2165,19 +2165,36 @@ export default function App() {
       return;
     }
     let cancelled = false;
+    let timer: number | null = null;
+    let inFlight = false;
+    const intervalMs = Math.max(16, Math.min(1000, playbackUiState.tick_interval_ms));
+    const schedule = (delayMs: number) => {
+      if (cancelled) {
+        return;
+      }
+      timer = window.setTimeout(tick, delayMs);
+    };
     const tick = () => {
+      if (cancelled || inFlight) {
+        return;
+      }
+      inFlight = true;
+      const startedAt = performance.now();
       void uiSession.tickPlayback(Date.now()).then((nextSnapshot) => {
         if (!cancelled) {
           applySessionSnapshot(nextSnapshot, "playback_tick");
         }
-      }).catch(() => {});
+      }).catch(() => {}).finally(() => {
+        inFlight = false;
+        schedule(Math.max(0, intervalMs - (performance.now() - startedAt)));
+      });
     };
     tick();
-    const intervalMs = Math.max(16, Math.min(1000, playbackUiState.tick_interval_ms));
-    const timer = window.setInterval(tick, intervalMs);
     return () => {
       cancelled = true;
-      window.clearInterval(timer);
+      if (timer !== null) {
+        window.clearTimeout(timer);
+      }
     };
   }, [applySessionSnapshot, playbackUiState.status, playbackUiState.tick_interval_ms, uiSession]);
 
@@ -3746,12 +3763,12 @@ function MapPage(props: {
     const current = mapOverlayQueryRequestRef.current;
     return (
       current !== null
-      && !mapOverlayQueryPendingRef.current
       && request.id > landedMapOverlayQueryRequestIdRef.current
       && current.session === request.session
       && current.width === request.width
       && current.height === request.height
       && current.layerKey === request.layerKey
+      && Math.abs(current.viewport.zoom - request.viewport.zoom) < 0.001
     );
   }
 
@@ -4310,13 +4327,6 @@ function MapPage(props: {
     () => resolveSituationOverlay(ownship, viewport, surfaceSize.width, surfaceSize.height, situationRingCandidates),
     [ownship, viewport, surfaceSize.height, surfaceSize.width, situationRingCandidates],
   );
-  const mapOverlayOwnshipKey = [
-    ownship.position?.lat.toFixed(6) ?? "none",
-    ownship.position?.lon.toFixed(6) ?? "none",
-    ownship.altitude_msl_ft?.toFixed(0) ?? ownship.pressure_altitude_ft?.toFixed(0) ?? "none",
-    ownship.orientation_deg?.toFixed(0) ?? "none",
-    ownship.speed_kt?.toFixed(0) ?? "none",
-  ].join(":");
   const mapOverlayLayersVisible =
     mapLayerState.vectors.visible
     || mapLayerState.metars.visible
@@ -4595,7 +4605,6 @@ function MapPage(props: {
     mapLayerState.vectors.visible,
     mapOverlayLayersVisible,
     mapIsVisible,
-    mapOverlayOwnshipKey,
     onDebugWarning,
     surfaceSize.height,
     surfaceSize.width,
@@ -6503,9 +6512,22 @@ function PlaybackWidget(props: {
       }
       const traceJson = await response.text();
       const nextSnapshot = await uiSession.loadPlaybackTrace(sourcePath, traceJson);
+      debugLog("playback.load.result", {
+        source_path: sourcePath,
+        playback_panel_visible: nextSnapshot.playback_panel_state.visible,
+        playback_status: nextSnapshot.playback_ui_state.status,
+        playback_title: nextSnapshot.playback_ui_state.title_label,
+        ownship_mode: nextSnapshot.app_ui_state.ownship.controls.mode,
+        ownship_launcher_label: nextSnapshot.app_ui_state.ownship.controls.launcher_label,
+        ownship_selection: nextSnapshot.app_ui_state.ownship.controls.selection,
+      });
       onSnapshotChange(nextSnapshot);
     } catch (error) {
       console.error(error);
+      debugLog("playback.load.error", {
+        source_path: sourcePath,
+        message: errorMessage(error),
+      });
     } finally {
       setIsBusy(false);
     }
@@ -6592,6 +6614,7 @@ function PlaybackWidget(props: {
       onPointerDown={stopPointer}
       onPointerUp={stopPointer}
       onDoubleClick={stopDoubleClick}
+      onClick={stopClick}
       style={maxWidthPx > 0 ? ({ width: `${maxWidthPx}px` } as CSSProperties) : undefined}
     >
       <div className="playbackWidgetTop">
@@ -8527,6 +8550,7 @@ function ChartsPage(props: {
   const [resolvedChartUrls, setResolvedChartUrls] = useState<Record<string, ResolvedChartUrls>>({});
   const trayOpen = trayGroup.scrimOpen;
   const sortedCharts = selectedAirport?.charts ?? [];
+  const planProcedureLoadKey = `${plan.id}:${plan.version}`;
   const selectedImageSize = imageSize && imageSize.chartId === (selectedChart?.id ?? "") ? imageSize : null;
   const selectedChartAssetUrl = selectedChart ? resolvedChartUrls[selectedChart.id]?.assetUrl ?? null : null;
   const fallbackViewport = useMemo(() => {
@@ -8740,6 +8764,9 @@ function ChartsPage(props: {
   const overscrollPx = 64;
 
   useEffect(() => {
+    if (page !== "plate") {
+      return;
+    }
     if (!appCoreAdapter || !selectedChart) {
       setPlateProcedureLoads([]);
       return;
@@ -8767,7 +8794,7 @@ function ChartsPage(props: {
     return () => {
       cancelled = true;
     };
-  }, [appCoreAdapter, plan, selectedChart?.id]);
+  }, [appCoreAdapter, page, planProcedureLoadKey, selectedChart?.id]);
 
   const loadProcedureOptions = useMemo(() => {
     return plateProcedureLoads.map((load, index) => ({
@@ -10279,6 +10306,10 @@ function distanceBetween(first: ScreenPoint, second: ScreenPoint) {
 }
 
 function stopPointer(event: React.PointerEvent<HTMLElement>) {
+  event.stopPropagation();
+}
+
+function stopClick(event: MouseEvent<HTMLElement>) {
   event.stopPropagation();
 }
 

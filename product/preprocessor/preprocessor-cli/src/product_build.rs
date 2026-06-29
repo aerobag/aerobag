@@ -54,7 +54,7 @@ use preprocessor_resource_index::{
 };
 use preprocessor_tpp::{
     package_native_tpp_versioned, plan_tpp_region_render, render_tpp_unit, tpp_prefetch_requests,
-    NativeTppRunRequest, TppRegionRenderPlan, TppRenderUnitPlan,
+    TppRegionRenderPlan, TppRenderUnitPlan,
 };
 use preprocessor_vectors::{
     build_vectors_dataset, expanded_union_polygon_from_closed_ring, simplify_closed_ring,
@@ -1126,7 +1126,6 @@ type TaskCompletion = GraphTaskCompletion<TaskValue>;
 
 const PRODUCT_BUILD_CGROUP_ACTIVE_ENV: &str = "PRODUCT_BUILD_CGROUP_ACTIVE";
 const DEFAULT_PRODUCT_BUILD_MEMORY_MAX: &str = "80G";
-const TPP_RENDER_JOBS_PER_RUN: usize = 8;
 const SCHEDULER_WEIGHT_SCALE: usize = 8;
 const LIGHT_TASK_WEIGHT: usize = SCHEDULER_WEIGHT_SCALE;
 const CHART_PROCESS_WEIGHT: usize = 4 * SCHEDULER_WEIGHT_SCALE;

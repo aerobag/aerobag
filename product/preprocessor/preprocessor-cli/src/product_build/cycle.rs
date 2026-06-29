@@ -273,14 +273,13 @@ pub fn build_cycle(config: &ProductBuildConfig) -> anyhow::Result<PathBuf> {
         });
 
         master_log.log(format!(
-            "scheduler-ready tasks={} work_unit_budget={} weight_scale={} chart_and_data_weight={} csup_weight={} tpp_unit_weight={} tpp_render_jobs_per_run={} light_weight={} resource_index_weight={}",
+            "scheduler-ready tasks={} work_unit_budget={} weight_scale={} chart_and_data_weight={} csup_weight={} tpp_unit_weight={} light_weight={} resource_index_weight={}",
             pending_tasks.len(),
             work_unit_budget,
             SCHEDULER_WEIGHT_SCALE,
             CHART_PROCESS_WEIGHT,
             CSUP_RENDER_WEIGHT,
             TPP_RENDER_UNIT_WEIGHT,
-            TPP_RENDER_JOBS_PER_RUN,
             LIGHT_TASK_WEIGHT,
             RESOURCE_INDEX_WEIGHT
         ))?;
@@ -411,18 +410,16 @@ pub fn build_cycle(config: &ProductBuildConfig) -> anyhow::Result<PathBuf> {
                             _ => unreachable!("tpp-fetch dependency should have completed"),
                         };
                         let region_id = region.code().to_ascii_lowercase();
-                        let request = NativeTppRunRequest {
+                        let source_urls_path =
+                            source_urls_dir.join(format!("tpp-{region_id}/source_urls.jsonl"));
+                        build_tpp_plan_node(
+                            &config,
                             region,
-                            source_repo: PathBuf::new(),
-                            run_root: PathBuf::new(),
-                            prefetch_source_urls: Some(
-                                source_urls_dir.join(format!("tpp-{region_id}/source_urls.jsonl")),
-                            ),
-                            fetch_jobs: config.fetch_jobs,
-                            render_jobs: TPP_RENDER_JOBS_PER_RUN,
-                            fetch_cache: Some(static_source_fetch_cache_config(&config)?),
-                        };
-                        build_tpp_plan_node(&config, &request, Some(&source_fetch)).map(
+                            &source_urls_path,
+                            config.fetch_jobs,
+                            Some(&source_fetch),
+                        )
+                        .map(
                             |(record, source_root, plan, source_content_fingerprint)| {
                                 let unit_count = plan.units().len();
                                 let cache_hit = record.cache_hit;

@@ -834,14 +834,12 @@ pub(super) fn tpp_render_unit_records_for_plan(
 
 pub(super) fn build_tpp_plan_node(
     config: &ProductBuildConfig,
-    request: &NativeTppRunRequest,
+    region: Region,
+    source_urls: &Path,
+    fetch_jobs: usize,
     source_fetch_record: Option<&NodeRecord>,
 ) -> anyhow::Result<(NodeRecord, PathBuf, TppRegionRenderPlan, String)> {
-    let region_id = request.region.code().to_ascii_lowercase();
-    let source_urls = request
-        .prefetch_source_urls
-        .as_ref()
-        .context("tpp build requires source urls")?;
+    let region_id = region.code().to_ascii_lowercase();
     let node_name = format!("tpp-{region_id}-plan");
     let source_fetch_root = source_fetch_record
         .map(|record| {
@@ -851,7 +849,12 @@ pub(super) fn build_tpp_plan_node(
     let source_content_fingerprint = source_fetch_record
         .map(tpp_source_content_fingerprint)
         .transpose()?;
-    let inputs = tpp_render_inputs(request, source_urls, &region_id, source_content_fingerprint)?;
+    let inputs = tpp_plan_inputs(
+        source_urls,
+        &region_id,
+        fetch_jobs,
+        source_content_fingerprint,
+    )?;
     let prepared = prepare_node_at(
         &build_shared_node_dir(config, &node_name)?,
         &node_name,
@@ -894,7 +897,7 @@ pub(super) fn build_tpp_plan_node(
         &source_fetch_root.join("d-TPP_Metafile.xml"),
         &work_dir.join("d-TPP_Metafile.xml"),
     )?;
-    let plan = plan_tpp_region_render(&work_dir, &source_fetch_root, request.region)?;
+    let plan = plan_tpp_region_render(&work_dir, &source_fetch_root, region)?;
     if let Some(parent) = plan_path.parent() {
         fs::create_dir_all(parent)
             .with_context(|| format!("failed to create {}", parent.display()))?;
@@ -1526,16 +1529,16 @@ pub(super) fn csup_render_inputs(
     ]))
 }
 
-pub(super) fn tpp_render_inputs(
-    request: &NativeTppRunRequest,
+pub(super) fn tpp_plan_inputs(
     source_urls: &Path,
     region_id: &str,
+    fetch_jobs: usize,
     source_content_fingerprint: Option<&str>,
 ) -> anyhow::Result<BTreeMap<String, String>> {
     let mut inputs = BTreeMap::from([
         ("region".to_string(), region_id.to_string()),
         ("source_urls".to_string(), hash_file(source_urls)?),
-        ("fetch_jobs".to_string(), request.fetch_jobs.to_string()),
+        ("fetch_jobs".to_string(), fetch_jobs.to_string()),
         (
             "tpp_render_node_version".to_string(),
             TPP_RENDER_NODE_VERSION.to_string(),
@@ -1597,7 +1600,7 @@ fn tpp_render_unit_inputs(
             source_content_fingerprint.to_string(),
         ),
         (
-            "unit_plan".to_string(),
+            "unit_plan_hash".to_string(),
             hash_text(&serde_json::to_string(unit).context("tpp render unit plan json")?),
         ),
         (
@@ -2325,22 +2328,12 @@ mod tests {
     }
 
     #[test]
-    fn tpp_render_inputs_use_source_content_fingerprint() {
+    fn tpp_plan_inputs_use_source_content_fingerprint() {
         let temp = tempdir().unwrap();
         let source_urls = temp.path().join("source_urls.jsonl");
         fs::write(&source_urls, b"").unwrap();
-        let request = NativeTppRunRequest {
-            region: Region::Nw,
-            source_repo: PathBuf::new(),
-            run_root: PathBuf::new(),
-            prefetch_source_urls: Some(source_urls.clone()),
-            fetch_jobs: 4,
-            render_jobs: 8,
-            fetch_cache: None,
-        };
 
-        let inputs =
-            tpp_render_inputs(&request, &source_urls, "nw", Some("source-content")).unwrap();
+        let inputs = tpp_plan_inputs(&source_urls, "nw", 4, Some("source-content")).unwrap();
 
         assert_eq!(
             inputs.get("source_content_fingerprint").map(String::as_str),

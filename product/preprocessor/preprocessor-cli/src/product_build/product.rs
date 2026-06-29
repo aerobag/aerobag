@@ -538,7 +538,7 @@ pub fn build_product(config: &ProductBuildConfig) -> anyhow::Result<ProductBuild
         let publish_ready_task_ids = current_artifacts_deps;
 
         master_log.log(format!(
-            "product-scheduler-ready tasks={} work_unit_budget={} weight_scale={} chart_and_data_weight={} csup_weight={} terrain_weight={} water_mask_weight={} tpp_unit_weight={} tpp_render_jobs_per_run={} light_weight={} resource_index_weight={}",
+            "product-scheduler-ready tasks={} work_unit_budget={} weight_scale={} chart_and_data_weight={} csup_weight={} terrain_weight={} water_mask_weight={} tpp_unit_weight={} light_weight={} resource_index_weight={}",
             pending_tasks.len(),
             work_unit_budget,
             SCHEDULER_WEIGHT_SCALE,
@@ -547,7 +547,6 @@ pub fn build_product(config: &ProductBuildConfig) -> anyhow::Result<ProductBuild
             TERRAIN_BUILD_WEIGHT,
             WATER_MASK_BUILD_WEIGHT,
             TPP_RENDER_UNIT_WEIGHT,
-            TPP_RENDER_JOBS_PER_RUN,
             LIGHT_TASK_WEIGHT,
             RESOURCE_INDEX_WEIGHT
         ))?;
@@ -802,19 +801,16 @@ pub fn build_product(config: &ProductBuildConfig) -> anyhow::Result<ProductBuild
                         let mut cycle_config = config.clone();
                         cycle_config.target_cycle = Some(cycle);
                         let region_id = region.code().to_ascii_lowercase();
-                        let request = NativeTppRunRequest {
-                            region,
-                            source_repo: PathBuf::new(),
-                            run_root: PathBuf::new(),
-                            prefetch_source_urls: Some(
-                                source_urls.join(format!("tpp-{region_id}/source_urls.jsonl")),
-                            ),
-                            fetch_jobs: cycle_config.fetch_jobs,
-                            render_jobs: TPP_RENDER_JOBS_PER_RUN,
-                            fetch_cache: Some(static_source_fetch_cache_config(&cycle_config)?),
-                        };
+                        let source_urls_path =
+                            source_urls.join(format!("tpp-{region_id}/source_urls.jsonl"));
                         let (record, source_root, plan, source_content_fingerprint) =
-                            build_tpp_plan_node(&cycle_config, &request, Some(&source_fetch))?;
+                            build_tpp_plan_node(
+                                &cycle_config,
+                                region,
+                                &source_urls_path,
+                                cycle_config.fetch_jobs,
+                                Some(&source_fetch),
+                            )?;
                         let unit_count = plan.units().len();
                         let cache_hit = record.cache_hit;
                         Ok(ProductTaskCompletion {

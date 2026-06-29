@@ -13,6 +13,7 @@ import kotlinx.serialization.json.jsonArray
 import kotlinx.serialization.json.put
 import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
+import org.aerobag.app.diagnosticLogInfo
 import org.aerobag.app.generated.NexradOverlayQueryResult
 
 data class VectorTileRequest(
@@ -647,6 +648,12 @@ class NativeUiSession internal constructor(
     var snapshot: UiSessionSnapshot = initialSnapshot
         private set
 
+    private var invalidationListener: ((List<String>) -> Unit)? = null
+
+    fun setInvalidationListener(listener: ((List<String>) -> Unit)?) {
+        invalidationListener = listener
+    }
+
     private fun runPlainSnapshot(commandName: String, operation: () -> String): UiSessionSnapshot {
         val result = runNativeSessionCommand(commandName, operation) ?: return snapshot
         snapshot = decodeSnapshot(result)
@@ -654,19 +661,34 @@ class NativeUiSession internal constructor(
     }
 
     private fun runPagedSnapshot(commandName: String, operation: () -> String): UiSessionSnapshot {
-        val result = runNativeSessionCommand(commandName) {
-            navKvStore?.runPagedSessionOperationElement(operation = operation)
+        val outcome = runNativeSessionCommand(commandName) {
+            navKvStore?.runPagedSessionOperation(operation = operation)
                 ?: run {
                     val outcome = json.parseToJsonElement(operation()).jsonObject
                     when (val state = outcome.getValue("state").jsonPrimitive.content) {
-                        "complete" -> outcome["result"] ?: JsonNull
+                        "complete" -> PagedSessionOperationResult(
+                            result = outcome["result"] ?: JsonNull,
+                            invalidations = outcome["invalidations"]
+                                ?.jsonArray
+                                ?.map { it.jsonPrimitive.content }
+                                ?: emptyList(),
+                        )
                         "need_resources" -> error("nav_kv store is required for paged session resources")
                         else -> error("unknown HAD session operation state: $state")
                     }
                 }
         } ?: return snapshot
-        snapshot = json.decodeFromJsonElement<WireUiSessionSnapshot>(result).toUi()
+        snapshot = json.decodeFromJsonElement<WireUiSessionSnapshot>(outcome.result).toUi()
+        publishInvalidations(commandName, outcome.invalidations)
         return snapshot
+    }
+
+    private fun publishInvalidations(commandName: String, invalidations: List<String>) {
+        if (invalidations.isEmpty()) return
+        diagnosticLogInfo("AerobagInvalidation") {
+            "source=$commandName invalidations=${invalidations.joinToString(",")}"
+        }
+        invalidationListener?.invoke(invalidations)
     }
 
     private fun <T> runNativeSessionCommand(commandName: String, operation: () -> T): T? =

@@ -2148,6 +2148,30 @@ internal fun DisclaimerConsentModal(
     }
 }
 
+internal data class UiInvalidationRevisions(
+    val sessionSnapshot: Int = 0,
+    val rasterTiles: Int = 0,
+    val mapOverlay: Int = 0,
+    val nexradOverlay: Int = 0,
+    val terrainOverlay: Int = 0,
+    val flightPlanRoute: Int = 0,
+    val debugPanel: Int = 0,
+) {
+    fun bumped(invalidations: List<String>): UiInvalidationRevisions =
+        invalidations.fold(this) { revisions, invalidation ->
+            when (invalidation) {
+                "session_snapshot" -> revisions.copy(sessionSnapshot = revisions.sessionSnapshot + 1)
+                "raster_tiles" -> revisions.copy(rasterTiles = revisions.rasterTiles + 1)
+                "map_overlay" -> revisions.copy(mapOverlay = revisions.mapOverlay + 1)
+                "nexrad_overlay" -> revisions.copy(nexradOverlay = revisions.nexradOverlay + 1)
+                "terrain_overlay" -> revisions.copy(terrainOverlay = revisions.terrainOverlay + 1)
+                "flight_plan_route" -> revisions.copy(flightPlanRoute = revisions.flightPlanRoute + 1)
+                "debug_panel" -> revisions.copy(debugPanel = revisions.debugPanel + 1)
+                else -> revisions
+            }
+        }
+}
+
 @Composable
 internal fun AerobagApp(
     retainedModel: AerobagRetainedModel,
@@ -2280,6 +2304,17 @@ internal fun AerobagApp(
         }
         sessionSnapshot = nextSnapshot
         return true
+    }
+    var uiInvalidationRevisions by remember(uiSession) { mutableStateOf(UiInvalidationRevisions()) }
+    fun publishUiInvalidations(invalidations: List<String>) {
+        if (invalidations.isEmpty()) return
+        uiInvalidationRevisions = uiInvalidationRevisions.bumped(invalidations)
+    }
+    DisposableEffect(uiSession) {
+        uiSession.setInvalidationListener(::publishUiInvalidations)
+        onDispose {
+            uiSession.setInvalidationListener(null)
+        }
     }
     LaunchedEffect(context, sessionSnapshot.displayPolicy) {
         (context as? MainActivity)?.applyCoreDisplayPolicy(sessionSnapshot.displayPolicy)
@@ -2636,6 +2671,7 @@ internal fun AerobagApp(
                         uptimeLabel = uptimeLabel,
                         uiSession = uiSession,
                         sessionSnapshot = sessionSnapshot,
+                        uiInvalidationRevisions = uiInvalidationRevisions,
                         liveFeedGeneration = liveFeedGeneration,
                         uiTheme = uiTheme,
                         ownship = appUiState.ownship.render,

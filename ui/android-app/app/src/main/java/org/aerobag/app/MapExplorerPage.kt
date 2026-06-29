@@ -548,6 +548,7 @@ internal fun MapExplorerPage(
     uptimeLabel: String,
     uiSession: NativeUiSession,
     sessionSnapshot: UiSessionSnapshot,
+    uiInvalidationRevisions: UiInvalidationRevisions,
     liveFeedGeneration: Int,
     uiTheme: UiTheme,
     ownship: OwnshipRenderState,
@@ -1689,7 +1690,7 @@ internal fun MapExplorerPage(
         situationTrayOpen = false
         mapSelection = null
     }
-    LaunchedEffect(uiSession, plan.id, plan.version, plan.guidance, plan.resolvedLegs) {
+    LaunchedEffect(uiSession, plan.id, plan.version, plan.guidance, plan.resolvedLegs, uiInvalidationRevisions.flightPlanRoute) {
         runCatching {
             uiSession.projectFlightPlanRoute()
         }.onSuccess {
@@ -1731,7 +1732,7 @@ internal fun MapExplorerPage(
             updateViewport(nextViewport, syncFollow = false)
         }
     }
-    LaunchedEffect(uiSession, liveFeedGeneration, currentViewport, surfaceSize, density.density, mapLayerState.vectors.visible, mapLayerState.metars.visible, mapLayerState.offlineRegions.visible, devServerBaseUrl) {
+    LaunchedEffect(uiSession, liveFeedGeneration, uiInvalidationRevisions.mapOverlay, currentViewport, surfaceSize, density.density, mapLayerState.vectors.visible, mapLayerState.metars.visible, mapLayerState.offlineRegions.visible, devServerBaseUrl) {
         if (surfaceSize.width <= 0 || surfaceSize.height <= 0) {
             mapOverlayError = null
             return@LaunchedEffect

@@ -4857,26 +4857,36 @@ fn revalidate_guidance_after_plan_edit(
     }
 
     if let Some(direct_to) = guidance.direct_to.as_mut() {
+        let direct_to_was_route_origin = direct_to.target_leg_id.is_none();
         let target_leg_index = direct_to
             .target_leg_id
             .as_deref()
             .and_then(|target_leg_id| leg_index_by_id(resolved_legs, target_leg_id))
             .filter(|index| resolved_legs[*index].to == direct_to.target);
+        let may_resume_by_nav_ref =
+            direct_to.target_component_uid.is_none() && direct_to_was_route_origin;
         let resume_leg_index = direct_to
             .resume_leg_id
             .as_deref()
-            .and_then(|resume_leg_id| leg_index_by_id(resolved_legs, resume_leg_id));
+            .and_then(|resume_leg_id| leg_index_by_id(resolved_legs, resume_leg_id))
+            .filter(|index| resolved_legs[*index].from == direct_to.target)
+            .or_else(|| {
+                if may_resume_by_nav_ref {
+                    resolved_legs
+                        .iter()
+                        .position(|leg| leg.from == direct_to.target)
+                } else {
+                    None
+                }
+            });
 
         if let Some(target_leg_index) = target_leg_index {
             guidance.active_leg_index = target_leg_index;
         } else {
             direct_to.target_leg_id = None;
-            direct_to.resume_leg_id = None;
         }
 
-        if resume_leg_index.is_none() {
-            direct_to.resume_leg_id = None;
-        }
+        direct_to.resume_leg_id = resume_leg_index.map(|index| resolved_legs[index].id.clone());
     }
 
     Some(guidance)
@@ -7916,6 +7926,92 @@ mod tests {
                 .as_ref()
                 .map(|guidance| guidance.can_restore_direct_to),
             Some(false)
+        );
+    }
+
+    #[test]
+    fn direct_to_route_origin_survives_guidance_revalidation_and_resumes_route() {
+        let activated = activate_direct_to(
+            &sample_guided_waypoint_plan(),
+            LatLon {
+                lat: 47.5,
+                lon: -122.0,
+            },
+            NavRef::Airport("KRNT".to_string()),
+        )
+        .unwrap();
+        let revalidated = revalidate_guidance_after_plan_edit(
+            activated.guidance.clone(),
+            &activated.resolved_legs,
+        )
+        .expect("revalidated guidance");
+        let direct_to = revalidated.direct_to.as_ref().expect("direct-to state");
+        assert_eq!(direct_to.target_leg_id, None);
+        assert_eq!(direct_to.resume_leg_id.as_deref(), Some("component-0-1"));
+
+        let sequenced = sequence_active_detail(&FlightPlan {
+            guidance: Some(revalidated),
+            ..activated
+        })
+        .expect("sequence direct-to route origin");
+        let guidance = sequenced.guidance.as_ref().expect("sequenced guidance");
+        assert_eq!(guidance.sequencing_mode, SequencingMode::FollowPlan);
+        assert_eq!(guidance.active_leg_index, 0);
+        assert_eq!(guidance.active_detail_index, Some(0));
+        assert!(guidance.direct_to.is_none());
+        assert_eq!(guidance.suspend_reason, None);
+        assert_eq!(
+            active_guidance_leg(&sequenced),
+            Some(PlanLeg {
+                from: NavRef::Airport("KRNT".to_string()),
+                to: NavRef::Navaid("SEA".to_string()),
+                airway: None,
+            })
+        );
+    }
+
+    #[test]
+    fn direct_to_route_origin_component_survives_guidance_revalidation_and_resumes_route() {
+        let activated = activate_direct_to_component(
+            &sample_guided_waypoint_plan(),
+            LatLon {
+                lat: 47.5,
+                lon: -122.0,
+            },
+            0,
+        )
+        .unwrap();
+        let revalidated = revalidate_guidance_after_plan_edit(
+            activated.guidance.clone(),
+            &activated.resolved_legs,
+        )
+        .expect("revalidated guidance");
+        let direct_to = revalidated.direct_to.as_ref().expect("direct-to state");
+        assert_eq!(
+            direct_to.target_component_uid.as_deref(),
+            Some("fpc:0000000000000000")
+        );
+        assert_eq!(direct_to.target_leg_id, None);
+        assert_eq!(direct_to.resume_leg_id.as_deref(), Some("component-0-1"));
+
+        let sequenced = sequence_active_detail(&FlightPlan {
+            guidance: Some(revalidated),
+            ..activated
+        })
+        .expect("sequence direct-to route origin");
+        let guidance = sequenced.guidance.as_ref().expect("sequenced guidance");
+        assert_eq!(guidance.sequencing_mode, SequencingMode::FollowPlan);
+        assert_eq!(guidance.active_leg_index, 0);
+        assert_eq!(guidance.active_detail_index, Some(0));
+        assert!(guidance.direct_to.is_none());
+        assert_eq!(guidance.suspend_reason, None);
+        assert_eq!(
+            active_guidance_leg(&sequenced),
+            Some(PlanLeg {
+                from: NavRef::Airport("KRNT".to_string()),
+                to: NavRef::Navaid("SEA".to_string()),
+                airway: None,
+            })
         );
     }
 

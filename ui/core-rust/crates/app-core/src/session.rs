@@ -10169,8 +10169,7 @@ fn nav_ref_label(nav_ref: &NavRef) -> String {
         NavRef::ArincNavaid { identifier, .. } | NavRef::TerminalNavaid { identifier, .. } => {
             identifier.clone()
         }
-        NavRef::LatLon(position) => format!("{:.4},{:.4}", position.lat, position.lon),
-        NavRef::Spot(_) => "SPOT".to_string(),
+        NavRef::LatLon(_) | NavRef::Spot(_) => "SPOT".to_string(),
     }
 }
 
@@ -10783,6 +10782,13 @@ mod tests {
     fn spot_cdi_label_omits_coordinates() {
         assert_eq!(
             nav_ref_label(&NavRef::Spot(LatLon {
+                lat: 47.626,
+                lon: -122.194,
+            })),
+            "SPOT"
+        );
+        assert_eq!(
+            nav_ref_label(&NavRef::LatLon(LatLon {
                 lat: 47.626,
                 lon: -122.194,
             })),
@@ -16461,7 +16467,7 @@ mod tests {
         );
 
         assert!(
-            active_leg_summary.starts_with("47.0000,-122.0000 -> VPDUB"),
+            active_leg_summary.starts_with("SPOT -> VPDUB"),
             "direct-to CDI label must describe the same direct leg used for deviation: {active_leg_summary}"
         );
         assert!(

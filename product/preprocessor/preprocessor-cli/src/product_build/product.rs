@@ -890,14 +890,14 @@ pub fn build_product(config: &ProductBuildConfig) -> anyhow::Result<ProductBuild
                         let region_id = region.code().to_ascii_lowercase();
                         let plan_id = cycle_task_id(&cycle, &format!("tpp-{region_id}-plan"));
                         let (source_root, source_content_fingerprint) =
-                            match task_values_snapshot.get(&plan_id) {
+                            task_values_snapshot.with(&plan_id, |value| match value {
                                 Some(ProductTaskValue::TppPlan {
                                     source_root,
                                     source_content_fingerprint,
                                     ..
-                                }) => (source_root, source_content_fingerprint),
+                                }) => Ok((source_root.clone(), source_content_fingerprint.clone())),
                                 _ => bail!("missing tpp plan for cycle {cycle} region {region_id}"),
-                            };
+                            })?;
                         let record = build_tpp_render_unit_node(
                             &cycle_config,
                             &region_id,
@@ -1011,13 +1011,16 @@ pub fn build_product(config: &ProductBuildConfig) -> anyhow::Result<ProductBuild
                         cycle_config.target_cycle = Some(cycle.clone());
                         let package_plan_id =
                             cycle_task_id(&cycle, &tpp_package_plan_task_name(region));
-                        let asset_root = match task_values_snapshot.get(&package_plan_id) {
-                            Some(ProductTaskValue::TppPackagePlan { asset_root, .. }) => asset_root,
-                            _ => bail!(
-                                "missing tpp package plan for cycle {cycle} region {}",
-                                region.code()
-                            ),
-                        };
+                        let asset_root =
+                            task_values_snapshot.with(&package_plan_id, |value| match value {
+                                Some(ProductTaskValue::TppPackagePlan { asset_root, .. }) => {
+                                    Ok(asset_root.clone())
+                                }
+                                _ => bail!(
+                                    "missing tpp package plan for cycle {cycle} region {}",
+                                    region.code()
+                                ),
+                            })?;
                         let record = build_tpp_thumbnail_node(
                             &cycle_config,
                             region,

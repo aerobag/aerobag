@@ -33,6 +33,11 @@ impl<T: Clone> GraphReadMap<T> {
         Self { inner }
     }
 
+    pub(super) fn with<R>(&self, key: &str, map: impl FnOnce(Option<&T>) -> R) -> R {
+        let guard = self.inner.read().expect("graph read map lock poisoned");
+        map(guard.get(key))
+    }
+
     pub(super) fn get(&self, key: &str) -> Option<T> {
         self.inner
             .read()

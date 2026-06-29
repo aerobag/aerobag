@@ -1719,15 +1719,6 @@ pub(super) fn tpp_plan_inputs(
             "detect_landscape_rotation_script".to_string(),
             hash_file(tpp_crate_path().join("scripts/detect_landscape_rotation.py"))?,
         ),
-        (
-            "tools_lib".to_string(),
-            hash_file(
-                Path::new(env!("CARGO_MANIFEST_DIR"))
-                    .parent()
-                    .expect("preprocessor-cli should live under workspace root")
-                    .join("preprocessor-tools/src/lib.rs"),
-            )?,
-        ),
     ]);
     if let Some(fingerprint) = source_content_fingerprint {
         inputs.insert(
@@ -1757,10 +1748,6 @@ fn tpp_render_unit_inputs(
         (
             "tpp_render_node_version".to_string(),
             TPP_RENDER_NODE_VERSION.to_string(),
-        ),
-        (
-            "tools_lib".to_string(),
-            hash_file(workspace_preprocessor_path().join("preprocessor-tools/src/lib.rs"))?,
         ),
     ]))
 }
@@ -1831,10 +1818,6 @@ fn tpp_package_plan_inputs(
             "tpp_package".to_string(),
             hash_file(tpp_crate_path().join("src/package.rs"))?,
         ),
-        (
-            "tools_lib".to_string(),
-            hash_file(workspace_preprocessor_path().join("preprocessor-tools/src/lib.rs"))?,
-        ),
     ]))
 }
 
@@ -1862,10 +1845,6 @@ fn tpp_thumbnail_inputs(
         (
             "tpp_package".to_string(),
             hash_file(tpp_crate_path().join("src/package.rs"))?,
-        ),
-        (
-            "tools_lib".to_string(),
-            hash_file(workspace_preprocessor_path().join("preprocessor-tools/src/lib.rs"))?,
         ),
     ]))
 }
@@ -1917,10 +1896,6 @@ fn tpp_package_assemble_inputs(
         (
             "tpp_package".to_string(),
             hash_file(tpp_crate_path().join("src/package.rs"))?,
-        ),
-        (
-            "tools_lib".to_string(),
-            hash_file(workspace_preprocessor_path().join("preprocessor-tools/src/lib.rs"))?,
         ),
     ]))
 }
@@ -2603,6 +2578,60 @@ mod tests {
         assert!(!inputs.contains_key("source_fetch_fingerprint"));
         assert!(inputs.contains_key("tpp_render_node_version"));
         assert!(!inputs.contains_key("tpp_lib"));
+        assert!(!inputs.contains_key("tools_lib"));
+    }
+
+    #[test]
+    fn tpp_package_inputs_do_not_depend_on_shared_tools_hash() {
+        let temp = tempdir().unwrap();
+        let source_urls = temp.path().join("source_urls.jsonl");
+        fs::write(&source_urls, b"").unwrap();
+        let asset_root = temp.path().join("assets");
+        fs::create_dir_all(asset_root.join("plates")).unwrap();
+        fs::write(asset_root.join("plates/test.png"), b"png").unwrap();
+        let render_record = NodeRecord {
+            name: "tpp-nw-render-assemble".to_string(),
+            fingerprint: "render-fingerprint".to_string(),
+            inputs: BTreeMap::new(),
+            outputs: BTreeMap::new(),
+            output_details: BTreeMap::new(),
+            cache_hit: true,
+            started_at_utc: "2026-06-02T00:00:00Z".to_string(),
+            finished_at_utc: "2026-06-02T00:00:00Z".to_string(),
+            elapsed_ms: 0,
+            fetch_cache_refs: Vec::new(),
+        };
+        let thumbnail = TppThumbnailPlan {
+            id: "thumb".to_string(),
+            asset_path: "plates/test.png".to_string(),
+            thumbnail_path: "thumbnails/test.png".to_string(),
+        };
+        let thumbnail_record = NodeRecord {
+            name: "tpp-nw-thumbnail-thumb".to_string(),
+            fingerprint: "thumbnail-fingerprint".to_string(),
+            inputs: BTreeMap::new(),
+            outputs: BTreeMap::from([(
+                "thumbnail_path".to_string(),
+                "thumbnails/test.png".to_string(),
+            )]),
+            output_details: BTreeMap::new(),
+            cache_hit: true,
+            started_at_utc: "2026-06-02T00:00:00Z".to_string(),
+            finished_at_utc: "2026-06-02T00:00:00Z".to_string(),
+            elapsed_ms: 0,
+            fetch_cache_refs: Vec::new(),
+        };
+
+        let package_plan_inputs =
+            tpp_package_plan_inputs(Region::Nw, &source_urls, "2606_01", "TPP1", &render_record)
+                .unwrap();
+        let thumbnail_inputs = tpp_thumbnail_inputs(Region::Nw, &asset_root, &thumbnail).unwrap();
+        let assemble_inputs =
+            tpp_package_assemble_inputs(Region::Nw, &render_record, &[thumbnail_record]).unwrap();
+
+        assert!(!package_plan_inputs.contains_key("tools_lib"));
+        assert!(!thumbnail_inputs.contains_key("tools_lib"));
+        assert!(!assemble_inputs.contains_key("tools_lib"));
     }
 
     #[test]

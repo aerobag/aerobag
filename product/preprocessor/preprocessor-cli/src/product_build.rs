@@ -1157,8 +1157,10 @@ const TPP_THUMBNAIL_WEIGHT: usize = 2;
 const TPP_CACHE_LAYOUT_VERSION: &str = "v2-cache-nodes";
 const TPP_FETCH_NODE_VERSION: &str = "v2-source-content-fingerprint";
 // TPP render/package work is expensive enough that broad source-file hashes are
-// too costly. Keep these manually bumped when orchestration changes can affect
-// the corresponding rendered or packaged output bytes.
+// too costly. These versions cover the Rust TPP implementation and shared
+// output-affecting helpers it calls; bump them when those output semantics
+// change. Do not add broad helper-crate hashes to TPP node inputs for logging or
+// subprocess-runner changes.
 const TPP_RENDER_NODE_VERSION: &str = "v3-per-output-render-nodes";
 const TPP_PACKAGE_NODE_VERSION: &str = "v2-per-thumbnail-nodes";
 const STATIC_SOURCE_FETCH_NODE_VERSION: &str = "v2-source-content-fingerprint";

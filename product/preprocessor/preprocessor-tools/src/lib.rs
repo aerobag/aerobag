@@ -10,6 +10,8 @@ use anyhow::Context;
 use image::{Rgba, RgbaImage};
 use preprocessor_core::CaptureEntry;
 
+pub const TOOL_RUNNER_ARG: &str = "__aerobag-tool-runner";
+
 pub fn comparison_targets(entry: &CaptureEntry) -> Vec<&'static str> {
     let mut targets = vec!["zip_members", "package_hashes"];
     if entry.tile_paths.is_some() {
@@ -147,8 +149,8 @@ impl ToolInvocation {
             })?;
         }
 
-        let mut command = Command::new(&self.program);
-        command.args(&self.args).current_dir(&self.cwd);
+        let mut command = self.runner_command()?;
+        command.current_dir(&self.cwd);
         for (key, value) in &self.env {
             command.env(key, value);
         }
@@ -167,7 +169,6 @@ impl ToolInvocation {
         if self.stdin_text.is_some() {
             command.stdin(Stdio::piped());
         }
-        configure_subprocess_containment(&mut command);
 
         let start = Instant::now();
         let mut child = command
@@ -207,6 +208,14 @@ impl ToolInvocation {
             outcome.diagnostic_summary()
         );
     }
+
+    fn runner_command(&self) -> anyhow::Result<Command> {
+        let exe = std::env::current_exe().context("failed to resolve current executable")?;
+        let mut command = Command::new(exe);
+        command.arg(TOOL_RUNNER_ARG).arg("--").arg(&self.program);
+        command.args(&self.args);
+        Ok(command)
+    }
 }
 
 fn escaped_log_tail(path: &Path) -> Option<String> {
@@ -238,27 +247,50 @@ fn escape_log_field(value: &str) -> String {
 }
 
 #[cfg(unix)]
-fn configure_subprocess_containment(command: &mut Command) {
+pub fn run_tool_runner(args: &[String]) -> anyhow::Result<()> {
     use std::os::unix::process::CommandExt;
 
-    unsafe {
-        command.pre_exec(|| {
-            if libc::setpgid(0, 0) != 0 {
-                return Err(IoError::last_os_error());
-            }
-            if libc::prctl(libc::PR_SET_PDEATHSIG, libc::SIGKILL) != 0 {
-                return Err(IoError::last_os_error());
-            }
-            if libc::getppid() == 1 {
-                libc::raise(libc::SIGKILL);
-            }
-            Ok(())
-        });
+    if args.first().map(String::as_str) != Some("--") {
+        anyhow::bail!("{TOOL_RUNNER_ARG} requires -- before tool command");
     }
+    let program = args
+        .get(1)
+        .ok_or_else(|| anyhow::anyhow!("{TOOL_RUNNER_ARG} missing tool command"))?;
+    let tool_args = &args[2..];
+
+    configure_current_process_containment()?;
+    let error = Command::new(program).args(tool_args).exec();
+    Err(error)
+        .with_context(|| format!("failed to exec {}", render_command_line(program, tool_args)))
+}
+
+#[cfg(unix)]
+fn configure_current_process_containment() -> anyhow::Result<()> {
+    unsafe {
+        if libc::setpgid(0, 0) != 0 {
+            return Err(IoError::last_os_error()).context("failed to set tool process group");
+        }
+        if libc::prctl(libc::PR_SET_PDEATHSIG, libc::SIGKILL) != 0 {
+            return Err(IoError::last_os_error()).context("failed to set tool parent-death signal");
+        }
+        if libc::getppid() == 1 {
+            libc::raise(libc::SIGKILL);
+        }
+    }
+    Ok(())
 }
 
 #[cfg(not(unix))]
-fn configure_subprocess_containment(_command: &mut Command) {}
+pub fn run_tool_runner(_args: &[String]) -> anyhow::Result<()> {
+    anyhow::bail!("{TOOL_RUNNER_ARG} is only supported on Unix")
+}
+
+fn render_command_line(program: &str, args: &[String]) -> String {
+    let mut parts = Vec::with_capacity(args.len() + 1);
+    parts.push(program.to_string());
+    parts.extend(args.iter().cloned());
+    parts.join(" ")
+}
 
 pub fn append_pngs_vertical(
     work_dir: &Path,

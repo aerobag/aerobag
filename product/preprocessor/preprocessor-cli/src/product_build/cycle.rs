@@ -476,14 +476,14 @@ pub fn build_cycle(config: &ProductBuildConfig) -> anyhow::Result<PathBuf> {
                         let region_id = region.code().to_ascii_lowercase();
                         let plan_id = format!("tpp-{region_id}-plan");
                         let (source_root, source_content_fingerprint) =
-                            match task_values_snapshot.get(&plan_id) {
+                            task_values_snapshot.with(&plan_id, |value| match value {
                                 Some(TaskValue::TppPlan {
                                     source_root,
                                     source_content_fingerprint,
                                     ..
-                                }) => (source_root, source_content_fingerprint),
+                                }) => (source_root.clone(), source_content_fingerprint.clone()),
                                 _ => unreachable!("tpp plan dependency should have completed"),
-                            };
+                            });
                         let record = build_tpp_render_unit_node(
                             &config,
                             &region_id,
@@ -567,12 +567,12 @@ pub fn build_cycle(config: &ProductBuildConfig) -> anyhow::Result<PathBuf> {
                     ScheduledTaskKind::TppThumbnail { region, thumbnail } => {
                         let region_id = region.code().to_ascii_lowercase();
                         let plan_id = tpp_package_plan_task_name(region);
-                        let asset_root = match task_values_snapshot.get(&plan_id) {
-                            Some(TaskValue::TppPackagePlan { asset_root, .. }) => asset_root,
-                            _ => {
-                                unreachable!("tpp package plan dependency should have completed")
+                        let asset_root = task_values_snapshot.with(&plan_id, |value| match value {
+                            Some(TaskValue::TppPackagePlan { asset_root, .. }) => {
+                                asset_root.clone()
                             }
-                        };
+                            _ => unreachable!("tpp package plan dependency should have completed"),
+                        });
                         let record =
                             build_tpp_thumbnail_node(&config, region, &asset_root, &thumbnail)?;
                         let cache_hit = record.cache_hit;

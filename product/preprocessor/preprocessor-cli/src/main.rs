@@ -30,7 +30,7 @@ use preprocessor_live_feeds::{
 use preprocessor_resource_index::{
     write_resource_index, AssetSource, BuildResourceIndexRequest, ChartSource,
 };
-use preprocessor_tools::ToolInvocation;
+use preprocessor_tools::{run_tool_runner, ToolInvocation, TOOL_RUNNER_ARG};
 use preprocessor_tpp::{run_native_tpp, NativeTppRunRequest};
 use preprocessor_vectors::{
     analyze_obstacle_thresholds, audit_class_airspace_simplification, build_bravo_union_svg,
@@ -1827,6 +1827,9 @@ fn print_fetch_cache_gc_report(mode: BuildCacheGcMode, report: FetchCacheGcRepor
 
 fn main() -> anyhow::Result<()> {
     let args: Vec<String> = env::args().collect();
+    if args.get(1).map(String::as_str) == Some(TOOL_RUNNER_ARG) {
+        return run_tool_runner(&args[2..]);
+    }
     if matches!(args.get(1).map(String::as_str), Some("--help" | "-h")) {
         println!("{}", usage());
         return Ok(());

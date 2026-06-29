@@ -3592,12 +3592,16 @@ fn guidance_leg_geometry_from_route(
 fn self_contained_guidance_leg_geometry_for_plan(
     plan: &FlightPlan,
 ) -> AppResult<Option<Vec<GuidanceLegGeometry>>> {
-    let mut geometries = Vec::new();
     let mut resolve_position = |nav_ref: &NavRef, _procedure_airport_id: Option<&str>| match nav_ref
     {
         NavRef::LatLon(position) | NavRef::Spot(position) => Ok(*position),
         _ => Err(()),
     };
+    if let Ok(route) = crate::project_flight_plan_route_with_resolver(plan, &mut resolve_position) {
+        return Ok(Some(guidance_leg_geometry_from_route(route)));
+    }
+
+    let mut geometries = Vec::new();
     for (leg_index, leg) in plan.resolved_legs.iter().enumerate() {
         if let Ok(route) = crate::project_flight_plan_leg_route_with_resolver(
             plan,
@@ -10375,18 +10379,30 @@ fn sequence_guidance_by_ownship_position(session: &mut UiSession) -> AppResult<b
         let Some(guidance) = plan.guidance.as_ref() else {
             return Ok(sequenced);
         };
-        let Some(active_detail_index) = active_guidance_detail_index_for_motion(plan, guidance)
-        else {
-            return Ok(sequenced);
-        };
-        let suspended_hold = guidance.sequencing_mode == SequencingMode::Suspended;
-        let Some(finish_criterion) = active_detail_finish_criterion(
-            plan,
-            active_detail_index,
-            &session.guidance_leg_geometry,
-            suspended_hold,
-        ) else {
-            return Ok(sequenced);
+        let (finish_criterion, suspended_hold) = if guidance.sequencing_mode
+            == SequencingMode::DirectTo
+        {
+            let Some(finish_criterion) =
+                direct_to_finish_criterion(plan, &session.guidance_leg_geometry)
+            else {
+                return Ok(sequenced);
+            };
+            (finish_criterion, false)
+        } else {
+            let Some(active_detail_index) = active_guidance_detail_index_for_motion(plan, guidance)
+            else {
+                return Ok(sequenced);
+            };
+            let suspended_hold = guidance.sequencing_mode == SequencingMode::Suspended;
+            let Some(finish_criterion) = active_detail_finish_criterion(
+                plan,
+                active_detail_index,
+                &session.guidance_leg_geometry,
+                suspended_hold,
+            ) else {
+                return Ok(sequenced);
+            };
+            (finish_criterion, suspended_hold)
         };
         if !position_satisfies_finish_criterion(position, finish_criterion) {
             return Ok(sequenced);
@@ -10401,6 +10417,37 @@ fn sequence_guidance_by_ownship_position(session: &mut UiSession) -> AppResult<b
         sequenced = true;
     }
     Ok(sequenced)
+}
+
+fn direct_to_finish_criterion(
+    plan: &FlightPlan,
+    geometry_by_leg_id: &HashMap<String, GuidanceLegGeometry>,
+) -> Option<SequencingFinishCriterion> {
+    let guidance = plan.guidance.as_ref()?;
+    if guidance.sequencing_mode != SequencingMode::DirectTo {
+        return None;
+    }
+    let current = active_guidance_projection_geometry(plan, geometry_by_leg_id)?;
+    let current_course = terminal_course_for_guidance_geometry(&current)?;
+    let next_course = guidance
+        .direct_to
+        .as_ref()
+        .and_then(|direct_to| direct_to.resume_leg_id.as_deref())
+        .and_then(|resume_leg_id| {
+            plan.resolved_legs
+                .iter()
+                .position(|leg| leg.id == resume_leg_id)
+        })
+        .and_then(|resume_leg_index| first_guidance_detail_index_for_leg(plan, resume_leg_index))
+        .and_then(|detail_index| {
+            active_guidance_detail_geometry_for_index(plan, detail_index, geometry_by_leg_id)
+        })
+        .and_then(|(_, geometry)| initial_course_for_guidance_geometry(&geometry))
+        .unwrap_or(current_course);
+    Some(SequencingFinishCriterion::Plane(SequencingFinishPlane {
+        point: current.to,
+        normal_course_deg: finish_line_normal_course_deg(current_course, next_course),
+    }))
 }
 
 fn active_detail_finish_criterion(
@@ -16591,6 +16638,49 @@ mod tests {
             .expect("guidance");
         assert_eq!(guidance.active_leg_index, 1);
         assert_eq!(guidance.active_detail_index, Some(1));
+    }
+
+    #[test]
+    fn playback_sequences_direct_to_route_start_into_first_leg() {
+        let plan = short_lat_lon_preview_plan();
+        let route_start = LatLon {
+            lat: 40.0,
+            lon: -120.0,
+        };
+        let direct_start = LatLon {
+            lat: 40.0,
+            lon: -120.02,
+        };
+        let after_route_start = LatLon {
+            lat: 40.0,
+            lon: -119.998,
+        };
+        let direct_to_plan =
+            crate::activate_direct_to(&plan, direct_start, NavRef::LatLon(route_start))
+                .expect("activate direct-to route start");
+        let init = create_ui_session(direct_to_plan, &[], None, None).expect("create session");
+        load_playback_trace_in_session(
+            init.handle,
+            "cross-direct-to-route-start.json",
+            &format!(
+                r#"{{"trace":[[0.0,{},{},3000,120.0,90.0],[10.0,{},{},3000,120.0,90.0]]}}"#,
+                direct_start.lat, direct_start.lon, after_route_start.lat, after_route_start.lon
+            ),
+        )
+        .expect("load replay trace");
+        play_playback_in_session(init.handle, 0.0).expect("play replay");
+
+        let snapshot = tick_playback_in_session(init.handle, 10_000.0).expect("tick replay");
+        let guidance = snapshot
+            .app_state
+            .active_plan
+            .as_ref()
+            .and_then(|plan| plan.guidance.as_ref())
+            .expect("guidance");
+        assert_eq!(guidance.sequencing_mode, SequencingMode::FollowPlan);
+        assert_eq!(guidance.active_leg_index, 0);
+        assert_eq!(guidance.active_detail_index, Some(0));
+        assert!(guidance.direct_to.is_none());
     }
 
     #[test]

@@ -164,6 +164,45 @@ class WatchBuildLogTests(unittest.TestCase):
         self.assertEqual(completed["runtime_seconds"], 3)
         self.assertEqual(completed["runtime"], "0:03")
 
+    def test_incremental_snapshot_reads_only_appended_log_lines(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            log_path = Path(tmp) / "master.log"
+            log_path.write_text(
+                "\n".join(
+                    [
+                        "2026-06-09T21:00:00+00:00 +0:00 begin pid=1 "
+                        "build_root=/tmp/build publish_dir=/tmp/build/published/master/20260609T210000Z",
+                        "2026-06-09T21:00:01+00:00 +0:01 scheduler-ready tasks=3 work_unit_budget=4",
+                        "2026-06-09T21:00:02+00:00 +0:02 product-scheduler-launch a "
+                        "launched=1/3 completed=0/3 weight=1 running_units=1/4",
+                        "2026-06-09T21:00:03+00:00 +0:03 product-scheduler-complete a "
+                        "completed=1/3 running_units=0/4 ok",
+                    ]
+                )
+                + "\n",
+                encoding="utf-8",
+            )
+
+            snapshotter = watch_build_log.IncrementalLogSnapshotter(log_path)
+            first = snapshotter.snapshot(completed_limit=1)
+            self.assertEqual(first["progress"]["completed"], 1)
+            self.assertEqual(first["tasks"]["completed"][0]["task"], "a")
+
+            with log_path.open("a", encoding="utf-8") as handle:
+                handle.write(
+                    "2026-06-09T21:00:04+00:00 +0:04 product-scheduler-launch b "
+                    "launched=2/3 completed=1/3 weight=1 running_units=1/4\n"
+                )
+                handle.write(
+                    "2026-06-09T21:00:05+00:00 +0:05 product-scheduler-complete b "
+                    "completed=2/3 running_units=0/4 ok\n"
+                )
+
+            second = snapshotter.snapshot(completed_limit=1)
+            self.assertEqual(second["progress"]["completed"], 2)
+            self.assertEqual(len(second["tasks"]["completed"]), 1)
+            self.assertEqual(second["tasks"]["completed"][0]["task"], "b")
+
 
 if __name__ == "__main__":
     unittest.main()

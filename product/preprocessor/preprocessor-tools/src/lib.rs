@@ -1,9 +1,8 @@
 use std::{
     fs,
-    io::{BufRead, BufReader, Error as IoError, Read, Seek, SeekFrom, Write},
+    io::{Error as IoError, Read, Seek, SeekFrom, Write},
     path::{Path, PathBuf},
     process::{Command, Output, Stdio},
-    thread,
     time::Instant,
 };
 
@@ -158,16 +157,17 @@ impl ToolInvocation {
             command.env("MAGICK_TEMPORARY_PATH", &temp_dir);
             command.env("TMPDIR", &temp_dir);
         }
-        command.stdout(Stdio::piped()).stderr(Stdio::piped());
+        let stdout_file = fs::File::create(&logs.stdout)
+            .with_context(|| format!("failed to create stdout log {}", logs.stdout.display()))?;
+        let stderr_file = fs::File::create(&logs.stderr)
+            .with_context(|| format!("failed to create stderr log {}", logs.stderr.display()))?;
+        command
+            .stdout(Stdio::from(stdout_file))
+            .stderr(Stdio::from(stderr_file));
         if self.stdin_text.is_some() {
             command.stdin(Stdio::piped());
         }
         configure_subprocess_containment(&mut command);
-
-        let mut stdout_file = fs::File::create(&logs.stdout)
-            .with_context(|| format!("failed to create stdout log {}", logs.stdout.display()))?;
-        let mut stderr_file = fs::File::create(&logs.stderr)
-            .with_context(|| format!("failed to create stderr log {}", logs.stderr.display()))?;
 
         let start = Instant::now();
         let mut child = command
@@ -182,57 +182,11 @@ impl ToolInvocation {
                 .write_all(stdin_text.as_bytes())
                 .context("failed to write child stdin")?;
         }
-        let stdout = child
-            .stdout
-            .take()
-            .context("failed to capture child stdout")?;
-        let stderr = child
-            .stderr
-            .take()
-            .context("failed to capture child stderr")?;
-
-        let stdout_handle = thread::spawn(move || -> std::io::Result<()> {
-            let mut reader = BufReader::new(stdout);
-            let mut line = Vec::new();
-            loop {
-                line.clear();
-                let bytes = reader.read_until(b'\n', &mut line)?;
-                if bytes == 0 {
-                    break;
-                }
-                stdout_file.write_all(&line)?;
-                stdout_file.flush()?;
-            }
-            Ok(())
-        });
-
-        let stderr_handle = thread::spawn(move || -> std::io::Result<()> {
-            let mut reader = BufReader::new(stderr);
-            let mut line = Vec::new();
-            loop {
-                line.clear();
-                let bytes = reader.read_until(b'\n', &mut line)?;
-                if bytes == 0 {
-                    break;
-                }
-                stderr_file.write_all(&line)?;
-                stderr_file.flush()?;
-            }
-            Ok(())
-        });
 
         let status = child
             .wait()
             .with_context(|| format!("failed waiting for {}", self.render_command_line()))?;
         let elapsed_ms = start.elapsed().as_millis();
-        stdout_handle
-            .join()
-            .map_err(|_| anyhow::anyhow!("stdout thread panicked"))?
-            .context("failed to stream stdout log")?;
-        stderr_handle
-            .join()
-            .map_err(|_| anyhow::anyhow!("stderr thread panicked"))?
-            .context("failed to stream stderr log")?;
 
         Ok(ToolOutcome {
             success: status.success(),

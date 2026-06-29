@@ -8,6 +8,7 @@ import json
 import os
 import re
 import sys
+import threading
 import time
 from dataclasses import dataclass
 from pathlib import Path
@@ -214,6 +215,55 @@ def read_state(log_path: Path) -> BuildState:
         for raw_line in handle:
             state.apply_line(raw_line.rstrip("\n"))
     return state
+
+
+class IncrementalLogSnapshotter:
+    def __init__(self, log_path: Path) -> None:
+        self.log_path = log_path
+        self.state = BuildState()
+        self.offset = 0
+        self.identity: tuple[int, int] | None = None
+        self.partial_line = ""
+        self.lock = threading.Lock()
+
+    def snapshot(self, completed_limit: int | None) -> dict:
+        with self.lock:
+            self._read_appended_lines()
+            return state_snapshot(self.state, self.log_path, completed_limit)
+
+    def _read_appended_lines(self) -> None:
+        try:
+            stat = self.log_path.stat()
+        except FileNotFoundError:
+            self.state = BuildState()
+            self.offset = 0
+            self.identity = None
+            self.partial_line = ""
+            return
+
+        identity = (stat.st_dev, stat.st_ino)
+        if self.identity != identity or stat.st_size < self.offset:
+            self.state = BuildState()
+            self.offset = 0
+            self.identity = identity
+            self.partial_line = ""
+
+        with self.log_path.open("r", encoding="utf-8", errors="replace") as handle:
+            handle.seek(self.offset)
+            chunk = handle.read()
+            self.offset = handle.tell()
+
+        if not chunk:
+            return
+
+        text = self.partial_line + chunk
+        lines = text.splitlines(keepends=True)
+        if lines and not lines[-1].endswith(("\n", "\r")):
+            self.partial_line = lines.pop()
+        else:
+            self.partial_line = ""
+        for raw_line in lines:
+            self.state.apply_line(raw_line.rstrip("\r\n"))
 
 
 def parse_pid(header_rest: str) -> int | None:
@@ -811,8 +861,11 @@ def parse_listen_address(value: str) -> tuple[str, int]:
     return host or "127.0.0.1", int(port)
 
 
-def run_web_server(log_path: Path, listen: str, refresh_seconds: float) -> None:
+def run_web_server(
+    log_path: Path, listen: str, refresh_seconds: float, completed_limit: int | None
+) -> None:
     host, port = parse_listen_address(listen)
+    snapshotter = IncrementalLogSnapshotter(log_path)
 
     class Handler(BaseHTTPRequestHandler):
         server_version = "AerobagBuildWatch/1"
@@ -837,7 +890,7 @@ def run_web_server(log_path: Path, listen: str, refresh_seconds: float) -> None:
                 )
                 return
             if path == "/api/state":
-                payload = state_snapshot(read_state(log_path), log_path, completed_limit=None)
+                payload = snapshotter.snapshot(completed_limit)
                 self._send_bytes(
                     200,
                     json.dumps(payload, sort_keys=True).encode("utf-8"),
@@ -1247,7 +1300,7 @@ def main() -> int:
         run_json_watch(log_path, args.refresh_seconds, completed_limit)
         return 0
     if args.serve:
-        run_web_server(log_path, args.serve, args.refresh_seconds)
+        run_web_server(log_path, args.serve, args.refresh_seconds, completed_limit)
         return 0
     curses.wrapper(run_ui, log_path, args.refresh_seconds)
     return 0

@@ -1708,10 +1708,6 @@ pub(super) fn tpp_plan_inputs(
             TPP_RENDER_NODE_VERSION.to_string(),
         ),
         (
-            "tpp_orchestration".to_string(),
-            hash_file(product_build_cycle_nodes_path())?,
-        ),
-        (
             "cache_layout_version".to_string(),
             TPP_CACHE_LAYOUT_VERSION.to_string(),
         ),
@@ -1772,10 +1768,6 @@ fn tpp_render_unit_inputs(
             TPP_RENDER_NODE_VERSION.to_string(),
         ),
         (
-            "tpp_orchestration".to_string(),
-            hash_file(product_build_cycle_nodes_path())?,
-        ),
-        (
             "tpp_lib".to_string(),
             hash_file(tpp_crate_path().join("src/lib.rs"))?,
         ),
@@ -1817,10 +1809,6 @@ fn tpp_render_assemble_inputs(
             "tpp_render_node_version".to_string(),
             TPP_RENDER_NODE_VERSION.to_string(),
         ),
-        (
-            "tpp_orchestration".to_string(),
-            hash_file(product_build_cycle_nodes_path())?,
-        ),
     ]))
 }
 
@@ -1853,10 +1841,6 @@ fn tpp_package_plan_inputs(
             TPP_CACHE_LAYOUT_VERSION.to_string(),
         ),
         (
-            "tpp_orchestration".to_string(),
-            hash_file(product_build_cycle_nodes_path())?,
-        ),
-        (
             "tpp_package".to_string(),
             hash_file(tpp_crate_path().join("src/package.rs"))?,
         ),
@@ -1887,10 +1871,6 @@ fn tpp_thumbnail_inputs(
         (
             "tpp_package_node_version".to_string(),
             TPP_PACKAGE_NODE_VERSION.to_string(),
-        ),
-        (
-            "tpp_orchestration".to_string(),
-            hash_file(product_build_cycle_nodes_path())?,
         ),
         (
             "tpp_package".to_string(),
@@ -1948,10 +1928,6 @@ fn tpp_package_assemble_inputs(
             TPP_CACHE_LAYOUT_VERSION.to_string(),
         ),
         (
-            "tpp_orchestration".to_string(),
-            hash_file(product_build_cycle_nodes_path())?,
-        ),
-        (
             "tpp_package".to_string(),
             hash_file(tpp_crate_path().join("src/package.rs"))?,
         ),
@@ -1960,10 +1936,6 @@ fn tpp_package_assemble_inputs(
             hash_file(workspace_preprocessor_path().join("preprocessor-tools/src/lib.rs"))?,
         ),
     ]))
-}
-
-fn product_build_cycle_nodes_path() -> PathBuf {
-    Path::new(env!("CARGO_MANIFEST_DIR")).join("src/product_build/cycle_nodes.rs")
 }
 
 fn workspace_preprocessor_path() -> PathBuf {

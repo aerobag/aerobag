@@ -1695,6 +1695,16 @@ internal fun MapExplorerPage(
             uiSession.projectFlightPlanRoute()
         }.onSuccess {
             flightPlanRoute = it
+            val guidance = sessionSnapshot.appUiState.activePlan?.guidance
+            Log.i(
+                "AerobagGuidance",
+                "route projection revision=${sessionSnapshot.sessionRevision} " +
+                    "mode=${guidance?.sequencingMode} " +
+                    "activeLeg=${guidance?.activeLegIndex} " +
+                    "activeSummary=${guidance?.navElement?.activeLegSummary} " +
+                    "cdi=${guidance?.navElement?.cdiIndicatorDots} " +
+                    "statuses=${it.joinToString(",") { segment -> "${segment.id}:${segment.status}" }}",
+            )
         }.onFailure {
             flightPlanRoute = emptyList()
             Log.e("AerobagGuidance", "failed to project flight plan route", it)

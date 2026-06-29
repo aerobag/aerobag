@@ -399,10 +399,11 @@ pub(crate) fn guidance_detail_count_for_leg(leg: &ResolvedLeg) -> usize {
 }
 
 pub(crate) fn guidance_detail_id_for_leg_element(
+    leg_index: usize,
     leg: &ResolvedLeg,
     element_index: usize,
 ) -> String {
-    format!("{}#{element_index}", leg.id)
+    format!("leg:{leg_index}:{}#{element_index}", leg.id)
 }
 
 fn guidance_detail_index_for_leg_element(
@@ -421,24 +422,6 @@ fn guidance_detail_index_for_leg_element(
             .sum::<usize>()
             + element_index,
     )
-}
-
-pub(crate) fn guidance_detail_id_for_index(
-    plan: &FlightPlan,
-    detail_index: usize,
-) -> Option<String> {
-    let mut current_index = 0usize;
-    for leg in &plan.resolved_legs {
-        let detail_count = guidance_detail_count_for_leg(leg);
-        if detail_index < current_index + detail_count {
-            return Some(guidance_detail_id_for_leg_element(
-                leg,
-                detail_index - current_index,
-            ));
-        }
-        current_index += detail_count;
-    }
-    None
 }
 
 fn route_status_for_detail(
@@ -707,52 +690,12 @@ where
 {
     let mut route = Vec::new();
     for (leg_index, leg) in plan.resolved_legs.iter().enumerate() {
-        let procedure_airport_id = leg.procedure_provenance.as_ref().and_then(|provenance| {
-            (!provenance.airport_id.is_empty()).then_some(provenance.airport_id.as_str())
-        });
-        if let Some(display_path) = leg
-            .procedure_provenance
-            .as_ref()
-            .and_then(|provenance| provenance.display_path.as_ref())
-        {
-            for (element_index, element) in display_path.elements.iter().enumerate() {
-                let geometry = guidance_route_geometry_from_display_element(element);
-                let (from, to) = guidance_route_endpoints(&geometry);
-                route.push(FlightPlanRouteSegment {
-                    id: guidance_detail_id_for_leg_element(leg, element_index),
-                    leg_id: leg.id.clone(),
-                    from,
-                    to,
-                    path: guidance_route_path_from_geometry(&geometry),
-                    style: display_path.style.clone(),
-                    geometry: geometry.clone(),
-                    distance_nm: guidance_route_distance_nm(&geometry),
-                    course_deg: guidance_route_course_deg(&geometry),
-                    status: route_status_for_detail(&plan, leg_index, element_index),
-                    finish_lines: Vec::new(),
-                });
-            }
-        } else {
-            let fallback_from = resolve_position(&leg.from, procedure_airport_id)?;
-            let fallback_to = resolve_position(&leg.to, procedure_airport_id)?;
-            let geometry = GuidanceRouteGeometry::Segment {
-                start: fallback_from,
-                end: fallback_to,
-            };
-            route.push(FlightPlanRouteSegment {
-                id: guidance_detail_id_for_leg_element(leg, 0),
-                leg_id: leg.id.clone(),
-                from: fallback_from,
-                to: fallback_to,
-                path: guidance_route_path_from_geometry(&geometry),
-                style: LegDisplayPathStyle::Solid,
-                geometry: geometry.clone(),
-                distance_nm: guidance_route_distance_nm(&geometry),
-                course_deg: guidance_route_course_deg(&geometry),
-                status: route_status_for_detail(&plan, leg_index, 0),
-                finish_lines: Vec::new(),
-            });
-        }
+        route.extend(project_flight_plan_leg_route_with_resolver(
+            plan,
+            leg_index,
+            leg,
+            &mut resolve_position,
+        )?);
     }
     let route_geometries = route
         .iter()
@@ -786,6 +729,65 @@ where
             course_deg: guidance_route_course_deg(&geometry),
             status: FlightPlanRouteSegmentStatus::Active,
             finish_lines: sequencing_finish_lines(&geometry, None),
+        });
+    }
+    Ok(route)
+}
+
+pub(crate) fn project_flight_plan_leg_route_with_resolver<E, F>(
+    plan: &FlightPlan,
+    leg_index: usize,
+    leg: &ResolvedLeg,
+    resolve_position: &mut F,
+) -> Result<Vec<FlightPlanRouteSegment>, E>
+where
+    F: FnMut(&NavRef, Option<&str>) -> Result<LatLon, E>,
+{
+    let procedure_airport_id = leg.procedure_provenance.as_ref().and_then(|provenance| {
+        (!provenance.airport_id.is_empty()).then_some(provenance.airport_id.as_str())
+    });
+    let mut route = Vec::new();
+    if let Some(display_path) = leg
+        .procedure_provenance
+        .as_ref()
+        .and_then(|provenance| provenance.display_path.as_ref())
+    {
+        for (element_index, element) in display_path.elements.iter().enumerate() {
+            let geometry = guidance_route_geometry_from_display_element(element);
+            let (from, to) = guidance_route_endpoints(&geometry);
+            route.push(FlightPlanRouteSegment {
+                id: guidance_detail_id_for_leg_element(leg_index, leg, element_index),
+                leg_id: leg.id.clone(),
+                from,
+                to,
+                path: guidance_route_path_from_geometry(&geometry),
+                style: display_path.style.clone(),
+                geometry: geometry.clone(),
+                distance_nm: guidance_route_distance_nm(&geometry),
+                course_deg: guidance_route_course_deg(&geometry),
+                status: route_status_for_detail(plan, leg_index, element_index),
+                finish_lines: Vec::new(),
+            });
+        }
+    } else {
+        let from = resolve_position(&leg.from, procedure_airport_id)?;
+        let to = resolve_position(&leg.to, procedure_airport_id)?;
+        let geometry = GuidanceRouteGeometry::Segment {
+            start: from,
+            end: to,
+        };
+        route.push(FlightPlanRouteSegment {
+            id: guidance_detail_id_for_leg_element(leg_index, leg, 0),
+            leg_id: leg.id.clone(),
+            from,
+            to,
+            path: guidance_route_path_from_geometry(&geometry),
+            style: LegDisplayPathStyle::Solid,
+            geometry: geometry.clone(),
+            distance_nm: guidance_route_distance_nm(&geometry),
+            course_deg: guidance_route_course_deg(&geometry),
+            status: route_status_for_detail(plan, leg_index, 0),
+            finish_lines: Vec::new(),
         });
     }
     Ok(route)

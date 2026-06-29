@@ -26,7 +26,7 @@ use crate::{
         cycle_product_is_expired, evaluate_age, format_age, parse_utc_instant, FreshnessSeverity,
         FreshnessViolation, DATA_FRESHNESS_POLICIES,
     },
-    guidance_detail_id_for_index, guidance_detail_id_for_leg_element,
+    guidance_detail_id_for_leg_element,
     had_ops::{
         flight_plan_ui_state, insert_waypoint_best_position,
         materialize_airway_presentation_selection, materialize_procedure, nav_kv_page_resources,
@@ -54,9 +54,9 @@ use crate::{
     MapOverlayConfig, MapOverlayQueryResult, MapSelectionForNavRefResult, MapSelectionQueryResult,
     MapSelectionSessionAction, MapSurfaceMetrics, MapViewport, MetarProductPayload,
     MetarTilePayload, NavDbOpenResult, NavKvLookup, NavKvPageProbeStats, NavKvQuery, NavKvRoot,
-    NavKvStore, NavRef, PlanLeg, PlaybackUiState, PointTilePayload, ProcedureDiscontinuity,
-    ProcedureKind, ProcedureLoadCommand, RasterMapCatalog, RasterResourceMode, RasterTilePlan,
-    ResolvedLeg, ResolvedLegSource, RouteComponentViewKind, SequencingMode, SituationControlInput,
+    NavKvStore, NavRef, PlaybackUiState, PointTilePayload, ProcedureDiscontinuity, ProcedureKind,
+    ProcedureLoadCommand, RasterMapCatalog, RasterResourceMode, RasterTilePlan, ResolvedLeg,
+    ResolvedLegSource, RouteComponentViewKind, SequencingMode, SituationControlInput,
     SituationControlMenuItem, TafProductPayload, TerrainOverlayQueryResult, TfrProductPayload,
     UiSnapshotAppState, VectorAggregateTilePayload, VectorIdentLabelStyle,
 };
@@ -2947,6 +2947,11 @@ fn create_ui_session_inner(
     for record in procedure_geometry_status_records_for_plan(&active_plan) {
         data_status_records.insert(record.id.clone(), record);
     }
+    let guidance_leg_geometry = self_contained_guidance_leg_geometry_for_plan(&active_plan)?
+        .unwrap_or_default()
+        .into_iter()
+        .map(|geometry| (geometry.leg_id.clone(), geometry))
+        .collect();
     let hushed_status_ids = BTreeSet::new();
     let data_status_state = project_data_status_state(&data_status_records, &hushed_status_ids);
     let data_status_page_state = default_data_status_page_state();
@@ -2982,7 +2987,7 @@ fn create_ui_session_inner(
             plan_preview: PlanPreviewState::default(),
             bad_autopilot: BadAutopilotState::default(),
             map_follow,
-            guidance_leg_geometry: HashMap::new(),
+            guidance_leg_geometry,
             map_overlay_config,
             vector_manifest_loaded: false,
             chart_page_state,
@@ -3549,6 +3554,14 @@ pub(crate) fn set_guidance_leg_geometry_in_session(
 ) -> AppResult<UiSessionSnapshot> {
     let mut sessions = lock_sessions();
     let session = session_mut(&mut sessions, handle)?;
+    install_guidance_leg_geometry(session, geometries)?;
+    snapshot_for_changed_session(session)
+}
+
+fn install_guidance_leg_geometry(
+    session: &mut UiSession,
+    geometries: Vec<GuidanceLegGeometry>,
+) -> AppResult<()> {
     session.guidance_leg_geometry = geometries
         .into_iter()
         .map(|geometry| (geometry.leg_id.clone(), geometry))
@@ -3559,7 +3572,43 @@ pub(crate) fn set_guidance_leg_geometry_in_session(
     {
         sync_plan_preview_to_active_leg(session)?;
     }
-    snapshot_for_changed_session(session)
+    Ok(())
+}
+
+fn guidance_leg_geometry_from_route(
+    route: Vec<crate::FlightPlanRouteSegment>,
+) -> Vec<GuidanceLegGeometry> {
+    route
+        .into_iter()
+        .map(|segment| GuidanceLegGeometry {
+            leg_id: segment.id,
+            from: segment.from,
+            to: segment.to,
+            path: segment.path,
+        })
+        .collect()
+}
+
+fn self_contained_guidance_leg_geometry_for_plan(
+    plan: &FlightPlan,
+) -> AppResult<Option<Vec<GuidanceLegGeometry>>> {
+    let mut geometries = Vec::new();
+    let mut resolve_position = |nav_ref: &NavRef, _procedure_airport_id: Option<&str>| match nav_ref
+    {
+        NavRef::LatLon(position) | NavRef::Spot(position) => Ok(*position),
+        _ => Err(()),
+    };
+    for (leg_index, leg) in plan.resolved_legs.iter().enumerate() {
+        if let Ok(route) = crate::project_flight_plan_leg_route_with_resolver(
+            plan,
+            leg_index,
+            leg,
+            &mut resolve_position,
+        ) {
+            geometries.extend(guidance_leg_geometry_from_route(route));
+        }
+    }
+    Ok((!geometries.is_empty()).then_some(geometries))
 }
 
 pub fn sync_guidance_geometry_in_session(handle: u32) -> AppResult<HadOperationOutcome> {
@@ -3612,7 +3661,19 @@ fn sync_guidance_geometry_for_session(
     );
     let route_started = crate::CoreDebugTimer::start();
     let Some(store) = session.nav_kv_store.as_ref() else {
-        session.guidance_leg_geometry.clear();
+        if let Some(geometries) =
+            self_contained_guidance_leg_geometry_for_plan(&plan).map_err(|err| {
+                HadReadError::Fatal(format!(
+                    "self-contained route projection failed: {}",
+                    err.message
+                ))
+            })?
+        {
+            install_guidance_leg_geometry(session, geometries)
+                .map_err(|err| HadReadError::Fatal(err.message))?;
+        } else {
+            session.guidance_leg_geometry.clear();
+        }
         crate::core_debug_log(
             "plan.guidance.sync.core_phase",
             &serde_json::json!({
@@ -3650,24 +3711,8 @@ fn sync_guidance_geometry_for_session(
             "total_ms": started.elapsed_ms(),
         }),
     );
-    session.guidance_leg_geometry = route
-        .into_iter()
-        .map(|segment| {
-            let geometry = GuidanceLegGeometry {
-                leg_id: segment.id,
-                from: segment.from,
-                to: segment.to,
-                path: segment.path,
-            };
-            (geometry.leg_id.clone(), geometry)
-        })
-        .collect();
-    if selected_ownship_source_kind(&session.app_state.ownship)
-        == Some(crate::OwnshipSourceKind::FlightPlanSimulator)
-        && session.plan_preview.pointer.is_none()
-    {
-        sync_plan_preview_to_active_leg(session).map_err(|err| HadReadError::Fatal(err.message))?;
-    }
+    install_guidance_leg_geometry(session, guidance_leg_geometry_from_route(route))
+        .map_err(|err| HadReadError::Fatal(err.message))?;
     Ok(())
 }
 
@@ -3792,9 +3837,7 @@ pub fn push_situation_sample_in_session(
 ) -> AppResult<UiSessionSnapshot> {
     let mut sessions = lock_sessions();
     let session = session_mut(&mut sessions, handle)?;
-    maybe_log_gps_capture_sample(session, &sample);
-    advance_session_wall_clock(session, sample.received_time_epoch_ms);
-    session.app_state = state::reduce(&session.app_state, AppEvent::PushSituationSample(sample))?;
+    apply_ownship_sample(session, sample)?;
     snapshot_for_changed_session(session)
 }
 
@@ -3804,17 +3847,8 @@ pub fn push_situation_sample_in_session_outcome(
 ) -> AppResult<HadOperationOutcome> {
     let mut sessions = lock_sessions();
     let session = session_mut(&mut sessions, handle)?;
-    let terrain_key_before = ownship_terrain_refresh_key(session);
-    maybe_log_gps_capture_sample(session, &sample);
-    advance_session_wall_clock(session, sample.received_time_epoch_ms);
-    session.app_state = state::reduce(&session.app_state, AppEvent::PushSituationSample(sample))?;
-    changed_session_snapshot_outcome_with_invalidations(
-        session,
-        terrain_overlay_invalidations_for_ownship_change(
-            terrain_key_before,
-            ownship_terrain_refresh_key(session),
-        ),
-    )
+    let motion = apply_ownship_sample(session, sample)?;
+    changed_session_snapshot_outcome_for_ownship_motion(session, Some(motion))
 }
 
 fn maybe_log_gps_capture_status(session: &UiSession, update: &crate::OwnshipSourceStatusUpdate) {
@@ -3928,6 +3962,7 @@ pub fn select_ownship_source_in_session_outcome(
     let mut sessions = lock_sessions();
     let session = session_mut(&mut sessions, handle)?;
     let terrain_key_before = ownship_terrain_refresh_key(session);
+    let mut sequenced_guidance = false;
     let selected_source_kind = match &selection {
         crate::OwnshipSelectionCommand::Source { source_id } => session
             .app_state
@@ -3951,16 +3986,14 @@ pub fn select_ownship_source_in_session_outcome(
         }
         Some(crate::OwnshipSourceKind::BadAutopilot) => {
             session.bad_autopilot = BadAutopilotState::default();
-            tick_bad_autopilot(session, 0.0)?;
+            sequenced_guidance =
+                tick_bad_autopilot(session, 0.0)?.is_some_and(|motion| motion.sequenced_guidance);
         }
         _ => {}
     }
     changed_session_snapshot_outcome_with_invalidations(
         session,
-        terrain_overlay_invalidations_for_ownship_change(
-            terrain_key_before,
-            ownship_terrain_refresh_key(session),
-        ),
+        ownship_motion_invalidations_from(session, terrain_key_before, sequenced_guidance),
     )
 }
 
@@ -4005,18 +4038,11 @@ pub fn load_playback_trace_in_session_outcome(
 ) -> AppResult<HadOperationOutcome> {
     let mut sessions = lock_sessions();
     let session = session_mut(&mut sessions, handle)?;
-    let terrain_key_before = ownship_terrain_refresh_key(session);
     let playback_state = session
         .playback
         .load_trace_json(source_path.to_string(), trace_json)?;
-    apply_playback_state_to_ownship(session, playback_state, 0)?;
-    changed_session_snapshot_outcome_with_invalidations(
-        session,
-        terrain_overlay_invalidations_for_ownship_change(
-            terrain_key_before,
-            ownship_terrain_refresh_key(session),
-        ),
-    )
+    let motion = apply_playback_state_to_ownship(session, playback_state, 0)?;
+    changed_session_snapshot_outcome_for_ownship_motion(session, Some(motion))
 }
 
 pub fn play_playback_in_session(handle: u32, now_epoch_ms: f64) -> AppResult<UiSessionSnapshot> {
@@ -4034,17 +4060,14 @@ pub fn play_playback_in_session_outcome(
 ) -> AppResult<HadOperationOutcome> {
     let mut sessions = lock_sessions();
     let session = session_mut(&mut sessions, handle)?;
-    let terrain_key_before = ownship_terrain_refresh_key(session);
-    if let Some(playback_state) = session.playback.play(now_epoch_ms) {
-        apply_playback_state_to_ownship(session, playback_state, now_epoch_ms as i64)?;
-    }
-    changed_session_snapshot_outcome_with_invalidations(
-        session,
-        terrain_overlay_invalidations_for_ownship_change(
-            terrain_key_before,
-            ownship_terrain_refresh_key(session),
-        ),
-    )
+    let motion = session
+        .playback
+        .play(now_epoch_ms)
+        .map(|playback_state| {
+            apply_playback_state_to_ownship(session, playback_state, now_epoch_ms as i64)
+        })
+        .transpose()?;
+    changed_session_snapshot_outcome_for_ownship_motion(session, motion)
 }
 
 pub fn pause_playback_in_session(handle: u32, now_epoch_ms: f64) -> AppResult<UiSessionSnapshot> {
@@ -4062,17 +4085,14 @@ pub fn pause_playback_in_session_outcome(
 ) -> AppResult<HadOperationOutcome> {
     let mut sessions = lock_sessions();
     let session = session_mut(&mut sessions, handle)?;
-    let terrain_key_before = ownship_terrain_refresh_key(session);
-    if let Some(playback_state) = session.playback.pause(now_epoch_ms) {
-        apply_playback_state_to_ownship(session, playback_state, now_epoch_ms as i64)?;
-    }
-    changed_session_snapshot_outcome_with_invalidations(
-        session,
-        terrain_overlay_invalidations_for_ownship_change(
-            terrain_key_before,
-            ownship_terrain_refresh_key(session),
-        ),
-    )
+    let motion = session
+        .playback
+        .pause(now_epoch_ms)
+        .map(|playback_state| {
+            apply_playback_state_to_ownship(session, playback_state, now_epoch_ms as i64)
+        })
+        .transpose()?;
+    changed_session_snapshot_outcome_for_ownship_motion(session, motion)
 }
 
 pub fn seek_playback_in_session(
@@ -4095,17 +4115,14 @@ pub fn seek_playback_in_session_outcome(
 ) -> AppResult<HadOperationOutcome> {
     let mut sessions = lock_sessions();
     let session = session_mut(&mut sessions, handle)?;
-    let terrain_key_before = ownship_terrain_refresh_key(session);
-    if let Some(playback_state) = session.playback.seek(cursor_seconds, now_epoch_ms) {
-        apply_playback_state_to_ownship(session, playback_state, now_epoch_ms as i64)?;
-    }
-    changed_session_snapshot_outcome_with_invalidations(
-        session,
-        terrain_overlay_invalidations_for_ownship_change(
-            terrain_key_before,
-            ownship_terrain_refresh_key(session),
-        ),
-    )
+    let motion = session
+        .playback
+        .seek(cursor_seconds, now_epoch_ms)
+        .map(|playback_state| {
+            apply_playback_state_to_ownship(session, playback_state, now_epoch_ms as i64)
+        })
+        .transpose()?;
+    changed_session_snapshot_outcome_for_ownship_motion(session, motion)
 }
 
 pub fn set_playback_rate_in_session(
@@ -4128,17 +4145,14 @@ pub fn set_playback_rate_in_session_outcome(
 ) -> AppResult<HadOperationOutcome> {
     let mut sessions = lock_sessions();
     let session = session_mut(&mut sessions, handle)?;
-    let terrain_key_before = ownship_terrain_refresh_key(session);
-    if let Some(playback_state) = session.playback.set_rate(rate, now_epoch_ms) {
-        apply_playback_state_to_ownship(session, playback_state, now_epoch_ms as i64)?;
-    }
-    changed_session_snapshot_outcome_with_invalidations(
-        session,
-        terrain_overlay_invalidations_for_ownship_change(
-            terrain_key_before,
-            ownship_terrain_refresh_key(session),
-        ),
-    )
+    let motion = session
+        .playback
+        .set_rate(rate, now_epoch_ms)
+        .map(|playback_state| {
+            apply_playback_state_to_ownship(session, playback_state, now_epoch_ms as i64)
+        })
+        .transpose()?;
+    changed_session_snapshot_outcome_for_ownship_motion(session, motion)
 }
 
 pub fn tick_playback_in_session(handle: u32, now_epoch_ms: f64) -> AppResult<UiSessionSnapshot> {
@@ -4156,17 +4170,14 @@ pub fn tick_playback_in_session_outcome(
 ) -> AppResult<HadOperationOutcome> {
     let mut sessions = lock_sessions();
     let session = session_mut(&mut sessions, handle)?;
-    let terrain_key_before = ownship_terrain_refresh_key(session);
-    if let Some(playback_state) = session.playback.tick(now_epoch_ms) {
-        apply_playback_state_to_ownship(session, playback_state, now_epoch_ms as i64)?;
-    }
-    changed_session_snapshot_outcome_with_invalidations(
-        session,
-        terrain_overlay_invalidations_for_ownship_change(
-            terrain_key_before,
-            ownship_terrain_refresh_key(session),
-        ),
-    )
+    let motion = session
+        .playback
+        .tick(now_epoch_ms)
+        .map(|playback_state| {
+            apply_playback_state_to_ownship(session, playback_state, now_epoch_ms as i64)
+        })
+        .transpose()?;
+    changed_session_snapshot_outcome_for_ownship_motion(session, motion)
 }
 
 pub fn set_situation_in_session(
@@ -4192,8 +4203,7 @@ pub fn set_situation_in_session_outcome(
 ) -> AppResult<HadOperationOutcome> {
     let mut sessions = lock_sessions();
     let session = session_mut(&mut sessions, handle)?;
-    let terrain_key_before = ownship_terrain_refresh_key(session);
-    apply_situation_to_ownship(
+    let motion = apply_situation_to_ownship(
         session,
         DIRECT_SITUATION_SOURCE_ID,
         crate::OwnshipSourceKind::FlightPlanSimulator,
@@ -4201,13 +4211,7 @@ pub fn set_situation_in_session_outcome(
         situation,
         0,
     )?;
-    changed_session_snapshot_outcome_with_invalidations(
-        session,
-        terrain_overlay_invalidations_for_ownship_change(
-            terrain_key_before,
-            ownship_terrain_refresh_key(session),
-        ),
-    )
+    changed_session_snapshot_outcome_for_ownship_motion(session, Some(motion))
 }
 
 pub fn tick_bad_autopilot_in_session(
@@ -4226,15 +4230,8 @@ pub fn tick_bad_autopilot_in_session_outcome(
 ) -> AppResult<HadOperationOutcome> {
     let mut sessions = lock_sessions();
     let session = session_mut(&mut sessions, handle)?;
-    let terrain_key_before = ownship_terrain_refresh_key(session);
-    tick_bad_autopilot(session, now_epoch_ms)?;
-    changed_session_snapshot_outcome_with_invalidations(
-        session,
-        terrain_overlay_invalidations_for_ownship_change(
-            terrain_key_before,
-            ownship_terrain_refresh_key(session),
-        ),
-    )
+    let motion = tick_bad_autopilot(session, now_epoch_ms)?;
+    changed_session_snapshot_outcome_for_ownship_motion(session, motion)
 }
 
 #[allow(dead_code)]
@@ -8676,7 +8673,11 @@ fn replace_session_flight_plan(session: &mut UiSession, plan: FlightPlan) -> App
         .active_plan
         .clone()
         .ok_or_else(|| missing_active_plan_error("replace flight plan"))?;
-    session.guidance_leg_geometry.clear();
+    if let Some(geometries) = self_contained_guidance_leg_geometry_for_plan(&normalized_plan)? {
+        install_guidance_leg_geometry(session, geometries)?;
+    } else {
+        session.guidance_leg_geometry.clear();
+    }
     session.chart_page_state = derive_compact_chart_page_state(
         &normalized_plan,
         &session.chart_page_state.recent_airport_ids,
@@ -9505,7 +9506,7 @@ fn active_guidance_projection(
     geometry_by_leg_id: &HashMap<String, GuidanceLegGeometry>,
 ) -> Option<ActiveGuidanceProjection> {
     let leg = crate::active_guidance_leg(plan)?;
-    let geometry = active_guidance_projection_geometry(plan, &leg, geometry_by_leg_id);
+    let geometry = active_guidance_projection_geometry(plan, geometry_by_leg_id);
     let summary = if active_guidance_detail_is_terminal_hold(plan) {
         "HOLD".to_string()
     } else {
@@ -9526,41 +9527,18 @@ fn active_guidance_detail_is_terminal_hold(plan: &FlightPlan) -> bool {
 
 fn active_guidance_projection_geometry(
     plan: &FlightPlan,
-    active_leg: &PlanLeg,
     geometry_by_leg_id: &HashMap<String, GuidanceLegGeometry>,
 ) -> Option<GuidanceLegGeometry> {
-    if let (Some(from), Some(to)) = (
-        nav_ref_embedded_position(&active_leg.from),
-        nav_ref_embedded_position(&active_leg.to),
-    ) {
-        return Some(GuidanceLegGeometry {
-            leg_id: "__latlon_leg__".to_string(),
-            from,
-            to,
-            path: vec![from, to],
-        });
-    }
     let guidance = plan.guidance.as_ref()?;
     if guidance.sequencing_mode == SequencingMode::DirectTo {
-        return {
-            let from = nav_ref_embedded_position(&active_leg.from)?;
-            let to = match nav_ref_embedded_position(&active_leg.to) {
-                Some(position) => position,
-                None => geometry_by_leg_id.get("direct-to")?.to,
-            };
-            Some(GuidanceLegGeometry {
-                leg_id: "direct-to".to_string(),
-                from,
-                to,
-                path: vec![from, to],
-            })
-        };
+        return geometry_by_leg_id.get("direct-to").cloned();
     }
     guidance
         .active_detail_index
-        .and_then(|detail_index| guidance_detail_id_for_index(plan, detail_index))
-        .and_then(|detail_id| geometry_by_leg_id.get(&detail_id))
-        .cloned()
+        .and_then(|detail_index| {
+            active_guidance_detail_geometry_for_index(plan, detail_index, geometry_by_leg_id)
+        })
+        .map(|(_, geometry)| geometry)
 }
 
 #[derive(Debug, Clone)]
@@ -9747,27 +9725,31 @@ fn apply_plan_preview_pointer(
         },
         0,
     )
+    .map(|_| ())
 }
 
-fn tick_bad_autopilot(session: &mut UiSession, now_epoch_ms: f64) -> AppResult<()> {
+fn tick_bad_autopilot(
+    session: &mut UiSession,
+    now_epoch_ms: f64,
+) -> AppResult<Option<OwnshipMotionResult>> {
     if !session.debug_state.bad_autopilot {
-        return Ok(());
+        return Ok(None);
     }
     if selected_ownship_source_kind(&session.app_state.ownship)
         != Some(crate::OwnshipSourceKind::BadAutopilot)
     {
-        return Ok(());
+        return Ok(None);
     }
     session.bad_autopilot.running = true;
 
     let Some((detail_id, geometry)) = active_guidance_detail_geometry(session) else {
         session.bad_autopilot.last_tick_epoch_ms = Some(now_epoch_ms);
-        return Ok(());
+        return Ok(None);
     };
     let distance_nm = geometry_distance_nm(&geometry);
     if distance_nm <= f64::EPSILON {
         session.bad_autopilot.last_tick_epoch_ms = Some(now_epoch_ms);
-        return Ok(());
+        return Ok(None);
     }
 
     let dt_seconds = session
@@ -9821,6 +9803,7 @@ fn tick_bad_autopilot(session: &mut UiSession, now_epoch_ms: f64) -> AppResult<(
         },
         now_epoch_ms as i64,
     )
+    .map(Some)
 }
 
 fn active_guidance_detail_geometry(session: &UiSession) -> Option<(String, GuidanceLegGeometry)> {
@@ -9864,16 +9847,12 @@ fn active_guidance_detail_geometry_for_index(
     geometry_by_leg_id: &HashMap<String, GuidanceLegGeometry>,
 ) -> Option<(String, GuidanceLegGeometry)> {
     let mut current_index = 0usize;
-    for leg in &plan.resolved_legs {
+    for (leg_index, leg) in plan.resolved_legs.iter().enumerate() {
         let detail_count = crate::guidance_detail_count_for_leg(leg);
         if active_detail_index < current_index + detail_count {
             let element_index = active_detail_index - current_index;
-            let detail_id = guidance_detail_id_for_leg_element(leg, element_index);
-            let geometry = geometry_by_leg_id
-                .get(&detail_id)
-                .cloned()
-                .or_else(|| geometry_by_leg_id.get(&leg.id).cloned())
-                .or_else(|| geometry_for_resolved_leg(leg, geometry_by_leg_id))?;
+            let detail_id = guidance_detail_id_for_leg_element(leg_index, leg, element_index);
+            let geometry = geometry_by_leg_id.get(&detail_id).cloned()?;
             return Some((detail_id, geometry));
         }
         current_index += detail_count;
@@ -9903,7 +9882,7 @@ fn plan_preview_legs(
         .filter_map(|(leg_index, leg)| {
             let pointer_key =
                 pointer_key_for_preview_leg(plan, leg_index, leg, &component_leg_counts)?;
-            let geometry = geometry_for_resolved_leg(leg, geometry_by_leg_id)?;
+            let geometry = geometry_for_resolved_leg(leg_index, leg, geometry_by_leg_id)?;
             let distance_nm = geometry_distance_nm(&geometry);
             Some(PlanPreviewLeg {
                 resolved_leg_index: leg_index,
@@ -9954,6 +9933,7 @@ fn preview_component_pointer_scope(plan: &FlightPlan, component_index: usize) ->
 }
 
 fn geometry_for_resolved_leg(
+    leg_index: usize,
     leg: &ResolvedLeg,
     geometry_by_leg_id: &HashMap<String, GuidanceLegGeometry>,
 ) -> Option<GuidanceLegGeometry> {
@@ -9961,9 +9941,11 @@ fn geometry_for_resolved_leg(
     if detail_count > 1 {
         let mut detail_geometries = Vec::with_capacity(detail_count);
         for element_index in 0..detail_count {
-            detail_geometries.push(
-                geometry_by_leg_id.get(&guidance_detail_id_for_leg_element(leg, element_index))?,
-            );
+            detail_geometries.push(geometry_by_leg_id.get(&guidance_detail_id_for_leg_element(
+                leg_index,
+                leg,
+                element_index,
+            ))?);
         }
         let from = detail_geometries.first()?.from;
         let to = detail_geometries.last()?.to;
@@ -9983,22 +9965,10 @@ fn geometry_for_resolved_leg(
         });
     }
 
-    if let Some(geometry) = geometry_by_leg_id
-        .get(&guidance_detail_id_for_leg_element(leg, 0))
-        .or_else(|| geometry_by_leg_id.get(&leg.id))
+    if let Some(geometry) =
+        geometry_by_leg_id.get(&guidance_detail_id_for_leg_element(leg_index, leg, 0))
     {
         return Some(geometry.clone());
-    }
-    if let (Some(from), Some(to)) = (
-        nav_ref_embedded_position(&leg.from),
-        nav_ref_embedded_position(&leg.to),
-    ) {
-        return Some(GuidanceLegGeometry {
-            leg_id: leg.id.clone(),
-            from,
-            to,
-            path: vec![from, to],
-        });
     }
     None
 }
@@ -10200,23 +10170,18 @@ fn nav_ref_label(nav_ref: &NavRef) -> String {
     }
 }
 
-fn nav_ref_embedded_position(nav_ref: &NavRef) -> Option<LatLon> {
-    match nav_ref {
-        NavRef::LatLon(position) | NavRef::Spot(position) => Some(*position),
-        _ => None,
-    }
+#[derive(Debug, Clone, Copy)]
+struct OwnshipMotionResult {
+    terrain_key_before: OwnshipTerrainRefreshKey,
+    sequenced_guidance: bool,
 }
 
-fn apply_situation_to_ownship(
+fn register_manual_ownship_source(
     session: &mut UiSession,
-    source_id: &str,
+    source_id: crate::OwnshipSourceId,
     source_kind: crate::OwnshipSourceKind,
     display_name: &str,
-    situation: crate::Situation,
-    timestamp_epoch_ms: i64,
-) -> AppResult<()> {
-    let source_id = crate::OwnshipSourceId(source_id.to_string());
-    advance_session_wall_clock(session, timestamp_epoch_ms);
+) -> AppResult<crate::OwnshipSourceId> {
     session.app_state = state::reduce(
         &session.app_state,
         AppEvent::RegisterOwnshipSource(crate::OwnshipSourceRegistration {
@@ -10238,9 +10203,81 @@ fn apply_situation_to_ownship(
             allow_auto_simulated: true,
         }),
     )?;
-    session.app_state = state::reduce(
-        &session.app_state,
-        AppEvent::PushSituationSample(crate::SituationSample {
+    Ok(source_id)
+}
+
+fn apply_ownship_sample(
+    session: &mut UiSession,
+    sample: crate::SituationSample,
+) -> AppResult<OwnshipMotionResult> {
+    let terrain_key_before = ownship_terrain_refresh_key(session);
+    maybe_log_gps_capture_sample(session, &sample);
+    advance_session_wall_clock(session, sample.received_time_epoch_ms);
+    session.app_state = state::reduce(&session.app_state, AppEvent::PushSituationSample(sample))?;
+    let sequenced_guidance = sequence_guidance_by_ownship_position(session)?;
+    Ok(OwnshipMotionResult {
+        terrain_key_before,
+        sequenced_guidance,
+    })
+}
+
+fn ownship_motion_invalidations(
+    session: &UiSession,
+    motion: OwnshipMotionResult,
+) -> Vec<UiInvalidation> {
+    ownship_motion_invalidations_from(
+        session,
+        motion.terrain_key_before,
+        motion.sequenced_guidance,
+    )
+}
+
+fn ownship_motion_invalidations_from(
+    session: &UiSession,
+    terrain_key_before: OwnshipTerrainRefreshKey,
+    sequenced_guidance: bool,
+) -> Vec<UiInvalidation> {
+    let mut invalidations = terrain_overlay_invalidations_for_ownship_change(
+        terrain_key_before,
+        ownship_terrain_refresh_key(session),
+    );
+    if sequenced_guidance {
+        invalidations.extend([
+            UiInvalidation::SessionSnapshot,
+            UiInvalidation::FlightPlanRoute,
+            UiInvalidation::MapOverlay,
+        ]);
+    }
+    invalidations
+}
+
+fn changed_session_snapshot_outcome_for_ownship_motion(
+    session: &mut UiSession,
+    motion: Option<OwnshipMotionResult>,
+) -> AppResult<HadOperationOutcome> {
+    let invalidations = motion
+        .map(|motion| ownship_motion_invalidations(session, motion))
+        .unwrap_or_default();
+    changed_session_snapshot_outcome_with_invalidations(session, invalidations)
+}
+
+fn apply_situation_to_ownship(
+    session: &mut UiSession,
+    source_id: &str,
+    source_kind: crate::OwnshipSourceKind,
+    display_name: &str,
+    situation: crate::Situation,
+    timestamp_epoch_ms: i64,
+) -> AppResult<OwnshipMotionResult> {
+    let source_id = register_manual_ownship_source(
+        session,
+        crate::OwnshipSourceId(source_id.to_string()),
+        source_kind,
+        display_name,
+    )?;
+    apply_ownship_sample(
+        session,
+        crate::SituationSample {
             source_id,
             source_kind,
             event_time_epoch_ms: timestamp_epoch_ms,
@@ -10254,39 +10291,20 @@ fn apply_situation_to_ownship(
             altitude_msl_ft: situation.altitude_msl_ft,
             pressure_altitude_ft: None,
             vertical_speed_fpm: None,
-        }),
-    )?;
-    sequence_guidance_by_ownship_position(session)?;
-    Ok(())
+        },
+    )
 }
 
 fn apply_playback_state_to_ownship(
     session: &mut UiSession,
     playback_state: crate::playback::PlaybackOwnshipState,
     timestamp_epoch_ms: i64,
-) -> AppResult<()> {
-    let source_id = crate::OwnshipSourceId(PLAYBACK_SOURCE_ID.to_string());
-    advance_session_wall_clock(session, timestamp_epoch_ms);
-    session.app_state = state::reduce(
-        &session.app_state,
-        AppEvent::RegisterOwnshipSource(crate::OwnshipSourceRegistration {
-            source_id: source_id.clone(),
-            source_kind: playback_state.source_kind,
-            display_name: playback_state.display_name,
-            selectable: true,
-            auto_eligible: true,
-        }),
-    )?;
-    session.app_state = state::reduce(
-        &session.app_state,
-        AppEvent::SetOwnshipPolicy(crate::OwnshipPolicy {
-            selection: crate::OwnshipSelectionPolicy::Manual {
-                source_id: source_id.clone(),
-            },
-            source_priority: vec![source_id.clone()],
-            allow_auto_replay: true,
-            allow_auto_simulated: true,
-        }),
+) -> AppResult<OwnshipMotionResult> {
+    let source_id = register_manual_ownship_source(
+        session,
+        crate::OwnshipSourceId(PLAYBACK_SOURCE_ID.to_string()),
+        playback_state.source_kind,
+        &playback_state.display_name,
     )?;
     let (position, orientation_deg, speed_kt, altitude_msl_ft) = match playback_state.situation {
         Some(situation) => (
@@ -10297,9 +10315,9 @@ fn apply_playback_state_to_ownship(
         ),
         None => (None, None, None, None),
     };
-    session.app_state = state::reduce(
-        &session.app_state,
-        AppEvent::PushSituationSample(crate::SituationSample {
+    let motion = apply_ownship_sample(
+        session,
+        crate::SituationSample {
             source_id: source_id.clone(),
             source_kind: playback_state.source_kind,
             event_time_epoch_ms: timestamp_epoch_ms,
@@ -10313,7 +10331,7 @@ fn apply_playback_state_to_ownship(
             altitude_msl_ft,
             pressure_altitude_ft: None,
             vertical_speed_fpm: None,
-        }),
+        },
     )?;
     session.app_state = state::reduce(
         &session.app_state,
@@ -10324,8 +10342,7 @@ fn apply_playback_state_to_ownship(
             status_label: playback_state.status_label,
         }),
     )?;
-    sequence_guidance_by_ownship_position(session)?;
-    Ok(())
+    Ok(motion)
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -10346,20 +10363,21 @@ enum SequencingFinishCriterion {
     },
 }
 
-fn sequence_guidance_by_ownship_position(session: &mut UiSession) -> AppResult<()> {
+fn sequence_guidance_by_ownship_position(session: &mut UiSession) -> AppResult<bool> {
     let Some(position) = session.app_state.ownship.render.position else {
-        return Ok(());
+        return Ok(false);
     };
+    let mut sequenced = false;
     for _ in 0..16 {
         let Some(plan) = session.app_state.active_plan.as_ref() else {
-            return Ok(());
+            return Ok(sequenced);
         };
         let Some(guidance) = plan.guidance.as_ref() else {
-            return Ok(());
+            return Ok(sequenced);
         };
         let Some(active_detail_index) = active_guidance_detail_index_for_motion(plan, guidance)
         else {
-            return Ok(());
+            return Ok(sequenced);
         };
         let suspended_hold = guidance.sequencing_mode == SequencingMode::Suspended;
         let Some(finish_criterion) = active_detail_finish_criterion(
@@ -10368,10 +10386,10 @@ fn sequence_guidance_by_ownship_position(session: &mut UiSession) -> AppResult<(
             &session.guidance_leg_geometry,
             suspended_hold,
         ) else {
-            return Ok(());
+            return Ok(sequenced);
         };
         if !position_satisfies_finish_criterion(position, finish_criterion) {
-            return Ok(());
+            return Ok(sequenced);
         }
         let next_plan = if suspended_hold {
             sequence_suspended_terminal_hold_detail(plan)?
@@ -10380,8 +10398,9 @@ fn sequence_guidance_by_ownship_position(session: &mut UiSession) -> AppResult<(
         };
         session.app_state =
             state::reduce(&session.app_state, AppEvent::ReplaceFlightPlan(next_plan))?;
+        sequenced = true;
     }
-    Ok(())
+    Ok(sequenced)
 }
 
 fn active_detail_finish_criterion(
@@ -10390,21 +10409,22 @@ fn active_detail_finish_criterion(
     geometry_by_leg_id: &HashMap<String, GuidanceLegGeometry>,
     wrap_terminal_hold: bool,
 ) -> Option<SequencingFinishCriterion> {
-    let current_id = guidance_detail_id_for_index(plan, active_detail_index)?;
-    let current = geometry_by_leg_id.get(&current_id)?;
+    let (_, current) =
+        active_guidance_detail_geometry_for_index(plan, active_detail_index, geometry_by_leg_id)?;
     if let Some(arc_criterion) = active_detail_arc_finish_criterion(plan, active_detail_index) {
         return Some(arc_criterion);
     }
-    let current_course = terminal_course_for_guidance_geometry(current)?;
+    let current_course = terminal_course_for_guidance_geometry(&current)?;
     let next_detail_index = if wrap_terminal_hold {
         next_terminal_hold_detail_index(plan, active_detail_index)
     } else {
         active_detail_index.checked_add(1)
     };
     let next_course = next_detail_index
-        .and_then(|detail_index| guidance_detail_id_for_index(plan, detail_index))
-        .and_then(|next_id| geometry_by_leg_id.get(&next_id))
-        .and_then(initial_course_for_guidance_geometry)
+        .and_then(|detail_index| {
+            active_guidance_detail_geometry_for_index(plan, detail_index, geometry_by_leg_id)
+        })
+        .and_then(|(_, geometry)| initial_course_for_guidance_geometry(&geometry))
         .unwrap_or(current_course);
     Some(SequencingFinishCriterion::Plane(SequencingFinishPlane {
         point: current.to,
@@ -15187,6 +15207,17 @@ mod tests {
         assert!((left - right).abs() < 1e-4, "{left} != {right}");
     }
 
+    fn self_contained_geometry_map_for_test(
+        plan: &FlightPlan,
+    ) -> HashMap<String, GuidanceLegGeometry> {
+        self_contained_guidance_leg_geometry_for_plan(plan)
+            .expect("derive self-contained geometry")
+            .unwrap_or_default()
+            .into_iter()
+            .map(|geometry| (geometry.leg_id.clone(), geometry))
+            .collect()
+    }
+
     #[test]
     fn straight_leg_cdi_is_signed_against_course_direction() {
         let from = LatLon {
@@ -16209,7 +16240,7 @@ mod tests {
         let after_geometry = set_guidance_leg_geometry_in_session(
             init.handle,
             vec![GuidanceLegGeometry {
-                leg_id: "component-0-1#0".to_string(),
+                leg_id: "leg:0:component-0-1#0".to_string(),
                 from: LatLon {
                     lat: 37.461_111,
                     lon: -122.115_056,
@@ -16312,7 +16343,7 @@ mod tests {
             init.handle,
             vec![
                 GuidanceLegGeometry {
-                    leg_id: "component-0-1#0".to_string(),
+                    leg_id: "leg:0:component-0-1#0".to_string(),
                     from: LatLon {
                         lat: 48.0,
                         lon: -123.0,
@@ -16434,6 +16465,132 @@ mod tests {
             .and_then(|plan| plan.guidance.as_ref())
             .expect("core guidance");
         assert_eq!(core_guidance.active_detail_index, Some(1));
+    }
+
+    #[test]
+    fn raw_ownship_sample_sequences_across_active_leg_finish_line() {
+        let plan = short_lat_lon_preview_plan();
+        let a = LatLon {
+            lat: 40.0,
+            lon: -120.0,
+        };
+        let b = LatLon {
+            lat: 40.0,
+            lon: -119.95,
+        };
+        let c = LatLon {
+            lat: 40.05,
+            lon: -119.95,
+        };
+        let init = create_ui_session(plan.clone(), &[], None, None).expect("create session");
+        set_guidance_leg_geometry_in_session(
+            init.handle,
+            vec![
+                GuidanceLegGeometry {
+                    leg_id: guidance_detail_id_for_leg_element(0, &plan.resolved_legs[0], 0),
+                    from: a,
+                    to: b,
+                    path: vec![a, b],
+                },
+                GuidanceLegGeometry {
+                    leg_id: guidance_detail_id_for_leg_element(1, &plan.resolved_legs[1], 0),
+                    from: b,
+                    to: c,
+                    path: vec![b, c],
+                },
+            ],
+        )
+        .expect("install guidance geometry");
+
+        let outcome = push_situation_sample_in_session_outcome(
+            init.handle,
+            SituationSample {
+                source_id: OwnshipSourceId("test-gps".to_string()),
+                source_kind: OwnshipSourceKind::DeviceGps,
+                event_time_epoch_ms: 1_000,
+                received_time_epoch_ms: 1_000,
+                position: Some(LatLon {
+                    lat: 40.002,
+                    lon: -119.948,
+                }),
+                horizontal_accuracy_m: None,
+                vertical_accuracy_m: None,
+                track_deg_true: Some(45.0),
+                heading_deg_true: None,
+                ground_speed_kt: Some(120.0),
+                altitude_msl_ft: Some(3000.0),
+                pressure_altitude_ft: None,
+                vertical_speed_fpm: None,
+            },
+        )
+        .expect("push sample");
+        let invalidations = complete_invalidations(outcome);
+        assert!(invalidations.contains(&UiInvalidation::SessionSnapshot));
+        assert!(invalidations.contains(&UiInvalidation::FlightPlanRoute));
+        assert!(invalidations.contains(&UiInvalidation::MapOverlay));
+
+        let snapshot = get_session_snapshot(init.handle).expect("snapshot");
+        let guidance = snapshot
+            .app_state
+            .active_plan
+            .as_ref()
+            .and_then(|plan| plan.guidance.as_ref())
+            .expect("guidance");
+        assert_eq!(guidance.active_leg_index, 1);
+        assert_eq!(guidance.active_detail_index, Some(1));
+    }
+
+    #[test]
+    fn playback_sequences_across_active_leg_finish_line() {
+        let plan = short_lat_lon_preview_plan();
+        let a = LatLon {
+            lat: 40.0,
+            lon: -120.0,
+        };
+        let b = LatLon {
+            lat: 40.0,
+            lon: -119.95,
+        };
+        let c = LatLon {
+            lat: 40.05,
+            lon: -119.95,
+        };
+        let init = create_ui_session(plan.clone(), &[], None, None).expect("create session");
+        set_guidance_leg_geometry_in_session(
+            init.handle,
+            vec![
+                GuidanceLegGeometry {
+                    leg_id: guidance_detail_id_for_leg_element(0, &plan.resolved_legs[0], 0),
+                    from: a,
+                    to: b,
+                    path: vec![a, b],
+                },
+                GuidanceLegGeometry {
+                    leg_id: guidance_detail_id_for_leg_element(1, &plan.resolved_legs[1], 0),
+                    from: b,
+                    to: c,
+                    path: vec![b, c],
+                },
+            ],
+        )
+        .expect("install guidance geometry");
+        load_playback_trace_in_session(
+            init.handle,
+            "cross-simple-leg.json",
+            r#"{"trace":[[0.0,40.0,-120.0,3000,120.0,90.0],[10.0,40.002,-119.948,3000,120.0,45.0]]}"#,
+        )
+        .expect("load replay trace");
+        play_playback_in_session(init.handle, 0.0).expect("play replay");
+
+        let snapshot = tick_playback_in_session(init.handle, 10_000.0).expect("tick replay");
+        let guidance = snapshot
+            .app_state
+            .active_plan
+            .as_ref()
+            .and_then(|plan| plan.guidance.as_ref())
+            .expect("guidance");
+        assert_eq!(guidance.active_leg_index, 1);
+        assert_eq!(guidance.active_detail_index, Some(1));
     }
 
     #[test]
@@ -16843,7 +17000,7 @@ mod tests {
     #[test]
     fn plan_preview_recovers_after_newer_bad_autopilot_samples() {
         let plan = lat_lon_preview_plan();
-        let active_detail_id = guidance_detail_id_for_index(&plan, 1).expect("active detail id");
+        let active_detail_id = guidance_detail_id_for_leg_element(1, &plan.resolved_legs[1], 0);
         let active_from = LatLon {
             lat: 40.0,
             lon: -119.0,
@@ -17030,7 +17187,8 @@ mod tests {
             version: 1,
         };
 
-        let records = plan_preview_legs(&plan, &HashMap::new());
+        let geometry_by_leg_id = self_contained_geometry_map_for_test(&plan);
+        let records = plan_preview_legs(&plan, &geometry_by_leg_id);
 
         assert_eq!(records.len(), 2);
         assert_eq!(
@@ -17136,7 +17294,8 @@ mod tests {
             version: 1,
         };
 
-        let records = plan_preview_legs(&plan, &HashMap::new());
+        let geometry_by_leg_id = self_contained_geometry_map_for_test(&plan);
+        let records = plan_preview_legs(&plan, &geometry_by_leg_id);
         let keys = records
             .iter()
             .map(|record| record.pointer_key.as_str())
@@ -17235,27 +17394,27 @@ mod tests {
         };
         let geometry_by_leg_id = HashMap::from([
             (
-                guidance_detail_id_for_leg_element(&leg, 0),
+                guidance_detail_id_for_leg_element(0, &leg, 0),
                 GuidanceLegGeometry {
-                    leg_id: guidance_detail_id_for_leg_element(&leg, 0),
+                    leg_id: guidance_detail_id_for_leg_element(0, &leg, 0),
                     from: a,
                     to: b,
                     path: vec![a, b],
                 },
             ),
             (
-                guidance_detail_id_for_leg_element(&leg, 1),
+                guidance_detail_id_for_leg_element(0, &leg, 1),
                 GuidanceLegGeometry {
-                    leg_id: guidance_detail_id_for_leg_element(&leg, 1),
+                    leg_id: guidance_detail_id_for_leg_element(0, &leg, 1),
                     from: b,
                     to: c,
                     path: vec![b, c],
                 },
             ),
             (
-                guidance_detail_id_for_leg_element(&leg, 2),
+                guidance_detail_id_for_leg_element(0, &leg, 2),
                 GuidanceLegGeometry {
-                    leg_id: guidance_detail_id_for_leg_element(&leg, 2),
+                    leg_id: guidance_detail_id_for_leg_element(0, &leg, 2),
                     from: c,
                     to: d,
                     path: vec![c, d],
@@ -17355,19 +17514,19 @@ mod tests {
             init.handle,
             vec![
                 GuidanceLegGeometry {
-                    leg_id: guidance_detail_id_for_leg_element(&leg, 0),
+                    leg_id: guidance_detail_id_for_leg_element(0, &leg, 0),
                     from: a,
                     to: b,
                     path: vec![a, b],
                 },
                 GuidanceLegGeometry {
-                    leg_id: guidance_detail_id_for_leg_element(&leg, 1),
+                    leg_id: guidance_detail_id_for_leg_element(0, &leg, 1),
                     from: b,
                     to: c,
                     path: vec![b, c],
                 },
                 GuidanceLegGeometry {
-                    leg_id: guidance_detail_id_for_leg_element(&leg, 2),
+                    leg_id: guidance_detail_id_for_leg_element(0, &leg, 2),
                     from: c,
                     to: d,
                     path: vec![c, d],
@@ -17434,13 +17593,13 @@ mod tests {
             init.handle,
             vec![
                 GuidanceLegGeometry {
-                    leg_id: "driver-leg-a-b#0".to_string(),
+                    leg_id: "leg:0:driver-leg-a-b#0".to_string(),
                     from: a,
                     to: b,
                     path: vec![a, b],
                 },
                 GuidanceLegGeometry {
-                    leg_id: "driver-leg-b-c".to_string(),
+                    leg_id: "leg:1:driver-leg-b-c#0".to_string(),
                     from: b,
                     to: c,
                     path: vec![b, c],
@@ -17573,13 +17732,13 @@ mod tests {
             init.handle,
             vec![
                 GuidanceLegGeometry {
-                    leg_id: guidance_detail_id_for_leg_element(&leg, 0),
+                    leg_id: guidance_detail_id_for_leg_element(0, &leg, 0),
                     from: outbound_start,
                     to: arc_start,
                     path: vec![outbound_start, arc_start],
                 },
                 GuidanceLegGeometry {
-                    leg_id: guidance_detail_id_for_leg_element(&leg, 1),
+                    leg_id: guidance_detail_id_for_leg_element(0, &leg, 1),
                     from: arc_start,
                     to: arc_end,
                     path: vec![
@@ -17590,7 +17749,7 @@ mod tests {
                     ],
                 },
                 GuidanceLegGeometry {
-                    leg_id: guidance_detail_id_for_leg_element(&leg, 2),
+                    leg_id: guidance_detail_id_for_leg_element(0, &leg, 2),
                     from: arc_end,
                     to: inbound_end,
                     path: vec![arc_end, inbound_end],
@@ -17732,37 +17891,37 @@ mod tests {
             init.handle,
             vec![
                 GuidanceLegGeometry {
-                    leg_id: guidance_detail_id_for_leg_element(&hold_leg, 0),
+                    leg_id: guidance_detail_id_for_leg_element(0, &hold_leg, 0),
                     from: a,
                     to: b,
                     path: vec![a, b],
                 },
                 GuidanceLegGeometry {
-                    leg_id: guidance_detail_id_for_leg_element(&hold_leg, 1),
+                    leg_id: guidance_detail_id_for_leg_element(0, &hold_leg, 1),
                     from: b,
                     to: c,
                     path: vec![b, c],
                 },
                 GuidanceLegGeometry {
-                    leg_id: guidance_detail_id_for_leg_element(&hold_leg, 2),
+                    leg_id: guidance_detail_id_for_leg_element(0, &hold_leg, 2),
                     from: c,
                     to: d,
                     path: vec![c, d],
                 },
                 GuidanceLegGeometry {
-                    leg_id: guidance_detail_id_for_leg_element(&hold_leg, 3),
+                    leg_id: guidance_detail_id_for_leg_element(0, &hold_leg, 3),
                     from: d,
                     to: e,
                     path: vec![d, e],
                 },
                 GuidanceLegGeometry {
-                    leg_id: guidance_detail_id_for_leg_element(&hold_leg, 4),
+                    leg_id: guidance_detail_id_for_leg_element(0, &hold_leg, 4),
                     from: e,
                     to: b,
                     path: vec![e, b],
                 },
                 GuidanceLegGeometry {
-                    leg_id: guidance_detail_id_for_leg_element(&exit_leg, 0),
+                    leg_id: guidance_detail_id_for_leg_element(1, &exit_leg, 0),
                     from: b,
                     to: f,
                     path: vec![b, f],
@@ -17835,106 +17994,6 @@ mod tests {
             .expect("guidance");
         assert_eq!(guidance.active_leg_index, 1);
         assert_eq!(guidance.sequencing_mode, SequencingMode::FollowPlan);
-    }
-
-    #[test]
-    fn bad_autopilot_falls_back_to_guidance_leg_geometry() {
-        let a = LatLon {
-            lat: 40.0,
-            lon: -120.0,
-        };
-        let b = LatLon {
-            lat: 40.0,
-            lon: -119.999,
-        };
-        let c = LatLon {
-            lat: 40.001,
-            lon: -119.999,
-        };
-        let leg = ResolvedLeg {
-            id: "driver-multi-leg".to_string(),
-            from: NavRef::LatLon(a),
-            to: NavRef::LatLon(c),
-            source: ResolvedLegSource::RouteComponent { component_index: 0 },
-            procedure_provenance: Some(ProcedureLegProvenance {
-                airport_id: "KAAA".to_string(),
-                procedure_id: "TEST".to_string(),
-                kind: ProcedureKind::Approach,
-                role: ProcedureSegmentRole::Common,
-                path_termination: PathTermination::TrackToFix,
-                leg_sequence: 10,
-                display_path: Some(LegDisplayPath {
-                    style: LegDisplayPathStyle::Solid,
-                    elements: vec![
-                        LegDisplayElement::Segment { start: a, end: b },
-                        LegDisplayElement::Segment { start: b, end: c },
-                    ],
-                    effective_terminal_course_deg: None,
-                    debug_element_sources: Vec::new(),
-                    debug_element_roles: Vec::new(),
-                }),
-            }),
-        };
-        let plan = FlightPlan {
-            id: "bad-ap-aggregate-geometry".to_string(),
-            name: "bad ap aggregate geometry".to_string(),
-            legs: Vec::new(),
-            route_components: vec![RouteComponent::Procedure {
-                procedure: crate::ProcedureSegment {
-                    airport_id: AirportId("KAAA".to_string()),
-                    procedure_id: "TEST".to_string(),
-                    display_label: None,
-                    kind: ProcedureKind::Approach,
-                    runway_transition: None,
-                    enroute_transition: None,
-                    terminal_discontinuity: None,
-                    data_quality: Vec::new(),
-                },
-            }],
-            route_component_uids: vec!["row-proc".to_string()],
-            route_component_uid_counter: 1,
-            resolved_legs: vec![leg.clone()],
-            guidance: Some(GuidanceState {
-                active_leg_index: 0,
-                active_detail_index: Some(1),
-                display_split_leg_id: None,
-                sequencing_mode: SequencingMode::FollowPlan,
-                direct_to: None,
-                suspend_reason: None,
-            }),
-            departure: None,
-            destination: None,
-            alternate: None,
-            cruise_altitude_ft: None,
-            notes: None,
-            updated_at_epoch_ms: 0,
-            version: 1,
-        };
-        let init = create_ui_session(plan, &[], None, None).expect("create session");
-        set_guidance_leg_geometry_in_session(
-            init.handle,
-            vec![GuidanceLegGeometry {
-                leg_id: "driver-multi-leg".to_string(),
-                from: a,
-                to: c,
-                path: vec![a, b, c],
-            }],
-        )
-        .expect("install aggregate guidance geometry");
-        enable_bad_autopilot(init.handle);
-        select_ownship_source_in_session(
-            init.handle,
-            crate::OwnshipSelectionCommand::Source {
-                source_id: crate::OwnshipSourceId(BAD_AUTOPILOT_SOURCE_ID.to_string()),
-            },
-        )
-        .expect("select bad autopilot");
-
-        let snapshot = tick_bad_autopilot_in_session(init.handle, 1_000.0).expect("tick driver");
-        assert!(
-            snapshot.app_ui_state.ownship.render.position.is_some(),
-            "bad autopilot must keep moving when active detail geometry falls back to leg geometry"
-        );
     }
 
     #[test]

@@ -15104,6 +15104,155 @@ mod tests {
         }
     }
 
+    fn modda_zgood_normy_plan() -> FlightPlan {
+        FlightPlan {
+            id: "modda-zgood-normy".to_string(),
+            name: "MODDA ZGOOD NORMY".to_string(),
+            legs: Vec::new(),
+            route_components: vec![
+                RouteComponent::Waypoint {
+                    waypoint: NavRef::Fix("MODDA".to_string()),
+                },
+                RouteComponent::Waypoint {
+                    waypoint: NavRef::Fix("ZGOOD".to_string()),
+                },
+                RouteComponent::Waypoint {
+                    waypoint: NavRef::Fix("NORMY".to_string()),
+                },
+            ],
+            route_component_uids: vec![
+                "row-modda".to_string(),
+                "row-zgood".to_string(),
+                "row-normy".to_string(),
+            ],
+            route_component_uid_counter: 3,
+            resolved_legs: vec![
+                ResolvedLeg {
+                    id: "leg-modda-zgood".to_string(),
+                    from: NavRef::Fix("MODDA".to_string()),
+                    to: NavRef::Fix("ZGOOD".to_string()),
+                    source: ResolvedLegSource::RouteComponent { component_index: 0 },
+                    procedure_provenance: None,
+                },
+                ResolvedLeg {
+                    id: "leg-zgood-normy".to_string(),
+                    from: NavRef::Fix("ZGOOD".to_string()),
+                    to: NavRef::Fix("NORMY".to_string()),
+                    source: ResolvedLegSource::RouteComponent { component_index: 1 },
+                    procedure_provenance: None,
+                },
+            ],
+            guidance: Some(GuidanceState {
+                active_leg_index: 0,
+                active_detail_index: Some(0),
+                display_split_leg_id: None,
+                sequencing_mode: SequencingMode::FollowPlan,
+                direct_to: None,
+                suspend_reason: None,
+            }),
+            departure: None,
+            destination: None,
+            alternate: None,
+            cruise_altitude_ft: None,
+            notes: None,
+            updated_at_epoch_ms: 0,
+            version: 1,
+        }
+    }
+
+    fn modda_zgood_normy_nav_kv_store() -> NavKvStore {
+        crate::navkv::nav_kv_store_for_test(
+            &[
+                (
+                    "navref/position/fix/MODDA",
+                    br#"{"lat":40.0,"lon":-120.0}"# as &[u8],
+                ),
+                (
+                    "navref/position/fix/ZGOOD",
+                    br#"{"lat":40.0,"lon":-119.95}"# as &[u8],
+                ),
+                (
+                    "navref/position/fix/NORMY",
+                    br#"{"lat":40.05,"lon":-119.95}"# as &[u8],
+                ),
+            ],
+            256,
+        )
+    }
+
+    fn create_synced_modda_zgood_normy_session() -> UiSessionInitResult {
+        let store = modda_zgood_normy_nav_kv_store();
+        let init = create_ui_session(modda_zgood_normy_plan(), &[], None, None)
+            .expect("create session");
+        attach_nav_kv_store_to_session(init.handle, 1, &store).expect("attach nav kv");
+        let sync = sync_guidance_geometry_in_session(init.handle).expect("sync guidance geometry");
+        assert!(
+            matches!(sync, HadOperationOutcome::Complete { .. }),
+            "named-fix guidance geometry should sync from the test nav store"
+        );
+        init
+    }
+
+    fn activate_direct_to_modda_row(handle: u32) {
+        let before_direct_to = get_session_snapshot(handle).expect("snapshot before direct-to");
+        let modda_row = before_direct_to
+            .app_ui_state
+            .active_plan
+            .as_ref()
+            .expect("plan ui")
+            .display_rows
+            .iter()
+            .find(|row| row.nav_ref == Some(NavRef::Fix("MODDA".to_string())))
+            .expect("MODDA row")
+            .clone();
+        let direct_to_action = crate::planning::flight_plan_row_actions(&modda_row)
+            .find(|action| action.id == FlightPlanRowActionId::DirectTo)
+            .expect("direct-to action")
+            .clone();
+        let direct_to =
+            perform_flight_plan_row_action_in_session(handle, modda_row.uid, direct_to_action.uid)
+                .expect("direct-to MODDA");
+        assert_session_snapshot_invalidated(direct_to);
+    }
+
+    fn session_route_statuses(handle: u32) -> Vec<crate::FlightPlanRouteSegmentStatus> {
+        let route = project_flight_plan_route_in_session(handle).expect("project route");
+        let HadOperationOutcome::Complete { result, .. } = route else {
+            panic!("route unexpectedly needed resources");
+        };
+        let segments: Vec<crate::FlightPlanRouteSegment> =
+            serde_json::from_value(result).expect("route segments");
+        segments
+            .iter()
+            .map(|segment| segment.status.clone())
+            .collect()
+    }
+
+    fn assert_ui_guidance_tracks_leg(
+        snapshot: &UiSessionSnapshot,
+        active_leg_index: usize,
+        from_label: &str,
+        to_label: &str,
+    ) {
+        let ui_guidance = snapshot
+            .app_ui_state
+            .active_plan
+            .as_ref()
+            .and_then(|plan_ui| plan_ui.guidance.as_ref())
+            .expect("ui guidance");
+        assert_eq!(ui_guidance.active_leg_index, Some(active_leg_index));
+        assert!(
+            ui_guidance.nav_element.active_leg_summary.contains(from_label)
+                && ui_guidance.nav_element.active_leg_summary.contains(to_label),
+            "CDI label should describe the active leg, got {}",
+            ui_guidance.nav_element.active_leg_summary
+        );
+        assert!(
+            ui_guidance.nav_element.cdi_indicator_dots.is_some(),
+            "CDI should not be blank while the route has an active leg"
+        );
+    }
+
     fn short_procedure_display_path_plan() -> FlightPlan {
         let a = LatLon {
             lat: 40.0,
@@ -16828,6 +16977,161 @@ mod tests {
                 crate::FlightPlanRouteSegmentStatus::Completed,
             ]
         );
+    }
+
+    #[test]
+    fn named_route_origin_direct_to_sequences_through_resumed_leg_with_cdi_and_active_route() {
+        let init = create_synced_modda_zgood_normy_session();
+        push_test_ownship_position(
+            init.handle,
+            LatLon {
+                lat: 40.0,
+                lon: -120.02,
+            },
+            1_000,
+        );
+        activate_direct_to_modda_row(init.handle);
+
+        let after_direct_to = push_test_ownship_position(
+            init.handle,
+            LatLon {
+                lat: 40.0,
+                lon: -119.998,
+            },
+            2_000,
+        );
+        let plan = after_direct_to
+            .app_state
+            .active_plan
+            .as_ref()
+            .expect("plan after completing direct-to");
+        let guidance = plan.guidance.as_ref().expect("guidance after direct-to");
+        assert_eq!(guidance.sequencing_mode, SequencingMode::FollowPlan);
+        assert_eq!(guidance.active_leg_index, 0);
+        assert_eq!(guidance.active_detail_index, Some(0));
+        assert!(guidance.direct_to.is_none());
+        assert_ui_guidance_tracks_leg(&after_direct_to, 0, "MODDA", "ZGOOD");
+        assert_eq!(
+            session_route_statuses(init.handle),
+            vec![
+                crate::FlightPlanRouteSegmentStatus::Active,
+                crate::FlightPlanRouteSegmentStatus::Remaining,
+            ],
+            "route projection must render exactly the CDI-active leg as active"
+        );
+
+        let after_resumed_leg = push_test_ownship_position(
+            init.handle,
+            LatLon {
+                lat: 40.002,
+                lon: -119.948,
+            },
+            3_000,
+        );
+        let plan = after_resumed_leg
+            .app_state
+            .active_plan
+            .as_ref()
+            .expect("plan after completing resumed leg");
+        let guidance = plan
+            .guidance
+            .as_ref()
+            .expect("guidance after completing resumed leg");
+        assert_eq!(guidance.sequencing_mode, SequencingMode::FollowPlan);
+        assert_eq!(guidance.active_leg_index, 1);
+        assert_eq!(guidance.active_detail_index, Some(1));
+        assert!(guidance.direct_to.is_none());
+        assert_ui_guidance_tracks_leg(&after_resumed_leg, 1, "ZGOOD", "NORMY");
+        assert_eq!(
+            session_route_statuses(init.handle),
+            vec![
+                crate::FlightPlanRouteSegmentStatus::Completed,
+                crate::FlightPlanRouteSegmentStatus::Active,
+            ],
+            "route projection must advance active paint with guidance"
+        );
+    }
+
+    #[test]
+    fn named_route_origin_direct_to_can_sequence_multiple_finish_lines_in_one_sample() {
+        let init = create_synced_modda_zgood_normy_session();
+        push_test_ownship_position(
+            init.handle,
+            LatLon {
+                lat: 40.0,
+                lon: -120.02,
+            },
+            1_000,
+        );
+        activate_direct_to_modda_row(init.handle);
+
+        let after_jump = push_test_ownship_position(
+            init.handle,
+            LatLon {
+                lat: 40.002,
+                lon: -119.948,
+            },
+            2_000,
+        );
+        let plan = after_jump
+            .app_state
+            .active_plan
+            .as_ref()
+            .expect("plan after jump");
+        let guidance = plan.guidance.as_ref().expect("guidance after jump");
+        assert_eq!(guidance.sequencing_mode, SequencingMode::FollowPlan);
+        assert_eq!(guidance.active_leg_index, 1);
+        assert_eq!(guidance.active_detail_index, Some(1));
+        assert_ui_guidance_tracks_leg(&after_jump, 1, "ZGOOD", "NORMY");
+    }
+
+    #[test]
+    fn map_direct_to_named_route_origin_preserves_resume_leg() {
+        let init = create_synced_modda_zgood_normy_session();
+        push_test_ownship_position(
+            init.handle,
+            LatLon {
+                lat: 40.0,
+                lon: -120.02,
+            },
+            1_000,
+        );
+        let direct_to =
+            activate_direct_to_nav_ref_in_session_outcome(init.handle, NavRef::Fix("MODDA".into()))
+                .expect("map direct-to MODDA");
+        assert_session_snapshot_invalidated(direct_to);
+        let after_direct_to = get_session_snapshot(init.handle).expect("snapshot after direct-to");
+        let direct_to_state = after_direct_to
+            .app_state
+            .active_plan
+            .as_ref()
+            .and_then(|plan| plan.guidance.as_ref())
+            .and_then(|guidance| guidance.direct_to.as_ref())
+            .expect("direct-to state");
+        assert_eq!(
+            direct_to_state.resume_leg_id.as_deref(),
+            Some("leg-modda-zgood"),
+            "direct-to route origin must resume the first route leg"
+        );
+
+        let after_jump = push_test_ownship_position(
+            init.handle,
+            LatLon {
+                lat: 40.002,
+                lon: -119.948,
+            },
+            2_000,
+        );
+        let guidance = after_jump
+            .app_state
+            .active_plan
+            .as_ref()
+            .and_then(|plan| plan.guidance.as_ref())
+            .expect("guidance after jump");
+        assert_eq!(guidance.sequencing_mode, SequencingMode::FollowPlan);
+        assert_eq!(guidance.active_leg_index, 1);
+        assert_eq!(guidance.active_detail_index, Some(1));
+        assert!(guidance.direct_to.is_none());
     }
 
     #[test]

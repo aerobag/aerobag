@@ -1696,6 +1696,7 @@ internal fun MapExplorerPage(
         }.onSuccess {
             flightPlanRoute = it
             val guidance = sessionSnapshot.appUiState.activePlan?.guidance
+            val directTo = guidance?.directTo
             Log.i(
                 "AerobagGuidance",
                 "route projection revision=${sessionSnapshot.sessionRevision} " +
@@ -1703,6 +1704,10 @@ internal fun MapExplorerPage(
                     "activeLeg=${guidance?.activeLegIndex} " +
                     "activeSummary=${guidance?.navElement?.activeLegSummary} " +
                     "cdi=${guidance?.navElement?.cdiIndicatorDots} " +
+                    "directTarget=${directTo?.target} " +
+                    "directTargetLeg=${directTo?.targetLegId} " +
+                    "directResume=${directTo?.resumeLegId} " +
+                    "directTargetComponent=${directTo?.targetComponentUid} " +
                     "statuses=${it.joinToString(",") { segment -> "${segment.id}:${segment.status}" }}",
             )
         }.onFailure {

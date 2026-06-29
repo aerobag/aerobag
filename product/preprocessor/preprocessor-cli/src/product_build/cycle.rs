@@ -29,6 +29,37 @@ fn tpp_render_tasks_for_plan(
     tasks
 }
 
+fn tpp_package_tasks_for_plan(
+    plan_task_id: &str,
+    region: Region,
+    plan: &TppPackagePlan,
+) -> Vec<GraphScheduledTask<ScheduledTaskKind>> {
+    let mut thumbnail_ids = Vec::with_capacity(plan.thumbnails.len());
+    let mut tasks = Vec::with_capacity(plan.thumbnails.len() + 1);
+    for thumbnail in &plan.thumbnails {
+        let thumbnail_id = tpp_thumbnail_task_name(region, thumbnail);
+        thumbnail_ids.push(thumbnail_id.clone());
+        tasks.push(GraphScheduledTask {
+            id: thumbnail_id,
+            deps: vec![plan_task_id.to_string()],
+            weight: TPP_THUMBNAIL_WEIGHT,
+            kind: ScheduledTaskKind::TppThumbnail {
+                region,
+                thumbnail: thumbnail.clone(),
+            },
+        });
+    }
+    let mut package_deps = thumbnail_ids;
+    package_deps.push(plan_task_id.to_string());
+    tasks.push(GraphScheduledTask {
+        id: format!("tpp-{}-package", region.code().to_ascii_lowercase()),
+        deps: package_deps,
+        weight: LIGHT_TASK_WEIGHT,
+        kind: ScheduledTaskKind::TppPackage { region },
+    });
+    tasks
+}
+
 pub fn build_cycle(config: &ProductBuildConfig) -> anyhow::Result<PathBuf> {
     fs::create_dir_all(&config.packaged_dir)
         .with_context(|| format!("failed to create {}", config.packaged_dir.display()))?;
@@ -209,6 +240,7 @@ pub fn build_cycle(config: &ProductBuildConfig) -> anyhow::Result<PathBuf> {
             let region_id = region.code().to_ascii_lowercase();
             let plan_id = format!("tpp-{region_id}-plan");
             let assemble_id = tpp_render_assemble_task_name(*region);
+            let package_plan_id = tpp_package_plan_task_name(*region);
             let package_id = format!("tpp-{region_id}-package");
             pending_tasks.push(GraphScheduledTask {
                 id: plan_id,
@@ -217,10 +249,10 @@ pub fn build_cycle(config: &ProductBuildConfig) -> anyhow::Result<PathBuf> {
                 kind: ScheduledTaskKind::TppPlan { region: *region },
             });
             pending_tasks.push(GraphScheduledTask {
-                id: package_id.clone(),
-                deps: vec![assemble_id, "tpp-fetch".to_string()],
+                id: package_plan_id,
+                deps: vec![assemble_id],
                 weight: LIGHT_TASK_WEIGHT,
-                kind: ScheduledTaskKind::TppPackage { region: *region },
+                kind: ScheduledTaskKind::TppPackagePlan { region: *region },
             });
             pending_tasks.push(GraphScheduledTask {
                 id: format!("tpp-{region_id}-unpack"),
@@ -273,13 +305,14 @@ pub fn build_cycle(config: &ProductBuildConfig) -> anyhow::Result<PathBuf> {
         });
 
         master_log.log(format!(
-            "scheduler-ready tasks={} work_unit_budget={} weight_scale={} chart_and_data_weight={} csup_weight={} tpp_unit_weight={} light_weight={} resource_index_weight={}",
+            "scheduler-ready tasks={} work_unit_budget={} weight_scale={} chart_and_data_weight={} csup_weight={} tpp_unit_weight={} tpp_thumbnail_weight={} light_weight={} resource_index_weight={}",
             pending_tasks.len(),
             work_unit_budget,
             SCHEDULER_WEIGHT_SCALE,
             CHART_PROCESS_WEIGHT,
             CSUP_RENDER_WEIGHT,
             TPP_RENDER_UNIT_WEIGHT,
+            TPP_THUMBNAIL_WEIGHT,
             LIGHT_TASK_WEIGHT,
             RESOURCE_INDEX_WEIGHT
         ))?;
@@ -494,6 +527,64 @@ pub fn build_cycle(config: &ProductBuildConfig) -> anyhow::Result<PathBuf> {
                             ),
                         })
                     }
+                    ScheduledTaskKind::TppPackagePlan { region } => {
+                        let region_id = region.code().to_ascii_lowercase();
+                        let render_record = match task_values_snapshot
+                            .get(&tpp_render_assemble_task_name(region))
+                        {
+                            Some(TaskValue::TppRender { record }) => record,
+                            _ => {
+                                unreachable!("tpp render assemble dependency should have completed")
+                            }
+                        };
+                        let source_urls_path =
+                            source_urls_dir.join(format!("tpp-{region_id}/source_urls.jsonl"));
+                        let (record, asset_root, plan) = build_tpp_package_plan_node(
+                            &config,
+                            region,
+                            &source_urls_path,
+                            tpp_versions
+                                .get(&region_id)
+                                .expect("tpp region version should exist"),
+                            &render_record,
+                        )?;
+                        let cache_hit = record.cache_hit;
+                        Ok(TaskCompletion {
+                            node_records: vec![record.clone()],
+                            value: TaskValue::TppPackagePlan {
+                                record,
+                                asset_root,
+                                plan: plan.clone(),
+                            },
+                            completion_detail: format!(
+                                "plates={} thumbnails={} cache_hit={}",
+                                plan.plate_members.len(),
+                                plan.thumbnails.len(),
+                                cache_hit
+                            ),
+                        })
+                    }
+                    ScheduledTaskKind::TppThumbnail { region, thumbnail } => {
+                        let region_id = region.code().to_ascii_lowercase();
+                        let plan_id = tpp_package_plan_task_name(region);
+                        let asset_root = match task_values_snapshot.get(&plan_id) {
+                            Some(TaskValue::TppPackagePlan { asset_root, .. }) => asset_root,
+                            _ => {
+                                unreachable!("tpp package plan dependency should have completed")
+                            }
+                        };
+                        let record =
+                            build_tpp_thumbnail_node(&config, region, &asset_root, &thumbnail)?;
+                        let cache_hit = record.cache_hit;
+                        Ok(TaskCompletion {
+                            node_records: vec![record],
+                            value: TaskValue::None,
+                            completion_detail: format!(
+                                "region={} thumbnail={} cache_hit={}",
+                                region_id, thumbnail.id, cache_hit
+                            ),
+                        })
+                    }
                     ScheduledTaskKind::DataBase => build_data_nodes(
                         &config,
                         &source_urls_dir,
@@ -638,23 +729,33 @@ pub fn build_cycle(config: &ProductBuildConfig) -> anyhow::Result<PathBuf> {
                     }
                     ScheduledTaskKind::TppPackage { region } => {
                         let region_id = region.code().to_ascii_lowercase();
-                        let render_record = match task_values_snapshot
-                            .get(&tpp_render_assemble_task_name(region))
+                        let package_plan_id = tpp_package_plan_task_name(region);
+                        let (plan_record, asset_root, plan) = match task_values_snapshot
+                            .get(&package_plan_id)
                         {
-                            Some(TaskValue::TppRender { record }) => record,
+                            Some(TaskValue::TppPackagePlan {
+                                record,
+                                asset_root,
+                                plan,
+                            }) => (record, asset_root, plan),
                             _ => {
-                                unreachable!("tpp render assemble dependency should have completed")
+                                unreachable!("tpp package plan dependency should have completed")
                             }
                         };
+                        let thumbnail_records = tpp_thumbnail_records_for_plan(
+                            region,
+                            &plan,
+                            &task_node_records_snapshot.iter().collect(),
+                        )?;
                         let started = Instant::now();
-                        let (record, source) = build_tpp_package_node(
+                        let (record, source) = build_tpp_package_assemble_node(
                             &config,
                             region,
                             &source_urls_dir.join(format!("tpp-{region_id}/source_urls.jsonl")),
-                            tpp_versions
-                                .get(&region_id)
-                                .expect("tpp region version should exist"),
-                            &render_record,
+                            &plan_record,
+                            &asset_root,
+                            &plan,
+                            &thumbnail_records,
                         )?;
                         let cache_hit = record.cache_hit;
                         let fingerprint = record.fingerprint.clone();
@@ -665,8 +766,9 @@ pub fn build_cycle(config: &ProductBuildConfig) -> anyhow::Result<PathBuf> {
                                 fingerprint,
                             },
                             completion_detail: format!(
-                                "elapsed_ms={} cache_hit={}",
+                                "elapsed_ms={} thumbnails={} cache_hit={}",
                                 started.elapsed().as_millis(),
+                                thumbnail_records.len(),
                                 cache_hit,
                             ),
                         })
@@ -881,6 +983,13 @@ pub fn build_cycle(config: &ProductBuildConfig) -> anyhow::Result<PathBuf> {
                         _ => unreachable!("tpp plan completion should carry plan value"),
                     };
                     Ok(tpp_render_tasks_for_plan(task_id, *region, plan))
+                }
+                ScheduledTaskKind::TppPackagePlan { region } => {
+                    let plan = match &completion.value {
+                        TaskValue::TppPackagePlan { plan, .. } => plan,
+                        _ => unreachable!("tpp package plan completion should carry plan value"),
+                    };
+                    Ok(tpp_package_tasks_for_plan(task_id, *region, plan))
                 }
                 _ => Ok(Vec::new()),
             },

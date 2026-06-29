@@ -53,8 +53,9 @@ use preprocessor_resource_index::{
     ResourceIndex, TileBoundsRecord, TileLevelRecord,
 };
 use preprocessor_tpp::{
-    package_native_tpp_versioned, plan_tpp_region_render, render_tpp_unit, tpp_prefetch_requests,
-    TppRegionRenderPlan, TppRenderUnitPlan,
+    assemble_package_region, plan_package_region, plan_tpp_region_render, render_tpp_unit,
+    tpp_prefetch_requests, write_tpp_thumbnail, TppPackagePlan, TppRegionRenderPlan,
+    TppRenderUnitPlan, TppThumbnailPlan,
 };
 use preprocessor_vectors::{
     build_vectors_dataset, expanded_union_polygon_from_closed_ring, simplify_closed_ring,
@@ -941,6 +942,13 @@ enum ScheduledTaskKind {
     TppRenderAssemble {
         region: Region,
     },
+    TppPackagePlan {
+        region: Region,
+    },
+    TppThumbnail {
+        region: Region,
+        thumbnail: TppThumbnailPlan,
+    },
     DataBase,
     DataMatch,
     ChartPackage {
@@ -990,6 +998,11 @@ enum TaskValue {
     TppRender {
         record: NodeRecord,
     },
+    TppPackagePlan {
+        record: NodeRecord,
+        asset_root: PathBuf,
+        plan: TppPackagePlan,
+    },
     ChartSource(ChartSource),
     CsupSource(AssetSource),
     FingerprintedData {
@@ -1036,6 +1049,11 @@ enum ProductTaskValue {
     },
     TppRender {
         record: NodeRecord,
+    },
+    TppPackagePlan {
+        record: NodeRecord,
+        asset_root: PathBuf,
+        plan: TppPackagePlan,
     },
     ChartSource(ChartSource),
     CsupSource(AssetSource),
@@ -1135,9 +1153,11 @@ const RESOURCE_INDEX_WEIGHT: usize = 2 * SCHEDULER_WEIGHT_SCALE;
 const TERRAIN_BUILD_WEIGHT: usize = 6 * SCHEDULER_WEIGHT_SCALE;
 const WATER_MASK_BUILD_WEIGHT: usize = 4 * SCHEDULER_WEIGHT_SCALE;
 const TPP_RENDER_UNIT_WEIGHT: usize = 2;
+const TPP_THUMBNAIL_WEIGHT: usize = 2;
 const TPP_CACHE_LAYOUT_VERSION: &str = "v2-cache-nodes";
 const TPP_FETCH_NODE_VERSION: &str = "v2-source-content-fingerprint";
 const TPP_RENDER_NODE_VERSION: &str = "v3-per-output-render-nodes";
+const TPP_PACKAGE_NODE_VERSION: &str = "v2-per-thumbnail-nodes";
 const STATIC_SOURCE_FETCH_NODE_VERSION: &str = "v2-source-content-fingerprint";
 const TERRAIN_PIPELINE_VERSION: &str = "v6-ter2-z9-max-none-ceil64-gradient";
 const SHADED_RELIEF_PIPELINE_VERSION: &str = "v8-wide-angle-split-tile-boxes";

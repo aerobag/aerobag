@@ -811,6 +811,18 @@ pub(super) fn tpp_render_assemble_task_name(region: Region) -> String {
     format!("tpp-{}-render-assemble", region.code().to_ascii_lowercase())
 }
 
+pub(super) fn tpp_package_plan_task_name(region: Region) -> String {
+    format!("tpp-{}-package-plan", region.code().to_ascii_lowercase())
+}
+
+pub(super) fn tpp_thumbnail_task_name(region: Region, thumbnail: &TppThumbnailPlan) -> String {
+    format!(
+        "tpp-{}-thumbnail-{}",
+        region.code().to_ascii_lowercase(),
+        thumbnail.id
+    )
+}
+
 pub(super) fn tpp_render_unit_records_for_plan(
     region: Region,
     plan: &TppRegionRenderPlan,
@@ -828,6 +840,27 @@ pub(super) fn tpp_render_unit_records_for_plan(
                 .find(|record| record.name.ends_with("-render-unit"))
                 .cloned()
                 .with_context(|| format!("missing tpp render unit node record for {task_id}"))
+        })
+        .collect()
+}
+
+pub(super) fn tpp_thumbnail_records_for_plan(
+    region: Region,
+    plan: &TppPackagePlan,
+    task_node_records: &BTreeMap<String, Vec<NodeRecord>>,
+) -> anyhow::Result<Vec<NodeRecord>> {
+    plan.thumbnails
+        .iter()
+        .map(|thumbnail| {
+            let task_id = tpp_thumbnail_task_name(region, thumbnail);
+            let records = task_node_records
+                .get(&task_id)
+                .with_context(|| format!("missing tpp thumbnail task record for {task_id}"))?;
+            records
+                .iter()
+                .find(|record| record.name.ends_with("-thumbnail"))
+                .cloned()
+                .with_context(|| format!("missing tpp thumbnail node record for {task_id}"))
         })
         .collect()
 }
@@ -1274,52 +1307,148 @@ fn source_content_fingerprint(record: &NodeRecord) -> anyhow::Result<&str> {
         })
 }
 
-pub(super) fn build_tpp_package_node(
+pub(super) fn build_tpp_package_plan_node(
     config: &ProductBuildConfig,
     region: Region,
     source_urls_path: &Path,
     version_label: &str,
     render_record: &NodeRecord,
-) -> anyhow::Result<(NodeRecord, AssetSource)> {
+) -> anyhow::Result<(NodeRecord, PathBuf, TppPackagePlan)> {
     let contract_id = product_contract_id_for_family("tpp")?;
     let artifact_version = contract_artifact_version(contract_id, version_label);
-    let region_id = region.code().to_ascii_lowercase();
-    let asset_root = resolve_artifact_path(config, output_path(&render_record, "work_dir")?);
-    let inputs = BTreeMap::from([
+    let asset_root = resolve_artifact_path(config, output_path(render_record, "work_dir")?);
+    let inputs = tpp_package_plan_inputs(
+        region,
+        source_urls_path,
+        version_label,
+        contract_id,
+        render_record,
+    )?;
+    let node_name = tpp_package_plan_task_name(region);
+    let prepared = prepare_node_at(
+        &build_shared_node_dir(config, &node_name)?,
+        &node_name,
+        &inputs,
+    )?;
+    let plan_path = prepared.dir.join("meta").join("tpp-package-plan.json");
+    let marker = prepared.dir.join(".package-plan-complete");
+    let _build_lock = match claim_or_wait_for_node(&prepared, &[plan_path.clone(), marker.clone()])?
+    {
+        NodeCacheState::CacheHit(record) => {
+            let plan = load_tpp_package_plan(&plan_path)?;
+            return Ok((record, asset_root, plan));
+        }
+        NodeCacheState::Build(lock) => lock,
+    };
+    let started_at_utc = utc_now_string();
+    let started = Instant::now();
+    let plan = plan_package_region(&asset_root, region, version_label, &artifact_version)?;
+    if let Some(parent) = plan_path.parent() {
+        fs::create_dir_all(parent)
+            .with_context(|| format!("failed to create {}", parent.display()))?;
+    }
+    fs::write(
+        &plan_path,
+        serde_json::to_vec_pretty(&plan).context("failed to encode tpp package plan")?,
+    )
+    .with_context(|| format!("failed to write {}", plan_path.display()))?;
+    fs::write(&marker, b"ok").with_context(|| format!("failed to write {}", marker.display()))?;
+    let outputs = BTreeMap::from([
         (
-            "render_fingerprint".to_string(),
-            render_record.fingerprint.clone(),
+            "asset_root".to_string(),
+            relative_artifact_path(&asset_root, &config.build_root),
         ),
         (
-            "package_node_contract".to_string(),
-            "unpack-source-root-v1".to_string(),
+            "plan".to_string(),
+            relative_artifact_path(&plan_path, &config.build_root),
         ),
-        ("region".to_string(), region.code().to_string()),
-        ("version_label".to_string(), version_label.to_string()),
-        ("contract_id".to_string(), contract_id.to_string()),
+        ("package_id".to_string(), plan.package_id.clone()),
+        ("manifest_name".to_string(), plan.manifest_name.clone()),
+        ("zip_name".to_string(), plan.zip_name.clone()),
         (
-            "cache_layout_version".to_string(),
-            TPP_CACHE_LAYOUT_VERSION.to_string(),
-        ),
-        (
-            "tpp_package".to_string(),
-            hash_file(
-                Path::new(env!("CARGO_MANIFEST_DIR"))
-                    .parent()
-                    .expect("preprocessor-cli should live under workspace root")
-                    .join("preprocessor-tpp/src/package.rs"),
-            )?,
-        ),
-        (
-            "tools_lib".to_string(),
-            hash_file(
-                Path::new(env!("CARGO_MANIFEST_DIR"))
-                    .parent()
-                    .expect("preprocessor-cli should live under workspace root")
-                    .join("preprocessor-tools/src/lib.rs"),
-            )?,
+            "marker".to_string(),
+            relative_artifact_path(&marker, &config.build_root),
         ),
     ]);
+    let record = write_node_record(
+        prepared,
+        inputs,
+        outputs,
+        false,
+        started_at_utc,
+        utc_now_string(),
+        started.elapsed().as_millis() as u64,
+    )?;
+    Ok((record, asset_root, plan))
+}
+
+pub(super) fn build_tpp_thumbnail_node(
+    config: &ProductBuildConfig,
+    region: Region,
+    asset_root: &Path,
+    thumbnail: &TppThumbnailPlan,
+) -> anyhow::Result<NodeRecord> {
+    let region_id = region.code().to_ascii_lowercase();
+    let node_name = format!("tpp-{region_id}-thumbnail");
+    let inputs = tpp_thumbnail_inputs(region, asset_root, thumbnail)?;
+    let prepared = prepare_node_at(
+        &build_shared_node_dir(config, &node_name)?,
+        &node_name,
+        &inputs,
+    )?;
+    let output_root = prepared.dir.join("output");
+    let thumbnail_path = output_root.join(&thumbnail.thumbnail_path);
+    let marker = prepared.dir.join(".thumbnail-complete");
+    run_cached_node(
+        prepared,
+        inputs,
+        &[thumbnail_path.clone(), marker.clone()],
+        |_prepared| {
+            if output_root.exists() {
+                fs::remove_dir_all(&output_root)
+                    .with_context(|| format!("failed to remove {}", output_root.display()))?;
+            }
+            let written = write_tpp_thumbnail(asset_root, &output_root, thumbnail)?;
+            if written != thumbnail_path {
+                bail!(
+                    "tpp thumbnail writer returned {} but expected {}",
+                    written.display(),
+                    thumbnail_path.display()
+                );
+            }
+            fs::write(&marker, b"ok")
+                .with_context(|| format!("failed to write {}", marker.display()))?;
+            Ok(BTreeMap::from([
+                ("thumbnail_id".to_string(), thumbnail.id.clone()),
+                ("asset_path".to_string(), thumbnail.asset_path.clone()),
+                (
+                    "thumbnail_path".to_string(),
+                    thumbnail.thumbnail_path.clone(),
+                ),
+                (
+                    "thumbnail".to_string(),
+                    relative_artifact_path(&thumbnail_path, &config.build_root),
+                ),
+                (
+                    "marker".to_string(),
+                    relative_artifact_path(&marker, &config.build_root),
+                ),
+            ]))
+        },
+    )
+}
+
+pub(super) fn build_tpp_package_assemble_node(
+    config: &ProductBuildConfig,
+    region: Region,
+    source_urls_path: &Path,
+    plan_record: &NodeRecord,
+    asset_root: &Path,
+    plan: &TppPackagePlan,
+    thumbnail_records: &[NodeRecord],
+) -> anyhow::Result<(NodeRecord, AssetSource)> {
+    let region_id = region.code().to_ascii_lowercase();
+    let inputs = tpp_package_assemble_inputs(region, plan_record, thumbnail_records)?;
     let node_name = format!("tpp-{region_id}-package");
     let prepared = prepare_node_at(
         &build_shared_node_dir(config, &node_name)?,
@@ -1334,12 +1463,8 @@ pub(super) fn build_tpp_package_node(
         .join("provenance")
         .join(format!("tpp-{region_id}"));
     let package_outputs_path = provenance_dir.join("package_outputs.jsonl");
-    let zip_path = package_root.join(format!("{}_TPP_{}.zip", region.code(), artifact_version));
-    let manifest_path = package_root.join(format!(
-        "{}_TPP_{}.manifest",
-        region.code(),
-        artifact_version
-    ));
+    let zip_path = package_root.join(&plan.zip_name);
+    let manifest_path = package_root.join(&plan.manifest_name);
     let _build_lock = match claim_or_wait_for_node(
         &prepared,
         &[
@@ -1354,7 +1479,7 @@ pub(super) fn build_tpp_package_node(
                 record,
                 AssetSource {
                     package_outputs_path,
-                    asset_root: asset_root.clone(),
+                    asset_root: asset_root.to_path_buf(),
                     package_root: package_root.clone(),
                     unpack_source_root: unpack_source_root.clone(),
                     source_urls_path: Some(source_urls_path.to_path_buf()),
@@ -1365,21 +1490,26 @@ pub(super) fn build_tpp_package_node(
     };
     let started_at_utc = utc_now_string();
     let started = Instant::now();
+    if package_root.exists() {
+        fs::remove_dir_all(&package_root)
+            .with_context(|| format!("failed to remove {}", package_root.display()))?;
+    }
     if unpack_source_root.exists() {
         fs::remove_dir_all(&unpack_source_root)
             .with_context(|| format!("failed to remove {}", unpack_source_root.display()))?;
     }
-    let result = package_native_tpp_versioned(
-        &asset_root,
+    let thumbnail_sources = thumbnail_sources_from_records(config, plan, thumbnail_records)?;
+    let package_count = assemble_package_region(
+        asset_root,
         &package_root,
         &provenance_dir,
         region,
-        version_label,
-        &artifact_version,
+        plan,
+        &thumbnail_sources,
     )?;
     prepare_package_unpack_source_root(
         std::slice::from_ref(&zip_path),
-        &asset_root,
+        asset_root,
         &package_root,
         &unpack_source_root,
         &["thumbnails/"],
@@ -1387,7 +1517,7 @@ pub(super) fn build_tpp_package_node(
     let outputs = BTreeMap::from([
         (
             "asset_root".to_string(),
-            relative_artifact_path(&asset_root, &config.build_root),
+            relative_artifact_path(asset_root, &config.build_root),
         ),
         (
             "package_root".to_string(),
@@ -1409,10 +1539,7 @@ pub(super) fn build_tpp_package_node(
             "manifest".to_string(),
             relative_artifact_path(&manifest_path, &config.build_root),
         ),
-        (
-            "package_count".to_string(),
-            result.package_count.to_string(),
-        ),
+        ("package_count".to_string(), package_count.to_string()),
     ]);
     let record = write_node_record(
         prepared,
@@ -1427,12 +1554,49 @@ pub(super) fn build_tpp_package_node(
         record,
         AssetSource {
             package_outputs_path,
-            asset_root,
+            asset_root: asset_root.to_path_buf(),
             package_root,
             unpack_source_root,
             source_urls_path: Some(source_urls_path.to_path_buf()),
         },
     ))
+}
+
+fn load_tpp_package_plan(path: &Path) -> anyhow::Result<TppPackagePlan> {
+    let bytes = fs::read(path).with_context(|| format!("failed to read {}", path.display()))?;
+    serde_json::from_slice(&bytes).context("failed to parse tpp package plan")
+}
+
+fn thumbnail_sources_from_records(
+    config: &ProductBuildConfig,
+    plan: &TppPackagePlan,
+    thumbnail_records: &[NodeRecord],
+) -> anyhow::Result<BTreeMap<String, PathBuf>> {
+    if thumbnail_records.len() != plan.thumbnails.len() {
+        bail!(
+            "tpp package plan expected {} thumbnails but received {} node records",
+            plan.thumbnails.len(),
+            thumbnail_records.len()
+        );
+    }
+    let mut sources = BTreeMap::new();
+    for (thumbnail, record) in plan.thumbnails.iter().zip(thumbnail_records.iter()) {
+        let record_thumbnail_path = record
+            .outputs
+            .get("thumbnail_path")
+            .with_context(|| format!("node {} missing outputs.thumbnail_path", record.name))?;
+        if record_thumbnail_path != &thumbnail.thumbnail_path {
+            bail!(
+                "thumbnail node path mismatch for {}: record has {}, plan has {}",
+                thumbnail.id,
+                record_thumbnail_path,
+                thumbnail.thumbnail_path
+            );
+        }
+        let thumbnail_file = resolve_artifact_path(config, output_path(record, "thumbnail")?);
+        sources.insert(thumbnail.thumbnail_path.clone(), thumbnail_file);
+    }
+    Ok(sources)
 }
 
 pub(super) fn chart_process_inputs(
@@ -1656,6 +1820,144 @@ fn tpp_render_assemble_inputs(
         (
             "tpp_orchestration".to_string(),
             hash_file(product_build_cycle_nodes_path())?,
+        ),
+    ]))
+}
+
+fn tpp_package_plan_inputs(
+    region: Region,
+    source_urls: &Path,
+    version_label: &str,
+    contract_id: &str,
+    render_record: &NodeRecord,
+) -> anyhow::Result<BTreeMap<String, String>> {
+    Ok(BTreeMap::from([
+        ("region".to_string(), region.code().to_ascii_lowercase()),
+        ("source_urls".to_string(), hash_file(source_urls)?),
+        ("version_label".to_string(), version_label.to_string()),
+        ("contract_id".to_string(), contract_id.to_string()),
+        (
+            "render_fingerprint".to_string(),
+            render_record.fingerprint.clone(),
+        ),
+        (
+            "package_node_contract".to_string(),
+            "unpack-source-root-v1".to_string(),
+        ),
+        (
+            "tpp_package_node_version".to_string(),
+            TPP_PACKAGE_NODE_VERSION.to_string(),
+        ),
+        (
+            "cache_layout_version".to_string(),
+            TPP_CACHE_LAYOUT_VERSION.to_string(),
+        ),
+        (
+            "tpp_orchestration".to_string(),
+            hash_file(product_build_cycle_nodes_path())?,
+        ),
+        (
+            "tpp_package".to_string(),
+            hash_file(tpp_crate_path().join("src/package.rs"))?,
+        ),
+        (
+            "tools_lib".to_string(),
+            hash_file(workspace_preprocessor_path().join("preprocessor-tools/src/lib.rs"))?,
+        ),
+    ]))
+}
+
+fn tpp_thumbnail_inputs(
+    region: Region,
+    asset_root: &Path,
+    thumbnail: &TppThumbnailPlan,
+) -> anyhow::Result<BTreeMap<String, String>> {
+    Ok(BTreeMap::from([
+        ("region".to_string(), region.code().to_ascii_lowercase()),
+        ("thumbnail_id".to_string(), thumbnail.id.clone()),
+        ("asset_path".to_string(), thumbnail.asset_path.clone()),
+        (
+            "thumbnail_path".to_string(),
+            thumbnail.thumbnail_path.clone(),
+        ),
+        (
+            "source_png".to_string(),
+            hash_file(&asset_root.join(&thumbnail.asset_path))?,
+        ),
+        (
+            "tpp_package_node_version".to_string(),
+            TPP_PACKAGE_NODE_VERSION.to_string(),
+        ),
+        (
+            "tpp_orchestration".to_string(),
+            hash_file(product_build_cycle_nodes_path())?,
+        ),
+        (
+            "tpp_package".to_string(),
+            hash_file(tpp_crate_path().join("src/package.rs"))?,
+        ),
+        (
+            "tools_lib".to_string(),
+            hash_file(workspace_preprocessor_path().join("preprocessor-tools/src/lib.rs"))?,
+        ),
+    ]))
+}
+
+fn tpp_package_assemble_inputs(
+    region: Region,
+    plan_record: &NodeRecord,
+    thumbnail_records: &[NodeRecord],
+) -> anyhow::Result<BTreeMap<String, String>> {
+    let thumbnail_fingerprints = thumbnail_records
+        .iter()
+        .map(|record| {
+            let thumbnail_path = record
+                .outputs
+                .get("thumbnail_path")
+                .with_context(|| format!("node {} missing outputs.thumbnail_path", record.name))?;
+            Ok(serde_json::json!({
+                "name": record.name,
+                "fingerprint": record.fingerprint,
+                "thumbnail_path": thumbnail_path,
+            }))
+        })
+        .collect::<anyhow::Result<Vec<_>>>()?;
+    Ok(BTreeMap::from([
+        ("region".to_string(), region.code().to_ascii_lowercase()),
+        (
+            "package_plan_fingerprint".to_string(),
+            plan_record.fingerprint.clone(),
+        ),
+        (
+            "thumbnail_fingerprints".to_string(),
+            hash_text(
+                &serde_json::to_string(&thumbnail_fingerprints)
+                    .context("tpp thumbnail fingerprint json")?,
+            ),
+        ),
+        (
+            "package_node_contract".to_string(),
+            "unpack-source-root-v1".to_string(),
+        ),
+        (
+            "tpp_package_node_version".to_string(),
+            TPP_PACKAGE_NODE_VERSION.to_string(),
+        ),
+        (
+            "cache_layout_version".to_string(),
+            TPP_CACHE_LAYOUT_VERSION.to_string(),
+        ),
+        (
+            "tpp_orchestration".to_string(),
+            hash_file(product_build_cycle_nodes_path())?,
+        ),
+        (
+            "tpp_package".to_string(),
+            hash_file(tpp_crate_path().join("src/package.rs"))?,
+        ),
+        (
+            "tools_lib".to_string(),
+            hash_file(workspace_preprocessor_path().join("preprocessor-tools/src/lib.rs"))?,
         ),
     ]))
 }

@@ -24,6 +24,10 @@ use preprocessor_tools::{
 use serde::{Deserialize, Serialize};
 
 mod package;
+pub use package::{
+    assemble_package_region, plan_package_region, write_tpp_thumbnail, TppPackagePlan,
+    TppThumbnailPlan,
+};
 use package::{package_region, package_region_versioned};
 
 const TPP_AIRPORT_DIAGRAMS_URL: &str =

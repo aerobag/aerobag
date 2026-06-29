@@ -1,16 +1,66 @@
-use std::{collections::BTreeMap, fs, path::Path, process::Command};
+use std::{
+    collections::BTreeMap,
+    fs,
+    path::{Path, PathBuf},
+    process::Command,
+};
 
 use anyhow::{bail, Context};
 use chrono::Utc;
 use preprocessor_core::{
     PackageAssetManifest, PackageAssetRecord, PlateGeoref, Region, PACKAGE_ASSET_MANIFEST_NAME,
 };
-use preprocessor_fetch::{hash_file, write_package_outputs_jsonl, PackageOutputRecord};
+use preprocessor_fetch::{hash_file, hash_text, write_package_outputs_jsonl, PackageOutputRecord};
 use preprocessor_tools::{
     command_output_diagnostic_summary, write_thumbnail_from_png, ToolInvocation,
 };
+use serde::{Deserialize, Serialize};
 
 use crate::calculate_cycle;
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct TppPackagePlan {
+    pub package_id: String,
+    pub manifest_name: String,
+    pub zip_name: String,
+    pub manifest_version: String,
+    pub region_id: String,
+    pub plate_members: Vec<String>,
+    pub thumbnails: Vec<TppThumbnailPlan>,
+}
+
+impl TppPackagePlan {
+    pub fn archive_members(&self) -> anyhow::Result<Vec<String>> {
+        if self.plate_members.len() != self.thumbnails.len() {
+            bail!(
+                "tpp package plan has {} plates but {} thumbnails",
+                self.plate_members.len(),
+                self.thumbnails.len()
+            );
+        }
+        let mut members = Vec::with_capacity(self.plate_members.len() + self.thumbnails.len());
+        for (plate, thumbnail) in self.plate_members.iter().zip(self.thumbnails.iter()) {
+            if thumbnail.asset_path != *plate {
+                bail!(
+                    "tpp package plan thumbnail {} points at {} but expected {}",
+                    thumbnail.id,
+                    thumbnail.asset_path,
+                    plate
+                );
+            }
+            members.push(plate.clone());
+            members.push(thumbnail.thumbnail_path.clone());
+        }
+        Ok(members)
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct TppThumbnailPlan {
+    pub id: String,
+    pub asset_path: String,
+    pub thumbnail_path: String,
+}
 
 pub(crate) fn package_region(
     asset_root: &Path,
@@ -37,59 +87,90 @@ pub(crate) fn package_region_versioned(
     manifest_version: &str,
     artifact_version: &str,
 ) -> anyhow::Result<usize> {
-    let package_id = format!("{}_TPP_{}", region.code(), artifact_version);
-    let manifest_name = format!("{package_id}.manifest");
-    let zip_name = format!("{}_TPP_{}.zip", region.code(), artifact_version);
+    let plan = plan_package_region(asset_root, region, manifest_version, artifact_version)?;
     fs::create_dir_all(output_root)
         .with_context(|| format!("failed to create {}", output_root.display()))?;
-    let manifest_path = output_root.join(&manifest_name);
-    let zip_path = output_root.join(&zip_name);
+    let mut thumbnail_sources = BTreeMap::new();
+    for thumbnail in &plan.thumbnails {
+        let thumbnail_path = write_tpp_thumbnail(asset_root, output_root, thumbnail)?;
+        thumbnail_sources.insert(thumbnail.thumbnail_path.clone(), thumbnail_path);
+    }
+    assemble_package_region(
+        asset_root,
+        output_root,
+        provenance_dir,
+        region,
+        &plan,
+        &thumbnail_sources,
+    )
+}
+
+pub fn plan_package_region(
+    asset_root: &Path,
+    region: Region,
+    manifest_version: &str,
+    artifact_version: &str,
+) -> anyhow::Result<TppPackagePlan> {
+    let package_id = format!("{}_TPP_{}", region.code(), artifact_version);
+    let plate_members = collect_region_pngs(asset_root, region)?;
+    let thumbnails = plate_members.iter().map(thumbnail_plan).collect();
+    Ok(TppPackagePlan {
+        package_id: package_id.clone(),
+        manifest_name: format!("{package_id}.manifest"),
+        zip_name: format!("{}_TPP_{}.zip", region.code(), artifact_version),
+        manifest_version: manifest_version.to_string(),
+        region_id: region.code().to_ascii_lowercase(),
+        plate_members,
+        thumbnails,
+    })
+}
+
+pub fn write_tpp_thumbnail(
+    asset_root: &Path,
+    output_root: &Path,
+    thumbnail: &TppThumbnailPlan,
+) -> anyhow::Result<PathBuf> {
+    write_thumbnail_from_png(
+        &asset_root.join(&thumbnail.asset_path),
+        &output_root.join("thumbnails"),
+        Path::new(&thumbnail.asset_path),
+    )?;
+    Ok(output_root.join(&thumbnail.thumbnail_path))
+}
+
+pub fn assemble_package_region(
+    asset_root: &Path,
+    output_root: &Path,
+    provenance_dir: &Path,
+    region: Region,
+    plan: &TppPackagePlan,
+    thumbnail_sources: &BTreeMap<String, PathBuf>,
+) -> anyhow::Result<usize> {
+    fs::create_dir_all(output_root)
+        .with_context(|| format!("failed to create {}", output_root.display()))?;
+    let manifest_path = output_root.join(&plan.manifest_name);
+    let zip_path = output_root.join(&plan.zip_name);
+    let package_assets_path = output_root.join(PACKAGE_ASSET_MANIFEST_NAME);
     remove_if_exists(&manifest_path)?;
     remove_if_exists(&zip_path)?;
-
-    let selected = collect_region_pngs(asset_root, region)?;
-    let package_assets_path = output_root.join(PACKAGE_ASSET_MANIFEST_NAME);
     remove_if_exists(&package_assets_path)?;
-    stage_member_files(asset_root, output_root, &selected)?;
-    let selected = with_thumbnail_members(asset_root, output_root, &selected)?;
-    write_package_asset_manifest(asset_root, &package_assets_path, &package_id, &selected)?;
-    let mut manifest_text = String::new();
-    manifest_text.push_str(manifest_version);
-    manifest_text.push('\n');
-    for path in &selected {
-        manifest_text.push_str(path);
-        manifest_text.push('\n');
-    }
-    fs::write(&manifest_path, manifest_text)
-        .with_context(|| format!("failed to write {}", manifest_path.display()))?;
 
-    let mut stdin_text = String::new();
-    for path in &selected {
-        stdin_text.push_str(path);
-        stdin_text.push('\n');
-    }
-    stdin_text.push_str(PACKAGE_ASSET_MANIFEST_NAME);
-    stdin_text.push('\n');
-    stdin_text.push_str(&manifest_name);
-    stdin_text.push('\n');
-
-    let invocation = ToolInvocation {
-        program: "zip".to_string(),
-        args: vec![
-            "-q".to_string(),
-            "-0".to_string(),
-            zip_name.clone(),
-            "-@".to_string(),
-        ],
-        cwd: output_root.to_path_buf(),
-        label: format!("tpp-package-{}", region.code()),
-        env: Vec::new(),
-        stdin_text: Some(stdin_text),
-    };
-    let outcome = invocation.run_logged(output_root.join(".rust-logs"))?;
-    invocation.ensure_success(
-        &outcome,
-        &format!("zip failed for region {}", region.code()),
+    stage_member_files(asset_root, output_root, &plan.plate_members)?;
+    stage_thumbnail_files(output_root, thumbnail_sources)?;
+    let archive_members = plan.archive_members()?;
+    write_package_asset_manifest(
+        asset_root,
+        &package_assets_path,
+        &plan.package_id,
+        &archive_members,
+    )?;
+    write_tpp_manifest(&manifest_path, &plan.manifest_version, &archive_members)?;
+    write_tpp_zip(
+        output_root,
+        region,
+        &plan.zip_name,
+        &plan.manifest_name,
+        &archive_members,
     )?;
 
     write_package_outputs_jsonl(
@@ -98,9 +179,9 @@ pub(crate) fn package_region_versioned(
             label: format!("tpp-{}", region.code().to_ascii_lowercase()),
             chart: None,
             region: region.code().to_ascii_lowercase(),
-            manifest: manifest_name,
+            manifest: plan.manifest_name.clone(),
             manifest_sha256: hash_file(&manifest_path)?,
-            zip: zip_name,
+            zip: plan.zip_name.clone(),
             zip_sha256: hash_file(&zip_path)?,
             metadata: BTreeMap::new(),
         }],
@@ -147,27 +228,21 @@ for state in sys.argv[2:]:
         .collect())
 }
 
-fn with_thumbnail_members(
-    asset_root: &Path,
-    output_root: &Path,
-    members: &[String],
-) -> anyhow::Result<Vec<String>> {
-    let mut all = Vec::with_capacity(members.len() * 2);
-    let thumbnail_root = output_root.join("thumbnails");
-    for member in members {
-        all.push(member.clone());
-        let asset_path = Path::new(member);
-        let source = asset_root.join(asset_path);
-        let thumbnail_path = Path::new("thumbnails")
-            .join(asset_path)
-            .to_string_lossy()
-            .replace('\\', "/");
-        if !output_root.join(&thumbnail_path).is_file() {
-            write_thumbnail_from_png(&source, &thumbnail_root, asset_path)?;
-        }
-        all.push(thumbnail_path);
+fn thumbnail_plan(member: &String) -> TppThumbnailPlan {
+    let thumbnail_path = Path::new("thumbnails")
+        .join(member)
+        .to_string_lossy()
+        .replace('\\', "/");
+    let id = short_stable_hash(&thumbnail_path);
+    TppThumbnailPlan {
+        id,
+        asset_path: member.clone(),
+        thumbnail_path,
     }
-    Ok(all)
+}
+
+fn short_stable_hash(value: &str) -> String {
+    hash_text(value).chars().take(24).collect()
 }
 
 fn stage_member_files(
@@ -198,6 +273,89 @@ fn stage_member_files(
         }
     }
     Ok(())
+}
+
+fn stage_thumbnail_files(
+    output_root: &Path,
+    thumbnail_sources: &BTreeMap<String, PathBuf>,
+) -> anyhow::Result<()> {
+    for (member, source) in thumbnail_sources {
+        let destination = output_root.join(member);
+        if source == &destination {
+            continue;
+        }
+        if let Some(parent) = destination.parent() {
+            fs::create_dir_all(parent)
+                .with_context(|| format!("failed to create {}", parent.display()))?;
+        }
+        remove_if_exists(&destination)?;
+        match fs::hard_link(source, &destination) {
+            Ok(()) => {}
+            Err(_) => {
+                fs::copy(source, &destination).with_context(|| {
+                    format!(
+                        "failed to copy {} to {}",
+                        source.display(),
+                        destination.display()
+                    )
+                })?;
+            }
+        }
+    }
+    Ok(())
+}
+
+fn write_tpp_manifest(
+    manifest_path: &Path,
+    manifest_version: &str,
+    members: &[String],
+) -> anyhow::Result<()> {
+    let mut manifest_text = String::new();
+    manifest_text.push_str(manifest_version);
+    manifest_text.push('\n');
+    for path in members {
+        manifest_text.push_str(path);
+        manifest_text.push('\n');
+    }
+    fs::write(manifest_path, manifest_text)
+        .with_context(|| format!("failed to write {}", manifest_path.display()))
+}
+
+fn write_tpp_zip(
+    output_root: &Path,
+    region: Region,
+    zip_name: &str,
+    manifest_name: &str,
+    members: &[String],
+) -> anyhow::Result<()> {
+    let mut stdin_text = String::new();
+    for path in members {
+        stdin_text.push_str(path);
+        stdin_text.push('\n');
+    }
+    stdin_text.push_str(PACKAGE_ASSET_MANIFEST_NAME);
+    stdin_text.push('\n');
+    stdin_text.push_str(manifest_name);
+    stdin_text.push('\n');
+
+    let invocation = ToolInvocation {
+        program: "zip".to_string(),
+        args: vec![
+            "-q".to_string(),
+            "-0".to_string(),
+            zip_name.to_string(),
+            "-@".to_string(),
+        ],
+        cwd: output_root.to_path_buf(),
+        label: format!("tpp-package-{}", region.code()),
+        env: Vec::new(),
+        stdin_text: Some(stdin_text),
+    };
+    let outcome = invocation.run_logged(output_root.join(".rust-logs"))?;
+    invocation.ensure_success(
+        &outcome,
+        &format!("zip failed for region {}", region.code()),
+    )
 }
 
 fn write_package_asset_manifest(

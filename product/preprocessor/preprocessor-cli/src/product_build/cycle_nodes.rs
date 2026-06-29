@@ -1712,15 +1712,6 @@ pub(super) fn tpp_plan_inputs(
             TPP_CACHE_LAYOUT_VERSION.to_string(),
         ),
         (
-            "tpp_lib".to_string(),
-            hash_file(
-                Path::new(env!("CARGO_MANIFEST_DIR"))
-                    .parent()
-                    .expect("preprocessor-cli should live under workspace root")
-                    .join("preprocessor-tpp/src/lib.rs"),
-            )?,
-        ),
-        (
             "find_plate_pages_script".to_string(),
             hash_file(tpp_crate_path().join("scripts/find_plate_pages.py"))?,
         ),
@@ -1766,10 +1757,6 @@ fn tpp_render_unit_inputs(
         (
             "tpp_render_node_version".to_string(),
             TPP_RENDER_NODE_VERSION.to_string(),
-        ),
-        (
-            "tpp_lib".to_string(),
-            hash_file(tpp_crate_path().join("src/lib.rs"))?,
         ),
         (
             "tools_lib".to_string(),
@@ -2614,6 +2601,8 @@ mod tests {
             Some("source-content")
         );
         assert!(!inputs.contains_key("source_fetch_fingerprint"));
+        assert!(inputs.contains_key("tpp_render_node_version"));
+        assert!(!inputs.contains_key("tpp_lib"));
     }
 
     #[test]

@@ -176,6 +176,13 @@ struct PlannedPlate {
     minimum_pages: Vec<u32>,
 }
 
+#[derive(Debug, Clone)]
+struct PdfPlanningFacts {
+    pdf_hash: String,
+    non_special_render_kind: Option<PlateRenderKind>,
+    landscape_rotation: Option<PlateRotation>,
+}
+
 pub fn run_native_tpp(request: &NativeTppRunRequest) -> anyhow::Result<NativeTppRunResult> {
     let render = render_native_tpp(request)?;
     let package = package_native_tpp(
@@ -338,9 +345,10 @@ pub fn plan_tpp_region_render(
     let tasks = build_plate_tasks(plates);
     let ad_tags = read_airport_diagram_tags(&pdf_root.join("avare_aptdiags.php"))?;
     let minimum_pages = collect_minimum_pages_by_plate(pdf_root, &tasks)?;
+    let pdf_facts = collect_pdf_planning_facts(pdf_root, &tasks)?;
     let units = tasks
         .into_iter()
-        .map(|task| plan_plate_task(pdf_root, &ad_tags, &minimum_pages, task))
+        .map(|task| plan_plate_task(&ad_tags, &minimum_pages, &pdf_facts, task))
         .collect::<anyhow::Result<Vec<_>>>()?;
     Ok(TppRegionRenderPlan { units })
 }
@@ -477,20 +485,20 @@ fn build_plate_tasks(plates: Vec<PlateRecord>) -> Vec<PlateTask> {
 }
 
 fn plan_plate_task(
-    pdf_root: &Path,
     ad_tags: &std::collections::HashMap<String, String>,
     minimum_pages: &BTreeMap<(String, String), Vec<u32>>,
+    pdf_facts: &BTreeMap<String, PdfPlanningFacts>,
     task: PlateTask,
 ) -> anyhow::Result<TppRenderUnitPlan> {
     let planned_task = match task {
         PlateTask::Single(plate) => {
-            PlannedPlateTask::Single(plan_plate(pdf_root, ad_tags, minimum_pages, plate)?)
+            PlannedPlateTask::Single(plan_plate(ad_tags, minimum_pages, pdf_facts, plate)?)
         }
         PlateTask::Continued(group) => {
             let mut members = group
                 .members
                 .into_iter()
-                .map(|plate| plan_plate(pdf_root, ad_tags, minimum_pages, plate))
+                .map(|plate| plan_plate(ad_tags, minimum_pages, pdf_facts, plate))
                 .collect::<anyhow::Result<Vec<_>>>()?;
             let mut legacy_continued_outputs = Vec::new();
             for member in &members {
@@ -514,6 +522,61 @@ fn plan_plate_task(
         id: planned_unit_id(&planned_task),
         task: planned_task,
     })
+}
+
+fn collect_pdf_planning_facts(
+    pdf_root: &Path,
+    tasks: &[PlateTask],
+) -> anyhow::Result<BTreeMap<String, PdfPlanningFacts>> {
+    #[derive(Debug, Default)]
+    struct NeededFacts {
+        geotag_classification: bool,
+        landscape_rotation: bool,
+    }
+
+    let mut needed_by_pdf = BTreeMap::<String, NeededFacts>::new();
+    for plate in plate_records_for_tasks(tasks) {
+        let output_name = plate_output_name(&plate.chart_code, &plate.state_id, &plate.chart_name);
+        let needed = needed_by_pdf.entry(plate.pdf_name.clone()).or_default();
+        if plate.chart_code != "HOT"
+            && !output_name.starts_with("MIN-")
+            && !output_name.starts_with("APD-")
+        {
+            needed.geotag_classification = true;
+        }
+        if plate.chart_code != "HOT" && should_detect_landscape_rotation(&output_name) {
+            needed.landscape_rotation = true;
+        }
+    }
+
+    needed_by_pdf
+        .into_iter()
+        .map(|(pdf_name, needed)| {
+            let pdf_path = pdf_root.join(&pdf_name);
+            if !pdf_path.is_file() {
+                bail!("file not found {}", pdf_path.display());
+            }
+            let pdf_hash = hash_file(&pdf_path)?;
+            let non_special_render_kind = if needed.geotag_classification {
+                Some(classify_pdf_non_special_render_kind(&pdf_path)?)
+            } else {
+                None
+            };
+            let landscape_rotation = if needed.landscape_rotation {
+                Some(detect_landscape_rotation(&pdf_path)?)
+            } else {
+                None
+            };
+            Ok((
+                pdf_name,
+                PdfPlanningFacts {
+                    pdf_hash,
+                    non_special_render_kind,
+                    landscape_rotation,
+                },
+            ))
+        })
+        .collect()
 }
 
 fn resolved_continued_group_should_keep_separate(members: &[PlannedPlate]) -> bool {
@@ -570,25 +633,34 @@ fn plate_records_for_tasks(tasks: &[PlateTask]) -> Vec<&PlateRecord> {
 }
 
 fn plan_plate(
-    pdf_root: &Path,
     ad_tags: &std::collections::HashMap<String, String>,
     minimum_pages: &BTreeMap<(String, String), Vec<u32>>,
+    pdf_facts: &BTreeMap<String, PdfPlanningFacts>,
     plate: PlateRecord,
 ) -> anyhow::Result<PlannedPlate> {
     let output_name = plate_output_name(&plate.chart_code, &plate.state_id, &plate.chart_name);
-    let pdf_path = pdf_root.join(&plate.pdf_name);
-    if !pdf_path.is_file() {
-        bail!("file not found {}", pdf_path.display());
-    }
+    let facts = pdf_facts
+        .get(&plate.pdf_name)
+        .with_context(|| format!("missing planning facts for {}", plate.pdf_name))?;
     let render_kind = if plate.chart_code == "HOT" {
         PlateRenderKind::Basic
+    } else if output_name.starts_with("MIN-") {
+        PlateRenderKind::Minimum
+    } else if output_name.starts_with("APD-") {
+        PlateRenderKind::AirportDiagram
     } else {
-        classify_plate_render_kind(&pdf_path, &output_name)?
+        facts
+            .non_special_render_kind
+            .with_context(|| format!("missing render-kind facts for {}", plate.pdf_name))?
     };
     let rotation = if plate.chart_code == "HOT" {
         PlateRotation::None
+    } else if should_detect_landscape_rotation(&output_name) {
+        facts
+            .landscape_rotation
+            .with_context(|| format!("missing rotation facts for {}", plate.pdf_name))?
     } else {
-        detect_plate_rotation(&pdf_path, &output_name)?
+        PlateRotation::None
     };
     let airport_diagram_comment = (render_kind == PlateRenderKind::AirportDiagram)
         .then(|| ad_tags.get(&plate.apt_id).cloned().unwrap_or_default());
@@ -601,7 +673,7 @@ fn plan_plate(
         Vec::new()
     };
     Ok(PlannedPlate {
-        pdf_hash: hash_file(&pdf_path)?,
+        pdf_hash: facts.pdf_hash.clone(),
         render_kind,
         rotation,
         airport_diagram_comment,
@@ -1139,11 +1211,7 @@ fn render_basic_png(
     Ok(())
 }
 
-fn detect_plate_rotation(pdf_path: &Path, output_name: &str) -> anyhow::Result<PlateRotation> {
-    if !should_detect_landscape_rotation(output_name) {
-        return Ok(PlateRotation::None);
-    }
-
+fn detect_landscape_rotation(pdf_path: &Path) -> anyhow::Result<PlateRotation> {
     let script_path = detect_landscape_rotation_script()?;
     let output = Command::new("python3")
         .env("PYTHONDONTWRITEBYTECODE", "1")
@@ -1207,16 +1275,7 @@ fn rotate_png_if_needed(
     Ok(())
 }
 
-fn classify_plate_render_kind(
-    pdf_path: &Path,
-    output_name: &str,
-) -> anyhow::Result<PlateRenderKind> {
-    if output_name.starts_with("MIN-") {
-        return Ok(PlateRenderKind::Minimum);
-    }
-    if output_name.starts_with("APD-") {
-        return Ok(PlateRenderKind::AirportDiagram);
-    }
+fn classify_pdf_non_special_render_kind(pdf_path: &Path) -> anyhow::Result<PlateRenderKind> {
     let gdalinfo = read_gdalinfo(pdf_path)?;
     if gdalinfo.contains("PROJCRS") {
         return Ok(PlateRenderKind::Geotagged);

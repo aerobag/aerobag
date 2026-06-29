@@ -894,7 +894,7 @@ pub(super) fn build_tpp_plan_node(
         &source_fetch_root.join("d-TPP_Metafile.xml"),
         &work_dir.join("d-TPP_Metafile.xml"),
     )?;
-    let plan = plan_tpp_region_render(&work_dir, request.region)?;
+    let plan = plan_tpp_region_render(&work_dir, &source_fetch_root, request.region)?;
     if let Some(parent) = plan_path.parent() {
         fs::create_dir_all(parent)
             .with_context(|| format!("failed to create {}", parent.display()))?;
@@ -1611,14 +1611,6 @@ fn tpp_render_unit_inputs(
         (
             "tpp_lib".to_string(),
             hash_file(tpp_crate_path().join("src/lib.rs"))?,
-        ),
-        (
-            "find_plate_pages_script".to_string(),
-            hash_file(tpp_crate_path().join("scripts/find_plate_pages.py"))?,
-        ),
-        (
-            "detect_landscape_rotation_script".to_string(),
-            hash_file(tpp_crate_path().join("scripts/detect_landscape_rotation.py"))?,
         ),
         (
             "tools_lib".to_string(),

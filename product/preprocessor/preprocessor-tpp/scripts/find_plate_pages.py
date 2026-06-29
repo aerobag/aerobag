@@ -5,19 +5,28 @@ import pypdf
 
 
 def main() -> int:
-    if len(sys.argv) != 3:
-        print("usage: find_plate_pages.py <pdf-path> <apt-id>", file=sys.stderr)
+    if len(sys.argv) < 3:
+        print("usage: find_plate_pages.py <pdf-path> <apt-id> [<apt-id> ...]", file=sys.stderr)
         return 2
 
     pdf_path = sys.argv[1]
-    apt_id = sys.argv[2]
+    apt_ids = sorted(set(sys.argv[2:]))
     reader = pypdf.PdfReader(pdf_path)
-    pattern = re.compile(rf"\({re.escape(apt_id)}\)|\(K{re.escape(apt_id)}\)")
+    patterns = {
+        apt_id: re.compile(rf"\({re.escape(apt_id)}\)|\(K{re.escape(apt_id)}\)")
+        for apt_id in apt_ids
+    }
+    matches = {apt_id: [] for apt_id in apt_ids}
 
     for index, page in enumerate(reader.pages):
         text = page.extract_text() or ""
-        if pattern.search(text):
-            print(index)
+        for apt_id, pattern in patterns.items():
+            if pattern.search(text):
+                matches[apt_id].append(index)
+
+    import json
+
+    print(json.dumps(matches, sort_keys=True, separators=(",", ":")))
 
     return 0
 

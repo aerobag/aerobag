@@ -333,7 +333,7 @@ pub fn build_cycle(config: &ProductBuildConfig) -> anyhow::Result<PathBuf> {
                             family,
                             &config.chart_cutline_root,
                             &source_urls_dir.join(format!("charts-{family_id}/source_urls.jsonl")),
-                            source_fetch,
+                            &source_fetch,
                             config.cpu_jobs.min(8).max(1),
                         )
                         .map(|record| TaskCompletion {
@@ -365,7 +365,7 @@ pub fn build_cycle(config: &ProductBuildConfig) -> anyhow::Result<PathBuf> {
                             &config,
                             Path::new(""),
                             &source_urls_dir.join("csup/source_urls.jsonl"),
-                            source_fetch,
+                            &source_fetch,
                         )
                         .and_then(|record| {
                             let work_dir =
@@ -386,7 +386,7 @@ pub fn build_cycle(config: &ProductBuildConfig) -> anyhow::Result<PathBuf> {
                         build_csup_render_node(
                             &config,
                             region,
-                            process.1,
+                            &process.1,
                             &process.0.fingerprint,
                             &csup_version,
                             config.cpu_jobs.max(1),
@@ -422,7 +422,7 @@ pub fn build_cycle(config: &ProductBuildConfig) -> anyhow::Result<PathBuf> {
                             render_jobs: TPP_RENDER_JOBS_PER_RUN,
                             fetch_cache: Some(static_source_fetch_cache_config(&config)?),
                         };
-                        build_tpp_plan_node(&config, &request, Some(source_fetch)).map(
+                        build_tpp_plan_node(&config, &request, Some(&source_fetch)).map(
                             |(record, source_root, plan, source_content_fingerprint)| {
                                 let unit_count = plan.units().len();
                                 let cache_hit = record.cache_hit;
@@ -457,8 +457,8 @@ pub fn build_cycle(config: &ProductBuildConfig) -> anyhow::Result<PathBuf> {
                         let record = build_tpp_render_unit_node(
                             &config,
                             &region_id,
-                            source_content_fingerprint,
-                            source_root,
+                            &source_content_fingerprint,
+                            &source_root,
                             &unit,
                         )?;
                         let cache_hit = record.cache_hit;
@@ -477,13 +477,13 @@ pub fn build_cycle(config: &ProductBuildConfig) -> anyhow::Result<PathBuf> {
                         };
                         let unit_records = tpp_render_unit_records_for_plan(
                             region,
-                            plan,
-                            &task_node_records_snapshot,
+                            &plan,
+                            &task_node_records_snapshot.iter().collect(),
                         )?;
                         let record = build_tpp_render_assemble_node(
                             &config,
                             region,
-                            plan_record,
+                            &plan_record,
                             &unit_records,
                         )?;
                         let cache_hit = record.cache_hit;
@@ -599,7 +599,7 @@ pub fn build_cycle(config: &ProductBuildConfig) -> anyhow::Result<PathBuf> {
                             chart_versions
                                 .get(&family_id)
                                 .expect("chart family version should exist"),
-                            source_fetch,
+                            &source_fetch,
                         )?;
                         let summary = summarize_package_records(&records);
                         Ok(TaskCompletion {
@@ -624,7 +624,7 @@ pub fn build_cycle(config: &ProductBuildConfig) -> anyhow::Result<PathBuf> {
                             &config,
                             &source_urls_dir,
                             &csup_version,
-                            source_fetch,
+                            &source_fetch,
                         )?;
                         let summary = summarize_package_records(&records);
                         Ok(TaskCompletion {
@@ -657,7 +657,7 @@ pub fn build_cycle(config: &ProductBuildConfig) -> anyhow::Result<PathBuf> {
                             tpp_versions
                                 .get(&region_id)
                                 .expect("tpp region version should exist"),
-                            render_record,
+                            &render_record,
                         )?;
                         let cache_hit = record.cache_hit;
                         let fingerprint = record.fingerprint.clone();
@@ -687,9 +687,9 @@ pub fn build_cycle(config: &ProductBuildConfig) -> anyhow::Result<PathBuf> {
                             };
                         let record = build_vectors_node(
                             &config,
-                            data,
-                            source_input_dir,
-                            data_fingerprint,
+                            &data,
+                            &source_input_dir,
+                            &data_fingerprint,
                             &data_version,
                         )?;
                         let cache_hit = record.cache_hit;

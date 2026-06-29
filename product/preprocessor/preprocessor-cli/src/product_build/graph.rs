@@ -15,6 +15,43 @@ pub(super) struct GraphTaskCompletion<V> {
     pub(super) completion_detail: String,
 }
 
+#[derive(Debug)]
+pub(super) struct GraphReadMap<T> {
+    inner: Arc<RwLock<BTreeMap<String, T>>>,
+}
+
+impl<T> Clone for GraphReadMap<T> {
+    fn clone(&self) -> Self {
+        Self {
+            inner: Arc::clone(&self.inner),
+        }
+    }
+}
+
+impl<T: Clone> GraphReadMap<T> {
+    fn new(inner: Arc<RwLock<BTreeMap<String, T>>>) -> Self {
+        Self { inner }
+    }
+
+    pub(super) fn get(&self, key: &str) -> Option<T> {
+        self.inner
+            .read()
+            .expect("graph read map lock poisoned")
+            .get(key)
+            .cloned()
+    }
+
+    pub(super) fn iter(&self) -> std::vec::IntoIter<(String, T)> {
+        self.inner
+            .read()
+            .expect("graph read map lock poisoned")
+            .iter()
+            .map(|(key, value)| (key.clone(), value.clone()))
+            .collect::<Vec<_>>()
+            .into_iter()
+    }
+}
+
 #[derive(Debug, Clone)]
 pub(super) struct GraphRunOutcome<V> {
     pub(super) task_values: BTreeMap<String, V>,
@@ -78,11 +115,11 @@ pub(super) fn run_weighted_task_graph<K, V, RunTask, Log>(
 ) -> anyhow::Result<(BTreeMap<String, V>, BTreeMap<String, Vec<NodeRecord>>)>
 where
     K: Clone + Send + 'static,
-    V: Clone + Send + 'static,
+    V: Clone + Send + Sync + 'static,
     RunTask: Fn(
             K,
-            BTreeMap<String, V>,
-            BTreeMap<String, Vec<NodeRecord>>,
+            GraphReadMap<V>,
+            GraphReadMap<Vec<NodeRecord>>,
         ) -> anyhow::Result<GraphTaskCompletion<V>>
         + Clone
         + Send
@@ -111,11 +148,11 @@ pub(super) fn run_weighted_task_graph_with_expansion<K, V, RunTask, ExpandTask, 
 ) -> anyhow::Result<(BTreeMap<String, V>, BTreeMap<String, Vec<NodeRecord>>)>
 where
     K: Clone + Send + 'static,
-    V: Clone + Send + 'static,
+    V: Clone + Send + Sync + 'static,
     RunTask: Fn(
             K,
-            BTreeMap<String, V>,
-            BTreeMap<String, Vec<NodeRecord>>,
+            GraphReadMap<V>,
+            GraphReadMap<Vec<NodeRecord>>,
         ) -> anyhow::Result<GraphTaskCompletion<V>>
         + Clone
         + Send
@@ -158,12 +195,12 @@ pub(super) fn run_weighted_task_graph_fail_slow_with_failure_scopes<
 ) -> anyhow::Result<GraphRunOutcome<V>>
 where
     K: Clone + Send + 'static,
-    V: Clone + Send + 'static,
+    V: Clone + Send + Sync + 'static,
     FailureScope: Fn(&str) -> Option<String> + Clone + Send + 'static,
     RunTask: Fn(
             K,
-            BTreeMap<String, V>,
-            BTreeMap<String, Vec<NodeRecord>>,
+            GraphReadMap<V>,
+            GraphReadMap<Vec<NodeRecord>>,
         ) -> anyhow::Result<GraphTaskCompletion<V>>
         + Clone
         + Send
@@ -199,12 +236,12 @@ pub(super) fn run_weighted_task_graph_fail_slow_with_failure_scopes_and_expansio
 ) -> anyhow::Result<GraphRunOutcome<V>>
 where
     K: Clone + Send + 'static,
-    V: Clone + Send + 'static,
+    V: Clone + Send + Sync + 'static,
     FailureScope: Fn(&str) -> Option<String> + Clone + Send + 'static,
     RunTask: Fn(
             K,
-            BTreeMap<String, V>,
-            BTreeMap<String, Vec<NodeRecord>>,
+            GraphReadMap<V>,
+            GraphReadMap<Vec<NodeRecord>>,
         ) -> anyhow::Result<GraphTaskCompletion<V>>
         + Clone
         + Send
@@ -245,11 +282,11 @@ fn run_weighted_task_graph_impl<K, V, RunTask, ExpandTask, Log>(
 ) -> anyhow::Result<GraphRunOutcome<V>>
 where
     K: Clone + Send + 'static,
-    V: Clone + Send + 'static,
+    V: Clone + Send + Sync + 'static,
     RunTask: Fn(
             K,
-            BTreeMap<String, V>,
-            BTreeMap<String, Vec<NodeRecord>>,
+            GraphReadMap<V>,
+            GraphReadMap<Vec<NodeRecord>>,
         ) -> anyhow::Result<GraphTaskCompletion<V>>
         + Clone
         + Send
@@ -280,8 +317,8 @@ where
     let mut launched_tasks = 0_usize;
     let mut completed_tasks = 0_usize;
     let mut completed_ids = std::collections::BTreeSet::<String>::new();
-    let mut task_values = BTreeMap::<String, V>::new();
-    let mut task_node_records = BTreeMap::<String, Vec<NodeRecord>>::new();
+    let task_values = Arc::new(RwLock::new(BTreeMap::<String, V>::new()));
+    let task_node_records = Arc::new(RwLock::new(BTreeMap::<String, Vec<NodeRecord>>::new()));
     let mut failures = BTreeMap::<String, String>::new();
     let mut failed_ids = BTreeSet::<String>::new();
     let mut failed_scopes = BTreeSet::<String>::new();
@@ -357,8 +394,8 @@ where
                 work_unit_budget,
             ))?;
             let tx = tx.clone();
-            let task_values_snapshot = task_values.clone();
-            let task_node_records_snapshot = task_node_records.clone();
+            let task_values_snapshot = GraphReadMap::new(Arc::clone(&task_values));
+            let task_node_records_snapshot = GraphReadMap::new(Arc::clone(&task_node_records));
             let worker_task_id = task_id.clone();
             let run_task = run_task.clone();
             let join_handle = thread::spawn(move || -> anyhow::Result<()> {
@@ -434,16 +471,22 @@ where
             match result {
                 Ok(completion) => {
                     completed_tasks += 1;
-                    let mut next_task_node_records = task_node_records.clone();
-                    next_task_node_records.insert(task_id.clone(), completion.node_records.clone());
-                    let mut next_task_values = task_values.clone();
-                    next_task_values.insert(task_id.clone(), completion.value.clone());
+                    task_node_records
+                        .write()
+                        .expect("graph node records lock poisoned")
+                        .insert(task_id.clone(), completion.node_records.clone());
+                    task_values
+                        .write()
+                        .expect("graph values lock poisoned")
+                        .insert(task_id.clone(), completion.value.clone());
                     let spawned_tasks = expand_task(
                         &task_id,
                         &task_kind,
                         &completion,
-                        &next_task_values,
-                        &next_task_node_records,
+                        &task_values.read().expect("graph values lock poisoned"),
+                        &task_node_records
+                            .read()
+                            .expect("graph node records lock poisoned"),
                     )?;
                     if !spawned_tasks.is_empty() {
                         for task in &spawned_tasks {
@@ -460,8 +503,6 @@ where
                         ))?;
                         pending_tasks.extend(spawned_tasks);
                     }
-                    task_node_records = next_task_node_records;
-                    task_values = next_task_values;
                     completed_ids.insert(task_id.clone());
                     log(format!(
                         "{graph_name}-complete {} completed={}/{} running_units={}/{} {}",
@@ -493,9 +534,17 @@ where
         }
     }
 
+    let final_task_values = task_values
+        .read()
+        .expect("graph values lock poisoned")
+        .clone();
+    let final_task_node_records = task_node_records
+        .read()
+        .expect("graph node records lock poisoned")
+        .clone();
     Ok(GraphRunOutcome {
-        task_values,
-        task_node_records,
+        task_values: final_task_values,
+        task_node_records: final_task_node_records,
         failures,
         skipped_tasks,
     })

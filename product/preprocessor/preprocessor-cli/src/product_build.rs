@@ -10,6 +10,7 @@ use std::{
     panic::{self, AssertUnwindSafe},
     path::{Path, PathBuf},
     process::Command,
+    sync::{Arc, RwLock},
     thread,
     time::{Duration, Instant, SystemTime},
 };

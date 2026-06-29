@@ -685,7 +685,7 @@ pub fn build_product(config: &ProductBuildConfig) -> anyhow::Result<ProductBuild
                             family,
                             &cycle_config.chart_cutline_root,
                             &source_urls.join(format!("charts-{family_id}/source_urls.jsonl")),
-                            source_fetch,
+                            &source_fetch,
                             cycle_config.cpu_jobs.min(8).max(1),
                         )?;
                         let cache_hit = record.cache_hit;
@@ -738,7 +738,7 @@ pub fn build_product(config: &ProductBuildConfig) -> anyhow::Result<ProductBuild
                             &cycle_config,
                             Path::new(""),
                             &source_urls.join("csup/source_urls.jsonl"),
-                            source_fetch,
+                            &source_fetch,
                         )?;
                         let cache_hit = record.cache_hit;
                         let work_dir =
@@ -814,7 +814,7 @@ pub fn build_product(config: &ProductBuildConfig) -> anyhow::Result<ProductBuild
                             fetch_cache: Some(static_source_fetch_cache_config(&cycle_config)?),
                         };
                         let (record, source_root, plan, source_content_fingerprint) =
-                            build_tpp_plan_node(&cycle_config, &request, Some(source_fetch))?;
+                            build_tpp_plan_node(&cycle_config, &request, Some(&source_fetch))?;
                         let unit_count = plan.units().len();
                         let cache_hit = record.cache_hit;
                         Ok(ProductTaskCompletion {
@@ -855,8 +855,8 @@ pub fn build_product(config: &ProductBuildConfig) -> anyhow::Result<ProductBuild
                         let record = build_tpp_render_unit_node(
                             &cycle_config,
                             &region_id,
-                            source_content_fingerprint,
-                            source_root,
+                            &source_content_fingerprint,
+                            &source_root,
                             &unit,
                         )?;
                         let cache_hit = record.cache_hit;
@@ -878,14 +878,16 @@ pub fn build_product(config: &ProductBuildConfig) -> anyhow::Result<ProductBuild
                             Some(ProductTaskValue::TppPlan { record, plan, .. }) => (record, plan),
                             _ => bail!("missing tpp plan for cycle {cycle} region {region_id}"),
                         };
-                        let scoped_task_records =
-                            unscoped_tpp_render_unit_records(&cycle, &task_node_records_snapshot);
+                        let scoped_task_records = unscoped_tpp_render_unit_records(
+                            &cycle,
+                            &task_node_records_snapshot.iter().collect(),
+                        );
                         let unit_records =
-                            tpp_render_unit_records_for_plan(region, plan, &scoped_task_records)?;
+                            tpp_render_unit_records_for_plan(region, &plan, &scoped_task_records)?;
                         let record = build_tpp_render_assemble_node(
                             &cycle_config,
                             region,
-                            plan_record,
+                            &plan_record,
                             &unit_records,
                         )?;
                         let cache_hit = record.cache_hit;
@@ -992,7 +994,7 @@ pub fn build_product(config: &ProductBuildConfig) -> anyhow::Result<ProductBuild
                                 .1
                                 .get(&family_id)
                                 .expect("chart family version should exist"),
-                            source_fetch,
+                            &source_fetch,
                         )?;
                         let summary = summarize_package_records(&records);
                         Ok(ProductTaskCompletion {
@@ -1032,7 +1034,7 @@ pub fn build_product(config: &ProductBuildConfig) -> anyhow::Result<ProductBuild
                             &cycle_config,
                             &source_urls.0,
                             &source_urls.1,
-                            source_fetch,
+                            &source_fetch,
                         )?;
                         let summary = summarize_package_records(&records);
                         Ok(ProductTaskCompletion {
@@ -1083,7 +1085,7 @@ pub fn build_product(config: &ProductBuildConfig) -> anyhow::Result<ProductBuild
                                 .1
                                 .get(&region_id)
                                 .expect("tpp region version should exist"),
-                            render_record,
+                            &render_record,
                         )?;
                         let cache_hit = record.cache_hit;
                         let fingerprint = record.fingerprint.clone();
@@ -1309,10 +1311,9 @@ pub fn build_product(config: &ProductBuildConfig) -> anyhow::Result<ProductBuild
                                     .get(&cycle_task_id(&cycle, "resource-index"))
                                     .and_then(|records| {
                                         records
-                                            .iter()
+                                            .into_iter()
                                             .find(|record| record.name == "resource-index")
                                     })
-                                    .cloned()
                                     .context("missing resource-index node record")?;
                                 resolve_artifact_path(
                                     &config,
@@ -1332,7 +1333,7 @@ pub fn build_product(config: &ProductBuildConfig) -> anyhow::Result<ProductBuild
                         let mut cycle_config = config.clone();
                         cycle_config.target_cycle = Some(cycle.clone());
                         let static_raster_tile_levels = collect_static_raster_tile_levels(
-                            &task_values_snapshot,
+                            &task_values_snapshot.iter().collect(),
                             &cycle_config,
                         )?;
                         let stable_packages = static_product_task_ids(&cycle_config)
@@ -1347,11 +1348,11 @@ pub fn build_product(config: &ProductBuildConfig) -> anyhow::Result<ProductBuild
                                     source_fetched_at_utc,
                                     ..
                                 }) => build_stable_bundle_package_artifact(
-                                    id,
-                                    published_zip,
-                                    sha256,
-                                    *size_bytes,
-                                    source_version,
+                                    &id,
+                                    &published_zip,
+                                    &sha256,
+                                    size_bytes,
+                                    &source_version,
                                     source_fetched_at_utc.clone(),
                                 ),
                                 _ => {
@@ -1464,11 +1465,11 @@ pub fn build_product(config: &ProductBuildConfig) -> anyhow::Result<ProductBuild
                                     source_fetched_at_utc,
                                     ..
                                 }) => build_stable_bundle_package_artifact(
-                                    id,
-                                    published_zip,
-                                    sha256,
-                                    *size_bytes,
-                                    source_version,
+                                    &id,
+                                    &published_zip,
+                                    &sha256,
+                                    size_bytes,
+                                    &source_version,
                                     source_fetched_at_utc.clone(),
                                 ),
                                 _ => {
@@ -1833,7 +1834,7 @@ pub fn build_product(config: &ProductBuildConfig) -> anyhow::Result<ProductBuild
                                 zip_path.clone(),
                                 unpack_source_root.clone(),
                                 zip_sha256.clone(),
-                                *zip_size_bytes,
+                                zip_size_bytes,
                                 source_version.clone(),
                                 source_fetched_at_utc.clone(),
                             ),
@@ -1877,7 +1878,7 @@ pub fn build_product(config: &ProductBuildConfig) -> anyhow::Result<ProductBuild
                                 zip_path.clone(),
                                 unpack_source_root.clone(),
                                 zip_sha256.clone(),
-                                *zip_size_bytes,
+                                zip_size_bytes,
                                 source_version.clone(),
                                 source_fetched_at_utc.clone(),
                             ),
@@ -1921,7 +1922,7 @@ pub fn build_product(config: &ProductBuildConfig) -> anyhow::Result<ProductBuild
                                 zip_path.clone(),
                                 unpack_source_root.clone(),
                                 zip_sha256.clone(),
-                                *zip_size_bytes,
+                                zip_size_bytes,
                                 source_version.clone(),
                                 source_fetched_at_utc.clone(),
                             ),
@@ -1967,7 +1968,7 @@ pub fn build_product(config: &ProductBuildConfig) -> anyhow::Result<ProductBuild
                                 zip_path.clone(),
                                 unpack_source_root.clone(),
                                 zip_sha256.clone(),
-                                *zip_size_bytes,
+                                zip_size_bytes,
                                 source_version.clone(),
                                 source_fetched_at_utc.clone(),
                             ),
@@ -2011,7 +2012,7 @@ pub fn build_product(config: &ProductBuildConfig) -> anyhow::Result<ProductBuild
                                 zip_path.clone(),
                                 unpack_source_root.clone(),
                                 zip_sha256.clone(),
-                                *zip_size_bytes,
+                                zip_size_bytes,
                                 source_version.clone(),
                                 source_fetched_at_utc.clone(),
                             ),

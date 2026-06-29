@@ -718,6 +718,11 @@ where
         .filter(|guidance| guidance.sequencing_mode == SequencingMode::DirectTo)
         .and_then(|guidance| guidance.direct_to.as_ref())
     {
+        let resume_geometry = direct_to
+            .resume_leg_id
+            .as_deref()
+            .and_then(|resume_leg_id| route.iter().find(|segment| segment.leg_id == resume_leg_id))
+            .map(|segment| segment.geometry.clone());
         let from = resolve_position(&direct_to.start, None)?;
         let to = resolve_position(&direct_to.target, None)?;
         let geometry = GuidanceRouteGeometry::Segment {
@@ -735,7 +740,7 @@ where
             distance_nm: guidance_route_distance_nm(&geometry),
             course_deg: guidance_route_course_deg(&geometry),
             status: FlightPlanRouteSegmentStatus::Active,
-            finish_lines: sequencing_finish_lines(&geometry, None),
+            finish_lines: sequencing_finish_lines(&geometry, resume_geometry.as_ref()),
         });
     }
     Ok(route)
@@ -1560,5 +1565,77 @@ mod tests {
         assert_eq!(route.len(), 1);
         assert_eq!(route[0].from, start);
         assert_eq!(route[0].to, end);
+    }
+
+    #[test]
+    fn direct_to_route_projection_finish_line_uses_resume_leg_geometry() {
+        let route_start = LatLon {
+            lat: 40.0,
+            lon: -120.0,
+        };
+        let next = LatLon {
+            lat: 40.0,
+            lon: -119.95,
+        };
+        let final_waypoint = LatLon {
+            lat: 40.05,
+            lon: -119.95,
+        };
+        let direct_start = LatLon {
+            lat: 39.95,
+            lon: -120.0,
+        };
+        let plan = FlightPlan {
+            route_components: vec![
+                RouteComponent::Waypoint {
+                    waypoint: NavRef::LatLon(route_start),
+                },
+                RouteComponent::Waypoint {
+                    waypoint: NavRef::LatLon(next),
+                },
+                RouteComponent::Waypoint {
+                    waypoint: NavRef::LatLon(final_waypoint),
+                },
+            ],
+            resolved_legs: vec![
+                ResolvedLeg {
+                    id: "route-start-to-next".to_string(),
+                    from: NavRef::LatLon(route_start),
+                    to: NavRef::LatLon(next),
+                    source: ResolvedLegSource::RouteComponent { component_index: 0 },
+                    procedure_provenance: None,
+                },
+                ResolvedLeg {
+                    id: "next-to-final".to_string(),
+                    from: NavRef::LatLon(next),
+                    to: NavRef::LatLon(final_waypoint),
+                    source: ResolvedLegSource::RouteComponent { component_index: 1 },
+                    procedure_provenance: None,
+                },
+            ],
+            ..FlightPlan::default()
+        };
+        let plan = activate_direct_to(&plan, direct_start, NavRef::LatLon(route_start))
+            .expect("activate direct-to route start");
+
+        let route = project_flight_plan_route_with_resolver(&plan, |nav_ref, _| match nav_ref {
+            NavRef::LatLon(position) => Ok(*position),
+            _ => Err("unexpected nav ref"),
+        })
+        .expect("project route");
+        let direct_to = route
+            .iter()
+            .find(|segment| segment.id == "direct-to")
+            .expect("direct-to route segment");
+        let finish_line = direct_to
+            .finish_lines
+            .first()
+            .expect("direct-to finish line");
+        let finish_line_course = route_bearing_from(finish_line.start, finish_line.end);
+
+        assert!(
+            (finish_line_course - 135.0).abs() < 1.0,
+            "direct-to finish line should bisect the turn into the resumed route leg; got {finish_line_course:.1}"
+        );
     }
 }

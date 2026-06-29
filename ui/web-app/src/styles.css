@@ -2318,6 +2318,7 @@ button {
 .playbackWidget.isLeftDocked {
   left: var(--thumb-gap);
   right: auto;
+  bottom: calc(var(--safe-bottom) + (var(--thumb-gap) * 2) + (var(--thumb) * 0.83));
 }
 
 .playbackWidgetTop,

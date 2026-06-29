@@ -15193,6 +15193,50 @@ mod tests {
         )
     }
 
+    fn self_contained_route_statuses(
+        plan: &FlightPlan,
+    ) -> Vec<crate::FlightPlanRouteSegmentStatus> {
+        crate::project_flight_plan_route_with_resolver(
+            plan,
+            |nav_ref, _procedure_airport_id| -> Result<LatLon, String> {
+                match nav_ref {
+                    NavRef::LatLon(position) | NavRef::Spot(position) => Ok(*position),
+                    _ => Err(format!("missing test position for {nav_ref:?}")),
+                }
+            },
+        )
+        .expect("project self-contained route")
+        .into_iter()
+        .map(|segment| segment.status)
+        .collect()
+    }
+
+    fn push_test_ownship_position(
+        handle: u32,
+        position: LatLon,
+        epoch_ms: i64,
+    ) -> UiSessionSnapshot {
+        push_situation_sample_in_session(
+            handle,
+            SituationSample {
+                source_id: OwnshipSourceId("test-gps".to_string()),
+                source_kind: OwnshipSourceKind::DeviceGps,
+                event_time_epoch_ms: epoch_ms,
+                received_time_epoch_ms: epoch_ms,
+                position: Some(position),
+                horizontal_accuracy_m: None,
+                vertical_accuracy_m: None,
+                track_deg_true: Some(45.0),
+                heading_deg_true: None,
+                ground_speed_kt: Some(120.0),
+                altitude_msl_ft: Some(3000.0),
+                pressure_altitude_ft: None,
+                vertical_speed_fpm: None,
+            },
+        )
+        .expect("push ownship position")
+    }
+
     fn select_plan_preview(handle: u32) -> UiSessionSnapshot {
         set_situation_in_session(
             handle,
@@ -16687,6 +16731,103 @@ mod tests {
         assert_eq!(guidance.active_leg_index, 0);
         assert_eq!(guidance.active_detail_index, Some(0));
         assert!(guidance.direct_to.is_none());
+    }
+
+    #[test]
+    fn route_status_tracks_active_guidance_through_direct_to_and_route_end() {
+        let plan = short_lat_lon_preview_plan();
+        let route_start = LatLon {
+            lat: 40.0,
+            lon: -120.0,
+        };
+        let direct_start = LatLon {
+            lat: 40.0,
+            lon: -120.02,
+        };
+        let direct_to_plan =
+            crate::activate_direct_to(&plan, direct_start, NavRef::LatLon(route_start))
+                .expect("activate direct-to route start");
+        let init = create_ui_session(direct_to_plan, &[], None, None).expect("create session");
+
+        let after_direct = push_test_ownship_position(
+            init.handle,
+            LatLon {
+                lat: 40.0,
+                lon: -119.998,
+            },
+            1_000,
+        );
+        let after_direct_plan = after_direct
+            .app_state
+            .active_plan
+            .as_ref()
+            .expect("plan after direct-to");
+        assert_eq!(
+            after_direct_plan
+                .guidance
+                .as_ref()
+                .expect("guidance after direct-to")
+                .active_leg_index,
+            0
+        );
+        assert_eq!(
+            self_contained_route_statuses(after_direct_plan),
+            vec![
+                crate::FlightPlanRouteSegmentStatus::Active,
+                crate::FlightPlanRouteSegmentStatus::Remaining,
+            ]
+        );
+
+        let after_first_leg = push_test_ownship_position(
+            init.handle,
+            LatLon {
+                lat: 40.002,
+                lon: -119.948,
+            },
+            2_000,
+        );
+        let after_first_leg_plan = after_first_leg
+            .app_state
+            .active_plan
+            .as_ref()
+            .expect("plan after first leg");
+        assert_eq!(
+            after_first_leg_plan
+                .guidance
+                .as_ref()
+                .expect("guidance after first leg")
+                .active_leg_index,
+            1
+        );
+        assert_eq!(
+            self_contained_route_statuses(after_first_leg_plan),
+            vec![
+                crate::FlightPlanRouteSegmentStatus::Completed,
+                crate::FlightPlanRouteSegmentStatus::Active,
+            ]
+        );
+
+        let after_route_end = push_test_ownship_position(
+            init.handle,
+            LatLon {
+                lat: 40.052,
+                lon: -119.948,
+            },
+            3_000,
+        );
+        let after_route_end_plan = after_route_end
+            .app_state
+            .active_plan
+            .as_ref()
+            .expect("plan after route end");
+        assert!(crate::active_guidance_leg(after_route_end_plan).is_none());
+        assert_eq!(
+            self_contained_route_statuses(after_route_end_plan),
+            vec![
+                crate::FlightPlanRouteSegmentStatus::Completed,
+                crate::FlightPlanRouteSegmentStatus::Completed,
+            ]
+        );
     }
 
     #[test]

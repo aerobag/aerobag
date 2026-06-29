@@ -1734,6 +1734,9 @@ fn sequence_after_terminal_hold(
 pub fn active_guidance_leg(plan: &FlightPlan) -> Option<PlanLeg> {
     let plan = plan.clone().normalized();
     let guidance = plan.guidance.clone()?;
+    if !guidance_projects_active_leg(&plan, &guidance) {
+        return None;
+    }
 
     match guidance.sequencing_mode {
         SequencingMode::DirectTo => {
@@ -1753,10 +1756,25 @@ pub fn active_guidance_leg(plan: &FlightPlan) -> Option<PlanLeg> {
                     airway: None,
                 })
         }
+        SequencingMode::Suspended => plan
+            .resolved_legs
+            .get(guidance.active_leg_index)
+            .map(|leg| PlanLeg {
+                from: leg.from.clone(),
+                to: leg.to.clone(),
+                airway: None,
+            }),
+    }
+}
+
+pub(crate) fn guidance_projects_active_leg(plan: &FlightPlan, guidance: &GuidanceState) -> bool {
+    match guidance.sequencing_mode {
+        SequencingMode::DirectTo => guidance.direct_to.is_some(),
+        SequencingMode::FollowPlan => plan.resolved_legs.get(guidance.active_leg_index).is_some(),
         SequencingMode::Suspended => {
             let preserve_active_leg = match guidance.suspend_reason {
                 Some(SuspendReason::Manual) => true,
-                Some(SuspendReason::Boundary) if guidance_is_in_terminal_hold(&plan, &guidance) => {
+                Some(SuspendReason::Boundary) if guidance_is_in_terminal_hold(plan, guidance) => {
                     true
                 }
                 Some(
@@ -1766,21 +1784,11 @@ pub fn active_guidance_leg(plan: &FlightPlan) -> Option<PlanLeg> {
                 ) => false,
                 None => {
                     guidance.direct_to.is_none()
-                        && !should_suspend_after_active_leg(&plan, guidance.active_leg_index)
+                        && !should_suspend_after_active_leg(plan, guidance.active_leg_index)
                         && guidance.active_leg_index + 1 < plan.resolved_legs.len()
                 }
             };
-            if !preserve_active_leg {
-                None
-            } else {
-                plan.resolved_legs
-                    .get(guidance.active_leg_index)
-                    .map(|leg| PlanLeg {
-                        from: leg.from.clone(),
-                        to: leg.to.clone(),
-                        airway: None,
-                    })
-            }
+            preserve_active_leg && plan.resolved_legs.get(guidance.active_leg_index).is_some()
         }
     }
 }

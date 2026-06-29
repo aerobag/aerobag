@@ -445,6 +445,13 @@ fn route_status_for_detail(
     let Some(active_detail_index) = active_detail_index else {
         return FlightPlanRouteSegmentStatus::Remaining;
     };
+    if !planning::guidance_projects_active_leg(plan, guidance) {
+        return if detail_index <= active_detail_index {
+            FlightPlanRouteSegmentStatus::Completed
+        } else {
+            FlightPlanRouteSegmentStatus::Remaining
+        };
+    }
     let active_element_index = planning::guidance_detail_ref_by_index(plan, active_detail_index)
         .filter(|detail| detail.leg_index == guidance.active_leg_index)
         .map(|detail| detail.element_index);

@@ -360,6 +360,31 @@ class PipelineHealthTests(unittest.TestCase):
         self.assertNotIn("payload", encoded)
         self.assertLess(len(encoded), 1_000)
 
+    def test_compact_metric_series_keeps_only_historical_values(self) -> None:
+        series = pipeline_health.compact_metric_series(
+            [
+                {
+                    "sampled_at_utc": "2026-06-19T12:00:00Z",
+                    "evaluation": {
+                        "metrics": [
+                            {
+                                "id": "live_feed.metars.stale_seconds",
+                                "value": 123,
+                                "severity": "warning",
+                                "message": "not needed in series",
+                            }
+                        ]
+                    },
+                }
+            ]
+        )
+
+        self.assertEqual(
+            series["samples"][0]["metrics"]["live_feed.metars.stale_seconds"],
+            123,
+        )
+        self.assertNotIn("warning", json.dumps(series))
+
     def test_daily_history_reader_bounds_record_count_across_days(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             health_root = Path(temp_dir)

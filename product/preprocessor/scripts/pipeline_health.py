@@ -890,10 +890,7 @@ def compact_metric_series(records: list[dict[str, Any]]) -> dict[str, Any]:
         for metric in metrics:
             if not isinstance(metric, dict) or not isinstance(metric.get("id"), str):
                 continue
-            metric_values[metric["id"]] = {
-                "value": metric.get("value"),
-                "severity": metric.get("severity", "ok"),
-            }
+            metric_values[metric["id"]] = metric.get("value")
         samples.append(
             {
                 "sampled_at_utc": record.get("sampled_at_utc"),
@@ -1003,7 +1000,7 @@ def serve(config: MonitorConfig) -> None:
                 response["truncated"] = history.truncated
                 self._send(
                     200,
-                    json.dumps(response, indent=2, sort_keys=True) + "\n",
+                    json.dumps(response, sort_keys=True, separators=(",", ":")) + "\n",
                     "application/json",
                     send_body,
                 )
@@ -1123,6 +1120,10 @@ function graphValue(value) {
   if (typeof value === "boolean") return value ? 1 : 0;
   return null;
 }
+function seriesValue(metric) {
+  if (metric && typeof metric === "object" && Object.hasOwn(metric, "value")) return metric.value;
+  return metric;
+}
 function formatValue(metric) {
   const value = metric?.value;
   if (value === null || value === undefined) return "missing";
@@ -1165,7 +1166,7 @@ function graphableMetrics(metrics, series) {
   const idsWithSeries = new Set();
   for (const sample of series.samples || []) {
     for (const [id, metric] of Object.entries(sample.metrics || {})) {
-      if (graphValue(metric?.value) !== null) idsWithSeries.add(id);
+      if (graphValue(seriesValue(metric)) !== null) idsWithSeries.add(id);
     }
   }
   return (metrics || [])
@@ -1207,7 +1208,7 @@ function renderMetricRows(current, series) {
   metrics.forEach((metric, index) => {
     const x = [], y = [];
     for (const sample of series.samples || []) {
-      const value = graphValue(sample.metrics?.[metric.id]?.value);
+      const value = graphValue(seriesValue(sample.metrics?.[metric.id]));
       if (value !== null && sample.sampled_at_utc) {
         x.push(sample.sampled_at_utc);
         y.push(value);

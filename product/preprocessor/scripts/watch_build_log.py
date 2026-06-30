@@ -84,6 +84,7 @@ class BuildState:
         self.final_at: str | None = None
         self.tasks: dict[str, TaskState] = {}
         self.completion_order: list[str] = []
+        self.completed_task_names: set[str] = set()
         self.last_line = ""
         self.last_timestamp = ""
 
@@ -160,7 +161,8 @@ class BuildState:
                 self.diagnostic_error_count = parse_diagnostic_error_count(
                     task_state.details
                 )
-            if task not in self.completion_order:
+            if task not in self.completed_task_names:
+                self.completed_task_names.add(task)
                 self.completion_order.append(task)
             return
 
@@ -191,6 +193,7 @@ class BuildState:
         self.final_at = None
         self.tasks = {}
         self.completion_order = []
+        self.completed_task_names = set()
         self.last_timestamp = ""
 
     def active_tasks(self) -> list[TaskState]:

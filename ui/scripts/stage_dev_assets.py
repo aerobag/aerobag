@@ -29,8 +29,10 @@ def resolve_artifact_root() -> Path:
         if not candidate.is_absolute():
             candidate = (ROOT / candidate).resolve()
     current = candidate / "current_artifacts.json"
+    if not current.exists():
+        return candidate
     if not current.is_file():
-        raise RuntimeError(f"artifact root does not contain {current}")
+        raise RuntimeError(f"artifact root current_artifacts is not a file: {current}")
     current_artifacts = json.loads(current.read_text())
     if not isinstance(current_artifacts, list) or not current_artifacts:
         raise RuntimeError(f"{current} must be a non-empty current_artifacts list")
@@ -55,14 +57,24 @@ STAGE_STAMP_PATH = WEB_STATIC_ROOT / ".stage-stamp.json"
 
 def current_stage_stamp() -> dict:
     current = ARTIFACT_ROOT / "current_artifacts.json"
-    stat = current.stat()
-    return {
-        "artifact_root": str(ARTIFACT_ROOT),
-        "current_artifacts": {
+    try:
+        stat = current.stat()
+        current_artifacts = {
             "path": str(current),
+            "exists": True,
             "size": stat.st_size,
             "mtime_ns": stat.st_mtime_ns,
-        },
+        }
+    except FileNotFoundError:
+        current_artifacts = {
+            "path": str(current),
+            "exists": False,
+            "size": None,
+            "mtime_ns": None,
+        }
+    return {
+        "artifact_root": str(ARTIFACT_ROOT),
+        "current_artifacts": current_artifacts,
         "version": 12,
     }
 

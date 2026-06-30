@@ -1167,6 +1167,7 @@ const TPP_FETCH_NODE_VERSION: &str = "v2-source-content-fingerprint";
 const TPP_RENDER_NODE_VERSION: &str = "v3-per-output-render-nodes";
 const TPP_RENDER_ASSEMBLE_NODE_VERSION: &str = "v2-source-map-assemble";
 const TPP_PACKAGE_NODE_VERSION: &str = "v2-per-thumbnail-nodes";
+const TPP_THUMBNAIL_NODE_VERSION: &str = "v1-source-png-thumbnail";
 const STATIC_SOURCE_FETCH_NODE_VERSION: &str = "v2-source-content-fingerprint";
 const TERRAIN_PIPELINE_VERSION: &str = "v6-ter2-z9-max-none-ceil64-gradient";
 const SHADED_RELIEF_PIPELINE_VERSION: &str = "v8-wide-angle-split-tile-boxes";

@@ -11,12 +11,10 @@ use preprocessor_core::{
     PackageAssetManifest, PackageAssetRecord, PlateGeoref, Region, PACKAGE_ASSET_MANIFEST_NAME,
 };
 use preprocessor_fetch::{hash_file, hash_text, write_package_outputs_jsonl, PackageOutputRecord};
-use preprocessor_tools::{
-    command_output_diagnostic_summary, write_thumbnail_from_png, ToolInvocation,
-};
+use preprocessor_tools::{command_output_diagnostic_summary, ToolInvocation};
 use serde::{Deserialize, Serialize};
 
-use crate::calculate_cycle;
+use crate::{calculate_cycle, thumbnail::write_tpp_thumbnail};
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct TppPackagePlan {
@@ -132,31 +130,6 @@ pub fn plan_package_region_from_members(
         plate_members,
         thumbnails,
     })
-}
-
-pub fn write_tpp_thumbnail(
-    asset_root: &Path,
-    output_root: &Path,
-    thumbnail: &TppThumbnailPlan,
-) -> anyhow::Result<PathBuf> {
-    write_tpp_thumbnail_from_source(
-        &asset_root.join(&thumbnail.asset_path),
-        output_root,
-        thumbnail,
-    )
-}
-
-pub fn write_tpp_thumbnail_from_source(
-    source_png: &Path,
-    output_root: &Path,
-    thumbnail: &TppThumbnailPlan,
-) -> anyhow::Result<PathBuf> {
-    write_thumbnail_from_png(
-        source_png,
-        &output_root.join("thumbnails"),
-        Path::new(&thumbnail.asset_path),
-    )?;
-    Ok(output_root.join(&thumbnail.thumbnail_path))
 }
 
 pub fn assemble_package_region(
@@ -791,6 +764,7 @@ fn remove_if_exists(path: &Path) -> anyhow::Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::thumbnail::write_tpp_thumbnail_from_source;
     use tempfile::tempdir;
     use zip::{CompressionMethod, ZipArchive};
 

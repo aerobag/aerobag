@@ -24,12 +24,13 @@ use preprocessor_tools::{
 use serde::{Deserialize, Serialize};
 
 mod package;
+mod thumbnail;
 pub use package::{
     assemble_package_region, assemble_package_region_from_sources, plan_package_region,
-    plan_package_region_from_members, write_tpp_thumbnail, write_tpp_thumbnail_from_source,
-    TppPackagePlan, TppThumbnailPlan,
+    plan_package_region_from_members, TppPackagePlan, TppThumbnailPlan,
 };
 use package::{package_region, package_region_versioned};
+pub use thumbnail::{write_tpp_thumbnail, write_tpp_thumbnail_from_source};
 
 const TPP_AIRPORT_DIAGRAMS_URL: &str =
     "https://www.outerworldapps.com/WairToNowWork/avare_aptdiags.php";

@@ -667,15 +667,6 @@ pub(super) fn build_csup_package_nodes(
                     .join("preprocessor-csup/src/package.rs"),
             )?,
         ),
-        (
-            "tools_lib".to_string(),
-            hash_file(
-                Path::new(env!("CARGO_MANIFEST_DIR"))
-                    .parent()
-                    .expect("preprocessor-cli should live under workspace root")
-                    .join("preprocessor-tools/src/lib.rs"),
-            )?,
-        ),
     ]);
     for region in Region::ALL.iter() {
         let render_node_name = format!("csup-render-{}", region.code().to_ascii_lowercase());
@@ -1768,15 +1759,6 @@ pub(super) fn csup_process_inputs(
                     .join("preprocessor-csup/src/lib.rs"),
             )?,
         ),
-        (
-            "tools_lib".to_string(),
-            hash_file(
-                Path::new(env!("CARGO_MANIFEST_DIR"))
-                    .parent()
-                    .expect("preprocessor-cli should live under workspace root")
-                    .join("preprocessor-tools/src/lib.rs"),
-            )?,
-        ),
     ]))
 }
 
@@ -1804,13 +1786,12 @@ pub(super) fn csup_render_inputs(
             )?,
         ),
         (
-            "tools_lib".to_string(),
-            hash_file(
-                Path::new(env!("CARGO_MANIFEST_DIR"))
-                    .parent()
-                    .expect("preprocessor-cli should live under workspace root")
-                    .join("preprocessor-tools/src/lib.rs"),
-            )?,
+            "png_tools".to_string(),
+            hash_file(preprocessor_tools_src_path("png.rs"))?,
+        ),
+        (
+            "tool_invocation".to_string(),
+            hash_file(preprocessor_tools_src_path("tool_invocation.rs"))?,
         ),
     ]))
 }
@@ -1958,12 +1939,12 @@ fn tpp_thumbnail_inputs(
         ),
         ("source_png".to_string(), hash_file(source_png)?),
         (
-            "tpp_package_node_version".to_string(),
-            TPP_PACKAGE_NODE_VERSION.to_string(),
+            "tpp_thumbnail_node_version".to_string(),
+            TPP_THUMBNAIL_NODE_VERSION.to_string(),
         ),
         (
-            "tpp_package".to_string(),
-            hash_file(tpp_crate_path().join("src/package.rs"))?,
+            "tpp_thumbnail".to_string(),
+            hash_file(tpp_crate_path().join("src/thumbnail.rs"))?,
         ),
     ]))
 }
@@ -2024,6 +2005,12 @@ fn workspace_preprocessor_path() -> PathBuf {
         .parent()
         .expect("preprocessor-cli should live under workspace root")
         .to_path_buf()
+}
+
+fn preprocessor_tools_src_path(file_name: &str) -> PathBuf {
+    workspace_preprocessor_path()
+        .join("preprocessor-tools/src")
+        .join(file_name)
 }
 
 fn tpp_crate_path() -> PathBuf {
@@ -2755,6 +2742,10 @@ mod tests {
         assert!(!package_plan_inputs.contains_key("tools_lib"));
         assert!(!thumbnail_inputs.contains_key("tools_lib"));
         assert!(!assemble_inputs.contains_key("tools_lib"));
+        assert!(thumbnail_inputs.contains_key("tpp_thumbnail"));
+        assert!(thumbnail_inputs.contains_key("tpp_thumbnail_node_version"));
+        assert!(!thumbnail_inputs.contains_key("tpp_package"));
+        assert!(!thumbnail_inputs.contains_key("tpp_package_node_version"));
         assert!(render_assemble_inputs.contains_key("tpp_render_assemble_node_version"));
         assert!(!render_assemble_inputs.contains_key("tpp_render_node_version"));
     }
@@ -2782,6 +2773,20 @@ mod tests {
             Some("source-content")
         );
         assert!(!inputs.contains_key("source_fetch_fingerprint"));
+        assert!(!inputs.contains_key("tools_lib"));
+    }
+
+    #[test]
+    fn csup_render_inputs_use_narrow_tool_hashes() {
+        let inputs = csup_render_inputs("process", Region::Nw, 4, "2607").unwrap();
+
+        assert_eq!(
+            inputs.get("process_fingerprint").map(String::as_str),
+            Some("process")
+        );
+        assert!(inputs.contains_key("png_tools"));
+        assert!(inputs.contains_key("tool_invocation"));
+        assert!(!inputs.contains_key("tools_lib"));
     }
 
     #[test]

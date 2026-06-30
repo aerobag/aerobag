@@ -231,6 +231,7 @@ function logWorkerResponseReceived(
     ready_to_receive_ms: pending.readyMarkerDelayMs === undefined ? null : Math.round(pending.readyMarkerDelayMs),
     marker_to_payload_ms: markerToPayloadMs === null ? null : Math.round(markerToPayloadMs),
     ok: message.ok,
+    error: message.ok ? null : message.error,
     ...summary,
   });
 }

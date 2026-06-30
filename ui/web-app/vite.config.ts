@@ -281,6 +281,11 @@ function aerobagStaticPlugin(): Plugin {
       res.end();
     });
     server.middlewares.use("/packages", mountStaticTree(artifactReadRoot, { missingStatus: 404, logPrefix: "packages" }));
+    server.middlewares.use("/live-feeds", (req: { url?: string }, res: { statusCode: number; end: (body?: string) => void }) => {
+      res.statusCode = 404;
+      appendRequestLog({ kind: "live_feeds_wrong_origin", url: req.url ?? "", status: 404 });
+      res.end("live feeds are served by the configured live-feed origin, not Vite");
+    });
     server.middlewares.use("/icons", mountStaticTree(iconsRoot, { missingStatus: 404, logPrefix: "icons" }));
     server.middlewares.use("/adsb-traces", mountStaticTree(adsbTraceRoot, { missingStatus: 404, logPrefix: "adsb_traces", direct: true }));
     server.middlewares.use("/gps-captures", mountStaticTree(gpsCaptureRoot, { missingStatus: 404, logPrefix: "gps_captures", direct: true }));
@@ -349,14 +354,6 @@ export default defineConfig({
     port: 4173,
     host: "0.0.0.0",
     allowedHosts: ["aerobag-dev.iac.jonh.net"],
-    proxy: liveFeedsOrigin
-      ? {
-          "/live-feeds": {
-            target: liveFeedsOrigin,
-            changeOrigin: true,
-          },
-        }
-      : undefined,
     fs: {
       allow: [
         workspaceRoot,
@@ -372,14 +369,6 @@ export default defineConfig({
   },
   preview: {
     allowedHosts: ["aerobag-dev.iac.jonh.net"],
-    proxy: liveFeedsOrigin
-      ? {
-          "/live-feeds": {
-            target: liveFeedsOrigin,
-            changeOrigin: true,
-          },
-        }
-      : undefined,
   },
   build: {
     outDir: path.join(webTargetRoot, "dist"),

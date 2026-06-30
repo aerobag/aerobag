@@ -5379,6 +5379,15 @@ pub fn refresh_live_feed_current_in_session(handle: u32) -> AppResult<HadOperati
         .refresh_current_outcome_with_invalidations_at_epoch_ms(session.wall_clock_epoch_ms))
 }
 
+pub fn configure_live_feed_source_in_session(handle: u32, source_root_url: &str) -> AppResult<()> {
+    let mut sessions = lock_sessions();
+    let session = session_mut(&mut sessions, handle)?;
+    let normalized = session.live_feeds.set_source_root_url(source_root_url)?;
+    session.live_feed_connection.source_url = Some(normalized.clone());
+    session.live_feed_connection.status_url = Some(crate::live_feed_status_url(&normalized)?);
+    Ok(())
+}
+
 pub fn ingest_live_feed_sse_event_in_session(
     handle: u32,
     event: &LiveFeedSseEvent,
@@ -5568,8 +5577,17 @@ fn record_live_feed_connection_event(
 ) {
     advance_session_wall_clock(session, epoch_ms);
     let at = session.wall_clock_epoch_ms;
-    if event.source_url.is_some() {
-        session.live_feed_connection.source_url = event.source_url;
+    if let Some(source_url) = event.source_url {
+        match session.live_feeds.set_source_root_url(&source_url) {
+            Ok(normalized) => {
+                session.live_feed_connection.source_url = Some(normalized);
+            }
+            Err(err) => {
+                session.live_feed_connection.source_url = Some(source_url);
+                session.live_feed_connection.last_resource_error_epoch_ms = Some(at);
+                session.live_feed_connection.last_resource_error_message = Some(err.to_string());
+            }
+        }
     }
     if event.status_url.is_some() {
         session.live_feed_connection.status_url = event.status_url;

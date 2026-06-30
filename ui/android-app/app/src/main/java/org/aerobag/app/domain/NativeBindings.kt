@@ -20,7 +20,13 @@ interface NativeBridge {
 
     fun destroyUiSessionWorkScheduler(handle: Long)
 
-    fun createLiveFeedCache(installedStatesJson: String): Long
+    fun createLiveFeedCache(sourceRootUrl: String, installedStatesJson: String): Long
+
+    fun liveFeedEventsUrl(sourceRootUrl: String): String
+
+    fun liveFeedStatusUrl(sourceRootUrl: String): String
+
+    fun normalizeLiveFeedSourceRootUrl(sourceRootUrl: String): String
 
     fun liveFeedCacheMissingRequestsJson(handle: Long): String
 
@@ -548,7 +554,13 @@ object NativeBindings : NativeBridge {
 
     external override fun destroyUiSessionWorkScheduler(handle: Long)
 
-    external override fun createLiveFeedCache(installedStatesJson: String): Long
+    external override fun createLiveFeedCache(sourceRootUrl: String, installedStatesJson: String): Long
+
+    external override fun liveFeedEventsUrl(sourceRootUrl: String): String
+
+    external override fun liveFeedStatusUrl(sourceRootUrl: String): String
+
+    external override fun normalizeLiveFeedSourceRootUrl(sourceRootUrl: String): String
 
     external override fun liveFeedCacheMissingRequestsJson(handle: Long): String
 

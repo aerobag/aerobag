@@ -852,6 +852,9 @@ type WasmModule = {
   core_had_operation(handle: number, operationJson: string): Promise<string> | string;
   drain_session_resource_effects(handle: number): Promise<string> | string;
   sync_live_feeds_in_session(handle: number): Promise<string> | string;
+  configure_live_feed_source_in_session(handle: number, sourceRootUrl: string): Promise<void> | void;
+  live_feed_events_url(sourceRootUrl: string): Promise<string> | string;
+  live_feed_status_url(sourceRootUrl: string): Promise<string> | string;
   live_feed_runtime_decision(inputJson: string): Promise<string> | string;
   refresh_live_feed_current_in_session(handle: number): Promise<string> | string;
   ingest_live_feed_sse_event_in_session(handle: number, eventJson: string): Promise<string> | string;
@@ -993,6 +996,7 @@ export class WasmAppCoreAdapter implements AppCoreAdapter {
     const parseSessionSnapshotRefreshDecision = async (json: Promise<string> | string) =>
       JSON.parse(await json) as SessionSnapshotRefreshDecision;
     let liveFeedSubscription: LiveFeedSubscription | null = null;
+    let configuredLiveFeedSourceUrl: string | null = null;
     reportSessionResourceFailure = async (resourceId, message) => {
       snapshot = await parseSessionSnapshot(
         this.module.report_session_resource_failure_in_session_at_epoch_ms(handle, resourceId, message, Date.now()),
@@ -1005,17 +1009,39 @@ export class WasmAppCoreAdapter implements AppCoreAdapter {
       });
       publishInvalidations(["session_snapshot"]);
     };
+    const configureLiveFeedSource = async () => {
+      const sourceUrl = liveFeedSourceUrl();
+      if (configuredLiveFeedSourceUrl !== sourceUrl) {
+        await this.module.configure_live_feed_source_in_session(handle, sourceUrl);
+        configuredLiveFeedSourceUrl = sourceUrl;
+      }
+      return sourceUrl;
+    };
+    const syncLiveFeeds = async () => {
+      await withSessionRetry(async () =>
+        runSessionOperation<unknown>(
+          () => this.module.sync_live_feeds_in_session(handle),
+          (resourceId, resourceBytes) => ingestResourceForHandle(handle, resourceId, resourceBytes),
+          "live_feeds.sync",
+        ),
+      );
+    };
     const refreshLiveFeedCurrent = async () => {
       await withSessionRetry(async () =>
         runSessionOperation<unknown>(
           () => this.module.refresh_live_feed_current_in_session(handle),
           (resourceId, resourceBytes) => ingestResourceForHandle(handle, resourceId, resourceBytes),
+          "live_feeds.current_refresh",
         ),
       );
     };
+    const refreshLiveFeedCurrentAndSync = async () => {
+      await refreshLiveFeedCurrent();
+      await syncLiveFeeds();
+    };
     const handleLiveFeedRuntimeEvent = async (input: LiveFeedRuntimeInput): Promise<LiveFeedRuntimeDecision> => {
-      const sourceUrl = liveFeedSourceUrl();
-      const statusUrl = liveFeedStatusUrl(sourceUrl);
+      const sourceUrl = await configureLiveFeedSource();
+      const statusUrl = await this.module.live_feed_status_url(sourceUrl);
       const decision = JSON.parse(await this.module.live_feed_runtime_decision(JSON.stringify({
         source_url: sourceUrl,
         status_url: statusUrl,
@@ -1031,7 +1057,7 @@ export class WasmAppCoreAdapter implements AppCoreAdapter {
         publishInvalidations(["session_snapshot"]);
       }
       if (decision.refresh_current) {
-        await refreshLiveFeedCurrent();
+        await refreshLiveFeedCurrentAndSync();
       }
       return decision;
     };
@@ -1582,26 +1608,21 @@ export class WasmAppCoreAdapter implements AppCoreAdapter {
             this.module.project_flight_plan_route_in_session(handle),
           ),
         ),
-      syncLiveFeeds: async () => {
-        await withSessionRetry(async () =>
-          runSessionOperation<unknown>(
-            () => this.module.sync_live_feeds_in_session(handle),
-            (resourceId, resourceBytes) => ingestResourceForHandle(handle, resourceId, resourceBytes),
-          ),
-        );
-      },
+      syncLiveFeeds,
       startLiveFeedSubscription: async () => {
         await handleLiveFeedRuntimeEvent({ kind: "start" });
         if (liveFeedSubscription) {
           return;
         }
         liveFeedSubscription = createLiveFeedSubscription(
+          () => this.module.live_feed_events_url(liveFeedSourceUrl()),
           handleLiveFeedRuntimeEvent,
           async (events) => {
             await withSessionRetry(async () =>
               runSessionOperation<unknown>(
                 () => this.module.ingest_live_feed_sse_events_in_session(handle, JSON.stringify(events)),
                 (resourceId, resourceBytes) => ingestResourceForHandle(handle, resourceId, resourceBytes),
+                "live_feeds.sse_ingest",
               ),
             );
           },
@@ -1623,6 +1644,7 @@ export class WasmAppCoreAdapter implements AppCoreAdapter {
           runSessionOperation<unknown>(
             () => this.module.ingest_live_feed_sse_event_in_session(handle, JSON.stringify(event)),
             (resourceId, resourceBytes) => ingestResourceForHandle(handle, resourceId, resourceBytes),
+            "live_feeds.sse_ingest",
           ),
         );
       },
@@ -1889,6 +1911,9 @@ async function loadBestAvailableAdapterUncached(
     "attach_nav_kv_store_to_session",
     "core_had_operation",
     "sync_live_feeds_in_session",
+    "configure_live_feed_source_in_session",
+    "live_feed_events_url",
+    "live_feed_status_url",
     "live_feed_runtime_decision",
     "refresh_live_feed_current_in_session",
     "ingest_live_feed_sse_event_in_session",
@@ -1934,8 +1959,6 @@ type LiveFeedSubscription = {
   close(): void;
 };
 
-const LiveFeedEventsPath = "/live-feeds/v2/events";
-
 type LiveFeedRuntimeInput = {
   kind: "start" | "network_status" | "connecting" | "connected" | "message" | "error" | "closed" | "idle_timeout" | "online";
   message?: string | null;
@@ -1967,17 +1990,8 @@ function liveFeedSourceUrl(): string {
   return "";
 }
 
-function liveFeedStatusUrl(sourceUrl: string): string {
-  const origin = sourceUrl.replace(/\/+$/, "");
-  return origin ? `${origin}/live-feeds/status.html` : "/live-feeds/status.html";
-}
-
-function liveFeedEventsUrl(sourceUrl: string): string {
-  const origin = sourceUrl.replace(/\/+$/, "");
-  return origin ? `${origin}${LiveFeedEventsPath}` : LiveFeedEventsPath;
-}
-
 function createLiveFeedSubscription(
+  liveFeedEventsUrl: () => Promise<string> | string,
   handleRuntimeEvent: (input: LiveFeedRuntimeInput) => Promise<LiveFeedRuntimeDecision>,
   ingestEvents: (events: LiveFeedSseEvent[]) => Promise<void>,
   log: (tag: string, data?: unknown) => void,
@@ -2043,39 +2057,51 @@ function createLiveFeedSubscription(
     }
     clearReconnectTimer();
     reportEvent({ kind: "connecting" });
-    const nextEvents = new EventSource(liveFeedEventsUrl(liveFeedSourceUrl()));
-    events = nextEvents;
-    const isCurrent = () => !closed && events === nextEvents;
-    nextEvents.addEventListener("live-feed-current", (event) => {
-      if (!isCurrent()) {
+    void Promise.resolve(liveFeedEventsUrl()).then((eventsUrl) => {
+      if (closed) {
         return;
       }
-      clearReconnectTimer();
-      const message = event as MessageEvent<string>;
-      reportEvent({ kind: "message" });
-      queuedEvents.push({
-        id: message.lastEventId || null,
-        event: "live-feed-current",
-        data: message.data,
+      log("live_feeds.sse.opening", { events_url: eventsUrl });
+      const nextEvents = new EventSource(eventsUrl);
+      events = nextEvents;
+      const isCurrent = () => !closed && events === nextEvents;
+      nextEvents.addEventListener("live-feed-current", (event) => {
+        if (!isCurrent()) {
+          return;
+        }
+        clearReconnectTimer();
+        const message = event as MessageEvent<string>;
+        reportEvent({ kind: "message" });
+        queuedEvents.push({
+          id: message.lastEventId || null,
+          event: "live-feed-current",
+          data: message.data,
+        });
+        scheduleFlush();
       });
-      scheduleFlush();
-    });
-    nextEvents.onopen = () => {
-      if (!isCurrent()) {
-        return;
-      }
-      clearReconnectTimer();
-      reportEvent({ kind: "connected" });
-    };
-    nextEvents.onerror = () => {
-      if (!isCurrent()) {
-        return;
-      }
-      log("live_feeds.sse.error", { ready_state: nextEvents.readyState });
-      void runtimeEvent({ kind: "error", message: "EventSource error" })
+      nextEvents.onopen = () => {
+        if (!isCurrent()) {
+          return;
+        }
+        clearReconnectTimer();
+        log("live_feeds.sse.open", { events_url: eventsUrl });
+        reportEvent({ kind: "connected" });
+      };
+      nextEvents.onerror = () => {
+        if (!isCurrent()) {
+          return;
+        }
+        log("live_feeds.sse.error", { ready_state: nextEvents.readyState });
+        void runtimeEvent({ kind: "error", message: "EventSource error" })
+          .then((decision) => scheduleReconnect(decision.reconnect_delay_ms ?? 0))
+          .catch(() => scheduleReconnect(0));
+      };
+    }).catch((error: unknown) => {
+      log("live_feeds.sse.url.failed", { message: error instanceof Error ? error.message : String(error) });
+      void runtimeEvent({ kind: "error", message: error instanceof Error ? error.message : String(error) })
         .then((decision) => scheduleReconnect(decision.reconnect_delay_ms ?? 0))
         .catch(() => scheduleReconnect(0));
-    };
+    });
   };
   const scheduleReconnect = (delayMs: number) => {
     if (closed) {

@@ -98,10 +98,7 @@ pub fn live_feed_runtime_decision(input: LiveFeedRuntimeInput) -> LiveFeedRuntim
         connection_event,
         refresh_current: matches!(
             input.kind,
-            RuntimeKind::Start
-                | RuntimeKind::Connected
-                | RuntimeKind::NetworkStatus
-                | RuntimeKind::Online
+            RuntimeKind::Connected | RuntimeKind::NetworkStatus | RuntimeKind::Online
         ),
         reconnect_delay_ms: match input.kind {
             RuntimeKind::Error => Some(LIVE_FEED_SSE_RECONNECT_DELAY_MS),
@@ -134,6 +131,21 @@ mod tests {
         let event = decision.connection_event.unwrap();
         assert_eq!(event.kind, LiveFeedConnectionEventKind::Connected);
         assert_eq!(event.source_url.as_deref(), Some("http://example.test"));
+    }
+
+    #[test]
+    fn start_does_not_block_on_current_catalog_refresh() {
+        let decision = live_feed_runtime_decision(LiveFeedRuntimeInput {
+            kind: LiveFeedRuntimeEventKind::Start,
+            message: None,
+            source_url: Some("http://example.test".to_string()),
+            status_url: Some("http://example.test/live-feeds/status.html".to_string()),
+            network_status: Some(LiveFeedNetworkStatus::Unmetered),
+        });
+
+        assert!(!decision.refresh_current);
+        assert_eq!(decision.reconnect_delay_ms, None);
+        assert!(decision.connection_event.is_none());
     }
 
     #[test]

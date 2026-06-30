@@ -15,10 +15,12 @@ pub const LIVE_FEEDS_BASE_PATH: &str = "/live-feeds/v2";
 pub const LIVE_FEEDS_EVENTS_PATH: &str = "/live-feeds/v2/events";
 const CURRENT_ADDRESS: &str = "/live-feeds/v2/current.json";
 const LIVE_FEEDS_PREFIX: &str = "/live-feeds/v2/";
+const LIVE_FEEDS_STATUS_PATH: &str = "/live-feeds/status.html";
 const FAILED_RESOURCE_RETRY_DELAY_MS: i64 = 5 * 60 * 1000;
 
 #[derive(Debug, Clone, PartialEq, Default)]
 pub struct LiveFeedsState {
+    source_root_url: Option<String>,
     products: HashMap<String, LiveFeedProductState>,
     current_loaded: bool,
     resource_failure_retry_after_epoch_ms: HashMap<String, i64>,
@@ -221,6 +223,16 @@ struct LiveFeedCurrentEvent {
 }
 
 impl LiveFeedsState {
+    pub fn set_source_root_url(&mut self, source_root_url: &str) -> AppResult<String> {
+        let normalized = normalize_live_feed_source_root_url(source_root_url)?;
+        self.source_root_url = Some(normalized.clone());
+        Ok(normalized)
+    }
+
+    pub fn source_root_url(&self) -> Option<&str> {
+        self.source_root_url.as_deref()
+    }
+
     pub fn sync_outcome(&self) -> HadOperationOutcome {
         let resources = self.missing_resources();
         self.outcome_for_resources(resources)
@@ -235,7 +247,7 @@ impl LiveFeedsState {
         &self,
         epoch_ms: i64,
     ) -> HadOperationOutcome {
-        let resources = self.retryable_resources(vec![Self::current_resource_request()], epoch_ms);
+        let resources = self.retryable_resources(vec![self.current_resource_request()], epoch_ms);
         self.outcome_for_resources_with_invalidations(resources)
     }
 
@@ -848,7 +860,7 @@ impl LiveFeedsState {
         installed: impl IntoIterator<Item = LiveFeedDurableInstalledProduct>,
     ) -> Vec<LiveFeedCacheRequest> {
         if !self.current_loaded {
-            return vec![Self::durable_current_request()];
+            return vec![self.durable_current_request()];
         }
 
         let installed_by_product = installed
@@ -876,7 +888,7 @@ impl LiveFeedsState {
                 if let Some(url) = &entry.version_manifest_url {
                     requests.push(LiveFeedCacheRequest {
                         id: format!("live_feeds/version/{product}/{version}"),
-                        url: live_feed_address(url),
+                        url: self.required_live_feed_url(url),
                         kind: LiveFeedCacheRequestKind::Version {
                             product: product.to_string(),
                             version: version.clone(),
@@ -895,7 +907,7 @@ impl LiveFeedsState {
                             "live_feeds/delta/{}/{}/{}",
                             product, delta.from_version, delta.to_version
                         ),
-                        url: live_feed_address(&delta.url),
+                        url: self.required_live_feed_url(&delta.url),
                         kind: LiveFeedCacheRequestKind::Delta {
                             product: product.to_string(),
                             from_version: delta.from_version.clone(),
@@ -912,7 +924,7 @@ impl LiveFeedsState {
             if let Some(full_ref) = full_ref {
                 requests.push(LiveFeedCacheRequest {
                     id: format!("live_feeds/full/{product}/{version}"),
-                    url: live_feed_address(&full_ref.url),
+                    url: self.required_live_feed_url(&full_ref.url),
                     kind: LiveFeedCacheRequestKind::Full {
                         product: product.to_string(),
                         version: version.clone(),
@@ -934,7 +946,7 @@ impl LiveFeedsState {
     }
 
     fn durable_current_refresh_requests(&self) -> Vec<LiveFeedCacheRequest> {
-        vec![Self::durable_current_request()]
+        vec![self.durable_current_request()]
     }
 
     pub fn durable_current_refresh_requests_at_epoch_ms(
@@ -945,10 +957,10 @@ impl LiveFeedsState {
         self.retryable_cache_requests(requests, epoch_ms)
     }
 
-    fn durable_current_request() -> LiveFeedCacheRequest {
+    fn durable_current_request(&self) -> LiveFeedCacheRequest {
         LiveFeedCacheRequest {
             id: CURRENT_RESOURCE_ID.to_string(),
-            url: CURRENT_ADDRESS.to_string(),
+            url: self.required_live_feed_url(CURRENT_ADDRESS),
             kind: LiveFeedCacheRequestKind::Current,
         }
     }
@@ -1031,14 +1043,43 @@ impl LiveFeedsState {
 
     fn missing_resources(&self) -> Vec<CoreResourceRequest> {
         if !self.current_loaded {
-            return vec![Self::current_resource_request()];
+            return vec![self.current_resource_request()];
         }
         let products = self.products.keys().map(String::as_str).collect::<Vec<_>>();
         self.missing_resources_for_products(products)
     }
 
-    fn current_resource_request() -> CoreResourceRequest {
-        CoreResourceRequest::public_url(CURRENT_RESOURCE_ID, CURRENT_ADDRESS, false)
+    fn current_resource_request(&self) -> CoreResourceRequest {
+        self.public_live_feed_resource(CURRENT_RESOURCE_ID, CURRENT_ADDRESS, false)
+    }
+
+    fn public_live_feed_resource(
+        &self,
+        id: impl Into<String>,
+        live_feed_relative_url: &str,
+        optional: bool,
+    ) -> CoreResourceRequest {
+        let id = id.into();
+        match self.live_feed_url(live_feed_relative_url) {
+            Ok(url) => CoreResourceRequest::public_url(id, url, optional),
+            Err(err) => CoreResourceRequest::unavailable(id, err.to_string(), optional),
+        }
+    }
+
+    fn live_feed_url(&self, live_feed_relative_url: &str) -> AppResult<String> {
+        let source_root_url = self.source_root_url.as_deref().ok_or_else(|| {
+            invalid_live_feed("live-feed source root is not configured".to_string())
+        })?;
+        Ok(live_feed_resource_url(
+            source_root_url,
+            live_feed_relative_url,
+        ))
+    }
+
+    fn required_live_feed_url(&self, live_feed_relative_url: &str) -> String {
+        self.live_feed_url(live_feed_relative_url).expect(
+            "live-feed source root must be configured before requesting live-feed resources",
+        )
     }
 
     fn missing_resources_for_products<'a>(
@@ -1058,9 +1099,9 @@ impl LiveFeedsState {
             };
             if entry.version_manifest.is_none() {
                 if let Some(url) = &entry.version_manifest_url {
-                    resources.push(CoreResourceRequest::public_url(
+                    resources.push(self.public_live_feed_resource(
                         format!("live_feeds/version/{product}/{version}"),
-                        live_feed_address(url),
+                        url,
                         false,
                     ));
                     continue;
@@ -1070,20 +1111,20 @@ impl LiveFeedsState {
                 continue;
             }
             if let Some(delta) = entry.applicable_delta(product) {
-                resources.push(CoreResourceRequest::public_url(
+                resources.push(self.public_live_feed_resource(
                     format!(
                         "live_feeds/delta/{}/{}/{}",
                         product, delta.from_version, delta.to_version
                     ),
-                    live_feed_address(&delta.url),
+                    &delta.url,
                     false,
                 ));
                 continue;
             }
             if let Some(url) = &entry.state_url {
-                resources.push(CoreResourceRequest::public_url(
+                resources.push(self.public_live_feed_resource(
                     format!("live_feeds/state/{product}/{version}"),
-                    live_feed_address(url),
+                    url,
                     false,
                 ));
             }
@@ -1300,11 +1341,57 @@ fn decode_live_feed_payload<'a>(
     }
 }
 
-fn live_feed_address(relative_url: &str) -> String {
-    format!(
-        "{LIVE_FEEDS_PREFIX}{}",
-        relative_url.trim_start_matches('/')
-    )
+pub fn normalize_live_feed_source_root_url(source_root_url: &str) -> AppResult<String> {
+    let mut normalized = source_root_url.trim().trim_end_matches('/').to_string();
+    for suffix in [
+        "/live-feeds/v2/current.json",
+        "/live-feeds/v2/events",
+        "/live-feeds/v2",
+        "/live-feeds/events",
+        "/live-feeds/status.html",
+        "/live-feeds",
+    ] {
+        if normalized.ends_with(suffix) {
+            normalized.truncate(normalized.len() - suffix.len());
+            break;
+        }
+    }
+    if normalized.is_empty()
+        || !(normalized.starts_with("http://") || normalized.starts_with("https://"))
+    {
+        return Err(invalid_live_feed(format!(
+            "live-feed source root must be an absolute http(s) URL: {source_root_url}"
+        )));
+    }
+    Ok(normalized)
+}
+
+pub fn live_feed_events_url(source_root_url: &str) -> AppResult<String> {
+    Ok(format!(
+        "{}{}",
+        normalize_live_feed_source_root_url(source_root_url)?,
+        LIVE_FEEDS_EVENTS_PATH
+    ))
+}
+
+pub fn live_feed_status_url(source_root_url: &str) -> AppResult<String> {
+    Ok(format!(
+        "{}{}",
+        normalize_live_feed_source_root_url(source_root_url)?,
+        LIVE_FEEDS_STATUS_PATH
+    ))
+}
+
+fn live_feed_resource_url(source_root_url: &str, live_feed_relative_url: &str) -> String {
+    let path = if live_feed_relative_url.starts_with('/') {
+        live_feed_relative_url.to_string()
+    } else {
+        format!(
+            "{LIVE_FEEDS_PREFIX}{}",
+            live_feed_relative_url.trim_start_matches('/')
+        )
+    };
+    format!("{}{}", source_root_url.trim_end_matches('/'), path)
 }
 
 fn validate_relative_url(url: &str) -> AppResult<()> {
@@ -1576,6 +1663,18 @@ fn invalid_live_feed(message: String) -> AppError {
 mod tests {
     use super::*;
 
+    const TEST_LIVE_FEED_ROOT: &str = "http://live.test";
+
+    fn live_feeds_state() -> LiveFeedsState {
+        let mut state = LiveFeedsState::default();
+        state.set_source_root_url(TEST_LIVE_FEED_ROOT).unwrap();
+        state
+    }
+
+    fn test_live_feed_url(path: &str) -> String {
+        live_feed_resource_url(TEST_LIVE_FEED_ROOT, path)
+    }
+
     fn metar_state(version: &str, stations: &[(&str, &str)]) -> Value {
         let mut metars_by_station = serde_json::Map::new();
         for (station_id, raw_text) in stations {
@@ -1669,7 +1768,7 @@ mod tests {
         let delta_bytes =
             nav_kv_package::xz_frame_uncompressed_bytes(&serde_json::to_vec(&delta).unwrap())
                 .unwrap();
-        let mut state = LiveFeedsState::default();
+        let mut state = live_feeds_state();
         state
             .ingest_resource(
                 "live_feeds/current",
@@ -1772,7 +1871,7 @@ mod tests {
         assert_eq!(
             resources[0].source,
             crate::CoreResourceSource::PublicUrl {
-                url: format!("{LIVE_FEEDS_BASE_PATH}/deltas/{product}/v1__v2.json.xz"),
+                url: test_live_feed_url(&format!("deltas/{product}/v1__v2.json.xz")),
             }
         );
 
@@ -1814,7 +1913,7 @@ mod tests {
 
     #[test]
     fn sync_requests_current_manifest_first() {
-        let state = LiveFeedsState::default();
+        let state = live_feeds_state();
         let HadOperationOutcome::NeedResources { resources } = state.sync_outcome() else {
             panic!("expected current manifest request");
         };
@@ -1823,14 +1922,14 @@ mod tests {
         assert_eq!(
             resources[0].source,
             crate::CoreResourceSource::PublicUrl {
-                url: CURRENT_ADDRESS.to_string(),
+                url: test_live_feed_url(CURRENT_ADDRESS),
             }
         );
     }
 
     #[test]
     fn reconnect_refresh_requests_current_manifest_even_after_catalog_loaded() {
-        let mut state = LiveFeedsState::default();
+        let mut state = live_feeds_state();
         state
             .ingest_resource(
                 "live_feeds/current",
@@ -1852,7 +1951,7 @@ mod tests {
 
     #[test]
     fn failed_current_manifest_fetch_is_retry_gated() {
-        let mut state = LiveFeedsState::default();
+        let mut state = live_feeds_state();
         state.record_resource_failure("live_feeds/current", 1_000);
 
         let HadOperationOutcome::Complete { .. } = state.sync_outcome_at_epoch_ms(1_001) else {
@@ -1870,7 +1969,7 @@ mod tests {
 
     #[test]
     fn current_manifest_drives_version_then_state_requests() {
-        let mut state = LiveFeedsState::default();
+        let mut state = live_feeds_state();
         state
             .ingest_resource(
                 "live_feeds/current",
@@ -1894,14 +1993,14 @@ mod tests {
         assert_eq!(
             resources[0].source,
             crate::CoreResourceSource::PublicUrl {
-                url: format!("{LIVE_FEEDS_BASE_PATH}/versions/nexrad/v1.json"),
+                url: test_live_feed_url("versions/nexrad/v1.json"),
             }
         );
     }
 
     #[test]
     fn current_manifest_is_authoritative_for_product_membership() {
-        let mut state = LiveFeedsState::default();
+        let mut state = live_feeds_state();
         state
             .ingest_resource(
                 "live_feeds/current",
@@ -1950,7 +2049,7 @@ mod tests {
 
     #[test]
     fn durable_loaded_product_cannot_override_current_state_hash() {
-        let mut state = LiveFeedsState::default();
+        let mut state = live_feeds_state();
         state
             .ingest_resource(
                 "live_feeds/current",
@@ -1981,7 +2080,7 @@ mod tests {
 
     #[test]
     fn loaded_current_without_overlay_products_still_invalidates_overlays() {
-        let mut state = LiveFeedsState::default();
+        let mut state = live_feeds_state();
         state
             .ingest_resource(
                 "live_feeds/current",
@@ -2010,7 +2109,7 @@ mod tests {
             "areas": []
         });
         let state_sha256 = canonical_json_sha256(&tfrs).unwrap();
-        let mut state = LiveFeedsState::default();
+        let mut state = live_feeds_state();
         state
             .ingest_resource(
                 "live_feeds/current",
@@ -2124,7 +2223,7 @@ mod tests {
 
     #[test]
     fn nav_kv_state_manifest_validates_embedded_state_hash() {
-        let mut state = LiveFeedsState::default();
+        let mut state = live_feeds_state();
         state
             .ingest_resource(
                 "live_feeds/current",
@@ -2181,7 +2280,7 @@ mod tests {
     fn sse_event_updates_product_without_platform_contract_logic() {
         let mut state = LiveFeedsState {
             current_loaded: true,
-            ..LiveFeedsState::default()
+            ..live_feeds_state()
         };
         let outcome = state
             .ingest_sse_event(LiveFeedSseEvent {
@@ -2206,7 +2305,7 @@ mod tests {
     fn batched_sse_events_fetch_only_the_latest_version_per_product() {
         let mut state = LiveFeedsState {
             current_loaded: true,
-            ..LiveFeedsState::default()
+            ..live_feeds_state()
         };
         let affected = state
             .ingest_sse_events([
@@ -2268,7 +2367,7 @@ mod tests {
     fn replayed_batched_sse_events_do_not_forget_loaded_version_manifest() {
         let mut state = LiveFeedsState {
             current_loaded: true,
-            ..LiveFeedsState::default()
+            ..live_feeds_state()
         };
         let events = vec![
             LiveFeedSseEvent {

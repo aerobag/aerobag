@@ -876,6 +876,15 @@ pub fn sync_live_feeds_in_session_json(handle: u64) -> Result<String, String> {
     serde_json::to_string(&outcome).map_err(|err| err.to_string())
 }
 
+pub fn configure_live_feed_source_in_session_json(
+    handle: u64,
+    source_root_url: &str,
+) -> Result<String, String> {
+    app_core::configure_live_feed_source_in_session(handle as u32, source_root_url)
+        .map_err(|err| err.to_string())?;
+    Ok("null".to_string())
+}
+
 pub fn live_feed_runtime_decision_json(input_json: &str) -> Result<String, String> {
     let input: app_core::LiveFeedRuntimeInput =
         serde_json::from_str(input_json).map_err(|err| err.to_string())?;
@@ -1279,7 +1288,10 @@ pub fn create_offline_packages_controller_json(
     Ok(handle as u64)
 }
 
-pub fn create_live_feed_cache_json(installed_states_json: Option<&str>) -> Result<u64, String> {
+pub fn create_live_feed_cache_json(
+    source_root_url: &str,
+    installed_states_json: Option<&str>,
+) -> Result<u64, String> {
     let installed_states = installed_states_json
         .filter(|json| !json.trim().is_empty())
         .map(|json| {
@@ -1294,9 +1306,25 @@ pub fn create_live_feed_cache_json(installed_states_json: Option<&str>) -> Resul
         .map_err(|_| "live feed cache store poisoned".to_string())?
         .insert(
             handle,
-            app_core::LiveFeedCache::with_installed(installed_states),
+            app_core::LiveFeedCache::with_source_root_url_and_installed(
+                source_root_url,
+                installed_states,
+            )
+            .map_err(|err| err.to_string())?,
         );
     Ok(handle as u64)
+}
+
+pub fn live_feed_events_url_json(source_root_url: &str) -> Result<String, String> {
+    app_core::live_feed_events_url(source_root_url).map_err(|err| err.to_string())
+}
+
+pub fn live_feed_status_url_json(source_root_url: &str) -> Result<String, String> {
+    app_core::live_feed_status_url(source_root_url).map_err(|err| err.to_string())
+}
+
+pub fn normalize_live_feed_source_root_url_json(source_root_url: &str) -> Result<String, String> {
+    app_core::normalize_live_feed_source_root_url(source_root_url).map_err(|err| err.to_string())
 }
 
 pub fn create_ui_session_work_scheduler() -> Result<u64, String> {
@@ -2289,17 +2317,53 @@ pub extern "system" fn Java_org_aerobag_app_domain_NativeBindings_destroyUiSessi
 pub extern "system" fn Java_org_aerobag_app_domain_NativeBindings_createLiveFeedCache(
     mut env: JNIEnv,
     _class: JClass,
+    source_root_url: JString,
     installed_states_json: JString,
 ) -> i64 {
-    match get_java_string(&mut env, installed_states_json)
-        .and_then(|installed_states| create_live_feed_cache_json(Some(&installed_states)))
-    {
+    match get_java_string(&mut env, source_root_url).and_then(|source_root_url| {
+        get_java_string(&mut env, installed_states_json).and_then(|installed_states| {
+            create_live_feed_cache_json(&source_root_url, Some(&installed_states))
+        })
+    }) {
         Ok(handle) => handle as i64,
         Err(message) => {
             let _ = env.throw_new("java/lang/RuntimeException", message);
             0
         }
     }
+}
+
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_org_aerobag_app_domain_NativeBindings_liveFeedEventsUrl(
+    mut env: JNIEnv,
+    _class: JClass,
+    source_root_url: JString,
+) -> jstring {
+    let result =
+        get_java_string(&mut env, source_root_url).and_then(|url| live_feed_events_url_json(&url));
+    return_string(&mut env, result)
+}
+
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_org_aerobag_app_domain_NativeBindings_liveFeedStatusUrl(
+    mut env: JNIEnv,
+    _class: JClass,
+    source_root_url: JString,
+) -> jstring {
+    let result =
+        get_java_string(&mut env, source_root_url).and_then(|url| live_feed_status_url_json(&url));
+    return_string(&mut env, result)
+}
+
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_org_aerobag_app_domain_NativeBindings_normalizeLiveFeedSourceRootUrl(
+    mut env: JNIEnv,
+    _class: JClass,
+    source_root_url: JString,
+) -> jstring {
+    let result = get_java_string(&mut env, source_root_url)
+        .and_then(|url| normalize_live_feed_source_root_url_json(&url));
+    return_string(&mut env, result)
 }
 
 #[unsafe(no_mangle)]

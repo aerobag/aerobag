@@ -380,30 +380,21 @@ internal fun resolvePlaybackTraceUrl(sourcePath: String, devServerBaseUrl: Strin
         else -> "$devServerBaseUrl/$sourcePath"
     }
 
-internal fun resolveLiveFeedSourceRootUrl(
+internal fun configuredLiveFeedSourceRootUrl(
     context: Context,
     prefs: android.content.SharedPreferences,
     devServerBaseUrl: String,
 ): String {
     loadAndroidLiveFeedSourceBaseUrl(context)?.let { configured ->
-        return normalizeLiveFeedSourceRootUrl(configured)
+        return NativeBindings.normalizeLiveFeedSourceRootUrl(configured)
     }
     val configuredRoot = runCatching {
         resolvePublicationRootUrl(readPackageSourceBaseUrl(context, prefs))
     }.getOrNull() ?: devServerBaseUrl
-    return normalizeLiveFeedSourceRootUrl(
+    return NativeBindings.normalizeLiveFeedSourceRootUrl(
         configuredRoot.trimEnd('/').removeSuffix("/$PublicationPackageRootPath"),
     )
 }
-
-internal fun normalizeLiveFeedSourceRootUrl(configured: String): String =
-    configured
-        .trim()
-        .trimEnd('/')
-        .removeSuffix("/live-feeds/v2/events")
-        .removeSuffix("/live-feeds/v2")
-        .removeSuffix("/live-feeds/events")
-        .removeSuffix("/live-feeds")
 
 internal fun fetchJsonOrNull(url: String): String? =
     runCatching {
@@ -435,9 +426,12 @@ internal fun fetchCoreResource(
             val url = if (source.url.startsWith("/packages/")) {
                 resolvePackageSourceUrl(source.url.removePrefix("/packages/"), publicationRootUrl)
             } else if (source.url.startsWith("/live-feeds/")) {
-                "${resolveLiveFeedSourceRootUrl(context.applicationContext, prefs, devServerBaseUrl)}${source.url}"
+                error("core live-feed resource ${resource.id} must provide an absolute URL, got ${source.url}")
             } else {
-                resolvePlaybackTraceUrl(source.url, devServerBaseUrl)
+                require(source.url.startsWith("http://") || source.url.startsWith("https://")) {
+                    "core public resource ${resource.id} must provide an absolute URL, got ${source.url}"
+                }
+                source.url
             }
             fetchResourceBytes(url)
         }

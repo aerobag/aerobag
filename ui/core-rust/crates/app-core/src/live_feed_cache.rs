@@ -129,12 +129,20 @@ struct NavKvInstallManifest {
 }
 
 impl LiveFeedCache {
-    pub fn with_installed(installed: impl IntoIterator<Item = LiveFeedInstalledState>) -> Self {
+    pub fn with_source_root_url_and_installed(
+        source_root_url: &str,
+        installed: impl IntoIterator<Item = LiveFeedInstalledState>,
+    ) -> AppResult<Self> {
         let mut cache = Self::default();
+        cache.live_feeds.set_source_root_url(source_root_url)?;
         for state in installed {
             cache.remember_installed_state(state);
         }
-        cache
+        Ok(cache)
+    }
+
+    pub fn set_source_root_url(&mut self, source_root_url: &str) -> AppResult<String> {
+        self.live_feeds.set_source_root_url(source_root_url)
     }
 
     pub fn installed(&self, product: &str) -> Option<&LiveFeedInstalledState> {
@@ -977,6 +985,13 @@ mod tests {
     use std::io::{Cursor, Read};
     use zip::CompressionMethod;
 
+    const TEST_LIVE_FEED_ROOT: &str = "http://live.test";
+
+    fn live_feed_cache() -> LiveFeedCache {
+        LiveFeedCache::with_source_root_url_and_installed(TEST_LIVE_FEED_ROOT, std::iter::empty())
+            .unwrap()
+    }
+
     fn metar_state(version: &str, records: &[(&str, &str)]) -> Value {
         let mut metars = serde_json::Map::new();
         for (station, raw_text) in records {
@@ -1067,7 +1082,7 @@ mod tests {
 
     #[test]
     fn durable_reconnect_refresh_requests_current_after_catalog_loaded() {
-        let mut cache = LiveFeedCache::default();
+        let mut cache = live_feed_cache();
         cache
             .ingest_current(&current_manifest("metars", "v1", "abc"))
             .unwrap();
@@ -1080,7 +1095,7 @@ mod tests {
 
     #[test]
     fn durable_request_failures_are_retry_gated_in_core() {
-        let mut cache = LiveFeedCache::default();
+        let mut cache = live_feed_cache();
         cache.record_request_failure("live_feeds/current", 1_000);
 
         assert!(cache.current_refresh_requests_at_epoch_ms(1_001).is_empty());
@@ -1095,7 +1110,7 @@ mod tests {
         let registry = live_feed_product_registry();
         let v1 = metar_state("v1", &[("KSEA", "old"), ("KOLM", "old")]);
         let (v1_manifest, v1_bytes, v1_sha) = json_version_manifest("metars", "v1", &v1, None);
-        let mut cache = LiveFeedCache::default();
+        let mut cache = live_feed_cache();
         cache
             .ingest_current(&current_manifest("metars", "v1", &v1_sha))
             .unwrap();
@@ -1178,7 +1193,7 @@ mod tests {
         let registry = live_feed_product_registry();
         let v1 = metar_state("v1", &[("KSEA", "old")]);
         let (v1_manifest, v1_bytes, v1_sha) = json_version_manifest("metars", "v1", &v1, None);
-        let mut cache = LiveFeedCache::default();
+        let mut cache = live_feed_cache();
         cache
             .ingest_current(&current_manifest("metars", "v1", &v1_sha))
             .unwrap();
@@ -1246,7 +1261,7 @@ mod tests {
             }
         });
         let (v1_manifest, v1_bytes, v1_sha) = json_version_manifest("tafs", "v1", &v1, None);
-        let mut cache = LiveFeedCache::default();
+        let mut cache = live_feed_cache();
         cache
             .ingest_current(&current_manifest("tafs", "v1", &v1_sha))
             .unwrap();
@@ -1374,7 +1389,7 @@ mod tests {
             }
         }))
         .unwrap();
-        let mut cache = LiveFeedCache::default();
+        let mut cache = live_feed_cache();
         cache
             .ingest_current(&current_manifest("obstacles", "v1", &first_sha))
             .unwrap();
@@ -1502,7 +1517,7 @@ mod tests {
             .unwrap();
         assert_eq!(pairs, second_pairs);
 
-        let mut reloaded = LiveFeedCache::default();
+        let mut reloaded = live_feed_cache();
         reloaded
             .ingest_installed_payload_bytes(&registry, &summary, &persisted)
             .unwrap();
@@ -1555,7 +1570,7 @@ mod tests {
             }
         }))
         .unwrap();
-        let mut cache = LiveFeedCache::default();
+        let mut cache = live_feed_cache();
         cache
             .ingest_current(&current_manifest("obstacles", "v1", &first_sha))
             .unwrap();

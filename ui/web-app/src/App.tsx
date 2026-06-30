@@ -8764,7 +8764,7 @@ function ChartsPage(props: {
   const overscrollPx = 64;
 
   useEffect(() => {
-    if (page !== "plate") {
+    if (page !== "charts") {
       return;
     }
     if (!appCoreAdapter || !selectedChart) {

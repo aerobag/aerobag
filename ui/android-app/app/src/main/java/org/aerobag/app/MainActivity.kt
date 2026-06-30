@@ -2340,8 +2340,15 @@ internal fun AerobagApp(
         delay(delayMs)
         applySessionSnapshot(uiSession.refreshSnapshot())
     }
-    val liveFeedCache = remember(uiSession, context) {
-        LiveFeedCacheStore.open(context.applicationContext)
+    val liveFeedSourceRootUrl = remember(context, prefs) {
+        configuredLiveFeedSourceRootUrl(
+            context.applicationContext,
+            prefs,
+            loadAndroidDevServerBaseUrl(context.applicationContext),
+        )
+    }
+    val liveFeedCache = remember(uiSession, context, liveFeedSourceRootUrl) {
+        LiveFeedCacheStore.open(context.applicationContext, liveFeedSourceRootUrl)
     }
     DisposableEffect(liveFeedCache) {
         onDispose { liveFeedCache.close() }
@@ -2383,15 +2390,10 @@ internal fun AerobagApp(
         withContext(Dispatchers.IO) {
             LiveFeedCacheStore.listInstalled(appContext).map { it.summary }
         }.forEach { promoteLiveFeed(it) }
-        val sourceRootUrl = resolveLiveFeedSourceRootUrl(
-            appContext,
-            prefs,
-            loadAndroidDevServerBaseUrl(appContext),
-        )
         AndroidLiveFeedClient(
             context = appContext,
             cache = liveFeedCache,
-            sourceRootUrl = sourceRootUrl,
+            sourceRootUrl = liveFeedSourceRootUrl,
         ).bootstrapAndRun(
             promote = { summary ->
                 withContext(Dispatchers.Main) {

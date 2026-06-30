@@ -66,6 +66,7 @@ import org.aerobag.app.domain.UiDataStatusState
 import org.aerobag.app.domain.UiStatusAction
 import org.aerobag.app.domain.UiStatusActionStyle
 import org.aerobag.app.domain.UiStatusSeverity
+import org.aerobag.app.domain.NativeBindings
 import kotlin.math.roundToInt
 
 @Composable
@@ -507,7 +508,7 @@ internal fun dataSourcesStatusRow(
         configuredCycleDataBaseUrl.trim().trimEnd('/')
     }
     val liveFeedsRootUrl = runCatching {
-        resolveLiveFeedSourceRootUrl(
+        configuredLiveFeedSourceRootUrl(
             appContext,
             prefs,
             loadAndroidDevServerBaseUrl(appContext),
@@ -515,7 +516,11 @@ internal fun dataSourcesStatusRow(
     }.getOrElse {
         cycleDataBaseUrl.trimEnd('/').removeSuffix("/$PublicationPackageRootPath")
     }
-    val liveFeedsBaseUrl = "${liveFeedsRootUrl.trimEnd('/')}/live-feeds"
+    val liveFeedsStatusUrl = runCatching {
+        NativeBindings.liveFeedStatusUrl(liveFeedsRootUrl)
+    }.getOrElse {
+        liveFeedsRootUrl
+    }
     return UiDataStatusPageRow(
         id = "data_sources",
         label = "Data Sources",
@@ -532,8 +537,8 @@ internal fun dataSourcesStatusRow(
             ),
             UiDataStatusPageFact(
                 label = "Live Feeds",
-                value = liveFeedsBaseUrl,
-                linkUrl = liveFeedsBaseUrl,
+                value = liveFeedsStatusUrl,
+                linkUrl = liveFeedsStatusUrl,
                 timeUtc = null,
                 timeDisplay = null,
             ),

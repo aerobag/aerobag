@@ -51,7 +51,7 @@ class LiveFeedCacheTest {
                 destroyCount.incrementAndGet()
             },
         )
-        val cache = LiveFeedCache(bridge = bridge)
+        val cache = LiveFeedCache(sourceRootUrl = "http://live.test", bridge = bridge)
 
         assertTrue(cache.missingRequests().isEmpty())
 
@@ -88,7 +88,7 @@ class LiveFeedCacheTest {
                 destroyCount.incrementAndGet()
             },
         )
-        val cache = LiveFeedCache(bridge = bridge)
+        val cache = LiveFeedCache(sourceRootUrl = "http://live.test", bridge = bridge)
         val reader = Thread {
             cache.missingRequests()
         }
@@ -121,6 +121,9 @@ class LiveFeedCacheTest {
         ) { _, method, args ->
             when (method.name) {
                 "createLiveFeedCache" -> 1L
+                "liveFeedEventsUrl" -> "http://live.test/live-feeds/v2/events"
+                "liveFeedStatusUrl" -> "http://live.test/live-feeds/status.html"
+                "normalizeLiveFeedSourceRootUrl" -> args?.first() as String
                 "liveFeedCacheMissingRequestsJson" -> missingRequestsJson()
                 "destroyLiveFeedCache" -> {
                     destroyLiveFeedCache()

@@ -1214,6 +1214,9 @@ fn handle_connection(
     let method = parts.next().unwrap_or("");
     let target = parts.next().unwrap_or("/");
     drain_headers(&mut reader)?;
+    if method == "OPTIONS" {
+        return write_options_response(&mut stream);
+    }
     if method != "GET" && method != "HEAD" {
         return write_status(&mut stream, 405, "method not allowed");
     }
@@ -1336,7 +1339,7 @@ fn write_sse_heartbeat(writer: &mut impl Write) -> anyhow::Result<()> {
 fn write_sse_headers(writer: &mut impl Write) -> anyhow::Result<()> {
     write!(
         writer,
-        "HTTP/1.1 200 OK\r\nContent-Type: text/event-stream; charset=utf-8\r\nCache-Control: no-cache, no-transform\r\nConnection: keep-alive\r\n\r\n"
+        "HTTP/1.1 200 OK\r\nContent-Type: text/event-stream; charset=utf-8\r\nCache-Control: no-cache, no-transform\r\nConnection: keep-alive\r\nAccess-Control-Allow-Origin: *\r\n\r\n"
     )
     .context("failed to write SSE headers")
 }
@@ -1526,7 +1529,7 @@ fn write_response(
 ) -> anyhow::Result<()> {
     write!(
         stream,
-        "HTTP/1.1 200 OK\r\nContent-Type: {}\r\nContent-Length: {}\r\nCache-Control: {}\r\n\r\n",
+        "HTTP/1.1 200 OK\r\nContent-Type: {}\r\nContent-Length: {}\r\nCache-Control: {}\r\nAccess-Control-Allow-Origin: *\r\n\r\n",
         content_type,
         bytes.len(),
         cache_control,
@@ -1538,6 +1541,14 @@ fn write_response(
             .context("failed to write response body")?;
     }
     Ok(())
+}
+
+fn write_options_response(stream: &mut TcpStream) -> anyhow::Result<()> {
+    write!(
+        stream,
+        "HTTP/1.1 204 No Content\r\nAccess-Control-Allow-Origin: *\r\nAccess-Control-Allow-Methods: GET, HEAD, OPTIONS\r\nAccess-Control-Allow-Headers: Last-Event-ID, Cache-Control, Content-Type\r\nAccess-Control-Max-Age: 600\r\nContent-Length: 0\r\n\r\n"
+    )
+    .context("failed to write CORS options response")
 }
 
 const LIVE_FEEDS_STATUS_HTML: &str = r##"<!doctype html>
@@ -1739,7 +1750,7 @@ fn write_status(stream: &mut TcpStream, status: u16, body: &str) -> anyhow::Resu
     };
     write!(
         stream,
-        "HTTP/1.1 {status} {reason}\r\nContent-Type: text/plain; charset=utf-8\r\nContent-Length: {}\r\n\r\n{}",
+        "HTTP/1.1 {status} {reason}\r\nContent-Type: text/plain; charset=utf-8\r\nContent-Length: {}\r\nAccess-Control-Allow-Origin: *\r\n\r\n{}",
         body.len(),
         body
     )
@@ -2004,6 +2015,10 @@ mod tests {
             "{response}"
         );
         assert!(
+            response.contains("Access-Control-Allow-Origin: *"),
+            "{response}"
+        );
+        assert!(
             response.ends_with("{\"version_label\":\"m1\"}"),
             "{response}"
         );
@@ -2024,6 +2039,10 @@ mod tests {
             response.contains("Content-Type: text/event-stream"),
             "{response}"
         );
+        assert!(
+            response.contains("Access-Control-Allow-Origin: *"),
+            "{response}"
+        );
         assert!(response.contains("event: live-feed-current"), "{response}");
         assert!(response.contains("\"schema_version\":2"), "{response}");
         assert!(response.contains("\"product\":\"metars\""), "{response}");
@@ -2042,6 +2061,10 @@ mod tests {
             response.contains("Content-Type: application/json"),
             "{response}"
         );
+        assert!(
+            response.contains("Access-Control-Allow-Origin: *"),
+            "{response}"
+        );
         assert!(response.contains("\"active_sse_clients\""), "{response}");
 
         let response = request_once(
@@ -2051,6 +2074,28 @@ mod tests {
         assert!(response.starts_with("HTTP/1.1 200 OK"), "{response}");
         assert!(response.contains("Content-Type: text/html"), "{response}");
         assert!(response.contains("Aerobag Live Feeds"), "{response}");
+        Ok(())
+    }
+
+    #[test]
+    fn server_allows_browser_cors_preflight_for_live_feeds() -> anyhow::Result<()> {
+        let temp = tempdir()?;
+        let response = request_once(
+            temp.path(),
+            "OPTIONS /live-feeds/v2/current.json HTTP/1.1\r\nHost: localhost\r\nOrigin: http://example.test\r\nAccess-Control-Request-Method: GET\r\n\r\n",
+        )?;
+        assert!(
+            response.starts_with("HTTP/1.1 204 No Content"),
+            "{response}"
+        );
+        assert!(
+            response.contains("Access-Control-Allow-Origin: *"),
+            "{response}"
+        );
+        assert!(
+            response.contains("Access-Control-Allow-Methods: GET, HEAD, OPTIONS"),
+            "{response}"
+        );
         Ok(())
     }
 

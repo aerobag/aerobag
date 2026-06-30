@@ -507,6 +507,27 @@ pub fn sync_live_feeds_in_session(session_handle: u32) -> Result<String, JsValue
 }
 
 #[wasm_bindgen]
+pub fn configure_live_feed_source_in_session(
+    session_handle: u32,
+    source_root_url: &str,
+) -> Result<(), JsValue> {
+    app_core::configure_live_feed_source_in_session(session_handle, source_root_url)
+        .map_err(|err| JsValue::from_str(&err.to_string()))
+}
+
+#[wasm_bindgen]
+pub fn live_feed_events_url(source_root_url: &str) -> Result<String, JsValue> {
+    app_core::live_feed_events_url(source_root_url)
+        .map_err(|err| JsValue::from_str(&err.to_string()))
+}
+
+#[wasm_bindgen]
+pub fn live_feed_status_url(source_root_url: &str) -> Result<String, JsValue> {
+    app_core::live_feed_status_url(source_root_url)
+        .map_err(|err| JsValue::from_str(&err.to_string()))
+}
+
+#[wasm_bindgen]
 pub fn live_feed_runtime_decision(input_json: &str) -> Result<String, JsValue> {
     let input: app_core::LiveFeedRuntimeInput =
         serde_json::from_str(input_json).map_err(|err| JsValue::from_str(&err.to_string()))?;

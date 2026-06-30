@@ -34,7 +34,6 @@ import org.aerobag.app.diagnosticLogInfo
 private const val LiveFeedCacheDirectoryName = "live-feeds"
 private const val LiveFeedSseConnectTimeoutMs = 5_000
 private const val LiveFeedSseIdleTimeoutMs = 65_000
-private const val LiveFeedEventsPath = "/live-feeds/v2/events"
 private const val LiveFeedLogTag = "AndroidLiveFeeds"
 internal const val LiveFeedMaxInMemoryFetchBytes = 64L * 1024L * 1024L
 
@@ -112,6 +111,7 @@ data class LiveFeedRuntimeDecision(
 )
 
 class LiveFeedCache(
+    private val sourceRootUrl: String,
     installedStatesJson: String = "[]",
     private val bridge: NativeBridge = NativeBindings,
     private val json: Json = Json {
@@ -119,7 +119,7 @@ class LiveFeedCache(
         ignoreUnknownKeys = true
     },
 ) : AutoCloseable {
-    private val handle = bridge.createLiveFeedCache(installedStatesJson)
+    private val handle = bridge.createLiveFeedCache(sourceRootUrl, installedStatesJson)
     @Volatile
     private var closed = false
 
@@ -188,6 +188,10 @@ class LiveFeedCache(
         bridge.liveFeedCacheSyncCatalogInSessionJson(handle, sessionHandle)
     }
 
+    fun liveFeedEventsUrl(): String = bridge.liveFeedEventsUrl(sourceRootUrl)
+
+    fun liveFeedStatusUrl(): String = bridge.liveFeedStatusUrl(sourceRootUrl)
+
     fun pumpOnce(
         fetch: (LiveFeedCacheRequest) -> ByteArray,
         persist: (LiveFeedInstalledSummary, ByteArray) -> Unit,
@@ -233,15 +237,16 @@ class AndroidLiveFeedClient(
     },
 ) {
     private val pumpMutex = Mutex()
+    private val eventsUrl = cache.liveFeedEventsUrl()
+    private val statusUrl = cache.liveFeedStatusUrl()
 
     suspend fun bootstrapAndRun(
         promote: suspend (LiveFeedInstalledSummary) -> Unit,
         onChanged: suspend () -> Unit,
         onConnectionEvent: suspend (LiveFeedConnectionEvent) -> Unit = {},
     ) = coroutineScope {
-        val liveFeedEventsUrl = resolveLiveFeedUrl(LiveFeedEventsPath, sourceRootUrl)
         val networkChanges = Channel<LiveFeedNetworkStatus>(Channel.CONFLATED)
-        val networkCallback = registerLiveFeedNetworkCallback(context, liveFeedEventsUrl) { status ->
+        val networkCallback = registerLiveFeedNetworkCallback(context, eventsUrl) { status ->
             networkChanges.trySend(status)
         }
         val networkPump = launch {
@@ -262,7 +267,7 @@ class AndroidLiveFeedClient(
                 onChanged = onChanged,
                 onConnectionEvent = onConnectionEvent,
             )
-            networkChanges.trySend(detectLiveFeedNetworkStatus(context, liveFeedEventsUrl))
+            networkChanges.trySend(detectLiveFeedNetworkStatus(context, eventsUrl))
             while (kotlin.coroutines.coroutineContext.isActive) {
                 runCatching {
                     readSseLoop(promote, onChanged, onConnectionEvent)
@@ -284,7 +289,7 @@ class AndroidLiveFeedClient(
                         handleRuntimeEvent(
                             kind = "error",
                             message = error.message ?: error::class.java.simpleName,
-                            networkStatus = detectLiveFeedNetworkStatus(context, sourceRootUrl),
+                            networkStatus = detectLiveFeedNetworkStatus(context, eventsUrl),
                             promote = promote,
                             onChanged = onChanged,
                             onConnectionEvent = onConnectionEvent,
@@ -313,7 +318,7 @@ class AndroidLiveFeedClient(
                 kind = kind,
                 message = message,
                 sourceUrl = sourceRootUrl,
-                statusUrl = liveFeedStatusUrl(sourceRootUrl),
+                statusUrl = statusUrl,
                 networkStatus = networkStatus,
             ),
         )
@@ -396,15 +401,14 @@ class AndroidLiveFeedClient(
         onChanged: suspend () -> Unit,
         onConnectionEvent: suspend (LiveFeedConnectionEvent) -> Unit,
     ) = withContext(Dispatchers.IO) {
-        val url = resolveLiveFeedUrl(LiveFeedEventsPath, sourceRootUrl)
         handleRuntimeEvent(
             kind = "connecting",
-            networkStatus = detectLiveFeedNetworkStatus(context, url),
+            networkStatus = detectLiveFeedNetworkStatus(context, eventsUrl),
             promote = promote,
             onChanged = onChanged,
             onConnectionEvent = onConnectionEvent,
         )
-        val connection = (URL(url).openConnection() as HttpURLConnection).apply {
+        val connection = (URL(eventsUrl).openConnection() as HttpURLConnection).apply {
             connectTimeout = LiveFeedSseConnectTimeoutMs
             readTimeout = LiveFeedSseIdleTimeoutMs
             setRequestProperty("Accept", "text/event-stream")
@@ -415,7 +419,7 @@ class AndroidLiveFeedClient(
                 connected = true
                 handleRuntimeEvent(
                     kind = "connected",
-                    networkStatus = detectLiveFeedNetworkStatus(context, url),
+                    networkStatus = detectLiveFeedNetworkStatus(context, eventsUrl),
                     promote = promote,
                     onChanged = onChanged,
                     onConnectionEvent = onConnectionEvent,
@@ -456,7 +460,7 @@ class AndroidLiveFeedClient(
             }
             handleRuntimeEvent(
                 kind = "closed",
-                networkStatus = detectLiveFeedNetworkStatus(context, url),
+                networkStatus = detectLiveFeedNetworkStatus(context, eventsUrl),
                 promote = promote,
                 onChanged = onChanged,
                 onConnectionEvent = onConnectionEvent,
@@ -472,7 +476,10 @@ class AndroidLiveFeedClient(
     }
 
     private fun fetchBytes(url: String): ByteArray {
-        val resolved = resolveLiveFeedUrl(url, sourceRootUrl)
+        require(url.startsWith("http://") || url.startsWith("https://")) {
+            "core live-feed request URL must be absolute: $url"
+        }
+        val resolved = url
         val startMs = SystemClock.elapsedRealtime()
         val connection = (URL(resolved).openConnection() as HttpURLConnection).apply {
             connectTimeout = 5_000
@@ -606,16 +613,6 @@ internal fun detectLiveFeedNetworkStatus(context: Context, url: String): LiveFee
     }
 }
 
-fun resolveLiveFeedUrl(url: String, sourceRootUrl: String): String =
-    when {
-        url.startsWith("http://") || url.startsWith("https://") -> url
-        url.startsWith("/") -> "${sourceRootUrl.trimEnd('/')}$url"
-        else -> "${sourceRootUrl.trimEnd('/')}/live-feeds/${url.trimStart('/')}"
-    }
-
-fun liveFeedStatusUrl(sourceRootUrl: String): String =
-    resolveLiveFeedUrl("/live-feeds/status.html", sourceRootUrl)
-
 object LiveFeedCacheStore {
     private val json = Json {
         encodeDefaults = true
@@ -624,9 +621,10 @@ object LiveFeedCacheStore {
 
     fun open(
         context: Context,
+        sourceRootUrl: String,
         bridge: NativeBridge = NativeBindings,
     ): LiveFeedCache {
-        val cache = LiveFeedCache(bridge = bridge, json = json)
+        val cache = LiveFeedCache(sourceRootUrl = sourceRootUrl, bridge = bridge, json = json)
         for (entry in listInstalled(context)) {
             runCatching {
                 cache.ingestInstalledPayload(entry.summary, entry.payloadFile.readBytes())

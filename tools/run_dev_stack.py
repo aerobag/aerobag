@@ -416,6 +416,16 @@ def make_handler(stack: DevStack):
         def do_GET(self) -> None:
             self.handle_request(send_body=True)
 
+        def do_OPTIONS(self) -> None:
+            parsed = urlparse(self.path)
+            path = parsed.path
+            if path == "/live-feeds" or path.startswith("/live-feeds/"):
+                self.send_cors_options()
+                return
+            self.send_response(204)
+            self.send_header("Content-Length", "0")
+            self.end_headers()
+
         def handle_request(self, send_body: bool) -> None:
             parsed = urlparse(self.path)
             path = parsed.path
@@ -428,7 +438,7 @@ def make_handler(stack: DevStack):
                 if config.disable_live_feeds:
                     self.send_text(503, "live-feeds disabled\n", send_body)
                 else:
-                    self.proxy(config.live_feeds_listen, path, parsed.query, send_body)
+                    self.proxy(config.live_feeds_listen, path, parsed.query, send_body, cors=True)
             elif path == "/build-watch" or path.startswith("/build-watch/"):
                 if config.disable_build_watch:
                     self.send_text(503, "build-watch disabled\n", send_body)
@@ -490,6 +500,8 @@ def make_handler(stack: DevStack):
             path: str,
             query: str,
             send_body: bool,
+            *,
+            cors: bool = False,
         ) -> None:
             host, port = parse_listen(listen)
             target = path
@@ -504,6 +516,7 @@ def make_handler(stack: DevStack):
                 )
                 response = connection.getresponse()
                 self.send_response(response.status, response.reason)
+                has_cors_origin = False
                 for header, value in response.getheaders():
                     lower = header.lower()
                     if lower in {
@@ -517,17 +530,31 @@ def make_handler(stack: DevStack):
                         "upgrade",
                     }:
                         continue
+                    if lower == "access-control-allow-origin":
+                        has_cors_origin = True
                     self.send_header(header, value)
                 self.send_header("Cache-Control", "no-store")
+                if cors and not has_cors_origin:
+                    self.send_header("Access-Control-Allow-Origin", "*")
                 self.end_headers()
                 if send_body:
-                    while chunk := response.read(1024 * 64):
+                    chunk_size = 1 if response.getheader("Content-Type", "").startswith("text/event-stream") else 1024 * 64
+                    while chunk := response.read(chunk_size):
                         self.wfile.write(chunk)
                         self.wfile.flush()
             except (ConnectionError, OSError, TimeoutError) as exc:
                 self.send_text(502, f"upstream {listen} unavailable: {exc}\n", send_body)
             finally:
                 connection.close()
+
+        def send_cors_options(self) -> None:
+            self.send_response(204)
+            self.send_header("Access-Control-Allow-Origin", "*")
+            self.send_header("Access-Control-Allow-Methods", "GET, HEAD, OPTIONS")
+            self.send_header("Access-Control-Allow-Headers", "Last-Event-ID, Cache-Control, Content-Type")
+            self.send_header("Access-Control-Max-Age", "600")
+            self.send_header("Content-Length", "0")
+            self.end_headers()
 
         def send_text(self, status: int, body: str, send_body: bool) -> None:
             payload = body.encode("utf-8")

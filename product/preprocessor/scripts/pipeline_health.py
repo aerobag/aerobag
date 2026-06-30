@@ -563,18 +563,22 @@ def add_product_fact_metrics(
     facts: dict[str, Any],
     previous_records: list[dict[str, Any]],
 ) -> None:
-    counts = aggregate_product_counts(facts)
+    summary = product_count_summary(facts)
+    counts = summary["counts"]
     previous_counts = latest_distinct_product_counts(previous_records, facts)
     for count_name, label in [
-        ("error_count", "Cycle product errors"),
-        ("warning_count", "Cycle product warnings"),
+        ("error_count", "Cycle product errors per cycle"),
+        ("warning_count", "Cycle product warnings per cycle"),
     ]:
         value = counts[count_name]
         previous = previous_counts.get(count_name) if previous_counts is not None else None
         increased = previous is not None and value > previous
-        message = f"{label}: {value}"
+        cycle_summary = format_cycle_count_summary(summary["cycles"], count_name)
+        message = f"{label}: max {value}"
+        if cycle_summary:
+            message = f"{message} ({cycle_summary})"
         if previous is not None:
-            message = f"{label}: {value} (previous distinct publication: {previous})"
+            message = f"{message}; previous distinct publication: {previous}"
         add_metric(
             metrics,
             metric_id=f"cycle_product.{count_name}",
@@ -584,6 +588,7 @@ def add_product_fact_metrics(
             severity="warning" if increased else "ok",
             warning_threshold=(previous + 1) if previous is not None else None,
             message=message,
+            details={"cycle_counts": summary["cycles"]},
         )
 
 
@@ -597,12 +602,45 @@ def iter_current_product_facts(facts: dict[str, Any]) -> list[dict[str, Any]]:
     return products
 
 
-def aggregate_product_counts(facts: dict[str, Any]) -> dict[str, int]:
-    counts = {"error_count": 0, "warning_count": 0}
+def product_count_summary(facts: dict[str, Any]) -> dict[str, Any]:
+    cycle_counts: dict[str, dict[str, int]] = {}
     for product in iter_current_product_facts(facts):
+        cycle = str(product.get("cycle") or "uncycled")
+        counts = cycle_counts.setdefault(cycle, {"error_count": 0, "warning_count": 0})
         counts["error_count"] += int(product.get("error_count") or 0)
         counts["warning_count"] += int(product.get("warning_count") or 0)
-    return counts
+    return {
+        "counts": max_cycle_counts(cycle_counts),
+        "cycles": cycle_counts,
+    }
+
+
+def aggregate_product_counts(facts: dict[str, Any]) -> dict[str, int]:
+    return product_count_summary(facts)["counts"]
+
+
+def max_cycle_counts(cycle_counts: dict[str, dict[str, int]]) -> dict[str, int]:
+    return {
+        "error_count": max(
+            (counts.get("error_count", 0) for counts in cycle_counts.values()),
+            default=0,
+        ),
+        "warning_count": max(
+            (counts.get("warning_count", 0) for counts in cycle_counts.values()),
+            default=0,
+        ),
+    }
+
+
+def format_cycle_count_summary(
+    cycle_counts: dict[str, dict[str, int]], count_name: str
+) -> str:
+    parts = [
+        f"{cycle}: {counts.get(count_name, 0)}"
+        for cycle, counts in sorted(cycle_counts.items())
+        if counts.get(count_name, 0)
+    ]
+    return ", ".join(parts)
 
 
 def product_facts_publication_key(facts: dict[str, Any]) -> tuple[str, ...]:

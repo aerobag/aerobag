@@ -226,6 +226,76 @@ class PipelineHealthTests(unittest.TestCase):
         self.assertEqual(errors["severity"], "warning")
         self.assertIn("previous distinct publication: 1", errors["message"])
 
+    def test_product_facts_uses_max_per_cycle_for_overlapping_publications(self) -> None:
+        current_facts = {
+            "inputs": {
+                "current_artifacts": {"error": None, "payload": []},
+                "deploy_health": {"error": None, "payload": {}},
+                "live_feeds_status": {"error": None, "payload": {"products": {}}},
+                "build_watch": {"error": None, "payload": {}},
+                "faa_cycle_calendar": {"error": None, "payload": {"cycles": []}},
+                "product_facts": [
+                    {
+                        "path": "/artifacts/current/product-facts.json",
+                        "payload": {
+                            "products": [
+                                {
+                                    "product_id": "NAV_DB_NAV11_2606_01",
+                                    "family": "nav-db",
+                                    "cycle": "2606",
+                                    "error_count": 0,
+                                    "warning_count": 145,
+                                },
+                                {
+                                    "product_id": "NAV_DB_NAV11_2607_01",
+                                    "family": "nav-db",
+                                    "cycle": "2607",
+                                    "error_count": 0,
+                                    "warning_count": 146,
+                                },
+                            ]
+                        },
+                    }
+                ],
+            }
+        }
+        previous = [
+            {
+                "facts": {
+                    "inputs": {
+                        "product_facts": [
+                            {
+                                "path": "/artifacts/previous/product-facts.json",
+                                "payload": {
+                                    "products": [
+                                        {
+                                            "product_id": "NAV_DB_NAV11_2606_01",
+                                            "family": "nav-db",
+                                            "cycle": "2606",
+                                            "error_count": 0,
+                                            "warning_count": 145,
+                                        }
+                                    ]
+                                },
+                            }
+                        ]
+                    }
+                }
+            }
+        ]
+
+        evaluation = pipeline_health.evaluate_health(
+            current_facts,
+            previous,
+            datetime(2026, 6, 19, 12, 0, 0, tzinfo=timezone.utc),
+        )
+
+        warnings = metric(evaluation, "cycle_product.warning_count")
+        self.assertEqual(warnings["value"], 146)
+        self.assertEqual(warnings["severity"], "warning")
+        self.assertIn("2606: 145, 2607: 146", warnings["message"])
+        self.assertIn("previous distinct publication: 145", warnings["message"])
+
     def test_current_response_reports_sample_age(self) -> None:
         record = {"sampled_at_utc": "2026-06-19T12:00:00Z"}
 

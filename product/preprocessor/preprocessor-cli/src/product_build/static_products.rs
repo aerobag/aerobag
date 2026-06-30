@@ -42,6 +42,11 @@ pub(super) fn build_terrain_product(
         let zip_path = output_dir.join(format!("terrain_{region_id}_{version_label}.zip"));
         let manifest_path = output_dir.join("manifest.json");
         if let Some(record) = try_load_node_record(&prepared, &[zip_path.clone(), manifest_path])? {
+            let record = with_terrain_dem_fetch_cache_refs(
+                record,
+                &fetch_cache,
+                &cached_selection.selection.requests,
+            )?;
             return Ok((
                 zip_path,
                 version_label,
@@ -103,6 +108,8 @@ pub(super) fn build_terrain_product(
     let manifest_path = output_dir.join("manifest.json");
     let _build_lock = match claim_or_wait_for_node(&prepared, &[zip_path.clone(), manifest_path])? {
         NodeCacheState::CacheHit(record) => {
+            let record =
+                with_terrain_dem_fetch_cache_refs(record, &fetch_cache, &dem_selection.requests)?;
             return Ok((
                 zip_path,
                 version_label,
@@ -1030,6 +1037,11 @@ pub(super) fn build_shaded_relief_product(
         let zip_path = output_dir.join(format!("shaded_relief_{region_id}_{version_label}.zip"));
         let manifest_path = package_dir.join("manifest.json");
         if let Some(record) = try_load_node_record(&prepared, &[zip_path.clone(), manifest_path])? {
+            let record = with_terrain_dem_fetch_cache_refs(
+                record,
+                &fetch_cache,
+                &cached_selection.selection.requests,
+            )?;
             let tile_levels =
                 read_static_tile_manifest_levels(&output_dir.join("package/manifest.json"))?;
             return Ok((
@@ -1095,6 +1107,8 @@ pub(super) fn build_shaded_relief_product(
     let manifest_path = package_dir.join("manifest.json");
     let _build_lock = match claim_or_wait_for_node(&prepared, &[zip_path.clone(), manifest_path])? {
         NodeCacheState::CacheHit(record) => {
+            let record =
+                with_terrain_dem_fetch_cache_refs(record, &fetch_cache, &dem_selection.requests)?;
             let tile_levels =
                 read_static_tile_manifest_levels(&output_dir.join("package/manifest.json"))?;
             return Ok((
@@ -2213,6 +2227,87 @@ pub(super) fn cached_terrain_dem_sources_for_requests(
     Ok(Some(sources))
 }
 
+fn with_terrain_dem_fetch_cache_refs(
+    mut record: NodeRecord,
+    fetch_cache: &FetchCacheConfig,
+    requests: &[PrefetchRequest],
+) -> anyhow::Result<NodeRecord> {
+    let refs = terrain_dem_fetch_cache_refs_for_requests(fetch_cache, requests)?;
+    if refs.is_empty() {
+        return Ok(record);
+    }
+    let mut merged = BTreeMap::<(String, String, String), FetchCacheRef>::new();
+    for fetch_ref in record.fetch_cache_refs.into_iter().chain(refs) {
+        let key = (
+            fetch_ref.sha256.clone(),
+            fetch_ref.cache_key.clone(),
+            fetch_ref.file.clone(),
+        );
+        merged.entry(key).or_insert(fetch_ref);
+    }
+    record.fetch_cache_refs = merged.into_values().collect();
+    Ok(record)
+}
+
+fn terrain_dem_fetch_cache_refs_for_requests(
+    fetch_cache: &FetchCacheConfig,
+    requests: &[PrefetchRequest],
+) -> anyhow::Result<Vec<FetchCacheRef>> {
+    let layout = CacheLayout::new(&fetch_cache.root);
+    let mut refs = BTreeMap::<(String, String, String), FetchCacheRef>::new();
+    for request in requests {
+        let metadata_path = layout.http_metadata_path(&request.cache_key);
+        let value: serde_json::Value = serde_json::from_slice(
+            &fs::read(&metadata_path)
+                .with_context(|| format!("failed to read {}", metadata_path.display()))?,
+        )
+        .with_context(|| format!("failed to parse {}", metadata_path.display()))?;
+        let sha256 = value
+            .get("sha256")
+            .and_then(|value| value.as_str())
+            .with_context(|| {
+                format!(
+                    "terrain DEM cache metadata missing sha256 for {}",
+                    request.url
+                )
+            })?
+            .to_string();
+        let blob_path = layout.blob_path(&sha256);
+        if !blob_path.is_file() {
+            bail!(
+                "terrain DEM cache metadata {} points at missing blob {}",
+                metadata_path.display(),
+                blob_path.display()
+            );
+        }
+        let file = value
+            .get("file")
+            .and_then(|value| value.as_str())
+            .map(ToOwned::to_owned)
+            .or_else(|| request.logical_file_name.clone())
+            .or_else(|| request.url.rsplit('/').next().map(ToOwned::to_owned))
+            .context("terrain DEM request has no filename")?;
+        let url = value
+            .get("url")
+            .and_then(|value| value.as_str())
+            .unwrap_or(&request.url)
+            .to_string();
+        let size_bytes = value
+            .get("size")
+            .and_then(|value| value.as_u64())
+            .or_else(|| fs::metadata(&blob_path).ok().map(|metadata| metadata.len()));
+        let key = (sha256.clone(), request.cache_key.clone(), file.clone());
+        refs.entry(key).or_insert(FetchCacheRef {
+            cache_key: request.cache_key.clone(),
+            url,
+            file,
+            sha256,
+            size_bytes,
+        });
+    }
+    Ok(refs.into_values().collect())
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub(super) struct TerrainDemCandidate {
     url: String,
@@ -3221,6 +3316,55 @@ mod tests {
         assert!(output_dir.join("water_mask_nw_test.zip").exists());
         assert!(!output_dir.join("source.geojson").exists());
         assert!(!source_pages.exists());
+    }
+
+    #[test]
+    fn cached_terrain_record_gets_dem_fetch_refs_from_fetch_cache_metadata() {
+        let temp = tempdir().unwrap();
+        let fetch_cache = FetchCacheConfig {
+            root: temp.path().join("fetch"),
+            mode: FetchCacheMode::CacheFirst,
+        };
+        let layout = CacheLayout::new(&fetch_cache.root);
+        fs::create_dir_all(layout.http_dir()).unwrap();
+        fs::create_dir_all(layout.blobs_dir()).unwrap();
+
+        let url = "https://example.test/USGS_1_n46w106_20240325.tif";
+        let request = PrefetchRequest::new(url)
+            .with_logical_file_name("USGS_1_n46w106_20240325.tif")
+            .with_cache_key(format!("{url}#logical_name=USGS_1_n46w106_20240325.tif"));
+        fs::write(layout.blob_path("dem-sha"), b"dem").unwrap();
+        fs::write(
+            layout.http_metadata_path(&request.cache_key),
+            serde_json::to_vec_pretty(&serde_json::json!({
+                "cache_key": request.cache_key,
+                "file": "USGS_1_n46w106_20240325.tif",
+                "sha256": "dem-sha",
+                "size": 3,
+                "url": url,
+            }))
+            .unwrap(),
+        )
+        .unwrap();
+
+        let record = NodeRecord {
+            name: "static-terrain-nw".to_string(),
+            fingerprint: "fingerprint".to_string(),
+            started_at_utc: "2026-06-30T00:00:00Z".to_string(),
+            finished_at_utc: "2026-06-30T00:00:01Z".to_string(),
+            elapsed_ms: 1,
+            cache_hit: true,
+            inputs: BTreeMap::new(),
+            outputs: BTreeMap::new(),
+            output_details: BTreeMap::new(),
+            fetch_cache_refs: Vec::new(),
+        };
+
+        let enriched = with_terrain_dem_fetch_cache_refs(record, &fetch_cache, &[request]).unwrap();
+
+        assert_eq!(enriched.fetch_cache_refs.len(), 1);
+        assert_eq!(enriched.fetch_cache_refs[0].sha256, "dem-sha");
+        assert_eq!(enriched.fetch_cache_refs[0].size_bytes, Some(3));
     }
 }
 

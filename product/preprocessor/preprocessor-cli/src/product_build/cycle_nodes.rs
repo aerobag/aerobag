@@ -844,6 +844,119 @@ pub(super) fn tpp_render_unit_records_for_plan(
         .collect()
 }
 
+fn tpp_plate_sources_from_unit_records(
+    config: &ProductBuildConfig,
+    unit_records: &[NodeRecord],
+) -> anyhow::Result<TppPlateSourceMap> {
+    let mut sources = TppPlateSourceMap::new();
+    for unit_record in unit_records {
+        let unit_plates_root =
+            resolve_artifact_path(config, output_path(unit_record, "plates_root")?);
+        if unit_plates_root.is_dir() {
+            collect_tpp_plate_sources(config, &unit_plates_root, &unit_plates_root, &mut sources)?;
+        }
+    }
+    Ok(sources)
+}
+
+fn collect_tpp_plate_sources(
+    config: &ProductBuildConfig,
+    plates_root: &Path,
+    dir: &Path,
+    sources: &mut TppPlateSourceMap,
+) -> anyhow::Result<()> {
+    let mut entries = fs::read_dir(dir)
+        .with_context(|| format!("failed to read {}", dir.display()))?
+        .collect::<Result<Vec<_>, _>>()
+        .with_context(|| format!("failed to iterate {}", dir.display()))?;
+    entries.sort_by_key(|entry| entry.path());
+    for entry in entries {
+        let path = entry.path();
+        let file_type = entry
+            .file_type()
+            .with_context(|| format!("failed to stat {}", path.display()))?;
+        if file_type.is_dir() {
+            collect_tpp_plate_sources(config, plates_root, &path, sources)?;
+            continue;
+        }
+        if !file_type.is_file() || path.extension().and_then(|value| value.to_str()) != Some("png")
+        {
+            continue;
+        }
+        let member = Path::new("plates")
+            .join(path.strip_prefix(plates_root).with_context(|| {
+                format!(
+                    "failed to relativize {} under {}",
+                    path.display(),
+                    plates_root.display()
+                )
+            })?)
+            .to_string_lossy()
+            .replace('\\', "/");
+        insert_tpp_plate_source(sources, member, path)?;
+    }
+    Ok(())
+}
+
+fn insert_tpp_plate_source(
+    sources: &mut TppPlateSourceMap,
+    member: String,
+    path: PathBuf,
+) -> anyhow::Result<()> {
+    if let Some(existing) = sources.get(&member) {
+        let existing_hash = hash_file(existing)?;
+        let new_hash = hash_file(&path)?;
+        if existing_hash != new_hash {
+            bail!(
+                "duplicate TPP package member {member} has conflicting source files: {} and {}",
+                existing.display(),
+                path.display()
+            );
+        }
+        return Ok(());
+    }
+    sources.insert(member, path);
+    Ok(())
+}
+
+fn write_tpp_plate_source_manifest(
+    config: &ProductBuildConfig,
+    path: &Path,
+    sources: &TppPlateSourceMap,
+) -> anyhow::Result<()> {
+    let relative_sources = sources
+        .iter()
+        .map(|(member, source)| {
+            (
+                member.clone(),
+                relative_artifact_path(source, &config.build_root),
+            )
+        })
+        .collect::<BTreeMap<_, _>>();
+    fs::write(
+        path,
+        serde_json::to_vec_pretty(&relative_sources)
+            .context("failed to encode tpp plate source manifest")?,
+    )
+    .with_context(|| format!("failed to write {}", path.display()))
+}
+
+fn load_tpp_plate_source_manifest(
+    config: &ProductBuildConfig,
+    render_record: &NodeRecord,
+) -> anyhow::Result<TppPlateSourceMap> {
+    let manifest_path = resolve_artifact_path(config, output_path(render_record, "plate_sources")?);
+    let relative_sources: BTreeMap<String, String> = serde_json::from_slice(
+        &fs::read(&manifest_path)
+            .with_context(|| format!("failed to read {}", manifest_path.display()))?,
+    )
+    .with_context(|| format!("failed to parse {}", manifest_path.display()))?;
+    Ok(relative_sources
+        .into_iter()
+        .map(|(member, path)| (member, resolve_artifact_path(config, &path)))
+        .collect())
+}
+
 pub(super) fn tpp_thumbnail_records_for_plan(
     region: Region,
     plan: &TppPackagePlan,
@@ -1040,14 +1153,15 @@ pub(super) fn build_tpp_render_assemble_node(
     )?;
     let run_root = prepared.dir.clone();
     let work_dir = run_root.join(format!("work/tpp-{region_id}"));
-    let plates_root = work_dir.join("plates");
     let plan_work_dir = resolve_artifact_path(config, output_path(plan_record, "work_dir")?);
     let plan_path = resolve_artifact_path(config, output_path(plan_record, "plan")?);
     let child_records_path = run_root.join("meta").join("tpp-render-unit-records.json");
+    let plate_sources_path = run_root.join("meta").join("tpp-plate-sources.json");
     let marker = run_root.join(".render-complete");
     let expected = vec![
-        plates_root.clone(),
         child_records_path.clone(),
+        plate_sources_path.clone(),
+        work_dir.join("d-TPP_Metafile.xml"),
         marker.clone(),
     ];
     let _build_lock = match claim_or_wait_for_node(&prepared, &expected)? {
@@ -1060,38 +1174,29 @@ pub(super) fn build_tpp_render_assemble_node(
         fs::remove_dir_all(&work_dir)
             .with_context(|| format!("failed to remove {}", work_dir.display()))?;
     }
-    fs::create_dir_all(&plates_root)
-        .with_context(|| format!("failed to create {}", plates_root.display()))?;
     if let Some(parent) = child_records_path.parent() {
         fs::create_dir_all(parent)
             .with_context(|| format!("failed to create {}", parent.display()))?;
     }
+    fs::create_dir_all(&work_dir)
+        .with_context(|| format!("failed to create {}", work_dir.display()))?;
     hard_link_or_copy_file(
         &plan_work_dir.join("d-TPP_Metafile.xml"),
         &work_dir.join("d-TPP_Metafile.xml"),
     )?;
-    for unit_record in unit_records {
-        let unit_plates_root =
-            resolve_artifact_path(config, output_path(unit_record, "plates_root")?);
-        if unit_plates_root.is_dir() {
-            hard_link_or_copy_dir_recursive(&unit_plates_root, &plates_root)?;
-        }
-    }
+    let plate_sources = tpp_plate_sources_from_unit_records(config, unit_records)?;
     fs::write(
         &child_records_path,
         serde_json::to_vec_pretty(unit_records)
             .context("failed to encode tpp render unit node records")?,
     )
     .with_context(|| format!("failed to write {}", child_records_path.display()))?;
+    write_tpp_plate_source_manifest(config, &plate_sources_path, &plate_sources)?;
     fs::write(&marker, b"ok").with_context(|| format!("failed to write {}", marker.display()))?;
     let outputs = BTreeMap::from([
         (
             "work_dir".to_string(),
             relative_artifact_path(&work_dir, &config.build_root),
-        ),
-        (
-            "plates_root".to_string(),
-            relative_artifact_path(&plates_root, &config.build_root),
         ),
         (
             "plan".to_string(),
@@ -1100,6 +1205,10 @@ pub(super) fn build_tpp_render_assemble_node(
         (
             "render_unit_records".to_string(),
             relative_artifact_path(&child_records_path, &config.build_root),
+        ),
+        (
+            "plate_sources".to_string(),
+            relative_artifact_path(&plate_sources_path, &config.build_root),
         ),
         (
             "marker".to_string(),
@@ -1313,10 +1422,11 @@ pub(super) fn build_tpp_package_plan_node(
     source_urls_path: &Path,
     version_label: &str,
     render_record: &NodeRecord,
-) -> anyhow::Result<(NodeRecord, PathBuf, TppPackagePlan)> {
+) -> anyhow::Result<(NodeRecord, PathBuf, TppPlateSourceMap, TppPackagePlan)> {
     let contract_id = product_contract_id_for_family("tpp")?;
     let artifact_version = contract_artifact_version(contract_id, version_label);
-    let asset_root = resolve_artifact_path(config, output_path(render_record, "work_dir")?);
+    let metadata_root = resolve_artifact_path(config, output_path(render_record, "work_dir")?);
+    let plate_sources = load_tpp_plate_source_manifest(config, render_record)?;
     let inputs = tpp_package_plan_inputs(
         region,
         source_urls_path,
@@ -1336,13 +1446,18 @@ pub(super) fn build_tpp_package_plan_node(
     {
         NodeCacheState::CacheHit(record) => {
             let plan = load_tpp_package_plan(&plan_path)?;
-            return Ok((record, asset_root, plan));
+            return Ok((record, metadata_root, plate_sources, plan));
         }
         NodeCacheState::Build(lock) => lock,
     };
     let started_at_utc = utc_now_string();
     let started = Instant::now();
-    let plan = plan_package_region(&asset_root, region, version_label, &artifact_version)?;
+    let plan = plan_package_region_from_members(
+        region,
+        version_label,
+        &artifact_version,
+        plate_sources.keys().cloned().collect(),
+    )?;
     if let Some(parent) = plan_path.parent() {
         fs::create_dir_all(parent)
             .with_context(|| format!("failed to create {}", parent.display()))?;
@@ -1355,8 +1470,12 @@ pub(super) fn build_tpp_package_plan_node(
     fs::write(&marker, b"ok").with_context(|| format!("failed to write {}", marker.display()))?;
     let outputs = BTreeMap::from([
         (
-            "asset_root".to_string(),
-            relative_artifact_path(&asset_root, &config.build_root),
+            "metadata_root".to_string(),
+            relative_artifact_path(&metadata_root, &config.build_root),
+        ),
+        (
+            "plate_sources".to_string(),
+            output_path(render_record, "plate_sources")?.to_string(),
         ),
         (
             "plan".to_string(),
@@ -1379,18 +1498,18 @@ pub(super) fn build_tpp_package_plan_node(
         utc_now_string(),
         started.elapsed().as_millis() as u64,
     )?;
-    Ok((record, asset_root, plan))
+    Ok((record, metadata_root, plate_sources, plan))
 }
 
 pub(super) fn build_tpp_thumbnail_node(
     config: &ProductBuildConfig,
     region: Region,
-    asset_root: &Path,
+    source_png: &Path,
     thumbnail: &TppThumbnailPlan,
 ) -> anyhow::Result<NodeRecord> {
     let region_id = region.code().to_ascii_lowercase();
     let node_name = format!("tpp-{region_id}-thumbnail");
-    let inputs = tpp_thumbnail_inputs(region, asset_root, thumbnail)?;
+    let inputs = tpp_thumbnail_inputs(region, source_png, thumbnail)?;
     let prepared = prepare_node_at(
         &build_shared_node_dir(config, &node_name)?,
         &node_name,
@@ -1408,7 +1527,7 @@ pub(super) fn build_tpp_thumbnail_node(
                 fs::remove_dir_all(&output_root)
                     .with_context(|| format!("failed to remove {}", output_root.display()))?;
             }
-            let written = write_tpp_thumbnail(asset_root, &output_root, thumbnail)?;
+            let written = write_tpp_thumbnail_from_source(source_png, &output_root, thumbnail)?;
             if written != thumbnail_path {
                 bail!(
                     "tpp thumbnail writer returned {} but expected {}",
@@ -1443,7 +1562,8 @@ pub(super) fn build_tpp_package_assemble_node(
     region: Region,
     source_urls_path: &Path,
     plan_record: &NodeRecord,
-    asset_root: &Path,
+    metadata_root: &Path,
+    plate_sources: &TppPlateSourceMap,
     plan: &TppPackagePlan,
     thumbnail_records: &[NodeRecord],
 ) -> anyhow::Result<(NodeRecord, AssetSource)> {
@@ -1479,7 +1599,7 @@ pub(super) fn build_tpp_package_assemble_node(
                 record,
                 AssetSource {
                     package_outputs_path,
-                    asset_root: asset_root.to_path_buf(),
+                    asset_root: metadata_root.to_path_buf(),
                     package_root: package_root.clone(),
                     unpack_source_root: unpack_source_root.clone(),
                     source_urls_path: Some(source_urls_path.to_path_buf()),
@@ -1499,25 +1619,27 @@ pub(super) fn build_tpp_package_assemble_node(
             .with_context(|| format!("failed to remove {}", unpack_source_root.display()))?;
     }
     let thumbnail_sources = thumbnail_sources_from_records(config, plan, thumbnail_records)?;
-    let package_count = assemble_package_region(
-        asset_root,
+    let package_count = assemble_package_region_from_sources(
+        metadata_root,
         &package_root,
         &provenance_dir,
         region,
         plan,
+        plate_sources,
         &thumbnail_sources,
     )?;
-    prepare_package_unpack_source_root(
+    prepare_package_unpack_source_root_with_member_sources(
         std::slice::from_ref(&zip_path),
-        asset_root,
+        metadata_root,
         &package_root,
         &unpack_source_root,
         &["thumbnails/"],
+        Some(plate_sources),
     )?;
     let outputs = BTreeMap::from([
         (
-            "asset_root".to_string(),
-            relative_artifact_path(asset_root, &config.build_root),
+            "metadata_root".to_string(),
+            relative_artifact_path(metadata_root, &config.build_root),
         ),
         (
             "package_root".to_string(),
@@ -1554,7 +1676,7 @@ pub(super) fn build_tpp_package_assemble_node(
         record,
         AssetSource {
             package_outputs_path,
-            asset_root: asset_root.to_path_buf(),
+            asset_root: metadata_root.to_path_buf(),
             package_root,
             unpack_source_root,
             source_urls_path: Some(source_urls_path.to_path_buf()),
@@ -1780,8 +1902,8 @@ fn tpp_render_assemble_inputs(
             ),
         ),
         (
-            "tpp_render_node_version".to_string(),
-            TPP_RENDER_NODE_VERSION.to_string(),
+            "tpp_render_assemble_node_version".to_string(),
+            TPP_RENDER_ASSEMBLE_NODE_VERSION.to_string(),
         ),
     ]))
 }
@@ -1823,7 +1945,7 @@ fn tpp_package_plan_inputs(
 
 fn tpp_thumbnail_inputs(
     region: Region,
-    asset_root: &Path,
+    source_png: &Path,
     thumbnail: &TppThumbnailPlan,
 ) -> anyhow::Result<BTreeMap<String, String>> {
     Ok(BTreeMap::from([
@@ -1834,10 +1956,7 @@ fn tpp_thumbnail_inputs(
             "thumbnail_path".to_string(),
             thumbnail.thumbnail_path.clone(),
         ),
-        (
-            "source_png".to_string(),
-            hash_file(&asset_root.join(&thumbnail.asset_path))?,
-        ),
+        ("source_png".to_string(), hash_file(source_png)?),
         (
             "tpp_package_node_version".to_string(),
             TPP_PACKAGE_NODE_VERSION.to_string(),
@@ -2625,13 +2744,19 @@ mod tests {
         let package_plan_inputs =
             tpp_package_plan_inputs(Region::Nw, &source_urls, "2606_01", "TPP1", &render_record)
                 .unwrap();
-        let thumbnail_inputs = tpp_thumbnail_inputs(Region::Nw, &asset_root, &thumbnail).unwrap();
+        let thumbnail_inputs =
+            tpp_thumbnail_inputs(Region::Nw, &asset_root.join("plates/test.png"), &thumbnail)
+                .unwrap();
         let assemble_inputs =
             tpp_package_assemble_inputs(Region::Nw, &render_record, &[thumbnail_record]).unwrap();
+        let render_assemble_inputs =
+            tpp_render_assemble_inputs(Region::Nw, &render_record, &[]).unwrap();
 
         assert!(!package_plan_inputs.contains_key("tools_lib"));
         assert!(!thumbnail_inputs.contains_key("tools_lib"));
         assert!(!assemble_inputs.contains_key("tools_lib"));
+        assert!(render_assemble_inputs.contains_key("tpp_render_assemble_node_version"));
+        assert!(!render_assemble_inputs.contains_key("tpp_render_node_version"));
     }
 
     #[test]

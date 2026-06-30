@@ -30,7 +30,7 @@ use preprocessor_live_feeds::{
 use preprocessor_resource_index::{
     write_resource_index, AssetSource, BuildResourceIndexRequest, ChartSource,
 };
-use preprocessor_tools::{run_tool_runner, ToolInvocation, TOOL_RUNNER_ARG};
+use preprocessor_tools::{run_tool_runner, ToolInvocation, TOOL_RUNNER_ARG, TOOL_RUNNER_EXE_ENV};
 use preprocessor_tpp::{run_native_tpp, NativeTppRunRequest};
 use preprocessor_vectors::{
     analyze_obstacle_thresholds, audit_class_airspace_simplification, build_bravo_union_svg,
@@ -1580,7 +1580,7 @@ struct FullGcConfig {
 fn full_gc_config_from_args(args: &[String]) -> anyhow::Result<FullGcConfig> {
     let mut base = ProductBuildConfig::from_env_and_args(&[])?;
     let mut mode = BuildCacheGcMode::Execute;
-    let mut grace_hours = 24_u64;
+    let mut grace_hours = 0_u64;
     let mut index = 0;
     while index < args.len() {
         match args[index].as_str() {
@@ -1620,7 +1620,7 @@ fn full_gc_config_from_args(args: &[String]) -> anyhow::Result<FullGcConfig> {
 fn build_cache_gc_config_from_args(args: &[String]) -> anyhow::Result<BuildCacheGcConfig> {
     let mut base = ProductBuildConfig::from_env_and_args(&[])?;
     let mut mode = BuildCacheGcMode::DryRun;
-    let mut grace_hours = 24_u64;
+    let mut grace_hours = 0_u64;
     let mut bootstrap_from_build_manifests = false;
     let mut index = 0;
     while index < args.len() {
@@ -1688,7 +1688,7 @@ fn basic_gc_args(
     let base = ProductBuildConfig::from_env_and_args(&[])?;
     let mut build_root = base.build_root;
     let mut mode = BuildCacheGcMode::DryRun;
-    let mut grace_hours = 24_u64;
+    let mut grace_hours = 0_u64;
     let mut index = 0;
     while index < args.len() {
         match args[index].as_str() {
@@ -1830,6 +1830,8 @@ fn main() -> anyhow::Result<()> {
     if args.get(1).map(String::as_str) == Some(TOOL_RUNNER_ARG) {
         return run_tool_runner(&args[2..]);
     }
+    let current_exe = env::current_exe().context("failed to resolve current executable")?;
+    env::set_var(TOOL_RUNNER_EXE_ENV, current_exe);
     if matches!(args.get(1).map(String::as_str), Some("--help" | "-h")) {
         println!("{}", usage());
         return Ok(());
@@ -3024,7 +3026,7 @@ mod tests {
         let config = full_gc_config_from_args(&args).expect("parse gc");
         assert_eq!(config.build_root, PathBuf::from("/tmp/artifacts"));
         assert_eq!(config.mode, BuildCacheGcMode::Execute);
-        assert_eq!(config.grace_hours, 24);
+        assert_eq!(config.grace_hours, 0);
     }
 
     #[test]

@@ -25,8 +25,9 @@ use serde::{Deserialize, Serialize};
 
 mod package;
 pub use package::{
-    assemble_package_region, plan_package_region, write_tpp_thumbnail, TppPackagePlan,
-    TppThumbnailPlan,
+    assemble_package_region, assemble_package_region_from_sources, plan_package_region,
+    plan_package_region_from_members, write_tpp_thumbnail, write_tpp_thumbnail_from_source,
+    TppPackagePlan, TppThumbnailPlan,
 };
 use package::{package_region, package_region_versioned};
 

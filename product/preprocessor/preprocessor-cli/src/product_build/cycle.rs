@@ -539,21 +539,23 @@ pub fn build_cycle(config: &ProductBuildConfig) -> anyhow::Result<PathBuf> {
                         };
                         let source_urls_path =
                             source_urls_dir.join(format!("tpp-{region_id}/source_urls.jsonl"));
-                        let (record, asset_root, plan) = build_tpp_package_plan_node(
-                            &config,
-                            region,
-                            &source_urls_path,
-                            tpp_versions
-                                .get(&region_id)
-                                .expect("tpp region version should exist"),
-                            &render_record,
-                        )?;
+                        let (record, metadata_root, plate_sources, plan) =
+                            build_tpp_package_plan_node(
+                                &config,
+                                region,
+                                &source_urls_path,
+                                tpp_versions
+                                    .get(&region_id)
+                                    .expect("tpp region version should exist"),
+                                &render_record,
+                            )?;
                         let cache_hit = record.cache_hit;
                         Ok(TaskCompletion {
                             node_records: vec![record.clone()],
                             value: TaskValue::TppPackagePlan {
                                 record,
-                                asset_root,
+                                metadata_root,
+                                plate_sources,
                                 plan: plan.clone(),
                             },
                             completion_detail: format!(
@@ -567,14 +569,25 @@ pub fn build_cycle(config: &ProductBuildConfig) -> anyhow::Result<PathBuf> {
                     ScheduledTaskKind::TppThumbnail { region, thumbnail } => {
                         let region_id = region.code().to_ascii_lowercase();
                         let plan_id = tpp_package_plan_task_name(region);
-                        let asset_root = task_values_snapshot.with(&plan_id, |value| match value {
-                            Some(TaskValue::TppPackagePlan { asset_root, .. }) => {
-                                asset_root.clone()
-                            }
-                            _ => unreachable!("tpp package plan dependency should have completed"),
-                        });
+                        let source_png =
+                            task_values_snapshot.with(&plan_id, |value| match value {
+                                Some(TaskValue::TppPackagePlan { plate_sources, .. }) => {
+                                    plate_sources
+                                        .get(&thumbnail.asset_path)
+                                        .cloned()
+                                        .with_context(|| {
+                                            format!(
+                                                "missing tpp plate source for {}",
+                                                thumbnail.asset_path
+                                            )
+                                        })
+                                }
+                                _ => unreachable!(
+                                    "tpp package plan dependency should have completed"
+                                ),
+                            })?;
                         let record =
-                            build_tpp_thumbnail_node(&config, region, &asset_root, &thumbnail)?;
+                            build_tpp_thumbnail_node(&config, region, &source_png, &thumbnail)?;
                         let cache_hit = record.cache_hit;
                         Ok(TaskCompletion {
                             node_records: vec![record],
@@ -730,18 +743,20 @@ pub fn build_cycle(config: &ProductBuildConfig) -> anyhow::Result<PathBuf> {
                     ScheduledTaskKind::TppPackage { region } => {
                         let region_id = region.code().to_ascii_lowercase();
                         let package_plan_id = tpp_package_plan_task_name(region);
-                        let (plan_record, asset_root, plan) = match task_values_snapshot
-                            .get(&package_plan_id)
-                        {
-                            Some(TaskValue::TppPackagePlan {
-                                record,
-                                asset_root,
-                                plan,
-                            }) => (record, asset_root, plan),
-                            _ => {
-                                unreachable!("tpp package plan dependency should have completed")
-                            }
-                        };
+                        let (plan_record, metadata_root, plate_sources, plan) =
+                            match task_values_snapshot.get(&package_plan_id) {
+                                Some(TaskValue::TppPackagePlan {
+                                    record,
+                                    metadata_root,
+                                    plate_sources,
+                                    plan,
+                                }) => (record, metadata_root, plate_sources, plan),
+                                _ => {
+                                    unreachable!(
+                                        "tpp package plan dependency should have completed"
+                                    )
+                                }
+                            };
                         let thumbnail_records = tpp_thumbnail_records_for_plan(
                             region,
                             &plan,
@@ -753,7 +768,8 @@ pub fn build_cycle(config: &ProductBuildConfig) -> anyhow::Result<PathBuf> {
                             region,
                             &source_urls_dir.join(format!("tpp-{region_id}/source_urls.jsonl")),
                             &plan_record,
-                            &asset_root,
+                            &metadata_root,
+                            &plate_sources,
                             &plan,
                             &thumbnail_records,
                         )?;

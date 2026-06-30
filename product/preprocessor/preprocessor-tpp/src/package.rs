@@ -111,8 +111,17 @@ pub fn plan_package_region(
     manifest_version: &str,
     artifact_version: &str,
 ) -> anyhow::Result<TppPackagePlan> {
-    let package_id = format!("{}_TPP_{}", region.code(), artifact_version);
     let plate_members = collect_region_pngs(asset_root, region)?;
+    plan_package_region_from_members(region, manifest_version, artifact_version, plate_members)
+}
+
+pub fn plan_package_region_from_members(
+    region: Region,
+    manifest_version: &str,
+    artifact_version: &str,
+    plate_members: Vec<String>,
+) -> anyhow::Result<TppPackagePlan> {
+    let package_id = format!("{}_TPP_{}", region.code(), artifact_version);
     let thumbnails = plate_members.iter().map(thumbnail_plan).collect();
     Ok(TppPackagePlan {
         package_id: package_id.clone(),
@@ -130,8 +139,20 @@ pub fn write_tpp_thumbnail(
     output_root: &Path,
     thumbnail: &TppThumbnailPlan,
 ) -> anyhow::Result<PathBuf> {
-    write_thumbnail_from_png(
+    write_tpp_thumbnail_from_source(
         &asset_root.join(&thumbnail.asset_path),
+        output_root,
+        thumbnail,
+    )
+}
+
+pub fn write_tpp_thumbnail_from_source(
+    source_png: &Path,
+    output_root: &Path,
+    thumbnail: &TppThumbnailPlan,
+) -> anyhow::Result<PathBuf> {
+    write_thumbnail_from_png(
+        source_png,
         &output_root.join("thumbnails"),
         Path::new(&thumbnail.asset_path),
     )?;
@@ -146,6 +167,31 @@ pub fn assemble_package_region(
     plan: &TppPackagePlan,
     thumbnail_sources: &BTreeMap<String, PathBuf>,
 ) -> anyhow::Result<usize> {
+    let plate_sources = plan
+        .plate_members
+        .iter()
+        .map(|member| (member.clone(), asset_root.join(member)))
+        .collect::<BTreeMap<_, _>>();
+    assemble_package_region_from_sources(
+        asset_root,
+        output_root,
+        provenance_dir,
+        region,
+        plan,
+        &plate_sources,
+        thumbnail_sources,
+    )
+}
+
+pub fn assemble_package_region_from_sources(
+    metadata_root: &Path,
+    output_root: &Path,
+    provenance_dir: &Path,
+    region: Region,
+    plan: &TppPackagePlan,
+    plate_sources: &BTreeMap<String, PathBuf>,
+    thumbnail_sources: &BTreeMap<String, PathBuf>,
+) -> anyhow::Result<usize> {
     fs::create_dir_all(output_root)
         .with_context(|| format!("failed to create {}", output_root.display()))?;
     let manifest_path = output_root.join(&plan.manifest_name);
@@ -155,14 +201,15 @@ pub fn assemble_package_region(
     remove_if_exists(&zip_path)?;
     remove_if_exists(&package_assets_path)?;
 
-    stage_member_files(asset_root, output_root, &plan.plate_members)?;
+    stage_member_source_files(output_root, &plan.plate_members, plate_sources)?;
     stage_thumbnail_files(output_root, thumbnail_sources)?;
     let archive_members = plan.archive_members()?;
     write_package_asset_manifest(
-        asset_root,
+        metadata_root,
         &package_assets_path,
         &plan.package_id,
         &archive_members,
+        plate_sources,
     )?;
     write_tpp_manifest(&manifest_path, &plan.manifest_version, &archive_members)?;
     write_tpp_zip(
@@ -220,12 +267,14 @@ for state in sys.argv[2:]:
     }
 
     let stdout = String::from_utf8(output.stdout).context("plate enumeration was not utf-8")?;
-    Ok(stdout
+    let mut members = stdout
         .lines()
         .map(str::trim)
         .filter(|line| !line.is_empty())
         .map(ToOwned::to_owned)
-        .collect())
+        .collect::<Vec<_>>();
+    members.sort();
+    Ok(members)
 }
 
 fn thumbnail_plan(member: &String) -> TppThumbnailPlan {
@@ -245,24 +294,26 @@ fn short_stable_hash(value: &str) -> String {
     hash_text(value).chars().take(24).collect()
 }
 
-fn stage_member_files(
-    asset_root: &Path,
+fn stage_member_source_files(
     output_root: &Path,
     members: &[String],
+    sources: &BTreeMap<String, PathBuf>,
 ) -> anyhow::Result<()> {
     for member in members {
         let relative_path = Path::new(member);
-        let source = asset_root.join(relative_path);
+        let source = sources
+            .get(member)
+            .with_context(|| format!("tpp package plan missing source for {member}"))?;
         let destination = output_root.join(relative_path);
         if let Some(parent) = destination.parent() {
             fs::create_dir_all(parent)
                 .with_context(|| format!("failed to create {}", parent.display()))?;
         }
         remove_if_exists(&destination)?;
-        match fs::hard_link(&source, &destination) {
+        match fs::hard_link(source, &destination) {
             Ok(()) => {}
             Err(_) => {
-                fs::copy(&source, &destination).with_context(|| {
+                fs::copy(source, &destination).with_context(|| {
                     format!(
                         "failed to copy {} to {}",
                         source.display(),
@@ -359,16 +410,22 @@ fn write_tpp_zip(
 }
 
 fn write_package_asset_manifest(
-    asset_root: &Path,
+    metadata_root: &Path,
     output_path: &Path,
     package_id: &str,
     members: &[String],
+    plate_sources: &BTreeMap<String, PathBuf>,
 ) -> anyhow::Result<()> {
-    let tpp_metadata = load_tpp_asset_metadata(asset_root)?;
+    let tpp_metadata = load_tpp_asset_metadata(metadata_root)?;
     let assets = members
         .iter()
         .filter(|member| member.ends_with(".png") && !member.starts_with("thumbnails/"))
-        .map(|member| build_package_asset_records_for_member(asset_root, member, &tpp_metadata))
+        .map(|member| {
+            let source = plate_sources
+                .get(member)
+                .with_context(|| format!("package asset manifest missing source for {member}"))?;
+            build_package_asset_records_for_member(member, source, &tpp_metadata)
+        })
         .collect::<anyhow::Result<Vec<_>>>()?
         .into_iter()
         .flatten()
@@ -490,8 +547,8 @@ fn load_tpp_asset_metadata(
 }
 
 fn build_package_asset_records_for_member(
-    asset_root: &Path,
     member: &str,
+    source_png: &Path,
     tpp_metadata: &BTreeMap<(String, String), TppAssetMetadata>,
 ) -> anyhow::Result<Vec<PackageAssetRecord>> {
     let asset_path = Path::new(member);
@@ -518,7 +575,7 @@ fn build_package_asset_records_for_member(
         .join(asset_path)
         .to_string_lossy()
         .replace('\\', "/");
-    let georef = read_plate_georef_from_png(&asset_root.join(member))?;
+    let georef = read_plate_georef_from_png(source_png)?;
 
     let hotspot_records = if normalized_hotspot_label.starts_with("HOT-") {
         let hotspot_prefix = format!("{normalized_hotspot_label}-");
@@ -798,6 +855,58 @@ mod tests {
                 .compression(),
             CompressionMethod::Stored
         );
+    }
+
+    #[test]
+    fn tpp_package_can_assemble_from_explicit_plate_sources() {
+        let temp = tempdir().unwrap();
+        let metadata_root = temp.path().join("metadata-root");
+        let source_root = temp.path().join("source-root");
+        let output_root = temp.path().join("output-root");
+        let provenance_dir = temp.path().join("meta/provenance/tpp-nw");
+        fs::create_dir_all(&metadata_root).unwrap();
+        fs::create_dir_all(&provenance_dir).unwrap();
+        let source_png = source_root.join("unit-a/plates/RNT/STAR-WA-GLASR THREE.png");
+        fs::create_dir_all(source_png.parent().unwrap()).unwrap();
+        fs::write(&source_png, ONE_BY_ONE_PNG).unwrap();
+
+        let member = "plates/RNT/STAR-WA-GLASR THREE.png".to_string();
+        let plan =
+            plan_package_region_from_members(Region::Nw, "2604", "2604", vec![member.clone()])
+                .unwrap();
+        let thumbnail = write_tpp_thumbnail_from_source(
+            &source_png,
+            &output_root,
+            plan.thumbnails.first().unwrap(),
+        )
+        .unwrap();
+        let plate_sources = BTreeMap::from([(member.clone(), source_png)]);
+        let thumbnail_sources = BTreeMap::from([(
+            plan.thumbnails.first().unwrap().thumbnail_path.clone(),
+            thumbnail,
+        )]);
+
+        assemble_package_region_from_sources(
+            &metadata_root,
+            &output_root,
+            &provenance_dir,
+            Region::Nw,
+            &plan,
+            &plate_sources,
+            &thumbnail_sources,
+        )
+        .unwrap();
+
+        let zip_path = output_root.join(&plan.zip_name);
+        let file = fs::File::open(zip_path).unwrap();
+        let mut archive = ZipArchive::new(file).unwrap();
+        assert_eq!(
+            archive.by_name(&member).unwrap().compression(),
+            CompressionMethod::Stored
+        );
+        assert!(archive
+            .by_name("thumbnails/plates/RNT/STAR-WA-GLASR THREE.png")
+            .is_ok());
     }
 
     #[test]

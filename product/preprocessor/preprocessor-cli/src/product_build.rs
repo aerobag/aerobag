@@ -53,9 +53,9 @@ use preprocessor_resource_index::{
     ResourceIndex, TileBoundsRecord, TileLevelRecord,
 };
 use preprocessor_tpp::{
-    assemble_package_region, plan_package_region, plan_tpp_region_render, render_tpp_unit,
-    tpp_prefetch_requests, write_tpp_thumbnail, TppPackagePlan, TppRegionRenderPlan,
-    TppRenderUnitPlan, TppThumbnailPlan,
+    assemble_package_region_from_sources, plan_package_region_from_members, plan_tpp_region_render,
+    render_tpp_unit, tpp_prefetch_requests, write_tpp_thumbnail_from_source, TppPackagePlan,
+    TppRegionRenderPlan, TppRenderUnitPlan, TppThumbnailPlan,
 };
 use preprocessor_vectors::{
     build_vectors_dataset, expanded_union_polygon_from_closed_ring, simplify_closed_ring,
@@ -1000,7 +1000,8 @@ enum TaskValue {
     },
     TppPackagePlan {
         record: NodeRecord,
-        asset_root: PathBuf,
+        metadata_root: PathBuf,
+        plate_sources: TppPlateSourceMap,
         plan: TppPackagePlan,
     },
     ChartSource(ChartSource),
@@ -1052,7 +1053,8 @@ enum ProductTaskValue {
     },
     TppPackagePlan {
         record: NodeRecord,
-        asset_root: PathBuf,
+        metadata_root: PathBuf,
+        plate_sources: TppPlateSourceMap,
         plan: TppPackagePlan,
     },
     ChartSource(ChartSource),
@@ -1124,6 +1126,7 @@ enum ProductTaskValue {
 }
 
 type ProductTaskCompletion = GraphTaskCompletion<ProductTaskValue>;
+type TppPlateSourceMap = BTreeMap<String, PathBuf>;
 
 mod graph;
 use graph::*;
@@ -1162,6 +1165,7 @@ const TPP_FETCH_NODE_VERSION: &str = "v2-source-content-fingerprint";
 // change. Do not add broad helper-crate hashes to TPP node inputs for logging or
 // subprocess-runner changes.
 const TPP_RENDER_NODE_VERSION: &str = "v3-per-output-render-nodes";
+const TPP_RENDER_ASSEMBLE_NODE_VERSION: &str = "v2-source-map-assemble";
 const TPP_PACKAGE_NODE_VERSION: &str = "v2-per-thumbnail-nodes";
 const STATIC_SOURCE_FETCH_NODE_VERSION: &str = "v2-source-content-fingerprint";
 const TERRAIN_PIPELINE_VERSION: &str = "v6-ter2-z9-max-none-ceil64-gradient";
@@ -1601,6 +1605,24 @@ fn prepare_package_unpack_source_root(
     unpack_source_root: &Path,
     generated_member_prefixes: &[&str],
 ) -> anyhow::Result<()> {
+    prepare_package_unpack_source_root_with_member_sources(
+        zip_paths,
+        asset_root,
+        package_root,
+        unpack_source_root,
+        generated_member_prefixes,
+        None,
+    )
+}
+
+fn prepare_package_unpack_source_root_with_member_sources(
+    zip_paths: &[PathBuf],
+    asset_root: &Path,
+    package_root: &Path,
+    unpack_source_root: &Path,
+    generated_member_prefixes: &[&str],
+    member_sources: Option<&BTreeMap<String, PathBuf>>,
+) -> anyhow::Result<()> {
     if unpack_source_root.exists() {
         fs::remove_dir_all(unpack_source_root)
             .with_context(|| format!("failed to remove {}", unpack_source_root.display()))?;
@@ -1614,6 +1636,7 @@ fn prepare_package_unpack_source_root(
             package_root,
             unpack_source_root,
             generated_member_prefixes,
+            member_sources,
         )?;
     }
     Ok(())
@@ -1625,6 +1648,7 @@ fn hardlink_package_zip_members_to_unpack_source_root(
     package_root: &Path,
     unpack_source_root: &Path,
     generated_member_prefixes: &[&str],
+    member_sources: Option<&BTreeMap<String, PathBuf>>,
 ) -> anyhow::Result<()> {
     let file =
         File::open(zip_path).with_context(|| format!("failed to open {}", zip_path.display()))?;
@@ -1653,6 +1677,7 @@ fn hardlink_package_zip_members_to_unpack_source_root(
             package_root,
             &member,
             generated_member_prefixes,
+            member_sources,
         );
         if !source.is_file() {
             bail!(
@@ -1682,6 +1707,7 @@ fn package_zip_member_source_path(
     package_root: &Path,
     member: &str,
     generated_member_prefixes: &[&str],
+    member_sources: Option<&BTreeMap<String, PathBuf>>,
 ) -> PathBuf {
     let member_path = Path::new(member);
     if member_path.components().count() == 1
@@ -1690,6 +1716,8 @@ fn package_zip_member_source_path(
             .any(|prefix| member.starts_with(prefix))
     {
         package_root.join(member)
+    } else if let Some(source) = member_sources.and_then(|sources| sources.get(member)) {
+        source.clone()
     } else {
         asset_root.join(member)
     }

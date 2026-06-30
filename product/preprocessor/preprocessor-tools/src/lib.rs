@@ -11,6 +11,7 @@ use image::{Rgba, RgbaImage};
 use preprocessor_core::CaptureEntry;
 
 pub const TOOL_RUNNER_ARG: &str = "__aerobag-tool-runner";
+pub const TOOL_RUNNER_EXE_ENV: &str = "AEROBAG_TOOL_RUNNER_EXE";
 
 pub fn comparison_targets(entry: &CaptureEntry) -> Vec<&'static str> {
     let mut targets = vec!["zip_members", "package_hashes"];
@@ -210,9 +211,13 @@ impl ToolInvocation {
     }
 
     fn runner_command(&self) -> anyhow::Result<Command> {
-        let exe = std::env::current_exe().context("failed to resolve current executable")?;
-        let mut command = Command::new(exe);
-        command.arg(TOOL_RUNNER_ARG).arg("--").arg(&self.program);
+        let mut command = if let Some(exe) = std::env::var_os(TOOL_RUNNER_EXE_ENV) {
+            let mut command = Command::new(exe);
+            command.arg(TOOL_RUNNER_ARG).arg("--").arg(&self.program);
+            command
+        } else {
+            Command::new(&self.program)
+        };
         command.args(&self.args);
         Ok(command)
     }

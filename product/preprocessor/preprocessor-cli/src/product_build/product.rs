@@ -973,16 +973,17 @@ pub fn build_product(config: &ProductBuildConfig) -> anyhow::Result<ProductBuild
                         let source_urls_path = source_urls
                             .0
                             .join(format!("tpp-{region_id}/source_urls.jsonl"));
-                        let (record, asset_root, plan) = build_tpp_package_plan_node(
-                            &cycle_config,
-                            region,
-                            &source_urls_path,
-                            source_urls
-                                .1
-                                .get(&region_id)
-                                .expect("tpp region version should exist"),
-                            &render_record,
-                        )?;
+                        let (record, metadata_root, plate_sources, plan) =
+                            build_tpp_package_plan_node(
+                                &cycle_config,
+                                region,
+                                &source_urls_path,
+                                source_urls
+                                    .1
+                                    .get(&region_id)
+                                    .expect("tpp region version should exist"),
+                                &render_record,
+                            )?;
                         let cache_hit = record.cache_hit;
                         Ok(ProductTaskCompletion {
                             node_records: vec![normalize_node_record_paths(
@@ -991,7 +992,8 @@ pub fn build_product(config: &ProductBuildConfig) -> anyhow::Result<ProductBuild
                             )],
                             value: ProductTaskValue::TppPackagePlan {
                                 record,
-                                asset_root,
+                                metadata_root,
+                                plate_sources,
                                 plan: plan.clone(),
                             },
                             completion_detail: format!(
@@ -1011,11 +1013,19 @@ pub fn build_product(config: &ProductBuildConfig) -> anyhow::Result<ProductBuild
                         cycle_config.target_cycle = Some(cycle.clone());
                         let package_plan_id =
                             cycle_task_id(&cycle, &tpp_package_plan_task_name(region));
-                        let asset_root =
+                        let source_png =
                             task_values_snapshot.with(&package_plan_id, |value| match value {
-                                Some(ProductTaskValue::TppPackagePlan { asset_root, .. }) => {
-                                    Ok(asset_root.clone())
-                                }
+                                Some(ProductTaskValue::TppPackagePlan {
+                                    plate_sources, ..
+                                }) => plate_sources
+                                    .get(&thumbnail.asset_path)
+                                    .cloned()
+                                    .with_context(|| {
+                                        format!(
+                                            "missing tpp plate source for {}",
+                                            thumbnail.asset_path
+                                        )
+                                    }),
                                 _ => bail!(
                                     "missing tpp package plan for cycle {cycle} region {}",
                                     region.code()
@@ -1024,7 +1034,7 @@ pub fn build_product(config: &ProductBuildConfig) -> anyhow::Result<ProductBuild
                         let record = build_tpp_thumbnail_node(
                             &cycle_config,
                             region,
-                            &asset_root,
+                            &source_png,
                             &thumbnail,
                         )?;
                         let cache_hit = record.cache_hit;
@@ -1201,13 +1211,14 @@ pub fn build_product(config: &ProductBuildConfig) -> anyhow::Result<ProductBuild
                         let region_id = region.code().to_ascii_lowercase();
                         let package_plan_id =
                             cycle_task_id(&cycle, &tpp_package_plan_task_name(region));
-                        let (plan_record, asset_root, plan) =
+                        let (plan_record, metadata_root, plate_sources, plan) =
                             match task_values_snapshot.get(&package_plan_id) {
                                 Some(ProductTaskValue::TppPackagePlan {
                                     record,
-                                    asset_root,
+                                    metadata_root,
+                                    plate_sources,
                                     plan,
-                                }) => (record, asset_root, plan),
+                                }) => (record, metadata_root, plate_sources, plan),
                                 _ => bail!(
                                     "missing tpp package plan for cycle {cycle} region {region_id}"
                                 ),
@@ -1224,7 +1235,8 @@ pub fn build_product(config: &ProductBuildConfig) -> anyhow::Result<ProductBuild
                             region,
                             &source_urls.join(format!("tpp-{region_id}/source_urls.jsonl")),
                             &plan_record,
-                            &asset_root,
+                            &metadata_root,
+                            &plate_sources,
                             &plan,
                             &thumbnail_records,
                         )?;

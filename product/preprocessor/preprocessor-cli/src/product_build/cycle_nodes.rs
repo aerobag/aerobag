@@ -171,6 +171,7 @@ pub(super) fn build_chart_process_node(
         seed_prefetched_source_tree(&source_fetch_root, &work_dir)?;
         build_family_vrts(family, &work_dir, cpu_jobs)?;
         build_family_tiles(family, &work_dir, cpu_jobs)?;
+        prune_chart_render_intermediates(&work_dir)?;
         Ok(BTreeMap::from([
             (
                 "work_dir".to_string(),
@@ -182,6 +183,41 @@ pub(super) fn build_chart_process_node(
             ),
         ]))
     })
+}
+
+pub(super) fn prune_chart_render_intermediates(work_dir: &Path) -> anyhow::Result<()> {
+    prune_chart_render_intermediates_dir(work_dir, false)
+}
+
+fn prune_chart_render_intermediates_dir(dir: &Path, in_tiles_dir: bool) -> anyhow::Result<()> {
+    for entry in fs::read_dir(dir).with_context(|| format!("failed to read {}", dir.display()))? {
+        let entry = entry?;
+        let path = entry.path();
+        let file_type = entry.file_type()?;
+        let is_tiles_dir = entry.file_name().to_string_lossy() == "tiles";
+        let child_in_tiles = in_tiles_dir || is_tiles_dir;
+        if file_type.is_dir() {
+            prune_chart_render_intermediates_dir(&path, child_in_tiles)?;
+            if !child_in_tiles {
+                remove_empty_dir(&path)?;
+            }
+            continue;
+        }
+        if !child_in_tiles {
+            fs::remove_file(&path)
+                .with_context(|| format!("failed to remove {}", path.display()))?;
+        }
+    }
+    Ok(())
+}
+
+fn remove_empty_dir(path: &Path) -> anyhow::Result<()> {
+    match fs::remove_dir(path) {
+        Ok(()) => Ok(()),
+        Err(err) if err.kind() == std::io::ErrorKind::DirectoryNotEmpty => Ok(()),
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(err) => Err(err).with_context(|| format!("failed to remove {}", path.display())),
+    }
 }
 
 fn build_single_source_fetch_node(
@@ -2774,6 +2810,29 @@ mod tests {
         );
         assert!(!inputs.contains_key("source_fetch_fingerprint"));
         assert!(!inputs.contains_key("tools_lib"));
+    }
+
+    #[test]
+    fn chart_render_cleanup_keeps_tiles_and_removes_source_work_files() {
+        let temp = tempdir().unwrap();
+        let work_dir = temp.path().join("charts-sec");
+        let tile_path = work_dir.join("tiles").join("0").join("1").join("2.webp");
+        fs::create_dir_all(tile_path.parent().unwrap()).unwrap();
+        fs::write(&tile_path, b"tile").unwrap();
+        fs::write(work_dir.join("Seattle SEC.tif"), b"tiff").unwrap();
+        fs::write(work_dir.join("Seattle.zip"), b"zip").unwrap();
+        fs::write(work_dir.join("Seattle.vrt"), b"vrt").unwrap();
+        fs::create_dir_all(work_dir.join(".rust-logs")).unwrap();
+        fs::write(work_dir.join(".rust-logs").join("gdal2tiles.log"), b"log").unwrap();
+
+        prune_chart_render_intermediates(&work_dir).unwrap();
+
+        assert!(tile_path.exists());
+        assert!(work_dir.join("tiles").exists());
+        assert!(!work_dir.join("Seattle SEC.tif").exists());
+        assert!(!work_dir.join("Seattle.zip").exists());
+        assert!(!work_dir.join("Seattle.vrt").exists());
+        assert!(!work_dir.join(".rust-logs").exists());
     }
 
     #[test]

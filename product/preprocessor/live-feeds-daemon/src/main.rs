@@ -17,12 +17,12 @@ use chrono::Utc;
 use preprocessor_fetch::{FetchCacheConfig, FetchCacheMode};
 use preprocessor_live_feeds::{
     engine::{
-        default_poll_interval, run_upstream_live_feed_publish_tick,
+        default_poll_interval, prune_live_feed_scratch_root, run_upstream_live_feed_publish_tick,
         write_live_feeds_current_manifest, CompiledFixtureCache, FileLiveFeedPublisher, FixedClock,
         FixtureCacheKeyPart, LiveFeedInvalidation, LiveFeedPollingTask, LiveFeedSourceAndBuilder,
         LiveFeedTaskPhase, LiveFeedTickResult, LiveFeedVersionManifest, LiveFeedsCurrentManifest,
         ProductBuilder, PublishedLiveFeedUpdate, SseBroker, SystemClock, UpstreamEvent,
-        LIVE_FEEDS_SCHEMA_VERSION,
+        LIVE_FEEDS_SCHEMA_VERSION, LIVE_FEED_FAILED_SCRATCH_RETAIN_COUNT,
     },
     products::{
         LiveFeedFetchConfig, MetarLiveFeedBuilder, NexradSourceGridLiveFeedBuilder,
@@ -481,6 +481,7 @@ fn live_feed_phase_name(phase: LiveFeedTaskPhase) -> &'static str {
         LiveFeedTaskPhase::Build => "build",
         LiveFeedTaskPhase::Publish => "publish",
         LiveFeedTaskPhase::Announce => "announce",
+        LiveFeedTaskPhase::Cleanup => "cleanup",
     }
 }
 
@@ -718,6 +719,11 @@ fn start_live_feed_driver(
     let scratch_root = config.scratch_root.join("live-feed-build");
     let poll_interval = Duration::from_millis(config.poll_loop_interval_ms);
     let fetch = live_feed_fetch_config(config)?;
+    if let Err(error) =
+        prune_live_feed_scratch_root(&scratch_root, LIVE_FEED_FAILED_SCRATCH_RETAIN_COUNT)
+    {
+        eprintln!("live-feed startup scratch prune failed: {error:#}");
+    }
     thread::spawn(move || {
         let publisher = FileLiveFeedPublisher::new(live_root, SystemClock);
         let mut tasks = production_tasks(fetch);

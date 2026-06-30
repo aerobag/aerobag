@@ -373,7 +373,9 @@ pub fn gc_build_cache(config: &BuildCacheGcConfig) -> anyhow::Result<BuildCacheG
             }
         }
     }
-    scrub_rooted_tpp_render_scratch(&cache_nodes_root, &rooted, config.mode, &mut report)?;
+    scrub_tpp_render_scratch_cache(&cache_nodes_root, config.mode, &mut report)?;
+    scrub_chart_render_intermediates_cache(&cache_nodes_root, config.mode, &mut report)?;
+    scrub_water_mask_intermediates_cache(&cache_nodes_root, config.mode, &mut report)?;
     Ok(report)
 }
 
@@ -795,6 +797,23 @@ mod tests {
         record
     }
 
+    fn empty_build_cache_gc_report() -> BuildCacheGcReport {
+        BuildCacheGcReport {
+            roots_path: PathBuf::new(),
+            rooted_nodes: 0,
+            scanned_nodes: 0,
+            active_nodes: 0,
+            stale_lock_nodes: 0,
+            grace_nodes: 0,
+            evictable_nodes: 0,
+            reclaimed_bytes: 0,
+            scratch_files: 0,
+            scratch_bytes: 0,
+            scratch_active_nodes: 0,
+            by_node_name: BTreeMap::new(),
+        }
+    }
+
     fn write_build_manifest(
         build_root: &Path,
         label: &str,
@@ -1104,37 +1123,291 @@ mod tests {
             .to_string()
             .contains("current build manifests contain no fetch_cache_refs"));
     }
+
+    #[test]
+    fn tpp_render_unit_scrub_removes_only_plate_tiff_intermediates() {
+        let temp = tempdir().unwrap();
+        let cache_nodes_root = temp.path().join("cache").join("nodes");
+        let node_dir = cache_nodes_root
+            .join("tpp-se-render-unit")
+            .join("render-fingerprint");
+        let plates_dir = node_dir.join("work").join("plates").join("SEA");
+        fs::create_dir_all(&plates_dir).unwrap();
+        fs::write(plates_dir.join("SEA-IAP.tif"), b"temporary tiff").unwrap();
+        fs::write(plates_dir.join("SEA-IAP.TIFF"), b"temporary tiff").unwrap();
+        fs::write(plates_dir.join("SEA-IAP.png"), b"final png").unwrap();
+        fs::write(node_dir.join("work").join("SOURCE.PDF"), b"source pdf").unwrap();
+        fs::write(
+            node_dir.join("work").join("source.tif"),
+            b"non-plate source",
+        )
+        .unwrap();
+
+        let mut report = empty_build_cache_gc_report();
+        scrub_tpp_render_scratch_cache(&cache_nodes_root, BuildCacheGcMode::DryRun, &mut report)
+            .unwrap();
+        assert_eq!(report.scratch_files, 2);
+        assert!(plates_dir.join("SEA-IAP.tif").exists());
+
+        let mut report = empty_build_cache_gc_report();
+        scrub_tpp_render_scratch_cache(&cache_nodes_root, BuildCacheGcMode::Execute, &mut report)
+            .unwrap();
+
+        assert_eq!(report.scratch_files, 2);
+        assert_eq!(report.scratch_bytes, 28);
+        assert!(!plates_dir.join("SEA-IAP.tif").exists());
+        assert!(!plates_dir.join("SEA-IAP.TIFF").exists());
+        assert!(plates_dir.join("SEA-IAP.png").exists());
+        assert!(node_dir.join("work").join("SOURCE.PDF").exists());
+        assert!(node_dir.join("work").join("source.tif").exists());
+    }
+
+    #[test]
+    fn chart_render_scrub_keeps_tiles_and_removes_source_work_files() {
+        let temp = tempdir().unwrap();
+        let cache_nodes_root = temp.path().join("cache").join("nodes");
+        let node_dir = cache_nodes_root
+            .join("charts-sec-render")
+            .join("render-fingerprint");
+        let work_dir = node_dir.join("work").join("charts-sec");
+        let tile_path = work_dir.join("tiles").join("0").join("1").join("2.webp");
+        fs::create_dir_all(tile_path.parent().unwrap()).unwrap();
+        fs::write(&tile_path, b"tile").unwrap();
+        fs::write(work_dir.join("Seattle SEC.tif"), b"tiff").unwrap();
+        fs::write(work_dir.join("Seattle.zip"), b"zip").unwrap();
+        fs::write(work_dir.join("Seattle.vrt"), b"vrt").unwrap();
+        fs::write(node_dir.join("build-record.json"), b"record").unwrap();
+
+        let mut report = empty_build_cache_gc_report();
+        scrub_chart_render_intermediates_cache(
+            &cache_nodes_root,
+            BuildCacheGcMode::DryRun,
+            &mut report,
+        )
+        .unwrap();
+        assert_eq!(report.scratch_files, 3);
+        assert!(work_dir.join("Seattle SEC.tif").exists());
+
+        let mut report = empty_build_cache_gc_report();
+        scrub_chart_render_intermediates_cache(
+            &cache_nodes_root,
+            BuildCacheGcMode::Execute,
+            &mut report,
+        )
+        .unwrap();
+
+        assert_eq!(report.scratch_files, 3);
+        assert_eq!(report.scratch_bytes, 10);
+        assert!(tile_path.exists());
+        assert!(node_dir.join("build-record.json").exists());
+        assert!(!work_dir.join("Seattle SEC.tif").exists());
+        assert!(!work_dir.join("Seattle.zip").exists());
+        assert!(!work_dir.join("Seattle.vrt").exists());
+    }
+
+    #[test]
+    fn water_mask_scrub_keeps_product_outputs_and_removes_sources() {
+        let temp = tempdir().unwrap();
+        let cache_nodes_root = temp.path().join("cache").join("nodes");
+        let node_dir = cache_nodes_root
+            .join("static-water-mask-nw")
+            .join("water-fingerprint");
+        let output_dir = node_dir.join("output");
+        let tile_path = output_dir
+            .join("tiles")
+            .join("0")
+            .join("1")
+            .join("2.water.png");
+        fs::create_dir_all(tile_path.parent().unwrap()).unwrap();
+        fs::write(&tile_path, b"tile").unwrap();
+        fs::write(output_dir.join("manifest.json"), b"{}").unwrap();
+        fs::write(output_dir.join("water_mask_nw_test.zip"), b"zip").unwrap();
+        fs::write(output_dir.join("source.geojson"), b"source").unwrap();
+        let source_pages = output_dir.join("source-pages");
+        fs::create_dir_all(&source_pages).unwrap();
+        fs::write(source_pages.join("layer_9_chunk_00001.geojson"), b"page").unwrap();
+
+        let mut report = empty_build_cache_gc_report();
+        scrub_water_mask_intermediates_cache(
+            &cache_nodes_root,
+            BuildCacheGcMode::Execute,
+            &mut report,
+        )
+        .unwrap();
+
+        assert_eq!(report.scratch_files, 2);
+        assert_eq!(report.scratch_bytes, 10);
+        assert!(tile_path.exists());
+        assert!(output_dir.join("manifest.json").exists());
+        assert!(output_dir.join("water_mask_nw_test.zip").exists());
+        assert!(!output_dir.join("source.geojson").exists());
+        assert!(!source_pages.join("layer_9_chunk_00001.geojson").exists());
+    }
 }
 
-pub(super) fn scrub_rooted_tpp_render_scratch(
+pub(super) fn scrub_tpp_render_scratch_cache(
     cache_nodes_root: &Path,
-    rooted: &BTreeSet<(String, String)>,
     mode: BuildCacheGcMode,
     report: &mut BuildCacheGcReport,
 ) -> anyhow::Result<()> {
-    for (node_name, fingerprint) in rooted {
-        if !is_tpp_render_node_name(node_name) {
+    if !cache_nodes_root.is_dir() {
+        return Ok(());
+    }
+    for node_entry in fs::read_dir(cache_nodes_root)
+        .with_context(|| format!("failed to read {}", cache_nodes_root.display()))?
+    {
+        let node_entry = node_entry?;
+        if !node_entry.file_type()?.is_dir() {
             continue;
         }
-        let node_dir = cache_nodes_root.join(node_name).join(fingerprint);
-        if !node_dir.is_dir() {
+        let node_name = node_entry.file_name().to_string_lossy().to_string();
+        let Some(kind) = tpp_render_scratch_kind(&node_name) else {
             continue;
+        };
+        for fingerprint_entry in fs::read_dir(node_entry.path())
+            .with_context(|| format!("failed to read {}", node_entry.path().display()))?
+        {
+            let fingerprint_entry = fingerprint_entry?;
+            if !fingerprint_entry.file_type()?.is_dir() {
+                continue;
+            }
+            let node_dir = fingerprint_entry.path();
+            let lock_path = node_dir.join(".build-lock");
+            if lock_path.exists() && lock_is_live(&lock_path)? {
+                report.scratch_active_nodes += 1;
+                continue;
+            }
+            scrub_tpp_render_scratch_dir(&node_dir, kind, mode, report)?;
         }
-        let lock_path = node_dir.join(".build-lock");
-        if lock_path.exists() && lock_is_live(&lock_path)? {
-            report.scratch_active_nodes += 1;
-            continue;
-        }
-        scrub_tpp_render_scratch_dir(&node_dir, mode, report)?;
     }
     Ok(())
 }
 
-pub(super) fn is_tpp_render_node_name(node_name: &str) -> bool {
-    node_name.starts_with("tpp-") && node_name.ends_with("-render")
+pub(super) fn scrub_chart_render_intermediates_cache(
+    cache_nodes_root: &Path,
+    mode: BuildCacheGcMode,
+    report: &mut BuildCacheGcReport,
+) -> anyhow::Result<()> {
+    if !cache_nodes_root.is_dir() {
+        return Ok(());
+    }
+    for node_entry in fs::read_dir(cache_nodes_root)
+        .with_context(|| format!("failed to read {}", cache_nodes_root.display()))?
+    {
+        let node_entry = node_entry?;
+        if !node_entry.file_type()?.is_dir() {
+            continue;
+        }
+        let node_name = node_entry.file_name().to_string_lossy().to_string();
+        if !is_chart_render_node_name(&node_name) {
+            continue;
+        }
+        for fingerprint_entry in fs::read_dir(node_entry.path())
+            .with_context(|| format!("failed to read {}", node_entry.path().display()))?
+        {
+            let fingerprint_entry = fingerprint_entry?;
+            if !fingerprint_entry.file_type()?.is_dir() {
+                continue;
+            }
+            let node_dir = fingerprint_entry.path();
+            let lock_path = node_dir.join(".build-lock");
+            if lock_path.exists() && lock_is_live(&lock_path)? {
+                report.scratch_active_nodes += 1;
+                continue;
+            }
+            let work_dir = node_dir.join("work");
+            if work_dir.is_dir() {
+                scrub_chart_render_intermediates_dir(&work_dir, false, mode, report)?;
+            }
+        }
+    }
+    Ok(())
 }
 
-pub(super) fn scrub_tpp_render_scratch_dir(
+pub(super) fn is_chart_render_node_name(node_name: &str) -> bool {
+    node_name.starts_with("charts-") && node_name.ends_with("-render")
+}
+
+pub(super) fn scrub_chart_render_intermediates_dir(
+    dir: &Path,
+    in_tiles_dir: bool,
+    mode: BuildCacheGcMode,
+    report: &mut BuildCacheGcReport,
+) -> anyhow::Result<()> {
+    for entry in fs::read_dir(dir).with_context(|| format!("failed to read {}", dir.display()))? {
+        let entry = entry?;
+        let path = entry.path();
+        let file_type = entry.file_type()?;
+        let is_tiles_dir = entry.file_name().to_string_lossy() == "tiles";
+        let child_in_tiles = in_tiles_dir || is_tiles_dir;
+        if file_type.is_dir() {
+            if !child_in_tiles {
+                scrub_chart_render_intermediates_dir(&path, child_in_tiles, mode, report)?;
+            }
+            continue;
+        }
+        if !child_in_tiles {
+            scrub_scratch_file(&path, mode, report)?;
+        }
+    }
+    Ok(())
+}
+
+pub(super) fn scrub_water_mask_intermediates_cache(
+    cache_nodes_root: &Path,
+    mode: BuildCacheGcMode,
+    report: &mut BuildCacheGcReport,
+) -> anyhow::Result<()> {
+    if !cache_nodes_root.is_dir() {
+        return Ok(());
+    }
+    for node_entry in fs::read_dir(cache_nodes_root)
+        .with_context(|| format!("failed to read {}", cache_nodes_root.display()))?
+    {
+        let node_entry = node_entry?;
+        if !node_entry.file_type()?.is_dir() {
+            continue;
+        }
+        let node_name = node_entry.file_name().to_string_lossy().to_string();
+        if !node_name.starts_with("static-water-mask-") {
+            continue;
+        }
+        for fingerprint_entry in fs::read_dir(node_entry.path())
+            .with_context(|| format!("failed to read {}", node_entry.path().display()))?
+        {
+            let fingerprint_entry = fingerprint_entry?;
+            if !fingerprint_entry.file_type()?.is_dir() {
+                continue;
+            }
+            let node_dir = fingerprint_entry.path();
+            let lock_path = node_dir.join(".build-lock");
+            if lock_path.exists() && lock_is_live(&lock_path)? {
+                report.scratch_active_nodes += 1;
+                continue;
+            }
+            scrub_water_mask_intermediates_dir(&node_dir.join("output"), mode, report)?;
+        }
+    }
+    Ok(())
+}
+
+pub(super) fn scrub_water_mask_intermediates_dir(
+    output_dir: &Path,
+    mode: BuildCacheGcMode,
+    report: &mut BuildCacheGcReport,
+) -> anyhow::Result<()> {
+    let source_geojson = output_dir.join("source.geojson");
+    if source_geojson.is_file() {
+        scrub_scratch_file(&source_geojson, mode, report)?;
+    }
+    let source_pages = output_dir.join("source-pages");
+    if source_pages.is_dir() {
+        scrub_scratch_dir_files(&source_pages, mode, report)?;
+    }
+    Ok(())
+}
+
+pub(super) fn scrub_scratch_dir_files(
     dir: &Path,
     mode: BuildCacheGcMode,
     report: &mut BuildCacheGcReport,
@@ -1143,32 +1416,76 @@ pub(super) fn scrub_tpp_render_scratch_dir(
         let entry = entry?;
         let path = entry.path();
         if entry.file_type()?.is_dir() {
-            scrub_tpp_render_scratch_dir(&path, mode, report)?;
+            scrub_scratch_dir_files(&path, mode, report)?;
             continue;
         }
-        if !is_tpp_render_scratch_file(&path) {
-            continue;
-        }
-        let bytes = entry
-            .metadata()
-            .with_context(|| format!("failed to stat {}", path.display()))?
-            .len();
-        report.scratch_files += 1;
-        report.scratch_bytes = report.scratch_bytes.saturating_add(bytes);
-        if mode == BuildCacheGcMode::Execute {
-            set_path_readonly(&path, false)?;
-            fs::remove_file(&path)
-                .with_context(|| format!("failed to remove {}", path.display()))?;
-        }
+        scrub_scratch_file(&path, mode, report)?;
     }
     Ok(())
 }
 
-pub(super) fn is_tpp_render_scratch_file(path: &Path) -> bool {
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum TppRenderScratchKind {
+    RegionRender,
+    RenderUnit,
+}
+
+pub(super) fn tpp_render_scratch_kind(node_name: &str) -> Option<TppRenderScratchKind> {
+    if !node_name.starts_with("tpp-") {
+        return None;
+    }
+    if node_name.ends_with("-render") {
+        return Some(TppRenderScratchKind::RegionRender);
+    }
+    if node_name.ends_with("-render-unit") {
+        return Some(TppRenderScratchKind::RenderUnit);
+    }
+    None
+}
+
+pub(super) fn scrub_tpp_render_scratch_dir(
+    dir: &Path,
+    kind: TppRenderScratchKind,
+    mode: BuildCacheGcMode,
+    report: &mut BuildCacheGcReport,
+) -> anyhow::Result<()> {
+    for entry in fs::read_dir(dir).with_context(|| format!("failed to read {}", dir.display()))? {
+        let entry = entry?;
+        let path = entry.path();
+        if entry.file_type()?.is_dir() {
+            scrub_tpp_render_scratch_dir(&path, kind, mode, report)?;
+            continue;
+        }
+        if !is_tpp_render_scratch_file(&path, kind) {
+            continue;
+        }
+        scrub_scratch_file(&path, mode, report)?;
+    }
+    Ok(())
+}
+
+pub(super) fn scrub_scratch_file(
+    path: &Path,
+    mode: BuildCacheGcMode,
+    report: &mut BuildCacheGcReport,
+) -> anyhow::Result<()> {
+    let bytes = fs::metadata(path)
+        .with_context(|| format!("failed to stat {}", path.display()))?
+        .len();
+    report.scratch_files += 1;
+    report.scratch_bytes = report.scratch_bytes.saturating_add(bytes);
+    if mode == BuildCacheGcMode::Execute {
+        set_path_readonly(path, false)?;
+        fs::remove_file(path).with_context(|| format!("failed to remove {}", path.display()))?;
+    }
+    Ok(())
+}
+
+pub(super) fn is_tpp_render_scratch_file(path: &Path, kind: TppRenderScratchKind) -> bool {
     let Some(extension) = path.extension().and_then(|value| value.to_str()) else {
         return false;
     };
-    if extension.eq_ignore_ascii_case("pdf") {
+    if kind == TppRenderScratchKind::RegionRender && extension.eq_ignore_ascii_case("pdf") {
         return true;
     }
     if !(extension.eq_ignore_ascii_case("tif") || extension.eq_ignore_ascii_case("tiff")) {

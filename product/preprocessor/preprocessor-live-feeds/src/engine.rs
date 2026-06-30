@@ -1,7 +1,7 @@
 use std::{
-    collections::BTreeMap,
+    collections::{BTreeMap, BTreeSet},
     fs,
-    path::{Path, PathBuf},
+    path::{Component, Path, PathBuf},
     sync::{
         mpsc::{self, Receiver, Sender, TryRecvError},
         Arc, Mutex,
@@ -22,6 +22,8 @@ use serde_json::Value;
 use sha2::{Digest, Sha256};
 
 pub const LIVE_FEEDS_SCHEMA_VERSION: u32 = 2;
+pub const LIVE_FEED_FAILED_SCRATCH_RETAIN_COUNT: usize = 5;
+const LIVE_FEED_PUBLICATION_DIRS: &[&str] = &["states", "versions", "deltas", "packages"];
 
 pub trait Clock {
     fn now_utc(&self) -> DateTime<Utc>;
@@ -388,6 +390,7 @@ pub enum LiveFeedTaskPhase {
     Build,
     Publish,
     Announce,
+    Cleanup,
 }
 
 pub trait LiveFeedPollingTask {
@@ -544,13 +547,27 @@ where
                         phase: LiveFeedTaskPhase::Build,
                         error: format!("{error:#}"),
                     });
+                    retain_failed_live_feed_scratch(
+                        scratch_root,
+                        &product_id,
+                        Some(&scratch_dir),
+                        &mut failures,
+                    );
                     continue;
                 }
             };
             if let Some(update) =
                 publish_and_announce(product_id.clone(), built, publisher, broker, &mut failures)
             {
+                cleanup_successful_live_feed_scratch(&product_id, &scratch_dir, &mut failures);
                 published.push(update);
+            } else {
+                retain_failed_live_feed_scratch(
+                    scratch_root,
+                    &product_id,
+                    Some(&scratch_dir),
+                    &mut failures,
+                );
             }
         }
     }
@@ -616,6 +633,76 @@ pub fn default_poll_interval(product_id: &str) -> Option<StdDuration> {
     }
 }
 
+pub fn prune_live_feed_scratch_root(
+    scratch_root: &Path,
+    retain_count_per_product: usize,
+) -> anyhow::Result<()> {
+    if !scratch_root.is_dir() {
+        return Ok(());
+    }
+    for product_entry in fs::read_dir(scratch_root)
+        .with_context(|| format!("failed to read {}", scratch_root.display()))?
+    {
+        let product_entry =
+            product_entry.with_context(|| format!("failed to read {}", scratch_root.display()))?;
+        let product_path = product_entry.path();
+        if !product_entry
+            .file_type()
+            .with_context(|| format!("failed to stat {}", product_path.display()))?
+            .is_dir()
+        {
+            continue;
+        }
+        prune_failed_live_feed_scratch(&product_path, retain_count_per_product, None)?;
+    }
+    remove_empty_dir_if_exists(scratch_root);
+    Ok(())
+}
+
+fn cleanup_successful_live_feed_scratch(
+    product_id: &str,
+    scratch_dir: &Path,
+    failures: &mut Vec<FailedLiveFeedTask>,
+) {
+    if let Err(error) = remove_path_if_exists(scratch_dir) {
+        failures.push(FailedLiveFeedTask {
+            product: product_id.to_string(),
+            phase: LiveFeedTaskPhase::Cleanup,
+            error: format!(
+                "failed to remove successful scratch {}: {error:#}",
+                scratch_dir.display()
+            ),
+        });
+        return;
+    }
+    if let Some(product_dir) = scratch_dir.parent() {
+        remove_empty_dir_if_exists(product_dir);
+    }
+}
+
+fn retain_failed_live_feed_scratch(
+    scratch_root: &Path,
+    product_id: &str,
+    active_scratch_dir: Option<&Path>,
+    failures: &mut Vec<FailedLiveFeedTask>,
+) {
+    let product_scratch_root = scratch_root.join(product_id);
+    if let Err(error) = prune_failed_live_feed_scratch(
+        &product_scratch_root,
+        LIVE_FEED_FAILED_SCRATCH_RETAIN_COUNT,
+        active_scratch_dir,
+    ) {
+        failures.push(FailedLiveFeedTask {
+            product: product_id.to_string(),
+            phase: LiveFeedTaskPhase::Cleanup,
+            error: format!(
+                "failed to prune failed scratch under {}: {error:#}",
+                product_scratch_root.display()
+            ),
+        });
+    }
+}
+
 pub fn live_feed_invalidation_from_update(
     update: &PublishedLiveFeedUpdate,
 ) -> LiveFeedInvalidation {
@@ -631,14 +718,75 @@ pub fn live_feed_invalidation_from_update(
     }
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct LiveFeedRetentionPolicy {
+    default_recent_tail: StdDuration,
+    recent_tail_by_product: BTreeMap<String, StdDuration>,
+}
+
+impl LiveFeedRetentionPolicy {
+    pub fn new(default_recent_tail: StdDuration) -> Self {
+        Self {
+            default_recent_tail,
+            recent_tail_by_product: BTreeMap::new(),
+        }
+    }
+
+    pub fn with_product_recent_tail(
+        mut self,
+        product: impl Into<String>,
+        recent_tail: StdDuration,
+    ) -> Self {
+        self.recent_tail_by_product
+            .insert(product.into(), recent_tail);
+        self
+    }
+
+    fn recent_tail_for(&self, product: &str) -> StdDuration {
+        self.recent_tail_by_product
+            .get(product)
+            .copied()
+            .unwrap_or(self.default_recent_tail)
+    }
+}
+
+impl Default for LiveFeedRetentionPolicy {
+    fn default() -> Self {
+        Self::new(StdDuration::from_secs(3 * 60 * 60))
+            .with_product_recent_tail("nexrad", StdDuration::from_secs(60 * 60))
+            .with_product_recent_tail("metars", StdDuration::from_secs(3 * 60 * 60))
+            .with_product_recent_tail("tafs", StdDuration::from_secs(3 * 60 * 60))
+            .with_product_recent_tail("tfrs", StdDuration::from_secs(3 * 60 * 60))
+            .with_product_recent_tail("winds-aloft", StdDuration::from_secs(7 * 24 * 60 * 60))
+            .with_product_recent_tail("obstacles", StdDuration::from_secs(7 * 24 * 60 * 60))
+    }
+}
+
 pub struct FileLiveFeedPublisher<C> {
     root: PathBuf,
     clock: C,
+    retention: LiveFeedRetentionPolicy,
 }
 
 impl<C: Clock> FileLiveFeedPublisher<C> {
     pub fn new(root: PathBuf, clock: C) -> Self {
-        Self { root, clock }
+        Self {
+            root,
+            clock,
+            retention: LiveFeedRetentionPolicy::default(),
+        }
+    }
+
+    pub fn new_with_retention_policy(
+        root: PathBuf,
+        clock: C,
+        retention: LiveFeedRetentionPolicy,
+    ) -> Self {
+        Self {
+            root,
+            clock,
+            retention,
+        }
     }
 
     pub fn root(&self) -> &Path {
@@ -844,6 +992,7 @@ impl<C: Clock> FileLiveFeedPublisher<C> {
                         .to_rfc3339_opts(SecondsFormat::Secs, true);
                     current.products.insert(product.clone(), next_entry);
                     write_live_feeds_current_manifest(&self.root, &current)?;
+                    self.prune_publication_best_effort();
                 }
                 return Ok(PublishedLiveFeedUpdate {
                     product,
@@ -1057,6 +1206,7 @@ impl<C: Clock> FileLiveFeedPublisher<C> {
             },
         );
         write_live_feeds_current_manifest(&self.root, &current)?;
+        self.prune_publication_best_effort();
 
         Ok(PublishedLiveFeedUpdate {
             product,
@@ -1073,6 +1223,20 @@ impl<C: Clock> FileLiveFeedPublisher<C> {
             changed_count,
             removed_count,
         })
+    }
+
+    fn prune_publication_best_effort(&self) {
+        if let Err(error) =
+            prune_live_feed_publication(&self.root, &self.retention, self.clock.now_utc())
+                .with_context(|| {
+                    format!(
+                        "failed to prune live-feed output under {}",
+                        self.root.display()
+                    )
+                })
+        {
+            eprintln!("live-feed publication GC failed: {error:#}");
+        }
     }
 
     fn write_install_state_package(
@@ -1340,6 +1504,209 @@ pub fn write_live_feeds_current_manifest(
     let path = root.join("current.json");
     write_json_pretty_file(&path, current)?;
     Ok(path)
+}
+
+pub fn prune_live_feed_publication(
+    live_root: &Path,
+    policy: &LiveFeedRetentionPolicy,
+    now: DateTime<Utc>,
+) -> anyhow::Result<()> {
+    let Some(current) = read_live_feeds_current(live_root)? else {
+        return Ok(());
+    };
+
+    let mut retained = BTreeSet::new();
+    retained.insert(live_root.join("current.json"));
+    for (product, entry) in &current.products {
+        let version_manifest_path =
+            retain_live_relative_path(live_root, &mut retained, &entry.version_manifest_url)?;
+        retain_live_relative_path(live_root, &mut retained, &entry.state_url)?;
+        if version_manifest_path.is_file() {
+            let manifest =
+                retain_version_manifest(live_root, &version_manifest_path, &mut retained)?;
+            if let Some(previous) = manifest.previous.as_deref() {
+                let previous_manifest_path =
+                    live_feed_version_manifest_path(live_root, product, previous)?;
+                if previous_manifest_path.is_file() {
+                    retain_version_manifest(live_root, &previous_manifest_path, &mut retained)?;
+                }
+            }
+        }
+    }
+
+    retain_recent_live_feed_versions(live_root, policy, now, &mut retained)?;
+
+    for child in LIVE_FEED_PUBLICATION_DIRS {
+        prune_product_children(&live_root.join(child), &retained)?;
+    }
+    Ok(())
+}
+
+fn retain_recent_live_feed_versions(
+    live_root: &Path,
+    policy: &LiveFeedRetentionPolicy,
+    now: DateTime<Utc>,
+    retained: &mut BTreeSet<PathBuf>,
+) -> anyhow::Result<()> {
+    let versions_root = live_root.join("versions");
+    if !versions_root.is_dir() {
+        return Ok(());
+    }
+    for product_entry in fs::read_dir(&versions_root)
+        .with_context(|| format!("failed to read {}", versions_root.display()))?
+    {
+        let product_entry =
+            product_entry.with_context(|| format!("failed to read {}", versions_root.display()))?;
+        let product_path = product_entry.path();
+        if !product_entry
+            .file_type()
+            .with_context(|| format!("failed to stat {}", product_path.display()))?
+            .is_dir()
+        {
+            continue;
+        }
+        let product = product_entry.file_name().to_string_lossy().into_owned();
+        let recent_tail = policy.recent_tail_for(&product);
+        for version_entry in fs::read_dir(&product_path)
+            .with_context(|| format!("failed to read {}", product_path.display()))?
+        {
+            let version_entry = version_entry
+                .with_context(|| format!("failed to read {}", product_path.display()))?;
+            let path = version_entry.path();
+            if !version_entry
+                .file_type()
+                .with_context(|| format!("failed to stat {}", path.display()))?
+                .is_file()
+                || path.extension().and_then(|extension| extension.to_str()) != Some("json")
+            {
+                continue;
+            }
+            if path_modified_within(&path, now, recent_tail) {
+                retain_version_manifest(live_root, &path, retained)?;
+            }
+        }
+    }
+    Ok(())
+}
+
+fn retain_version_manifest(
+    live_root: &Path,
+    version_manifest_path: &Path,
+    retained: &mut BTreeSet<PathBuf>,
+) -> anyhow::Result<LiveFeedVersionManifest> {
+    retained.insert(version_manifest_path.to_path_buf());
+    let manifest: LiveFeedVersionManifest = serde_json::from_slice(
+        &fs::read(version_manifest_path)
+            .with_context(|| format!("failed to read {}", version_manifest_path.display()))?,
+    )
+    .with_context(|| format!("failed to parse {}", version_manifest_path.display()))?;
+    retain_live_relative_path(live_root, retained, &manifest.state.url)?;
+    if let Some(install_state) = manifest.install_state.as_ref() {
+        retain_live_relative_path(live_root, retained, &install_state.url)?;
+    }
+    if let Some(delta) = manifest.delta_from_previous.as_ref() {
+        retain_live_relative_path(live_root, retained, &delta.url)?;
+    }
+    Ok(manifest)
+}
+
+fn retain_live_relative_path(
+    live_root: &Path,
+    retained: &mut BTreeSet<PathBuf>,
+    relative: &str,
+) -> anyhow::Result<PathBuf> {
+    let path = live_root.join(safe_relative_path(relative)?);
+    retained.insert(path.clone());
+    Ok(path)
+}
+
+fn live_feed_version_manifest_path(
+    live_root: &Path,
+    product: &str,
+    version: &str,
+) -> anyhow::Result<PathBuf> {
+    if !is_safe_path_segment(product) || !is_safe_path_segment(version) {
+        bail!("invalid live-feed product/version path: {product}/{version}");
+    }
+    Ok(live_root
+        .join("versions")
+        .join(product)
+        .join(format!("{version}.json")))
+}
+
+fn safe_relative_path(relative: &str) -> anyhow::Result<PathBuf> {
+    let path = PathBuf::from(relative.trim_start_matches('/'));
+    if path.as_os_str().is_empty()
+        || path
+            .components()
+            .any(|component| !matches!(component, Component::Normal(_)))
+    {
+        bail!("invalid live-feed path: {relative}");
+    }
+    Ok(path)
+}
+
+fn is_safe_path_segment(value: &str) -> bool {
+    let mut components = Path::new(value).components();
+    matches!(components.next(), Some(Component::Normal(_))) && components.next().is_none()
+}
+
+fn path_modified_within(path: &Path, now: DateTime<Utc>, recent_tail: StdDuration) -> bool {
+    let now_system: SystemTime = now.into();
+    let modified = modified_time(path);
+    match now_system.duration_since(modified) {
+        Ok(age) => age <= recent_tail,
+        Err(_) => true,
+    }
+}
+
+fn prune_product_children(root: &Path, retained: &BTreeSet<PathBuf>) -> anyhow::Result<()> {
+    if !root.is_dir() {
+        return Ok(());
+    }
+    for product_entry in
+        fs::read_dir(root).with_context(|| format!("failed to read {}", root.display()))?
+    {
+        let product_entry =
+            product_entry.with_context(|| format!("failed to read {}", root.display()))?;
+        let product_path = product_entry.path();
+        if product_entry
+            .file_type()
+            .with_context(|| format!("failed to stat {}", product_path.display()))?
+            .is_dir()
+        {
+            prune_version_children(&product_path, retained)?;
+            if fs::read_dir(&product_path)
+                .with_context(|| format!("failed to read {}", product_path.display()))?
+                .next()
+                .is_none()
+            {
+                fs::remove_dir(&product_path)
+                    .with_context(|| format!("failed to remove {}", product_path.display()))?;
+            }
+        } else if !path_is_retained(&product_path, retained) {
+            remove_path_if_exists(&product_path)?;
+        }
+    }
+    Ok(())
+}
+
+fn prune_version_children(root: &Path, retained: &BTreeSet<PathBuf>) -> anyhow::Result<()> {
+    for child_entry in
+        fs::read_dir(root).with_context(|| format!("failed to read {}", root.display()))?
+    {
+        let child_entry =
+            child_entry.with_context(|| format!("failed to read {}", root.display()))?;
+        let child_path = child_entry.path();
+        if !path_is_retained(&child_path, retained) {
+            remove_path_if_exists(&child_path)?;
+        }
+    }
+    Ok(())
+}
+
+fn path_is_retained(path: &Path, retained: &BTreeSet<PathBuf>) -> bool {
+    retained.contains(path) || retained.iter().any(|retained| retained.starts_with(path))
 }
 
 fn validate_live_feeds_schema(label: &str, schema_version: u32) -> anyhow::Result<()> {
@@ -1642,6 +2009,67 @@ fn copy_symlink_or_target(source: &Path, output: &Path) -> anyhow::Result<()> {
     } else {
         copy_file_if_missing(source, output)
     }
+}
+
+fn remove_path_if_exists(path: &Path) -> anyhow::Result<()> {
+    match fs::symlink_metadata(path) {
+        Ok(metadata) if metadata.is_dir() => {
+            fs::remove_dir_all(path).with_context(|| format!("failed to remove {}", path.display()))
+        }
+        Ok(_) => {
+            fs::remove_file(path).with_context(|| format!("failed to remove {}", path.display()))
+        }
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(error) => Err(error).with_context(|| format!("failed to stat {}", path.display())),
+    }
+}
+
+fn remove_empty_dir_if_exists(path: &Path) {
+    if let Ok(mut entries) = fs::read_dir(path) {
+        if entries.next().is_none() {
+            let _ = fs::remove_dir(path);
+        }
+    }
+}
+
+fn prune_failed_live_feed_scratch(
+    product_scratch_root: &Path,
+    retain_count: usize,
+    active_scratch_dir: Option<&Path>,
+) -> anyhow::Result<()> {
+    if !product_scratch_root.is_dir() {
+        return Ok(());
+    }
+    let mut entries = Vec::new();
+    for entry in fs::read_dir(product_scratch_root)
+        .with_context(|| format!("failed to read {}", product_scratch_root.display()))?
+    {
+        let entry =
+            entry.with_context(|| format!("failed to read {}", product_scratch_root.display()))?;
+        let path = entry.path();
+        entries.push((modified_time(&path), path));
+    }
+    entries.sort_by(|left, right| {
+        right
+            .0
+            .cmp(&left.0)
+            .then_with(|| left.1.file_name().cmp(&right.1.file_name()))
+    });
+
+    let mut retained = BTreeSet::new();
+    if let Some(active_scratch_dir) = active_scratch_dir {
+        retained.insert(active_scratch_dir.to_path_buf());
+    }
+    for (_, path) in entries.iter().take(retain_count) {
+        retained.insert(path.clone());
+    }
+    for (_, path) in entries {
+        if !retained.contains(&path) {
+            remove_path_if_exists(&path)?;
+        }
+    }
+    remove_empty_dir_if_exists(product_scratch_root);
+    Ok(())
 }
 
 #[allow(dead_code)]
@@ -2285,6 +2713,54 @@ mod tests {
     }
 
     #[test]
+    fn file_publisher_prunes_old_versions_after_publish() -> anyhow::Result<()> {
+        let temp = tempdir()?;
+        let root = temp.path().join("live-feeds");
+        let publisher = FileLiveFeedPublisher::new_with_retention_policy(
+            root.clone(),
+            FixedClock::new(Utc.with_ymd_and_hms(2035, 1, 1, 0, 0, 0).unwrap()),
+            LiveFeedRetentionPolicy::new(StdDuration::ZERO),
+        );
+
+        publisher.publish(json_state(
+            temp.path(),
+            "metars",
+            "metars-v1",
+            "v1",
+            "records",
+            &[("KSEA", 1)],
+        )?)?;
+        publisher.publish(json_state(
+            temp.path(),
+            "metars",
+            "metars-v2",
+            "v2",
+            "records",
+            &[("KSEA", 2)],
+        )?)?;
+        publisher.publish(json_state(
+            temp.path(),
+            "metars",
+            "metars-v3",
+            "v3",
+            "records",
+            &[("KSEA", 3)],
+        )?)?;
+
+        assert!(!root.join("versions/metars/v1.json").exists());
+        assert!(!root.join("states/metars/v1.json.xz").exists());
+        assert!(root.join("versions/metars/v2.json").is_file());
+        assert!(root.join("states/metars/v2.json.xz").is_file());
+        assert!(root.join("deltas/metars/v2__v3.json.xz").is_file());
+        assert!(root.join("versions/metars/v3.json").is_file());
+        assert_eq!(
+            read_live_feeds_current(&root)?.expect("current").products["metars"].current,
+            "v3"
+        );
+        Ok(())
+    }
+
+    #[test]
     fn publish_tick_continues_after_one_product_fails() -> anyhow::Result<()> {
         let temp = tempdir()?;
         let root = temp.path().join("live-feeds");
@@ -2393,6 +2869,95 @@ mod tests {
             .expect("current")
             .products
             .contains_key("metars"));
+        assert!(
+            !live_feed_event_scratch_dir(
+                &scratch_root,
+                "metars",
+                &UpstreamEvent {
+                    product: "metars".to_string(),
+                    source_id: "m1".to_string(),
+                    previous_source_id: None,
+                    observed_at_utc: Utc.with_ymd_and_hms(2026, 5, 18, 4, 0, 0).unwrap(),
+                    payload_path: None,
+                }
+            )
+            .exists(),
+            "successful live-feed events should not leave scratch behind"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn upstream_publish_tick_keeps_only_recent_failed_scratch_dirs() -> anyhow::Result<()> {
+        let temp = tempdir()?;
+        let live_root = temp.path().join("live-feeds");
+        let scratch_root = temp.path().join("scratch");
+        let publisher = FileLiveFeedPublisher::new(
+            live_root,
+            FixedClock::new(Utc.with_ymd_and_hms(2026, 5, 18, 4, 5, 6).unwrap()),
+        );
+        let broker = RecordingBroker::default();
+        let events = (0..7)
+            .map(|index| UpstreamEvent {
+                product: "metars".to_string(),
+                source_id: format!("m{index}"),
+                previous_source_id: None,
+                observed_at_utc: Utc.with_ymd_and_hms(2026, 5, 18, 4, index, 0).unwrap(),
+                payload_path: None,
+            })
+            .collect();
+        let mut tasks = vec![LiveFeedSourceAndBuilder::new(
+            StaticSource {
+                product: "metars".to_string(),
+                events,
+            },
+            FailingScratchBuilder {
+                product: "metars".to_string(),
+            },
+        )];
+
+        let result = run_upstream_live_feed_publish_tick(
+            Utc.with_ymd_and_hms(2026, 5, 18, 4, 0, 0).unwrap(),
+            &mut tasks,
+            &scratch_root,
+            &publisher,
+            &broker,
+        );
+
+        assert_eq!(result.published.len(), 0);
+        assert_eq!(
+            result
+                .failures
+                .iter()
+                .filter(|failure| failure.phase == LiveFeedTaskPhase::Build)
+                .count(),
+            7
+        );
+        let remaining =
+            fs::read_dir(scratch_root.join("metars"))?.collect::<Result<Vec<_>, _>>()?;
+        assert_eq!(remaining.len(), LIVE_FEED_FAILED_SCRATCH_RETAIN_COUNT);
+        Ok(())
+    }
+
+    #[test]
+    fn startup_scratch_prune_bounds_existing_product_dirs() -> anyhow::Result<()> {
+        let temp = tempdir()?;
+        let scratch_root = temp.path().join("scratch");
+        for product in ["metars", "nexrad"] {
+            for index in 0..7 {
+                let dir = scratch_root.join(product).join(format!("attempt-{index}"));
+                fs::create_dir_all(&dir)?;
+                fs::write(dir.join("marker"), b"debug")?;
+            }
+        }
+
+        prune_live_feed_scratch_root(&scratch_root, 5)?;
+
+        for product in ["metars", "nexrad"] {
+            let remaining =
+                fs::read_dir(scratch_root.join(product))?.collect::<Result<Vec<_>, _>>()?;
+            assert_eq!(remaining.len(), 5);
+        }
         Ok(())
     }
 
@@ -2694,6 +3259,26 @@ mod tests {
                 "records",
                 &[("KSEA", 1)],
             )
+        }
+    }
+
+    struct FailingScratchBuilder {
+        product: String,
+    }
+
+    impl ProductBuilder for FailingScratchBuilder {
+        fn product_id(&self) -> &str {
+            &self.product
+        }
+
+        fn build_state(
+            &self,
+            _event: &UpstreamEvent,
+            scratch_dir: &Path,
+        ) -> anyhow::Result<BuiltLiveFeedState> {
+            fs::create_dir_all(scratch_dir)?;
+            fs::write(scratch_dir.join("failure-marker"), b"debug")?;
+            bail!("intentional test failure")
         }
     }
 

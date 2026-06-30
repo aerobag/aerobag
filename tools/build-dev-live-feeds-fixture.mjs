@@ -15,7 +15,7 @@ Options:
   --metars <dir>         METAR fixture zip directory.
   --winds-aloft <dir>    Winds-aloft fixture zip directory.
   --no-winds-aloft       Omit winds-aloft fixtures.
-  --tfr-state <file>     Add one JSON TFR state; defaults to newest private-work TFR build when present.
+  --tfr-state <file>     Add one JSON TFR state; defaults to newest live-feed scratch TFR build when present.
   --no-tfrs              Omit TFR fixtures.
   --nexrad-state <dir>   Add one NEXRAD output directory containing manifest.json and tiles; may repeat.
   --no-nexrad            Omit NEXRAD fixtures.
@@ -36,8 +36,16 @@ const defaultWindsAloftFixtureRoot = path.join(
   "winds-aloft",
   "cycle-trace",
 );
-const defaultTfrBuildRoot = path.join(repoRoot, "..", "private-work", "live-feed-build", "tfrs");
-const defaultNexradBuildRoot = path.join(repoRoot, "..", "private-work", "live-feed-build", "nexrad");
+const artifactsRoot = resolveArtifactsRoot();
+const defaultLiveFeedBuildRoot = path.join(
+  artifactsRoot,
+  "scratch",
+  "dev-stack",
+  "live-feeds",
+  "live-feed-build",
+);
+const defaultTfrBuildRoot = path.join(defaultLiveFeedBuildRoot, "tfrs");
+const defaultNexradBuildRoot = path.join(defaultLiveFeedBuildRoot, "nexrad");
 
 const args = parseArgs(process.argv.slice(2));
 const outputRoot = path.resolve(args.output ?? path.join(repoRoot, "..", "live-feeds-dev-fixture"));
@@ -95,6 +103,21 @@ if (nexradStateRoots.length === 0) {
 }
 if (obstaclesHadRoots.length > 0) {
   console.log(`wrote ${obstaclesHadRoots.length} obstacle live-feed HAD state(s)`);
+}
+
+function resolveArtifactsRoot() {
+  const envValue = process.env.AEROBAG_ARTIFACT_WRITE_PATH;
+  if (envValue) {
+    return path.resolve(repoRoot, envValue);
+  }
+  const pointerPath = path.join(repoRoot, ".aerobag-artifact-write-path");
+  if (fs.existsSync(pointerPath)) {
+    const pointerValue = fs.readFileSync(pointerPath, "utf8").trim();
+    if (pointerValue) {
+      return path.resolve(repoRoot, pointerValue);
+    }
+  }
+  return path.resolve(repoRoot, "..", "aerobag-artifacts");
 }
 
 function parseArgs(argv) {

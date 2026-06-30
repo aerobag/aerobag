@@ -321,12 +321,24 @@ fn clean_tpp_transient_tree(dir: &Path) -> anyhow::Result<()> {
         }
         let name = entry.file_name();
         let name = name.to_string_lossy();
-        if name.ends_with("_exiftool_tmp") || name.ends_with('~') {
+        if name.ends_with("_exiftool_tmp") || name.ends_with('~') || is_tpp_intermediate_tiff(&path)
+        {
             fs::remove_file(&path)
                 .with_context(|| format!("failed to remove {}", path.display()))?;
         }
     }
     Ok(())
+}
+
+fn is_tpp_intermediate_tiff(path: &Path) -> bool {
+    let Some(extension) = path.extension().and_then(|value| value.to_str()) else {
+        return false;
+    };
+    if !(extension.eq_ignore_ascii_case("tif") || extension.eq_ignore_ascii_case("tiff")) {
+        return false;
+    }
+    path.components()
+        .any(|component| component.as_os_str() == "plates")
 }
 
 fn render_tpp_region(work_dir: &Path, region: Region, render_jobs: usize) -> anyhow::Result<()> {
@@ -1890,9 +1902,9 @@ fn hard_link_or_copy_file(from: &Path, to: &Path) -> anyhow::Result<()> {
 #[cfg(test)]
 mod tests {
     use super::{
-        build_plate_tasks, geotag_comment_from_gdalinfo, parse_dms_coordinate, parse_region_plates,
-        resolved_continued_group_should_keep_separate, PlannedPlate, PlateRecord, PlateRenderKind,
-        PlateRotation, PlateTask,
+        build_plate_tasks, clean_tpp_transient_work_files, geotag_comment_from_gdalinfo,
+        parse_dms_coordinate, parse_region_plates, resolved_continued_group_should_keep_separate,
+        PlannedPlate, PlateRecord, PlateRenderKind, PlateRotation, PlateTask,
     };
     use preprocessor_core::Region;
     use std::fs;
@@ -1949,6 +1961,33 @@ Lower Right (-8246604.366, 4994848.615) ( 74d 4'49.83\"W, 40d52'52.67\"N)
 
         assert_eq!(plates.len(), 1);
         assert_eq!(plates[0].pdf_name, "SEA-RNAV16C.PDF");
+    }
+
+    #[test]
+    fn cleanup_removes_tpp_plate_tiff_intermediates() {
+        let dir = tempfile::tempdir().unwrap();
+        let work_dir = dir.path();
+        let plates_dir = work_dir.join("plates").join("SEA");
+        fs::create_dir_all(&plates_dir).unwrap();
+        fs::create_dir_all(work_dir.join(".tmp-imagemagick")).unwrap();
+        fs::write(plates_dir.join("SEA-IAP.tif"), b"temporary tiff").unwrap();
+        fs::write(plates_dir.join("SEA-IAP.TIFF"), b"temporary tiff").unwrap();
+        fs::write(plates_dir.join("SEA-IAP.png"), b"final png").unwrap();
+        fs::write(work_dir.join("SOURCE.PDF"), b"source pdf").unwrap();
+        fs::write(work_dir.join("source.tif"), b"non-plate source").unwrap();
+        fs::write(work_dir.join("SEA-IAP.png~"), b"imagemagick backup").unwrap();
+        fs::write(work_dir.join("SEA-IAP_exiftool_tmp"), b"exiftool tmp").unwrap();
+
+        clean_tpp_transient_work_files(work_dir).unwrap();
+
+        assert!(!work_dir.join(".tmp-imagemagick").exists());
+        assert!(!plates_dir.join("SEA-IAP.tif").exists());
+        assert!(!plates_dir.join("SEA-IAP.TIFF").exists());
+        assert!(!work_dir.join("SEA-IAP.png~").exists());
+        assert!(!work_dir.join("SEA-IAP_exiftool_tmp").exists());
+        assert!(plates_dir.join("SEA-IAP.png").exists());
+        assert!(work_dir.join("SOURCE.PDF").exists());
+        assert!(work_dir.join("source.tif").exists());
     }
 
     #[test]

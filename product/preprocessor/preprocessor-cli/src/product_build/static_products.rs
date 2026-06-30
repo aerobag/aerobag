@@ -472,6 +472,7 @@ pub(super) fn build_water_mask_product(
         content_product_version_label(&source_version)
     ));
     zip_directory_deterministic(&zip_path, &output_dir, &["manifest.json", "tiles"])?;
+    prune_water_mask_source_intermediates(&output_dir)?;
     let outputs = BTreeMap::from([
         (
             "manifest".to_string(),
@@ -502,6 +503,26 @@ pub(super) fn build_water_mask_product(
         source_fetched_at_utc,
         record,
     ))
+}
+
+pub(super) fn prune_water_mask_source_intermediates(output_dir: &Path) -> anyhow::Result<()> {
+    remove_file_if_exists(&output_dir.join("source.geojson"))?;
+    let source_pages = output_dir.join("source-pages");
+    match fs::remove_dir_all(&source_pages) {
+        Ok(()) => Ok(()),
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(err) => {
+            Err(err).with_context(|| format!("failed to remove {}", source_pages.display()))
+        }
+    }
+}
+
+fn remove_file_if_exists(path: &Path) -> anyhow::Result<()> {
+    match fs::remove_file(path) {
+        Ok(()) => Ok(()),
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(err) => Err(err).with_context(|| format!("failed to remove {}", path.display())),
+    }
 }
 
 pub(super) fn water_mask_record_zip_path(
@@ -3169,6 +3190,39 @@ def main():
 if __name__ == '__main__':
     main()
 "#;
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use tempfile::tempdir;
+
+    #[test]
+    fn water_mask_cleanup_keeps_product_outputs_and_removes_source_work_files() {
+        let temp = tempdir().unwrap();
+        let output_dir = temp.path();
+        let tile_path = output_dir
+            .join("tiles")
+            .join("0")
+            .join("1")
+            .join("2.water.png");
+        fs::create_dir_all(tile_path.parent().unwrap()).unwrap();
+        fs::write(&tile_path, b"tile").unwrap();
+        fs::write(output_dir.join("manifest.json"), b"{}").unwrap();
+        fs::write(output_dir.join("water_mask_nw_test.zip"), b"zip").unwrap();
+        fs::write(output_dir.join("source.geojson"), b"source").unwrap();
+        let source_pages = output_dir.join("source-pages");
+        fs::create_dir_all(&source_pages).unwrap();
+        fs::write(source_pages.join("layer_9_chunk_00001.geojson"), b"page").unwrap();
+
+        prune_water_mask_source_intermediates(output_dir).unwrap();
+
+        assert!(tile_path.exists());
+        assert!(output_dir.join("manifest.json").exists());
+        assert!(output_dir.join("water_mask_nw_test.zip").exists());
+        assert!(!output_dir.join("source.geojson").exists());
+        assert!(!source_pages.exists());
+    }
+}
 
 const SHADED_RELIEF_WIDE_TILE_SCRIPT: &str = r#"
 import argparse

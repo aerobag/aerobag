@@ -207,6 +207,29 @@ impl LiveFeedCache {
             }))
     }
 
+    pub fn missing_requests_at_epoch_ms(&self, epoch_ms: i64) -> Vec<LiveFeedCacheRequest> {
+        self.live_feeds.durable_missing_requests_at_epoch_ms(
+            self.installed
+                .values()
+                .map(|installed| LiveFeedDurableInstalledProduct {
+                    product: installed.product.clone(),
+                    version: installed.version.clone(),
+                    state_sha256: installed.state_sha256.clone(),
+                }),
+            epoch_ms,
+        )
+    }
+
+    pub fn current_refresh_requests_at_epoch_ms(&self, epoch_ms: i64) -> Vec<LiveFeedCacheRequest> {
+        self.live_feeds
+            .durable_current_refresh_requests_at_epoch_ms(epoch_ms)
+    }
+
+    pub fn record_request_failure(&mut self, request_id: &str, epoch_ms: i64) {
+        self.live_feeds
+            .record_resource_failure(request_id, epoch_ms);
+    }
+
     pub fn install_fetched_payload(
         &mut self,
         registry: &LiveFeedProductRegistry,
@@ -1040,6 +1063,31 @@ mod tests {
             Some(("tafs_by_station".to_string(), Some("taf_count".to_string())))
         );
         assert_eq!(registry.record_json_delta_schema("tfrs"), None);
+    }
+
+    #[test]
+    fn durable_reconnect_refresh_requests_current_after_catalog_loaded() {
+        let mut cache = LiveFeedCache::default();
+        cache
+            .ingest_current(&current_manifest("metars", "v1", "abc"))
+            .unwrap();
+
+        let requests = cache.current_refresh_requests_at_epoch_ms(1_000);
+
+        assert_eq!(requests.len(), 1);
+        assert_eq!(requests[0].id, "live_feeds/current");
+    }
+
+    #[test]
+    fn durable_request_failures_are_retry_gated_in_core() {
+        let mut cache = LiveFeedCache::default();
+        cache.record_request_failure("live_feeds/current", 1_000);
+
+        assert!(cache.current_refresh_requests_at_epoch_ms(1_001).is_empty());
+        assert_eq!(
+            cache.current_refresh_requests_at_epoch_ms(301_000)[0].id,
+            "live_feeds/current"
+        );
     }
 
     #[test]

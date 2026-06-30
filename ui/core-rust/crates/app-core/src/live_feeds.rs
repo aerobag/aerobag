@@ -231,6 +231,14 @@ impl LiveFeedsState {
         self.outcome_for_resources(resources)
     }
 
+    pub fn refresh_current_outcome_with_invalidations_at_epoch_ms(
+        &self,
+        epoch_ms: i64,
+    ) -> HadOperationOutcome {
+        let resources = self.retryable_resources(vec![Self::current_resource_request()], epoch_ms);
+        self.outcome_for_resources_with_invalidations(resources)
+    }
+
     pub fn sync_product_outcome_at_epoch_ms(
         &self,
         product: &str,
@@ -840,11 +848,7 @@ impl LiveFeedsState {
         installed: impl IntoIterator<Item = LiveFeedDurableInstalledProduct>,
     ) -> Vec<LiveFeedCacheRequest> {
         if !self.current_loaded {
-            return vec![LiveFeedCacheRequest {
-                id: CURRENT_RESOURCE_ID.to_string(),
-                url: CURRENT_ADDRESS.to_string(),
-                kind: LiveFeedCacheRequestKind::Current,
-            }];
+            return vec![Self::durable_current_request()];
         }
 
         let installed_by_product = installed
@@ -920,6 +924,51 @@ impl LiveFeedsState {
         requests
     }
 
+    pub fn durable_missing_requests_at_epoch_ms(
+        &self,
+        installed: impl IntoIterator<Item = LiveFeedDurableInstalledProduct>,
+        epoch_ms: i64,
+    ) -> Vec<LiveFeedCacheRequest> {
+        let requests = self.durable_missing_requests(installed);
+        self.retryable_cache_requests(requests, epoch_ms)
+    }
+
+    fn durable_current_refresh_requests(&self) -> Vec<LiveFeedCacheRequest> {
+        vec![Self::durable_current_request()]
+    }
+
+    pub fn durable_current_refresh_requests_at_epoch_ms(
+        &self,
+        epoch_ms: i64,
+    ) -> Vec<LiveFeedCacheRequest> {
+        let requests = self.durable_current_refresh_requests();
+        self.retryable_cache_requests(requests, epoch_ms)
+    }
+
+    fn durable_current_request() -> LiveFeedCacheRequest {
+        LiveFeedCacheRequest {
+            id: CURRENT_RESOURCE_ID.to_string(),
+            url: CURRENT_ADDRESS.to_string(),
+            kind: LiveFeedCacheRequestKind::Current,
+        }
+    }
+
+    fn retryable_cache_requests(
+        &self,
+        requests: Vec<LiveFeedCacheRequest>,
+        epoch_ms: i64,
+    ) -> Vec<LiveFeedCacheRequest> {
+        requests
+            .into_iter()
+            .filter(
+                |request| match self.resource_failure_retry_after_epoch_ms.get(&request.id) {
+                    Some(retry_after) => *retry_after <= epoch_ms,
+                    None => true,
+                },
+            )
+            .collect()
+    }
+
     pub fn ingest_durable_request_resource(
         &mut self,
         request: &LiveFeedCacheRequest,
@@ -982,14 +1031,14 @@ impl LiveFeedsState {
 
     fn missing_resources(&self) -> Vec<CoreResourceRequest> {
         if !self.current_loaded {
-            return vec![CoreResourceRequest::public_url(
-                CURRENT_RESOURCE_ID,
-                CURRENT_ADDRESS,
-                false,
-            )];
+            return vec![Self::current_resource_request()];
         }
         let products = self.products.keys().map(String::as_str).collect::<Vec<_>>();
         self.missing_resources_for_products(products)
+    }
+
+    fn current_resource_request() -> CoreResourceRequest {
+        CoreResourceRequest::public_url(CURRENT_RESOURCE_ID, CURRENT_ADDRESS, false)
     }
 
     fn missing_resources_for_products<'a>(
@@ -1777,6 +1826,28 @@ mod tests {
                 url: CURRENT_ADDRESS.to_string(),
             }
         );
+    }
+
+    #[test]
+    fn reconnect_refresh_requests_current_manifest_even_after_catalog_loaded() {
+        let mut state = LiveFeedsState::default();
+        state
+            .ingest_resource(
+                "live_feeds/current",
+                br#"{
+                    "schema_version": 2,
+                    "products": {}
+                }"#,
+            )
+            .unwrap();
+
+        let HadOperationOutcome::NeedResources { resources } =
+            state.refresh_current_outcome_with_invalidations_at_epoch_ms(1_000)
+        else {
+            panic!("expected reconnect current manifest request");
+        };
+        assert_eq!(resources.len(), 1);
+        assert_eq!(resources[0].id, "live_feeds/current");
     }
 
     #[test]

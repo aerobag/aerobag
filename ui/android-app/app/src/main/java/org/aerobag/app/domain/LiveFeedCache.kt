@@ -34,7 +34,6 @@ import org.aerobag.app.diagnosticLogInfo
 private const val LiveFeedCacheDirectoryName = "live-feeds"
 private const val LiveFeedSseConnectTimeoutMs = 5_000
 private const val LiveFeedSseIdleTimeoutMs = 65_000
-private const val LiveFeedFailedRequestRetryDelayMs = 5 * 60_000L
 private const val LiveFeedEventsPath = "/live-feeds/v2/events"
 private const val LiveFeedLogTag = "AndroidLiveFeeds"
 internal const val LiveFeedMaxInMemoryFetchBytes = 64L * 1024L * 1024L
@@ -90,6 +89,28 @@ enum class LiveFeedNetworkStatus {
     Unknown,
 }
 
+@Serializable
+data class LiveFeedRuntimeInput(
+    val kind: String,
+    val message: String? = null,
+    @SerialName("source_url")
+    val sourceUrl: String? = null,
+    @SerialName("status_url")
+    val statusUrl: String? = null,
+    @SerialName("network_status")
+    val networkStatus: LiveFeedNetworkStatus? = null,
+)
+
+@Serializable
+data class LiveFeedRuntimeDecision(
+    @SerialName("connection_event")
+    val connectionEvent: LiveFeedConnectionEvent? = null,
+    @SerialName("refresh_current")
+    val refreshCurrent: Boolean = false,
+    @SerialName("reconnect_delay_ms")
+    val reconnectDelayMs: Long? = null,
+)
+
 class LiveFeedCache(
     installedStatesJson: String = "[]",
     private val bridge: NativeBridge = NativeBindings,
@@ -108,6 +129,21 @@ class LiveFeedCache(
     fun missingRequests(): List<LiveFeedCacheRequest> = withOpenHandle { handle ->
         json.decodeFromString(bridge.liveFeedCacheMissingRequestsJson(handle))
     }
+
+    fun missingRequestsAtEpochMs(epochMs: Long): List<LiveFeedCacheRequest> = withOpenHandle { handle ->
+        json.decodeFromString(bridge.liveFeedCacheMissingRequestsAtEpochMsJson(handle, epochMs))
+    }
+
+    fun currentRefreshRequestsAtEpochMs(epochMs: Long): List<LiveFeedCacheRequest> = withOpenHandle { handle ->
+        json.decodeFromString(bridge.liveFeedCacheCurrentRefreshRequestsAtEpochMsJson(handle, epochMs))
+    }
+
+    fun recordRequestFailure(requestId: String, epochMs: Long) = withOpenHandle { handle ->
+        bridge.liveFeedCacheRecordRequestFailure(handle, requestId, epochMs)
+    }
+
+    fun runtimeDecision(input: LiveFeedRuntimeInput): LiveFeedRuntimeDecision =
+        json.decodeFromString(bridge.liveFeedRuntimeDecisionJson(json.encodeToString(input)))
 
     fun installFetchedBytes(
         request: LiveFeedCacheRequest,
@@ -196,7 +232,6 @@ class AndroidLiveFeedClient(
         ignoreUnknownKeys = true
     },
 ) {
-    private val retryGate = LiveFeedRequestRetryGate(LiveFeedFailedRequestRetryDelayMs)
     private val pumpMutex = Mutex()
 
     suspend fun bootstrapAndRun(
@@ -211,44 +246,51 @@ class AndroidLiveFeedClient(
         }
         val networkPump = launch {
             for (status in networkChanges) {
-                retryGate.clearAll()
-                onConnectionEvent(
-                    LiveFeedConnectionEvent(
-                        kind = "network_status",
-                        sourceUrl = sourceRootUrl,
-                        statusUrl = liveFeedStatusUrl(sourceRootUrl),
-                        networkStatus = status,
-                    ),
+                handleRuntimeEvent(
+                    kind = "network_status",
+                    networkStatus = status,
+                    promote = promote,
+                    onChanged = onChanged,
+                    onConnectionEvent = onConnectionEvent,
                 )
-                pumpUntilSettled(promote, onChanged)
             }
         }
         try {
+            handleRuntimeEvent(
+                kind = "start",
+                promote = promote,
+                onChanged = onChanged,
+                onConnectionEvent = onConnectionEvent,
+            )
             networkChanges.trySend(detectLiveFeedNetworkStatus(context, liveFeedEventsUrl))
-            pumpUntilSettled(promote, onChanged)
             while (kotlin.coroutines.coroutineContext.isActive) {
                 runCatching {
                     readSseLoop(promote, onChanged, onConnectionEvent)
                 }.onFailure { error ->
                     if (error is CancellationException) throw error
-                    if (error is LiveFeedSseIdleTimeoutException) {
+                    val decision = if (error is LiveFeedSseIdleTimeoutException) {
                         diagnosticLogInfo(TAG) {
                             "live-feed SSE idle for ${LiveFeedSseIdleTimeoutMs}ms; reconnecting"
                         }
+                        handleRuntimeEvent(
+                            kind = "idle_timeout",
+                            message = error.message,
+                            promote = promote,
+                            onChanged = onChanged,
+                            onConnectionEvent = onConnectionEvent,
+                        )
                     } else {
                         Log.w(TAG, "live-feed SSE loop failed: ${error.message}", error)
-                        onConnectionEvent(
-                            LiveFeedConnectionEvent(
-                                kind = "error",
-                                message = error.message ?: error::class.java.simpleName,
-                                sourceUrl = sourceRootUrl,
-                                statusUrl = liveFeedStatusUrl(sourceRootUrl),
-                                networkStatus = detectLiveFeedNetworkStatus(context, sourceRootUrl),
-                            ),
+                        handleRuntimeEvent(
+                            kind = "error",
+                            message = error.message ?: error::class.java.simpleName,
+                            networkStatus = detectLiveFeedNetworkStatus(context, sourceRootUrl),
+                            promote = promote,
+                            onChanged = onChanged,
+                            onConnectionEvent = onConnectionEvent,
                         )
-                        delay(5_000)
                     }
-                    pumpUntilSettled(promote, onChanged)
+                    decision.reconnectDelayMs?.takeIf { it > 0 }?.let { delay(it) }
                 }
             }
         } finally {
@@ -258,6 +300,30 @@ class AndroidLiveFeedClient(
         }
     }
 
+    private suspend fun handleRuntimeEvent(
+        kind: String,
+        message: String? = null,
+        networkStatus: LiveFeedNetworkStatus? = null,
+        promote: suspend (LiveFeedInstalledSummary) -> Unit,
+        onChanged: suspend () -> Unit,
+        onConnectionEvent: suspend (LiveFeedConnectionEvent) -> Unit,
+    ): LiveFeedRuntimeDecision {
+        val decision = cache.runtimeDecision(
+            LiveFeedRuntimeInput(
+                kind = kind,
+                message = message,
+                sourceUrl = sourceRootUrl,
+                statusUrl = liveFeedStatusUrl(sourceRootUrl),
+                networkStatus = networkStatus,
+            ),
+        )
+        decision.connectionEvent?.let { onConnectionEvent(it) }
+        if (decision.refreshCurrent) {
+            refreshCurrentAndPump(promote, onChanged)
+        }
+        return decision
+    }
+
     suspend fun pumpUntilSettled(
         promote: suspend (LiveFeedInstalledSummary) -> Unit,
         onChanged: suspend () -> Unit,
@@ -265,49 +331,64 @@ class AndroidLiveFeedClient(
         var installs = 0
         while (kotlin.coroutines.coroutineContext.isActive) {
             val nowMs = SystemClock.elapsedRealtime()
-            val requests = cache.missingRequests()
+            val requests = cache.missingRequestsAtEpochMs(nowMs)
             if (requests.isEmpty()) {
                 return installs
             }
-            val readyRequests = requests.filter { retryGate.shouldAttempt(it.id, nowMs) }
-            if (readyRequests.isEmpty()) {
-                return installs
-            }
-            var madeProgress = false
-            for (request in readyRequests) {
-                try {
-                    val bytes = withContext(Dispatchers.IO) { fetchBytes(request.url) }
-                    val summary = cache.installFetchedBytes(request, bytes)
-                    retryGate.recordSuccess(request.id)
-                    if (summary == null) {
-                        onChanged()
-                        madeProgress = true
-                        continue
-                    }
-                    val payloadBytes = cache.installedPayloadBytes(summary.product)
-                    withContext(Dispatchers.IO) {
-                        LiveFeedCacheStore.persist(context, summary, payloadBytes)
-                    }
-                    promote(summary)
-                    onChanged()
-                    installs += 1
-                    madeProgress = true
-                } catch (error: Exception) {
-                    if (error is CancellationException) throw error
-                    retryGate.recordFailure(request.id, SystemClock.elapsedRealtime())
-                    Log.w(
-                        TAG,
-                        "failed to install live-feed request id=${request.id} url=${request.url}; " +
-                            "retrying in ${LiveFeedFailedRequestRetryDelayMs / 1000}s: ${error.message}",
-                        error,
-                    )
-                }
-            }
-            if (!madeProgress) {
+            val result = pumpRequestsOnce(requests, promote, onChanged)
+            installs += result.installs
+            if (!result.madeProgress) {
                 return installs
             }
         }
         return installs
+    }
+
+    private suspend fun refreshCurrentAndPump(
+        promote: suspend (LiveFeedInstalledSummary) -> Unit,
+        onChanged: suspend () -> Unit,
+    ): Int = pumpMutex.withLock {
+        val nowMs = SystemClock.elapsedRealtime()
+        val result = pumpRequestsOnce(cache.currentRefreshRequestsAtEpochMs(nowMs), promote, onChanged)
+        result.installs
+    } + pumpUntilSettled(promote, onChanged)
+
+    private suspend fun pumpRequestsOnce(
+        requests: List<LiveFeedCacheRequest>,
+        promote: suspend (LiveFeedInstalledSummary) -> Unit,
+        onChanged: suspend () -> Unit,
+    ): LiveFeedPumpResult {
+        var installs = 0
+        var madeProgress = false
+        for (request in requests) {
+            try {
+                val bytes = withContext(Dispatchers.IO) { fetchBytes(request.url) }
+                val summary = cache.installFetchedBytes(request, bytes)
+                if (summary == null) {
+                    onChanged()
+                    madeProgress = true
+                    continue
+                }
+                val payloadBytes = cache.installedPayloadBytes(summary.product)
+                withContext(Dispatchers.IO) {
+                    LiveFeedCacheStore.persist(context, summary, payloadBytes)
+                }
+                promote(summary)
+                onChanged()
+                installs += 1
+                madeProgress = true
+            } catch (error: Exception) {
+                if (error is CancellationException) throw error
+                cache.recordRequestFailure(request.id, SystemClock.elapsedRealtime())
+                Log.w(
+                    TAG,
+                    "failed to install live-feed request id=${request.id} url=${request.url}; " +
+                        "retrying after core cooldown: ${error.message}",
+                    error,
+                )
+            }
+        }
+        return LiveFeedPumpResult(installs = installs, madeProgress = madeProgress)
     }
 
     private suspend fun readSseLoop(
@@ -316,14 +397,12 @@ class AndroidLiveFeedClient(
         onConnectionEvent: suspend (LiveFeedConnectionEvent) -> Unit,
     ) = withContext(Dispatchers.IO) {
         val url = resolveLiveFeedUrl(LiveFeedEventsPath, sourceRootUrl)
-        val statusUrl = liveFeedStatusUrl(sourceRootUrl)
-        onConnectionEvent(
-            LiveFeedConnectionEvent(
-                kind = "connecting",
-                sourceUrl = sourceRootUrl,
-                statusUrl = statusUrl,
-                networkStatus = detectLiveFeedNetworkStatus(context, url),
-            ),
+        handleRuntimeEvent(
+            kind = "connecting",
+            networkStatus = detectLiveFeedNetworkStatus(context, url),
+            promote = promote,
+            onChanged = onChanged,
+            onConnectionEvent = onConnectionEvent,
         )
         val connection = (URL(url).openConnection() as HttpURLConnection).apply {
             connectTimeout = LiveFeedSseConnectTimeoutMs
@@ -334,13 +413,12 @@ class AndroidLiveFeedClient(
         try {
             connection.inputStream.bufferedReader().use { reader ->
                 connected = true
-                onConnectionEvent(
-                    LiveFeedConnectionEvent(
-                        kind = "connected",
-                        sourceUrl = sourceRootUrl,
-                        statusUrl = statusUrl,
-                        networkStatus = detectLiveFeedNetworkStatus(context, url),
-                    ),
+                handleRuntimeEvent(
+                    kind = "connected",
+                    networkStatus = detectLiveFeedNetworkStatus(context, url),
+                    promote = promote,
+                    onChanged = onChanged,
+                    onConnectionEvent = onConnectionEvent,
                 )
                 var eventName: String? = null
                 var eventId: String? = null
@@ -355,7 +433,12 @@ class AndroidLiveFeedClient(
                     dataLines.clear()
                     eventName = null
                     eventId = null
-                    onConnectionEvent(LiveFeedConnectionEvent(kind = "message"))
+                    handleRuntimeEvent(
+                        kind = "message",
+                        promote = promote,
+                        onChanged = onChanged,
+                        onConnectionEvent = onConnectionEvent,
+                    )
                     if (!cache.ingestSseEvent(event)) return
                     pumpUntilSettled(promote, onChanged)
                 }
@@ -371,13 +454,12 @@ class AndroidLiveFeedClient(
                 }
                 flushEvent()
             }
-            onConnectionEvent(
-                LiveFeedConnectionEvent(
-                    kind = "closed",
-                    sourceUrl = sourceRootUrl,
-                    statusUrl = statusUrl,
-                    networkStatus = detectLiveFeedNetworkStatus(context, url),
-                ),
+            handleRuntimeEvent(
+                kind = "closed",
+                networkStatus = detectLiveFeedNetworkStatus(context, url),
+                promote = promote,
+                onChanged = onChanged,
+                onConnectionEvent = onConnectionEvent,
             )
         } catch (error: SocketTimeoutException) {
             if (connected) {
@@ -439,6 +521,11 @@ class LiveFeedResponseTooLargeException(
     observedBytes: Long,
 ) : IOException("live-feed response too large: observedBytes=$observedBytes maxBytes=$maxBytes url=$url")
 
+private data class LiveFeedPumpResult(
+    val installs: Int,
+    val madeProgress: Boolean,
+)
+
 internal fun readLiveFeedBytesBounded(
     input: InputStream,
     maxBytes: Long,
@@ -462,31 +549,6 @@ internal fun readLiveFeedBytesBounded(
         output.write(buffer, 0, bytesRead)
     }
     return output.toByteArray()
-}
-
-internal class LiveFeedRequestRetryGate(
-    private val retryDelayMs: Long,
-) {
-    private val retryNotBeforeMsByRequestId = mutableMapOf<String, Long>()
-
-    @Synchronized
-    fun shouldAttempt(requestId: String, nowMs: Long): Boolean =
-        nowMs >= (retryNotBeforeMsByRequestId[requestId] ?: Long.MIN_VALUE)
-
-    @Synchronized
-    fun recordSuccess(requestId: String) {
-        retryNotBeforeMsByRequestId.remove(requestId)
-    }
-
-    @Synchronized
-    fun recordFailure(requestId: String, nowMs: Long) {
-        retryNotBeforeMsByRequestId[requestId] = nowMs + retryDelayMs
-    }
-
-    @Synchronized
-    fun clearAll() {
-        retryNotBeforeMsByRequestId.clear()
-    }
 }
 
 internal fun registerLiveFeedNetworkCallback(

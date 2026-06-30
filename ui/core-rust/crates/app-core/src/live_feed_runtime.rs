@@ -1,0 +1,158 @@
+use serde::{Deserialize, Serialize};
+
+pub const LIVE_FEED_SSE_CONNECT_TIMEOUT_MS: i64 = 5_000;
+pub const LIVE_FEED_SSE_IDLE_TIMEOUT_MS: i64 = 65_000;
+pub const LIVE_FEED_SSE_RECONNECT_DELAY_MS: i64 = 5_000;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum LiveFeedConnectionEventKind {
+    Connecting,
+    Connected,
+    Message,
+    Error,
+    Closed,
+    NetworkStatus,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum LiveFeedNetworkStatus {
+    Unmetered,
+    Metered,
+    NoActiveNetwork,
+    Unknown,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct LiveFeedConnectionEvent {
+    pub kind: LiveFeedConnectionEventKind,
+    #[serde(default)]
+    pub message: Option<String>,
+    #[serde(default)]
+    pub source_url: Option<String>,
+    #[serde(default)]
+    pub status_url: Option<String>,
+    #[serde(default)]
+    pub network_status: Option<LiveFeedNetworkStatus>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum LiveFeedRuntimeEventKind {
+    Start,
+    NetworkStatus,
+    Connecting,
+    Connected,
+    Message,
+    Error,
+    Closed,
+    IdleTimeout,
+    Online,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct LiveFeedRuntimeInput {
+    pub kind: LiveFeedRuntimeEventKind,
+    #[serde(default)]
+    pub message: Option<String>,
+    #[serde(default)]
+    pub source_url: Option<String>,
+    #[serde(default)]
+    pub status_url: Option<String>,
+    #[serde(default)]
+    pub network_status: Option<LiveFeedNetworkStatus>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct LiveFeedRuntimeDecision {
+    #[serde(default)]
+    pub connection_event: Option<LiveFeedConnectionEvent>,
+    #[serde(default)]
+    pub refresh_current: bool,
+    #[serde(default)]
+    pub reconnect_delay_ms: Option<i64>,
+}
+
+pub fn live_feed_runtime_decision(input: LiveFeedRuntimeInput) -> LiveFeedRuntimeDecision {
+    use LiveFeedConnectionEventKind as ConnectionKind;
+    use LiveFeedRuntimeEventKind as RuntimeKind;
+
+    let connection_kind = match input.kind {
+        RuntimeKind::Connecting => Some(ConnectionKind::Connecting),
+        RuntimeKind::Connected => Some(ConnectionKind::Connected),
+        RuntimeKind::Message => Some(ConnectionKind::Message),
+        RuntimeKind::Error => Some(ConnectionKind::Error),
+        RuntimeKind::Closed | RuntimeKind::IdleTimeout => Some(ConnectionKind::Closed),
+        RuntimeKind::NetworkStatus => Some(ConnectionKind::NetworkStatus),
+        RuntimeKind::Start | RuntimeKind::Online => None,
+    };
+    let connection_event = connection_kind.map(|kind| LiveFeedConnectionEvent {
+        kind,
+        message: input.message.clone(),
+        source_url: input.source_url.clone(),
+        status_url: input.status_url.clone(),
+        network_status: input.network_status,
+    });
+    LiveFeedRuntimeDecision {
+        connection_event,
+        refresh_current: matches!(
+            input.kind,
+            RuntimeKind::Start
+                | RuntimeKind::Connected
+                | RuntimeKind::NetworkStatus
+                | RuntimeKind::Online
+        ),
+        reconnect_delay_ms: match input.kind {
+            RuntimeKind::Error => Some(LIVE_FEED_SSE_RECONNECT_DELAY_MS),
+            RuntimeKind::Closed | RuntimeKind::IdleTimeout | RuntimeKind::Online => Some(0),
+            RuntimeKind::Start
+            | RuntimeKind::NetworkStatus
+            | RuntimeKind::Connecting
+            | RuntimeKind::Connected
+            | RuntimeKind::Message => None,
+        },
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn connected_refreshes_current_catalog() {
+        let decision = live_feed_runtime_decision(LiveFeedRuntimeInput {
+            kind: LiveFeedRuntimeEventKind::Connected,
+            message: None,
+            source_url: Some("http://example.test".to_string()),
+            status_url: Some("http://example.test/live-feeds/status.html".to_string()),
+            network_status: Some(LiveFeedNetworkStatus::Unmetered),
+        });
+
+        assert!(decision.refresh_current);
+        assert_eq!(decision.reconnect_delay_ms, None);
+        let event = decision.connection_event.unwrap();
+        assert_eq!(event.kind, LiveFeedConnectionEventKind::Connected);
+        assert_eq!(event.source_url.as_deref(), Some("http://example.test"));
+    }
+
+    #[test]
+    fn errors_report_and_back_off() {
+        let decision = live_feed_runtime_decision(LiveFeedRuntimeInput {
+            kind: LiveFeedRuntimeEventKind::Error,
+            message: Some("boom".to_string()),
+            source_url: None,
+            status_url: None,
+            network_status: None,
+        });
+
+        assert!(!decision.refresh_current);
+        assert_eq!(
+            decision.reconnect_delay_ms,
+            Some(LIVE_FEED_SSE_RECONNECT_DELAY_MS)
+        );
+        let event = decision.connection_event.unwrap();
+        assert_eq!(event.kind, LiveFeedConnectionEventKind::Error);
+        assert_eq!(event.message.as_deref(), Some("boom"));
+    }
+}

@@ -33,6 +33,9 @@ use crate::{
         nav_ref_position, nav_symbol_feature, suggest_waypoint_identifiers, CoreResourceRequest,
         CoreResourceSource, HadOperationOutcome, HadReadError, UiInvalidation,
     },
+    live_feed_runtime::{
+        LiveFeedConnectionEvent, LiveFeedConnectionEventKind, LiveFeedNetworkStatus,
+    },
     live_feeds::{LiveFeedSseEvent, LiveFeedsState, LIVE_FEEDS_BASE_PATH},
     map_follow::{MapFollowSessionState, MapFollowUiState},
     map_overlay::{
@@ -391,39 +394,6 @@ impl From<&NavDbOpenResult> for AttachedNavDbArtifact {
             warning_text: result.selected_warning_text.clone(),
         }
     }
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum LiveFeedConnectionEventKind {
-    Connecting,
-    Connected,
-    Message,
-    Error,
-    Closed,
-    NetworkStatus,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum LiveFeedNetworkStatus {
-    Unmetered,
-    Metered,
-    NoActiveNetwork,
-    Unknown,
-}
-
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub struct LiveFeedConnectionEvent {
-    pub kind: LiveFeedConnectionEventKind,
-    #[serde(default)]
-    pub message: Option<String>,
-    #[serde(default)]
-    pub source_url: Option<String>,
-    #[serde(default)]
-    pub status_url: Option<String>,
-    #[serde(default)]
-    pub network_status: Option<LiveFeedNetworkStatus>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -5399,6 +5369,14 @@ pub fn sync_live_feeds_in_session(handle: u32) -> AppResult<HadOperationOutcome>
     Ok(session
         .live_feeds
         .sync_outcome_with_invalidations_at_epoch_ms(session.wall_clock_epoch_ms))
+}
+
+pub fn refresh_live_feed_current_in_session(handle: u32) -> AppResult<HadOperationOutcome> {
+    let sessions = lock_sessions();
+    let session = session_ref(&sessions, handle)?;
+    Ok(session
+        .live_feeds
+        .refresh_current_outcome_with_invalidations_at_epoch_ms(session.wall_clock_epoch_ms))
 }
 
 pub fn ingest_live_feed_sse_event_in_session(
@@ -15182,8 +15160,8 @@ mod tests {
 
     fn create_synced_modda_zgood_normy_session() -> UiSessionInitResult {
         let store = modda_zgood_normy_nav_kv_store();
-        let init = create_ui_session(modda_zgood_normy_plan(), &[], None, None)
-            .expect("create session");
+        let init =
+            create_ui_session(modda_zgood_normy_plan(), &[], None, None).expect("create session");
         attach_nav_kv_store_to_session(init.handle, 1, &store).expect("attach nav kv");
         let sync = sync_guidance_geometry_in_session(init.handle).expect("sync guidance geometry");
         assert!(
@@ -15242,8 +15220,14 @@ mod tests {
             .expect("ui guidance");
         assert_eq!(ui_guidance.active_leg_index, Some(active_leg_index));
         assert!(
-            ui_guidance.nav_element.active_leg_summary.contains(from_label)
-                && ui_guidance.nav_element.active_leg_summary.contains(to_label),
+            ui_guidance
+                .nav_element
+                .active_leg_summary
+                .contains(from_label)
+                && ui_guidance
+                    .nav_element
+                    .active_leg_summary
+                    .contains(to_label),
             "CDI label should describe the active leg, got {}",
             ui_guidance.nav_element.active_leg_summary
         );

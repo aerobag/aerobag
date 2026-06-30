@@ -24,6 +24,12 @@ interface NativeBridge {
 
     fun liveFeedCacheMissingRequestsJson(handle: Long): String
 
+    fun liveFeedCacheMissingRequestsAtEpochMsJson(handle: Long, epochMs: Long): String
+
+    fun liveFeedCacheCurrentRefreshRequestsAtEpochMsJson(handle: Long, epochMs: Long): String
+
+    fun liveFeedCacheRecordRequestFailure(handle: Long, requestId: String, epochMs: Long)
+
     fun liveFeedCacheInstallFetchedBytesJson(
         handle: Long,
         requestJson: String,
@@ -392,6 +398,10 @@ interface NativeBridge {
 
     fun syncLiveFeedsInSessionJson(handle: Long): String
 
+    fun liveFeedRuntimeDecisionJson(inputJson: String): String
+
+    fun refreshLiveFeedCurrentInSessionJson(handle: Long): String
+
     fun ingestLiveFeedSseEventsInSessionJson(handle: Long, eventsJson: String): String
 
     fun reportLiveFeedConnectionEventInSessionJson(handle: Long, eventJson: String): String
@@ -541,6 +551,12 @@ object NativeBindings : NativeBridge {
     external override fun createLiveFeedCache(installedStatesJson: String): Long
 
     external override fun liveFeedCacheMissingRequestsJson(handle: Long): String
+
+    external override fun liveFeedCacheMissingRequestsAtEpochMsJson(handle: Long, epochMs: Long): String
+
+    external override fun liveFeedCacheCurrentRefreshRequestsAtEpochMsJson(handle: Long, epochMs: Long): String
+
+    external override fun liveFeedCacheRecordRequestFailure(handle: Long, requestId: String, epochMs: Long)
 
     external override fun liveFeedCacheInstallFetchedBytesJson(
         handle: Long,
@@ -909,6 +925,10 @@ object NativeBindings : NativeBridge {
     ): String
 
     external override fun syncLiveFeedsInSessionJson(handle: Long): String
+
+    external override fun liveFeedRuntimeDecisionJson(inputJson: String): String
+
+    external override fun refreshLiveFeedCurrentInSessionJson(handle: Long): String
 
     external override fun ingestLiveFeedSseEventsInSessionJson(handle: Long, eventsJson: String): String
 

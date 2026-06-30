@@ -852,6 +852,8 @@ type WasmModule = {
   core_had_operation(handle: number, operationJson: string): Promise<string> | string;
   drain_session_resource_effects(handle: number): Promise<string> | string;
   sync_live_feeds_in_session(handle: number): Promise<string> | string;
+  live_feed_runtime_decision(inputJson: string): Promise<string> | string;
+  refresh_live_feed_current_in_session(handle: number): Promise<string> | string;
   ingest_live_feed_sse_event_in_session(handle: number, eventJson: string): Promise<string> | string;
   ingest_live_feed_sse_events_in_session(handle: number, eventsJson: string): Promise<string> | string;
   report_live_feed_connection_event_in_session(handle: number, eventJson: string): Promise<string> | string;
@@ -1002,6 +1004,36 @@ export class WasmAppCoreAdapter implements AppCoreAdapter {
         invalidations: ["session_snapshot"],
       });
       publishInvalidations(["session_snapshot"]);
+    };
+    const refreshLiveFeedCurrent = async () => {
+      await withSessionRetry(async () =>
+        runSessionOperation<unknown>(
+          () => this.module.refresh_live_feed_current_in_session(handle),
+          (resourceId, resourceBytes) => ingestResourceForHandle(handle, resourceId, resourceBytes),
+        ),
+      );
+    };
+    const handleLiveFeedRuntimeEvent = async (input: LiveFeedRuntimeInput): Promise<LiveFeedRuntimeDecision> => {
+      const sourceUrl = liveFeedSourceUrl();
+      const statusUrl = liveFeedStatusUrl(sourceUrl);
+      const decision = JSON.parse(await this.module.live_feed_runtime_decision(JSON.stringify({
+        source_url: sourceUrl,
+        status_url: statusUrl,
+        ...input,
+      }))) as LiveFeedRuntimeDecision;
+      if (decision.connection_event) {
+        snapshot = await parseSessionSnapshot(
+          this.module.report_live_feed_connection_event_in_session(
+            handle,
+            JSON.stringify(decision.connection_event),
+          ),
+        );
+        publishInvalidations(["session_snapshot"]);
+      }
+      if (decision.refresh_current) {
+        await refreshLiveFeedCurrent();
+      }
+      return decision;
     };
     const syncGuidanceGeometry = async (reason = "unspecified") => {
       snapshot = await debugTiming("plan.guidance.sync", () =>
@@ -1559,32 +1591,12 @@ export class WasmAppCoreAdapter implements AppCoreAdapter {
         );
       },
       startLiveFeedSubscription: async () => {
-        await withSessionRetry(async () =>
-          runSessionOperation<unknown>(
-            () => this.module.sync_live_feeds_in_session(handle),
-            (resourceId, resourceBytes) => ingestResourceForHandle(handle, resourceId, resourceBytes),
-          ),
-        );
+        await handleLiveFeedRuntimeEvent({ kind: "start" });
         if (liveFeedSubscription) {
           return;
         }
-        const sourceUrl = liveFeedSourceUrl();
-        const statusUrl = liveFeedStatusUrl(sourceUrl);
-        const reportConnectionEvent = async (kind: "connecting" | "connected" | "message" | "error" | "closed", message?: string) => {
-          snapshot = await parseSessionSnapshot(
-            this.module.report_live_feed_connection_event_in_session(
-              handle,
-              JSON.stringify({
-                kind,
-                message: message ?? null,
-                source_url: sourceUrl,
-                status_url: statusUrl,
-              }),
-            ),
-          );
-          publishInvalidations(["session_snapshot"]);
-        };
         liveFeedSubscription = createLiveFeedSubscription(
+          handleLiveFeedRuntimeEvent,
           async (events) => {
             await withSessionRetry(async () =>
               runSessionOperation<unknown>(
@@ -1593,7 +1605,6 @@ export class WasmAppCoreAdapter implements AppCoreAdapter {
               ),
             );
           },
-          reportConnectionEvent,
           (tag, data) => debugLog(tag, data),
         );
       },
@@ -1602,19 +1613,7 @@ export class WasmAppCoreAdapter implements AppCoreAdapter {
           const closing = liveFeedSubscription;
           liveFeedSubscription = null;
           closing.close();
-          const sourceUrl = liveFeedSourceUrl();
-          snapshot = await parseSessionSnapshot(
-            this.module.report_live_feed_connection_event_in_session(
-              handle,
-              JSON.stringify({
-                kind: "closed",
-                message: null,
-                source_url: sourceUrl,
-                status_url: liveFeedStatusUrl(sourceUrl),
-              }),
-            ),
-          );
-          publishInvalidations(["session_snapshot"]);
+          await handleLiveFeedRuntimeEvent({ kind: "closed" });
           return;
         }
         liveFeedSubscription = null;
@@ -1890,6 +1889,8 @@ async function loadBestAvailableAdapterUncached(
     "attach_nav_kv_store_to_session",
     "core_had_operation",
     "sync_live_feeds_in_session",
+    "live_feed_runtime_decision",
+    "refresh_live_feed_current_in_session",
     "ingest_live_feed_sse_event_in_session",
     "ingest_live_feed_sse_events_in_session",
     "report_live_feed_connection_event_in_session",
@@ -1933,8 +1934,27 @@ type LiveFeedSubscription = {
   close(): void;
 };
 
-const LiveFeedEventSourceReconnectDelayMs = 5_000;
 const LiveFeedEventsPath = "/live-feeds/v2/events";
+
+type LiveFeedRuntimeInput = {
+  kind: "start" | "network_status" | "connecting" | "connected" | "message" | "error" | "closed" | "idle_timeout" | "online";
+  message?: string | null;
+  source_url?: string | null;
+  status_url?: string | null;
+  network_status?: "unmetered" | "metered" | "no_active_network" | "unknown" | null;
+};
+
+type LiveFeedRuntimeDecision = {
+  connection_event?: {
+    kind: "connecting" | "connected" | "message" | "error" | "closed" | "network_status";
+    message?: string | null;
+    source_url?: string | null;
+    status_url?: string | null;
+    network_status?: "unmetered" | "metered" | "no_active_network" | "unknown" | null;
+  } | null;
+  refresh_current?: boolean;
+  reconnect_delay_ms?: number | null;
+};
 
 function liveFeedSourceUrl(): string {
   const configured = __AEROBAG_LIVE_FEEDS_ORIGIN__?.trim();
@@ -1958,8 +1978,8 @@ function liveFeedEventsUrl(sourceUrl: string): string {
 }
 
 function createLiveFeedSubscription(
+  handleRuntimeEvent: (input: LiveFeedRuntimeInput) => Promise<LiveFeedRuntimeDecision>,
   ingestEvents: (events: LiveFeedSseEvent[]) => Promise<void>,
-  reportConnectionEvent: (kind: "connecting" | "connected" | "message" | "error" | "closed", message?: string) => Promise<void>,
   log: (tag: string, data?: unknown) => void,
 ): LiveFeedSubscription {
   if (typeof EventSource === "undefined") {
@@ -1972,10 +1992,13 @@ function createLiveFeedSubscription(
   let flushInFlight = false;
   let flushAgain = false;
   let reconnectTimer: number | null = null;
-  const reportEvent = (kind: "connecting" | "connected" | "message" | "error" | "closed", message?: string) => {
-    void reportConnectionEvent(kind, message).catch((error: unknown) => {
+  const runtimeEvent = (input: LiveFeedRuntimeInput): Promise<LiveFeedRuntimeDecision> =>
+    handleRuntimeEvent(input).catch((error: unknown) => {
       log("live_feeds.connection_event.failed", { message: error instanceof Error ? error.message : String(error) });
+      throw error;
     });
+  const reportEvent = (input: LiveFeedRuntimeInput) => {
+    void runtimeEvent(input).catch(() => {});
   };
   const clearReconnectTimer = () => {
     if (reconnectTimer === null) {
@@ -2019,7 +2042,7 @@ function createLiveFeedSubscription(
       return;
     }
     clearReconnectTimer();
-    reportEvent("connecting");
+    reportEvent({ kind: "connecting" });
     const nextEvents = new EventSource(liveFeedEventsUrl(liveFeedSourceUrl()));
     events = nextEvents;
     const isCurrent = () => !closed && events === nextEvents;
@@ -2029,7 +2052,7 @@ function createLiveFeedSubscription(
       }
       clearReconnectTimer();
       const message = event as MessageEvent<string>;
-      reportEvent("message");
+      reportEvent({ kind: "message" });
       queuedEvents.push({
         id: message.lastEventId || null,
         event: "live-feed-current",
@@ -2042,15 +2065,16 @@ function createLiveFeedSubscription(
         return;
       }
       clearReconnectTimer();
-      reportEvent("connected");
+      reportEvent({ kind: "connected" });
     };
     nextEvents.onerror = () => {
       if (!isCurrent()) {
         return;
       }
       log("live_feeds.sse.error", { ready_state: nextEvents.readyState });
-      reportEvent("error", "EventSource error");
-      scheduleReconnect(LiveFeedEventSourceReconnectDelayMs);
+      void runtimeEvent({ kind: "error", message: "EventSource error" })
+        .then((decision) => scheduleReconnect(decision.reconnect_delay_ms ?? 0))
+        .catch(() => scheduleReconnect(0));
     };
   };
   const scheduleReconnect = (delayMs: number) => {
@@ -2075,7 +2099,9 @@ function createLiveFeedSubscription(
     if (closed || events?.readyState === EventSource.OPEN) {
       return;
     }
-    scheduleReconnect(0);
+    void runtimeEvent({ kind: "online" })
+      .then((decision) => scheduleReconnect(decision.reconnect_delay_ms ?? 0))
+      .catch(() => scheduleReconnect(0));
   };
   if (typeof window !== "undefined") {
     window.addEventListener("online", handleOnline);

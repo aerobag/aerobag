@@ -12,6 +12,7 @@ pub mod geometry;
 pub mod had_ops;
 pub mod ids;
 pub mod live_feed_cache;
+pub mod live_feed_runtime;
 pub mod live_feeds;
 pub mod map_follow;
 pub mod map_overlay;
@@ -68,6 +69,12 @@ pub use live_feed_cache::{
     live_feed_product_registry, LiveFeedCache, LiveFeedFetchedPayload, LiveFeedInstalledPayload,
     LiveFeedInstalledState, LiveFeedInstalledSummary, LiveFeedProductDriver,
     LiveFeedProductRegistry,
+};
+pub use live_feed_runtime::{
+    live_feed_runtime_decision, LiveFeedConnectionEvent, LiveFeedConnectionEventKind,
+    LiveFeedNetworkStatus, LiveFeedRuntimeDecision, LiveFeedRuntimeEventKind, LiveFeedRuntimeInput,
+    LIVE_FEED_SSE_CONNECT_TIMEOUT_MS, LIVE_FEED_SSE_IDLE_TIMEOUT_MS,
+    LIVE_FEED_SSE_RECONNECT_DELAY_MS,
 };
 pub use live_feeds::{
     decode_prepared_metar_live_feed, prepare_metar_live_feed_delta_resource,
@@ -217,10 +224,10 @@ pub use session::{
     play_playback_in_session_outcome, prepare_nexrad_tile_in_session,
     preview_flight_plan_entry_in_session, project_flight_plan_route_in_session,
     push_situation_sample_in_session, push_situation_sample_in_session_outcome,
-    register_ownship_source_in_session, register_ownship_source_in_session_outcome,
-    render_terrain_overlay_tile_by_key_in_session, render_terrain_overlay_tile_in_session,
-    render_terrain_overlay_tiles_in_session, report_live_feed_connection_event_in_session,
-    report_session_resource_failure_in_session,
+    refresh_live_feed_current_in_session, register_ownship_source_in_session,
+    register_ownship_source_in_session_outcome, render_terrain_overlay_tile_by_key_in_session,
+    render_terrain_overlay_tile_in_session, render_terrain_overlay_tiles_in_session,
+    report_live_feed_connection_event_in_session, report_session_resource_failure_in_session,
     report_session_resource_failure_in_session_at_epoch_ms,
     resolve_chart_asset_resource_in_session, resolve_metar_manifest_in_session,
     resolve_nav_db_artifact_candidates_in_session, restore_chart_page_state_in_session,
@@ -239,8 +246,7 @@ pub use session::{
     tick_bad_autopilot_in_session_outcome, tick_playback_in_session,
     tick_playback_in_session_outcome, unsuspend_sequencing_in_session,
     update_ownship_source_status_in_session, update_ownship_source_status_in_session_outcome,
-    ClientBuildInfo, DisplayDimTimeout, GuidanceLegGeometry, LiveFeedConnectionEvent,
-    LiveFeedConnectionEventKind, LiveFeedNetworkStatus, PlatformCapabilities,
+    ClientBuildInfo, DisplayDimTimeout, GuidanceLegGeometry, PlatformCapabilities,
     PlatformDisplayPolicyCapability, SettingsPreferences, SettingsStorage, SettingsStorageHandle,
     UiChartPageState, UiDebugState, UiDisclaimerState, UiDisplayPolicy, UiMapLayerState,
     UiMapLayerToggleState, UiPlaybackPanelState, UiSessionInitResult, UiSessionResourceEffect,

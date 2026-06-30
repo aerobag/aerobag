@@ -876,6 +876,19 @@ pub fn sync_live_feeds_in_session_json(handle: u64) -> Result<String, String> {
     serde_json::to_string(&outcome).map_err(|err| err.to_string())
 }
 
+pub fn live_feed_runtime_decision_json(input_json: &str) -> Result<String, String> {
+    let input: app_core::LiveFeedRuntimeInput =
+        serde_json::from_str(input_json).map_err(|err| err.to_string())?;
+    serde_json::to_string(&app_core::live_feed_runtime_decision(input))
+        .map_err(|err| err.to_string())
+}
+
+pub fn refresh_live_feed_current_in_session_json(handle: u64) -> Result<String, String> {
+    let outcome = app_core::refresh_live_feed_current_in_session(handle as u32)
+        .map_err(|err| err.to_string())?;
+    serde_json::to_string(&outcome).map_err(|err| err.to_string())
+}
+
 pub fn ingest_live_feed_sse_events_in_session_json(
     handle: u64,
     events_json: &str,
@@ -1345,6 +1358,49 @@ pub fn live_feed_cache_missing_requests_json(handle: u64) -> Result<String, Stri
         .get(&(handle as u32))
         .ok_or_else(|| format!("invalid live feed cache handle: {handle}"))?;
     serde_json::to_string(&cache.missing_requests()).map_err(|err| err.to_string())
+}
+
+pub fn live_feed_cache_missing_requests_at_epoch_ms_json(
+    handle: u64,
+    epoch_ms: i64,
+) -> Result<String, String> {
+    let caches = live_feed_caches()
+        .lock()
+        .map_err(|_| "live feed cache store poisoned".to_string())?;
+    let cache = caches
+        .get(&(handle as u32))
+        .ok_or_else(|| format!("invalid live feed cache handle: {handle}"))?;
+    serde_json::to_string(&cache.missing_requests_at_epoch_ms(epoch_ms))
+        .map_err(|err| err.to_string())
+}
+
+pub fn live_feed_cache_current_refresh_requests_at_epoch_ms_json(
+    handle: u64,
+    epoch_ms: i64,
+) -> Result<String, String> {
+    let caches = live_feed_caches()
+        .lock()
+        .map_err(|_| "live feed cache store poisoned".to_string())?;
+    let cache = caches
+        .get(&(handle as u32))
+        .ok_or_else(|| format!("invalid live feed cache handle: {handle}"))?;
+    serde_json::to_string(&cache.current_refresh_requests_at_epoch_ms(epoch_ms))
+        .map_err(|err| err.to_string())
+}
+
+pub fn live_feed_cache_record_request_failure(
+    handle: u64,
+    request_id: &str,
+    epoch_ms: i64,
+) -> Result<(), String> {
+    let mut caches = live_feed_caches()
+        .lock()
+        .map_err(|_| "live feed cache store poisoned".to_string())?;
+    let cache = caches
+        .get_mut(&(handle as u32))
+        .ok_or_else(|| format!("invalid live feed cache handle: {handle}"))?;
+    cache.record_request_failure(request_id, epoch_ms);
+    Ok(())
 }
 
 pub fn live_feed_cache_install_fetched_bytes_json(
@@ -2256,6 +2312,48 @@ pub extern "system" fn Java_org_aerobag_app_domain_NativeBindings_liveFeedCacheM
         &mut env,
         live_feed_cache_missing_requests_json(handle as u64),
     )
+}
+
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_org_aerobag_app_domain_NativeBindings_liveFeedCacheMissingRequestsAtEpochMsJson(
+    mut env: JNIEnv,
+    _class: JClass,
+    handle: i64,
+    epoch_ms: i64,
+) -> jstring {
+    return_string(
+        &mut env,
+        live_feed_cache_missing_requests_at_epoch_ms_json(handle as u64, epoch_ms),
+    )
+}
+
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_org_aerobag_app_domain_NativeBindings_liveFeedCacheCurrentRefreshRequestsAtEpochMsJson(
+    mut env: JNIEnv,
+    _class: JClass,
+    handle: i64,
+    epoch_ms: i64,
+) -> jstring {
+    return_string(
+        &mut env,
+        live_feed_cache_current_refresh_requests_at_epoch_ms_json(handle as u64, epoch_ms),
+    )
+}
+
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_org_aerobag_app_domain_NativeBindings_liveFeedCacheRecordRequestFailure(
+    mut env: JNIEnv,
+    _class: JClass,
+    handle: i64,
+    request_id: JString,
+    epoch_ms: i64,
+) {
+    let result = get_java_string(&mut env, request_id).and_then(|request| {
+        live_feed_cache_record_request_failure(handle as u64, &request, epoch_ms)
+    });
+    if let Err(message) = result {
+        let _ = env.throw_new("java/lang/RuntimeException", message);
+    }
 }
 
 #[unsafe(no_mangle)]
@@ -3331,6 +3429,27 @@ pub extern "system" fn Java_org_aerobag_app_domain_NativeBindings_syncLiveFeedsI
     handle: i64,
 ) -> jstring {
     let result = sync_live_feeds_in_session_json(handle as u64);
+    return_string(&mut env, result)
+}
+
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_org_aerobag_app_domain_NativeBindings_liveFeedRuntimeDecisionJson(
+    mut env: JNIEnv,
+    _class: JClass,
+    input_json: JString,
+) -> jstring {
+    let result = get_java_string(&mut env, input_json)
+        .and_then(|input| live_feed_runtime_decision_json(&input));
+    return_string(&mut env, result)
+}
+
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_org_aerobag_app_domain_NativeBindings_refreshLiveFeedCurrentInSessionJson(
+    mut env: JNIEnv,
+    _class: JClass,
+    handle: i64,
+) -> jstring {
+    let result = refresh_live_feed_current_in_session_json(handle as u64);
     return_string(&mut env, result)
 }
 

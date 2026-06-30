@@ -168,6 +168,15 @@ describe("loadBestAvailableAdapter", () => {
       attach_nav_kv_store_to_session: async () => {},
       core_had_operation: async () => JSON.stringify({ state: "complete", result: null }),
       sync_live_feeds_in_session: async () => JSON.stringify({ state: "complete", result: { products: [] } }),
+      refresh_live_feed_current_in_session: async () => JSON.stringify({ state: "complete", result: { products: [] } }),
+      live_feed_runtime_decision: async (inputJson: string) => {
+        const input = JSON.parse(inputJson) as { kind: string };
+        return JSON.stringify({
+          connection_event: input.kind === "start" || input.kind === "online" ? null : input,
+          refresh_current: input.kind === "start" || input.kind === "connected" || input.kind === "network_status" || input.kind === "online",
+          reconnect_delay_ms: input.kind === "error" ? 5000 : null,
+        });
+      },
       ingest_live_feed_sse_event_in_session: async () => JSON.stringify({ state: "complete", result: { products: [] } }),
       ingest_live_feed_sse_events_in_session: async () => JSON.stringify({ state: "complete", result: { products: [] } }),
       report_live_feed_connection_event_in_session: async () => snapshotJson,

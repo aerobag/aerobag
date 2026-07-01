@@ -86,7 +86,6 @@ import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.getValue
-import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableLongStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.mutableStateMapOf
@@ -364,7 +363,7 @@ internal fun FlightPlanPage(
     var routeEntryError by remember { mutableStateOf<String?>(null) }
     var routeEntrySubmitting by remember { mutableStateOf(false) }
     var routeEntryFocused by remember { mutableStateOf(false) }
-    var routeEntryPreviewRequestId by remember { mutableIntStateOf(0) }
+    val routeEntryPreviewController = remember { RouteEntryPreviewController() }
     var routeEntrySuppressNavigationUntilMs by remember { mutableLongStateOf(0L) }
     var trayOpenedAtMs by remember { mutableStateOf(0L) }
     val projectedPlanUiState = requireNotNull(planUiState) { "FlightPlanPage requires core-projected FlightPlanUiState" }
@@ -612,37 +611,44 @@ internal fun FlightPlanPage(
         action()
     }
 
+    fun currentRouteEntryPreviewState(): RouteEntryPreviewUiState =
+        RouteEntryPreviewUiState(
+            preview = routeEntryPreview,
+            loading = routeEntryLoading,
+            error = routeEntryError,
+        )
+
+    fun applyRouteEntryPreviewState(next: RouteEntryPreviewUiState) {
+        routeEntryPreview = next.preview
+        routeEntryLoading = next.loading
+        routeEntryError = next.error
+    }
+
     LaunchedEffect(plan, routeEntryText) {
         val input = routeEntryText.trim()
-        routeEntryPreviewRequestId += 1
-        val requestId = routeEntryPreviewRequestId
-        if (input.isEmpty()) {
-            routeEntryLoading = false
-            routeEntryPreview = emptyFlightPlanEntryPreview()
-            routeEntryError = null
+        val request = routeEntryPreviewController.begin(input, currentRouteEntryPreviewState())
+        applyRouteEntryPreviewState(request.state)
+        if (!request.shouldFetch) {
             return@LaunchedEffect
         }
-        routeEntryLoading = true
         try {
             val preview =
                 withContext(Dispatchers.IO) {
                     uiSession.previewFlightPlanEntry(routeEntryText)
                 }
-            if (routeEntryPreviewRequestId == requestId) {
-                routeEntryPreview = preview
-                routeEntryError = null
-            }
+            applyRouteEntryPreviewState(
+                routeEntryPreviewController.complete(request.id, preview, currentRouteEntryPreviewState()),
+            )
         } catch (error: CancellationException) {
             throw error
         } catch (error: Throwable) {
-            if (routeEntryPreviewRequestId == requestId) {
-                routeEntryPreview = emptyFlightPlanEntryPreview()
-                routeEntryError = error.message ?: error.toString()
-            }
+            applyRouteEntryPreviewState(
+                routeEntryPreviewController.fail(request.id, error, currentRouteEntryPreviewState()),
+            )
         } finally {
-            if (routeEntryPreviewRequestId == requestId) {
-                routeEntryLoading = false
-            }
+            applyRouteEntryPreviewState(
+                routeEntryPreviewController.finish(request.id, currentRouteEntryPreviewState()),
+            )
         }
     }
 

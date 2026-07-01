@@ -303,8 +303,12 @@ class NavKvStore private constructor(
             return when (val state = outcome.getValue("state").jsonPrimitive.content) {
                 "complete" -> outcome["result"] ?: JsonNull
                 "need_resources" -> {
+                    var loadedAnyResource = false
                     for (resource in parseCoreResourceRequests(outcome)) {
-                        ensureNavKvResource(resource)
+                        loadedAnyResource = ensureNavKvResource(resource) || loadedAnyResource
+                    }
+                    if (!loadedAnyResource) {
+                        error("HAD operation requested only already-loaded resources")
                     }
                     continue
                 }
@@ -339,9 +343,10 @@ class NavKvStore private constructor(
                         ?: emptyList(),
                 )
                 "need_resources" -> {
+                    var loadedAnyResource = false
                     for (resource in parseCoreResourceRequests(outcome)) {
                         if (resource.id.startsWith("nav_kv/page/")) {
-                            ensureNavKvResource(resource)
+                            loadedAnyResource = ensureNavKvResource(resource) || loadedAnyResource
                         } else {
                             val fetch = fetchSessionResource
                                 ?: error("session resource requested without fetcher: ${resource.id}")
@@ -360,7 +365,11 @@ class NavKvStore private constructor(
                                 throw error
                             }
                             ingest(resource, bytes)
+                            loadedAnyResource = true
                         }
+                    }
+                    if (!loadedAnyResource) {
+                        error("paged session operation requested only already-loaded resources")
                     }
                     continue
                 }
@@ -376,28 +385,37 @@ class NavKvStore private constructor(
         bridge.attachNavKvStoreToSession(handle, sessionHandle)
     }
 
-    private fun ensureNavKvResource(resource: CoreResourceRequest) {
+    private fun ensureNavKvResource(resource: CoreResourceRequest): Boolean {
         val pageIndex = resource.id.removePrefix("nav_kv/page/").toIntOrNull()
             ?: error("unsupported nav_kv resource id: ${resource.id}")
-        ensurePage(pageIndex, resource)
+        return ensurePage(pageIndex, resource)
     }
 
     @Synchronized
-    private fun ensurePage(pageIndex: Int, resource: CoreResourceRequest) {
-        if (!loadedPages.add(pageIndex)) {
-            return
+    private fun ensurePage(pageIndex: Int, resource: CoreResourceRequest): Boolean {
+        if (loadedPages.contains(pageIndex)) {
+            return false
         }
         val startMs = SystemClock.elapsedRealtime()
         val source = resource.source
         require(source is CoreResourceSource.NavKvMember && source.memberPath.isNotBlank()) {
             "Android nav_kv paging expected nav_kv_member for ${resource.id}, got ${source.kindForLog()}"
         }
-        val pageBytes = InstalledPackages.readZipEntryBytes(navDbArtifact.file, source.memberPath)
-        bridge.navKvInsertResource(handle, resource.id, pageBytes)
+        try {
+            val pageBytes = InstalledPackages.readZipEntryBytes(navDbArtifact.file, source.memberPath)
+            bridge.navKvInsertResource(handle, resource.id, pageBytes)
+            loadedPages.add(pageIndex)
+        } catch (error: Throwable) {
+            diagnosticLogInfo(TAG) {
+                "ensurePage($pageIndex) failed resource=${resource.id} source=${source.describeForLog()}: ${error.message}"
+            }
+            throw error
+        }
         val elapsedMs = SystemClock.elapsedRealtime() - startMs
         if (elapsedMs >= 10) {
             perfLogInfo(TAG) { "ensurePage($pageIndex) took ${elapsedMs}ms" }
         }
+        return true
     }
 
     override fun close() {

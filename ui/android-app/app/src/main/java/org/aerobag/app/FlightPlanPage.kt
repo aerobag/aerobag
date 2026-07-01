@@ -364,6 +364,7 @@ internal fun FlightPlanPage(
     var routeEntryError by remember { mutableStateOf<String?>(null) }
     var routeEntrySubmitting by remember { mutableStateOf(false) }
     var routeEntryFocused by remember { mutableStateOf(false) }
+    var routeEntryPreviewRequestId by remember { mutableIntStateOf(0) }
     var routeEntrySuppressNavigationUntilMs by remember { mutableLongStateOf(0L) }
     var trayOpenedAtMs by remember { mutableStateOf(0L) }
     val projectedPlanUiState = requireNotNull(planUiState) { "FlightPlanPage requires core-projected FlightPlanUiState" }
@@ -613,23 +614,36 @@ internal fun FlightPlanPage(
 
     LaunchedEffect(plan, routeEntryText) {
         val input = routeEntryText.trim()
+        routeEntryPreviewRequestId += 1
+        val requestId = routeEntryPreviewRequestId
         if (input.isEmpty()) {
             routeEntryLoading = false
             routeEntryPreview = emptyFlightPlanEntryPreview()
+            routeEntryError = null
             return@LaunchedEffect
         }
         routeEntryLoading = true
-        runCatching {
-            withContext(Dispatchers.IO) {
-                uiSession.previewFlightPlanEntry(routeEntryText)
+        try {
+            val preview =
+                withContext(Dispatchers.IO) {
+                    uiSession.previewFlightPlanEntry(routeEntryText)
+                }
+            if (routeEntryPreviewRequestId == requestId) {
+                routeEntryPreview = preview
+                routeEntryError = null
             }
-        }.onSuccess { preview ->
-            routeEntryPreview = preview
-        }.onFailure { error ->
-            routeEntryPreview = emptyFlightPlanEntryPreview()
-            routeEntryError = error.message ?: error.toString()
+        } catch (error: CancellationException) {
+            throw error
+        } catch (error: Throwable) {
+            if (routeEntryPreviewRequestId == requestId) {
+                routeEntryPreview = emptyFlightPlanEntryPreview()
+                routeEntryError = error.message ?: error.toString()
+            }
+        } finally {
+            if (routeEntryPreviewRequestId == requestId) {
+                routeEntryLoading = false
+            }
         }
-        routeEntryLoading = false
     }
 
     LaunchedEffect(airportInsert?.rowUid, airportInsert?.before, airportInsert?.airportId) {

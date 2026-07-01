@@ -369,6 +369,7 @@ internal fun HomePage(
     onOpenRecentChartOrPlate: () -> Unit = {},
     offlinePackagesControllerHandle: Long,
     onOfflinePackagesClosed: (() -> Unit)? = null,
+    onOfflinePackageLibraryCacheChanged: (String?) -> Unit = {},
 ) {
     val uiTheme = LocalAerobagUiTheme.current
     val context = LocalContext.current
@@ -472,6 +473,9 @@ internal fun HomePage(
         writeOfflinePackagesStateJson(prefs, result.packagesStateJson)
         writeOfflinePackagesLibraryCacheJson(prefs, result.libraryCacheJson)
         offlinePackagesControllerResult = result
+        if (event is OfflinePackagesControllerEventWire.LibraryRefreshSucceeded) {
+            onOfflinePackageLibraryCacheChanged(result.libraryCacheJson)
+        }
         when (val command = result.command) {
             is OfflinePackagesControllerCommandWire.RefreshLibrary -> {
                 val refreshResult: Result<OfflinePackagesControllerEventWire.LibraryRefreshSucceeded> = runCatching {

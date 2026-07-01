@@ -221,6 +221,17 @@ pub fn set_resource_policy_in_session_json(
     serde_json::to_string(&snapshot).map_err(|err| err.to_string())
 }
 
+pub fn load_offline_package_library_cache_in_session_json(
+    handle: u64,
+    library_cache_json: &str,
+) -> Result<String, String> {
+    let cache: app_core::OfflinePackagesLibraryCache =
+        serde_json::from_str(library_cache_json).map_err(|err| err.to_string())?;
+    let snapshot = app_core::load_offline_package_library_cache_in_session(handle as u32, cache)
+        .map_err(|err| err.to_string())?;
+    serde_json::to_string(&snapshot).map_err(|err| err.to_string())
+}
+
 pub fn configure_platform_capabilities_in_session_json(
     handle: u64,
     capabilities_json: &str,
@@ -2598,6 +2609,20 @@ pub extern "system" fn Java_org_aerobag_app_domain_NativeBindings_setResourcePol
     let result = (|| {
         let policy_json = get_java_string(&mut env, policy_json)?;
         set_resource_policy_in_session_json(handle as u64, &policy_json)
+    })();
+    return_string(&mut env, result)
+}
+
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_org_aerobag_app_domain_NativeBindings_loadOfflinePackageLibraryCacheInSessionJson(
+    mut env: JNIEnv,
+    _class: JClass,
+    handle: i64,
+    library_cache_json: JString,
+) -> jstring {
+    let result = (|| {
+        let library_cache_json = get_java_string(&mut env, library_cache_json)?;
+        load_offline_package_library_cache_in_session_json(handle as u64, &library_cache_json)
     })();
     return_string(&mut env, result)
 }

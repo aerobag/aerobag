@@ -2846,6 +2846,9 @@ internal fun AerobagApp(
                         onOpenPlan = { navigateToPage(AppPage.Plan) },
                         onOpenRecentChartOrPlate = ::navigateToMostRecentChartOrPlate,
                         offlinePackagesControllerHandle = offlinePackagesControllerHandle,
+                        onOfflinePackageLibraryCacheChanged = { cacheJson ->
+                            applySessionSnapshot(uiSession.loadOfflinePackageLibraryCache(cacheJson))
+                        },
                     )
                 }
                 AppPage.OfflinePackages -> {
@@ -2861,6 +2864,9 @@ internal fun AerobagApp(
                         onOpenPlan = { navigateToPage(AppPage.Plan) },
                         onOpenRecentChartOrPlate = ::navigateToMostRecentChartOrPlate,
                         offlinePackagesControllerHandle = offlinePackagesControllerHandle,
+                        onOfflinePackageLibraryCacheChanged = { cacheJson ->
+                            applySessionSnapshot(uiSession.loadOfflinePackageLibraryCache(cacheJson))
+                        },
                     )
                 }
                 AppPage.DataStatus -> {

@@ -57,11 +57,12 @@ use crate::{
     MapOverlayConfig, MapOverlayQueryResult, MapSelectionForNavRefResult, MapSelectionQueryResult,
     MapSelectionSessionAction, MapSurfaceMetrics, MapViewport, MetarProductPayload,
     MetarTilePayload, NavDbOpenResult, NavKvLookup, NavKvPageProbeStats, NavKvQuery, NavKvRoot,
-    NavKvStore, NavRef, PlaybackUiState, PointTilePayload, ProcedureDiscontinuity, ProcedureKind,
-    ProcedureLoadCommand, RasterMapCatalog, RasterResourceMode, RasterTilePlan, ResolvedLeg,
-    ResolvedLegSource, RouteComponentViewKind, SequencingMode, SituationControlInput,
-    SituationControlMenuItem, TafProductPayload, TerrainOverlayQueryResult, TfrProductPayload,
-    UiSnapshotAppState, VectorAggregateTilePayload, VectorIdentLabelStyle,
+    NavKvStore, NavRef, OfflinePackagesLibraryCache, PlaybackUiState, PointTilePayload,
+    ProcedureDiscontinuity, ProcedureKind, ProcedureLoadCommand, RasterMapCatalog,
+    RasterResourceMode, RasterTilePlan, ResolvedLeg, ResolvedLegSource, RouteComponentViewKind,
+    SequencingMode, SituationControlInput, SituationControlMenuItem, TafProductPayload,
+    TerrainOverlayQueryResult, TfrProductPayload, UiSnapshotAppState, VectorAggregateTilePayload,
+    VectorIdentLabelStyle,
 };
 
 const WORLD_MERCATOR_MAX_LATITUDE: f64 = 85.051_128_78;
@@ -346,7 +347,6 @@ struct UiSession {
     resource_policy: CoreResourcePolicy,
     installed_package_ids: BTreeSet<String>,
     publication_resolver: PublicationResolver,
-    current_artifacts_checked_epoch_ms: Option<i64>,
     cycle_product_freshness: CycleProductFreshnessState,
     live_feeds: LiveFeedsState,
     live_feed_connection: LiveFeedConnectionSessionState,
@@ -2433,7 +2433,10 @@ fn publication_status_page_row(session: &UiSession) -> UiDataStatusPageRow {
             UiDataStatusPageTimeDisplay::Ago,
         ));
     }
-    if let Some(checked_at) = session.current_artifacts_checked_epoch_ms {
+    if let Some(checked_at) = session
+        .publication_resolver
+        .current_artifacts_checked_epoch_ms()
+    {
         let checked_utc = utc_from_epoch_ms(checked_at);
         facts.push(status_time_fact(
             "Checked",
@@ -2978,7 +2981,6 @@ fn create_ui_session_inner(
                 "/packages",
                 CoreResourcePolicy::InstalledPackage,
             ),
-            current_artifacts_checked_epoch_ms: None,
             cycle_product_freshness: CycleProductFreshnessState {
                 dirty: true,
                 ..CycleProductFreshnessState::default()
@@ -3173,6 +3175,24 @@ pub fn set_resource_policy_in_session(
         session.publication_resolver.set_resource_policy(policy);
         session.raster_map_catalog = None;
     }
+    snapshot_for_changed_session(session)
+}
+
+pub fn load_offline_package_library_cache_in_session(
+    handle: u32,
+    cache: OfflinePackagesLibraryCache,
+) -> AppResult<UiSessionSnapshot> {
+    let mut sessions = lock_sessions();
+    let session = session_mut(&mut sessions, handle)?;
+    advance_session_wall_clock(session, cache.fetched_at_epoch_ms);
+    session
+        .publication_resolver
+        .load_offline_library_cache(&cache)
+        .map_err(|message| AppError {
+            kind: AppErrorKind::InvalidManifest,
+            message,
+        })?;
+    mark_cycle_product_freshness_dirty(session);
     snapshot_for_changed_session(session)
 }
 
@@ -5524,6 +5544,18 @@ pub fn ingest_resource_in_session_at_epoch_ms(
     if resource_id.starts_with("publication/") {
         let mut sessions = lock_sessions();
         let session = session_mut(&mut sessions, handle)?;
+        if resource_id == "publication/current_artifacts" {
+            advance_session_wall_clock(session, epoch_ms);
+            session
+                .publication_resolver
+                .ingest_resource_at_epoch_ms(resource_id, bytes, session.wall_clock_epoch_ms)
+                .map_err(|message| AppError {
+                    kind: AppErrorKind::InvalidManifest,
+                    message,
+                })?;
+            mark_cycle_product_freshness_dirty(session);
+            return Ok(());
+        }
         session
             .publication_resolver
             .ingest_resource(resource_id, bytes)
@@ -5531,10 +5563,6 @@ pub fn ingest_resource_in_session_at_epoch_ms(
                 kind: AppErrorKind::InvalidManifest,
                 message,
             })?;
-        if resource_id == "publication/current_artifacts" {
-            advance_session_wall_clock(session, epoch_ms);
-            session.current_artifacts_checked_epoch_ms = Some(session.wall_clock_epoch_ms);
-        }
         mark_cycle_product_freshness_dirty(session);
         return Ok(());
     }
@@ -12050,7 +12078,6 @@ mod tests {
                 "/packages",
                 CoreResourcePolicy::InstalledPackage,
             ),
-            current_artifacts_checked_epoch_ms: None,
             cycle_product_freshness: CycleProductFreshnessState::default(),
             live_feeds: LiveFeedsState::default(),
             live_feed_connection: LiveFeedConnectionSessionState::default(),
@@ -12238,7 +12265,6 @@ mod tests {
                 "/packages",
                 CoreResourcePolicy::InstalledPackage,
             ),
-            current_artifacts_checked_epoch_ms: None,
             cycle_product_freshness: CycleProductFreshnessState::default(),
             live_feeds: LiveFeedsState::default(),
             live_feed_connection: LiveFeedConnectionSessionState::default(),
@@ -12677,7 +12703,6 @@ mod tests {
                 "/packages",
                 CoreResourcePolicy::InstalledPackage,
             ),
-            current_artifacts_checked_epoch_ms: None,
             cycle_product_freshness: CycleProductFreshnessState::default(),
             live_feeds: LiveFeedsState::default(),
             live_feed_connection: LiveFeedConnectionSessionState::default(),
@@ -14086,16 +14111,16 @@ mod tests {
             let session = session_mut(&mut sessions, init.handle).expect("session");
             session
                 .publication_resolver
-                .ingest_resource(
+                .ingest_resource_at_epoch_ms(
                     "publication/current_artifacts",
                     format!(
                         r#"[{{"schema_version":1,"contracts":{{"nav-db":"{}"}},"as_of_utc":"2026-05-20T12:00:00Z","artifact_roots":{{"packaged":"published_packaged","unpacked":"published_unpacked"}},"bundles":[]}}]"#,
                         crate::REQUIRED_NAV_DB_CONTRACT_ID
                     )
                     .as_bytes(),
+                    checked_at,
                 )
                 .expect("ingest current artifacts");
-            session.current_artifacts_checked_epoch_ms = Some(checked_at);
         }
 
         let snapshot = get_session_snapshot_at_epoch_ms(
@@ -14119,6 +14144,42 @@ mod tests {
                 && fact.time_utc.as_deref() == Some("2026-05-20T12:00:00Z")
                 && fact.time_display == Some(UiDataStatusPageTimeDisplay::Ago)
         }));
+    }
+
+    #[test]
+    fn data_status_package_library_uses_offline_library_cache() {
+        let checked_at = utc("2026-05-20T12:00:00Z").timestamp_millis();
+        let init =
+            create_ui_session_at_epoch_ms(FlightPlan::default(), &[], None, None, checked_at)
+                .expect("create session");
+        let discovery = serde_json::from_str::<crate::CurrentArtifactsManifest>(&format!(
+            r#"{{"schema_version":1,"contracts":{{"nav-db":"{}"}},"as_of_utc":"2026-05-20T12:00:00Z","artifact_roots":{{"packaged":"published_packaged","unpacked":"published_unpacked"}},"bundles":[]}}"#,
+            crate::REQUIRED_NAV_DB_CONTRACT_ID
+        ))
+        .expect("current artifacts");
+
+        let snapshot = load_offline_package_library_cache_in_session(
+            init.handle,
+            OfflinePackagesLibraryCache {
+                package_source_base_url: "https://aerobag.org/packages".to_string(),
+                fetched_at_epoch_ms: checked_at,
+                discovery_manifests: vec![discovery],
+                bundle_manifests_by_filename: BTreeMap::new(),
+            },
+        )
+        .expect("load package library cache");
+
+        let row = snapshot
+            .data_status_page_state
+            .rows
+            .iter()
+            .find(|row| row.id == "publication:current_artifacts")
+            .expect("package library row");
+        assert_eq!(row.value, "OK");
+        assert_eq!(
+            row.detail,
+            "current_artifacts.json checked at 2026-05-20 12:00 UTC."
+        );
     }
 
     #[test]

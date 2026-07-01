@@ -117,6 +117,11 @@ interface NativeBridge {
         packageIdsJson: String,
     ): String
 
+    fun loadOfflinePackageLibraryCacheInSessionJson(
+        handle: Long,
+        libraryCacheJson: String,
+    ): String
+
     fun performMapSelectionActionInSessionJson(
         handle: Long,
         actionJson: String,
@@ -638,6 +643,11 @@ object NativeBindings : NativeBridge {
         recentAirportIdsJson: String,
         selectedAirportIdJson: String,
         selectedChartIdJson: String,
+    ): String
+
+    external override fun loadOfflinePackageLibraryCacheInSessionJson(
+        handle: Long,
+        libraryCacheJson: String,
     ): String
 
     external override fun configurePlatformCapabilitiesInSessionJson(

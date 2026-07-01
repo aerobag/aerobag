@@ -744,6 +744,13 @@ class NativeUiSession internal constructor(
         return snapshot
     }
 
+    fun loadOfflinePackageLibraryCache(libraryCacheJson: String?): UiSessionSnapshot {
+        val payload = libraryCacheJson?.takeIf { it.isNotBlank() } ?: return snapshot
+        return runPlainSnapshot("loadOfflinePackageLibraryCache") {
+            bridge.loadOfflinePackageLibraryCacheInSessionJson(handle, payload)
+        }
+    }
+
     fun projectFlightPlanRoute(): List<FlightPlanRouteSegment> {
         val store = navKvStore ?: return emptyList()
         return json.decodeFromJsonElement<List<WireFlightPlanRouteSegment>>(

@@ -82,6 +82,8 @@ internal class AerobagRetainedModel : ViewModel() {
                 dirty = BuildConfig.AEROBAG_BUILD_DIRTY,
             ),
         )
+        val prefs = context.applicationContext.getSharedPreferences(UiPrefsName, Context.MODE_PRIVATE)
+        uiSession.loadOfflinePackageLibraryCache(readOfflinePackagesLibraryCacheJson(prefs))
         return AerobagRetainedCoreSession(
             runtimeContent = runtimeContent,
             appCore = appCore,

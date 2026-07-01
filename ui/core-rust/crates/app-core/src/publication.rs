@@ -4,7 +4,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::package_management::{
     decode_current_artifacts_manifest_list, package_contract_is_supported,
-    select_supported_current_artifacts_manifests,
+    select_supported_current_artifacts_manifests, OfflinePackagesLibraryCache,
 };
 use crate::{
     BundleManifest, BundlePackageArtifact, CoreResourceRequest, CoreResourceSource,
@@ -25,6 +25,7 @@ pub struct PublicationResolver {
     public_base_url: String,
     resource_policy: CoreResourcePolicy,
     current_artifacts: Option<CurrentArtifactsManifest>,
+    current_artifacts_checked_epoch_ms: Option<i64>,
     bundle_manifests_by_filename: BTreeMap<String, BundleManifest>,
 }
 
@@ -46,6 +47,7 @@ impl PublicationResolver {
             public_base_url: trim_url_root(public_base_url.into()),
             resource_policy,
             current_artifacts: None,
+            current_artifacts_checked_epoch_ms: None,
             bundle_manifests_by_filename: BTreeMap::new(),
         }
     }
@@ -56,6 +58,10 @@ impl PublicationResolver {
 
     pub fn current_artifacts(&self) -> Option<&CurrentArtifactsManifest> {
         self.current_artifacts.as_ref()
+    }
+
+    pub fn current_artifacts_checked_epoch_ms(&self) -> Option<i64> {
+        self.current_artifacts_checked_epoch_ms
     }
 
     pub fn loaded_bundle_manifest_count(&self) -> usize {
@@ -73,6 +79,40 @@ impl PublicationResolver {
         resource_id: &str,
         resource_bytes: &[u8],
     ) -> Result<(), String> {
+        self.ingest_resource_inner(resource_id, resource_bytes, None)
+    }
+
+    pub fn ingest_resource_at_epoch_ms(
+        &mut self,
+        resource_id: &str,
+        resource_bytes: &[u8],
+        epoch_ms: i64,
+    ) -> Result<(), String> {
+        self.ingest_resource_inner(resource_id, resource_bytes, Some(epoch_ms))
+    }
+
+    pub fn load_offline_library_cache(
+        &mut self,
+        cache: &OfflinePackagesLibraryCache,
+    ) -> Result<(), String> {
+        let mut manifests =
+            select_supported_current_artifacts_manifests(cache.discovery_manifests.clone())?;
+        manifests.sort_by(|left, right| left.as_of_utc.cmp(&right.as_of_utc));
+        self.current_artifacts = manifests.pop();
+        self.current_artifacts_checked_epoch_ms = self
+            .current_artifacts
+            .as_ref()
+            .map(|_| cache.fetched_at_epoch_ms);
+        self.bundle_manifests_by_filename = cache.bundle_manifests_by_filename.clone();
+        Ok(())
+    }
+
+    fn ingest_resource_inner(
+        &mut self,
+        resource_id: &str,
+        resource_bytes: &[u8],
+        checked_epoch_ms: Option<i64>,
+    ) -> Result<(), String> {
         let payload = std::str::from_utf8(resource_bytes)
             .map_err(|err| format!("publication resource {resource_id} is not utf-8: {err}"))?;
         if resource_id == CURRENT_ARTIFACTS_RESOURCE_ID {
@@ -81,6 +121,8 @@ impl PublicationResolver {
             )?;
             manifests.sort_by(|left, right| left.as_of_utc.cmp(&right.as_of_utc));
             self.current_artifacts = manifests.pop();
+            self.current_artifacts_checked_epoch_ms =
+                self.current_artifacts.as_ref().and(checked_epoch_ms);
             return Ok(());
         }
         let filename = resource_id

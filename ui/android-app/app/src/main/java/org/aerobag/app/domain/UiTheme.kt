@@ -51,6 +51,10 @@ data class AviationTheme(
     val tfrRed: Color,
     val intersectionCyan: Color,
     val darkGray: Color,
+    val obstacleDanger: Color,
+    val obstacleCaution: Color,
+    val obstacleMuted: Color,
+    val obstacleUnder: Color,
 )
 
 data class FlightPlanRouteTheme(
@@ -110,6 +114,10 @@ private data class WireAviationTheme(
     val tfr_red: String,
     val intersection_cyan: String,
     val dark_gray: String,
+    val obstacle_danger: String,
+    val obstacle_caution: String,
+    val obstacle_muted: String,
+    val obstacle_under: String,
 )
 
 @Serializable
@@ -164,6 +172,10 @@ object UiThemeLoader {
                 tfrRed = wire.aviation.tfr_red.toColor(),
                 intersectionCyan = wire.aviation.intersection_cyan.toColor(),
                 darkGray = wire.aviation.dark_gray.toColor(),
+                obstacleDanger = wire.aviation.obstacle_danger.toColor(),
+                obstacleCaution = wire.aviation.obstacle_caution.toColor(),
+                obstacleMuted = wire.aviation.obstacle_muted.toColor(),
+                obstacleUnder = wire.aviation.obstacle_under.toColor(),
             ),
             flightPlanRoute = FlightPlanRouteTheme(
                 completed = wire.flight_plan_route.completed.toColor(),

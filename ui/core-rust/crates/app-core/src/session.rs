@@ -16435,6 +16435,7 @@ mod tests {
                         airspace_limit: None,
                         session_action: Some("direct-to-action".to_string()),
                         flight_plan_row_action: None,
+                        navigation: None,
                     }],
                 }],
             }],

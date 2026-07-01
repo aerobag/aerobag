@@ -535,9 +535,12 @@ pub struct VisibleMapFeature {
     pub id: String,
     pub kind: String,
     pub label: String,
+    pub symbol_kind: String,
     pub style_class: String,
     #[serde(default)]
     pub obstacle_variant: Option<String>,
+    #[serde(default)]
+    pub obstacle_tone: Option<String>,
     pub screen_x: f64,
     pub screen_y: f64,
     pub towered: bool,
@@ -679,9 +682,12 @@ pub struct AirspaceLimitGlyph {
 pub struct NavSymbolFeature {
     pub kind: String,
     pub label: String,
+    pub symbol_kind: String,
     pub style_class: String,
     #[serde(default)]
     pub obstacle_variant: Option<String>,
+    #[serde(default)]
+    pub obstacle_tone: Option<String>,
     #[serde(default)]
     pub towered: bool,
     #[serde(default)]
@@ -801,12 +807,24 @@ pub struct MapSelectionAction {
     pub session_action: Option<String>,
     #[serde(default)]
     pub flight_plan_row_action: Option<MapSelectionFlightPlanRowAction>,
+    #[serde(default)]
+    pub navigation: Option<MapSelectionNavigationAction>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct MapSelectionFlightPlanRowAction {
     pub row_uid: String,
     pub action_uid: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum MapSelectionNavigationAction {
+    OpenPlateTarget {
+        airport_id: String,
+        target: String,
+        chart_id: String,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -1927,8 +1945,10 @@ fn visible_map_feature_from_symbol(
         id,
         kind: symbol.kind,
         label: symbol.label,
+        symbol_kind: symbol.symbol_kind,
         style_class: symbol.style_class,
         obstacle_variant: symbol.obstacle_variant,
+        obstacle_tone: symbol.obstacle_tone,
         screen_x: point.x,
         screen_y: point.y,
         towered: symbol.towered,
@@ -2818,12 +2838,28 @@ fn selection_item_for_point(
         Some(_) => disabled_action("insert", "In grouped route"),
         None => disabled_action("insert", "Insert unavailable"),
     };
-    let mut actions = if is_airport {
+    let airport_id = match &nav_ref {
+        Some(NavRef::Airport(airport_id)) => Some(airport_id.as_str()),
+        _ => None,
+    };
+    let mut actions = if let Some(airport_id) = airport_id {
         vec![
             direct_to_action(plan, nav_ref.as_ref(), direct_to_row_action),
             insert_action,
-            action_for_availability("plates", "Plates", airport_plate_availability.plates),
-            action_for_availability("csup", "Chart Supp", airport_plate_availability.csup),
+            plate_target_action(
+                "plates",
+                "Plates",
+                airport_id,
+                "Folder",
+                airport_plate_availability.plates,
+            ),
+            plate_target_action(
+                "csup",
+                "Chart Supp",
+                airport_id,
+                "CSup",
+                airport_plate_availability.csup,
+            ),
             taf.map(|record| detail_action("taf", "TAF", taf_detail_text(record)))
                 .unwrap_or_else(|| disabled_action("taf", "TAF")),
             disabled_action("runways", "Runways"),
@@ -2939,8 +2975,14 @@ fn selection_item_for_flight_plan_point(
         vec![
             direct_to_action(plan, Some(nav_ref), direct_to_row_action),
             insert_action,
-            action_for_availability("plates", "Plates", availability.plates),
-            action_for_availability("csup", "Chart Supp", availability.csup),
+            plate_target_action(
+                "plates",
+                "Plates",
+                airport_id,
+                "Folder",
+                availability.plates,
+            ),
+            plate_target_action("csup", "Chart Supp", airport_id, "CSup", availability.csup),
             taf.map(|record| detail_action("taf", "TAF", taf_detail_text(record)))
                 .unwrap_or_else(|| disabled_action("taf", "TAF")),
             disabled_action("runways", "Runways"),
@@ -2995,14 +3037,6 @@ pub fn selected_map_selection_item_id_for_nav_ref(
 
 fn nav_ref_overlay_key(nav_ref: &NavRef) -> String {
     serde_json::to_string(nav_ref).unwrap_or_else(|_| format!("{nav_ref:?}"))
-}
-
-fn action_for_availability(id: &str, label: &str, available: bool) -> MapSelectionAction {
-    if available {
-        enabled_action(id, label)
-    } else {
-        disabled_action(id, label)
-    }
 }
 
 fn insert_best_position_action(plan: Option<&FlightPlan>, nav_ref: &NavRef) -> MapSelectionAction {
@@ -3452,6 +3486,7 @@ fn display_action(id: &str, label: &str) -> MapSelectionAction {
         airspace_limit: None,
         session_action: None,
         flight_plan_row_action: None,
+        navigation: None,
     }
 }
 
@@ -3465,6 +3500,7 @@ fn detail_action(id: &str, label: &str, detail_text: String) -> MapSelectionActi
         airspace_limit: None,
         session_action: None,
         flight_plan_row_action: None,
+        navigation: None,
     }
 }
 
@@ -3478,6 +3514,34 @@ fn enabled_action(id: &str, label: &str) -> MapSelectionAction {
         airspace_limit: None,
         session_action: None,
         flight_plan_row_action: None,
+        navigation: None,
+    }
+}
+
+fn plate_target_action(
+    id: &str,
+    label: &str,
+    airport_id: &str,
+    target: &str,
+    available: bool,
+) -> MapSelectionAction {
+    MapSelectionAction {
+        id: id.to_string(),
+        label: label.to_string(),
+        enabled: available,
+        display_only: false,
+        detail_text: None,
+        airspace_limit: None,
+        session_action: None,
+        flight_plan_row_action: None,
+        navigation: available.then(|| {
+            let chart_id = format!("Plate:{airport_id}:{target}");
+            MapSelectionNavigationAction::OpenPlateTarget {
+                airport_id: airport_id.to_string(),
+                target: target.to_string(),
+                chart_id,
+            }
+        }),
     }
 }
 
@@ -3491,6 +3555,7 @@ fn disabled_action(id: &str, label: &str) -> MapSelectionAction {
         airspace_limit: None,
         session_action: None,
         flight_plan_row_action: None,
+        navigation: None,
     }
 }
 
@@ -3508,6 +3573,7 @@ fn row_action(
         airspace_limit: None,
         session_action: None,
         flight_plan_row_action,
+        navigation: None,
     }
 }
 
@@ -3522,6 +3588,7 @@ fn session_action(id: &str, label: &str, action: MapSelectionSessionAction) -> M
         airspace_limit: None,
         session_action,
         flight_plan_row_action: None,
+        navigation: None,
     }
 }
 
@@ -3565,6 +3632,7 @@ fn airspace_limit_action_from_parts(
         }),
         session_action: None,
         flight_plan_row_action: None,
+        navigation: None,
     }
 }
 
@@ -3907,7 +3975,7 @@ fn point_feature_label_priority(feature: &VisibleMapFeature) -> u8 {
     match feature.label_style {
         VectorIdentLabelStyle::ActiveFlightPlan => 60,
         VectorIdentLabelStyle::FlightPlan => 50,
-        VectorIdentLabelStyle::Default => match feature.style_class.as_str() {
+        VectorIdentLabelStyle::Default => match feature.symbol_kind.as_str() {
             "nav" => 40,
             "airport" => 30,
             "fix" => 20,
@@ -3939,18 +4007,16 @@ fn point_feature_label_rect(feature: &VisibleMapFeature, scale: f64) -> Option<L
     if text.is_empty() || !feature.screen_x.is_finite() || !feature.screen_y.is_finite() {
         return None;
     }
-    let style = feature.style_class.to_ascii_lowercase();
-    let kind = feature.kind.to_ascii_lowercase();
-    let label_y = if style == "airport" || kind == "airport" {
+    let label_y = if feature.symbol_kind == "airport" {
         -24.0 * scale
-    } else if style == "nav" || kind.contains("vor") {
+    } else if feature.symbol_kind == "nav" {
         -24.0 * scale
-    } else if style.starts_with("obstacle") || kind == "obs" || kind == "obstacle" {
+    } else if feature.symbol_kind == "obstacle" {
         -14.0 * scale
     } else {
         -15.0 * scale
     };
-    let font_px = if style.starts_with("obstacle") {
+    let font_px = if feature.symbol_kind == "obstacle" {
         12.0 * scale
     } else {
         14.0 * scale
@@ -4959,7 +5025,9 @@ pub fn point_vector_record_to_symbol_feature_unfiltered(
 ) -> Option<NavSymbolFeature> {
     let mut style_class = record.style_class.clone();
     let mut label = display_label(record);
+    let symbol_kind = point_symbol_kind(&record.style_class, &record.kind);
     let mut obstacle_variant = None;
+    let mut obstacle_tone = None;
     if record.style_class == "obstacle" {
         let obstacle = record.obstacle.as_ref()?;
         let altitude_ft = obstacle.top_msl_ft;
@@ -4968,15 +5036,18 @@ pub fn point_vector_record_to_symbol_feature_unfiltered(
             if delta_ft < -OBSTACLE_BELOW_OWNERSHIP_HIDE_FT {
                 return None;
             }
-            style_class = if delta_ft >= -OBSTACLE_DANGER_LOWER_FT {
-                "obstacle-danger".to_string()
+            let tone = if delta_ft >= -OBSTACLE_DANGER_LOWER_FT {
+                "danger"
             } else if delta_ft >= -OBSTACLE_CAUTION_LOWER_FT {
-                "obstacle-caution".to_string()
+                "caution"
             } else {
-                "obstacle-muted".to_string()
+                "muted"
             };
+            style_class = format!("obstacle-{tone}");
+            obstacle_tone = Some(tone.to_string());
         } else {
             style_class = "obstacle-caution".to_string();
+            obstacle_tone = Some("caution".to_string());
         }
         obstacle_variant = Some(if obstacle.is_tall {
             "tall".to_string()
@@ -4988,8 +5059,10 @@ pub fn point_vector_record_to_symbol_feature_unfiltered(
     Some(NavSymbolFeature {
         kind: record.kind.clone(),
         label,
+        symbol_kind,
         style_class,
         obstacle_variant,
+        obstacle_tone,
         towered: record.towered.unwrap_or(false),
         fuel_available: record.fuel_available.unwrap_or(false),
         has_paved_runway: record.has_paved_runway,
@@ -4998,6 +5071,20 @@ pub fn point_vector_record_to_symbol_feature_unfiltered(
         runway_length_ratio: runway_length_ratio(record.longest_runway_length_ft),
         longest_runway_heading_true_deg: record.longest_runway_heading_true_deg,
     })
+}
+
+fn point_symbol_kind(style_class: &str, kind: &str) -> String {
+    let style = style_class.to_ascii_lowercase();
+    let kind = kind.to_ascii_lowercase();
+    if style == "airport" || kind == "airport" {
+        "airport".to_string()
+    } else if style == "nav" || kind.contains("vor") {
+        "nav".to_string()
+    } else if style.starts_with("obstacle") || kind == "obs" || kind == "obstacle" {
+        "obstacle".to_string()
+    } else {
+        "fix".to_string()
+    }
 }
 
 pub fn tile_key(layer: &str, z: u32, x: u32, y: u32) -> String {
@@ -8344,8 +8431,10 @@ mod tests {
                 symbol: NavSymbolFeature {
                     kind: "fix".to_string(),
                     label: "WIBAT".to_string(),
+                    symbol_kind: "fix".to_string(),
                     style_class: "fix".to_string(),
                     obstacle_variant: None,
+                    obstacle_tone: None,
                     towered: false,
                     fuel_available: false,
                     has_paved_runway: None,
@@ -8421,8 +8510,10 @@ mod tests {
         let symbol = NavSymbolFeature {
             kind: "VOR/DME".to_string(),
             label: "SEA 116.80".to_string(),
+            symbol_kind: "nav".to_string(),
             style_class: "nav".to_string(),
             obstacle_variant: None,
+            obstacle_tone: None,
             towered: false,
             fuel_available: false,
             has_paved_runway: None,
@@ -8727,8 +8818,10 @@ mod tests {
             id: id.to_string(),
             kind: kind.to_string(),
             label: label.to_string(),
+            symbol_kind: point_symbol_kind(style_class, kind),
             style_class: style_class.to_string(),
             obstacle_variant: None,
+            obstacle_tone: None,
             screen_x,
             screen_y,
             towered: false,

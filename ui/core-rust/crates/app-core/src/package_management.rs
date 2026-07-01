@@ -348,6 +348,8 @@ pub enum OfflinePackagesEvent {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
 pub struct OfflinePackagesUiRow {
     pub id: String,
+    #[serde(default)]
+    pub label: String,
     pub selection: OfflinePackageSelection,
     pub fetch_count: usize,
     pub gc_count: usize,
@@ -402,8 +404,6 @@ pub struct OfflinePackagesUiState {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct OfflinePackagesInitInput {
     pub state: Option<OfflinePackagesState>,
-    pub region_ids: Vec<String>,
-    pub product_ids: Vec<String>,
     pub now_epoch_ms: i64,
     pub discovery_manifests: Vec<CurrentArtifactsManifest>,
     pub bundle_manifests_by_filename: BTreeMap<String, BundleManifest>,
@@ -418,8 +418,6 @@ pub struct OfflinePackagesInitInput {
 pub struct OfflinePackagesReduceInput {
     pub state: OfflinePackagesState,
     pub event: OfflinePackagesEvent,
-    pub region_ids: Vec<String>,
-    pub product_ids: Vec<String>,
     pub now_epoch_ms: i64,
     pub discovery_manifests: Vec<CurrentArtifactsManifest>,
     pub bundle_manifests_by_filename: BTreeMap<String, BundleManifest>,
@@ -501,9 +499,6 @@ pub enum OfflinePackagesControllerEvent {
     LibraryRefreshFailed {
         message: String,
     },
-    InstalledArtifactHealthObserved {
-        unreadable_installed_filename_messages: BTreeMap<String, String>,
-    },
     PackagesEvent {
         event: OfflinePackagesEvent,
     },
@@ -557,8 +552,6 @@ pub struct OfflinePackagesControllerInput {
     pub state: Option<OfflinePackagesControllerState>,
     pub package_source_base_url: String,
     pub discovery_filenames: Vec<String>,
-    pub region_ids: Vec<String>,
-    pub product_ids: Vec<String>,
     pub now_epoch_ms: i64,
     pub installed: Vec<InstalledArtifact>,
     #[serde(default)]
@@ -616,18 +609,22 @@ where
 pub fn initialize_offline_packages(
     input: &OfflinePackagesInitInput,
 ) -> OfflinePackagesReduceResult {
+    let prior_state = input.state.clone().unwrap_or_default();
+    let effective_now_epoch_ms = effective_now_epoch_ms(&prior_state, input.now_epoch_ms);
+    let (region_ids, product_ids) = offline_package_catalog_dimensions(
+        &input.discovery_manifests,
+        &input.bundle_manifests_by_filename,
+        effective_now_epoch_ms,
+        None,
+    );
     let state = OfflinePackagesState {
         preferences: normalize_preferences(
             input.state.as_ref().map(|state| &state.preferences),
-            &input.region_ids,
-            &input.product_ids,
+            &region_ids,
+            &product_ids,
         ),
-        now_override_epoch_ms: input
-            .state
-            .as_ref()
-            .and_then(|state| state.now_override_epoch_ms),
+        now_override_epoch_ms: prior_state.now_override_epoch_ms,
     };
-    let effective_now_epoch_ms = effective_now_epoch_ms(&state, input.now_epoch_ms);
     let bundle = resolve_cycle_bundle_manifest(
         &input.discovery_manifests,
         &input.bundle_manifests_by_filename,
@@ -644,8 +641,6 @@ pub fn initialize_offline_packages(
     OfflinePackagesReduceResult {
         ui_state: project_offline_packages_ui_state(
             &state,
-            &input.region_ids,
-            &input.product_ids,
             effective_now_epoch_ms,
             &input.discovery_manifests,
             &input.bundle_manifests_by_filename,
@@ -662,11 +657,18 @@ pub fn initialize_offline_packages(
 }
 
 pub fn reduce_offline_packages(input: &OfflinePackagesReduceInput) -> OfflinePackagesReduceResult {
+    let initial_now_epoch_ms = effective_now_epoch_ms(&input.state, input.now_epoch_ms);
+    let (initial_region_ids, initial_product_ids) = offline_package_catalog_dimensions(
+        &input.discovery_manifests,
+        &input.bundle_manifests_by_filename,
+        initial_now_epoch_ms,
+        None,
+    );
     let mut state = OfflinePackagesState {
         preferences: normalize_preferences(
             Some(&input.state.preferences),
-            &input.region_ids,
-            &input.product_ids,
+            &initial_region_ids,
+            &initial_product_ids,
         ),
         now_override_epoch_ms: input.state.now_override_epoch_ms,
     };
@@ -686,12 +688,14 @@ pub fn reduce_offline_packages(input: &OfflinePackagesReduceInput) -> OfflinePac
         }
     }
 
-    state.preferences = normalize_preferences(
-        Some(&state.preferences),
-        &input.region_ids,
-        &input.product_ids,
-    );
     let effective_now_epoch_ms = effective_now_epoch_ms(&state, input.now_epoch_ms);
+    let (region_ids, product_ids) = offline_package_catalog_dimensions(
+        &input.discovery_manifests,
+        &input.bundle_manifests_by_filename,
+        effective_now_epoch_ms,
+        None,
+    );
+    state.preferences = normalize_preferences(Some(&state.preferences), &region_ids, &product_ids);
     let bundle = resolve_cycle_bundle_manifest(
         &input.discovery_manifests,
         &input.bundle_manifests_by_filename,
@@ -709,8 +713,6 @@ pub fn reduce_offline_packages(input: &OfflinePackagesReduceInput) -> OfflinePac
     OfflinePackagesReduceResult {
         ui_state: project_offline_packages_ui_state(
             &state,
-            &input.region_ids,
-            &input.product_ids,
             effective_now_epoch_ms,
             &input.discovery_manifests,
             &input.bundle_manifests_by_filename,
@@ -778,12 +780,6 @@ pub fn reduce_offline_packages_controller(
             state.library_loading = false;
             state.library_error_message = Some(message.clone());
         }
-        OfflinePackagesControllerEvent::InstalledArtifactHealthObserved {
-            unreadable_installed_filename_messages,
-        } => {
-            state.tombstoned_installed_filename_messages =
-                unreadable_installed_filename_messages.clone();
-        }
         OfflinePackagesControllerEvent::PackagesEvent { event } => {
             let Some(library_cache) = state.library_cache.as_ref() else {
                 state.library_error_message =
@@ -802,8 +798,6 @@ pub fn reduce_offline_packages_controller(
             let reduced = reduce_offline_packages(&OfflinePackagesReduceInput {
                 state: state.packages_state.clone().unwrap_or_default(),
                 event: event.clone(),
-                region_ids: input.region_ids.clone(),
-                product_ids: input.product_ids.clone(),
                 now_epoch_ms: input.now_epoch_ms,
                 discovery_manifests: library_cache.discovery_manifests.clone(),
                 bundle_manifests_by_filename: library_cache.bundle_manifests_by_filename.clone(),
@@ -837,8 +831,6 @@ pub fn reduce_offline_packages_controller(
                 let planner_ui_state = replan_controller_ui_state(
                     &mut state,
                     &package_source_base_url,
-                    &input.region_ids,
-                    &input.product_ids,
                     input.now_epoch_ms,
                     &input.installed,
                     &forced_gc_installed_filenames,
@@ -889,8 +881,6 @@ pub fn reduce_offline_packages_controller(
                 };
             let current = initialize_offline_packages(&OfflinePackagesInitInput {
                 state: state.packages_state.clone(),
-                region_ids: input.region_ids.clone(),
-                product_ids: input.product_ids.clone(),
                 now_epoch_ms: input.now_epoch_ms,
                 discovery_manifests: library_cache.discovery_manifests.clone(),
                 bundle_manifests_by_filename: library_cache.bundle_manifests_by_filename.clone(),
@@ -964,8 +954,6 @@ pub fn reduce_offline_packages_controller(
     let planner_ui_state = replan_controller_ui_state(
         &mut state,
         &package_source_base_url,
-        &input.region_ids,
-        &input.product_ids,
         input.now_epoch_ms,
         &input.installed,
         &forced_gc_installed_filenames,
@@ -1039,8 +1027,6 @@ fn forced_gc_installed_filenames(
 fn replan_controller_ui_state(
     state: &mut OfflinePackagesControllerState,
     package_source_base_url: &str,
-    region_ids: &[String],
-    product_ids: &[String],
     now_epoch_ms: i64,
     installed: &[InstalledArtifact],
     forced_gc_installed_filenames: &[String],
@@ -1051,8 +1037,6 @@ fn replan_controller_ui_state(
     }
     let reduced = initialize_offline_packages(&OfflinePackagesInitInput {
         state: state.packages_state.clone(),
-        region_ids: region_ids.to_vec(),
-        product_ids: product_ids.to_vec(),
         now_epoch_ms,
         discovery_manifests: library_cache.discovery_manifests.clone(),
         bundle_manifests_by_filename: library_cache.bundle_manifests_by_filename.clone(),
@@ -1066,8 +1050,6 @@ fn replan_controller_ui_state(
     });
     let ui_state = project_offline_packages_ui_state(
         &reduced.state,
-        region_ids,
-        product_ids,
         reduced.effective_now_epoch_ms,
         &library_cache.discovery_manifests,
         &library_cache.bundle_manifests_by_filename,
@@ -1368,8 +1350,6 @@ fn fetch_product_priority_from_artifact_id(artifact_id: &str) -> u8 {
 
 fn project_offline_packages_ui_state(
     state: &OfflinePackagesState,
-    region_ids: &[String],
-    product_ids: &[String],
     now_epoch_ms: i64,
     discovery_manifests: &[CurrentArtifactsManifest],
     bundle_manifests_by_filename: &BTreeMap<String, BundleManifest>,
@@ -1408,12 +1388,19 @@ fn project_offline_packages_ui_state(
         bundle_manifests_by_filename,
         sync_progress,
     );
+    let (region_ids, product_ids) = offline_package_catalog_dimensions(
+        discovery_manifests,
+        bundle_manifests_by_filename,
+        now_epoch_ms,
+        Some(&rows),
+    );
 
     OfflinePackagesUiState {
         clock_label: clock_label(now_epoch_ms, state.now_override_epoch_ms),
         clock_options: clock_options(discovery_manifests, state.now_override_epoch_ms),
         all_packages: offline_packages_ui_row(
             "all-packages".to_string(),
+            "All packages".to_string(),
             OfflinePackageSelection::Play,
             Some(&rows.all_packages),
         ),
@@ -1437,7 +1424,12 @@ fn project_offline_packages_ui_state(
             ids.into_iter()
                 .map(|id| {
                     let row = rows.core_products.get(&id);
-                    offline_packages_ui_row(id, OfflinePackageSelection::Play, row)
+                    offline_packages_ui_row(
+                        id.clone(),
+                        offline_core_product_label(&id),
+                        OfflinePackageSelection::Play,
+                        row,
+                    )
                 })
                 .collect()
         },
@@ -1446,6 +1438,7 @@ fn project_offline_packages_ui_state(
             .map(|id| {
                 offline_packages_ui_row(
                     id.clone(),
+                    offline_region_label(id),
                     state
                         .preferences
                         .regions
@@ -1461,6 +1454,7 @@ fn project_offline_packages_ui_state(
             .map(|id| {
                 offline_packages_ui_row(
                     id.clone(),
+                    offline_product_label(id),
                     state
                         .preferences
                         .products
@@ -1483,6 +1477,125 @@ fn clock_label(now_epoch_ms: i64, override_epoch_ms: Option<i64>) -> String {
         Some(epoch_ms) => format!("CLOCK {}", format_epoch_ms_utc(epoch_ms)),
         None => format!("CLOCK NOW ({})", format_epoch_ms_utc(now_epoch_ms)),
     }
+}
+
+fn offline_package_catalog_dimensions(
+    discovery_manifests: &[CurrentArtifactsManifest],
+    bundle_manifests_by_filename: &BTreeMap<String, BundleManifest>,
+    now_epoch_ms: i64,
+    rows: Option<&PlanRowsByDimension>,
+) -> (Vec<String>, Vec<String>) {
+    let active_bundle = resolve_cycle_bundle_manifest(
+        discovery_manifests,
+        bundle_manifests_by_filename,
+        now_epoch_ms,
+    );
+    let mut region_ids = BTreeSet::new();
+    let mut product_ids = BTreeSet::new();
+
+    for bundle in bundle_manifests_by_filename
+        .values()
+        .chain(std::iter::once(&active_bundle))
+    {
+        for pkg in &bundle.packages {
+            if let Some(region_id) = pkg.region_id.as_deref() {
+                region_ids.insert(region_id.to_string());
+                product_ids.insert(pkg.family_id.clone());
+            }
+        }
+    }
+
+    if let Some(rows) = rows {
+        region_ids.extend(rows.regions.keys().cloned());
+        product_ids.extend(rows.products.keys().cloned());
+    }
+
+    let mut region_ids: Vec<String> = region_ids.into_iter().collect();
+    region_ids.sort_by_key(|id| (offline_region_sort_order(id), id.clone()));
+    let mut product_ids: Vec<String> = product_ids.into_iter().collect();
+    product_ids.sort_by_key(|id| (offline_product_sort_order(id), id.clone()));
+    (region_ids, product_ids)
+}
+
+fn offline_region_label(id: &str) -> String {
+    match id {
+        "ak" => "Alaska",
+        "ec" => "East Central",
+        "nc" => "North Central",
+        "ne" => "Northeast",
+        "nw" => "Northwest",
+        "pac" => "Pacific",
+        "sc" => "South Central",
+        "se" => "Southeast",
+        "sw" => "Southwest",
+        "world" => "World",
+        other => return fallback_dimension_label(other),
+    }
+    .to_string()
+}
+
+fn offline_region_sort_order(id: &str) -> usize {
+    match id {
+        "ak" => 0,
+        "ec" => 1,
+        "nc" => 2,
+        "ne" => 3,
+        "nw" => 4,
+        "pac" => 5,
+        "sc" => 6,
+        "se" => 7,
+        "sw" => 8,
+        "world" => 9,
+        _ => usize::MAX,
+    }
+}
+
+fn offline_product_label(id: &str) -> String {
+    match id {
+        "sec" => "Sectional",
+        "tac" => "TAC",
+        "shaded-relief" => "Shaded Relief",
+        "terrain" => "Terrain",
+        "enr-l" => "IFR-L",
+        "enr-h" => "IFR-H",
+        "tpp" => "TPP",
+        "csup" => "CSUP",
+        other => return fallback_dimension_label(other),
+    }
+    .to_string()
+}
+
+fn offline_product_sort_order(id: &str) -> usize {
+    match id {
+        "sec" => 0,
+        "tac" => 1,
+        "shaded-relief" => 2,
+        "terrain" => 3,
+        "enr-l" => 4,
+        "enr-h" => 5,
+        "tpp" => 6,
+        "csup" => 7,
+        _ => usize::MAX,
+    }
+}
+
+fn offline_core_product_label(id: &str) -> String {
+    match id {
+        "nav-db" => "NAV DB",
+        "vectors" => "VECTORS",
+        "geo" => "GEO",
+        "terrain" => "TERRAIN",
+        other => return fallback_dimension_label(other),
+    }
+    .to_string()
+}
+
+fn fallback_dimension_label(id: &str) -> String {
+    id.split(['-', '_'])
+        .filter(|part| !part.is_empty())
+        .map(|part| part.to_ascii_uppercase())
+        .collect::<Vec<_>>()
+        .join(" ")
 }
 
 fn clock_options(
@@ -1560,6 +1673,7 @@ struct PlanRowsByDimension {
 
 fn offline_packages_ui_row(
     id: String,
+    label: String,
     selection: OfflinePackageSelection,
     details: Option<&DimensionPlanDetails>,
 ) -> OfflinePackagesUiRow {
@@ -1603,6 +1717,7 @@ fn offline_packages_ui_row(
     });
     OfflinePackagesUiRow {
         id,
+        label,
         selection,
         fetch_count: details.map_or(0, |details| details.fetch_count),
         gc_count: details.map_or(0, |details| details.gc_count),
@@ -2424,6 +2539,7 @@ mod tests {
         let rows = plan_rows_by_dimension(&input, &plan, &BTreeMap::new(), None);
         let row = offline_packages_ui_row(
             "nw".to_string(),
+            "Northwest".to_string(),
             OfflinePackageSelection::Play,
             rows.regions.get("nw"),
         );
@@ -2496,6 +2612,7 @@ mod tests {
         let rows = plan_rows_by_dimension(&input, &plan, &BTreeMap::new(), None);
         let row = offline_packages_ui_row(
             "world-basemap".to_string(),
+            "WORLD BASEMAP".to_string(),
             OfflinePackageSelection::Play,
             rows.core_products.get("world-basemap"),
         );
@@ -2785,11 +2902,13 @@ mod tests {
         );
         let nw = offline_packages_ui_row(
             "nw".to_string(),
+            "Northwest".to_string(),
             OfflinePackageSelection::Play,
             rows.regions.get("nw"),
         );
         let all = offline_packages_ui_row(
             "all-packages".to_string(),
+            "All packages".to_string(),
             OfflinePackageSelection::Play,
             Some(&rows.all_packages),
         );
@@ -2822,6 +2941,7 @@ mod tests {
         assert_eq!(
             offline_packages_ui_row(
                 "all-packages".to_string(),
+                "All packages".to_string(),
                 OfflinePackageSelection::Play,
                 Some(&replanned_rows.all_packages),
             )
@@ -2864,8 +2984,13 @@ mod tests {
         assert_eq!(format_package_size_label(424_000), "0.42M");
         assert_eq!(format_signed_package_size_label(-458_000_000), "-460M");
         assert!(
-            !offline_packages_ui_row("nw".to_string(), OfflinePackageSelection::Play, None,)
-                .planned_size_change_visible
+            !offline_packages_ui_row(
+                "nw".to_string(),
+                "Northwest".to_string(),
+                OfflinePackageSelection::Play,
+                None,
+            )
+            .planned_size_change_visible
         );
     }
 
@@ -2930,6 +3055,7 @@ mod tests {
         assert_eq!(
             offline_packages_ui_row(
                 "nw".to_string(),
+                "Northwest".to_string(),
                 OfflinePackageSelection::Play,
                 rows.regions.get("nw"),
             )
@@ -3031,118 +3157,6 @@ mod tests {
     }
 
     #[test]
-    fn forced_gc_bad_navdbs_show_fetch_and_gc_in_core_row() {
-        let discovery = CurrentArtifactsManifest {
-            schema_version: Some(1),
-            contracts: test_contracts(),
-            artifact_roots: test_artifact_roots(),
-            as_of_date: Some("2026-03-25".to_string()),
-            as_of_utc: Some("2026-03-25T12:00:00Z".to_string()),
-            bundles: vec![CurrentArtifactsBundleRef {
-                filename: "bundle_cycle_2603.json".to_string(),
-                relative_path: "bundle_cycle_2603.json".to_string(),
-                id: "cycle-2603".to_string(),
-                bundle_type: "cycle".to_string(),
-                cycle: Some("2603".to_string()),
-                cycle_version: Some("01".to_string()),
-                start_valid: None,
-                end_valid: None,
-                checksum_sha256: None,
-                size_bytes: None,
-            }],
-            startup_prefetch: None,
-        };
-        let bundle_2603 = BundleManifest {
-            packages: vec![BundlePackageArtifact {
-                id: "NAV_DB_2603_01".to_string(),
-                family_id: "nav-db".to_string(),
-                contract_id: crate::REQUIRED_NAV_DB_CONTRACT_ID.to_string(),
-                region_id: None,
-                filename: "nav_db_2603.zip".to_string(),
-                relative_path: "nav_db_2603.zip".to_string(),
-                cycle: Some("2603".to_string()),
-                cycle_version: Some("01".to_string()),
-                checksum_sha256: None,
-                size_bytes: None,
-                effective_date: Some("2026-03-20".to_string()),
-                expiration_date: Some("2026-04-16".to_string()),
-                warning_text: None,
-                metadata: Some(nav_db_metadata()),
-            }],
-        };
-        let bundle_2604 = BundleManifest {
-            packages: vec![BundlePackageArtifact {
-                id: "NAV_DB_2604_01".to_string(),
-                family_id: "nav-db".to_string(),
-                contract_id: crate::REQUIRED_NAV_DB_CONTRACT_ID.to_string(),
-                region_id: None,
-                filename: "nav_db_2604.zip".to_string(),
-                relative_path: "nav_db_2604.zip".to_string(),
-                cycle: Some("2604".to_string()),
-                cycle_version: Some("01".to_string()),
-                checksum_sha256: None,
-                size_bytes: None,
-                effective_date: Some("2026-04-16".to_string()),
-                expiration_date: Some("2026-05-14".to_string()),
-                warning_text: None,
-                metadata: Some(nav_db_metadata()),
-            }],
-        };
-
-        let result = reduce_offline_packages_controller(&OfflinePackagesControllerInput {
-            state: Some(OfflinePackagesControllerState {
-                packages_state: Some(OfflinePackagesState {
-                    preferences: default_offline_package_preferences(
-                        Vec::<String>::new(),
-                        ["nav-db"],
-                    ),
-                    now_override_epoch_ms: Some(1_774_401_600_000),
-                }),
-                library_cache: Some(OfflinePackagesLibraryCache {
-                    package_source_base_url: "http://example.test".to_string(),
-                    fetched_at_epoch_ms: 1_774_401_600_000,
-                    discovery_manifests: vec![discovery],
-                    bundle_manifests_by_filename: BTreeMap::from([
-                        ("bundle_cycle_2603.json".to_string(), bundle_2603),
-                        ("bundle_cycle_2604.json".to_string(), bundle_2604),
-                    ]),
-                }),
-                tombstoned_installed_filename_messages: BTreeMap::new(),
-                suppressed_fetch_filename_messages: BTreeMap::new(),
-                sync_progress: None,
-                library_loading: false,
-                library_error_message: None,
-                sync_in_flight: false,
-                sync_message: None,
-            }),
-            package_source_base_url: "http://example.test".to_string(),
-            discovery_filenames: vec![],
-            region_ids: vec![],
-            product_ids: vec!["nav-db".to_string()],
-            now_epoch_ms: 1_774_401_600_000,
-            installed: vec![installed("NAV_DB_2603_01"), installed("NAV_DB_2604_01")],
-            storage: None,
-            event: OfflinePackagesControllerEvent::InstalledArtifactHealthObserved {
-                unreadable_installed_filename_messages: BTreeMap::from([
-                    ("NAV_DB_2603_01.zip".to_string(), "bad".to_string()),
-                    ("NAV_DB_2604_01.zip".to_string(), "bad".to_string()),
-                ]),
-            },
-        });
-
-        let navdb = result
-            .ui_state
-            .planner_ui_state
-            .unwrap()
-            .core_products
-            .into_iter()
-            .find(|row| row.id == "nav-db")
-            .unwrap();
-        assert_eq!(navdb.fetch_count, 1);
-        assert_eq!(navdb.gc_count, 2);
-    }
-
-    #[test]
     fn remote_poisoned_filename_is_suppressed_from_refetch() {
         let discovery = CurrentArtifactsManifest {
             schema_version: Some(1),
@@ -3210,8 +3224,6 @@ mod tests {
             }),
             package_source_base_url: "http://example.test".to_string(),
             discovery_filenames: vec![],
-            region_ids: vec![],
-            product_ids: vec!["nav-db".to_string()],
             now_epoch_ms: 1_777_120_000_000,
             installed: vec![InstalledArtifact {
                 artifact_id: "NAV_DB_2604_01".to_string(),
@@ -3255,8 +3267,6 @@ mod tests {
             state: Some(OfflinePackagesControllerState::default()),
             package_source_base_url: "http://example.test".to_string(),
             discovery_filenames: vec![],
-            region_ids: vec![],
-            product_ids: vec![],
             now_epoch_ms: 1_777_120_000_000,
             installed: vec![],
             storage: Some(OfflinePackagesStorageInfo {
@@ -3332,8 +3342,6 @@ mod tests {
             }),
             package_source_base_url: "http://example.test".to_string(),
             discovery_filenames: vec![],
-            region_ids: vec!["nw".to_string()],
-            product_ids: vec!["sec".to_string()],
             now_epoch_ms: 1_778_025_600_000,
             installed: vec![installed_with_size("NW_SEC_2605", 52_000_000)],
             storage: None,
@@ -3398,8 +3406,6 @@ mod tests {
             }),
             package_source_base_url: "http://current-source.test".to_string(),
             discovery_filenames: vec![],
-            region_ids: vec!["nw".to_string()],
-            product_ids: vec!["sec".to_string()],
             now_epoch_ms: 1_778_025_600_000,
             installed: vec![installed_with_size("NW_SEC_2605", 52_000_000)],
             storage: None,
@@ -3459,8 +3465,6 @@ mod tests {
         )]);
         let init = initialize_offline_packages(&OfflinePackagesInitInput {
             state: None,
-            region_ids: vec!["nw".to_string()],
-            product_ids: vec!["sec".to_string()],
             now_epoch_ms: 200,
             discovery_manifests: vec![discovery.clone()],
             bundle_manifests_by_filename: bundles.clone(),
@@ -3478,8 +3482,6 @@ mod tests {
             event: OfflinePackagesEvent::CycleRegion {
                 id: "nw".to_string(),
             },
-            region_ids: vec!["nw".to_string()],
-            product_ids: vec!["sec".to_string()],
             now_epoch_ms: 200,
             discovery_manifests: vec![discovery],
             bundle_manifests_by_filename: bundles,

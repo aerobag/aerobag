@@ -919,6 +919,13 @@ pub enum FlightPlanRowActionExecution {
     CoreSession,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum FlightPlanRowNavigationAction {
+    OpenAirportCharts { airport_id: String },
+    OpenPlateTarget { airport_id: String, target: String },
+}
+
 fn default_row_action_execution() -> FlightPlanRowActionExecution {
     FlightPlanRowActionExecution::UiController
 }
@@ -938,6 +945,8 @@ pub struct FlightPlanRowActionUiView {
     pub execution: FlightPlanRowActionExecution,
     #[serde(default = "default_dismiss_tray_on_success")]
     pub dismiss_tray_on_success: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub navigation: Option<FlightPlanRowNavigationAction>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -2385,6 +2394,10 @@ fn project_display_rows(
         }
     }
 
+    for row in &mut rows {
+        refresh_flight_plan_row_action_navigation(row);
+    }
+
     rows
 }
 
@@ -2779,6 +2792,7 @@ fn action(id: FlightPlanRowActionId, enabled: bool) -> FlightPlanRowActionUiView
         enabled,
         execution: FlightPlanRowActionExecution::UiController,
         dismiss_tray_on_success: true,
+        navigation: None,
     }
 }
 
@@ -2790,6 +2804,7 @@ fn core_session_action(id: FlightPlanRowActionId, enabled: bool) -> FlightPlanRo
         enabled,
         execution: FlightPlanRowActionExecution::CoreSession,
         dismiss_tray_on_success: true,
+        navigation: None,
     }
 }
 
@@ -2801,6 +2816,7 @@ fn move_action(id: FlightPlanRowActionId, enabled: bool) -> FlightPlanRowActionU
         enabled,
         execution: FlightPlanRowActionExecution::CoreSession,
         dismiss_tray_on_success: false,
+        navigation: None,
     }
 }
 
@@ -2879,6 +2895,32 @@ pub(crate) fn flight_plan_row_actions_mut(
     row: &mut FlightPlanDisplayRowUiView,
 ) -> impl Iterator<Item = &mut FlightPlanRowActionUiView> {
     row.action_matrix.iter_mut().flatten()
+}
+
+pub(crate) fn refresh_flight_plan_row_action_navigation(row: &mut FlightPlanDisplayRowUiView) {
+    let chart_airport_id = row.chart_airport_id.clone();
+    let show_plate_target_id = row.show_plate_target_id.clone();
+    for action in flight_plan_row_actions_mut(row) {
+        action.navigation = match action.id {
+            FlightPlanRowActionId::Plates => chart_airport_id.as_ref().map(|airport_id| {
+                FlightPlanRowNavigationAction::OpenAirportCharts {
+                    airport_id: airport_id.clone(),
+                }
+            }),
+            FlightPlanRowActionId::ShowPlate => {
+                match (chart_airport_id.as_ref(), show_plate_target_id.as_ref()) {
+                    (Some(airport_id), Some(target)) => {
+                        Some(FlightPlanRowNavigationAction::OpenPlateTarget {
+                            airport_id: airport_id.clone(),
+                            target: target.clone(),
+                        })
+                    }
+                    _ => None,
+                }
+            }
+            _ => None,
+        };
+    }
 }
 
 fn nav_ref_key(nav_ref: &NavRef) -> String {
@@ -7561,6 +7603,81 @@ mod tests {
 
         assert!(action_ids.contains(&(&FlightPlanRowActionId::InsertBefore, true)));
         assert!(action_ids.contains(&(&FlightPlanRowActionId::InsertAfter, true)));
+    }
+
+    #[test]
+    fn waypoint_plates_action_carries_core_navigation_target() {
+        let ui = project_ui_state(&sample_two_waypoint_plan());
+        let plates = flight_plan_row_actions(&ui.display_rows[0])
+            .find(|action| action.id == FlightPlanRowActionId::Plates)
+            .expect("Plates action");
+
+        assert_eq!(
+            plates.navigation,
+            Some(FlightPlanRowNavigationAction::OpenAirportCharts {
+                airport_id: "KRNT".to_string(),
+            })
+        );
+    }
+
+    #[test]
+    fn show_plate_navigation_uses_enriched_plate_target() {
+        let mut row = FlightPlanDisplayRowUiView {
+            uid: "procedure-row".to_string(),
+            label: "VOR-A".to_string(),
+            row_kind: FlightPlanDisplayRowKind::Group,
+            component_kind: Some(RouteComponentViewKind::Procedure),
+            component_uid: Some("procedure".to_string()),
+            component_index: Some(0),
+            procedure_id: Some("KPAE-VOR-A".to_string()),
+            procedure_kind: Some(ProcedureKind::Approach),
+            leg_index: None,
+            data_cells: Vec::new(),
+            show_plate_target_id: None,
+            chart_airport_id: Some("KPAE".to_string()),
+            nav_ref: None,
+            symbol_feature: None,
+            depth: 0,
+            active: false,
+            enabled: true,
+            synthetic_direct_to: false,
+            can_add_airway_after: false,
+            can_add_procedure_before: false,
+            can_remove_component: true,
+            can_reorder_component: false,
+            can_reorder_up: false,
+            can_reorder_down: false,
+            replace_procedure_component_index: None,
+            start_component_index: None,
+            end_component_index: None,
+            origin_anchor: None,
+            destination_anchor: None,
+            preceding_waypoint: None,
+            following_waypoint: None,
+            action_matrix: action_matrix_from_actions(&assign_action_uids(
+                "procedure-row",
+                vec![action(FlightPlanRowActionId::ShowPlate, true)],
+            )),
+        };
+
+        refresh_flight_plan_row_action_navigation(&mut row);
+        let show_plate = flight_plan_row_actions(&row)
+            .find(|action| action.id == FlightPlanRowActionId::ShowPlate)
+            .expect("Show Plate action");
+        assert_eq!(show_plate.navigation, None);
+
+        row.show_plate_target_id = Some("Plate:KPAE:KPAE-VOR-A".to_string());
+        refresh_flight_plan_row_action_navigation(&mut row);
+        let show_plate = flight_plan_row_actions(&row)
+            .find(|action| action.id == FlightPlanRowActionId::ShowPlate)
+            .expect("Show Plate action");
+        assert_eq!(
+            show_plate.navigation,
+            Some(FlightPlanRowNavigationAction::OpenPlateTarget {
+                airport_id: "KPAE".to_string(),
+                target: "Plate:KPAE:KPAE-VOR-A".to_string(),
+            })
+        );
     }
 
     #[test]

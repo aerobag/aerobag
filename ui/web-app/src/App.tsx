@@ -7,6 +7,7 @@ import type {
   ChartFamilyId,
   FlightPlan,
   FlightPlanEntryPreview,
+  FlightPlanRowNavigationAction,
   FlightPlanRouteSegment,
   FlightPlanUiState,
   FlightDataBannerModel,
@@ -766,6 +767,10 @@ type UiThemeJson = {
     tfr_red: string;
     intersection_cyan: string;
     dark_gray: string;
+    obstacle_danger: string;
+    obstacle_caution: string;
+    obstacle_muted: string;
+    obstacle_under: string;
   };
   flight_plan_route: {
     completed: string;
@@ -1213,8 +1218,10 @@ const obstacleLabelY = -14;
 type VectorPointSymbolFeature = {
   kind: string;
   label: string;
+  symbol_kind: "airport" | "nav" | "obstacle" | "fix" | string;
   style_class: string;
   obstacle_variant?: "short" | "tall" | null;
+  obstacle_tone?: "danger" | "caution" | "muted" | null;
   towered: boolean;
   fuel_available: boolean;
   has_paved_runway?: boolean | null;
@@ -1267,9 +1274,9 @@ function VectorIdentLabel(props: {
 
 function VectorPointSymbol(props: { feature: VectorPointSymbolFeature; showLabel?: boolean }) {
   const { feature, showLabel = true } = props;
-  const isAirport = feature.style_class === "airport" || feature.kind.toLowerCase() === "airport";
-  const isVor = feature.kind.toLowerCase().includes("vor") || feature.style_class === "nav";
-  const isObstacle = feature.style_class.startsWith("obstacle") || feature.kind.toLowerCase() === "obs" || feature.kind.toLowerCase() === "obstacle";
+  const isAirport = feature.symbol_kind === "airport";
+  const isVor = feature.symbol_kind === "nav";
+  const isObstacle = feature.symbol_kind === "obstacle";
   const airportClass = feature.towered ? "airportMarker airportTowered" : "airportMarker airportUntowered";
   const airportLabelClass = feature.towered ? "airportLabel airportToweredLabel" : "airportLabel airportUntoweredLabel";
   if (isAirport) {
@@ -1346,14 +1353,14 @@ function VectorPointSymbol(props: { feature: VectorPointSymbolFeature; showLabel
     );
   }
   if (isObstacle) {
-    const obstacleClass = feature.style_class === "obstacle-danger"
+    const obstacleClass = feature.obstacle_tone === "danger"
       ? "obstacleMarker obstacleDanger"
-      : feature.style_class === "obstacle-muted"
+      : feature.obstacle_tone === "muted"
         ? "obstacleMarker obstacleMuted"
         : "obstacleMarker obstacleCaution";
-    const obstacleDotClass = feature.style_class === "obstacle-danger"
+    const obstacleDotClass = feature.obstacle_tone === "danger"
       ? "obstacleDot obstacleDangerFill"
-      : feature.style_class === "obstacle-muted"
+      : feature.obstacle_tone === "muted"
         ? "obstacleDot obstacleMutedFill"
         : "obstacleDot obstacleCautionFill";
     const isTallObstacle = feature.obstacle_variant === "tall";
@@ -2847,6 +2854,10 @@ export default function App() {
         "--theme-tfr-red": loadedUiTheme.aviation.tfr_red,
         "--theme-intersection-cyan": loadedUiTheme.aviation.intersection_cyan,
         "--theme-aviation-dark-gray": loadedUiTheme.aviation.dark_gray,
+        "--theme-obstacle-danger": loadedUiTheme.aviation.obstacle_danger,
+        "--theme-obstacle-caution": loadedUiTheme.aviation.obstacle_caution,
+        "--theme-obstacle-muted": loadedUiTheme.aviation.obstacle_muted,
+        "--theme-obstacle-under": loadedUiTheme.aviation.obstacle_under,
       }) as CSSProperties,
     [],
   );
@@ -5512,12 +5523,8 @@ function MapPage(props: {
                   if (!appCoreAdapter) {
                     return;
                   }
-                  if (action.id === "plates" || action.id === "csup") {
-                    const airportId = airportIdFromNavRef(item.nav_ref);
-                    if (!airportId) {
-                      return;
-                    }
-                    onOpenPlateTarget(airportId, action.id === "csup" ? "CSup" : "Folder");
+                  if (action.navigation?.kind === "open_plate_target") {
+                    onOpenPlateTarget(action.navigation.airport_id, action.navigation.target);
                     setMapSelection(null);
                     return;
                   }
@@ -6972,7 +6979,7 @@ function FlightPlanPage(props: {
 
   const rowActionRows = useMemo(() => {
     if (!selectedRow) {
-      return [] as Array<Array<{ id: string; uid: string; label: string; enabled: boolean; execution?: string; onSelect: () => void }>>;
+    return [] as Array<Array<{ id: string; uid: string; label: string; enabled: boolean; execution?: string; navigation?: FlightPlanRowNavigationAction | null; onSelect: () => void }>>;
     }
 
     const closeTray = () => {
@@ -6982,13 +6989,14 @@ function FlightPlanPage(props: {
       setAirportInsert(null);
     };
 
-    const actionForUi = (action: { id: string; uid: string; label: string; enabled: boolean; execution?: string; dismiss_tray_on_success?: boolean }) => {
+    const actionForUi = (action: { id: string; uid: string; label: string; enabled: boolean; execution?: string; dismiss_tray_on_success?: boolean; navigation?: FlightPlanRowNavigationAction | null }) => {
       return {
         id: action.id,
         uid: action.uid,
         label: action.label,
         enabled: action.enabled,
         execution: action.execution,
+        navigation: action.navigation,
         dismissTrayOnSuccess: action.dismiss_tray_on_success ?? true,
         onSelect: () => {
           if (!action.enabled) {
@@ -6999,6 +7007,15 @@ function FlightPlanPage(props: {
             if (action.dismiss_tray_on_success ?? true) {
               closeTray();
             }
+            return;
+          }
+          if (action.navigation) {
+            if (action.navigation.kind === "open_airport_charts") {
+              props.onOpenCharts(action.navigation.airport_id);
+            } else if (action.navigation.kind === "open_plate_target") {
+              props.onOpenCharts(action.navigation.airport_id, action.navigation.target);
+            }
+            closeTray();
             return;
           }
           if (action.id === "insert_before" || action.id === "insert_after") {
@@ -7087,27 +7104,10 @@ function FlightPlanPage(props: {
             });
             return;
           }
-          if (action.id === "show_plate") {
-            if (!selectedRow.chartAirportId || !selectedRow.showPlateTargetId) {
-              return;
-            }
-            debugLog("plan.show_plate.match", {
-              airport_id: selectedRow.chartAirportId,
-              procedure_id: selectedRow.procedureId,
-              plate_id: selectedRow.showPlateTargetId,
-            });
-            props.onOpenCharts(selectedRow.chartAirportId, selectedRow.showPlateTargetId);
-            closeTray();
-            return;
-          }
-          if (action.id === "charts" || action.id === "plates") {
-            props.onOpenCharts(selectedRow.chartAirportId);
-            closeTray();
-          }
         },
       };
     };
-    return (selectedRow.actionMatrix as Array<Array<{ id: string; uid: string; label: string; enabled: boolean; execution?: string; dismiss_tray_on_success?: boolean }>>).map((row) => row.map(actionForUi));
+    return (selectedRow.actionMatrix as Array<Array<{ id: string; uid: string; label: string; enabled: boolean; execution?: string; dismiss_tray_on_success?: boolean; navigation?: FlightPlanRowNavigationAction | null }>>).map((row) => row.map(actionForUi));
   }, [props, selectedRow]);
   const rowActions = useMemo(() => rowActionRows.flat(), [rowActionRows]);
 
@@ -9747,10 +9747,6 @@ function moveAirportToFront(
 
 function plateFolderColor(category: PlateFolderCategory) {
   return plateFolderTheme.label_colors[category as keyof typeof plateFolderTheme.label_colors] ?? plateFolderTheme.label_colors.other ?? "#52656d";
-}
-
-function airportIdFromNavRef(navRef: NavRef | null | undefined): string | null {
-  return navRef && "Airport" in navRef ? navRef.Airport : null;
 }
 
 function SituationStatusBadge(props: {

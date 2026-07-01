@@ -68,7 +68,6 @@ data class RenderTile(
     val sizePx: Float,
     val zoom: Int,
     val mapViewId: String,
-    val family: MapChartFamily,
     val sources: List<RenderTileSource>,
 )
 

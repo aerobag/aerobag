@@ -216,7 +216,6 @@ import org.aerobag.app.domain.AirspaceDisplaySubpath
 import org.aerobag.app.domain.AirspaceLimitGlyph
 import org.aerobag.app.domain.AirspaceScreenPoint
 import org.aerobag.app.domain.LatLonPoint
-import org.aerobag.app.domain.MapChartFamily
 import org.aerobag.app.domain.MapLayerId
 import org.aerobag.app.domain.MapFollowUiState
 import org.aerobag.app.domain.MapOverlayQueryResult

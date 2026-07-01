@@ -213,7 +213,6 @@ import org.aerobag.app.domain.AirspaceDisplaySubpath
 import org.aerobag.app.domain.AirspaceLimitGlyph
 import org.aerobag.app.domain.AirspaceScreenPoint
 import org.aerobag.app.domain.LatLonPoint
-import org.aerobag.app.domain.MapChartFamily
 import org.aerobag.app.domain.MapLayerId
 import org.aerobag.app.domain.MapFollowUiState
 import org.aerobag.app.domain.MapOverlayQueryResult
@@ -337,6 +336,12 @@ internal fun aviationColor(uiTheme: UiTheme, colorKey: String): Color = when (co
     "intersection_cyan", "cyan" -> uiTheme.aviation.intersectionCyan
     "dark_gray" -> uiTheme.aviation.darkGray
     else -> uiTheme.aviation.classBDBlue
+}
+
+internal fun obstacleToneColor(uiTheme: UiTheme, obstacleTone: String?): Color = when (obstacleTone) {
+    "danger" -> uiTheme.aviation.obstacleDanger
+    "muted" -> uiTheme.aviation.obstacleMuted
+    else -> uiTheme.aviation.obstacleCaution
 }
 
 internal fun airspacePath(subpath: org.aerobag.app.domain.AirspaceDisplaySubpath): Path =

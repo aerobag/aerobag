@@ -23,8 +23,6 @@ import kotlinx.serialization.json.jsonPrimitive
 data class WireAppState(
     val active_plan: WireFlightPlan? = null,
     val ownship: WireOwnshipState = WireOwnshipState(),
-    val content_policy: WireContentPolicy = WireContentPolicy.PreferLocal,
-    val last_content_report: WireContentReport? = null,
 )
 
 @Serializable
@@ -32,15 +30,11 @@ data class WireAppUiState(
     val active_plan: WireFlightPlanUiState? = null,
     val ownship: WireOwnshipUiState = WireOwnshipUiState(),
     val flight_data_banner: WireFlightDataBannerModel = WireFlightDataBannerModel(),
-    val content_policy: WireContentPolicy = WireContentPolicy.PreferLocal,
-    val last_content_report: WireContentReport? = null,
 )
 
 @Serializable
 data class WireUiSnapshotAppState(
     val active_plan: WireFlightPlan? = null,
-    val content_policy: WireContentPolicy = WireContentPolicy.PreferLocal,
-    val last_content_report: WireContentReport? = null,
 )
 
 @Serializable
@@ -358,15 +352,6 @@ private fun decodeOwnshipSourceId(element: kotlinx.serialization.json.JsonElemen
 }
 
 @Serializable
-enum class WireContentPolicy {
-    OfflineRequired,
-
-    PreferLocal,
-
-    StreamAllowed,
-}
-
-@Serializable
 enum class WireOwnshipMode {
     @SerialName("none")
     None,
@@ -472,96 +457,6 @@ enum class WireSourceConnectionState {
 }
 
 @Serializable
-enum class WireContentAvailability {
-    LocalOnly,
-
-    RemoteOnly,
-
-    LocalAndRemote,
-
-    Unavailable,
-}
-
-@Serializable
-enum class WireChartFamilyId {
-    @SerialName("sec")
-    Sec,
-
-    @SerialName("tac")
-    Tac,
-
-    @SerialName("enr-l")
-    EnrL,
-
-    @SerialName("enr-h")
-    EnrH,
-
-    @SerialName("shaded-relief")
-    ShadedRelief,
-
-    @SerialName("world-basemap")
-    WorldBasemap,
-}
-
-@Serializable
-enum class WireTileStorageKind {
-    @SerialName("asset_tree")
-    AssetTree,
-
-    @SerialName("sectional_package")
-    SectionalPackage,
-
-    @SerialName("static_product")
-    StaticProduct,
-}
-
-@Serializable
-enum class WireRegionId {
-    @SerialName("ne")
-    Ne,
-
-    @SerialName("nc")
-    Nc,
-
-    @SerialName("nw")
-    Nw,
-
-    @SerialName("se")
-    Se,
-
-    @SerialName("sc")
-    Sc,
-
-    @SerialName("sw")
-    Sw,
-
-    @SerialName("ec")
-    Ec,
-
-    @SerialName("ak")
-    Ak,
-
-    @SerialName("pac")
-    Pac,
-
-    @SerialName("world")
-    World,
-}
-
-@Serializable
-data class WirePackageId(
-    val region: WireRegionId,
-    val family: WireChartFamilyId,
-    val cycle: String,
-)
-
-@Serializable
-data class WireInstalledPackage(
-    val package_id: WirePackageId,
-    val integrity_ok: Boolean,
-)
-
-@Serializable
 data class WireVectorTileRequest(
     val layer: String,
     val z: Int,
@@ -608,8 +503,10 @@ data class WireVisibleMapFeature(
     val id: String,
     val kind: String,
     val label: String,
+    val symbol_kind: String = "fix",
     val style_class: String,
     val obstacle_variant: String? = null,
+    val obstacle_tone: String? = null,
     val screen_x: Double,
     val screen_y: Double,
     val towered: Boolean,
@@ -626,8 +523,10 @@ data class WireVisibleMapFeature(
 data class WireNavSymbolFeature(
     val kind: String,
     val label: String,
+    val symbol_kind: String = "fix",
     val style_class: String,
     val obstacle_variant: String? = null,
+    val obstacle_tone: String? = null,
     val towered: Boolean,
     val fuel_available: Boolean,
     val has_paved_runway: Boolean? = null,
@@ -848,12 +747,21 @@ data class WireMapSelectionAction(
     val airspace_limit: WireAirspaceLimitGlyph? = null,
     val session_action: String? = null,
     val flight_plan_row_action: WireMapSelectionFlightPlanRowAction? = null,
+    val navigation: WireMapSelectionNavigationAction? = null,
 )
 
 @Serializable
 data class WireMapSelectionFlightPlanRowAction(
     val row_uid: String,
     val action_uid: String,
+)
+
+@Serializable
+data class WireMapSelectionNavigationAction(
+    val kind: String,
+    val airport_id: String? = null,
+    val target: String? = null,
+    val chart_id: String? = null,
 )
 
 @Serializable
@@ -1490,6 +1398,14 @@ data class WireFlightPlanRowActionUiView(
     val enabled: Boolean,
     val execution: String = "ui_controller",
     val dismiss_tray_on_success: Boolean = true,
+    val navigation: WireFlightPlanRowNavigationAction? = null,
+)
+
+@Serializable
+data class WireFlightPlanRowNavigationAction(
+    val kind: String,
+    val airport_id: String? = null,
+    val target: String? = null,
 )
 
 @Serializable
@@ -1618,166 +1534,8 @@ data class WireMaterializedProcedure(
 )
 
 @Serializable
-data class WireContentInventory(
-    val installed_packages: List<WireInstalledPackage>,
-    val cached_tilesets: List<WireCachedTileset> = emptyList(),
-    val cached_plates: List<WireCachedPlate> = emptyList(),
-)
-
-@Serializable
-data class WireCachedTileset(
-    val chart_id: String,
-    val fully_cached: Boolean,
-)
-
-@Serializable
-data class WireCachedPlate(
-    val plate_id: String,
-    val cached_pages: List<Int>,
-)
-
-@Serializable
-data class WireContentRequirement(
-    val package_ids: List<WirePackageId>,
-    val chart_ids: List<String> = emptyList(),
-    val plate_ids: List<String> = emptyList(),
-)
-
-@Serializable
-data class WireAvailabilityDetail(
-    val availability: WireContentAvailability,
-    val cycle_current: Boolean,
-    val integrity_ok: Boolean,
-    val cached: Boolean,
-    val offline_usable: Boolean,
-)
-
-@Serializable
-data class WireContentReportItem(
-    val label: String,
-    val availability: WireAvailabilityDetail,
-)
-
-@Serializable
-data class WireContentReport(
-    val fully_satisfied: Boolean,
-    val items: List<WireContentReportItem>,
-)
-
-@Serializable
-data class WireCatalog(
-    val schema_version: Int,
-    val cycle: String,
-    val catalog_revision: String,
-    val families: List<WireCatalogFamily>,
-    val regions: List<WireCatalogRegion>,
-    val packages: List<WireCatalogPackage>,
-    val charts: List<WireChartRecord> = emptyList(),
-    val plates: List<WirePlateRecord> = emptyList(),
-    val supplements: List<WireSupplementRecord> = emptyList(),
-)
-
-@Serializable
-data class WireCatalogFamily(
-    val id: WireChartFamilyId,
-    val display_name: String,
-    val kind: String,
-    val max_zoom: Int? = null,
-    val tile_size: Int? = null,
-)
-
-@Serializable
-data class WireCatalogRegion(
-    val id: WireRegionId,
-    val display_name: String,
-    val sort_order: Int,
-)
-
-@Serializable
-data class WireCatalogPackage(
-    val id: WirePackageId,
-    val package_name: String,
-    val family_id: WireChartFamilyId,
-    val region_id: WireRegionId,
-    val cycle: String,
-    val artifact_kind: String,
-    val relative_url: String,
-    val manifest_name: String,
-    val size_bytes: Long? = null,
-    val checksum_sha256: String? = null,
-)
-
-@Serializable
-data class WireChartRecord(
-    val id: WireChartId,
-    val family_id: WireChartFamilyId,
-    val name: String,
-    val display_name: String,
-    val cycle: String,
-    val region_ids: List<WireRegionId>,
-    val max_zoom: Int,
-    val tile_path_template: String,
-)
-
-@Serializable
-data class WireChartId(
-    val family: WireChartFamilyId,
-    val name: String,
-    val cycle: String,
-)
-
-
-@Serializable
-data class WireGeometryBundle(
-    val schema_version: Int,
-    val polygons: List<WirePolygonRecord>,
-)
-
-@Serializable
-data class WirePolygonRecord(
-    val id: String,
-    val points: List<List<Double>>,
-)
-
-@Serializable
-data class WireInitialProbe(
-    val family: WireChartFamilyId,
-    val lat: Double,
-    val lon: Double,
-)
-
-@Serializable
 data class WireMapViewportSeed(
     val lat: Double,
     val lon: Double,
     val zoom: Double,
-)
-
-@Serializable
-data class WirePlateId(
-    val airport_id: String,
-    val procedure_code: String,
-    val page: Int,
-    val cycle: String,
-)
-
-@Serializable
-data class WirePlateRecord(
-    val id: WirePlateId,
-    val airport_id: String,
-    val region_id: WireRegionId,
-    val cycle: String,
-    val procedure_code: String,
-    val display_name: String,
-    val kind: String,
-    val georeferenced: Boolean,
-    val page_count: Int,
-)
-
-@Serializable
-data class WireSupplementRecord(
-    val airport_id: String,
-    val region_id: WireRegionId,
-    val cycle: String,
-    val page_count: Int,
 )

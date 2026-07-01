@@ -213,7 +213,6 @@ import org.aerobag.app.domain.AirspaceDisplaySubpath
 import org.aerobag.app.domain.AirspaceLimitGlyph
 import org.aerobag.app.domain.AirspaceScreenPoint
 import org.aerobag.app.domain.LatLonPoint
-import org.aerobag.app.domain.MapChartFamily
 import org.aerobag.app.domain.MapLayerId
 import org.aerobag.app.domain.MapFollowUiState
 import org.aerobag.app.domain.MapOverlayQueryResult
@@ -348,14 +347,8 @@ internal fun PlanWaypointSymbol(
         val airportFillColor = if (feature.towered) uiTheme.aviation.classBDBlue else uiTheme.aviation.classCMagenta
         val openAirportStrokeColor = uiTheme.aviation.classCMagenta
         val vorMarkerColor = uiTheme.aviation.classBDBlue
-        val isAirport = feature.styleClass == "airport" || feature.kind.equals("airport", ignoreCase = true)
-        val isVor = feature.styleClass == "nav" || feature.kind.contains("vor", ignoreCase = true)
-        val isObstacle =
-            feature.styleClass.startsWith("obstacle") ||
-                feature.kind.equals("obs", ignoreCase = true) ||
-                feature.kind.equals("obstacle", ignoreCase = true)
-        when {
-            isAirport -> {
+        when (feature.symbolKind) {
+            "airport" -> {
                 val usesOpenAirportCircle =
                     feature.heliport == true ||
                         feature.hasWaterRunway == true ||
@@ -411,7 +404,7 @@ internal fun PlanWaypointSymbol(
                 }
             }
 
-            isVor -> {
+            "nav" -> {
                 val radius = 8f * scale
                 val outerHex = vorOuterHexPath(center, radius)
                 val band = vorBandPath(center, radius)
@@ -420,7 +413,7 @@ internal fun PlanWaypointSymbol(
                 drawPath(outerHex, fixMarkerStrokeColor, style = Stroke(width = 1.6f * scale))
             }
 
-            isObstacle -> {
+            "obstacle" -> {
                 val isTallObstacle = feature.obstacleVariant == "tall"
                 val obstaclePath = if (isTallObstacle) {
                     obstacleTallPath(center, scale)
@@ -428,12 +421,8 @@ internal fun PlanWaypointSymbol(
                     obstacleShortPath(center, scale)
                 }
                 val dotY = if (isTallObstacle) obstacleTallDotY else obstacleShortDotY
-                val obstacleColor = when (feature.styleClass) {
-                    "obstacle-danger" -> Color(0xFFD83A2E)
-                    "obstacle-muted" -> Color(0xB8FFD34D)
-                    else -> Color(0xFFFFD34D)
-                }
-                val obstacleUnderColor = Color(0xD1081218)
+                val obstacleColor = obstacleToneColor(uiTheme, feature.obstacleTone)
+                val obstacleUnderColor = uiTheme.aviation.obstacleUnder
                 drawPath(
                     obstaclePath,
                     obstacleUnderColor,

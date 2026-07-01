@@ -79,10 +79,6 @@ fun parseCoreResourceSource(source: JsonObject): CoreResourceSource =
         else -> error("unknown core resource source kind: $kind")
     }
 
-data class NavDbOpenReport(
-    val statuses: List<NavDbArtifactStatus>,
-)
-
 @Serializable
 private data class WireInstalledArtifact(
     @SerialName("artifact_id")
@@ -108,16 +104,6 @@ private data class WireNavDbOpenResult(
     val selectedPackageId: String,
     @SerialName("selected_filename")
     val selectedFilename: String,
-    val statuses: List<WireNavDbArtifactStatus>,
-)
-
-@Serializable
-private data class WireNavDbArtifactStatus(
-    @SerialName("package_id")
-    val packageId: String,
-    val filename: String,
-    val readable: Boolean,
-    val message: String? = null,
 )
 
 class NavKvStore private constructor(
@@ -139,7 +125,7 @@ class NavKvStore private constructor(
                 ignoreUnknownKeys = true
             },
         ): NavKvStore =
-            openInstalledArtifacts(listOf(artifact), libraryCacheJson = "", bridge, json).first
+            openInstalledArtifacts(listOf(artifact), libraryCacheJson = "", bridge, json)
 
         fun open(
             context: Context,
@@ -164,7 +150,7 @@ class NavKvStore private constructor(
                 encodeDefaults = true
                 ignoreUnknownKeys = true
             },
-        ): Pair<NavKvStore, NavDbOpenReport> {
+        ): NavKvStore {
             val artifactsByFilename = artifacts.associateBy { it.filename }
             val controllerHandle = bridge.navDbOpenControllerCreateFromInstalledArtifacts(
                 json.encodeToString(artifacts.map { it.toWireInstalledArtifact() }),
@@ -187,67 +173,7 @@ class NavKvStore private constructor(
                                 json = json,
                                 handle = finish.navKvHandle,
                                 navDbArtifact = selectedArtifact,
-                            ) to NavDbOpenReport(
-                                statuses = finish.openResult.statuses.map { it.toStatus() },
                             )
-                        }
-                        "need_resources" -> {
-                            for (resource in parseCoreResourceRequests(outcome)) {
-                                val bytes = try {
-                                    readInstalledArtifactResource(artifactsByFilename, resource)
-                                } catch (error: Throwable) {
-                                    if (resource.optional) {
-                                        diagnosticLogInfo(TAG) {
-                                            "optional resource ${resource.id} unavailable: ${error.message}"
-                                        }
-                                        ByteArray(0)
-                                    } else {
-                                        throw error
-                                    }
-                                }
-                                bridge.navDbOpenControllerIngestResource(controllerHandle, resource.id, bytes)
-                            }
-                        }
-                        else -> error("unknown nav_db open state: $state")
-                    }
-                }
-            } finally {
-                bridge.navDbOpenControllerDestroy(controllerHandle)
-            }
-        }
-
-        fun inspectInstalledArtifacts(
-            artifacts: List<InstalledPackageArtifact>,
-            libraryCacheJson: String,
-            bridge: NativeBridge = NativeBindings,
-            json: Json = Json {
-                encodeDefaults = true
-                ignoreUnknownKeys = true
-            },
-        ): NavDbOpenReport {
-            val artifactsByFilename = artifacts.associateBy { it.filename }
-            val controllerHandle = bridge.navDbOpenControllerCreateFromInstalledArtifacts(
-                json.encodeToString(artifacts.map { it.toWireInstalledArtifact() }),
-                libraryCacheJson,
-            )
-            try {
-                while (true) {
-                    val outcome = try {
-                        json.parseToJsonElement(
-                            bridge.navDbOpenControllerStep(controllerHandle),
-                        ).jsonObject
-                    } catch (_: Throwable) {
-                        val statuses = json.decodeFromString<List<WireNavDbArtifactStatus>>(
-                            bridge.navDbOpenControllerStatuses(controllerHandle),
-                        )
-                        return NavDbOpenReport(statuses = statuses.map { it.toStatus() })
-                    }
-                    when (val state = outcome.getValue("state").jsonPrimitive.content) {
-                        "complete" -> {
-                            val result = json.decodeFromJsonElement<WireNavDbOpenResult>(
-                                outcome.getValue("result"),
-                            )
-                            return NavDbOpenReport(statuses = result.statuses.map { it.toStatus() })
                         }
                         "need_resources" -> {
                             for (resource in parseCoreResourceRequests(outcome)) {
@@ -289,14 +215,6 @@ class NavKvStore private constructor(
                 ?: error("missing installed artifact ${source.filename}")
             return InstalledPackages.readZipEntryBytes(artifact.file, source.memberPath)
         }
-
-        private fun WireNavDbArtifactStatus.toStatus(): NavDbArtifactStatus =
-            NavDbArtifactStatus(
-                packageId = packageId,
-                filename = filename,
-                readable = readable,
-                message = message,
-            )
 
         private fun InstalledPackageArtifact.toWireInstalledArtifact(): WireInstalledArtifact =
             WireInstalledArtifact(

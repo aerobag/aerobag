@@ -1,35 +1,5 @@
 package org.aerobag.app.domain
 
-enum class ContentPolicy {
-    OfflineRequired,
-    PreferLocal,
-    StreamAllowed,
-}
-
-enum class ContentAvailability {
-    LocalOnly,
-    RemoteOnly,
-    LocalAndRemote,
-    Unavailable,
-}
-
-data class PackageId(
-    val region: String,
-    val family: String,
-    val cycle: String,
-) {
-    fun packageName(): String {
-        val familyCode = when (family) {
-            "sec" -> "SEC"
-            "enr-l" -> "ENR_L"
-            "enr-h" -> "ENR_H"
-            "enr-a" -> "ENR_A"
-            else -> family.uppercase()
-        }
-        return "${region.uppercase()}_$familyCode"
-    }
-}
-
 data class FlightPlanLeg(
     val from: NavRef,
     val to: NavRef,
@@ -405,7 +375,19 @@ data class FlightPlanRowActionUiView(
     val enabled: Boolean,
     val execution: String = "ui_controller",
     val dismissTrayOnSuccess: Boolean = true,
+    val navigation: FlightPlanRowNavigationAction? = null,
 )
+
+sealed interface FlightPlanRowNavigationAction {
+    data class OpenAirportCharts(
+        val airportId: String,
+    ) : FlightPlanRowNavigationAction
+
+    data class OpenPlateTarget(
+        val airportId: String,
+        val target: String,
+    ) : FlightPlanRowNavigationAction
+}
 
 data class FlightDataCell(
     val id: String,
@@ -487,15 +469,6 @@ data class MaterializedProcedure(
     val resolvedLegs: List<ResolvedLeg>,
 )
 
-enum class MapChartFamily {
-    Sec,
-    Tac,
-    EnrL,
-    EnrH,
-    ShadedRelief,
-    WorldBasemap,
-}
-
 enum class TileStorageKind {
     AssetTree,
     SectionalPackage,
@@ -527,55 +500,18 @@ data class ChartPageFixture(
     val airports: List<ChartAirport>,
 )
 
-data class InstalledPackage(
-    val packageId: PackageId,
-    val integrityOk: Boolean,
-)
-
-data class ContentInventory(
-    val installedPackages: List<InstalledPackage>,
-)
-
-data class ContentRequirement(
-    val packageIds: List<PackageId>,
-)
-
-data class AvailabilityDetail(
-    val availability: ContentAvailability,
-    val cycleCurrent: Boolean,
-    val integrityOk: Boolean,
-    val cached: Boolean,
-    val offlineUsable: Boolean,
-)
-
-data class ContentReportItem(
-    val label: String,
-    val availability: AvailabilityDetail,
-)
-
-data class ContentReport(
-    val fullySatisfied: Boolean,
-    val items: List<ContentReportItem>,
-)
-
 data class AppState(
     val activePlan: FlightPlan? = null,
-    val contentPolicy: ContentPolicy = ContentPolicy.PreferLocal,
-    val lastContentReport: ContentReport? = null,
 )
 
 data class AppUiState(
     val activePlan: FlightPlanUiState? = null,
     val ownship: OwnshipUiState = OwnshipUiState(),
     val flightDataBanner: FlightDataBannerModel = FlightDataBannerModel(),
-    val contentPolicy: ContentPolicy = ContentPolicy.PreferLocal,
-    val lastContentReport: ContentReport? = null,
 )
 
 data class UiSnapshotAppState(
     val activePlan: FlightPlan? = null,
-    val contentPolicy: ContentPolicy = ContentPolicy.PreferLocal,
-    val lastContentReport: ContentReport? = null,
 )
 
 sealed interface OwnshipSelection {

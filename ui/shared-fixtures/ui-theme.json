@@ -31,7 +31,11 @@
     "class_c_magenta": "#be32a0",
     "tfr_red": "#e04646",
     "intersection_cyan": "#39d9ff",
-    "dark_gray": "#202a31"
+    "dark_gray": "#202a31",
+    "obstacle_danger": "#d83a2e",
+    "obstacle_caution": "#ffd34d",
+    "obstacle_muted": "#ffd34db8",
+    "obstacle_under": "#081218d1"
   },
   "flight_plan_route": {
     "completed": "#8c9dad",

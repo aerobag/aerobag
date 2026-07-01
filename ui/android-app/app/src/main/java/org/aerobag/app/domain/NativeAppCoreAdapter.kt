@@ -68,8 +68,10 @@ data class VisibleMapFeature(
     val id: String,
     val kind: String,
     val label: String,
+    val symbolKind: String,
     val styleClass: String,
     val obstacleVariant: String?,
+    val obstacleTone: String?,
     val screenX: Double,
     val screenY: Double,
     val towered: Boolean,
@@ -174,8 +176,10 @@ data class AirspaceLimitGlyph(
 data class NavSymbolFeature(
     val kind: String,
     val label: String,
+    val symbolKind: String,
     val styleClass: String,
     val obstacleVariant: String?,
+    val obstacleTone: String?,
     val towered: Boolean,
     val fuelAvailable: Boolean,
     val hasPavedRunway: Boolean?,
@@ -290,12 +294,21 @@ data class MapSelectionAction(
     val airspaceLimit: AirspaceLimitGlyph?,
     val sessionAction: String?,
     val flightPlanRowAction: MapSelectionFlightPlanRowAction?,
+    val navigation: MapSelectionNavigationAction?,
 )
 
 data class MapSelectionFlightPlanRowAction(
     val rowUid: String,
     val actionUid: String,
 )
+
+sealed interface MapSelectionNavigationAction {
+    data class OpenPlateTarget(
+        val airportId: String,
+        val target: String,
+        val chartId: String,
+    ) : MapSelectionNavigationAction
+}
 
 sealed interface TerrainOverlayStatus {
     data object Hidden : TerrainOverlayStatus
@@ -1445,42 +1458,9 @@ private fun NavRef.toWire(): WireNavRef = when (this) {
     is NavRef.Spot -> WireNavRef.Spot(WireLatLon(lat, lon))
 }
 
-private fun ContentPolicy.toWire() = when (this) {
-    ContentPolicy.OfflineRequired -> WireContentPolicy.OfflineRequired
-    ContentPolicy.PreferLocal -> WireContentPolicy.PreferLocal
-    ContentPolicy.StreamAllowed -> WireContentPolicy.StreamAllowed
-}
-
-private fun ContentInventory.toWire() = WireContentInventory(
-    installed_packages = installedPackages.map {
-        WireInstalledPackage(
-            package_id = it.packageId.toWire(),
-            integrity_ok = it.integrityOk,
-        )
-    },
-)
-
 private fun AppState.toWire() = WireAppState(
     active_plan = activePlan?.toWire(),
     ownship = WireOwnshipState(),
-    content_policy = contentPolicy.toWire(),
-    last_content_report = lastContentReport?.let { report ->
-        WireContentReport(
-            fully_satisfied = report.fullySatisfied,
-            items = report.items.map { item ->
-                WireContentReportItem(
-                    label = item.label,
-                    availability = WireAvailabilityDetail(
-                        availability = item.availability.availability.toWire(),
-                        cycle_current = item.availability.cycleCurrent,
-                        integrity_ok = item.availability.integrityOk,
-                        cached = item.availability.cached,
-                        offline_usable = item.availability.offlineUsable,
-                    ),
-                )
-            },
-        )
-    },
 )
 
 private fun OwnshipSelection.toWire(): WireOwnshipSelection = when (this) {
@@ -1538,72 +1518,16 @@ private fun SituationControlInput.toWire(): WireSituationControlInput = when (th
 
 private fun WireAppState.toUi() = AppState(
     activePlan = active_plan?.toUiFlightPlan(),
-    contentPolicy = content_policy.toUi(),
-    lastContentReport = last_content_report?.let { report ->
-        ContentReport(
-            fullySatisfied = report.fully_satisfied,
-            items = report.items.map { item ->
-                ContentReportItem(
-                    label = item.label,
-                    availability = AvailabilityDetail(
-                        availability = item.availability.availability.toUi(),
-                        cycleCurrent = item.availability.cycle_current,
-                        integrityOk = item.availability.integrity_ok,
-                        cached = item.availability.cached,
-                        offlineUsable = item.availability.offline_usable,
-                    ),
-                )
-            },
-        )
-    },
 )
 
 private fun WireAppUiState.toUi() = AppUiState(
     activePlan = active_plan?.toUi(),
     ownship = ownship.toUi(),
     flightDataBanner = flight_data_banner.toUi(),
-    contentPolicy = content_policy.toUi(),
-    lastContentReport = last_content_report?.let { report ->
-        ContentReport(
-            fullySatisfied = report.fully_satisfied,
-            items = report.items.map { item ->
-                ContentReportItem(
-                    label = item.label,
-                    availability =
-                        AvailabilityDetail(
-                            availability = item.availability.availability.toUi(),
-                            cycleCurrent = item.availability.cycle_current,
-                            integrityOk = item.availability.integrity_ok,
-                            cached = item.availability.cached,
-                            offlineUsable = item.availability.offline_usable,
-                        ),
-                )
-            },
-        )
-    },
 )
 
 private fun WireUiSnapshotAppState.toUi() = UiSnapshotAppState(
     activePlan = active_plan?.toUiFlightPlan(),
-    contentPolicy = content_policy.toUi(),
-    lastContentReport = last_content_report?.let { report ->
-        ContentReport(
-            fullySatisfied = report.fully_satisfied,
-            items = report.items.map { item ->
-                ContentReportItem(
-                    label = item.label,
-                    availability =
-                        AvailabilityDetail(
-                            availability = item.availability.availability.toUi(),
-                            cycleCurrent = item.availability.cycle_current,
-                            integrityOk = item.availability.integrity_ok,
-                            cached = item.availability.cached,
-                            offlineUsable = item.availability.offline_usable,
-                        ),
-                )
-            },
-        )
-    },
 )
 
 private fun WireOwnshipSelection.toUi(): OwnshipSelection = when (this) {
@@ -2624,8 +2548,10 @@ private fun WireVisibleMapFeature.toUi() = VisibleMapFeature(
     id = id,
     kind = kind,
     label = label,
+    symbolKind = symbol_kind,
     styleClass = style_class,
     obstacleVariant = obstacle_variant,
+    obstacleTone = obstacle_tone,
     screenX = screen_x,
     screenY = screen_y,
     towered = towered,
@@ -2788,6 +2714,7 @@ private fun WireMapSelectionAction.toUi() = MapSelectionAction(
     airspaceLimit = airspace_limit?.toUi(),
     sessionAction = session_action,
     flightPlanRowAction = flight_plan_row_action?.toUi(),
+    navigation = navigation?.toUi(),
 )
 
 private fun WireMapSelectionFlightPlanRowAction.toUi() = MapSelectionFlightPlanRowAction(
@@ -2795,11 +2722,28 @@ private fun WireMapSelectionFlightPlanRowAction.toUi() = MapSelectionFlightPlanR
     actionUid = action_uid,
 )
 
+private fun WireMapSelectionNavigationAction.toUi(): MapSelectionNavigationAction? =
+    when (kind) {
+        "open_plate_target" -> {
+            val airportId = airport_id ?: return null
+            val target = target ?: return null
+            val chartId = chart_id ?: return null
+            MapSelectionNavigationAction.OpenPlateTarget(
+                airportId = airportId,
+                target = target,
+                chartId = chartId,
+            )
+        }
+        else -> null
+    }
+
 private fun WireNavSymbolFeature.toUi() = NavSymbolFeature(
     kind = kind,
     label = label,
+    symbolKind = symbol_kind,
     styleClass = style_class,
     obstacleVariant = obstacle_variant,
+    obstacleTone = obstacle_tone,
     towered = towered,
     fuelAvailable = fuel_available,
     hasPavedRunway = has_paved_runway,
@@ -2812,8 +2756,10 @@ private fun WireNavSymbolFeature.toUi() = NavSymbolFeature(
 private fun NavSymbolFeature.toWire() = WireNavSymbolFeature(
     kind = kind,
     label = label,
+    symbol_kind = symbolKind,
     style_class = styleClass,
     obstacle_variant = obstacleVariant,
+    obstacle_tone = obstacleTone,
     towered = towered,
     fuel_available = fuelAvailable,
     has_paved_runway = hasPavedRunway,
@@ -3485,6 +3431,7 @@ private fun WireFlightPlanRowActionUiView.toUi() = FlightPlanRowActionUiView(
     enabled = enabled,
     execution = execution,
     dismissTrayOnSuccess = dismiss_tray_on_success,
+    navigation = navigation?.toUi(),
 )
 
 private fun FlightPlanRowActionUiView.toWire() = WireFlightPlanRowActionUiView(
@@ -3494,7 +3441,35 @@ private fun FlightPlanRowActionUiView.toWire() = WireFlightPlanRowActionUiView(
     enabled = enabled,
     execution = execution,
     dismiss_tray_on_success = dismissTrayOnSuccess,
+    navigation = navigation?.toWire(),
 )
+
+private fun WireFlightPlanRowNavigationAction.toUi(): FlightPlanRowNavigationAction? =
+    when (kind) {
+        "open_airport_charts" -> {
+            val airportId = airport_id ?: return null
+            FlightPlanRowNavigationAction.OpenAirportCharts(airportId)
+        }
+        "open_plate_target" -> {
+            val airportId = airport_id ?: return null
+            val target = target ?: return null
+            FlightPlanRowNavigationAction.OpenPlateTarget(airportId, target)
+        }
+        else -> null
+    }
+
+private fun FlightPlanRowNavigationAction.toWire(): WireFlightPlanRowNavigationAction =
+    when (this) {
+        is FlightPlanRowNavigationAction.OpenAirportCharts -> WireFlightPlanRowNavigationAction(
+            kind = "open_airport_charts",
+            airport_id = airportId,
+        )
+        is FlightPlanRowNavigationAction.OpenPlateTarget -> WireFlightPlanRowNavigationAction(
+            kind = "open_plate_target",
+            airport_id = airportId,
+            target = target,
+        )
+    }
 
 private fun WireFlightPlanUiMutation.toUi() = FlightPlanUiMutation(
     plan = plan.toUiFlightPlan(),
@@ -3563,121 +3538,10 @@ private fun WireNavRef.toUi(): NavRef = when (this) {
     is WireNavRef.Spot -> NavRef.Spot(value.lat, value.lon)
 }
 
-private fun PackageId.toWire() = WirePackageId(
-    region = region.toWireRegion(),
-    family = when (family) {
-        "sec" -> WireChartFamilyId.Sec
-        "tac" -> WireChartFamilyId.Tac
-        "enr-l" -> WireChartFamilyId.EnrL
-        "enr-h" -> WireChartFamilyId.EnrH
-        "shaded-relief" -> WireChartFamilyId.ShadedRelief
-        "world-basemap" -> WireChartFamilyId.WorldBasemap
-        else -> error("Unsupported family: $family")
-    },
-    cycle = cycle,
-)
-
-private fun WirePackageId.toUi() = PackageId(
-    region = region.toUiRegion(),
-    family = when (family) {
-        WireChartFamilyId.Sec -> "sec"
-        WireChartFamilyId.Tac -> "tac"
-        WireChartFamilyId.EnrL -> "enr-l"
-        WireChartFamilyId.EnrH -> "enr-h"
-        WireChartFamilyId.ShadedRelief -> "shaded-relief"
-        WireChartFamilyId.WorldBasemap -> "world-basemap"
-    },
-    cycle = cycle,
-)
-
-private fun String.toWireRegion() = when (lowercase()) {
-    "ne" -> WireRegionId.Ne
-    "nc" -> WireRegionId.Nc
-    "nw" -> WireRegionId.Nw
-    "se" -> WireRegionId.Se
-    "sc" -> WireRegionId.Sc
-    "sw" -> WireRegionId.Sw
-    "ec" -> WireRegionId.Ec
-    "ak" -> WireRegionId.Ak
-    "pac" -> WireRegionId.Pac
-    "world" -> WireRegionId.World
-    else -> error("Unsupported region: $this")
-}
-
-private fun WireRegionId.toUiRegion() = when (this) {
-    WireRegionId.Ne -> "ne"
-    WireRegionId.Nc -> "nc"
-    WireRegionId.Nw -> "nw"
-    WireRegionId.Se -> "se"
-    WireRegionId.Sc -> "sc"
-    WireRegionId.Sw -> "sw"
-    WireRegionId.Ec -> "ec"
-    WireRegionId.Ak -> "ak"
-    WireRegionId.Pac -> "pac"
-    WireRegionId.World -> "world"
-}
-
-private fun regionDisplayName(regionId: String) = when (regionId.lowercase()) {
-    "ne" -> "Northeast"
-    "nc" -> "North Central"
-    "nw" -> "Northwest"
-    "se" -> "Southeast"
-    "sc" -> "South Central"
-    "sw" -> "Southwest"
-    "ec" -> "East Coast"
-    "ak" -> "Alaska"
-    "pac" -> "Pacific"
-    else -> error("Unsupported region: $regionId")
-}
-
-private fun regionSortOrder(regionId: String) = when (regionId.lowercase()) {
-    "ne" -> 0
-    "nc" -> 1
-    "nw" -> 2
-    "se" -> 3
-    "sc" -> 4
-    "sw" -> 5
-    "ec" -> 6
-    "ak" -> 7
-    "pac" -> 8
-    else -> error("Unsupported region: $regionId")
-}
-
-private fun ContentAvailability.toWire() = when (this) {
-    ContentAvailability.LocalOnly -> WireContentAvailability.LocalOnly
-    ContentAvailability.RemoteOnly -> WireContentAvailability.RemoteOnly
-    ContentAvailability.LocalAndRemote -> WireContentAvailability.LocalAndRemote
-    ContentAvailability.Unavailable -> WireContentAvailability.Unavailable
-}
-
-private fun WireContentAvailability.toUi() = when (this) {
-    WireContentAvailability.LocalOnly -> ContentAvailability.LocalOnly
-    WireContentAvailability.RemoteOnly -> ContentAvailability.RemoteOnly
-    WireContentAvailability.LocalAndRemote -> ContentAvailability.LocalAndRemote
-    WireContentAvailability.Unavailable -> ContentAvailability.Unavailable
-}
-
-private fun WireContentPolicy.toUi() = when (this) {
-    WireContentPolicy.OfflineRequired -> ContentPolicy.OfflineRequired
-    WireContentPolicy.PreferLocal -> ContentPolicy.PreferLocal
-    WireContentPolicy.StreamAllowed -> ContentPolicy.StreamAllowed
-}
-
 internal fun FlightPlan.toWireForTesting() = toWire()
-
-internal fun ContentInventory.toWireForTesting() = toWire()
 
 internal fun AppState.toWireForTesting() = toWire()
 
 internal fun WireAppState.toUiForTesting() = toUi()
 
 internal fun WireFlightPlan.toUiForTesting() = toUiFlightPlan()
-
-internal fun WireContentInventory.toUiInventory() = ContentInventory(
-    installedPackages = installed_packages.map {
-        InstalledPackage(
-            packageId = it.package_id.toUi(),
-            integrityOk = it.integrity_ok,
-        )
-    },
-)

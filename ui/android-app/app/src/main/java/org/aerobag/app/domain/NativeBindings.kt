@@ -81,8 +81,6 @@ interface NativeBridge {
 
     fun navDbOpenControllerFinish(handle: Long): String
 
-    fun navDbOpenControllerStatuses(handle: Long): String
-
     fun navDbOpenControllerDestroy(handle: Long)
 
     fun navKvInsertResource(handle: Long, resourceId: String, resourceBytes: ByteArray)
@@ -624,8 +622,6 @@ object NativeBindings : NativeBridge {
     external override fun navDbOpenControllerIngestResource(handle: Long, resourceId: String, resourceBytes: ByteArray)
 
     external override fun navDbOpenControllerFinish(handle: Long): String
-
-    external override fun navDbOpenControllerStatuses(handle: Long): String
 
     external override fun navDbOpenControllerDestroy(handle: Long)
 

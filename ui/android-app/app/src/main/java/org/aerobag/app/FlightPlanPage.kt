@@ -201,6 +201,7 @@ import org.aerobag.app.domain.FlightPlanUiMutation
 import org.aerobag.app.domain.FlightPlanDisplayRowKind
 import org.aerobag.app.domain.FlightPlanDisplayRowUiView
 import org.aerobag.app.domain.FlightPlanRowActionUiView
+import org.aerobag.app.domain.FlightPlanRowNavigationAction
 import org.aerobag.app.domain.FlightPlanRouteSegment
 import org.aerobag.app.domain.FlightPlanUiState
 import org.aerobag.app.domain.GuidanceState
@@ -212,7 +213,6 @@ import org.aerobag.app.domain.AirspaceDisplaySubpath
 import org.aerobag.app.domain.AirspaceLimitGlyph
 import org.aerobag.app.domain.AirspaceScreenPoint
 import org.aerobag.app.domain.LatLonPoint
-import org.aerobag.app.domain.MapChartFamily
 import org.aerobag.app.domain.MapLayerId
 import org.aerobag.app.domain.MapFollowUiState
 import org.aerobag.app.domain.MapOverlayQueryResult
@@ -344,7 +344,7 @@ internal fun FlightPlanPage(
     uiTheme: UiTheme,
     onSelectPage: (AppPage) -> Unit,
     onOpenRecentChartOrPlate: () -> Unit,
-    onOpenCharts: (String?) -> Unit,
+    onOpenCharts: (String, String?) -> Unit,
     onApplySessionSnapshot: (UiSessionSnapshot) -> Unit,
 ) {
     val density = LocalDensity.current
@@ -1206,6 +1206,19 @@ internal fun FlightPlanPage(
                                             }
                                             return@MenuPanelRow
                                         }
+                                        when (val navigation = action.navigation) {
+                                            is FlightPlanRowNavigationAction.OpenAirportCharts -> {
+                                                onOpenCharts(navigation.airportId, null)
+                                                closePanels()
+                                                return@MenuPanelRow
+                                            }
+                                            is FlightPlanRowNavigationAction.OpenPlateTarget -> {
+                                                onOpenCharts(navigation.airportId, navigation.target)
+                                                closePanels()
+                                                return@MenuPanelRow
+                                            }
+                                            null -> Unit
+                                        }
                                         when (action.id) {
                                             "insert_before",
                                             "insert_after",
@@ -1261,10 +1274,6 @@ internal fun FlightPlanPage(
                                                     Log.e("AerobagProcedure", "listProcedures failed airport=$airportId", error)
                                                     procedurePicker = procedurePicker?.copy(loading = false, error = error.message ?: error.toString())
                                                 }
-                                            }
-                                            "plates" -> {
-                                                onOpenCharts(selectedRow.chartAirportId)
-                                                closePanels()
                                             }
                                             "waypoint_info" -> {}
                                             else -> Unit

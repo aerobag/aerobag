@@ -1511,6 +1511,7 @@ pub(crate) fn flight_plan_ui_state(
                     action.enabled = plate_match.is_some();
                 }
             }
+            crate::planning::refresh_flight_plan_row_action_navigation(row);
         }
     }
     if has_remaining_distance {

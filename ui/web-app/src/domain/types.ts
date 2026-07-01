@@ -411,7 +411,19 @@ export type FlightPlanRowActionUiView = {
   enabled: boolean;
   execution?: "ui_controller" | "core_session";
   dismiss_tray_on_success?: boolean;
+  navigation?: FlightPlanRowNavigationAction | null;
 };
+
+export type FlightPlanRowNavigationAction =
+  | {
+      kind: "open_airport_charts";
+      airport_id: string;
+    }
+  | {
+      kind: "open_plate_target";
+      airport_id: string;
+      target: string;
+    };
 
 export type FlightPlanDisplayRowUiView = {
   uid: string;
@@ -451,8 +463,10 @@ export type FlightPlanDisplayRowUiView = {
 export type NavSymbolFeature = {
   kind: string;
   label: string;
+  symbol_kind: "airport" | "nav" | "obstacle" | "fix" | string;
   style_class: string;
   obstacle_variant?: "short" | "tall" | null;
+  obstacle_tone?: "danger" | "caution" | "muted" | null;
   towered: boolean;
   fuel_available: boolean;
   has_paved_runway?: boolean | null;

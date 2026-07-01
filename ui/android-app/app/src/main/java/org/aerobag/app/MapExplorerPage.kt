@@ -221,7 +221,6 @@ import org.aerobag.app.domain.AirspaceDisplaySubpath
 import org.aerobag.app.domain.AirspaceLimitGlyph
 import org.aerobag.app.domain.AirspaceScreenPoint
 import org.aerobag.app.domain.LatLonPoint
-import org.aerobag.app.domain.MapChartFamily
 import org.aerobag.app.domain.MapDisplayFrame
 import org.aerobag.app.domain.MapFollowTargetGate
 import org.aerobag.app.domain.MapLayerId
@@ -230,6 +229,7 @@ import org.aerobag.app.domain.MapOverlayQueryResult
 import org.aerobag.app.domain.MapSelectionAction
 import org.aerobag.app.domain.MapSelectionHighlight
 import org.aerobag.app.domain.MapSelectionItem
+import org.aerobag.app.domain.MapSelectionNavigationAction
 import org.aerobag.app.domain.MapSelectionQueryResult
 import org.aerobag.app.domain.MapFamilyOption
 import org.aerobag.app.domain.MapViewportState
@@ -518,16 +518,6 @@ private fun WireRasterTileSource.toRenderTileSource(): RenderTileSource? {
     )
 }
 
-private fun String.toMapChartFamily(): MapChartFamily? = when (this) {
-    "sec" -> MapChartFamily.Sec
-    "tac" -> MapChartFamily.Tac
-    "enr-l" -> MapChartFamily.EnrL
-    "enr-h" -> MapChartFamily.EnrH
-    "shaded-relief" -> MapChartFamily.ShadedRelief
-    "world-basemap" -> MapChartFamily.WorldBasemap
-    else -> null
-}
-
 private data class RasterTileLoadRequest(
     val id: Long,
     val mapId: String,
@@ -575,6 +565,7 @@ internal fun MapExplorerPage(
     onPlaybackSourcePathChange: (String) -> Unit,
     onSelectMapFamily: (String) -> Unit,
     onSelectPage: (AppPage) -> Unit,
+    onOpenPlateTarget: (airportId: String, target: String, chartId: String) -> Unit,
     onOpenPlan: () -> Unit,
     navElement: NavElementUiView?,
     plan: org.aerobag.app.domain.FlightPlan,
@@ -733,7 +724,6 @@ internal fun MapExplorerPage(
                     sizePx = tile.size_px.toFloat(),
                     zoom = tile.source_zoom,
                     mapViewId = tile.primary.map_view_id,
-                    family = tile.family.toMapChartFamily() ?: selectedFamilyId.toMapChartFamily() ?: MapChartFamily.Sec,
                     sources = sources,
                 )
             }
@@ -2577,26 +2567,20 @@ internal fun MapExplorerPage(
                                     mapSelection = null
                                     return@MapSelectionTray
                                 }
+                                when (val navigation = action.navigation) {
+                                    is MapSelectionNavigationAction.OpenPlateTarget -> {
+                                        onOpenPlateTarget(navigation.airportId, navigation.target, navigation.chartId)
+                                        mapSelection = null
+                                        return@MapSelectionTray
+                                    }
+                                    null -> Unit
+                                }
                                 action.sessionAction?.let { sessionAction ->
                                     runCatching { uiSession.performMapSelectionAction(sessionAction) }
                                         .onSuccess(onSessionSnapshotChange)
                                         .onFailure { Log.w("AerobagSelection", "map selection action failed", it) }
                                     mapSelection = null
                                     return@MapSelectionTray
-                                }
-                                when (action.id) {
-                                    "plates", "csup" -> {
-                                        val airportId = (item.navRef as? NavRef.Airport)?.code
-                                        if (airportId != null) {
-                                            val target = if (action.id == "csup") "CSup" else "Folder"
-                                            val snapshot = uiSession.selectAirport(airportId)
-                                            onSessionSnapshotChange(snapshot)
-                                            runCatching { uiSession.selectChart("Plate:$airportId:$target") }
-                                                .onSuccess(onSessionSnapshotChange)
-                                            onSelectPage(AppPage.Charts)
-                                            mapSelection = null
-                                        }
-                                    }
                                 }
                             },
                         )
@@ -2853,13 +2837,7 @@ private fun androidx.compose.ui.graphics.drawscope.DrawScope.drawVisibleMapFeatu
     val center = Offset(feature.screenX.toFloat(), feature.screenY.toFloat())
     val contrastColor = Color.White
     val contrastStrokeWidth = 8f * densityScale
-    val isAirport = feature.styleClass == "airport" || feature.kind.equals("airport", ignoreCase = true)
-    val isVor = feature.styleClass == "nav" || feature.kind.lowercase().contains("vor")
-    val isObstacle =
-        feature.styleClass.startsWith("obstacle") ||
-            feature.kind.equals("obs", ignoreCase = true) ||
-            feature.kind.equals("obstacle", ignoreCase = true)
-    if (isAirport) {
+    if (feature.symbolKind == "airport") {
         val label = labelOverride ?: feature.label
         val airportFillColor = if (feature.towered) airportToweredFillColor else airportUntoweredFillColor
         val airportLabelPaint = if (feature.towered) airportToweredLabelFillPaint else airportUntoweredLabelFillPaint
@@ -2948,7 +2926,7 @@ private fun androidx.compose.ui.graphics.drawscope.DrawScope.drawVisibleMapFeatu
                 )
             }
         }
-    } else if (isVor) {
+    } else if (feature.symbolKind == "nav") {
         val label = labelOverride ?: feature.label
         val radius = 8f * densityScale
         val outerHex = vorOuterHexPath(center, radius)
@@ -2977,7 +2955,7 @@ private fun androidx.compose.ui.graphics.drawscope.DrawScope.drawVisibleMapFeatu
                 }
             }
         }
-    } else if (isObstacle) {
+    } else if (feature.symbolKind == "obstacle") {
         val label = labelOverride ?: feature.label
         val isTallObstacle = feature.obstacleVariant == "tall"
         val obstaclePath = if (isTallObstacle) {
@@ -2986,12 +2964,8 @@ private fun androidx.compose.ui.graphics.drawscope.DrawScope.drawVisibleMapFeatu
             obstacleShortPath(center, densityScale)
         }
         val dotY = if (isTallObstacle) obstacleTallDotY else obstacleShortDotY
-        val obstacleColor = when (feature.styleClass) {
-            "obstacle-danger" -> Color(0xFFD83A2E)
-            "obstacle-muted" -> Color(0xB8FFD34D)
-            else -> Color(0xFFFFD34D)
-        }
-        val obstacleUnderColor = Color(0xD1081218)
+        val obstacleColor = obstacleToneColor(uiTheme, feature.obstacleTone)
+        val obstacleUnderColor = uiTheme.aviation.obstacleUnder
         if (contrastOnly) {
             drawPath(
                 obstaclePath,

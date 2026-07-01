@@ -86,7 +86,6 @@ import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.getValue
-import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableLongStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.mutableStateMapOf
@@ -214,7 +213,6 @@ import org.aerobag.app.domain.AirspaceDisplaySubpath
 import org.aerobag.app.domain.AirspaceLimitGlyph
 import org.aerobag.app.domain.AirspaceScreenPoint
 import org.aerobag.app.domain.LatLonPoint
-import org.aerobag.app.domain.MapChartFamily
 import org.aerobag.app.domain.MapLayerId
 import org.aerobag.app.domain.MapFollowUiState
 import org.aerobag.app.domain.MapOverlayQueryResult
@@ -384,13 +382,9 @@ internal fun HomePage(
         mutableStateOf(readPackageSourceBaseUrl(context.applicationContext, prefs))
     }
     val offlinePackagesRouted = page == AppPage.OfflinePackages
-    val regionOptions = remember { offlineRegionOptions() }
-    val regionIds = remember(regionOptions) { regionOptions.map { it.id } }
-    val productIds = remember { OfflineProductOptions.map { it.id } }
     var offlinePackagesControllerResult by remember { mutableStateOf<OfflinePackagesControllerResultWire?>(null) }
     var offlinePackageOperationJob by remember { mutableStateOf<Job?>(null) }
     var offlinePackageCancelRequested by remember { mutableStateOf(false) }
-    var navDbStatusRefreshToken by remember { mutableIntStateOf(0) }
     val activePackageConnections = remember { ActivePackageConnections() }
     fun launchOfflinePackageOperation(block: suspend () -> Unit) {
         if (offlinePackageOperationJob?.isActive == true) {
@@ -429,8 +423,6 @@ internal fun HomePage(
         val input = OfflinePackagesControllerInputWire(
             packageSourceBaseUrl = packageSourceBaseUrl,
             discoveryFilenames = emptyList(),
-            regionIds = regionIds,
-            productIds = productIds,
             nowEpochMs = bootstrap.packageManagementNowEpochMsOverride ?: System.currentTimeMillis(),
             installed = installed,
             storage = storage,
@@ -508,7 +500,6 @@ internal fun HomePage(
                         nextEvent,
                     )
                 }
-                navDbStatusRefreshToken += 1
             }
             is OfflinePackagesControllerCommandWire.Sync -> {
                 val summary = try {
@@ -551,7 +542,6 @@ internal fun HomePage(
                         OfflinePackagesControllerEventWire.SyncFinished(summary = summary),
                     )
                 }
-                navDbStatusRefreshToken += 1
             }
             null -> Unit
         }
@@ -645,14 +635,6 @@ internal fun HomePage(
                 )
                 .zIndex(1f)
             val controllerUiState = offlinePackagesControllerResult?.uiState
-            val navDbStatus by produceState<org.aerobag.app.domain.NavDbStatus?>(initialValue = null, context, navDbStatusRefreshToken, offlinePackagesRouted) {
-                value = withContext(Dispatchers.IO) {
-                    AndroidRuntimeContent.inspectNavDbStatus(
-                        context.applicationContext,
-                        readOfflinePackagesLibraryCacheJson(prefs),
-                    )
-                }
-            }
             LaunchedEffect(
                 offlinePackagesRouted,
                 packageSourceBaseUrl,
@@ -678,16 +660,6 @@ internal fun HomePage(
                             "error=${uiState.libraryErrorMessage}",
                     )
                 }
-            }
-            LaunchedEffect(navDbStatus) {
-                val status = navDbStatus ?: return@LaunchedEffect
-                dispatchOfflinePackagesController(
-                    OfflinePackagesControllerEventWire.InstalledArtifactHealthObserved(
-                        unreadableInstalledFilenameMessages = status.installed
-                            .filter { !it.readable }
-                            .associate { it.filename to (it.message ?: "unreadable") },
-                    ),
-                )
             }
             if (controllerUiState == null || (controllerUiState.plannerUiState == null && !controllerUiState.libraryLoaded)) {
                 val packageOperationActive = offlinePackageOperationJob?.isActive == true
@@ -751,10 +723,7 @@ internal fun HomePage(
                 )
             } else {
                 OfflinePackagesPanel(
-                    regionOptions = regionOptions,
-                    productOptions = OfflineProductOptions,
                     uiState = controllerUiState.plannerUiState,
-                    navDbStatusText = navDbStatus?.let(::formatNavDbStatusLine),
                     storageCapacityLabel = controllerUiState.storageCapacityLabel,
                     syncMessage = listOfNotNull(
                         controllerUiState.libraryStatusMessage,

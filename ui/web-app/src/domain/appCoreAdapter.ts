@@ -323,8 +323,10 @@ export type VisibleMapFeature = {
   id: string;
   kind: string;
   label: string;
+  symbol_kind: "airport" | "nav" | "obstacle" | "fix" | string;
   style_class: string;
   obstacle_variant?: "short" | "tall" | null;
+  obstacle_tone?: "danger" | "caution" | "muted" | null;
   screen_x: number;
   screen_y: number;
   towered: boolean;
@@ -492,7 +494,16 @@ export type MapSelectionAction = {
     row_uid: string;
     action_uid: string;
   } | null;
+  navigation?: MapSelectionNavigationAction | null;
 };
+
+export type MapSelectionNavigationAction =
+  | {
+      kind: "open_plate_target";
+      airport_id: string;
+      target: "Folder" | "CSup";
+      chart_id: string;
+    };
 
 export type TerrainOverlayStatus =
   | { state: "hidden" }

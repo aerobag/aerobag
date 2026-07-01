@@ -213,7 +213,6 @@ import org.aerobag.app.domain.AirspaceDisplaySubpath
 import org.aerobag.app.domain.AirspaceLimitGlyph
 import org.aerobag.app.domain.AirspaceScreenPoint
 import org.aerobag.app.domain.LatLonPoint
-import org.aerobag.app.domain.MapChartFamily
 import org.aerobag.app.domain.MapLayerId
 import org.aerobag.app.domain.MapFollowUiState
 import org.aerobag.app.domain.MapOverlayQueryResult
@@ -500,10 +499,7 @@ internal fun OfflinePackagesLibraryPanel(
 
 @Composable
 internal fun OfflinePackagesPanel(
-    regionOptions: List<OfflinePackageDimension>,
-    productOptions: List<OfflinePackageDimension>,
     uiState: OfflinePackagesUiStateWire,
-    navDbStatusText: String?,
     storageCapacityLabel: String?,
     syncMessage: String?,
     cancelRequested: Boolean,
@@ -606,12 +602,6 @@ internal fun OfflinePackagesPanel(
                     color = Color(0xFFD98B38),
                 )
             }
-            Text(
-                text = navDbStatusText ?: "NAVDB unknown",
-                style = MaterialTheme.typography.labelMedium,
-                fontWeight = FontWeight.Bold,
-                color = uiTheme.controls.panelFg,
-            )
             storageCapacityLabel?.let { label ->
                 Text(
                     text = label,
@@ -684,7 +674,6 @@ internal fun OfflinePackagesPanel(
                     OfflinePackageSection(
                         title = "REGIONS",
                         testTagPrefix = "parity:offline-region",
-                        options = regionOptions,
                         rows = uiState.regions,
                         enabled = plannerInteractionsEnabled,
                         onRowClick = { id ->
@@ -696,7 +685,6 @@ internal fun OfflinePackagesPanel(
                     OfflinePackageSection(
                         title = "PRODUCTS",
                         testTagPrefix = "parity:offline-product",
-                        options = productOptions,
                         rows = uiState.products,
                         enabled = plannerInteractionsEnabled,
                         onRowClick = { id ->
@@ -716,7 +704,7 @@ internal fun OfflinePackageAllSection(
     val uiTheme = LocalAerobagUiTheme.current
     MenuPanel(modifier = Modifier.fillMaxWidth()) {
         OfflinePackagePlanRow(
-            label = "All packages",
+            label = row.label,
             row = row,
             enabled = false,
             onCycleClick = null,
@@ -730,13 +718,11 @@ internal fun OfflinePackageAllSection(
 internal fun OfflinePackageSection(
     title: String,
     testTagPrefix: String,
-    options: List<OfflinePackageDimension>,
     rows: List<OfflinePackagesUiRowWire>,
     enabled: Boolean,
     onRowClick: (String) -> Unit,
 ) {
     val uiTheme = LocalAerobagUiTheme.current
-    val rowsById = rows.associateBy { it.id }
     MenuPanel(modifier = Modifier.fillMaxWidth()) {
         Text(
             text = title,
@@ -745,17 +731,13 @@ internal fun OfflinePackageSection(
             fontWeight = FontWeight.ExtraBold,
             color = uiTheme.controls.panelMuted,
         )
-        options.forEach { option ->
-            val row = rowsById[option.id] ?: OfflinePackagesUiRowWire(
-                id = option.id,
-                selection = OfflinePackageSelection.Play,
-            )
+        rows.forEach { row ->
             OfflinePackageSelectionRow(
-                label = option.label,
+                label = row.label,
                 row = row,
-                testTag = "$testTagPrefix:${option.id}",
+                testTag = "$testTagPrefix:${row.id}",
                 enabled = enabled,
-                onClick = { onRowClick(option.id) },
+                onClick = { onRowClick(row.id) },
             )
         }
     }
@@ -765,12 +747,6 @@ internal fun OfflinePackageSection(
 internal fun OfflinePackageCoreSection(
     rows: List<OfflinePackagesUiRowWire>,
 ) {
-    val labelById = mapOf(
-        "nav-db" to "NAV DB",
-        "vectors" to "VECTORS",
-        "geo" to "GEO",
-        "terrain" to "TERRAIN",
-    )
     val uiTheme = LocalAerobagUiTheme.current
     MenuPanel(modifier = Modifier.fillMaxWidth()) {
         Text(
@@ -782,7 +758,7 @@ internal fun OfflinePackageCoreSection(
         )
         rows.forEach { row ->
             OfflinePackagePlanRow(
-                label = labelById[row.id] ?: row.id.uppercase(),
+                label = row.label,
                 row = row,
                 enabled = false,
                 onCycleClick = null,
@@ -1126,7 +1102,6 @@ internal suspend fun syncOfflinePackages(
     val packagesById = bundle.packages.associateBy { it.id }
     val installedByFilename = listInstalledPackageArtifacts(context).associateBy { it.filename }
     val warnings = mutableListOf<OfflinePackagesWarning>()
-    val remotePoisonedFilenameMessages = linkedMapOf<String, String>()
     val totalFetchBytes = plan.fetch.sumOf { artifactId -> packagesById[artifactId]?.sizeBytes ?: 0L }
     val completedFetchArtifactIds = linkedSetOf<String>()
     val activeFetchBytesByArtifactId = linkedMapOf<String, Long>()
@@ -1222,23 +1197,10 @@ internal suspend fun syncOfflinePackages(
                                 sizeBytes = pkg.sizeBytes,
                                 checksumSha256 = pkg.checksumSha256,
                             )
-                            val validationError = validateInstalledPackageOrNull(
-                                context = context,
-                                pkg = pkg,
-                            )
                             progressMutex.withLock {
                                 activeFetchBytesByArtifactId.remove(artifactId)
                                 completedFetchBytes += packageDownloadedBytes
                                 completedFetchArtifactIds += artifactId
-                                if (validationError != null) {
-                                    remotePoisonedFilenameMessages[pkg.filename] = validationError
-                                    warnings += OfflinePackagesWarning(
-                                        artifactId = artifactId,
-                                        familyId = pkg.familyId,
-                                        regionId = pkg.regionId,
-                                        message = validationError,
-                                    )
-                                }
                                 fetchedCount += 1
                             }
                             val aggregateFetchBytes = progressMutex.withLock {
@@ -1246,8 +1208,7 @@ internal suspend fun syncOfflinePackages(
                             }
                             reportProgress(syncProgressText(fetchedCount, plan.fetch.size, aggregateFetchBytes, totalFetchBytes))
                             diagnosticLogInfo("OfflinePackages") {
-                                "fetch installed $artifactId worker=$workerIndex in ${SystemClock.elapsedRealtime() - fetchStartMs}ms from $sourceUrl" +
-                                    if (validationError != null) " poison=${pkg.filename}" else ""
+                                "fetch installed $artifactId worker=$workerIndex in ${SystemClock.elapsedRealtime() - fetchStartMs}ms from $sourceUrl"
                             }
                         }.onFailure {
                             progressMutex.withLock {
@@ -1315,7 +1276,6 @@ internal suspend fun syncOfflinePackages(
         fetchedCount = fetchedCount,
         gcCount = gcCount,
         warnings = warnings,
-        remotePoisonedFilenameMessages = remotePoisonedFilenameMessages,
     ).also {
         diagnosticLogInfo("OfflinePackages") {
             "sync completed in ${SystemClock.elapsedRealtime() - syncStartMs}ms " +
@@ -1614,42 +1574,12 @@ internal fun installDownloadedPackage(
     tempFile.delete()
 }
 
-internal fun validateInstalledPackageOrNull(
-    context: Context,
-    pkg: BundlePackageArtifactWire,
-): String? {
-    return when (pkg.familyId) {
-        "nav-db" -> runCatching {
-            val artifact = InstalledPackages.existingInstalledArtifacts(
-                context,
-                pkg.id,
-            ).firstOrNull { it.filename == pkg.filename }
-                ?: error("installed file missing after fetch")
-            NavKvStore.open(artifact = artifact).use { }
-        }.exceptionOrNull()?.let { error ->
-            "installed validation failed for ${pkg.filename}: ${error.message ?: error::class.simpleName ?: "unreadable"}"
-        }
-        else -> null
-    }
-}
-
 internal fun resolvePackageSourceUrl(relativePath: String, packageSourceBaseUrl: String): String =
     when {
         relativePath.startsWith("http://") || relativePath.startsWith("https://") -> relativePath
         packageSourceBaseUrl.endsWith("/") -> "$packageSourceBaseUrl$relativePath"
         else -> "$packageSourceBaseUrl/$relativePath"
     }
-
-internal fun formatNavDbStatusLine(status: org.aerobag.app.domain.NavDbStatus): String {
-    if (status.installed.isEmpty()) {
-        return "NAVDB none installed"
-    }
-    val parts = status.installed.map { artifact ->
-        val cycle = artifact.packageId.split('_').getOrNull(2) ?: artifact.packageId
-        if (artifact.readable) "$cycle ok" else "$cycle bad"
-    }
-    return "NAVDB ${status.installed.size}: ${parts.joinToString(", ")}"
-}
 
 internal fun deleteInstalledArtifact(
     context: Context,
@@ -1664,21 +1594,3 @@ internal fun sha256Hex(bytes: ByteArray): String =
     MessageDigest.getInstance("SHA-256")
         .digest(bytes)
         .joinToString("") { "%02x".format(it) }
-
-internal fun offlineRegionOptions(): List<OfflinePackageDimension> {
-    val labelById = mapOf(
-        "ak" to "Alaska",
-        "ec" to "East Central",
-        "nc" to "North Central",
-        "ne" to "Northeast",
-        "nw" to "Northwest",
-        "pac" to "Pacific",
-        "sc" to "South Central",
-        "se" to "Southeast",
-        "sw" to "Southwest",
-    )
-    val sortOrder = labelById.keys.withIndex().associate { it.value to it.index }
-    return labelById.keys
-        .sortedWith(compareBy({ sortOrder[it] ?: Int.MAX_VALUE }, { it }))
-        .map { id -> OfflinePackageDimension(id, labelById[id] ?: id.uppercase()) }
-}

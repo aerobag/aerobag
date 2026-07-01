@@ -1696,16 +1696,6 @@ pub fn nav_db_open_controller_finish_json(handle: u64) -> Result<String, String>
     .map_err(|err| err.to_string())
 }
 
-pub fn nav_db_open_controller_statuses_json(handle: u64) -> Result<String, String> {
-    let controllers = nav_db_open_controllers()
-        .lock()
-        .map_err(|_| "nav db open controller store poisoned".to_string())?;
-    let controller = controllers
-        .get(&(handle as u32))
-        .ok_or_else(|| format!("invalid nav db open controller handle: {handle}"))?;
-    serde_json::to_string(&controller.statuses()).map_err(|err| err.to_string())
-}
-
 pub fn nav_db_open_controller_destroy_handle(handle: u64) {
     if let Ok(mut controllers) = nav_db_open_controllers().lock() {
         let _ = controllers.remove(&(handle as u32));
@@ -1785,8 +1775,6 @@ struct BundlePackageManagementInputWire {
 #[derive(Deserialize)]
 struct OfflinePackagesInitInputWire {
     state: Option<app_core::OfflinePackagesState>,
-    region_ids: Vec<String>,
-    product_ids: Vec<String>,
     now_epoch_ms: i64,
     discovery_jsons: Vec<String>,
     bundle_jsons_by_filename: BTreeMap<String, String>,
@@ -1797,8 +1785,6 @@ struct OfflinePackagesInitInputWire {
 struct OfflinePackagesReduceInputWire {
     state: app_core::OfflinePackagesState,
     event: app_core::OfflinePackagesEvent,
-    region_ids: Vec<String>,
-    product_ids: Vec<String>,
     now_epoch_ms: i64,
     discovery_jsons: Vec<String>,
     bundle_jsons_by_filename: BTreeMap<String, String>,
@@ -1813,11 +1799,6 @@ struct OfflinePackagesControllerLibraryRefreshSucceededWire {
 }
 
 #[derive(Deserialize)]
-struct OfflinePackagesControllerInstalledArtifactHealthObservedWire {
-    unreadable_installed_filename_messages: BTreeMap<String, String>,
-}
-
-#[derive(Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 enum OfflinePackagesControllerEventWire {
     EnsureLibrary,
@@ -1826,7 +1807,6 @@ enum OfflinePackagesControllerEventWire {
     LibraryRefreshFailed {
         message: String,
     },
-    InstalledArtifactHealthObserved(OfflinePackagesControllerInstalledArtifactHealthObservedWire),
     PackagesEvent {
         event: app_core::OfflinePackagesEvent,
     },
@@ -1843,8 +1823,6 @@ enum OfflinePackagesControllerEventWire {
 struct OfflinePackagesControllerInputWire {
     package_source_base_url: String,
     discovery_filenames: Vec<String>,
-    region_ids: Vec<String>,
-    product_ids: Vec<String>,
     now_epoch_ms: i64,
     installed: Vec<app_core::InstalledArtifact>,
     #[serde(default)]
@@ -1912,8 +1890,6 @@ pub fn initialize_offline_packages_json(input_json: &str) -> Result<String, Stri
         .map_err(|err| err.to_string())?;
     let result = app_core::initialize_offline_packages(&app_core::OfflinePackagesInitInput {
         state: input.state,
-        region_ids: input.region_ids,
-        product_ids: input.product_ids,
         now_epoch_ms: input.now_epoch_ms,
         discovery_manifests,
         bundle_manifests_by_filename,
@@ -1945,8 +1921,6 @@ pub fn reduce_offline_packages_json(input_json: &str) -> Result<String, String> 
     let result = app_core::reduce_offline_packages(&app_core::OfflinePackagesReduceInput {
         state: input.state,
         event: input.event,
-        region_ids: input.region_ids,
-        product_ids: input.product_ids,
         now_epoch_ms: input.now_epoch_ms,
         discovery_manifests,
         bundle_manifests_by_filename,
@@ -2002,12 +1976,6 @@ pub fn dispatch_offline_packages_controller_json(
         OfflinePackagesControllerEventWire::LibraryRefreshFailed { message } => {
             app_core::OfflinePackagesControllerEvent::LibraryRefreshFailed { message }
         }
-        OfflinePackagesControllerEventWire::InstalledArtifactHealthObserved(payload) => {
-            app_core::OfflinePackagesControllerEvent::InstalledArtifactHealthObserved {
-                unreadable_installed_filename_messages: payload
-                    .unreadable_installed_filename_messages,
-            }
-        }
         OfflinePackagesControllerEventWire::PackagesEvent { event } => {
             app_core::OfflinePackagesControllerEvent::PackagesEvent { event }
         }
@@ -2026,8 +1994,6 @@ pub fn dispatch_offline_packages_controller_json(
             state: Some(state),
             package_source_base_url: input.package_source_base_url,
             discovery_filenames: input.discovery_filenames,
-            region_ids: input.region_ids,
-            product_ids: input.product_ids,
             now_epoch_ms: input.now_epoch_ms,
             installed: input.installed,
             storage: input.storage,
@@ -4011,18 +3977,6 @@ pub extern "system" fn Java_org_aerobag_app_domain_NativeBindings_navDbOpenContr
     handle: i64,
 ) -> jstring {
     return_string(&mut env, nav_db_open_controller_finish_json(handle as u64))
-}
-
-#[unsafe(no_mangle)]
-pub extern "system" fn Java_org_aerobag_app_domain_NativeBindings_navDbOpenControllerStatuses(
-    mut env: JNIEnv,
-    _class: JClass,
-    handle: i64,
-) -> jstring {
-    return_string(
-        &mut env,
-        nav_db_open_controller_statuses_json(handle as u64),
-    )
 }
 
 #[unsafe(no_mangle)]

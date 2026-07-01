@@ -586,14 +586,14 @@ button {
 }
 
 .obstacleMarkerUnder {
-  stroke: rgba(8, 18, 24, 0.82);
+  stroke: var(--theme-obstacle-under);
   stroke-width: 2.4px;
   stroke-linecap: butt;
   stroke-linejoin: miter;
 }
 
 .obstacleDotUnder {
-  fill: rgba(8, 18, 24, 0.82);
+  fill: var(--theme-obstacle-under);
 }
 
 .obstacleDot {
@@ -601,15 +601,15 @@ button {
 }
 
 .obstacleDanger {
-  stroke: #d83a2e;
+  stroke: var(--theme-obstacle-danger);
 }
 
 .obstacleCaution {
-  stroke: #ffd34d;
+  stroke: var(--theme-obstacle-caution);
 }
 
 .obstacleMuted {
-  stroke: rgba(255, 211, 77, 0.72);
+  stroke: var(--theme-obstacle-muted);
 }
 
 .metarSymbol {
@@ -668,15 +668,15 @@ button {
 }
 
 .obstacleDangerFill {
-  fill: #d83a2e;
+  fill: var(--theme-obstacle-danger);
 }
 
 .obstacleCautionFill {
-  fill: #ffd34d;
+  fill: var(--theme-obstacle-caution);
 }
 
 .obstacleMutedFill {
-  fill: rgba(255, 211, 77, 0.72);
+  fill: var(--theme-obstacle-muted);
 }
 
 .obstacleLabel {

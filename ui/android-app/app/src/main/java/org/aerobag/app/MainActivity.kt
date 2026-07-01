@@ -223,7 +223,6 @@ import org.aerobag.app.domain.AirspaceDisplayPath
 import org.aerobag.app.domain.AirspaceDisplaySubpath
 import org.aerobag.app.domain.AirspaceLimitGlyph
 import org.aerobag.app.domain.AirspaceScreenPoint
-import org.aerobag.app.domain.MapChartFamily
 import org.aerobag.app.domain.MapLayerId
 import org.aerobag.app.domain.MapFollowUiState
 import org.aerobag.app.domain.MapOverlayQueryResult
@@ -652,11 +651,6 @@ internal data class PageTrayOption(
     @DrawableRes val iconResId: Int? = null,
 )
 
-internal data class OfflinePackageDimension(
-    val id: String,
-    val label: String,
-)
-
 @Serializable
 internal enum class OfflinePackageSelection {
     @SerialName("unselected")
@@ -688,6 +682,7 @@ internal data class InstalledArtifactWire(
 @Serializable
 internal data class OfflinePackagesUiRowWire(
     val id: String,
+    val label: String = id,
     val selection: OfflinePackageSelection,
     @SerialName("fetch_count")
     val fetchCount: Int = 0,
@@ -798,8 +793,6 @@ internal data class OfflinePackagesSyncSummary(
     @SerialName("gc_count")
     val gcCount: Int,
     val warnings: List<OfflinePackagesWarning>,
-    @SerialName("remote_poisoned_filename_messages")
-    val remotePoisonedFilenameMessages: Map<String, String> = emptyMap(),
 )
 
 @Serializable
@@ -925,10 +918,6 @@ internal data class OfflinePackagesControllerResultWire(
 @Serializable
 internal data class OfflinePackagesInitInputWire(
     val state: OfflinePackagesStateWire? = null,
-    @SerialName("region_ids")
-    val regionIds: List<String>,
-    @SerialName("product_ids")
-    val productIds: List<String>,
     @SerialName("now_epoch_ms")
     val nowEpochMs: Long,
     @SerialName("discovery_jsons")
@@ -950,10 +939,6 @@ internal data class OfflinePackagesEventWire(
 internal data class OfflinePackagesReduceInputWire(
     val state: OfflinePackagesStateWire,
     val event: OfflinePackagesEventWire,
-    @SerialName("region_ids")
-    val regionIds: List<String>,
-    @SerialName("product_ids")
-    val productIds: List<String>,
     @SerialName("now_epoch_ms")
     val nowEpochMs: Long,
     @SerialName("discovery_jsons")
@@ -991,13 +976,6 @@ internal sealed interface OfflinePackagesControllerEventWire {
     ) : OfflinePackagesControllerEventWire
 
     @Serializable
-    @SerialName("installed_artifact_health_observed")
-    data class InstalledArtifactHealthObserved(
-        @SerialName("unreadable_installed_filename_messages")
-        val unreadableInstalledFilenameMessages: Map<String, String>,
-    ) : OfflinePackagesControllerEventWire
-
-    @Serializable
     @SerialName("packages_event")
     data class PackagesEvent(
         val event: OfflinePackagesEventWire,
@@ -1026,10 +1004,6 @@ internal data class OfflinePackagesControllerInputWire(
     val packageSourceBaseUrl: String,
     @SerialName("discovery_filenames")
     val discoveryFilenames: List<String>,
-    @SerialName("region_ids")
-    val regionIds: List<String>,
-    @SerialName("product_ids")
-    val productIds: List<String>,
     @SerialName("now_epoch_ms")
     val nowEpochMs: Long,
     val installed: List<InstalledArtifactWire>,
@@ -1128,17 +1102,6 @@ internal fun mostRecentChartOrPlatePageFromHistory(pageHistory: List<AppViewSnap
         ?.page
         ?: AppPage.Map
 
-internal val OfflineProductOptions = listOf(
-    OfflinePackageDimension("sec", "Sectional"),
-    OfflinePackageDimension("tac", "TAC"),
-    OfflinePackageDimension("shaded-relief", "Shaded Relief"),
-    OfflinePackageDimension("terrain", "Terrain"),
-    OfflinePackageDimension("enr-l", "IFR-L"),
-    OfflinePackageDimension("enr-h", "IFR-H"),
-    OfflinePackageDimension("tpp", "TPP"),
-    OfflinePackageDimension("csup", "CSUP"),
-)
-
 internal val HomeGridButtons = listOf(
     // Three columns, row 1.
     HomeGridButton("chart", "CHART", targetPage = AppPage.Map, enabled = true, iconResId = R.drawable.page_chart_icon),
@@ -1178,16 +1141,6 @@ internal fun mergeRecentAirportIds(
 }
 
 @DrawableRes
-internal fun chartFamilyIconResId(chartFamily: MapChartFamily): Int = when (chartFamily) {
-    MapChartFamily.Sec -> R.drawable.sectional_icon
-    MapChartFamily.Tac -> R.drawable.tac_icon
-    MapChartFamily.EnrL -> R.drawable.ifr_l_icon
-    MapChartFamily.EnrH -> R.drawable.ifr_h_icon
-    MapChartFamily.ShadedRelief -> R.drawable.shaded_relief_icon
-    MapChartFamily.WorldBasemap -> R.drawable.shaded_relief_icon
-}
-
-@DrawableRes
 internal fun chartFamilyIconResId(chartFamilyId: String): Int = when (chartFamilyId) {
     "sec" -> R.drawable.sectional_icon
     "tac" -> R.drawable.tac_icon
@@ -1196,15 +1149,6 @@ internal fun chartFamilyIconResId(chartFamilyId: String): Int = when (chartFamil
     "shaded-relief" -> R.drawable.shaded_relief_icon
     "world-basemap" -> R.drawable.shaded_relief_icon
     else -> R.drawable.page_chart_icon
-}
-
-internal fun chartFamilyId(chartFamily: MapChartFamily): String = when (chartFamily) {
-    MapChartFamily.Sec -> "sec"
-    MapChartFamily.Tac -> "tac"
-    MapChartFamily.EnrL -> "enr-l"
-    MapChartFamily.EnrH -> "enr-h"
-    MapChartFamily.ShadedRelief -> "shaded-relief"
-    MapChartFamily.WorldBasemap -> "world-basemap"
 }
 
 @DrawableRes
@@ -2643,18 +2587,41 @@ internal fun AerobagApp(
         applySessionSnapshot(uiSession.setDebugFlag(flagId, enabled))
     }
 
-    fun openChartsForAirport(airportId: String) {
+    fun openChartsForAirport(airportId: String, chartId: String? = null) {
         applySessionSnapshot(uiSession.selectAirport(airportId))
         val airport = chartAirportById[airportId]
+        val selectedChart = chartId
+            ?.let { requestedChartId -> airport?.charts?.find { it.id == requestedChartId } }
+            ?: airport?.charts?.firstOrNull()
         restoreSnapshot(
             currentSnapshot().copy(
                 page = AppPage.Charts,
                 selectedAirportId = airportId,
-                selectedChartId = airport?.charts?.firstOrNull()?.id.orEmpty(),
-                selectedChartLabel = airport?.charts?.firstOrNull()?.label.orEmpty(),
+                selectedChartId = selectedChart?.id.orEmpty(),
+                selectedChartLabel = selectedChart?.label.orEmpty(),
                 recentAirportIds = sessionSnapshot.chartPageState.recentAirportIds,
                 chartViewport = null,
-                chartFolderOpen = true,
+                chartFolderOpen = chartId == null,
+            ),
+            boundedHistory(pageHistory + currentSnapshot()),
+        )
+    }
+
+    fun openPlateTarget(airportId: String, target: String, chartId: String) {
+        val nextRecentAirportIds = moveAirportToFront(
+            sessionSnapshot.chartPageState.recentAirportIds,
+            airportId,
+            derivedChartPageState.airports,
+        )
+        restoreSnapshot(
+            currentSnapshot().copy(
+                page = AppPage.Charts,
+                selectedAirportId = airportId,
+                selectedChartId = chartId,
+                selectedChartLabel = "",
+                recentAirportIds = nextRecentAirportIds,
+                chartViewport = null,
+                chartFolderOpen = target == "Folder",
             ),
             boundedHistory(pageHistory + currentSnapshot()),
         )
@@ -2739,6 +2706,7 @@ internal fun AerobagApp(
                             }
                         },
                         onSelectPage = ::navigateToPage,
+                        onOpenPlateTarget = ::openPlateTarget,
                         onOpenPlan = { navigateToPage(AppPage.Plan) },
                         navElement = navElement,
                         plan = currentPlan,
@@ -2760,7 +2728,7 @@ internal fun AerobagApp(
                         uiTheme = uiTheme,
                         onSelectPage = ::navigateToPage,
                         onOpenRecentChartOrPlate = ::navigateToMostRecentChartOrPlate,
-                        onOpenCharts = { airportId -> if (airportId != null) openChartsForAirport(airportId) },
+                        onOpenCharts = { airportId, chartId -> openChartsForAirport(airportId, chartId) },
                         onApplySessionSnapshot = { snapshot ->
                             applySessionSnapshot(snapshot)
                         },

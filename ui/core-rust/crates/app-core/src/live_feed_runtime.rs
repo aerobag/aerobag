@@ -2,7 +2,7 @@ use serde::{Deserialize, Serialize};
 
 pub const LIVE_FEED_SSE_CONNECT_TIMEOUT_MS: i64 = 5_000;
 pub const LIVE_FEED_SSE_IDLE_TIMEOUT_MS: i64 = 65_000;
-pub const LIVE_FEED_SSE_RECONNECT_DELAY_MS: i64 = 5_000;
+pub const LIVE_FEED_SSE_RECONNECT_INITIAL_DELAY_MS: i64 = 5_000;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -74,7 +74,15 @@ pub struct LiveFeedRuntimeDecision {
     pub reconnect_delay_ms: Option<i64>,
 }
 
-pub fn live_feed_runtime_decision(input: LiveFeedRuntimeInput) -> LiveFeedRuntimeDecision {
+#[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
+pub struct LiveFeedRuntimeState {
+    consecutive_errors: u32,
+}
+
+pub fn live_feed_runtime_decision(
+    state: &mut LiveFeedRuntimeState,
+    input: LiveFeedRuntimeInput,
+) -> LiveFeedRuntimeDecision {
     use LiveFeedConnectionEventKind as ConnectionKind;
     use LiveFeedRuntimeEventKind as RuntimeKind;
 
@@ -94,22 +102,39 @@ pub fn live_feed_runtime_decision(input: LiveFeedRuntimeInput) -> LiveFeedRuntim
         status_url: input.status_url.clone(),
         network_status: input.network_status,
     });
+    let reconnect_delay_ms = match input.kind {
+        RuntimeKind::Error | RuntimeKind::Closed => {
+            state.consecutive_errors = state.consecutive_errors.saturating_add(1);
+            Some(reconnect_delay_for_consecutive_errors(
+                state.consecutive_errors,
+            ))
+        }
+        RuntimeKind::IdleTimeout | RuntimeKind::Online => Some(0),
+        RuntimeKind::Connected | RuntimeKind::Message => {
+            state.consecutive_errors = 0;
+            None
+        }
+        RuntimeKind::Start | RuntimeKind::NetworkStatus | RuntimeKind::Connecting => None,
+    };
+
     LiveFeedRuntimeDecision {
         connection_event,
         refresh_current: matches!(
             input.kind,
             RuntimeKind::Connected | RuntimeKind::NetworkStatus | RuntimeKind::Online
         ),
-        reconnect_delay_ms: match input.kind {
-            RuntimeKind::Error => Some(LIVE_FEED_SSE_RECONNECT_DELAY_MS),
-            RuntimeKind::Closed | RuntimeKind::IdleTimeout | RuntimeKind::Online => Some(0),
-            RuntimeKind::Start
-            | RuntimeKind::NetworkStatus
-            | RuntimeKind::Connecting
-            | RuntimeKind::Connected
-            | RuntimeKind::Message => None,
-        },
+        reconnect_delay_ms,
     }
+}
+
+fn reconnect_delay_for_consecutive_errors(consecutive_errors: u32) -> i64 {
+    let mut delay_ms = LIVE_FEED_SSE_RECONNECT_INITIAL_DELAY_MS;
+    for _ in 1..consecutive_errors {
+        delay_ms = delay_ms
+            .saturating_mul(2)
+            .min(LIVE_FEED_SSE_IDLE_TIMEOUT_MS);
+    }
+    delay_ms
 }
 
 #[cfg(test)]
@@ -118,13 +143,17 @@ mod tests {
 
     #[test]
     fn connected_refreshes_current_catalog() {
-        let decision = live_feed_runtime_decision(LiveFeedRuntimeInput {
-            kind: LiveFeedRuntimeEventKind::Connected,
-            message: None,
-            source_url: Some("http://example.test".to_string()),
-            status_url: Some("http://example.test/live-feeds/status.html".to_string()),
-            network_status: Some(LiveFeedNetworkStatus::Unmetered),
-        });
+        let mut state = LiveFeedRuntimeState::default();
+        let decision = live_feed_runtime_decision(
+            &mut state,
+            LiveFeedRuntimeInput {
+                kind: LiveFeedRuntimeEventKind::Connected,
+                message: None,
+                source_url: Some("http://example.test".to_string()),
+                status_url: Some("http://example.test/live-feeds/status.html".to_string()),
+                network_status: Some(LiveFeedNetworkStatus::Unmetered),
+            },
+        );
 
         assert!(decision.refresh_current);
         assert_eq!(decision.reconnect_delay_ms, None);
@@ -135,13 +164,17 @@ mod tests {
 
     #[test]
     fn start_does_not_block_on_current_catalog_refresh() {
-        let decision = live_feed_runtime_decision(LiveFeedRuntimeInput {
-            kind: LiveFeedRuntimeEventKind::Start,
-            message: None,
-            source_url: Some("http://example.test".to_string()),
-            status_url: Some("http://example.test/live-feeds/status.html".to_string()),
-            network_status: Some(LiveFeedNetworkStatus::Unmetered),
-        });
+        let mut state = LiveFeedRuntimeState::default();
+        let decision = live_feed_runtime_decision(
+            &mut state,
+            LiveFeedRuntimeInput {
+                kind: LiveFeedRuntimeEventKind::Start,
+                message: None,
+                source_url: Some("http://example.test".to_string()),
+                status_url: Some("http://example.test/live-feeds/status.html".to_string()),
+                network_status: Some(LiveFeedNetworkStatus::Unmetered),
+            },
+        );
 
         assert!(!decision.refresh_current);
         assert_eq!(decision.reconnect_delay_ms, None);
@@ -149,22 +182,89 @@ mod tests {
     }
 
     #[test]
-    fn errors_report_and_back_off() {
-        let decision = live_feed_runtime_decision(LiveFeedRuntimeInput {
-            kind: LiveFeedRuntimeEventKind::Error,
-            message: Some("boom".to_string()),
-            source_url: None,
-            status_url: None,
-            network_status: None,
-        });
+    fn errors_report_and_back_off_exponentially_to_idle_timeout() {
+        let mut state = LiveFeedRuntimeState::default();
+        let mut delays = Vec::new();
+        for _ in 0..6 {
+            let decision = live_feed_runtime_decision(
+                &mut state,
+                LiveFeedRuntimeInput {
+                    kind: LiveFeedRuntimeEventKind::Error,
+                    message: Some("boom".to_string()),
+                    source_url: None,
+                    status_url: None,
+                    network_status: None,
+                },
+            );
+            delays.push(decision.reconnect_delay_ms.unwrap());
+        }
+
+        assert_eq!(delays, vec![5_000, 10_000, 20_000, 40_000, 65_000, 65_000]);
+    }
+
+    #[test]
+    fn errors_report_connection_event() {
+        let mut state = LiveFeedRuntimeState::default();
+        let decision = live_feed_runtime_decision(
+            &mut state,
+            LiveFeedRuntimeInput {
+                kind: LiveFeedRuntimeEventKind::Error,
+                message: Some("boom".to_string()),
+                source_url: None,
+                status_url: None,
+                network_status: None,
+            },
+        );
 
         assert!(!decision.refresh_current);
         assert_eq!(
             decision.reconnect_delay_ms,
-            Some(LIVE_FEED_SSE_RECONNECT_DELAY_MS)
+            Some(LIVE_FEED_SSE_RECONNECT_INITIAL_DELAY_MS)
         );
         let event = decision.connection_event.unwrap();
         assert_eq!(event.kind, LiveFeedConnectionEventKind::Error);
         assert_eq!(event.message.as_deref(), Some("boom"));
+    }
+
+    #[test]
+    fn successful_message_resets_backoff() {
+        let mut state = LiveFeedRuntimeState::default();
+        for _ in 0..3 {
+            live_feed_runtime_decision(
+                &mut state,
+                LiveFeedRuntimeInput {
+                    kind: LiveFeedRuntimeEventKind::Error,
+                    message: Some("boom".to_string()),
+                    source_url: None,
+                    status_url: None,
+                    network_status: None,
+                },
+            );
+        }
+        live_feed_runtime_decision(
+            &mut state,
+            LiveFeedRuntimeInput {
+                kind: LiveFeedRuntimeEventKind::Message,
+                message: None,
+                source_url: None,
+                status_url: None,
+                network_status: None,
+            },
+        );
+        let decision = live_feed_runtime_decision(
+            &mut state,
+            LiveFeedRuntimeInput {
+                kind: LiveFeedRuntimeEventKind::Error,
+                message: Some("boom".to_string()),
+                source_url: None,
+                status_url: None,
+                network_status: None,
+            },
+        );
+
+        assert_eq!(
+            decision.reconnect_delay_ms,
+            Some(LIVE_FEED_SSE_RECONNECT_INITIAL_DELAY_MS)
+        );
     }
 }

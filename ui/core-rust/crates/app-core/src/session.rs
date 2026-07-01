@@ -35,6 +35,7 @@ use crate::{
     },
     live_feed_runtime::{
         LiveFeedConnectionEvent, LiveFeedConnectionEventKind, LiveFeedNetworkStatus,
+        LiveFeedRuntimeDecision, LiveFeedRuntimeInput, LiveFeedRuntimeState,
     },
     live_feeds::{LiveFeedSseEvent, LiveFeedsState, LIVE_FEEDS_BASE_PATH},
     map_follow::{MapFollowSessionState, MapFollowUiState},
@@ -414,6 +415,7 @@ impl Default for LiveFeedConnectionMode {
 #[derive(Debug, Clone, PartialEq, Default)]
 struct LiveFeedConnectionSessionState {
     mode: LiveFeedConnectionMode,
+    runtime: LiveFeedRuntimeState,
     source_url: Option<String>,
     status_url: Option<String>,
     last_state_change_epoch_ms: Option<i64>,
@@ -5626,6 +5628,18 @@ pub fn configure_live_feed_source_in_session(handle: u32, source_root_url: &str)
     session.live_feed_connection.source_url = Some(normalized.clone());
     session.live_feed_connection.status_url = Some(crate::live_feed_status_url(&normalized)?);
     Ok(())
+}
+
+pub fn live_feed_runtime_decision_in_session(
+    handle: u32,
+    input: LiveFeedRuntimeInput,
+) -> AppResult<LiveFeedRuntimeDecision> {
+    let mut sessions = lock_sessions();
+    let session = session_mut(&mut sessions, handle)?;
+    Ok(crate::live_feed_runtime_decision(
+        &mut session.live_feed_connection.runtime,
+        input,
+    ))
 }
 
 pub fn ingest_live_feed_sse_event_in_session(
@@ -14614,6 +14628,36 @@ mod tests {
             .facts
             .iter()
             .any(|fact| fact.label == "Network" && fact.value == "Unmetered"));
+    }
+
+    #[test]
+    fn live_feed_runtime_backoff_is_session_owned() {
+        let init = create_current_test_session();
+        let first = live_feed_runtime_decision_in_session(
+            init.handle,
+            LiveFeedRuntimeInput {
+                kind: crate::LiveFeedRuntimeEventKind::Error,
+                message: Some("boom".to_string()),
+                source_url: None,
+                status_url: None,
+                network_status: None,
+            },
+        )
+        .expect("first decision");
+        let second = live_feed_runtime_decision_in_session(
+            init.handle,
+            LiveFeedRuntimeInput {
+                kind: crate::LiveFeedRuntimeEventKind::Error,
+                message: Some("boom".to_string()),
+                source_url: None,
+                status_url: None,
+                network_status: None,
+            },
+        )
+        .expect("second decision");
+
+        assert_eq!(first.reconnect_delay_ms, Some(5_000));
+        assert_eq!(second.reconnect_delay_ms, Some(10_000));
     }
 
     #[test]

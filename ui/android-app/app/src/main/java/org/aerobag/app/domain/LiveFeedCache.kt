@@ -142,8 +142,9 @@ class LiveFeedCache(
         bridge.liveFeedCacheRecordRequestFailure(handle, requestId, epochMs)
     }
 
-    fun runtimeDecision(input: LiveFeedRuntimeInput): LiveFeedRuntimeDecision =
-        json.decodeFromString(bridge.liveFeedRuntimeDecisionJson(json.encodeToString(input)))
+    fun runtimeDecision(input: LiveFeedRuntimeInput): LiveFeedRuntimeDecision = withOpenHandle { handle ->
+        json.decodeFromString(bridge.liveFeedCacheRuntimeDecisionJson(handle, json.encodeToString(input)))
+    }
 
     fun installFetchedBytes(
         request: LiveFeedCacheRequest,

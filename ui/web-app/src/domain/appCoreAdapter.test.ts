@@ -172,11 +172,11 @@ describe("loadBestAvailableAdapter", () => {
       live_feed_events_url: async (sourceRootUrl: string) => `${sourceRootUrl}/live-feeds/v2/events`,
       live_feed_status_url: async (sourceRootUrl: string) => `${sourceRootUrl}/live-feeds/status.html`,
       refresh_live_feed_current_in_session: async () => JSON.stringify({ state: "complete", result: { products: [] } }),
-      live_feed_runtime_decision: async (inputJson: string) => {
+      live_feed_runtime_decision_in_session: async (_handle: number, inputJson: string) => {
         const input = JSON.parse(inputJson) as { kind: string };
         return JSON.stringify({
           connection_event: input.kind === "start" || input.kind === "online" ? null : input,
-          refresh_current: input.kind === "start" || input.kind === "connected" || input.kind === "network_status" || input.kind === "online",
+          refresh_current: input.kind === "connected" || input.kind === "network_status" || input.kind === "online",
           reconnect_delay_ms: input.kind === "error" ? 5000 : null,
         });
       },

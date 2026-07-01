@@ -8,7 +8,10 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use sha2::{Digest, Sha256};
 
-use crate::{AppError, AppErrorKind, AppResult, LiveFeedDurableInstalledProduct, LiveFeedsState};
+use crate::{
+    live_feed_runtime_decision, AppError, AppErrorKind, AppResult, LiveFeedDurableInstalledProduct,
+    LiveFeedRuntimeDecision, LiveFeedRuntimeInput, LiveFeedRuntimeState, LiveFeedsState,
+};
 
 pub use crate::live_feeds::{
     LiveFeedCacheRequest, LiveFeedCacheRequestKind, LiveFeedDeltaRef, LiveFeedPayloadRef,
@@ -18,6 +21,8 @@ pub use crate::live_feeds::{
 pub struct LiveFeedCache {
     #[serde(skip)]
     live_feeds: LiveFeedsState,
+    #[serde(skip)]
+    runtime: LiveFeedRuntimeState,
     installed: BTreeMap<String, LiveFeedInstalledState>,
 }
 
@@ -236,6 +241,10 @@ impl LiveFeedCache {
     pub fn record_request_failure(&mut self, request_id: &str, epoch_ms: i64) {
         self.live_feeds
             .record_resource_failure(request_id, epoch_ms);
+    }
+
+    pub fn runtime_decision(&mut self, input: LiveFeedRuntimeInput) -> LiveFeedRuntimeDecision {
+        live_feed_runtime_decision(&mut self.runtime, input)
     }
 
     pub fn install_fetched_payload(
@@ -1103,6 +1112,28 @@ mod tests {
             cache.current_refresh_requests_at_epoch_ms(301_000)[0].id,
             "live_feeds/current"
         );
+    }
+
+    #[test]
+    fn runtime_backoff_is_cache_owned() {
+        let mut cache = live_feed_cache();
+        let first = cache.runtime_decision(crate::LiveFeedRuntimeInput {
+            kind: crate::LiveFeedRuntimeEventKind::Error,
+            message: Some("boom".to_string()),
+            source_url: None,
+            status_url: None,
+            network_status: None,
+        });
+        let second = cache.runtime_decision(crate::LiveFeedRuntimeInput {
+            kind: crate::LiveFeedRuntimeEventKind::Error,
+            message: Some("boom".to_string()),
+            source_url: None,
+            status_url: None,
+            network_status: None,
+        });
+
+        assert_eq!(first.reconnect_delay_ms, Some(5_000));
+        assert_eq!(second.reconnect_delay_ms, Some(10_000));
     }
 
     #[test]

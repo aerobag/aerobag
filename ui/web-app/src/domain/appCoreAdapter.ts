@@ -866,7 +866,7 @@ type WasmModule = {
   configure_live_feed_source_in_session(handle: number, sourceRootUrl: string): Promise<void> | void;
   live_feed_events_url(sourceRootUrl: string): Promise<string> | string;
   live_feed_status_url(sourceRootUrl: string): Promise<string> | string;
-  live_feed_runtime_decision(inputJson: string): Promise<string> | string;
+  live_feed_runtime_decision_in_session(handle: number, inputJson: string): Promise<string> | string;
   refresh_live_feed_current_in_session(handle: number): Promise<string> | string;
   ingest_live_feed_sse_event_in_session(handle: number, eventJson: string): Promise<string> | string;
   ingest_live_feed_sse_events_in_session(handle: number, eventsJson: string): Promise<string> | string;
@@ -1053,7 +1053,7 @@ export class WasmAppCoreAdapter implements AppCoreAdapter {
     const handleLiveFeedRuntimeEvent = async (input: LiveFeedRuntimeInput): Promise<LiveFeedRuntimeDecision> => {
       const sourceUrl = await configureLiveFeedSource();
       const statusUrl = await this.module.live_feed_status_url(sourceUrl);
-      const decision = JSON.parse(await this.module.live_feed_runtime_decision(JSON.stringify({
+      const decision = JSON.parse(await this.module.live_feed_runtime_decision_in_session(handle, JSON.stringify({
         source_url: sourceUrl,
         status_url: statusUrl,
         ...input,
@@ -1925,7 +1925,7 @@ async function loadBestAvailableAdapterUncached(
     "configure_live_feed_source_in_session",
     "live_feed_events_url",
     "live_feed_status_url",
-    "live_feed_runtime_decision",
+    "live_feed_runtime_decision_in_session",
     "refresh_live_feed_current_in_session",
     "ingest_live_feed_sse_event_in_session",
     "ingest_live_feed_sse_events_in_session",

@@ -896,13 +896,6 @@ pub fn configure_live_feed_source_in_session_json(
     Ok("null".to_string())
 }
 
-pub fn live_feed_runtime_decision_json(input_json: &str) -> Result<String, String> {
-    let input: app_core::LiveFeedRuntimeInput =
-        serde_json::from_str(input_json).map_err(|err| err.to_string())?;
-    serde_json::to_string(&app_core::live_feed_runtime_decision(input))
-        .map_err(|err| err.to_string())
-}
-
 pub fn refresh_live_feed_current_in_session_json(handle: u64) -> Result<String, String> {
     let outcome = app_core::refresh_live_feed_current_in_session(handle as u32)
         .map_err(|err| err.to_string())?;
@@ -1336,6 +1329,21 @@ pub fn live_feed_status_url_json(source_root_url: &str) -> Result<String, String
 
 pub fn normalize_live_feed_source_root_url_json(source_root_url: &str) -> Result<String, String> {
     app_core::normalize_live_feed_source_root_url(source_root_url).map_err(|err| err.to_string())
+}
+
+pub fn live_feed_cache_runtime_decision_json(
+    handle: u64,
+    input_json: &str,
+) -> Result<String, String> {
+    let input: app_core::LiveFeedRuntimeInput =
+        serde_json::from_str(input_json).map_err(|err| err.to_string())?;
+    let mut caches = live_feed_caches()
+        .lock()
+        .map_err(|_| "live feed cache store poisoned".to_string())?;
+    let cache = caches
+        .get_mut(&(handle as u32))
+        .ok_or_else(|| format!("invalid live feed cache handle: {handle}"))?;
+    serde_json::to_string(&cache.runtime_decision(input)).map_err(|err| err.to_string())
 }
 
 pub fn create_ui_session_work_scheduler() -> Result<u64, String> {
@@ -2408,6 +2416,18 @@ pub extern "system" fn Java_org_aerobag_app_domain_NativeBindings_liveFeedCacheC
         &mut env,
         live_feed_cache_current_refresh_requests_at_epoch_ms_json(handle as u64, epoch_ms),
     )
+}
+
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_org_aerobag_app_domain_NativeBindings_liveFeedCacheRuntimeDecisionJson(
+    mut env: JNIEnv,
+    _class: JClass,
+    handle: i64,
+    input_json: JString,
+) -> jstring {
+    let result = get_java_string(&mut env, input_json)
+        .and_then(|input| live_feed_cache_runtime_decision_json(handle as u64, &input));
+    return_string(&mut env, result)
 }
 
 #[unsafe(no_mangle)]
@@ -3513,17 +3533,6 @@ pub extern "system" fn Java_org_aerobag_app_domain_NativeBindings_syncLiveFeedsI
     handle: i64,
 ) -> jstring {
     let result = sync_live_feeds_in_session_json(handle as u64);
-    return_string(&mut env, result)
-}
-
-#[unsafe(no_mangle)]
-pub extern "system" fn Java_org_aerobag_app_domain_NativeBindings_liveFeedRuntimeDecisionJson(
-    mut env: JNIEnv,
-    _class: JClass,
-    input_json: JString,
-) -> jstring {
-    let result = get_java_string(&mut env, input_json)
-        .and_then(|input| live_feed_runtime_decision_json(&input));
     return_string(&mut env, result)
 }
 

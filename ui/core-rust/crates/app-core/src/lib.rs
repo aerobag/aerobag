@@ -177,7 +177,8 @@ pub use planning::{
 };
 pub use playback::{PlaybackGapSpan, PlaybackStatus, PlaybackUiState};
 pub use publication::{
-    serialize_publication_outcome, CoreResourcePolicy, PublicationResolvedResource,
+    nav_db_artifact_candidates_from_installed_artifacts, serialize_publication_outcome,
+    CoreResourcePolicy, PublicationResolvedResource,
 };
 pub use raster_tiles::{
     preferred_family_map, raster_map_ui_state, raster_tile_plan, raster_tile_plan_with_options,

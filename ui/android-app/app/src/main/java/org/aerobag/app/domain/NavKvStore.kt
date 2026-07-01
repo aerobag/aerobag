@@ -84,10 +84,14 @@ data class NavDbOpenReport(
 )
 
 @Serializable
-private data class WireNavDbArtifactCandidate(
-    @SerialName("package_id")
-    val packageId: String,
+private data class WireInstalledArtifact(
+    @SerialName("artifact_id")
+    val artifactId: String,
     val filename: String,
+    @SerialName("size_bytes")
+    val sizeBytes: Long? = null,
+    @SerialName("checksum_sha256")
+    val checksumSha256: String? = null,
 )
 
 @Serializable
@@ -135,7 +139,7 @@ class NavKvStore private constructor(
                 ignoreUnknownKeys = true
             },
         ): NavKvStore =
-            openCandidates(listOf(artifact), bridge, json).first
+            openInstalledArtifacts(listOf(artifact), libraryCacheJson = "", bridge, json).first
 
         fun open(
             context: Context,
@@ -152,8 +156,9 @@ class NavKvStore private constructor(
             return open(artifact = artifact, bridge = bridge, json = json)
         }
 
-        fun openCandidates(
+        fun openInstalledArtifacts(
             artifacts: List<InstalledPackageArtifact>,
+            libraryCacheJson: String,
             bridge: NativeBridge = NativeBindings,
             json: Json = Json {
                 encodeDefaults = true
@@ -161,8 +166,9 @@ class NavKvStore private constructor(
             },
         ): Pair<NavKvStore, NavDbOpenReport> {
             val artifactsByFilename = artifacts.associateBy { it.filename }
-            val controllerHandle = bridge.navDbOpenControllerCreate(
-                json.encodeToString(artifacts.map { it.toWireCandidate() }),
+            val controllerHandle = bridge.navDbOpenControllerCreateFromInstalledArtifacts(
+                json.encodeToString(artifacts.map { it.toWireInstalledArtifact() }),
+                libraryCacheJson,
             )
             try {
                 while (true) {
@@ -210,8 +216,9 @@ class NavKvStore private constructor(
             }
         }
 
-        fun inspectCandidates(
+        fun inspectInstalledArtifacts(
             artifacts: List<InstalledPackageArtifact>,
+            libraryCacheJson: String,
             bridge: NativeBridge = NativeBindings,
             json: Json = Json {
                 encodeDefaults = true
@@ -219,8 +226,9 @@ class NavKvStore private constructor(
             },
         ): NavDbOpenReport {
             val artifactsByFilename = artifacts.associateBy { it.filename }
-            val controllerHandle = bridge.navDbOpenControllerCreate(
-                json.encodeToString(artifacts.map { it.toWireCandidate() }),
+            val controllerHandle = bridge.navDbOpenControllerCreateFromInstalledArtifacts(
+                json.encodeToString(artifacts.map { it.toWireInstalledArtifact() }),
+                libraryCacheJson,
             )
             try {
                 while (true) {
@@ -290,10 +298,12 @@ class NavKvStore private constructor(
                 message = message,
             )
 
-        private fun InstalledPackageArtifact.toWireCandidate(): WireNavDbArtifactCandidate =
-            WireNavDbArtifactCandidate(
-                packageId = artifactId,
+        private fun InstalledPackageArtifact.toWireInstalledArtifact(): WireInstalledArtifact =
+            WireInstalledArtifact(
+                artifactId = artifactId,
                 filename = filename,
+                sizeBytes = sizeBytes,
+                checksumSha256 = checksumSha256,
             )
     }
 

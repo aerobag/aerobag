@@ -1,10 +1,10 @@
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 use serde::{Deserialize, Serialize};
 
 use crate::package_management::{
     decode_current_artifacts_manifest_list, package_contract_is_supported,
-    select_supported_current_artifacts_manifests, OfflinePackagesLibraryCache,
+    select_supported_current_artifacts_manifests, InstalledArtifact, OfflinePackagesLibraryCache,
 };
 use crate::{
     BundleManifest, BundlePackageArtifact, CoreResourceRequest, CoreResourceSource,
@@ -353,6 +353,74 @@ impl PublicationResolver {
     }
 }
 
+pub fn nav_db_artifact_candidates_from_installed_artifacts(
+    installed: &[InstalledArtifact],
+    library_cache: Option<&OfflinePackagesLibraryCache>,
+) -> Result<Vec<NavDbArtifactCandidate>, String> {
+    let installed_filenames = installed
+        .iter()
+        .map(|artifact| artifact.filename.as_str())
+        .collect::<BTreeSet<_>>();
+    if let Some(cache) = library_cache {
+        let mut resolver = PublicationResolver::with_resource_policy(
+            cache.package_source_base_url.clone(),
+            CoreResourcePolicy::InstalledPackage,
+        );
+        resolver.load_offline_library_cache(cache)?;
+        let mut candidates = resolver
+            .loaded_bundle_packages()
+            .filter(|package| package.family_id == "nav-db")
+            .filter(|package| package_contract_is_supported(package))
+            .filter(|package| installed_filenames.contains(package.filename.as_str()))
+            .map(installed_nav_db_package_candidate)
+            .collect::<Vec<_>>();
+        candidates.sort_by(|left, right| {
+            left.effective_date
+                .cmp(&right.effective_date)
+                .then_with(|| left.expiration_date.cmp(&right.expiration_date))
+                .then_with(|| left.filename.cmp(&right.filename))
+        });
+        if !candidates.is_empty() {
+            return Ok(candidates);
+        }
+    }
+
+    Ok(installed
+        .iter()
+        .map(|artifact| NavDbArtifactCandidate {
+            package_id: artifact.artifact_id.clone(),
+            filename: artifact.filename.clone(),
+            contract_id: None,
+            cycle: None,
+            cycle_version: None,
+            effective_date: None,
+            expiration_date: None,
+            warning_text: None,
+            root_source: Some(CoreResourceSource::InstalledArtifactMember {
+                filename: artifact.filename.clone(),
+                member_path: "root".to_string(),
+            }),
+        })
+        .collect())
+}
+
+fn installed_nav_db_package_candidate(package: &BundlePackageArtifact) -> NavDbArtifactCandidate {
+    NavDbArtifactCandidate {
+        package_id: package.id.clone(),
+        filename: package.filename.clone(),
+        contract_id: Some(package.contract_id.clone()),
+        cycle: package.cycle.clone(),
+        cycle_version: package.cycle_version.clone(),
+        effective_date: package.effective_date.clone(),
+        expiration_date: package.expiration_date.clone(),
+        warning_text: package.warning_text.clone(),
+        root_source: Some(CoreResourceSource::InstalledArtifactMember {
+            filename: package.filename.clone(),
+            member_path: "root".to_string(),
+        }),
+    }
+}
+
 fn trim_url_root(root: String) -> String {
     let trimmed = root.trim().trim_end_matches('/').to_string();
     if trimmed.is_empty() {
@@ -604,6 +672,84 @@ mod tests {
                 filename: "nav_db_hash.zip".to_string(),
                 member_path: "root".to_string(),
             }
+        );
+    }
+
+    #[test]
+    fn installed_artifact_nav_db_candidates_are_core_derived_from_cached_catalog() {
+        let cache = OfflinePackagesLibraryCache {
+            package_source_base_url: "/packages".to_string(),
+            fetched_at_epoch_ms: 1_768_000_000_000,
+            discovery_manifests: vec![current_artifacts()],
+            bundle_manifests_by_filename: BTreeMap::from([(
+                "bundle_cycle.json".to_string(),
+                BundleManifest {
+                    packages: vec![
+                        BundlePackageArtifact {
+                            id: "nav-db-2606".to_string(),
+                            family_id: "nav-db".to_string(),
+                            contract_id: crate::REQUIRED_NAV_DB_CONTRACT_ID.to_string(),
+                            region_id: None,
+                            filename: "nav_db_2606.zip".to_string(),
+                            relative_path: "nav_db_2606.zip".to_string(),
+                            cycle: Some("2606".to_string()),
+                            cycle_version: Some("01".to_string()),
+                            checksum_sha256: None,
+                            size_bytes: None,
+                            effective_date: Some("2026-05-14".to_string()),
+                            expiration_date: Some("2026-06-11".to_string()),
+                            warning_text: None,
+                            metadata: None,
+                        },
+                        BundlePackageArtifact {
+                            id: "sec-nw-2606".to_string(),
+                            family_id: "sec".to_string(),
+                            contract_id: product_contracts::contract_id_for_family("sec")
+                                .expect("sec contract")
+                                .to_string(),
+                            region_id: Some("nw".to_string()),
+                            filename: "sec_nw_2606.zip".to_string(),
+                            relative_path: "sec_nw_2606.zip".to_string(),
+                            cycle: Some("2606".to_string()),
+                            cycle_version: Some("01".to_string()),
+                            checksum_sha256: None,
+                            size_bytes: None,
+                            effective_date: Some("2026-05-14".to_string()),
+                            expiration_date: Some("2026-06-11".to_string()),
+                            warning_text: None,
+                            metadata: None,
+                        },
+                    ],
+                },
+            )]),
+        };
+        let installed = vec![
+            InstalledArtifact {
+                artifact_id: "WHATEVER_ANDROID_CALLED_IT".to_string(),
+                filename: "sec_nw_2606.zip".to_string(),
+                size_bytes: None,
+                checksum_sha256: None,
+            },
+            InstalledArtifact {
+                artifact_id: "NOT_INTERPRETED_BY_ANDROID".to_string(),
+                filename: "nav_db_2606.zip".to_string(),
+                size_bytes: None,
+                checksum_sha256: None,
+            },
+        ];
+
+        let candidates =
+            nav_db_artifact_candidates_from_installed_artifacts(&installed, Some(&cache))
+                .expect("candidates");
+        assert_eq!(candidates.len(), 1);
+        assert_eq!(candidates[0].package_id, "nav-db-2606");
+        assert_eq!(candidates[0].cycle.as_deref(), Some("2606"));
+        assert_eq!(
+            candidates[0].root_source,
+            Some(CoreResourceSource::InstalledArtifactMember {
+                filename: "nav_db_2606.zip".to_string(),
+                member_path: "root".to_string(),
+            })
         );
     }
 }

@@ -1,9 +1,11 @@
 use std::{
     borrow::Cow,
+    cmp::Ordering,
     collections::{HashMap, HashSet},
     ops::Range,
 };
 
+use chrono::{DateTime, Utc};
 use procedure_geometry_types as pgt;
 use serde::{de::DeserializeOwned, Deserialize, Serialize};
 use serde_json::Value;
@@ -233,28 +235,28 @@ pub struct NavDbOpenController {
     statuses: Vec<Option<NavDbArtifactOpenStatus>>,
     stores: Vec<Option<NavKvStore>>,
     root_prefetch_attempted: Vec<bool>,
+    now_epoch_ms: i64,
 }
 
 impl NavDbOpenController {
     pub fn new(candidates: Vec<NavDbArtifactCandidate>) -> Self {
+        Self::new_at_epoch_ms(candidates, 0)
+    }
+
+    pub fn new_at_epoch_ms(candidates: Vec<NavDbArtifactCandidate>, now_epoch_ms: i64) -> Self {
         let len = candidates.len();
         Self {
             candidates,
             statuses: vec![None; len],
             stores: vec![None; len],
             root_prefetch_attempted: vec![false; len],
+            now_epoch_ms,
         }
     }
 
     pub fn step(&mut self) -> Result<HadOperationOutcome, String> {
         for (index, candidate) in self.candidates.iter().enumerate() {
             match &self.statuses[index] {
-                Some(status) if status.readable => {
-                    return Ok(HadOperationOutcome::complete(
-                        serde_json::to_value(self.open_result(candidate))
-                            .map_err(|err| err.to_string())?,
-                    ));
-                }
                 Some(_) => continue,
                 None => {
                     if let Some(store) = self.stores.get(index).and_then(Option::as_ref) {
@@ -277,10 +279,7 @@ impl NavDbOpenController {
                                     readable: true,
                                     message: None,
                                 });
-                                return Ok(HadOperationOutcome::complete(
-                                    serde_json::to_value(self.open_result(candidate))
-                                        .map_err(|err| err.to_string())?,
-                                ));
+                                continue;
                             }
                             NavDbContractValidation::NeedPages(pages) => {
                                 return Ok(HadOperationOutcome::NeedResources {
@@ -305,6 +304,11 @@ impl NavDbOpenController {
                     });
                 }
             }
+        }
+        if let Some(index) = self.selected_candidate_index() {
+            return Ok(HadOperationOutcome::complete(
+                serde_json::to_value(self.open_result(index)).map_err(|err| err.to_string())?,
+            ));
         }
         Err(self.no_readable_candidate_message())
     }
@@ -353,7 +357,12 @@ impl NavDbOpenController {
                 package_id: candidate.package_id.clone(),
                 filename: candidate.filename.clone(),
                 readable: false,
-                message: Some("missing root".to_string()),
+                message: Some(
+                    resource
+                        .page_index
+                        .map(|page| format!("missing page {page:04}"))
+                        .unwrap_or_else(|| "missing root".to_string()),
+                ),
             });
             return Ok(());
         }
@@ -385,9 +394,7 @@ impl NavDbOpenController {
     }
 
     pub fn selected_store(&self) -> Option<&NavKvStore> {
-        self.statuses
-            .iter()
-            .position(|status| status.as_ref().is_some_and(|status| status.readable))
+        self.selected_candidate_index()
             .and_then(|index| self.stores.get(index))
             .and_then(Option::as_ref)
     }
@@ -396,7 +403,23 @@ impl NavDbOpenController {
         self.statuses.iter().filter_map(Clone::clone).collect()
     }
 
-    fn open_result(&self, candidate: &NavDbArtifactCandidate) -> NavDbOpenResult {
+    fn selected_candidate_index(&self) -> Option<usize> {
+        self.statuses
+            .iter()
+            .enumerate()
+            .filter(|(_, status)| status.as_ref().is_some_and(|status| status.readable))
+            .map(|(index, _)| index)
+            .max_by(|left, right| {
+                compare_nav_db_candidates(
+                    &self.candidates[*left],
+                    &self.candidates[*right],
+                    self.now_epoch_ms,
+                )
+            })
+    }
+
+    fn open_result(&self, index: usize) -> NavDbOpenResult {
+        let candidate = &self.candidates[index];
         NavDbOpenResult {
             selected_package_id: candidate.package_id.clone(),
             selected_filename: candidate.filename.clone(),
@@ -409,6 +432,46 @@ impl NavDbOpenController {
             statuses: self.statuses.iter().filter_map(Clone::clone).collect(),
         }
     }
+}
+
+fn compare_nav_db_candidates(
+    left: &NavDbArtifactCandidate,
+    right: &NavDbArtifactCandidate,
+    now_epoch_ms: i64,
+) -> Ordering {
+    nav_db_candidate_score(left, now_epoch_ms)
+        .cmp(&nav_db_candidate_score(right, now_epoch_ms))
+        .then_with(|| left.filename.cmp(&right.filename))
+}
+
+fn nav_db_candidate_score(candidate: &NavDbArtifactCandidate, now_epoch_ms: i64) -> (u8, i64, i64) {
+    let effective_epoch_ms = candidate
+        .effective_date
+        .as_deref()
+        .and_then(parse_nav_db_timestamp);
+    let expiration_epoch_ms = candidate
+        .expiration_date
+        .as_deref()
+        .and_then(parse_nav_db_timestamp);
+    match (effective_epoch_ms, expiration_epoch_ms) {
+        (Some(effective), Some(expiration))
+            if effective <= now_epoch_ms && now_epoch_ms < expiration =>
+        {
+            (3, effective, expiration)
+        }
+        (Some(effective), _) if now_epoch_ms < effective => (1, effective.saturating_neg(), 0),
+        (_, Some(expiration)) if expiration <= now_epoch_ms => (0, expiration, 0),
+        _ => (2, 0, 0),
+    }
+}
+
+fn parse_nav_db_timestamp(value: &str) -> Option<i64> {
+    if let Ok(timestamp) = DateTime::parse_from_rfc3339(value) {
+        return Some(timestamp.with_timezone(&Utc).timestamp_millis());
+    }
+    DateTime::parse_from_rfc3339(&format!("{value}T00:00:00Z"))
+        .ok()
+        .map(|timestamp| timestamp.with_timezone(&Utc).timestamp_millis())
 }
 
 fn nav_db_artifact_root_resource(
@@ -446,7 +509,7 @@ fn nav_db_artifact_page_resources(
             CoreResourceRequest {
                 id,
                 source: nav_db_artifact_page_source(candidate, page),
-                optional: false,
+                optional: true,
             }
         })
         .collect()
@@ -4001,6 +4064,52 @@ mod tests {
     }
 
     #[test]
+    fn nav_db_open_controller_prefers_current_candidate_over_future_candidate() {
+        let contract = format!(r#"{{"contract_id":"{REQUIRED_NAV_DB_CONTRACT_ID}"}}"#);
+        let (root_bytes, pages) = build_root(&[("contract/nav-db", contract.as_bytes())], 256);
+        let mut controller = NavDbOpenController::new_at_epoch_ms(
+            vec![
+                nav_db_candidate_for_selection_test(
+                    "NAV_DB_2607",
+                    "nav_db_2607.zip",
+                    "2026-06-11",
+                    "2026-07-09",
+                ),
+                nav_db_candidate_for_selection_test(
+                    "NAV_DB_2606",
+                    "nav_db_2606.zip",
+                    "2026-05-14",
+                    "2026-06-11",
+                ),
+            ],
+            parse_nav_db_timestamp("2026-05-20T12:00:00Z").expect("now"),
+        );
+
+        loop {
+            match controller.step().expect("controller step") {
+                HadOperationOutcome::NeedResources { resources } => {
+                    for resource in resources {
+                        let bytes =
+                            nav_db_selection_test_resource_bytes(&resource, &root_bytes, &pages);
+                        controller
+                            .ingest_resource(&resource.id, &bytes)
+                            .expect("ingest resource");
+                    }
+                }
+                HadOperationOutcome::Complete { result, .. } => {
+                    let result: NavDbOpenResult =
+                        serde_json::from_value(result).expect("decode result");
+                    assert_eq!(result.selected_package_id, "NAV_DB_2606");
+                    assert_eq!(result.selected_filename, "nav_db_2606.zip");
+                    assert_eq!(result.statuses.len(), 2);
+                    assert!(result.statuses.iter().all(|status| status.readable));
+                    break;
+                }
+            }
+        }
+    }
+
+    #[test]
     fn nav_db_open_controller_rejects_missing_contract_id() {
         let (root_bytes, pages) = build_root(&[("vector/manifest", b"{}")], 256);
         let mut controller = NavDbOpenController::new(vec![NavDbArtifactCandidate {
@@ -4234,6 +4343,50 @@ mod tests {
         write_u32(&mut root, 36, value_page_start);
         write_u32(&mut root, 40, value_bytes.len() as u32);
         (root, pages)
+    }
+
+    fn nav_db_candidate_for_selection_test(
+        package_id: &str,
+        filename: &str,
+        effective_date: &str,
+        expiration_date: &str,
+    ) -> NavDbArtifactCandidate {
+        NavDbArtifactCandidate {
+            package_id: package_id.to_string(),
+            filename: filename.to_string(),
+            contract_id: Some(REQUIRED_NAV_DB_CONTRACT_ID.to_string()),
+            cycle: None,
+            cycle_version: None,
+            effective_date: Some(effective_date.to_string()),
+            expiration_date: Some(expiration_date.to_string()),
+            warning_text: None,
+            root_source: Some(CoreResourceSource::InstalledArtifactMember {
+                filename: filename.to_string(),
+                member_path: "root".to_string(),
+            }),
+        }
+    }
+
+    fn nav_db_selection_test_resource_bytes(
+        resource: &CoreResourceRequest,
+        root_bytes: &[u8],
+        pages: &[Vec<u8>],
+    ) -> Vec<u8> {
+        let CoreResourceSource::InstalledArtifactMember { member_path, .. } = &resource.source
+        else {
+            panic!("unexpected source: {:?}", resource.source);
+        };
+        if member_path == "root" {
+            return root_bytes.to_vec();
+        }
+        let page = member_path
+            .strip_prefix("page_")
+            .and_then(|value| value.parse::<usize>().ok())
+            .unwrap_or_else(|| panic!("unexpected nav-db member path: {member_path}"));
+        pages
+            .get(page)
+            .unwrap_or_else(|| panic!("missing page {page}"))
+            .clone()
     }
 
     fn write_u32(bytes: &mut [u8], offset: usize, value: u32) {

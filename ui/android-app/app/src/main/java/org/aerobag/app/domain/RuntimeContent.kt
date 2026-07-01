@@ -50,11 +50,19 @@ object AndroidRuntimeContent {
         )
     }
 
-    fun loadInstalledRuntime(context: Context, bootstrap: RuntimeBootstrap): RuntimeContent {
+    fun loadInstalledRuntime(
+        context: Context,
+        bootstrap: RuntimeBootstrap,
+        libraryCacheJson: String,
+    ): RuntimeContent {
         val navKvOpenStartMs = SystemClock.elapsedRealtime()
-        val navKvStore = openInstalledNavDb(context).first
+        val installedArtifacts = InstalledPackages.listInstalledArtifacts(context.applicationContext)
+        val navKvStore = NavKvStore.openInstalledArtifacts(
+            installedArtifacts,
+            libraryCacheJson = libraryCacheJson,
+        ).first
         val navKvOpenMs = SystemClock.elapsedRealtime() - navKvOpenStartMs
-        val installedPackageIds = InstalledPackages.listInstalledArtifacts(context.applicationContext)
+        val installedPackageIds = installedArtifacts
             .map { it.artifactId }
             .distinct()
             .sorted()
@@ -87,13 +95,19 @@ object AndroidRuntimeContent {
 
     fun inspectNavDbStatus(
         context: Context,
+        libraryCacheJson: String,
         bridge: NativeBridge = NativeBindings,
     ): NavDbStatus {
         val appContext = context.applicationContext
+        val installedArtifacts = InstalledPackages.listInstalledArtifacts(appContext)
         val installed = runCatching {
-            NavKvStore.inspectCandidates(installedNavDbArtifacts(appContext), bridge = bridge).statuses
+            NavKvStore.inspectInstalledArtifacts(
+                installedArtifacts,
+                libraryCacheJson = libraryCacheJson,
+                bridge = bridge,
+            ).statuses
         }.getOrElse {
-            installedNavDbArtifacts(appContext).map { artifact ->
+            installedArtifacts.map { artifact ->
                 NavDbArtifactStatus(
                     packageId = artifact.artifactId,
                     filename = artifact.filename,
@@ -104,18 +118,4 @@ object AndroidRuntimeContent {
         }
         return NavDbStatus(installed = installed)
     }
-
-    private fun openInstalledNavDb(
-        context: Context,
-        bridge: NativeBridge = NativeBindings,
-    ): Pair<NavKvStore, NavDbOpenReport> =
-        NavKvStore.openCandidates(installedNavDbArtifacts(context.applicationContext), bridge = bridge)
-
-    private fun installedNavDbArtifacts(context: Context): List<InstalledPackageArtifact> =
-        InstalledPackages.listInstalledArtifacts(context)
-            .filter { it.artifactId.startsWith("NAV_DB_") }
-            .sortedWith(
-                compareByDescending<InstalledPackageArtifact> { it.file.lastModified() }
-                    .thenByDescending { it.filename },
-            )
 }

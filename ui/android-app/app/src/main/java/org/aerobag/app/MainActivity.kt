@@ -2203,7 +2203,13 @@ internal fun AerobagApp(
         }
         runtimeFixture = null
         val loaded = withContext(Dispatchers.IO) {
-            runCatching { AndroidRuntimeContent.loadInstalledRuntime(context.applicationContext, bootstrap) }
+            runCatching {
+                AndroidRuntimeContent.loadInstalledRuntime(
+                    context.applicationContext,
+                    bootstrap,
+                    readOfflinePackagesLibraryCacheJson(prefs),
+                )
+            }
         }
         retainedModel.runtimeResult = loaded
         runtimeFixture = loaded

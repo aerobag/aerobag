@@ -70,6 +70,11 @@ interface NativeBridge {
 
     fun navDbOpenControllerCreate(candidatesJson: String): Long
 
+    fun navDbOpenControllerCreateFromInstalledArtifacts(
+        installedArtifactsJson: String,
+        libraryCacheJson: String,
+    ): Long
+
     fun navDbOpenControllerStep(handle: Long): String
 
     fun navDbOpenControllerIngestResource(handle: Long, resourceId: String, resourceBytes: ByteArray)
@@ -608,6 +613,11 @@ object NativeBindings : NativeBridge {
     external override fun planCurrentArtifactsDiscoveryJson(inputJson: String): String
 
     external override fun navDbOpenControllerCreate(candidatesJson: String): Long
+
+    external override fun navDbOpenControllerCreateFromInstalledArtifacts(
+        installedArtifactsJson: String,
+        libraryCacheJson: String,
+    ): Long
 
     external override fun navDbOpenControllerStep(handle: Long): String
 

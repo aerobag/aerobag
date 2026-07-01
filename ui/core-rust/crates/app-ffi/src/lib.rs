@@ -1594,11 +1594,40 @@ pub fn destroy_offline_packages_controller_json(handle: u64) -> Result<(), Strin
 pub fn nav_db_open_controller_create_json(candidates_json: &str) -> Result<u64, String> {
     let candidates: Vec<app_core::NavDbArtifactCandidate> =
         serde_json::from_str(candidates_json).map_err(|err| err.to_string())?;
+    create_nav_db_open_controller(candidates)
+}
+
+pub fn nav_db_open_controller_create_from_installed_artifacts_json(
+    installed_artifacts_json: &str,
+    library_cache_json: Option<&str>,
+) -> Result<u64, String> {
+    let installed: Vec<app_core::InstalledArtifact> =
+        serde_json::from_str(installed_artifacts_json).map_err(|err| err.to_string())?;
+    let library_cache = library_cache_json
+        .filter(|json| !json.trim().is_empty())
+        .map(|json| {
+            serde_json::from_str::<app_core::OfflinePackagesLibraryCache>(json)
+                .map_err(|err| err.to_string())
+        })
+        .transpose()?;
+    let candidates = app_core::nav_db_artifact_candidates_from_installed_artifacts(
+        &installed,
+        library_cache.as_ref(),
+    )?;
+    create_nav_db_open_controller(candidates)
+}
+
+fn create_nav_db_open_controller(
+    candidates: Vec<app_core::NavDbArtifactCandidate>,
+) -> Result<u64, String> {
     let handle = NEXT_NAV_DB_OPEN_HANDLE.fetch_add(1, Ordering::Relaxed);
     nav_db_open_controllers()
         .lock()
         .map_err(|_| "nav db open controller store poisoned".to_string())?
-        .insert(handle, app_core::NavDbOpenController::new(candidates));
+        .insert(
+            handle,
+            app_core::NavDbOpenController::new_at_epoch_ms(candidates, now_epoch_ms()),
+        );
     Ok(handle as u64)
 }
 
@@ -3916,6 +3945,30 @@ pub extern "system" fn Java_org_aerobag_app_domain_NativeBindings_navDbOpenContr
     match get_java_string(&mut env, candidates_json)
         .and_then(|candidates| nav_db_open_controller_create_json(&candidates))
     {
+        Ok(handle) => handle as i64,
+        Err(message) => {
+            let _ = env.throw_new("java/lang/RuntimeException", message);
+            0
+        }
+    }
+}
+
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_org_aerobag_app_domain_NativeBindings_navDbOpenControllerCreateFromInstalledArtifacts(
+    mut env: JNIEnv,
+    _class: JClass,
+    installed_artifacts_json: JString,
+    library_cache_json: JString,
+) -> i64 {
+    let result = (|| {
+        let installed_artifacts_json = get_java_string(&mut env, installed_artifacts_json)?;
+        let library_cache_json = get_java_string(&mut env, library_cache_json)?;
+        nav_db_open_controller_create_from_installed_artifacts_json(
+            &installed_artifacts_json,
+            Some(&library_cache_json),
+        )
+    })();
+    match result {
         Ok(handle) => handle as i64,
         Err(message) => {
             let _ = env.throw_new("java/lang/RuntimeException", message);

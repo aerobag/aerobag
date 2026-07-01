@@ -2058,43 +2058,68 @@ fn cycle_package_group_status_page_row(
     let mut latest_effective: Option<DateTime<Utc>> = None;
     let mut missing_expiration_families = BTreeSet::new();
 
+    let mut packages_by_family: BTreeMap<u8, (&'static str, Vec<&NavDbPackageRecord>)> =
+        BTreeMap::new();
     for package in &packages {
         let Some((_, family_label, family_sort_key)) = family_spec_for_package(families, package)
         else {
             continue;
         };
         family_set.insert((family_sort_key, family_label));
-        collect_chart_validity_violations(
-            &mut violations,
-            &mut seen_violations,
-            family_label,
-            family_sort_key,
-            package.effective_date.as_deref(),
-            package.expiration_date.as_deref(),
-            now_utc,
-        );
-        if let Some(effective_utc) = package
-            .effective_date
-            .as_deref()
-            .and_then(parse_utc_instant)
-        {
-            latest_effective = Some(
-                latest_effective
-                    .map(|current| current.max(effective_utc))
-                    .unwrap_or(effective_utc),
-            );
+        packages_by_family
+            .entry(family_sort_key)
+            .or_insert_with(|| (family_label, Vec::new()))
+            .1
+            .push(package);
+    }
+
+    for (family_sort_key, (family_label, family_packages)) in packages_by_family {
+        let current_packages = family_packages
+            .iter()
+            .copied()
+            .filter(|package| cycle_package_is_currently_valid(package, now_utc))
+            .collect::<Vec<_>>();
+        if current_packages.is_empty() {
+            for package in family_packages {
+                collect_chart_validity_violations(
+                    &mut violations,
+                    &mut seen_violations,
+                    family_label,
+                    family_sort_key,
+                    package.effective_date.as_deref(),
+                    package.expiration_date.as_deref(),
+                    now_utc,
+                );
+            }
+            continue;
         }
-        if let Some(expiration_utc) = package
-            .expiration_date
-            .as_deref()
-            .and_then(parse_utc_instant)
-        {
-            earliest_expiration = Some(
-                earliest_expiration
-                    .map(|current| current.min(expiration_utc))
-                    .unwrap_or(expiration_utc),
-            );
-        } else {
+        let mut family_has_expiration = false;
+        for package in current_packages {
+            if let Some(effective_utc) = package
+                .effective_date
+                .as_deref()
+                .and_then(parse_utc_instant)
+            {
+                latest_effective = Some(
+                    latest_effective
+                        .map(|current| current.max(effective_utc))
+                        .unwrap_or(effective_utc),
+                );
+            }
+            if let Some(expiration_utc) = package
+                .expiration_date
+                .as_deref()
+                .and_then(parse_utc_instant)
+            {
+                family_has_expiration = true;
+                earliest_expiration = Some(
+                    earliest_expiration
+                        .map(|current| current.min(expiration_utc))
+                        .unwrap_or(expiration_utc),
+                );
+            }
+        }
+        if !family_has_expiration {
             missing_expiration_families.insert((family_sort_key, family_label));
         }
     }
@@ -2154,6 +2179,26 @@ fn cycle_package_group_status_page_row(
         format!("{family_list} {noun} validity metadata is not available."),
         facts,
     )
+}
+
+fn cycle_package_is_currently_valid(package: &NavDbPackageRecord, now_utc: DateTime<Utc>) -> bool {
+    if package
+        .effective_date
+        .as_deref()
+        .and_then(parse_utc_instant)
+        .is_some_and(|effective| now_utc < effective)
+    {
+        return false;
+    }
+    if package
+        .expiration_date
+        .as_deref()
+        .and_then(parse_utc_instant)
+        .is_some_and(|expiration| cycle_product_is_expired(expiration, now_utc))
+    {
+        return false;
+    }
+    true
 }
 
 fn static_package_group_status_page_row(
@@ -14098,6 +14143,58 @@ mod tests {
         assert_eq!(docs.value, "OK");
         assert!(docs.detail.contains("TPP, CSup airport docs valid"));
         assert!(!docs.detail.contains("not valid yet"));
+    }
+
+    #[test]
+    fn data_status_page_uses_current_chart_cycle_when_future_cycle_is_installed() {
+        let init = create_current_test_session();
+        attach_nav_db_package_records_for_test(
+            init.handle,
+            vec![
+                package_record_json("SEC_NW_2606", "sec", Some("2026-05-14"), Some("2026-06-11")),
+                package_record_json("TAC_NW_2606", "tac", Some("2026-05-14"), Some("2026-06-11")),
+                package_record_json("SEC_NW_2607", "sec", Some("2026-06-11"), Some("2026-07-09")),
+                package_record_json("TAC_NW_2607", "tac", Some("2026-06-11"), Some("2026-07-09")),
+            ],
+        );
+
+        let snapshot = get_session_snapshot(init.handle).expect("snapshot");
+        let row = snapshot
+            .data_status_page_state
+            .rows
+            .iter()
+            .find(|row| row.id == "cycle:charts")
+            .expect("charts row");
+        assert_eq!(row.value, "OK");
+        assert_eq!(row.severity, UiStatusSeverity::Ok);
+        assert!(row.detail.contains("valid until 2026-06-11 00:00 UTC"));
+        assert!(!row.detail.contains("not valid yet"));
+    }
+
+    #[test]
+    fn data_status_page_uses_current_docs_cycle_when_future_cycle_is_installed() {
+        let init = create_current_test_session();
+        attach_nav_db_package_records_for_test(
+            init.handle,
+            vec![
+                package_record_json("TPP_2606", "tpp", Some("2026-05-14"), Some("2026-06-11")),
+                package_record_json("CSUP_2606", "csup", Some("2026-05-14"), Some("2026-06-11")),
+                package_record_json("TPP_2607", "tpp", Some("2026-06-11"), Some("2026-07-09")),
+                package_record_json("CSUP_2607", "csup", Some("2026-06-11"), Some("2026-07-09")),
+            ],
+        );
+
+        let snapshot = get_session_snapshot(init.handle).expect("snapshot");
+        let row = snapshot
+            .data_status_page_state
+            .rows
+            .iter()
+            .find(|row| row.id == "cycle:airport_docs")
+            .expect("airport docs row");
+        assert_eq!(row.value, "OK");
+        assert_eq!(row.severity, UiStatusSeverity::Ok);
+        assert!(row.detail.contains("valid until 2026-06-11 00:00 UTC"));
+        assert!(!row.detail.contains("not valid yet"));
     }
 
     #[test]

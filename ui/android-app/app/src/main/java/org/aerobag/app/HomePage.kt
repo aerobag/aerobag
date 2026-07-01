@@ -647,7 +647,10 @@ internal fun HomePage(
             val controllerUiState = offlinePackagesControllerResult?.uiState
             val navDbStatus by produceState<org.aerobag.app.domain.NavDbStatus?>(initialValue = null, context, navDbStatusRefreshToken, offlinePackagesRouted) {
                 value = withContext(Dispatchers.IO) {
-                    AndroidRuntimeContent.inspectNavDbStatus(context.applicationContext)
+                    AndroidRuntimeContent.inspectNavDbStatus(
+                        context.applicationContext,
+                        readOfflinePackagesLibraryCacheJson(prefs),
+                    )
                 }
             }
             LaunchedEffect(

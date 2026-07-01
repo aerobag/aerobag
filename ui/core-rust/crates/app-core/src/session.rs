@@ -641,6 +641,12 @@ struct PackageUiWarningRecord {
     detail: String,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct CycleWindow {
+    effective: Option<DateTime<Utc>>,
+    expiration: Option<DateTime<Utc>>,
+}
+
 #[derive(Debug, Clone)]
 struct LiveObstacleHadState {
     version: String,
@@ -2073,7 +2079,7 @@ fn cycle_package_group_status_page_row(
             .push(package);
     }
 
-    for (family_sort_key, (family_label, family_packages)) in packages_by_family {
+    for (family_sort_key, (family_label, family_packages)) in &packages_by_family {
         let current_packages = family_packages
             .iter()
             .copied()
@@ -2085,7 +2091,7 @@ fn cycle_package_group_status_page_row(
                     &mut violations,
                     &mut seen_violations,
                     family_label,
-                    family_sort_key,
+                    *family_sort_key,
                     package.effective_date.as_deref(),
                     package.expiration_date.as_deref(),
                     now_utc,
@@ -2120,7 +2126,7 @@ fn cycle_package_group_status_page_row(
             }
         }
         if !family_has_expiration {
-            missing_expiration_families.insert((family_sort_key, family_label));
+            missing_expiration_families.insert((*family_sort_key, *family_label));
         }
     }
 
@@ -2147,12 +2153,16 @@ fn cycle_package_group_status_page_row(
             UiDataStatusPageTimeDisplay::Ago,
         ));
     }
+    let next_cycle_window = next_published_cycle_window_for_families(session, families, now_utc)
+        .or_else(|| next_cycle_window_for_package_groups(&packages_by_family, now_utc));
+
     if let Some(expiration) = earliest_expiration {
         facts.push(status_time_fact(
             "Expires",
             expiration,
             UiDataStatusPageTimeDisplay::Until,
         ));
+        push_next_cycle_window_facts(&mut facts, next_cycle_window);
         return status_page_row(
             id,
             label,
@@ -2171,6 +2181,7 @@ fn cycle_package_group_status_page_row(
             status_family_list(missing_expiration_families.iter().copied()),
         ));
     }
+    push_next_cycle_window_facts(&mut facts, next_cycle_window);
     status_page_row(
         id,
         label,
@@ -2179,6 +2190,136 @@ fn cycle_package_group_status_page_row(
         format!("{family_list} {noun} validity metadata is not available."),
         facts,
     )
+}
+
+fn next_published_cycle_window_for_families(
+    session: &UiSession,
+    families: &[(&'static str, &'static str, u8)],
+    now_utc: DateTime<Utc>,
+) -> Option<CycleWindow> {
+    let mut latest_effective: Option<DateTime<Utc>> = None;
+    let mut earliest_expiration: Option<DateTime<Utc>> = None;
+    for (family_id, _, _) in families {
+        let Some((package, effective)) = session
+            .publication_resolver
+            .loaded_bundle_packages()
+            .filter(|package| {
+                package.family_id == *family_id
+                    && crate::package_management::package_contract_is_supported(package)
+            })
+            .filter_map(|package| {
+                let effective = package
+                    .effective_date
+                    .as_deref()
+                    .and_then(parse_utc_instant)?;
+                (now_utc < effective).then_some((package, effective))
+            })
+            .min_by(
+                |(left_package, left_effective), (right_package, right_effective)| {
+                    left_effective
+                        .cmp(right_effective)
+                        .then_with(|| left_package.id.cmp(&right_package.id))
+                },
+            )
+        else {
+            continue;
+        };
+        latest_effective = Some(
+            latest_effective
+                .map(|current| current.max(effective))
+                .unwrap_or(effective),
+        );
+        if let Some(expiration) = package
+            .expiration_date
+            .as_deref()
+            .and_then(parse_utc_instant)
+        {
+            earliest_expiration = Some(
+                earliest_expiration
+                    .map(|current| current.min(expiration))
+                    .unwrap_or(expiration),
+            );
+        }
+    }
+    if latest_effective.is_none() && earliest_expiration.is_none() {
+        None
+    } else {
+        Some(CycleWindow {
+            effective: latest_effective,
+            expiration: earliest_expiration,
+        })
+    }
+}
+
+fn next_cycle_window_for_package_groups(
+    packages_by_family: &BTreeMap<u8, (&'static str, Vec<&NavDbPackageRecord>)>,
+    now_utc: DateTime<Utc>,
+) -> Option<CycleWindow> {
+    let mut latest_effective: Option<DateTime<Utc>> = None;
+    let mut earliest_expiration: Option<DateTime<Utc>> = None;
+    for (_, family_packages) in packages_by_family.values() {
+        let Some(package) = family_packages
+            .iter()
+            .filter_map(|package| {
+                let effective = package
+                    .effective_date
+                    .as_deref()
+                    .and_then(parse_utc_instant)?;
+                (now_utc < effective).then_some((*package, effective))
+            })
+            .min_by(|(_, left), (_, right)| left.cmp(right))
+        else {
+            continue;
+        };
+        latest_effective = Some(
+            latest_effective
+                .map(|current| current.max(package.1))
+                .unwrap_or(package.1),
+        );
+        if let Some(expiration) = package
+            .0
+            .expiration_date
+            .as_deref()
+            .and_then(parse_utc_instant)
+        {
+            earliest_expiration = Some(
+                earliest_expiration
+                    .map(|current| current.min(expiration))
+                    .unwrap_or(expiration),
+            );
+        }
+    }
+    if latest_effective.is_none() && earliest_expiration.is_none() {
+        None
+    } else {
+        Some(CycleWindow {
+            effective: latest_effective,
+            expiration: earliest_expiration,
+        })
+    }
+}
+
+fn push_next_cycle_window_facts(
+    facts: &mut Vec<UiDataStatusPageFact>,
+    window: Option<CycleWindow>,
+) {
+    let Some(window) = window else {
+        return;
+    };
+    if let Some(effective) = window.effective {
+        facts.push(status_time_fact(
+            "Next effective",
+            effective,
+            UiDataStatusPageTimeDisplay::Until,
+        ));
+    }
+    if let Some(expiration) = window.expiration {
+        facts.push(status_time_fact(
+            "Next expires",
+            expiration,
+            UiDataStatusPageTimeDisplay::Until,
+        ));
+    }
 }
 
 fn cycle_package_is_currently_valid(package: &NavDbPackageRecord, now_utc: DateTime<Utc>) -> bool {
@@ -2379,6 +2520,7 @@ fn nav_db_status_page_row(session: &UiSession) -> UiDataStatusPageRow {
             UiDataStatusPageTimeDisplay::Until,
         ));
     }
+    push_next_cycle_window_facts(&mut facts, next_nav_db_cycle_window(session, now_utc));
     if expired || not_yet_effective {
         let value = match (expired, not_yet_effective) {
             (true, true) => "INVALID",
@@ -2422,6 +2564,39 @@ fn nav_db_status_page_row(session: &UiSession) -> UiDataStatusPageRow {
         "NAV DB package metadata does not include an expiration date.",
         facts,
     )
+}
+
+fn next_nav_db_cycle_window(session: &UiSession, now_utc: DateTime<Utc>) -> Option<CycleWindow> {
+    let mut candidates = session
+        .publication_resolver
+        .loaded_bundle_packages()
+        .filter(|package| {
+            package.family_id == "nav-db"
+                && crate::package_management::package_contract_is_supported(package)
+        })
+        .filter_map(|package| {
+            let effective = package
+                .effective_date
+                .as_deref()
+                .and_then(parse_utc_instant)?;
+            (now_utc < effective).then_some((package, effective))
+        })
+        .collect::<Vec<_>>();
+    candidates.sort_by(
+        |(left_package, left_effective), (right_package, right_effective)| {
+            left_effective
+                .cmp(right_effective)
+                .then_with(|| left_package.id.cmp(&right_package.id))
+        },
+    );
+    let (package, effective) = candidates.first().copied()?;
+    Some(CycleWindow {
+        effective: Some(effective),
+        expiration: package
+            .expiration_date
+            .as_deref()
+            .and_then(parse_utc_instant),
+    })
 }
 
 fn expected_contract_versions_status_page_row() -> UiDataStatusPageRow {
@@ -14169,6 +14344,59 @@ mod tests {
         assert_eq!(row.severity, UiStatusSeverity::Ok);
         assert!(row.detail.contains("valid until 2026-06-11 00:00 UTC"));
         assert!(!row.detail.contains("not valid yet"));
+        assert!(row.facts.iter().any(|fact| {
+            fact.label == "Next effective"
+                && fact.value == "2026-06-11 00:00 UTC"
+                && fact.time_utc.as_deref() == Some("2026-06-11T00:00:00Z")
+                && fact.time_display == Some(UiDataStatusPageTimeDisplay::Until)
+        }));
+        assert!(row.facts.iter().any(|fact| {
+            fact.label == "Next expires"
+                && fact.value == "2026-07-09 00:00 UTC"
+                && fact.time_utc.as_deref() == Some("2026-07-09T00:00:00Z")
+                && fact.time_display == Some(UiDataStatusPageTimeDisplay::Until)
+        }));
+    }
+
+    #[test]
+    fn data_status_page_reports_next_chart_cycle_from_publication() {
+        let init = create_current_test_session();
+        attach_nav_db_package_records_for_test(
+            init.handle,
+            vec![
+                package_record_json("SEC_NW_2606", "sec", Some("2026-05-14"), Some("2026-06-11")),
+                package_record_json("TAC_NW_2606", "tac", Some("2026-05-14"), Some("2026-06-11")),
+            ],
+        );
+        ingest_bundle_packages_for_test(
+            init.handle,
+            vec![
+                package_record_json("SEC_NW_2607", "sec", Some("2026-06-11"), Some("2026-07-09")),
+                package_record_json("TAC_NW_2607", "tac", Some("2026-06-11"), Some("2026-07-09")),
+            ],
+        );
+
+        let snapshot = get_session_snapshot(init.handle).expect("snapshot");
+        let row = snapshot
+            .data_status_page_state
+            .rows
+            .iter()
+            .find(|row| row.id == "cycle:charts")
+            .expect("charts row");
+        assert_eq!(row.value, "OK");
+        assert!(row.detail.contains("valid until 2026-06-11 00:00 UTC"));
+        assert!(row.facts.iter().any(|fact| {
+            fact.label == "Next effective"
+                && fact.value == "2026-06-11 00:00 UTC"
+                && fact.time_utc.as_deref() == Some("2026-06-11T00:00:00Z")
+                && fact.time_display == Some(UiDataStatusPageTimeDisplay::Until)
+        }));
+        assert!(row.facts.iter().any(|fact| {
+            fact.label == "Next expires"
+                && fact.value == "2026-07-09 00:00 UTC"
+                && fact.time_utc.as_deref() == Some("2026-07-09T00:00:00Z")
+                && fact.time_display == Some(UiDataStatusPageTimeDisplay::Until)
+        }));
     }
 
     #[test]
@@ -14195,6 +14423,59 @@ mod tests {
         assert_eq!(row.severity, UiStatusSeverity::Ok);
         assert!(row.detail.contains("valid until 2026-06-11 00:00 UTC"));
         assert!(!row.detail.contains("not valid yet"));
+        assert!(row.facts.iter().any(|fact| {
+            fact.label == "Next effective"
+                && fact.value == "2026-06-11 00:00 UTC"
+                && fact.time_utc.as_deref() == Some("2026-06-11T00:00:00Z")
+                && fact.time_display == Some(UiDataStatusPageTimeDisplay::Until)
+        }));
+        assert!(row.facts.iter().any(|fact| {
+            fact.label == "Next expires"
+                && fact.value == "2026-07-09 00:00 UTC"
+                && fact.time_utc.as_deref() == Some("2026-07-09T00:00:00Z")
+                && fact.time_display == Some(UiDataStatusPageTimeDisplay::Until)
+        }));
+    }
+
+    #[test]
+    fn data_status_page_reports_next_docs_cycle_from_publication() {
+        let init = create_current_test_session();
+        attach_nav_db_package_records_for_test(
+            init.handle,
+            vec![
+                package_record_json("TPP_2606", "tpp", Some("2026-05-14"), Some("2026-06-11")),
+                package_record_json("CSUP_2606", "csup", Some("2026-05-14"), Some("2026-06-11")),
+            ],
+        );
+        ingest_bundle_packages_for_test(
+            init.handle,
+            vec![
+                package_record_json("TPP_2607", "tpp", Some("2026-06-11"), Some("2026-07-09")),
+                package_record_json("CSUP_2607", "csup", Some("2026-06-11"), Some("2026-07-09")),
+            ],
+        );
+
+        let snapshot = get_session_snapshot(init.handle).expect("snapshot");
+        let row = snapshot
+            .data_status_page_state
+            .rows
+            .iter()
+            .find(|row| row.id == "cycle:airport_docs")
+            .expect("airport docs row");
+        assert_eq!(row.value, "OK");
+        assert!(row.detail.contains("valid until 2026-06-11 00:00 UTC"));
+        assert!(row.facts.iter().any(|fact| {
+            fact.label == "Next effective"
+                && fact.value == "2026-06-11 00:00 UTC"
+                && fact.time_utc.as_deref() == Some("2026-06-11T00:00:00Z")
+                && fact.time_display == Some(UiDataStatusPageTimeDisplay::Until)
+        }));
+        assert!(row.facts.iter().any(|fact| {
+            fact.label == "Next expires"
+                && fact.value == "2026-07-09 00:00 UTC"
+                && fact.time_utc.as_deref() == Some("2026-07-09T00:00:00Z")
+                && fact.time_display == Some(UiDataStatusPageTimeDisplay::Until)
+        }));
     }
 
     #[test]
@@ -14609,6 +14890,55 @@ mod tests {
             .detail
             .contains("NAV DB valid until 2026-06-18 00:00 UTC"));
         assert!(!row.detail.contains("contains no nav-db package rows"));
+    }
+
+    #[test]
+    fn data_status_page_reports_next_nav_db_cycle_from_publication() {
+        let init = create_current_test_session();
+        let store = crate::navkv::nav_kv_store_for_test(&[], 256);
+        let mut open_result =
+            nav_db_open_result_for_test("NAV_DB_2606", Some("2026-06-11T00:00:00Z"));
+        open_result.selected_effective_date = Some("2026-05-14T00:00:00Z".to_string());
+        attach_nav_kv_store_to_session_with_open_result(init.handle, 1, &store, Some(&open_result))
+            .expect("attach nav kv");
+        ingest_bundle_packages_for_test(
+            init.handle,
+            vec![
+                package_record_json(
+                    "NAV_DB_2606",
+                    "nav-db",
+                    Some("2026-05-14T00:00:00Z"),
+                    Some("2026-06-11T00:00:00Z"),
+                ),
+                package_record_json(
+                    "NAV_DB_2607",
+                    "nav-db",
+                    Some("2026-06-11T00:00:00Z"),
+                    Some("2026-07-09T00:00:00Z"),
+                ),
+            ],
+        );
+
+        let snapshot = get_session_snapshot(init.handle).expect("snapshot");
+        let row = snapshot
+            .data_status_page_state
+            .rows
+            .iter()
+            .find(|row| row.id == "nav_db")
+            .expect("nav-db page row");
+        assert_eq!(row.value, "OK");
+        assert!(row.facts.iter().any(|fact| {
+            fact.label == "Next effective"
+                && fact.value == "2026-06-11 00:00 UTC"
+                && fact.time_utc.as_deref() == Some("2026-06-11T00:00:00Z")
+                && fact.time_display == Some(UiDataStatusPageTimeDisplay::Until)
+        }));
+        assert!(row.facts.iter().any(|fact| {
+            fact.label == "Next expires"
+                && fact.value == "2026-07-09 00:00 UTC"
+                && fact.time_utc.as_deref() == Some("2026-07-09T00:00:00Z")
+                && fact.time_display == Some(UiDataStatusPageTimeDisplay::Until)
+        }));
     }
 
     #[test]

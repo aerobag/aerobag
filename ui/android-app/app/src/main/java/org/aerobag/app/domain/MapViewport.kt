@@ -173,6 +173,12 @@ class MapFollowTargetGate {
     }
 }
 
+fun mapFollowSyncViewportForCompletedGesture(
+    movedViewportDuringGesture: Boolean,
+    finalGestureViewport: MapViewportState,
+): MapViewportState? =
+    if (movedViewportDuringGesture) finalGestureViewport else null
+
 fun screenToWorld(
     viewport: MapViewportState,
     point: ScreenPoint,

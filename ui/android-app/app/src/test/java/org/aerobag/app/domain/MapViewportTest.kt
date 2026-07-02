@@ -1,6 +1,7 @@
 package org.aerobag.app.domain
 
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
@@ -169,5 +170,114 @@ class MapViewportTest {
 
         assertEquals(null, gate.awaitedViewport())
         assertTrue(gate.shouldApplyTarget(oldTarget))
+    }
+
+    @Test
+    fun completedCtrDragPreservesOwnshipScreenOffsetUntilOwnshipLeavesViewport() {
+        val widthPx = 1200f
+        val heightPx = 900f
+        val ownship = latLonToWorld(47.50, -122.30)
+        val centeredViewport = MapViewportState(
+            centerWorldX = ownship.x,
+            centerWorldY = ownship.y,
+            zoom = 10.0,
+        )
+        val draggedViewport = dragViewport(centeredViewport, dx = 260f, dy = -140f)
+        val draggedOwnshipScreen = MapDisplayFrame(draggedViewport, widthPx, heightPx)
+            .worldToScreen(ownship)
+        val follow = TestMapFollowState()
+
+        val syncViewport = mapFollowSyncViewportForCompletedGesture(
+            movedViewportDuringGesture = true,
+            finalGestureViewport = draggedViewport,
+        )
+        require(syncViewport != null)
+        follow.sync(
+            ownshipWorld = ownship,
+            viewport = syncViewport,
+            widthPx = widthPx,
+            heightPx = heightPx,
+        )
+
+        assertTrue("CTR should stay active while ownship remains in the viewport", follow.following)
+        assertEquals(draggedViewport.centerWorldX, follow.targetViewport(ownship).centerWorldX, 1e-8)
+        assertEquals(draggedViewport.centerWorldY, follow.targetViewport(ownship).centerWorldY, 1e-8)
+
+        val movedOwnship = WorldPoint(
+            x = ownship.x + 0.015,
+            y = ownship.y - 0.010,
+        )
+        val followingViewport = follow.targetViewport(movedOwnship)
+        val movedOwnshipScreen = MapDisplayFrame(followingViewport, widthPx, heightPx)
+            .worldToScreen(movedOwnship)
+        assertEquals(
+            "CTR should preserve the screen-space offset established by the drag",
+            draggedOwnshipScreen.x.toDouble(),
+            movedOwnshipScreen.x.toDouble(),
+            1e-4,
+        )
+        assertEquals(
+            "CTR should preserve the screen-space offset established by the drag",
+            draggedOwnshipScreen.y.toDouble(),
+            movedOwnshipScreen.y.toDouble(),
+            1e-4,
+        )
+
+        val offscreenViewport = dragViewport(centeredViewport, dx = widthPx * 1.5f, dy = 0f)
+        val offscreenSyncViewport = mapFollowSyncViewportForCompletedGesture(
+            movedViewportDuringGesture = true,
+            finalGestureViewport = offscreenViewport,
+        )
+        require(offscreenSyncViewport != null)
+        follow.sync(
+            ownshipWorld = ownship,
+            viewport = offscreenSyncViewport,
+            widthPx = widthPx,
+            heightPx = heightPx,
+        )
+
+        assertFalse("CTR should disengage when a drag moves ownship out of the viewport", follow.following)
+    }
+
+    private class TestMapFollowState {
+        var following: Boolean = true
+            private set
+        private var currentViewport: MapViewportState? = null
+        private var anchorOffsetXPx: Double = 0.0
+        private var anchorOffsetYPx: Double = 0.0
+
+        fun sync(
+            ownshipWorld: WorldPoint,
+            viewport: MapViewportState,
+            widthPx: Float,
+            heightPx: Float,
+        ) {
+            currentViewport = viewport
+            val point = MapDisplayFrame(viewport, widthPx, heightPx).worldToScreen(ownshipWorld)
+            if (
+                point.x < 0f ||
+                point.x > widthPx ||
+                point.y < 0f ||
+                point.y > heightPx
+            ) {
+                following = false
+                return
+            }
+            following = true
+            anchorOffsetXPx = point.x - widthPx / 2.0
+            anchorOffsetYPx = point.y - heightPx / 2.0
+        }
+
+        fun targetViewport(ownshipWorld: WorldPoint): MapViewportState {
+            val viewport = currentViewport ?: error("follow state was not synced")
+            if (!following) {
+                return viewport
+            }
+            val scale = scaleForZoom(viewport.zoom)
+            return viewport.copy(
+                centerWorldX = ownshipWorld.x - anchorOffsetXPx / scale,
+                centerWorldY = ownshipWorld.y - anchorOffsetYPx / scale,
+            )
+        }
     }
 }

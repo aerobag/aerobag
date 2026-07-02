@@ -288,6 +288,7 @@ import org.aerobag.app.domain.dragViewport
 import org.aerobag.app.domain.imageDisplaySize
 import org.aerobag.app.domain.kindForLog
 import org.aerobag.app.domain.latLonToWorld
+import org.aerobag.app.domain.mapFollowSyncViewportForCompletedGesture
 import org.aerobag.app.domain.preserveViewportForMap
 import org.aerobag.app.domain.renderTileKey
 import org.aerobag.app.domain.sameMapViewport
@@ -2262,8 +2263,12 @@ internal fun MapExplorerPage(
                             }
                         }
                     } finally {
-                        if (movedViewportDuringGesture) {
-                            syncFollowStateForViewport(gestureViewport)
+                        val completedGestureSyncViewport = mapFollowSyncViewportForCompletedGesture(
+                            movedViewportDuringGesture = movedViewportDuringGesture,
+                            finalGestureViewport = gestureViewport,
+                        )
+                        if (completedGestureSyncViewport != null) {
+                            syncFollowStateForViewport(completedGestureSyncViewport)
                         } else if (loggedGestureSeed && dragLastPosition != null) {
                             val point = dragLastPosition
                             requestMapSelection(point)

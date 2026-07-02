@@ -2263,7 +2263,7 @@ internal fun MapExplorerPage(
                         }
                     } finally {
                         if (movedViewportDuringGesture) {
-                            syncFollowStateForViewport(viewportState.value)
+                            syncFollowStateForViewport(gestureViewport)
                         } else if (loggedGestureSeed && dragLastPosition != null) {
                             val point = dragLastPosition
                             requestMapSelection(point)

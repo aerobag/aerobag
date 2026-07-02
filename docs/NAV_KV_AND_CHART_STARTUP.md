@@ -547,11 +547,12 @@ contract instead of parallel formats. This should improve WAN and durable-cache
 size without putting decompression on the normal query path.
 
 Status: implemented in the shared `nav-kv-package` crate. Cycle nav-db is now
-contract `NAV10`, cycle/live nav-kv packages use Stored zip members with xz
+contract `NAV12`, cycle/live nav-kv packages use Stored zip members with xz
 `page_####` payloads, live-feed schema is now `2`, and large live-feed JSON
 full/delta payloads are xz-compressed at publication time. Core decodes xz pages
 before inserting them into HAD stores and durable obstacle delta rebuilds persist
-back into the same Stored-zip/xz-page package shape.
+back into the same Stored-zip/xz-page package shape. NAV12 also requires
+`navref/symbol/*` records to carry explicit `symbol_kind` values.
 
 Target nav-kv package/page contract:
 

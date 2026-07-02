@@ -240,14 +240,14 @@ class PipelineHealthTests(unittest.TestCase):
                         "payload": {
                             "products": [
                                 {
-                                    "product_id": "NAV_DB_NAV11_2606_01",
+                                    "product_id": "NAV_DB_NAV12_2606_01",
                                     "family": "nav-db",
                                     "cycle": "2606",
                                     "error_count": 0,
                                     "warning_count": 145,
                                 },
                                 {
-                                    "product_id": "NAV_DB_NAV11_2607_01",
+                                    "product_id": "NAV_DB_NAV12_2607_01",
                                     "family": "nav-db",
                                     "cycle": "2607",
                                     "error_count": 0,
@@ -269,7 +269,7 @@ class PipelineHealthTests(unittest.TestCase):
                                 "payload": {
                                     "products": [
                                         {
-                                            "product_id": "NAV_DB_NAV11_2606_01",
+                                            "product_id": "NAV_DB_NAV12_2606_01",
                                             "family": "nav-db",
                                             "cycle": "2606",
                                             "error_count": 0,
@@ -362,7 +362,7 @@ class PipelineHealthTests(unittest.TestCase):
                     "payload": {
                         "products": [
                             {
-                                "product_id": "NAV_DB_NAV11_2607_01",
+                                "product_id": "NAV_DB_NAV12_2607_01",
                                 "cycle": "2607",
                             }
                         ]

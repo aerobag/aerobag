@@ -3346,7 +3346,10 @@ mod tests {
             installed: vec![installed_with_size("NW_SEC_2605", 52_000_000)],
             storage: None,
             event: OfflinePackagesControllerEvent::LibraryRefreshFailed {
-                message: "app requires nav-db=NAV10; artifacts offer nav-db=NAVBOGUS".to_string(),
+                message: format!(
+                    "app requires nav-db={}; artifacts offer nav-db=NAVBOGUS",
+                    crate::REQUIRED_NAV_DB_CONTRACT_ID
+                ),
             },
         });
 

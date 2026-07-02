@@ -2821,6 +2821,7 @@ pub(super) fn build_nav_kv_airport_navref_pairs(
             &serde_json::json!({
                 "kind": kind.to_ascii_lowercase(),
                 "label": airport_display_label(&id),
+                "symbol_kind": "airport",
                 "style_class": "airport",
                 "towered": atct.trim().eq_ignore_ascii_case("Y"),
                 "fuel_available": !fuel_types.trim().is_empty(),
@@ -2887,6 +2888,7 @@ pub(super) fn build_nav_kv_navaid_navref_pairs(
                 &serde_json::json!({
                     "kind": kind.to_ascii_lowercase(),
                     "label": navaid_display_label(&id, &facility_name),
+                    "symbol_kind": "nav",
                     "style_class": "nav",
                 }),
                 "navref navaid symbol",
@@ -2991,6 +2993,7 @@ pub(super) fn build_nav_kv_fix_navref_pairs(
             &serde_json::json!({
                 "kind": kind.to_ascii_lowercase(),
                 "label": titlecase_nav_label(&facility_name).to_ascii_uppercase(),
+                "symbol_kind": "fix",
                 "style_class": "fix",
             }),
             "navref fix symbol",
@@ -5012,5 +5015,82 @@ mod tests {
                 "station_ids": ["KAAA", "KCCC"],
             })
         );
+    }
+
+    #[test]
+    fn navref_symbol_pairs_emit_current_symbol_wire_shape() {
+        let connection = rusqlite::Connection::open_in_memory().expect("sqlite");
+        connection
+            .execute_batch(
+                r#"
+                CREATE TABLE airports (
+                    LocationID TEXT,
+                    ARPLatitude REAL,
+                    ARPLongitude REAL,
+                    FacilityName TEXT,
+                    Type TEXT,
+                    ATCT TEXT,
+                    FuelTypes TEXT,
+                    ARPElevation TEXT
+                );
+                CREATE TABLE airportrunways (
+                    LocationID TEXT,
+                    Length TEXT,
+                    Surface TEXT,
+                    LEHeadingT TEXT,
+                    LELatitude TEXT,
+                    LELongitude TEXT,
+                    HELatitude TEXT,
+                    HELongitude TEXT
+                );
+                CREATE TABLE nav (
+                    LocationID TEXT,
+                    ARPLatitude REAL,
+                    ARPLongitude REAL,
+                    FacilityName TEXT,
+                    Type TEXT
+                );
+                CREATE TABLE fix (
+                    LocationID TEXT,
+                    ARPLatitude REAL,
+                    ARPLongitude REAL,
+                    FacilityName TEXT,
+                    Type TEXT
+                );
+                INSERT INTO airports VALUES
+                    ('KRNT', 47.493, -122.216, 'Renton Municipal', 'AIRPORT', 'Y', '100LL', '32');
+                INSERT INTO nav VALUES
+                    ('SEA', 47.435, -122.310, 'Seattle', 'VORTAC');
+                INSERT INTO fix VALUES
+                    ('EPH', 47.374, -119.424, 'EPH', 'FIX');
+                "#,
+            )
+            .expect("schema");
+
+        let mut pairs = Vec::new();
+        pairs.extend(build_nav_kv_airport_navref_pairs(&connection).expect("airport pairs"));
+        pairs.extend(build_nav_kv_navaid_navref_pairs(&connection).expect("navaid pairs"));
+        pairs.extend(build_nav_kv_fix_navref_pairs(&connection).expect("fix pairs"));
+
+        for (key, symbol_kind) in [
+            ("navref/symbol/airport/KRNT", "airport"),
+            ("navref/symbol/navaid/SEA", "nav"),
+            ("navref/symbol/fix/EPH", "fix"),
+        ] {
+            let pair = pairs
+                .iter()
+                .find(|pair| pair.key == key)
+                .unwrap_or_else(|| panic!("missing {key}"));
+            let value: serde_json::Value =
+                serde_json::from_slice(&pair.value).expect("symbol json");
+            assert_eq!(
+                value.get("symbol_kind").and_then(|value| value.as_str()),
+                Some(symbol_kind),
+                "{key}"
+            );
+            assert!(value.get("kind").is_some(), "{key}");
+            assert!(value.get("label").is_some(), "{key}");
+            assert!(value.get("style_class").is_some(), "{key}");
+        }
     }
 }

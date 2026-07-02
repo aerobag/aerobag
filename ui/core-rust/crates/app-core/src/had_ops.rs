@@ -4536,6 +4536,54 @@ mod tests {
         store
     }
 
+    #[test]
+    fn nav_symbol_feature_decodes_current_navref_symbol_records() {
+        let store = test_nav_kv_store(&[
+            (
+                "navref/symbol/airport/KRNT",
+                serde_json::json!({
+                    "kind": "airport",
+                    "label": "KRNT",
+                    "symbol_kind": "airport",
+                    "style_class": "airport",
+                    "towered": true
+                }),
+            ),
+            (
+                "navref/symbol/navaid/SEA",
+                serde_json::json!({
+                    "kind": "vortac",
+                    "label": "SEA 116.80",
+                    "symbol_kind": "nav",
+                    "style_class": "nav"
+                }),
+            ),
+            (
+                "navref/symbol/fix/EPH",
+                serde_json::json!({
+                    "kind": "fix",
+                    "label": "EPH",
+                    "symbol_kind": "fix",
+                    "style_class": "fix"
+                }),
+            ),
+        ]);
+
+        let airport = nav_symbol_feature(&store, &NavRef::Airport("KRNT".to_string()))
+            .expect("decode airport symbol")
+            .expect("airport symbol present");
+        let navaid = nav_symbol_feature(&store, &NavRef::Navaid("SEA".to_string()))
+            .expect("decode navaid symbol")
+            .expect("navaid symbol present");
+        let fix = nav_symbol_feature(&store, &NavRef::Fix("EPH".to_string()))
+            .expect("decode fix symbol")
+            .expect("fix symbol present");
+
+        assert_eq!(airport.symbol_kind, "airport");
+        assert_eq!(navaid.symbol_kind, "nav");
+        assert_eq!(fix.symbol_kind, "fix");
+    }
+
     fn procedure_plate_match_value(
         airport_id: &str,
         procedure_id: &str,
@@ -5021,6 +5069,7 @@ mod tests {
             r#"{{
                 "kind":"airport",
                 "label":"KAAA",
+                "symbol_kind":"airport",
                 "style_class":"airport",
                 "towered":false,
                 "fuel_available":false,
@@ -6919,6 +6968,7 @@ mod tests {
             serde_json::json!({
                 "kind": "vortac",
                 "label": "SEA 116.80",
+                "symbol_kind": "nav",
                 "style_class": "nav"
             }),
         )]);

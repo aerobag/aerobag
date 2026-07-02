@@ -353,6 +353,7 @@ internal fun ChartsPage(
     viewport: org.aerobag.app.domain.ImageViewportState?,
     onViewportChange: (org.aerobag.app.domain.ImageViewportState?) -> Unit,
     onSessionSnapshotChange: (UiSessionSnapshot) -> Unit,
+    onSessionCommandFailure: (Throwable) -> Unit,
     onFolderOpenChange: (Boolean) -> Unit,
     onSelectPage: (AppPage) -> Unit,
     onOpenPlan: () -> Unit,
@@ -375,6 +376,15 @@ internal fun ChartsPage(
     var dataStatusTrayOpen by remember { mutableStateOf(false) }
     var situationTrayOpen by remember { mutableStateOf(false) }
     var surfaceSize by remember { mutableStateOf(IntSize.Zero) }
+    fun applySessionCommand(operation: () -> UiSessionSnapshot) {
+        try {
+            onSessionSnapshotChange(operation())
+        } catch (error: CancellationException) {
+            throw error
+        } catch (error: Throwable) {
+            onSessionCommandFailure(error)
+        }
+    }
     val surfaceWidthDp = remember(surfaceSize, density) { with(density) { surfaceSize.width.toDp().value } }
     val situationDockLowered = surfaceWidthDp.dp < SituationDockOverlapWidth
     val situationDockTopPadding =
@@ -669,7 +679,9 @@ internal fun ChartsPage(
                 onSelectOwnshipSource(sourceId)
             },
             onSituationControlInput = { input ->
-                onSessionSnapshotChange(uiSession.applySituationControlInput(input, System.currentTimeMillis().toDouble()))
+                applySessionCommand {
+                    uiSession.applySituationControlInput(input, System.currentTimeMillis().toDouble())
+                }
             },
         )
 
@@ -738,7 +750,13 @@ internal fun ChartsPage(
             onSelectProcedureLoad = { loadId ->
                 runCatching { uiSession.loadPlateProcedure(loadId) }
                     .onSuccess(onSessionSnapshotChange)
-                    .onFailure { Log.w("AerobagCharts", "plate procedure load failed", it) }
+                    .onFailure { error ->
+                        if (error is org.aerobag.app.domain.NativeSessionCommandRejectedException) {
+                            onSessionCommandFailure(error)
+                        } else {
+                            Log.w("AerobagCharts", "plate procedure load failed", error)
+                        }
+                    }
                 loadTrayOpen = false
                 dataStatusTrayOpen = false
             },

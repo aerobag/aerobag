@@ -234,6 +234,7 @@ import org.aerobag.app.domain.MapFamilyOption
 import org.aerobag.app.domain.MapViewportState
 import org.aerobag.app.domain.NativeAppCoreAdapter
 import org.aerobag.app.domain.NativeBindings
+import org.aerobag.app.domain.NativeSessionCommandRejectedException
 import org.aerobag.app.domain.NativeUiSession
 import org.aerobag.app.domain.NavKvStore
 import org.aerobag.app.domain.NavRef
@@ -378,6 +379,7 @@ internal const val TerrainAltitudeBucketFt = 200
 internal const val MapLayerLogTag = "MapLayers"
 internal const val TileBudgetLogTag = "AerobagTileBudget"
 internal const val DecodedTileCacheMaxBytes = 96L * 1024L * 1024L
+private const val SessionCommandNoticeDurationMs = 4_000L
 internal const val MapTileLoadWorkerCount = 4
 internal const val SlowTileLoadLogMs = 1000L
 internal val TileLoadGenerationIds = AtomicLong()
@@ -521,6 +523,11 @@ internal data class AppViewSnapshot(
     val recentAirportIds: List<String>,
     val chartViewport: org.aerobag.app.domain.ImageViewportState?,
     val chartFolderOpen: Boolean,
+)
+
+private data class SessionCommandNotice(
+    val id: Long,
+    val message: String,
 )
 
 internal data class MapSelectionUiState(
@@ -2244,6 +2251,8 @@ internal fun AerobagApp(
     var rasterMapState by remember(uiSession) { mutableStateOf(initialRasterMapState) }
     var selectedMapId by remember(uiSession) { mutableStateOf(initialRasterMapState.selectedMapId) }
     var sessionSnapshot by remember(uiSession) { mutableStateOf(uiSession.snapshot) }
+    var nextSessionCommandNoticeId by remember(uiSession) { mutableLongStateOf(1L) }
+    var sessionCommandNotice by remember(uiSession) { mutableStateOf<SessionCommandNotice?>(null) }
     fun applySessionSnapshot(nextSnapshot: UiSessionSnapshot): Boolean {
         if (nextSnapshot.sessionRevision < sessionSnapshot.sessionRevision) {
             Log.i(
@@ -2254,6 +2263,58 @@ internal fun AerobagApp(
         }
         sessionSnapshot = nextSnapshot
         return true
+    }
+    fun recoverSessionCommandFailure(error: Throwable, notifyUser: Boolean = true) {
+        if (error is CancellationException) {
+            throw error
+        }
+        if (error !is NativeSessionCommandRejectedException) {
+            throw error
+        }
+        applySessionSnapshot(error.refreshedSnapshot)
+        Log.w(
+            "AerobagSessionCommand",
+            "recovered rejected session command command=${error.commandName}",
+            error,
+        )
+        if (notifyUser) {
+            sessionCommandNotice = SessionCommandNotice(
+                id = nextSessionCommandNoticeId++,
+                message = "Action failed; app state was refreshed.",
+            )
+        }
+    }
+    fun applySessionCommand(
+        commandName: String,
+        notifyUser: Boolean = true,
+        operation: () -> UiSessionSnapshot,
+    ): UiSessionSnapshot? {
+        return try {
+            val snapshot = operation()
+            snapshot.takeIf { applySessionSnapshot(it) }
+        } catch (error: Throwable) {
+            recoverSessionCommandFailure(error, notifyUser = notifyUser)
+            null
+        }
+    }
+    fun applyBackgroundSessionCommand(
+        commandName: String,
+        logTag: String,
+        operation: () -> UiSessionSnapshot,
+    ): UiSessionSnapshot? {
+        return try {
+            val snapshot = operation()
+            snapshot.takeIf { applySessionSnapshot(it) }
+        } catch (error: Throwable) {
+            if (error is NativeSessionCommandRejectedException) {
+                recoverSessionCommandFailure(error, notifyUser = false)
+            } else if (error is CancellationException) {
+                throw error
+            } else {
+                Log.w(logTag, "background session command failed command=$commandName", error)
+            }
+            null
+        }
     }
     var uiInvalidationRevisions by remember(uiSession) { mutableStateOf(UiInvalidationRevisions()) }
     fun publishUiInvalidations(invalidations: List<String>) {
@@ -2275,7 +2336,9 @@ internal fun AerobagApp(
         }
     }
     fun selectOwnshipSource(sourceId: String) {
-        applySessionSnapshot(uiSession.selectOwnshipSource(OwnshipSelection.Source(sourceId)))
+        applySessionCommand("selectOwnshipSource") {
+            uiSession.selectOwnshipSource(OwnshipSelection.Source(sourceId))
+        } ?: return
         AndroidGpsPower.clearPendingOwnshipSource(appContext)
         if (AndroidGpsPower.shouldRunHighPrecisionGpsForSource(sourceId)) {
             AerobagGpsService.startHighPrecisionGps(appContext)
@@ -2288,7 +2351,9 @@ internal fun AerobagApp(
         val delayMs = (nextCheckEpochMs - System.currentTimeMillis())
             .coerceAtLeast(0L)
         delay(delayMs)
-        applySessionSnapshot(uiSession.refreshSnapshot())
+        applySessionCommand("refreshSnapshot", notifyUser = false) {
+            uiSession.refreshSnapshot()
+        }
     }
     val liveFeedSourceRootUrl = remember(context, prefs) {
         configuredLiveFeedSourceRootUrl(
@@ -2305,34 +2370,23 @@ internal fun AerobagApp(
     }
     var liveFeedGeneration by remember(uiSession) { mutableIntStateOf(0) }
     fun promoteLiveFeed(summary: LiveFeedInstalledSummary) {
-        runCatching {
+        applyBackgroundSessionCommand("installLiveFeedCacheProduct", "AndroidLiveFeeds") {
             uiSession.installLiveFeedCacheProduct(liveFeedCache, summary.product)
-        }.onSuccess {
-            applySessionSnapshot(it)
+        }?.let {
             liveFeedGeneration += 1
             diagnosticLogInfo("AndroidLiveFeeds") {
                 "promoted product=${summary.product} version=${summary.version} generation=$liveFeedGeneration"
             }
-        }.onFailure { error ->
-            Log.w("AndroidLiveFeeds", "failed to promote ${summary.product}/${summary.version}", error)
         }
     }
     fun reportLiveFeedConnection(event: LiveFeedConnectionEvent) {
-        runCatching {
+        applyBackgroundSessionCommand("reportLiveFeedConnectionEvent", "AndroidLiveFeeds") {
             uiSession.reportLiveFeedConnectionEvent(event)
-        }.onSuccess {
-            applySessionSnapshot(it)
-        }.onFailure { error ->
-            Log.w("AndroidLiveFeeds", "failed to report live-feed connection ${event.kind}", error)
         }
     }
     fun syncLiveFeedCatalog() {
-        runCatching {
+        applyBackgroundSessionCommand("syncLiveFeedCacheCatalog", "AndroidLiveFeeds") {
             uiSession.syncLiveFeedCacheCatalog(liveFeedCache)
-        }.onSuccess {
-            applySessionSnapshot(it)
-        }.onFailure { error ->
-            Log.w("AndroidLiveFeeds", "failed to sync live-feed catalog", error)
         }
     }
     LaunchedEffect(uiSession, liveFeedCache, context, prefs) {
@@ -2365,8 +2419,9 @@ internal fun AerobagApp(
     DisposableEffect(uiSession, context) {
         val activity = context as? MainActivity
         activity?.onSituationControlInput = { input ->
-            applySessionSnapshot(uiSession.applySituationControlInput(input, System.currentTimeMillis().toDouble()))
-            true
+            applySessionCommand("applySituationControlInput") {
+                uiSession.applySituationControlInput(input, System.currentTimeMillis().toDouble())
+            } != null
         }
         onDispose {
             if (activity?.onSituationControlInput != null) {
@@ -2445,10 +2500,16 @@ internal fun AerobagApp(
     }
     LaunchedEffect(uiSession) {
         if (readStoredGpsCaptureDebugFlag(prefs)) {
-            applySessionSnapshot(uiSession.setDebugFlag("gps_capture", true))
+            applyBackgroundSessionCommand("setDebugFlag", "AerobagDebug") {
+                uiSession.setDebugFlag("gps_capture", true)
+            }
         }
-        applySessionSnapshot(uiSession.registerOwnshipSource(AndroidGpsSource.registration()))
-        applySessionSnapshot(uiSession.updateOwnshipSourceStatus(AndroidGpsSource.status.value))
+        applyBackgroundSessionCommand("registerOwnshipSource", "AerobagOwnship") {
+            uiSession.registerOwnshipSource(AndroidGpsSource.registration())
+        }
+        applyBackgroundSessionCommand("updateOwnshipSourceStatus", "AerobagOwnship") {
+            uiSession.updateOwnshipSourceStatus(AndroidGpsSource.status.value)
+        }
         val startupOwnshipSource = AndroidGpsPower.consumePendingOwnshipSource(appContext)
             ?: AndroidGpsPower.batterySavingFallbackSourceId().takeIf { AndroidGpsPower.isGpsPaused(appContext) }
         if (startupOwnshipSource != null) {
@@ -2456,12 +2517,16 @@ internal fun AerobagApp(
         }
         launch {
             AndroidGpsSource.status.collect { status ->
-                applySessionSnapshot(uiSession.updateOwnshipSourceStatus(status))
+                applyBackgroundSessionCommand("updateOwnshipSourceStatus", "AerobagOwnship") {
+                    uiSession.updateOwnshipSourceStatus(status)
+                }
             }
         }
         launch {
             AndroidGpsSource.samples.collect { sample ->
-                applySessionSnapshot(uiSession.pushSituationSample(sample))
+                applyBackgroundSessionCommand("pushSituationSample", "AerobagOwnship") {
+                    uiSession.pushSituationSample(sample)
+                }
             }
         }
         launch {
@@ -2478,11 +2543,9 @@ internal fun AerobagApp(
         val tickIntervalMs = sessionSnapshot.playbackUiState.tickIntervalMs.coerceIn(16, 1000).toLong()
         while (sessionSnapshot.playbackUiState.status == PlaybackStatus.Playing) {
             delay(tickIntervalMs)
-            runCatching { uiSession.tickPlayback(System.currentTimeMillis().toDouble()) }
-                .onSuccess {
-                    applySessionSnapshot(it)
-                }
-                .onFailure { Log.e("AerobagPlayback", "tick failed", it) }
+            applyBackgroundSessionCommand("tickPlayback", "AerobagPlayback") {
+                uiSession.tickPlayback(System.currentTimeMillis().toDouble())
+            }
         }
     }
     val sessionPlanUiState = requireNotNull(sessionSnapshot.appUiState.activePlan) {
@@ -2510,30 +2573,30 @@ internal fun AerobagApp(
 
     fun restoreSnapshot(snapshot: AppViewSnapshot, history: List<AppViewSnapshot>) {
         if (snapshot.selectedAirportId.isNotBlank() || snapshot.selectedChartId.isNotBlank() || snapshot.recentAirportIds.isNotEmpty()) {
-            applySessionSnapshot(
+            applySessionCommand("restoreChartPageState") {
                 uiSession.restoreChartPageState(
                     recentAirportIds = snapshot.recentAirportIds,
                     selectedAirportId = snapshot.selectedAirportId.ifBlank { null },
                     selectedChartId = snapshot.selectedChartId.ifBlank { null },
-                ),
-            )
+                )
+            }
         }
         pageHistory = history
         page = snapshot.page
-        runCatching {
-            val nextSnapshot =
+        val nextSnapshot =
+            applySessionCommand(if (snapshot.selectedMapId.isBlank()) "refreshSnapshot" else "selectRasterMap") {
                 if (snapshot.selectedMapId.isBlank()) {
                     uiSession.refreshSnapshot()
                 } else {
                     uiSession.selectRasterMap(snapshot.selectedMapId)
                 }
+            }
+        if (nextSnapshot != null) {
             val nextRasterMapState = requireNotNull(nextSnapshot.rasterMap) {
                 "core session returned no raster map state"
             }
-            if (applySessionSnapshot(nextSnapshot)) {
-                rasterMapState = nextRasterMapState
-                selectedMapId = nextRasterMapState.selectedMapId
-            }
+            rasterMapState = nextRasterMapState
+            selectedMapId = nextRasterMapState.selectedMapId
         }
         mapViewport = snapshot.mapViewport
         chartViewport = snapshot.chartViewport
@@ -2581,14 +2644,15 @@ internal fun AerobagApp(
     }
 
     fun setDebugFlag(flagId: String, enabled: Boolean) {
-        if (flagId == "gps_capture") {
-            writeStoredGpsCaptureDebugFlag(prefs, enabled)
+        if (applySessionCommand("setDebugFlag") { uiSession.setDebugFlag(flagId, enabled) } != null) {
+            if (flagId == "gps_capture") {
+                writeStoredGpsCaptureDebugFlag(prefs, enabled)
+            }
         }
-        applySessionSnapshot(uiSession.setDebugFlag(flagId, enabled))
     }
 
     fun openChartsForAirport(airportId: String, chartId: String? = null) {
-        applySessionSnapshot(uiSession.selectAirport(airportId))
+        applySessionCommand("selectAirport") { uiSession.selectAirport(airportId) } ?: return
         val airport = chartAirportById[airportId]
         val selectedChart = chartId
             ?.let { requestedChartId -> airport?.charts?.find { it.id == requestedChartId } }
@@ -2672,9 +2736,12 @@ internal fun AerobagApp(
                         },
                         onViewportChange = { mapViewport = it },
                         onSessionSnapshotChange = { applySessionSnapshot(it) },
+                        onSessionCommandFailure = { recoverSessionCommandFailure(it) },
                         onSelectOwnshipSource = ::selectOwnshipSource,
                         onSituationControlInput = { input ->
-                            applySessionSnapshot(uiSession.applySituationControlInput(input, System.currentTimeMillis().toDouble()))
+                            applySessionCommand("applySituationControlInput") {
+                                uiSession.applySituationControlInput(input, System.currentTimeMillis().toDouble())
+                            }
                         },
                         onPlaybackSourcePathChange = { playbackSourcePath = it },
                         onSelectMapFamily = {
@@ -2690,19 +2757,21 @@ internal fun AerobagApp(
                             pageHistory = boundedHistory(pageHistory + currentSnapshot())
                             page = AppPage.Map
                             val selectStartMs = SystemClock.elapsedRealtime()
-                            val nextSnapshot = uiSession.selectMapFamily(it)
-                            perfLogInfo(TileBudgetLogTag) {
-                                "map-family-select-core id=$timingId family=$it elapsedMs=${SystemClock.elapsedRealtime() - selectStartMs}"
+                            val nextSnapshot = applySessionCommand("selectMapFamily") {
+                                uiSession.selectMapFamily(it)
                             }
-                            val nextRasterMapState = requireNotNull(nextSnapshot.rasterMap) {
-                                "core selectMapFamily returned no raster map state"
-                            }
-                            if (applySessionSnapshot(nextSnapshot)) {
+                            if (nextSnapshot != null) {
+                                perfLogInfo(TileBudgetLogTag) {
+                                    "map-family-select-core id=$timingId family=$it elapsedMs=${SystemClock.elapsedRealtime() - selectStartMs}"
+                                }
+                                val nextRasterMapState = requireNotNull(nextSnapshot.rasterMap) {
+                                    "core selectMapFamily returned no raster map state"
+                                }
                                 rasterMapState = nextRasterMapState
                                 selectedMapId = nextRasterMapState.selectedMapId
-                            }
-                            perfLogInfo(TileBudgetLogTag) {
-                                "map-family-click-done id=$timingId family=$it elapsedMs=${SystemClock.elapsedRealtime() - clickStartMs}"
+                                perfLogInfo(TileBudgetLogTag) {
+                                    "map-family-click-done id=$timingId family=$it elapsedMs=${SystemClock.elapsedRealtime() - clickStartMs}"
+                                }
                             }
                         },
                         onSelectPage = ::navigateToPage,
@@ -2732,6 +2801,7 @@ internal fun AerobagApp(
                         onApplySessionSnapshot = { snapshot ->
                             applySessionSnapshot(snapshot)
                         },
+                        onSessionCommandFailure = { recoverSessionCommandFailure(it) },
                     )
                 }
                 AppPage.Charts -> {
@@ -2754,6 +2824,7 @@ internal fun AerobagApp(
                         viewport = chartViewport,
                         onViewportChange = { chartViewport = it },
                         onSessionSnapshotChange = { applySessionSnapshot(it) },
+                        onSessionCommandFailure = { recoverSessionCommandFailure(it) },
                         onFolderOpenChange = {
                             restoreSnapshot(
                                 currentSnapshot().copy(
@@ -2766,42 +2837,44 @@ internal fun AerobagApp(
                         onSelectPage = ::navigateToPage,
                         onOpenPlan = { navigateToPage(AppPage.Plan) },
                         onStatusAction = { actionId ->
-                            runCatching { uiSession.performStatusAction(actionId) }
-                                .onSuccess { applySessionSnapshot(it) }
-                                .onFailure { error -> Log.w("AerobagCharts", "status action failed: $actionId", error) }
+                            applySessionCommand("performStatusAction") {
+                                uiSession.performStatusAction(actionId)
+                            }
                         },
                         onSelectAirport = { airportId ->
-                            applySessionSnapshot(uiSession.selectAirport(airportId))
-                            val airport = chartAirportById[airportId]
-                            restoreSnapshot(
-                                currentSnapshot().copy(
-                                    page = AppPage.Charts,
-                                    selectedAirportId = airportId,
-                                    selectedChartId = airport?.charts?.firstOrNull()?.id.orEmpty(),
-                                    selectedChartLabel = airport?.charts?.firstOrNull()?.label.orEmpty(),
-                                    recentAirportIds = sessionSnapshot.chartPageState.recentAirportIds,
-                                    chartViewport = null,
-                                    chartFolderOpen = false,
-                                ),
-                                boundedHistory(pageHistory + currentSnapshot()),
-                            )
+                            if (applySessionCommand("selectAirport") { uiSession.selectAirport(airportId) } != null) {
+                                val airport = chartAirportById[airportId]
+                                restoreSnapshot(
+                                    currentSnapshot().copy(
+                                        page = AppPage.Charts,
+                                        selectedAirportId = airportId,
+                                        selectedChartId = airport?.charts?.firstOrNull()?.id.orEmpty(),
+                                        selectedChartLabel = airport?.charts?.firstOrNull()?.label.orEmpty(),
+                                        recentAirportIds = sessionSnapshot.chartPageState.recentAirportIds,
+                                        chartViewport = null,
+                                        chartFolderOpen = false,
+                                    ),
+                                    boundedHistory(pageHistory + currentSnapshot()),
+                                )
+                            }
                         },
                         onSelectChart = {
-                            applySessionSnapshot(uiSession.selectChart(it))
-                            restoreSnapshot(
-                                currentSnapshot().copy(
-                                    page = AppPage.Charts,
-                                    selectedChartId = it,
-                                    selectedChartLabel = chartAirportById[sessionSnapshot.chartPageState.selectedAirportId]
-                                        ?.charts
-                                        ?.firstOrNull { chart -> chart.id == it }
-                                        ?.label
-                                        .orEmpty(),
-                                    chartViewport = null,
-                                    chartFolderOpen = false,
-                                ),
-                                boundedHistory(pageHistory + currentSnapshot()),
-                            )
+                            if (applySessionCommand("selectChart") { uiSession.selectChart(it) } != null) {
+                                restoreSnapshot(
+                                    currentSnapshot().copy(
+                                        page = AppPage.Charts,
+                                        selectedChartId = it,
+                                        selectedChartLabel = chartAirportById[sessionSnapshot.chartPageState.selectedAirportId]
+                                            ?.charts
+                                            ?.firstOrNull { chart -> chart.id == it }
+                                            ?.label
+                                            .orEmpty(),
+                                        chartViewport = null,
+                                        chartFolderOpen = false,
+                                    ),
+                                    boundedHistory(pageHistory + currentSnapshot()),
+                                )
+                            }
                         },
                         onSelectOwnshipSource = ::selectOwnshipSource,
                     )
@@ -2821,7 +2894,9 @@ internal fun AerobagApp(
                         onOpenRecentChartOrPlate = ::navigateToMostRecentChartOrPlate,
                         offlinePackagesControllerHandle = offlinePackagesControllerHandle,
                         onOfflinePackageLibraryCacheChanged = { cacheJson ->
-                            applySessionSnapshot(uiSession.loadOfflinePackageLibraryCache(cacheJson))
+                            applySessionCommand("loadOfflinePackageLibraryCache") {
+                                uiSession.loadOfflinePackageLibraryCache(cacheJson)
+                            }
                         },
                     )
                 }
@@ -2839,7 +2914,9 @@ internal fun AerobagApp(
                         onOpenRecentChartOrPlate = ::navigateToMostRecentChartOrPlate,
                         offlinePackagesControllerHandle = offlinePackagesControllerHandle,
                         onOfflinePackageLibraryCacheChanged = { cacheJson ->
-                            applySessionSnapshot(uiSession.loadOfflinePackageLibraryCache(cacheJson))
+                            applySessionCommand("loadOfflinePackageLibraryCache") {
+                                uiSession.loadOfflinePackageLibraryCache(cacheJson)
+                            }
                         },
                     )
                 }
@@ -2861,9 +2938,9 @@ internal fun AerobagApp(
                         onOpenRecentChartOrPlate = ::navigateToMostRecentChartOrPlate,
                         onSelectPage = ::navigateToPage,
                         onSettingsAction = { actionId, valueId ->
-                            runCatching { uiSession.performSettingsAction(actionId, valueId) }
-                                .onSuccess { applySessionSnapshot(it) }
-                                .onFailure { error -> Log.w("AerobagSettings", "settings action failed: $actionId=$valueId", error) }
+                            applySessionCommand("performSettingsAction") {
+                                uiSession.performSettingsAction(actionId, valueId)
+                            }
                         },
                     )
                 }
@@ -2887,12 +2964,60 @@ internal fun AerobagApp(
                 DisclaimerConsentModal(
                     state = sessionSnapshot.disclaimerState,
                     onAccept = {
-                        runCatching { uiSession.acceptDisclaimer(sessionSnapshot.disclaimerState.agreementId) }
-                            .onSuccess { applySessionSnapshot(it) }
-                            .onFailure { error -> Log.w("AerobagDisclaimer", "failed to accept disclaimer", error) }
+                        applySessionCommand("acceptDisclaimer") {
+                            uiSession.acceptDisclaimer(sessionSnapshot.disclaimerState.agreementId)
+                        }
                     },
                 )
             }
+            sessionCommandNotice?.let { notice ->
+                LaunchedEffect(notice.id) {
+                    delay(SessionCommandNoticeDurationMs)
+                    if (sessionCommandNotice?.id == notice.id) {
+                        sessionCommandNotice = null
+                    }
+                }
+                SessionCommandNoticeBanner(
+                    notice = notice,
+                    uiTheme = uiTheme,
+                    modifier = Modifier
+                        .align(Alignment.TopCenter)
+                        .padding(top = ThumbGap, start = ThumbGap, end = ThumbGap)
+                        .zIndex(OverlayPlaneModal),
+                )
+            }
+        }
+    }
+}
+
+@Composable
+private fun SessionCommandNoticeBanner(
+    notice: SessionCommandNotice,
+    uiTheme: UiTheme,
+    modifier: Modifier = Modifier,
+) {
+    AnimatedVisibility(
+        visible = true,
+        enter = fadeIn() + slideInVertically { -it },
+        exit = fadeOut() + slideOutVertically { -it },
+        modifier = modifier,
+    ) {
+        Surface(
+            shape = RoundedCornerShape(ThumbRadius * 0.65f),
+            color = uiTheme.controls.dataStatusWarningBg,
+            contentColor = uiTheme.controls.panelFg,
+            border = BorderStroke(1.dp, uiTheme.controls.dataStatusWarningStroke),
+            shadowElevation = 8.dp,
+        ) {
+            Text(
+                text = notice.message,
+                modifier = Modifier.padding(horizontal = ThumbSize * 0.28f, vertical = ThumbSize * 0.16f),
+                style = MaterialTheme.typography.labelLarge,
+                fontWeight = FontWeight.Bold,
+                maxLines = 2,
+                overflow = TextOverflow.Ellipsis,
+                textAlign = TextAlign.Center,
+            )
         }
     }
 }

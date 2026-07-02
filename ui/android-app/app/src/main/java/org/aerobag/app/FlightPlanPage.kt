@@ -346,6 +346,7 @@ internal fun FlightPlanPage(
     onOpenRecentChartOrPlate: () -> Unit,
     onOpenCharts: (String, String?) -> Unit,
     onApplySessionSnapshot: (UiSessionSnapshot) -> Unit,
+    onSessionCommandFailure: (Throwable) -> Unit,
 ) {
     val density = LocalDensity.current
     val focusManager = LocalFocusManager.current
@@ -366,6 +367,16 @@ internal fun FlightPlanPage(
     val routeEntryPreviewController = remember { RouteEntryPreviewController() }
     var routeEntrySuppressNavigationUntilMs by remember { mutableLongStateOf(0L) }
     var trayOpenedAtMs by remember { mutableStateOf(0L) }
+    fun applySessionCommand(commandName: String, operation: () -> UiSessionSnapshot): UiSessionSnapshot? =
+        try {
+            operation().also(onApplySessionSnapshot)
+        } catch (error: CancellationException) {
+            throw error
+        } catch (error: Throwable) {
+            Log.w("AerobagSessionCommand", "flight-plan command failed command=$commandName", error)
+            onSessionCommandFailure(error)
+            null
+        }
     val projectedPlanUiState = requireNotNull(planUiState) { "FlightPlanPage requires core-projected FlightPlanUiState" }
     val guidance = projectedPlanUiState.guidance
     val rows = remember(projectedPlanUiState.displayRows) {
@@ -588,16 +599,14 @@ internal fun FlightPlanPage(
         routeEntrySuppressNavigationUntilMs = SystemClock.elapsedRealtime() + 800L
         routeEntrySubmitting = true
         routeEntryError = null
-        runCatching {
+        val snapshot = applySessionCommand("appendFlightPlanEntry") {
             uiSession.appendFlightPlanEntry(input)
-        }.onSuccess { snapshot ->
-            onApplySessionSnapshot(snapshot)
+        }
+        if (snapshot != null) {
             routeEntryText = ""
             routeEntryPreview = emptyFlightPlanEntryPreview()
             keyboardController?.hide()
             focusManager.clearFocus(force = true)
-        }.onFailure { error ->
-            routeEntryError = error.message ?: error.toString()
         }
         routeEntrySubmitting = false
     }
@@ -891,25 +900,25 @@ internal fun FlightPlanPage(
                     label = "Next Leg",
                     modifier = Modifier.width(ThumbSize * 1.8f).height(ThumbSize),
                     enabled = guidance?.canActivateNextLeg == true,
-                    onClick = { onApplySessionSnapshot(uiSession.activateNextLeg()) },
+                    onClick = { applySessionCommand("activateNextLeg") { uiSession.activateNextLeg() } },
                 )
                 CompactSquareButton(
                     label = "Sequence",
                     modifier = Modifier.width(ThumbSize * 1.8f).height(ThumbSize),
                     enabled = guidance?.canSequenceActiveLeg == true,
-                    onClick = { onApplySessionSnapshot(uiSession.sequenceActiveLeg()) },
+                    onClick = { applySessionCommand("sequenceActiveLeg") { uiSession.sequenceActiveLeg() } },
                 )
                 CompactSquareButton(
                     label = "Suspend",
                     modifier = Modifier.width(ThumbSize * 1.8f).height(ThumbSize),
                     enabled = guidance?.canSuspend == true,
-                    onClick = { onApplySessionSnapshot(uiSession.suspendSequencing()) },
+                    onClick = { applySessionCommand("suspendSequencing") { uiSession.suspendSequencing() } },
                 )
                 CompactSquareButton(
                     label = "Unsusp",
                     modifier = Modifier.width(ThumbSize * 1.8f).height(ThumbSize),
                     enabled = guidance?.canUnsuspend == true,
-                    onClick = { onApplySessionSnapshot(uiSession.unsuspendSequencing()) },
+                    onClick = { applySessionCommand("unsuspendSequencing") { uiSession.unsuspendSequencing() } },
                 )
             }
             NavElementDock(
@@ -959,23 +968,22 @@ internal fun FlightPlanPage(
                                 return@AirportInsertPanel
                             }
                             runCatching {
-                                val waypoint = appCore.resolveNavRefIdentifier(airportId)
-                                uiSession.insertWaypointAtFlightPlanRow(editor.rowUid, editor.before, waypoint)
-                            }.onSuccess { snapshot ->
-                                onApplySessionSnapshot(snapshot)
-                                closePanels()
+                                appCore.resolveNavRefIdentifier(airportId)
+                            }.onSuccess { waypoint ->
+                                if (applySessionCommand("insertWaypointAtFlightPlanRow") {
+                                        uiSession.insertWaypointAtFlightPlanRow(editor.rowUid, editor.before, waypoint)
+                                    } != null) {
+                                    closePanels()
+                                }
                             }.onFailure { error ->
                                 airportInsert = editor.copy(error = error.message ?: error.toString())
                             }
                         },
                         onSuggestionClick = { suggestion ->
-                            runCatching {
+                            if (applySessionCommand("insertWaypointAtFlightPlanRow") {
                                 uiSession.insertWaypointAtFlightPlanRow(editor.rowUid, editor.before, suggestion.navRef)
-                            }.onSuccess { snapshot ->
-                                onApplySessionSnapshot(snapshot)
+                            } != null) {
                                 closePanels()
-                            }.onFailure { error ->
-                                airportInsert = editor.copy(error = error.message ?: error.toString())
                             }
                         },
                     )
@@ -1037,7 +1045,7 @@ internal fun FlightPlanPage(
                                 enabled = true,
                                 onSelect = {
                                     procedurePicker = picker.copy(loading = true, error = null)
-                                    runCatching {
+                                    val snapshot = applySessionCommand("selectProcedureAtFlightPlanRow") {
                                         uiSession.selectProcedureAtFlightPlanRow(
                                             picker.rowUid,
                                             picker.airportId,
@@ -1046,16 +1054,11 @@ internal fun FlightPlanPage(
                                             null,
                                             choice.enrouteTransition,
                                         )
-                                    }.onSuccess { snapshot ->
-                                        onApplySessionSnapshot(snapshot)
+                                    }
+                                    if (snapshot != null) {
                                         closePanels()
-                                    }.onFailure { error ->
-                                        Log.e(
-                                            "AerobagProcedure",
-                                            "select procedure failed row=${picker.rowUid} airport=${picker.airportId} procedure=${picker.selectedProcedureId} enroute=${choice.enrouteTransition}",
-                                            error,
-                                        )
-                                        procedurePicker = picker.copy(loading = false, error = error.message ?: error.toString())
+                                    } else {
+                                        procedurePicker = picker.copy(loading = false)
                                     }
                                 },
                             )
@@ -1146,18 +1149,18 @@ internal fun FlightPlanPage(
                                 onSelect = {
                                     if (isEntry) return@MenuPanelRow
                                     airwayPicker = picker.copy(loading = true, error = null)
-                                    runCatching {
+                                    val snapshot = applySessionCommand("insertAirwayAtFlightPlanRow") {
                                         uiSession.insertAirwayAtFlightPlanRow(
                                             picker.rowUid,
                                             presentation,
                                             picker.selectedEntryIndex,
                                             exitIndex,
                                         )
-                                    }.onSuccess { snapshot ->
-                                        onApplySessionSnapshot(snapshot)
+                                    }
+                                    if (snapshot != null) {
                                         closePanels()
-                                    }.onFailure { error ->
-                                        airwayPicker = picker.copy(error = error.message ?: error.toString())
+                                    } else {
+                                        airwayPicker = picker.copy(loading = false)
                                     }
                                 },
                             )
@@ -1190,18 +1193,10 @@ internal fun FlightPlanPage(
                                             return@MenuPanelRow
                                         }
                                         if (action.execution == "core_session") {
-                                            runCatching {
+                                            val snapshot = applySessionCommand("performFlightPlanRowAction") {
                                                 uiSession.performFlightPlanRowAction(selectedRow.id, action.uid)
-                                            }.onSuccess { snapshot ->
-                                                onApplySessionSnapshot(snapshot)
-                                            }.onFailure { error ->
-                                                Log.e(
-                                                    "AerobagPlan",
-                                                    "core row action failed row=${selectedRow.id} action=${action.uid}",
-                                                    error,
-                                                )
                                             }
-                                            if (action.dismissTrayOnSuccess) {
+                                            if (snapshot != null && action.dismissTrayOnSuccess) {
                                                 closePanels()
                                             }
                                             return@MenuPanelRow

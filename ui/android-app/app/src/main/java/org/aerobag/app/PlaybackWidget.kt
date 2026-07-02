@@ -224,6 +224,7 @@ import org.aerobag.app.domain.MapFamilyOption
 import org.aerobag.app.domain.MapViewportState
 import org.aerobag.app.domain.NativeAppCoreAdapter
 import org.aerobag.app.domain.NativeBindings
+import org.aerobag.app.domain.NativeSessionCommandRejectedException
 import org.aerobag.app.domain.NativeUiSession
 import org.aerobag.app.domain.NavKvStore
 import org.aerobag.app.domain.NavRef
@@ -335,6 +336,7 @@ internal fun PlaybackWidget(
     sourcePath: String,
     onSourcePathChange: (String) -> Unit,
     onSnapshotChange: (UiSessionSnapshot) -> Unit,
+    onSessionCommandFailure: (Throwable) -> Unit,
     modifier: Modifier = Modifier,
 ) {
     val context = LocalContext.current
@@ -343,6 +345,18 @@ internal fun PlaybackWidget(
     var isBusy by remember { mutableStateOf(false) }
     var scrubCursorSeconds by remember { mutableStateOf<Double?>(null) }
     var seekJob by remember { mutableStateOf<Job?>(null) }
+    fun applyPlaybackCommand(commandName: String, operation: () -> UiSessionSnapshot): UiSessionSnapshot? =
+        try {
+            operation().also(onSnapshotChange)
+        } catch (error: CancellationException) {
+            throw error
+        } catch (error: NativeSessionCommandRejectedException) {
+            onSessionCommandFailure(error)
+            null
+        } catch (error: Throwable) {
+            Log.e("AerobagPlayback", "$commandName failed", error)
+            null
+        }
     val durationSeconds = playbackUiState.durationSeconds.coerceAtLeast(0.0)
     val committedCursorSeconds = playbackUiState.cursorSeconds.coerceIn(0.0, durationSeconds.takeIf { it > 0.0 } ?: 0.0)
     val cursorSeconds = (scrubCursorSeconds ?: committedCursorSeconds).coerceIn(0.0, durationSeconds.takeIf { it > 0.0 } ?: 0.0)
@@ -422,9 +436,15 @@ internal fun PlaybackWidget(
                                     withContext(Dispatchers.IO) {
                                         fetchResourceBytes(traceUrl).decodeToString()
                                     }
-                                onSnapshotChange(uiSession.loadPlaybackTrace(sourcePath, traceJson))
+                                applyPlaybackCommand("loadPlaybackTrace") {
+                                    uiSession.loadPlaybackTrace(sourcePath, traceJson)
+                                }
                             } catch (error: Throwable) {
-                                Log.e("AerobagPlayback", "trace load failed: $sourcePath", error)
+                                if (error is NativeSessionCommandRejectedException) {
+                                    onSessionCommandFailure(error)
+                                } else {
+                                    Log.e("AerobagPlayback", "trace load failed: $sourcePath", error)
+                                }
                             } finally {
                                 isBusy = false
                             }
@@ -443,14 +463,13 @@ internal fun PlaybackWidget(
                     enabled = playbackUiState.status != PlaybackStatus.Empty,
                     onClick = {
                         scope.launch {
-                            runCatching {
+                            applyPlaybackCommand("playPausePlayback") {
                                 if (playbackUiState.status == PlaybackStatus.Playing) {
                                     uiSession.pausePlayback(System.currentTimeMillis().toDouble())
                                 } else {
                                     uiSession.playPlayback(System.currentTimeMillis().toDouble())
                                 }
-                            }.onSuccess(onSnapshotChange)
-                                .onFailure { Log.e("AerobagPlayback", "play/pause failed", it) }
+                            }
                         }
                     },
                 )
@@ -466,10 +485,9 @@ internal fun PlaybackWidget(
                     modifier = Modifier.weight(1f).height(rowHeight),
                     onValueChange = { nextRate ->
                         scope.launch {
-                            runCatching {
+                            applyPlaybackCommand("setPlaybackRate") {
                                 uiSession.setPlaybackRate(nextRate.toDouble(), System.currentTimeMillis().toDouble())
-                            }.onSuccess(onSnapshotChange)
-                                .onFailure { Log.e("AerobagPlayback", "rate change failed", it) }
+                            }
                         }
                     },
                 )
@@ -482,16 +500,11 @@ internal fun PlaybackWidget(
                     scrubCursorSeconds = nextCursorSeconds
                     seekJob?.cancel()
                     seekJob = scope.launch {
-                        runCatching {
+                        applyPlaybackCommand("seekPlayback") {
                             uiSession.seekPlayback(nextCursorSeconds, System.currentTimeMillis().toDouble())
-                        }.onSuccess {
-                            onSnapshotChange(it)
+                        }?.let {
                             if (finished) {
                                 scrubCursorSeconds = null
-                            }
-                        }.onFailure {
-                            if (it !is CancellationException) {
-                                Log.e("AerobagPlayback", "seek failed", it)
                             }
                         }
                     }

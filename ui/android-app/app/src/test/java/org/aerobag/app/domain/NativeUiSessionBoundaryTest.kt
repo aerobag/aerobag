@@ -31,6 +31,16 @@ class NativeUiSessionBoundaryTest {
             "The native command helper must not absorb Kotlin-side programming/configuration failures.",
             sessionBody.contains("error.isNativeSessionCommandFailure()"),
         )
+        assertTrue(
+            "Rejected native session commands should refresh the snapshot but still report failure to the caller.",
+            Regex("""val refreshedSnapshot = refreshSnapshotAfterRejectedCommand\(commandName, error\)\s*throw NativeSessionCommandRejectedException\(commandName, refreshedSnapshot, error\)""")
+                .containsMatchIn(sessionBody),
+        )
+        assertTrue(
+            "Recoverable native session command failures should carry the refreshed snapshot to UI callers.",
+            source.contains("class NativeSessionCommandRejectedException") &&
+                source.contains("val refreshedSnapshot: UiSessionSnapshot"),
+        )
         assertFalse(
             "Paged snapshot mutations must pass through the named guarded helper.",
             Regex("""runPagedSnapshot\s*\{""").containsMatchIn(sessionBody),
@@ -61,6 +71,64 @@ class NativeUiSessionBoundaryTest {
         assertTrue(
             "Flight-plan route projection should rerun when core emits flight_plan_route.",
             mapPage.contains("uiInvalidationRevisions.flightPlanRoute"),
+        )
+    }
+
+    @Test
+    fun androidUiRoutesSessionCommandFailuresThroughRecoverableBoundary() {
+        val mainActivity = sourceFile("src/main/java/org/aerobag/app/MainActivity.kt").readText()
+        val flightPlanPage = sourceFile("src/main/java/org/aerobag/app/FlightPlanPage.kt").readText()
+        val mapPage = sourceFile("src/main/java/org/aerobag/app/MapExplorerPage.kt").readText()
+        val chartsPage = sourceFile("src/main/java/org/aerobag/app/ChartsPage.kt").readText()
+        val playbackWidget = sourceFile("src/main/java/org/aerobag/app/PlaybackWidget.kt").readText()
+
+        assertTrue(
+            "MainActivity should own the central recoverable session-command UI boundary.",
+            mainActivity.contains("fun recoverSessionCommandFailure(error: Throwable") &&
+                mainActivity.contains("fun applySessionCommand(") &&
+                mainActivity.contains("Action failed; app state was refreshed."),
+        )
+        for ((name, source) in listOf(
+            "FlightPlanPage.kt" to flightPlanPage,
+            "MapExplorerPage.kt" to mapPage,
+            "ChartsPage.kt" to chartsPage,
+            "PlaybackWidget.kt" to playbackWidget,
+        )) {
+            assertTrue(
+                "$name should route recoverable session command failures to the app shell.",
+                source.contains("onSessionCommandFailure: (Throwable) -> Unit"),
+            )
+        }
+
+        val directSnapshotPatterns = listOf(
+            Regex("""applySessionSnapshot\(\s*uiSession\."""),
+            Regex("""onApplySessionSnapshot\(\s*uiSession\."""),
+            Regex("""onSessionSnapshotChange\(\s*uiSession\."""),
+            Regex("""onSnapshotChange\(\s*uiSession\."""),
+            Regex("""onSessionSnapshotChange\(\s*\n\s*uiSession\."""),
+        )
+        for ((name, source) in listOf(
+            "MainActivity.kt" to mainActivity,
+            "FlightPlanPage.kt" to flightPlanPage,
+            "MapExplorerPage.kt" to mapPage,
+            "ChartsPage.kt" to chartsPage,
+            "PlaybackWidget.kt" to playbackWidget,
+        )) {
+            for (pattern in directSnapshotPatterns) {
+                assertFalse(
+                    "$name should not evaluate uiSession mutations directly inside snapshot application calls.",
+                    pattern.containsMatchIn(source),
+                )
+            }
+        }
+        assertFalse(
+            "MainActivity should not hide session command failures behind generic runCatching blocks.",
+            Regex("""runCatching\s*\{\s*uiSession\.""").containsMatchIn(mainActivity),
+        )
+        assertTrue(
+            "ChartsPage's remaining plate-load runCatching must route typed command rejections to the app shell.",
+            chartsPage.contains("error is org.aerobag.app.domain.NativeSessionCommandRejectedException") &&
+                chartsPage.contains("onSessionCommandFailure(error)"),
         )
     }
 

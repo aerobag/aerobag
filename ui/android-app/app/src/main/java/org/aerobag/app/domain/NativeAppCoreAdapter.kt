@@ -651,6 +651,15 @@ class NativeAppCoreAdapter(
 
 }
 
+class NativeSessionCommandRejectedException(
+    val commandName: String,
+    val refreshedSnapshot: UiSessionSnapshot,
+    cause: RuntimeException,
+) : RuntimeException(
+    "Session command failed; refreshed current app state command=$commandName",
+    cause,
+)
+
 class NativeUiSession internal constructor(
     private val handle: Long,
     private val bridge: NativeBridge,
@@ -711,8 +720,8 @@ class NativeUiSession internal constructor(
             if (!error.isNativeSessionCommandFailure()) {
                 throw error
             }
-            refreshSnapshotAfterRejectedCommand(commandName, error)
-            null
+            val refreshedSnapshot = refreshSnapshotAfterRejectedCommand(commandName, error)
+            throw NativeSessionCommandRejectedException(commandName, refreshedSnapshot, error)
         }
 
     private fun refreshSnapshotAfterRejectedCommand(commandName: String, error: RuntimeException): UiSessionSnapshot {

@@ -561,6 +561,7 @@ internal fun MapExplorerPage(
     onPageTilePaintTimingComplete: (Long) -> Unit,
     onViewportChange: (MapViewportState) -> Unit,
     onSessionSnapshotChange: (UiSessionSnapshot) -> Unit,
+    onSessionCommandFailure: (Throwable) -> Unit,
     onSelectOwnshipSource: (String) -> Unit,
     onSituationControlInput: (SituationControlInput) -> Unit,
     onPlaybackSourcePathChange: (String) -> Unit,
@@ -583,6 +584,16 @@ internal fun MapExplorerPage(
         }
     }
     val devServerBaseUrl = remember(context) { loadAndroidDevServerBaseUrl(context.applicationContext) }
+    fun applySessionCommand(commandName: String, operation: () -> UiSessionSnapshot): UiSessionSnapshot? =
+        try {
+            operation().also(onSessionSnapshotChange)
+        } catch (error: CancellationException) {
+            throw error
+        } catch (error: Throwable) {
+            Log.w("AerobagSessionCommand", "map command failed command=$commandName", error)
+            onSessionCommandFailure(error)
+            null
+        }
     val focusRequester = remember { FocusRequester() }
     var chartTrayOpen by remember { mutableStateOf(false) }
     var layerTrayOpen by remember { mutableStateOf(false) }
@@ -832,11 +843,13 @@ internal fun MapExplorerPage(
             ) {
                 val visible = !mapLayerState.metars.visible
                 val startMs = SystemClock.elapsedRealtime()
-                val snapshot = uiSession.setMapLayerVisibility(MapLayerId.Metars, visible)
-                diagnosticLogInfo(MapLayerLogTag) {
-                    "toggle layer=metars visible=$visible coreMs=${SystemClock.elapsedRealtime() - startMs}"
+                if (applySessionCommand("setMapLayerVisibility") {
+                        uiSession.setMapLayerVisibility(MapLayerId.Metars, visible)
+                    } != null) {
+                    diagnosticLogInfo(MapLayerLogTag) {
+                        "toggle layer=metars visible=$visible coreMs=${SystemClock.elapsedRealtime() - startMs}"
+                    }
                 }
-                onSessionSnapshotChange(snapshot)
             },
             MenuDockOption(
                 key = "vectors",
@@ -847,11 +860,13 @@ internal fun MapExplorerPage(
             ) {
                 val visible = !mapLayerState.vectors.visible
                 val startMs = SystemClock.elapsedRealtime()
-                val snapshot = uiSession.setMapLayerVisibility(MapLayerId.Vectors, visible)
-                diagnosticLogInfo(MapLayerLogTag) {
-                    "toggle layer=vectors visible=$visible coreMs=${SystemClock.elapsedRealtime() - startMs}"
+                if (applySessionCommand("setMapLayerVisibility") {
+                        uiSession.setMapLayerVisibility(MapLayerId.Vectors, visible)
+                    } != null) {
+                    diagnosticLogInfo(MapLayerLogTag) {
+                        "toggle layer=vectors visible=$visible coreMs=${SystemClock.elapsedRealtime() - startMs}"
+                    }
                 }
-                onSessionSnapshotChange(snapshot)
             },
             MenuDockOption(
                 key = "nexrad",
@@ -862,11 +877,13 @@ internal fun MapExplorerPage(
             ) {
                 val visible = !mapLayerState.nexrad.visible
                 val startMs = SystemClock.elapsedRealtime()
-                val snapshot = uiSession.setMapLayerVisibility(MapLayerId.Nexrad, visible)
-                diagnosticLogInfo(MapLayerLogTag) {
-                    "toggle layer=nexrad visible=$visible coreMs=${SystemClock.elapsedRealtime() - startMs}"
+                if (applySessionCommand("setMapLayerVisibility") {
+                        uiSession.setMapLayerVisibility(MapLayerId.Nexrad, visible)
+                    } != null) {
+                    diagnosticLogInfo(MapLayerLogTag) {
+                        "toggle layer=nexrad visible=$visible coreMs=${SystemClock.elapsedRealtime() - startMs}"
+                    }
                 }
-                onSessionSnapshotChange(snapshot)
             },
             MenuDockOption(
                 key = "terrain_warning",
@@ -877,11 +894,13 @@ internal fun MapExplorerPage(
             ) {
                 val visible = !mapLayerState.terrainWarning.visible
                 val startMs = SystemClock.elapsedRealtime()
-                val snapshot = uiSession.setMapLayerVisibility(MapLayerId.TerrainWarning, visible)
-                diagnosticLogInfo(MapLayerLogTag) {
-                    "toggle layer=terrain_warning visible=$visible coreMs=${SystemClock.elapsedRealtime() - startMs}"
+                if (applySessionCommand("setMapLayerVisibility") {
+                        uiSession.setMapLayerVisibility(MapLayerId.TerrainWarning, visible)
+                    } != null) {
+                    diagnosticLogInfo(MapLayerLogTag) {
+                        "toggle layer=terrain_warning visible=$visible coreMs=${SystemClock.elapsedRealtime() - startMs}"
+                    }
                 }
-                onSessionSnapshotChange(snapshot)
             },
             MenuDockOption(
                 key = "world_basemap",
@@ -892,11 +911,13 @@ internal fun MapExplorerPage(
             ) {
                 val visible = !mapLayerState.worldBasemap.visible
                 val startMs = SystemClock.elapsedRealtime()
-                val snapshot = uiSession.setMapLayerVisibility(MapLayerId.WorldBasemap, visible)
-                diagnosticLogInfo(MapLayerLogTag) {
-                    "toggle layer=world_basemap visible=$visible coreMs=${SystemClock.elapsedRealtime() - startMs}"
+                if (applySessionCommand("setMapLayerVisibility") {
+                        uiSession.setMapLayerVisibility(MapLayerId.WorldBasemap, visible)
+                    } != null) {
+                    diagnosticLogInfo(MapLayerLogTag) {
+                        "toggle layer=world_basemap visible=$visible coreMs=${SystemClock.elapsedRealtime() - startMs}"
+                    }
                 }
-                onSessionSnapshotChange(snapshot)
             },
             MenuDockOption(
                 key = "offline_regions",
@@ -907,11 +928,13 @@ internal fun MapExplorerPage(
             ) {
                 val visible = !mapLayerState.offlineRegions.visible
                 val startMs = SystemClock.elapsedRealtime()
-                val snapshot = uiSession.setMapLayerVisibility(MapLayerId.OfflineRegions, visible)
-                diagnosticLogInfo(MapLayerLogTag) {
-                    "toggle layer=offline_regions visible=$visible coreMs=${SystemClock.elapsedRealtime() - startMs}"
+                if (applySessionCommand("setMapLayerVisibility") {
+                        uiSession.setMapLayerVisibility(MapLayerId.OfflineRegions, visible)
+                    } != null) {
+                    diagnosticLogInfo(MapLayerLogTag) {
+                        "toggle layer=offline_regions visible=$visible coreMs=${SystemClock.elapsedRealtime() - startMs}"
+                    }
                 }
-                onSessionSnapshotChange(snapshot)
             },
         )
     }
@@ -1143,7 +1166,7 @@ internal fun MapExplorerPage(
         val scenarioStartMs = SystemClock.elapsedRealtime()
         try {
             val scenarioNowMs = System.currentTimeMillis()
-            onSessionSnapshotChange(
+            applySessionCommand("registerOwnshipSource") {
                 uiSession.registerOwnshipSource(
                     OwnshipSourceRegistration(
                         sourceId = PerfScenarioKorsOwnshipSourceId,
@@ -1152,9 +1175,9 @@ internal fun MapExplorerPage(
                         selectable = true,
                         autoEligible = false,
                     ),
-                ),
-            )
-            onSessionSnapshotChange(
+                )
+            }
+            applySessionCommand("updateOwnshipSourceStatus") {
                 uiSession.updateOwnshipSourceStatus(
                     OwnshipSourceStatusUpdate(
                         sourceId = PerfScenarioKorsOwnshipSourceId,
@@ -1162,9 +1185,9 @@ internal fun MapExplorerPage(
                         enabled = true,
                         statusLabel = "KORS terrain perf",
                     ),
-                ),
-            )
-            onSessionSnapshotChange(
+                )
+            }
+            applySessionCommand("pushSituationSample") {
                 uiSession.pushSituationSample(
                     SituationSample(
                         sourceId = PerfScenarioKorsOwnshipSourceId,
@@ -1182,9 +1205,11 @@ internal fun MapExplorerPage(
                         groundSpeedKt = 120.0,
                         altitudeMslFt = PerfScenarioKorsStressAltitudeMslFt,
                     ),
-                ),
-            )
-            onSessionSnapshotChange(uiSession.selectOwnshipSource(OwnshipSelection.Source(PerfScenarioKorsOwnshipSourceId)))
+                )
+            }
+            applySessionCommand("selectOwnshipSource") {
+                uiSession.selectOwnshipSource(OwnshipSelection.Source(PerfScenarioKorsOwnshipSourceId))
+            }
             delay(250)
             val scenarioSnapshot = uiSession.refreshSnapshot()
             onSessionSnapshotChange(scenarioSnapshot)
@@ -1193,10 +1218,14 @@ internal fun MapExplorerPage(
                 "start scenario=${scenario.id} surface=${surfaceSize.width}x${surfaceSize.height} density=${density.density} map=$selectedMapId terrainLayerEnabled=${mapLayerState.terrainWarning.enabled} nexradLayerEnabled=${mapLayerState.nexrad.enabled} snapshotOwnshipTerrainBucketFt=${scenarioSnapshot.appUiState.ownship.render.terrainAltitudeBucketFt} syntheticOwnship=${PerfScenarioKorsStressCenterLat},${PerfScenarioKorsStressCenterLon} altitudeMslFt=$PerfScenarioKorsStressAltitudeMslFt",
             )
             if (mapLayerState.terrainWarning.enabled && !mapLayerState.terrainWarning.visible) {
-                onSessionSnapshotChange(uiSession.setMapLayerVisibility(MapLayerId.TerrainWarning, true))
+                applySessionCommand("setMapLayerVisibility") {
+                    uiSession.setMapLayerVisibility(MapLayerId.TerrainWarning, true)
+                }
             }
             if (mapLayerState.nexrad.enabled && !mapLayerState.nexrad.visible) {
-                onSessionSnapshotChange(uiSession.setMapLayerVisibility(MapLayerId.Nexrad, true))
+                applySessionCommand("setMapLayerVisibility") {
+                    uiSession.setMapLayerVisibility(MapLayerId.Nexrad, true)
+                }
             }
             val center = latLonToWorld(PerfScenarioKorsStressCenterLat, PerfScenarioKorsStressCenterLon)
             val baseViewport = MapViewportState(
@@ -1714,7 +1743,7 @@ internal fun MapExplorerPage(
     }
     LaunchedEffect(uiSession, mapFollowUiState.following, mapFollowTargetViewport, viewport) {
         if (mapFollowUiState.following && mapFollowTargetViewport == null) {
-            runCatching { uiSession.engageMapFollow(viewport) }.onSuccess(onSessionSnapshotChange)
+            applySessionCommand("engageMapFollow") { uiSession.engageMapFollow(viewport) }
         }
     }
     LaunchedEffect(mapFollowUiState.following, mapFollowTargetViewport, mapGestureActive) {
@@ -1756,7 +1785,7 @@ internal fun MapExplorerPage(
             },
             onResult = { outcome ->
                 if (outcome.invalidations.contains("session_snapshot")) {
-                    onSessionSnapshotChange(uiSession.refreshSnapshot())
+                    applySessionCommand("refreshSnapshot") { uiSession.refreshSnapshot() }
                 }
                 val overlay = outcome.overlay
                 perfLogInfo(MapLayerLogTag) {
@@ -2406,9 +2435,9 @@ internal fun MapExplorerPage(
                 layerTrayOpen = false
             },
             onAction = { actionId ->
-                runCatching { uiSession.performStatusAction(actionId) }
-                    .onSuccess(onSessionSnapshotChange)
-                    .onFailure { error -> Log.w(MapLayerLogTag, "status action failed: $actionId", error) }
+                applySessionCommand("performStatusAction") {
+                    uiSession.performStatusAction(actionId)
+                }
             },
         )
         SituationStatusBadge(
@@ -2485,6 +2514,7 @@ internal fun MapExplorerPage(
                 sourcePath = playbackSourcePath,
                 onSourcePathChange = onPlaybackSourcePathChange,
                 onSnapshotChange = onSessionSnapshotChange,
+                onSessionCommandFailure = onSessionCommandFailure,
                 modifier = Modifier
                     .align(Alignment.BottomStart)
                     .padding(start = ThumbGap, bottom = playbackBottomPadding),
@@ -2501,14 +2531,14 @@ internal fun MapExplorerPage(
             selected = mapFollowUiState.following,
             selectedColor = Color(0xFF0D6F67),
             onClick = {
-                runCatching {
-                    followTargetGate.clear()
+                followTargetGate.clear()
+                applySessionCommand(if (mapFollowUiState.following) "disengageMapFollow" else "engageMapFollow") {
                     if (mapFollowUiState.following) {
                         uiSession.disengageMapFollow(viewportState.value)
                     } else {
                         uiSession.engageMapFollow(viewportState.value)
                     }
-                }.onSuccess(onSessionSnapshotChange)
+                }
             },
         )
 
@@ -2566,9 +2596,9 @@ internal fun MapExplorerPage(
                                     return@MapSelectionTray
                                 }
                                 action.flightPlanRowAction?.let { rowAction ->
-                                    runCatching { uiSession.performFlightPlanRowAction(rowAction.rowUid, rowAction.actionUid) }
-                                        .onSuccess(onSessionSnapshotChange)
-                                        .onFailure { Log.w("AerobagSelection", "flight-plan row action failed", it) }
+                                    applySessionCommand("performFlightPlanRowAction") {
+                                        uiSession.performFlightPlanRowAction(rowAction.rowUid, rowAction.actionUid)
+                                    }
                                     mapSelection = null
                                     return@MapSelectionTray
                                 }
@@ -2581,9 +2611,9 @@ internal fun MapExplorerPage(
                                     null -> Unit
                                 }
                                 action.sessionAction?.let { sessionAction ->
-                                    runCatching { uiSession.performMapSelectionAction(sessionAction) }
-                                        .onSuccess(onSessionSnapshotChange)
-                                        .onFailure { Log.w("AerobagSelection", "map selection action failed", it) }
+                                    applySessionCommand("performMapSelectionAction") {
+                                        uiSession.performMapSelectionAction(sessionAction)
+                                    }
                                     mapSelection = null
                                     return@MapSelectionTray
                                 }

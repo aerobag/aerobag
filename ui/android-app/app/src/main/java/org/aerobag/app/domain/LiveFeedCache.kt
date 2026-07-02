@@ -13,7 +13,9 @@ import java.io.InputStream
 import java.net.HttpURLConnection
 import java.net.SocketTimeoutException
 import java.net.URL
+import java.util.concurrent.TimeUnit
 import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.delay
@@ -29,6 +31,8 @@ import kotlinx.serialization.decodeFromString
 import kotlinx.serialization.encodeToString
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonObject
+import okhttp3.OkHttpClient
+import okhttp3.Request
 import org.aerobag.app.diagnosticLogInfo
 
 private const val LiveFeedCacheDirectoryName = "live-feeds"
@@ -240,6 +244,12 @@ class AndroidLiveFeedClient(
     private val pumpMutex = Mutex()
     private val eventsUrl = cache.liveFeedEventsUrl()
     private val statusUrl = cache.liveFeedStatusUrl()
+    private val sseHttpClient = OkHttpClient.Builder()
+        .connectTimeout(LiveFeedSseConnectTimeoutMs.toLong(), TimeUnit.MILLISECONDS)
+        .readTimeout(LiveFeedSseIdleTimeoutMs.toLong(), TimeUnit.MILLISECONDS)
+        .callTimeout(0, TimeUnit.MILLISECONDS)
+        .retryOnConnectionFailure(true)
+        .build()
 
     suspend fun bootstrapAndRun(
         promote: suspend (LiveFeedInstalledSummary) -> Unit,
@@ -409,15 +419,29 @@ class AndroidLiveFeedClient(
             onChanged = onChanged,
             onConnectionEvent = onConnectionEvent,
         )
-        val connection = (URL(eventsUrl).openConnection() as HttpURLConnection).apply {
-            connectTimeout = LiveFeedSseConnectTimeoutMs
-            readTimeout = LiveFeedSseIdleTimeoutMs
-            setRequestProperty("Accept", "text/event-stream")
+        val request = Request.Builder()
+            .url(eventsUrl)
+            .header("Accept", "text/event-stream")
+            .header("Cache-Control", "no-cache")
+            .build()
+        val call = sseHttpClient.newCall(request)
+        val cancellationHandle = kotlin.coroutines.coroutineContext[Job]?.invokeOnCompletion { cause ->
+            if (cause is CancellationException) {
+                call.cancel()
+            }
         }
         var connected = false
         try {
-            connection.inputStream.bufferedReader().use { reader ->
+            Log.i(TAG, "live-feed SSE connect start url=$eventsUrl")
+            val response = call.execute()
+            response.use {
+                if (!it.isSuccessful) {
+                    throw IOException("live-feed SSE HTTP ${it.code}: ${it.message}")
+                }
+                val body = it.body ?: throw IOException("live-feed SSE response has no body")
+                val reader = body.charStream().buffered()
                 connected = true
+                Log.i(TAG, "live-feed SSE connected url=$eventsUrl code=${it.code} protocol=${it.protocol}")
                 handleRuntimeEvent(
                     kind = "connected",
                     networkStatus = detectLiveFeedNetworkStatus(context, eventsUrl),
@@ -472,7 +496,8 @@ class AndroidLiveFeedClient(
             }
             throw error
         } finally {
-            connection.disconnect()
+            cancellationHandle?.dispose()
+            call.cancel()
         }
     }
 

@@ -2063,7 +2063,45 @@ internal data class WireDerivedChartAsset(
     val kind: String,
     val folder_category: String,
     val has_thumbnail: Boolean,
+    val georef: WirePlateGeoref? = null,
 )
+
+@kotlinx.serialization.Serializable(with = WirePlateGeorefSerializer::class)
+internal sealed interface WirePlateGeoref
+
+private object WirePlateGeorefSerializer :
+    kotlinx.serialization.json.JsonContentPolymorphicSerializer<WirePlateGeoref>(WirePlateGeoref::class) {
+    override fun selectDeserializer(
+        element: JsonElement,
+    ): kotlinx.serialization.DeserializationStrategy<WirePlateGeoref> =
+        when (val kind = element.jsonObject["kind"]?.jsonPrimitive?.content) {
+            "plate_transform_v1" -> WirePlateTransformV1.serializer()
+            "airport_diagram_transform_v1" -> WireAirportDiagramTransformV1.serializer()
+            else -> error("Unsupported PlateGeoref variant: $kind")
+        }
+}
+
+@kotlinx.serialization.Serializable
+@kotlinx.serialization.SerialName("plate_transform_v1")
+internal data class WirePlateTransformV1(
+    val kind: String = "plate_transform_v1",
+    val pixels_per_longitude: Double,
+    val pixels_per_latitude: Double,
+    val top_left_lon: Double,
+    val top_left_lat: Double,
+) : WirePlateGeoref
+
+@kotlinx.serialization.Serializable
+@kotlinx.serialization.SerialName("airport_diagram_transform_v1")
+internal data class WireAirportDiagramTransformV1(
+    val kind: String = "airport_diagram_transform_v1",
+    val pixel_x_from_lon: Double,
+    val pixel_x_from_lat: Double,
+    val pixel_x_offset: Double,
+    val pixel_y_from_lon: Double,
+    val pixel_y_from_lat: Double,
+    val pixel_y_offset: Double,
+) : WirePlateGeoref
 
 internal fun WireDerivedChartPage.toUi() = ChartPageFixture(
     airports = airports.map { it.toUi() },
@@ -2424,7 +2462,26 @@ internal fun WireDerivedChartAsset.toUi() = ChartAsset(
     kind = kind,
     folderCategory = folder_category,
     hasThumbnail = has_thumbnail,
+    georef = georef?.toUi(),
 )
+
+private fun WirePlateGeoref.toUi(): PlateGeoref =
+    when (this) {
+        is WirePlateTransformV1 -> PlateGeoref.PlateTransformV1(
+            pixelsPerLongitude = pixels_per_longitude,
+            pixelsPerLatitude = pixels_per_latitude,
+            topLeftLon = top_left_lon,
+            topLeftLat = top_left_lat,
+        )
+        is WireAirportDiagramTransformV1 -> PlateGeoref.AirportDiagramTransformV1(
+            pixelXFromLon = pixel_x_from_lon,
+            pixelXFromLat = pixel_x_from_lat,
+            pixelXOffset = pixel_x_offset,
+            pixelYFromLon = pixel_y_from_lon,
+            pixelYFromLat = pixel_y_from_lat,
+            pixelYOffset = pixel_y_offset,
+        )
+    }
 
 @kotlinx.serialization.Serializable
 private data class WireMapViewport(

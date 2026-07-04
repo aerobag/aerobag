@@ -214,6 +214,8 @@ import org.aerobag.app.domain.AirspaceDisplayPath
 import org.aerobag.app.domain.AirspaceDisplaySubpath
 import org.aerobag.app.domain.AirspaceLimitGlyph
 import org.aerobag.app.domain.AirspaceScreenPoint
+import org.aerobag.app.domain.ImageDisplaySize
+import org.aerobag.app.domain.ImageViewportState
 import org.aerobag.app.domain.LatLonPoint
 import org.aerobag.app.domain.MapLayerId
 import org.aerobag.app.domain.MapFollowUiState
@@ -233,6 +235,7 @@ import org.aerobag.app.domain.NavElementUiView
 import org.aerobag.app.domain.OwnshipControlModel
 import org.aerobag.app.domain.OwnshipMode
 import org.aerobag.app.domain.OwnshipRenderState
+import org.aerobag.app.domain.PlateGeoref
 import org.aerobag.app.domain.describeForLog
 import org.aerobag.app.domain.PackageZipStore
 import org.aerobag.app.domain.PlaybackStatus
@@ -350,8 +353,8 @@ internal fun ChartsPage(
     uiSession: NativeUiSession,
     navElement: NavElementUiView?,
     folderOpen: Boolean,
-    viewport: org.aerobag.app.domain.ImageViewportState?,
-    onViewportChange: (org.aerobag.app.domain.ImageViewportState?) -> Unit,
+    viewport: ImageViewportState?,
+    onViewportChange: (ImageViewportState?) -> Unit,
     onSessionSnapshotChange: (UiSessionSnapshot) -> Unit,
     onSessionCommandFailure: (Throwable) -> Unit,
     onFolderOpenChange: (Boolean) -> Unit,
@@ -364,6 +367,7 @@ internal fun ChartsPage(
 ) {
     val context = LocalContext.current
     val activity = context as? MainActivity
+    val aircraftDrawable = remember(context) { AppCompatResources.getDrawable(context, R.drawable.plan_view_icon)?.mutate() }
     val density = LocalDensity.current
     val focusRequester = remember { FocusRequester() }
     val devServerBaseUrl = remember(context) { loadAndroidDevServerBaseUrl(context.applicationContext) }
@@ -606,28 +610,53 @@ internal fun ChartsPage(
                 },
             )
         } else {
+            val currentViewport = viewport
+            val currentBitmap = bitmap
+            val currentDisplaySize = if (currentViewport != null && currentBitmap != null) {
+                imageDisplaySize(
+                    imageWidthPx = currentBitmap.width.toFloat(),
+                    imageHeightPx = currentBitmap.height.toFloat(),
+                    viewportWidthPx = surfaceSize.width.toFloat(),
+                    viewportHeightPx = surfaceSize.height.toFloat(),
+                    zoom = currentViewport.zoom,
+                )
+            } else {
+                null
+            }
+            val plateOwnshipOverlay = if (currentViewport != null && currentBitmap != null && currentDisplaySize != null) {
+                resolvePlateOwnshipOverlay(
+                    ownship = ownship,
+                    georef = selectedChart?.georef,
+                    imageWidthPx = currentBitmap.width.toFloat(),
+                    imageHeightPx = currentBitmap.height.toFloat(),
+                    viewport = currentViewport,
+                    displaySize = currentDisplaySize,
+                )
+            } else {
+                null
+            }
             Canvas(modifier = Modifier.fillMaxSize()) {
-                val currentViewport = viewport
-                val currentBitmap = bitmap
-                if (currentViewport != null && currentBitmap != null) {
-                    val displaySize = imageDisplaySize(
-                        imageWidthPx = currentBitmap.width.toFloat(),
-                        imageHeightPx = currentBitmap.height.toFloat(),
-                        viewportWidthPx = surfaceSize.width.toFloat(),
-                        viewportHeightPx = surfaceSize.height.toFloat(),
-                        zoom = currentViewport.zoom,
-                    )
+                if (currentViewport != null && currentBitmap != null && currentDisplaySize != null) {
                     drawImage(
                         image = currentBitmap,
                         dstOffset = IntOffset(currentViewport.leftPx.roundToInt(), currentViewport.topPx.roundToInt()),
-                        dstSize = IntSize(displaySize.widthPx.roundToInt(), displaySize.heightPx.roundToInt()),
+                        dstSize = IntSize(currentDisplaySize.widthPx.roundToInt(), currentDisplaySize.heightPx.roundToInt()),
                     )
                     drawRect(
                         color = Color(0x14000000),
                         topLeft = Offset(currentViewport.leftPx, currentViewport.topPx),
-                        size = Size(displaySize.widthPx, displaySize.heightPx),
+                        size = Size(currentDisplaySize.widthPx, currentDisplaySize.heightPx),
                         style = Stroke(width = 1.dp.toPx()),
                     )
+                }
+            }
+            if (plateOwnshipOverlay != null) {
+                Canvas(
+                    modifier = Modifier
+                        .fillMaxSize()
+                        .testTag("parity:plate-ownship-overlay"),
+                ) {
+                    drawPlateOwnshipOverlay(plateOwnshipOverlay, aircraftDrawable)
                 }
             }
         }
@@ -780,6 +809,82 @@ internal fun ChartsPage(
                 .padding(bottom = ThumbGap),
         )
 
+    }
+}
+
+internal data class PlateOwnshipOverlay(
+    val screenX: Float,
+    val screenY: Float,
+    val headingDeg: Float,
+)
+
+private data class PlateImagePoint(
+    val x: Double,
+    val y: Double,
+)
+
+internal fun resolvePlateOwnshipOverlay(
+    ownship: OwnshipRenderState,
+    georef: PlateGeoref?,
+    imageWidthPx: Float,
+    imageHeightPx: Float,
+    viewport: ImageViewportState,
+    displaySize: ImageDisplaySize,
+): PlateOwnshipOverlay? {
+    if (imageWidthPx <= 0f || imageHeightPx <= 0f) return null
+    if (!ownship.drawAircraft) return null
+    val position = ownship.position ?: return null
+    val chartGeoref = georef ?: return null
+    val imagePoint = plateImagePoint(position, chartGeoref)
+    if (imagePoint.x.isNaN() || imagePoint.x.isInfinite()) return null
+    if (imagePoint.y.isNaN() || imagePoint.y.isInfinite()) return null
+    if (imagePoint.x < 0.0 || imagePoint.x > imageWidthPx.toDouble()) return null
+    if (imagePoint.y < 0.0 || imagePoint.y > imageHeightPx.toDouble()) return null
+
+    val scaleX = displaySize.widthPx.toDouble() / imageWidthPx.toDouble()
+    val scaleY = displaySize.heightPx.toDouble() / imageHeightPx.toDouble()
+    return PlateOwnshipOverlay(
+        screenX = (viewport.leftPx.toDouble() + imagePoint.x * scaleX).toFloat(),
+        screenY = (viewport.topPx.toDouble() + imagePoint.y * scaleY).toFloat(),
+        headingDeg = (ownship.orientationDeg ?: 0.0).toFloat(),
+    )
+}
+
+private fun plateImagePoint(position: LatLonPoint, georef: PlateGeoref): PlateImagePoint =
+    when (georef) {
+        is PlateGeoref.PlateTransformV1 -> PlateImagePoint(
+            x = (position.lon - georef.topLeftLon) * georef.pixelsPerLongitude,
+            y = (position.lat - georef.topLeftLat) * georef.pixelsPerLatitude,
+        )
+        is PlateGeoref.AirportDiagramTransformV1 -> PlateImagePoint(
+            x = position.lon * georef.pixelXFromLon +
+                position.lat * georef.pixelXFromLat +
+                georef.pixelXOffset,
+            y = position.lon * georef.pixelYFromLon +
+                position.lat * georef.pixelYFromLat +
+                georef.pixelYOffset,
+        )
+    }
+
+private fun androidx.compose.ui.graphics.drawscope.DrawScope.drawPlateOwnshipOverlay(
+    overlay: PlateOwnshipOverlay,
+    aircraftDrawable: android.graphics.drawable.Drawable?,
+) {
+    val center = Offset(overlay.screenX, overlay.screenY)
+    val iconSizePx = ThumbSize.toPx() * 0.72f
+    if (aircraftDrawable == null) {
+        drawCircle(Color.White, radius = iconSizePx * 0.24f, center = center)
+        drawCircle(Color(0x66000000), radius = iconSizePx * 0.24f, center = center, style = Stroke(width = 2f))
+        return
+    }
+    val left = (center.x - iconSizePx / 2f).roundToInt()
+    val top = (center.y - iconSizePx / 2f).roundToInt()
+    drawContext.canvas.nativeCanvas.apply {
+        save()
+        rotate(overlay.headingDeg, center.x, center.y)
+        aircraftDrawable.setBounds(left, top, (left + iconSizePx).roundToInt(), (top + iconSizePx).roundToInt())
+        aircraftDrawable.draw(this)
+        restore()
     }
 }
 

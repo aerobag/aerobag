@@ -481,6 +481,24 @@ data class MapViewportSeed(
     val zoom: Double,
 )
 
+sealed interface PlateGeoref {
+    data class PlateTransformV1(
+        val pixelsPerLongitude: Double,
+        val pixelsPerLatitude: Double,
+        val topLeftLon: Double,
+        val topLeftLat: Double,
+    ) : PlateGeoref
+
+    data class AirportDiagramTransformV1(
+        val pixelXFromLon: Double,
+        val pixelXFromLat: Double,
+        val pixelXOffset: Double,
+        val pixelYFromLon: Double,
+        val pixelYFromLat: Double,
+        val pixelYOffset: Double,
+    ) : PlateGeoref
+}
+
 data class ChartAsset(
     val id: String,
     val airportId: String,
@@ -488,6 +506,7 @@ data class ChartAsset(
     val kind: String,
     val folderCategory: String,
     val hasThumbnail: Boolean,
+    val georef: PlateGeoref? = null,
 )
 
 data class ChartAirport(

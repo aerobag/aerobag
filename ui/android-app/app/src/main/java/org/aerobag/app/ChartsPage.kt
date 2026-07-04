@@ -1115,7 +1115,7 @@ internal fun AndroidChartSearchBox(
                 ),
             modifier =
                 Modifier
-                    .testTag("chart-search-input")
+                    .testTag("parity:chart-search-input")
                     .width(ThumbSize * 2f)
                     .height(ThumbSize)
                     .clip(RoundedCornerShape(ThumbRadius))
@@ -1176,7 +1176,7 @@ internal fun AndroidChartSearchBox(
                                 Modifier
                                     .fillMaxWidth()
                                     .height(ThumbSize)
-                                    .testTag("chart-search-suggestion-${suggestion.identifier}")
+                                    .testTag("parity:chart-search-suggestion:${suggestion.identifier}")
                                     .clickable {
                                         keyboardController?.hide()
                                         onSuggestionClick(suggestion)

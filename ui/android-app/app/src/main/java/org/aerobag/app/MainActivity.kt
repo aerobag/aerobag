@@ -2082,7 +2082,8 @@ internal fun DisclaimerConsentModal(
                 onClick = onAccept,
                 modifier = Modifier
                     .fillMaxWidth()
-                    .height(ThumbSize * 0.95f),
+                    .height(ThumbSize * 0.95f)
+                    .testTag("parity:disclaimer-accept-button"),
                 colors = ButtonDefaults.buttonColors(
                     containerColor = uiTheme.controls.buttonChecked,
                     contentColor = uiTheme.controls.buttonFg,

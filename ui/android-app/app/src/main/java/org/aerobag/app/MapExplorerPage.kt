@@ -3258,7 +3258,19 @@ private fun RouteOverlayLayer(
     uiTheme: UiTheme,
 ) {
     if (flightPlanRoute.isEmpty() || surfaceWidthPx <= 0f || surfaceHeightPx <= 0f) return
-    Canvas(modifier = Modifier.fillMaxSize()) {
+    val visibleSegmentCount = remember(flightPlanRoute, viewport, surfaceWidthPx, surfaceHeightPx) {
+        countVisibleRouteSegments(
+            flightPlanRoute = flightPlanRoute,
+            viewport = viewport,
+            surfaceWidthPx = surfaceWidthPx,
+            surfaceHeightPx = surfaceHeightPx,
+        )
+    }
+    Canvas(
+        modifier = Modifier
+            .fillMaxSize()
+            .testTag("parity:flight-plan-route-overlay:segments:${flightPlanRoute.size}:visible:$visibleSegmentCount"),
+    ) {
         flightPlanRoute.forEach { segment ->
             val path = segment.path.ifEmpty { listOf(segment.from, segment.to) }.map { point ->
                 latLonToScreen(point.lat, point.lon, viewport, surfaceWidthPx, surfaceHeightPx)
@@ -3289,6 +3301,30 @@ private fun RouteOverlayLayer(
         }
     }
 }
+
+private fun countVisibleRouteSegments(
+    flightPlanRoute: List<FlightPlanRouteSegment>,
+    viewport: MapViewportState,
+    surfaceWidthPx: Float,
+    surfaceHeightPx: Float,
+): Int =
+    flightPlanRoute.count { segment ->
+        val screenPath = segment.path.ifEmpty { listOf(segment.from, segment.to) }.map { point ->
+            latLonToScreen(point.lat, point.lon, viewport, surfaceWidthPx, surfaceHeightPx)
+        }
+        if (screenPath.size < 2) {
+            return@count false
+        }
+        val minX = screenPath.minOf { it.x }
+        val maxX = screenPath.maxOf { it.x }
+        val minY = screenPath.minOf { it.y }
+        val maxY = screenPath.maxOf { it.y }
+        val marginPx = 24f
+        maxX >= -marginPx &&
+            minX <= surfaceWidthPx + marginPx &&
+            maxY >= -marginPx &&
+            minY <= surfaceHeightPx + marginPx
+    }
 
 @Composable
 private fun MapSelectionHighlightLayer(

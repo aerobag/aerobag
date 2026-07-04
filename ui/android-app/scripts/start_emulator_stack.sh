@@ -40,6 +40,7 @@ EMULATOR_ADB_PORT="${EMULATOR_ADB_PORT:-$((EMULATOR_CONSOLE_PORT + 1))}"
 ANDROID_SERIAL="${ANDROID_SERIAL:-emulator-${EMULATOR_CONSOLE_PORT}}"
 PACKAGE_SOURCE_PORT="${PACKAGE_SOURCE_PORT:-8083}"
 ANDROID_PACKAGE_SOURCE_REVERSE="${ANDROID_PACKAGE_SOURCE_REVERSE:-1}"
+EMULATOR_HEADLESS="${EMULATOR_HEADLESS:-0}"
 XVFB_SCREEN="${XVFB_SCREEN:-1440x3040x24}"
 VNC_CLIP="${VNC_CLIP:-1080x2400+0+0}"
 AVD_NAME="${AVD_NAME:-aerobag34}"
@@ -139,33 +140,37 @@ start_if_needed() {
   echo "started $name (pid $!)"
 }
 
-start_if_needed "Xvfb" "$XVFB_PID_FILE" "$XVFB_LOG" \
-  Xvfb "$DISPLAY_NUM" -screen 0 "$XVFB_SCREEN" -ac
+if [[ "$EMULATOR_HEADLESS" != "1" ]]; then
+  start_if_needed "Xvfb" "$XVFB_PID_FILE" "$XVFB_LOG" \
+    Xvfb "$DISPLAY_NUM" -screen 0 "$XVFB_SCREEN" -ac
 
-display_is_ready() {
-  DISPLAY="$DISPLAY_NUM" xdpyinfo >/dev/null 2>&1
-}
+  display_is_ready() {
+    DISPLAY="$DISPLAY_NUM" xdpyinfo >/dev/null 2>&1
+  }
 
-for _ in $(seq 1 "$DISPLAY_READY_TIMEOUT"); do
-  if display_is_ready; then
-    break
+  for _ in $(seq 1 "$DISPLAY_READY_TIMEOUT"); do
+    if display_is_ready; then
+      break
+    fi
+    sleep 1
+  done
+
+  if ! display_is_ready; then
+    echo "X display $DISPLAY_NUM did not become ready" >&2
+    exit 1
   fi
+
+  start_if_needed "x11vnc" "$X11VNC_PID_FILE" "$X11VNC_LOG" \
+    x11vnc -display "$DISPLAY_NUM" -forever -shared -nopw -rfbport "$VNC_PORT" \
+    -noxdamage -nowf -noscr -fixscreen 1 -ncache 0 -clip "$VNC_CLIP"
+
   sleep 1
-done
-
-if ! display_is_ready; then
-  echo "X display $DISPLAY_NUM did not become ready" >&2
-  exit 1
-fi
-
-start_if_needed "x11vnc" "$X11VNC_PID_FILE" "$X11VNC_LOG" \
-  x11vnc -display "$DISPLAY_NUM" -forever -shared -nopw -rfbport "$VNC_PORT" \
-  -noxdamage -nowf -noscr -fixscreen 1 -ncache 0 -clip "$VNC_CLIP"
-
-sleep 1
-if ! is_running "$X11VNC_PID_FILE"; then
-  echo "x11vnc failed to stay running; see $X11VNC_LOG" >&2
-  exit 1
+  if ! is_running "$X11VNC_PID_FILE"; then
+    echo "x11vnc failed to stay running; see $X11VNC_LOG" >&2
+    exit 1
+  fi
+else
+  echo "headless emulator mode; skipping Xvfb and x11vnc"
 fi
 
 if is_running "$EMULATOR_PID_FILE"; then
@@ -181,11 +186,18 @@ else
     -no-audio
     -no-snapshot-save
   )
+  if [[ "$EMULATOR_HEADLESS" == "1" ]]; then
+    emulator_args+=(-no-window)
+  fi
   if [[ "$EMULATOR_READ_ONLY" == "1" ]]; then
     emulator_args+=(-read-only)
   fi
-  DISPLAY="$DISPLAY_NUM" nohup setsid "$EMULATOR_BIN" "${emulator_args[@]}" \
-    >"$EMULATOR_LOG" 2>&1 &
+  if [[ "$EMULATOR_HEADLESS" == "1" ]]; then
+    nohup setsid "$EMULATOR_BIN" "${emulator_args[@]}" >"$EMULATOR_LOG" 2>&1 &
+  else
+    DISPLAY="$DISPLAY_NUM" nohup setsid "$EMULATOR_BIN" "${emulator_args[@]}" \
+      >"$EMULATOR_LOG" 2>&1 &
+  fi
   echo "$!" >"$EMULATOR_PID_FILE"
   echo "started emulator (pid $!)"
 fi
@@ -202,8 +214,12 @@ for _ in $(seq 1 180); do
       echo "PACKAGE_SOURCE_REVERSE=tcp:${PACKAGE_SOURCE_PORT}->tcp:${PACKAGE_SOURCE_PORT}"
       echo "ANDROID_PACKAGE_SOURCE_BASE_URL=http://127.0.0.1:${PACKAGE_SOURCE_PORT}/packages/"
     fi
-    echo "DISPLAY=$DISPLAY_NUM"
-    echo "VNC=localhost:$VNC_PORT"
+    if [[ "$EMULATOR_HEADLESS" != "1" ]]; then
+      echo "DISPLAY=$DISPLAY_NUM"
+      echo "VNC=localhost:$VNC_PORT"
+    else
+      echo "EMULATOR_HEADLESS=1"
+    fi
     echo "ANDROID_SERIAL=$ANDROID_SERIAL"
     exit 0
   fi

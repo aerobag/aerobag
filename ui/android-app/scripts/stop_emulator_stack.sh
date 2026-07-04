@@ -28,7 +28,23 @@ print(5554 + index * 2)
 PY
 )"
 EMULATOR_CONSOLE_PORT="${EMULATOR_CONSOLE_PORT:-$DEFAULT_EMULATOR_CONSOLE_PORT}"
+EMULATOR_ADB_PORT="${EMULATOR_ADB_PORT:-$((EMULATOR_CONSOLE_PORT + 1))}"
 ANDROID_SERIAL="${ANDROID_SERIAL:-emulator-${EMULATOR_CONSOLE_PORT}}"
+DEFAULT_DISPLAY_NUM="$(python3 - <<'PY' "$VNC_PORT"
+import sys
+port = int(sys.argv[1])
+print(f":{max(port - 5900, 1)}")
+PY
+)"
+DISPLAY_NUM="${DISPLAY_NUM:-$DEFAULT_DISPLAY_NUM}"
+AVD_NAME="${AVD_NAME:-aerobag34}"
+if [[ -z "${AVD_INSTANCE_NAME:-}" ]]; then
+  if [[ "$VNC_PORT" == "5900" ]]; then
+    AVD_INSTANCE_NAME="$AVD_NAME"
+  else
+    AVD_INSTANCE_NAME="${AVD_NAME}-${VNC_PORT}"
+  fi
+fi
 STATE_DIR="${AEROBAG_UI_TARGET_ROOT}/android/emulator-stack-${VNC_PORT}"
 XVFB_PID_FILE="${STATE_DIR}/xvfb.pid"
 X11VNC_PID_FILE="${STATE_DIR}/x11vnc.pid"
@@ -58,6 +74,28 @@ stop_pid_file() {
   rm -f "$pid_file"
 }
 
+stop_matching_processes() {
+  local name="$1"
+  local pattern="$2"
+  local pid
+  while read -r pid; do
+    if [[ -z "$pid" ]]; then
+      continue
+    fi
+    kill "$pid" 2>/dev/null || true
+    for _ in $(seq 1 20); do
+      if ! kill -0 "$pid" 2>/dev/null; then
+        break
+      fi
+      sleep 0.25
+    done
+    if kill -0 "$pid" 2>/dev/null; then
+      kill -9 "$pid" 2>/dev/null || true
+    fi
+    echo "stopped stale $name (pid $pid)"
+  done < <(pgrep -f "$pattern" || true)
+}
+
 if adb -s "$ANDROID_SERIAL" get-state >/dev/null 2>&1; then
   adb -s "$ANDROID_SERIAL" emu kill >/dev/null 2>&1 || true
   sleep 2
@@ -66,3 +104,7 @@ fi
 stop_pid_file "emulator" "$EMULATOR_PID_FILE"
 stop_pid_file "x11vnc" "$X11VNC_PID_FILE"
 stop_pid_file "Xvfb" "$XVFB_PID_FILE"
+
+stop_matching_processes "emulator" "qemu-system.*@$AVD_INSTANCE_NAME|qemu-system.*-ports ${EMULATOR_CONSOLE_PORT},${EMULATOR_ADB_PORT}"
+stop_matching_processes "x11vnc" "x11vnc .* -rfbport ${VNC_PORT}( |$)"
+stop_matching_processes "Xvfb" "Xvfb ${DISPLAY_NUM}( |$)"

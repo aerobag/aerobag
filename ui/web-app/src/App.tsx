@@ -5140,6 +5140,14 @@ function MapPage(props: {
   }
 
   function handlePointerRelease(event: React.PointerEvent<HTMLDivElement>) {
+    if (trayGroup.scrimOpen || mapSelection) {
+      activePointersRef.current.delete(event.pointerId);
+      clickCandidateRef.current = null;
+      pinchRef.current = null;
+      dragRef.current = null;
+      setViewportGestureActive(false);
+      return;
+    }
     const clickCandidate = clickCandidateRef.current;
     activePointersRef.current.delete(event.pointerId);
     setViewportGestureActive(activePointersRef.current.size > 0);
@@ -5201,7 +5209,7 @@ function MapPage(props: {
   }
 
   function handleWheel(event: React.WheelEvent<HTMLDivElement>) {
-    if (trayGroup.scrimOpen || surfaceSize.width <= 0 || surfaceSize.height <= 0) {
+    if (trayGroup.scrimOpen || mapSelection || surfaceSize.width <= 0 || surfaceSize.height <= 0) {
       event.preventDefault();
       return;
     }
@@ -5220,7 +5228,7 @@ function MapPage(props: {
   }
 
   function handleDoubleClick(event: React.MouseEvent<HTMLDivElement>) {
-    if (trayGroup.scrimOpen || surfaceSize.width <= 0 || surfaceSize.height <= 0) {
+    if (trayGroup.scrimOpen || mapSelection || surfaceSize.width <= 0 || surfaceSize.height <= 0) {
       return;
     }
     const nextViewport = zoomAroundPoint(
@@ -8338,7 +8346,12 @@ function MapSelectionTray(props: {
       style={{ ...horizontalStyle, ...verticalStyle }}
       aria-label="Map selection"
       onPointerDown={stopPointer}
+      onPointerMove={stopPointer}
       onPointerUp={stopPointer}
+      onPointerCancel={stopPointer}
+      onWheel={stopWheel}
+      onClick={stopClick}
+      onDoubleClick={stopDoubleClick}
     >
       {result.categories.map((category) => (
         <div key={category.id} className="mapSelectionCategory">
@@ -8368,14 +8381,19 @@ function MapSelectionTray(props: {
       ))}
       <div className="mapSelectionActions">
         <div className="mapSelectionActionTitle">
-          {selectedItem ? (
-            <>
-              <strong>{selectedItem.label}</strong>
-              {selectedItem.description ? (
-                <span className="mapSelectionActionDescription"> · {selectedItem.description}</span>
-              ) : null}
-            </>
-          ) : "\u00a0"}
+          <div className="mapSelectionActionTitlePrimary">
+            {selectedItem ? (
+              <>
+                <strong>{selectedItem.label}</strong>
+                {selectedItem.description ? (
+                  <span className="mapSelectionActionDescription"> · {selectedItem.description}</span>
+                ) : null}
+              </>
+            ) : "\u00a0"}
+          </div>
+          <div className="mapSelectionActionTitleSecondary">
+            {selectedItem?.secondary_description?.trim() || "\u00a0"}
+          </div>
         </div>
         <div className="mapSelectionActionGrid">
           {visibleActionSlots.map((action) => (
@@ -8422,7 +8440,12 @@ function MapSelectionDetailModal(props: { title: string; text: string }) {
       className="mapSelectionDetailModal"
       aria-label={props.title}
       onPointerDown={stopPointer}
+      onPointerMove={stopPointer}
       onPointerUp={stopPointer}
+      onPointerCancel={stopPointer}
+      onWheel={stopWheel}
+      onClick={stopClick}
+      onDoubleClick={stopDoubleClick}
     >
       <div className="mapSelectionDetailTitle">{props.title}</div>
       <div className="mapSelectionDetailText">{props.text}</div>
@@ -10306,6 +10329,10 @@ function stopPointer(event: React.PointerEvent<HTMLElement>) {
 }
 
 function stopClick(event: MouseEvent<HTMLElement>) {
+  event.stopPropagation();
+}
+
+function stopWheel(event: React.WheelEvent<HTMLElement>) {
   event.stopPropagation();
 }
 

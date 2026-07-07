@@ -465,6 +465,7 @@ export type MapSelectionItem = {
   label: string;
   sublabel: string;
   description?: string | null;
+  secondary_description?: string | null;
   detail_text?: string | null;
   highlight: MapSelectionHighlight;
   nav_ref?: NavRef | null;

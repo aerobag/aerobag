@@ -16789,6 +16789,7 @@ mod tests {
                     label: "KPWT".to_string(),
                     sublabel: "Airport".to_string(),
                     description: None,
+                    secondary_description: None,
                     position: None,
                     detail_text: None,
                     highlight: MapSelectionHighlight::Spot {
@@ -16842,6 +16843,7 @@ mod tests {
             label: id.to_string(),
             sublabel: String::new(),
             description: description.map(str::to_string),
+            secondary_description: None,
             position,
             detail_text: None,
             highlight: MapSelectionHighlight::Spot { lat: 0.0, lon: 0.0 },
@@ -16889,8 +16891,9 @@ mod tests {
     fn map_selection_uses_common_tenths_format_for_near_point_distance() {
         let ownship = LatLon { lat: 0.0, lon: 0.0 };
         let point = LatLon { lat: 0.0, lon: 0.1 };
-        let selection =
-            test_map_selection_with_items(vec![test_map_selection_item("SPOT", None, Some(point))]);
+        let mut spot = test_map_selection_item("SPOT", None, Some(point));
+        spot.secondary_description = Some("0.0000, 0.1000".to_string());
+        let selection = test_map_selection_with_items(vec![spot]);
 
         let selection = map_selection_with_ownship_distances(selection, Some(ownship));
         assert_eq!(
@@ -16899,6 +16902,12 @@ mod tests {
                 "{}nm",
                 crate::flight_data::format_nm(crate::great_circle_distance_nm(ownship, point))
             ))
+        );
+        assert_eq!(
+            selection.categories[0].items[0]
+                .secondary_description
+                .as_deref(),
+            Some("0.0000, 0.1000")
         );
     }
 

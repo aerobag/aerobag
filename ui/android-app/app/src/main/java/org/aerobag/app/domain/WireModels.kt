@@ -669,6 +669,7 @@ data class WireMapSelectionItem(
     val label: String,
     val sublabel: String,
     val description: String? = null,
+    val secondary_description: String? = null,
     val detail_text: String? = null,
     val highlight: @Serializable(with = WireMapSelectionHighlightSerializer::class) WireMapSelectionHighlight,
     val nav_ref: WireNavRef? = null,

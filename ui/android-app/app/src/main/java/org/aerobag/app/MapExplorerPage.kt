@@ -3669,20 +3669,7 @@ internal fun MapSelectionTray(
                 color = uiTheme.controls.panelBg.copy(alpha = 0.72f),
             ) {
                 Column(modifier = Modifier.padding(ThumbGap * 0.6f), verticalArrangement = Arrangement.spacedBy(ThumbGap * 0.45f)) {
-                    Text(
-                        text = buildAnnotatedString {
-                            if (selectedItem != null) {
-                                withStyle(SpanStyle(fontWeight = FontWeight.Bold)) { append(selectedItem.label) }
-                                selectedItem.description?.takeIf { it.isNotBlank() }?.let { append(" · $it") }
-                            } else {
-                                append(" ")
-                            }
-                        },
-                        style = MaterialTheme.typography.labelMedium,
-                        color = uiTheme.controls.panelFg,
-                        maxLines = 1,
-                        overflow = TextOverflow.Ellipsis,
-                    )
+                    MapSelectionHeader(selectedItem)
                     MapSelectionActionRow(
                         actions = firstActionRow,
                         selectedItem = selectedItem,
@@ -3700,6 +3687,43 @@ internal fun MapSelectionTray(
                 }
             }
         }
+    }
+}
+
+@Composable
+internal fun MapSelectionHeader(selectedItem: MapSelectionItem?) {
+    val uiTheme = LocalAerobagUiTheme.current
+    Column(
+        modifier = Modifier
+            .fillMaxWidth()
+            .height(ThumbSize * 0.52f),
+        verticalArrangement = Arrangement.Center,
+    ) {
+        Text(
+            text = buildAnnotatedString {
+                if (selectedItem != null) {
+                    withStyle(SpanStyle(fontWeight = FontWeight.Bold)) { append(selectedItem.label) }
+                    selectedItem.description?.takeIf { it.isNotBlank() }?.let { append(" · $it") }
+                } else {
+                    append(" ")
+                }
+            },
+            style = MaterialTheme.typography.labelMedium.copy(lineHeight = 15.sp),
+            color = uiTheme.controls.panelFg,
+            maxLines = 1,
+            overflow = TextOverflow.Ellipsis,
+        )
+        Text(
+            text = selectedItem?.secondaryDescription?.trim()?.takeIf { it.isNotEmpty() } ?: "\u00a0",
+            style = MaterialTheme.typography.labelSmall.copy(
+                fontSize = 13.sp,
+                fontWeight = FontWeight.Bold,
+                lineHeight = 14.sp,
+            ),
+            color = uiTheme.controls.panelFg.copy(alpha = 0.72f),
+            maxLines = 1,
+            overflow = TextOverflow.Ellipsis,
+        )
     }
 }
 

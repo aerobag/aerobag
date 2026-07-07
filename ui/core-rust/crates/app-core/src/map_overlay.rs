@@ -765,6 +765,8 @@ pub struct MapSelectionItem {
     pub sublabel: String,
     #[serde(default)]
     pub description: Option<String>,
+    #[serde(default)]
+    pub secondary_description: Option<String>,
     #[serde(skip)]
     pub position: Option<LatLon>,
     #[serde(default)]
@@ -2875,6 +2877,7 @@ fn selection_item_for_point(
         label,
         sublabel: record.kind.trim().to_ascii_uppercase(),
         description: selection_item_description(record, is_airport),
+        secondary_description: None,
         position: Some(LatLon {
             lat: record.lat,
             lon: record.lon,
@@ -2998,6 +3001,7 @@ fn selection_item_for_flight_plan_point(
         label,
         sublabel: point.symbol.kind.trim().to_ascii_uppercase(),
         description: None,
+        secondary_description: None,
         position: Some(point.position),
         detail_text: None,
         highlight: MapSelectionHighlight::FeatureRef {
@@ -3062,7 +3066,8 @@ fn spot_selection_item(click: LatLon, plan: Option<&FlightPlan>) -> MapSelection
         id: format!("spot:{:.6}:{:.6}", click.lat, click.lon),
         label: "SPOT".to_string(),
         sublabel: coordinates.clone(),
-        description: Some(coordinates),
+        description: None,
+        secondary_description: Some(coordinates),
         position: Some(click),
         detail_text: None,
         highlight: MapSelectionHighlight::Spot {
@@ -3092,6 +3097,7 @@ fn selection_item_for_metar(
         label: record.station_id.trim().to_ascii_uppercase(),
         sublabel: normalized_metar_flight_category(record).to_ascii_uppercase(),
         description: record.observed_at_utc.clone(),
+        secondary_description: None,
         position: Some(LatLon {
             lat: record.latitude,
             lon: record.longitude,
@@ -3129,6 +3135,7 @@ fn selection_item_for_pirep(
             .unwrap_or("PIREP")
             .to_ascii_uppercase(),
         description: record.observed_at_utc.clone(),
+        secondary_description: None,
         position: Some(LatLon {
             lat: record.latitude,
             lon: record.longitude,
@@ -3184,6 +3191,7 @@ fn selection_item_for_airspace(feature: &AirspaceFeaturePayload) -> MapSelection
         label: airspace_selection_label(feature),
         sublabel: feature.ident.trim().to_string(),
         description: None,
+        secondary_description: None,
         position: None,
         detail_text: None,
         highlight: MapSelectionHighlight::FeatureRef {
@@ -3243,6 +3251,7 @@ fn selection_item_for_offline_region_group(regions: &[&OfflineRegionRecord]) -> 
         label: first.region_id.to_ascii_uppercase(),
         sublabel: description.clone(),
         description: Some(description),
+        secondary_description: None,
         position: None,
         detail_text: Some(offline_region_group_detail_text(regions)),
         highlight: MapSelectionHighlight::OfflineRegion {
@@ -3457,6 +3466,7 @@ fn selection_item_for_tfr(area: &TfrAreaPayload) -> MapSelectionItem {
         label: "TFR".to_string(),
         sublabel: area.notam_id.trim().to_string(),
         description: None,
+        secondary_description: None,
         position: None,
         detail_text: None,
         highlight: MapSelectionHighlight::FeatureRef {
@@ -5431,6 +5441,7 @@ mod tests {
             label: id.to_string(),
             sublabel: String::new(),
             description: None,
+            secondary_description: None,
             position: None,
             detail_text: None,
             highlight: MapSelectionHighlight::Spot { lat: 0.0, lon: 0.0 },
@@ -8079,7 +8090,11 @@ mod tests {
             .find(|item| item.id.starts_with("spot:"))
             .expect("spot selection item");
         let spot_coordinates = format!("{:.4}, {:.4}", viewport.center.lat, viewport.center.lon);
-        assert_eq!(spot.description.as_deref(), Some(spot_coordinates.as_str()));
+        assert_eq!(spot.description, None);
+        assert_eq!(
+            spot.secondary_description.as_deref(),
+            Some(spot_coordinates.as_str())
+        );
         assert_eq!(spot.detail_text, None);
         let spot_nav_ref = NavRef::Spot(viewport.center);
         assert_eq!(spot.nav_ref, Some(spot_nav_ref.clone()));

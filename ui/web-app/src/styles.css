@@ -1427,10 +1427,23 @@ button {
 }
 
 .mapSelectionActionTitle {
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  height: calc(var(--thumb) * 0.42);
   margin-bottom: var(--thumb-gap);
   color: #24333a;
   font-size: calc(var(--thumb) * 0.18);
   font-weight: 400;
+  line-height: 1.12;
+}
+
+.mapSelectionActionTitlePrimary,
+.mapSelectionActionTitleSecondary {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .mapSelectionActionTitle strong {
@@ -1439,6 +1452,12 @@ button {
 
 .mapSelectionActionDescription {
   font-weight: 400;
+}
+
+.mapSelectionActionTitleSecondary {
+  color: #52656d;
+  font-size: calc(var(--thumb) * 0.16);
+  font-weight: 700;
 }
 
 .mapSelectionActionGrid {

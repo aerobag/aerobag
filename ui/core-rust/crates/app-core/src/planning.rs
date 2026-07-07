@@ -2041,7 +2041,7 @@ fn populate_default_flight_data_cells(rows: &mut [FlightPlanDisplayRowUiView]) {
             None,
             None,
             None,
-            FlightDataCellTone::Normal,
+            FlightDataCellTone::Planned,
         );
     }
 }

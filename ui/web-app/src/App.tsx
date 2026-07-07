@@ -760,6 +760,8 @@ type UiThemeJson = {
     flight_data_label: string;
     flight_data_value: string;
     flight_data_missing_value: string;
+    flight_data_passed_value: string;
+    flight_data_active_value: string;
     cdi_pointer: string;
   };
   aviation: {
@@ -2848,7 +2850,8 @@ export default function App() {
         "--theme-flight-data-label": controlTheme.flight_data_label,
         "--theme-flight-data-value": controlTheme.flight_data_value,
         "--theme-flight-data-missing-value": controlTheme.flight_data_missing_value,
-        "--theme-flight-data-muted-value": `color-mix(in srgb, ${controlTheme.panel_fg} 60%, ${controlTheme.panel_bg})`,
+        "--theme-flight-data-passed-value": controlTheme.flight_data_passed_value,
+        "--theme-flight-data-active-value": controlTheme.flight_data_active_value,
         "--theme-cdi-pointer": controlTheme.cdi_pointer,
         "--theme-class-b-d-blue": loadedUiTheme.aviation.class_b_d_blue,
         "--theme-class-c-magenta": loadedUiTheme.aviation.class_c_magenta,
@@ -7458,7 +7461,8 @@ function FlightPlanPage(props: {
                             "planCell",
                             row.depth > 0 ? "planStructuredDataCell isChildRow" : "",
                             row.rowKind === "summary" ? "planSummaryCell" : "",
-                            cell.tone === "muted" ? "isMuted" : "",
+                            cell.tone === "passed" ? "isPassed" : "",
+                            cell.tone === "active" ? "isActive" : "",
                           ].filter(Boolean).join(" ")}
                         >
                           {cell.value ?? "\u2014"}

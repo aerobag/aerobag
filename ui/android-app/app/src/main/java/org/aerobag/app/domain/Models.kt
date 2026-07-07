@@ -404,7 +404,7 @@ data class FlightDataCell(
     val id: String,
     val label: String,
     val value: String?,
-    val tone: String = "normal",
+    val tone: String = "planned",
 )
 
 data class FlightDataColumn(

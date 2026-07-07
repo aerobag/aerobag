@@ -1,17 +1,18 @@
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
 #[serde(rename_all = "snake_case")]
 pub enum FlightDataCellTone {
     #[default]
-    Normal,
-    Muted,
+    Planned,
+    Passed,
+    Active,
 }
 
 impl FlightDataCellTone {
-    fn is_normal(&self) -> bool {
-        matches!(self, Self::Normal)
+    fn is_planned(&self) -> bool {
+        matches!(self, Self::Planned)
     }
 }
 
@@ -20,7 +21,7 @@ pub struct FlightDataCell {
     pub id: String,
     pub label: String,
     pub value: Option<String>,
-    #[serde(default, skip_serializing_if = "FlightDataCellTone::is_normal")]
+    #[serde(default, skip_serializing_if = "FlightDataCellTone::is_planned")]
     pub tone: FlightDataCellTone,
 }
 
@@ -148,7 +149,7 @@ impl FlightDataComputer {
                     id: column.id,
                     label: column.label,
                     value: Some(String::new()),
-                    tone: FlightDataCellTone::Normal,
+                    tone: FlightDataCellTone::Planned,
                 })
                 .collect();
         }
@@ -176,27 +177,35 @@ impl FlightDataComputer {
         ]
     }
 
-    pub fn flight_plan_summary_cells(&self, total_distance_nm: Option<f64>) -> Vec<FlightDataCell> {
+    pub fn flight_plan_summary_cells(
+        &self,
+        total_distance_nm: Option<f64>,
+        tone: FlightDataCellTone,
+    ) -> Vec<FlightDataCell> {
         vec![
-            cell(
+            cell_with_tone(
                 "waypoint_distance",
                 "DIST nm",
                 total_distance_nm.map(format_nm),
+                tone,
             ),
-            cell(
+            cell_with_tone(
                 "final_eta",
                 "ETA",
                 total_distance_nm.and_then(|distance| self.format_eta(distance)),
+                tone,
             ),
-            cell(
+            cell_with_tone(
                 "waypoint_ete",
                 "ETE",
                 total_distance_nm.and_then(|distance| self.format_ete(distance)),
+                tone,
             ),
-            cell(
+            cell_with_tone(
                 "fuel",
                 "FUEL gal",
                 total_distance_nm.and_then(|distance| self.format_fuel(distance)),
+                tone,
             ),
             cell("desired_track", "DTK °M", None),
         ]
@@ -259,7 +268,7 @@ pub fn possible_columns() -> Vec<FlightDataColumn> {
 }
 
 pub fn cell(id: &str, label: &str, value: Option<String>) -> FlightDataCell {
-    cell_with_tone(id, label, value, FlightDataCellTone::Normal)
+    cell_with_tone(id, label, value, FlightDataCellTone::Planned)
 }
 
 pub fn cell_with_tone(
@@ -363,7 +372,7 @@ mod tests {
             Some(30.0),
             None,
             None,
-            FlightDataCellTone::Normal,
+            FlightDataCellTone::Planned,
         );
         let row_ete = row_cells
             .iter()
@@ -413,7 +422,7 @@ mod tests {
             Some(30.0),
             None,
             None,
-            FlightDataCellTone::Normal,
+            FlightDataCellTone::Planned,
         );
         let row_fuel = row_cells
             .iter()
@@ -442,7 +451,7 @@ mod tests {
             Some(30.0),
             computer.format_eta_at(30.0, 12 * 60 * 60 * 1000),
             None,
-            FlightDataCellTone::Normal,
+            FlightDataCellTone::Planned,
         );
 
         assert_eq!(
@@ -491,13 +500,14 @@ mod tests {
             Some(30.0),
             None,
             None,
-            FlightDataCellTone::Normal,
+            FlightDataCellTone::Planned,
         );
         let row_eta = row_cells
             .iter()
             .find(|cell| cell.id == "final_eta")
             .and_then(|cell| cell.value.as_deref());
-        let summary_cells = computer.flight_plan_summary_cells(Some(30.0));
+        let summary_cells =
+            computer.flight_plan_summary_cells(Some(30.0), FlightDataCellTone::Planned);
         let summary_eta = summary_cells
             .iter()
             .find(|cell| cell.id == "final_eta")

@@ -676,7 +676,7 @@ export type FlightDataCell = {
   id: string;
   label: string;
   value: string | null;
-  tone?: "normal" | "muted";
+  tone?: "planned" | "passed" | "active";
 };
 
 export type FlightDataColumn = {

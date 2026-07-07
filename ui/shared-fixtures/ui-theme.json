@@ -24,6 +24,8 @@
     "flight_data_label": "#ffffffd1",
     "flight_data_value": "#ffffff",
     "flight_data_missing_value": "#ffffff94",
+    "flight_data_passed_value": "#8da1b3",
+    "flight_data_active_value": "#d45a7a",
     "cdi_pointer": "#d45a7a"
   },
   "aviation": {

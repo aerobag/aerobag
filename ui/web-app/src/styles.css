@@ -2889,13 +2889,16 @@ button {
   text-align: right;
 }
 
-.planCell.isMuted {
-  color: var(--theme-flight-data-muted-value);
+.planSummaryCell {
+  font-weight: 800;
 }
 
-.planSummaryCell {
-  color: var(--theme-panel-muted);
-  font-weight: 800;
+.planCell.isPassed {
+  color: var(--theme-flight-data-passed-value);
+}
+
+.planCell.isActive {
+  color: var(--theme-flight-data-active-value);
 }
 
 .planWaypointButton {

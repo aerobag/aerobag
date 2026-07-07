@@ -540,7 +540,7 @@ internal fun FlightPlanDataRow(
                 cell.value ?: "—",
                 Modifier.weight(1f),
                 cellHeight = cellHeight,
-                muted = cell.tone == "muted" || row.rowKind == "summary",
+                tone = cell.tone,
             )
         }
     }
@@ -608,6 +608,7 @@ internal fun PlanCell(
     cellHeight: Dp? = null,
     alpha: Float = 1f,
     muted: Boolean = false,
+    tone: String = "planned",
 ) {
     val uiTheme = LocalAerobagUiTheme.current
     val resolvedCellHeight = cellHeight ?: if (isHeader) ThumbSize * 0.5f else ThumbSize
@@ -626,6 +627,8 @@ internal fun PlanCell(
             color =
                 when {
                     isHeader -> uiTheme.controls.panelMuted
+                    tone == "active" -> uiTheme.controls.flightDataActiveValue
+                    tone == "passed" -> uiTheme.controls.flightDataPassedValue
                     muted -> uiTheme.controls.panelFg.copy(alpha = 0.6f)
                     else -> uiTheme.controls.panelFg
                 },

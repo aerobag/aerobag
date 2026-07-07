@@ -1436,7 +1436,7 @@ data class WireFlightDataCell(
     val id: String,
     val label: String,
     val value: String? = null,
-    val tone: String = "normal",
+    val tone: String = "planned",
 )
 
 @Serializable

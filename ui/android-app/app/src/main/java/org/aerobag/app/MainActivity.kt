@@ -245,6 +245,7 @@ import org.aerobag.app.domain.OwnshipLauncherTextTone
 import org.aerobag.app.domain.OwnshipMode
 import org.aerobag.app.domain.OwnshipRenderState
 import org.aerobag.app.domain.OwnshipSelection
+import org.aerobag.app.domain.OwnshipSourceKind
 import org.aerobag.app.domain.PackageZipStore
 import org.aerobag.app.domain.RasterMapUiState
 import org.aerobag.app.domain.PlaybackStatus
@@ -1219,6 +1220,7 @@ internal fun SituationStatusBadge(
             open = open,
             onToggle = onToggle,
             style = MenuDockStyle.Situation,
+            launcherTestTag = "parity:ownship-launcher",
             launcherForegroundColor = launcherForegroundColor,
             trayWidthOverride = trayWidth,
             options = emptyList(),
@@ -1257,6 +1259,7 @@ internal fun SituationSourceRow(
                 wide = false,
                 modifier = Modifier.size(ThumbSize),
                 maxLines = 2,
+                testTag = "parity:ownship-source:${source.sourceId}",
                 onClick = { onSelectSource(source.sourceId) },
             )
         }
@@ -2547,6 +2550,17 @@ internal fun AerobagApp(
             applyBackgroundSessionCommand("tickPlayback", "AerobagPlayback") {
                 uiSession.tickPlayback(System.currentTimeMillis().toDouble())
             }
+        }
+    }
+    val badAutopilotActive = appUiState.ownship.controls.sources.any { source ->
+        source.sourceKind == OwnshipSourceKind.BadAutopilot && source.active
+    }
+    LaunchedEffect(uiSession, badAutopilotActive) {
+        while (badAutopilotActive) {
+            applyBackgroundSessionCommand("tickBadAutopilot", "AerobagOwnship") {
+                uiSession.tickBadAutopilot(System.currentTimeMillis().toDouble())
+            }
+            delay(250)
         }
     }
     val sessionPlanUiState = requireNotNull(sessionSnapshot.appUiState.activePlan) {

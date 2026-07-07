@@ -976,6 +976,12 @@ class NativeUiSession internal constructor(
         }
     }
 
+    fun tickBadAutopilot(nowEpochMs: Double): UiSessionSnapshot {
+        return runPagedSnapshot("tickBadAutopilot") {
+            bridge.tickBadAutopilotInSessionPagedJson(handle, nowEpochMs)
+        }
+    }
+
     fun selectAirport(airportId: String): UiSessionSnapshot {
         return runPlainSnapshot("selectAirport") {
             bridge.selectAirportInSessionJson(handle, json.encodeToString(airportId))

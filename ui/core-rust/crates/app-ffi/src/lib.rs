@@ -725,6 +725,24 @@ pub fn tick_playback_in_session_paged_json(
     serde_json::to_string(&outcome).map_err(|err| err.to_string())
 }
 
+pub fn tick_bad_autopilot_in_session_json(
+    handle: u64,
+    now_epoch_ms: f64,
+) -> Result<String, String> {
+    let snapshot = app_core::tick_bad_autopilot_in_session(handle as u32, now_epoch_ms)
+        .map_err(|err| err.to_string())?;
+    serde_json::to_string(&snapshot).map_err(|err| err.to_string())
+}
+
+pub fn tick_bad_autopilot_in_session_paged_json(
+    handle: u64,
+    now_epoch_ms: f64,
+) -> Result<String, String> {
+    let outcome = app_core::tick_bad_autopilot_in_session_outcome(handle as u32, now_epoch_ms)
+        .map_err(|err| err.to_string())?;
+    serde_json::to_string(&outcome).map_err(|err| err.to_string())
+}
+
 pub fn select_chart_in_session_json(handle: u64, chart_id_json: &str) -> Result<String, String> {
     let chart_id: String = serde_json::from_str(chart_id_json).map_err(|err| err.to_string())?;
     let snapshot = app_core::select_chart_in_session(handle as u32, &chart_id)
@@ -3309,6 +3327,32 @@ pub extern "system" fn Java_org_aerobag_app_domain_NativeBindings_tickPlaybackIn
     return_string(
         &mut env,
         tick_playback_in_session_paged_json(handle as u64, now_epoch_ms),
+    )
+}
+
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_org_aerobag_app_domain_NativeBindings_tickBadAutopilotInSessionJson(
+    mut env: JNIEnv,
+    _class: JClass,
+    handle: i64,
+    now_epoch_ms: f64,
+) -> jstring {
+    return_string(
+        &mut env,
+        tick_bad_autopilot_in_session_json(handle as u64, now_epoch_ms),
+    )
+}
+
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_org_aerobag_app_domain_NativeBindings_tickBadAutopilotInSessionPagedJson(
+    mut env: JNIEnv,
+    _class: JClass,
+    handle: i64,
+    now_epoch_ms: f64,
+) -> jstring {
+    return_string(
+        &mut env,
+        tick_bad_autopilot_in_session_paged_json(handle as u64, now_epoch_ms),
     )
 }
 

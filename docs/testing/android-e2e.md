@@ -57,6 +57,10 @@ URL is not already available.
 - `android.flight-plan-route-smoke`: launch the app, enter flight plan
   `KRNT KPWT`, switch to the chart page, and assert that Android exposes a
   flight-plan route overlay with at least one visible segment.
+- `android.map-follow-ctr-gesture-smoke`: launch the app, enter the same
+  route, enable/select Bad Autopilot as a deterministic ownship source, engage
+  CTR, then assert that drag and zoom gestures keep CTR engaged while preserving
+  an off-center ownship offset.
 
 ## Testability Contract
 
@@ -72,5 +76,11 @@ route smoke test uses:
 parity:flight-plan-route-overlay:segments:<count>:visible:<count>
 ```
 
-This keeps assertions tied to the platform UI render path while avoiding
+The CTR regression test uses:
+
+```text
+parity:map-follow-state:following:<0|1>:ownship-x:<px>:ownship-y:<px>:center-x:<px>:center-y:<px>:zoom-centi:<zoom*100>
+```
+
+These probes keep assertions tied to the platform UI render path while avoiding
 business-logic duplication in the test runner.

@@ -313,6 +313,7 @@ fn platform_adapters_use_paged_loops_for_paged_session_exports() {
         "seekPlaybackInSessionPagedJson",
         "setPlaybackRateInSessionPagedJson",
         "tickPlaybackInSessionPagedJson",
+        "tickBadAutopilotInSessionPagedJson",
     ];
     for export in paged_android_snapshot_helper_exports {
         let needle = format!("bridge.{export}");
@@ -359,6 +360,7 @@ fn platform_adapters_do_not_call_plain_had_sensitive_snapshot_exports() {
         "updateOwnshipSourceStatusInSessionJson",
         "pushSituationSampleInSessionJson",
         "selectOwnshipSourceInSessionJson",
+        "tickBadAutopilotInSessionJson",
     ] {
         if android.contains(&format!("bridge.{export}(")) {
             violations.push(format!("android calls plain HAD-sensitive export {export}"));

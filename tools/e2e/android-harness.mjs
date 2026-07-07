@@ -200,7 +200,7 @@ async function scrollUntilTagInDirection(serial, tag, direction, maxSwipes) {
     const endY = direction === "down"
       ? Math.round(bounds.top + inset)
       : Math.round(bounds.bottom - inset);
-    adb(serial, ["shell", "input", "swipe", String(x), String(startY), String(x), String(endY), "450"]);
+    adb(serial, ["shell", "input", "touchscreen", "swipe", String(x), String(startY), String(x), String(endY), "450"]);
     await delay(250);
   }
   return findNode(dumpAndroid(serial), (node) => hasAndroidTag(node, tag)) !== null;
@@ -212,6 +212,20 @@ export function inputText(serial, text) {
 
 export function pressKey(serial, keyCode) {
   adb(serial, ["shell", "input", "keyevent", keyCode]);
+}
+
+export function swipe(serial, startX, startY, endX, endY, durationMs = 450) {
+  adb(serial, [
+    "shell",
+    "input",
+    "touchscreen",
+    "swipe",
+    String(Math.round(startX)),
+    String(Math.round(startY)),
+    String(Math.round(endX)),
+    String(Math.round(endY)),
+    String(Math.round(durationMs)),
+  ]);
 }
 
 export function clearFocusedText(serial, maxChars = 160) {

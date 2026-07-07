@@ -345,7 +345,9 @@ internal fun CommonDebugPanel(
     DebugCheckbox("offline simulated clock buttons", debugState.offlineSimulatedClockButtons) {
         onDebugFlagChange("offline_simulated_clock_buttons", it)
     }
-    DebugCheckbox("Bad Autopilot", debugState.badAutopilot) { onDebugFlagChange("bad_autopilot", it) }
+    DebugCheckbox("Bad Autopilot", debugState.badAutopilot, testTag = "parity:debug-flag:bad_autopilot") {
+        onDebugFlagChange("bad_autopilot", it)
+    }
     DebugCheckbox("capture GPS samples", debugState.gpsCapture) { onDebugFlagChange("gps_capture", it) }
 }
 
@@ -353,11 +355,19 @@ internal fun CommonDebugPanel(
 internal fun DebugCheckbox(
     label: String,
     checked: Boolean,
+    testTag: String? = null,
     onCheckedChange: (Boolean) -> Unit,
 ) {
     Row(
         verticalAlignment = Alignment.CenterVertically,
         horizontalArrangement = Arrangement.spacedBy(4.dp),
+        modifier = testTag
+            ?.let {
+                Modifier
+                    .testTag(it)
+                    .clickable { onCheckedChange(!checked) }
+            }
+            ?: Modifier,
     ) {
         Checkbox(
             checked = checked,

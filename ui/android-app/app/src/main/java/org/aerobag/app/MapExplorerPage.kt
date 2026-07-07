@@ -373,6 +373,29 @@ private const val PerfScenarioKorsStressCenterLon = -122.8600
 private const val PerfScenarioKorsStressZoom = 10.8
 private const val PerfScenarioKorsStressAltitudeMslFt = 1_000.0
 
+internal fun buildMapFollowProbeTag(
+    following: Boolean,
+    ownshipPosition: LatLonPoint,
+    viewport: MapViewportState,
+    surfaceWidthPx: Float,
+    surfaceHeightPx: Float,
+): String {
+    val point = latLonToScreen(
+        ownshipPosition.lat,
+        ownshipPosition.lon,
+        viewport,
+        surfaceWidthPx,
+        surfaceHeightPx,
+    )
+    return "parity:map-follow-state:" +
+        "following:${if (following) 1 else 0}:" +
+        "ownship-x:${point.x.roundToInt()}:" +
+        "ownship-y:${point.y.roundToInt()}:" +
+        "center-x:${(surfaceWidthPx / 2f).roundToInt()}:" +
+        "center-y:${(surfaceHeightPx / 2f).roundToInt()}:" +
+        "zoom-centi:${(viewport.zoom * 100.0).roundToInt()}"
+}
+
 private fun fetchMapOverlayCoreResource(
     context: Context,
     resource: CoreResourceRequest,
@@ -961,6 +984,27 @@ internal fun MapExplorerPage(
             heightUnits = surfaceHeightPx,
             ringCandidates = situationRingCandidates,
         )
+    }
+    val mapFollowProbeTag = remember(
+        mapFollowUiState.following,
+        ownship.drawAircraft,
+        ownship.position,
+        currentViewport,
+        surfaceWidthPx,
+        surfaceHeightPx,
+    ) {
+        val position = ownship.position
+        if (ownship.drawAircraft && position != null && surfaceWidthPx > 0f && surfaceHeightPx > 0f) {
+            buildMapFollowProbeTag(
+                following = mapFollowUiState.following,
+                ownshipPosition = position,
+                viewport = currentViewport,
+                surfaceWidthPx = surfaceWidthPx,
+                surfaceHeightPx = surfaceHeightPx,
+            )
+        } else {
+            null
+        }
     }
     fun syncFollowStateForViewport(nextViewport: MapViewportState) {
         if (!mapFollowUiState.following || surfaceWidthPx <= 0f || surfaceHeightPx <= 0f) {
@@ -2214,7 +2258,16 @@ internal fun MapExplorerPage(
                 true
             }
             .focusable()
-            .pointerInput(selectedMapId, surfaceSize, menuTrayOpen, mapSelection, mapSelectionTrayBounds, mapSurfaceBounds) {
+            .pointerInput(
+                selectedMapId,
+                surfaceSize,
+                menuTrayOpen,
+                mapSelection,
+                mapSelectionTrayBounds,
+                mapSurfaceBounds,
+                mapFollowUiState.following,
+                ownshipControls.selection,
+            ) {
                 if (surfaceWidthPx == 0f || surfaceHeightPx == 0f) {
                     return@pointerInput
                 }
@@ -2228,8 +2281,29 @@ internal fun MapExplorerPage(
                     try {
                         while (true) {
                             val event = awaitPointerEvent()
-                            val pressed = event.changes.filter { it.pressed && !it.isConsumed }
-                            if (pressed.isEmpty()) break
+                            val activeChanges = event.changes.filter { !it.isConsumed }
+                            val pressed = activeChanges.filter { it.pressed }
+                            if (pressed.isEmpty()) {
+                                val endingDragChange = dragPointerId?.let { pointerId ->
+                                    activeChanges.firstOrNull { it.id == pointerId }
+                                }
+                                val last = dragLastPosition
+                                if (endingDragChange != null && last != null && !mapInputBlockedAt(endingDragChange.position)) {
+                                    val dx = endingDragChange.position.x - last.x
+                                    val dy = endingDragChange.position.y - last.y
+                                    if (dx != 0f || dy != 0f) {
+                                        gestureViewport = dragViewport(
+                                            viewportState.value,
+                                            dx = dx,
+                                            dy = dy,
+                                        )
+                                        movedViewportDuringGesture = true
+                                        updateViewport(gestureViewport, syncFollow = false)
+                                        endingDragChange.consume()
+                                    }
+                                }
+                                break
+                            }
                             if (pressed.any { mapInputBlockedAt(it.position) }) {
                                 break
                             }
@@ -2412,6 +2486,14 @@ internal fun MapExplorerPage(
             labelFillPaint = labelFillPaint,
             aircraftDrawable = aircraftDrawable,
         )
+        mapFollowProbeTag?.let { tag ->
+            Box(
+                modifier = Modifier
+                    .align(Alignment.TopStart)
+                    .size(1.dp)
+                    .testTag(tag),
+            )
+        }
         FlightDataBanner(
             banner = flightDataBanner,
             surfaceSize = surfaceSize,

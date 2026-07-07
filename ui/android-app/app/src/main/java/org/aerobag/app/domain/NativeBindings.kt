@@ -297,6 +297,16 @@ interface NativeBridge {
         nowEpochMs: Double,
     ): String
 
+    fun tickBadAutopilotInSessionJson(
+        handle: Long,
+        nowEpochMs: Double,
+    ): String
+
+    fun tickBadAutopilotInSessionPagedJson(
+        handle: Long,
+        nowEpochMs: Double,
+    ): String
+
     fun selectAirportInSessionJson(
         handle: Long,
         airportIdJson: String,
@@ -835,6 +845,16 @@ object NativeBindings : NativeBridge {
     ): String
 
     external override fun tickPlaybackInSessionPagedJson(
+        handle: Long,
+        nowEpochMs: Double,
+    ): String
+
+    external override fun tickBadAutopilotInSessionJson(
+        handle: Long,
+        nowEpochMs: Double,
+    ): String
+
+    external override fun tickBadAutopilotInSessionPagedJson(
         handle: Long,
         nowEpochMs: Double,
     ): String

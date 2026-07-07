@@ -25,6 +25,14 @@ tree, but it is not yet a required CI gate.
   - Centers the chart on the destination.
   - Verifies that Android exposes a rendered flight-plan route overlay with at
     least one visible segment.
+- `android.map-follow-ctr-gesture-smoke`
+  - Performs the same route setup.
+  - Enables the Bad Autopilot debug ownship source.
+  - Selects the synthetic ownship source and waits for an ownship render probe.
+  - Ensures CTR follow is engaged.
+  - Drags the map and verifies CTR remains engaged with the aircraft offset
+    from center.
+  - Zooms the map and verifies CTR remains engaged with that offset preserved.
 
 ## App Test Hooks
 
@@ -32,13 +40,16 @@ The Android UI now exposes stable `parity:` tags for the smoke test:
 
 - disclaimer accept button
 - chart search field and suggestions
+- debug Bad Autopilot flag and ownship source controls
 - flight-plan route overlay semantic probe
+- map-follow semantic probe
 
-The route overlay is painted canvas content, so the E2E check uses a semantic
-probe tag:
+Painted canvas content is not directly visible to `uiautomator`, so the E2E
+checks use semantic probe tags:
 
 ```text
 parity:flight-plan-route-overlay:segments:<count>:visible:<count>
+parity:map-follow-state:following:<0|1>:ownship-x:<px>:ownship-y:<px>:center-x:<px>:center-y:<px>:zoom-centi:<zoom*100>
 ```
 
 ## Emulator Support

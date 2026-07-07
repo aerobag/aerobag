@@ -1990,15 +1990,28 @@ type LiveFeedRuntimeDecision = {
   reconnect_delay_ms?: number | null;
 };
 
-function liveFeedSourceUrl(): string {
-  const configured = __AEROBAG_LIVE_FEEDS_ORIGIN__?.trim();
+type LiveFeedSourceRuntime = {
+  window?: { location?: { origin?: string | null } } | null;
+  location?: { origin?: string | null } | null;
+};
+
+export function resolveLiveFeedSourceUrl(
+  configuredOrigin: string | null | undefined,
+  runtime: LiveFeedSourceRuntime = globalThis as unknown as LiveFeedSourceRuntime,
+): string {
+  const configured = configuredOrigin?.trim();
   if (configured) {
     return configured.replace(/\/+$/, "");
   }
-  if (typeof window !== "undefined" && window.location.origin) {
-    return window.location.origin;
+  const origin = runtime.window?.location?.origin ?? runtime.location?.origin ?? "";
+  if (origin) {
+    return origin;
   }
   return "";
+}
+
+function liveFeedSourceUrl(): string {
+  return resolveLiveFeedSourceUrl(__AEROBAG_LIVE_FEEDS_ORIGIN__);
 }
 
 function createLiveFeedSubscription(

@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { loadBestAvailableAdapter } from "./appCoreAdapter";
+import { loadBestAvailableAdapter, resolveLiveFeedSourceUrl } from "./appCoreAdapter";
 
 const snapshotJson = JSON.stringify({
   app_state: {
@@ -197,5 +197,19 @@ describe("loadBestAvailableAdapter", () => {
 
     expect(loaded.backend).toBe("wasm");
     expect(loaded.detail).toContain("Rust WASM");
+  });
+});
+
+describe("resolveLiveFeedSourceUrl", () => {
+  it("uses the worker global location when window is unavailable", () => {
+    expect(resolveLiveFeedSourceUrl(null, {
+      location: { origin: "https://aerobag.org" },
+    })).toBe("https://aerobag.org");
+  });
+
+  it("prefers the configured live-feed origin and trims trailing slashes", () => {
+    expect(resolveLiveFeedSourceUrl(" https://feeds.example.test/// ", {
+      location: { origin: "https://aerobag.org" },
+    })).toBe("https://feeds.example.test");
   });
 });

@@ -642,6 +642,7 @@ export interface UiSession {
   performStatusAction(actionId: string): Promise<UiSessionSnapshot>;
   performMapSelectionAction(action: string): Promise<UiSessionSnapshot>;
   activateNextLeg(): Promise<UiSessionSnapshot>;
+  stopNavigation(): Promise<UiSessionSnapshot>;
   suspendSequencing(): Promise<UiSessionSnapshot>;
   unsuspendSequencing(): Promise<UiSessionSnapshot>;
   sequenceActiveLeg(): Promise<UiSessionSnapshot>;
@@ -820,6 +821,7 @@ type WasmModule = {
   perform_flight_plan_row_action_in_session(sessionHandle: number, rowUid: string, actionUid: string): Promise<string> | string;
   perform_status_action_in_session(sessionHandle: number, actionId: string): Promise<string> | string;
   activate_next_leg_in_session(sessionHandle: number): Promise<string> | string;
+  stop_navigation_in_session(sessionHandle: number): Promise<string> | string;
   suspend_sequencing_in_session(sessionHandle: number): Promise<string> | string;
   unsuspend_sequencing_in_session(sessionHandle: number): Promise<string> | string;
   sequence_active_leg_in_session(sessionHandle: number): Promise<string> | string;
@@ -1251,6 +1253,12 @@ export class WasmAppCoreAdapter implements AppCoreAdapter {
           parseSessionSnapshot(this.module.activate_next_leg_in_session(handle)),
         );
         return syncGuidanceGeometry("activate_next_leg");
+      },
+      stopNavigation: async () => {
+        snapshot = await withSessionRetry(async () =>
+          parseSessionSnapshot(this.module.stop_navigation_in_session(handle)),
+        );
+        return syncGuidanceGeometry("stop_navigation");
       },
       suspendSequencing: async () => {
         snapshot = await withSessionRetry(async () =>
@@ -1907,6 +1915,7 @@ async function loadBestAvailableAdapterUncached(
     "load_plate_procedure_in_session",
     "restore_direct_to_in_session_outcome",
     "activate_next_leg_in_session",
+    "stop_navigation_in_session",
     "suspend_sequencing_in_session",
     "unsuspend_sequencing_in_session",
     "sequence_active_leg_in_session",

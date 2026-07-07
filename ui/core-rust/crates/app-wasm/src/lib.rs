@@ -795,6 +795,13 @@ pub fn activate_next_leg_in_session(session_handle: u32) -> Result<String, JsVal
 }
 
 #[wasm_bindgen]
+pub fn stop_navigation_in_session(session_handle: u32) -> Result<String, JsValue> {
+    let snapshot = app_core::stop_navigation_in_session(session_handle)
+        .map_err(|err| JsValue::from_str(&err.to_string()))?;
+    serde_json::to_string(&snapshot).map_err(|err| JsValue::from_str(&err.to_string()))
+}
+
+#[wasm_bindgen]
 pub fn suspend_sequencing_in_session(session_handle: u32) -> Result<String, JsValue> {
     let snapshot = app_core::suspend_sequencing_in_session(session_handle)
         .map_err(|err| JsValue::from_str(&err.to_string()))?;

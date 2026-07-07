@@ -4462,6 +4462,10 @@ pub fn activate_next_leg_in_session(handle: u32) -> AppResult<UiSessionSnapshot>
     mutate_session_flight_plan(handle, crate::activate_next_leg)
 }
 
+pub fn stop_navigation_in_session(handle: u32) -> AppResult<UiSessionSnapshot> {
+    mutate_session_flight_plan(handle, crate::stop_navigation)
+}
+
 pub fn suspend_sequencing_in_session(handle: u32) -> AppResult<UiSessionSnapshot> {
     mutate_session_guidance(handle, crate::suspend_sequencing)
 }

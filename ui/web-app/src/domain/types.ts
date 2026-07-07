@@ -387,6 +387,7 @@ export type FlightPlanControlId =
   | "activate_next_leg"
   | "restore_direct_to"
   | "sequence_active_leg"
+  | "stop_navigation"
   | "suspend_sequencing"
   | "unsuspend_sequencing";
 

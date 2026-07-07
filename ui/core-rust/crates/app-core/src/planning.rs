@@ -891,6 +891,7 @@ pub enum FlightPlanControlId {
     ActivateNextLeg,
     RestoreDirectTo,
     SequenceActiveLeg,
+    StopNavigation,
     SuspendSequencing,
     UnsuspendSequencing,
 }
@@ -1460,6 +1461,21 @@ pub fn activate_next_leg(plan: &FlightPlan) -> AppResult<FlightPlan> {
     })
 }
 
+pub fn stop_navigation(plan: &FlightPlan) -> AppResult<FlightPlan> {
+    let plan = plan.clone().normalized();
+    if plan.guidance.is_none() {
+        return Err(AppError {
+            kind: AppErrorKind::UnsupportedOperation,
+            message: "cannot stop navigation without guidance state".to_string(),
+        });
+    }
+
+    Ok(FlightPlan {
+        guidance: None,
+        ..plan
+    })
+}
+
 pub fn suspend_sequencing(plan: &FlightPlan) -> AppResult<FlightPlan> {
     let plan = plan.clone().normalized();
     let guidance = plan.guidance.clone().ok_or_else(|| AppError {
@@ -1841,6 +1857,7 @@ fn project_flight_plan_controls(plan: &FlightPlan) -> Vec<FlightPlanControlUiVie
         can_activate_next_leg,
         can_restore_direct_to,
         can_sequence_active_leg,
+        can_stop_navigation,
         can_suspend,
         can_unsuspend,
     ) = plan
@@ -1861,11 +1878,12 @@ fn project_flight_plan_controls(plan: &FlightPlan) -> Vec<FlightPlanControlUiVie
                 guidance.active_leg_index + 1 < plan.resolved_legs.len(),
                 can_restore_direct_to,
                 can_sequence_active_leg,
+                true,
                 guidance.sequencing_mode != SequencingMode::Suspended,
                 guidance.sequencing_mode == SequencingMode::Suspended,
             )
         })
-        .unwrap_or((false, false, false, false, false));
+        .unwrap_or((false, false, false, false, false, false));
 
     vec![
         flight_plan_control(
@@ -1877,6 +1895,11 @@ fn project_flight_plan_controls(plan: &FlightPlan) -> Vec<FlightPlanControlUiVie
             FlightPlanControlId::SequenceActiveLeg,
             "SQNC",
             can_sequence_active_leg,
+        ),
+        flight_plan_control(
+            FlightPlanControlId::StopNavigation,
+            "STOP\nNAV",
+            can_stop_navigation,
         ),
         flight_plan_control(FlightPlanControlId::SuspendSequencing, "SUSP", can_suspend),
         flight_plan_control(
@@ -7016,6 +7039,23 @@ mod tests {
     }
 
     #[test]
+    fn stop_navigation_clears_guidance_without_mutating_route() {
+        let plan = sample_guided_waypoint_plan();
+
+        let stopped = stop_navigation(&plan).unwrap();
+
+        assert_eq!(stopped.guidance, None);
+        assert_eq!(stopped.route_components, plan.route_components);
+        assert_eq!(stopped.resolved_legs, plan.resolved_legs);
+    }
+
+    #[test]
+    fn stop_navigation_rejects_plan_without_guidance() {
+        let err = stop_navigation(&sample_waypoint_only_plan()).unwrap_err();
+        assert_eq!(err.kind, AppErrorKind::UnsupportedOperation);
+    }
+
+    #[test]
     fn activate_direct_to_leg_can_target_specific_duplicate_waypoint_occurrence() {
         let activated = activate_direct_to_leg(
             &sample_duplicate_waypoint_plan(),
@@ -8141,8 +8181,32 @@ mod tests {
                 .iter()
                 .map(|control| control.label.as_str())
                 .collect::<Vec<_>>(),
-            vec!["Next\nLeg", "SQNC", "SUSP", "Unsusp", "Restore\nFP"]
+            vec![
+                "Next\nLeg",
+                "SQNC",
+                "STOP\nNAV",
+                "SUSP",
+                "Unsusp",
+                "Restore\nFP"
+            ]
         );
+    }
+
+    #[test]
+    fn stop_navigation_control_is_enabled_only_when_guidance_exists() {
+        let guided = project_ui_state(&sample_guided_waypoint_plan());
+        let stopped = project_ui_state(&stop_navigation(&sample_guided_waypoint_plan()).unwrap());
+
+        assert!(guided
+            .controls
+            .iter()
+            .find(|control| matches!(&control.id, FlightPlanControlId::StopNavigation))
+            .is_some_and(|control| control.enabled));
+        assert!(stopped
+            .controls
+            .iter()
+            .find(|control| matches!(&control.id, FlightPlanControlId::StopNavigation))
+            .is_some_and(|control| !control.enabled));
     }
 
     #[test]

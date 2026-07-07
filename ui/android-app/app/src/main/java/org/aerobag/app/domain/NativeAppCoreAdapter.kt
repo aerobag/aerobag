@@ -1106,6 +1106,13 @@ class NativeUiSession internal constructor(
         return syncGuidanceGeometry("activateNextLeg.syncGuidanceGeometry")
     }
 
+    fun stopNavigation(): UiSessionSnapshot {
+        runPlainSnapshot("stopNavigation") {
+            bridge.stopNavigationInSessionJson(handle)
+        }
+        return syncGuidanceGeometry("stopNavigation.syncGuidanceGeometry")
+    }
+
     fun suspendSequencing(): UiSessionSnapshot {
         runPlainSnapshot("suspendSequencing") {
             bridge.suspendSequencingInSessionJson(handle)
@@ -3280,6 +3287,7 @@ private fun WireFlightPlanControlId.toUi() = when (this) {
     WireFlightPlanControlId.ActivateNextLeg -> FlightPlanControlId.ActivateNextLeg
     WireFlightPlanControlId.RestoreDirectTo -> FlightPlanControlId.RestoreDirectTo
     WireFlightPlanControlId.SequenceActiveLeg -> FlightPlanControlId.SequenceActiveLeg
+    WireFlightPlanControlId.StopNavigation -> FlightPlanControlId.StopNavigation
     WireFlightPlanControlId.SuspendSequencing -> FlightPlanControlId.SuspendSequencing
     WireFlightPlanControlId.UnsuspendSequencing -> FlightPlanControlId.UnsuspendSequencing
 }
@@ -3288,6 +3296,7 @@ private fun FlightPlanControlId.toWire() = when (this) {
     FlightPlanControlId.ActivateNextLeg -> WireFlightPlanControlId.ActivateNextLeg
     FlightPlanControlId.RestoreDirectTo -> WireFlightPlanControlId.RestoreDirectTo
     FlightPlanControlId.SequenceActiveLeg -> WireFlightPlanControlId.SequenceActiveLeg
+    FlightPlanControlId.StopNavigation -> WireFlightPlanControlId.StopNavigation
     FlightPlanControlId.SuspendSequencing -> WireFlightPlanControlId.SuspendSequencing
     FlightPlanControlId.UnsuspendSequencing -> WireFlightPlanControlId.UnsuspendSequencing
 }

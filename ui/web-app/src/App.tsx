@@ -3082,6 +3082,9 @@ export default function App() {
               case "sequence_active_leg":
                 applySessionSnapshot(await uiSession.sequenceActiveLeg(), "sequence_active_leg");
                 return;
+              case "stop_navigation":
+                applySessionSnapshot(await uiSession.stopNavigation(), "stop_navigation");
+                return;
               case "suspend_sequencing":
                 applySessionSnapshot(await uiSession.suspendSequencing(), "suspend_sequencing");
                 return;

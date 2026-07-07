@@ -1367,6 +1367,9 @@ enum class WireFlightPlanControlId {
     @SerialName("sequence_active_leg")
     SequenceActiveLeg,
 
+    @SerialName("stop_navigation")
+    StopNavigation,
+
     @SerialName("suspend_sequencing")
     SuspendSequencing,
 

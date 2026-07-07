@@ -347,6 +347,7 @@ enum class FlightPlanControlId {
     ActivateNextLeg,
     RestoreDirectTo,
     SequenceActiveLeg,
+    StopNavigation,
     SuspendSequencing,
     UnsuspendSequencing,
 }

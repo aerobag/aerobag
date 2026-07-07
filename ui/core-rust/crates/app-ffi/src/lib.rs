@@ -319,6 +319,12 @@ pub fn activate_next_leg_in_session_json(handle: u64) -> Result<String, String> 
     serde_json::to_string(&snapshot).map_err(|err| err.to_string())
 }
 
+pub fn stop_navigation_in_session_json(handle: u64) -> Result<String, String> {
+    let snapshot =
+        app_core::stop_navigation_in_session(handle as u32).map_err(|err| err.to_string())?;
+    serde_json::to_string(&snapshot).map_err(|err| err.to_string())
+}
+
 pub fn suspend_sequencing_in_session_json(handle: u64) -> Result<String, String> {
     let snapshot =
         app_core::suspend_sequencing_in_session(handle as u32).map_err(|err| err.to_string())?;
@@ -2783,6 +2789,16 @@ pub extern "system" fn Java_org_aerobag_app_domain_NativeBindings_activateNextLe
     handle: i64,
 ) -> jstring {
     let result = (|| activate_next_leg_in_session_json(handle as u64))();
+    return_string(&mut env, result)
+}
+
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_org_aerobag_app_domain_NativeBindings_stopNavigationInSessionJson(
+    mut env: JNIEnv,
+    _class: JClass,
+    handle: i64,
+) -> jstring {
+    let result = (|| stop_navigation_in_session_json(handle as u64))();
     return_string(&mut env, result)
 }
 

@@ -389,6 +389,8 @@ internal fun FlightPlanPage(
                 applySessionCommand("restoreDirectTo") { uiSession.restoreDirectTo() }
             FlightPlanControlId.SequenceActiveLeg ->
                 applySessionCommand("sequenceActiveLeg") { uiSession.sequenceActiveLeg() }
+            FlightPlanControlId.StopNavigation ->
+                applySessionCommand("stopNavigation") { uiSession.stopNavigation() }
             FlightPlanControlId.SuspendSequencing ->
                 applySessionCommand("suspendSequencing") { uiSession.suspendSequencing() }
             FlightPlanControlId.UnsuspendSequencing ->
@@ -1297,6 +1299,7 @@ private fun FlightPlanControlId.coreId() = when (this) {
     FlightPlanControlId.ActivateNextLeg -> "activate_next_leg"
     FlightPlanControlId.RestoreDirectTo -> "restore_direct_to"
     FlightPlanControlId.SequenceActiveLeg -> "sequence_active_leg"
+    FlightPlanControlId.StopNavigation -> "stop_navigation"
     FlightPlanControlId.SuspendSequencing -> "suspend_sequencing"
     FlightPlanControlId.UnsuspendSequencing -> "unsuspend_sequencing"
 }

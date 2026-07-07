@@ -17,6 +17,7 @@ declare module "@generated/app_wasm.js" {
   const init: (...args: unknown[]) => Promise<unknown>;
   export default init;
   export const activate_next_leg_in_session: (...args: unknown[]) => string;
+  export const stop_navigation_in_session: (...args: unknown[]) => string;
   export const suspend_sequencing_in_session: (...args: unknown[]) => string;
   export const unsuspend_sequencing_in_session: (...args: unknown[]) => string;
   export const sequence_active_leg_in_session: (...args: unknown[]) => string;

@@ -343,6 +343,7 @@ function workerBackedSession(client: AppCoreWorkerClient, sessionId: number, ini
     performStatusAction: (...args) => updateSnapshot(call("performStatusAction", args)),
     performMapSelectionAction: (...args) => updateSnapshot(call("performMapSelectionAction", args)),
     activateNextLeg: () => updateSnapshot(call("activateNextLeg")),
+    stopNavigation: () => updateSnapshot(call("stopNavigation")),
     suspendSequencing: () => updateSnapshot(call("suspendSequencing")),
     unsuspendSequencing: () => updateSnapshot(call("unsuspendSequencing")),
     sequenceActiveLeg: () => updateSnapshot(call("sequenceActiveLeg")),

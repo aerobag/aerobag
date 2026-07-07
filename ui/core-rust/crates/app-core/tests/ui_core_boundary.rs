@@ -282,6 +282,7 @@ fn platform_adapters_use_paged_loops_for_paged_session_exports() {
         "insertAirwayAtFlightPlanRowInSessionJson",
         "selectProcedureAtFlightPlanRowInSessionJson",
         "loadPlateProcedureInSessionJson",
+        "restoreDirectToInSessionJson",
         "performFlightPlanRowActionInSessionJson",
         "syncGuidanceGeometryInSessionJson",
         "projectFlightPlanRouteInSessionJson",

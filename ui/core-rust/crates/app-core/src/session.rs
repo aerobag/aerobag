@@ -16633,9 +16633,12 @@ mod tests {
             .active_plan
             .as_ref()
             .expect("direct-to plan UI")
-            .guidance
-            .as_ref()
-            .is_some_and(|guidance| guidance.can_restore_direct_to));
+            .controls
+            .iter()
+            .any(
+                |control| matches!(&control.id, crate::FlightPlanControlId::RestoreDirectTo)
+                    && control.enabled
+            ));
 
         let restored = restore_direct_to_in_session(init.handle).expect("restore direct-to");
         let guidance = restored
@@ -16648,14 +16651,16 @@ mod tests {
         assert_eq!(guidance.sequencing_mode, SequencingMode::FollowPlan);
         assert_eq!(guidance.active_leg_index, 0);
         assert!(guidance.direct_to.is_none());
-        assert!(!restored
+        let restored_restore_control = restored
             .app_ui_state
             .active_plan
             .as_ref()
             .expect("restored plan UI")
-            .guidance
-            .as_ref()
-            .is_some_and(|guidance| guidance.can_restore_direct_to));
+            .controls
+            .iter()
+            .find(|control| matches!(&control.id, crate::FlightPlanControlId::RestoreDirectTo))
+            .expect("restore direct-to control");
+        assert!(!restored_restore_control.enabled);
     }
 
     #[test]

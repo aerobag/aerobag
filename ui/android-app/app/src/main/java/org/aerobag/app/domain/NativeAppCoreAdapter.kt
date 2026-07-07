@@ -807,6 +807,12 @@ class NativeUiSession internal constructor(
         }
     }
 
+    fun restoreDirectTo(): UiSessionSnapshot {
+        return runPagedSnapshot("restoreDirectTo") {
+            bridge.restoreDirectToInSessionJson(handle)
+        }
+    }
+
     fun insertWaypointAtFlightPlanRow(rowUid: String, before: Boolean, waypoint: NavRef): UiSessionSnapshot {
         return runPagedSnapshot("insertWaypointAtFlightPlanRow") {
             bridge.insertWaypointAtFlightPlanRowInSessionJson(
@@ -3270,6 +3276,34 @@ private fun DirectToUiView.toWire() = WireDirectToUiView(
     on_plan_target = onPlanTarget,
 )
 
+private fun WireFlightPlanControlId.toUi() = when (this) {
+    WireFlightPlanControlId.ActivateNextLeg -> FlightPlanControlId.ActivateNextLeg
+    WireFlightPlanControlId.RestoreDirectTo -> FlightPlanControlId.RestoreDirectTo
+    WireFlightPlanControlId.SequenceActiveLeg -> FlightPlanControlId.SequenceActiveLeg
+    WireFlightPlanControlId.SuspendSequencing -> FlightPlanControlId.SuspendSequencing
+    WireFlightPlanControlId.UnsuspendSequencing -> FlightPlanControlId.UnsuspendSequencing
+}
+
+private fun FlightPlanControlId.toWire() = when (this) {
+    FlightPlanControlId.ActivateNextLeg -> WireFlightPlanControlId.ActivateNextLeg
+    FlightPlanControlId.RestoreDirectTo -> WireFlightPlanControlId.RestoreDirectTo
+    FlightPlanControlId.SequenceActiveLeg -> WireFlightPlanControlId.SequenceActiveLeg
+    FlightPlanControlId.SuspendSequencing -> WireFlightPlanControlId.SuspendSequencing
+    FlightPlanControlId.UnsuspendSequencing -> WireFlightPlanControlId.UnsuspendSequencing
+}
+
+private fun WireFlightPlanControlUiView.toUi() = FlightPlanControlUiView(
+    id = id.toUi(),
+    label = label,
+    enabled = enabled,
+)
+
+private fun FlightPlanControlUiView.toWire() = WireFlightPlanControlUiView(
+    id = id.toWire(),
+    label = label,
+    enabled = enabled,
+)
+
 private fun WireGuidanceUiView.toUi() = GuidanceUiView(
     sequencingMode = sequencing_mode.toUi(),
     activeLegIndex = active_leg_index,
@@ -3280,10 +3314,6 @@ private fun WireGuidanceUiView.toUi() = GuidanceUiView(
     activeLeg = active_leg?.toUiPlanLeg(),
     navElement = nav_element.toUi(),
     directTo = direct_to?.toUi(),
-    canSequenceActiveLeg = can_sequence_active_leg,
-    canActivateNextLeg = can_activate_next_leg,
-    canSuspend = can_suspend,
-    canUnsuspend = can_unsuspend,
     suspendBoundaryAfterActiveLeg = suspend_boundary_after_active_leg,
 )
 
@@ -3297,10 +3327,6 @@ private fun GuidanceUiView.toWire() = WireGuidanceUiView(
     active_leg = activeLeg?.toWire(),
     nav_element = navElement.toWire(),
     direct_to = directTo?.toWire(),
-    can_sequence_active_leg = canSequenceActiveLeg,
-    can_activate_next_leg = canActivateNextLeg,
-    can_suspend = canSuspend,
-    can_unsuspend = canUnsuspend,
     suspend_boundary_after_active_leg = suspendBoundaryAfterActiveLeg,
 )
 
@@ -3375,6 +3401,7 @@ private fun WireFlightPlanUiState.toUi() = FlightPlanUiState(
     resolvedLegs = resolved_legs.map { it.toUi() },
     displayRows = display_rows.map { it.toUi() },
     dataColumns = data_columns.map { it.toUi() },
+    controls = controls.map { it.toUi() },
     guidance = guidance?.toUi(),
 )
 
@@ -3383,6 +3410,7 @@ private fun FlightPlanUiState.toWire() = WireFlightPlanUiState(
     resolved_legs = resolvedLegs.map { it.toWire() },
     display_rows = displayRows.map { it.toWire() },
     data_columns = dataColumns.map { it.toWire() },
+    controls = controls.map { it.toWire() },
     guidance = guidance?.toWire(),
 )
 

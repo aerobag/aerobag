@@ -1936,6 +1936,11 @@ button {
   justify-content: center;
 }
 
+.planControlButton {
+  white-space: pre-line;
+  line-height: 1.02;
+}
+
 .trayButton:disabled {
   border-color: color-mix(in srgb, var(--theme-button-disabled) 78%, black);
   background:
@@ -3141,6 +3146,13 @@ button {
   color: #7a1f16;
   font-size: calc(var(--thumb) * 0.18);
   font-weight: 700;
+}
+
+.planControls {
+  display: flex;
+  flex: 0 0 auto;
+  justify-content: center;
+  gap: var(--thumb-gap);
 }
 
 .planFooter {

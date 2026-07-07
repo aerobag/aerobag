@@ -1905,6 +1905,7 @@ async function loadBestAvailableAdapterUncached(
     "insert_airway_at_flight_plan_row_in_session",
     "select_procedure_at_flight_plan_row_in_session",
     "load_plate_procedure_in_session",
+    "restore_direct_to_in_session_outcome",
     "activate_next_leg_in_session",
     "suspend_sequencing_in_session",
     "unsuspend_sequencing_in_session",

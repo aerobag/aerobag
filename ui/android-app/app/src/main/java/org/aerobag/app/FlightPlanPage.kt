@@ -196,6 +196,7 @@ import org.aerobag.app.domain.WaypointIdentifierSuggestion
 import org.aerobag.app.domain.CoreMapViewport
 import org.aerobag.app.domain.DerivedChartPageState
 import org.aerobag.app.domain.FlightPlan
+import org.aerobag.app.domain.FlightPlanControlId
 import org.aerobag.app.domain.FlightPlanEntryPreview
 import org.aerobag.app.domain.FlightPlanUiMutation
 import org.aerobag.app.domain.FlightPlanDisplayRowKind
@@ -376,9 +377,24 @@ internal fun FlightPlanPage(
             Log.w("AerobagSessionCommand", "flight-plan command failed command=$commandName", error)
             onSessionCommandFailure(error)
             null
-        }
+    }
     val projectedPlanUiState = requireNotNull(planUiState) { "FlightPlanPage requires core-projected FlightPlanUiState" }
     val guidance = projectedPlanUiState.guidance
+    val planControls = projectedPlanUiState.controls
+    fun performFlightPlanControl(controlId: FlightPlanControlId) {
+        when (controlId) {
+            FlightPlanControlId.ActivateNextLeg ->
+                applySessionCommand("activateNextLeg") { uiSession.activateNextLeg() }
+            FlightPlanControlId.RestoreDirectTo ->
+                applySessionCommand("restoreDirectTo") { uiSession.restoreDirectTo() }
+            FlightPlanControlId.SequenceActiveLeg ->
+                applySessionCommand("sequenceActiveLeg") { uiSession.sequenceActiveLeg() }
+            FlightPlanControlId.SuspendSequencing ->
+                applySessionCommand("suspendSequencing") { uiSession.suspendSequencing() }
+            FlightPlanControlId.UnsuspendSequencing ->
+                applySessionCommand("unsuspendSequencing") { uiSession.unsuspendSequencing() }
+        }
+    }
     val rows = remember(projectedPlanUiState.displayRows) {
         buildFlightPlanDisplayRows(projectedPlanUiState)
     }
@@ -896,30 +912,16 @@ internal fun FlightPlanPage(
                 modifier = Modifier.align(Alignment.TopCenter),
                 horizontalArrangement = Arrangement.spacedBy(ThumbGap),
             ) {
-                CompactSquareButton(
-                    label = "Next Leg",
-                    modifier = Modifier.width(ThumbSize * 1.8f).height(ThumbSize),
-                    enabled = guidance?.canActivateNextLeg == true,
-                    onClick = { applySessionCommand("activateNextLeg") { uiSession.activateNextLeg() } },
-                )
-                CompactSquareButton(
-                    label = "Sequence",
-                    modifier = Modifier.width(ThumbSize * 1.8f).height(ThumbSize),
-                    enabled = guidance?.canSequenceActiveLeg == true,
-                    onClick = { applySessionCommand("sequenceActiveLeg") { uiSession.sequenceActiveLeg() } },
-                )
-                CompactSquareButton(
-                    label = "Suspend",
-                    modifier = Modifier.width(ThumbSize * 1.8f).height(ThumbSize),
-                    enabled = guidance?.canSuspend == true,
-                    onClick = { applySessionCommand("suspendSequencing") { uiSession.suspendSequencing() } },
-                )
-                CompactSquareButton(
-                    label = "Unsusp",
-                    modifier = Modifier.width(ThumbSize * 1.8f).height(ThumbSize),
-                    enabled = guidance?.canUnsuspend == true,
-                    onClick = { applySessionCommand("unsuspendSequencing") { uiSession.unsuspendSequencing() } },
-                )
+                planControls.forEach { control ->
+                    CompactSquareButton(
+                        label = control.label,
+                        modifier = Modifier.size(ThumbSize),
+                        maxLines = 2,
+                        enabled = control.enabled,
+                        testTag = "parity:plan-control:${control.id.coreId()}",
+                        onClick = { performFlightPlanControl(control.id) },
+                    )
+                }
             }
             NavElementDock(
                 navElement = navElement,
@@ -1290,6 +1292,14 @@ internal fun emptyFlightPlanEntryPreview(): FlightPlanEntryPreview =
         tokens = emptyList(),
         issues = emptyList(),
     )
+
+private fun FlightPlanControlId.coreId() = when (this) {
+    FlightPlanControlId.ActivateNextLeg -> "activate_next_leg"
+    FlightPlanControlId.RestoreDirectTo -> "restore_direct_to"
+    FlightPlanControlId.SequenceActiveLeg -> "sequence_active_leg"
+    FlightPlanControlId.SuspendSequencing -> "suspend_sequencing"
+    FlightPlanControlId.UnsuspendSequencing -> "unsuspend_sequencing"
+}
 
 internal fun routeEntryVisualTransformation(
     preview: FlightPlanEntryPreview,

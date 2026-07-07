@@ -337,6 +337,12 @@ pub fn sequence_active_leg_in_session_json(handle: u64) -> Result<String, String
     serde_json::to_string(&snapshot).map_err(|err| err.to_string())
 }
 
+pub fn restore_direct_to_in_session_json(handle: u64) -> Result<String, String> {
+    let outcome = app_core::restore_direct_to_in_session_outcome(handle as u32)
+        .map_err(|err| err.to_string())?;
+    serde_json::to_string(&outcome).map_err(|err| err.to_string())
+}
+
 pub fn sync_guidance_geometry_in_session_json(handle: u64) -> Result<String, String> {
     let outcome = app_core::sync_guidance_geometry_in_session(handle as u32)
         .map_err(|err| err.to_string())?;
@@ -2807,6 +2813,16 @@ pub extern "system" fn Java_org_aerobag_app_domain_NativeBindings_sequenceActive
     handle: i64,
 ) -> jstring {
     let result = (|| sequence_active_leg_in_session_json(handle as u64))();
+    return_string(&mut env, result)
+}
+
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_org_aerobag_app_domain_NativeBindings_restoreDirectToInSessionJson(
+    mut env: JNIEnv,
+    _class: JClass,
+    handle: i64,
+) -> jstring {
+    let result = (|| restore_direct_to_in_session_json(handle as u64))();
     return_string(&mut env, result)
 }
 

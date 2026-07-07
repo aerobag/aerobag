@@ -6,6 +6,7 @@ import type {
   ChartPageData,
   ChartFamilyId,
   FlightPlan,
+  FlightPlanControlId,
   FlightPlanEntryPreview,
   FlightPlanRowNavigationAction,
   FlightPlanRouteSegment,
@@ -3066,30 +3067,29 @@ export default function App() {
             if (!uiSession) return;
             applySessionSnapshot(await uiSession.appendFlightPlanEntry(input), "append_flight_plan_entry");
           }}
-          onActivateNextLeg={async () => {
+          onPerformFlightPlanControl={async (controlId) => {
             if (!uiSession) return;
-            const nextSnapshot = await uiSession.activateNextLeg();
-            applySessionSnapshot(nextSnapshot, "activate_next_leg");
-          }}
-          onSuspendSequencing={async () => {
-            if (!uiSession) return;
-            const nextSnapshot = await uiSession.suspendSequencing();
-            applySessionSnapshot(nextSnapshot, "suspend_sequencing");
-          }}
-          onUnsuspendSequencing={async () => {
-            if (!uiSession) return;
-            const nextSnapshot = await uiSession.unsuspendSequencing();
-            applySessionSnapshot(nextSnapshot, "unsuspend_sequencing");
-          }}
-          onSequenceActiveLeg={async () => {
-            if (!uiSession) return;
-            const nextSnapshot = await uiSession.sequenceActiveLeg();
-            applySessionSnapshot(nextSnapshot, "sequence_active_leg");
-          }}
-          onRestoreDirectTo={async () => {
-            if (!uiSession) return;
-            const nextSnapshot = await uiSession.restoreDirectTo();
-            applySessionSnapshot(nextSnapshot, "restore_direct_to");
+            switch (controlId) {
+              case "activate_next_leg":
+                applySessionSnapshot(await uiSession.activateNextLeg(), "activate_next_leg");
+                return;
+              case "restore_direct_to":
+                applySessionSnapshot(await uiSession.restoreDirectTo(), "restore_direct_to");
+                return;
+              case "sequence_active_leg":
+                applySessionSnapshot(await uiSession.sequenceActiveLeg(), "sequence_active_leg");
+                return;
+              case "suspend_sequencing":
+                applySessionSnapshot(await uiSession.suspendSequencing(), "suspend_sequencing");
+                return;
+              case "unsuspend_sequencing":
+                applySessionSnapshot(await uiSession.unsuspendSequencing(), "unsuspend_sequencing");
+                return;
+              default: {
+                const exhaustive: never = controlId;
+                throw new Error(`Unsupported flight plan control: ${exhaustive}`);
+              }
+            }
           }}
           onPerformFlightPlanRowAction={async (rowUid, actionUid) => {
             if (!uiSession) return;
@@ -6770,11 +6770,7 @@ function FlightPlanPage(props: {
   onInsertAirportWaypointAtRow: (rowUid: string, before: boolean, airportId: string) => void | Promise<void>;
   onPreviewFlightPlanEntry: (input: string) => Promise<FlightPlanEntryPreview>;
   onAppendFlightPlanEntry: (input: string) => void | Promise<void>;
-  onActivateNextLeg: () => void | Promise<void>;
-  onSuspendSequencing: () => void | Promise<void>;
-  onUnsuspendSequencing: () => void | Promise<void>;
-  onSequenceActiveLeg: () => void | Promise<void>;
-  onRestoreDirectTo: () => void | Promise<void>;
+  onPerformFlightPlanControl: (controlId: FlightPlanControlId) => void | Promise<void>;
   onPerformFlightPlanRowAction: (rowUid: string, actionUid: string) => void | Promise<void>;
   onInsertAirwayAtRow: (
     rowUid: string,
@@ -6839,6 +6835,7 @@ function FlightPlanPage(props: {
     throw new Error("FlightPlanPage requires core-projected FlightPlanUiState");
   }
   const guidance = planUiState.guidance ?? null;
+  const planControls = planUiState.controls;
   const activeFromRowUid = guidance?.active_from_row_uid ?? null;
   const activeToRowUid = guidance?.active_to_row_uid ?? null;
   const activeGuidanceRowsKey = guidance?.active_leg
@@ -7545,29 +7542,18 @@ function FlightPlanPage(props: {
       </div>
 
       <div className="planControls" ref={planControlsRef}>
-        <button type="button" className="trayButton planControlButton" data-testid="plan-control-next-leg" disabled={!guidance?.can_activate_next_leg} onClick={() => void props.onActivateNextLeg()}>
-          Next Leg
-        </button>
-        {guidance?.can_restore_direct_to ? (
-          <button type="button" className="trayButton planControlButton" onClick={() => void props.onRestoreDirectTo()}>
-            Restore FP
+        {planControls.map((control) => (
+          <button
+            key={control.id}
+            type="button"
+            className="trayButton trayButtonSquare planControlButton"
+            data-testid={`plan-control-${control.id}`}
+            disabled={!control.enabled}
+            onClick={() => void props.onPerformFlightPlanControl(control.id)}
+          >
+            {control.label}
           </button>
-        ) : null}
-        <button
-          type="button"
-          className="trayButton planControlButton"
-          data-testid="plan-control-sequence"
-          disabled={!guidance?.can_sequence_active_leg}
-          onClick={() => void props.onSequenceActiveLeg()}
-        >
-          Sequence
-        </button>
-        <button type="button" className="trayButton planControlButton" data-testid="plan-control-suspend" disabled={!guidance?.can_suspend} onClick={() => void props.onSuspendSequencing()}>
-          Suspend
-        </button>
-        <button type="button" className="trayButton planControlButton" data-testid="plan-control-unsuspend" disabled={!guidance?.can_unsuspend} onClick={() => void props.onUnsuspendSequencing()}>
-          Unsusp
-        </button>
+        ))}
       </div>
 
       <div className="planFooter" ref={planFooterRef}>

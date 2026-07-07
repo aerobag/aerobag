@@ -880,7 +880,26 @@ pub struct FlightPlanUiState {
     #[serde(default)]
     pub data_columns: Vec<FlightDataColumn>,
     pub display_rows: Vec<FlightPlanDisplayRowUiView>,
+    #[serde(default)]
+    pub controls: Vec<FlightPlanControlUiView>,
     pub guidance: Option<GuidanceUiView>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum FlightPlanControlId {
+    ActivateNextLeg,
+    RestoreDirectTo,
+    SequenceActiveLeg,
+    SuspendSequencing,
+    UnsuspendSequencing,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct FlightPlanControlUiView {
+    pub id: FlightPlanControlId,
+    pub label: String,
+    pub enabled: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -1047,11 +1066,6 @@ pub struct GuidanceUiView {
     #[serde(default)]
     pub nav_element: NavElementUiView,
     pub direct_to: Option<DirectToUiView>,
-    pub can_activate_next_leg: bool,
-    pub can_suspend: bool,
-    pub can_unsuspend: bool,
-    #[serde(default)]
-    pub can_restore_direct_to: bool,
     pub suspend_boundary_after_active_leg: bool,
 }
 
@@ -1810,6 +1824,74 @@ fn guidance_is_in_terminal_hold(plan: &FlightPlan, guidance: &GuidanceState) -> 
     })
 }
 
+fn flight_plan_control(
+    id: FlightPlanControlId,
+    label: &str,
+    enabled: bool,
+) -> FlightPlanControlUiView {
+    FlightPlanControlUiView {
+        id,
+        label: label.to_string(),
+        enabled,
+    }
+}
+
+fn project_flight_plan_controls(plan: &FlightPlan) -> Vec<FlightPlanControlUiView> {
+    let (
+        can_activate_next_leg,
+        can_restore_direct_to,
+        can_sequence_active_leg,
+        can_suspend,
+        can_unsuspend,
+    ) = plan
+        .guidance
+        .as_ref()
+        .map(|guidance| {
+            let can_restore_direct_to = guidance.sequencing_mode == SequencingMode::DirectTo
+                && guidance
+                    .direct_to
+                    .as_ref()
+                    .is_some_and(|direct_to| !direct_to_on_plan(plan, direct_to));
+            let can_sequence_active_leg = match guidance.sequencing_mode {
+                SequencingMode::DirectTo => guidance.direct_to.is_some(),
+                SequencingMode::FollowPlan => !plan.resolved_legs.is_empty(),
+                SequencingMode::Suspended => false,
+            };
+            (
+                guidance.active_leg_index + 1 < plan.resolved_legs.len(),
+                can_restore_direct_to,
+                can_sequence_active_leg,
+                guidance.sequencing_mode != SequencingMode::Suspended,
+                guidance.sequencing_mode == SequencingMode::Suspended,
+            )
+        })
+        .unwrap_or((false, false, false, false, false));
+
+    vec![
+        flight_plan_control(
+            FlightPlanControlId::ActivateNextLeg,
+            "Next\nLeg",
+            can_activate_next_leg,
+        ),
+        flight_plan_control(
+            FlightPlanControlId::SequenceActiveLeg,
+            "SQNC",
+            can_sequence_active_leg,
+        ),
+        flight_plan_control(FlightPlanControlId::SuspendSequencing, "SUSP", can_suspend),
+        flight_plan_control(
+            FlightPlanControlId::UnsuspendSequencing,
+            "Unsusp",
+            can_unsuspend,
+        ),
+        flight_plan_control(
+            FlightPlanControlId::RestoreDirectTo,
+            "Restore\nFP",
+            can_restore_direct_to,
+        ),
+    ]
+}
+
 pub fn project_ui_state(plan: &FlightPlan) -> FlightPlanUiState {
     let plan = plan.clone().normalized();
     let grouped_legs = grouped_component_legs(&plan);
@@ -1934,14 +2016,6 @@ pub fn project_ui_state(plan: &FlightPlan) -> FlightPlanUiState {
             resume_leg_id: direct_to.resume_leg_id.clone(),
             on_plan_target: direct_to_on_plan(&plan, direct_to),
         }),
-        can_activate_next_leg: guidance.active_leg_index + 1 < plan.resolved_legs.len(),
-        can_suspend: guidance.sequencing_mode != SequencingMode::Suspended,
-        can_unsuspend: guidance.sequencing_mode == SequencingMode::Suspended,
-        can_restore_direct_to: guidance.sequencing_mode == SequencingMode::DirectTo
-            && guidance
-                .direct_to
-                .as_ref()
-                .is_some_and(|direct_to| !direct_to_on_plan(&plan, direct_to)),
         suspend_boundary_after_active_leg: should_suspend_after_active_leg(
             &plan,
             guidance.active_leg_index,
@@ -1954,6 +2028,7 @@ pub fn project_ui_state(plan: &FlightPlan) -> FlightPlanUiState {
         resolved_legs,
         data_columns: crate::flight_data::flight_plan_columns(),
         guidance,
+        controls: project_flight_plan_controls(&plan),
     }
 }
 
@@ -8044,6 +8119,30 @@ mod tests {
                 .map(|direct_to| direct_to.on_plan_target),
             Some(false)
         );
+        let restore_control = ui
+            .controls
+            .iter()
+            .find(|control| matches!(&control.id, FlightPlanControlId::RestoreDirectTo))
+            .expect("restore direct-to control");
+        assert_eq!(restore_control.label, "Restore\nFP");
+        assert!(restore_control.enabled);
+        assert!(ui
+            .controls
+            .last()
+            .is_some_and(|control| matches!(&control.id, FlightPlanControlId::RestoreDirectTo)));
+    }
+
+    #[test]
+    fn project_ui_state_projects_compact_flight_plan_control_labels() {
+        let ui = project_ui_state(&sample_guided_waypoint_plan());
+
+        assert_eq!(
+            ui.controls
+                .iter()
+                .map(|control| control.label.as_str())
+                .collect::<Vec<_>>(),
+            vec!["Next\nLeg", "SQNC", "SUSP", "Unsusp", "Restore\nFP"]
+        );
     }
 
     #[test]
@@ -8069,12 +8168,17 @@ mod tests {
                 .map(|direct_to| direct_to.on_plan_target),
             Some(true)
         );
-        assert_eq!(
-            ui.guidance
-                .as_ref()
-                .map(|guidance| guidance.can_restore_direct_to),
-            Some(false)
-        );
+        let restore_control = ui
+            .controls
+            .iter()
+            .find(|control| matches!(&control.id, FlightPlanControlId::RestoreDirectTo))
+            .expect("restore direct-to control");
+        assert_eq!(restore_control.label, "Restore\nFP");
+        assert!(!restore_control.enabled);
+        assert!(ui
+            .controls
+            .last()
+            .is_some_and(|control| matches!(&control.id, FlightPlanControlId::RestoreDirectTo)));
     }
 
     #[test]
@@ -8100,12 +8204,17 @@ mod tests {
                 .map(|direct_to| direct_to.on_plan_target),
             Some(true)
         );
-        assert_eq!(
-            ui.guidance
-                .as_ref()
-                .map(|guidance| guidance.can_restore_direct_to),
-            Some(false)
-        );
+        let restore_control = ui
+            .controls
+            .iter()
+            .find(|control| matches!(&control.id, FlightPlanControlId::RestoreDirectTo))
+            .expect("restore direct-to control");
+        assert_eq!(restore_control.label, "Restore\nFP");
+        assert!(!restore_control.enabled);
+        assert!(ui
+            .controls
+            .last()
+            .is_some_and(|control| matches!(&control.id, FlightPlanControlId::RestoreDirectTo)));
     }
 
     #[test]

@@ -189,6 +189,7 @@ describe("loadBestAvailableAdapter", () => {
       insert_airway_at_flight_plan_row_in_session: async () => JSON.stringify({ state: "complete", result: JSON.parse(snapshotJson) }),
       select_procedure_at_flight_plan_row_in_session: async () => JSON.stringify({ state: "complete", result: JSON.parse(snapshotJson) }),
       load_plate_procedure_in_session: async () => JSON.stringify({ state: "complete", result: JSON.parse(snapshotJson) }),
+      restore_direct_to_in_session_outcome: async () => JSON.stringify({ state: "complete", result: JSON.parse(snapshotJson) }),
       activate_next_leg_in_session: async () => snapshotJson,
       suspend_sequencing_in_session: async () => snapshotJson,
       unsuspend_sequencing_in_session: async () => snapshotJson,

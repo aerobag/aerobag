@@ -380,12 +380,20 @@ export type GuidanceUiView = {
   active_leg: PlanLeg | null;
   nav_element: NavElementUiView;
   direct_to: DirectToUiView | null;
-  can_sequence_active_leg: boolean;
-  can_activate_next_leg: boolean;
-  can_suspend: boolean;
-  can_unsuspend: boolean;
-  can_restore_direct_to?: boolean;
   suspend_boundary_after_active_leg: boolean;
+};
+
+export type FlightPlanControlId =
+  | "activate_next_leg"
+  | "restore_direct_to"
+  | "sequence_active_leg"
+  | "suspend_sequencing"
+  | "unsuspend_sequencing";
+
+export type FlightPlanControlUiView = {
+  id: FlightPlanControlId;
+  label: string;
+  enabled: boolean;
 };
 
 export type NavElementUiView = {
@@ -399,6 +407,7 @@ export type FlightPlanUiState = {
   resolved_legs: ResolvedLegUiView[];
   data_columns: FlightDataColumn[];
   display_rows: FlightPlanDisplayRowUiView[];
+  controls: FlightPlanControlUiView[];
   guidance: GuidanceUiView | null;
 };
 

@@ -377,6 +377,8 @@ interface NativeBridge {
         loadId: String,
     ): String
 
+    fun restoreDirectToInSessionJson(handle: Long): String
+
     fun activateNextLegInSessionJson(handle: Long): String
 
     fun suspendSequencingInSessionJson(handle: Long): String
@@ -928,6 +930,8 @@ object NativeBindings : NativeBridge {
         handle: Long,
         loadId: String,
     ): String
+
+    external override fun restoreDirectToInSessionJson(handle: Long): String
 
     external override fun activateNextLegInSessionJson(handle: Long): String
 

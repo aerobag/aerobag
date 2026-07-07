@@ -340,11 +340,21 @@ data class GuidanceUiView(
     val activeLeg: PlanLeg?,
     val navElement: NavElementUiView,
     val directTo: DirectToUiView?,
-    val canSequenceActiveLeg: Boolean,
-    val canActivateNextLeg: Boolean,
-    val canSuspend: Boolean,
-    val canUnsuspend: Boolean,
     val suspendBoundaryAfterActiveLeg: Boolean,
+)
+
+enum class FlightPlanControlId {
+    ActivateNextLeg,
+    RestoreDirectTo,
+    SequenceActiveLeg,
+    SuspendSequencing,
+    UnsuspendSequencing,
+}
+
+data class FlightPlanControlUiView(
+    val id: FlightPlanControlId,
+    val label: String,
+    val enabled: Boolean,
 )
 
 data class NavElementUiView(
@@ -358,6 +368,7 @@ data class FlightPlanUiState(
     val resolvedLegs: List<ResolvedLegUiView>,
     val displayRows: List<FlightPlanDisplayRowUiView>,
     val dataColumns: List<FlightDataColumn>,
+    val controls: List<FlightPlanControlUiView>,
     val guidance: GuidanceUiView?,
 )
 

@@ -1353,11 +1353,32 @@ data class WireGuidanceUiView(
     val active_leg: WirePlanLeg? = null,
     val nav_element: WireNavElementUiView = WireNavElementUiView(),
     val direct_to: WireDirectToUiView? = null,
-    val can_sequence_active_leg: Boolean = false,
-    val can_activate_next_leg: Boolean = false,
-    val can_suspend: Boolean = false,
-    val can_unsuspend: Boolean = false,
     val suspend_boundary_after_active_leg: Boolean = false,
+)
+
+@Serializable
+enum class WireFlightPlanControlId {
+    @SerialName("activate_next_leg")
+    ActivateNextLeg,
+
+    @SerialName("restore_direct_to")
+    RestoreDirectTo,
+
+    @SerialName("sequence_active_leg")
+    SequenceActiveLeg,
+
+    @SerialName("suspend_sequencing")
+    SuspendSequencing,
+
+    @SerialName("unsuspend_sequencing")
+    UnsuspendSequencing,
+}
+
+@Serializable
+data class WireFlightPlanControlUiView(
+    val id: WireFlightPlanControlId,
+    val label: String,
+    val enabled: Boolean,
 )
 
 @Serializable
@@ -1373,6 +1394,7 @@ data class WireFlightPlanUiState(
     val resolved_legs: List<WireResolvedLegUiView>,
     val display_rows: List<WireFlightPlanDisplayRowUiView>,
     val data_columns: List<WireFlightDataColumn>,
+    val controls: List<WireFlightPlanControlUiView> = emptyList(),
     val guidance: WireGuidanceUiView? = null,
 )
 

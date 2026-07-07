@@ -322,11 +322,11 @@ fn format_ete_seconds(total_seconds: i64) -> String {
         let total_minutes = (total_seconds + 30) / 60;
         let hours = total_minutes / 60;
         let minutes = total_minutes % 60;
-        format!("{hours:02}:{minutes:02}")
+        format!("{hours:02}:{minutes:02}⌛")
     } else {
         let minutes = total_seconds / 60;
         let seconds = total_seconds % 60;
-        format!("{minutes:02}:{seconds:02}")
+        format!("{minutes:02}:{seconds:02}⏱️")
     }
 }
 
@@ -370,8 +370,14 @@ mod tests {
             .find(|cell| cell.id == "waypoint_ete")
             .and_then(|cell| cell.value.as_deref());
 
-        assert_eq!(final_ete, Some("15:00"));
+        assert_eq!(final_ete, Some("15:00⏱️"));
         assert_eq!(row_ete, final_ete);
+    }
+
+    #[test]
+    fn ete_formatting_suffix_disambiguates_duration_mode() {
+        assert_eq!(format_ete_seconds(12 * 60 + 34), "12:34⏱️");
+        assert_eq!(format_ete_seconds(12 * 3600 + 34 * 60), "12:34⌛");
     }
 
     #[test]

@@ -390,6 +390,13 @@ data class FlightPlanRowActionUiView(
     val execution: String = "ui_controller",
     val dismissTrayOnSuccess: Boolean = true,
     val navigation: FlightPlanRowNavigationAction? = null,
+    val weatherDetail: WeatherDetailUiView? = null,
+)
+
+data class WeatherDetailUiView(
+    val stationId: String,
+    val metarText: String?,
+    val tafText: String?,
 )
 
 sealed interface FlightPlanRowNavigationAction {

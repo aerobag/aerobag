@@ -54,16 +54,16 @@ use crate::{
     AirportPlateAvailability, AirspaceFeaturePayload, AirspaceLabelTilePayload,
     AirspaceReferenceTilePayload, AirwayPresentationPlan, AppError, AppErrorKind, AppEvent,
     AppResult, AppState, AppUiState, FlightPlan, FlightPlanDisplayRowKind,
-    FlightPlanRowActionExecution, FlightPlanRowActionId, GuidanceState, LatLon, LegDisplayElement,
-    MapOverlayConfig, MapOverlayQueryResult, MapSelectionForNavRefResult, MapSelectionQueryResult,
-    MapSelectionSessionAction, MapSurfaceMetrics, MapViewport, MetarProductPayload,
-    MetarTilePayload, NavDbOpenResult, NavKvLookup, NavKvPageProbeStats, NavKvQuery, NavKvRoot,
-    NavKvStore, NavRef, OfflinePackagesLibraryCache, PlaybackUiState, PointTilePayload,
-    ProcedureDiscontinuity, ProcedureKind, ProcedureLoadCommand, RasterMapCatalog,
-    RasterResourceMode, RasterTilePlan, ResolvedLeg, ResolvedLegSource, RouteComponentViewKind,
-    SequencingMode, SituationControlInput, SituationControlMenuItem, TafProductPayload,
-    TerrainOverlayQueryResult, TfrProductPayload, UiSnapshotAppState, VectorAggregateTilePayload,
-    VectorIdentLabelStyle,
+    FlightPlanRowActionExecution, FlightPlanRowActionId, FlightPlanUiState, GuidanceState, LatLon,
+    LegDisplayElement, MapOverlayConfig, MapOverlayQueryResult, MapSelectionForNavRefResult,
+    MapSelectionQueryResult, MapSelectionSessionAction, MapSurfaceMetrics, MapViewport,
+    MetarProductPayload, MetarTilePayload, NavDbOpenResult, NavKvLookup, NavKvPageProbeStats,
+    NavKvQuery, NavKvRoot, NavKvStore, NavRef, OfflinePackagesLibraryCache, PlaybackUiState,
+    PointTilePayload, ProcedureDiscontinuity, ProcedureKind, ProcedureLoadCommand,
+    RasterMapCatalog, RasterResourceMode, RasterTilePlan, ResolvedLeg, ResolvedLegSource,
+    RouteComponentViewKind, SequencingMode, SituationControlInput, SituationControlMenuItem,
+    TafProductPayload, TerrainOverlayQueryResult, TfrProductPayload, UiSnapshotAppState,
+    VectorAggregateTilePayload, VectorIdentLabelStyle,
 };
 
 const WORLD_MERCATOR_MAX_LATITUDE: f64 = 85.051_128_78;
@@ -9488,8 +9488,39 @@ fn project_session_app_ui_state(session: &UiSession) -> Result<AppUiState, HadRe
             },
         )?);
     }
+    if let Some(active_plan) = app_ui_state.active_plan.as_mut() {
+        enrich_flight_plan_weather_actions(session, active_plan);
+    }
     app_ui_state.flight_data_banner = project_flight_data_banner(session, &app_ui_state)?;
     Ok(app_ui_state)
+}
+
+fn enrich_flight_plan_weather_actions(session: &UiSession, active_plan: &mut FlightPlanUiState) {
+    for row in &mut active_plan.display_rows {
+        let station_id = row
+            .chart_airport_id
+            .as_deref()
+            .map(crate::map_overlay::weather_station_id_for_airport_id)
+            .or_else(|| match row.nav_ref.as_ref() {
+                Some(NavRef::Airport(airport_id)) => Some(
+                    crate::map_overlay::weather_station_id_for_airport_id(airport_id),
+                ),
+                _ => None,
+            });
+        let weather_detail = station_id.as_deref().and_then(|station_id| {
+            crate::map_overlay::weather_detail_for_station(
+                station_id,
+                session.metar_payload.as_ref(),
+                session.taf_payload.as_ref(),
+            )
+        });
+        for action in crate::planning::flight_plan_row_actions_mut(row) {
+            if action.id == FlightPlanRowActionId::Weather {
+                action.enabled = weather_detail.is_some();
+                action.weather_detail = weather_detail.clone();
+            }
+        }
+    }
 }
 
 fn project_flight_data_banner(
@@ -12151,6 +12182,87 @@ mod tests {
                 .find(|fact| fact.label == "Collected At")
                 .map(|fact| fact.value.as_str()),
             Some("2026-05-03 00:05 UTC")
+        );
+    }
+
+    #[test]
+    fn airport_flight_plan_rows_project_weather_action_from_session_payloads() {
+        let plan = FlightPlan {
+            route_components: vec![RouteComponent::Waypoint {
+                waypoint: NavRef::Airport("KAAA".to_string()),
+            }],
+            route_component_uids: vec!["component-1".to_string()],
+            route_component_uid_counter: 1,
+            ..empty_test_plan()
+        };
+        let init = create_ui_session(plan, &[], None, None).expect("create session");
+        {
+            let mut sessions = lock_sessions();
+            let session = sessions.get_mut(&init.handle).expect("session");
+            let mut metars_by_station = HashMap::new();
+            metars_by_station.insert(
+                "KAAA".to_string(),
+                crate::MetarRecord {
+                    raw_text: "METAR KAAA 010000Z 00000KT 10SM SCT020 10/08 A3000".to_string(),
+                    observed_at_utc: Some("2026-05-03T00:00:00.000Z".to_string()),
+                    station_id: "KAAA".to_string(),
+                    flight_category: Some("VFR".to_string()),
+                    clouds: None,
+                    longitude: 0.0,
+                    latitude: 0.0,
+                },
+            );
+            session.metar_payload = Some(MetarProductPayload {
+                schema_version: 3,
+                version_label: "v1".to_string(),
+                generated_at_utc: None,
+                observed_at_utc: None,
+                metar_count: Some(1),
+                metars_by_station,
+                pireps: Vec::new(),
+            });
+            let mut tafs_by_station = HashMap::new();
+            tafs_by_station.insert(
+                "KAAA".to_string(),
+                crate::TafRecord {
+                    raw_text: "TAF KAAA 010000Z 0100/0124 00000KT P6SM SCT020".to_string(),
+                    issued_at_utc: Some("2026-05-03T00:00:00.000Z".to_string()),
+                    station_id: "KAAA".to_string(),
+                    longitude: 0.0,
+                    latitude: 0.0,
+                },
+            );
+            session.taf_payload = Some(TafProductPayload {
+                schema_version: 1,
+                version_label: "v1".to_string(),
+                generated_at_utc: None,
+                taf_count: Some(1),
+                tafs_by_station,
+            });
+        }
+
+        let snapshot = get_session_snapshot_at_epoch_ms(init.handle, 0).expect("snapshot");
+        let active_plan = snapshot.app_ui_state.active_plan.expect("active plan");
+        let row = active_plan
+            .display_rows
+            .iter()
+            .find(|row| row.nav_ref == Some(NavRef::Airport("KAAA".to_string())))
+            .expect("KAAA row");
+        let wx = crate::planning::flight_plan_row_actions(row)
+            .find(|action| action.id == FlightPlanRowActionId::Weather)
+            .expect("WX action");
+
+        assert!(wx.enabled);
+        assert_eq!(wx.label, "WX");
+        let detail = wx.weather_detail.as_ref().expect("weather detail");
+        assert_eq!(detail.station_id, "KAAA");
+        assert_eq!(
+            detail.metar_text.as_deref(),
+            Some("METAR KAAA 010000Z 00000KT 10SM SCT020 10/08 A3000")
+        );
+        assert_eq!(
+            detail.taf_text.as_deref(),
+            Some("TAF KAAA 010000Z 0100/0124 00000KT P6SM SCT020")
         );
     }
 
@@ -16924,6 +17036,7 @@ mod tests {
                         display_only: false,
                         detail_text: None,
                         disabled_reason: None,
+                        weather_detail: None,
                         airspace_limit: None,
                         session_action: Some("direct-to-action".to_string()),
                         flight_plan_row_action: None,

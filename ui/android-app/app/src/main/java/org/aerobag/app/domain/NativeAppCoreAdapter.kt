@@ -295,6 +295,7 @@ data class MapSelectionAction(
     val displayOnly: Boolean,
     val detailText: String?,
     val disabledReason: String?,
+    val weatherDetail: WeatherDetailUiView?,
     val airspaceLimit: AirspaceLimitGlyph?,
     val sessionAction: String?,
     val flightPlanRowAction: MapSelectionFlightPlanRowAction?,
@@ -2818,10 +2819,23 @@ private fun WireMapSelectionAction.toUi() = MapSelectionAction(
     displayOnly = display_only,
     detailText = detail_text,
     disabledReason = disabled_reason,
+    weatherDetail = weather_detail?.toUi(),
     airspaceLimit = airspace_limit?.toUi(),
     sessionAction = session_action,
     flightPlanRowAction = flight_plan_row_action?.toUi(),
     navigation = navigation?.toUi(),
+)
+
+private fun WireWeatherDetailUiView.toUi() = WeatherDetailUiView(
+    stationId = station_id,
+    metarText = metar_text,
+    tafText = taf_text,
+)
+
+private fun WeatherDetailUiView.toWire() = WireWeatherDetailUiView(
+    station_id = stationId,
+    metar_text = metarText,
+    taf_text = tafText,
 )
 
 private fun WireMapSelectionFlightPlanRowAction.toUi() = MapSelectionFlightPlanRowAction(
@@ -3568,6 +3582,7 @@ private fun WireFlightPlanRowActionUiView.toUi() = FlightPlanRowActionUiView(
     execution = execution,
     dismissTrayOnSuccess = dismiss_tray_on_success,
     navigation = navigation?.toUi(),
+    weatherDetail = weather_detail?.toUi(),
 )
 
 private fun FlightPlanRowActionUiView.toWire() = WireFlightPlanRowActionUiView(
@@ -3579,6 +3594,7 @@ private fun FlightPlanRowActionUiView.toWire() = WireFlightPlanRowActionUiView(
     execution = execution,
     dismiss_tray_on_success = dismissTrayOnSuccess,
     navigation = navigation?.toWire(),
+    weather_detail = weatherDetail?.toWire(),
 )
 
 private fun WireFlightPlanRowNavigationAction.toUi(): FlightPlanRowNavigationAction? =

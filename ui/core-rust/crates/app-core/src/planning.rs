@@ -5,7 +5,7 @@ use crate::errors::{AppError, AppErrorKind, AppResult};
 use crate::geodesy::initial_course_deg;
 use crate::geometry::LatLon;
 use crate::ids::AirportId;
-use crate::map_overlay::NavSymbolFeature;
+use crate::map_overlay::{NavSymbolFeature, WeatherDetailUiView};
 use crate::{FlightDataCell, FlightDataCellTone, FlightDataColumn};
 
 pub(crate) const OFF_PLAN_DIRECT_TO_EDIT_DISABLED_REASON: &str =
@@ -937,6 +937,7 @@ pub enum FlightPlanRowActionId {
     MoveUp,
     MoveDown,
     WaypointInfo,
+    Weather,
     AddAirway,
     SelectProcedure,
     Plates,
@@ -982,6 +983,8 @@ pub struct FlightPlanRowActionUiView {
     pub dismiss_tray_on_success: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub navigation: Option<FlightPlanRowNavigationAction>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub weather_detail: Option<WeatherDetailUiView>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -2795,6 +2798,7 @@ fn waypoint_actions_for_row(
             move_action(FlightPlanRowActionId::MoveUp, can_reorder_up),
             move_action(FlightPlanRowActionId::MoveDown, can_reorder_down),
             action(FlightPlanRowActionId::WaypointInfo, false),
+            action(FlightPlanRowActionId::Weather, false),
             action(
                 FlightPlanRowActionId::AddAirway,
                 can_add_airway_after && origin_anchor.is_some(),
@@ -2960,6 +2964,7 @@ fn action(id: FlightPlanRowActionId, enabled: bool) -> FlightPlanRowActionUiView
         execution: FlightPlanRowActionExecution::UiController,
         dismiss_tray_on_success: true,
         navigation: None,
+        weather_detail: None,
     }
 }
 
@@ -2974,6 +2979,7 @@ fn core_session_action(id: FlightPlanRowActionId, enabled: bool) -> FlightPlanRo
         execution: FlightPlanRowActionExecution::CoreSession,
         dismiss_tray_on_success: true,
         navigation: None,
+        weather_detail: None,
     }
 }
 
@@ -3000,6 +3006,7 @@ fn move_action(id: FlightPlanRowActionId, enabled: bool) -> FlightPlanRowActionU
         execution: FlightPlanRowActionExecution::CoreSession,
         dismiss_tray_on_success: false,
         navigation: None,
+        weather_detail: None,
     }
 }
 
@@ -3015,6 +3022,7 @@ fn row_action_disabled_reason(id: &FlightPlanRowActionId, enabled: bool) -> Opti
             FlightPlanRowActionId::MoveUp => "This route element is already at the top.",
             FlightPlanRowActionId::MoveDown => "This route element is already at the bottom.",
             FlightPlanRowActionId::WaypointInfo => "Waypoint info is not available yet.",
+            FlightPlanRowActionId::Weather => "No METAR or TAF is available for this station.",
             FlightPlanRowActionId::AddAirway => {
                 "Airway insertion requires a named waypoint with airway connections."
             }
@@ -3043,31 +3051,32 @@ fn assign_action_uids(
 fn action_matrix_from_actions(
     actions: &[FlightPlanRowActionUiView],
 ) -> Vec<Vec<FlightPlanRowActionUiView>> {
-    let rows = [
-        [
+    let rows = vec![
+        vec![
             FlightPlanRowActionId::ActivateLeg,
             FlightPlanRowActionId::DirectTo,
         ],
-        [
+        vec![
             FlightPlanRowActionId::InsertBefore,
             FlightPlanRowActionId::MoveUp,
         ],
-        [
+        vec![
             FlightPlanRowActionId::InsertAfter,
             FlightPlanRowActionId::MoveDown,
         ],
-        [
+        vec![
             FlightPlanRowActionId::Remove,
             FlightPlanRowActionId::RemoveAllAbove,
         ],
-        [
+        vec![
             FlightPlanRowActionId::AddAirway,
             FlightPlanRowActionId::SelectProcedure,
         ],
-        [
+        vec![
             FlightPlanRowActionId::WaypointInfo,
             FlightPlanRowActionId::Plates,
         ],
+        vec![FlightPlanRowActionId::Weather],
     ];
     let mut used = Vec::new();
     let mut matrix = rows
@@ -3167,6 +3176,7 @@ fn action_label(id: &FlightPlanRowActionId) -> &'static str {
         FlightPlanRowActionId::MoveUp => "Move Up",
         FlightPlanRowActionId::MoveDown => "Move Down",
         FlightPlanRowActionId::WaypointInfo => "Waypoint Info",
+        FlightPlanRowActionId::Weather => "WX",
         FlightPlanRowActionId::AddAirway => "Add Airway",
         FlightPlanRowActionId::SelectProcedure => "Select Procedure",
         FlightPlanRowActionId::Plates => "Plates",
@@ -7946,6 +7956,7 @@ mod tests {
                     FlightPlanRowActionId::WaypointInfo,
                     FlightPlanRowActionId::Plates
                 ],
+                vec![FlightPlanRowActionId::Weather],
             ]
         );
     }

@@ -159,6 +159,7 @@ import androidx.compose.ui.text.SpanStyle
 import androidx.compose.ui.text.buildAnnotatedString
 import androidx.compose.ui.text.withStyle
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextDecoration
 import androidx.compose.ui.text.style.TextOverflow
@@ -280,6 +281,7 @@ import org.aerobag.app.domain.UiSessionSnapshot
 import org.aerobag.app.domain.VisibleMapFeature
 import org.aerobag.app.domain.VisibleMetarFeature
 import org.aerobag.app.domain.VisiblePirepFeature
+import org.aerobag.app.domain.WeatherDetailUiView
 import org.aerobag.app.domain.applyPinchGesture
 import org.aerobag.app.domain.clampZoom
 import org.aerobag.app.domain.createInitialImageViewport
@@ -2656,9 +2658,16 @@ internal fun MapExplorerPage(
                 Box(modifier = Modifier.fillMaxSize()) {
                     Scrim { mapSelection = null }
                     if (selection.detailModal != null) {
-                        MapSelectionDetailModal(
+                        selection.detailModal.weatherDetail?.let { weatherDetail ->
+                            WeatherDetailModal(
+                                detail = weatherDetail,
+                                modifier = Modifier
+                                    .align(Alignment.Center)
+                                    .zIndex(OverlayPlaneModal),
+                            )
+                        } ?: MapSelectionDetailModal(
                             title = selection.detailModal.title,
-                            text = selection.detailModal.text,
+                            text = selection.detailModal.text.orEmpty(),
                             modifier = Modifier
                                 .align(Alignment.Center)
                                 .zIndex(OverlayPlaneModal),
@@ -2679,7 +2688,16 @@ internal fun MapExplorerPage(
                                 )
                                 .padding(ThumbGap),
                             onSelectItem = { item ->
-                                mapSelection = selection.copy(selectedItem = item, detailModal = null)
+                                val weatherDetail = immediateWeatherDetailForMapSelectionItem(item)
+                                mapSelection = selection.copy(
+                                    selectedItem = item,
+                                    detailModal = weatherDetail?.let { detail ->
+                                        MapSelectionDetailModalState(
+                                            title = "WX ${detail.stationId}",
+                                            weatherDetail = detail,
+                                        )
+                                    },
+                                )
                             },
                             onSelectAction = { item, action ->
                                 if (!action.enabled) {
@@ -2688,6 +2706,16 @@ internal fun MapExplorerPage(
                                         ?.let { reason ->
                                             Toast.makeText(context, reason, Toast.LENGTH_SHORT).show()
                                         }
+                                    return@MapSelectionTray
+                                }
+                                action.weatherDetail?.let { detail ->
+                                    mapSelection = selection.copy(
+                                        selectedItem = item,
+                                        detailModal = MapSelectionDetailModalState(
+                                            title = "WX ${detail.stationId}",
+                                            weatherDetail = detail,
+                                        ),
+                                    )
                                     return@MapSelectionTray
                                 }
                                 action.detailText?.let { detail ->
@@ -3851,6 +3879,88 @@ internal fun MapSelectionDetailModal(
             )
         }
     }
+}
+
+@Composable
+internal fun WeatherDetailModal(
+    detail: WeatherDetailUiView,
+    modifier: Modifier = Modifier,
+) {
+    val uiTheme = LocalAerobagUiTheme.current
+    Surface(
+        modifier = modifier
+            .widthIn(max = ThumbSize * 9.5f)
+            .heightIn(max = ThumbSize * 8.5f),
+        shape = RoundedCornerShape(ThumbRadius + 4.dp),
+        color = uiTheme.controls.panelBg.copy(alpha = 0.98f),
+        contentColor = uiTheme.controls.panelFg,
+        shadowElevation = 8.dp,
+        border = BorderStroke(1.dp, uiTheme.controls.panelBorder.copy(alpha = 0.85f)),
+    ) {
+        Column(
+            modifier = Modifier.padding(ThumbSize * 0.18f),
+            verticalArrangement = Arrangement.spacedBy(ThumbGap * 0.85f),
+        ) {
+            Text(
+                text = "WX ${detail.stationId}".uppercase(),
+                style = MaterialTheme.typography.labelMedium.copy(
+                    fontWeight = FontWeight.Black,
+                    letterSpacing = 0.4.sp,
+                ),
+                color = uiTheme.controls.panelFg,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+            )
+            WeatherDetailSection(label = "METAR", text = detail.metarText)
+            WeatherDetailSection(label = "TAF", text = detail.tafText)
+        }
+    }
+}
+
+@Composable
+private fun WeatherDetailSection(
+    label: String,
+    text: String?,
+) {
+    val uiTheme = LocalAerobagUiTheme.current
+    Column(
+        modifier = Modifier
+            .fillMaxWidth()
+            .heightIn(min = ThumbSize * 1.2f, max = ThumbSize * 3.3f)
+            .background(uiTheme.controls.mapSelectionDisplayBg.copy(alpha = 0.72f), RoundedCornerShape(ThumbRadius))
+            .border(1.dp, uiTheme.controls.panelBorder.copy(alpha = 0.4f), RoundedCornerShape(ThumbRadius))
+            .padding(ThumbSize * 0.13f),
+        verticalArrangement = Arrangement.spacedBy(ThumbGap * 0.45f),
+    ) {
+        Text(
+            text = label,
+            style = MaterialTheme.typography.labelSmall.copy(
+                fontWeight = FontWeight.Black,
+                letterSpacing = 0.6.sp,
+            ),
+            color = uiTheme.controls.panelFg,
+        )
+        Text(
+            text = text ?: "No $label available.",
+            modifier = Modifier
+                .fillMaxWidth()
+                .verticalScroll(rememberScrollState()),
+            style = MaterialTheme.typography.bodyMedium.copy(
+                fontSize = 16.sp,
+                lineHeight = 20.sp,
+                fontWeight = FontWeight.Bold,
+                fontFamily = if (text == null) FontFamily.Default else FontFamily.Monospace,
+            ),
+            color = if (text == null) uiTheme.controls.panelFg.copy(alpha = 0.65f) else uiTheme.controls.panelFg,
+        )
+    }
+}
+
+private fun immediateWeatherDetailForMapSelectionItem(item: MapSelectionItem): WeatherDetailUiView? {
+    if (item.metarFeature == null) {
+        return null
+    }
+    return item.actions.firstOrNull { it.enabled && it.weatherDetail != null }?.weatherDetail
 }
 
 @Composable

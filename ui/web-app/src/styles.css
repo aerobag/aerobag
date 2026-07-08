@@ -1528,6 +1528,50 @@ button {
   pointer-events: auto;
 }
 
+.weatherDetailModal {
+  width: min(calc(var(--thumb) * 10.5), calc(100vw - var(--safe-left) - var(--safe-right) - calc(var(--thumb) * 0.5)));
+  max-height: min(calc(var(--thumb) * 8.5), calc(var(--app-height) - var(--safe-top) - var(--safe-bottom) - calc(var(--thumb) * 0.5)));
+}
+
+.weatherDetailSections {
+  display: grid;
+  grid-template-rows: auto minmax(0, 1fr);
+  gap: calc(var(--thumb-gap) * 0.9);
+}
+
+.weatherDetailSection {
+  min-height: calc(var(--thumb) * 1.35);
+  padding: calc(var(--thumb) * 0.14);
+  border-radius: var(--thumb-radius);
+  background: rgba(255, 255, 255, 0.78);
+  box-shadow: inset 0 0 0 1px rgba(19, 33, 41, 0.12);
+}
+
+.weatherDetailSectionTitle {
+  margin-bottom: calc(var(--thumb-gap) * 0.45);
+  color: #24333a;
+  font-size: calc(var(--thumb) * 0.16);
+  font-weight: 900;
+  letter-spacing: 0.06em;
+}
+
+.weatherDetailText {
+  max-height: calc(var(--thumb) * 3.1);
+  margin: 0;
+  overflow: auto;
+  color: #111b20;
+  font-family: "JetBrains Mono", "SFMono-Regular", "Consolas", monospace;
+  font-size: calc(var(--thumb) * 0.19);
+  font-weight: 800;
+  line-height: 1.25;
+  white-space: pre-wrap;
+}
+
+.weatherDetailText.isMissing {
+  color: #68777d;
+  font-family: inherit;
+}
+
 .mapSelectionAction:disabled,
 .mapSelectionAction.isDisabled {
   background: var(--theme-button-disabled);

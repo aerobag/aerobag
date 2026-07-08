@@ -415,6 +415,12 @@ export type FlightPlanUiState = {
 
 export type FlightPlanDisplayRowKind = "waypoint" | "group" | "discontinuity" | "summary";
 
+export type WeatherDetailUiView = {
+  station_id: string;
+  metar_text?: string | null;
+  taf_text?: string | null;
+};
+
 export type FlightPlanRowActionUiView = {
   id: string;
   uid: string;
@@ -424,6 +430,7 @@ export type FlightPlanRowActionUiView = {
   execution?: "ui_controller" | "core_session";
   dismiss_tray_on_success?: boolean;
   navigation?: FlightPlanRowNavigationAction | null;
+  weather_detail?: WeatherDetailUiView | null;
 };
 
 export type FlightPlanRowNavigationAction =

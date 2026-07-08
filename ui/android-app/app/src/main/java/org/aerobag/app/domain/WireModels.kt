@@ -749,10 +749,18 @@ data class WireMapSelectionAction(
     val display_only: Boolean,
     val detail_text: String? = null,
     val disabled_reason: String? = null,
+    val weather_detail: WireWeatherDetailUiView? = null,
     val airspace_limit: WireAirspaceLimitGlyph? = null,
     val session_action: String? = null,
     val flight_plan_row_action: WireMapSelectionFlightPlanRowAction? = null,
     val navigation: WireMapSelectionNavigationAction? = null,
+)
+
+@Serializable
+data class WireWeatherDetailUiView(
+    val station_id: String,
+    val metar_text: String? = null,
+    val taf_text: String? = null,
 )
 
 @Serializable
@@ -1431,6 +1439,7 @@ data class WireFlightPlanRowActionUiView(
     val execution: String = "ui_controller",
     val dismiss_tray_on_success: Boolean = true,
     val navigation: WireFlightPlanRowNavigationAction? = null,
+    val weather_detail: WireWeatherDetailUiView? = null,
 )
 
 @Serializable

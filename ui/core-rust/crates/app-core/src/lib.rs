@@ -104,8 +104,8 @@ pub use map_overlay::{
     OverlaySurfaceDecision, PirepRecord, PointTilePayload, PointVectorRecord, TafProductPayload,
     TafRecord, TfrAltitudeLimit, TfrAreaPayload, TfrLatLonPoint, TfrProductPayload,
     TfrScheduleFragment, VectorAggregateTilePayload, VectorIdentLabelStyle, VectorTileRequest,
-    VisibleMapFeature, VisibleMetarFeature, VisiblePirepFeature, AIRSPACE_DISPLAY_FEATURE_LIMIT,
-    VECTOR_DISPLAY_FEATURE_LIMIT,
+    VisibleMapFeature, VisibleMetarFeature, VisiblePirepFeature, WeatherDetailUiView,
+    AIRSPACE_DISPLAY_FEATURE_LIMIT, VECTOR_DISPLAY_FEATURE_LIMIT,
 };
 pub use navdb_types::{
     AirwayAutoSelection, AirwayBranch, AirwayEntryCandidate, AirwayExitCandidate,

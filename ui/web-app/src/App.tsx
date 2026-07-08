@@ -28,6 +28,7 @@ import type {
   SituationSample,
   SituationRingCandidate,
   WaypointIdentifierSuggestion,
+  WeatherDetailUiView,
 } from "./domain/types";
 import uiTheme from "@shared-ui-theme";
 import aboutReadmeHtml from "./content/about-readme.html?raw";
@@ -3461,7 +3462,7 @@ function MapPage(props: {
     point: ScreenPoint;
     result: MapSelectionQueryResult;
     selectedItem: MapSelectionItem | null;
-    detailModal: { title: string; text: string } | null;
+    detailModal: { kind: "text"; title: string; text: string } | { kind: "weather"; detail: WeatherDetailUiView } | null;
   } | null>(null);
   const { toast: disabledActionToast, show: showDisabledAction } = useDisabledActionToast();
   const firstVisualReadyRef = useRef(false);
@@ -5557,7 +5558,9 @@ function MapPage(props: {
         {mapSelection ? (
           <>
             <TrayScrim ariaLabel="Close map selection" onClose={() => setMapSelection(null)} />
-            {mapSelection.detailModal ? (
+            {mapSelection.detailModal?.kind === "weather" ? (
+              <WeatherDetailModal detail={mapSelection.detailModal.detail} />
+            ) : mapSelection.detailModal ? (
               <MapSelectionDetailModal
                 title={mapSelection.detailModal.title}
                 text={mapSelection.detailModal.text}
@@ -5567,8 +5570,19 @@ function MapPage(props: {
                 point={mapSelection.point}
                 result={mapSelection.result}
                 selectedItem={mapSelection.selectedItem}
-                onSelectItem={(item) => setMapSelection((current) => current ? { ...current, selectedItem: item, detailModal: null } : current)}
-                onSelectDetail={(title, text) => setMapSelection((current) => current ? { ...current, detailModal: { title, text } } : current)}
+                onSelectItem={(item) => setMapSelection((current) => {
+                  if (!current) {
+                    return current;
+                  }
+                  const weatherDetail = immediateWeatherDetailForMapSelectionItem(item);
+                  return {
+                    ...current,
+                    selectedItem: item,
+                    detailModal: weatherDetail ? { kind: "weather", detail: weatherDetail } : null,
+                  };
+                })}
+                onSelectDetail={(title, text) => setMapSelection((current) => current ? { ...current, detailModal: { kind: "text", title, text } } : current)}
+                onSelectWeather={(detail) => setMapSelection((current) => current ? { ...current, detailModal: { kind: "weather", detail } } : current)}
                 onDisabledAction={showDisabledAction}
                 onSelectAction={async (item, action) => {
                   if (!appCoreAdapter) {
@@ -5583,6 +5597,7 @@ function MapPage(props: {
                     setMapSelection((current) => current ? {
                       ...current,
                       detailModal: {
+                        kind: "text",
                         title: action.label,
                         text: item.detail_text ?? "Offline package region controls are not connected in this web build yet.",
                       },
@@ -5593,6 +5608,7 @@ function MapPage(props: {
                     setMapSelection((current) => current ? {
                       ...current,
                       detailModal: {
+                        kind: "text",
                         title: "Offline Packages",
                         text: "Offline Packages settings are not available in this web build yet.",
                       },
@@ -6875,6 +6891,7 @@ function FlightPlanPage(props: {
 }) {
   const [selectedWaypointUid, setSelectedWaypointUid] = useState<string | null>(null);
   const [selectedWaypointAnchor, setSelectedWaypointAnchor] = useState<{ top: number; height: number } | null>(null);
+  const [flightPlanWeatherModal, setFlightPlanWeatherModal] = useState<WeatherDetailUiView | null>(null);
   const [airwayPicker, setAirwayPicker] = useState<{
     loading: boolean;
     error: string | null;
@@ -7088,7 +7105,7 @@ function FlightPlanPage(props: {
       setAirportInsert(null);
     };
 
-    const actionForUi = (action: { id: string; uid: string; label: string; enabled: boolean; disabled_reason?: string | null; execution?: string; dismiss_tray_on_success?: boolean; navigation?: FlightPlanRowNavigationAction | null }) => {
+    const actionForUi = (action: { id: string; uid: string; label: string; enabled: boolean; disabled_reason?: string | null; execution?: string; dismiss_tray_on_success?: boolean; navigation?: FlightPlanRowNavigationAction | null; weather_detail?: WeatherDetailUiView | null }) => {
       return {
         id: action.id,
         uid: action.uid,
@@ -7100,6 +7117,11 @@ function FlightPlanPage(props: {
         dismissTrayOnSuccess: action.dismiss_tray_on_success ?? true,
         onSelect: () => {
           if (!action.enabled) {
+            return;
+          }
+          if (action.weather_detail) {
+            setFlightPlanWeatherModal(action.weather_detail);
+            closeTray();
             return;
           }
           if (action.execution === "core_session") {
@@ -7207,7 +7229,7 @@ function FlightPlanPage(props: {
         },
       };
     };
-    return (selectedRow.actionMatrix as Array<Array<{ id: string; uid: string; label: string; enabled: boolean; disabled_reason?: string | null; execution?: string; dismiss_tray_on_success?: boolean; navigation?: FlightPlanRowNavigationAction | null }>>).map((row) => row.map(actionForUi));
+    return (selectedRow.actionMatrix as Array<Array<{ id: string; uid: string; label: string; enabled: boolean; disabled_reason?: string | null; execution?: string; dismiss_tray_on_success?: boolean; navigation?: FlightPlanRowNavigationAction | null; weather_detail?: WeatherDetailUiView | null }>>).map((row) => row.map(actionForUi));
   }, [props, selectedRow]);
   const rowActions = useMemo(() => rowActionRows.flat(), [rowActionRows]);
 
@@ -8104,6 +8126,12 @@ function FlightPlanPage(props: {
           {disabledActionToast.message}
         </div>
       ) : null}
+      {flightPlanWeatherModal ? (
+        <>
+          <TrayScrim ariaLabel="Close weather" onClose={() => setFlightPlanWeatherModal(null)} />
+          <WeatherDetailModal detail={flightPlanWeatherModal} />
+        </>
+      ) : null}
     </section>
   );
 }
@@ -8455,9 +8483,10 @@ function MapSelectionTray(props: {
   onSelectItem: (item: MapSelectionItem) => void;
   onSelectDetail: (title: string, text: string) => void;
   onDisabledAction: (message: string) => void;
+  onSelectWeather: (detail: WeatherDetailUiView) => void;
   onSelectAction: (item: MapSelectionItem, action: MapSelectionItem["actions"][number]) => void | Promise<void>;
 }) {
-  const { point, result, selectedItem, onSelectItem, onSelectDetail, onDisabledAction, onSelectAction } = props;
+  const { point, result, selectedItem, onSelectItem, onSelectDetail, onDisabledAction, onSelectWeather, onSelectAction } = props;
   const edgePad = thumbPixels(0.1);
   type MapSelectionActionSlot = MapSelectionItem["actions"][number] & { placeholder?: boolean };
   const actionSlots: MapSelectionActionSlot[] = selectedItem
@@ -8569,6 +8598,10 @@ function MapSelectionTray(props: {
                     }
                     return;
                   }
+                  if (action.weather_detail) {
+                    onSelectWeather(action.weather_detail);
+                    return;
+                  }
                   if (action.detail_text) {
                     onSelectDetail(action.label, action.detail_text);
                     return;
@@ -8611,6 +8644,47 @@ function MapSelectionDetailModal(props: { title: string; text: string }) {
     >
       <div className="mapSelectionDetailTitle">{props.title}</div>
       <div className="mapSelectionDetailText">{props.text}</div>
+    </section>
+  );
+}
+
+function immediateWeatherDetailForMapSelectionItem(item: MapSelectionItem): WeatherDetailUiView | null {
+  if (!item.metar_feature) {
+    return null;
+  }
+  return item.actions.find((action) => action.enabled && action.weather_detail)?.weather_detail ?? null;
+}
+
+function WeatherDetailModal(props: { detail: WeatherDetailUiView }) {
+  const { detail } = props;
+  return (
+    <section
+      className="mapSelectionDetailModal weatherDetailModal"
+      aria-label={`Weather ${detail.station_id}`}
+      onPointerDown={stopPointer}
+      onPointerMove={stopPointer}
+      onPointerUp={stopPointer}
+      onPointerCancel={stopPointer}
+      onWheel={stopWheel}
+      onClick={stopClick}
+      onDoubleClick={stopDoubleClick}
+    >
+      <div className="mapSelectionDetailTitle">WX {detail.station_id}</div>
+      <div className="weatherDetailSections">
+        <WeatherDetailSection label="METAR" text={detail.metar_text ?? null} />
+        <WeatherDetailSection label="TAF" text={detail.taf_text ?? null} />
+      </div>
+    </section>
+  );
+}
+
+function WeatherDetailSection(props: { label: string; text: string | null }) {
+  return (
+    <section className="weatherDetailSection">
+      <div className="weatherDetailSectionTitle">{props.label}</div>
+      <pre className={`weatherDetailText${props.text ? "" : " isMissing"}`}>
+        {props.text ?? `No ${props.label} available.`}
+      </pre>
     </section>
   );
 }

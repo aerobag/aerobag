@@ -356,6 +356,15 @@ pub struct TafProductPayload {
     pub tafs_by_station: HashMap<String, TafRecord>,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct WeatherDetailUiView {
+    pub station_id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub metar_text: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub taf_text: Option<String>,
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct MetarProductPayload {
     pub schema_version: u32,
@@ -803,6 +812,8 @@ pub struct MapSelectionAction {
     pub display_only: bool,
     #[serde(default)]
     pub detail_text: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub weather_detail: Option<WeatherDetailUiView>,
     #[serde(default)]
     pub disabled_reason: Option<String>,
     #[serde(default)]
@@ -2520,10 +2531,11 @@ pub fn query_map_selection_for_surface(
                         NavRef::Airport(airport_id) => Some(airport_id),
                         _ => None,
                     });
-                let taf = airport_id.as_deref().and_then(|airport_id| {
-                    taf_payload.and_then(|payload| payload.tafs_by_station.get(airport_id))
+                let weather_detail = airport_id.as_deref().and_then(|airport_id| {
+                    weather_detail_for_station(airport_id, metar_payload, taf_payload)
                 });
-                let item = selection_item_for_point(record, &symbol, plan, availability, taf);
+                let item =
+                    selection_item_for_point(record, &symbol, plan, availability, weather_detail);
                 if let Some(key) = nav_ref_match_key(item.nav_ref.as_ref()) {
                     matched_nav_refs.insert(key);
                 }
@@ -2554,6 +2566,7 @@ pub fn query_map_selection_for_surface(
         hit_radius_px,
         flight_plan_points,
         &matched_nav_refs,
+        metar_payload,
         taf_payload,
         airport_plate_availability,
     ) {
@@ -2804,7 +2817,7 @@ fn selection_item_for_point(
     symbol: &NavSymbolFeature,
     plan: Option<&FlightPlan>,
     airport_plate_availability: AirportPlateAvailability,
-    taf: Option<&TafRecord>,
+    weather_detail: Option<WeatherDetailUiView>,
 ) -> MapSelectionItem {
     let is_airport = record.style_class == "airport"
         || record.kind.eq_ignore_ascii_case("airport")
@@ -2876,14 +2889,7 @@ fn selection_item_for_point(
                 "CSup",
                 airport_plate_availability.csup,
             ),
-            taf.map(|record| detail_action("taf", "TAF", taf_detail_text(record)))
-                .unwrap_or_else(|| {
-                    disabled_action_with_reason(
-                        "taf",
-                        "TAF",
-                        "No TAF is available for this station.",
-                    )
-                }),
+            weather_action(weather_detail.clone()),
             disabled_action_with_reason(
                 "runways",
                 "Runways",
@@ -2932,6 +2938,7 @@ fn query_flight_plan_selection_matches(
     hit_radius_px: f64,
     points: &[FlightPlanSelectionPoint],
     matched_nav_refs: &BTreeSet<String>,
+    metar_payload: Option<&MetarProductPayload>,
     taf_payload: Option<&TafProductPayload>,
     airport_plate_availability: &mut dyn FnMut(&str) -> AirportPlateAvailability,
 ) -> Vec<MapSelectionPointMatch> {
@@ -2955,6 +2962,7 @@ fn query_flight_plan_selection_matches(
             item: selection_item_for_flight_plan_point(
                 point,
                 plan,
+                metar_payload,
                 taf_payload,
                 airport_plate_availability,
             ),
@@ -2967,6 +2975,7 @@ fn query_flight_plan_selection_matches(
 fn selection_item_for_flight_plan_point(
     point: &FlightPlanSelectionPoint,
     plan: Option<&FlightPlan>,
+    metar_payload: Option<&MetarProductPayload>,
     taf_payload: Option<&TafProductPayload>,
     airport_plate_availability: &mut dyn FnMut(&str) -> AirportPlateAvailability,
 ) -> MapSelectionItem {
@@ -2999,9 +3008,9 @@ fn selection_item_for_flight_plan_point(
             "Edit grouped routes from the Flight Plan page.",
         )
     };
-    let taf = match nav_ref {
+    let weather_detail = match nav_ref {
         NavRef::Airport(airport_id) => {
-            taf_payload.and_then(|payload| payload.tafs_by_station.get(airport_id))
+            weather_detail_for_station(airport_id, metar_payload, taf_payload)
         }
         _ => None,
     };
@@ -3018,14 +3027,7 @@ fn selection_item_for_flight_plan_point(
                 availability.plates,
             ),
             plate_target_action("csup", "Chart Supp", airport_id, "CSup", availability.csup),
-            taf.map(|record| detail_action("taf", "TAF", taf_detail_text(record)))
-                .unwrap_or_else(|| {
-                    disabled_action_with_reason(
-                        "taf",
-                        "TAF",
-                        "No TAF is available for this station.",
-                    )
-                }),
+            weather_action(weather_detail.clone()),
             disabled_action_with_reason(
                 "runways",
                 "Runways",
@@ -3138,6 +3140,7 @@ fn selection_item_for_metar(
     taf: Option<&TafRecord>,
     feature: VisibleMetarFeature,
 ) -> MapSelectionItem {
+    let weather_detail = weather_detail_from_records(record.station_id.trim(), Some(record), taf);
     MapSelectionItem {
         id: format!("metar:{}", record.station_id.trim()),
         label: record.station_id.trim().to_ascii_uppercase(),
@@ -3148,7 +3151,7 @@ fn selection_item_for_metar(
             lat: record.latitude,
             lon: record.longitude,
         }),
-        detail_text: Some(record.raw_text.clone()),
+        detail_text: None,
         highlight: MapSelectionHighlight::Metar {
             station_id: record.station_id.clone(),
         },
@@ -3157,17 +3160,7 @@ fn selection_item_for_metar(
         metar_feature: Some(feature),
         pirep_feature: None,
         airspace_icon: None,
-        actions: vec![
-            display_action("metar", "METAR"),
-            taf.map(|record| detail_action("taf", "TAF", taf_detail_text(record)))
-                .unwrap_or_else(|| {
-                    disabled_action_with_reason(
-                        "taf",
-                        "TAF",
-                        "No TAF is available for this station.",
-                    )
-                }),
-        ],
+        actions: vec![weather_action(weather_detail)],
     }
 }
 
@@ -3216,6 +3209,41 @@ fn pirep_hazard_label(record: &PirepRecord) -> String {
         "severe-turbulence" => "Sev Turb".to_string(),
         _ => "PIREP".to_string(),
     }
+}
+
+pub(crate) fn weather_station_id_for_airport_id(airport_id: &str) -> String {
+    airport_id.trim().to_ascii_uppercase()
+}
+
+pub(crate) fn weather_detail_for_station(
+    station_id: &str,
+    metar_payload: Option<&MetarProductPayload>,
+    taf_payload: Option<&TafProductPayload>,
+) -> Option<WeatherDetailUiView> {
+    let station_id = station_id.trim().to_ascii_uppercase();
+    if station_id.is_empty() {
+        return None;
+    }
+    let metar = metar_payload.and_then(|payload| payload.metars_by_station.get(&station_id));
+    let taf = taf_payload.and_then(|payload| payload.tafs_by_station.get(&station_id));
+    weather_detail_from_records(&station_id, metar, taf)
+}
+
+fn weather_detail_from_records(
+    station_id: &str,
+    metar: Option<&MetarRecord>,
+    taf: Option<&TafRecord>,
+) -> Option<WeatherDetailUiView> {
+    let metar_text = metar.map(|record| record.raw_text.clone());
+    let taf_text = taf.map(taf_detail_text);
+    if metar_text.is_none() && taf_text.is_none() {
+        return None;
+    }
+    Some(WeatherDetailUiView {
+        station_id: station_id.trim().to_ascii_uppercase(),
+        metar_text,
+        taf_text,
+    })
 }
 
 fn taf_detail_text(record: &TafRecord) -> String {
@@ -3546,6 +3574,7 @@ fn display_action(id: &str, label: &str) -> MapSelectionAction {
         display_only: true,
         detail_text: None,
         disabled_reason: None,
+        weather_detail: None,
         airspace_limit: None,
         session_action: None,
         flight_plan_row_action: None,
@@ -3553,14 +3582,17 @@ fn display_action(id: &str, label: &str) -> MapSelectionAction {
     }
 }
 
-fn detail_action(id: &str, label: &str, detail_text: String) -> MapSelectionAction {
+fn weather_action(weather_detail: Option<WeatherDetailUiView>) -> MapSelectionAction {
     MapSelectionAction {
-        id: id.to_string(),
-        label: label.to_string(),
-        enabled: true,
+        id: "wx".to_string(),
+        label: "WX".to_string(),
+        enabled: weather_detail.is_some(),
         display_only: false,
-        detail_text: Some(detail_text),
-        disabled_reason: None,
+        detail_text: None,
+        disabled_reason: weather_detail
+            .is_none()
+            .then(|| "No METAR or TAF is available for this station.".to_string()),
+        weather_detail,
         airspace_limit: None,
         session_action: None,
         flight_plan_row_action: None,
@@ -3576,6 +3608,7 @@ fn enabled_action(id: &str, label: &str) -> MapSelectionAction {
         display_only: false,
         detail_text: None,
         disabled_reason: None,
+        weather_detail: None,
         airspace_limit: None,
         session_action: None,
         flight_plan_row_action: None,
@@ -3598,6 +3631,7 @@ fn plate_target_action(
         detail_text: None,
         disabled_reason: (!available)
             .then(|| format!("No {label} are available for this airport.")),
+        weather_detail: None,
         airspace_limit: None,
         session_action: None,
         flight_plan_row_action: None,
@@ -3632,6 +3666,7 @@ fn disabled_action_inner(
         display_only: false,
         detail_text: None,
         disabled_reason,
+        weather_detail: None,
         airspace_limit: None,
         session_action: None,
         flight_plan_row_action: None,
@@ -3651,6 +3686,7 @@ fn row_action(
         display_only: false,
         detail_text: None,
         disabled_reason: None,
+        weather_detail: None,
         airspace_limit: None,
         session_action: None,
         flight_plan_row_action,
@@ -3667,6 +3703,7 @@ fn session_action(id: &str, label: &str, action: MapSelectionSessionAction) -> M
         display_only: false,
         detail_text: None,
         disabled_reason: None,
+        weather_detail: None,
         airspace_limit: None,
         session_action,
         flight_plan_row_action: None,
@@ -3711,6 +3748,7 @@ fn airspace_limit_action_from_parts(
         display_only: true,
         detail_text: None,
         disabled_reason: None,
+        weather_detail: None,
         airspace_limit: Some(AirspaceLimitGlyph {
             upper,
             lower,
@@ -7019,7 +7057,7 @@ mod tests {
         let item = weather.items.first().expect("METAR selection item");
 
         assert_eq!(item.label, "KAAA");
-        assert_eq!(item.detail_text.as_deref(), Some(raw_text));
+        assert_eq!(item.detail_text.as_deref(), None);
         assert!(matches!(
             item.highlight,
             MapSelectionHighlight::Metar { ref station_id } if station_id == "KAAA"
@@ -7030,15 +7068,24 @@ mod tests {
                 .map(|feature| feature.ceiling_amount.as_str()),
             Some("sct")
         );
-        assert!(item.actions.iter().any(|action| action.id == "metar"));
-        let taf_action = item
+        let wx_action = item
             .actions
             .iter()
-            .find(|action| action.id == "taf")
-            .expect("TAF action");
-        assert!(taf_action.enabled);
+            .find(|action| action.id == "wx")
+            .expect("WX action");
+        assert!(wx_action.enabled);
         assert_eq!(
-            taf_action.detail_text.as_deref(),
+            wx_action
+                .weather_detail
+                .as_ref()
+                .and_then(|detail| detail.metar_text.as_deref()),
+            Some(raw_text)
+        );
+        assert_eq!(
+            wx_action
+                .weather_detail
+                .as_ref()
+                .and_then(|detail| detail.taf_text.as_deref()),
             Some("TAF KAAA 010000Z 0100/0124 00000KT P6SM SCT020\nBECMG 0102/0104 BKN030\nFM010600 22008KT P6SM SCT050")
         );
     }
@@ -8296,13 +8343,13 @@ mod tests {
                 plates: true,
                 csup: true,
             },
-            Some(&TafRecord {
-                raw_text: "TAF KSEA 010000Z 0100/0124 00000KT P6SM SCT020 BECMG 0102/0104 BKN030 FM010600 22008KT P6SM SCT050"
-                    .to_string(),
-                issued_at_utc: Some("2026-05-03T00:00:00.000Z".to_string()),
+            Some(WeatherDetailUiView {
                 station_id: "KSEA".to_string(),
-                longitude: record.lon,
-                latitude: record.lat,
+                metar_text: None,
+                taf_text: Some(
+                    "TAF KSEA 010000Z 0100/0124 00000KT P6SM SCT020\nBECMG 0102/0104 BKN030\nFM010600 22008KT P6SM SCT050"
+                        .to_string(),
+                ),
             }),
         );
         let remove = item
@@ -8331,14 +8378,16 @@ mod tests {
             .actions
             .iter()
             .any(|action| action.id == "csup" && action.enabled));
-        let taf = item
+        let wx = item
             .actions
             .iter()
-            .find(|action| action.id == "taf")
-            .expect("TAF action");
-        assert!(taf.enabled);
+            .find(|action| action.id == "wx")
+            .expect("WX action");
+        assert!(wx.enabled);
         assert_eq!(
-            taf.detail_text.as_deref(),
+            wx.weather_detail
+                .as_ref()
+                .and_then(|detail| detail.taf_text.as_deref()),
             Some("TAF KSEA 010000Z 0100/0124 00000KT P6SM SCT020\nBECMG 0102/0104 BKN030\nFM010600 22008KT P6SM SCT050")
         );
 

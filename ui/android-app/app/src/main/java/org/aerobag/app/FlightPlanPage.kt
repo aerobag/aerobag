@@ -260,6 +260,7 @@ import org.aerobag.app.domain.UiSessionSnapshot
 import org.aerobag.app.domain.VisibleMapFeature
 import org.aerobag.app.domain.VisibleMetarFeature
 import org.aerobag.app.domain.VisiblePirepFeature
+import org.aerobag.app.domain.WeatherDetailUiView
 import org.aerobag.app.domain.applyPinchGesture
 import org.aerobag.app.domain.clampZoom
 import org.aerobag.app.domain.createInitialImageViewport
@@ -360,6 +361,7 @@ internal fun FlightPlanPage(
     var airwayPicker by remember { mutableStateOf<AndroidAirwayPickerState?>(null) }
     var procedurePicker by remember { mutableStateOf<AndroidProcedurePickerState?>(null) }
     var airportInsert by remember { mutableStateOf<AndroidAirportInsertState?>(null) }
+    var weatherModal by remember { mutableStateOf<WeatherDetailUiView?>(null) }
     var routeEntryText by remember { mutableStateOf("") }
     var routeEntryPreview by remember { mutableStateOf(emptyFlightPlanEntryPreview()) }
     var routeEntryLoading by remember { mutableStateOf(false) }
@@ -1202,6 +1204,11 @@ internal fun FlightPlanPage(
                                         if (!action.enabled) {
                                             return@MenuPanelRow
                                         }
+                                        action.weatherDetail?.let { detail ->
+                                            weatherModal = detail
+                                            closePanels()
+                                            return@MenuPanelRow
+                                        }
                                         if (action.execution == "core_session") {
                                             val snapshot = applySessionCommand("performFlightPlanRowAction") {
                                                 uiSession.performFlightPlanRowAction(selectedRow.id, action.uid)
@@ -1289,6 +1296,22 @@ internal fun FlightPlanPage(
                         }
                     }
                 }
+        }
+        weatherModal?.let { detail ->
+            Popup(
+                onDismissRequest = { weatherModal = null },
+                properties = PopupProperties(focusable = true, clippingEnabled = false),
+            ) {
+                Box(modifier = Modifier.fillMaxSize()) {
+                    Scrim { weatherModal = null }
+                    WeatherDetailModal(
+                        detail = detail,
+                        modifier = Modifier
+                            .align(Alignment.Center)
+                            .zIndex(OverlayPlaneModal),
+                    )
+                }
+            }
         }
     }
 }

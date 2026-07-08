@@ -292,6 +292,7 @@ import org.aerobag.app.domain.UiSessionSnapshot
 import org.aerobag.app.domain.VisibleMapFeature
 import org.aerobag.app.domain.VisibleMetarFeature
 import org.aerobag.app.domain.VisiblePirepFeature
+import org.aerobag.app.domain.WeatherDetailUiView
 import org.aerobag.app.domain.WorldPoint
 import org.aerobag.app.domain.applyPinchGesture
 import org.aerobag.app.domain.clampZoom
@@ -540,7 +541,8 @@ internal data class MapSelectionUiState(
 
 internal data class MapSelectionDetailModalState(
     val title: String,
-    val text: String,
+    val text: String? = null,
+    val weatherDetail: WeatherDetailUiView? = null,
 )
 
 internal data class FlightPlanDisplayRow(

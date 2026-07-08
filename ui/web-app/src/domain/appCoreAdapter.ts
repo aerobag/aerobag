@@ -27,6 +27,7 @@ import type {
   SituationRingCandidate,
   SituationSample,
   WaypointIdentifierSuggestion,
+  WeatherDetailUiView,
 } from "./types";
 import type { NexradOverlayQueryResult } from "../generated/nexradOverlayWire";
 import { viewportCenterLatLon, type MapViewportState } from "./mapViewport";
@@ -492,6 +493,7 @@ export type MapSelectionAction = {
   display_only: boolean;
   detail_text?: string | null;
   disabled_reason?: string | null;
+  weather_detail?: WeatherDetailUiView | null;
   airspace_limit?: AirspaceLimitGlyph | null;
   session_action?: string | null;
   flight_plan_row_action?: {

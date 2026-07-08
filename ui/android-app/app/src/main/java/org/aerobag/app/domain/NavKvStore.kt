@@ -42,6 +42,12 @@ sealed class CoreResourceSource {
 data class PagedSessionOperationResult(
     val result: JsonElement,
     val invalidations: List<String>,
+    val effectInvalidations: List<String> = emptyList(),
+)
+
+private data class CoreSessionResourceEffect(
+    val resource: CoreResourceRequest,
+    val afterSuccessInvalidations: List<String>,
 )
 
 fun parseCoreResourceRequests(outcome: JsonObject): List<CoreResourceRequest> =
@@ -248,28 +254,43 @@ class NavKvStore private constructor(
     fun runPagedSessionOperationElement(
         fetchSessionResource: ((CoreResourceRequest) -> ByteArray)? = null,
         ingestSessionResource: ((CoreResourceRequest, ByteArray) -> Unit)? = null,
+        drainSessionResourceEffects: (() -> String)? = null,
         operation: () -> String,
     ): JsonElement = runPagedSessionOperation(
         fetchSessionResource = fetchSessionResource,
         ingestSessionResource = ingestSessionResource,
+        drainSessionResourceEffects = drainSessionResourceEffects,
         operation = operation,
     ).result
 
     fun runPagedSessionOperation(
         fetchSessionResource: ((CoreResourceRequest) -> ByteArray)? = null,
         ingestSessionResource: ((CoreResourceRequest, ByteArray) -> Unit)? = null,
+        drainSessionResourceEffects: (() -> String)? = null,
         operation: () -> String,
     ): PagedSessionOperationResult {
         while (true) {
             val outcome = json.parseToJsonElement(operation()).jsonObject
             return when (val state = outcome.getValue("state").jsonPrimitive.content) {
-                "complete" -> PagedSessionOperationResult(
-                    result = outcome["result"] ?: JsonNull,
-                    invalidations = outcome["invalidations"]
-                        ?.jsonArray
-                        ?.map { it.jsonPrimitive.content }
-                        ?: emptyList(),
-                )
+                "complete" -> {
+                    val effectInvalidations = drainSessionResourceEffects
+                        ?.let {
+                            pumpSessionResourceEffects(
+                                drainSessionResourceEffects = it,
+                                fetchSessionResource = fetchSessionResource,
+                                ingestSessionResource = ingestSessionResource,
+                            )
+                        }
+                        ?: emptyList()
+                    PagedSessionOperationResult(
+                        result = outcome["result"] ?: JsonNull,
+                        invalidations = outcome["invalidations"]
+                            ?.jsonArray
+                            ?.map { it.jsonPrimitive.content }
+                            ?: emptyList(),
+                        effectInvalidations = effectInvalidations,
+                    )
+                }
                 "need_resources" -> {
                     var loadedAnyResource = false
                     for (resource in parseCoreResourceRequests(outcome)) {
@@ -304,6 +325,74 @@ class NavKvStore private constructor(
                 else -> error("unknown HAD session operation state: $state")
             }
         }
+    }
+
+    fun pumpSessionResourceEffects(
+        drainSessionResourceEffects: () -> String,
+        fetchSessionResource: ((CoreResourceRequest) -> ByteArray)? = null,
+        ingestSessionResource: ((CoreResourceRequest, ByteArray) -> Unit)? = null,
+    ): List<String> {
+        val invalidations = linkedSetOf<String>()
+        while (true) {
+            val effects = parseCoreSessionResourceEffects(drainSessionResourceEffects())
+            if (effects.isEmpty()) {
+                return invalidations.toList()
+            }
+            for (effect in effects) {
+                try {
+                    ensureSessionEffectResource(
+                        resource = effect.resource,
+                        fetchSessionResource = fetchSessionResource,
+                        ingestSessionResource = ingestSessionResource,
+                    )
+                    invalidations.addAll(effect.afterSuccessInvalidations)
+                } catch (error: Throwable) {
+                    diagnosticLogInfo(TAG) {
+                        "session resource effect failed resource=${effect.resource.id}: ${error.message}"
+                    }
+                }
+            }
+        }
+    }
+
+    private fun parseCoreSessionResourceEffects(effectsJson: String): List<CoreSessionResourceEffect> =
+        json.parseToJsonElement(effectsJson).jsonArray.map { element ->
+            val effect = element.jsonObject
+            CoreSessionResourceEffect(
+                resource = parseCoreResourceRequest(effect.getValue("resource").jsonObject),
+                afterSuccessInvalidations = effect["after_success_invalidations"]
+                    ?.jsonArray
+                    ?.map { it.jsonPrimitive.content }
+                    ?: emptyList(),
+            )
+        }
+
+    private fun ensureSessionEffectResource(
+        resource: CoreResourceRequest,
+        fetchSessionResource: ((CoreResourceRequest) -> ByteArray)?,
+        ingestSessionResource: ((CoreResourceRequest, ByteArray) -> Unit)?,
+    ) {
+        if (resource.id.startsWith("nav_kv/page/")) {
+            ensureNavKvResource(resource)
+            return
+        }
+        val fetch = fetchSessionResource
+            ?: error("session resource effect requested without fetcher: ${resource.id}")
+        val ingest = ingestSessionResource
+            ?: error("session resource effect requested without ingester: ${resource.id}")
+        val bytes = try {
+            fetch(resource)
+        } catch (error: Throwable) {
+            if (resource.optional) {
+                diagnosticLogInfo(TAG) {
+                    "optional session resource effect ${resource.id} unavailable: ${error.message}"
+                }
+                ByteArray(0)
+            } else {
+                throw error
+            }
+        }
+        ingest(resource, bytes)
     }
 
     fun <T> runCoreOperation(operation: JsonObject, serializer: KSerializer<T>): T =

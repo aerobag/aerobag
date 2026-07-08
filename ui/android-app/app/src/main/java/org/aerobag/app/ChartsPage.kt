@@ -182,7 +182,6 @@ import kotlinx.coroutines.asCoroutineDispatcher
 import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.currentCoroutineContext
-import kotlinx.coroutines.delay
 import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Mutex
@@ -335,6 +334,20 @@ import kotlin.math.pow
 import kotlin.math.sin
 
 
+internal data class ChartAssetLoadKey(
+    val chartId: String?,
+    val dataRevision: Int,
+)
+
+internal fun chartAssetLoadKey(
+    chartId: String?,
+    dataRevision: Int,
+): ChartAssetLoadKey =
+    ChartAssetLoadKey(
+        chartId = chartId,
+        dataRevision = dataRevision,
+    )
+
 @OptIn(ExperimentalComposeUiApi::class)
 @Composable
 internal fun ChartsPage(
@@ -344,6 +357,7 @@ internal fun ChartsPage(
     airports: List<ChartAirport>,
     selectedAirport: ChartAirport?,
     selectedChart: ChartAsset?,
+    chartAssetDataRevision: Int,
     plan: FlightPlan,
     uiTheme: UiTheme,
     ownship: OwnshipRenderState,
@@ -395,33 +409,49 @@ internal fun ChartsPage(
         if (situationDockLowered) ThumbSize + (ThumbGap * 2f) else ThumbGap
     val sortedCharts = selectedAirport?.charts ?: emptyList()
     val overscrollPx = with(density) { ThumbSize.toPx() }
-    val bitmap by produceState<androidx.compose.ui.graphics.ImageBitmap?>(initialValue = null, selectedChart?.id, uiSession, devServerBaseUrl) {
-        val chartId = selectedChart?.id
-        value = if (chartId == null) {
-            null
-        } else {
-            withContext(Dispatchers.IO) {
-                var attemptedResource: CoreResourceRequest? = null
-                runCatching {
-                    val bytes = uiSession.chartAssetBytes(chartId, "asset") { resource ->
-                        attemptedResource = resource
-                        fetchCoreResource(context, resource, devServerBaseUrl)
-                    }
-                    BitmapFactory.decodeByteArray(bytes, 0, bytes.size)?.asImageBitmap()
-                        ?: error(
-                            "failed to decode plate asset bytes for $chartId " +
-                                "source=${attemptedResource?.source?.describeForLog() ?: "unresolved"}",
-                        )
-                }.onFailure { error ->
-                    Log.w(
-                        "AerobagCharts",
-                        "plate asset unavailable chart=$chartId " +
+    val bitmapLoadKey = chartAssetLoadKey(selectedChart?.id, chartAssetDataRevision)
+    val bitmap by produceState<androidx.compose.ui.graphics.ImageBitmap?>(
+        initialValue = null,
+        bitmapLoadKey,
+        uiSession,
+        devServerBaseUrl,
+    ) {
+        val chartId = bitmapLoadKey.chartId
+        value = null
+        if (chartId == null) {
+            return@produceState
+        }
+        var attemptedResource: CoreResourceRequest? = null
+        val loadedBitmap = withContext(Dispatchers.IO) {
+            runCatching {
+                val bytes = uiSession.chartAssetBytes(chartId, "asset") { resource ->
+                    attemptedResource = resource
+                    fetchCoreResource(context, resource, devServerBaseUrl)
+                }
+                BitmapFactory.decodeByteArray(bytes, 0, bytes.size)?.asImageBitmap()
+                    ?: error(
+                        "failed to decode plate asset bytes for $chartId " +
                             "source=${attemptedResource?.source?.describeForLog() ?: "unresolved"}",
-                        error,
                     )
-                }.getOrNull()
             }
         }
+        loadedBitmap
+            .onSuccess { value = it }
+            .onFailure { error ->
+                if (error is CancellationException) {
+                    throw error
+                }
+                if (error is org.aerobag.app.domain.NativeSessionCommandRejectedException) {
+                    onSessionCommandFailure(error)
+                    return@onFailure
+                }
+                Log.w(
+                    "AerobagCharts",
+                    "plate asset unavailable chart=$chartId " +
+                    "source=${attemptedResource?.source?.describeForLog() ?: "unresolved"}",
+                    error,
+                )
+            }
     }
     val viewportState = rememberUpdatedState(viewport)
     val imageWidthPx = bitmap?.width?.toFloat() ?: 0f
@@ -440,7 +470,7 @@ internal fun ChartsPage(
         }
     }
 
-    LaunchedEffect(bitmap, surfaceSize) {
+    LaunchedEffect(bitmap, surfaceSize, viewport) {
         val currentBitmap = bitmap
         if (currentBitmap != null && surfaceSize.width > 0 && surfaceSize.height > 0 && viewport == null) {
             onViewportChange(createInitialImageViewport(

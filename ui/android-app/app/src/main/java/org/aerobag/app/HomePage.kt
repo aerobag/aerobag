@@ -368,6 +368,7 @@ internal fun HomePage(
     offlinePackagesControllerHandle: Long,
     onOfflinePackagesClosed: (() -> Unit)? = null,
     onOfflinePackageLibraryCacheChanged: (String?) -> Unit = {},
+    onOfflinePackageArtifactsChanged: () -> Unit = {},
 ) {
     val uiTheme = LocalAerobagUiTheme.current
     val context = LocalContext.current
@@ -467,6 +468,12 @@ internal fun HomePage(
         offlinePackagesControllerResult = result
         if (event is OfflinePackagesControllerEventWire.LibraryRefreshSucceeded) {
             onOfflinePackageLibraryCacheChanged(result.libraryCacheJson)
+        }
+        if (
+            event is OfflinePackagesControllerEventWire.SyncFinished &&
+            (event.summary.fetchedCount > 0 || event.summary.gcCount > 0)
+        ) {
+            onOfflinePackageArtifactsChanged()
         }
         when (val command = result.command) {
             is OfflinePackagesControllerCommandWire.RefreshLibrary -> {

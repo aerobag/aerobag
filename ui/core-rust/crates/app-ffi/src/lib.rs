@@ -911,6 +911,12 @@ pub fn ingest_resource_in_session_bytes(
     Ok("null".to_string())
 }
 
+pub fn drain_session_resource_effects_json(handle: u64) -> Result<String, String> {
+    let effects =
+        app_core::drain_session_resource_effects(handle as u32).map_err(|err| err.to_string())?;
+    serde_json::to_string(&effects).map_err(|err| err.to_string())
+}
+
 pub fn sync_live_feeds_in_session_json(handle: u64) -> Result<String, String> {
     let outcome =
         app_core::sync_live_feeds_in_session(handle as u32).map_err(|err| err.to_string())?;
@@ -3621,6 +3627,15 @@ pub extern "system" fn Java_org_aerobag_app_domain_NativeBindings_ingestResource
         ingest_resource_in_session_bytes(handle as u64, &resource_id, &bytes)
     })();
     return_string(&mut env, result)
+}
+
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_org_aerobag_app_domain_NativeBindings_drainSessionResourceEffectsJson(
+    mut env: JNIEnv,
+    _class: JClass,
+    handle: i64,
+) -> jstring {
+    return_string(&mut env, drain_session_resource_effects_json(handle as u64))
 }
 
 #[unsafe(no_mangle)]

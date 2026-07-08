@@ -107,6 +107,7 @@ fn exported_plain_snapshot_session_apis_are_allowlisted() {
         "set_situation_in_session",
         "tick_bad_autopilot_in_session",
         "activate_next_leg_in_session",
+        "stop_navigation_in_session",
         "suspend_sequencing_in_session",
         "unsuspend_sequencing_in_session",
         "sequence_active_leg_in_session",
@@ -294,7 +295,7 @@ fn platform_adapters_use_paged_loops_for_paged_session_exports() {
             continue;
         };
         let window = &android[index.saturating_sub(220)..android.len().min(index + 420)];
-        if !window.contains("runPagedSessionOperationElement")
+        if !window.contains("runPagedSessionOperation")
             && !window.contains("runPagedSnapshot")
         {
             violations.push(format!(

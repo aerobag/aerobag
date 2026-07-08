@@ -75,6 +75,30 @@ class NativeUiSessionBoundaryTest {
     }
 
     @Test
+    fun androidDrainsCoreSessionResourceEffectsLikeWeb() {
+        val nativeBridge = sourceFile("src/main/java/org/aerobag/app/domain/NativeBindings.kt").readText()
+        val nativeSession = sourceFile("src/main/java/org/aerobag/app/domain/NativeAppCoreAdapter.kt").readText()
+        val navKvStore = sourceFile("src/main/java/org/aerobag/app/domain/NavKvStore.kt").readText()
+
+        assertTrue(
+            "Android JNI bridge must expose core's pending session resource effects, matching web's drain_session_resource_effects.",
+            nativeBridge.contains("fun drainSessionResourceEffectsJson(handle: Long): String") &&
+                nativeBridge.contains("external override fun drainSessionResourceEffectsJson(handle: Long): String"),
+        )
+        assertTrue(
+            "Android NavKvStore must pump pending session effects and publish their after-success invalidations.",
+            navKvStore.contains("pumpSessionResourceEffects(") &&
+                navKvStore.contains("after_success_invalidations") &&
+                navKvStore.contains("afterSuccessInvalidations"),
+        )
+        assertTrue(
+            "NativeUiSession must wire the session-effect pump to core invalidation listeners.",
+            nativeSession.contains("bridge.drainSessionResourceEffectsJson(handle)") &&
+                nativeSession.contains("publishInvalidations(\"session_effect\", effectInvalidations)"),
+        )
+    }
+
+    @Test
     fun androidUiRoutesSessionCommandFailuresThroughRecoverableBoundary() {
         val mainActivity = sourceFile("src/main/java/org/aerobag/app/MainActivity.kt").readText()
         val flightPlanPage = sourceFile("src/main/java/org/aerobag/app/FlightPlanPage.kt").readText()

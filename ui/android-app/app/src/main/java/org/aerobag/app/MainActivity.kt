@@ -2480,6 +2480,7 @@ internal fun AerobagApp(
         )
     }
     var chartViewport by remember { mutableStateOf<org.aerobag.app.domain.ImageViewportState?>(null) }
+    var chartAssetDataRevision by remember { mutableIntStateOf(0) }
     var chartFolderOpen by remember { mutableStateOf(false) }
     var pageTilePaintTiming by remember { mutableStateOf<PageTilePaintTiming?>(null) }
     var nextPageTilePaintTimingId by remember { mutableStateOf(1L) }
@@ -2849,6 +2850,7 @@ internal fun AerobagApp(
                         airports = orderedChartAirports,
                         selectedAirport = selectedAirport,
                         selectedChart = selectedChart,
+                        chartAssetDataRevision = chartAssetDataRevision,
                         plan = currentPlan,
                         uiTheme = uiTheme,
                         ownship = appUiState.ownship.render,
@@ -2935,6 +2937,9 @@ internal fun AerobagApp(
                                 uiSession.loadOfflinePackageLibraryCache(cacheJson)
                             }
                         },
+                        onOfflinePackageArtifactsChanged = {
+                            chartAssetDataRevision = chartAssetDataRevision + 1
+                        },
                     )
                 }
                 AppPage.OfflinePackages -> {
@@ -2954,6 +2959,9 @@ internal fun AerobagApp(
                             applySessionCommand("loadOfflinePackageLibraryCache") {
                                 uiSession.loadOfflinePackageLibraryCache(cacheJson)
                             }
+                        },
+                        onOfflinePackageArtifactsChanged = {
+                            chartAssetDataRevision = chartAssetDataRevision + 1
                         },
                     )
                 }

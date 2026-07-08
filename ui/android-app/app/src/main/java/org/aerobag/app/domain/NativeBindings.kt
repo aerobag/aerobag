@@ -93,6 +93,8 @@ interface NativeBridge {
 
     fun coreHadOperation(handle: Long, operationJson: String): String
 
+    fun drainSessionResourceEffectsJson(handle: Long): String
+
     fun situationRingCandidatesJson(): String
 
     fun emptyFlightPlanJson(): String
@@ -656,6 +658,8 @@ object NativeBindings : NativeBridge {
     external override fun attachNavKvStoreToSession(navKvHandle: Long, sessionHandle: Long)
 
     external override fun coreHadOperation(handle: Long, operationJson: String): String
+
+    external override fun drainSessionResourceEffectsJson(handle: Long): String
 
     external override fun situationRingCandidatesJson(): String
 

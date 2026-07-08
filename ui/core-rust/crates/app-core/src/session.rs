@@ -2889,9 +2889,9 @@ fn live_feed_product_status_page_row(
         return status_page_row(
             format!("live_feed:{product}"),
             label,
-            "LOADED",
+            "CACHED",
             UiStatusSeverity::Info,
-            format!("{label} is loaded."),
+            format!("Cached {label} live-feed data is available, but source timestamp is unknown."),
             facts,
         );
     };
@@ -12218,6 +12218,41 @@ mod tests {
             },
         )
         .expect("install durable TFRs before current catalog");
+
+        let cached_snapshot = get_session_snapshot_at_epoch_ms(
+            init.handle,
+            utc("2026-05-03T00:04:00Z").timestamp_millis(),
+        )
+        .expect("cached snapshot before catalog sync");
+        let cached_rows = &cached_snapshot.data_status_page_state.rows;
+        let cached_tafs = cached_rows
+            .iter()
+            .find(|row| row.id == "live_feed:tafs")
+            .expect("cached TAF data-status row");
+        assert_eq!(cached_tafs.value, "CACHED");
+        assert_eq!(cached_tafs.severity, UiStatusSeverity::Info);
+        assert_eq!(
+            cached_tafs.detail,
+            "Cached TAFs live-feed data is available, but source timestamp is unknown."
+        );
+        assert!(cached_tafs
+            .facts
+            .iter()
+            .all(|fact| fact.label != "Collected At"));
+        let cached_tfrs = cached_rows
+            .iter()
+            .find(|row| row.id == "live_feed:tfrs")
+            .expect("cached TFR data-status row");
+        assert_eq!(cached_tfrs.value, "CACHED");
+        assert_eq!(cached_tfrs.severity, UiStatusSeverity::Info);
+        assert_eq!(
+            cached_tfrs.detail,
+            "Cached TFRs live-feed data is available, but source timestamp is unknown."
+        );
+        assert!(cached_tfrs
+            .facts
+            .iter()
+            .all(|fact| fact.label != "Collected At"));
 
         let mut cache_catalog = crate::LiveFeedsState::default();
         let live_feeds_schema_version = crate::live_feeds::LIVE_FEEDS_SCHEMA_VERSION;

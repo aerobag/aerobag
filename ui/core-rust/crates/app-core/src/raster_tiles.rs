@@ -31,6 +31,8 @@ pub struct RasterMapFamilyOption {
     pub label: String,
     pub launcher_label: String,
     pub enabled: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub disabled_reason: Option<String>,
     pub active: bool,
 }
 
@@ -1212,6 +1214,7 @@ mod tests {
                     label: "NONE".to_string(),
                     launcher_label: "NONE".to_string(),
                     enabled: true,
+                    disabled_reason: None,
                     active: false,
                 },
                 RasterMapFamilyOption {
@@ -1219,6 +1222,7 @@ mod tests {
                     label: "SECTIONAL".to_string(),
                     launcher_label: "SEC".to_string(),
                     enabled: true,
+                    disabled_reason: None,
                     active: true,
                 },
             ],

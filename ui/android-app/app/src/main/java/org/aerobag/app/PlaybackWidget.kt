@@ -361,6 +361,13 @@ internal fun PlaybackWidget(
     val committedCursorSeconds = playbackUiState.cursorSeconds.coerceIn(0.0, durationSeconds.takeIf { it > 0.0 } ?: 0.0)
     val cursorSeconds = (scrubCursorSeconds ?: committedCursorSeconds).coerceIn(0.0, durationSeconds.takeIf { it > 0.0 } ?: 0.0)
     val summary = playbackUiState.titleLabel
+    val loadDisabledReason = when {
+        isBusy -> "Trace load is already running."
+        sourcePath.isBlank() -> "Enter a trace URL before loading."
+        else -> null
+    }
+    val playDisabledReason =
+        if (playbackUiState.status == PlaybackStatus.Empty) "Load a trace before replaying." else null
     val panelShape = RoundedCornerShape(ThumbRadius * 0.9f)
     val rowHeight = ThumbSize * 0.63f
     val rowGap = ThumbSize * 0.12f
@@ -425,7 +432,10 @@ internal fun PlaybackWidget(
                 )
                 PlaybackSmallButton(
                     label = "LOAD",
-                    enabled = !isBusy && sourcePath.isNotBlank(),
+                    enabled = loadDisabledReason == null,
+                    onDisabledClick = loadDisabledReason?.let { reason ->
+                        { showDisabledActionToast(context, reason) }
+                    },
                     onClick = {
                         scope.launch {
                             isBusy = true
@@ -460,7 +470,10 @@ internal fun PlaybackWidget(
                 PlaybackSmallButton(
                     label = "",
                     icon = if (playbackUiState.status == PlaybackStatus.Playing) PlaybackButtonIcon.Pause else PlaybackButtonIcon.Play,
-                    enabled = playbackUiState.status != PlaybackStatus.Empty,
+                    enabled = playDisabledReason == null,
+                    onDisabledClick = playDisabledReason?.let { reason ->
+                        { showDisabledActionToast(context, reason) }
+                    },
                     onClick = {
                         scope.launch {
                             applyPlaybackCommand("playPausePlayback") {
@@ -482,6 +495,9 @@ internal fun PlaybackWidget(
                 PlaybackRateRail(
                     value = playbackUiState.rate.toFloat().coerceIn(0.25f, 11f),
                     enabled = playbackUiState.status != PlaybackStatus.Empty,
+                    onDisabledClick = playDisabledReason?.let { reason ->
+                        { showDisabledActionToast(context, reason) }
+                    },
                     modifier = Modifier.weight(1f).height(rowHeight),
                     onValueChange = { nextRate ->
                         scope.launch {
@@ -538,6 +554,7 @@ internal fun PlaybackSmallButton(
     onClick: () -> Unit,
     icon: PlaybackButtonIcon? = null,
     height: Dp = ThumbSize * 0.63f,
+    onDisabledClick: (() -> Unit)? = null,
 ) {
     Surface(
         modifier =
@@ -551,7 +568,18 @@ internal fun PlaybackSmallButton(
                             interactionSource = remember { MutableInteractionSource() },
                         ) { onClick() }
                     } else {
-                        Modifier.alpha(0.45f)
+                        Modifier
+                            .alpha(0.45f)
+                            .then(
+                                if (onDisabledClick != null) {
+                                    Modifier.clickable(
+                                        indication = null,
+                                        interactionSource = remember { MutableInteractionSource() },
+                                    ) { onDisabledClick() }
+                                } else {
+                                    Modifier
+                                },
+                            )
                     },
                 ),
         shape = RoundedCornerShape(ThumbRadius * 0.55f),
@@ -640,6 +668,7 @@ internal fun Modifier.consumePointerGestures(): Modifier =
 internal fun PlaybackRateRail(
     value: Float,
     enabled: Boolean,
+    onDisabledClick: (() -> Unit)? = null,
     modifier: Modifier = Modifier,
     onValueChange: (Float) -> Unit,
 ) {
@@ -659,9 +688,10 @@ internal fun PlaybackRateRail(
                 .border(1.dp, Color(0x24132129), shape)
                 .alpha(if (enabled) 1f else 0.45f)
                 .onSizeChanged { railSize = it }
-                .pointerInput(enabled, railSize) {
+                .pointerInput(enabled, railSize, onDisabledClick) {
                     awaitEachGesture {
                         var activePointer: PointerId? = null
+                        var moved = false
                         while (true) {
                             val event = awaitPointerEvent()
                             val change =
@@ -670,11 +700,17 @@ internal fun PlaybackRateRail(
                                 } else {
                                     event.changes.firstOrNull { it.id == activePointer }
                                 } ?: break
+                            if (change.positionChanged()) {
+                                moved = true
+                            }
                             if (enabled && railSize.width > 0) {
                                 onValueChange(rateForX(change.position.x))
                             }
                             change.consume()
                             if (!change.pressed) {
+                                if (!enabled && !moved) {
+                                    onDisabledClick?.invoke()
+                                }
                                 break
                             }
                         }

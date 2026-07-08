@@ -12,6 +12,8 @@ const MAX_LATITUDE: f64 = 85.051_128_78;
 pub struct MapFollowUiState {
     pub can_center_here: bool,
     pub following: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub disabled_reason: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -38,6 +40,10 @@ impl MapFollowSessionState {
         MapFollowUiState {
             can_center_here: ownship.position.is_some(),
             following: self.following,
+            disabled_reason: ownship
+                .position
+                .is_none()
+                .then(|| "Centering requires an ownship position.".to_string()),
         }
     }
 
@@ -312,6 +318,7 @@ mod tests {
             MapFollowUiState {
                 can_center_here: false,
                 following: false,
+                disabled_reason: Some("Centering requires an ownship position.".to_string()),
             }
         );
     }
@@ -339,6 +346,7 @@ mod tests {
             MapFollowUiState {
                 can_center_here: false,
                 following: false,
+                disabled_reason: Some("Centering requires an ownship position.".to_string()),
             }
         );
         assert_eq!(lost_target, Some(centered));

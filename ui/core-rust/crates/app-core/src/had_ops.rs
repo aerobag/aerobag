@@ -1098,6 +1098,8 @@ struct MapFamilyOption {
     label: String,
     launcher_label: String,
     enabled: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    disabled_reason: Option<String>,
     active: bool,
 }
 
@@ -1612,6 +1614,7 @@ fn flight_plan_summary_row(
         depth: 0,
         active: false,
         enabled: false,
+        disabled_reason: None,
         synthetic_direct_to: false,
         can_add_airway_after: false,
         can_add_procedure_before: false,
@@ -1806,15 +1809,19 @@ fn map_selector_state(
     let geometry = displayed_geometry();
     let family_options = supported_chart_families()
         .into_iter()
-        .map(|(id, label, launcher_label)| MapFamilyOption {
-            id: id.to_string(),
-            label: label.to_string(),
-            launcher_label: launcher_label.to_string(),
-            enabled: id == NO_RASTER_FAMILY_ID
+        .map(|(id, label, launcher_label)| {
+            let enabled = id == NO_RASTER_FAMILY_ID
                 || map_views
                     .iter()
-                    .any(|view| view.map_view.chart_family == id),
-            active: selected_family_id == id,
+                    .any(|view| view.map_view.chart_family == id);
+            MapFamilyOption {
+                id: id.to_string(),
+                label: label.to_string(),
+                launcher_label: launcher_label.to_string(),
+                enabled,
+                disabled_reason: (!enabled).then(|| format!("{label} charts are not available.")),
+                active: selected_family_id == id,
+            }
         })
         .collect();
     Ok(MapSelectorState {
@@ -3265,7 +3272,7 @@ pub(crate) fn insert_waypoint_best_position_rejection(
     waypoint: &NavRef,
 ) -> Option<String> {
     if flight_plan_has_direct_to_overlay(plan) {
-        return Some("cannot insert while direct-to is off the flight plan".to_string());
+        return Some(crate::planning::OFF_PLAN_DIRECT_TO_EDIT_DISABLED_REASON.to_string());
     }
     if !matches!(
         waypoint,

@@ -246,6 +246,8 @@ pub struct OwnshipSourceMenuItem {
     pub launcher_label: String,
     pub tone: OwnshipControlTone,
     pub enabled: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub disabled_reason: Option<String>,
     pub active: bool,
     pub status_label: String,
 }
@@ -255,6 +257,8 @@ pub struct SituationControlMenuItem {
     pub input: SituationControlInput,
     pub label: String,
     pub enabled: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub disabled_reason: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -758,16 +762,30 @@ fn project_source_menu_item(
     policy: &OwnshipPolicy,
 ) -> OwnshipSourceMenuItem {
     let launcher_label = source_launcher_label(source);
+    let enabled = source.selectable && source.enabled;
     OwnshipSourceMenuItem {
         source_id: source.source_id.clone(),
         source_kind: source.source_kind,
         label: source_menu_label(source),
         launcher_label,
         tone: source_control_tone(source),
-        enabled: source.selectable && source.enabled,
+        enabled,
+        disabled_reason: (!enabled).then(|| source_disabled_reason(source)),
         active: source.active || source_selected_by_policy(source, policy),
         status_label: source.status_label.clone(),
     }
+}
+
+fn source_disabled_reason(source: &OwnshipSourceStatus) -> String {
+    if !source.selectable {
+        return "This ownship source cannot be selected.".to_string();
+    }
+    source
+        .status_label
+        .trim()
+        .is_empty()
+        .then(|| "This ownship source is unavailable.".to_string())
+        .unwrap_or_else(|| source.status_label.clone())
 }
 
 fn source_selected_by_policy(source: &OwnshipSourceStatus, policy: &OwnshipPolicy) -> bool {
@@ -804,28 +822,40 @@ fn source_menu_rank(kind: OwnshipSourceKind) -> u8 {
 trait SituationControlHandler {
     fn controls_enabled(&self) -> bool;
 
+    fn disabled_reason(&self) -> Option<String> {
+        (!self.controls_enabled()).then(|| {
+            "Replay and plan preview controls are not available for this ownship source."
+                .to_string()
+        })
+    }
+
     fn menu_items(&self) -> Vec<SituationControlMenuItem> {
         let enabled = self.controls_enabled();
+        let disabled_reason = self.disabled_reason();
         vec![
             SituationControlMenuItem {
                 input: SituationControlInput::SkipBackward,
                 label: "⏮".to_string(),
                 enabled,
+                disabled_reason: disabled_reason.clone(),
             },
             SituationControlMenuItem {
                 input: SituationControlInput::FastRewind,
                 label: "⏪".to_string(),
                 enabled,
+                disabled_reason: disabled_reason.clone(),
             },
             SituationControlMenuItem {
                 input: SituationControlInput::FastForward,
                 label: "⏩".to_string(),
                 enabled,
+                disabled_reason: disabled_reason.clone(),
             },
             SituationControlMenuItem {
                 input: SituationControlInput::SkipForward,
                 label: "⏭".to_string(),
                 enabled,
+                disabled_reason,
             },
         ]
     }

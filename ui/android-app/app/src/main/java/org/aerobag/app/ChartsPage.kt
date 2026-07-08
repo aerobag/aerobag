@@ -1042,7 +1042,14 @@ internal fun MapTopLeftControls(
             onToggle = onToggle,
             style = MenuDockStyle.Compact,
             options = trayOptions.map { option ->
-                MenuDockOption(option.id, option.label, active = option.launcherLabel == selectedLabel, enabled = option.available, iconResId = option.iconResId) { option.select?.invoke() }
+                MenuDockOption(
+                    option.id,
+                    option.label,
+                    active = option.launcherLabel == selectedLabel,
+                    enabled = option.available,
+                    disabledReason = option.disabledReason,
+                    iconResId = option.iconResId,
+                ) { option.select?.invoke() }
             },
         )
         MenuDock(
@@ -1236,6 +1243,7 @@ internal fun ChartViewerSelectors(
     onSelectChart: (String) -> Unit,
     onSelectProcedureLoad: (String) -> Unit,
 ) {
+    val context = LocalContext.current
     val uiTheme = LocalAerobagUiTheme.current
     val trayOpen = airportTrayOpen || chartTrayOpen || loadTrayOpen
     BoxWithConstraints(modifier = modifier) {
@@ -1297,6 +1305,7 @@ internal fun ChartViewerSelectors(
                 onToggle = onToggleLoadTray,
                 style = MenuDockStyle.Compact,
                 disabled = plateProcedureLoads.isEmpty(),
+                disabledReason = "No loadable procedure is available for this plate.",
                 options = plateProcedureLoads.map { load ->
                     MenuDockOption(load.loadId, load.label) { onSelectProcedureLoad(load.loadId) }
                 },
@@ -1308,6 +1317,7 @@ internal fun ChartViewerSelectors(
                 testTag = "parity:plate-folder-button",
                 enabled = !trayOpen,
                 selected = folderOpen,
+                onDisabledClick = { showDisabledActionToast(context, "Close the open tray first.") },
                 onClick = onToggleFolder,
             )
         }
@@ -1417,10 +1427,12 @@ internal fun MenuDock(
     trayWidthOverride: Dp? = null,
     launcherForegroundColor: Color? = null,
     disabled: Boolean = false,
+    disabledReason: String? = null,
     options: List<MenuDockOption>,
     body: (@Composable ColumnScope.() -> Unit)? = null,
     footer: (@Composable ColumnScope.() -> Unit)? = null,
 ) {
+    val context = LocalContext.current
     val density = LocalDensity.current
     val configuration = LocalConfiguration.current
     var anchorTopPx by remember { mutableStateOf(0f) }
@@ -1453,6 +1465,9 @@ internal fun MenuDock(
             accentColor = launcherAccentColor,
             wide = style != MenuDockStyle.Compact,
             testTag = launcherTestTag,
+            onDisabledClick = disabledReason?.let { reason ->
+                { showDisabledActionToast(context, reason) }
+            },
             modifier = Modifier
                 .width(buttonWidth)
                 .height(buttonHeight)
@@ -1487,6 +1502,7 @@ internal fun MenuDock(
                                     toggleState = option.toggleState,
                                     iconResId = option.iconResId,
                                     testTag = optionTestTagPrefix?.let { "$it:${option.key}" },
+                                    disabledReason = option.disabledReason,
                                     width = trayWidth,
                                     onSelect = option.onSelect,
                                 )
@@ -1533,11 +1549,13 @@ internal fun MenuPanelRow(
     toggleState: UiMapLayerToggleState? = null,
     @DrawableRes iconResId: Int? = null,
     testTag: String? = null,
+    disabledReason: String? = null,
     modifier: Modifier = Modifier,
     width: Dp = Dp.Unspecified,
     maxLines: Int = 2,
     onSelect: () -> Unit,
 ) {
+    val context = LocalContext.current
     val uiTheme = LocalAerobagUiTheme.current
     val rowShape = RoundedCornerShape(ThumbRadius)
     val isOn = toggleState?.enabled == true && toggleState.visible
@@ -1561,11 +1579,15 @@ internal fun MenuPanelRow(
             .clip(rowShape)
             .background(rowBackground)
             .clickable(
-                enabled = enabled,
+                enabled = enabled || !disabledReason.isNullOrBlank(),
                 indication = null,
                 interactionSource = remember { MutableInteractionSource() },
             ) {
-                onSelect()
+                if (enabled) {
+                    onSelect()
+                } else {
+                    showDisabledActionToast(context, disabledReason)
+                }
             },
         contentAlignment = Alignment.CenterStart,
     ) {

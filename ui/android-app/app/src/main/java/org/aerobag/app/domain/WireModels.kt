@@ -113,6 +113,7 @@ data class WireSituationRingCandidate(
 data class WireMapFollowUiState(
     val can_center_here: Boolean = false,
     val following: Boolean = false,
+    val disabled_reason: String? = null,
 )
 
 @Serializable
@@ -149,6 +150,7 @@ data class WireOwnshipSourceMenuItem(
     val launcher_label: String,
     val tone: WireOwnshipControlTone = WireOwnshipControlTone.Neutral,
     val enabled: Boolean,
+    val disabled_reason: String? = null,
     val active: Boolean,
     val status_label: String,
 )
@@ -158,6 +160,7 @@ data class WireSituationControlMenuItem(
     val input: WireSituationControlInput,
     val label: String,
     val enabled: Boolean,
+    val disabled_reason: String? = null,
 )
 
 @Serializable
@@ -745,6 +748,7 @@ data class WireMapSelectionAction(
     val enabled: Boolean,
     val display_only: Boolean,
     val detail_text: String? = null,
+    val disabled_reason: String? = null,
     val airspace_limit: WireAirspaceLimitGlyph? = null,
     val session_action: String? = null,
     val flight_plan_row_action: WireMapSelectionFlightPlanRowAction? = null,
@@ -1382,6 +1386,7 @@ data class WireFlightPlanControlUiView(
     val id: WireFlightPlanControlId,
     val label: String,
     val enabled: Boolean,
+    val disabled_reason: String? = null,
 )
 
 @Serializable
@@ -1422,6 +1427,7 @@ data class WireFlightPlanRowActionUiView(
     val uid: String = "",
     val label: String,
     val enabled: Boolean,
+    val disabled_reason: String? = null,
     val execution: String = "ui_controller",
     val dismiss_tray_on_success: Boolean = true,
     val navigation: WireFlightPlanRowNavigationAction? = null,
@@ -1472,6 +1478,7 @@ data class WireFlightPlanDisplayRowUiView(
     val depth: Int,
     val active: Boolean,
     val enabled: Boolean = true,
+    val disabled_reason: String? = null,
     val synthetic_direct_to: Boolean = false,
     val can_add_airway_after: Boolean,
     val can_add_procedure_before: Boolean,

@@ -14,6 +14,7 @@ import android.os.SystemClock
 import android.util.Log
 import android.view.KeyEvent as AndroidKeyEvent
 import android.view.MotionEvent
+import android.widget.Toast
 import java.util.LinkedHashMap
 import java.net.HttpURLConnection
 import androidx.annotation.DrawableRes
@@ -331,6 +332,10 @@ import kotlin.math.min
 import kotlin.math.pow
 import kotlin.math.sin
 
+internal fun showDisabledActionToast(context: Context, reason: String?) {
+    val message = reason?.trim()?.takeIf { it.isNotEmpty() } ?: return
+    Toast.makeText(context, message, Toast.LENGTH_SHORT).show()
+}
 
 @Composable
 internal fun CommonDebugPanel(

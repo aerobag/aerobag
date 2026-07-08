@@ -201,6 +201,7 @@ enum class MapLayerId {
 data class UiMapLayerToggleState(
     val visible: Boolean,
     val enabled: Boolean,
+    val disabledReason: String? = null,
 )
 
 data class UiMapLayerState(
@@ -229,6 +230,7 @@ data class MapFamilyOption(
     val label: String,
     val launcherLabel: String,
     val enabled: Boolean,
+    val disabledReason: String? = null,
     val active: Boolean,
 )
 
@@ -292,6 +294,7 @@ data class MapSelectionAction(
     val enabled: Boolean,
     val displayOnly: Boolean,
     val detailText: String?,
+    val disabledReason: String?,
     val airspaceLimit: AirspaceLimitGlyph?,
     val sessionAction: String?,
     val flightPlanRowAction: MapSelectionFlightPlanRowAction?,
@@ -1528,6 +1531,7 @@ private fun OwnshipSourceMenuItem.toWire() = WireOwnshipSourceMenuItem(
     launcher_label = launcherLabel,
     tone = tone.toWire(),
     enabled = enabled,
+    disabled_reason = disabledReason,
     active = active,
     status_label = statusLabel,
 )
@@ -1536,6 +1540,7 @@ private fun SituationControlMenuItem.toWire() = WireSituationControlMenuItem(
     input = input.toWire(),
     label = label,
     enabled = enabled,
+    disabled_reason = disabledReason,
 )
 
 private fun SituationControlInput.toWire(): WireSituationControlInput = when (this) {
@@ -1601,6 +1606,7 @@ private fun WireSituationRingCandidate.toUi() = SituationRingCandidate(
 private fun WireMapFollowUiState.toUi() = MapFollowUiState(
     canCenterHere = can_center_here,
     following = following,
+    disabledReason = disabled_reason,
 )
 
 private fun WirePlaybackUiState.toUi() = PlaybackUiState(
@@ -1629,6 +1635,7 @@ private fun WireOwnshipSourceMenuItem.toUi() = OwnshipSourceMenuItem(
     launcherLabel = launcher_label,
     tone = tone.toUi(),
     enabled = enabled,
+    disabledReason = disabled_reason,
     active = active,
     statusLabel = status_label,
 )
@@ -1637,6 +1644,7 @@ private fun WireSituationControlMenuItem.toUi() = SituationControlMenuItem(
     input = input.toUi(),
     label = label,
     enabled = enabled,
+    disabledReason = disabled_reason,
 )
 
 private fun WireSituationControlInput.toUi(): SituationControlInput = when (this) {
@@ -1854,6 +1862,7 @@ private data class WireUiChartPageState(
 private data class WireUiMapLayerToggleState(
     val visible: Boolean = false,
     val enabled: Boolean = false,
+    val disabled_reason: String? = null,
 )
 
 @kotlinx.serialization.Serializable
@@ -2053,6 +2062,7 @@ private data class WireMapFamilyOption(
     val label: String,
     val launcher_label: String,
     val enabled: Boolean,
+    val disabled_reason: String? = null,
     val active: Boolean,
 )
 
@@ -2301,6 +2311,7 @@ private fun WireMapFamilyOption.toUi() = MapFamilyOption(
     label = label,
     launcherLabel = launcher_label,
     enabled = enabled,
+    disabledReason = disabled_reason,
     active = active,
 )
 
@@ -2324,6 +2335,7 @@ private fun WireUiChartPageState.toUi() = UiChartPageState(
 private fun WireUiMapLayerToggleState.toUi() = UiMapLayerToggleState(
     visible = visible,
     enabled = enabled,
+    disabledReason = disabled_reason,
 )
 
 private fun WireUiMapLayerState.toUi() = UiMapLayerState(
@@ -2798,6 +2810,7 @@ private fun WireMapSelectionAction.toUi() = MapSelectionAction(
     enabled = enabled,
     displayOnly = display_only,
     detailText = detail_text,
+    disabledReason = disabled_reason,
     airspaceLimit = airspace_limit?.toUi(),
     sessionAction = session_action,
     flightPlanRowAction = flight_plan_row_action?.toUi(),
@@ -3305,12 +3318,14 @@ private fun WireFlightPlanControlUiView.toUi() = FlightPlanControlUiView(
     id = id.toUi(),
     label = label,
     enabled = enabled,
+    disabledReason = disabled_reason,
 )
 
 private fun FlightPlanControlUiView.toWire() = WireFlightPlanControlUiView(
     id = id.toWire(),
     label = label,
     enabled = enabled,
+    disabled_reason = disabledReason,
 )
 
 private fun WireGuidanceUiView.toUi() = GuidanceUiView(
@@ -3469,6 +3484,7 @@ private fun WireFlightPlanDisplayRowUiView.toUi() = FlightPlanDisplayRowUiView(
     depth = depth,
     active = active,
     enabled = enabled,
+    disabledReason = disabled_reason,
     syntheticDirectTo = synthetic_direct_to,
     canAddAirwayAfter = can_add_airway_after,
     canAddProcedureBefore = can_add_procedure_before,
@@ -3504,6 +3520,7 @@ private fun FlightPlanDisplayRowUiView.toWire() = WireFlightPlanDisplayRowUiView
     depth = depth,
     active = active,
     enabled = enabled,
+    disabled_reason = disabledReason,
     synthetic_direct_to = syntheticDirectTo,
     can_add_airway_after = canAddAirwayAfter,
     can_add_procedure_before = canAddProcedureBefore,
@@ -3540,6 +3557,7 @@ private fun WireFlightPlanRowActionUiView.toUi() = FlightPlanRowActionUiView(
     uid = uid,
     label = label,
     enabled = enabled,
+    disabledReason = disabled_reason,
     execution = execution,
     dismissTrayOnSuccess = dismiss_tray_on_success,
     navigation = navigation?.toUi(),
@@ -3550,6 +3568,7 @@ private fun FlightPlanRowActionUiView.toWire() = WireFlightPlanRowActionUiView(
     uid = uid,
     label = label,
     enabled = enabled,
+    disabled_reason = disabledReason,
     execution = execution,
     dismiss_tray_on_success = dismissTrayOnSuccess,
     navigation = navigation?.toWire(),

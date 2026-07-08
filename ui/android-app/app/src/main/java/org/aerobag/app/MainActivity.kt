@@ -562,6 +562,7 @@ internal data class FlightPlanDisplayRow(
     val depth: Int = 0,
     val active: Boolean = false,
     val enabled: Boolean = true,
+    val disabledReason: String? = null,
     val syntheticDirectTo: Boolean = false,
     val canAddAirwayAfter: Boolean = false,
     val canAddProcedureBefore: Boolean = false,
@@ -875,16 +876,24 @@ internal data class OfflinePackagesControllerUiStateWire(
     val storageCapacityLabel: String? = null,
     @SerialName("package_source_editable")
     val packageSourceEditable: Boolean = true,
+    @SerialName("package_source_edit_disabled_reason")
+    val packageSourceEditDisabledReason: String? = null,
     @SerialName("refresh_enabled")
     val refreshEnabled: Boolean = false,
+    @SerialName("refresh_disabled_reason")
+    val refreshDisabledReason: String? = null,
     @SerialName("refresh_cancel_enabled")
     val refreshCancelEnabled: Boolean = false,
     @SerialName("sync_enabled")
     val syncEnabled: Boolean = false,
+    @SerialName("sync_disabled_reason")
+    val syncDisabledReason: String? = null,
     @SerialName("sync_cancel_enabled")
     val syncCancelEnabled: Boolean = false,
     @SerialName("planner_interactions_enabled")
     val plannerInteractionsEnabled: Boolean = true,
+    @SerialName("planner_interactions_disabled_reason")
+    val plannerInteractionsDisabledReason: String? = null,
 )
 
 @Serializable
@@ -1048,6 +1057,7 @@ internal data class MenuDockOption(
     val label: String,
     val active: Boolean = false,
     val enabled: Boolean = true,
+    val disabledReason: String? = null,
     val accentColor: Color? = null,
     val toggleState: UiMapLayerToggleState? = null,
     @DrawableRes val iconResId: Int? = null,
@@ -1128,6 +1138,7 @@ internal data class ChartTrayOption(
     val label: String,
     val launcherLabel: String,
     val available: Boolean,
+    val disabledReason: String? = null,
     @DrawableRes val iconResId: Int? = null,
     val select: (() -> Unit)?,
 )
@@ -1247,6 +1258,7 @@ internal fun SituationSourceRow(
     sources: List<org.aerobag.app.domain.OwnshipSourceMenuItem>,
     onSelectSource: (String) -> Unit,
 ) {
+    val context = LocalContext.current
     Row(
         horizontalArrangement = Arrangement.spacedBy(3.dp),
         modifier = Modifier.fillMaxWidth(),
@@ -1260,6 +1272,9 @@ internal fun SituationSourceRow(
                 modifier = Modifier.size(ThumbSize),
                 maxLines = 2,
                 testTag = "parity:ownship-source:${source.sourceId}",
+                onDisabledClick = source.disabledReason?.let { reason ->
+                    { showDisabledActionToast(context, reason) }
+                },
                 onClick = { onSelectSource(source.sourceId) },
             )
         }
@@ -1279,7 +1294,7 @@ internal fun SituationTransportRow(
         modifier = Modifier.fillMaxWidth(),
     ) {
         controls.forEach { control ->
-            SituationTransportButton(control.label, control.input, control.enabled, onInput)
+            SituationTransportButton(control.label, control.input, control.enabled, control.disabledReason, onInput)
         }
     }
 }
@@ -1289,14 +1304,19 @@ internal fun SituationTransportButton(
     label: String,
     input: SituationControlInput,
     enabled: Boolean,
+    disabledReason: String?,
     onInput: (SituationControlInput) -> Unit,
 ) {
+    val context = LocalContext.current
     CompactSquareButton(
         label = label,
         enabled = enabled,
         wide = false,
         modifier = Modifier
             .size(ThumbSize),
+        onDisabledClick = disabledReason?.let { reason ->
+            { showDisabledActionToast(context, reason) }
+        },
         onClick = { onInput(input) },
     )
 }

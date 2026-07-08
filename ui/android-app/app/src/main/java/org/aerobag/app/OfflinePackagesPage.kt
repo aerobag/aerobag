@@ -391,7 +391,9 @@ internal fun OfflinePackagesLibraryPanel(
     onPackageSourceBaseUrlChange: (String) -> Unit,
     refreshInFlight: Boolean,
     sourceEditable: Boolean,
+    sourceEditDisabledReason: String? = null,
     refreshEnabled: Boolean,
+    refreshDisabledReason: String? = null,
     refreshCancelEnabled: Boolean,
     cancelRequested: Boolean,
     onRefresh: () -> Unit,
@@ -401,7 +403,14 @@ internal fun OfflinePackagesLibraryPanel(
     showCloseButton: Boolean = true,
     modifier: Modifier = Modifier,
 ) {
+    val context = LocalContext.current
     val uiTheme = LocalAerobagUiTheme.current
+    val refreshButtonDisabledReason = when {
+        cancelRequested -> "Waiting for cancellation to finish."
+        refreshInFlight && !refreshCancelEnabled -> "Refresh cancellation is not available."
+        !refreshInFlight && !refreshEnabled -> refreshDisabledReason
+        else -> null
+    }
     Surface(
         modifier = modifier.fillMaxSize(),
         shape = RoundedCornerShape(ThumbRadius + 4.dp),
@@ -439,6 +448,9 @@ internal fun OfflinePackagesLibraryPanel(
                     maxLines = if (refreshInFlight) 2 else 1,
                     enabled = !cancelRequested && if (refreshInFlight) refreshCancelEnabled else refreshEnabled,
                     testTag = "parity:offline-refresh-button",
+                    onDisabledClick = refreshButtonDisabledReason?.let { reason ->
+                        { showDisabledActionToast(context, reason) }
+                    },
                     onClick = if (refreshInFlight) onCancelRefresh else onRefresh,
                 )
                 if (showCloseButton) {
@@ -490,6 +502,16 @@ internal fun OfflinePackagesLibraryPanel(
                         .clip(RoundedCornerShape(ThumbRadius))
                         .background(Color.White)
                         .border(1.dp, uiTheme.controls.panelBorder, RoundedCornerShape(ThumbRadius))
+                        .then(
+                            if (!sourceEditable && !sourceEditDisabledReason.isNullOrBlank()) {
+                                Modifier.clickable(
+                                    indication = null,
+                                    interactionSource = remember { MutableInteractionSource() },
+                                ) { showDisabledActionToast(context, sourceEditDisabledReason) }
+                            } else {
+                                Modifier
+                            },
+                        )
                         .padding(horizontal = ThumbGap * 0.7f, vertical = ThumbGap * 0.55f),
                 )
             }
@@ -509,11 +531,15 @@ internal fun OfflinePackagesPanel(
     onRefreshLibrary: () -> Unit,
     libraryRefreshInFlight: Boolean,
     packageSourceEditable: Boolean,
+    packageSourceEditDisabledReason: String? = null,
     refreshEnabled: Boolean,
+    refreshDisabledReason: String? = null,
     refreshCancelEnabled: Boolean,
     syncEnabled: Boolean,
+    syncDisabledReason: String? = null,
     syncCancelEnabled: Boolean,
     plannerInteractionsEnabled: Boolean,
+    plannerInteractionsDisabledReason: String? = null,
     onCancelRefresh: () -> Unit,
     onRowClick: (OfflinePackagesEventWire) -> Unit,
     onClockClick: (String) -> Unit,
@@ -525,7 +551,20 @@ internal fun OfflinePackagesPanel(
     showCloseButton: Boolean = true,
     modifier: Modifier = Modifier,
 ) {
+    val context = LocalContext.current
     val uiTheme = LocalAerobagUiTheme.current
+    val refreshButtonDisabledReason = when {
+        cancelRequested -> "Waiting for cancellation to finish."
+        libraryRefreshInFlight && !refreshCancelEnabled -> "Refresh cancellation is not available."
+        !libraryRefreshInFlight && !refreshEnabled -> refreshDisabledReason
+        else -> null
+    }
+    val syncButtonDisabledReason = when {
+        cancelRequested -> "Waiting for cancellation to finish."
+        syncInFlight && !syncCancelEnabled -> "Sync cancellation is not available."
+        !syncInFlight && !syncEnabled -> syncDisabledReason
+        else -> null
+    }
     Surface(
         modifier = modifier
             .fillMaxSize()
@@ -567,6 +606,9 @@ internal fun OfflinePackagesPanel(
                     maxLines = if (libraryRefreshInFlight) 2 else 1,
                     enabled = !cancelRequested && if (libraryRefreshInFlight) refreshCancelEnabled else refreshEnabled,
                     testTag = "parity:offline-refresh-button",
+                    onDisabledClick = refreshButtonDisabledReason?.let { reason ->
+                        { showDisabledActionToast(context, reason) }
+                    },
                     onClick = if (libraryRefreshInFlight) onCancelRefresh else onRefreshLibrary,
                 )
                 CompactSquareButton(
@@ -581,6 +623,9 @@ internal fun OfflinePackagesPanel(
                     maxLines = if (syncInFlight) 2 else 1,
                     enabled = !cancelRequested && if (syncInFlight) syncCancelEnabled else syncEnabled,
                     testTag = "parity:offline-sync-button",
+                    onDisabledClick = syncButtonDisabledReason?.let { reason ->
+                        { showDisabledActionToast(context, reason) }
+                    },
                     onClick = if (syncInFlight) onCancelOperation else onSync,
                 )
                 if (showCloseButton) {
@@ -636,6 +681,16 @@ internal fun OfflinePackagesPanel(
                         .clip(RoundedCornerShape(ThumbRadius))
                         .background(Color.White)
                         .border(1.dp, uiTheme.controls.panelBorder, RoundedCornerShape(ThumbRadius))
+                        .then(
+                            if (!packageSourceEditable && !packageSourceEditDisabledReason.isNullOrBlank()) {
+                                Modifier.clickable(
+                                    indication = null,
+                                    interactionSource = remember { MutableInteractionSource() },
+                                ) { showDisabledActionToast(context, packageSourceEditDisabledReason) }
+                            } else {
+                                Modifier
+                            },
+                        )
                         .padding(horizontal = ThumbGap * 0.7f, vertical = ThumbGap * 0.55f),
                 )
             }
@@ -653,6 +708,9 @@ internal fun OfflinePackagesPanel(
                             maxLines = 1,
                             enabled = plannerInteractionsEnabled,
                             selected = option.active,
+                            onDisabledClick = plannerInteractionsDisabledReason?.let { reason ->
+                                { showDisabledActionToast(context, reason) }
+                            },
                             onClick = { onClockClick(option.id) },
                         )
                     }
@@ -676,6 +734,7 @@ internal fun OfflinePackagesPanel(
                         testTagPrefix = "parity:offline-region",
                         rows = uiState.regions,
                         enabled = plannerInteractionsEnabled,
+                        disabledReason = plannerInteractionsDisabledReason,
                         onRowClick = { id ->
                             onRowClick(OfflinePackagesEventWire(kind = "cycle_region", id = id))
                         },
@@ -687,6 +746,7 @@ internal fun OfflinePackagesPanel(
                         testTagPrefix = "parity:offline-product",
                         rows = uiState.products,
                         enabled = plannerInteractionsEnabled,
+                        disabledReason = plannerInteractionsDisabledReason,
                         onRowClick = { id ->
                             onRowClick(OfflinePackagesEventWire(kind = "cycle_product", id = id))
                         },
@@ -720,6 +780,7 @@ internal fun OfflinePackageSection(
     testTagPrefix: String,
     rows: List<OfflinePackagesUiRowWire>,
     enabled: Boolean,
+    disabledReason: String? = null,
     onRowClick: (String) -> Unit,
 ) {
     val uiTheme = LocalAerobagUiTheme.current
@@ -737,6 +798,7 @@ internal fun OfflinePackageSection(
                 row = row,
                 testTag = "$testTagPrefix:${row.id}",
                 enabled = enabled,
+                disabledReason = disabledReason,
                 onClick = { onRowClick(row.id) },
             )
         }
@@ -773,12 +835,14 @@ internal fun OfflinePackageSelectionRow(
     row: OfflinePackagesUiRowWire,
     testTag: String,
     enabled: Boolean,
+    disabledReason: String? = null,
     onClick: () -> Unit,
 ) {
     OfflinePackagePlanRow(
         label = label,
         row = row,
         enabled = enabled,
+        disabledReason = disabledReason,
         onCycleClick = onClick,
         testTag = testTag,
     )
@@ -789,11 +853,13 @@ internal fun OfflinePackagePlanRow(
     label: String,
     row: OfflinePackagesUiRowWire,
     enabled: Boolean,
+    disabledReason: String? = null,
     onCycleClick: (() -> Unit)?,
     showSelectionIcon: Boolean = true,
     backgroundOverride: Color? = null,
     testTag: String? = null,
 ) {
+    val context = LocalContext.current
     val uiTheme = LocalAerobagUiTheme.current
     val background = backgroundOverride ?: when (row.selection) {
             OfflinePackageSelection.Play -> lerp(uiTheme.controls.buttonUnchecked, Color.White, 0.14f)
@@ -833,7 +899,18 @@ internal fun OfflinePackagePlanRow(
                                 interactionSource = remember { MutableInteractionSource() },
                             ) { onCycleClick() }
                         } else {
-                            Modifier.alpha(0.58f)
+                            Modifier
+                                .alpha(0.58f)
+                                .then(
+                                    if (!disabledReason.isNullOrBlank()) {
+                                        Modifier.clickable(
+                                            indication = null,
+                                            interactionSource = remember { MutableInteractionSource() },
+                                        ) { showDisabledActionToast(context, disabledReason) }
+                                    } else {
+                                        Modifier
+                                    },
+                                )
                         },
                     ),
                 contentAlignment = Alignment.Center,

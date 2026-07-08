@@ -17,6 +17,7 @@ import android.os.SystemClock
 import android.util.Log
 import android.view.KeyEvent as AndroidKeyEvent
 import android.view.MotionEvent
+import android.widget.Toast
 import java.util.LinkedHashMap
 import java.net.HttpURLConnection
 import androidx.annotation.DrawableRes
@@ -849,6 +850,7 @@ internal fun MapExplorerPage(
                 label = option.label,
                 launcherLabel = option.launcherLabel,
                 available = option.enabled,
+                disabledReason = option.disabledReason,
                 iconResId = chartFamilyIconResId(option.id),
             ) {
                 onSelectMapFamily(option.id)
@@ -861,6 +863,7 @@ internal fun MapExplorerPage(
                 key = "metars",
                 label = "Observations",
                 enabled = mapLayerState.metars.enabled,
+                disabledReason = mapLayerState.metars.disabledReason,
                 toggleState = mapLayerState.metars,
                 iconResId = mapLayerIconResId(MapLayerId.Metars),
             ) {
@@ -878,6 +881,7 @@ internal fun MapExplorerPage(
                 key = "vectors",
                 label = "Vectors",
                 enabled = mapLayerState.vectors.enabled,
+                disabledReason = mapLayerState.vectors.disabledReason,
                 toggleState = mapLayerState.vectors,
                 iconResId = mapLayerIconResId(MapLayerId.Vectors),
             ) {
@@ -895,6 +899,7 @@ internal fun MapExplorerPage(
                 key = "nexrad",
                 label = "NEXRAD",
                 enabled = mapLayerState.nexrad.enabled,
+                disabledReason = mapLayerState.nexrad.disabledReason,
                 toggleState = mapLayerState.nexrad,
                 iconResId = mapLayerIconResId(MapLayerId.Nexrad),
             ) {
@@ -912,6 +917,7 @@ internal fun MapExplorerPage(
                 key = "terrain_warning",
                 label = "Terrain Warning",
                 enabled = mapLayerState.terrainWarning.enabled,
+                disabledReason = mapLayerState.terrainWarning.disabledReason,
                 toggleState = mapLayerState.terrainWarning,
                 iconResId = mapLayerIconResId(MapLayerId.TerrainWarning),
             ) {
@@ -929,6 +935,7 @@ internal fun MapExplorerPage(
                 key = "world_basemap",
                 label = "World Map",
                 enabled = mapLayerState.worldBasemap.enabled,
+                disabledReason = mapLayerState.worldBasemap.disabledReason,
                 toggleState = mapLayerState.worldBasemap,
                 iconResId = mapLayerIconResId(MapLayerId.WorldBasemap),
             ) {
@@ -946,6 +953,7 @@ internal fun MapExplorerPage(
                 key = "offline_regions",
                 label = "Offline Regions",
                 enabled = mapLayerState.offlineRegions.enabled,
+                disabledReason = mapLayerState.offlineRegions.disabledReason,
                 toggleState = mapLayerState.offlineRegions,
                 iconResId = mapLayerIconResId(MapLayerId.OfflineRegions),
             ) {
@@ -2612,6 +2620,9 @@ internal fun MapExplorerPage(
             enabled = mapFollowUiState.canCenterHere || mapFollowUiState.following,
             selected = mapFollowUiState.following,
             selectedColor = Color(0xFF0D6F67),
+            onDisabledClick = mapFollowUiState.disabledReason?.let { reason ->
+                { showDisabledActionToast(context, reason) }
+            },
             onClick = {
                 followTargetGate.clear()
                 applySessionCommand(if (mapFollowUiState.following) "disengageMapFollow" else "engageMapFollow") {
@@ -2667,6 +2678,14 @@ internal fun MapExplorerPage(
                                 mapSelection = selection.copy(selectedItem = item, detailModal = null)
                             },
                             onSelectAction = { item, action ->
+                                if (!action.enabled) {
+                                    action.disabledReason
+                                        ?.takeIf { it.isNotBlank() }
+                                        ?.let { reason ->
+                                            Toast.makeText(context, reason, Toast.LENGTH_SHORT).show()
+                                        }
+                                    return@MapSelectionTray
+                                }
                                 action.detailText?.let { detail ->
                                     mapSelection = selection.copy(
                                         selectedItem = item,
@@ -3742,9 +3761,13 @@ internal fun MapSelectionActionRow(
             if (action == null) {
                 Spacer(modifier = Modifier.width(ThumbSize * 1.2f).height(ThumbSize))
             } else {
+                val actionEnabled = action.enabled && !action.displayOnly
+                val acceptsTap = !action.displayOnly &&
+                    (actionEnabled || !action.disabledReason.isNullOrBlank())
                 MapSelectionActionButton(
                     action = action,
-                    enabled = action.enabled && !action.displayOnly,
+                    enabled = actionEnabled,
+                    acceptsTap = acceptsTap,
                     onClick = {
                         if (selectedItem != null) onSelectAction(selectedItem, action)
                     },
@@ -3989,6 +4012,7 @@ internal fun navSymbolStrokeJoin(value: String?): StrokeJoin = when (value) {
 internal fun MapSelectionActionButton(
     action: MapSelectionAction,
     enabled: Boolean,
+    acceptsTap: Boolean,
     onClick: () -> Unit,
 ) {
     val uiTheme = LocalAerobagUiTheme.current
@@ -4008,7 +4032,7 @@ internal fun MapSelectionActionButton(
                     disabled()
                 }
             }
-            .then(if (enabled) Modifier.clickable(onClick = onClick) else Modifier),
+            .then(if (acceptsTap) Modifier.clickable(onClick = onClick) else Modifier),
         shape = RoundedCornerShape(ThumbRadius),
         color = containerColor,
         contentColor = uiTheme.controls.buttonFg,

@@ -1528,9 +1528,14 @@ button {
   pointer-events: auto;
 }
 
-.mapSelectionAction:disabled {
+.mapSelectionAction:disabled,
+.mapSelectionAction.isDisabled {
   background: var(--theme-button-disabled);
   border-color: color-mix(in srgb, var(--theme-button-disabled) 78%, black);
+}
+
+.mapSelectionAction.isDisabled {
+  cursor: help;
 }
 
 .mapSelectionAction.isDisplayOnly {
@@ -1541,6 +1546,26 @@ button {
 .mapSelectionAction.isPlaceholder {
   visibility: hidden;
   pointer-events: none;
+}
+
+.mapSelectionToast {
+  position: fixed;
+  z-index: var(--z-modal-content-raised);
+  left: 50%;
+  bottom: calc(var(--safe-bottom) + var(--thumb) * 0.32);
+  max-width: min(calc(var(--thumb) * 6.8), calc(100vw - var(--safe-left) - var(--safe-right) - var(--thumb)));
+  padding: calc(var(--thumb) * 0.12) calc(var(--thumb) * 0.18);
+  border: 1px solid rgba(19, 33, 41, 0.22);
+  border-radius: var(--thumb-radius);
+  background: rgba(20, 29, 34, 0.94);
+  color: #fff;
+  font-size: calc(var(--thumb) * 0.16);
+  font-weight: 800;
+  line-height: 1.2;
+  text-align: center;
+  box-shadow: var(--shadow);
+  pointer-events: none;
+  transform: translateX(-50%);
 }
 
 .chartButton {
@@ -1941,6 +1966,7 @@ button {
   line-height: 1.02;
 }
 
+.trayButton.isDisabled,
 .trayButton:disabled {
   border-color: color-mix(in srgb, var(--theme-button-disabled) 78%, black);
   background:
@@ -1952,6 +1978,10 @@ button {
       var(--tray-accent, var(--theme-button-disabled)) 100%
     );
   color: var(--theme-button-fg);
+}
+
+.trayButton.isDisabled {
+  cursor: help;
 }
 
 .debugFlag {
@@ -2482,8 +2512,13 @@ button {
   letter-spacing: 0.04em;
 }
 
+.playbackWidgetButton.isDisabled,
 .playbackWidgetButton:disabled {
   opacity: 0.45;
+}
+
+.playbackWidgetButton.isDisabled {
+  cursor: help;
 }
 
 .playbackWidgetMediaButton {
@@ -2536,10 +2571,15 @@ button {
   color: #fff;
 }
 
+.centerHereButton.isDisabled,
 .centerHereButton:disabled {
   background: var(--theme-button-disabled);
   border-color: color-mix(in srgb, var(--theme-button-disabled) 72%, black);
   color: var(--theme-button-fg);
+}
+
+.centerHereButton.isDisabled {
+  cursor: help;
 }
 
 .zoomControl {

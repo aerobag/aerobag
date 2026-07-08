@@ -8,6 +8,17 @@ use crate::ids::AirportId;
 use crate::map_overlay::NavSymbolFeature;
 use crate::{FlightDataCell, FlightDataCellTone, FlightDataColumn};
 
+pub(crate) const OFF_PLAN_DIRECT_TO_EDIT_DISABLED_REASON: &str =
+    "Restore FP before editing the flight plan.";
+const AIRWAY_ENDPOINT_REMOVE_DISABLED_REASON: &str = "Only airway endpoints can be removed.";
+const WAYPOINT_REMOVE_DISABLED_REASON: &str =
+    "This waypoint cannot be removed from the flight plan.";
+const AIRWAY_REMOVE_DISABLED_REASON: &str = "This airway cannot be removed from the flight plan.";
+const PROCEDURE_REMOVE_DISABLED_REASON: &str =
+    "This procedure cannot be removed from the flight plan.";
+const REMOVE_ALL_ABOVE_DISABLED_REASON: &str =
+    "This row cannot be used as a Remove All Above target.";
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct FlightPlan {
     pub id: String,
@@ -901,6 +912,8 @@ pub struct FlightPlanControlUiView {
     pub id: FlightPlanControlId,
     pub label: String,
     pub enabled: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub disabled_reason: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -961,6 +974,8 @@ pub struct FlightPlanRowActionUiView {
     pub uid: String,
     pub label: String,
     pub enabled: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub disabled_reason: Option<String>,
     #[serde(default = "default_row_action_execution")]
     pub execution: FlightPlanRowActionExecution,
     #[serde(default = "default_dismiss_tray_on_success")]
@@ -993,6 +1008,8 @@ pub struct FlightPlanDisplayRowUiView {
     pub active: bool,
     #[serde(default = "default_true")]
     pub enabled: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub disabled_reason: Option<String>,
     #[serde(default)]
     pub synthetic_direct_to: bool,
     pub can_add_airway_after: bool,
@@ -1844,11 +1861,13 @@ fn flight_plan_control(
     id: FlightPlanControlId,
     label: &str,
     enabled: bool,
+    disabled_reason: &'static str,
 ) -> FlightPlanControlUiView {
     FlightPlanControlUiView {
         id,
         label: label.to_string(),
         enabled,
+        disabled_reason: (!enabled).then(|| disabled_reason.to_string()),
     }
 }
 
@@ -1890,27 +1909,55 @@ fn project_flight_plan_controls(plan: &FlightPlan) -> Vec<FlightPlanControlUiVie
             FlightPlanControlId::ActivateNextLeg,
             "Next\nLeg",
             can_activate_next_leg,
+            "No next leg is available.",
         ),
         flight_plan_control(
             FlightPlanControlId::SequenceActiveLeg,
             "SQNC",
             can_sequence_active_leg,
+            if plan
+                .guidance
+                .as_ref()
+                .is_some_and(|guidance| guidance.sequencing_mode == SequencingMode::Suspended)
+            {
+                "Unsuspend sequencing before sequencing the active leg."
+            } else {
+                "No active leg is available to sequence."
+            },
         ),
         flight_plan_control(
             FlightPlanControlId::StopNavigation,
             "STOP\nNAV",
             can_stop_navigation,
+            "No active guidance is available to stop.",
         ),
-        flight_plan_control(FlightPlanControlId::SuspendSequencing, "SUSP", can_suspend),
+        flight_plan_control(
+            FlightPlanControlId::SuspendSequencing,
+            "SUSP",
+            can_suspend,
+            if plan.guidance.is_none() {
+                "No active guidance is available to suspend."
+            } else if plan
+                .guidance
+                .as_ref()
+                .is_some_and(|guidance| guidance.sequencing_mode == SequencingMode::Suspended)
+            {
+                "Sequencing is already suspended."
+            } else {
+                "Sequencing cannot be suspended now."
+            },
+        ),
         flight_plan_control(
             FlightPlanControlId::UnsuspendSequencing,
             "Unsusp",
             can_unsuspend,
+            "Sequencing is not suspended.",
         ),
         flight_plan_control(
             FlightPlanControlId::RestoreDirectTo,
             "Restore\nFP",
             can_restore_direct_to,
+            "No off-plan Direct-To is active.",
         ),
     ]
 }
@@ -2200,6 +2247,7 @@ fn project_display_rows(
                 depth: 0,
                 active: component.active,
                 enabled: !direct_to_overlay,
+                disabled_reason: None,
                 synthetic_direct_to: false,
                 can_add_airway_after: component.can_add_airway_after,
                 can_add_procedure_before: component.can_add_procedure_before,
@@ -2239,6 +2287,7 @@ fn project_display_rows(
                 depth: 0,
                 active: component.active,
                 enabled: !direct_to_overlay,
+                disabled_reason: None,
                 synthetic_direct_to: false,
                 can_add_airway_after: component.can_add_airway_after,
                 can_add_procedure_before: component.can_add_procedure_before,
@@ -2323,6 +2372,7 @@ fn project_display_rows(
                             depth: 1,
                             active: component.active,
                             enabled: !direct_to_overlay,
+                            disabled_reason: None,
                             synthetic_direct_to: false,
                             can_add_airway_after: false,
                             can_add_procedure_before: false,
@@ -2379,6 +2429,7 @@ fn project_display_rows(
                             depth: 1,
                             active: false,
                             enabled: !direct_to_overlay,
+                            disabled_reason: None,
                             synthetic_direct_to: false,
                             can_add_airway_after: false,
                             can_add_procedure_before: false,
@@ -2428,6 +2479,7 @@ fn project_display_rows(
             depth: 0,
             active: true,
             enabled: true,
+            disabled_reason: None,
             synthetic_direct_to: true,
             can_add_airway_after: false,
             can_add_procedure_before: false,
@@ -2453,8 +2505,11 @@ fn project_display_rows(
         for row in &mut rows {
             if !row.synthetic_direct_to {
                 row.enabled = false;
+                row.disabled_reason = Some(OFF_PLAN_DIRECT_TO_EDIT_DISABLED_REASON.to_string());
                 for action in flight_plan_row_actions_mut(row) {
                     action.enabled = false;
+                    action.disabled_reason =
+                        Some(OFF_PLAN_DIRECT_TO_EDIT_DISABLED_REASON.to_string());
                 }
             }
         }
@@ -2485,6 +2540,8 @@ fn project_display_rows(
                             || (!hold_row && !active_in_terminal_hold)
                         {
                             action.enabled = false;
+                            action.disabled_reason =
+                                Some("This leg is already active.".to_string());
                         }
                     }
                 }
@@ -2674,7 +2731,11 @@ fn can_insert_procedure_before_component(plan: &FlightPlan, component_index: usi
 fn group_row_actions(component: &RouteComponentUiView) -> Vec<FlightPlanRowActionUiView> {
     match component.kind {
         RouteComponentViewKind::Airway => vec![
-            core_session_action(FlightPlanRowActionId::RemoveAirway, component.can_remove),
+            core_session_action_with_disabled_reason(
+                FlightPlanRowActionId::RemoveAirway,
+                component.can_remove,
+                AIRWAY_REMOVE_DISABLED_REASON,
+            ),
             core_session_action(FlightPlanRowActionId::RemoveAllAbove, true),
         ],
         RouteComponentViewKind::Procedure => vec![
@@ -2682,7 +2743,11 @@ fn group_row_actions(component: &RouteComponentUiView) -> Vec<FlightPlanRowActio
                 FlightPlanRowActionId::ShowPlate,
                 component.chart_airport_id.is_some() && component.procedure_id.is_some(),
             ),
-            core_session_action(FlightPlanRowActionId::RemoveProcedure, component.can_remove),
+            core_session_action_with_disabled_reason(
+                FlightPlanRowActionId::RemoveProcedure,
+                component.can_remove,
+                PROCEDURE_REMOVE_DISABLED_REASON,
+            ),
         ],
         RouteComponentViewKind::Waypoint => Vec::new(),
     }
@@ -2710,9 +2775,10 @@ fn waypoint_actions_for_row(
         vec![
             core_session_action(FlightPlanRowActionId::ActivateLeg, leg_index.is_some()),
             core_session_action(FlightPlanRowActionId::DirectTo, nav_ref.is_some()),
-            core_session_action(
+            core_session_action_with_disabled_reason(
                 FlightPlanRowActionId::Remove,
                 component_index.is_some() && can_remove_component,
+                WAYPOINT_REMOVE_DISABLED_REASON,
             ),
             core_session_action(
                 FlightPlanRowActionId::RemoveAllAbove,
@@ -2764,9 +2830,10 @@ fn child_waypoint_actions_for_row(
     ];
     if component_kind == RouteComponentViewKind::Airway {
         let is_endpoint = waypoint_index == 0 || waypoint_index + 1 == waypoint_count;
-        actions.push(core_session_action(
+        actions.push(core_session_action_with_disabled_reason(
             FlightPlanRowActionId::Remove,
             is_endpoint,
+            AIRWAY_ENDPOINT_REMOVE_DISABLED_REASON,
         ));
         actions.push(core_session_action(
             FlightPlanRowActionId::RemoveAllAbove,
@@ -2883,11 +2950,13 @@ fn child_waypoint_row_uid(
 }
 
 fn action(id: FlightPlanRowActionId, enabled: bool) -> FlightPlanRowActionUiView {
+    let disabled_reason = row_action_disabled_reason(&id, enabled);
     FlightPlanRowActionUiView {
         label: action_label(&id).to_string(),
         uid: String::new(),
         id,
         enabled,
+        disabled_reason,
         execution: FlightPlanRowActionExecution::UiController,
         dismiss_tray_on_success: true,
         navigation: None,
@@ -2895,27 +2964,68 @@ fn action(id: FlightPlanRowActionId, enabled: bool) -> FlightPlanRowActionUiView
 }
 
 fn core_session_action(id: FlightPlanRowActionId, enabled: bool) -> FlightPlanRowActionUiView {
+    let disabled_reason = row_action_disabled_reason(&id, enabled);
     FlightPlanRowActionUiView {
         label: action_label(&id).to_string(),
         uid: String::new(),
         id,
         enabled,
+        disabled_reason,
         execution: FlightPlanRowActionExecution::CoreSession,
         dismiss_tray_on_success: true,
         navigation: None,
     }
 }
 
+fn core_session_action_with_disabled_reason(
+    id: FlightPlanRowActionId,
+    enabled: bool,
+    disabled_reason: &'static str,
+) -> FlightPlanRowActionUiView {
+    let mut action = core_session_action(id, enabled);
+    if !enabled {
+        action.disabled_reason = Some(disabled_reason.to_string());
+    }
+    action
+}
+
 fn move_action(id: FlightPlanRowActionId, enabled: bool) -> FlightPlanRowActionUiView {
+    let disabled_reason = row_action_disabled_reason(&id, enabled);
     FlightPlanRowActionUiView {
         label: action_label(&id).to_string(),
         uid: String::new(),
         id,
         enabled,
+        disabled_reason,
         execution: FlightPlanRowActionExecution::CoreSession,
         dismiss_tray_on_success: false,
         navigation: None,
     }
+}
+
+fn row_action_disabled_reason(id: &FlightPlanRowActionId, enabled: bool) -> Option<String> {
+    (!enabled).then(|| {
+        match id {
+            FlightPlanRowActionId::ActivateLeg => "This row is not a flyable leg.",
+            FlightPlanRowActionId::DirectTo => "This row has no Direct-To target.",
+            FlightPlanRowActionId::Remove => WAYPOINT_REMOVE_DISABLED_REASON,
+            FlightPlanRowActionId::RemoveAllAbove => REMOVE_ALL_ABOVE_DISABLED_REASON,
+            FlightPlanRowActionId::InsertBefore => "Choose a top-level route row to insert before.",
+            FlightPlanRowActionId::InsertAfter => "Choose a top-level route row to insert after.",
+            FlightPlanRowActionId::MoveUp => "This route element is already at the top.",
+            FlightPlanRowActionId::MoveDown => "This route element is already at the bottom.",
+            FlightPlanRowActionId::WaypointInfo => "Waypoint info is not available yet.",
+            FlightPlanRowActionId::AddAirway => {
+                "Airway insertion requires a named waypoint with airway connections."
+            }
+            FlightPlanRowActionId::SelectProcedure => "Procedures can be added at airports only.",
+            FlightPlanRowActionId::Plates => "No airport plates are associated with this row.",
+            FlightPlanRowActionId::ShowPlate => "This procedure has no plate to show.",
+            FlightPlanRowActionId::RemoveAirway => AIRWAY_REMOVE_DISABLED_REASON,
+            FlightPlanRowActionId::RemoveProcedure => PROCEDURE_REMOVE_DISABLED_REASON,
+        }
+        .to_string()
+    })
 }
 
 fn assign_action_uids(
@@ -3564,7 +3674,7 @@ pub fn remove_airway_child_waypoint(
     if point_index != first_visible_index && point_index != last_visible_index {
         return Err(AppError {
             kind: AppErrorKind::UnsupportedOperation,
-            message: "only visible airway endpoints can be removed directly".to_string(),
+            message: AIRWAY_ENDPOINT_REMOVE_DISABLED_REASON.to_string(),
         });
     }
 
@@ -7755,6 +7865,7 @@ mod tests {
             depth: 0,
             active: false,
             enabled: true,
+            disabled_reason: None,
             synthetic_direct_to: false,
             can_add_airway_after: false,
             can_add_procedure_before: false,
@@ -7851,6 +7962,26 @@ mod tests {
 
         assert!(first_actions.contains(&(&FlightPlanRowActionId::RemoveAllAbove, true)));
         assert!(third_actions.contains(&(&FlightPlanRowActionId::RemoveAllAbove, true)));
+    }
+
+    #[test]
+    fn remove_action_disabled_reasons_are_specific() {
+        assert_eq!(
+            row_action_disabled_reason(&FlightPlanRowActionId::Remove, false).as_deref(),
+            Some(WAYPOINT_REMOVE_DISABLED_REASON)
+        );
+        assert_eq!(
+            row_action_disabled_reason(&FlightPlanRowActionId::RemoveAirway, false).as_deref(),
+            Some(AIRWAY_REMOVE_DISABLED_REASON)
+        );
+        assert_eq!(
+            row_action_disabled_reason(&FlightPlanRowActionId::RemoveProcedure, false).as_deref(),
+            Some(PROCEDURE_REMOVE_DISABLED_REASON)
+        );
+        assert_eq!(
+            row_action_disabled_reason(&FlightPlanRowActionId::RemoveAllAbove, false).as_deref(),
+            Some(REMOVE_ALL_ABOVE_DISABLED_REASON)
+        );
     }
 
     #[test]
@@ -8139,10 +8270,18 @@ mod tests {
         let rows = ui.display_rows;
 
         assert!(rows[..rows.len() - 1].iter().all(|row| !row.enabled));
+        assert!(rows[..rows.len() - 1].iter().all(|row| {
+            row.disabled_reason.as_deref() == Some(OFF_PLAN_DIRECT_TO_EDIT_DISABLED_REASON)
+        }));
         assert!(rows[..rows.len() - 1]
             .iter()
             .flat_map(flight_plan_row_actions)
             .all(|action| !action.enabled));
+        assert!(rows[..rows.len() - 1]
+            .iter()
+            .flat_map(flight_plan_row_actions)
+            .all(|action| action.disabled_reason.as_deref()
+                == Some(OFF_PLAN_DIRECT_TO_EDIT_DISABLED_REASON)));
         let direct_row = rows.last().expect("synthetic direct-to row");
         assert_eq!(direct_row.label, "KPSC");
         assert_eq!(
@@ -8166,6 +8305,7 @@ mod tests {
             .expect("restore direct-to control");
         assert_eq!(restore_control.label, "Restore\nFP");
         assert!(restore_control.enabled);
+        assert_eq!(restore_control.disabled_reason, None);
         assert!(ui
             .controls
             .last()
@@ -8239,6 +8379,10 @@ mod tests {
             .expect("restore direct-to control");
         assert_eq!(restore_control.label, "Restore\nFP");
         assert!(!restore_control.enabled);
+        assert_eq!(
+            restore_control.disabled_reason.as_deref(),
+            Some("No off-plan Direct-To is active.")
+        );
         assert!(ui
             .controls
             .last()
@@ -8275,6 +8419,10 @@ mod tests {
             .expect("restore direct-to control");
         assert_eq!(restore_control.label, "Restore\nFP");
         assert!(!restore_control.enabled);
+        assert_eq!(
+            restore_control.disabled_reason.as_deref(),
+            Some("No off-plan Direct-To is active.")
+        );
         assert!(ui
             .controls
             .last()
@@ -8722,6 +8870,18 @@ mod tests {
             false,
             FlightPlanRowActionExecution::CoreSession
         )));
+        let hokbo_remove = airway_rows
+            .iter()
+            .find(|row| row.label == "HOKBO")
+            .and_then(|row| {
+                flight_plan_row_actions(row)
+                    .find(|action| action.id == FlightPlanRowActionId::Remove)
+            })
+            .expect("HOKBO remove action");
+        assert_eq!(
+            hokbo_remove.disabled_reason.as_deref(),
+            Some(AIRWAY_ENDPOINT_REMOVE_DISABLED_REASON)
+        );
         assert!(row_actions("UBG").contains(&(
             FlightPlanRowActionId::Remove,
             true,

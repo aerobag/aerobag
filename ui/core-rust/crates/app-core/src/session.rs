@@ -144,6 +144,8 @@ pub struct UiChartPageState {
 pub struct UiMapLayerToggleState {
     pub visible: bool,
     pub enabled: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub disabled_reason: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -3753,6 +3755,7 @@ pub fn set_map_layer_enabled_in_session(
     let layer = parse_map_layer_id(layer_id)?;
     let toggle = map_layer_toggle_mut(&mut session.map_layer_state, layer);
     toggle.enabled = enabled;
+    toggle.disabled_reason = (!enabled).then(|| map_layer_disabled_reason(layer).to_string());
     if !enabled {
         toggle.visible = false;
     }
@@ -7908,7 +7911,7 @@ fn map_selection_with_session_action_availability(
         .filter(|action| action.id == "direct_to")
     {
         action.enabled = false;
-        action.detail_text = Some("Direct-to requires ownship position.".to_string());
+        action.disabled_reason = Some("Direct-to requires ownship position.".to_string());
         action.session_action = None;
         action.flight_plan_row_action = None;
     }
@@ -9212,27 +9215,44 @@ fn default_map_layer_state() -> UiMapLayerState {
         world_basemap: UiMapLayerToggleState {
             visible: true,
             enabled: true,
+            disabled_reason: None,
         },
         vectors: UiMapLayerToggleState {
             visible: true,
             enabled: true,
+            disabled_reason: None,
         },
         metars: UiMapLayerToggleState {
             visible: true,
             enabled: true,
+            disabled_reason: None,
         },
         nexrad: UiMapLayerToggleState {
             visible: false,
             enabled: true,
+            disabled_reason: None,
         },
         terrain_warning: UiMapLayerToggleState {
             visible: true,
             enabled: true,
+            disabled_reason: None,
         },
         offline_regions: UiMapLayerToggleState {
             visible: false,
             enabled: true,
+            disabled_reason: None,
         },
+    }
+}
+
+fn map_layer_disabled_reason(layer_id: MapLayerId) -> &'static str {
+    match layer_id {
+        MapLayerId::WorldBasemap => "The world map layer is unavailable.",
+        MapLayerId::Vectors => "The vector layer is unavailable.",
+        MapLayerId::Metars => "Weather observations are unavailable.",
+        MapLayerId::Nexrad => "NEXRAD is unavailable.",
+        MapLayerId::TerrainWarning => "Terrain warning is unavailable.",
+        MapLayerId::OfflineRegions => "Offline package regions are unavailable.",
     }
 }
 
@@ -9564,6 +9584,7 @@ fn project_bad_autopilot_availability_for_state(
             if !available {
                 source.tone = crate::ownship::OwnshipControlTone::Unavailable;
                 source.status_label = "No active leg".to_string();
+                source.disabled_reason = Some("Bad AP requires an active leg.".to_string());
             }
         }
     }
@@ -9599,29 +9620,37 @@ trait SessionSituationSourceHandler {
         false
     }
 
+    fn input_disabled_reason(
+        &self,
+        _session: &UiSession,
+        _input: SituationControlInput,
+    ) -> Option<String> {
+        Some(
+            "Replay and plan preview controls are not available for this ownship source."
+                .to_string(),
+        )
+    }
+
     fn menu_items(&self, session: &UiSession) -> Vec<SituationControlMenuItem> {
-        vec![
-            SituationControlMenuItem {
-                input: SituationControlInput::SkipBackward,
-                label: "⏮".to_string(),
-                enabled: self.input_enabled(session, SituationControlInput::SkipBackward),
-            },
-            SituationControlMenuItem {
-                input: SituationControlInput::FastRewind,
-                label: "⏪".to_string(),
-                enabled: self.input_enabled(session, SituationControlInput::FastRewind),
-            },
-            SituationControlMenuItem {
-                input: SituationControlInput::FastForward,
-                label: "⏩".to_string(),
-                enabled: self.input_enabled(session, SituationControlInput::FastForward),
-            },
-            SituationControlMenuItem {
-                input: SituationControlInput::SkipForward,
-                label: "⏭".to_string(),
-                enabled: self.input_enabled(session, SituationControlInput::SkipForward),
-            },
+        [
+            (SituationControlInput::SkipBackward, "⏮"),
+            (SituationControlInput::FastRewind, "⏪"),
+            (SituationControlInput::FastForward, "⏩"),
+            (SituationControlInput::SkipForward, "⏭"),
         ]
+        .into_iter()
+        .map(|(input, label)| {
+            let enabled = self.input_enabled(session, input);
+            SituationControlMenuItem {
+                input,
+                label: label.to_string(),
+                enabled,
+                disabled_reason: (!enabled)
+                    .then(|| self.input_disabled_reason(session, input))
+                    .flatten(),
+            }
+        })
+        .collect()
     }
 }
 
@@ -9667,6 +9696,25 @@ impl SessionSituationSourceHandler for ReplaySituationSourceHandler {
             }
         }
     }
+
+    fn input_disabled_reason(
+        &self,
+        session: &UiSession,
+        input: SituationControlInput,
+    ) -> Option<String> {
+        let ui_state = session.playback.ui_state();
+        if ui_state.duration_seconds <= 1e-6 {
+            return Some("Load a trace before replaying.".to_string());
+        }
+        match input {
+            SituationControlInput::SkipBackward | SituationControlInput::FastRewind => {
+                Some("Already at the start of replay.".to_string())
+            }
+            SituationControlInput::FastForward | SituationControlInput::SkipForward => {
+                Some("Already at the end of replay.".to_string())
+            }
+        }
+    }
 }
 
 impl SessionSituationSourceHandler for PlanPreviewSituationSourceHandler {
@@ -9684,6 +9732,30 @@ impl SessionSituationSourceHandler for PlanPreviewSituationSourceHandler {
         match input {
             SituationControlInput::SkipBackward | SituationControlInput::FastRewind => can_rewind,
             SituationControlInput::FastForward | SituationControlInput::SkipForward => can_forward,
+        }
+    }
+
+    fn input_disabled_reason(
+        &self,
+        session: &UiSession,
+        input: SituationControlInput,
+    ) -> Option<String> {
+        let records = session
+            .app_state
+            .active_plan
+            .as_ref()
+            .map(|plan| plan_preview_legs(plan, &session.guidance_leg_geometry))
+            .unwrap_or_default();
+        if records.is_empty() {
+            return Some("No plan preview route is available.".to_string());
+        }
+        match input {
+            SituationControlInput::SkipBackward | SituationControlInput::FastRewind => {
+                Some("Already at the start of plan preview.".to_string())
+            }
+            SituationControlInput::FastForward | SituationControlInput::SkipForward => {
+                Some("Already at the end of plan preview.".to_string())
+            }
         }
     }
 }
@@ -16851,6 +16923,7 @@ mod tests {
                         enabled: true,
                         display_only: false,
                         detail_text: None,
+                        disabled_reason: None,
                         airspace_limit: None,
                         session_action: Some("direct-to-action".to_string()),
                         flight_plan_row_action: None,
@@ -16864,9 +16937,10 @@ mod tests {
         let action = &unavailable.categories[0].items[0].actions[0];
         assert!(!action.enabled);
         assert_eq!(
-            action.detail_text.as_deref(),
+            action.disabled_reason.as_deref(),
             Some("Direct-to requires ownship position.")
         );
+        assert_eq!(action.detail_text, None);
         assert!(action.session_action.is_none());
         assert!(action.flight_plan_row_action.is_none());
 

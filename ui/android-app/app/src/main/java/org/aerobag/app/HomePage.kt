@@ -668,6 +668,10 @@ internal fun HomePage(
                 val packageSourceEditable = controllerUiState?.packageSourceEditable ?: !packageOperationActive
                 val libraryRefreshEnabled = controllerUiState?.refreshEnabled ?: !packageOperationActive
                 val libraryRefreshCancelEnabled = controllerUiState?.refreshCancelEnabled ?: packageOperationActive
+                val packageSourceEditDisabledReason = controllerUiState?.packageSourceEditDisabledReason
+                    ?: if (!packageSourceEditable) "Wait for the current package operation to finish before changing the source." else null
+                val libraryRefreshDisabledReason = controllerUiState?.refreshDisabledReason
+                    ?: if (!libraryRefreshEnabled) "Wait for the current package operation to finish before refreshing." else null
                 OfflinePackagesLibraryPanel(
                     message = listOfNotNull(
                         controllerUiState?.libraryStatusMessage ?: controllerUiState?.libraryErrorMessage,
@@ -689,7 +693,9 @@ internal fun HomePage(
                     },
                     refreshInFlight = libraryRefreshInFlight,
                     sourceEditable = packageSourceEditable,
+                    sourceEditDisabledReason = packageSourceEditDisabledReason,
                     refreshEnabled = libraryRefreshEnabled,
+                    refreshDisabledReason = libraryRefreshDisabledReason,
                     refreshCancelEnabled = libraryRefreshCancelEnabled,
                     cancelRequested = offlinePackageCancelRequested,
                     onRefresh = {
@@ -750,11 +756,15 @@ internal fun HomePage(
                     },
                     libraryRefreshInFlight = controllerUiState.libraryLoading,
                     packageSourceEditable = controllerUiState.packageSourceEditable,
+                    packageSourceEditDisabledReason = controllerUiState.packageSourceEditDisabledReason,
                     refreshEnabled = controllerUiState.refreshEnabled,
+                    refreshDisabledReason = controllerUiState.refreshDisabledReason,
                     refreshCancelEnabled = controllerUiState.refreshCancelEnabled,
                     syncEnabled = controllerUiState.syncEnabled,
+                    syncDisabledReason = controllerUiState.syncDisabledReason,
                     syncCancelEnabled = controllerUiState.syncCancelEnabled,
                     plannerInteractionsEnabled = controllerUiState.plannerInteractionsEnabled,
+                    plannerInteractionsDisabledReason = controllerUiState.plannerInteractionsDisabledReason,
                     onCancelRefresh = {
                         diagnosticLogInfo("OfflinePackages") { "refresh cancel requested" }
                         offlinePackageCancelRequested = true

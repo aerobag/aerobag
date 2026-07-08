@@ -804,6 +804,8 @@ pub struct MapSelectionAction {
     #[serde(default)]
     pub detail_text: Option<String>,
     #[serde(default)]
+    pub disabled_reason: Option<String>,
+    #[serde(default)]
     pub airspace_limit: Option<AirspaceLimitGlyph>,
     #[serde(default)]
     pub session_action: Option<String>,
@@ -2832,13 +2834,25 @@ fn selection_item_for_point(
             remove_row_action,
         ),
         Some(nav_ref) if selection_plan_top_level_waypoint_count(plan, nav_ref) > 1 => {
-            disabled_action("remove_from_flight_plan", "Remove ambiguous")
+            disabled_action_with_reason(
+                "remove_from_flight_plan",
+                "Remove ambiguous",
+                "This waypoint appears more than once in the flight plan.",
+            )
         }
         Some(nav_ref) if !selection_plan_contains_nav_ref(plan, nav_ref) => {
             insert_best_position_action(plan, nav_ref)
         }
-        Some(_) => disabled_action("insert", "In grouped route"),
-        None => disabled_action("insert", "Insert unavailable"),
+        Some(_) => disabled_action_with_reason(
+            "insert",
+            "In grouped route",
+            "Edit grouped routes from the Flight Plan page.",
+        ),
+        None => disabled_action_with_reason(
+            "insert",
+            "Insert unavailable",
+            "This item cannot be inserted into the flight plan.",
+        ),
     };
     let airport_id = match &nav_ref {
         Some(NavRef::Airport(airport_id)) => Some(airport_id.as_str()),
@@ -2863,8 +2877,18 @@ fn selection_item_for_point(
                 airport_plate_availability.csup,
             ),
             taf.map(|record| detail_action("taf", "TAF", taf_detail_text(record)))
-                .unwrap_or_else(|| disabled_action("taf", "TAF")),
-            disabled_action("runways", "Runways"),
+                .unwrap_or_else(|| {
+                    disabled_action_with_reason(
+                        "taf",
+                        "TAF",
+                        "No TAF is available for this station.",
+                    )
+                }),
+            disabled_action_with_reason(
+                "runways",
+                "Runways",
+                "Runway details are not available yet.",
+            ),
         ]
     } else {
         vec![
@@ -2961,11 +2985,19 @@ fn selection_item_for_flight_plan_point(
             remove_row_action,
         )
     } else if selection_plan_top_level_waypoint_count(plan, nav_ref) > 1 {
-        disabled_action("remove_from_flight_plan", "Remove ambiguous")
+        disabled_action_with_reason(
+            "remove_from_flight_plan",
+            "Remove ambiguous",
+            "This waypoint appears more than once in the flight plan.",
+        )
     } else if !selection_plan_contains_nav_ref(plan, nav_ref) {
         insert_best_position_action(plan, nav_ref)
     } else {
-        disabled_action("insert", "In grouped route")
+        disabled_action_with_reason(
+            "insert",
+            "In grouped route",
+            "Edit grouped routes from the Flight Plan page.",
+        )
     };
     let taf = match nav_ref {
         NavRef::Airport(airport_id) => {
@@ -2987,8 +3019,18 @@ fn selection_item_for_flight_plan_point(
             ),
             plate_target_action("csup", "Chart Supp", airport_id, "CSup", availability.csup),
             taf.map(|record| detail_action("taf", "TAF", taf_detail_text(record)))
-                .unwrap_or_else(|| disabled_action("taf", "TAF")),
-            disabled_action("runways", "Runways"),
+                .unwrap_or_else(|| {
+                    disabled_action_with_reason(
+                        "taf",
+                        "TAF",
+                        "No TAF is available for this station.",
+                    )
+                }),
+            disabled_action_with_reason(
+                "runways",
+                "Runways",
+                "Runway details are not available yet.",
+            ),
         ]
     } else {
         vec![
@@ -3045,10 +3087,14 @@ fn nav_ref_overlay_key(nav_ref: &NavRef) -> String {
 
 fn insert_best_position_action(plan: Option<&FlightPlan>, nav_ref: &NavRef) -> MapSelectionAction {
     let Some(plan) = plan else {
-        return disabled_action("insert", "Insert in flight plan");
+        return disabled_action_with_reason(
+            "insert",
+            "Insert in flight plan",
+            "Start a flight plan before inserting a waypoint.",
+        );
     };
-    if crate::had_ops::insert_waypoint_best_position_rejection(plan, nav_ref).is_some() {
-        return disabled_action("insert", "Insert in flight plan");
+    if let Some(reason) = crate::had_ops::insert_waypoint_best_position_rejection(plan, nav_ref) {
+        return disabled_action_with_reason("insert", "Insert in flight plan", reason);
     }
     session_action(
         "insert",
@@ -3114,7 +3160,13 @@ fn selection_item_for_metar(
         actions: vec![
             display_action("metar", "METAR"),
             taf.map(|record| detail_action("taf", "TAF", taf_detail_text(record)))
-                .unwrap_or_else(|| disabled_action("taf", "TAF")),
+                .unwrap_or_else(|| {
+                    disabled_action_with_reason(
+                        "taf",
+                        "TAF",
+                        "No TAF is available for this station.",
+                    )
+                }),
         ],
     }
 }
@@ -3493,6 +3545,7 @@ fn display_action(id: &str, label: &str) -> MapSelectionAction {
         enabled: false,
         display_only: true,
         detail_text: None,
+        disabled_reason: None,
         airspace_limit: None,
         session_action: None,
         flight_plan_row_action: None,
@@ -3507,6 +3560,7 @@ fn detail_action(id: &str, label: &str, detail_text: String) -> MapSelectionActi
         enabled: true,
         display_only: false,
         detail_text: Some(detail_text),
+        disabled_reason: None,
         airspace_limit: None,
         session_action: None,
         flight_plan_row_action: None,
@@ -3521,6 +3575,7 @@ fn enabled_action(id: &str, label: &str) -> MapSelectionAction {
         enabled: true,
         display_only: false,
         detail_text: None,
+        disabled_reason: None,
         airspace_limit: None,
         session_action: None,
         flight_plan_row_action: None,
@@ -3541,6 +3596,8 @@ fn plate_target_action(
         enabled: available,
         display_only: false,
         detail_text: None,
+        disabled_reason: (!available)
+            .then(|| format!("No {label} are available for this airport.")),
         airspace_limit: None,
         session_action: None,
         flight_plan_row_action: None,
@@ -3555,13 +3612,26 @@ fn plate_target_action(
     }
 }
 
-fn disabled_action(id: &str, label: &str) -> MapSelectionAction {
+fn disabled_action_with_reason(
+    id: &str,
+    label: &str,
+    disabled_reason: impl Into<String>,
+) -> MapSelectionAction {
+    disabled_action_inner(id, label, Some(disabled_reason.into()))
+}
+
+fn disabled_action_inner(
+    id: &str,
+    label: &str,
+    disabled_reason: Option<String>,
+) -> MapSelectionAction {
     MapSelectionAction {
         id: id.to_string(),
         label: label.to_string(),
         enabled: false,
         display_only: false,
         detail_text: None,
+        disabled_reason,
         airspace_limit: None,
         session_action: None,
         flight_plan_row_action: None,
@@ -3580,6 +3650,7 @@ fn row_action(
         enabled: flight_plan_row_action.is_some(),
         display_only: false,
         detail_text: None,
+        disabled_reason: None,
         airspace_limit: None,
         session_action: None,
         flight_plan_row_action,
@@ -3595,6 +3666,7 @@ fn session_action(id: &str, label: &str, action: MapSelectionSessionAction) -> M
         enabled: session_action.is_some(),
         display_only: false,
         detail_text: None,
+        disabled_reason: None,
         airspace_limit: None,
         session_action,
         flight_plan_row_action: None,
@@ -3619,7 +3691,11 @@ fn direct_to_action(
             },
         );
     }
-    disabled_action("direct_to", "Direct-to")
+    disabled_action_with_reason(
+        "direct_to",
+        "Direct-to",
+        "Direct-to needs a selected waypoint, airport, or fix.",
+    )
 }
 
 fn airspace_limit_action_from_parts(
@@ -3634,6 +3710,7 @@ fn airspace_limit_action_from_parts(
         enabled: false,
         display_only: true,
         detail_text: None,
+        disabled_reason: None,
         airspace_limit: Some(AirspaceLimitGlyph {
             upper,
             lower,
@@ -8161,6 +8238,10 @@ mod tests {
             .find(|action| action.id == "insert")
             .expect("insert action");
         assert!(!overlay_insert.enabled);
+        assert_eq!(
+            overlay_insert.disabled_reason.as_deref(),
+            Some("Restore FP before editing the flight plan.")
+        );
         assert!(overlay_insert.session_action.is_none());
         assert_eq!(result.categories[3].id, "weather");
     }

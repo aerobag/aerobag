@@ -367,6 +367,7 @@ internal fun buildFlightPlanDisplayRows(planUiState: FlightPlanUiState): List<Fl
             depth = row.depth,
             active = row.active,
             enabled = row.enabled,
+            disabledReason = row.disabledReason,
             syntheticDirectTo = row.syntheticDirectTo,
             canAddAirwayAfter = row.canAddAirwayAfter,
             canAddProcedureBefore = row.canAddProcedureBefore,

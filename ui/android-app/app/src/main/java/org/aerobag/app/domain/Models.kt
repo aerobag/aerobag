@@ -356,6 +356,7 @@ data class FlightPlanControlUiView(
     val id: FlightPlanControlId,
     val label: String,
     val enabled: Boolean,
+    val disabledReason: String? = null,
 )
 
 data class NavElementUiView(
@@ -385,6 +386,7 @@ data class FlightPlanRowActionUiView(
     val uid: String = "",
     val label: String,
     val enabled: Boolean,
+    val disabledReason: String? = null,
     val execution: String = "ui_controller",
     val dismissTrayOnSuccess: Boolean = true,
     val navigation: FlightPlanRowNavigationAction? = null,
@@ -435,6 +437,7 @@ data class FlightPlanDisplayRowUiView(
     val depth: Int,
     val active: Boolean,
     val enabled: Boolean,
+    val disabledReason: String? = null,
     val syntheticDirectTo: Boolean,
     val canAddAirwayAfter: Boolean,
     val canAddProcedureBefore: Boolean,
@@ -641,6 +644,7 @@ data class OwnshipSourceMenuItem(
     val launcherLabel: String,
     val tone: OwnshipControlTone,
     val enabled: Boolean,
+    val disabledReason: String? = null,
     val active: Boolean,
     val statusLabel: String,
 )
@@ -649,6 +653,7 @@ data class SituationControlMenuItem(
     val input: SituationControlInput,
     val label: String,
     val enabled: Boolean,
+    val disabledReason: String? = null,
 )
 
 data class SituationSample(
@@ -685,6 +690,7 @@ data class OwnshipSourceStatusUpdate(
 data class MapFollowUiState(
     val canCenterHere: Boolean = false,
     val following: Boolean = false,
+    val disabledReason: String? = null,
 )
 
 data class CoreMapViewport(

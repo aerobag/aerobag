@@ -349,6 +349,7 @@ internal fun FlightPlanPage(
     onApplySessionSnapshot: (UiSessionSnapshot) -> Unit,
     onSessionCommandFailure: (Throwable) -> Unit,
 ) {
+    val context = LocalContext.current
     val density = LocalDensity.current
     val focusManager = LocalFocusManager.current
     val keyboardController = LocalSoftwareKeyboardController.current
@@ -921,6 +922,9 @@ internal fun FlightPlanPage(
                         maxLines = 2,
                         enabled = control.enabled,
                         testTag = "parity:plan-control:${control.id.coreId()}",
+                        onDisabledClick = control.disabledReason?.let { reason ->
+                            { showDisabledActionToast(context, reason) }
+                        },
                         onClick = { performFlightPlanControl(control.id) },
                     )
                 }
@@ -1150,6 +1154,7 @@ internal fun FlightPlanPage(
                                 label = navRefLabel(point.navRef),
                                 active = exitIndex == presentation.suggestedExitIndex,
                                 enabled = !isEntry,
+                                disabledReason = if (isEntry) "That fix is the airway entry; choose an exit." else null,
                                 onSelect = {
                                     if (isEntry) return@MenuPanelRow
                                     airwayPicker = picker.copy(loading = true, error = null)
@@ -1190,6 +1195,7 @@ internal fun FlightPlanPage(
                                     label = action.label,
                                     active = false,
                                     enabled = action.enabled,
+                                    disabledReason = action.disabledReason,
                                     testTag = "parity:plan-row-action:${action.id}",
                                     width = waypointActionButtonWidth,
                                     onSelect = {

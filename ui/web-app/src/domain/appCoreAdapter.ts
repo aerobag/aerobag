@@ -70,6 +70,7 @@ export type RasterMapUiState = {
     label: string;
     launcher_label: string;
     enabled: boolean;
+    disabled_reason?: string | null;
     active: boolean;
   }>;
 };
@@ -220,6 +221,7 @@ export type MapLayerId =
 export type UiMapLayerToggleState = {
   visible: boolean;
   enabled: boolean;
+  disabled_reason?: string | null;
 };
 
 export type UiMapLayerState = {
@@ -489,6 +491,7 @@ export type MapSelectionAction = {
   enabled: boolean;
   display_only: boolean;
   detail_text?: string | null;
+  disabled_reason?: string | null;
   airspace_limit?: AirspaceLimitGlyph | null;
   session_action?: string | null;
   flight_plan_row_action?: {

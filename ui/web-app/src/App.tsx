@@ -730,9 +730,35 @@ type TrayOption = {
   toggleState?: UiMapLayerToggleState;
   active?: boolean;
   disabled?: boolean;
+  disabledReason?: string | null;
   accentColor?: string;
   onSelect: () => void;
 };
+
+function disabledReasonText(reason: string | null | undefined): string | null {
+  const trimmed = reason?.trim();
+  return trimmed ? trimmed : null;
+}
+
+function useDisabledActionToast() {
+  const [toast, setToast] = useState<{ id: number; message: string } | null>(null);
+  const show = useCallback((message: string) => {
+    setToast({ id: Date.now(), message });
+  }, []);
+
+  useEffect(() => {
+    if (!toast) {
+      return;
+    }
+    const toastId = toast.id;
+    const timeout = window.setTimeout(() => {
+      setToast((current) => current?.id === toastId ? null : current);
+    }, 2600);
+    return () => window.clearTimeout(timeout);
+  }, [toast]);
+
+  return { toast, show };
+}
 
 type UiThemeJson = {
   controls: {
@@ -3437,6 +3463,7 @@ function MapPage(props: {
     selectedItem: MapSelectionItem | null;
     detailModal: { title: string; text: string } | null;
   } | null>(null);
+  const { toast: disabledActionToast, show: showDisabledAction } = useDisabledActionToast();
   const firstVisualReadyRef = useRef(false);
   const statusControlDockLowered = shouldLowerStatusControlDock(surfaceSize.width, dataStatusState.boxes.length > 0);
   const flightDataBannerEdgeLayout = surfaceSize.width > surfaceSize.height;
@@ -5434,6 +5461,7 @@ function MapPage(props: {
       iconSrc: layerIconSrc("metars"),
       toggleState: mapLayerState.metars,
       disabled: !mapLayerState.metars.enabled,
+      disabledReason: mapLayerState.metars.disabled_reason ?? null,
       onSelect: () => void setMapLayerVisible("metars", !mapLayerState.metars.visible),
     },
     {
@@ -5442,6 +5470,7 @@ function MapPage(props: {
       iconSrc: layerIconSrc("vectors"),
       toggleState: mapLayerState.vectors,
       disabled: !mapLayerState.vectors.enabled,
+      disabledReason: mapLayerState.vectors.disabled_reason ?? null,
       onSelect: () => void setMapLayerVisible("vectors", !mapLayerState.vectors.visible),
     },
     {
@@ -5450,6 +5479,7 @@ function MapPage(props: {
       iconSrc: layerIconSrc("nexrad"),
       toggleState: mapLayerState.nexrad,
       disabled: !mapLayerState.nexrad.enabled,
+      disabledReason: mapLayerState.nexrad.disabled_reason ?? null,
       onSelect: () => void setMapLayerVisible("nexrad", !mapLayerState.nexrad.visible),
     },
     {
@@ -5458,6 +5488,7 @@ function MapPage(props: {
       iconSrc: layerIconSrc("terrain_warning"),
       toggleState: mapLayerState.terrain_warning,
       disabled: !mapLayerState.terrain_warning.enabled,
+      disabledReason: mapLayerState.terrain_warning.disabled_reason ?? null,
       onSelect: () => void setMapLayerVisible("terrain_warning", !mapLayerState.terrain_warning.visible),
     },
     {
@@ -5466,6 +5497,7 @@ function MapPage(props: {
       iconSrc: layerIconSrc("world_basemap"),
       toggleState: mapLayerState.world_basemap,
       disabled: !mapLayerState.world_basemap.enabled,
+      disabledReason: mapLayerState.world_basemap.disabled_reason ?? null,
       onSelect: () => void setMapLayerVisible("world_basemap", !mapLayerState.world_basemap.visible),
     },
     {
@@ -5474,6 +5506,7 @@ function MapPage(props: {
       iconSrc: layerIconSrc("offline_regions"),
       toggleState: mapLayerState.offline_regions,
       disabled: !mapLayerState.offline_regions.enabled,
+      disabledReason: mapLayerState.offline_regions.disabled_reason ?? null,
       onSelect: () => void setMapLayerVisible("offline_regions", !mapLayerState.offline_regions.visible),
     },
   ];
@@ -5482,6 +5515,7 @@ function MapPage(props: {
     label: source.label,
     active: source.active,
     disabled: !source.enabled || !uiSession,
+    disabledReason: !uiSession ? "Ownship controls are not ready yet." : source.disabled_reason ?? null,
     onSelect: () => {
       if (!uiSession) {
         return;
@@ -5492,6 +5526,8 @@ function MapPage(props: {
         .finally(() => trayGroup.close("ownship"));
     },
   }));
+  const centerHereDisabled = !mapFollowUiState.can_center_here && !mapFollowUiState.following;
+  const centerHereDisabledReason = disabledReasonText(mapFollowUiState.disabled_reason);
 
   return (
     <section className="pageSurface">
@@ -5533,6 +5569,7 @@ function MapPage(props: {
                 selectedItem={mapSelection.selectedItem}
                 onSelectItem={(item) => setMapSelection((current) => current ? { ...current, selectedItem: item, detailModal: null } : current)}
                 onSelectDetail={(title, text) => setMapSelection((current) => current ? { ...current, detailModal: { title, text } } : current)}
+                onDisabledAction={showDisabledAction}
                 onSelectAction={async (item, action) => {
                   if (!appCoreAdapter) {
                     return;
@@ -5606,6 +5643,11 @@ function MapPage(props: {
               />
             )}
           </>
+        ) : null}
+        {disabledActionToast ? (
+          <div className="mapSelectionToast" role="status" aria-live="polite">
+            {disabledActionToast.message}
+          </div>
         ) : null}
         <div ref={mapContentTransformRef} className="mapContentTransform">
           <Profiler id="RasterLayer" onRender={logReactProfilerRender}>
@@ -6145,7 +6187,8 @@ function MapPage(props: {
           onStatusToggle={() => trayGroup.toggle("status")}
           onAction={onStatusAction}
           options={ownshipSourceOptions}
-          transportControls={<SituationTransportRow controls={ownshipControls.situation_controls} onInput={onSituationControlInput} />}
+          onDisabledAction={showDisabledAction}
+          transportControls={<SituationTransportRow controls={ownshipControls.situation_controls} onInput={onSituationControlInput} onDisabledAction={showDisabledAction} />}
         />
 
         <div className="chartDock">
@@ -6158,12 +6201,14 @@ function MapPage(props: {
             onToggle={() => trayGroup.toggle("family")}
             ariaLabel="Chart family"
             testId="chart-family-button"
+            onDisabledAction={showDisabledAction}
             options={familyOptions.map((family) => ({
               id: family.id,
               label: family.label,
               iconSrc: chartFamilyIconSrc(family.id),
               active: family.active,
               disabled: !family.enabled,
+              disabledReason: family.disabled_reason ?? null,
               onSelect: () => {
                 onSelectMapFamily(family.id);
                 trayGroup.close("family");
@@ -6177,6 +6222,7 @@ function MapPage(props: {
             onToggle={() => trayGroup.toggle("layers")}
             ariaLabel="Layers"
             testId="layers-button"
+            onDisabledAction={showDisabledAction}
             options={layerTrayOptions}
           />
           <ChartSearchBox
@@ -6217,6 +6263,7 @@ function MapPage(props: {
             onSnapshotChange={props.onPlaybackSnapshotChange}
             surfaceWidth={surfaceSize.width}
             dock="left"
+            onDisabledAction={showDisabledAction}
           />
         ) : null}
 
@@ -6243,12 +6290,20 @@ function MapPage(props: {
           </div>
           <button
             type="button"
-            className={`centerHereButton${mapFollowUiState.following ? " isActive" : ""}`}
-            disabled={!mapFollowUiState.can_center_here && !mapFollowUiState.following}
+            className={`centerHereButton${mapFollowUiState.following ? " isActive" : ""}${centerHereDisabled ? " isDisabled" : ""}`}
+            disabled={centerHereDisabled && !centerHereDisabledReason}
+            aria-disabled={centerHereDisabled ? "true" : undefined}
+            title={centerHereDisabledReason ?? undefined}
             onPointerDown={stopPointer}
             onPointerUp={stopPointer}
             onDoubleClick={stopDoubleClick}
             onClick={() => {
+              if (centerHereDisabled) {
+                if (centerHereDisabledReason) {
+                  showDisabledAction(centerHereDisabledReason);
+                }
+                return;
+              }
               if (!uiSession) {
                 return;
               }
@@ -6453,6 +6508,7 @@ function PlaybackWidget(props: {
   onSnapshotChange: Dispatch<SetStateAction<UiSessionSnapshot>>;
   surfaceWidth: number;
   dock?: "left" | "right";
+  onDisabledAction?: (message: string) => void;
 }) {
   const {
     uiSession,
@@ -6462,6 +6518,7 @@ function PlaybackWidget(props: {
     onSnapshotChange,
     surfaceWidth,
     dock = "right",
+    onDisabledAction,
   } = props;
   const [isBusy, setIsBusy] = useState(false);
   const [scrubCursorSeconds, setScrubCursorSeconds] = useState<number | null>(null);
@@ -6476,6 +6533,18 @@ function PlaybackWidget(props: {
       ? committedCursorSeconds
       : Math.min(Math.max(scrubCursorSeconds, 0), durationSeconds || 0);
   const canControl = uiSession !== null;
+  const loadDisabledReason = !canControl
+    ? "Playback controls are not ready yet."
+    : isBusy
+      ? "Trace load is already running."
+      : !sourcePath.trim()
+        ? "Enter a trace URL before loading."
+        : null;
+  const playDisabledReason = !canControl
+    ? "Playback controls are not ready yet."
+    : playbackUiState.status === "empty"
+      ? "Load a trace before replaying."
+      : null;
   const summary = playbackUiState.title_label;
   const overviewWidth = 320;
   const overviewHeight = 34;
@@ -6653,10 +6722,18 @@ function PlaybackWidget(props: {
         />
         <button
           type="button"
-          className="playbackWidgetButton"
+          className={`playbackWidgetButton${loadDisabledReason ? " isDisabled" : ""}`}
           data-testid="playback-load-button"
-          disabled={!canControl || isBusy}
-          onClick={() => void loadTrace()}
+          disabled={Boolean(loadDisabledReason && !onDisabledAction)}
+          aria-disabled={loadDisabledReason ? "true" : undefined}
+          title={loadDisabledReason ?? undefined}
+          onClick={() => {
+            if (loadDisabledReason) {
+              onDisabledAction?.(loadDisabledReason);
+              return;
+            }
+            void loadTrace();
+          }}
         >
           LOAD
         </button>
@@ -6664,10 +6741,18 @@ function PlaybackWidget(props: {
       <div className="playbackWidgetRow">
         <button
           type="button"
-          className="playbackWidgetButton playbackWidgetMediaButton"
+          className={`playbackWidgetButton playbackWidgetMediaButton${playDisabledReason ? " isDisabled" : ""}`}
           data-testid="playback-play-toggle"
-          disabled={!canControl || playbackUiState.status === "empty"}
-          onClick={() => void playPause()}
+          disabled={Boolean(playDisabledReason && !onDisabledAction)}
+          aria-disabled={playDisabledReason ? "true" : undefined}
+          title={playDisabledReason ?? undefined}
+          onClick={() => {
+            if (playDisabledReason) {
+              onDisabledAction?.(playDisabledReason);
+              return;
+            }
+            void playPause();
+          }}
           aria-label={playbackUiState.status === "playing" ? "Pause playback" : "Play playback"}
         >
           {playbackUiState.status === "playing" ? (
@@ -6691,6 +6776,7 @@ function PlaybackWidget(props: {
             step={0.25}
             value={playbackUiState.rate}
             disabled={!canControl || playbackUiState.status === "empty"}
+            title={playDisabledReason ?? undefined}
             onChange={(event) => {
               if (!uiSession) {
                 return;
@@ -6827,6 +6913,7 @@ function FlightPlanPage(props: {
   const [routeEntryLoading, setRouteEntryLoading] = useState(false);
   const [routeEntryError, setRouteEntryError] = useState<string | null>(null);
   const [routeEntrySubmitting, setRouteEntrySubmitting] = useState(false);
+  const { toast: disabledActionToast, show: showDisabledAction } = useDisabledActionToast();
   const previewFlightPlanEntryRef = useRef(props.onPreviewFlightPlanEntry);
   useEffect(() => {
     previewFlightPlanEntryRef.current = props.onPreviewFlightPlanEntry;
@@ -6949,6 +7036,7 @@ function FlightPlanPage(props: {
         dataCells: row.data_cells,
         active: row.active,
         enabled: row.enabled ?? true,
+        disabledReason: row.disabled_reason ?? null,
         syntheticDirectTo: row.synthetic_direct_to ?? false,
         depth: row.depth,
         rowKind: row.row_kind,
@@ -6990,7 +7078,7 @@ function FlightPlanPage(props: {
 
   const rowActionRows = useMemo(() => {
     if (!selectedRow) {
-    return [] as Array<Array<{ id: string; uid: string; label: string; enabled: boolean; execution?: string; navigation?: FlightPlanRowNavigationAction | null; onSelect: () => void }>>;
+    return [] as Array<Array<{ id: string; uid: string; label: string; enabled: boolean; disabledReason?: string | null; execution?: string; navigation?: FlightPlanRowNavigationAction | null; onSelect: () => void }>>;
     }
 
     const closeTray = () => {
@@ -7000,12 +7088,13 @@ function FlightPlanPage(props: {
       setAirportInsert(null);
     };
 
-    const actionForUi = (action: { id: string; uid: string; label: string; enabled: boolean; execution?: string; dismiss_tray_on_success?: boolean; navigation?: FlightPlanRowNavigationAction | null }) => {
+    const actionForUi = (action: { id: string; uid: string; label: string; enabled: boolean; disabled_reason?: string | null; execution?: string; dismiss_tray_on_success?: boolean; navigation?: FlightPlanRowNavigationAction | null }) => {
       return {
         id: action.id,
         uid: action.uid,
         label: action.label,
         enabled: action.enabled,
+        disabledReason: action.disabled_reason ?? null,
         execution: action.execution,
         navigation: action.navigation,
         dismissTrayOnSuccess: action.dismiss_tray_on_success ?? true,
@@ -7118,7 +7207,7 @@ function FlightPlanPage(props: {
         },
       };
     };
-    return (selectedRow.actionMatrix as Array<Array<{ id: string; uid: string; label: string; enabled: boolean; execution?: string; dismiss_tray_on_success?: boolean; navigation?: FlightPlanRowNavigationAction | null }>>).map((row) => row.map(actionForUi));
+    return (selectedRow.actionMatrix as Array<Array<{ id: string; uid: string; label: string; enabled: boolean; disabled_reason?: string | null; execution?: string; dismiss_tray_on_success?: boolean; navigation?: FlightPlanRowNavigationAction | null }>>).map((row) => row.map(actionForUi));
   }, [props, selectedRow]);
   const rowActions = useMemo(() => rowActionRows.flat(), [rowActionRows]);
 
@@ -7431,8 +7520,14 @@ function FlightPlanPage(props: {
                             row.depth > 0 ? "isChildRow" : "",
                             row.rowKind === "discontinuity" ? "isDiscontinuityItem" : "",
                           ].filter(Boolean).join(" ")}
+                          title={disabledReasonText(row.disabledReason) ?? undefined}
+                          aria-disabled={!row.enabled && !row.syntheticDirectTo ? "true" : undefined}
                           onClick={(event) => {
                             if (!row.enabled && !row.syntheticDirectTo) {
+                              const reason = disabledReasonText(row.disabledReason);
+                              if (reason) {
+                                showDisabledAction(reason);
+                              }
                               return;
                             }
                             const page = pageRef.current;
@@ -7549,18 +7644,32 @@ function FlightPlanPage(props: {
       </div>
 
       <div className="planControls" ref={planControlsRef}>
-        {planControls.map((control) => (
-          <button
-            key={control.id}
-            type="button"
-            className="trayButton trayButtonSquare planControlButton"
-            data-testid={`plan-control-${control.id}`}
-            disabled={!control.enabled}
-            onClick={() => void props.onPerformFlightPlanControl(control.id)}
-          >
-            {control.label}
-          </button>
-        ))}
+        {planControls.map((control) => {
+          const disabledReason = disabledReasonText(control.disabled_reason);
+          const disabled = !control.enabled;
+          return (
+            <button
+              key={control.id}
+              type="button"
+              className={`trayButton trayButtonSquare planControlButton${disabled ? " isDisabled" : ""}`}
+              data-testid={`plan-control-${control.id}`}
+              disabled={disabled && !disabledReason}
+              aria-disabled={disabled ? "true" : undefined}
+              title={disabledReason ?? undefined}
+              onClick={() => {
+                if (disabled) {
+                  if (disabledReason) {
+                    showDisabledAction(disabledReason);
+                  }
+                  return;
+                }
+                void props.onPerformFlightPlanControl(control.id);
+              }}
+            >
+              {control.label}
+            </button>
+          );
+        })}
       </div>
 
       <div className="planFooter" ref={planFooterRef}>
@@ -7894,12 +8003,14 @@ function FlightPlanPage(props: {
                       <button
                         key={`${exit.airway_name}:${exit.branch_key}:${exit.branch_point_index}`}
                         type="button"
-                        className={`trayButton airwayChoiceButton${index === airwayPicker.presentation?.suggested_exit_index ? " isSuggested" : ""}`}
-                        disabled={exit.is_entry}
+                        className={`trayButton airwayChoiceButton${index === airwayPicker.presentation?.suggested_exit_index && !exit.is_entry ? " isSuggested" : ""}${exit.is_entry ? " isDisabled" : ""}`}
+                        aria-disabled={exit.is_entry ? "true" : undefined}
+                        title={exit.is_entry ? "That fix is the airway entry; choose an exit." : undefined}
                         onPointerDown={stopPointer}
                         onPointerUp={stopPointer}
                         onClick={async () => {
                           if (exit.is_entry) {
+                            showDisabledAction("That fix is the airway entry; choose an exit.");
                             return;
                           }
                           const presentation = airwayPicker.presentation;
@@ -7953,26 +8064,45 @@ function FlightPlanPage(props: {
               <div className="waypointActionGrid">
                 {rowActionRows.map((row, rowIndex) => (
                   <div key={`row-${rowIndex}`} className="waypointActionGridRow">
-                    {row.map((action) => (
-                      <button
-                        key={action.id}
-                        type="button"
-                        className="trayButton airwayChoiceButton"
-                        data-testid={`plan-row-action-${action.id}`}
-                        disabled={!action.enabled}
-                        onPointerDown={stopPointer}
-                        onPointerUp={stopPointer}
-                        onClick={action.onSelect}
-                      >
-                        {action.label}
-                      </button>
-                    ))}
+                    {row.map((action) => {
+                      const disabledReason = disabledReasonText(action.disabledReason);
+                      const disabled = !action.enabled;
+                      return (
+                        <button
+                          key={action.id}
+                          type="button"
+                          className={`trayButton airwayChoiceButton${disabled ? " isDisabled" : ""}`}
+                          data-testid={`plan-row-action-${action.id}`}
+                          disabled={disabled && !disabledReason}
+                          aria-disabled={disabled ? "true" : undefined}
+                          title={disabledReason ?? undefined}
+                          onPointerDown={stopPointer}
+                          onPointerUp={stopPointer}
+                          onClick={() => {
+                            if (disabled) {
+                              if (disabledReason) {
+                                showDisabledAction(disabledReason);
+                              }
+                              return;
+                            }
+                            action.onSelect();
+                          }}
+                        >
+                          {action.label}
+                        </button>
+                      );
+                    })}
                   </div>
                 ))}
               </div>
             )}
           </section>
         </>
+      ) : null}
+      {disabledActionToast ? (
+        <div className="mapSelectionToast" role="status" aria-live="polite">
+          {disabledActionToast.message}
+        </div>
       ) : null}
     </section>
   );
@@ -8071,6 +8201,8 @@ function TrayDock(props: {
   onToggle: () => void;
   ariaLabel: string;
   disabled?: boolean;
+  disabledReason?: string | null;
+  onDisabledAction?: (message: string) => void;
   style?: TrayDockStyle;
   launcherClassName?: string;
   launcherAccentColor?: string;
@@ -8078,7 +8210,7 @@ function TrayDock(props: {
   footer?: ReactNode;
   testId?: string;
 }) {
-  const { launcherLabel, launcherImageSrc, launcherStyle, open, onToggle, ariaLabel, disabled = false, style = "compact", launcherClassName, launcherAccentColor, options, footer, testId } = props;
+  const { launcherLabel, launcherImageSrc, launcherStyle, open, onToggle, ariaLabel, disabled = false, disabledReason, onDisabledAction, style = "compact", launcherClassName, launcherAccentColor, options, footer, testId } = props;
   const launcherRef = useRef<HTMLButtonElement | null>(null);
   const trayRef = useRef<HTMLElement | null>(null);
   const [trayPosition, setTrayPosition] = useState<{ left: number; top: number } | null>(null);
@@ -8086,6 +8218,7 @@ function TrayDock(props: {
   const launcherWide = style === "plate_wide" || style === "wide" || style === "situation";
   const trayWide = style === "plate_narrow" || style === "plate_wide" || style === "wide";
   const launcherDisabled = disabled && !open;
+  const launcherDisabledReason = disabledReasonText(disabledReason);
 
   useEffect(() => {
     if (!open) {
@@ -8141,7 +8274,12 @@ function TrayDock(props: {
         onPointerDown={stopPointer}
         onPointerUp={stopPointer}
         onDoubleClick={stopDoubleClick}
-        onClick={launcherDisabled ? undefined : onToggle}
+        title={launcherDisabledReason ?? undefined}
+        onClick={launcherDisabled
+          ? launcherDisabledReason && onDisabledAction
+            ? () => onDisabledAction(launcherDisabledReason)
+            : undefined
+          : onToggle}
       >
         {launcherImageSrc ? <img className="chartButtonIcon" src={launcherImageSrc} alt="" aria-hidden="true" /> : null}
         <span className={`chartButtonLabel${launcherWide ? " chartButtonLabelWide" : ""}`}>{launcherLabel}</span>
@@ -8170,39 +8308,53 @@ function TrayDock(props: {
               onPointerUp={stopPointer}
             >
               <div className={style === "situation" ? "situationSourceRow" : "trayOptions"}>
-                {options.map((option) => (
-                  <button
-                    key={option.id}
-                    type="button"
-                    className={`trayButton${option.active ? " isActive" : ""}${option.iconSrc ? " trayButtonWithIcon" : ""}${option.toggleState ? " trayButtonHasToggle" : ""}${option.toggleState?.visible && option.toggleState.enabled ? " isOn" : ""}${option.toggleState && option.toggleState.enabled && !option.toggleState.visible ? " isOff" : ""}`}
-                    data-testid={`tray-option-${option.id}`}
-                    disabled={option.disabled}
-                    style={option.accentColor ? ({ ["--tray-accent" as string]: option.accentColor } as CSSProperties) : undefined}
-                    onPointerDown={stopPointer}
-                    onPointerUp={stopPointer}
-                    onDoubleClick={stopDoubleClick}
-                    onClick={option.disabled ? undefined : option.onSelect}
-                  >
-                    {option.iconSrc || option.toggleState ? (
-                      <span className="trayButtonContent">
-                        {option.iconSrc ? (
-                          <span className="trayButtonIconFrame" aria-hidden="true">
-                            <img className="trayButtonIcon" src={option.iconSrc} alt="" />
-                          </span>
-                        ) : null}
-                        <span className="trayButtonText">{option.label}</span>
-                        {option.toggleState ? (
-                          <span
-                            className={`trayButtonToggle${option.toggleState.visible ? " isOn" : ""}${option.toggleState.enabled ? "" : " isDisabled"}`}
-                            aria-hidden="true"
-                          >
-                            <span className="trayButtonToggleKnob" />
-                          </span>
-                        ) : null}
-                      </span>
-                    ) : option.label}
-                  </button>
-                ))}
+                {options.map((option) => {
+                  const optionDisabledReason = disabledReasonText(option.disabledReason);
+                  const optionDisabled = option.disabled ?? false;
+                  return (
+                    <button
+                      key={option.id}
+                      type="button"
+                      className={`trayButton${option.active ? " isActive" : ""}${optionDisabled ? " isDisabled" : ""}${option.iconSrc ? " trayButtonWithIcon" : ""}${option.toggleState ? " trayButtonHasToggle" : ""}${option.toggleState?.visible && option.toggleState.enabled ? " isOn" : ""}${option.toggleState && option.toggleState.enabled && !option.toggleState.visible ? " isOff" : ""}`}
+                      data-testid={`tray-option-${option.id}`}
+                      disabled={optionDisabled && !optionDisabledReason}
+                      aria-disabled={optionDisabled ? "true" : undefined}
+                      title={optionDisabledReason ?? undefined}
+                      style={option.accentColor ? ({ ["--tray-accent" as string]: option.accentColor } as CSSProperties) : undefined}
+                      onPointerDown={stopPointer}
+                      onPointerUp={stopPointer}
+                      onDoubleClick={stopDoubleClick}
+                      onClick={() => {
+                        if (optionDisabled) {
+                          if (optionDisabledReason && onDisabledAction) {
+                            onDisabledAction(optionDisabledReason);
+                          }
+                          return;
+                        }
+                        option.onSelect();
+                      }}
+                    >
+                      {option.iconSrc || option.toggleState ? (
+                        <span className="trayButtonContent">
+                          {option.iconSrc ? (
+                            <span className="trayButtonIconFrame" aria-hidden="true">
+                              <img className="trayButtonIcon" src={option.iconSrc} alt="" />
+                            </span>
+                          ) : null}
+                          <span className="trayButtonText">{option.label}</span>
+                          {option.toggleState ? (
+                            <span
+                              className={`trayButtonToggle${option.toggleState.visible ? " isOn" : ""}${option.toggleState.enabled ? "" : " isDisabled"}`}
+                              aria-hidden="true"
+                            >
+                              <span className="trayButtonToggleKnob" />
+                            </span>
+                          ) : null}
+                        </span>
+                      ) : option.label}
+                    </button>
+                  );
+                })}
               </div>
               {footer}
             </section>,
@@ -8302,9 +8454,10 @@ function MapSelectionTray(props: {
   selectedItem: MapSelectionItem | null;
   onSelectItem: (item: MapSelectionItem) => void;
   onSelectDetail: (title: string, text: string) => void;
+  onDisabledAction: (message: string) => void;
   onSelectAction: (item: MapSelectionItem, action: MapSelectionItem["actions"][number]) => void | Promise<void>;
 }) {
-  const { point, result, selectedItem, onSelectItem, onSelectDetail, onSelectAction } = props;
+  const { point, result, selectedItem, onSelectItem, onSelectDetail, onDisabledAction, onSelectAction } = props;
   const edgePad = thumbPixels(0.1);
   type MapSelectionActionSlot = MapSelectionItem["actions"][number] & { placeholder?: boolean };
   const actionSlots: MapSelectionActionSlot[] = selectedItem
@@ -8389,35 +8542,51 @@ function MapSelectionTray(props: {
           </div>
         </div>
         <div className="mapSelectionActionGrid">
-          {visibleActionSlots.map((action) => (
-            <button
-              key={action.id}
-              type="button"
-              className={`mapSelectionAction${action.display_only ? " isDisplayOnly" : ""}${action.placeholder ? " isPlaceholder" : ""}`}
-              data-testid={action.placeholder ? undefined : `map-selection-action-${action.id}`}
-              disabled={!action.enabled}
-              onPointerDown={stopPointer}
-              onPointerUp={stopPointer}
-              onDoubleClick={stopDoubleClick}
-              onClick={() => {
-                if (selectedItem && action.enabled && action.detail_text) {
-                  onSelectDetail(action.label, action.detail_text);
-                  return;
-                }
-                if (selectedItem && action.enabled && !action.display_only) {
+          {visibleActionSlots.map((action) => {
+            const disabledReason = action.disabled_reason?.trim() || null;
+            const inert = Boolean(
+              action.placeholder || action.display_only || (!action.enabled && !disabledReason),
+            );
+            const styledDisabled = !action.enabled && !action.display_only && !action.placeholder;
+            return (
+              <button
+                key={action.id}
+                type="button"
+                className={`mapSelectionAction${action.display_only ? " isDisplayOnly" : ""}${action.placeholder ? " isPlaceholder" : ""}${styledDisabled ? " isDisabled" : ""}`}
+                data-testid={action.placeholder ? undefined : `map-selection-action-${action.id}`}
+                disabled={inert}
+                title={disabledReason ?? undefined}
+                onPointerDown={stopPointer}
+                onPointerUp={stopPointer}
+                onDoubleClick={stopDoubleClick}
+                onClick={() => {
+                  if (!selectedItem || action.placeholder || action.display_only) {
+                    return;
+                  }
+                  if (!action.enabled) {
+                    if (disabledReason) {
+                      onDisabledAction(disabledReason);
+                    }
+                    return;
+                  }
+                  if (action.detail_text) {
+                    onSelectDetail(action.label, action.detail_text);
+                    return;
+                  }
                   void onSelectAction(selectedItem, action);
-                }
-              }}
-              aria-hidden={action.placeholder ? "true" : undefined}
-              tabIndex={action.placeholder ? -1 : undefined}
-            >
-              {action.airspace_limit ? (
-                <svg className="mapSelectionAirspaceLimitGlyph" viewBox="-32 -32 64 64" aria-hidden="true">
-                  <AirspaceLimitGlyph glyph={action.airspace_limit} scale={1.45} />
-                </svg>
-              ) : action.label}
-            </button>
-          ))}
+                }}
+                aria-disabled={styledDisabled ? "true" : undefined}
+                aria-hidden={action.placeholder ? "true" : undefined}
+                tabIndex={action.placeholder ? -1 : undefined}
+              >
+                {action.airspace_limit ? (
+                  <svg className="mapSelectionAirspaceLimitGlyph" viewBox="-32 -32 64 64" aria-hidden="true">
+                    <AirspaceLimitGlyph glyph={action.airspace_limit} scale={1.45} />
+                  </svg>
+                ) : action.label}
+              </button>
+            );
+          })}
           {selectedItem?.detail_text ? (
             <div className="mapSelectionDetailText mapSelectionInlineDetailText">{selectedItem.detail_text}</div>
           ) : null}
@@ -8564,6 +8733,7 @@ function ChartsPage(props: {
   const trayGroup = useModalTrayGroup(["airport", "chart", "load", "ownship"] as const);
   const [plateProcedureLoads, setPlateProcedureLoads] = useState<ProcedureLoadOption[]>([]);
   const [resolvedChartUrls, setResolvedChartUrls] = useState<Record<string, ResolvedChartUrls>>({});
+  const { toast: disabledActionToast, show: showDisabledAction } = useDisabledActionToast();
   const trayOpen = trayGroup.scrimOpen;
   const sortedCharts = selectedAirport?.charts ?? [];
   const planProcedureLoadKey = `${plan.id}:${plan.version}`;
@@ -8833,6 +9003,7 @@ function ChartsPage(props: {
     label: source.label,
     active: source.active,
     disabled: !source.enabled || !props.uiSession,
+    disabledReason: !props.uiSession ? "Ownship controls are not ready yet." : source.disabled_reason ?? null,
     onSelect: () => {
       if (!props.uiSession) {
         return;
@@ -8844,6 +9015,7 @@ function ChartsPage(props: {
     },
   }));
   const loadApproachEnabled = loadProcedureOptions.length > 0;
+  const folderDisabledReason = trayOpen ? "Close the open tray first." : null;
 
   function localPointFromPointerEvent(
     event:
@@ -9027,7 +9199,8 @@ function ChartsPage(props: {
           ownshipOpen={trayGroup.isOpen("ownship")}
           onOwnshipToggle={() => trayGroup.toggle("ownship")}
           options={ownshipSourceOptions}
-          transportControls={<SituationTransportRow controls={ownshipControls.situation_controls} onInput={props.onSituationControlInput} />}
+          onDisabledAction={showDisabledAction}
+          transportControls={<SituationTransportRow controls={ownshipControls.situation_controls} onInput={props.onSituationControlInput} onDisabledAction={showDisabledAction} />}
         />
         {trayOpen ? <TrayScrim ariaLabel="Close chart tray" onClose={trayGroup.closeAll} /> : null}
 
@@ -9142,20 +9315,32 @@ function ChartsPage(props: {
             launcherLabel={"LOAD\nAPPCH"}
             open={trayGroup.isOpen("load")}
             disabled={!loadApproachEnabled}
+            disabledReason="No loadable procedure is available for this plate."
             onToggle={() => trayGroup.toggle("load")}
             ariaLabel="Load procedure"
             testId="plate-load-button"
+            onDisabledAction={showDisabledAction}
             options={loadProcedureOptions}
           />
           <button
             type="button"
             className={`chartButton${folderOpen ? " isOpen" : ""}`}
             aria-disabled={trayOpen || folderOpen}
+            title={folderDisabledReason ?? undefined}
             tabIndex={trayOpen ? -1 : undefined}
-            onPointerDown={trayOpen || folderOpen ? undefined : stopPointer}
-            onPointerUp={trayOpen || folderOpen ? undefined : stopPointer}
-            onDoubleClick={trayOpen || folderOpen ? undefined : stopDoubleClick}
-            onClick={trayOpen || folderOpen ? undefined : () => onFolderOpenChange(true)}
+            onPointerDown={stopPointer}
+            onPointerUp={stopPointer}
+            onDoubleClick={stopDoubleClick}
+            onClick={() => {
+              if (folderDisabledReason) {
+                showDisabledAction(folderDisabledReason);
+                return;
+              }
+              if (folderOpen) {
+                return;
+              }
+              onFolderOpenChange(true);
+            }}
             aria-pressed={folderOpen}
             aria-label="Open plate folder view"
             data-testid="plate-folder-button"
@@ -9181,7 +9366,13 @@ function ChartsPage(props: {
             onSnapshotChange={props.onPlaybackSnapshotChange}
             surfaceWidth={surfaceSize.width}
             dock="left"
+            onDisabledAction={showDisabledAction}
           />
+        ) : null}
+        {disabledActionToast ? (
+          <div className="mapSelectionToast" role="status" aria-live="polite">
+            {disabledActionToast.message}
+          </div>
         ) : null}
       </div>
     </section>
@@ -9771,6 +9962,7 @@ function SituationStatusBadge(props: {
   onToggle: () => void;
   options: TrayOption[];
   transportControls?: ReactNode;
+  onDisabledAction?: (message: string) => void;
 }) {
   return (
     <TrayDock
@@ -9783,6 +9975,7 @@ function SituationStatusBadge(props: {
       options={props.options}
       footer={props.transportControls}
       testId="ownship-source-button"
+      onDisabledAction={props.onDisabledAction}
     />
   );
 }
@@ -9798,6 +9991,7 @@ function StatusControlDock(props: {
   onAction?: (actionId: string) => void | Promise<void>;
   options: TrayOption[];
   transportControls?: ReactNode;
+  onDisabledAction?: (message: string) => void;
 }) {
   return (
     <div className={`statusControlDock${props.lowered ? " isLowered" : ""}`}>
@@ -9815,6 +10009,7 @@ function StatusControlDock(props: {
         onToggle={props.onOwnshipToggle}
         options={props.options}
         transportControls={props.transportControls}
+        onDisabledAction={props.onDisabledAction}
       />
     </div>
   );
@@ -9939,25 +10134,39 @@ function DataStatusDock(props: {
 function SituationTransportRow(props: {
   controls: OwnshipControlModel["situation_controls"];
   onInput: (input: SituationControlInput) => void;
+  onDisabledAction?: (message: string) => void;
 }) {
   return (
     <div className="situationTransportRow" role="group" aria-label="Plan preview and replay controls">
-      {props.controls.map((button) => (
-        <button
-          key={button.input}
-          type="button"
-          className="trayButton trayButtonSquare situationTransportButton"
-          aria-label={button.label}
-          title={button.label}
-          disabled={!button.enabled}
-          onPointerDown={stopPointer}
-          onPointerUp={stopPointer}
-          onDoubleClick={stopDoubleClick}
-          onClick={button.enabled ? () => props.onInput(button.input) : undefined}
-        >
-          {button.label}
-        </button>
-      ))}
+      {props.controls.map((button) => {
+        const disabledReason = disabledReasonText(button.disabled_reason);
+        const disabled = !button.enabled;
+        return (
+          <button
+            key={button.input}
+            type="button"
+            className={`trayButton trayButtonSquare situationTransportButton${disabled ? " isDisabled" : ""}`}
+            aria-label={button.label}
+            title={disabledReason ?? button.label}
+            disabled={disabled && !disabledReason}
+            aria-disabled={disabled ? "true" : undefined}
+            onPointerDown={stopPointer}
+            onPointerUp={stopPointer}
+            onDoubleClick={stopDoubleClick}
+            onClick={() => {
+              if (disabled) {
+                if (disabledReason && props.onDisabledAction) {
+                  props.onDisabledAction(disabledReason);
+                }
+                return;
+              }
+              props.onInput(button.input);
+            }}
+          >
+            {button.label}
+          </button>
+        );
+      })}
     </div>
   );
 }

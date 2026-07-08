@@ -462,6 +462,7 @@ internal fun FlightPlanDataRow(
     structuredRowBounds: MutableMap<String, Rect>? = null,
     onWaypointClick: () -> Unit,
 ) {
+    val context = LocalContext.current
     val uiTheme = LocalAerobagUiTheme.current
     val targetIndent = ThumbSize * (row.depth * 0.5f)
     val indent by animateDpAsState(targetValue = targetIndent, label = "planRowIndent")
@@ -515,6 +516,10 @@ internal fun FlightPlanDataRow(
                     backgroundColor = defaultButtonColor,
                     selected = selected,
                     selectedColor = selectedButtonColor,
+                    enabled = row.enabled || row.syntheticDirectTo,
+                    onDisabledClick = row.disabledReason?.let { reason ->
+                        { showDisabledActionToast(context, reason) }
+                    },
                     maxLines = if (procedureGroupCell) 3 else 2,
                     textModifier =
                         if (procedureGroupCell) {

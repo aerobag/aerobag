@@ -395,6 +395,7 @@ export type FlightPlanControlUiView = {
   id: FlightPlanControlId;
   label: string;
   enabled: boolean;
+  disabled_reason?: string | null;
 };
 
 export type NavElementUiView = {
@@ -419,6 +420,7 @@ export type FlightPlanRowActionUiView = {
   uid: string;
   label: string;
   enabled: boolean;
+  disabled_reason?: string | null;
   execution?: "ui_controller" | "core_session";
   dismiss_tray_on_success?: boolean;
   navigation?: FlightPlanRowNavigationAction | null;
@@ -453,6 +455,7 @@ export type FlightPlanDisplayRowUiView = {
   depth: number;
   active: boolean;
   enabled?: boolean;
+  disabled_reason?: string | null;
   synthetic_direct_to?: boolean;
   can_add_airway_after: boolean;
   can_add_procedure_before: boolean;
@@ -653,6 +656,7 @@ export type PlaybackUiState = {
 export type MapFollowUiState = {
   can_center_here: boolean;
   following: boolean;
+  disabled_reason?: string | null;
 };
 
 export type SituationPosition =
@@ -775,6 +779,7 @@ export type OwnshipControlModel = {
     launcher_label: string;
     tone: OwnshipControlTone;
     enabled: boolean;
+    disabled_reason?: string | null;
     active: boolean;
     status_label: string;
   }>;
@@ -782,6 +787,7 @@ export type OwnshipControlModel = {
     input: SituationControlInput;
     label: string;
     enabled: boolean;
+    disabled_reason?: string | null;
   }>;
 };
 

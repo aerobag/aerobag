@@ -540,11 +540,19 @@ pub struct OfflinePackagesControllerUiState {
     pub sync_message: Option<String>,
     pub storage_capacity_label: Option<String>,
     pub package_source_editable: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub package_source_edit_disabled_reason: Option<String>,
     pub refresh_enabled: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub refresh_disabled_reason: Option<String>,
     pub refresh_cancel_enabled: bool,
     pub sync_enabled: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sync_disabled_reason: Option<String>,
     pub sync_cancel_enabled: bool,
     pub planner_interactions_enabled: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub planner_interactions_disabled_reason: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -1077,6 +1085,11 @@ fn project_offline_packages_controller_ui_state(
             && !cache.discovery_manifests.is_empty()
     });
     let operation_in_flight = state.library_loading || state.sync_in_flight;
+    let package_source_editable = !operation_in_flight;
+    let refresh_enabled = !operation_in_flight;
+    let sync_enabled =
+        library_loaded && !operation_in_flight && state.library_error_message.is_none();
+    let planner_interactions_enabled = !state.sync_in_flight;
     OfflinePackagesControllerUiState {
         planner_ui_state,
         library_loaded,
@@ -1089,14 +1102,38 @@ fn project_offline_packages_controller_ui_state(
         sync_in_flight: state.sync_in_flight,
         sync_message: state.sync_message.clone(),
         storage_capacity_label: format_offline_package_storage_capacity_label(storage),
-        package_source_editable: !operation_in_flight,
-        refresh_enabled: !operation_in_flight,
+        package_source_editable,
+        package_source_edit_disabled_reason: (!package_source_editable).then(|| {
+            "Wait for the current package operation to finish before changing the source."
+                .to_string()
+        }),
+        refresh_enabled,
+        refresh_disabled_reason: (!refresh_enabled).then(|| {
+            if state.library_loading {
+                "Refresh is already running.".to_string()
+            } else {
+                "Wait for sync to finish before refreshing.".to_string()
+            }
+        }),
         refresh_cancel_enabled: state.library_loading,
-        sync_enabled: library_loaded
-            && !operation_in_flight
-            && state.library_error_message.is_none(),
+        sync_enabled,
+        sync_disabled_reason: (!sync_enabled).then(|| {
+            if state.sync_in_flight {
+                "Sync is already running.".to_string()
+            } else if state.library_loading {
+                "Wait for refresh to finish before syncing.".to_string()
+            } else if !library_loaded {
+                "Refresh the package catalog before syncing.".to_string()
+            } else if state.library_error_message.is_some() {
+                "Refresh the package catalog successfully before syncing.".to_string()
+            } else {
+                "Sync is not available.".to_string()
+            }
+        }),
         sync_cancel_enabled: state.sync_in_flight,
-        planner_interactions_enabled: !state.sync_in_flight,
+        planner_interactions_enabled,
+        planner_interactions_disabled_reason: (!planner_interactions_enabled)
+            .then(|| "Wait for sync to finish before changing package selections.".to_string()),
     }
 }
 

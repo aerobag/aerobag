@@ -1210,7 +1210,7 @@ const WORLD_BASEMAP_BOUNDARIES_URL: &str =
 const TERRAIN_MIN_ZOOM: u32 = 0;
 const TERRAIN_ZOOM: u32 = TERRAIN_TER2_MAX_ZOOM;
 const TERRAIN_TILE_SIZE: u32 = 512;
-const RASTER_BASEMAP_MAX_DISPLAY_ZOOM: f64 = 12.5;
+const RASTER_BASEMAP_MAX_DISPLAY_ZOOM: f64 = 14.0;
 
 pub fn explain_product_build(config: &ProductBuildConfig) -> anyhow::Result<String> {
     let mut lines = Vec::new();

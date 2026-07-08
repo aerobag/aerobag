@@ -1389,9 +1389,16 @@ class NativeUiSession internal constructor(
         viewport: MapViewportState,
         widthPx: Double,
         heightPx: Double,
+        devicePixelRatio: Double,
     ): String {
-        val viewportJson = json.encodeToString(viewport.toWire())
-        return bridge.getRasterTilePlanInSessionJson(handle, viewportJson, widthPx, heightPx)
+        val viewportJson = json.encodeToString(logicalViewportForDisplayScale(viewport, devicePixelRatio).toWire())
+        return bridge.getRasterTilePlanInSessionWithDisplayScaleJson(
+            handle,
+            viewportJson,
+            widthPx,
+            heightPx,
+            devicePixelRatio,
+        )
     }
 
     fun renderTerrainOverlayTile(

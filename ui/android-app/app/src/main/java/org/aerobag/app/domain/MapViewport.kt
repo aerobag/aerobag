@@ -107,6 +107,17 @@ fun preserveViewportForMap(viewport: MapViewportState, minZoom: Double, maxZoom:
 
 fun clampZoom(zoom: Double, minZoom: Double, maxZoom: Double): Double = min(maxZoom, max(minZoom, zoom))
 
+fun displayScaleZoomDelta(displayScale: Double): Double {
+    val normalizedScale = if (displayScale.isFinite() && displayScale > 0.0) displayScale else 1.0
+    return ln(normalizedScale) / ln(2.0)
+}
+
+fun physicalDisplayMaxZoom(logicalMaxZoom: Double, displayScale: Double): Double =
+    logicalMaxZoom + displayScaleZoomDelta(displayScale)
+
+fun logicalViewportForDisplayScale(viewport: MapViewportState, displayScale: Double): MapViewportState =
+    viewport.copy(zoom = viewport.zoom - displayScaleZoomDelta(displayScale))
+
 fun latLonToWorld(lat: Double, lon: Double): WorldPoint {
     val clampedLat = min(MAX_LATITUDE, max(-MAX_LATITUDE, lat))
     val x = ((lon + 180.0) / 360.0) * WORLD_SIZE

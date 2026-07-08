@@ -1167,6 +1167,27 @@ pub fn get_raster_tile_plan_in_session_json(
     serde_json::to_string(&plan).map_err(|err| err.to_string())
 }
 
+pub fn get_raster_tile_plan_in_session_with_display_scale_json(
+    handle: u64,
+    viewport_json: &str,
+    width_px: f64,
+    height_px: f64,
+    device_pixel_ratio: f64,
+) -> Result<String, String> {
+    let viewport: app_core::MapViewport =
+        serde_json::from_str(viewport_json).map_err(|err| err.to_string())?;
+    let plan = app_core::get_raster_tile_plan_in_session_with_display_scale_at_epoch_ms(
+        handle as u32,
+        viewport,
+        width_px,
+        height_px,
+        device_pixel_ratio,
+        now_epoch_ms(),
+    )
+    .map_err(|err| err.to_string())?;
+    serde_json::to_string(&plan).map_err(|err| err.to_string())
+}
+
 pub fn get_raster_tile_plan_in_session_with_options_json(
     handle: u64,
     viewport_json: &str,
@@ -3810,6 +3831,29 @@ pub extern "system" fn Java_org_aerobag_app_domain_NativeBindings_getRasterTileP
     let result = (|| {
         let viewport = get_java_string(&mut env, viewport_json)?;
         get_raster_tile_plan_in_session_json(handle as u64, &viewport, width_px, height_px)
+    })();
+    return_string(&mut env, result)
+}
+
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_org_aerobag_app_domain_NativeBindings_getRasterTilePlanInSessionWithDisplayScaleJson(
+    mut env: JNIEnv,
+    _class: JClass,
+    handle: i64,
+    viewport_json: JString,
+    width_px: f64,
+    height_px: f64,
+    device_pixel_ratio: f64,
+) -> jstring {
+    let result = (|| {
+        let viewport = get_java_string(&mut env, viewport_json)?;
+        get_raster_tile_plan_in_session_with_display_scale_json(
+            handle as u64,
+            &viewport,
+            width_px,
+            height_px,
+            device_pixel_ratio,
+        )
     })();
     return_string(&mut env, result)
 }

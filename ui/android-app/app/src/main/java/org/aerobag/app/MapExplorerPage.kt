@@ -290,6 +290,7 @@ import org.aerobag.app.domain.imageDisplaySize
 import org.aerobag.app.domain.kindForLog
 import org.aerobag.app.domain.latLonToWorld
 import org.aerobag.app.domain.mapFollowSyncViewportForCompletedGesture
+import org.aerobag.app.domain.physicalDisplayMaxZoom
 import org.aerobag.app.domain.preserveViewportForMap
 import org.aerobag.app.domain.renderTileKey
 import org.aerobag.app.domain.sameMapViewport
@@ -704,6 +705,8 @@ internal fun MapExplorerPage(
     val currentViewport = viewportState.value
     val surfaceWidthPx = surfaceSize.width.toFloat()
     val surfaceHeightPx = surfaceSize.height.toFloat()
+    val mapDisplayScale = density.density.toDouble().takeIf { it.isFinite() && it > 0.0 } ?: 1.0
+    val interactiveMaxZoom = physicalDisplayMaxZoom(selectedMap.maxZoom, mapDisplayScale)
     val mapLayerState = sessionSnapshot.mapLayerState
     val terrainViewportState = rememberUpdatedState(currentViewport)
     val terrainSurfaceSizeState = rememberUpdatedState(surfaceSize)
@@ -728,7 +731,7 @@ internal fun MapExplorerPage(
     val situationDockLowered = surfaceWidthDp.dp < SituationDockOverlapWidth
     val situationDockTopPadding =
         if (situationDockLowered) ThumbSize + (ThumbGap * 2f) else ThumbGap
-    val tiles = remember(selectedMapId, currentViewport, surfaceSize, uiSession, debugState.fastTiles) {
+    val tiles = remember(selectedMapId, currentViewport, surfaceSize, mapDisplayScale, uiSession, debugState.fastTiles) {
         if (surfaceSize.width == 0 || surfaceSize.height == 0) {
             emptyList()
         } else {
@@ -736,8 +739,9 @@ internal fun MapExplorerPage(
             val plan = json.decodeFromString<WireRasterTilePlan>(
                 uiSession.queryRasterTilePlanJson(
                     currentViewport,
-                    surfaceWidthPx.toDouble(),
-                    surfaceHeightPx.toDouble(),
+                    surfaceWidthDp.toDouble(),
+                    surfaceHeightDp.toDouble(),
+                    mapDisplayScale,
                 ),
             )
             val planMs = SystemClock.elapsedRealtime() - planStartMs
@@ -1116,7 +1120,7 @@ internal fun MapExplorerPage(
             val baseViewport = MapViewportState(
                 centerWorldX = sfo.x,
                 centerWorldY = sfo.y,
-                zoom = clampZoom(9.8, selectedMap.minZoom, selectedMap.maxZoom),
+                zoom = clampZoom(9.8, selectedMap.minZoom, interactiveMaxZoom),
             )
             updateViewport(baseViewport, syncFollow = false)
             delay(750)
@@ -1283,7 +1287,7 @@ internal fun MapExplorerPage(
             val baseViewport = MapViewportState(
                 centerWorldX = center.x,
                 centerWorldY = center.y,
-                zoom = clampZoom(PerfScenarioKorsStressZoom, selectedMap.minZoom, selectedMap.maxZoom),
+                zoom = clampZoom(PerfScenarioKorsStressZoom, selectedMap.minZoom, interactiveMaxZoom),
             )
             updateViewport(baseViewport, syncFollow = false)
             delay(500)
@@ -2254,11 +2258,11 @@ internal fun MapExplorerPage(
                     zoomAroundPoint(
                         viewport = viewportState.value,
                         minZoom = selectedMap.minZoom,
-                        maxZoom = selectedMap.maxZoom,
+                        maxZoom = interactiveMaxZoom,
                         anchor = ScreenPoint(surfaceWidthPx / 2f, surfaceHeightPx / 2f),
                         widthPx = surfaceWidthPx,
                         heightPx = surfaceHeightPx,
-                        nextZoom = clampZoom(viewportState.value.zoom + delta, selectedMap.minZoom, selectedMap.maxZoom),
+                        nextZoom = clampZoom(viewportState.value.zoom + delta, selectedMap.minZoom, interactiveMaxZoom),
                     ),
                     syncFollow = false,
                 )
@@ -2363,7 +2367,7 @@ internal fun MapExplorerPage(
                                         currentFirst = ScreenPoint(first.position.x, first.position.y),
                                         currentSecond = ScreenPoint(second.position.x, second.position.y),
                                         minZoom = selectedMap.minZoom,
-                                        maxZoom = selectedMap.maxZoom,
+                                        maxZoom = interactiveMaxZoom,
                                         widthPx = surfaceWidthPx,
                                         heightPx = surfaceHeightPx,
                                     )
@@ -2402,11 +2406,11 @@ internal fun MapExplorerPage(
                         zoomAroundPoint(
                             viewport = viewportState.value,
                             minZoom = selectedMap.minZoom,
-                            maxZoom = selectedMap.maxZoom,
+                            maxZoom = interactiveMaxZoom,
                             anchor = ScreenPoint(surfaceWidthPx / 2f, surfaceHeightPx / 2f),
                             widthPx = surfaceWidthPx,
                             heightPx = surfaceHeightPx,
-                            nextZoom = clampZoom(viewportState.value.zoom - wheelDelta * 0.28, selectedMap.minZoom, selectedMap.maxZoom),
+                            nextZoom = clampZoom(viewportState.value.zoom - wheelDelta * 0.28, selectedMap.minZoom, interactiveMaxZoom),
                         ),
                         syncFollow = false,
                     )

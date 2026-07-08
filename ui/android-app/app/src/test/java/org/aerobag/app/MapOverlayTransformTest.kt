@@ -14,15 +14,59 @@ import org.aerobag.app.domain.AirspaceScreenPoint
 import org.aerobag.app.domain.MapOverlayQueryResult
 import org.aerobag.app.domain.MapViewportState
 import org.aerobag.app.domain.OfflineRegionDisplay
+import org.aerobag.app.domain.SituationRingCandidate
 import org.aerobag.app.domain.VisibleMapFeature
 import org.aerobag.app.domain.VisibleMetarFeature
 import org.aerobag.app.domain.VisiblePirepFeature
+import org.aerobag.app.domain.displayScaleZoomDelta
 import org.aerobag.app.domain.dragViewport
+import org.aerobag.app.domain.latLonToWorld
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
 class MapOverlayTransformTest {
+    @Test
+    fun situationRingSelectionMatchesLogicalDisplayZoomAcrossDensity() {
+        val ownship = LatLon(lat = 27.9755, lon = -82.5332)
+        val center = latLonToWorld(ownship.lat, ownship.lon)
+        val logicalViewport = MapViewportState(
+            centerWorldX = center.x,
+            centerWorldY = center.y,
+            zoom = 12.5,
+        )
+        val density = 2.0
+        val androidViewport = logicalViewport.copy(
+            zoom = logicalViewport.zoom + displayScaleZoomDelta(density),
+        )
+        val candidates = listOf(
+            SituationRingCandidate(radiusNm = 1.0, label = "1nm"),
+            SituationRingCandidate(radiusNm = 2.0, label = "2nm"),
+            SituationRingCandidate(radiusNm = 3.0, label = "3nm"),
+            SituationRingCandidate(radiusNm = 5.0, label = "5nm"),
+        )
+
+        val webRing = selectSituationRing(
+            position = ownship,
+            viewport = logicalViewport,
+            widthUnits = 600f,
+            heightUnits = 400f,
+            ringCandidates = candidates,
+            magneticVariationDeg = null,
+        )
+        val androidRing = selectSituationRing(
+            position = ownship,
+            viewport = androidViewport,
+            widthUnits = 1200f,
+            heightUnits = 800f,
+            ringCandidates = candidates,
+            magneticVariationDeg = null,
+        )
+
+        assertEquals(webRing.labelText, androidRing.labelText)
+        assertEquals(webRing.radiusUnits.toDouble() * density, androidRing.radiusUnits.toDouble(), 1e-3)
+    }
+
     @Test
     fun displayTransformMovesEveryScreenSpaceCoordinateAfterDrag() {
         val fromViewport = MapViewportState(centerWorldX = 92.4, centerWorldY = 96.8, zoom = 9.3)

@@ -78,6 +78,21 @@ class MapViewportTest {
     }
 
     @Test
+    fun displayScaleZoomHelpersConvertBetweenLogicalAndPhysicalZoom() {
+        val logicalMaxZoom = 12.5
+        val density = 2.0
+        val physicalMaxZoom = physicalDisplayMaxZoom(logicalMaxZoom, density)
+        val physicalViewport = MapViewportState(centerWorldX = 40.0, centerWorldY = 50.0, zoom = physicalMaxZoom)
+        val logicalViewport = logicalViewportForDisplayScale(physicalViewport, density)
+
+        assertEquals(1.0, displayScaleZoomDelta(density), 1e-8)
+        assertEquals(13.5, physicalMaxZoom, 1e-8)
+        assertEquals(logicalMaxZoom, logicalViewport.zoom, 1e-8)
+        assertEquals(physicalViewport.centerWorldX, logicalViewport.centerWorldX, 1e-8)
+        assertEquals(physicalViewport.centerWorldY, logicalViewport.centerWorldY, 1e-8)
+    }
+
+    @Test
     fun displayFrameCarryForwardMatchesDirectProjectionAfterDrag() {
         val oldViewport = createInitialViewport(initialViewport, minZoom, maxZoom)
         val oldFrame = MapDisplayFrame(oldViewport, 1200f, 900f)

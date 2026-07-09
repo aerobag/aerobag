@@ -667,7 +667,11 @@ internal fun ChartsPage(
             } else {
                 null
             }
-            Canvas(modifier = Modifier.fillMaxSize()) {
+            Canvas(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .testTag("parity:plate-surface"),
+            ) {
                 if (currentViewport != null && currentBitmap != null && currentDisplaySize != null) {
                     drawImage(
                         image = currentBitmap,
@@ -1414,6 +1418,7 @@ internal fun PlateFolderGrid(
                 modifier = Modifier
                     .width(PlateFolderTileWidth)
                     .height(PlateFolderTileHeight)
+                    .testTag("parity:plate-folder-tile:${chart.id}")
                     .border(
                         width = if (chart.id == selectedChartId) 2.dp else 1.dp,
                         color = if (chart.id == selectedChartId) MaterialTheme.colorScheme.primary else Color(0x26132129),

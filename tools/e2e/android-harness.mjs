@@ -28,6 +28,25 @@ export function adbBestEffort(serial, args, options = {}) {
   });
 }
 
+export function adbBuffer(serial, args, options = {}) {
+  const res = spawnSync("adb", adbArgs(serial, args), {
+    encoding: null,
+    timeout: 20000,
+    ...options,
+  });
+  if (res.status !== 0) {
+    const stderr = Buffer.isBuffer(res.stderr) ? res.stderr.toString("utf8") : (res.stderr || "");
+    const stdout = Buffer.isBuffer(res.stdout) ? res.stdout.toString("utf8") : (res.stdout || "");
+    const detail = res.error?.message ?? (stderr || stdout);
+    throw new Error(`adb ${args.join(" ")} failed: ${detail}`);
+  }
+  return res.stdout;
+}
+
+export function screencapPng(serial) {
+  return adbBuffer(serial, ["exec-out", "screencap", "-p"], { timeout: 20000 });
+}
+
 export function dumpAndroid(serial, dumpPath = "/sdcard/aerobag-e2e.xml") {
   adb(serial, ["shell", "uiautomator", "dump", dumpPath]);
   return adb(serial, ["exec-out", "cat", dumpPath]);
@@ -239,6 +258,7 @@ export function wakeAndUnlock(serial) {
   adbBestEffort(serial, ["shell", "input", "keyevent", "KEYCODE_WAKEUP"]);
   adbBestEffort(serial, ["shell", "wm", "dismiss-keyguard"]);
   adbBestEffort(serial, ["shell", "input", "keyevent", "KEYCODE_MENU"]);
+  adbBestEffort(serial, ["shell", "cmd", "statusbar", "collapse"]);
 }
 
 export function grantAerobagRuntimePermissions(serial) {
@@ -264,7 +284,7 @@ export async function launchFreshAndroidApp(serial, { clearUiPrefs = true, clear
   }
   adb(serial, ["shell", "am", "start", "-W", "-n", ANDROID_ACTIVITY]);
   wakeAndUnlock(serial);
-  await waitForNode(serial, (node) => node.package === ANDROID_PACKAGE, 20000, "Aerobag app visible");
+  await waitForNode(serial, (node) => node.package === ANDROID_PACKAGE, 90000, "Aerobag app visible");
 }
 
 export async function acceptDisclaimerIfPresent(serial) {

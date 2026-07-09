@@ -388,6 +388,9 @@ function workerBackedSession(client: AppCoreWorkerClient, sessionId: number, ini
     projectFlightPlanRoute: () => call("projectFlightPlanRoute"),
     syncLiveFeeds: () => call("syncLiveFeeds"),
     startLiveFeedSubscription: () => call("startLiveFeedSubscription"),
+    notifyLiveFeedOnline: () => {
+      void call("notifyLiveFeedOnline");
+    },
     stopLiveFeedSubscription: () => call("stopLiveFeedSubscription"),
     ingestLiveFeedSseEvent: (...args) => call("ingestLiveFeedSseEvent", args),
     ingestLiveFeedSseEvents: (...args) => call("ingestLiveFeedSseEvents", args),

@@ -37,6 +37,36 @@ import { debugLog, debugTiming, installRustDebugLogBridge, perfDebugLog } from "
 declare const __AEROBAG_LIVE_FEEDS_ORIGIN__: string | null;
 declare const __AEROBAG_CLIENT_BUILD_INFO__: ClientBuildInfo;
 
+type LiveFeedE2eProbeState = {
+  open_attempts: number;
+  active_event_sources: number;
+  reconnect_scheduled: number;
+  online_events: number;
+  errors: number;
+  messages: number;
+  last_events_url: string | null;
+  last_ready_state: number | null;
+  last_reconnect_delay_ms: number | null;
+};
+
+function liveFeedE2eProbeState(): LiveFeedE2eProbeState {
+  const global = (typeof window !== "undefined" ? window : globalThis) as typeof globalThis & {
+    __aerobagLiveFeedE2eState?: LiveFeedE2eProbeState;
+  };
+  global.__aerobagLiveFeedE2eState ??= {
+    open_attempts: 0,
+    active_event_sources: 0,
+    reconnect_scheduled: 0,
+    online_events: 0,
+    errors: 0,
+    messages: 0,
+    last_events_url: null,
+    last_ready_state: null,
+    last_reconnect_delay_ms: null,
+  };
+  return global.__aerobagLiveFeedE2eState;
+}
+
 export type {
   NexradOverlayQueryResult,
   NexradOverlayStats,
@@ -703,6 +733,7 @@ export interface UiSession {
   projectFlightPlanRoute(): Promise<FlightPlanRouteSegment[]>;
   syncLiveFeeds(): Promise<void>;
   startLiveFeedSubscription(): Promise<void>;
+  notifyLiveFeedOnline(): void;
   stopLiveFeedSubscription(): Promise<void>;
   ingestLiveFeedSseEvent(event: LiveFeedSseEvent): Promise<void>;
   ingestLiveFeedSseEvents(events: LiveFeedSseEvent[]): Promise<void>;
@@ -1660,6 +1691,9 @@ export class WasmAppCoreAdapter implements AppCoreAdapter {
           (tag, data) => debugLog(tag, data),
         );
       },
+      notifyLiveFeedOnline: () => {
+        liveFeedSubscription?.notifyOnline();
+      },
       stopLiveFeedSubscription: async () => {
         if (liveFeedSubscription) {
           const closing = liveFeedSubscription;
@@ -1992,6 +2026,7 @@ function coreViewportForMap(viewport: MapViewportState) {
 }
 
 type LiveFeedSubscription = {
+  notifyOnline(): void;
   close(): void;
 };
 
@@ -2039,7 +2074,7 @@ function liveFeedSourceUrl(): string {
   return resolveLiveFeedSourceUrl(__AEROBAG_LIVE_FEEDS_ORIGIN__);
 }
 
-function createLiveFeedSubscription(
+export function createLiveFeedSubscription(
   liveFeedEventsUrl: () => Promise<string> | string,
   handleRuntimeEvent: (input: LiveFeedRuntimeInput) => Promise<LiveFeedRuntimeDecision>,
   ingestEvents: (events: LiveFeedSseEvent[]) => Promise<void>,
@@ -2055,6 +2090,23 @@ function createLiveFeedSubscription(
   let flushInFlight = false;
   let flushAgain = false;
   let reconnectTimer: number | null = null;
+  const probeState = liveFeedE2eProbeState();
+  const trackedEventSources = new WeakSet<EventSource>();
+  const trackEventSource = (source: EventSource) => {
+    trackedEventSources.add(source);
+    probeState.active_event_sources += 1;
+    probeState.last_ready_state = source.readyState;
+  };
+  const closeEventSource = (source: EventSource | null) => {
+    if (!source) {
+      return;
+    }
+    if (trackedEventSources.delete(source)) {
+      probeState.active_event_sources = Math.max(0, probeState.active_event_sources - 1);
+    }
+    source.close();
+    probeState.last_ready_state = source.readyState;
+  };
   const runtimeEvent = (input: LiveFeedRuntimeInput): Promise<LiveFeedRuntimeDecision> =>
     handleRuntimeEvent(input).catch((error: unknown) => {
       log("live_feeds.connection_event.failed", { message: error instanceof Error ? error.message : String(error) });
@@ -2112,6 +2164,9 @@ function createLiveFeedSubscription(
       }
       log("live_feeds.sse.opening", { events_url: eventsUrl });
       const nextEvents = new EventSource(eventsUrl);
+      probeState.open_attempts += 1;
+      probeState.last_events_url = eventsUrl;
+      trackEventSource(nextEvents);
       events = nextEvents;
       const isCurrent = () => !closed && events === nextEvents;
       nextEvents.addEventListener("live-feed-current", (event) => {
@@ -2120,6 +2175,8 @@ function createLiveFeedSubscription(
         }
         clearReconnectTimer();
         const message = event as MessageEvent<string>;
+        probeState.messages += 1;
+        probeState.last_ready_state = nextEvents.readyState;
         reportEvent({ kind: "message" });
         queuedEvents.push({
           id: message.lastEventId || null,
@@ -2134,6 +2191,7 @@ function createLiveFeedSubscription(
         }
         clearReconnectTimer();
         log("live_feeds.sse.open", { events_url: eventsUrl });
+        probeState.last_ready_state = nextEvents.readyState;
         reportEvent({ kind: "connected" });
       };
       nextEvents.onerror = () => {
@@ -2141,6 +2199,8 @@ function createLiveFeedSubscription(
           return;
         }
         log("live_feeds.sse.error", { ready_state: nextEvents.readyState });
+        probeState.errors += 1;
+        probeState.last_ready_state = nextEvents.readyState;
         void runtimeEvent({ kind: "error", message: "EventSource error" })
           .then((decision) => scheduleReconnect(decision.reconnect_delay_ms ?? 0))
           .catch(() => scheduleReconnect(0));
@@ -2159,6 +2219,8 @@ function createLiveFeedSubscription(
     if (reconnectTimer !== null) {
       return;
     }
+    probeState.reconnect_scheduled += 1;
+    probeState.last_reconnect_delay_ms = delayMs;
     reconnectTimer = globalThis.setTimeout(() => {
       reconnectTimer = null;
       if (closed) {
@@ -2166,14 +2228,16 @@ function createLiveFeedSubscription(
       }
       const previous = events;
       events = null;
-      previous?.close();
+      closeEventSource(previous);
       openConnection();
     }, delayMs) as unknown as number;
   };
   const handleOnline = () => {
-    if (closed || events?.readyState === EventSource.OPEN) {
+    if (closed) {
       return;
     }
+    probeState.online_events += 1;
+    clearReconnectTimer();
     void runtimeEvent({ kind: "online" })
       .then((decision) => scheduleReconnect(decision.reconnect_delay_ms ?? 0))
       .catch(() => scheduleReconnect(0));
@@ -2183,6 +2247,7 @@ function createLiveFeedSubscription(
   }
   openConnection();
   return {
+    notifyOnline: handleOnline,
     close: () => {
       closed = true;
       clearReconnectTimer();
@@ -2193,7 +2258,7 @@ function createLiveFeedSubscription(
       if (typeof window !== "undefined") {
         window.removeEventListener("online", handleOnline);
       }
-      events?.close();
+      closeEventSource(events);
       events = null;
     },
   };

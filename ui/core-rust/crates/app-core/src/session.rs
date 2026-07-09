@@ -372,6 +372,15 @@ struct UiSession {
     terrain_source_tile_cache: HashMap<String, Vec<u8>>,
     pending_resource_effects: Vec<UiSessionResourceEffect>,
     wall_clock_epoch_ms: i64,
+    live_feed_current_refresh: LiveFeedCurrentRefreshState,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+enum LiveFeedCurrentRefreshState {
+    #[default]
+    Idle,
+    Requested,
+    Ingested,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -3231,6 +3240,7 @@ fn create_ui_session_inner(
             terrain_source_tile_cache: HashMap::new(),
             pending_resource_effects: Vec::new(),
             wall_clock_epoch_ms,
+            live_feed_current_refresh: LiveFeedCurrentRefreshState::Idle,
         },
     );
     if let Some(mark) = mark.as_deref_mut() {
@@ -5632,8 +5642,13 @@ pub fn sync_live_feeds_in_session(handle: u32) -> AppResult<HadOperationOutcome>
 }
 
 pub fn refresh_live_feed_current_in_session(handle: u32) -> AppResult<HadOperationOutcome> {
-    let sessions = lock_sessions();
-    let session = session_ref(&sessions, handle)?;
+    let mut sessions = lock_sessions();
+    let session = session_mut(&mut sessions, handle)?;
+    if session.live_feed_current_refresh == LiveFeedCurrentRefreshState::Ingested {
+        session.live_feed_current_refresh = LiveFeedCurrentRefreshState::Idle;
+        return Ok(session.live_feeds.complete_outcome_with_invalidations());
+    }
+    session.live_feed_current_refresh = LiveFeedCurrentRefreshState::Requested;
     Ok(session
         .live_feeds
         .refresh_current_outcome_with_invalidations_at_epoch_ms(session.wall_clock_epoch_ms))
@@ -5732,6 +5747,14 @@ pub fn ingest_live_feed_sse_events_in_session_at_epoch_ms(
         .sync_products_outcome_with_invalidations(affected.iter().map(String::as_str)))
 }
 
+fn mark_live_feed_current_refresh_ingested(session: &mut UiSession, resource_id: &str) {
+    if resource_id == "live_feeds/current"
+        && session.live_feed_current_refresh == LiveFeedCurrentRefreshState::Requested
+    {
+        session.live_feed_current_refresh = LiveFeedCurrentRefreshState::Ingested;
+    }
+}
+
 pub fn ingest_resource_in_session(handle: u32, resource_id: &str, bytes: &[u8]) -> AppResult<()> {
     ingest_resource_in_session_at_epoch_ms(handle, resource_id, bytes, 0)
 }
@@ -5765,6 +5788,7 @@ pub fn ingest_resource_in_session_at_epoch_ms(
             );
         }
         if let Err(err) = session.live_feeds.ingest_resource(resource_id, bytes) {
+            mark_live_feed_current_refresh_ingested(session, resource_id);
             session
                 .live_feeds
                 .record_resource_failure(resource_id, session.wall_clock_epoch_ms);
@@ -5775,6 +5799,7 @@ pub fn ingest_resource_in_session_at_epoch_ms(
             return Ok(());
         }
         if let Err(err) = install_live_feed_payloads(session) {
+            mark_live_feed_current_refresh_ingested(session, resource_id);
             session
                 .live_feeds
                 .record_resource_failure(resource_id, session.wall_clock_epoch_ms);
@@ -5784,6 +5809,7 @@ pub fn ingest_resource_in_session_at_epoch_ms(
             sync_live_feed_overlay_status_records(session);
             return Ok(());
         }
+        mark_live_feed_current_refresh_ingested(session, resource_id);
         clear_live_feed_resource_error(session);
         return Ok(());
     }
@@ -11928,6 +11954,54 @@ mod tests {
     }
 
     #[test]
+    fn live_feed_current_refresh_completes_after_current_resource_ingest() {
+        let init =
+            create_ui_session(FlightPlan::default(), &[], None, None).expect("create session");
+        configure_live_feed_source_in_session(init.handle, "http://feeds.example.test")
+            .expect("configure live-feed source");
+
+        let HadOperationOutcome::NeedResources { resources } =
+            refresh_live_feed_current_in_session(init.handle).expect("refresh current")
+        else {
+            panic!("expected current manifest request");
+        };
+        assert_eq!(resources.len(), 1);
+        assert_eq!(resources[0].id, "live_feeds/current");
+
+        ingest_resource_in_session(
+            init.handle,
+            "live_feeds/current",
+            br#"{
+                "schema_version": 2,
+                "products": {
+                    "metars": {
+                        "current": "v1",
+                        "version_manifest_url": "versions/metars/v1.json",
+                        "state_url": "states/metars/v1.json",
+                        "state_sha256": "unused"
+                    }
+                }
+            }"#,
+        )
+        .expect("ingest current manifest");
+
+        let HadOperationOutcome::Complete { invalidations, .. } =
+            refresh_live_feed_current_in_session(init.handle).expect("finish refresh current")
+        else {
+            panic!("current refresh should complete after current manifest ingest");
+        };
+        assert!(invalidations.contains(&UiInvalidation::SessionSnapshot));
+
+        let HadOperationOutcome::NeedResources { resources } =
+            sync_live_feeds_in_session(init.handle).expect("sync live feeds")
+        else {
+            panic!("expected version manifest request");
+        };
+        assert_eq!(resources.len(), 1);
+        assert_eq!(resources[0].id, "live_feeds/version/metars/v1");
+    }
+
+    #[test]
     fn live_feed_metars_build_their_own_tile_index() {
         let config = map_overlay_config_from_vector_manifest_json(
             r#"{
@@ -12604,6 +12678,7 @@ mod tests {
             terrain_source_tile_cache: HashMap::new(),
             pending_resource_effects: Vec::new(),
             wall_clock_epoch_ms: 0,
+            live_feed_current_refresh: LiveFeedCurrentRefreshState::Idle,
         };
         let mut metars_by_station = HashMap::new();
         metars_by_station.insert(
@@ -12792,6 +12867,7 @@ mod tests {
             terrain_source_tile_cache: HashMap::new(),
             pending_resource_effects: Vec::new(),
             wall_clock_epoch_ms: 0,
+            live_feed_current_refresh: LiveFeedCurrentRefreshState::Idle,
         };
 
         ensure_metar_station_importance_loaded(&mut session).expect("important station ids");
@@ -13231,6 +13307,7 @@ mod tests {
             terrain_source_tile_cache: HashMap::new(),
             pending_resource_effects: Vec::new(),
             wall_clock_epoch_ms: 0,
+            live_feed_current_refresh: LiveFeedCurrentRefreshState::Idle,
         };
         let bad_tfr_state = serde_json::json!({
             "schema_version": 1,

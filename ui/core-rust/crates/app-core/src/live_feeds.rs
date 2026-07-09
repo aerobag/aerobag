@@ -251,6 +251,10 @@ impl LiveFeedsState {
         self.outcome_for_resources_with_invalidations(resources)
     }
 
+    pub fn complete_outcome_with_invalidations(&self) -> HadOperationOutcome {
+        self.outcome_for_resources_with_invalidations(Vec::new())
+    }
+
     pub fn sync_product_outcome_at_epoch_ms(
         &self,
         product: &str,

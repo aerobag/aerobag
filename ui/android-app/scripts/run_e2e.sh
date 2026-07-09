@@ -7,10 +7,11 @@ TARGET_ROOT_FILE="$ROOT/ui/target-root.txt"
 INSTANCE_CONFIG="$ROOT/../INSTANCE_CONFIG"
 SKIP_INSTALL=0
 SYNC_OFFLINE_PACKAGES=1
+TEST_ID=""
 
 usage() {
   cat <<'EOF'
-usage: run_e2e.sh [--skip-install] [--serial SERIAL] [--route "KRNT KPWT"] [--no-sync-offline-packages]
+usage: run_e2e.sh [--skip-install] [--serial SERIAL] [--route "KRNT KPWT"] [--no-sync-offline-packages] [--test TEST_ID]
 
 Builds and installs the Android app, then runs Android end-to-end UI tests.
 Installed package data is preserved; the test runner clears only volatile UI
@@ -45,6 +46,10 @@ while [[ "$#" -gt 0 ]]; do
       ;;
     --no-sync-offline-packages)
       SYNC_OFFLINE_PACKAGES=0
+      ;;
+    --test)
+      TEST_ID="${2:-}"
+      shift
       ;;
     -h|--help)
       usage
@@ -153,5 +158,8 @@ E2E_ARGS=(
 )
 if [[ "$SYNC_OFFLINE_PACKAGES" -eq 0 ]]; then
   E2E_ARGS+=(--no-sync-offline-packages)
+fi
+if [[ -n "$TEST_ID" ]]; then
+  E2E_ARGS+=(--test "$TEST_ID")
 fi
 node "$ROOT/tools/e2e/run-android-e2e-suite.mjs" "${E2E_ARGS[@]}"

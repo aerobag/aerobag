@@ -7,7 +7,7 @@ PACKAGE_SERVER_PID=""
 
 usage() {
   cat <<'EOF'
-usage: run_e2e_ci.sh [--route "KRNT KPWT"] [--headless|--with-vnc] [--keep-emulator] [--no-package-server] [--skip-system-image-install]
+usage: run_e2e_ci.sh [--route "KRNT KPWT"] [--test TEST_ID] [--headless|--with-vnc] [--keep-emulator] [--no-package-server] [--skip-system-image-install]
 
 Starts a CI-suitable Android E2E environment:
   1. ensures the configured Android emulator system image is installed
@@ -22,6 +22,7 @@ EOF
 }
 
 ROUTE="KRNT KPWT"
+TEST_ID=""
 START_PACKAGE_SERVER="${START_PACKAGE_SERVER:-auto}"
 INSTALL_ANDROID_SYSTEM_IMAGE="${INSTALL_ANDROID_SYSTEM_IMAGE:-1}"
 if [[ -z "${KEEP_EMULATOR+x}" ]]; then
@@ -43,6 +44,10 @@ while [[ "$#" -gt 0 ]]; do
   case "$1" in
     --route)
       ROUTE="${2:-}"
+      shift
+      ;;
+    --test)
+      TEST_ID="${2:-}"
       shift
       ;;
     --keep-emulator)
@@ -146,7 +151,11 @@ echo "[2/4] clean and start emulator stack"
 EMULATOR_HEADLESS="$EMULATOR_HEADLESS" "$APP_DIR/scripts/start_emulator_stack.sh"
 
 echo "[3/4] run Android E2E"
+RUN_E2E_ARGS=(--route "$ROUTE")
+if [[ -n "$TEST_ID" ]]; then
+  RUN_E2E_ARGS+=(--test "$TEST_ID")
+fi
 PACKAGE_SOURCE_PORT="$PACKAGE_SOURCE_PORT" \
-  "$APP_DIR/scripts/run_e2e.sh" --route "$ROUTE"
+  "$APP_DIR/scripts/run_e2e.sh" "${RUN_E2E_ARGS[@]}"
 
 echo "[4/4] Android E2E CI run passed"

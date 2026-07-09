@@ -1,5 +1,5 @@
-import { describe, expect, it } from "vitest";
-import { loadBestAvailableAdapter, resolveLiveFeedSourceUrl } from "./appCoreAdapter";
+import { afterEach, describe, expect, it, vi } from "vitest";
+import { createLiveFeedSubscription, loadBestAvailableAdapter, resolveLiveFeedSourceUrl } from "./appCoreAdapter";
 
 const snapshotJson = JSON.stringify({
   app_state: {
@@ -214,5 +214,147 @@ describe("resolveLiveFeedSourceUrl", () => {
     expect(resolveLiveFeedSourceUrl(" https://feeds.example.test/// ", {
       location: { origin: "https://aerobag.org" },
     })).toBe("https://feeds.example.test");
+  });
+});
+
+describe("createLiveFeedSubscription", () => {
+  class FakeEventSource {
+    static CONNECTING = 0;
+    static OPEN = 1;
+    static CLOSED = 2;
+    static instances: FakeEventSource[] = [];
+
+    readonly url: string;
+    readyState = FakeEventSource.CONNECTING;
+    onopen: (() => void) | null = null;
+    onerror: (() => void) | null = null;
+    closed = false;
+
+    constructor(url: string) {
+      this.url = url;
+      FakeEventSource.instances.push(this);
+    }
+
+    addEventListener(_eventName: string, _listener: EventListenerOrEventListenerObject): void {}
+
+    close(): void {
+      this.closed = true;
+      this.readyState = FakeEventSource.CLOSED;
+    }
+
+    emitError(): void {
+      this.readyState = FakeEventSource.CONNECTING;
+      this.onerror?.();
+    }
+
+    markOpen(): void {
+      this.readyState = FakeEventSource.OPEN;
+    }
+  }
+
+  type TestGlobal = {
+    window?: unknown;
+    EventSource?: unknown;
+    __aerobagLiveFeedE2eState?: unknown;
+  };
+
+  const originalWindow = (globalThis as unknown as TestGlobal).window;
+  const originalEventSource = (globalThis as unknown as TestGlobal).EventSource;
+
+  afterEach(() => {
+    vi.useRealTimers();
+    FakeEventSource.instances = [];
+    const global = globalThis as unknown as TestGlobal;
+    if (originalWindow === undefined) {
+      delete global.window;
+    } else {
+      global.window = originalWindow;
+    }
+    if (originalEventSource === undefined) {
+      delete global.EventSource;
+    } else {
+      global.EventSource = originalEventSource;
+    }
+    delete global.__aerobagLiveFeedE2eState;
+  });
+
+  it("lets an online event interrupt a pending reconnect backoff", async () => {
+    vi.useFakeTimers();
+    const testWindow = new EventTarget();
+    const global = globalThis as unknown as TestGlobal;
+    global.window = testWindow;
+    global.EventSource = FakeEventSource;
+    delete global.__aerobagLiveFeedE2eState;
+
+    const runtimeEvents: string[] = [];
+    const subscription = createLiveFeedSubscription(
+      () => "https://feeds.example.test/live-feeds/v2/events",
+      async (input) => {
+        runtimeEvents.push(input.kind);
+        return {
+          reconnect_delay_ms: input.kind === "error" ? 5000 : 0,
+          refresh_current: input.kind === "online",
+        };
+      },
+      async () => {},
+      () => {},
+    );
+
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(FakeEventSource.instances).toHaveLength(1);
+
+    FakeEventSource.instances[0].emitError();
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(runtimeEvents).toContain("error");
+
+    vi.advanceTimersByTime(1000);
+    testWindow.dispatchEvent(new Event("online"));
+    await Promise.resolve();
+    await Promise.resolve();
+    vi.advanceTimersByTime(0);
+    await Promise.resolve();
+    await Promise.resolve();
+
+    expect(runtimeEvents).toContain("online");
+    expect(FakeEventSource.instances).toHaveLength(2);
+    expect(FakeEventSource.instances[0].closed).toBe(true);
+    subscription.close();
+  });
+
+  it("reopens the stream on online even if EventSource still reports open", async () => {
+    vi.useFakeTimers();
+    const testWindow = new EventTarget();
+    const global = globalThis as unknown as TestGlobal;
+    global.window = testWindow;
+    global.EventSource = FakeEventSource;
+    delete global.__aerobagLiveFeedE2eState;
+
+    const subscription = createLiveFeedSubscription(
+      () => "https://feeds.example.test/live-feeds/v2/events",
+      async (input) => ({
+        reconnect_delay_ms: input.kind === "online" ? 0 : null,
+        refresh_current: input.kind === "online",
+      }),
+      async () => {},
+      () => {},
+    );
+
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(FakeEventSource.instances).toHaveLength(1);
+    FakeEventSource.instances[0].markOpen();
+
+    testWindow.dispatchEvent(new Event("online"));
+    await Promise.resolve();
+    await Promise.resolve();
+    vi.advanceTimersByTime(0);
+    await Promise.resolve();
+    await Promise.resolve();
+
+    expect(FakeEventSource.instances).toHaveLength(2);
+    expect(FakeEventSource.instances[0].closed).toBe(true);
+    subscription.close();
   });
 });

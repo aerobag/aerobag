@@ -82,6 +82,7 @@ import {
   type UiDisclaimerState,
   type UiPlaybackPanelState,
   type UiDataStatusPageState,
+  type UiDataStatusPageRow,
   type UiDataStatusState,
   type UiSession,
   type UiSessionSnapshot,
@@ -143,6 +144,14 @@ import { TerrainOverlayRenderer } from "./domain/terrainOverlayRenderer";
 
 declare const __AEROBAG_LIVE_FEEDS_ORIGIN__: string | null;
 
+declare global {
+  interface Window {
+    __aerobagE2e?: {
+      liveFeeds?: () => unknown;
+    };
+  }
+}
+
 const defaultDisclaimerText = noWarrantyHtml
   .replace(/<\/p>/g, "")
   .replace(/<p>/g, "")
@@ -166,6 +175,33 @@ type WebIdleState = {
 };
 
 const WebIdleTimeoutMs = 60 * 60 * 1000;
+
+function dataStatusFactValue(row: UiDataStatusPageRow | null | undefined, label: string): string | null {
+  return row?.facts.find((fact) => fact.label === label)?.value ?? null;
+}
+
+function webE2eLiveFeedStatus(state: UiDataStatusPageState): unknown {
+  const rows = state.rows.filter((row) => row.id.startsWith("live_feed:"));
+  const rowById = Object.fromEntries(rows.map((row) => [row.id, row]));
+  const productVersion = (productId: string) => dataStatusFactValue(rowById[`live_feed:${productId}`], "Version");
+  return {
+    navigator_online: typeof navigator === "undefined" ? null : navigator.onLine,
+    document_visibility: typeof document === "undefined" ? null : document.visibilityState,
+    connection: rowById["live_feed:connection"] ?? null,
+    product_versions: {
+      tfrs: productVersion("tfrs"),
+      metars: productVersion("metars"),
+      tafs: productVersion("tafs"),
+      pireps: productVersion("pireps"),
+      nexrad: productVersion("nexrad"),
+      obstacles: productVersion("obstacles"),
+    },
+    rows,
+    adapter: (typeof window === "undefined"
+      ? (globalThis as typeof globalThis & { __aerobagLiveFeedE2eState?: unknown }).__aerobagLiveFeedE2eState
+      : (window as Window & { __aerobagLiveFeedE2eState?: unknown }).__aerobagLiveFeedE2eState) ?? null,
+  };
+}
 
 function initialWebIdleState(): WebIdleState {
   const now = Date.now();
@@ -1879,6 +1915,21 @@ export default function App() {
     }
     applySessionSnapshot(nextSnapshot, "session_callback");
   }, [applySessionSnapshot]);
+  useEffect(() => {
+    if (typeof window === "undefined") {
+      return;
+    }
+    const liveFeeds = () => webE2eLiveFeedStatus(sessionSnapshot.data_status_page_state);
+    window.__aerobagE2e = {
+      ...(window.__aerobagE2e ?? {}),
+      liveFeeds,
+    };
+    return () => {
+      if (window.__aerobagE2e?.liveFeeds === liveFeeds) {
+        delete window.__aerobagE2e.liveFeeds;
+      }
+    };
+  }, [sessionSnapshot.data_status_page_state]);
   const [playbackSourcePath, setPlaybackSourcePath] = useState(defaultPlaybackTracePath);
   const [debugWarningActive, setDebugWarningActive] = useState(false);
   const [derivedChartPageState, setDerivedChartPageState] = useState<DerivedChartPageState>(initialChartPageState);
@@ -2563,6 +2614,19 @@ export default function App() {
       void nextSession?.destroy();
     };
   }, [adapterBackend, appCoreAdapter, applySessionSnapshot, initialChartPageState.selected_airport_id, initialChartPageState.selected_chart_id, initialDebugState, initialRecentAirportIds, markStartupProgress, reportStartupFatalError]);
+
+  useEffect(() => {
+    if (!uiSession) {
+      return;
+    }
+    const handleOnline = () => {
+      uiSession.notifyLiveFeedOnline();
+    };
+    window.addEventListener("online", handleOnline);
+    return () => {
+      window.removeEventListener("online", handleOnline);
+    };
+  }, [uiSession]);
 
   useEffect(() => {
     if (!uiSession) {

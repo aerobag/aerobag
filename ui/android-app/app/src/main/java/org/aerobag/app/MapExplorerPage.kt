@@ -3664,6 +3664,7 @@ private fun SituationOverlayLayer(
 }
 
 @Composable
+@OptIn(ExperimentalComposeUiApi::class)
 internal fun MapSelectionTray(
     state: MapSelectionUiState,
     modifier: Modifier,
@@ -3679,6 +3680,7 @@ internal fun MapSelectionTray(
     Surface(
         modifier = modifier
             .testTag("parity:map-selection-tray")
+            .semantics { testTagsAsResourceId = true }
             .onGloballyPositioned { coordinates ->
                 onBoundsChange(coordinates.boundsInWindow())
             }

@@ -7,11 +7,17 @@ tree, but it is not yet a required CI gate.
 
 - `tools/e2e/android-harness.mjs` provides the shared adb/uiautomator helpers.
 - `tools/e2e/run-android-e2e-suite.mjs` runs the Android suite.
+- `tools/e2e/run-android-chrome-livefeed-e2e.mjs` runs the web live-feed
+  reconnect suite inside Chrome on Android through adb/CDP.
 - `ui/android-app/scripts/run_e2e.sh` builds, installs, and runs the suite
   against a selected device or emulator.
 - `ui/android-app/scripts/run_e2e_ci.sh` is the CI-oriented wrapper. It can
   install the emulator system image, start a local package server, boot the
   repo emulator stack, install the APK, and run the suite.
+- `ui/web-app/scripts/run_android_chrome_livefeed_e2e.sh` boots the same
+  emulator stack, starts a scripted live-feed server and Vite, launches Android
+  Chrome, and runs the web live-feed reconnect suite without using a physical
+  tablet.
 - `docs/testing/android-e2e.md` has operator-facing usage notes.
 
 ## Current Coverage
@@ -25,6 +31,13 @@ tree, but it is not yet a required CI gate.
   - Centers the chart on the destination.
   - Verifies that Android exposes a rendered flight-plan route overlay with at
     least one visible segment.
+- `android.plate-first-render-smoke`
+  - Launches the app and ensures offline packages are ready.
+  - Searches the chart for `KPLU`.
+  - Opens the airport inspector's `Plates` action.
+  - Selects the first plate in the folder.
+  - Captures the screen and verifies the plate canvas is visibly painted on the
+    first open.
 - `android.map-follow-ctr-gesture-smoke`
   - Performs the same route setup.
   - Enables the Bad Autopilot debug ownship source.
@@ -33,6 +46,18 @@ tree, but it is not yet a required CI gate.
   - Drags the map and verifies CTR remains engaged with the aircraft offset
     from center.
   - Zooms the map and verifies CTR remains engaged with that offset preserved.
+- `android.chrome.live-feed-network-recovery`
+  - Starts a strict local live-feed v2 server with a METAR product.
+  - Starts Vite with `AEROBAG_LIVE_FEEDS_ORIGIN` pointed at that server.
+  - Launches Chrome on Android, not the native Android app.
+  - Waits for the live-feed connection and METAR version `v1`.
+  - Publishes `v2` over SSE and verifies the Data Status projection advances.
+  - Forces Chrome offline, drops the SSE connection, and verifies a reconnect
+    backoff is pending.
+  - Publishes `v3`, restores Chrome online, and verifies the online event opens
+    a new EventSource before the old backoff could expire.
+  - Verifies Data Status advances to METAR version `v3` and that at most one
+    EventSource remains active.
 
 ## App Test Hooks
 
@@ -40,17 +65,28 @@ The Android UI now exposes stable `parity:` tags for the smoke test:
 
 - disclaimer accept button
 - chart search field and suggestions
+- plate folder tiles and plate canvas bounds
 - debug Bad Autopilot flag and ownship source controls
 - flight-plan route overlay semantic probe
 - map-follow semantic probe
 
 Painted canvas content is not directly visible to `uiautomator`, so the E2E
-checks use semantic probe tags:
+checks use semantic probe tags for map overlays and screenshot analysis for
+plate imagery:
 
 ```text
 parity:flight-plan-route-overlay:segments:<count>:visible:<count>
 parity:map-follow-state:following:<0|1>:ownship-x:<px>:ownship-y:<px>:center-x:<px>:center-y:<px>:zoom-centi:<zoom*100>
 ```
+
+The web app also exposes a read-only browser hook for Chrome-on-Android tests:
+
+```text
+window.__aerobagE2e.liveFeeds()
+```
+
+That hook returns core-projected Data Status live-feed rows plus adapter
+counters for EventSource opens, errors, reconnect timers, and online events.
 
 ## Emulator Support
 
@@ -66,7 +102,8 @@ The emulator stack scripts now support:
 - The full `run_e2e_ci.sh` path still needs to be re-run from a clean emulator
   and treated as the acceptance check for this foundation.
 - The framework is Android-only. Web parity through headless Chrome is still a
-  later step.
+  later step for general UI journeys; the first web-on-Android Chrome journey
+  now exists for live-feed network recovery.
 - The test depends on a current package publication being available to the
   local package server.
 - Offline package sync is automated enough for the first smoke test, but it may
@@ -83,3 +120,12 @@ Run:
 
 Fix any clean-emulator failures, then make the same command run headless under
 CI before expanding the suite.
+
+For the Android Chrome live-feed recovery suite:
+
+```sh
+./ui/web-app/scripts/run_android_chrome_livefeed_e2e.sh --with-vnc
+```
+
+Use `--headless` in CI, or `--no-start-emulator --serial emulator-5554` when an
+emulator is already running.

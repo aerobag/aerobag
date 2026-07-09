@@ -1,4 +1,8 @@
 #!/usr/bin/env node
+import { spawnSync } from "node:child_process";
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import {
   ANDROID_PACKAGE,
   acceptDisclaimerIfPresent,
@@ -18,6 +22,7 @@ import {
   launchFreshAndroidApp,
   pressKey,
   rectOfBounds,
+  screencapPng,
   scrollUntilTag,
   swipe,
   tapFirstPresentTag,
@@ -37,10 +42,12 @@ const ROUTE_OVERLAY_PREFIX = "parity:flight-plan-route-overlay:";
 const MAP_FOLLOW_PREFIX = "parity:map-follow-state:";
 const BAD_AUTOPILOT_SOURCE_TAG = "parity:ownship-source:__bad_autopilot__";
 const BAD_AUTOPILOT_DEBUG_TAG = "parity:debug-flag:bad_autopilot";
+const PLATE_SURFACE_TAG = "parity:plate-surface";
+const PLATE_FOLDER_TILE_PREFIX = "parity:plate-folder-tile:";
 
 function usage() {
   console.log(`Usage:
-  node tools/e2e/run-android-e2e-suite.mjs [--serial emulator-5554] [--route "KRNT KPWT"] [--package-source-port 8083] [--no-sync-offline-packages] [--json]
+  node tools/e2e/run-android-e2e-suite.mjs [--serial emulator-5554] [--route "KRNT KPWT"] [--package-source-port 8083] [--no-sync-offline-packages] [--test TEST_ID] [--json]
 
 Runs Android end-to-end UI tests against an installed Aerobag app.
 When a clean emulator starts on Offline Packages, the runner syncs the NW
@@ -53,6 +60,7 @@ function parseArgs(argv) {
     route: DEFAULT_ROUTE,
     packageSourcePort: DEFAULT_PACKAGE_SOURCE_PORT,
     syncOfflinePackages: true,
+    test: "",
     json: false,
   };
   for (let i = 2; i < argv.length; i += 1) {
@@ -67,6 +75,8 @@ function parseArgs(argv) {
       args.packageSourcePort = argv[++i] ?? "";
     } else if (arg === "--no-sync-offline-packages") {
       args.syncOfflinePackages = false;
+    } else if (arg === "--test") {
+      args.test = argv[++i] ?? "";
     } else if (arg === "--json") {
       args.json = true;
     } else {
@@ -436,6 +446,37 @@ async function centerChartOnDestination(serial, result, route) {
   throwWithUi(serial, `chart search did not contain ${destination}; last observed=${JSON.stringify(lastObserved)}`);
 }
 
+async function inspectAirportFromChartSearch(serial, result, airportId) {
+  let lastObserved = "";
+  for (let attempt = 0; attempt < 3; attempt += 1) {
+    await tapTag(serial, CHART_SEARCH_INPUT_TAG, 10000);
+    await delay(300);
+    clearFocusedText(serial);
+    inputText(serial, airportId);
+    const matched = await waitFor(() => {
+      const xml = dumpAndroid(serial);
+      lastObserved = chartSearchInputText(xml);
+      return lastObserved === airportId &&
+        findNode(xml, (node) => hasAndroidTag(node, `parity:chart-search-suggestion:${airportId}`)) !== null;
+    }, 7000, `chart search suggestion visible for ${airportId}`).then(
+      () => true,
+      () => false,
+    );
+    if (matched) {
+      await tapTag(serial, `parity:chart-search-suggestion:${airportId}`, 10000);
+      await waitForNode(
+        serial,
+        (node) => hasAndroidTag(node, "parity:map-selection-tray"),
+        15000,
+        "airport inspector opened from chart search",
+      );
+      recordStep(result, "airport inspector opened", airportId);
+      return;
+    }
+  }
+  throwWithUi(serial, `chart search did not show ${airportId} suggestion; last observed=${JSON.stringify(lastObserved)}`);
+}
+
 function parseRouteOverlayTag(tag) {
   const match = /^parity:flight-plan-route-overlay:segments:(\d+):visible:(\d+)$/.exec(tag);
   if (!match) return null;
@@ -555,6 +596,129 @@ async function selectBadAutopilotSource(serial, result) {
   await tapTag(serial, BAD_AUTOPILOT_SOURCE_TAG, 5000);
   await waitForMapFollowProbe(serial, () => true, 45000, "Bad Autopilot ownship probe visible");
   recordStep(result, "Bad Autopilot ownship selected");
+}
+
+function cropPlateSurface(rect) {
+  return {
+    left: Math.round(rect.left + rect.width * 0.22),
+    top: Math.round(rect.top + rect.height * 0.20),
+    right: Math.round(rect.right - rect.width * 0.22),
+    bottom: Math.round(rect.bottom - rect.height * 0.12),
+  };
+}
+
+function analyzePngCrop(pngBytes, crop) {
+  const tmpDir = mkdtempSync(join(tmpdir(), "aerobag-e2e-plate-"));
+  const pngPath = join(tmpDir, "screen.png");
+  try {
+    writeFileSync(pngPath, pngBytes);
+    const script = `
+from PIL import Image
+import json
+import math
+import sys
+
+path = sys.argv[1]
+crop = json.loads(sys.argv[2])
+image = Image.open(path).convert("RGB")
+left = max(0, min(image.width, int(crop["left"])))
+top = max(0, min(image.height, int(crop["top"])))
+right = max(left + 1, min(image.width, int(crop["right"])))
+bottom = max(top + 1, min(image.height, int(crop["bottom"])))
+region = image.crop((left, top, right, bottom))
+pixels = list(region.getdata())
+step = max(1, len(pixels) // 50000)
+sample = pixels[::step]
+lumas = [0.2126 * r + 0.7152 * g + 0.0722 * b for (r, g, b) in sample]
+mean = sum(lumas) / len(lumas)
+variance = sum((value - mean) ** 2 for value in lumas) / len(lumas)
+bright = sum(1 for value in lumas if value >= 220.0) / len(lumas)
+dark = sum(1 for value in lumas if value <= 80.0) / len(lumas)
+quantized = len({(r // 16, g // 16, b // 16) for (r, g, b) in sample})
+print(json.dumps({
+    "crop": {"left": left, "top": top, "right": right, "bottom": bottom},
+    "sampleCount": len(sample),
+    "lumaMean": mean,
+    "lumaStdDev": math.sqrt(variance),
+    "brightRatio": bright,
+    "darkRatio": dark,
+    "quantizedColorCount": quantized,
+}))
+`;
+    const res = spawnSync("python3", ["-c", script, pngPath, JSON.stringify(crop)], {
+      encoding: "utf8",
+      timeout: 20000,
+    });
+    if (res.status !== 0) {
+      throw new Error(`screenshot analysis failed: ${res.stderr || res.stdout}`);
+    }
+    return JSON.parse(res.stdout);
+  } finally {
+    rmSync(tmpDir, { recursive: true, force: true });
+  }
+}
+
+function plateImageIsVisiblyPainted(stats) {
+  return stats.brightRatio >= 0.10 && stats.lumaMean >= 170 && stats.lumaStdDev >= 18;
+}
+
+async function waitForPlateImagePainted(serial, result) {
+  let lastStats = null;
+  let lastCrop = null;
+  await waitFor(() => {
+    const xml = dumpAndroid(serial);
+    const surface = findNode(xml, (node) => hasAndroidTag(node, PLATE_SURFACE_TAG));
+    if (!surface) return false;
+    lastCrop = cropPlateSurface(rectOfBounds(surface.bounds));
+    lastStats = analyzePngCrop(screencapPng(serial), lastCrop);
+    return plateImageIsVisiblyPainted(lastStats);
+  }, 45000, "plate image visibly painted on first open", 1000).catch((error) => {
+    throw new Error(`${error.message}; lastCrop=${JSON.stringify(lastCrop)}; lastStats=${JSON.stringify(lastStats)}`);
+  });
+  recordStep(
+    result,
+    "plate image visibly painted",
+    `mean=${lastStats.lumaMean.toFixed(1)} stdev=${lastStats.lumaStdDev.toFixed(1)} bright=${lastStats.brightRatio.toFixed(3)}`,
+  );
+  recordCheck(result, "plate.firstOpenVisiblyPainted", true, JSON.stringify(lastStats));
+}
+
+async function openFirstPlateFromAirportInspector(serial, result, airportId) {
+  await inspectAirportFromChartSearch(serial, result, airportId);
+
+  const airportItemTag = `parity:map-selection-item:airport-${airportId}`;
+  if (findNode(dumpAndroid(serial), (node) => hasAndroidTag(node, airportItemTag))) {
+    await tapTag(serial, airportItemTag, 5000);
+    await delay(300);
+  }
+  const platesAction = await waitForNode(
+    serial,
+    (node) => hasAndroidTag(node, "parity:map-selection-action:plates"),
+    10000,
+    "airport plates action",
+  );
+  if (platesAction.enabled !== "true") {
+    throwWithUi(serial, `airport plates action is disabled for ${airportId}`);
+  }
+  await tapTag(serial, "parity:map-selection-action:plates", 10000);
+  await waitForNode(
+    serial,
+    (node) => hasAndroidTag(node, "parity:plate-folder-button"),
+    15000,
+    "plate folder page opened",
+  );
+  recordStep(result, "plate folder opened", airportId);
+
+  const firstTile = await waitForNode(
+    serial,
+    (node) => androidTag(node).startsWith(PLATE_FOLDER_TILE_PREFIX),
+    45000,
+    "first plate folder tile",
+  );
+  const firstTileTag = androidTag(firstTile);
+  await tapTag(serial, firstTileTag, 10000);
+  await waitForNode(serial, (node) => hasAndroidTag(node, PLATE_SURFACE_TAG), 15000, "plate surface after tile selection");
+  recordStep(result, "first plate opened", firstTileTag.slice(PLATE_FOLDER_TILE_PREFIX.length));
 }
 
 async function ensureMapFollowEngaged(serial, result) {
@@ -685,10 +849,32 @@ async function runMapFollowCtrGestureSmoke({ serial, route, packageSourcePort, s
   return result;
 }
 
+async function runPlateFirstRenderSmoke({ serial, packageSourcePort, syncOfflinePackages }) {
+  const result = createTestResult("android.plate-first-render-smoke");
+  adb(serial, ["logcat", "-c"]);
+  await launchFreshAndroidApp(serial, { clearUiPrefs: true, clearCoreSettings: false });
+  recordStep(result, "app launched", serial || "default adb device");
+  if (await acceptDisclaimerIfPresent(serial)) {
+    recordStep(result, "disclaimer accepted");
+  }
+  await ensureOfflinePackagesReady(serial, result, { packageSourcePort, syncOfflinePackages });
+  await waitForRuntime(serial, result);
+  await ensureChartPage(serial, result);
+  await openFirstPlateFromAirportInspector(serial, result, "KPLU");
+  await waitForPlateImagePainted(serial, result);
+  result.status = "pass";
+  result.finished_at = new Date().toISOString();
+  return result;
+}
+
 const tests = [
   {
     id: "android.flight-plan-route-smoke",
     run: runFlightPlanRouteSmoke,
+  },
+  {
+    id: "android.plate-first-render-smoke",
+    run: runPlateFirstRenderSmoke,
   },
   {
     id: "android.map-follow-ctr-gesture-smoke",
@@ -705,6 +891,12 @@ async function main() {
   if (!args.route.trim()) {
     throw new Error("--route must not be empty");
   }
+  const selectedTests = args.test
+    ? tests.filter((test) => test.id === args.test)
+    : tests;
+  if (selectedTests.length === 0) {
+    throw new Error(`unknown test ${JSON.stringify(args.test)}; available=${tests.map((test) => test.id).join(", ")}`);
+  }
   const suite = {
     suite: "android-e2e",
     package: ANDROID_PACKAGE,
@@ -712,7 +904,7 @@ async function main() {
     started_at: new Date().toISOString(),
     results: [],
   };
-  for (const test of tests) {
+  for (const test of selectedTests) {
     console.log(`# ${test.id}`);
     try {
       suite.results.push(await test.run(args));

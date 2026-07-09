@@ -14,7 +14,7 @@ use sha2::{Digest, Sha256};
 use crate::CoreResourcePolicy;
 use crate::{
     chart_ident_label_for_nav_ref_symbol,
-    chart_page::airport_ids_from_plan,
+    chart_page::chart_page_airport_ids_from_plan,
     chart_page::PlateChartAssetRecord,
     data_status::{
         parse_status_action_id, project_data_status_state, DataStatusRecord, UiDataStatusPageFact,
@@ -136,6 +136,8 @@ impl DisplayDimTimeout {
 pub struct UiChartPageState {
     pub ordered_airport_ids: Vec<String>,
     pub recent_airport_ids: Vec<String>,
+    #[serde(default)]
+    pub plate_target_airport_id: Option<String>,
     pub selected_airport_id: String,
     pub selected_chart_id: String,
 }
@@ -3111,6 +3113,7 @@ fn create_ui_session_inner(
     let chart_page_state = derive_compact_chart_page_state(
         &active_plan,
         recent_airport_ids,
+        None,
         selected_airport_id,
         selected_chart_id,
     );
@@ -3978,8 +3981,13 @@ pub fn select_airport_in_session(handle: u32, airport_id: &str) -> AppResult<UiS
             .filter(|id| id.as_str() != airport_id)
             .cloned(),
     );
-    session.chart_page_state =
-        derive_compact_chart_page_state(&plan, &recent_airport_ids, Some(airport_id), None);
+    session.chart_page_state = derive_compact_chart_page_state(
+        &plan,
+        &recent_airport_ids,
+        session.chart_page_state.plate_target_airport_id.as_deref(),
+        Some(airport_id),
+        None,
+    );
     snapshot_for_changed_session(session)
 }
 
@@ -3990,6 +3998,7 @@ pub fn select_chart_in_session(handle: u32, chart_id: &str) -> AppResult<UiSessi
     session.chart_page_state = derive_compact_chart_page_state(
         &plan,
         &session.chart_page_state.recent_airport_ids,
+        session.chart_page_state.plate_target_airport_id.as_deref(),
         Some(&session.chart_page_state.selected_airport_id),
         Some(chart_id),
     );
@@ -5410,6 +5419,7 @@ pub fn sync_map_follow_in_session(
 pub fn restore_chart_page_state_in_session(
     handle: u32,
     recent_airport_ids: &[String],
+    plate_target_airport_id: Option<&str>,
     selected_airport_id: Option<&str>,
     selected_chart_id: Option<&str>,
 ) -> AppResult<UiSessionSnapshot> {
@@ -5419,6 +5429,7 @@ pub fn restore_chart_page_state_in_session(
     session.chart_page_state = derive_compact_chart_page_state(
         &plan,
         recent_airport_ids,
+        plate_target_airport_id,
         selected_airport_id,
         selected_chart_id,
     );
@@ -8951,6 +8962,7 @@ fn replace_session_flight_plan(session: &mut UiSession, plan: FlightPlan) -> App
     session.chart_page_state = derive_compact_chart_page_state(
         &normalized_plan,
         &session.chart_page_state.recent_airport_ids,
+        session.chart_page_state.plate_target_airport_id.as_deref(),
         Some(&session.chart_page_state.selected_airport_id),
         Some(&session.chart_page_state.selected_chart_id),
     );
@@ -11049,13 +11061,17 @@ fn clockwise_delta_degrees(from_deg: f64, to_deg: f64) -> f64 {
 fn derive_compact_chart_page_state(
     plan: &FlightPlan,
     stored_recent_airport_ids: &[String],
+    plate_target_airport_id: Option<&str>,
     candidate_airport_id: Option<&str>,
     candidate_chart_id: Option<&str>,
 ) -> UiChartPageState {
     let mut ordered_airport_ids = Vec::new();
-    for airport_id in
-        compact_chart_page_airport_candidates(plan, stored_recent_airport_ids, candidate_airport_id)
-    {
+    for airport_id in compact_chart_page_airport_candidates(
+        plan,
+        stored_recent_airport_ids,
+        plate_target_airport_id,
+        candidate_airport_id,
+    ) {
         if !ordered_airport_ids
             .iter()
             .any(|existing| existing == &airport_id)
@@ -11083,19 +11099,25 @@ fn derive_compact_chart_page_state(
             recent_airport_ids.push(airport_id.clone());
         }
     }
-    let selected_airport_id = candidate_airport_id
+    let selected_airport_id = normalize_compact_airport_id(candidate_airport_id)
         .filter(|airport_id| {
             ordered_airport_ids
                 .iter()
-                .any(|existing| existing == *airport_id)
+                .any(|existing| existing == airport_id)
         })
-        .map(str::to_string)
         .or_else(|| recent_airport_ids.first().cloned())
         .or_else(|| ordered_airport_ids.first().cloned())
         .unwrap_or_default();
+    let plate_target_airport_id =
+        normalize_compact_airport_id(plate_target_airport_id).filter(|airport_id| {
+            ordered_airport_ids
+                .iter()
+                .any(|existing| existing == airport_id)
+        });
     UiChartPageState {
         ordered_airport_ids,
         recent_airport_ids,
+        plate_target_airport_id,
         selected_airport_id,
         selected_chart_id: candidate_chart_id.unwrap_or_default().to_string(),
     }
@@ -11104,9 +11126,16 @@ fn derive_compact_chart_page_state(
 fn compact_chart_page_airport_candidates(
     plan: &FlightPlan,
     stored_recent_airport_ids: &[String],
+    plate_target_airport_id: Option<&str>,
     candidate_airport_id: Option<&str>,
 ) -> Vec<String> {
     let mut airport_ids = Vec::new();
+    if let Some(plate_target_airport_id) = plate_target_airport_id
+        .map(str::trim)
+        .filter(|airport_id| !airport_id.is_empty())
+    {
+        airport_ids.push(plate_target_airport_id.to_ascii_uppercase());
+    }
     if let Some(candidate_airport_id) = candidate_airport_id
         .map(str::trim)
         .filter(|airport_id| !airport_id.is_empty())
@@ -11119,7 +11148,7 @@ fn compact_chart_page_airport_candidates(
             airport_ids.push(airport_id.to_ascii_uppercase());
         }
     }
-    airport_ids.extend(airport_ids_from_plan(plan));
+    airport_ids.extend(chart_page_airport_ids_from_plan(plan));
 
     let mut unique_airport_ids = Vec::new();
     for airport_id in airport_ids {
@@ -11131,6 +11160,13 @@ fn compact_chart_page_airport_candidates(
         }
     }
     unique_airport_ids
+}
+
+fn normalize_compact_airport_id(airport_id: Option<&str>) -> Option<String> {
+    airport_id
+        .map(str::trim)
+        .filter(|airport_id| !airport_id.is_empty())
+        .map(str::to_ascii_uppercase)
 }
 
 #[cfg(test)]
@@ -12529,6 +12565,7 @@ mod tests {
                 &[],
                 None,
                 None,
+                None,
             ),
             nav_kv_store_id: None,
             nav_kv_store: None,
@@ -12714,6 +12751,7 @@ mod tests {
             chart_page_state: derive_compact_chart_page_state(
                 &FlightPlan::default(),
                 &[],
+                None,
                 None,
                 None,
             ),
@@ -13152,6 +13190,7 @@ mod tests {
             chart_page_state: derive_compact_chart_page_state(
                 &FlightPlan::default(),
                 &[],
+                None,
                 None,
                 None,
             ),

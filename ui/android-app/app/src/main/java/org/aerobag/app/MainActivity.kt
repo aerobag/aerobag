@@ -198,6 +198,7 @@ import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
 import org.aerobag.app.domain.ChartAirport
+import org.aerobag.app.domain.ChartAirportMenuEntry
 import org.aerobag.app.domain.ChartAsset
 import org.aerobag.app.domain.AppState
 import org.aerobag.app.domain.AirwayPresentationPlan
@@ -519,6 +520,7 @@ internal data class AppViewSnapshot(
     val selectedMapId: String,
     val selectedMapLauncherLabel: String,
     val mapViewport: MapViewportState,
+    val plateTargetAirportId: String?,
     val selectedAirportId: String,
     val selectedChartId: String,
     val selectedChartLabel: String,
@@ -1057,14 +1059,24 @@ internal data class HomeGridButton(
 internal data class MenuDockOption(
     val key: String,
     val label: String,
+    val separator: Boolean = false,
     val active: Boolean = false,
     val enabled: Boolean = true,
     val disabledReason: String? = null,
     val accentColor: Color? = null,
     val toggleState: UiMapLayerToggleState? = null,
     @DrawableRes val iconResId: Int? = null,
-    val onSelect: () -> Unit,
-)
+    val onSelect: () -> Unit = {},
+) {
+    companion object {
+        fun separator(key: String, label: String) = MenuDockOption(
+            key = key,
+            label = label,
+            separator = true,
+            enabled = false,
+        )
+    }
+}
 
 internal enum class MenuDockStyle(
     val buttonWidth: androidx.compose.ui.unit.Dp,
@@ -2462,6 +2474,7 @@ internal fun AerobagApp(
         mutableStateOf(
             DerivedChartPageState(
                 airports = emptyList<ChartAirport>(),
+                airportMenuEntries = emptyList<ChartAirportMenuEntry>(),
                 recentAirportIds = sessionSnapshot.chartPageState.recentAirportIds,
                 selectedAirportId = sessionSnapshot.chartPageState.selectedAirportId,
                 selectedChartId = sessionSnapshot.chartPageState.selectedChartId,
@@ -2514,6 +2527,7 @@ internal fun AerobagApp(
         appCore,
         currentPlan,
         sessionSnapshot.chartPageState.recentAirportIds,
+        sessionSnapshot.chartPageState.plateTargetAirportId,
         sessionSnapshot.chartPageState.selectedAirportId,
         sessionSnapshot.chartPageState.selectedChartId,
     ) {
@@ -2521,6 +2535,7 @@ internal fun AerobagApp(
             appCore.deriveChartPageState(
                 currentPlan,
                 sessionSnapshot.chartPageState.recentAirportIds,
+                sessionSnapshot.chartPageState.plateTargetAirportId,
                 sessionSnapshot.chartPageState.selectedAirportId.ifBlank { null },
                 sessionSnapshot.chartPageState.selectedChartId.ifBlank { null },
             )
@@ -2601,6 +2616,7 @@ internal fun AerobagApp(
         selectedMapLauncherLabel =
             rasterMapState.selectedFamilyLauncherLabel,
         mapViewport = mapViewport,
+        plateTargetAirportId = sessionSnapshot.chartPageState.plateTargetAirportId,
         selectedAirportId = selectedAirportId,
         selectedChartId = selectedChartId,
         selectedChartLabel = selectedChart?.label.orEmpty(),
@@ -2610,10 +2626,11 @@ internal fun AerobagApp(
     )
 
     fun restoreSnapshot(snapshot: AppViewSnapshot, history: List<AppViewSnapshot>) {
-        if (snapshot.selectedAirportId.isNotBlank() || snapshot.selectedChartId.isNotBlank() || snapshot.recentAirportIds.isNotEmpty()) {
+        if (snapshot.plateTargetAirportId != null || snapshot.selectedAirportId.isNotBlank() || snapshot.selectedChartId.isNotBlank() || snapshot.recentAirportIds.isNotEmpty()) {
             applySessionCommand("restoreChartPageState") {
                 uiSession.restoreChartPageState(
                     recentAirportIds = snapshot.recentAirportIds,
+                    plateTargetAirportId = snapshot.plateTargetAirportId,
                     selectedAirportId = snapshot.selectedAirportId.ifBlank { null },
                     selectedChartId = snapshot.selectedChartId.ifBlank { null },
                 )
@@ -2698,6 +2715,7 @@ internal fun AerobagApp(
         restoreSnapshot(
             currentSnapshot().copy(
                 page = AppPage.Charts,
+                plateTargetAirportId = airportId,
                 selectedAirportId = airportId,
                 selectedChartId = selectedChart?.id.orEmpty(),
                 selectedChartLabel = selectedChart?.label.orEmpty(),
@@ -2718,6 +2736,7 @@ internal fun AerobagApp(
         restoreSnapshot(
             currentSnapshot().copy(
                 page = AppPage.Charts,
+                plateTargetAirportId = airportId,
                 selectedAirportId = airportId,
                 selectedChartId = chartId,
                 selectedChartLabel = "",
@@ -2848,6 +2867,7 @@ internal fun AerobagApp(
                         pageHistory = pageHistory,
                         uptimeLabel = uptimeLabel,
                         airports = orderedChartAirports,
+                        airportMenuEntries = derivedChartPageState.airportMenuEntries,
                         selectedAirport = selectedAirport,
                         selectedChart = selectedChart,
                         chartAssetDataRevision = chartAssetDataRevision,

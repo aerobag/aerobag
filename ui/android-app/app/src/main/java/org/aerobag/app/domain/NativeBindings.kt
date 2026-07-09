@@ -398,6 +398,7 @@ interface NativeBridge {
     fun restoreChartPageStateInSessionJson(
         handle: Long,
         recentAirportIdsJson: String,
+        plateTargetAirportIdJson: String,
         selectedAirportIdJson: String,
         selectedChartIdJson: String,
     ): String
@@ -964,6 +965,7 @@ object NativeBindings : NativeBridge {
     external override fun restoreChartPageStateInSessionJson(
         handle: Long,
         recentAirportIdsJson: String,
+        plateTargetAirportIdJson: String,
         selectedAirportIdJson: String,
         selectedChartIdJson: String,
     ): String

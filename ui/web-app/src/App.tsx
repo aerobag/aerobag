@@ -724,17 +724,24 @@ type ResolvedChartUrls = {
   assetUrl?: string | null;
   thumbnailUrl?: string | null;
 };
-type TrayOption = {
-  id: string;
-  label: string;
-  iconSrc?: string;
-  toggleState?: UiMapLayerToggleState;
-  active?: boolean;
-  disabled?: boolean;
-  disabledReason?: string | null;
-  accentColor?: string;
-  onSelect: () => void;
-};
+type TrayOption =
+  | {
+    kind?: "option";
+    id: string;
+    label: string;
+    iconSrc?: string;
+    toggleState?: UiMapLayerToggleState;
+    active?: boolean;
+    disabled?: boolean;
+    disabledReason?: string | null;
+    accentColor?: string;
+    onSelect: () => void;
+  }
+  | {
+    kind: "separator";
+    id: string;
+    label: string;
+  };
 
 function disabledReasonText(reason: string | null | undefined): string | null {
   const trimmed = reason?.trim();
@@ -1124,6 +1131,7 @@ type AppViewSnapshot = {
   page: AppPage;
   selectedMapId: string;
   mapViewport: MapViewportState;
+  plateTargetAirportId: string | null;
   selectedAirportId: string;
   selectedChartId: string;
   selectedChartLabel: string;
@@ -1747,6 +1755,7 @@ export default function App() {
   const initialChartPageState = useMemo<DerivedChartPageState>(
     () => ({
       airports: emptyChartPage.airports,
+      airport_menu_entries: [],
       recent_airport_ids: initialRecentAirportIds,
       selected_airport_id: persistedUiState.selectedAirportId ?? initialRecentAirportIds[0] ?? "",
       selected_chart_id: persistedUiState.selectedChartId ?? "",
@@ -1808,6 +1817,7 @@ export default function App() {
     chart_page_state: {
       ordered_airport_ids: initialChartPageState.airports.map((airport) => airport.id),
       recent_airport_ids: initialChartPageState.recent_airport_ids,
+      plate_target_airport_id: null,
       selected_airport_id: initialChartPageState.selected_airport_id,
       selected_chart_id: initialChartPageState.selected_chart_id,
     },
@@ -1959,6 +1969,7 @@ export default function App() {
     () => ({ airports: derivedChartPageState.airports }),
     [derivedChartPageState.airports],
   );
+  const airportMenuEntries = derivedChartPageState.airport_menu_entries;
 
   useEffect(() => installMainThreadResponsivenessInstrumentation(), []);
 
@@ -2405,18 +2416,21 @@ export default function App() {
       return null;
     }
     const recentAirportIds = sessionSnapshot.chart_page_state.recent_airport_ids;
+    const plateTargetAirportId = sessionSnapshot.chart_page_state.plate_target_airport_id ?? null;
     const selectedAirportId = sessionSnapshot.chart_page_state.selected_airport_id || undefined;
     const selectedChartId = sessionSnapshot.chart_page_state.selected_chart_id || undefined;
     return {
-      key: JSON.stringify([currentPlan, recentAirportIds, selectedAirportId ?? null, selectedChartId ?? null]),
+      key: JSON.stringify([currentPlan, recentAirportIds, plateTargetAirportId, selectedAirportId ?? null, selectedChartId ?? null]),
       plan: currentPlan,
       recentAirportIds,
+      plateTargetAirportId,
       selectedAirportId,
       selectedChartId,
     };
   }, [
     currentPlan,
     sessionSnapshot.chart_page_state.recent_airport_ids,
+    sessionSnapshot.chart_page_state.plate_target_airport_id,
     sessionSnapshot.chart_page_state.selected_airport_id,
     sessionSnapshot.chart_page_state.selected_chart_id,
   ]);
@@ -2592,6 +2606,7 @@ export default function App() {
       () => appCoreAdapter.deriveChartPageState(
         chartPageStateRequest.plan,
         chartPageStateRequest.recentAirportIds,
+        chartPageStateRequest.plateTargetAirportId,
         chartPageStateRequest.selectedAirportId,
         chartPageStateRequest.selectedChartId,
       ),
@@ -2681,6 +2696,7 @@ export default function App() {
       page,
       selectedMapId: rasterMapState?.selected_map_id ?? "",
       mapViewport,
+      plateTargetAirportId: sessionSnapshot.chart_page_state.plate_target_airport_id ?? null,
       selectedAirportId,
       selectedChartId,
       selectedChartLabel: selectedChart?.label ?? "",
@@ -2706,6 +2722,7 @@ export default function App() {
     if (uiSession) {
       void uiSession.restoreChartPageState(
         snapshot.recentAirportIds,
+        snapshot.plateTargetAirportId ?? null,
         snapshot.selectedAirportId || undefined,
         snapshot.selectedChartId || undefined,
       ).then((nextSnapshot) => {
@@ -2828,6 +2845,7 @@ export default function App() {
       void uiSession.restoreChartPageState(
         nextRecentAirportIds,
         airportId,
+        airportId,
         targetChartId,
       ).then((nextSnapshot) => {
         applySessionSnapshot(nextSnapshot, "open_plate_target");
@@ -2841,6 +2859,7 @@ export default function App() {
     }
     pushViewSnapshot({
       page: "charts",
+      plateTargetAirportId: airportId,
       selectedAirportId: airportId,
       selectedChartId: targetChartId,
       selectedChartLabel: "",
@@ -3057,6 +3076,7 @@ export default function App() {
               void uiSession.restoreChartPageState(
                 moveAirportToFront(recentAirportIds, airportId, chartPageData.airports),
                 airportId,
+                airportId,
                 resolvedChartId || undefined,
               ).then((nextSnapshot) => {
                 debugLog("charts.open.snapshot", {
@@ -3070,6 +3090,7 @@ export default function App() {
             }
             pushViewSnapshot({
               page: "charts",
+              plateTargetAirportId: airportId,
               selectedAirportId: airportId,
               selectedChartId: resolvedChartId,
               selectedChartLabel: resolvedChartLabel,
@@ -3162,7 +3183,7 @@ export default function App() {
           page={page}
           plan={currentPlan}
           planUiState={planUiState}
-          airports={chartPageData.airports}
+          airportMenuEntries={airportMenuEntries}
           selectedAirport={selectedAirport}
           selectedChart={selectedChart}
           folderOpen={chartFolderOpen}
@@ -8337,6 +8358,13 @@ function TrayDock(props: {
             >
               <div className={style === "situation" ? "situationSourceRow" : "trayOptions"}>
                 {options.map((option) => {
+                  if (option.kind === "separator") {
+                    return (
+                      <div key={option.id} className="traySeparator" role="separator">
+                        {option.label}
+                      </div>
+                    );
+                  }
                   const optionDisabledReason = disabledReasonText(option.disabledReason);
                   const optionDisabled = option.disabled ?? false;
                   return (
@@ -8783,7 +8811,7 @@ function ChartsPage(props: {
   page: AppPage;
   plan: FlightPlan;
   planUiState: FlightPlanUiState | null;
-  airports: ChartPageData["airports"];
+  airportMenuEntries: DerivedChartPageState["airport_menu_entries"];
   selectedAirport: ChartPageData["airports"][number] | null;
   selectedChart: ChartAsset | null;
   folderOpen: boolean;
@@ -8807,7 +8835,7 @@ function ChartsPage(props: {
   debugWarningActive: boolean;
   onFirstVisualReady: () => void;
 }) {
-  const { appCoreAdapter, page, plan, planUiState, airports, selectedAirport, selectedChart, folderOpen, viewport, onViewportChange, onFolderOpenChange, onSelectPage, onOpenPlan, onSelectAirport, onSelectChart, uiSession, ownship, ownshipControls, onFirstVisualReady } = props;
+  const { appCoreAdapter, page, plan, planUiState, airportMenuEntries, selectedAirport, selectedChart, folderOpen, viewport, onViewportChange, onFolderOpenChange, onSelectPage, onOpenPlan, onSelectAirport, onSelectChart, uiSession, ownship, ownshipControls, onFirstVisualReady } = props;
   const containerRef = useRef<HTMLDivElement | null>(null);
   const imageRef = useRef<HTMLImageElement | null>(null);
   const [surfaceSize, setSurfaceSize] = useState<SurfaceSize>({ width: 0, height: 0 });
@@ -9372,15 +9400,25 @@ function ChartsPage(props: {
             ariaLabel="Airport"
             style="plate_narrow"
             testId="plate-airport-button"
-            options={airports.map((airport) => ({
-              id: airport.id,
-              label: airport.id,
-              active: airport.id === selectedAirport?.id,
-              onSelect: () => {
-                onSelectAirport(airport.id);
-                trayGroup.close("airport");
-              },
-            }))}
+            options={airportMenuEntries.map((entry, index) => {
+              if (entry.kind === "separator") {
+                return {
+                  kind: "separator",
+                  id: `separator:${index}:${entry.label}`,
+                  label: entry.label,
+                };
+              }
+              const { airport } = entry;
+              return {
+                id: airport.id,
+                label: airport.id,
+                active: airport.id === selectedAirport?.id,
+                onSelect: () => {
+                  onSelectAirport(airport.id);
+                  trayGroup.close("airport");
+                },
+              };
+            })}
           />
           <TrayDock
             launcherLabel={selectedChart?.label ?? "---"}

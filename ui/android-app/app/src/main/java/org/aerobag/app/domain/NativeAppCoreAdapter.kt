@@ -450,6 +450,7 @@ class NativeAppCoreAdapter(
     fun deriveChartPageState(
         plan: FlightPlan,
         recentAirportIds: List<String>,
+        plateTargetAirportId: String?,
         selectedAirportId: String?,
         selectedChartId: String?,
     ): DerivedChartPageState {
@@ -458,6 +459,7 @@ class NativeAppCoreAdapter(
                 put("kind", "chart_page_state")
                 put("plan", json.encodeToJsonElement(plan.toWire()))
                 put("recent_airport_ids", json.encodeToJsonElement(recentAirportIds))
+                put("plate_target_airport_id", json.encodeToJsonElement(plateTargetAirportId))
                 put("selected_airport_id", json.encodeToJsonElement(selectedAirportId))
                 put("selected_chart_id", json.encodeToJsonElement(selectedChartId))
             },
@@ -1134,6 +1136,7 @@ class NativeUiSession internal constructor(
 
     fun restoreChartPageState(
         recentAirportIds: List<String>,
+        plateTargetAirportId: String?,
         selectedAirportId: String?,
         selectedChartId: String?,
     ): UiSessionSnapshot {
@@ -1141,6 +1144,7 @@ class NativeUiSession internal constructor(
             bridge.restoreChartPageStateInSessionJson(
                 handle,
                 json.encodeToString(recentAirportIds),
+                json.encodeToString(plateTargetAirportId),
                 json.encodeToString(selectedAirportId),
                 json.encodeToString(selectedChartId),
             )
@@ -1879,6 +1883,7 @@ internal data class WireDerivedChartPage(
 @kotlinx.serialization.Serializable
 private data class WireDerivedChartPageState(
     val airports: List<WireDerivedChartAirport>,
+    val airport_menu_entries: List<WireDerivedChartAirportMenuEntry> = emptyList(),
     val recent_airport_ids: List<String>,
     val selected_airport_id: String,
     val selected_chart_id: String,
@@ -1888,6 +1893,7 @@ private data class WireDerivedChartPageState(
 private data class WireUiChartPageState(
     val ordered_airport_ids: List<String>,
     val recent_airport_ids: List<String>,
+    val plate_target_airport_id: String? = null,
     val selected_airport_id: String,
     val selected_chart_id: String,
 )
@@ -2119,6 +2125,35 @@ internal data class WireDerivedChartAirport(
     val charts: List<WireDerivedChartAsset>,
 )
 
+@kotlinx.serialization.Serializable(with = WireDerivedChartAirportMenuEntrySerializer::class)
+private sealed interface WireDerivedChartAirportMenuEntry
+
+private object WireDerivedChartAirportMenuEntrySerializer :
+    kotlinx.serialization.json.JsonContentPolymorphicSerializer<WireDerivedChartAirportMenuEntry>(WireDerivedChartAirportMenuEntry::class) {
+    override fun selectDeserializer(
+        element: JsonElement,
+    ): kotlinx.serialization.DeserializationStrategy<WireDerivedChartAirportMenuEntry> =
+        when (val kind = element.jsonObject["kind"]?.jsonPrimitive?.content) {
+            "separator" -> WireDerivedChartAirportMenuSeparator.serializer()
+            "airport" -> WireDerivedChartAirportMenuAirport.serializer()
+            else -> error("Unsupported chart airport menu entry variant: $kind")
+        }
+}
+
+@kotlinx.serialization.Serializable
+@kotlinx.serialization.SerialName("separator")
+private data class WireDerivedChartAirportMenuSeparator(
+    val kind: String = "separator",
+    val label: String,
+) : WireDerivedChartAirportMenuEntry
+
+@kotlinx.serialization.Serializable
+@kotlinx.serialization.SerialName("airport")
+private data class WireDerivedChartAirportMenuAirport(
+    val kind: String = "airport",
+    val airport: WireDerivedChartAirport,
+) : WireDerivedChartAirportMenuEntry
+
 @kotlinx.serialization.Serializable
 internal data class WireDerivedChartAsset(
     val id: String,
@@ -2173,6 +2208,7 @@ internal fun WireDerivedChartPage.toUi() = ChartPageFixture(
 
 data class DerivedChartPageState(
     val airports: List<ChartAirport>,
+    val airportMenuEntries: List<ChartAirportMenuEntry>,
     val recentAirportIds: List<String>,
     val selectedAirportId: String,
     val selectedChartId: String,
@@ -2320,6 +2356,7 @@ data class UiPlaybackPanelState(
 data class UiChartPageState(
     val orderedAirportIds: List<String>,
     val recentAirportIds: List<String>,
+    val plateTargetAirportId: String?,
     val selectedAirportId: String,
     val selectedChartId: String,
 )
@@ -2354,6 +2391,7 @@ internal fun decodeRasterMapUiStateForTesting(rasterMapJson: String): RasterMapU
 
 private fun WireDerivedChartPageState.toUi() = DerivedChartPageState(
     airports = airports.map { it.toUi() },
+    airportMenuEntries = airport_menu_entries.map { it.toUi() },
     recentAirportIds = recent_airport_ids,
     selectedAirportId = selected_airport_id,
     selectedChartId = selected_chart_id,
@@ -2362,6 +2400,7 @@ private fun WireDerivedChartPageState.toUi() = DerivedChartPageState(
 private fun WireUiChartPageState.toUi() = UiChartPageState(
     orderedAirportIds = ordered_airport_ids,
     recentAirportIds = recent_airport_ids,
+    plateTargetAirportId = plate_target_airport_id,
     selectedAirportId = selected_airport_id,
     selectedChartId = selected_chart_id,
 )
@@ -2520,6 +2559,12 @@ internal fun WireDerivedChartAirport.toUi() = ChartAirport(
     label = label,
     charts = charts.map { it.toUi() },
 )
+
+private fun WireDerivedChartAirportMenuEntry.toUi(): ChartAirportMenuEntry =
+    when (this) {
+        is WireDerivedChartAirportMenuSeparator -> ChartAirportMenuEntry.Separator(label)
+        is WireDerivedChartAirportMenuAirport -> ChartAirportMenuEntry.Airport(airport.toUi())
+    }
 
 internal fun WireDerivedChartAsset.toUi() = ChartAsset(
     id = id,

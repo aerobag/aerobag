@@ -13,7 +13,7 @@ use serde_json::Value;
 use crate::planning::FlightPlanRowActionId;
 use crate::{
     chart_page::{
-        airport_ids_from_plan, derive_chart_page_state_from_airports, PlateAirportRecord,
+        chart_page_airport_ids_from_plan, derive_chart_page_state_from_airports, PlateAirportRecord,
     },
     describe_plate_procedure_load_options, describe_show_plate_for_procedure,
     flight_leg_distance_nm, flight_plan_contains_nav_ref, flight_plan_has_direct_to_overlay,
@@ -628,6 +628,8 @@ pub enum HadOperation {
     ChartPageState {
         plan: FlightPlan,
         recent_airport_ids: Vec<String>,
+        #[serde(default)]
+        plate_target_airport_id: Option<String>,
         selected_airport_id: Option<String>,
         selected_chart_id: Option<String>,
     },
@@ -901,12 +903,14 @@ fn run_had_operation_value(store: &NavKvStore, op: HadOperation) -> Result<Value
         HadOperation::ChartPageState {
             plan,
             recent_airport_ids,
+            plate_target_airport_id,
             selected_airport_id,
             selected_chart_id,
         } => serde_json::to_value(chart_page_state(
             store,
             &plan,
             &recent_airport_ids,
+            plate_target_airport_id.as_deref(),
             selected_airport_id.as_deref(),
             selected_chart_id.as_deref(),
         )?)?,
@@ -1637,13 +1641,17 @@ fn chart_page_state(
     store: &NavKvStore,
     plan: &FlightPlan,
     stored_recent_airport_ids: &[String],
+    plate_target_airport_id: Option<&str>,
     candidate_airport_id: Option<&str>,
     candidate_chart_id: Option<&str>,
 ) -> Result<crate::DerivedChartPageState, HadReadError> {
     let mut airports = Vec::new();
-    for airport_id in
-        chart_page_airport_candidates(plan, stored_recent_airport_ids, candidate_airport_id)
-    {
+    for airport_id in chart_page_airport_candidates(
+        plan,
+        stored_recent_airport_ids,
+        plate_target_airport_id,
+        candidate_airport_id,
+    ) {
         if airports
             .iter()
             .any(|airport: &crate::DerivedChartAirport| airport.id == airport_id)
@@ -1655,8 +1663,10 @@ fn chart_page_state(
         }
     }
     Ok(derive_chart_page_state_from_airports(
+        plan,
         airports,
         stored_recent_airport_ids,
+        plate_target_airport_id,
         candidate_airport_id,
         candidate_chart_id,
     ))
@@ -1720,9 +1730,16 @@ fn read_plate_by_id(store: &NavKvStore, plate_id: &str) -> Result<PlateByIdRead,
 fn chart_page_airport_candidates(
     plan: &FlightPlan,
     stored_recent_airport_ids: &[String],
+    plate_target_airport_id: Option<&str>,
     candidate_airport_id: Option<&str>,
 ) -> Vec<String> {
     let mut airport_ids = Vec::new();
+    if let Some(plate_target_airport_id) = plate_target_airport_id
+        .map(str::trim)
+        .filter(|airport_id| !airport_id.is_empty())
+    {
+        airport_ids.push(plate_target_airport_id.to_ascii_uppercase());
+    }
     if let Some(candidate_airport_id) = candidate_airport_id
         .map(str::trim)
         .filter(|airport_id| !airport_id.is_empty())
@@ -1735,7 +1752,7 @@ fn chart_page_airport_candidates(
             airport_ids.push(airport_id.to_ascii_uppercase());
         }
     }
-    airport_ids.extend(airport_ids_from_plan(plan));
+    airport_ids.extend(chart_page_airport_ids_from_plan(plan));
 
     let mut unique_airport_ids = Vec::new();
     for airport_id in airport_ids {

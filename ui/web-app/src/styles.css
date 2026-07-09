@@ -1939,6 +1939,20 @@ button {
   display: contents;
 }
 
+.traySeparator {
+  width: calc(var(--thumb) * 4);
+  min-width: calc(var(--thumb) * 4);
+  height: calc(var(--thumb) * 0.42);
+  display: flex;
+  align-items: end;
+  padding: 0 calc(var(--thumb) * 0.14) calc(var(--thumb) * 0.05);
+  color: #24313a;
+  font-size: calc(var(--thumb) * 0.18);
+  font-weight: 700;
+  border-bottom: 1px solid rgba(36, 49, 58, 0.28);
+  pointer-events: none;
+}
+
 .chartTray.chartTrayWide .trayButton {
   width: calc(var(--thumb) * 4);
   min-width: calc(var(--thumb) * 4);

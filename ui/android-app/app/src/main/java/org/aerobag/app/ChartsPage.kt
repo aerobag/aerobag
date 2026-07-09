@@ -188,6 +188,7 @@ import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
 import org.aerobag.app.domain.ChartAirport
+import org.aerobag.app.domain.ChartAirportMenuEntry
 import org.aerobag.app.domain.ChartAsset
 import org.aerobag.app.domain.AppState
 import org.aerobag.app.domain.AirwayPresentationPlan
@@ -355,6 +356,7 @@ internal fun ChartsPage(
     pageHistory: List<AppViewSnapshot>,
     uptimeLabel: String,
     airports: List<ChartAirport>,
+    airportMenuEntries: List<ChartAirportMenuEntry>,
     selectedAirport: ChartAirport?,
     selectedChart: ChartAsset?,
     chartAssetDataRevision: Int,
@@ -747,7 +749,7 @@ internal fun ChartsPage(
         ChartViewerSelectors(
             modifier = Modifier.align(Alignment.TopStart),
             currentPage = page,
-            airports = airports,
+            airportMenuEntries = airportMenuEntries,
             selectedAirport = selectedAirport,
             selectedChart = selectedChart,
             folderOpen = folderOpen,
@@ -1256,7 +1258,7 @@ internal fun AndroidChartSearchBox(
 internal fun ChartViewerSelectors(
     modifier: Modifier = Modifier,
     currentPage: AppPage,
-    airports: List<ChartAirport>,
+    airportMenuEntries: List<ChartAirportMenuEntry>,
     selectedAirport: ChartAirport?,
     selectedChart: ChartAsset?,
     folderOpen: Boolean,
@@ -1304,8 +1306,17 @@ internal fun ChartViewerSelectors(
                 open = airportTrayOpen,
                 onToggle = onToggleAirportTray,
                 style = MenuDockStyle.PlateAirport,
-                options = airports.map { airport ->
-                    MenuDockOption(airport.id, airport.id, active = airport.id == selectedAirport?.id) { onSelectAirport(airport.id) }
+                options = airportMenuEntries.mapIndexed { index, entry ->
+                    when (entry) {
+                        is ChartAirportMenuEntry.Separator ->
+                            MenuDockOption.separator("separator:$index:${entry.label}", entry.label)
+                        is ChartAirportMenuEntry.Airport ->
+                            MenuDockOption(
+                                entry.airport.id,
+                                entry.airport.id,
+                                active = entry.airport.id == selectedAirport?.id,
+                            ) { onSelectAirport(entry.airport.id) }
+                    }
                 },
             )
 
@@ -1524,18 +1535,22 @@ internal fun MenuDock(
                     } else {
                         LazyColumn(verticalArrangement = Arrangement.spacedBy(3.dp)) {
                             lazyColumnItems(options) { option ->
-                                MenuPanelRow(
-                                    label = option.label,
-                                    active = option.active,
-                                    enabled = option.enabled,
-                                    accentColor = option.accentColor,
-                                    toggleState = option.toggleState,
-                                    iconResId = option.iconResId,
-                                    testTag = optionTestTagPrefix?.let { "$it:${option.key}" },
-                                    disabledReason = option.disabledReason,
-                                    width = trayWidth,
-                                    onSelect = option.onSelect,
-                                )
+                                if (option.separator) {
+                                    MenuPanelSeparator(label = option.label, width = trayWidth)
+                                } else {
+                                    MenuPanelRow(
+                                        label = option.label,
+                                        active = option.active,
+                                        enabled = option.enabled,
+                                        accentColor = option.accentColor,
+                                        toggleState = option.toggleState,
+                                        iconResId = option.iconResId,
+                                        testTag = optionTestTagPrefix?.let { "$it:${option.key}" },
+                                        disabledReason = option.disabledReason,
+                                        width = trayWidth,
+                                        onSelect = option.onSelect,
+                                    )
+                                }
                             }
                         }
                     }
@@ -1543,6 +1558,30 @@ internal fun MenuDock(
                 }
             }
         }
+    }
+}
+
+@Composable
+internal fun MenuPanelSeparator(label: String, width: Dp) {
+    val uiTheme = LocalAerobagUiTheme.current
+    Column(
+        modifier = Modifier
+            .width(width)
+            .padding(start = 8.dp, top = 6.dp, end = 8.dp, bottom = 2.dp),
+    ) {
+        Text(
+            text = label,
+            style = MaterialTheme.typography.labelSmall.copy(fontWeight = FontWeight.Bold),
+            color = uiTheme.controls.panelFg.copy(alpha = 0.86f),
+            maxLines = 1,
+        )
+        Box(
+            modifier = Modifier
+                .padding(top = 2.dp)
+                .fillMaxWidth()
+                .height(1.dp)
+                .background(uiTheme.controls.panelFg.copy(alpha = 0.28f)),
+        )
     }
 }
 

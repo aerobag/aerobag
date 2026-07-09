@@ -48,6 +48,10 @@ export type {
 
 export type DerivedChartPageState = {
   airports: ChartPageData["airports"];
+  airport_menu_entries: Array<
+    | { kind: "separator"; label: string }
+    | { kind: "airport"; airport: ChartPageData["airports"][number] }
+  >;
   recent_airport_ids: string[];
   selected_airport_id: string;
   selected_chart_id: string;
@@ -237,6 +241,7 @@ export type UiMapLayerState = {
 export type UiChartPageState = {
   ordered_airport_ids: string[];
   recent_airport_ids: string[];
+  plate_target_airport_id?: string | null;
   selected_airport_id: string;
   selected_chart_id: string;
 };
@@ -701,7 +706,7 @@ export interface UiSession {
   stopLiveFeedSubscription(): Promise<void>;
   ingestLiveFeedSseEvent(event: LiveFeedSseEvent): Promise<void>;
   ingestLiveFeedSseEvents(events: LiveFeedSseEvent[]): Promise<void>;
-  restoreChartPageState(recentAirportIds: string[], selectedAirportId?: string, selectedChartId?: string): Promise<UiSessionSnapshot>;
+  restoreChartPageState(recentAirportIds: string[], plateTargetAirportId?: string | null, selectedAirportId?: string, selectedChartId?: string): Promise<UiSessionSnapshot>;
   destroy(): Promise<void>;
 }
 
@@ -727,6 +732,7 @@ export interface AppCoreAdapter {
   deriveChartPageState(
     plan: FlightPlan,
     recentAirportIds: string[],
+    plateTargetAirportId?: string | null,
     selectedAirportId?: string,
     selectedChartId?: string,
   ): Promise<DerivedChartPageState>;
@@ -856,7 +862,7 @@ type WasmModule = {
   session_snapshot_refresh_scheduler_viewport_activity(handle: number): Promise<string> | string;
   session_snapshot_refresh_scheduler_refresh_completed(handle: number): Promise<string> | string;
   session_snapshot_refresh_scheduler_poll(handle: number): Promise<string> | string;
-  restore_chart_page_state_in_session(handle: number, recentAirportIdsJson: string, selectedAirportIdJson: string, selectedChartIdJson: string): Promise<string> | string;
+  restore_chart_page_state_in_session(handle: number, recentAirportIdsJson: string, plateTargetAirportIdJson: string, selectedAirportIdJson: string, selectedChartIdJson: string): Promise<string> | string;
   destroy_session(handle: number): void;
   install_rust_debug_logger(): Promise<void> | void;
   nav_db_open_controller_create(candidatesJson: string): Promise<number> | number;
@@ -1681,12 +1687,13 @@ export class WasmAppCoreAdapter implements AppCoreAdapter {
           ),
         );
       },
-      restoreChartPageState: async (nextRecentAirportIds, nextSelectedAirportId, nextSelectedChartId) => {
+      restoreChartPageState: async (nextRecentAirportIds, nextPlateTargetAirportId, nextSelectedAirportId, nextSelectedChartId) => {
         snapshot = await withSessionRetry(async () =>
           parseSessionSnapshot(
             this.module.restore_chart_page_state_in_session(
               handle,
               JSON.stringify(nextRecentAirportIds),
+              JSON.stringify(nextPlateTargetAirportId ?? null),
               JSON.stringify(nextSelectedAirportId ?? null),
               JSON.stringify(nextSelectedChartId ?? null),
             ),
@@ -1706,6 +1713,7 @@ export class WasmAppCoreAdapter implements AppCoreAdapter {
   async deriveChartPageState(
     plan: FlightPlan,
     recentAirportIds: string[],
+    plateTargetAirportId?: string | null,
     selectedAirportId?: string,
     selectedChartId?: string,
   ): Promise<DerivedChartPageState> {
@@ -1713,6 +1721,7 @@ export class WasmAppCoreAdapter implements AppCoreAdapter {
       kind: "chart_page_state",
       plan,
       recent_airport_ids: recentAirportIds,
+      plate_target_airport_id: plateTargetAirportId ?? null,
       selected_airport_id: selectedAirportId ?? null,
       selected_chart_id: selectedChartId ?? null,
     });

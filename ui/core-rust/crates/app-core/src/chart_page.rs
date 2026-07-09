@@ -10,6 +10,7 @@ pub struct DerivedChartPage {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct DerivedChartPageState {
     pub airports: Vec<DerivedChartAirport>,
+    pub airport_menu_entries: Vec<DerivedChartAirportMenuEntry>,
     pub recent_airport_ids: Vec<String>,
     pub selected_airport_id: String,
     pub selected_chart_id: String,
@@ -22,6 +23,13 @@ pub struct DerivedChartAirport {
     pub id: String,
     pub label: String,
     pub charts: Vec<DerivedChartAsset>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum DerivedChartAirportMenuEntry {
+    Separator { label: String },
+    Airport { airport: DerivedChartAirport },
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -95,17 +103,29 @@ pub enum PlateGeoref {
 }
 
 pub fn derive_chart_page_state_from_airports(
+    plan: &FlightPlan,
     airports: Vec<DerivedChartAirport>,
     stored_recent_airport_ids: &[String],
-    candidate_airport_id: Option<&str>,
+    plate_target_airport_id: Option<&str>,
+    selected_airport_id: Option<&str>,
     candidate_chart_id: Option<&str>,
 ) -> DerivedChartPageState {
     let recent_airport_ids = merge_recent_airport_ids(&airports, stored_recent_airport_ids);
-    let selected_airport_id =
-        resolve_airport_id(&airports, candidate_airport_id, &recent_airport_ids);
+    let selected_airport_id = resolve_airport_id(
+        &airports,
+        selected_airport_id.or(plate_target_airport_id),
+        &recent_airport_ids,
+    );
     let selected_chart_id = resolve_chart_id(&airports, &selected_airport_id, candidate_chart_id);
+    let airport_menu_entries = derive_airport_menu_entries(
+        &airports,
+        plan,
+        stored_recent_airport_ids,
+        plate_target_airport_id,
+    );
     DerivedChartPageState {
         airports,
+        airport_menu_entries,
         recent_airport_ids,
         selected_airport_id,
         selected_chart_id,
@@ -146,6 +166,49 @@ pub fn airport_ids_from_plan(plan: &FlightPlan) -> Vec<String> {
     airport_ids
 }
 
+pub fn route_airport_ids_from_plan(plan: &FlightPlan) -> Vec<String> {
+    let mut airport_ids = Vec::new();
+    if let Some(departure) = &plan.departure {
+        airport_ids.push(departure.0.clone());
+    }
+    for component in &plan.route_components {
+        append_route_component_airports(&mut airport_ids, component);
+    }
+    if let Some(destination) = &plan.destination {
+        airport_ids.push(destination.0.clone());
+    }
+    airport_ids
+}
+
+pub fn chart_page_airport_ids_from_plan(plan: &FlightPlan) -> Vec<String> {
+    let mut airport_ids = route_airport_ids_from_plan(plan);
+    if let Some(alternate) = &plan.alternate {
+        airport_ids.push(alternate.0.clone());
+    }
+    airport_ids
+}
+
+fn append_route_component_airports(airport_ids: &mut Vec<String>, component: &RouteComponent) {
+    match component {
+        RouteComponent::Waypoint { waypoint } => {
+            if let Some(code) = waypoint.airport_code() {
+                airport_ids.push(code.to_string());
+            }
+        }
+        RouteComponent::Procedure { procedure } => {
+            airport_ids.push(procedure.airport_id.0.clone());
+        }
+        RouteComponent::Airway { airway } => {
+            if let Some(code) = airway.entry.airport_code() {
+                airport_ids.push(code.to_string());
+            }
+            if let Some(code) = airway.exit.airport_code() {
+                airport_ids.push(code.to_string());
+            }
+        }
+    }
+}
+
 fn merge_recent_airport_ids(
     airports: &[DerivedChartAirport],
     stored_ids: &[String],
@@ -167,17 +230,152 @@ fn merge_recent_airport_ids(
     ordered_ids
 }
 
+fn derive_airport_menu_entries(
+    airports: &[DerivedChartAirport],
+    plan: &FlightPlan,
+    stored_recent_airport_ids: &[String],
+    plate_target_airport_id: Option<&str>,
+) -> Vec<DerivedChartAirportMenuEntry> {
+    let mut entries = Vec::new();
+    let mut emitted_airport_ids = Vec::new();
+    if let Some(airport_id) = normalize_airport_id(plate_target_airport_id) {
+        append_airport_menu_section(
+            &mut entries,
+            &mut emitted_airport_ids,
+            "▶ Selected",
+            &[airport_id],
+            airports,
+        );
+    }
+
+    let route_airport_ids = unique_airport_ids(route_airport_ids_from_plan(plan));
+    let departure_airport_ids = route_airport_ids
+        .first()
+        .cloned()
+        .into_iter()
+        .collect::<Vec<_>>();
+    let arrival_airport_ids = route_airport_ids
+        .last()
+        .filter(|airport_id| departure_airport_ids.first() != Some(*airport_id))
+        .cloned()
+        .into_iter()
+        .collect::<Vec<_>>();
+    append_airport_menu_section(
+        &mut entries,
+        &mut emitted_airport_ids,
+        "🛫 Departure",
+        &departure_airport_ids,
+        airports,
+    );
+    append_airport_menu_section(
+        &mut entries,
+        &mut emitted_airport_ids,
+        "🛬 Arrival",
+        &arrival_airport_ids,
+        airports,
+    );
+
+    let mut plan_airport_ids = if route_airport_ids.len() > 2 {
+        route_airport_ids[1..route_airport_ids.len() - 1].to_vec()
+    } else {
+        Vec::new()
+    };
+    if let Some(alternate) = &plan.alternate {
+        plan_airport_ids.push(alternate.0.clone());
+    }
+    append_airport_menu_section(
+        &mut entries,
+        &mut emitted_airport_ids,
+        "☷ Plan",
+        &unique_airport_ids(plan_airport_ids),
+        airports,
+    );
+
+    append_airport_menu_section(
+        &mut entries,
+        &mut emitted_airport_ids,
+        "◷ Recent",
+        &stored_recent_airport_ids
+            .iter()
+            .take(5)
+            .cloned()
+            .collect::<Vec<_>>(),
+        airports,
+    );
+    entries
+}
+
+fn append_airport_menu_section(
+    entries: &mut Vec<DerivedChartAirportMenuEntry>,
+    emitted_airport_ids: &mut Vec<String>,
+    label: &str,
+    airport_ids: &[String],
+    airports: &[DerivedChartAirport],
+) {
+    let mut section_airports = Vec::new();
+    for airport_id in airport_ids {
+        let Some(airport_id) = normalize_airport_id(Some(airport_id.as_str())) else {
+            continue;
+        };
+        if emitted_airport_ids
+            .iter()
+            .any(|existing| existing == &airport_id)
+        {
+            continue;
+        }
+        let Some(airport) = airports.iter().find(|airport| airport.id == airport_id) else {
+            continue;
+        };
+        emitted_airport_ids.push(airport_id);
+        section_airports.push(airport.clone());
+    }
+    if section_airports.is_empty() {
+        return;
+    }
+    entries.push(DerivedChartAirportMenuEntry::Separator {
+        label: label.to_string(),
+    });
+    entries.extend(
+        section_airports
+            .into_iter()
+            .map(|airport| DerivedChartAirportMenuEntry::Airport { airport }),
+    );
+}
+
+fn normalize_airport_id(airport_id: Option<&str>) -> Option<String> {
+    airport_id
+        .map(str::trim)
+        .filter(|airport_id| !airport_id.is_empty())
+        .map(str::to_ascii_uppercase)
+}
+
+fn unique_airport_ids(airport_ids: Vec<String>) -> Vec<String> {
+    let mut unique_airport_ids = Vec::new();
+    for airport_id in airport_ids {
+        let Some(airport_id) = normalize_airport_id(Some(airport_id.as_str())) else {
+            continue;
+        };
+        if !unique_airport_ids
+            .iter()
+            .any(|existing| existing == &airport_id)
+        {
+            unique_airport_ids.push(airport_id);
+        }
+    }
+    unique_airport_ids
+}
+
 fn resolve_airport_id(
     airports: &[DerivedChartAirport],
     candidate_airport_id: Option<&str>,
     recent_airport_ids: &[String],
 ) -> String {
-    if let Some(candidate_airport_id) = candidate_airport_id {
+    if let Some(candidate_airport_id) = normalize_airport_id(candidate_airport_id) {
         if airports
             .iter()
             .any(|airport| airport.id == candidate_airport_id)
         {
-            return candidate_airport_id.to_string();
+            return candidate_airport_id;
         }
     }
     recent_airport_ids
@@ -249,12 +447,14 @@ fn plate_target_kind(candidate_chart_id: &str, airport_id: &str) -> Option<&'sta
 
 #[cfg(test)]
 mod tests {
+    use crate::ids::AirportId;
+
     use super::*;
 
-    fn chart(id: &str, kind: &str, folder_category: &str) -> DerivedChartAsset {
+    fn chart(airport_id: &str, id: &str, kind: &str, folder_category: &str) -> DerivedChartAsset {
         DerivedChartAsset {
             id: id.to_string(),
-            airport_id: "KXYZ".to_string(),
+            airport_id: airport_id.to_string(),
             label: id.to_string(),
             kind: kind.to_string(),
             folder_category: folder_category.to_string(),
@@ -264,12 +464,16 @@ mod tests {
     }
 
     fn airport() -> DerivedChartAirport {
+        airport_with_id("KXYZ")
+    }
+
+    fn airport_with_id(id: &str) -> DerivedChartAirport {
         DerivedChartAirport {
-            id: "KXYZ".to_string(),
-            label: "KXYZ".to_string(),
+            id: id.to_string(),
+            label: id.to_string(),
             charts: vec![
-                chart("plate:KXYZ:diagram.png", "plate", "airport"),
-                chart("csup:KXYZ:csup.pdf", "csup", "csup"),
+                chart(id, &format!("plate:{id}:diagram.png"), "plate", "airport"),
+                chart(id, &format!("csup:{id}:csup.pdf"), "csup", "csup"),
             ],
         }
     }
@@ -277,8 +481,10 @@ mod tests {
     #[test]
     fn plate_folder_target_selects_first_chart() {
         let state = derive_chart_page_state_from_airports(
+            &FlightPlan::default(),
             vec![airport()],
             &[],
+            Some("KXYZ"),
             Some("KXYZ"),
             Some("Plate:KXYZ:Folder"),
         );
@@ -290,13 +496,88 @@ mod tests {
     #[test]
     fn plate_csup_target_selects_chart_supplement() {
         let state = derive_chart_page_state_from_airports(
+            &FlightPlan::default(),
             vec![airport()],
             &[],
+            Some("KXYZ"),
             Some("KXYZ"),
             Some("Plate:KXYZ:CSup"),
         );
 
         assert_eq!(state.selected_airport_id, "KXYZ");
         assert_eq!(state.selected_chart_id, "csup:KXYZ:csup.pdf");
+    }
+
+    #[test]
+    fn airport_menu_entries_are_sectioned_and_recent_is_capped() {
+        let plan = FlightPlan {
+            departure: Some(AirportId("KRNT".to_string())),
+            destination: Some(AirportId("KBLI".to_string())),
+            route_components: vec![
+                RouteComponent::Waypoint {
+                    waypoint: crate::NavRef::Airport("KPAE".to_string()),
+                },
+                RouteComponent::Waypoint {
+                    waypoint: crate::NavRef::Airport("KORS".to_string()),
+                },
+            ],
+            ..FlightPlan::default()
+        };
+        let state = derive_chart_page_state_from_airports(
+            &plan,
+            vec![
+                airport_with_id("KPWT"),
+                airport_with_id("KRNT"),
+                airport_with_id("KBLI"),
+                airport_with_id("KPAE"),
+                airport_with_id("KORS"),
+                airport_with_id("KPLU"),
+                airport_with_id("KSEA"),
+                airport_with_id("KBFI"),
+                airport_with_id("KTCM"),
+                airport_with_id("KOLM"),
+                airport_with_id("KTIW"),
+            ],
+            &[
+                "KPLU".to_string(),
+                "KSEA".to_string(),
+                "KBFI".to_string(),
+                "KTCM".to_string(),
+                "KOLM".to_string(),
+                "KTIW".to_string(),
+            ],
+            Some("KPWT"),
+            Some("KPAE"),
+            None,
+        );
+
+        let labels = state
+            .airport_menu_entries
+            .iter()
+            .map(|entry| match entry {
+                DerivedChartAirportMenuEntry::Separator { label } => format!("--{label}"),
+                DerivedChartAirportMenuEntry::Airport { airport } => airport.id.clone(),
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(
+            labels,
+            vec![
+                "--▶ Selected",
+                "KPWT",
+                "--🛫 Departure",
+                "KRNT",
+                "--🛬 Arrival",
+                "KBLI",
+                "--☷ Plan",
+                "KPAE",
+                "KORS",
+                "--◷ Recent",
+                "KPLU",
+                "KSEA",
+                "KBFI",
+                "KTCM",
+                "KOLM",
+            ]
+        );
     }
 }

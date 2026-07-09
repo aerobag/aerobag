@@ -492,6 +492,7 @@ internal fun formatPageStack(
         selectedMapId = selectedMapId,
         selectedMapLauncherLabel = selectedMapLauncherLabel,
         mapViewport = MapViewportState(0.0, 0.0, 0.0),
+        plateTargetAirportId = null,
         selectedAirportId = selectedAirportId,
         selectedChartId = selectedChartId,
         selectedChartLabel = selectedChartLabel,

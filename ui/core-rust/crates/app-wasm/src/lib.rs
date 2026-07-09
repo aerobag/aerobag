@@ -1506,12 +1506,14 @@ pub fn get_raster_tile_plan_in_session_with_display_scale(
 pub fn restore_chart_page_state_in_session(
     handle: u32,
     recent_airport_ids_json: &str,
+    plate_target_airport_id_json: &str,
     selected_airport_id_json: &str,
     selected_chart_id_json: &str,
 ) -> Result<String, JsValue> {
     restore_chart_page_state_in_session_json(
         handle,
         recent_airport_ids_json,
+        plate_target_airport_id_json,
         selected_airport_id_json,
         selected_chart_id_json,
     )
@@ -2355,11 +2357,14 @@ fn get_raster_tile_plan_in_session_with_display_scale_json(
 fn restore_chart_page_state_in_session_json(
     handle: u32,
     recent_airport_ids_json: &str,
+    plate_target_airport_id_json: &str,
     selected_airport_id_json: &str,
     selected_chart_id_json: &str,
 ) -> Result<String, String> {
     let recent_airport_ids: Vec<String> =
         serde_json::from_str(recent_airport_ids_json).map_err(|err| err.to_string())?;
+    let plate_target_airport_id: Option<String> =
+        serde_json::from_str(plate_target_airport_id_json).map_err(|err| err.to_string())?;
     let selected_airport_id: Option<String> =
         serde_json::from_str(selected_airport_id_json).map_err(|err| err.to_string())?;
     let selected_chart_id: Option<String> =
@@ -2367,6 +2372,7 @@ fn restore_chart_page_state_in_session_json(
     let snapshot = app_core::restore_chart_page_state_in_session(
         handle,
         &recent_airport_ids,
+        plate_target_airport_id.as_deref(),
         selected_airport_id.as_deref(),
         selected_chart_id.as_deref(),
     )

@@ -541,6 +541,11 @@ data class ChartAirport(
     val charts: List<ChartAsset>,
 )
 
+sealed interface ChartAirportMenuEntry {
+    data class Separator(val label: String) : ChartAirportMenuEntry
+    data class Airport(val airport: ChartAirport) : ChartAirportMenuEntry
+}
+
 data class ChartPageFixture(
     val airports: List<ChartAirport>,
 )

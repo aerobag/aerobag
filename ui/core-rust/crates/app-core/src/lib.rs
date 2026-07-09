@@ -31,7 +31,8 @@ pub mod terrain;
 pub mod ui_work_scheduler;
 
 pub use chart_page::{
-    airport_ids_from_plan, derive_chart_page_state_from_airports, DerivedChartAirport,
+    airport_ids_from_plan, chart_page_airport_ids_from_plan, derive_chart_page_state_from_airports,
+    route_airport_ids_from_plan, DerivedChartAirport, DerivedChartAirportMenuEntry,
     DerivedChartAsset, DerivedChartCatalog, DerivedChartPage, DerivedChartPageState,
     PlateChartAssetRecord,
 };

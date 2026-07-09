@@ -38,6 +38,7 @@ const snapshotJson = JSON.stringify({
   chart_page_state: {
     ordered_airport_ids: [],
     recent_airport_ids: [],
+    plate_target_airport_id: null,
     selected_airport_id: "",
     selected_chart_id: "",
   },

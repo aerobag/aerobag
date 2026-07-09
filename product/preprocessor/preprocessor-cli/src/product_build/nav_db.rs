@@ -4019,16 +4019,44 @@ impl NavLookupContext {
 
     fn classify_by_position_json(&self, lat: f64, lon: f64) -> Option<serde_json::Value> {
         let key = position_lookup_key(lat, lon);
-        if let Some(id) = self.fix_positions_by_coord.get(&key) {
-            return Some(serde_json::json!({ "Fix": id }));
-        }
         if let Some(id) = self.navaid_positions_by_coord.get(&key) {
             return Some(serde_json::json!({ "Navaid": id }));
+        }
+        if let Some(id) = self.fix_positions_by_coord.get(&key) {
+            return Some(serde_json::json!({ "Fix": id }));
         }
         if let Some(id) = self.airport_positions_by_coord.get(&key) {
             return Some(serde_json::json!({ "Airport": id }));
         }
         None
+    }
+
+    fn assert_airway_point_nav_ref_invariant(
+        &self,
+        airway_name: &str,
+        branch_key: &str,
+        sequence: i32,
+        point_name: &str,
+        lat: f64,
+        lon: f64,
+        nav_ref: &serde_json::Value,
+    ) -> anyhow::Result<()> {
+        let Some(fix_id) = nav_ref.get("Fix").and_then(|value| value.as_str()) else {
+            return Ok(());
+        };
+        let fix_id = fix_id.trim().to_ascii_uppercase();
+        if self.classify_json(&fix_id) != serde_json::json!({ "Navaid": fix_id }) {
+            return Ok(());
+        }
+        let Some(navaid_position) = self.navaid_positions.get(&fix_id) else {
+            return Ok(());
+        };
+        if position_json_matches(navaid_position, lat, lon) {
+            bail!(
+                "airway {airway_name} branch {branch_key} sequence {sequence} point {point_name} emitted Fix({fix_id}) but waypoint/identifier/{fix_id} resolves to colocated Navaid({fix_id})"
+            );
+        }
+        Ok(())
     }
 
     pub(super) fn resolve_position_json(
@@ -4340,6 +4368,16 @@ pub(super) fn position_lookup_key(lat: f64, lon: f64) -> (i64, i64) {
     )
 }
 
+pub(super) fn position_json_matches(position: &serde_json::Value, lat: f64, lon: f64) -> bool {
+    let Some(position_lat) = position.get("lat").and_then(|value| value.as_f64()) else {
+        return false;
+    };
+    let Some(position_lon) = position.get("lon").and_then(|value| value.as_f64()) else {
+        return false;
+    };
+    position_lookup_key(position_lat, position_lon) == position_lookup_key(lat, lon)
+}
+
 pub(super) fn build_position_lookup(
     positions: &BTreeMap<String, serde_json::Value>,
 ) -> BTreeMap<(i64, i64), String> {
@@ -4500,6 +4538,15 @@ pub(super) fn build_nav_kv_airway_pairs(
         let (name, branch_key, sequence, point_name, lat, lon) = row?;
         let position = nav_lat_lon_json(lat, lon);
         let nav_ref = nav_context.classify_airway_point_json(&point_name, lat, lon);
+        nav_context.assert_airway_point_nav_ref_invariant(
+            &name,
+            &branch_key,
+            sequence,
+            &point_name,
+            lat,
+            lon,
+            &nav_ref,
+        )?;
         let point = serde_json::json!({
             "airway_name": name,
             "sequence": sequence,

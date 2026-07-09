@@ -3914,12 +3914,16 @@ mod tests {
                 INSERT INTO fix VALUES ('RAWER', 45.235644444444446, -122.79431666666666);
                 INSERT INTO fix VALUES ('CANBY', 45.31056944444444, -122.76489166666667);
                 INSERT INTO fix VALUES ('HARPR', 42.480555555555554, -122.88376111111111);
+                INSERT INTO fix VALUES ('PDT', 45.0, -118.0);
+                INSERT INTO nav VALUES ('PDT', 45.0, -118.0, '14.0');
                 INSERT INTO nav VALUES ('ILA', 39.0711736111111, -122.027269722222, '14.0');
                 INSERT INTO nav VALUES ('OAK', 37.7259255555556, -122.223591944444, '14.0');
                 INSERT INTO airways_branch VALUES ('V23', '', 690, '690', 'RAWER', 45.235644444444446, -122.79431666666666);
                 INSERT INTO airways_branch VALUES ('V23', '', 700, '700', 'CANBY', 45.31056944444444, -122.76489166666667);
                 INSERT INTO airways_branch VALUES ('V23', '', 710, '710', 'NAMEDBUTMISSING', 45.4, -122.7);
                 INSERT INTO airways_branch VALUES ('V23', '', 720, '720', '', 45.5, -122.6);
+                INSERT INTO airways_branch VALUES ('V4', '', 10, '10', 'PENDLETON', 45.0, -118.0);
+                INSERT INTO airways_branch VALUES ('V4', '', 20, '20', 'CORDO', 45.1, -117.9);
                 INSERT INTO airways_branch VALUES ('Q801', 'A', 10, '10', 'HARPR', 42.480555555555554, -122.88376111111111);
                 INSERT INTO airways_branch VALUES ('V195', 'RAGGS-JINGO', 220, '220', 'OAKLAND', 37.7259255555556, -122.223591944444);
                 INSERT INTO airways_branch VALUES ('V195', 'RAGGS-JINGO', 300, '300', 'WILLIAMS', 39.0711736111111, -122.027269722222);
@@ -3957,6 +3961,12 @@ mod tests {
 
         let q801 = pair_value("airway/Q801");
         assert_eq!(q801[0]["branch_key"], "A");
+
+        let v4 = pair_value("airway/V4");
+        assert_eq!(
+            v4[0]["points"][0]["nav_ref"],
+            serde_json::json!({ "Navaid": "PDT" })
+        );
 
         let v195 = pair_value("airway/V195");
         assert_eq!(

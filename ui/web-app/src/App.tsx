@@ -8671,17 +8671,34 @@ function WeatherDetailModal(props: { detail: WeatherDetailUiView }) {
     >
       <div className="mapSelectionDetailTitle">WX {detail.station_id}</div>
       <div className="weatherDetailSections">
-        <WeatherDetailSection label="METAR" text={detail.metar_text ?? null} />
-        <WeatherDetailSection label="TAF" text={detail.taf_text ?? null} />
+        <WeatherDetailSection
+          label="METAR"
+          ageLabel={detail.metar_age_label ?? null}
+          ageWarning={detail.metar_age_warning ?? false}
+          text={detail.metar_text ?? null}
+        />
+        <WeatherDetailSection
+          label="TAF"
+          ageLabel={detail.taf_age_label ?? null}
+          ageWarning={detail.taf_age_warning ?? false}
+          text={detail.taf_text ?? null}
+        />
       </div>
     </section>
   );
 }
 
-function WeatherDetailSection(props: { label: string; text: string | null }) {
+function WeatherDetailSection(props: { label: string; ageLabel: string | null; ageWarning: boolean; text: string | null }) {
   return (
     <section className="weatherDetailSection">
-      <div className="weatherDetailSectionTitle">{props.label}</div>
+      <div className="weatherDetailSectionTitle">
+        <span>{props.label}</span>
+        {props.ageLabel ? (
+          <span className={`weatherDetailAge${props.ageWarning ? " isWarning" : ""}`}>
+            {props.ageLabel}
+          </span>
+        ) : null}
+      </div>
       <pre className={`weatherDetailText${props.text ? "" : " isMissing"}`}>
         {props.text ?? `No ${props.label} available.`}
       </pre>

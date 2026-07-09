@@ -760,7 +760,11 @@ data class WireMapSelectionAction(
 data class WireWeatherDetailUiView(
     val station_id: String,
     val metar_text: String? = null,
+    val metar_age_label: String? = null,
+    val metar_age_warning: Boolean = false,
     val taf_text: String? = null,
+    val taf_age_label: String? = null,
+    val taf_age_warning: Boolean = false,
 )
 
 @Serializable

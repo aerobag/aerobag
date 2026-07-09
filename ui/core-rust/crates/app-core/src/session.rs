@@ -7848,6 +7848,7 @@ fn materialize_map_selection_in_session(
         session.tfr_payload.as_ref(),
         &flight_plan_points,
         &mut availability,
+        Some(session_wall_clock_utc(session)),
     );
     let ownship_position = session.app_state.ownship.render.position;
     let selection = map_selection_with_ownship_distances(selection, ownship_position);
@@ -9512,6 +9513,7 @@ fn enrich_flight_plan_weather_actions(session: &UiSession, active_plan: &mut Fli
                 station_id,
                 session.metar_payload.as_ref(),
                 session.taf_payload.as_ref(),
+                Some(session_wall_clock_utc(session)),
             )
         });
         for action in crate::planning::flight_plan_row_actions_mut(row) {
@@ -12226,7 +12228,7 @@ mod tests {
                 "KAAA".to_string(),
                 crate::TafRecord {
                     raw_text: "TAF KAAA 010000Z 0100/0124 00000KT P6SM SCT020".to_string(),
-                    issued_at_utc: Some("2026-05-03T00:00:00.000Z".to_string()),
+                    issued_at_utc: Some("2026-05-03T00:58:00.000Z".to_string()),
                     station_id: "KAAA".to_string(),
                     longitude: 0.0,
                     latitude: 0.0,
@@ -12241,7 +12243,13 @@ mod tests {
             });
         }
 
-        let snapshot = get_session_snapshot_at_epoch_ms(init.handle, 0).expect("snapshot");
+        let snapshot = get_session_snapshot_at_epoch_ms(
+            init.handle,
+            parse_utc_instant("2026-05-03T01:12:00Z")
+                .expect("test time")
+                .timestamp_millis(),
+        )
+        .expect("snapshot");
         let active_plan = snapshot.app_ui_state.active_plan.expect("active plan");
         let row = active_plan
             .display_rows
@@ -12260,10 +12268,14 @@ mod tests {
             detail.metar_text.as_deref(),
             Some("METAR KAAA 010000Z 00000KT 10SM SCT020 10/08 A3000")
         );
+        assert_eq!(detail.metar_age_label.as_deref(), Some("1.2h old"));
+        assert!(detail.metar_age_warning);
         assert_eq!(
             detail.taf_text.as_deref(),
             Some("TAF KAAA 010000Z 0100/0124 00000KT P6SM SCT020")
         );
+        assert_eq!(detail.taf_age_label.as_deref(), Some("14m old"));
+        assert!(!detail.taf_age_warning);
     }
 
     #[test]

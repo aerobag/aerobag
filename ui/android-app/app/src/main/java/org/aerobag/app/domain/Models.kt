@@ -396,7 +396,11 @@ data class FlightPlanRowActionUiView(
 data class WeatherDetailUiView(
     val stationId: String,
     val metarText: String?,
+    val metarAgeLabel: String?,
+    val metarAgeWarning: Boolean = false,
     val tafText: String?,
+    val tafAgeLabel: String?,
+    val tafAgeWarning: Boolean = false,
 )
 
 sealed interface FlightPlanRowNavigationAction {

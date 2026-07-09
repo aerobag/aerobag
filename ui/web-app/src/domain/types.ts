@@ -418,7 +418,11 @@ export type FlightPlanDisplayRowKind = "waypoint" | "group" | "discontinuity" | 
 export type WeatherDetailUiView = {
   station_id: string;
   metar_text?: string | null;
+  metar_age_label?: string | null;
+  metar_age_warning?: boolean | null;
   taf_text?: string | null;
+  taf_age_label?: string | null;
+  taf_age_warning?: boolean | null;
 };
 
 export type FlightPlanRowActionUiView = {

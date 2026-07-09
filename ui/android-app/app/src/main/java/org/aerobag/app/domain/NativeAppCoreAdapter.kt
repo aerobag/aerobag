@@ -2855,13 +2855,21 @@ private fun WireMapSelectionAction.toUi() = MapSelectionAction(
 private fun WireWeatherDetailUiView.toUi() = WeatherDetailUiView(
     stationId = station_id,
     metarText = metar_text,
+    metarAgeLabel = metar_age_label,
+    metarAgeWarning = metar_age_warning,
     tafText = taf_text,
+    tafAgeLabel = taf_age_label,
+    tafAgeWarning = taf_age_warning,
 )
 
 private fun WeatherDetailUiView.toWire() = WireWeatherDetailUiView(
     station_id = stationId,
     metar_text = metarText,
+    metar_age_label = metarAgeLabel,
+    metar_age_warning = metarAgeWarning,
     taf_text = tafText,
+    taf_age_label = tafAgeLabel,
+    taf_age_warning = tafAgeWarning,
 )
 
 private fun WireMapSelectionFlightPlanRowAction.toUi() = MapSelectionFlightPlanRowAction(

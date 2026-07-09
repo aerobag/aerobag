@@ -3911,8 +3911,18 @@ internal fun WeatherDetailModal(
                 maxLines = 1,
                 overflow = TextOverflow.Ellipsis,
             )
-            WeatherDetailSection(label = "METAR", text = detail.metarText)
-            WeatherDetailSection(label = "TAF", text = detail.tafText)
+            WeatherDetailSection(
+                label = "METAR",
+                ageLabel = detail.metarAgeLabel,
+                ageWarning = detail.metarAgeWarning,
+                text = detail.metarText,
+            )
+            WeatherDetailSection(
+                label = "TAF",
+                ageLabel = detail.tafAgeLabel,
+                ageWarning = detail.tafAgeWarning,
+                text = detail.tafText,
+            )
         }
     }
 }
@@ -3920,6 +3930,8 @@ internal fun WeatherDetailModal(
 @Composable
 private fun WeatherDetailSection(
     label: String,
+    ageLabel: String?,
+    ageWarning: Boolean,
     text: String?,
 ) {
     val uiTheme = LocalAerobagUiTheme.current
@@ -3932,14 +3944,32 @@ private fun WeatherDetailSection(
             .padding(ThumbSize * 0.13f),
         verticalArrangement = Arrangement.spacedBy(ThumbGap * 0.45f),
     ) {
-        Text(
-            text = label,
-            style = MaterialTheme.typography.labelSmall.copy(
-                fontWeight = FontWeight.Black,
-                letterSpacing = 0.6.sp,
-            ),
-            color = uiTheme.controls.panelFg,
-        )
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.SpaceBetween,
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Text(
+                text = label,
+                style = MaterialTheme.typography.labelSmall.copy(
+                    fontWeight = FontWeight.Black,
+                    letterSpacing = 0.6.sp,
+                ),
+                color = uiTheme.controls.panelFg,
+            )
+            ageLabel?.let { labelText ->
+                Text(
+                    text = labelText,
+                    style = MaterialTheme.typography.labelSmall.copy(
+                        fontWeight = FontWeight.Black,
+                        letterSpacing = 0.6.sp,
+                    ),
+                    color = if (ageWarning) uiTheme.controls.dataStatusWarningStroke else uiTheme.controls.panelFg,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                )
+            }
+        }
         Text(
             text = text ?: "No $label available.",
             modifier = Modifier

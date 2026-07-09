@@ -362,7 +362,15 @@ pub struct WeatherDetailUiView {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub metar_text: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub metar_age_label: Option<String>,
+    #[serde(default)]
+    pub metar_age_warning: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub taf_text: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub taf_age_label: Option<String>,
+    #[serde(default)]
+    pub taf_age_warning: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -2439,6 +2447,7 @@ pub fn query_map_selection_with_point_display_scale(
         tfr_payload,
         flight_plan_points,
         airport_plate_availability,
+        None,
     )
 }
 
@@ -2456,6 +2465,7 @@ pub fn query_map_selection_for_surface(
     tfr_payload: Option<&TfrProductPayload>,
     flight_plan_points: &[FlightPlanSelectionPoint],
     airport_plate_availability: &mut dyn FnMut(&str) -> AirportPlateAvailability,
+    weather_age_reference_utc: Option<DateTime<Utc>>,
 ) -> MapSelectionQueryResult {
     let viewport = &metrics.viewport;
     let width_px = metrics.width_px;
@@ -2532,7 +2542,12 @@ pub fn query_map_selection_for_surface(
                         _ => None,
                     });
                 let weather_detail = airport_id.as_deref().and_then(|airport_id| {
-                    weather_detail_for_station(airport_id, metar_payload, taf_payload)
+                    weather_detail_for_station(
+                        airport_id,
+                        metar_payload,
+                        taf_payload,
+                        weather_age_reference_utc,
+                    )
                 });
                 let item =
                     selection_item_for_point(record, &symbol, plan, availability, weather_detail);
@@ -2569,6 +2584,7 @@ pub fn query_map_selection_for_surface(
         metar_payload,
         taf_payload,
         airport_plate_availability,
+        weather_age_reference_utc,
     ) {
         if matches!(matched.item.nav_ref, Some(NavRef::Airport(_))) {
             airports.push(matched);
@@ -2613,6 +2629,7 @@ pub fn query_map_selection_for_surface(
             metar_tile_cache,
             metar_payload,
             taf_payload,
+            weather_age_reference_utc,
         ));
         weather.extend(query_pirep_selection_matches(
             viewport,
@@ -2699,6 +2716,7 @@ fn query_metar_selection_matches(
     metar_tile_cache: &HashMap<String, MetarTilePayload>,
     metar_payload: &MetarProductPayload,
     taf_payload: Option<&TafProductPayload>,
+    weather_age_reference_utc: Option<DateTime<Utc>>,
 ) -> Vec<MapSelectionPointMatch> {
     let Some(metar_layer) = config.metar_layer.as_ref() else {
         return Vec::new();
@@ -2742,6 +2760,7 @@ fn query_metar_selection_matches(
                             payload.tafs_by_station.get(record.station_id.trim())
                         }),
                         feature,
+                        weather_age_reference_utc,
                     ),
                     distance_px,
                 });
@@ -2941,6 +2960,7 @@ fn query_flight_plan_selection_matches(
     metar_payload: Option<&MetarProductPayload>,
     taf_payload: Option<&TafProductPayload>,
     airport_plate_availability: &mut dyn FnMut(&str) -> AirportPlateAvailability,
+    weather_age_reference_utc: Option<DateTime<Utc>>,
 ) -> Vec<MapSelectionPointMatch> {
     let mut matches = Vec::new();
     for point in points {
@@ -2965,6 +2985,7 @@ fn query_flight_plan_selection_matches(
                 metar_payload,
                 taf_payload,
                 airport_plate_availability,
+                weather_age_reference_utc,
             ),
             distance_px,
         });
@@ -2978,6 +2999,7 @@ fn selection_item_for_flight_plan_point(
     metar_payload: Option<&MetarProductPayload>,
     taf_payload: Option<&TafProductPayload>,
     airport_plate_availability: &mut dyn FnMut(&str) -> AirportPlateAvailability,
+    weather_age_reference_utc: Option<DateTime<Utc>>,
 ) -> MapSelectionItem {
     let nav_ref = &point.nav_ref;
     let label = chart_ident_label_for_nav_ref_symbol(nav_ref, &point.symbol);
@@ -3009,9 +3031,12 @@ fn selection_item_for_flight_plan_point(
         )
     };
     let weather_detail = match nav_ref {
-        NavRef::Airport(airport_id) => {
-            weather_detail_for_station(airport_id, metar_payload, taf_payload)
-        }
+        NavRef::Airport(airport_id) => weather_detail_for_station(
+            airport_id,
+            metar_payload,
+            taf_payload,
+            weather_age_reference_utc,
+        ),
         _ => None,
     };
     let mut actions = if let NavRef::Airport(airport_id) = nav_ref {
@@ -3139,8 +3164,14 @@ fn selection_item_for_metar(
     record: &MetarRecord,
     taf: Option<&TafRecord>,
     feature: VisibleMetarFeature,
+    weather_age_reference_utc: Option<DateTime<Utc>>,
 ) -> MapSelectionItem {
-    let weather_detail = weather_detail_from_records(record.station_id.trim(), Some(record), taf);
+    let weather_detail = weather_detail_from_records(
+        record.station_id.trim(),
+        Some(record),
+        taf,
+        weather_age_reference_utc,
+    );
     MapSelectionItem {
         id: format!("metar:{}", record.station_id.trim()),
         label: record.station_id.trim().to_ascii_uppercase(),
@@ -3219,6 +3250,7 @@ pub(crate) fn weather_detail_for_station(
     station_id: &str,
     metar_payload: Option<&MetarProductPayload>,
     taf_payload: Option<&TafProductPayload>,
+    age_reference_utc: Option<DateTime<Utc>>,
 ) -> Option<WeatherDetailUiView> {
     let station_id = station_id.trim().to_ascii_uppercase();
     if station_id.is_empty() {
@@ -3226,24 +3258,82 @@ pub(crate) fn weather_detail_for_station(
     }
     let metar = metar_payload.and_then(|payload| payload.metars_by_station.get(&station_id));
     let taf = taf_payload.and_then(|payload| payload.tafs_by_station.get(&station_id));
-    weather_detail_from_records(&station_id, metar, taf)
+    weather_detail_from_records(&station_id, metar, taf, age_reference_utc)
 }
 
 fn weather_detail_from_records(
     station_id: &str,
     metar: Option<&MetarRecord>,
     taf: Option<&TafRecord>,
+    age_reference_utc: Option<DateTime<Utc>>,
 ) -> Option<WeatherDetailUiView> {
     let metar_text = metar.map(|record| record.raw_text.clone());
+    let (metar_age_label, metar_age_warning) = weather_age_status(
+        metar.and_then(|record| record.observed_at_utc.as_deref()),
+        age_reference_utc,
+        METAR_AGE_WARNING_MS,
+    );
     let taf_text = taf.map(taf_detail_text);
+    let (taf_age_label, taf_age_warning) = weather_age_status(
+        taf.and_then(|record| record.issued_at_utc.as_deref()),
+        age_reference_utc,
+        TAF_AGE_WARNING_MS,
+    );
     if metar_text.is_none() && taf_text.is_none() {
         return None;
     }
     Some(WeatherDetailUiView {
         station_id: station_id.trim().to_ascii_uppercase(),
         metar_text,
+        metar_age_label,
+        metar_age_warning,
         taf_text,
+        taf_age_label,
+        taf_age_warning,
     })
+}
+
+const MINUTE_MS: i64 = 60_000;
+const HOUR_MS: i64 = 60 * MINUTE_MS;
+const DAY_MS: i64 = 24 * HOUR_MS;
+const METAR_AGE_WARNING_MS: i64 = HOUR_MS;
+const TAF_AGE_WARNING_MS: i64 = 6 * HOUR_MS;
+
+fn weather_age_status(
+    timestamp_utc: Option<&str>,
+    reference_utc: Option<DateTime<Utc>>,
+    warning_after_ms: i64,
+) -> (Option<String>, bool) {
+    let Some(timestamp) = timestamp_utc.and_then(crate::freshness::parse_utc_instant) else {
+        return (None, false);
+    };
+    let Some(reference) = reference_utc else {
+        return (None, false);
+    };
+    if reference <= DateTime::<Utc>::UNIX_EPOCH {
+        return (None, false);
+    }
+    let age_ms = reference
+        .signed_duration_since(timestamp)
+        .num_milliseconds()
+        .max(0);
+    (
+        Some(format!("{} old", format_weather_age(age_ms))),
+        age_ms > warning_after_ms,
+    )
+}
+
+fn format_weather_age(age_ms: i64) -> String {
+    let age_ms = age_ms.max(0);
+    if age_ms < HOUR_MS {
+        return format!("{}m", age_ms.div_euclid(MINUTE_MS));
+    }
+    if age_ms < DAY_MS {
+        let hours = age_ms as f64 / HOUR_MS as f64;
+        return format!("{hours:.1}h");
+    }
+    let days = age_ms as f64 / DAY_MS as f64;
+    format!("{days:.1}d")
 }
 
 fn taf_detail_text(record: &TafRecord) -> String {
@@ -7091,6 +7181,64 @@ mod tests {
     }
 
     #[test]
+    fn weather_detail_formats_compact_age_labels_in_core() {
+        let metar = MetarRecord {
+            raw_text: "METAR KAAA 010000Z 00000KT 10SM SCT020 10/08 A3000".to_string(),
+            observed_at_utc: Some("2026-05-03T00:00:00Z".to_string()),
+            station_id: "KAAA".to_string(),
+            flight_category: Some("VFR".to_string()),
+            clouds: None,
+            longitude: -122.0,
+            latitude: 47.0,
+        };
+        let taf = TafRecord {
+            raw_text: "TAF KAAA 010058Z 0101/0124 00000KT P6SM SCT020".to_string(),
+            issued_at_utc: Some("2026-05-03T00:58:00Z".to_string()),
+            station_id: "KAAA".to_string(),
+            longitude: -122.0,
+            latitude: 47.0,
+        };
+        let detail = weather_detail_from_records(
+            "KAAA",
+            Some(&metar),
+            Some(&taf),
+            crate::freshness::parse_utc_instant("2026-05-03T01:12:00Z"),
+        )
+        .expect("weather detail");
+
+        assert_eq!(detail.metar_age_label.as_deref(), Some("1.2h old"));
+        assert!(detail.metar_age_warning);
+        assert_eq!(detail.taf_age_label.as_deref(), Some("14m old"));
+        assert!(!detail.taf_age_warning);
+    }
+
+    #[test]
+    fn weather_detail_marks_age_warnings_in_core() {
+        let reference = crate::freshness::parse_utc_instant("2026-05-03T12:00:00Z");
+
+        assert!(
+            !weather_age_status(
+                Some("2026-05-03T11:00:00Z"),
+                reference,
+                METAR_AGE_WARNING_MS,
+            )
+            .1
+        );
+        assert!(
+            weather_age_status(
+                Some("2026-05-03T10:59:59Z"),
+                reference,
+                METAR_AGE_WARNING_MS,
+            )
+            .1
+        );
+        assert!(
+            !weather_age_status(Some("2026-05-03T06:00:00Z"), reference, TAF_AGE_WARNING_MS,).1
+        );
+        assert!(weather_age_status(Some("2026-05-03T05:59:59Z"), reference, TAF_AGE_WARNING_MS,).1);
+    }
+
+    #[test]
     fn map_selection_hits_weather_in_repeated_world_copy() {
         let viewport = MapViewport {
             center: LatLon { lat: 0.0, lon: 0.0 },
@@ -8346,10 +8494,14 @@ mod tests {
             Some(WeatherDetailUiView {
                 station_id: "KSEA".to_string(),
                 metar_text: None,
+                metar_age_label: None,
+                metar_age_warning: false,
                 taf_text: Some(
                     "TAF KSEA 010000Z 0100/0124 00000KT P6SM SCT020\nBECMG 0102/0104 BKN030\nFM010600 22008KT P6SM SCT050"
                         .to_string(),
                 ),
+                taf_age_label: None,
+                taf_age_warning: false,
             }),
         );
         let remove = item

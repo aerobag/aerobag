@@ -1548,11 +1548,27 @@ button {
 }
 
 .weatherDetailSectionTitle {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: calc(var(--thumb-gap) * 0.7);
   margin-bottom: calc(var(--thumb-gap) * 0.45);
   color: #24333a;
   font-size: calc(var(--thumb) * 0.16);
   font-weight: 900;
   letter-spacing: 0.06em;
+}
+
+.weatherDetailAge {
+  color: inherit;
+  font-size: inherit;
+  font-weight: inherit;
+  letter-spacing: inherit;
+  white-space: nowrap;
+}
+
+.weatherDetailAge.isWarning {
+  color: var(--theme-data-status-warning-stroke);
 }
 
 .weatherDetailText {

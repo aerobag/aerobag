@@ -1227,15 +1227,9 @@ pub fn activate_direct_to(
 ) -> AppResult<FlightPlan> {
     let plan = plan.clone().normalized();
 
-    let target_leg_index = plan
-        .resolved_legs
-        .iter()
-        .position(|leg| nav_refs_equivalent_for_route_continuation(&leg.to, &target));
+    let target_leg_index = plan.resolved_legs.iter().position(|leg| leg.to == target);
     let target_on_plan = target_leg_index.is_some() || flight_plan_contains_nav_ref(&plan, &target);
-    let resume_leg_index = plan
-        .resolved_legs
-        .iter()
-        .position(|leg| nav_refs_equivalent_for_route_continuation(&leg.from, &target));
+    let resume_leg_index = plan.resolved_legs.iter().position(|leg| leg.from == target);
     let target_leg_id = if target_on_plan {
         target_leg_index.map(|index| plan.resolved_legs[index].id.clone())
     } else {
@@ -1592,12 +1586,7 @@ pub fn sequence_active_leg(plan: &FlightPlan) -> AppResult<FlightPlan> {
                 .resume_leg_id
                 .as_deref()
                 .and_then(|resume_leg_id| leg_index_by_id(&plan.resolved_legs, resume_leg_id))
-                .filter(|index| {
-                    nav_refs_equivalent_for_route_continuation(
-                        &plan.resolved_legs[*index].from,
-                        &direct_to.target,
-                    )
-                })
+                .filter(|index| plan.resolved_legs[*index].from == direct_to.target)
                 .or_else(|| direct_to_resume_leg_index(&plan, &direct_to))
             {
                 Some(resume_leg_index) => GuidanceState {
@@ -5076,18 +5065,6 @@ fn leg_index_by_id(resolved_legs: &[ResolvedLeg], leg_id: &str) -> Option<usize>
     resolved_legs.iter().position(|leg| leg.id == leg_id)
 }
 
-fn nav_refs_equivalent_for_route_continuation(left: &NavRef, right: &NavRef) -> bool {
-    if left == right {
-        return true;
-    }
-    matches!(
-        (left, right),
-        (NavRef::Fix(left), NavRef::Navaid(right))
-            | (NavRef::Navaid(left), NavRef::Fix(right))
-            if left == right
-    )
-}
-
 fn leg_starts_at_route_component(leg: &ResolvedLeg, component_index: usize) -> bool {
     match leg.source {
         ResolvedLegSource::RouteComponent {
@@ -5105,12 +5082,7 @@ fn direct_to_resume_leg_index(plan: &FlightPlan, direct_to: &DirectToState) -> O
         .resume_leg_id
         .as_deref()
         .and_then(|resume_leg_id| leg_index_by_id(&plan.resolved_legs, resume_leg_id))
-        .filter(|index| {
-            nav_refs_equivalent_for_route_continuation(
-                &plan.resolved_legs[*index].from,
-                &direct_to.target,
-            )
-        })
+        .filter(|index| plan.resolved_legs[*index].from == direct_to.target)
     {
         return Some(resume_leg_index);
     }
@@ -5129,15 +5101,16 @@ fn direct_to_resume_leg_index(plan: &FlightPlan, direct_to: &DirectToState) -> O
             return None;
         }
         return plan.resolved_legs.iter().position(|leg| {
-            nav_refs_equivalent_for_route_continuation(&leg.from, &direct_to.target)
+            leg.from == direct_to.target
                 && leg_starts_at_route_component(leg, target_component_index)
         });
     }
 
     if direct_to.target_leg_id.is_none() {
-        return plan.resolved_legs.iter().position(|leg| {
-            nav_refs_equivalent_for_route_continuation(&leg.from, &direct_to.target)
-        });
+        return plan
+            .resolved_legs
+            .iter()
+            .position(|leg| leg.from == direct_to.target);
     }
 
     None
@@ -6763,19 +6736,19 @@ mod tests {
     }
 
     #[test]
-    fn direct_to_fix_navaid_ident_match_resumes_underlying_plan() {
+    fn direct_to_canonical_navaid_resumes_underlying_plan() {
         let plan = FlightPlan {
             resolved_legs: vec![
                 ResolvedLeg {
                     id: "v4-spuud-pdt".to_string(),
                     from: NavRef::Fix("SPUUD".to_string()),
-                    to: NavRef::Fix("PDT".to_string()),
+                    to: NavRef::Navaid("PDT".to_string()),
                     source: ResolvedLegSource::RouteComponent { component_index: 0 },
                     procedure_provenance: None,
                 },
                 ResolvedLeg {
                     id: "v4-pdt-cordo".to_string(),
-                    from: NavRef::Fix("PDT".to_string()),
+                    from: NavRef::Navaid("PDT".to_string()),
                     to: NavRef::Fix("CORDO".to_string()),
                     source: ResolvedLegSource::RouteComponent { component_index: 0 },
                     procedure_provenance: None,

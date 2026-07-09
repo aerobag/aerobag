@@ -986,11 +986,7 @@ fn run_had_operation_value(store: &NavKvStore, op: HadOperation) -> Result<Value
             serde_json::to_value(suggest_airways_near_anchor(store, &anchor, limit)?)?
         }
         HadOperation::AirwayBranches { airway_name } => {
-            serde_json::to_value(read_required::<Vec<AirwayBranch>>(
-                store,
-                NavKvQuery::AirwayBranches { airway_name },
-                "airway branches",
-            )?)?
+            serde_json::to_value(read_airway_branches(store, &airway_name)?)?
         }
         HadOperation::PrepareAirwayPresentationForAnchors {
             airway_name,
@@ -2322,6 +2318,86 @@ fn waypoint_identifier_record_nav_ref(record: &WaypointIdentifierRecord) -> Opti
     }
 }
 
+const AIRWAY_NAVAID_CANONICALIZATION_TOLERANCE_NM: f64 = 0.1;
+
+fn read_airway_branches(
+    store: &NavKvStore,
+    airway_name: &str,
+) -> Result<Vec<AirwayBranch>, HadReadError> {
+    let mut branches = read_required::<Vec<AirwayBranch>>(
+        store,
+        NavKvQuery::AirwayBranches {
+            airway_name: airway_name.to_string(),
+        },
+        "airway branches",
+    )?;
+    canonicalize_airway_branch_nav_refs(store, &mut branches)?;
+    Ok(branches)
+}
+
+fn read_optional_airway_branches(
+    store: &NavKvStore,
+    airway_name: &str,
+) -> Result<Option<Vec<AirwayBranch>>, HadReadError> {
+    let Some(mut branches) = read_optional::<Vec<AirwayBranch>>(
+        store,
+        NavKvQuery::AirwayBranches {
+            airway_name: airway_name.to_string(),
+        },
+    )?
+    else {
+        return Ok(None);
+    };
+    canonicalize_airway_branch_nav_refs(store, &mut branches)?;
+    Ok(Some(branches))
+}
+
+fn canonicalize_airway_branch_nav_refs(
+    store: &NavKvStore,
+    branches: &mut [AirwayBranch],
+) -> Result<(), HadReadError> {
+    for branch in branches {
+        for point in &mut branch.points {
+            point.nav_ref = canonicalize_airway_branch_point_nav_ref(
+                store,
+                point.nav_ref.clone(),
+                point.position,
+            )?;
+        }
+    }
+    Ok(())
+}
+
+fn canonicalize_airway_branch_point_nav_ref(
+    store: &NavKvStore,
+    nav_ref: NavRef,
+    position: LatLon,
+) -> Result<NavRef, HadReadError> {
+    let NavRef::Fix(id) = nav_ref else {
+        return Ok(nav_ref);
+    };
+    let normalized_id = id.trim().to_ascii_uppercase();
+    let Some(canonical_nav_ref) = read_optional::<NavRef>(
+        store,
+        NavKvQuery::WaypointIdentifier {
+            identifier: normalized_id.clone(),
+        },
+    )?
+    else {
+        return Ok(NavRef::Fix(id));
+    };
+    let NavRef::Navaid(canonical_id) = canonical_nav_ref else {
+        return Ok(NavRef::Fix(id));
+    };
+    let canonical_position = nav_ref_position(store, &NavRef::Navaid(canonical_id.clone()), None)?;
+    if flight_leg_distance_nm(position, canonical_position)
+        > AIRWAY_NAVAID_CANONICALIZATION_TOLERANCE_NM
+    {
+        return Ok(NavRef::Fix(id));
+    }
+    Ok(NavRef::Navaid(canonical_id))
+}
+
 fn nav_ref_kind_order(nav_ref: &NavRef) -> usize {
     match nav_ref {
         NavRef::Airport(_) => 0,
@@ -2416,13 +2492,7 @@ fn prepare_airway_presentation_for_anchors(
     origin_anchor: &NavRef,
     destination_anchor: Option<&NavRef>,
 ) -> Result<AirwayPresentationPlan, HadReadError> {
-    let branches = read_required::<Vec<AirwayBranch>>(
-        store,
-        NavKvQuery::AirwayBranches {
-            airway_name: airway_name.to_string(),
-        },
-        "airway branches",
-    )?;
+    let branches = read_airway_branches(store, airway_name)?;
     let origin_position = nav_ref_position(store, origin_anchor, None)?;
     let destination_position = destination_anchor
         .map(|anchor| nav_ref_position(store, anchor, None))
@@ -2506,13 +2576,7 @@ fn materialize_airway_selection(
     origin_anchor: &NavRef,
     destination_anchor: Option<&NavRef>,
 ) -> Result<MaterializedAirwayResponse, HadReadError> {
-    let branches = read_required::<Vec<AirwayBranch>>(
-        store,
-        NavKvQuery::AirwayBranches {
-            airway_name: entry.airway_name.clone(),
-        },
-        "airway branches",
-    )?;
+    let branches = read_airway_branches(store, &entry.airway_name)?;
     let origin_position = nav_ref_position(store, origin_anchor, None)?;
     let destination_position = destination_anchor
         .map(|anchor| nav_ref_position(store, anchor, None))
@@ -3461,12 +3525,7 @@ fn recognize_flight_plan_entry_token(
     if let Some(nav_ref) = resolve_waypoint_identifier_for_ui(store, token)? {
         return Ok(Some(RecognizedInputToken::Waypoint(nav_ref)));
     }
-    if let Some(branches) = read_optional::<Vec<AirwayBranch>>(
-        store,
-        NavKvQuery::AirwayBranches {
-            airway_name: token.to_string(),
-        },
-    )? {
+    if let Some(branches) = read_optional_airway_branches(store, token)? {
         if !branches.is_empty() {
             return Ok(Some(RecognizedInputToken::Airway {
                 airway_name: token.to_string(),
@@ -6819,6 +6878,83 @@ mod tests {
         .expect_err("PAE is not on V495");
 
         assert!(matches!(err, HadReadError::Fatal(message) if message == "PAE not on V495"));
+    }
+
+    #[test]
+    fn airway_branch_reader_canonicalizes_navaid_points_before_materializing_legs() {
+        let store = crate::navkv::nav_kv_store_for_test(
+            &[
+                (
+                    "airway/V4",
+                    br#"[
+                        {
+                            "display_name":"V4",
+                            "branch_key":"V4-TEST",
+                            "points":[
+                                {
+                                    "airway_name":"V4",
+                                    "sequence":10,
+                                    "position":{"lat":40.0,"lon":-120.2},
+                                    "nav_ref":{"Fix":"SPUUD"}
+                                },
+                                {
+                                    "airway_name":"V4",
+                                    "sequence":20,
+                                    "position":{"lat":40.0,"lon":-120.1},
+                                    "nav_ref":{"Fix":"PDT"}
+                                },
+                                {
+                                    "airway_name":"V4",
+                                    "sequence":30,
+                                    "position":{"lat":40.0,"lon":-120.0},
+                                    "nav_ref":{"Fix":"CORDO"}
+                                }
+                            ]
+                        }
+                    ]"# as &[u8],
+                ),
+                (
+                    "waypoint/identifier/PDT",
+                    br#"{"Navaid":"PDT"}"# as &[u8],
+                ),
+                (
+                    "navref/position/navaid/PDT",
+                    br#"{"lat":40.0,"lon":-120.1}"# as &[u8],
+                ),
+            ],
+            4096,
+        );
+
+        let branches = read_airway_branches(&store, "V4").expect("read airway branches");
+        assert_eq!(
+            branches[0].points[1].nav_ref,
+            NavRef::Navaid("PDT".to_string())
+        );
+        let entry = AirwayEntryCandidate {
+            airway_name: "V4".to_string(),
+            branch_key: "V4-TEST".to_string(),
+            branch_point_index: 0,
+            sequence: 10,
+            nav_ref: NavRef::Fix("SPUUD".to_string()),
+            distance_from_anchor_nm: 0.0,
+            previous_nav_ref: None,
+            next_nav_ref: Some(NavRef::Navaid("PDT".to_string())),
+        };
+        let exit = AirwayExitCandidate {
+            airway_name: "V4".to_string(),
+            branch_key: "V4-TEST".to_string(),
+            branch_point_index: 2,
+            sequence: 30,
+            nav_ref: NavRef::Fix("CORDO".to_string()),
+            leg_offset_from_entry: 2,
+            is_entry: false,
+            distance_from_target_nm: Some(0.0),
+        };
+
+        let (_airway, resolved_legs) =
+            materialize_airway_from_branches(0, &entry, &exit, &branches).expect("materialize V4");
+        assert_eq!(resolved_legs[0].to, NavRef::Navaid("PDT".to_string()));
+        assert_eq!(resolved_legs[1].from, NavRef::Navaid("PDT".to_string()));
     }
 
     #[test]

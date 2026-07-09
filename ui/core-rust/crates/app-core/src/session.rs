@@ -18264,8 +18264,8 @@ mod tests {
     }
 
     #[test]
-    fn map_direct_to_airway_midpoint_handles_fix_navaid_kind_mismatch() {
-        let init = create_synced_twf_v4_ykm_chins_kpae_session(NavRef::Fix("PDT".to_string()));
+    fn map_direct_to_airway_midpoint_marks_reachable_downstream_legs_remaining() {
+        let init = create_synced_twf_v4_ykm_chins_kpae_session(NavRef::Navaid("PDT".to_string()));
         push_test_ownship_position(
             init.handle,
             LatLon {
@@ -18291,7 +18291,7 @@ mod tests {
         assert_eq!(
             direct_to_state.resume_leg_id.as_deref(),
             Some("v4-pdt-cordo"),
-            "direct-to should resume through the downstream airway leg even if the clicked symbol is a navaid and the airway leg stores the same ident as a fix"
+            "direct-to should resume through the downstream airway leg"
         );
         assert_eq!(
             session_route_status_by_leg_id(init.handle, "leg-twf-alkal"),

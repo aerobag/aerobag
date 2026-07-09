@@ -434,6 +434,30 @@ fn guidance_detail_index_for_leg_element(
     )
 }
 
+fn flight_plan_leg_index_by_id(plan: &FlightPlan, leg_id: &str) -> Option<usize> {
+    plan.resolved_legs.iter().position(|leg| leg.id == leg_id)
+}
+
+fn direct_to_route_status_for_leg(
+    plan: &FlightPlan,
+    guidance: &GuidanceState,
+    leg_index: usize,
+) -> FlightPlanRouteSegmentStatus {
+    let Some(resume_leg_index) = guidance
+        .direct_to
+        .as_ref()
+        .and_then(|direct_to| direct_to.resume_leg_id.as_deref())
+        .and_then(|resume_leg_id| flight_plan_leg_index_by_id(plan, resume_leg_id))
+    else {
+        return FlightPlanRouteSegmentStatus::Completed;
+    };
+    if leg_index >= resume_leg_index {
+        FlightPlanRouteSegmentStatus::Remaining
+    } else {
+        FlightPlanRouteSegmentStatus::Completed
+    }
+}
+
 fn route_status_for_detail(
     plan: &FlightPlan,
     leg_index: usize,
@@ -443,7 +467,7 @@ fn route_status_for_detail(
         return FlightPlanRouteSegmentStatus::Remaining;
     };
     if guidance.sequencing_mode == SequencingMode::DirectTo {
-        return FlightPlanRouteSegmentStatus::Completed;
+        return direct_to_route_status_for_leg(plan, guidance, leg_index);
     }
     let Some(detail_index) = guidance_detail_index_for_leg_element(plan, leg_index, element_index)
     else {

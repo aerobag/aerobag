@@ -16072,6 +16072,167 @@ mod tests {
         init
     }
 
+    fn twf_v4_ykm_chins_kpae_plan(pdt_nav_ref: NavRef) -> FlightPlan {
+        FlightPlan {
+            id: "twf-v4-ykm-chins-kpae".to_string(),
+            name: "TWF ALKAL V4 YKM CHINS KPAE".to_string(),
+            legs: Vec::new(),
+            route_components: vec![
+                RouteComponent::Waypoint {
+                    waypoint: NavRef::Navaid("TWF".to_string()),
+                },
+                RouteComponent::Waypoint {
+                    waypoint: NavRef::Fix("ALKAL".to_string()),
+                },
+                RouteComponent::Airway {
+                    airway: crate::AirwaySegment {
+                        name: "V4".to_string(),
+                        branch_key: Some("V4-TWF-YKM".to_string()),
+                        entry: NavRef::Fix("ALKAL".to_string()),
+                        exit: NavRef::Navaid("YKM".to_string()),
+                    },
+                },
+                RouteComponent::Waypoint {
+                    waypoint: NavRef::Fix("CHINS".to_string()),
+                },
+                RouteComponent::Waypoint {
+                    waypoint: NavRef::Airport("KPAE".to_string()),
+                },
+            ],
+            route_component_uids: vec![
+                "row-twf".to_string(),
+                "row-alkal".to_string(),
+                "row-v4".to_string(),
+                "row-chins".to_string(),
+                "row-kpae".to_string(),
+            ],
+            route_component_uid_counter: 5,
+            resolved_legs: vec![
+                ResolvedLeg {
+                    id: "leg-twf-alkal".to_string(),
+                    from: NavRef::Navaid("TWF".to_string()),
+                    to: NavRef::Fix("ALKAL".to_string()),
+                    source: ResolvedLegSource::RouteComponent { component_index: 0 },
+                    procedure_provenance: None,
+                },
+                ResolvedLeg {
+                    id: "v4-alkal-spuud".to_string(),
+                    from: NavRef::Fix("ALKAL".to_string()),
+                    to: NavRef::Fix("SPUUD".to_string()),
+                    source: ResolvedLegSource::RouteComponent { component_index: 2 },
+                    procedure_provenance: None,
+                },
+                ResolvedLeg {
+                    id: "v4-spuud-pdt".to_string(),
+                    from: NavRef::Fix("SPUUD".to_string()),
+                    to: pdt_nav_ref.clone(),
+                    source: ResolvedLegSource::RouteComponent { component_index: 2 },
+                    procedure_provenance: None,
+                },
+                ResolvedLeg {
+                    id: "v4-pdt-cordo".to_string(),
+                    from: pdt_nav_ref,
+                    to: NavRef::Fix("CORDO".to_string()),
+                    source: ResolvedLegSource::RouteComponent { component_index: 2 },
+                    procedure_provenance: None,
+                },
+                ResolvedLeg {
+                    id: "v4-cordo-ykm".to_string(),
+                    from: NavRef::Fix("CORDO".to_string()),
+                    to: NavRef::Navaid("YKM".to_string()),
+                    source: ResolvedLegSource::RouteComponent { component_index: 2 },
+                    procedure_provenance: None,
+                },
+                ResolvedLeg {
+                    id: "leg-ykm-chins".to_string(),
+                    from: NavRef::Navaid("YKM".to_string()),
+                    to: NavRef::Fix("CHINS".to_string()),
+                    source: ResolvedLegSource::RouteComponent { component_index: 2 },
+                    procedure_provenance: None,
+                },
+                ResolvedLeg {
+                    id: "leg-chins-kpae".to_string(),
+                    from: NavRef::Fix("CHINS".to_string()),
+                    to: NavRef::Airport("KPAE".to_string()),
+                    source: ResolvedLegSource::RouteComponent { component_index: 3 },
+                    procedure_provenance: None,
+                },
+            ],
+            guidance: Some(GuidanceState {
+                active_leg_index: 2,
+                active_detail_index: Some(2),
+                display_split_leg_id: None,
+                sequencing_mode: SequencingMode::FollowPlan,
+                direct_to: None,
+                suspend_reason: None,
+            }),
+            departure: None,
+            destination: Some(AirportId("KPAE".to_string())),
+            alternate: None,
+            cruise_altitude_ft: Some(8000),
+            notes: None,
+            updated_at_epoch_ms: 0,
+            version: 1,
+        }
+    }
+
+    fn twf_v4_ykm_chins_kpae_nav_kv_store() -> NavKvStore {
+        crate::navkv::nav_kv_store_for_test(
+            &[
+                (
+                    "navref/position/navaid/TWF",
+                    br#"{"lat":40.0,"lon":-120.4}"# as &[u8],
+                ),
+                (
+                    "navref/position/fix/ALKAL",
+                    br#"{"lat":40.0,"lon":-120.3}"# as &[u8],
+                ),
+                (
+                    "navref/position/fix/SPUUD",
+                    br#"{"lat":40.0,"lon":-120.2}"# as &[u8],
+                ),
+                (
+                    "navref/position/fix/PDT",
+                    br#"{"lat":40.0,"lon":-120.1}"# as &[u8],
+                ),
+                (
+                    "navref/position/navaid/PDT",
+                    br#"{"lat":40.0,"lon":-120.1}"# as &[u8],
+                ),
+                (
+                    "navref/position/fix/CORDO",
+                    br#"{"lat":40.0,"lon":-120.0}"# as &[u8],
+                ),
+                (
+                    "navref/position/navaid/YKM",
+                    br#"{"lat":40.0,"lon":-119.9}"# as &[u8],
+                ),
+                (
+                    "navref/position/fix/CHINS",
+                    br#"{"lat":40.0,"lon":-119.8}"# as &[u8],
+                ),
+                (
+                    "navref/position/airport/KPAE",
+                    br#"{"lat":40.0,"lon":-119.7}"# as &[u8],
+                ),
+            ],
+            256,
+        )
+    }
+
+    fn create_synced_twf_v4_ykm_chins_kpae_session(pdt_nav_ref: NavRef) -> UiSessionInitResult {
+        let store = twf_v4_ykm_chins_kpae_nav_kv_store();
+        let init = create_ui_session(twf_v4_ykm_chins_kpae_plan(pdt_nav_ref), &[], None, None)
+            .expect("create session");
+        attach_nav_kv_store_to_session(init.handle, 1, &store).expect("attach nav kv");
+        let sync = sync_guidance_geometry_in_session(init.handle).expect("sync guidance geometry");
+        assert!(
+            matches!(sync, HadOperationOutcome::Complete { .. }),
+            "TWF V4 guidance geometry should sync from the test nav store"
+        );
+        init
+    }
+
     fn activate_direct_to_modda_row(handle: u32) {
         let before_direct_to = get_session_snapshot(handle).expect("snapshot before direct-to");
         let modda_row = before_direct_to
@@ -16094,17 +16255,30 @@ mod tests {
         assert_session_snapshot_invalidated(direct_to);
     }
 
-    fn session_route_statuses(handle: u32) -> Vec<crate::FlightPlanRouteSegmentStatus> {
+    fn session_route_segments(handle: u32) -> Vec<crate::FlightPlanRouteSegment> {
         let route = project_flight_plan_route_in_session(handle).expect("project route");
         let HadOperationOutcome::Complete { result, .. } = route else {
             panic!("route unexpectedly needed resources");
         };
-        let segments: Vec<crate::FlightPlanRouteSegment> =
-            serde_json::from_value(result).expect("route segments");
-        segments
+        serde_json::from_value(result).expect("route segments")
+    }
+
+    fn session_route_statuses(handle: u32) -> Vec<crate::FlightPlanRouteSegmentStatus> {
+        session_route_segments(handle)
             .iter()
             .map(|segment| segment.status.clone())
             .collect()
+    }
+
+    fn session_route_status_by_leg_id(
+        handle: u32,
+        leg_id: &str,
+    ) -> crate::FlightPlanRouteSegmentStatus {
+        session_route_segments(handle)
+            .into_iter()
+            .find(|segment| segment.leg_id == leg_id)
+            .unwrap_or_else(|| panic!("missing route segment for leg {leg_id}"))
+            .status
     }
 
     fn assert_ui_guidance_tracks_leg(
@@ -18035,6 +18209,150 @@ mod tests {
         assert_eq!(guidance.active_leg_index, 1);
         assert_eq!(guidance.active_detail_index, Some(1));
         assert!(guidance.direct_to.is_none());
+    }
+
+    #[test]
+    fn map_direct_to_airway_midpoint_sequences_into_resume_leg() {
+        let init = create_synced_twf_v4_ykm_chins_kpae_session(NavRef::Navaid("PDT".to_string()));
+        push_test_ownship_position(
+            init.handle,
+            LatLon {
+                lat: 40.0,
+                lon: -120.18,
+            },
+            1_000,
+        );
+        let direct_to = activate_direct_to_nav_ref_in_session_outcome(
+            init.handle,
+            NavRef::Navaid("PDT".into()),
+        )
+        .expect("map direct-to PDT");
+        assert_session_snapshot_invalidated(direct_to);
+        let after_direct_to = get_session_snapshot(init.handle).expect("snapshot after direct-to");
+        let direct_to_state = after_direct_to
+            .app_state
+            .active_plan
+            .as_ref()
+            .and_then(|plan| plan.guidance.as_ref())
+            .and_then(|guidance| guidance.direct_to.as_ref())
+            .expect("direct-to state");
+        assert_eq!(
+            direct_to_state.resume_leg_id.as_deref(),
+            Some("v4-pdt-cordo"),
+            "direct-to an airway midpoint must remember the downstream airway leg"
+        );
+
+        let after_pdt = push_test_ownship_position(
+            init.handle,
+            LatLon {
+                lat: 40.0,
+                lon: -120.08,
+            },
+            2_000,
+        );
+        let guidance = after_pdt
+            .app_state
+            .active_plan
+            .as_ref()
+            .and_then(|plan| plan.guidance.as_ref())
+            .expect("guidance after crossing PDT");
+        assert_eq!(guidance.sequencing_mode, SequencingMode::FollowPlan);
+        assert_eq!(guidance.active_leg_index, 3);
+        assert_eq!(guidance.active_detail_index, Some(3));
+        assert!(guidance.direct_to.is_none());
+        assert_ui_guidance_tracks_leg(&after_pdt, 3, "PDT", "CORDO");
+    }
+
+    #[test]
+    fn map_direct_to_airway_midpoint_handles_fix_navaid_kind_mismatch() {
+        let init = create_synced_twf_v4_ykm_chins_kpae_session(NavRef::Fix("PDT".to_string()));
+        push_test_ownship_position(
+            init.handle,
+            LatLon {
+                lat: 40.0,
+                lon: -120.18,
+            },
+            1_000,
+        );
+        let direct_to = activate_direct_to_nav_ref_in_session_outcome(
+            init.handle,
+            NavRef::Navaid("PDT".into()),
+        )
+        .expect("map direct-to PDT");
+        assert_session_snapshot_invalidated(direct_to);
+        let after_direct_to = get_session_snapshot(init.handle).expect("snapshot after direct-to");
+        let direct_to_state = after_direct_to
+            .app_state
+            .active_plan
+            .as_ref()
+            .and_then(|plan| plan.guidance.as_ref())
+            .and_then(|guidance| guidance.direct_to.as_ref())
+            .expect("direct-to state");
+        assert_eq!(
+            direct_to_state.resume_leg_id.as_deref(),
+            Some("v4-pdt-cordo"),
+            "direct-to should resume through the downstream airway leg even if the clicked symbol is a navaid and the airway leg stores the same ident as a fix"
+        );
+        assert_eq!(
+            session_route_status_by_leg_id(init.handle, "leg-twf-alkal"),
+            crate::FlightPlanRouteSegmentStatus::Completed,
+            "legs before the direct-to target are no longer reachable by sequencing"
+        );
+        assert_eq!(
+            session_route_status_by_leg_id(init.handle, "v4-alkal-spuud"),
+            crate::FlightPlanRouteSegmentStatus::Completed,
+            "airway legs before the direct-to target are no longer reachable by sequencing"
+        );
+        assert_eq!(
+            session_route_status_by_leg_id(init.handle, "v4-spuud-pdt"),
+            crate::FlightPlanRouteSegmentStatus::Completed,
+            "the normal inbound leg to the direct-to target is replaced by the direct-to leg"
+        );
+        assert_eq!(
+            session_route_status_by_leg_id(init.handle, "direct-to"),
+            crate::FlightPlanRouteSegmentStatus::Active,
+            "the direct-to overlay is the active leg"
+        );
+        assert_eq!(
+            session_route_status_by_leg_id(init.handle, "v4-pdt-cordo"),
+            crate::FlightPlanRouteSegmentStatus::Remaining,
+            "the downstream airway leg is reachable after crossing the direct-to target"
+        );
+        assert_eq!(
+            session_route_status_by_leg_id(init.handle, "v4-cordo-ykm"),
+            crate::FlightPlanRouteSegmentStatus::Remaining,
+            "later airway legs remain reachable after crossing the direct-to target"
+        );
+        assert_eq!(
+            session_route_status_by_leg_id(init.handle, "leg-ykm-chins"),
+            crate::FlightPlanRouteSegmentStatus::Remaining,
+            "post-airway legs remain reachable after crossing the direct-to target"
+        );
+        assert_eq!(
+            session_route_status_by_leg_id(init.handle, "leg-chins-kpae"),
+            crate::FlightPlanRouteSegmentStatus::Remaining,
+            "the route destination remains reachable after crossing the direct-to target"
+        );
+
+        let after_pdt = push_test_ownship_position(
+            init.handle,
+            LatLon {
+                lat: 40.0,
+                lon: -120.08,
+            },
+            2_000,
+        );
+        let guidance = after_pdt
+            .app_state
+            .active_plan
+            .as_ref()
+            .and_then(|plan| plan.guidance.as_ref())
+            .expect("guidance after crossing PDT");
+        assert_eq!(guidance.sequencing_mode, SequencingMode::FollowPlan);
+        assert_eq!(guidance.active_leg_index, 3);
+        assert_eq!(guidance.active_detail_index, Some(3));
+        assert!(guidance.direct_to.is_none());
+        assert_ui_guidance_tracks_leg(&after_pdt, 3, "PDT", "CORDO");
     }
 
     #[test]

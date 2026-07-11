@@ -46,6 +46,8 @@ const defaultLiveFeedBuildRoot = path.join(
 );
 const defaultTfrBuildRoot = path.join(defaultLiveFeedBuildRoot, "tfrs");
 const defaultNexradBuildRoot = path.join(defaultLiveFeedBuildRoot, "nexrad");
+const liveFeedHistoryMaxEntries = 12;
+const liveFeedHistoryWindowMs = 30 * 60 * 1000;
 
 const args = parseArgs(process.argv.slice(2));
 const outputRoot = path.resolve(args.output ?? path.join(repoRoot, "..", "live-feeds-dev-fixture"));
@@ -373,11 +375,12 @@ function publishDirectoryStateSequence(root, product, states) {
     const stateBytes = fs.readFileSync(statePath);
     const stateSha256 = sha256Hex(canonicalJson(entry.manifest));
     const versionManifest = {
-      schema_version: 1,
+      schema_version: 2,
       product,
       version: entry.version,
       previous: previous?.version ?? null,
       state: {
+        kind: "json",
         url: relativeUrl(root, statePath),
         bytes: stateBytes.length,
         blob_sha256: sha256Hex(stateBytes),
@@ -393,7 +396,7 @@ function publishDirectoryStateSequence(root, product, states) {
     previous = entry;
   }
 
-  setCurrentProduct(root, product, states[0]);
+  setCurrentProduct(root, product, states[0], states);
 }
 
 function publishObstacleHadStates(root, sourceRoots) {
@@ -673,20 +676,51 @@ function buildMetarStationDelta(fromState, toState) {
   };
 }
 
-function setCurrentProduct(root, product, first) {
+function setCurrentProduct(root, product, first, states = []) {
   const currentPath = path.join(root, "current.json");
   const current = readJsonIfExists(currentPath) ?? {
-    schema_version: 1,
+    schema_version: 2,
     generated_at_utc: new Date().toISOString(),
     products: {},
   };
-  current.products[product] = {
+  current.schema_version = 2;
+  current.products ??= {};
+  const entry = {
     current: first.version,
     version_manifest_url: relativeUrl(root, first.versionManifestPath),
     state_url: relativeUrl(root, first.statePath),
     state_sha256: first.stateSha256,
   };
+  const history = boundedHistoryEntries(root, states, first.version);
+  if (history.length > 0) {
+    entry.history = history;
+  }
+  current.products[product] = entry;
   fs.writeFileSync(currentPath, `${prettyJson(current)}\n`);
+}
+
+function boundedHistoryEntries(root, states, currentVersion) {
+  if (!Array.isArray(states) || states.length === 0) {
+    return [];
+  }
+  const current = states.find((entry) => entry.version === currentVersion);
+  const currentObservedMs = Date.parse(current?.observedAt ?? current?.manifest?.observed_at_utc ?? "");
+  let candidates = states.filter((entry) => entry.version !== currentVersion);
+  if (Number.isFinite(currentObservedMs)) {
+    candidates = candidates.filter((entry) => {
+      const observedMs = Date.parse(entry.observedAt ?? entry.manifest?.observed_at_utc ?? "");
+      return Number.isFinite(observedMs) && observedMs <= currentObservedMs && currentObservedMs - observedMs <= liveFeedHistoryWindowMs;
+    });
+  }
+  return candidates
+    .slice(-liveFeedHistoryMaxEntries)
+    .map((entry) => ({
+      version: entry.version,
+      version_manifest_url: relativeUrl(root, entry.versionManifestPath),
+      state_url: relativeUrl(root, entry.statePath),
+      state_sha256: entry.stateSha256,
+      collected_at_utc: entry.observedAt || undefined,
+    }));
 }
 
 function canonicalJson(value) {
@@ -748,10 +782,11 @@ function resetCurrentToFirstFixtureVersions(root) {
   const versionsRoot = path.join(root, "versions");
   const currentPath = path.join(root, "current.json");
   const current = readJsonIfExists(currentPath) ?? {
-    schema_version: 1,
+    schema_version: 2,
     generated_at_utc: new Date().toISOString(),
     products: {},
   };
+  current.schema_version = 2;
   current.products ??= {};
   if (!fs.existsSync(versionsRoot)) {
     fs.writeFileSync(currentPath, `${prettyJson(current)}\n`);
@@ -771,14 +806,41 @@ function resetCurrentToFirstFixtureVersions(root) {
     if (!manifest?.version || !manifest?.state?.url || !manifest?.state?.state_sha256) {
       continue;
     }
-    current.products[product] = {
+    const entry = {
       current: manifest.version,
       version_manifest_url: relativeUrl(root, versionPath),
       state_url: manifest.state.url,
       state_sha256: manifest.state.state_sha256,
     };
+    const history = boundedHistoryEntriesFromVersionFiles(root, product, versionFile);
+    if (history.length > 0) {
+      entry.history = history;
+    }
+    current.products[product] = entry;
   }
   fs.writeFileSync(currentPath, `${prettyJson(current)}\n`);
+}
+
+function boundedHistoryEntriesFromVersionFiles(root, product, currentVersionFile) {
+  const productRoot = path.join(root, "versions", product);
+  const versionFiles = fs.readdirSync(productRoot).filter((name) => name.endsWith(".json")).sort();
+  return versionFiles
+    .filter((name) => name !== currentVersionFile)
+    .slice(-liveFeedHistoryMaxEntries)
+    .map((name) => {
+      const versionPath = path.join(productRoot, name);
+      const manifest = readJsonIfExists(versionPath);
+      if (!manifest?.version || !manifest?.state?.url || !manifest?.state?.state_sha256) {
+        return null;
+      }
+      return {
+        version: manifest.version,
+        version_manifest_url: relativeUrl(root, versionPath),
+        state_url: manifest.state.url,
+        state_sha256: manifest.state.state_sha256,
+      };
+    })
+    .filter(Boolean);
 }
 
 function readZipMember(zipPath, memberName) {

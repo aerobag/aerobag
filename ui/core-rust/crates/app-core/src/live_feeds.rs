@@ -17,6 +17,7 @@ const CURRENT_ADDRESS: &str = "/live-feeds/v2/current.json";
 const LIVE_FEEDS_PREFIX: &str = "/live-feeds/v2/";
 const LIVE_FEEDS_STATUS_PATH: &str = "/live-feeds/status.html";
 const FAILED_RESOURCE_RETRY_DELAY_MS: i64 = 5 * 60 * 1000;
+pub const LIVE_FEED_HISTORY_MAX_ENTRIES: usize = 12;
 
 #[derive(Debug, Clone, PartialEq, Default)]
 pub struct LiveFeedsState {
@@ -41,6 +42,26 @@ struct LiveFeedProductState {
     delta_from_previous: Option<LiveFeedDeltaRef>,
     version_manifest: Option<Value>,
     state_manifest: Option<Value>,
+    history: Vec<LiveFeedProductHistoryState>,
+}
+
+#[derive(Debug, Clone, PartialEq, Default)]
+struct LiveFeedProductHistoryState {
+    version: String,
+    version_manifest_url: Option<String>,
+    state_url: Option<String>,
+    expected_state_sha256: Option<String>,
+    published_at_utc: Option<String>,
+    collected_at_utc: Option<String>,
+    state_kind: Option<String>,
+    state_ref: Option<LiveFeedPayloadRef>,
+    version_manifest: Option<Value>,
+    state_manifest: Option<Value>,
+}
+
+pub struct LiveFeedLoadedStateManifest<'a> {
+    pub version: &'a str,
+    pub manifest: &'a Value,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -74,6 +95,22 @@ struct CurrentManifest {
 #[derive(Debug, Deserialize)]
 struct CurrentProduct {
     current: String,
+    version_manifest_url: String,
+    #[serde(default)]
+    state_url: Option<String>,
+    #[serde(default)]
+    state_sha256: Option<String>,
+    #[serde(default)]
+    published_at_utc: Option<String>,
+    #[serde(default)]
+    collected_at_utc: Option<String>,
+    #[serde(default)]
+    history: Vec<CurrentProductHistoryEntry>,
+}
+
+#[derive(Debug, Clone, PartialEq, Deserialize)]
+struct CurrentProductHistoryEntry {
+    version: String,
     version_manifest_url: String,
     #[serde(default)]
     state_url: Option<String>,
@@ -220,6 +257,8 @@ struct LiveFeedCurrentEvent {
     published_at_utc: Option<String>,
     #[serde(default)]
     collected_at_utc: Option<String>,
+    #[serde(default)]
+    history: Vec<CurrentProductHistoryEntry>,
 }
 
 impl LiveFeedsState {
@@ -371,6 +410,7 @@ impl LiveFeedsState {
                 payload.state_sha256,
                 payload.published_at_utc,
                 payload.collected_at_utc,
+                payload.history,
             )?;
         }
         Ok(affected)
@@ -396,6 +436,7 @@ impl LiveFeedsState {
                     entry.state_sha256,
                     entry.published_at_utc,
                     entry.collected_at_utc,
+                    entry.history,
                 )?;
             }
             return Ok(());
@@ -435,6 +476,21 @@ impl LiveFeedsState {
             }
             let entry = self.products.entry(product).or_default();
             if entry.current_version.as_deref() != Some(version.as_str()) {
+                let Some(history) = entry
+                    .history
+                    .iter_mut()
+                    .find(|entry| entry.version == version)
+                else {
+                    self.resource_failure_retry_after_epoch_ms
+                        .remove(resource_id);
+                    return Ok(());
+                };
+                history.state_url = Some(manifest.state.url.clone());
+                history.expected_state_sha256 = Some(manifest.state.state_sha256.clone());
+                history.state_kind = manifest.state.kind.clone();
+                history.state_ref = Some(manifest.state);
+                history.version_manifest =
+                    Some(serde_json::from_slice(bytes).map_err(invalid_live_feed_json)?);
                 self.resource_failure_retry_after_epoch_ms
                     .remove(resource_id);
                 return Ok(());
@@ -455,6 +511,27 @@ impl LiveFeedsState {
             let (product, version) = split_product_version(resource_id, rest)?;
             let entry = self.products.entry(product).or_default();
             if entry.current_version.as_deref() != Some(version.as_str()) {
+                let Some(history) = entry
+                    .history
+                    .iter_mut()
+                    .find(|entry| entry.version == version)
+                else {
+                    self.resource_failure_retry_after_epoch_ms
+                        .remove(resource_id);
+                    return Ok(());
+                };
+                let decoded_bytes = decode_live_feed_payload(history.state_kind.as_deref(), bytes)?;
+                let parsed: Value = serde_json::from_slice(decoded_bytes.as_ref())
+                    .map_err(invalid_live_feed_json)?;
+                if let Some(expected) = &history.expected_state_sha256 {
+                    let actual = canonical_json_sha256(&parsed)?;
+                    if &actual != expected {
+                        return Err(invalid_live_feed(format!(
+                            "state hash mismatch for {resource_id}: expected {expected}, got {actual}"
+                        )));
+                    }
+                }
+                history.state_manifest = Some(parsed);
                 self.resource_failure_retry_after_epoch_ms
                     .remove(resource_id);
                 return Ok(());
@@ -762,6 +839,46 @@ impl LiveFeedsState {
         self.current_loaded
     }
 
+    pub fn product_loaded_state_manifests(
+        &self,
+        product: &str,
+    ) -> Vec<LiveFeedLoadedStateManifest<'_>> {
+        let Some(entry) = self.products.get(product) else {
+            return Vec::new();
+        };
+        let mut manifests = Vec::new();
+        for history in &entry.history {
+            if let Some(manifest) = &history.state_manifest {
+                manifests.push(LiveFeedLoadedStateManifest {
+                    version: &history.version,
+                    manifest,
+                });
+            }
+        }
+        if entry
+            .current_version
+            .as_deref()
+            .is_some_and(|version| entry.loaded_version.as_deref() == Some(version))
+        {
+            if let (Some(version), Some(manifest)) = (
+                entry.current_version.as_deref(),
+                entry.state_manifest.as_ref(),
+            ) {
+                manifests.push(LiveFeedLoadedStateManifest { version, manifest });
+            }
+        }
+        manifests
+    }
+
+    pub fn missing_history_resources_for_product_at_epoch_ms(
+        &self,
+        product: &str,
+        epoch_ms: i64,
+    ) -> Vec<CoreResourceRequest> {
+        let resources = self.missing_history_resources_for_product(product);
+        self.retryable_resources(resources, epoch_ms)
+    }
+
     fn register_product(
         &mut self,
         product: String,
@@ -771,11 +888,13 @@ impl LiveFeedsState {
         state_sha256: Option<String>,
         published_at_utc: Option<String>,
         collected_at_utc: Option<String>,
+        history: Vec<CurrentProductHistoryEntry>,
     ) -> AppResult<()> {
         validate_relative_url(&version_manifest_url)?;
         if let Some(url) = &state_url {
             validate_relative_url(url)?;
         }
+        let history = normalize_product_history(&product, history)?;
         let entry = self.products.entry(product).or_default();
         if entry.current_version.as_deref() == Some(version.as_str()) {
             entry.version_manifest_url = Some(version_manifest_url);
@@ -787,6 +906,7 @@ impl LiveFeedsState {
             }
             entry.published_at_utc = published_at_utc;
             entry.collected_at_utc = collected_at_utc;
+            entry.sync_history(history);
             if entry.loaded_version.as_deref() == Some(version.as_str()) {
                 entry.loaded_version = Some(version);
             }
@@ -803,6 +923,7 @@ impl LiveFeedsState {
         entry.install_state_ref = None;
         entry.delta_from_previous = None;
         entry.version_manifest = None;
+        entry.sync_history(history);
         Ok(())
     }
 
@@ -856,6 +977,7 @@ impl LiveFeedsState {
             entry.install_state_ref = source_entry.install_state_ref.clone();
             entry.delta_from_previous = source_entry.delta_from_previous.clone();
             entry.version_manifest = source_entry.version_manifest.clone();
+            entry.history = source_entry.history.clone();
         }
     }
 
@@ -1136,6 +1258,36 @@ impl LiveFeedsState {
         resources
     }
 
+    fn missing_history_resources_for_product(&self, product: &str) -> Vec<CoreResourceRequest> {
+        let Some(entry) = self.products.get(product) else {
+            return Vec::new();
+        };
+        let mut resources = Vec::new();
+        for history in &entry.history {
+            if history.state_manifest.is_some() {
+                continue;
+            }
+            if history.version_manifest.is_none() {
+                if let Some(url) = &history.version_manifest_url {
+                    resources.push(self.public_live_feed_resource(
+                        format!("live_feeds/version/{product}/{}", history.version),
+                        url,
+                        true,
+                    ));
+                    continue;
+                }
+            }
+            if let Some(url) = &history.state_url {
+                resources.push(self.public_live_feed_resource(
+                    format!("live_feeds/state/{product}/{}", history.version),
+                    url,
+                    true,
+                ));
+            }
+        }
+        resources
+    }
+
     fn retryable_resources(
         &self,
         resources: Vec<CoreResourceRequest>,
@@ -1208,6 +1360,44 @@ impl LiveFeedsState {
 }
 
 impl LiveFeedProductState {
+    fn sync_history(&mut self, history: Vec<CurrentProductHistoryEntry>) {
+        let mut existing = std::mem::take(&mut self.history)
+            .into_iter()
+            .map(|entry| (entry.version.clone(), entry))
+            .collect::<HashMap<_, _>>();
+        self.history = history
+            .into_iter()
+            .map(|entry| {
+                let mut state = existing.remove(&entry.version).unwrap_or_default();
+                let state_sha256_changed =
+                    entry.state_sha256.as_ref().is_some_and(|state_sha256| {
+                        state.expected_state_sha256.as_ref() != Some(state_sha256)
+                    });
+                let version_manifest_url_changed = state
+                    .version_manifest_url
+                    .as_ref()
+                    .is_some_and(|existing| existing != &entry.version_manifest_url);
+                if state_sha256_changed || version_manifest_url_changed {
+                    state.state_kind = None;
+                    state.state_ref = None;
+                    state.version_manifest = None;
+                    state.state_manifest = None;
+                }
+                state.version = entry.version;
+                state.version_manifest_url = Some(entry.version_manifest_url);
+                if entry.state_url.is_some() {
+                    state.state_url = entry.state_url;
+                }
+                if entry.state_sha256.is_some() {
+                    state.expected_state_sha256 = entry.state_sha256;
+                }
+                state.published_at_utc = entry.published_at_utc;
+                state.collected_at_utc = entry.collected_at_utc;
+                state
+            })
+            .collect();
+    }
+
     fn applicable_delta(&self, product: &str) -> Option<&LiveFeedDeltaRef> {
         if !supports_record_delta(product) {
             return None;
@@ -1309,6 +1499,40 @@ fn split_product_from_to(resource_id: &str, rest: &str) -> AppResult<(String, St
         parts[1].to_string(),
         parts[2].to_string(),
     ))
+}
+
+fn normalize_product_history(
+    product: &str,
+    history: Vec<CurrentProductHistoryEntry>,
+) -> AppResult<Vec<CurrentProductHistoryEntry>> {
+    if history.len() > LIVE_FEED_HISTORY_MAX_ENTRIES {
+        return Err(invalid_live_feed(format!(
+            "{product} live-feed history has {} entries; max is {LIVE_FEED_HISTORY_MAX_ENTRIES}",
+            history.len()
+        )));
+    }
+    let mut versions = Vec::new();
+    let mut normalized = Vec::new();
+    for entry in history {
+        if entry.version.is_empty() {
+            return Err(invalid_live_feed(format!(
+                "{product} live-feed history contains an empty version"
+            )));
+        }
+        if versions.iter().any(|version| version == &entry.version) {
+            return Err(invalid_live_feed(format!(
+                "{product} live-feed history repeats version {}",
+                entry.version
+            )));
+        }
+        validate_relative_url(&entry.version_manifest_url)?;
+        if let Some(url) = &entry.state_url {
+            validate_relative_url(url)?;
+        }
+        versions.push(entry.version.clone());
+        normalized.push(entry);
+    }
+    Ok(normalized)
 }
 
 fn parse_sse_current_event(event: LiveFeedSseEvent) -> AppResult<Option<LiveFeedCurrentEvent>> {
@@ -2000,6 +2224,118 @@ mod tests {
                 url: test_live_feed_url("versions/nexrad/v1.json"),
             }
         );
+    }
+
+    #[test]
+    fn current_manifest_history_is_bounded_and_loaded_separately() {
+        let mut state = live_feeds_state();
+        let history_manifest = serde_json::json!({
+            "product": "nexrad",
+            "state_id": "nexrad-v1",
+            "observed_at_utc": "2026-05-18T20:00:00Z",
+            "source_grid": {"geo_transform": [-123.0, 0.01, 0.0, 48.0, 0.0, -0.01]},
+            "levels": [],
+            "tile_size": 256,
+            "tile_path_template": "tiles/res{res}/{x}/{y}.png"
+        });
+        let history_sha = canonical_json_sha256(&history_manifest).expect("history hash");
+        state
+            .ingest_resource(
+                "live_feeds/current",
+                format!(
+                    r#"{{
+                    "schema_version": 2,
+                    "products": {{
+                        "nexrad": {{
+                            "current": "v2",
+                            "version_manifest_url": "versions/nexrad/v2.json",
+                            "history": [{{
+                                "version": "v1",
+                                "version_manifest_url": "versions/nexrad/v1.json",
+                                "state_url": "states/nexrad/v1/manifest.json",
+                                "state_sha256": "{history_sha}"
+                            }}]
+                        }}
+                    }}
+                }}"#
+                )
+                .as_bytes(),
+            )
+            .expect("ingest current manifest");
+
+        let resources = state.missing_history_resources_for_product_at_epoch_ms("nexrad", 0);
+        assert_eq!(resources.len(), 1);
+        assert_eq!(resources[0].id, "live_feeds/version/nexrad/v1");
+        assert!(resources[0].optional);
+
+        state
+            .ingest_resource(
+                "live_feeds/version/nexrad/v1",
+                format!(
+                    r#"{{
+                    "schema_version": 2,
+                    "product": "nexrad",
+                    "version": "v1",
+                    "state": {{
+                        "kind": "json",
+                        "url": "states/nexrad/v1/manifest.json",
+                        "state_sha256": "{history_sha}"
+                    }}
+                }}"#
+                )
+                .as_bytes(),
+            )
+            .expect("ingest history version");
+        let resources = state.missing_history_resources_for_product_at_epoch_ms("nexrad", 0);
+        assert_eq!(resources.len(), 1);
+        assert_eq!(resources[0].id, "live_feeds/state/nexrad/v1");
+        assert!(resources[0].optional);
+
+        state
+            .ingest_resource(
+                "live_feeds/state/nexrad/v1",
+                &serde_json::to_vec(&history_manifest).expect("history json"),
+            )
+            .expect("ingest history state");
+        let loaded = state.product_loaded_state_manifests("nexrad");
+        assert_eq!(loaded.len(), 1);
+        assert_eq!(loaded[0].version, "v1");
+        assert_eq!(loaded[0].manifest["state_id"], "nexrad-v1");
+    }
+
+    #[test]
+    fn current_manifest_rejects_unbounded_history() {
+        let mut state = live_feeds_state();
+        let history = (0..=LIVE_FEED_HISTORY_MAX_ENTRIES)
+            .map(|index| {
+                format!(
+                    r#"{{
+                    "version": "v{index}",
+                    "version_manifest_url": "versions/nexrad/v{index}.json"
+                }}"#
+                )
+            })
+            .collect::<Vec<_>>()
+            .join(",");
+        let err = state
+            .ingest_resource(
+                "live_feeds/current",
+                format!(
+                    r#"{{
+                    "schema_version": 2,
+                    "products": {{
+                        "nexrad": {{
+                            "current": "v-current",
+                            "version_manifest_url": "versions/nexrad/v-current.json",
+                            "history": [{history}]
+                        }}
+                    }}
+                }}"#
+                )
+                .as_bytes(),
+            )
+            .expect_err("unbounded history should fail");
+        assert!(err.message.contains("max is"));
     }
 
     #[test]

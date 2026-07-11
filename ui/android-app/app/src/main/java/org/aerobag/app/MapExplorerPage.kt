@@ -1862,8 +1862,21 @@ internal fun MapExplorerPage(
         )
     }
     LaunchedEffect(uiSession, nexradRenderRequests) {
+        var nexradAnimationJob: Job? = null
+        fun scheduleNexradAnimation(delayMs: Int?) {
+            nexradAnimationJob?.cancel()
+            nexradAnimationJob = null
+            if (delayMs == null) {
+                return
+            }
+            nexradAnimationJob = launch {
+                delay(delayMs.coerceAtLeast(0).toLong())
+                nexradRenderRequests.trySend(Unit)
+            }
+        }
         for (ignored in nexradRenderRequests) {
             val effectStartMs = SystemClock.elapsedRealtime()
+            scheduleNexradAnimation(null)
             val latestSurfaceSize = nexradSurfaceSizeState.value
             if (latestSurfaceSize.width <= 0 || latestSurfaceSize.height <= 0) {
                 nexradFrame = null
@@ -1895,9 +1908,10 @@ internal fun MapExplorerPage(
                     }
                 }
                 if (overlay.tiles.isEmpty()) {
+                    scheduleNexradAnimation(overlay.animation.nextUpdateDelayMs)
                     nexradFrame = null
                     perfLogInfo(MapLayerLogTag) {
-                        "nexrad empty status=${overlay.status.state} elapsedMs=${SystemClock.elapsedRealtime() - effectStartMs}"
+                        "nexrad empty status=${overlay.status.state} animation=${overlay.animation.phase} nextMs=${overlay.animation.nextUpdateDelayMs} elapsedMs=${SystemClock.elapsedRealtime() - effectStartMs}"
                     }
                     continue
                 }
@@ -1933,8 +1947,9 @@ internal fun MapExplorerPage(
                     decodedBytes = decodedImageBytes,
                 )
                 perfLogInfo(MapLayerLogTag) {
-                    "nexrad frame-ready pieces=${images.size} decodedImages=${decodedImagesBySrc.size} res=${overlay.stats.res} imageBytes=$imageBytes decodedBytes=$decodedImageBytes fetchMs=$fetchMs decodeMs=$decodeMs elapsedMs=${SystemClock.elapsedRealtime() - effectStartMs}"
+                    "nexrad frame-ready pieces=${images.size} decodedImages=${decodedImagesBySrc.size} res=${overlay.stats.res} animation=${overlay.animation.phase} frame=${overlay.animation.selectedFrameIndex}/${overlay.animation.frameCount} nextMs=${overlay.animation.nextUpdateDelayMs} imageBytes=$imageBytes decodedBytes=$decodedImageBytes fetchMs=$fetchMs decodeMs=$decodeMs elapsedMs=${SystemClock.elapsedRealtime() - effectStartMs}"
                 }
+                scheduleNexradAnimation(overlay.animation.nextUpdateDelayMs)
             } catch (error: CancellationException) {
                 throw error
             } catch (error: Throwable) {

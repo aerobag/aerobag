@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { createLiveFeedSubscription, loadBestAvailableAdapter, resolveLiveFeedSourceUrl } from "./appCoreAdapter";
+import { createLiveFeedSubscription, loadBestAvailableAdapter, resolveLiveFeedResourceUrl, resolveLiveFeedSourceUrl } from "./appCoreAdapter";
 
 const snapshotJson = JSON.stringify({
   app_state: {
@@ -142,7 +142,7 @@ describe("loadBestAvailableAdapter", () => {
       get_map_selection_for_nav_ref_in_session: async () => "{\"state\":\"complete\",\"result\":null}",
       get_terrain_overlay_in_session: async () => "{\"needed_terrain_tiles\":[],\"status\":\"hidden\"}",
       get_scheduled_terrain_overlay_in_session: async () => "{\"state\":\"complete\",\"result\":{\"status\":{\"state\":\"hidden\"},\"tile_requests\":[],\"altitude_bucket_ft\":null,\"frame_key\":null,\"schedule\":{\"cached_count\":0,\"in_flight_count\":0,\"missing_count\":0,\"frame_complete\":false,\"work_batch\":[]}}}",
-      get_nexrad_overlay_in_session: async () => "{\"state\":\"complete\",\"result\":{\"status\":{\"state\":\"hidden\"},\"tiles\":[]}}",
+      get_nexrad_overlay_in_session: async () => "{\"state\":\"complete\",\"result\":{\"status\":{\"state\":\"hidden\"},\"tiles\":[],\"stats\":{},\"animation\":{\"phase\":\"idle\",\"selected_frame_index\":null,\"frame_count\":0,\"age_labels\":[],\"age_summary\":\"---\",\"next_update_delay_ms\":null}}}",
       get_raster_tile_plan_in_session: async () => "{\"background_color\":\"#000000\",\"layers\":[]}",
       get_raster_tile_plan_in_session_with_display_scale: async () => "{\"background_color\":\"#000000\",\"layers\":[]}",
       render_terrain_overlay_tile_by_key_in_session: async () => new Uint8Array(),
@@ -214,6 +214,37 @@ describe("resolveLiveFeedSourceUrl", () => {
     expect(resolveLiveFeedSourceUrl(" https://feeds.example.test/// ", {
       location: { origin: "https://aerobag.org" },
     })).toBe("https://feeds.example.test");
+  });
+});
+
+describe("resolveLiveFeedResourceUrl", () => {
+  it("resolves core-relative live-feed resources against the configured live-feed origin", () => {
+    expect(resolveLiveFeedResourceUrl(
+      "/live-feeds/v2/states/nexrad/state-v1/tiles/res0/1/1.png",
+      " http://feeds.example.test:18080/// ",
+      { location: { origin: "http://app.example.test" } },
+    )).toBe("http://feeds.example.test:18080/live-feeds/v2/states/nexrad/state-v1/tiles/res0/1/1.png");
+  });
+
+  it("resolves core-relative live-feed resources against same origin when no feed origin is configured", () => {
+    expect(resolveLiveFeedResourceUrl(
+      "/live-feeds/v2/states/nexrad/state-v1/tiles/res0/1/1.png",
+      null,
+      { location: { origin: "http://app.example.test" } },
+    )).toBe("http://app.example.test/live-feeds/v2/states/nexrad/state-v1/tiles/res0/1/1.png");
+  });
+
+  it("leaves absolute and non-live-feed resource URLs unchanged", () => {
+    expect(resolveLiveFeedResourceUrl(
+      "https://cdn.example.test/live-feeds/v2/states/nexrad/state-v1/tiles/res0/1/1.png",
+      "http://feeds.example.test",
+      { location: { origin: "http://app.example.test" } },
+    )).toBe("https://cdn.example.test/live-feeds/v2/states/nexrad/state-v1/tiles/res0/1/1.png");
+    expect(resolveLiveFeedResourceUrl(
+      "/packages/cycle/manifest.json",
+      "http://feeds.example.test",
+      { location: { origin: "http://app.example.test" } },
+    )).toBe("/packages/cycle/manifest.json");
   });
 });
 

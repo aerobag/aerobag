@@ -85,7 +85,12 @@ function ktDefault(fieldSchema, ktType) {
     if (value === null) return " = null";
     if (Array.isArray(value)) return " = emptyList()";
     if (typeof value === "object") return ` = ${ktType}()`;
-    if (typeof value === "string") return ` = ${JSON.stringify(value)}`;
+    if (typeof value === "string") {
+      if (defs[ktType]?.enum?.includes(value)) {
+        return ` = ${ktType}.${enumMemberName(value)}`;
+      }
+      return ` = ${JSON.stringify(value)}`;
+    }
     if (typeof value === "number") return ` = ${ktType === "Double" ? value.toFixed(1) : value}`;
     if (typeof value === "boolean") return ` = ${value}`;
   }

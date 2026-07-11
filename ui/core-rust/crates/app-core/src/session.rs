@@ -468,6 +468,45 @@ pub struct NexradOverlayQueryResult {
     pub tiles: Vec<NexradOverlayTile>,
     #[serde(default)]
     pub stats: NexradOverlayStats,
+    #[serde(default)]
+    pub animation: NexradOverlayAnimation,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct NexradOverlayAnimation {
+    pub phase: NexradOverlayAnimationPhase,
+    pub selected_frame_index: Option<usize>,
+    pub frame_count: usize,
+    pub age_labels: Vec<String>,
+    pub age_summary: String,
+    pub next_update_delay_ms: Option<u32>,
+}
+
+impl Default for NexradOverlayAnimation {
+    fn default() -> Self {
+        Self::idle()
+    }
+}
+
+impl NexradOverlayAnimation {
+    fn idle() -> Self {
+        Self {
+            phase: NexradOverlayAnimationPhase::Idle,
+            selected_frame_index: None,
+            frame_count: 0,
+            age_labels: Vec::new(),
+            age_summary: "---".to_string(),
+            next_update_delay_ms: None,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum NexradOverlayAnimationPhase {
+    Idle,
+    Frame,
+    Blank,
 }
 
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
@@ -611,6 +650,10 @@ const PROCEDURE_GEOMETRY_STATUS_PREFIX: &str = "procedure_geometry:";
 const LIVE_FEED_METARS_STATUS_ID: &str = "live_feed:metars_unavailable";
 const LIVE_FEED_TAFS_STATUS_ID: &str = "live_feed:tafs_unavailable";
 const LIVE_FEED_NEXRAD_STATUS_ID: &str = "live_feed:nexrad_unavailable";
+const NEXRAD_ANIMATION_MAX_FRAMES: usize = 4;
+const NEXRAD_ANIMATION_FRAME_DWELL_MS: i64 = 500;
+const NEXRAD_ANIMATION_LATEST_DWELL_STEPS: usize = 3;
+const NEXRAD_ANIMATION_BLANK_DWELL_STEPS: usize = 1;
 const LIVE_FEED_TFRS_STATUS_ID: &str = "live_feed:tfrs_unavailable";
 const LIVE_FEED_OBSTACLES_STATUS_ID: &str = "live_feed:obstacles_unavailable";
 const CYCLE_DISPLAYED_CHART_STATUS_ID: &str = "cycle:displayed_chart_invalid";
@@ -1885,25 +1928,7 @@ fn project_data_status_page_state(session: &UiSession) -> UiDataStatusPageState 
             DATA_FRESHNESS_POLICIES.live_feeds.tafs,
             tafs_status.loaded_version,
         ),
-        live_feed_product_status_page_row(
-            session,
-            "nexrad",
-            "NEXRAD",
-            nexrad_status_manifest(session).is_some(),
-            live_feed_status_timestamp(session, "nexrad")
-                .or_else(|| nexrad_status_manifest(session).and_then(json_observed_at_utc)),
-            DATA_FRESHNESS_POLICIES.live_feeds.nexrad,
-            session
-                .nexrad_installed
-                .as_ref()
-                .map(|installed| installed.version.clone())
-                .or_else(|| {
-                    session
-                        .live_feeds
-                        .product_loaded_version("nexrad")
-                        .map(str::to_string)
-                }),
-        ),
+        nexrad_live_feed_status_page_row(session),
         live_feed_product_status_page_row(
             session,
             "obstacles",
@@ -2934,6 +2959,55 @@ fn nexrad_status_manifest(session: &UiSession) -> Option<&serde_json::Value> {
         .as_ref()
         .map(|installed| &installed.manifest)
         .or_else(|| session.live_feeds.product_state_manifest("nexrad"))
+}
+
+fn nexrad_live_feed_status_page_row(session: &UiSession) -> UiDataStatusPageRow {
+    let mut row = live_feed_product_status_page_row(
+        session,
+        "nexrad",
+        "NEXRAD",
+        nexrad_status_manifest(session).is_some(),
+        live_feed_status_timestamp(session, "nexrad")
+            .or_else(|| nexrad_status_manifest(session).and_then(json_observed_at_utc)),
+        DATA_FRESHNESS_POLICIES.live_feeds.nexrad,
+        session
+            .nexrad_installed
+            .as_ref()
+            .map(|installed| installed.version.clone())
+            .or_else(|| {
+                session
+                    .live_feeds
+                    .product_loaded_version("nexrad")
+                    .map(str::to_string)
+            }),
+    );
+    row.facts
+        .push(status_fact("Frames", nexrad_frame_age_summary(session)));
+    row
+}
+
+fn nexrad_frame_age_summary(session: &UiSession) -> String {
+    if !session.map_layer_state.nexrad.visible {
+        return "off".to_string();
+    }
+    let frames = nexrad_frame_candidates(session);
+    let labels = nexrad_frame_age_labels(&frames, session.wall_clock_epoch_ms);
+    if labels.is_empty() {
+        "inop".to_string()
+    } else {
+        labels.join(", ")
+    }
+}
+
+fn nexrad_frame_age_banner_value(session: &UiSession) -> String {
+    if !session.map_layer_state.nexrad.visible {
+        return "off".to_string();
+    }
+    let frames = nexrad_frame_candidates(session);
+    if frames.is_empty() {
+        return "inop".to_string();
+    }
+    nexrad_frame_age_values(&frames, session.wall_clock_epoch_ms).join("/")
 }
 
 fn json_observed_at_utc(value: &serde_json::Value) -> Option<DateTime<Utc>> {
@@ -8164,45 +8238,205 @@ pub fn get_nexrad_overlay_in_session_at_epoch_ms(
                 status: NexradOverlayStatus::Hidden,
                 tiles: Vec::new(),
                 stats: NexradOverlayStats::default(),
+                animation: NexradOverlayAnimation::idle(),
             },
             freshness_invalidations,
         );
     }
-    let manifest = if let Some(installed) = &session.nexrad_installed {
-        installed.manifest.clone()
-    } else {
+    if session.nexrad_installed.is_none() {
         if let HadOperationOutcome::NeedResources { resources } = session
             .live_feeds
-            .sync_outcome_at_epoch_ms(session.wall_clock_epoch_ms)
+            .sync_product_outcome_at_epoch_ms("nexrad", session.wall_clock_epoch_ms)
         {
             return Ok(HadOperationOutcome::NeedResources { resources });
         }
-        let Some(manifest) = session.live_feeds.product_state_manifest("nexrad").cloned() else {
-            return complete_nexrad_overlay_outcome_with_invalidations(
+        let history_resources = session
+            .live_feeds
+            .missing_history_resources_for_product_at_epoch_ms(
+                "nexrad",
+                session.wall_clock_epoch_ms,
+            );
+        for resource in history_resources {
+            enqueue_session_resource_effect(
                 session,
-                NexradOverlayQueryResult {
+                resource,
+                [
+                    UiInvalidation::NexradOverlay,
+                    UiInvalidation::SessionSnapshot,
+                    UiInvalidation::DebugPanel,
+                ],
+            );
+        }
+    }
+    let frames = nexrad_frame_candidates(session);
+    if frames.is_empty() {
+        return complete_nexrad_overlay_outcome_with_invalidations(
+            session,
+            NexradOverlayQueryResult {
+                status: NexradOverlayStatus::Unavailable {
+                    reason: "NEXRAD product is missing from the live feed index".to_string(),
+                },
+                tiles: Vec::new(),
+                stats: NexradOverlayStats::default(),
+                animation: NexradOverlayAnimation::idle(),
+            },
+            freshness_invalidations,
+        );
+    }
+    let animation = nexrad_animation_for_frames(&frames, session.wall_clock_epoch_ms);
+    let selected_frame_index = animation.selected_frame_index;
+    let query = match selected_frame_index {
+        Some(index) => {
+            match nexrad_overlay_query(&frames[index].manifest, &viewport, width_px, height_px) {
+                Ok(mut query) => {
+                    query.animation = animation;
+                    query
+                }
+                Err(err) => NexradOverlayQueryResult {
                     status: NexradOverlayStatus::Unavailable {
-                        reason: "NEXRAD product is missing from the live feed index".to_string(),
+                        reason: err.to_string(),
                     },
                     tiles: Vec::new(),
                     stats: NexradOverlayStats::default(),
+                    animation,
                 },
-                freshness_invalidations,
-            );
-        };
-        manifest
-    };
-    let query = match nexrad_overlay_query(&manifest, &viewport, width_px, height_px) {
-        Ok(query) => query,
-        Err(err) => NexradOverlayQueryResult {
-            status: NexradOverlayStatus::Unavailable {
-                reason: err.to_string(),
-            },
-            tiles: Vec::new(),
-            stats: NexradOverlayStats::default(),
-        },
+            }
+        }
+        None => {
+            let mut stats = NexradOverlayStats::default();
+            stats.observed_at_utc = frames.last().and_then(|frame| frame.observed_at_utc);
+            NexradOverlayQueryResult {
+                status: NexradOverlayStatus::Ready { count: 0 },
+                tiles: Vec::new(),
+                stats,
+                animation,
+            }
+        }
     };
     complete_nexrad_overlay_outcome_with_invalidations(session, query, freshness_invalidations)
+}
+
+#[derive(Clone)]
+struct NexradFrameCandidate {
+    version: String,
+    manifest: serde_json::Value,
+    observed_at_utc: Option<DateTime<Utc>>,
+}
+
+fn nexrad_frame_candidates(session: &UiSession) -> Vec<NexradFrameCandidate> {
+    let mut frames = Vec::new();
+    let mut identities = HashSet::new();
+    if let Some(installed) = &session.nexrad_installed {
+        frames.push(NexradFrameCandidate {
+            version: installed.version.clone(),
+            observed_at_utc: json_observed_at_utc(&installed.manifest),
+            manifest: installed.manifest.clone(),
+        });
+    } else {
+        for loaded in session.live_feeds.product_loaded_state_manifests("nexrad") {
+            let identity = nexrad_manifest_identity(loaded.version, loaded.manifest);
+            if identities.insert(identity) {
+                frames.push(NexradFrameCandidate {
+                    version: loaded.version.to_string(),
+                    observed_at_utc: json_observed_at_utc(loaded.manifest),
+                    manifest: loaded.manifest.clone(),
+                });
+            }
+        }
+    }
+    frames.sort_by(|left, right| {
+        left.observed_at_utc
+            .cmp(&right.observed_at_utc)
+            .then_with(|| left.version.cmp(&right.version))
+    });
+    if frames.len() > NEXRAD_ANIMATION_MAX_FRAMES {
+        frames.drain(0..frames.len() - NEXRAD_ANIMATION_MAX_FRAMES);
+    }
+    frames
+}
+
+fn nexrad_manifest_identity(version: &str, manifest: &serde_json::Value) -> String {
+    manifest
+        .get("state_id")
+        .and_then(serde_json::Value::as_str)
+        .unwrap_or(version)
+        .to_string()
+}
+
+fn nexrad_animation_for_frames(
+    frames: &[NexradFrameCandidate],
+    epoch_ms: i64,
+) -> NexradOverlayAnimation {
+    if frames.is_empty() {
+        return NexradOverlayAnimation::idle();
+    }
+    let age_labels = nexrad_frame_age_labels(frames, epoch_ms);
+    let age_summary = if age_labels.is_empty() {
+        "---".to_string()
+    } else {
+        age_labels.join(", ")
+    };
+    if frames.len() == 1 {
+        return NexradOverlayAnimation {
+            phase: NexradOverlayAnimationPhase::Frame,
+            selected_frame_index: Some(0),
+            frame_count: 1,
+            age_labels,
+            age_summary,
+            next_update_delay_ms: None,
+        };
+    }
+    let frame_steps = frames.len();
+    let latest_repeat_steps = NEXRAD_ANIMATION_LATEST_DWELL_STEPS.saturating_sub(1);
+    let total_steps = frame_steps + latest_repeat_steps + NEXRAD_ANIMATION_BLANK_DWELL_STEPS;
+    let cycle_ms = total_steps as i64 * NEXRAD_ANIMATION_FRAME_DWELL_MS;
+    let offset_ms = epoch_ms.rem_euclid(cycle_ms);
+    let step = offset_ms.div_euclid(NEXRAD_ANIMATION_FRAME_DWELL_MS) as usize;
+    let selected_frame_index = if step < frame_steps + latest_repeat_steps {
+        Some(step.min(frames.len() - 1))
+    } else {
+        None
+    };
+    NexradOverlayAnimation {
+        phase: if selected_frame_index.is_some() {
+            NexradOverlayAnimationPhase::Frame
+        } else {
+            NexradOverlayAnimationPhase::Blank
+        },
+        selected_frame_index,
+        frame_count: frames.len(),
+        age_labels,
+        age_summary,
+        next_update_delay_ms: Some(
+            (NEXRAD_ANIMATION_FRAME_DWELL_MS
+                - offset_ms.rem_euclid(NEXRAD_ANIMATION_FRAME_DWELL_MS)) as u32,
+        ),
+    }
+}
+
+fn nexrad_frame_age_labels(frames: &[NexradFrameCandidate], epoch_ms: i64) -> Vec<String> {
+    nexrad_frame_age_values(frames, epoch_ms)
+        .into_iter()
+        .map(|value| {
+            if value == "unknown" {
+                value
+            } else {
+                format!("{value} ago")
+            }
+        })
+        .collect()
+}
+
+fn nexrad_frame_age_values(frames: &[NexradFrameCandidate], epoch_ms: i64) -> Vec<String> {
+    frames
+        .iter()
+        .map(|frame| match frame.observed_at_utc {
+            Some(observed_at_utc) => {
+                format_age(epoch_ms.saturating_sub(observed_at_utc.timestamp_millis()))
+            }
+            None => "unknown".to_string(),
+        })
+        .collect()
 }
 
 pub fn nexrad_tile_bytes_in_session(handle: u32, src: &str) -> AppResult<Vec<u8>> {
@@ -8353,6 +8587,7 @@ fn nexrad_overlay_query(
             status: NexradOverlayStatus::Ready { count: 0 },
             tiles: Vec::new(),
             stats: NexradOverlayStats::default(),
+            animation: NexradOverlayAnimation::idle(),
         });
     }
     let manifest: NexradSourceGridManifest =
@@ -8370,6 +8605,7 @@ fn nexrad_overlay_query(
             },
             tiles: Vec::new(),
             stats: NexradOverlayStats::default(),
+            animation: NexradOverlayAnimation::idle(),
         });
     }
     let viewport_bounds = viewport_lat_lon_bounds(viewport, width_px, height_px);
@@ -8383,6 +8619,7 @@ fn nexrad_overlay_query(
             },
             tiles: Vec::new(),
             stats: NexradOverlayStats::default(),
+            animation: NexradOverlayAnimation::idle(),
         });
     }
     let Some(level) = nexrad_level_for_viewport(
@@ -8399,6 +8636,7 @@ fn nexrad_overlay_query(
             },
             tiles: Vec::new(),
             stats: NexradOverlayStats::default(),
+            animation: NexradOverlayAnimation::idle(),
         });
     };
     let level_scale = 2_f64.powi(level.res as i32);
@@ -8419,6 +8657,7 @@ fn nexrad_overlay_query(
             status: NexradOverlayStatus::Ready { count: 0 },
             tiles: Vec::new(),
             stats: NexradOverlayStats::default(),
+            animation: NexradOverlayAnimation::idle(),
         });
     }
 
@@ -8540,6 +8779,7 @@ fn nexrad_overlay_query(
         status: NexradOverlayStatus::Ready { count: tiles.len() },
         stats,
         tiles,
+        animation: NexradOverlayAnimation::idle(),
     })
 }
 
@@ -9612,7 +9852,7 @@ fn project_flight_data_banner(
         }
     }
 
-    Ok(flight_data_computer.banner(crate::FlightDataBannerInput {
+    let mut banner = flight_data_computer.banner(crate::FlightDataBannerInput {
         altitude_ft,
         vertical_speed_fpm: session
             .app_state
@@ -9625,7 +9865,13 @@ fn project_flight_data_banner(
         desired_track_magnetic_deg,
         waypoint_distance_nm,
         final_distance_nm,
-    }))
+    });
+    banner.cells.push(crate::flight_data::cell(
+        "nexrad_age",
+        "NEXRAD",
+        Some(nexrad_frame_age_banner_value(session)),
+    ));
+    Ok(banner)
 }
 
 fn project_bad_autopilot_availability(session: &UiSession, app_ui_state: &mut AppUiState) {
@@ -13932,6 +14178,7 @@ mod tests {
             status: NexradOverlayStatus::Ready { count: 96 },
             tiles: Vec::new(),
             stats: NexradOverlayStats::default(),
+            animation: NexradOverlayAnimation::idle(),
         })
         .expect("serialize nexrad overlay");
 
@@ -13941,6 +14188,193 @@ mod tests {
         );
         assert!(value["tiles"].as_array().expect("tiles array").is_empty());
         assert_eq!(value["stats"]["source_tile_count"], serde_json::json!(0));
+    }
+
+    fn nexrad_live_test_manifest(version: &str, observed_at_utc: &str) -> serde_json::Value {
+        serde_json::json!({
+            "product": "nexrad",
+            "state_id": version,
+            "observed_at_utc": observed_at_utc,
+            "source_grid": {
+                "geo_transform": [-123.0, 0.01, 0.0, 48.0, 0.0, -0.01],
+            },
+            "levels": [{
+                "res": 0,
+                "width": 256,
+                "height": 256,
+                "tile_cols": 1,
+                "tile_rows": 1,
+            }],
+            "tile_size": 256,
+            "tile_path_template": "tiles/res{res}/{x}/{y}.png",
+        })
+    }
+
+    fn ingest_nexrad_live_test_state(handle: u32, version: &str, manifest: &serde_json::Value) {
+        let state_sha256 = canonical_json_sha256_value(manifest).expect("state hash");
+        let version_manifest = serde_json::json!({
+            "schema_version": 2,
+            "product": "nexrad",
+            "version": version,
+            "state": {
+                "kind": "json",
+                "url": format!("states/nexrad/{version}/manifest.json"),
+                "state_sha256": state_sha256,
+            }
+        });
+        ingest_resource_in_session(
+            handle,
+            &format!("live_feeds/version/nexrad/{version}"),
+            &serde_json::to_vec(&version_manifest).expect("version manifest json"),
+        )
+        .expect("ingest nexrad version");
+        ingest_resource_in_session(
+            handle,
+            &format!("live_feeds/state/nexrad/{version}"),
+            &serde_json::to_vec(manifest).expect("state manifest json"),
+        )
+        .expect("ingest nexrad state");
+    }
+
+    #[test]
+    fn live_nexrad_history_drives_animation_and_frame_age_status() {
+        let init =
+            create_ui_session(FlightPlan::default(), &[], None, None).expect("create session");
+        let snapshot = get_session_snapshot(init.handle).expect("initial snapshot");
+        let nexrad_age_cell = snapshot
+            .app_ui_state
+            .flight_data_banner
+            .cells
+            .iter()
+            .find(|cell| cell.id == "nexrad_age")
+            .expect("initial nexrad age cell");
+        assert_eq!(nexrad_age_cell.value.as_deref(), Some("off"));
+
+        set_map_layer_visibility_in_session(init.handle, "nexrad", true).expect("show nexrad");
+        let snapshot = get_session_snapshot(init.handle).expect("empty nexrad snapshot");
+        let nexrad_age_cell = snapshot
+            .app_ui_state
+            .flight_data_banner
+            .cells
+            .iter()
+            .find(|cell| cell.id == "nexrad_age")
+            .expect("empty nexrad age cell");
+        assert_eq!(nexrad_age_cell.value.as_deref(), Some("inop"));
+
+        let versions = [
+            ("nexrad-v1", "2026-05-20T12:00:00Z"),
+            ("nexrad-v2", "2026-05-20T12:05:00Z"),
+            ("nexrad-v3", "2026-05-20T12:10:00Z"),
+            ("nexrad-v4", "2026-05-20T12:15:00Z"),
+        ];
+        let manifests = versions
+            .iter()
+            .map(|(version, observed)| (*version, nexrad_live_test_manifest(version, observed)))
+            .collect::<Vec<_>>();
+        let history = manifests[..3]
+            .iter()
+            .map(|(version, manifest)| {
+                let state_sha256 = canonical_json_sha256_value(manifest).expect("state hash");
+                serde_json::json!({
+                    "version": version,
+                    "version_manifest_url": format!("versions/nexrad/{version}.json"),
+                    "state_url": format!("states/nexrad/{version}/manifest.json"),
+                    "state_sha256": state_sha256,
+                })
+            })
+            .collect::<Vec<_>>();
+        let current = serde_json::json!({
+            "schema_version": 2,
+            "products": {
+                "nexrad": {
+                    "current": "nexrad-v4",
+                    "version_manifest_url": "versions/nexrad/nexrad-v4.json",
+                    "history": history,
+                }
+            }
+        });
+        ingest_resource_in_session(
+            init.handle,
+            "live_feeds/current",
+            &serde_json::to_vec(&current).expect("current json"),
+        )
+        .expect("ingest current");
+        for (version, manifest) in &manifests {
+            ingest_nexrad_live_test_state(init.handle, version, manifest);
+        }
+
+        let nominal_now = utc("2026-05-20T12:30:00Z").timestamp_millis();
+        let cycle_ms = (NEXRAD_ANIMATION_MAX_FRAMES
+            + NEXRAD_ANIMATION_LATEST_DWELL_STEPS.saturating_sub(1)
+            + NEXRAD_ANIMATION_BLANK_DWELL_STEPS) as i64
+            * NEXRAD_ANIMATION_FRAME_DWELL_MS;
+        let now = nominal_now + (cycle_ms - nominal_now.rem_euclid(cycle_ms)).rem_euclid(cycle_ms);
+        let outcome = get_nexrad_overlay_in_session_at_epoch_ms(
+            init.handle,
+            MapViewport {
+                center: LatLon {
+                    lat: 47.0,
+                    lon: -122.0,
+                },
+                zoom: 8.0,
+                rotation_deg: 0.0,
+                pitch_deg: 0.0,
+            },
+            512.0,
+            512.0,
+            now,
+        )
+        .expect("query nexrad");
+        let HadOperationOutcome::Complete { result, .. } = outcome else {
+            panic!("expected complete nexrad query");
+        };
+        let query: NexradOverlayQueryResult =
+            serde_json::from_value(result).expect("nexrad result");
+        assert_eq!(query.animation.phase, NexradOverlayAnimationPhase::Frame);
+        assert_eq!(query.animation.selected_frame_index, Some(0));
+        assert_eq!(query.animation.frame_count, 4);
+        assert_eq!(
+            query.animation.age_labels,
+            vec!["30m ago", "25m ago", "20m ago", "15m ago"]
+        );
+        assert!(query
+            .tiles
+            .iter()
+            .any(|tile| tile.src.contains("/states/nexrad/nexrad-v1/")));
+
+        let snapshot = get_session_snapshot(init.handle).expect("snapshot");
+        let nexrad_row = snapshot
+            .data_status_page_state
+            .rows
+            .iter()
+            .find(|row| row.id == "live_feed:nexrad")
+            .expect("nexrad row");
+        let frames_fact = nexrad_row
+            .facts
+            .iter()
+            .find(|fact| fact.label == "Frames")
+            .expect("frames fact");
+        assert_eq!(frames_fact.value, "30m ago, 25m ago, 20m ago, 15m ago");
+        let nexrad_age_cell = snapshot
+            .app_ui_state
+            .flight_data_banner
+            .cells
+            .iter()
+            .find(|cell| cell.id == "nexrad_age")
+            .expect("nexrad age cell");
+        assert_eq!(nexrad_age_cell.label, "NEXRAD");
+        assert_eq!(nexrad_age_cell.value.as_deref(), Some("30m/25m/20m/15m"));
+
+        set_map_layer_visibility_in_session(init.handle, "nexrad", false).expect("hide nexrad");
+        let snapshot = get_session_snapshot(init.handle).expect("hidden snapshot");
+        let nexrad_age_cell = snapshot
+            .app_ui_state
+            .flight_data_banner
+            .cells
+            .iter()
+            .find(|cell| cell.id == "nexrad_age")
+            .expect("hidden nexrad age cell");
+        assert_eq!(nexrad_age_cell.value.as_deref(), Some("off"));
     }
 
     #[test]
@@ -14444,6 +14878,7 @@ mod tests {
                         observed_at_utc: Some(utc("2020-01-01T00:00:00Z")),
                         ..NexradOverlayStats::default()
                     },
+                    animation: NexradOverlayAnimation::idle(),
                 },
             );
             assert!(invalidations.contains(&UiInvalidation::SessionSnapshot));

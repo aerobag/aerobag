@@ -22,6 +22,7 @@ use serde_json::Value;
 use sha2::{Digest, Sha256};
 
 pub const LIVE_FEEDS_SCHEMA_VERSION: u32 = 2;
+pub const LIVE_FEED_CURRENT_HISTORY_MAX_ENTRIES: usize = 12;
 pub const LIVE_FEED_FAILED_SCRATCH_RETAIN_COUNT: usize = 5;
 const LIVE_FEED_PUBLICATION_DIRS: &[&str] = &["states", "versions", "deltas", "packages"];
 
@@ -259,6 +260,18 @@ pub struct LiveFeedCurrentEntry {
     pub published_at_utc: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub collected_at_utc: Option<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub history: Vec<LiveFeedCurrentHistoryEntry>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct LiveFeedCurrentHistoryEntry {
+    pub version: String,
+    pub version_manifest_url: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub state_url: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub state_sha256: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -339,6 +352,7 @@ pub struct PublishedLiveFeedUpdate {
     pub state_sha256: String,
     pub published_at_utc: Option<String>,
     pub collected_at_utc: Option<String>,
+    pub history: Vec<LiveFeedCurrentHistoryEntry>,
     pub delta_path: Option<PathBuf>,
     pub changed_count: usize,
     pub removed_count: usize,
@@ -356,6 +370,8 @@ pub struct LiveFeedInvalidation {
     pub published_at_utc: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub collected_at_utc: Option<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub history: Vec<LiveFeedCurrentHistoryEntry>,
 }
 
 pub trait LiveFeedPublisher {
@@ -715,6 +731,7 @@ pub fn live_feed_invalidation_from_update(
         state_sha256: update.state_sha256.clone(),
         published_at_utc: update.published_at_utc.clone(),
         collected_at_utc: update.collected_at_utc.clone(),
+        history: update.history.clone(),
     }
 }
 
@@ -976,6 +993,14 @@ impl<C: Clock> FileLiveFeedPublisher<C> {
                         state_sha256
                     );
                 }
+                let now = self.clock.now_utc();
+                let history = live_feed_current_history_entries(
+                    &self.root,
+                    &product,
+                    &version,
+                    &self.retention,
+                    now,
+                )?;
                 let next_entry = LiveFeedCurrentEntry {
                     current: version.clone(),
                     version_manifest_url: previous.version_manifest_url.clone(),
@@ -983,13 +1008,11 @@ impl<C: Clock> FileLiveFeedPublisher<C> {
                     state_sha256: previous.state_sha256.clone(),
                     published_at_utc: published_at_utc.clone(),
                     collected_at_utc: collected_at_utc.clone(),
+                    history: history.clone(),
                 };
                 let metadata_changed = previous != &next_entry;
                 if metadata_changed {
-                    current.generated_at_utc = self
-                        .clock
-                        .now_utc()
-                        .to_rfc3339_opts(SecondsFormat::Secs, true);
+                    current.generated_at_utc = now.to_rfc3339_opts(SecondsFormat::Secs, true);
                     current.products.insert(product.clone(), next_entry);
                     write_live_feeds_current_manifest(&self.root, &current)?;
                     self.prune_publication_best_effort();
@@ -1005,6 +1028,7 @@ impl<C: Clock> FileLiveFeedPublisher<C> {
                     state_sha256: previous.state_sha256.clone(),
                     published_at_utc,
                     collected_at_utc,
+                    history,
                     delta_path: None,
                     changed_count: 0,
                     removed_count: 0,
@@ -1190,10 +1214,15 @@ impl<C: Clock> FileLiveFeedPublisher<C> {
                 delta_from_previous: delta_ref,
             },
         )?;
-        current.generated_at_utc = self
-            .clock
-            .now_utc()
-            .to_rfc3339_opts(SecondsFormat::Secs, true);
+        let now = self.clock.now_utc();
+        let history = live_feed_current_history_entries(
+            &self.root,
+            &product,
+            &version,
+            &self.retention,
+            now,
+        )?;
+        current.generated_at_utc = now.to_rfc3339_opts(SecondsFormat::Secs, true);
         current.products.insert(
             product.clone(),
             LiveFeedCurrentEntry {
@@ -1203,6 +1232,7 @@ impl<C: Clock> FileLiveFeedPublisher<C> {
                 state_sha256: state_sha256.clone(),
                 published_at_utc: published_at_utc.clone(),
                 collected_at_utc: collected_at_utc.clone(),
+                history: history.clone(),
             },
         );
         write_live_feeds_current_manifest(&self.root, &current)?;
@@ -1219,6 +1249,7 @@ impl<C: Clock> FileLiveFeedPublisher<C> {
             state_sha256,
             published_at_utc,
             collected_at_utc,
+            history,
             delta_path,
             changed_count,
             removed_count,
@@ -1506,6 +1537,70 @@ pub fn write_live_feeds_current_manifest(
     Ok(path)
 }
 
+fn live_feed_current_history_entries(
+    live_root: &Path,
+    product: &str,
+    current_version: &str,
+    policy: &LiveFeedRetentionPolicy,
+    now: DateTime<Utc>,
+) -> anyhow::Result<Vec<LiveFeedCurrentHistoryEntry>> {
+    let product_versions_root = live_root.join("versions").join(product);
+    if !product_versions_root.is_dir() {
+        return Ok(Vec::new());
+    }
+    let recent_tail = policy.recent_tail_for(product);
+    let mut entries = Vec::new();
+    for version_entry in fs::read_dir(&product_versions_root)
+        .with_context(|| format!("failed to read {}", product_versions_root.display()))?
+    {
+        let version_entry = version_entry
+            .with_context(|| format!("failed to read {}", product_versions_root.display()))?;
+        let version_path = version_entry.path();
+        if !version_entry
+            .file_type()
+            .with_context(|| format!("failed to stat {}", version_path.display()))?
+            .is_file()
+            || version_path
+                .extension()
+                .and_then(|extension| extension.to_str())
+                != Some("json")
+            || !path_modified_within(&version_path, now, recent_tail)
+        {
+            continue;
+        }
+        let manifest: LiveFeedVersionManifest = serde_json::from_slice(
+            &fs::read(&version_path)
+                .with_context(|| format!("failed to read {}", version_path.display()))?,
+        )
+        .with_context(|| format!("failed to parse {}", version_path.display()))?;
+        if manifest.schema_version != LIVE_FEEDS_SCHEMA_VERSION {
+            continue;
+        }
+        if manifest.product != product || manifest.version == current_version {
+            continue;
+        }
+        let state_path = live_root.join(safe_relative_path(&manifest.state.url)?);
+        if !state_path.exists() {
+            continue;
+        }
+        entries.push((
+            modified_time(&version_path),
+            manifest.version.clone(),
+            LiveFeedCurrentHistoryEntry {
+                version: manifest.version,
+                version_manifest_url: live_feeds_relative_url(live_root, &version_path)?,
+                state_url: Some(manifest.state.url),
+                state_sha256: Some(manifest.state.state_sha256),
+            },
+        ));
+    }
+    entries.sort_by(|left, right| left.0.cmp(&right.0).then_with(|| left.1.cmp(&right.1)));
+    if entries.len() > LIVE_FEED_CURRENT_HISTORY_MAX_ENTRIES {
+        entries.drain(0..entries.len() - LIVE_FEED_CURRENT_HISTORY_MAX_ENTRIES);
+    }
+    Ok(entries.into_iter().map(|(_, _, entry)| entry).collect())
+}
+
 pub fn prune_live_feed_publication(
     live_root: &Path,
     policy: &LiveFeedRetentionPolicy,
@@ -1530,6 +1625,19 @@ pub fn prune_live_feed_publication(
                 if previous_manifest_path.is_file() {
                     retain_version_manifest(live_root, &previous_manifest_path, &mut retained)?;
                 }
+            }
+        }
+        for history_entry in &entry.history {
+            let history_manifest_path = retain_live_relative_path(
+                live_root,
+                &mut retained,
+                &history_entry.version_manifest_url,
+            )?;
+            if let Some(state_url) = history_entry.state_url.as_deref() {
+                retain_live_relative_path(live_root, &mut retained, state_url)?;
+            }
+            if history_manifest_path.is_file() {
+                retain_version_manifest(live_root, &history_manifest_path, &mut retained)?;
             }
         }
     }
@@ -2757,6 +2865,50 @@ mod tests {
             read_live_feeds_current(&root)?.expect("current").products["metars"].current,
             "v3"
         );
+        Ok(())
+    }
+
+    #[test]
+    fn current_manifest_and_invalidation_history_are_bounded() -> anyhow::Result<()> {
+        let temp = tempdir()?;
+        let root = temp.path().join("live-feeds");
+        let publisher = FileLiveFeedPublisher::new(root.clone(), FixedClock::new(Utc::now()));
+
+        let mut latest_event = None;
+        for index in 0..14 {
+            let version = format!("v{index:02}");
+            let file_stem = format!("metars-{version}");
+            let records = [("KSEA", index)];
+            let (_, event) = publisher.publish_and_invalidation(json_state(
+                temp.path(),
+                "metars",
+                &file_stem,
+                &version,
+                "records",
+                &records,
+            )?)?;
+            latest_event = Some(event);
+        }
+
+        let current = read_live_feeds_current(&root)?.expect("current");
+        let history = &current.products["metars"].history;
+        assert_eq!(history.len(), LIVE_FEED_CURRENT_HISTORY_MAX_ENTRIES);
+        assert_eq!(
+            history.first().map(|entry| entry.version.as_str()),
+            Some("v01")
+        );
+        assert_eq!(
+            history.last().map(|entry| entry.version.as_str()),
+            Some("v12")
+        );
+        assert!(!history.iter().any(|entry| entry.version == "v13"));
+        assert_eq!(latest_event.expect("latest event").history, *history);
+        for entry in history {
+            assert!(root.join(&entry.version_manifest_url).is_file());
+            assert!(root
+                .join(entry.state_url.as_deref().expect("history state url"))
+                .is_file());
+        }
         Ok(())
     }
 

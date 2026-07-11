@@ -5,7 +5,7 @@
   "description": "Core-owned wire contract for NEXRAD overlay queries emitted by app-core.",
   "type": "object",
   "additionalProperties": false,
-  "required": ["status", "tiles", "stats"],
+  "required": ["status", "tiles", "stats", "animation"],
   "properties": {
     "status": { "$ref": "#/$defs/NexradOverlayStatus" },
     "tiles": {
@@ -16,11 +16,17 @@
     "stats": {
       "$ref": "#/$defs/NexradOverlayStats",
       "default": {}
+    },
+    "animation": {
+      "$ref": "#/$defs/NexradOverlayAnimation",
+      "default": {}
     }
   },
   "x-export-order": [
     "NexradOverlayStatusState",
     "NexradOverlayStatus",
+    "NexradOverlayAnimationPhase",
+    "NexradOverlayAnimation",
     "NexradOverlayScreenPoint",
     "NexradOverlayTileCorners",
     "NexradOverlayTile",
@@ -43,6 +49,49 @@
           "default": null
         },
         "count": {
+          "type": ["integer", "null"],
+          "default": null
+        }
+      }
+    },
+    "NexradOverlayAnimationPhase": {
+      "type": "string",
+      "enum": ["idle", "frame", "blank"]
+    },
+    "NexradOverlayAnimation": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "phase",
+        "selected_frame_index",
+        "frame_count",
+        "age_labels",
+        "age_summary",
+        "next_update_delay_ms"
+      ],
+      "properties": {
+        "phase": {
+          "$ref": "#/$defs/NexradOverlayAnimationPhase",
+          "default": "idle"
+        },
+        "selected_frame_index": {
+          "type": ["integer", "null"],
+          "default": null
+        },
+        "frame_count": {
+          "type": "integer",
+          "default": 0
+        },
+        "age_labels": {
+          "type": "array",
+          "items": { "type": "string" },
+          "default": []
+        },
+        "age_summary": {
+          "type": "string",
+          "default": "---"
+        },
+        "next_update_delay_ms": {
           "type": ["integer", "null"],
           "default": null
         }

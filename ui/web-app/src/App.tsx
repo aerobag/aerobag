@@ -65,6 +65,7 @@ import {
 } from "./generated/navSymbols";
 import {
   loadBestAvailableAdapter,
+  resolveLiveFeedResourceUrl,
   type AdapterBackendKind,
   type AppCoreAdapter,
   type DerivedChartPageState,
@@ -1114,7 +1115,7 @@ async function preloadNexradOverlayImages(query: NexradOverlayQueryResult): Prom
   if (query.status.state !== "ready" || query.tiles.length === 0) {
     return { loaded: 0, failed: 0 };
   }
-  const srcs = Array.from(new Set(query.tiles.map((tile) => tile.src)));
+  const srcs = Array.from(new Set(query.tiles.map((tile) => resolveLiveFeedResourceUrl(tile.src))));
   const results = await Promise.allSettled(srcs.map(preloadImage));
   return {
     loaded: results.filter((result) => result.status === "fulfilled").length,
@@ -1757,6 +1758,17 @@ function emptyNexradOverlayStats(): NexradOverlayQueryResult["stats"] {
     max_stack_depth: 0,
     res: null,
     observed_at_utc: null,
+  };
+}
+
+function emptyNexradOverlayAnimation(): NexradOverlayQueryResult["animation"] {
+  return {
+    phase: "idle",
+    selected_frame_index: null,
+    frame_count: 0,
+    age_labels: [],
+    age_summary: "---",
+    next_update_delay_ms: null,
   };
 }
 
@@ -3466,7 +3478,9 @@ function MapPage(props: {
     status: { state: "hidden" },
     tiles: [],
     stats: emptyNexradOverlayStats(),
+    animation: emptyNexradOverlayAnimation(),
   });
+  const [nexradAnimationTick, setNexradAnimationTick] = useState(0);
   const [nexradTransferSamples, setNexradTransferSamples] = useState<
     Array<{ atMs: number; transferBytes: number; encodedBytes: number; decodedBytes: number }>
   >([]);
@@ -3793,6 +3807,7 @@ function MapPage(props: {
               status: { state: "unavailable", reason: errorMessage(error) },
               tiles: [],
               stats: emptyNexradOverlayStats(),
+              animation: emptyNexradOverlayAnimation(),
             });
             setNexradOverlayFrame(null);
           }
@@ -4537,7 +4552,12 @@ function MapPage(props: {
     if (!mapIsVisible || !uiSession || surfaceSize.width <= 0 || surfaceSize.height <= 0 || !mapLayerState.nexrad.visible) {
       nexradQueryRequestRef.current = null;
       nexradQueryPendingRef.current = false;
-      setNexradOverlay({ status: { state: "hidden" }, tiles: [], stats: emptyNexradOverlayStats() });
+      setNexradOverlay({
+        status: { state: "hidden" },
+        tiles: [],
+        stats: emptyNexradOverlayStats(),
+        animation: emptyNexradOverlayAnimation(),
+      });
       setNexradOverlayFrame(null);
       return;
     }
@@ -4551,7 +4571,21 @@ function MapPage(props: {
     };
     nexradQueryPendingRef.current = true;
     pumpNexradQueryQueue();
-  }, [debugState.nexrad_tile_labels, mapIsVisible, mapLayerState.nexrad.visible, surfaceSize.height, surfaceSize.width, uiInvalidationRevisions.nexrad_overlay, uiSession, viewport]);
+  }, [debugState.nexrad_tile_labels, mapIsVisible, mapLayerState.nexrad.visible, nexradAnimationTick, surfaceSize.height, surfaceSize.width, uiInvalidationRevisions.nexrad_overlay, uiSession, viewport]);
+
+  useEffect(() => {
+    if (!mapIsVisible || !mapLayerState.nexrad.visible || !uiSession) {
+      return;
+    }
+    const delayMs = nexradOverlay.animation.next_update_delay_ms;
+    if (delayMs == null) {
+      return;
+    }
+    const timer = window.setTimeout(() => {
+      setNexradAnimationTick((tick) => tick + 1);
+    }, Math.max(0, delayMs));
+    return () => window.clearTimeout(timer);
+  }, [mapIsVisible, mapLayerState.nexrad.visible, nexradOverlay, uiSession]);
 
   useEffect(() => {
     if (typeof PerformanceObserver === "undefined") {
@@ -4563,7 +4597,7 @@ function MapPage(props: {
         if (!(entry instanceof PerformanceResourceTiming)) {
           continue;
         }
-        if (!entry.name.includes("/live-feeds/states/nexrad/") || !entry.name.endsWith(".png")) {
+        if (!entry.name.includes("/live-feeds/v2/states/nexrad/") || !entry.name.endsWith(".png")) {
           continue;
         }
         const transferBytes = entry.transferSize || 0;
@@ -5823,7 +5857,7 @@ function MapPage(props: {
                       overflow="hidden"
                     >
                       <image
-                        href={tile.src}
+                        href={resolveLiveFeedResourceUrl(tile.src)}
                         x={0}
                         y={0}
                         width={tile.image_width}

@@ -2070,6 +2070,25 @@ export function resolveLiveFeedSourceUrl(
   return "";
 }
 
+export function resolveLiveFeedResourceUrl(
+  resourceUrl: string,
+  configuredOrigin: string | null | undefined = __AEROBAG_LIVE_FEEDS_ORIGIN__,
+  runtime: LiveFeedSourceRuntime = globalThis as unknown as LiveFeedSourceRuntime,
+): string {
+  if (/^[a-z][a-z0-9+.-]*:/i.test(resourceUrl)) {
+    return resourceUrl;
+  }
+  const liveFeedsPrefix = "/live-feeds";
+  if (resourceUrl !== liveFeedsPrefix && !resourceUrl.startsWith(`${liveFeedsPrefix}/`)) {
+    return resourceUrl;
+  }
+  const sourceUrl = resolveLiveFeedSourceUrl(configuredOrigin, runtime);
+  if (!sourceUrl) {
+    return resourceUrl;
+  }
+  return `${sourceUrl}${resourceUrl}`;
+}
+
 function liveFeedSourceUrl(): string {
   return resolveLiveFeedSourceUrl(__AEROBAG_LIVE_FEEDS_ORIGIN__);
 }

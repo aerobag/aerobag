@@ -8,6 +8,17 @@ export type NexradOverlayStatus = {
   count?: number | null;
 };
 
+export type NexradOverlayAnimationPhase = "idle" | "frame" | "blank";
+
+export type NexradOverlayAnimation = {
+  phase: NexradOverlayAnimationPhase;
+  selected_frame_index: number | null;
+  frame_count: number;
+  age_labels: string[];
+  age_summary: string;
+  next_update_delay_ms: number | null;
+};
+
 export type NexradOverlayScreenPoint = {
   x: number;
   y: number;
@@ -51,4 +62,5 @@ export type NexradOverlayQueryResult = {
   status: NexradOverlayStatus;
   tiles: NexradOverlayTile[];
   stats: NexradOverlayStats;
+  animation: NexradOverlayAnimation;
 };

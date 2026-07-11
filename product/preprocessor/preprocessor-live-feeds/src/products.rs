@@ -144,14 +144,22 @@ impl ProductBuilder for NotamLiveFeedBuilder {
             .map(|record| (record.id.clone(), record))
             .collect::<BTreeMap<_, _>>();
         let notam_count = notams_by_id.len();
-        let fingerprint = store.current_fingerprint()?;
+        let content_for_version = serde_json::json!({
+            "schema_version": 1,
+            "notam_count": notam_count,
+            "notams_by_id": notams_by_id,
+        });
+        let fingerprint = sha256_hex(
+            &serde_json::to_vec(&content_for_version)
+                .context("failed to encode NOTAM live-feed version content")?,
+        );
         let version = content_version_label(&fingerprint);
         let structured_json_path = output_dir.join("notams.json");
         let state_value = serde_json::json!({
             "schema_version": 1,
             "version_label": version.clone(),
             "notam_count": notam_count,
-            "notams_by_id": notams_by_id,
+            "notams_by_id": content_for_version["notams_by_id"].clone(),
         });
         write_json_pretty_file(&structured_json_path, &state_value)?;
         Ok(with_collected_at(

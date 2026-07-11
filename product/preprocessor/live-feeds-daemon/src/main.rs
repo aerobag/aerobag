@@ -1365,6 +1365,7 @@ fn start_swim_notams_supervisor(
     store.initialize(&identity)?;
     let lock = store.acquire_lock()?;
     recover_and_queue_swim_notams(&store, &sender, &status)?;
+    queue_persisted_notam_state_event(&store, &sender, &status)?;
     thread::spawn(move || {
         let _lock = lock;
         let mut run_counter = 0_u64;
@@ -1397,6 +1398,30 @@ fn start_swim_notams_supervisor(
             thread::sleep(Duration::from_millis(config.retry_interval_ms));
         }
     });
+    Ok(())
+}
+
+fn queue_persisted_notam_state_event(
+    store: &NotamPersistentStore,
+    sender: &Sender<UpstreamEvent>,
+    status: &DaemonStatus,
+) -> anyhow::Result<()> {
+    if store.current_records()?.is_empty() {
+        return Ok(());
+    }
+    let observed_at_utc = Utc::now();
+    let source_timestamp = observed_at_utc.to_rfc3339_opts(chrono::SecondsFormat::Secs, true);
+    let source_id = format!("notams:persisted:{}", store.current_fingerprint()?);
+    sender
+        .send(UpstreamEvent {
+            product: "notams".to_string(),
+            source_id,
+            previous_source_id: None,
+            observed_at_utc,
+            payload_path: None,
+        })
+        .context("failed to queue persisted NOTAM state event")?;
+    status.record_source_success("notams", Some(source_timestamp), "source_persisted_state");
     Ok(())
 }
 
@@ -2015,6 +2040,9 @@ th, td { border-bottom: 1px solid #e3e3df; padding: 4px 8px; text-align: right; 
 th:first-child, td:first-child { text-align: left; }
 .plots { display: grid; grid-template-columns: repeat(auto-fit, minmax(420px, 1fr)); gap: 12px; }
 .plot { height: 260px; background: #fbfbf8; border: 1px solid #ddd; }
+details.product-details { margin: 0 0 12px; }
+details.product-details summary { cursor: pointer; color: #245; font-weight: 600; }
+details.product-details table { margin-top: 8px; }
 </style>
 <h1>Aerobag Live Feeds</h1>
 <div id="status" class="muted">Loading...</div>
@@ -2035,7 +2063,9 @@ function cdfTable(title, cdf) {
 }
 function productDetails(data) {
   const latestAttempt = data.attempts.length === 0 ? null : data.attempts[data.attempts.length - 1];
-  return `<table>
+  return `<details class="product-details">
+    <summary>Status details</summary>
+    <table>
     <tr><th>current version</th><td>${data.current_version ?? "-"}</td></tr>
     <tr><th>last attempt</th><td>${data.last_attempt_at_utc ?? "-"}</td></tr>
     <tr><th>last success</th><td>${data.last_success_at_utc ?? "-"}</td></tr>
@@ -2045,7 +2075,8 @@ function productDetails(data) {
     <tr><th>consecutive failures</th><td>${data.consecutive_failure_count}</td></tr>
     <tr><th>last error</th><td>${data.last_error ?? "-"}</td></tr>
     <tr><th>latest attempt result</th><td>${latestAttempt?.result ?? "-"}</td></tr>
-  </table>`;
+  </table>
+  </details>`;
 }
 function plotId(product, field) {
   return `plot-${product.replace(/[^a-zA-Z0-9_-]/g, "_")}-${field}`;

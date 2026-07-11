@@ -274,6 +274,15 @@ button {
   overflow: visible;
 }
 
+.metarHoverTarget,
+.metarHoverHitTarget {
+  pointer-events: all;
+}
+
+.metarHoverHitTarget {
+  fill: transparent;
+}
+
 .offlineRegionsOverlay {
   position: absolute;
   inset: 0;
@@ -1531,6 +1540,15 @@ button {
 .weatherDetailModal {
   width: min(calc(var(--thumb) * 10.5), calc(100vw - var(--safe-left) - var(--safe-right) - calc(var(--thumb) * 0.5)));
   max-height: min(calc(var(--thumb) * 8.5), calc(var(--app-height) - var(--safe-top) - var(--safe-bottom) - calc(var(--thumb) * 0.5)));
+}
+
+.hoverWeatherDetailModal {
+  left: auto;
+  top: auto;
+  right: auto;
+  bottom: auto;
+  transform: none;
+  pointer-events: none;
 }
 
 .weatherDetailSections {

@@ -2,6 +2,7 @@ import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
 
 const appSource = readFileSync(new URL("./App.tsx", import.meta.url), "utf8");
+const styles = readFileSync(new URL("./styles.css", import.meta.url), "utf8");
 
 function sourceBetween(start: string, end: string): string {
   const startIndex = appSource.indexOf(start);
@@ -49,5 +50,34 @@ describe("map interaction boundaries", () => {
     expect(functionSource("handlePointerRelease")).toContain("trayGroup.scrimOpen || mapSelection");
     expect(functionSource("handleWheel")).toContain("trayGroup.scrimOpen || mapSelection");
     expect(functionSource("handleDoubleClick")).toContain("trayGroup.scrimOpen || mapSelection");
+  });
+
+  it("uses lightweight hover weather for METAR symbols without opening the map inspector", () => {
+    const hoverSource = functionSource("handleMetarHoverEnter");
+    expect(hoverSource).toContain('event.pointerType !== "mouse"');
+    expect(hoverSource).toContain("queryMapSelection");
+    expect(hoverSource).toContain("weatherDetailForMetarSelection");
+
+    const metarOverlay = sourceBetween(
+      'className="metarOverlay"',
+      "</svg>",
+    );
+    expect(metarOverlay).toContain('className="metarHoverTarget"');
+    expect(metarOverlay).toContain("onPointerEnter={(event) => handleMetarHoverEnter(event, feature)}");
+    expect(metarOverlay).toContain("onPointerLeave={() => handleMetarHoverLeave(feature)}");
+    expect(appSource).toContain('className="hoverWeatherDetailModal"');
+  });
+
+  it("keeps METAR hover hit targets active while leaving the hover weather panel pointer-transparent", () => {
+    const metarHitBlocks = [...styles.matchAll(/\.(?:metarHoverTarget|metarHoverHitTarget)(?:,\s*\n\.(?:metarHoverTarget|metarHoverHitTarget))*\s*\{([^}]*)\}/g)]
+      .map((match) => match[1] ?? "")
+      .join("\n");
+    expect(metarHitBlocks).toContain("pointer-events: all");
+
+    const hoverPanelBlocks = [...styles.matchAll(/\.hoverWeatherDetailModal\s*\{([^}]*)\}/g)]
+      .map((match) => match[1] ?? "")
+      .join("\n");
+    expect(hoverPanelBlocks).toContain("transform: none");
+    expect(hoverPanelBlocks).toContain("pointer-events: none");
   });
 });

@@ -3563,6 +3563,12 @@ function MapPage(props: {
     selectedItem: MapSelectionItem | null;
     detailModal: { kind: "text"; title: string; text: string } | { kind: "weather"; detail: WeatherDetailUiView } | null;
   } | null>(null);
+  const [hoverWeather, setHoverWeather] = useState<{
+    stationId: string;
+    point: ScreenPoint;
+    detail: WeatherDetailUiView;
+  } | null>(null);
+  const hoverWeatherRequestSerialRef = useRef(0);
   const { toast: disabledActionToast, show: showDisabledAction } = useDisabledActionToast();
   const firstVisualReadyRef = useRef(false);
   const statusControlDockLowered = shouldLowerStatusControlDock(surfaceSize.width, dataStatusState.boxes.length > 0);
@@ -4842,6 +4848,27 @@ function MapPage(props: {
     }
     return null;
   }, [mapOverlay.airspace_paths, mapOverlay.offline_regions, mapOverlay.tfr_paths, mapOverlay.visible_features, mapOverlay.visible_metars, mapOverlay.visible_pireps, mapSelection?.selectedItem, surfaceSize.height, surfaceSize.width, viewport]);
+  useEffect(() => {
+    if (!hoverWeather) {
+      return;
+    }
+    if (mapSelection || trayGroup.scrimOpen || !mapIsVisible || !mapLayerState.metars.visible) {
+      hoverWeatherRequestSerialRef.current += 1;
+      setHoverWeather(null);
+    }
+  }, [hoverWeather, mapIsVisible, mapLayerState.metars.visible, mapSelection, trayGroup.scrimOpen]);
+  useEffect(() => {
+    setHoverWeather((current) => {
+      if (
+        !current ||
+        mapOverlay.visible_metars.some((feature) => normalizedStationId(feature.station_id) === current.stationId)
+      ) {
+        return current;
+      }
+      hoverWeatherRequestSerialRef.current += 1;
+      return null;
+    });
+  }, [mapOverlay.visible_metars]);
   const rasterTileTransform = useMemo(() => {
     if (!rasterTileFrame || surfaceSize.width <= 0 || surfaceSize.height <= 0) {
       return undefined;
@@ -5482,6 +5509,68 @@ function MapPage(props: {
     return null;
   }
 
+  function handleMetarHoverEnter(event: React.PointerEvent<SVGGElement>, feature: VisibleMetarFeature) {
+    if (
+      event.pointerType !== "mouse" ||
+      !uiSession ||
+      mapSelection ||
+      trayGroup.scrimOpen ||
+      surfaceSize.width <= 0 ||
+      surfaceSize.height <= 0 ||
+      activePointersRef.current.size > 0
+    ) {
+      return;
+    }
+    const container = containerRef.current;
+    if (!container) {
+      return;
+    }
+    const stationId = normalizedStationId(feature.station_id);
+    const containerRect = container.getBoundingClientRect();
+    const localPoint = {
+      x: event.clientX - containerRect.left,
+      y: event.clientY - containerRect.top,
+    };
+    const panelPoint = { x: event.clientX, y: event.clientY };
+    const world = screenToWorld(
+      viewportRef.current,
+      localPoint,
+      surfaceSize.width,
+      surfaceSize.height,
+    );
+    const click = worldToLatLon(world.x, world.y);
+    const requestSerial = hoverWeatherRequestSerialRef.current + 1;
+    hoverWeatherRequestSerialRef.current = requestSerial;
+    setHoverWeather((current) => current?.stationId === stationId ? current : null);
+    void uiSession
+      .queryMapSelection(viewportRef.current, surfaceSize.width, surfaceSize.height, click)
+      .then((result) => {
+        if (hoverWeatherRequestSerialRef.current !== requestSerial) {
+          return;
+        }
+        const detail = weatherDetailForMetarSelection(result, stationId);
+        if (!detail) {
+          setHoverWeather((current) => current?.stationId === stationId ? null : current);
+          return;
+        }
+        setHoverWeather({ stationId, point: panelPoint, detail });
+      })
+      .catch((error) => {
+        if (hoverWeatherRequestSerialRef.current === requestSerial) {
+          debugLog("map.metar_hover_weather.failed", {
+            station_id: feature.station_id,
+            error: errorMessage(error),
+          });
+        }
+      });
+  }
+
+  function handleMetarHoverLeave(feature: VisibleMetarFeature) {
+    const stationId = normalizedStationId(feature.station_id);
+    hoverWeatherRequestSerialRef.current += 1;
+    setHoverWeather((current) => current?.stationId === stationId ? null : current);
+  }
+
   function submitChartSearch() {
     const query = chartSearch.query.trim().toUpperCase();
     if (!query) {
@@ -5779,6 +5868,13 @@ function MapPage(props: {
             )}
           </>
         ) : null}
+        {!mapSelection && hoverWeather ? (
+          <WeatherDetailModal
+            detail={hoverWeather.detail}
+            className="hoverWeatherDetailModal"
+            style={hoverWeatherPanelStyle(hoverWeather.point)}
+          />
+        ) : null}
         {disabledActionToast ? (
           <div className="mapSelectionToast" role="status" aria-live="polite">
             {disabledActionToast.message}
@@ -6042,8 +6138,12 @@ function MapPage(props: {
                     {mapOverlay.visible_metars.map((feature) => (
                       <g
                         key={wrappedFeatureRenderKey(feature.station_id, feature.screen_x, feature.screen_y)}
+                        className="metarHoverTarget"
                         transform={`translate(${feature.screen_x} ${feature.screen_y})`}
+                        onPointerEnter={(event) => handleMetarHoverEnter(event, feature)}
+                        onPointerLeave={() => handleMetarHoverLeave(feature)}
                       >
+                        <circle className="metarHoverHitTarget" r="19" />
                         <MetarSymbol feature={feature} />
                       </g>
                     ))}
@@ -8781,6 +8881,24 @@ function MapSelectionDetailModal(props: { title: string; text: string }) {
   );
 }
 
+function normalizedStationId(stationId: string): string {
+  return stationId.trim().toUpperCase();
+}
+
+function weatherDetailForMetarSelection(result: MapSelectionQueryResult, stationId: string): WeatherDetailUiView | null {
+  const targetStationId = normalizedStationId(stationId);
+  for (const category of result.categories) {
+    for (const item of category.items) {
+      const itemStationId = item.metar_feature?.station_id
+        ?? (item.highlight.kind === "metar" ? item.highlight.station_id : null);
+      if (itemStationId && normalizedStationId(itemStationId) === targetStationId) {
+        return immediateWeatherDetailForMapSelectionItem(item);
+      }
+    }
+  }
+  return null;
+}
+
 function immediateWeatherDetailForMapSelectionItem(item: MapSelectionItem): WeatherDetailUiView | null {
   if (!item.metar_feature) {
     return null;
@@ -8788,11 +8906,24 @@ function immediateWeatherDetailForMapSelectionItem(item: MapSelectionItem): Weat
   return item.actions.find((action) => action.enabled && action.weather_detail)?.weather_detail ?? null;
 }
 
-function WeatherDetailModal(props: { detail: WeatherDetailUiView }) {
+function hoverWeatherPanelStyle(point: ScreenPoint): CSSProperties {
+  const edgePad = thumbPixels(0.14);
+  return {
+    ...(point.x < window.innerWidth / 2
+      ? { right: `${edgePad}px` }
+      : { left: `${edgePad}px` }),
+    ...(point.y < window.innerHeight / 2
+      ? { bottom: `${edgePad}px` }
+      : { top: `${edgePad}px` }),
+  };
+}
+
+function WeatherDetailModal(props: { detail: WeatherDetailUiView; className?: string; style?: CSSProperties }) {
   const { detail } = props;
   return (
     <section
-      className="mapSelectionDetailModal weatherDetailModal"
+      className={`mapSelectionDetailModal weatherDetailModal${props.className ? ` ${props.className}` : ""}`}
+      style={props.style}
       aria-label={`Weather ${detail.station_id}`}
       onPointerDown={stopPointer}
       onPointerMove={stopPointer}

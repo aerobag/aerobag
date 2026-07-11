@@ -143,7 +143,6 @@ impl ProductBuilder for NotamLiveFeedBuilder {
             .into_iter()
             .map(|record| (record.id.clone(), record))
             .collect::<BTreeMap<_, _>>();
-        let notams = notams_by_id.values().cloned().collect::<Vec<_>>();
         let notam_count = notams_by_id.len();
         let fingerprint = store.current_fingerprint()?;
         let version = content_version_label(&fingerprint);
@@ -152,7 +151,6 @@ impl ProductBuilder for NotamLiveFeedBuilder {
             "schema_version": 1,
             "version_label": version.clone(),
             "notam_count": notam_count,
-            "notams": notams,
             "notams_by_id": notams_by_id,
         });
         write_json_pretty_file(&structured_json_path, &state_value)?;

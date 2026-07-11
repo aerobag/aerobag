@@ -853,7 +853,10 @@ fn start_live_feed_driver(
     }
     thread::spawn(move || {
         let publisher = FileLiveFeedPublisher::new(live_root, SystemClock);
-        let mut tasks = production_tasks(fetch);
+        let notam_state_root_for_enrichment = swim_notams
+            .as_ref()
+            .map(|swim_notams| swim_notams.state_root.clone());
+        let mut tasks = production_tasks(fetch, notam_state_root_for_enrichment);
         if let Some(swim_notams) = swim_notams {
             let source = QueuedLiveFeedSource::new("notams");
             let notam_state_root = swim_notams.state_root.clone();
@@ -1610,7 +1613,16 @@ fn chrono_duration_from_std(duration: Duration) -> chrono::Duration {
     chrono::Duration::from_std(duration).unwrap_or_else(|_| chrono::Duration::seconds(i64::MAX))
 }
 
-fn production_tasks(fetch: LiveFeedFetchConfig) -> Vec<Box<dyn DaemonLiveFeedTask + Send>> {
+fn production_tasks(
+    fetch: LiveFeedFetchConfig,
+    notam_state_root_for_tfr_enrichment: Option<PathBuf>,
+) -> Vec<Box<dyn DaemonLiveFeedTask + Send>> {
+    let tfr_builder = match notam_state_root_for_tfr_enrichment {
+        Some(state_root) => {
+            TfrLiveFeedBuilder::new(fetch.clone()).with_notam_state_root(state_root)
+        }
+        None => TfrLiveFeedBuilder::new(fetch.clone()),
+    };
     vec![
         production_task("metars", MetarLiveFeedBuilder::new(fetch.clone())),
         production_task("tafs", TafLiveFeedBuilder::new(fetch.clone())),
@@ -1618,7 +1630,7 @@ fn production_tasks(fetch: LiveFeedFetchConfig) -> Vec<Box<dyn DaemonLiveFeedTas
             "nexrad",
             NexradSourceGridLiveFeedBuilder::new(fetch.clone(), false),
         ),
-        production_task("tfrs", TfrLiveFeedBuilder::new(fetch.clone())),
+        production_task("tfrs", tfr_builder),
         production_task("winds-aloft", WindsAloftLiveFeedBuilder::new(fetch.clone())),
         production_task("obstacles", ObstaclesLiveFeedBuilder::new(fetch)),
     ]

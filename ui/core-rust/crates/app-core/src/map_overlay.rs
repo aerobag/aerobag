@@ -491,6 +491,35 @@ pub struct TfrAreaPayload {
     pub lower_limit: TfrAltitudeLimit,
     pub polygon: Vec<TfrLatLonPoint>,
     pub summary_text: String,
+    #[serde(default)]
+    pub notam: Option<TfrNotamMetadata>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct TfrNotamMetadata {
+    pub record_id: String,
+    #[serde(default)]
+    pub source_type: Option<String>,
+    #[serde(default)]
+    pub status: Option<String>,
+    #[serde(default)]
+    pub function: Option<String>,
+    #[serde(default)]
+    pub keyword: Option<String>,
+    #[serde(default)]
+    pub facility: Option<String>,
+    #[serde(default)]
+    pub issued_utc: Option<String>,
+    #[serde(default)]
+    pub effective_start_utc: Option<String>,
+    #[serde(default)]
+    pub effective_end_utc: Option<String>,
+    #[serde(default)]
+    pub text: Option<String>,
+    #[serde(default)]
+    pub local_text: Option<String>,
+    #[serde(default)]
+    pub icao_text: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -3631,14 +3660,15 @@ fn airspace_icon_paths_from_lon_lat_paths(
 }
 
 fn selection_item_for_tfr(area: &TfrAreaPayload) -> MapSelectionItem {
+    let notam = area.notam.as_ref();
     MapSelectionItem {
         id: format!("tfr:{}:{}", area.notam_id.trim(), area.area_index),
         label: "TFR".to_string(),
         sublabel: area.notam_id.trim().to_string(),
-        description: None,
-        secondary_description: None,
+        description: notam.and_then(tfr_notam_description),
+        secondary_description: notam.and_then(tfr_notam_secondary_description),
         position: None,
-        detail_text: None,
+        detail_text: notam.and_then(tfr_notam_detail_text),
         highlight: MapSelectionHighlight::FeatureRef {
             id: format!("tfr:{}:{}", area.notam_id.trim(), area.area_index),
         },
@@ -3654,6 +3684,48 @@ fn selection_item_for_tfr(area: &TfrAreaPayload) -> MapSelectionItem {
             "tfr",
         )],
     }
+}
+
+fn tfr_notam_description(notam: &TfrNotamMetadata) -> Option<String> {
+    let facility = notam
+        .facility
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty());
+    let status = notam
+        .status
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty());
+    match (facility, status) {
+        (Some(facility), Some(status)) => Some(format!("{facility} {status}")),
+        (Some(facility), None) => Some(facility.to_string()),
+        (None, Some(status)) => Some(status.to_string()),
+        (None, None) => None,
+    }
+}
+
+fn tfr_notam_secondary_description(notam: &TfrNotamMetadata) -> Option<String> {
+    match (
+        notam.effective_start_utc.as_deref(),
+        notam.effective_end_utc.as_deref(),
+    ) {
+        (Some(start), Some(end)) => Some(format!("{start} to {end}")),
+        (Some(start), None) => Some(format!("starts {start}")),
+        (None, Some(end)) => Some(format!("ends {end}")),
+        (None, None) => None,
+    }
+}
+
+fn tfr_notam_detail_text(notam: &TfrNotamMetadata) -> Option<String> {
+    notam
+        .text
+        .as_deref()
+        .or(notam.local_text.as_deref())
+        .or(notam.icao_text.as_deref())
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(str::to_string)
 }
 
 fn display_action(id: &str, label: &str) -> MapSelectionAction {
@@ -6924,6 +6996,7 @@ mod tests {
                             },
                         ],
                         summary_text: "test TFR".to_string(),
+                        notam: None,
                     }],
                 })
             } else {
@@ -7879,6 +7952,7 @@ mod tests {
                     },
                 ],
                 summary_text: String::new(),
+                notam: None,
             }],
         };
 
@@ -7953,6 +8027,7 @@ mod tests {
                     },
                 ],
                 summary_text: String::new(),
+                notam: None,
             }],
         };
 

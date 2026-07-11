@@ -1,5 +1,5 @@
 use std::{
-    collections::BTreeMap,
+    collections::{BTreeMap, BTreeSet},
     fs,
     path::{Path, PathBuf},
     process::Command,
@@ -22,9 +22,10 @@ use crate::{
         read_json_value, sha256_hex, write_json_pretty_file, BuiltLiveFeedState, DeltaPolicy,
         LiveFeedStatePayload, LiveFeedStatusTimestamps, ProductBuilder, UpstreamEvent,
     },
-    metar_content_fingerprint,
+    load_tfr_notam_ids, metar_content_fingerprint,
     notam_store::NotamPersistentStore,
-    taf_content_fingerprint, BuildMetarRequest, BuildTafRequest, BuildTfrRequest,
+    taf_content_fingerprint, tfr_notam_metadata_by_fdc_id, BuildMetarRequest, BuildTafRequest,
+    BuildTfrRequest, StructuredTfrNotamMetadata,
 };
 
 const METAR_XML_URL: &str = "https://aviationweather.gov/data/cache/metars.cache.xml.gz";
@@ -497,11 +498,20 @@ impl ProductBuilder for TafLiveFeedBuilder {
 #[derive(Debug, Clone)]
 pub struct TfrLiveFeedBuilder {
     fetch: LiveFeedFetchConfig,
+    notam_state_root: Option<PathBuf>,
 }
 
 impl TfrLiveFeedBuilder {
     pub fn new(fetch: LiveFeedFetchConfig) -> Self {
-        Self { fetch }
+        Self {
+            fetch,
+            notam_state_root: None,
+        }
+    }
+
+    pub fn with_notam_state_root(mut self, state_root: impl Into<PathBuf>) -> Self {
+        self.notam_state_root = Some(state_root.into());
+        self
     }
 }
 
@@ -531,6 +541,14 @@ impl ProductBuilder for TfrLiveFeedBuilder {
             &provenance_dir,
             "tfrs",
         )?;
+        let tfr_notam_ids = load_tfr_notam_ids(&input_dir)?
+            .into_iter()
+            .collect::<BTreeSet<_>>();
+        let notams_by_fdc_id = self.current_tfr_notam_metadata_by_fdc_id(&tfr_notam_ids);
+        write_json_pretty_file(
+            &input_dir.join("notam-enrichment-by-fdc-id.json"),
+            &notams_by_fdc_id,
+        )?;
         let fingerprint = hash_tree(&input_dir)?;
         let version = content_version_label(&fingerprint);
         let result = build_tfr_dataset(&BuildTfrRequest {
@@ -538,6 +556,7 @@ impl ProductBuilder for TfrLiveFeedBuilder {
             output_dir,
             version_label: version.clone(),
             generated_at_utc,
+            notams_by_fdc_id,
         })?;
         let state_value = read_json_value(&result.structured_json_path)?;
         Ok(with_collected_at(
@@ -551,6 +570,31 @@ impl ProductBuilder for TfrLiveFeedBuilder {
             ),
             generated_at_utc,
         ))
+    }
+}
+
+impl TfrLiveFeedBuilder {
+    fn current_tfr_notam_metadata_by_fdc_id(
+        &self,
+        tfr_notam_ids: &BTreeSet<String>,
+    ) -> BTreeMap<String, StructuredTfrNotamMetadata> {
+        let Some(state_root) = &self.notam_state_root else {
+            return BTreeMap::new();
+        };
+        match NotamPersistentStore::new(state_root).current_records() {
+            Ok(records) => {
+                let mut metadata = tfr_notam_metadata_by_fdc_id(&records);
+                metadata.retain(|fdc_id, _| tfr_notam_ids.contains(fdc_id));
+                metadata
+            }
+            Err(error) => {
+                eprintln!(
+                    "TFR NOTAM enrichment unavailable from {}: {error:#}",
+                    state_root.display()
+                );
+                BTreeMap::new()
+            }
+        }
     }
 }
 

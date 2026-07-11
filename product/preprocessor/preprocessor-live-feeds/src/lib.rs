@@ -1,4 +1,4 @@
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
 use std::path::{Path, PathBuf};
 
@@ -26,6 +26,7 @@ pub struct BuildTfrRequest {
     pub output_dir: PathBuf,
     pub version_label: String,
     pub generated_at_utc: DateTime<Utc>,
+    pub notams_by_fdc_id: BTreeMap<String, StructuredTfrNotamMetadata>,
 }
 
 #[derive(Debug, Clone)]
@@ -379,6 +380,35 @@ pub struct StructuredTfrArea {
     lower_limit: StructuredTfrLimit,
     polygon: Vec<StructuredTfrPoint>,
     summary_text: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    notam: Option<StructuredTfrNotamMetadata>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct StructuredTfrNotamMetadata {
+    record_id: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    source_type: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    status: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    function: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    keyword: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    facility: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    issued_utc: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    effective_start_utc: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    effective_end_utc: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    text: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    local_text: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    icao_text: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -505,6 +535,213 @@ pub fn sanitize_notam_id(notam_id: &str) -> String {
     notam_id.replace('/', "_")
 }
 
+pub fn tfr_notam_metadata_by_fdc_id(
+    records: &[StructuredNotamRecord],
+) -> BTreeMap<String, StructuredTfrNotamMetadata> {
+    let mut by_fdc_id = BTreeMap::new();
+    for record in records {
+        let metadata = structured_tfr_notam_metadata(record);
+        for fdc_id in fdc_ids_for_notam(record) {
+            match by_fdc_id.get(&fdc_id) {
+                Some(existing)
+                    if tfr_notam_metadata_rank(existing) >= tfr_notam_metadata_rank(&metadata) => {}
+                _ => {
+                    by_fdc_id.insert(fdc_id, metadata.clone());
+                }
+            }
+        }
+    }
+    by_fdc_id
+}
+
+fn structured_tfr_notam_metadata(record: &StructuredNotamRecord) -> StructuredTfrNotamMetadata {
+    StructuredTfrNotamMetadata {
+        record_id: record.id.clone(),
+        source_type: record.source_type.clone(),
+        status: record.notam_status.clone(),
+        function: record.notam_function.clone(),
+        keyword: record.notam_keyword.clone(),
+        facility: record
+            .location_designator
+            .clone()
+            .or_else(|| record.icao_id.clone())
+            .or_else(|| record.location.clone()),
+        issued_utc: record.issued_utc.clone(),
+        effective_start_utc: record.effective_start_utc.clone(),
+        effective_end_utc: record.effective_end_utc.clone(),
+        text: record.text.clone(),
+        local_text: record.local_text.clone(),
+        icao_text: record.icao_text.clone(),
+    }
+}
+
+fn tfr_notam_metadata_rank(metadata: &StructuredTfrNotamMetadata) -> u8 {
+    let source_rank = metadata
+        .source_type
+        .as_deref()
+        .is_some_and(|source| source.eq_ignore_ascii_case("F")) as u8;
+    let keyword_rank = metadata
+        .keyword
+        .as_deref()
+        .is_some_and(|keyword| keyword.eq_ignore_ascii_case("AIRSPACE"))
+        as u8;
+    let text_rank = metadata
+        .text
+        .as_deref()
+        .is_some_and(|text| text_contains_tfr(text)) as u8;
+    source_rank + keyword_rank + text_rank
+}
+
+fn fdc_ids_for_notam(record: &StructuredNotamRecord) -> BTreeSet<String> {
+    let mut ids = BTreeSet::new();
+    if record
+        .source_type
+        .as_deref()
+        .is_some_and(|source| source.eq_ignore_ascii_case("F"))
+    {
+        if let (Some(year), Some(number)) = (&record.notam_year, &record.notam_number) {
+            if let Some(id) = fdc_id_from_year_and_number(year, number) {
+                ids.insert(id);
+            }
+        }
+    }
+    for text in [&record.text, &record.local_text, &record.icao_text]
+        .into_iter()
+        .flatten()
+    {
+        ids.extend(fdc_ids_in_text(text));
+    }
+    ids
+}
+
+fn fdc_id_from_year_and_number(year: &str, number: &str) -> Option<String> {
+    let year_digit = year.trim().chars().rev().find(|ch| ch.is_ascii_digit())?;
+    let number = number.trim();
+    if number.is_empty() || !number.chars().all(|ch| ch.is_ascii_digit()) {
+        return None;
+    }
+    let number = number.parse::<u32>().ok()?;
+    Some(format!("{year_digit}/{number:04}"))
+}
+
+fn fdc_ids_in_text(text: &str) -> BTreeSet<String> {
+    let chars = text.chars().collect::<Vec<_>>();
+    let mut ids = BTreeSet::new();
+    for index in 0..chars.len().saturating_sub(5) {
+        if !chars[index].is_ascii_digit() || chars.get(index + 1) != Some(&'/') {
+            continue;
+        }
+        let Some(number) = chars.get(index + 2..index + 6) else {
+            continue;
+        };
+        if !number.iter().all(|ch| ch.is_ascii_digit()) {
+            continue;
+        }
+        let before_ok = index == 0 || !chars[index - 1].is_ascii_alphanumeric();
+        let after_ok = chars
+            .get(index + 6)
+            .map(|ch| !ch.is_ascii_alphanumeric())
+            .unwrap_or(true);
+        if before_ok && after_ok {
+            ids.insert(chars[index..index + 6].iter().collect::<String>());
+        }
+    }
+    ids
+}
+
+fn text_contains_tfr(text: &str) -> bool {
+    let text = text.to_ascii_uppercase();
+    text.contains("TEMPORARY FLIGHT RESTRICTIONS")
+        || text.contains(" TFR")
+        || text.contains("91.137")
+        || text.contains("91.138")
+        || text.contains("91.139")
+        || text.contains("91.141")
+        || text.contains("91.143")
+        || text.contains("91.145")
+}
+
+fn enriched_tfr_limits(
+    area: &ParsedTfrArea,
+    notam_text: Option<&str>,
+) -> (StructuredTfrLimit, StructuredTfrLimit) {
+    let mut lower_limit = StructuredTfrLimit {
+        value_text: area.lower_value_text.clone(),
+        unit: area.lower_unit.clone(),
+    };
+    let mut upper_limit = StructuredTfrLimit {
+        value_text: area.upper_value_text.clone(),
+        unit: area.upper_unit.clone(),
+    };
+    if lower_limit.value_text.trim().is_empty() || upper_limit.value_text.trim().is_empty() {
+        if let Some((notam_lower, notam_upper)) = notam_text.and_then(tfr_altitude_limits_from_text)
+        {
+            if lower_limit.value_text.trim().is_empty() {
+                lower_limit = notam_lower;
+            }
+            if upper_limit.value_text.trim().is_empty() {
+                upper_limit = notam_upper;
+            }
+        }
+    }
+    (lower_limit, upper_limit)
+}
+
+fn tfr_notam_altitude_text(metadata: &StructuredTfrNotamMetadata) -> Option<&str> {
+    metadata
+        .local_text
+        .as_deref()
+        .or(metadata.text.as_deref())
+        .or(metadata.icao_text.as_deref())
+}
+
+fn tfr_altitude_limits_from_text(text: &str) -> Option<(StructuredTfrLimit, StructuredTfrLimit)> {
+    text.split_whitespace()
+        .filter_map(parse_tfr_altitude_pair_token)
+        .next()
+}
+
+fn parse_tfr_altitude_pair_token(token: &str) -> Option<(StructuredTfrLimit, StructuredTfrLimit)> {
+    let token = token
+        .trim_matches(|ch: char| !ch.is_ascii_alphanumeric() && ch != '-')
+        .to_ascii_uppercase();
+    let (lower, upper) = token.split_once('-')?;
+    if lower.is_empty() || upper.is_empty() {
+        return None;
+    }
+    Some((
+        parse_tfr_altitude_limit(lower)?,
+        parse_tfr_altitude_limit(upper)?,
+    ))
+}
+
+fn parse_tfr_altitude_limit(value: &str) -> Option<StructuredTfrLimit> {
+    let value = value
+        .trim_matches(|ch: char| !ch.is_ascii_alphanumeric())
+        .to_ascii_uppercase();
+    if value == "SFC" {
+        return Some(StructuredTfrLimit {
+            value_text: "SFC".to_string(),
+            unit: String::new(),
+        });
+    }
+    if let Some(number) = value.strip_suffix("FT") {
+        if !number.is_empty() && number.chars().all(|ch| ch.is_ascii_digit()) {
+            return Some(StructuredTfrLimit {
+                value_text: number.to_string(),
+                unit: "FT".to_string(),
+            });
+        }
+    }
+    if !value.is_empty() && value.chars().all(|ch| ch.is_ascii_digit()) {
+        return Some(StructuredTfrLimit {
+            value_text: value,
+            unit: String::new(),
+        });
+    }
+    None
+}
+
 pub fn build_tfr_dataset(request: &BuildTfrRequest) -> anyhow::Result<BuildTfrResult> {
     if request.output_dir.exists() {
         fs::remove_dir_all(&request.output_dir)
@@ -517,20 +754,20 @@ pub fn build_tfr_dataset(request: &BuildTfrRequest) -> anyhow::Result<BuildTfrRe
     let structured_areas = parsed_areas
         .iter()
         .cloned()
-        .map(|area| StructuredTfrArea {
-            notam_id: area.notam_id,
-            area_index: area.area_index,
-            schedule_fragments: area.schedule_fragments,
-            upper_limit: StructuredTfrLimit {
-                value_text: area.upper_value_text,
-                unit: area.upper_unit,
-            },
-            lower_limit: StructuredTfrLimit {
-                value_text: area.lower_value_text,
-                unit: area.lower_unit,
-            },
-            polygon: area.polygon.clone(),
-            summary_text: area.summary_text,
+        .map(|area| {
+            let notam = request.notams_by_fdc_id.get(&area.notam_id).cloned();
+            let (lower_limit, upper_limit) =
+                enriched_tfr_limits(&area, notam.as_ref().and_then(tfr_notam_altitude_text));
+            StructuredTfrArea {
+                notam_id: area.notam_id,
+                area_index: area.area_index,
+                schedule_fragments: area.schedule_fragments,
+                upper_limit,
+                lower_limit,
+                polygon: area.polygon.clone(),
+                summary_text: area.summary_text,
+                notam,
+            }
         })
         .collect::<Vec<_>>();
     let structured_json_path = request.output_dir.join("tfrs.json");
@@ -2367,6 +2604,7 @@ mod tests {
             output_dir: temp.path().join("out"),
             version_label: "fixture".to_string(),
             generated_at_utc,
+            notams_by_fdc_id: BTreeMap::new(),
         })?;
 
         let dataset: Value = serde_json::from_slice(&fs::read(&result.structured_json_path)?)?;
@@ -2378,6 +2616,63 @@ mod tests {
         assert_eq!(1.0, area["polygon"][2]["lat"]);
         assert_eq!("5000", area["upper_limit"]["value_text"]);
         assert_eq!("FT", area["upper_limit"]["unit"]);
+        Ok(())
+    }
+
+    #[test]
+    fn tfr_dataset_enriches_matching_fdc_notam_metadata() -> anyhow::Result<()> {
+        let temp = TempDir::new().context("failed to create temp dir")?;
+        let input_dir = temp.path().join("input");
+        fs::create_dir_all(&input_dir)?;
+        fs::write(input_dir.join("list.json"), r#"[{"notam_id":"6/7042"}]"#)?;
+        fs::write(
+            input_dir.join("graphics.geojson"),
+            r#"{
+  "type": "FeatureCollection",
+  "features": [{
+    "type": "Feature",
+    "id": "V_TFR_LOC.6/7042",
+    "properties": {},
+    "geometry": {
+      "type": "Polygon",
+      "coordinates": [[
+        [-120.0, 47.0],
+        [-119.9, 47.0],
+        [-119.9, 47.1],
+        [-120.0, 47.0]
+      ]]
+    }
+  }]
+}"#,
+        )?;
+        let generated_at_utc = DateTime::parse_from_rfc3339("2026-04-30T00:00:00Z")
+            .expect("valid fixture timestamp")
+            .with_timezone(&Utc);
+        let result = build_tfr_dataset(&BuildTfrRequest {
+            input_dir,
+            output_dir: temp.path().join("out"),
+            version_label: "fixture".to_string(),
+            generated_at_utc,
+            notams_by_fdc_id: tfr_notam_metadata_by_fdc_id(&[tfr_notam_record(
+                    "F:ZSE:2026:N:7042",
+                    "ZSE",
+                    "7042",
+                    "!FDC 6/7042 ZSE WA..AIRSPACE TEST..TEMPORARY FLIGHT RESTRICTIONS. WI AN AREA SFC-8500FT TEST FIRE.",
+                )]),
+        })?;
+
+        let dataset: Value = serde_json::from_slice(&fs::read(&result.structured_json_path)?)?;
+        let area = &dataset["areas"][0];
+        assert_eq!("SFC", area["lower_limit"]["value_text"]);
+        assert_eq!("8500", area["upper_limit"]["value_text"]);
+        assert_eq!("FT", area["upper_limit"]["unit"]);
+        assert_eq!("F:ZSE:2026:N:7042", area["notam"]["record_id"]);
+        assert_eq!("ZSE", area["notam"]["facility"]);
+        assert_eq!("PUBLISHED", area["notam"]["status"]);
+        assert!(area["notam"]["text"]
+            .as_str()
+            .expect("notam text")
+            .contains("TEMPORARY FLIGHT RESTRICTIONS"));
         Ok(())
     }
 
@@ -2410,10 +2705,49 @@ mod tests {
             output_dir: temp.path().join("out"),
             version_label: "fixture".to_string(),
             generated_at_utc,
+            notams_by_fdc_id: BTreeMap::new(),
         })
         .expect_err("projected coordinates should fail loudly");
         assert!(format!("{error:#}").contains("not lon/lat"));
         Ok(())
+    }
+
+    fn tfr_notam_record(
+        id: &str,
+        facility: &str,
+        number: &str,
+        text: &str,
+    ) -> StructuredNotamRecord {
+        StructuredNotamRecord {
+            id: id.to_string(),
+            jms_message_id: None,
+            nms_id: None,
+            correlation_id: None,
+            source_type: Some("F".to_string()),
+            notam_status: Some("PUBLISHED".to_string()),
+            notam_function: Some("N".to_string()),
+            notam_keyword: Some("AIRSPACE".to_string()),
+            last_updated_utc: None,
+            location_designator: Some(facility.to_string()),
+            icao_id: None,
+            airport_name: None,
+            airport_position: None,
+            location: Some(facility.to_string()),
+            classification: None,
+            account_id: None,
+            xover_account_id: None,
+            xover_notam_id: None,
+            notam_number: Some(number.to_string()),
+            notam_year: Some("2026".to_string()),
+            notam_type: Some("N".to_string()),
+            issued_utc: Some("2026-04-30T00:00:00Z".to_string()),
+            effective_start_utc: Some("2026-04-30T00:00:00Z".to_string()),
+            effective_end_utc: Some("2026-05-01T00:00:00Z".to_string()),
+            text: Some(text.to_string()),
+            local_text: Some(text.to_string()),
+            icao_text: None,
+            scenario: None,
+        }
     }
 
     #[test]

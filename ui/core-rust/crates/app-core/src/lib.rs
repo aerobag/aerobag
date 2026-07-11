@@ -103,10 +103,10 @@ pub use map_overlay::{
     MapSurfaceMetrics, MetarProductPayload, MetarRecord, MetarTilePayload, NavSymbolFeature,
     ObstacleOverlayContext, OfflineRegionCatalog, OfflineRegionDisplay, OfflineRegionRecord,
     OverlaySurfaceDecision, PirepRecord, PointTilePayload, PointVectorRecord, TafProductPayload,
-    TafRecord, TfrAltitudeLimit, TfrAreaPayload, TfrLatLonPoint, TfrProductPayload,
-    TfrScheduleFragment, VectorAggregateTilePayload, VectorIdentLabelStyle, VectorTileRequest,
-    VisibleMapFeature, VisibleMetarFeature, VisiblePirepFeature, WeatherDetailUiView,
-    AIRSPACE_DISPLAY_FEATURE_LIMIT, VECTOR_DISPLAY_FEATURE_LIMIT,
+    TafRecord, TfrAltitudeLimit, TfrAreaPayload, TfrLatLonPoint, TfrNotamMetadata,
+    TfrProductPayload, TfrScheduleFragment, VectorAggregateTilePayload, VectorIdentLabelStyle,
+    VectorTileRequest, VisibleMapFeature, VisibleMetarFeature, VisiblePirepFeature,
+    WeatherDetailUiView, AIRSPACE_DISPLAY_FEATURE_LIMIT, VECTOR_DISPLAY_FEATURE_LIMIT,
 };
 pub use navdb_types::{
     AirwayAutoSelection, AirwayBranch, AirwayEntryCandidate, AirwayExitCandidate,

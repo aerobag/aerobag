@@ -295,9 +295,7 @@ fn platform_adapters_use_paged_loops_for_paged_session_exports() {
             continue;
         };
         let window = &android[index.saturating_sub(220)..android.len().min(index + 420)];
-        if !window.contains("runPagedSessionOperation")
-            && !window.contains("runPagedSnapshot")
-        {
+        if !window.contains("runPagedSessionOperation") && !window.contains("runPagedSnapshot") {
             violations.push(format!(
                 "android calls {export} without runPagedSessionOperationElement"
             ));

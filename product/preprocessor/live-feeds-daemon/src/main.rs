@@ -19,10 +19,11 @@ use preprocessor_live_feeds::{
     engine::{
         default_poll_interval, prune_live_feed_scratch_root, run_upstream_live_feed_publish_tick,
         write_live_feeds_current_manifest, CompiledFixtureCache, FileLiveFeedPublisher, FixedClock,
-        FixtureCacheKeyPart, LiveFeedInvalidation, LiveFeedPollingTask, LiveFeedSourceAndBuilder,
-        LiveFeedTaskPhase, LiveFeedTickResult, LiveFeedVersionManifest, LiveFeedsCurrentManifest,
-        ProductBuilder, PublishedLiveFeedUpdate, SseBroker, SystemClock, UpstreamEvent,
-        LIVE_FEEDS_SCHEMA_VERSION, LIVE_FEED_FAILED_SCRATCH_RETAIN_COUNT,
+        FixtureCacheKeyPart, LiveFeedCurrentHistoryEntry, LiveFeedInvalidation,
+        LiveFeedPollingTask, LiveFeedSourceAndBuilder, LiveFeedTaskPhase, LiveFeedTickResult,
+        LiveFeedVersionManifest, LiveFeedsCurrentManifest, ProductBuilder, PublishedLiveFeedUpdate,
+        SseBroker, SystemClock, UpstreamEvent, LIVE_FEEDS_SCHEMA_VERSION,
+        LIVE_FEED_FAILED_SCRATCH_RETAIN_COUNT,
     },
     products::{
         LiveFeedFetchConfig, MetarLiveFeedBuilder, NexradSourceGridLiveFeedBuilder,
@@ -102,6 +103,8 @@ struct LiveFeedSseEvent {
     published_at_utc: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     collected_at_utc: Option<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    history: Vec<LiveFeedCurrentHistoryEntry>,
 }
 
 #[derive(Clone)]
@@ -972,6 +975,16 @@ fn retain_current_manifest_refs(
         if version_manifest_path.is_file() {
             retain_version_manifest(live_root, &version_manifest_path, retained)?;
         }
+        for history in &entry.history {
+            let history_manifest_path =
+                retain_live_relative_path(live_root, retained, &history.version_manifest_url)?;
+            if let Some(state_url) = history.state_url.as_deref() {
+                retain_live_relative_path(live_root, retained, state_url)?;
+            }
+            if history_manifest_path.is_file() {
+                retain_version_manifest(live_root, &history_manifest_path, retained)?;
+            }
+        }
     }
     Ok(())
 }
@@ -1373,6 +1386,7 @@ fn write_sse_event(writer: &mut impl Write, event: &LiveFeedSseEvent) -> anyhow:
             "state_sha256": event.state_sha256,
             "published_at_utc": event.published_at_utc,
             "collected_at_utc": event.collected_at_utc,
+            "history": event.history,
         }))
         .context("failed to encode SSE payload")?
     )
@@ -1389,6 +1403,7 @@ fn live_feed_sse_event_from_invalidation(invalidation: LiveFeedInvalidation) -> 
         state_sha256: invalidation.state_sha256,
         published_at_utc: invalidation.published_at_utc,
         collected_at_utc: invalidation.collected_at_utc,
+        history: invalidation.history,
     }
 }
 
@@ -1462,6 +1477,13 @@ fn list_live_feed_event_frames(root: &Path) -> anyhow::Result<Vec<Vec<LiveFeedSs
             else {
                 continue;
             };
+            let history = entry
+                .get("history")
+                .cloned()
+                .map(serde_json::from_value)
+                .transpose()
+                .with_context(|| format!("failed to parse {product} current history"))?
+                .unwrap_or_default();
             events.push(LiveFeedSseEvent {
                 id: format!("{product}:{version}"),
                 product: product.clone(),
@@ -1477,6 +1499,7 @@ fn list_live_feed_event_frames(root: &Path) -> anyhow::Result<Vec<Vec<LiveFeedSs
                     .get("collected_at_utc")
                     .and_then(serde_json::Value::as_str)
                     .map(str::to_string),
+                history,
             });
         }
     }
@@ -1879,6 +1902,12 @@ mod tests {
                 .collect::<Vec<_>>(),
             vec!["metars:m2", "nexrad:n1"]
         );
+        let metars = frames[0]
+            .iter()
+            .find(|event| event.id == "metars:m2")
+            .expect("metars event");
+        assert_eq!(metars.history.len(), 1);
+        assert_eq!(metars.history[0].version, "m1");
         Ok(())
     }
 
@@ -1893,6 +1922,12 @@ mod tests {
             state_sha256: "a".repeat(64),
             published_at_utc: None,
             collected_at_utc: None,
+            history: vec![LiveFeedCurrentHistoryEntry {
+                version: "m0".to_string(),
+                version_manifest_url: "versions/metars/m0.json".to_string(),
+                state_url: Some("states/metars/m0.json".to_string()),
+                state_sha256: Some("b".repeat(64)),
+            }],
         }];
         let mut bytes = Vec::new();
         write_sse_frame(&mut bytes, &frame)?;
@@ -1901,6 +1936,8 @@ mod tests {
         assert!(text.contains("event: live-feed-current\n"));
         assert!(text.contains("\"schema_version\":2"), "{text}");
         assert!(text.contains("\"product\":\"metars\""));
+        assert!(text.contains("\"history\":[{"), "{text}");
+        assert!(text.contains("\"version\":\"m0\""), "{text}");
         Ok(())
     }
 
@@ -2120,6 +2157,7 @@ mod tests {
                 state_sha256: "sha".to_string(),
                 published_at_utc: None,
                 collected_at_utc: None,
+                history: Vec::new(),
                 delta_path: None,
                 changed_count: 0,
                 removed_count: 0,
@@ -2195,6 +2233,7 @@ mod tests {
                 state_sha256: "sha".to_string(),
                 published_at_utc: Some("2026-06-19T18:57:16Z".to_string()),
                 collected_at_utc: Some("2026-06-19T18:56:41Z".to_string()),
+                history: Vec::new(),
                 delta_path: None,
                 changed_count: 0,
                 removed_count: 0,
@@ -2280,6 +2319,7 @@ mod tests {
                     state_sha256: "sha".to_string(),
                     published_at_utc: None,
                     collected_at_utc: None,
+                    history: Vec::new(),
                     delta_path: None,
                     changed_count: 1,
                     removed_count: 0,

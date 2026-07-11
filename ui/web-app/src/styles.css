@@ -3222,14 +3222,17 @@ button {
 }
 
 .planEntryInput {
+  display: block;
   position: relative;
   width: 100%;
-  min-height: var(--thumb);
+  height: var(--thumb);
   border: 0;
   background: transparent;
   color: transparent;
   caret-color: var(--theme-panel-fg);
+  resize: none;
   text-transform: uppercase;
+  overflow: hidden;
 }
 
 .planEntryInput:focus {

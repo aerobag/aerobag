@@ -7758,7 +7758,7 @@ function FlightPlanPage(props: {
                   ) : (
                     <div className="planEntryPlaceholder" aria-hidden="true">Append route...</div>
                   )}
-                  <input
+                  <textarea
                     className="planEntryInput"
                     data-testid="plan-append-route-input"
                     value={routeEntryText}
@@ -7768,6 +7768,13 @@ function FlightPlanPage(props: {
                     onChange={(event) => {
                       setRouteEntryText(event.target.value.toUpperCase());
                       setRouteEntryError(null);
+                    }}
+                    onKeyDown={(event) => {
+                      if (event.key !== "Enter" || event.shiftKey) {
+                        return;
+                      }
+                      event.preventDefault();
+                      event.currentTarget.form?.requestSubmit();
                     }}
                   />
                 </div>

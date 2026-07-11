@@ -710,6 +710,7 @@ def add_cycle_calendar_metrics(
         for product in iter_current_product_facts(facts)
         if product.get("cycle")
     }
+    parsed_cycles: list[tuple[str, datetime]] = []
     for entry in cycles:
         if not isinstance(entry, dict):
             continue
@@ -718,6 +719,23 @@ def add_cycle_calendar_metrics(
         if not isinstance(cycle, str) or effective is None:
             continue
         effective_at = utc_midnight(effective)
+        parsed_cycles.append((cycle, effective_at))
+
+    newest_published_effective = max(
+        (
+            effective_at
+            for cycle, effective_at in parsed_cycles
+            if cycle in published_cycles
+        ),
+        default=None,
+    )
+
+    for cycle, effective_at in parsed_cycles:
+        if (
+            newest_published_effective is not None
+            and effective_at < newest_published_effective
+        ):
+            continue
         seconds_until_effective = int((effective_at - now).total_seconds())
         if seconds_until_effective > CYCLE_PUBLICATION_WARNING_SECONDS:
             continue

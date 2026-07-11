@@ -409,6 +409,36 @@ class PipelineHealthTests(unittest.TestCase):
         self.assertEqual(countdown["value"], 0)
         self.assertEqual(countdown["severity"], "ok")
 
+    def test_calendar_hides_obsolete_cycle_when_newer_cycle_is_published(self) -> None:
+        facts = calendar_facts(
+            [
+                {"cycle": "2606", "effective_date": "2026-06-11"},
+                {"cycle": "2607", "effective_date": "2026-07-09"},
+            ],
+            product_facts=[
+                {
+                    "payload": {
+                        "products": [
+                            {
+                                "product_id": "NAV_DB_NAV12_2607_01",
+                                "cycle": "2607",
+                            }
+                        ]
+                    }
+                }
+            ],
+        )
+        now = datetime(2026, 7, 11, 0, 0, 0, tzinfo=timezone.utc)
+
+        evaluation = pipeline_health.evaluate_health(facts, [], now)
+
+        self.assertFalse(
+            has_metric(evaluation, "cycle_calendar.2606.seconds_until_effective")
+        )
+        countdown = metric(evaluation, "cycle_calendar.2607.seconds_until_effective")
+        self.assertEqual(countdown["value"], 0)
+        self.assertEqual(countdown["severity"], "ok")
+
     def test_collect_product_facts_resolves_packaged_roots(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             artifact_root = Path(temp_dir)

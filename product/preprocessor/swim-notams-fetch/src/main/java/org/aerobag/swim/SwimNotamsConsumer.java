@@ -22,8 +22,10 @@ import javax.jms.StreamMessage;
 import javax.jms.TextMessage;
 import java.io.BufferedWriter;
 import java.io.Closeable;
+import java.io.FileOutputStream;
 import java.io.IOException;
 import java.io.OutputStream;
+import java.io.OutputStreamWriter;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
@@ -75,6 +77,7 @@ public final class SwimNotamsConsumer {
         Connection connection = null;
         Session session = null;
         MessageConsumer consumer = null;
+        FileOutputStream messageStream = null;
         BufferedWriter writer = null;
         try {
             ConnectionFactory factory = createConnectionFactory(config);
@@ -84,7 +87,8 @@ public final class SwimNotamsConsumer {
             consumer = session.createConsumer(queue);
             connection.start();
 
-            writer = Files.newBufferedWriter(messagesPath, StandardCharsets.UTF_8);
+            messageStream = new FileOutputStream(messagesPath.toFile());
+            writer = new BufferedWriter(new OutputStreamWriter(messageStream, StandardCharsets.UTF_8));
 
             long lastMessageAt = System.currentTimeMillis();
             while (summary.messageCount < config.maxMessages) {
@@ -103,6 +107,7 @@ public final class SwimNotamsConsumer {
                 writer.write(JSON_LINE.writeValueAsString(captured));
                 writer.write('\n');
                 writer.flush();
+                messageStream.getChannel().force(true);
 
                 message.acknowledge();
 
@@ -121,6 +126,7 @@ public final class SwimNotamsConsumer {
             }
         } finally {
             closeQuietly(writer);
+            closeQuietly(messageStream);
             closeQuietly(consumer);
             closeQuietly(session);
             closeQuietly(connection);

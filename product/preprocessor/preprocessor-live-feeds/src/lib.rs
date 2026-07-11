@@ -12,6 +12,7 @@ use serde_json::Value;
 use sha2::{Digest, Sha256};
 
 pub mod engine;
+pub mod notam_store;
 pub mod products;
 pub mod simulation;
 
@@ -175,6 +176,7 @@ pub struct StructuredNotamDataset {
     version_label: String,
     notam_count: usize,
     notams: Vec<StructuredNotamRecord>,
+    notams_by_id: BTreeMap<String, StructuredNotamRecord>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -1174,7 +1176,11 @@ pub fn build_notam_dataset(request: &BuildNotamRequest) -> anyhow::Result<BuildN
     fs::create_dir_all(&request.output_dir)
         .with_context(|| format!("failed to create {}", request.output_dir.display()))?;
 
-    let notams = structured_notam_records(&request.input_jsonl_path)?;
+    let notams_by_id = structured_notam_records(&request.input_jsonl_path)?
+        .into_iter()
+        .map(|record| (record.id.clone(), record))
+        .collect::<BTreeMap<_, _>>();
+    let notams = notams_by_id.values().cloned().collect::<Vec<_>>();
     let structured_json_path = request.output_dir.join("notams.json");
     let manifest_path = request
         .output_dir
@@ -1190,6 +1196,7 @@ pub fn build_notam_dataset(request: &BuildNotamRequest) -> anyhow::Result<BuildN
             version_label: request.version_label.clone(),
             notam_count: notams.len(),
             notams: notams.clone(),
+            notams_by_id: notams_by_id.clone(),
         },
     )?;
     write_json_pretty(
@@ -1258,7 +1265,9 @@ fn parse_geo_csv(path: &Path) -> anyhow::Result<Vec<GeoGridPoint>> {
         .collect()
 }
 
-fn structured_notam_records(input_jsonl_path: &Path) -> anyhow::Result<Vec<StructuredNotamRecord>> {
+pub fn structured_notam_records(
+    input_jsonl_path: &Path,
+) -> anyhow::Result<Vec<StructuredNotamRecord>> {
     let mut records = load_json_lines::<CapturedNotamMessage>(input_jsonl_path)?
         .into_iter()
         .filter_map(|message| normalize_captured_notam(message).transpose())
@@ -2826,6 +2835,7 @@ mod tests {
         assert_eq!(1, dataset.notam_count);
         let record = &dataset.notams[0];
         assert_eq!("D:HLN:2026:N:198", record.id);
+        assert_eq!(Some(record), dataset.notams_by_id.get("D:HLN:2026:N:198"));
         assert_eq!(Some("KHLN".to_string()), record.icao_id.clone());
         assert_eq!(Some("RWY".to_string()), record.notam_keyword.clone());
         assert_eq!(Some("HELENA RGNL".to_string()), record.airport_name.clone());

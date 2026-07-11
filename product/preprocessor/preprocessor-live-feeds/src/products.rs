@@ -1,4 +1,5 @@
 use std::{
+    collections::BTreeMap,
     fs,
     path::{Path, PathBuf},
     process::Command,
@@ -21,8 +22,9 @@ use crate::{
         read_json_value, sha256_hex, write_json_pretty_file, BuiltLiveFeedState, DeltaPolicy,
         LiveFeedStatePayload, LiveFeedStatusTimestamps, ProductBuilder, UpstreamEvent,
     },
-    metar_content_fingerprint, taf_content_fingerprint, BuildMetarRequest, BuildTafRequest,
-    BuildTfrRequest,
+    metar_content_fingerprint,
+    notam_store::NotamPersistentStore,
+    taf_content_fingerprint, BuildMetarRequest, BuildTafRequest, BuildTfrRequest,
 };
 
 const METAR_XML_URL: &str = "https://aviationweather.gov/data/cache/metars.cache.xml.gz";
@@ -108,6 +110,65 @@ pub fn keyed_record_json_live_feed_state(
         },
         changed_count_if_no_delta,
     )
+}
+
+#[derive(Debug, Clone)]
+pub struct NotamLiveFeedBuilder {
+    state_root: PathBuf,
+}
+
+impl NotamLiveFeedBuilder {
+    pub fn new(state_root: impl Into<PathBuf>) -> Self {
+        Self {
+            state_root: state_root.into(),
+        }
+    }
+}
+
+impl ProductBuilder for NotamLiveFeedBuilder {
+    fn product_id(&self) -> &str {
+        "notams"
+    }
+
+    fn build_state(
+        &self,
+        event: &UpstreamEvent,
+        scratch_dir: &Path,
+    ) -> anyhow::Result<BuiltLiveFeedState> {
+        let generated_at_utc = normalized_event_time(event.observed_at_utc);
+        let output_dir = fresh_dir(&scratch_dir.join("output"))?;
+        let store = NotamPersistentStore::new(&self.state_root);
+        let records = store.current_records()?;
+        let notams_by_id = records
+            .into_iter()
+            .map(|record| (record.id.clone(), record))
+            .collect::<BTreeMap<_, _>>();
+        let notams = notams_by_id.values().cloned().collect::<Vec<_>>();
+        let notam_count = notams_by_id.len();
+        let fingerprint = store.current_fingerprint()?;
+        let version = content_version_label(&fingerprint);
+        let structured_json_path = output_dir.join("notams.json");
+        let state_value = serde_json::json!({
+            "schema_version": 1,
+            "version_label": version.clone(),
+            "notam_count": notam_count,
+            "notams": notams,
+            "notams_by_id": notams_by_id,
+        });
+        write_json_pretty_file(&structured_json_path, &state_value)?;
+        Ok(with_collected_at(
+            keyed_record_json_live_feed_state(
+                "notams",
+                version,
+                structured_json_path.clone(),
+                state_value,
+                "notams_by_id",
+                Some("notam_count"),
+                notam_count,
+            ),
+            generated_at_utc,
+        ))
+    }
 }
 
 fn with_collected_at(
@@ -1054,6 +1115,99 @@ mod tests {
                 .exists(),
             "staging must not create live-feed sidecars beside source fixtures"
         );
+        Ok(())
+    }
+
+    #[test]
+    fn notam_live_feed_builder_publishes_keyed_record_state() -> anyhow::Result<()> {
+        let temp = tempdir()?;
+        let state_root = temp.path().join("notam-state");
+        let segments_root = state_root.join("ingest").join("segments");
+        fs::create_dir_all(&segments_root)?;
+        let xml = r#"<?xml version="1.0" encoding="UTF-8"?>
+<AIXMBasicMessage xmlns:event="http://www.aixm.aero/schema/5.1/event">
+  <hasMember>
+    <event:Event>
+      <event:timeSlice>
+        <event:EventTimeSlice>
+          <event:scenario>95</event:scenario>
+          <event:textNOTAM>
+            <event:NOTAM>
+              <event:number>1</event:number>
+              <event:year>2026</event:year>
+              <event:type>N</event:type>
+              <event:issued>2026-07-11T02:00:00.000Z</event:issued>
+              <event:location>AAA</event:location>
+              <event:effectiveStart>202607110200</event:effectiveStart>
+              <event:effectiveEnd>202607111200</event:effectiveEnd>
+              <event:text>RWY 01 CLSD.</event:text>
+            </event:NOTAM>
+          </event:textNOTAM>
+        </event:EventTimeSlice>
+      </event:timeSlice>
+    </event:Event>
+  </hasMember>
+</AIXMBasicMessage>"#;
+        let line = serde_json::json!({
+            "jmsMessageId": "ID:test",
+            "receivedAtUtc": "2026-07-11T02:03:00Z",
+            "properties": {
+                "us_gov_dot_faa_aim_fns_nds_SourceType": "D",
+                "us_gov_dot_faa_aim_fns_nds_ICAOId": "KAAA",
+                "us_gov_dot_faa_aim_fns_nds_LocationDesignator": "AAA",
+                "us_gov_dot_faa_aim_fns_nds_NOTAMStatus": "ACTIVE",
+                "us_gov_dot_faa_aim_fns_nds_NOTAMFunction": "NOTAMN",
+                "us_gov_dot_faa_aim_fns_nds_NOTAMKeyword": "RWY"
+            },
+            "bodyText": xml
+        });
+        let segment_path = segments_root.join("001.jsonl");
+        fs::write(&segment_path, format!("{line}\n"))?;
+        let store = NotamPersistentStore::new(&state_root);
+        store.initialize(&crate::notam_store::SwimNotamSubscriptionIdentity {
+            provider_url: "smfs://example.test:55443".to_string(),
+            queue: "example.queue".to_string(),
+            connection_factory: "example.CF".to_string(),
+            username: "example.user".to_string(),
+            vpn: "example-vpn".to_string(),
+        })?;
+        store.apply_segment(&crate::notam_store::NotamIngestedSegment {
+            path: segment_path.clone(),
+            sha256: hash_file(&segment_path)?,
+            message_count: 1,
+            last_received_at_utc: Some("2026-07-11T02:03:00Z".to_string()),
+        })?;
+
+        let observed_at_utc = Utc.with_ymd_and_hms(2026, 7, 11, 2, 3, 0).unwrap();
+        let event = UpstreamEvent {
+            product: "notams".to_string(),
+            source_id: "notams:test".to_string(),
+            previous_source_id: None,
+            observed_at_utc,
+            payload_path: Some(segments_root.join("001.jsonl")),
+        };
+        let builder = NotamLiveFeedBuilder::new(&state_root);
+        let built = builder.build_state(&event, &temp.path().join("scratch"))?;
+        assert_eq!(built.product, "notams");
+        let LiveFeedStatePayload::JsonFile { value, .. } = &built.payload else {
+            panic!("NOTAM live-feed state should be JSON");
+        };
+        assert_eq!(value["notam_count"], 1);
+        assert_eq!(
+            value["notams_by_id"]["D:AAA:2026:N:1"]["text"],
+            "RWY 01 CLSD."
+        );
+
+        let live_root = temp.path().join("live");
+        let publisher = FileLiveFeedPublisher::new(
+            live_root.clone(),
+            FixedClock::new(Utc.with_ymd_and_hms(2026, 7, 11, 2, 4, 0).unwrap()),
+        );
+        let update = publisher.publish(built)?;
+        assert_eq!(update.product, "notams");
+        assert_eq!(update.changed_count, 1);
+        let current = read_live_feeds_current(&live_root)?.expect("current manifest");
+        assert!(current.products.contains_key("notams"));
         Ok(())
     }
 

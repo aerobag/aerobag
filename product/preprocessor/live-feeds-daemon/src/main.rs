@@ -4,6 +4,7 @@ use std::{
     io::{BufRead, BufReader, Write},
     net::{SocketAddr, TcpListener, TcpStream},
     path::{Component, Path, PathBuf},
+    process::Command,
     sync::{
         mpsc::{self, Receiver, RecvTimeoutError, Sender},
         Arc, Mutex,
@@ -22,12 +23,13 @@ use preprocessor_live_feeds::{
         FixtureCacheKeyPart, LiveFeedCurrentHistoryEntry, LiveFeedInvalidation,
         LiveFeedPollingTask, LiveFeedSourceAndBuilder, LiveFeedTaskPhase, LiveFeedTickResult,
         LiveFeedVersionManifest, LiveFeedsCurrentManifest, ProductBuilder, PublishedLiveFeedUpdate,
-        SseBroker, SystemClock, UpstreamEvent, LIVE_FEEDS_SCHEMA_VERSION,
+        QueuedLiveFeedSource, SseBroker, SystemClock, UpstreamEvent, LIVE_FEEDS_SCHEMA_VERSION,
         LIVE_FEED_FAILED_SCRATCH_RETAIN_COUNT,
     },
+    notam_store::{NotamIngestedSegment, NotamPersistentStore, SwimNotamSubscriptionIdentity},
     products::{
         LiveFeedFetchConfig, MetarLiveFeedBuilder, NexradSourceGridLiveFeedBuilder,
-        ObstaclesLiveFeedBuilder, TafLiveFeedBuilder, TfrLiveFeedBuilder,
+        NotamLiveFeedBuilder, ObstaclesLiveFeedBuilder, TafLiveFeedBuilder, TfrLiveFeedBuilder,
         WindsAloftLiveFeedBuilder,
     },
     simulation::{
@@ -35,7 +37,7 @@ use preprocessor_live_feeds::{
         CompiledFixtureStateBuilder, SimulatedLiveFeedSource,
     },
 };
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 
 const STATUS_HISTORY_LIMIT: usize = 256;
 const SIMULATION_RETAIN_VERSIONS_PER_PRODUCT: usize = 8;
@@ -59,7 +61,7 @@ fn live_feeds_contract_root(live_root: &Path) -> PathBuf {
 
 fn usage() -> &'static str {
     "usage:
-  aerobag-live-feedsd --live-root <path> --listen <addr> [--scratch-root <path>] [--event-interval-ms <n>]
+  aerobag-live-feedsd --live-root <path> --listen <addr> [--scratch-root <path>] [--event-interval-ms <n>] [--swim-notams-config <path> --swim-notams-collector <path> [--swim-notams-state-root <path>]]
   aerobag-live-feedsd --simulation --live-root <path> --listen <addr> [--fixture-root <path>] [--fixture-cache <path>] [--speedup <n>] [--event-interval-ms <n>]
   aerobag-live-feedsd --check-config --live-root <path> --listen <addr> [--simulation --fixture-root <path>]
 
@@ -80,6 +82,7 @@ struct DaemonConfig {
     poll_loop_interval_ms: u64,
     event_interval_ms: u64,
     simulation: Option<SimulationConfig>,
+    swim_notams: Option<SwimNotamsConfig>,
     check_config: bool,
     sse_event_limit: Option<usize>,
 }
@@ -89,6 +92,35 @@ struct SimulationConfig {
     fixture_root: Option<PathBuf>,
     fixture_cache: PathBuf,
     speedup: u32,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct SwimNotamsConfig {
+    config_path: PathBuf,
+    collector_path: PathBuf,
+    state_root: PathBuf,
+    retry_interval_ms: u64,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+struct SwimNotamsCollectorSummary {
+    #[serde(rename = "messageCount")]
+    message_count: u64,
+    #[serde(rename = "exitReason")]
+    exit_reason: Option<String>,
+    #[serde(rename = "lastReceivedAtUtc")]
+    last_received_at_utc: Option<String>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+struct SwimNotamsCredentialFile {
+    #[serde(rename = "providerUrl")]
+    provider_url: String,
+    queue: String,
+    #[serde(rename = "connectionFactory")]
+    connection_factory: String,
+    username: String,
+    vpn: String,
 }
 
 #[derive(Debug, Clone, Serialize, PartialEq, Eq)]
@@ -262,6 +294,43 @@ impl DaemonStatus {
         for failure in &result.failures {
             self.record_product_failure(failure);
         }
+    }
+
+    fn record_source_success(
+        &self,
+        product: &str,
+        source_timestamp_utc: Option<String>,
+        detail: impl Into<String>,
+    ) {
+        let observed_at_utc = Utc::now();
+        let detail = detail.into();
+        let mut state = self.inner.lock().expect("live-feed status lock");
+        let history = state.products.entry(product.to_string()).or_default();
+        history.last_attempt_at_utc = Some(observed_at_utc);
+        history.last_success_at_utc = Some(observed_at_utc);
+        history.last_source_timestamp_utc = source_timestamp_utc.clone();
+        history.consecutive_failure_count = 0;
+        push_limited(
+            &mut history.attempts,
+            ProductAttemptSample {
+                attempted_at_utc: observed_at_utc,
+                result: detail,
+                version: None,
+                unchanged: None,
+                published_at_utc: None,
+                source_timestamp_utc,
+                phase: Some("source".to_string()),
+                error: None,
+            },
+        );
+    }
+
+    fn record_source_failure(&self, product: &str, error: impl Into<String>) {
+        self.record_product_failure(&preprocessor_live_feeds::engine::FailedLiveFeedTask {
+            product: product.to_string(),
+            phase: LiveFeedTaskPhase::Poll,
+            error: error.into(),
+        });
     }
 
     fn record_product_success(&self, update: &PublishedLiveFeedUpdate) {
@@ -524,6 +593,10 @@ impl DaemonConfig {
         let mut fixture_root = None;
         let mut fixture_cache = None;
         let mut speedup = 1_u32;
+        let mut swim_notams_config = None;
+        let mut swim_notams_collector = None;
+        let mut swim_notams_state_root = None;
+        let mut swim_notams_retry_interval_ms = 60_000_u64;
         let mut event_interval_ms = 5_000_u64;
         let mut check_config = false;
 
@@ -580,6 +653,24 @@ impl DaemonConfig {
                         bail!("--speedup must be greater than zero");
                     }
                 }
+                "--swim-notams-config" => {
+                    swim_notams_config = Some(next_path(&mut args, "--swim-notams-config")?)
+                }
+                "--swim-notams-collector" => {
+                    swim_notams_collector = Some(next_path(&mut args, "--swim-notams-collector")?)
+                }
+                "--swim-notams-state-root" => {
+                    swim_notams_state_root = Some(next_path(&mut args, "--swim-notams-state-root")?)
+                }
+                "--swim-notams-retry-interval-ms" => {
+                    let value = next_value(&mut args, "--swim-notams-retry-interval-ms")?;
+                    swim_notams_retry_interval_ms = value.parse::<u64>().with_context(|| {
+                        format!("invalid --swim-notams-retry-interval-ms {value}")
+                    })?;
+                    if swim_notams_retry_interval_ms == 0 {
+                        bail!("--swim-notams-retry-interval-ms must be greater than zero");
+                    }
+                }
                 "--event-interval-ms" => {
                     let value = next_value(&mut args, "--event-interval-ms")?;
                     event_interval_ms = value
@@ -612,6 +703,22 @@ impl DaemonConfig {
             }
             None
         };
+        let swim_notams_state_root_supplied = swim_notams_state_root.is_some();
+        let swim_notams = match (swim_notams_config, swim_notams_collector) {
+            (Some(config_path), Some(collector_path)) => Some(SwimNotamsConfig {
+                config_path,
+                collector_path,
+                state_root: swim_notams_state_root
+                    .unwrap_or_else(|| live_root.join("../state/swim-notams")),
+                retry_interval_ms: swim_notams_retry_interval_ms,
+            }),
+            (None, None) => None,
+            (Some(_), None) => bail!("--swim-notams-config requires --swim-notams-collector"),
+            (None, Some(_)) => bail!("--swim-notams-collector requires --swim-notams-config"),
+        };
+        if swim_notams.is_none() && swim_notams_state_root_supplied {
+            bail!("--swim-notams-state-root requires --swim-notams-config and --swim-notams-collector");
+        }
 
         Ok(Self {
             live_root,
@@ -623,6 +730,7 @@ impl DaemonConfig {
             poll_loop_interval_ms,
             event_interval_ms,
             simulation,
+            swim_notams,
             check_config,
             sse_event_limit: None,
         })
@@ -676,6 +784,21 @@ fn validate_config(config: &DaemonConfig) -> anyhow::Result<()> {
         );
         let _ = cache.compiled_root(&key);
     }
+    if let Some(swim_notams) = &config.swim_notams {
+        if !swim_notams.config_path.is_file() {
+            bail!(
+                "--swim-notams-config does not exist: {}",
+                swim_notams.config_path.display()
+            );
+        }
+        if !swim_notams.collector_path.is_file() {
+            bail!(
+                "--swim-notams-collector does not exist: {}",
+                swim_notams.collector_path.display()
+            );
+        }
+        ensure_parent(&swim_notams.state_root, "--swim-notams-state-root")?;
+    }
     let _clock = SystemClock;
     Ok(())
 }
@@ -722,6 +845,7 @@ fn start_live_feed_driver(
     let scratch_root = config.scratch_root.join("live-feed-build");
     let poll_interval = Duration::from_millis(config.poll_loop_interval_ms);
     let fetch = live_feed_fetch_config(config)?;
+    let swim_notams = config.swim_notams.clone();
     if let Err(error) =
         prune_live_feed_scratch_root(&scratch_root, LIVE_FEED_FAILED_SCRATCH_RETAIN_COUNT)
     {
@@ -730,6 +854,22 @@ fn start_live_feed_driver(
     thread::spawn(move || {
         let publisher = FileLiveFeedPublisher::new(live_root, SystemClock);
         let mut tasks = production_tasks(fetch);
+        if let Some(swim_notams) = swim_notams {
+            let source = QueuedLiveFeedSource::new("notams");
+            let notam_state_root = swim_notams.state_root.clone();
+            if let Err(error) = start_swim_notams_supervisor(
+                swim_notams,
+                notam_state_root.clone(),
+                source.sender(),
+                status.clone(),
+            ) {
+                status.record_source_failure("notams", format!("{error:#}"));
+            }
+            tasks.push(Box::new(QueuedDaemonLiveFeedTask::new(
+                LiveFeedSourceAndBuilder::new(source, NotamLiveFeedBuilder::new(notam_state_root)),
+                Duration::from_secs(60),
+            )));
+        }
         for task in &tasks {
             status.register_product(task.product_id(), task.nominal_interval());
         }
@@ -1077,6 +1217,12 @@ struct ProductionLiveFeedTask {
     builder: Box<dyn ProductBuilder + Send>,
 }
 
+trait DaemonLiveFeedTask: LiveFeedPollingTask + Send {
+    fn nominal_interval(&self) -> Duration;
+
+    fn observe_tick_result(&mut self, _now: chrono::DateTime<Utc>, _result: &LiveFeedTickResult) {}
+}
+
 impl ProductionLiveFeedTask {
     fn new(
         product_id: impl Into<String>,
@@ -1090,10 +1236,6 @@ impl ProductionLiveFeedTask {
             consecutive_failures: 0,
             builder,
         }
-    }
-
-    fn nominal_interval(&self) -> Duration {
-        self.nominal_interval
     }
 
     fn observe_tick_result(&mut self, now: chrono::DateTime<Utc>, result: &LiveFeedTickResult) {
@@ -1117,6 +1259,16 @@ impl ProductionLiveFeedTask {
                 )),
             );
         }
+    }
+}
+
+impl DaemonLiveFeedTask for ProductionLiveFeedTask {
+    fn nominal_interval(&self) -> Duration {
+        self.nominal_interval
+    }
+
+    fn observe_tick_result(&mut self, now: chrono::DateTime<Utc>, result: &LiveFeedTickResult) {
+        ProductionLiveFeedTask::observe_tick_result(self, now, result);
     }
 }
 
@@ -1158,6 +1310,271 @@ impl LiveFeedPollingTask for ProductionLiveFeedTask {
     }
 }
 
+struct QueuedDaemonLiveFeedTask<T> {
+    task: T,
+    nominal_interval: Duration,
+}
+
+impl<T> QueuedDaemonLiveFeedTask<T> {
+    fn new(task: T, nominal_interval: Duration) -> Self {
+        Self {
+            task,
+            nominal_interval,
+        }
+    }
+}
+
+impl<T> LiveFeedPollingTask for QueuedDaemonLiveFeedTask<T>
+where
+    T: LiveFeedPollingTask + Send,
+{
+    fn product_id(&self) -> &str {
+        self.task.product_id()
+    }
+
+    fn poll_due(&mut self, now: chrono::DateTime<Utc>) -> anyhow::Result<Vec<UpstreamEvent>> {
+        self.task.poll_due(now)
+    }
+
+    fn build_state(
+        &self,
+        event: &UpstreamEvent,
+        scratch_dir: &Path,
+    ) -> anyhow::Result<preprocessor_live_feeds::engine::BuiltLiveFeedState> {
+        self.task.build_state(event, scratch_dir)
+    }
+}
+
+impl<T> DaemonLiveFeedTask for QueuedDaemonLiveFeedTask<T>
+where
+    T: LiveFeedPollingTask + Send,
+{
+    fn nominal_interval(&self) -> Duration {
+        self.nominal_interval
+    }
+}
+
+fn start_swim_notams_supervisor(
+    config: SwimNotamsConfig,
+    state_root: PathBuf,
+    sender: Sender<UpstreamEvent>,
+    status: DaemonStatus,
+) -> anyhow::Result<()> {
+    let identity = read_swim_notams_subscription_identity(&config.config_path)?;
+    let store = NotamPersistentStore::new(state_root);
+    store.initialize(&identity)?;
+    let lock = store.acquire_lock()?;
+    recover_and_queue_swim_notams(&store, &sender, &status)?;
+    thread::spawn(move || {
+        let _lock = lock;
+        let mut run_counter = 0_u64;
+        loop {
+            run_counter = run_counter.saturating_add(1);
+            if let Err(error) = recover_and_queue_swim_notams(&store, &sender, &status) {
+                status.record_source_failure("notams", format!("{error:#}"));
+            }
+            let started_at = Utc::now();
+            let result = run_swim_notams_collector_once(&config, &store, started_at, run_counter);
+            match result {
+                Ok(Some(segment)) => match store.apply_segment(&segment) {
+                    Ok(true) => {
+                        if let Err(error) = queue_notam_segment_event(&sender, &status, &segment) {
+                            status.record_source_failure("notams", format!("{error:#}"));
+                        }
+                    }
+                    Ok(false) => {
+                        status.record_source_success(
+                            "notams",
+                            segment.last_received_at_utc.clone(),
+                            "source_duplicate_segment",
+                        );
+                    }
+                    Err(error) => status.record_source_failure("notams", format!("{error:#}")),
+                },
+                Ok(None) => status.record_source_success("notams", None, "source_idle"),
+                Err(error) => status.record_source_failure("notams", format!("{error:#}")),
+            }
+            thread::sleep(Duration::from_millis(config.retry_interval_ms));
+        }
+    });
+    Ok(())
+}
+
+fn recover_and_queue_swim_notams(
+    store: &NotamPersistentStore,
+    sender: &Sender<UpstreamEvent>,
+    status: &DaemonStatus,
+) -> anyhow::Result<()> {
+    let recovered = store.recover_active_runs()?;
+    for segment in recovered {
+        if store.apply_segment(&segment)? {
+            queue_notam_segment_event(sender, status, &segment)?;
+        }
+    }
+    Ok(())
+}
+
+fn run_swim_notams_collector_once(
+    config: &SwimNotamsConfig,
+    store: &NotamPersistentStore,
+    started_at: chrono::DateTime<Utc>,
+    run_counter: u64,
+) -> anyhow::Result<Option<NotamIngestedSegment>> {
+    let run_dir = store.prepare_active_run(started_at, run_counter)?;
+    let output = Command::new(&config.collector_path)
+        .arg("--config")
+        .arg(&config.config_path)
+        .arg("--output-dir")
+        .arg(&run_dir)
+        .output()
+        .with_context(|| {
+            format!(
+                "failed to run SWIM NOTAM collector {}",
+                config.collector_path.display()
+            )
+        })?;
+    if !output.status.success() {
+        bail!(
+            "SWIM NOTAM collector failed with status {}: {}",
+            output.status,
+            summarize_swim_notams_collector_output(&output.stdout, &output.stderr)
+        );
+    }
+    let summary_path = run_dir.join("summary.json");
+    let summary: SwimNotamsCollectorSummary = serde_json::from_slice(
+        &fs::read(&summary_path)
+            .with_context(|| format!("failed to read {}", summary_path.display()))?,
+    )
+    .with_context(|| format!("failed to parse {}", summary_path.display()))?;
+    if summary.message_count == 0 {
+        eprintln!(
+            "SWIM NOTAM collector exited with no messages ({})",
+            summary.exit_reason.as_deref().unwrap_or("unknown")
+        );
+        remove_path_if_exists(&run_dir)?;
+        return Ok(None);
+    }
+    store.complete_collector_run(
+        &run_dir,
+        summary.message_count as usize,
+        summary.last_received_at_utc,
+    )
+}
+
+fn read_swim_notams_subscription_identity(
+    config_path: &Path,
+) -> anyhow::Result<SwimNotamSubscriptionIdentity> {
+    let config: SwimNotamsCredentialFile = serde_json::from_slice(
+        &fs::read(config_path)
+            .with_context(|| format!("failed to read {}", config_path.display()))?,
+    )
+    .with_context(|| format!("failed to parse {}", config_path.display()))?;
+    Ok(SwimNotamSubscriptionIdentity {
+        provider_url: config.provider_url,
+        queue: config.queue,
+        connection_factory: config.connection_factory,
+        username: config.username,
+        vpn: config.vpn,
+    })
+}
+
+fn queue_notam_segment_event(
+    sender: &Sender<UpstreamEvent>,
+    status: &DaemonStatus,
+    segment: &NotamIngestedSegment,
+) -> anyhow::Result<()> {
+    let observed_at_utc = segment
+        .last_received_at_utc
+        .as_deref()
+        .and_then(|value| chrono::DateTime::parse_from_rfc3339(value).ok())
+        .map(|value| value.with_timezone(&Utc))
+        .unwrap_or_else(Utc::now);
+    let source_timestamp = observed_at_utc.to_rfc3339_opts(chrono::SecondsFormat::Secs, true);
+    let event = UpstreamEvent {
+        product: "notams".to_string(),
+        source_id: format!("notams:{}", segment.path.display()),
+        previous_source_id: None,
+        observed_at_utc,
+        payload_path: Some(segment.path.clone()),
+    };
+    sender
+        .send(event)
+        .context("failed to queue NOTAM segment event")?;
+    status.record_source_success("notams", Some(source_timestamp), "source_messages");
+    Ok(())
+}
+
+fn summarize_swim_notams_collector_output(stdout: &[u8], stderr: &[u8]) -> String {
+    let text = format!(
+        "{}\n{}",
+        String::from_utf8_lossy(stdout),
+        String::from_utf8_lossy(stderr)
+    );
+    let mut lines = text
+        .lines()
+        .map(str::trim)
+        .filter_map(summarize_swim_notams_collector_line)
+        .collect::<Vec<_>>();
+    if lines.is_empty() {
+        lines = text
+            .lines()
+            .rev()
+            .take(8)
+            .map(str::trim)
+            .filter(|line| !line.is_empty())
+            .map(sanitize_swim_notams_collector_line)
+            .collect::<Vec<_>>();
+        lines.reverse();
+    }
+    lines.dedup();
+    let mut summary = lines.join(" | ");
+    const MAX_COLLECTOR_ERROR_BYTES: usize = 2000;
+    if summary.len() > MAX_COLLECTOR_ERROR_BYTES {
+        summary.truncate(MAX_COLLECTOR_ERROR_BYTES);
+        summary.push_str("...");
+    }
+    if summary.is_empty() {
+        "no collector output".to_string()
+    } else {
+        summary
+    }
+}
+
+fn summarize_swim_notams_collector_line(line: &str) -> Option<String> {
+    let lower = line.to_ascii_lowercase();
+    if lower.contains("error response") && lower.contains("queue shutdown") {
+        return Some("Solace queue bind failed: 503 Queue Shutdown".to_string());
+    }
+    if lower.contains("jcsmperrorresponseexception") && lower.contains("queue shutdown") {
+        return Some(
+            "Caused by: JCSMPErrorResponseException: 503 Queue Shutdown [Subcode:31]".to_string(),
+        );
+    }
+    if line.starts_with("Exception in thread ") {
+        return Some(sanitize_swim_notams_collector_line(line));
+    }
+    if lower.contains("failed") && !line.starts_with("at ") {
+        return Some(sanitize_swim_notams_collector_line(line));
+    }
+    None
+}
+
+fn sanitize_swim_notams_collector_line(line: &str) -> String {
+    let mut sanitized = line.to_string();
+    if let Some(start) = sanitized.find("Got BIND ('") {
+        if let Some(end) = sanitized[start + "Got BIND ('".len()..].find("')") {
+            let name_start = start + "Got BIND ('".len();
+            let name_end = name_start + end;
+            sanitized.replace_range(name_start..name_end, "<queue>");
+        }
+    }
+    if let Some(start) = sanitized.find("Client name:") {
+        sanitized.truncate(start);
+        sanitized.push_str("Client name: <redacted>)");
+    }
+    sanitized
+}
+
 fn failure_retry_delay(nominal_interval: Duration, consecutive_failures: u32) -> Duration {
     let exponent = consecutive_failures.saturating_sub(1).min(3);
     let seconds = 30_u64.saturating_mul(1_u64 << exponent);
@@ -1168,7 +1585,7 @@ fn chrono_duration_from_std(duration: Duration) -> chrono::Duration {
     chrono::Duration::from_std(duration).unwrap_or_else(|_| chrono::Duration::seconds(i64::MAX))
 }
 
-fn production_tasks(fetch: LiveFeedFetchConfig) -> Vec<ProductionLiveFeedTask> {
+fn production_tasks(fetch: LiveFeedFetchConfig) -> Vec<Box<dyn DaemonLiveFeedTask + Send>> {
     vec![
         production_task("metars", MetarLiveFeedBuilder::new(fetch.clone())),
         production_task("tafs", TafLiveFeedBuilder::new(fetch.clone())),
@@ -1182,12 +1599,16 @@ fn production_tasks(fetch: LiveFeedFetchConfig) -> Vec<ProductionLiveFeedTask> {
     ]
 }
 
-fn production_task<B>(product: &str, builder: B) -> ProductionLiveFeedTask
+fn production_task<B>(product: &str, builder: B) -> Box<dyn DaemonLiveFeedTask + Send>
 where
     B: preprocessor_live_feeds::engine::ProductBuilder + Send + 'static,
 {
     let interval = default_poll_interval(product).unwrap_or_else(|| Duration::from_secs(5 * 60));
-    ProductionLiveFeedTask::new(product, interval, Box::new(builder))
+    Box::new(ProductionLiveFeedTask::new(
+        product,
+        interval,
+        Box::new(builder),
+    ))
 }
 
 fn live_feed_fetch_config(config: &DaemonConfig) -> anyhow::Result<LiveFeedFetchConfig> {
@@ -1612,6 +2033,20 @@ function cdfTable(title, cdf) {
   return `<h2>${title}</h2><table><tr><th>samples</th><th>min</th><th>p50</th><th>p90</th><th>p95</th><th>p99</th><th>max</th></tr>` +
     `<tr><td>${cdf.sample_count}</td><td>${ms(cdf.min_ms)}</td><td>${ms(cdf.p50_ms)}</td><td>${ms(cdf.p90_ms)}</td><td>${ms(cdf.p95_ms)}</td><td>${ms(cdf.p99_ms)}</td><td>${ms(cdf.max_ms)}</td></tr></table>`;
 }
+function productDetails(data) {
+  const latestAttempt = data.attempts.length === 0 ? null : data.attempts[data.attempts.length - 1];
+  return `<table>
+    <tr><th>current version</th><td>${data.current_version ?? "-"}</td></tr>
+    <tr><th>last attempt</th><td>${data.last_attempt_at_utc ?? "-"}</td></tr>
+    <tr><th>last success</th><td>${data.last_success_at_utc ?? "-"}</td></tr>
+    <tr><th>last source timestamp</th><td>${data.last_source_timestamp_utc ?? "-"}</td></tr>
+    <tr><th>last failure</th><td>${data.last_failure_at_utc ?? "-"}</td></tr>
+    <tr><th>failure phase</th><td>${data.last_failure_phase ?? "-"}</td></tr>
+    <tr><th>consecutive failures</th><td>${data.consecutive_failure_count}</td></tr>
+    <tr><th>last error</th><td>${data.last_error ?? "-"}</td></tr>
+    <tr><th>latest attempt result</th><td>${latestAttempt?.result ?? "-"}</td></tr>
+  </table>`;
+}
 function plotId(product, field) {
   return `plot-${product.replace(/[^a-zA-Z0-9_-]/g, "_")}-${field}`;
 }
@@ -1733,6 +2168,7 @@ async function render() {
     ${products.map(([product, data]) => `
       <div class="product">
         <h2>${product}</h2>
+        ${productDetails(data)}
         <div class="plots">
           <div id="${plotId(product, "update_interval_ms")}" class="plot"></div>
           <div id="${plotId(product, "delta_bytes")}" class="plot"></div>
@@ -2002,6 +2438,16 @@ mod tests {
             publish_json_version(temp.path(), "metars", &format!("v{index:03}"))?;
         }
         publish_json_version(temp.path(), "nexrad", "v001")?;
+        let current_path = temp.path().join("current.json");
+        let mut current: LiveFeedsCurrentManifest =
+            serde_json::from_slice(&fs::read(&current_path)?)?;
+        current
+            .products
+            .get_mut("metars")
+            .expect("metars current")
+            .history
+            .retain(|entry| entry.version == "v007");
+        write_live_feeds_current_manifest(temp.path(), &current)?;
 
         prune_simulation_publication(temp.path(), 3)?;
 
@@ -2023,8 +2469,10 @@ mod tests {
                 "{version} state should be retained"
             );
         }
-        assert!(!temp.path().join("versions/metars/v007.json").exists());
-        assert!(!temp.path().join("states/metars/v007.json.xz").exists());
+        assert!(temp.path().join("versions/metars/v007.json").is_file());
+        assert!(temp.path().join("states/metars/v007.json.xz").is_file());
+        assert!(!temp.path().join("versions/metars/v006.json").exists());
+        assert!(!temp.path().join("states/metars/v006.json.xz").exists());
         assert!(!temp
             .path()
             .join("deltas/metars/v001__v002.json.xz")
@@ -2118,6 +2566,31 @@ mod tests {
         assert!(response.contains("Content-Type: text/html"), "{response}");
         assert!(response.contains("Aerobag Live Feeds"), "{response}");
         Ok(())
+    }
+
+    #[test]
+    fn swim_notam_collector_error_summary_keeps_status_small() {
+        let noisy = [
+            "INFO: TLS Ciphers: lots and lots",
+            "INFO: Connected to host",
+            "INFO: Got BIND ('queue-name.from.credentials') Error Response (503) - Queue Shutdown",
+            "Exception in thread \"main\" javax.jms.JMSSecurityException: Error creating consumer",
+            "\tat com.solacesystems.jms.impl.JMSExceptionValue.newInstance(JMSExceptionValue.java:36)",
+            "Caused by: ((Client name: aerobag-dev/123/secret local(/10.0.0.1:1) remote(example/1.2.3.4:55443)) - ) com.solacesystems.jcsmp.JCSMPErrorResponseException: 503: Queue Shutdown [Subcode:31]",
+        ]
+        .join("\n");
+
+        let summary = summarize_swim_notams_collector_output(b"", noisy.as_bytes());
+
+        assert!(summary.contains("Queue Shutdown"));
+        assert!(summary.contains("JMSSecurityException"));
+        assert!(summary.contains("JCSMPErrorResponseException"));
+        assert!(!summary.contains("TLS Ciphers"));
+        assert!(!summary.contains("queue-name.from.credentials"));
+        assert!(!summary.contains("Client name"));
+        assert!(!summary.contains("JMSExceptionValue"));
+        assert!(!summary.contains("10.0.0.1"));
+        assert!(summary.len() < 600);
     }
 
     #[test]
@@ -2447,6 +2920,7 @@ mod tests {
             poll_loop_interval_ms: 1,
             event_interval_ms: 1,
             simulation: None,
+            swim_notams: None,
             check_config: false,
             sse_event_limit: Some(1),
         };

@@ -25,18 +25,23 @@ That means we need three distinct layers:
 
 ### 1. Queue Ingestion
 
-Queue access is handled outside the Rust DAG.
+Queue access is handled outside the deterministic Rust build DAG.
 
 Current implementation:
 - Java collector under [product/preprocessor/swim-notams-fetch](/root/aerobag-preprocessor/aerobag/product/preprocessor/swim-notams-fetch)
+- optional live-feed daemon supervisor enabled with `--swim-notams-config <path> --swim-notams-collector <path>`
 
 Role:
 - connect to the FAA SWIM/SCDS Solace JMS queue
 - receive messages
 - durably persist raw messages before acknowledging them
+- promote complete raw JSONL runs into immutable daemon state segments
+- trigger the normal `notams` live-feed product builder after a complete segment lands
 
 Important rule:
 - the collector must not acknowledge a message before it has been durably written to local storage
+
+The NOTAM supervisor is isolated from the other live-feed products. A broken SWIM queue connection records `notams` source health failures and retries, but it does not stop METARs, TAFs, NEXRAD, TFRs, obstacles, or winds-aloft from publishing.
 
 ### 2. Producer-Owned State Store
 
@@ -49,19 +54,25 @@ Why:
 - node cache is for deterministic build-node outputs
 - live queue-fed NOTAM state is neither of those things
 
-Planned storage shape:
-- `artifact-root/state/notams/raw/`
-  - append-only raw segment files
-- `artifact-root/state/notams/state.sqlite`
-  - current normalized state
-- `artifact-root/state/notams/checkpoints.json`
-  - ingestion / export checkpoints
+Current storage shape:
+- `artifact-root/state/swim-notams/subscription.json`
+  - non-secret subscription identity for the SWIM queue this state belongs to
+- `artifact-root/state/swim-notams/lock`
+  - process lock protecting the queue subscription and local state
+- `artifact-root/state/swim-notams/ingest/active/`
+  - per-run collector directories while messages are being consumed
+- `artifact-root/state/swim-notams/ingest/segments/YYYY/MM/DD/*.jsonl`
+  - immutable append-only raw message segments after a collector run completes
+- `artifact-root/state/swim-notams/state/current.sqlite`
+  - current normalized state and applied segment checkpoints
 
 SQLite is the preferred state format because:
 - idempotent upserts are easy
 - airport / keyword / time indexing is easy
 - crash recovery is straightforward
 - snapshot export into a live-feed product is simple
+
+The raw segment journal is the disaster-recovery truth. SQLite is the internal communication boundary between ingestion and export: ingestion idempotently applies completed segments into SQLite, and the `notams` live-feed builder snapshots SQLite current state.
 
 ### 3. Snapshot / Export
 
@@ -116,12 +127,12 @@ So:
 
 The Java-to-Rust handoff must not be a single mutable file.
 
-Planned safe shape:
-- Java writes append-only segment files
-- each segment is fsynced/closed
-- then marked complete
-- Rust ingests only complete segments
-- Rust tracks its own checkpoint
+Current safe shape:
+- Java writes `messages.jsonl` in a per-run directory
+- each message is flushed/fsynced before JMS acknowledgement
+- the daemon promotes complete runs to immutable JSONL segment files
+- Rust ingests only complete promoted segments
+- Rust tracks applied segment checkpoints and idempotently upserts into SQLite
 
 This avoids:
 - acked-but-not-persisted message loss
@@ -135,6 +146,9 @@ The Rust-side normalization/state-upsert logic must therefore be idempotent.
 We now have:
 - Java queue collector
 - Rust offline normalizer from captured messages
+- first-stage live-feed daemon integration for a `notams` product
+- durable NOTAM store with subscription lock, raw segments, and SQLite current state
+- client/cache registry support for the `notams` record-json live-feed schema
 
 Current Rust tool:
 
@@ -150,7 +164,7 @@ This proves:
 - AIXM XML can be parsed in Rust
 - we can emit a product-shaped `notams.json` artifact
 
-But this is still offline normalization from captured files, not the persistent current-state pipeline yet.
+The daemon publishes the normalized current record set as a live-feed product from SQLite state. Complete raw segments remain available to rebuild that state if the SQLite file is lost or the normalizer changes.
 
 ## Client Contract
 
@@ -200,9 +214,7 @@ Plate attachment is desirable for many FDC/procedure NOTAMs, but it should be an
 
 ## Next Step
 
-Build the persistent producer-side NOTAM state store:
-- append-only raw segments
-- SQLite current-state DB
-- checkpoints
-
-Then add an export step that snapshots that state into a real `notams` live-feed state.
+Before productizing:
+- fix the FAA subscription/queue state if it returns `503 Queue Shutdown`
+- add an authoritative initial-state/backfill source so a fresh server can learn complete NOTAM state instead of only messages delivered after subscription startup
+- add indexes for airport/procedure lookup once the normalized record contract is consumed by clients

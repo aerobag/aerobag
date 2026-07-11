@@ -651,7 +651,7 @@ const LIVE_FEED_METARS_STATUS_ID: &str = "live_feed:metars_unavailable";
 const LIVE_FEED_TAFS_STATUS_ID: &str = "live_feed:tafs_unavailable";
 const LIVE_FEED_NEXRAD_STATUS_ID: &str = "live_feed:nexrad_unavailable";
 const NEXRAD_ANIMATION_MAX_FRAMES: usize = 4;
-const NEXRAD_ANIMATION_FRAME_DWELL_MS: i64 = 500;
+const NEXRAD_ANIMATION_FRAME_DWELL_MS: i64 = 1_500;
 const NEXRAD_ANIMATION_LATEST_DWELL_STEPS: usize = 3;
 const NEXRAD_ANIMATION_BLANK_DWELL_STEPS: usize = 1;
 const LIVE_FEED_TFRS_STATUS_ID: &str = "live_feed:tfrs_unavailable";
@@ -3007,7 +3007,14 @@ fn nexrad_frame_age_banner_value(session: &UiSession) -> String {
     if frames.is_empty() {
         return "inop".to_string();
     }
-    nexrad_frame_age_values(&frames, session.wall_clock_epoch_ms).join("/")
+    let animation = nexrad_animation_for_frames(&frames, session.wall_clock_epoch_ms);
+    let Some(index) = animation.selected_frame_index else {
+        return "---".to_string();
+    };
+    nexrad_frame_age_values(&frames, session.wall_clock_epoch_ms)
+        .get(index)
+        .cloned()
+        .unwrap_or_else(|| "inop".to_string())
 }
 
 fn json_observed_at_utc(value: &serde_json::Value) -> Option<DateTime<Utc>> {
@@ -8229,8 +8236,12 @@ pub fn get_nexrad_overlay_in_session_at_epoch_ms(
 ) -> AppResult<HadOperationOutcome> {
     let mut sessions = lock_sessions();
     let session = session_mut(&mut sessions, handle)?;
+    let previous_nexrad_banner_value = nexrad_frame_age_banner_value(session);
     advance_session_wall_clock(session, epoch_ms);
-    let freshness_invalidations = Vec::new();
+    let mut freshness_invalidations = Vec::new();
+    if previous_nexrad_banner_value != nexrad_frame_age_banner_value(session) {
+        freshness_invalidations.push(UiInvalidation::SessionSnapshot);
+    }
     if !session.map_layer_state.nexrad.visible {
         return complete_nexrad_overlay_outcome_with_invalidations(
             session,
@@ -14325,9 +14336,14 @@ mod tests {
             now,
         )
         .expect("query nexrad");
-        let HadOperationOutcome::Complete { result, .. } = outcome else {
+        let HadOperationOutcome::Complete {
+            result,
+            invalidations,
+        } = outcome
+        else {
             panic!("expected complete nexrad query");
         };
+        assert!(invalidations.contains(&UiInvalidation::SessionSnapshot));
         let query: NexradOverlayQueryResult =
             serde_json::from_value(result).expect("nexrad result");
         assert_eq!(query.animation.phase, NexradOverlayAnimationPhase::Frame);
@@ -14363,7 +14379,87 @@ mod tests {
             .find(|cell| cell.id == "nexrad_age")
             .expect("nexrad age cell");
         assert_eq!(nexrad_age_cell.label, "NEXRAD");
-        assert_eq!(nexrad_age_cell.value.as_deref(), Some("30m/25m/20m/15m"));
+        assert_eq!(nexrad_age_cell.value.as_deref(), Some("30m"));
+
+        let outcome = get_nexrad_overlay_in_session_at_epoch_ms(
+            init.handle,
+            MapViewport {
+                center: LatLon {
+                    lat: 47.0,
+                    lon: -122.0,
+                },
+                zoom: 8.0,
+                rotation_deg: 0.0,
+                pitch_deg: 0.0,
+            },
+            512.0,
+            512.0,
+            now + NEXRAD_ANIMATION_FRAME_DWELL_MS,
+        )
+        .expect("query second nexrad frame");
+        let HadOperationOutcome::Complete {
+            result,
+            invalidations,
+        } = outcome
+        else {
+            panic!("expected complete second nexrad query");
+        };
+        assert!(invalidations.contains(&UiInvalidation::SessionSnapshot));
+        let query: NexradOverlayQueryResult =
+            serde_json::from_value(result).expect("second nexrad result");
+        assert_eq!(query.animation.phase, NexradOverlayAnimationPhase::Frame);
+        assert_eq!(query.animation.selected_frame_index, Some(1));
+        let snapshot = get_session_snapshot(init.handle).expect("second-frame snapshot");
+        let nexrad_age_cell = snapshot
+            .app_ui_state
+            .flight_data_banner
+            .cells
+            .iter()
+            .find(|cell| cell.id == "nexrad_age")
+            .expect("second-frame nexrad age cell");
+        assert_eq!(nexrad_age_cell.value.as_deref(), Some("25m"));
+
+        let blank_now = now
+            + (NEXRAD_ANIMATION_MAX_FRAMES + NEXRAD_ANIMATION_LATEST_DWELL_STEPS.saturating_sub(1))
+                as i64
+                * NEXRAD_ANIMATION_FRAME_DWELL_MS;
+        let outcome = get_nexrad_overlay_in_session_at_epoch_ms(
+            init.handle,
+            MapViewport {
+                center: LatLon {
+                    lat: 47.0,
+                    lon: -122.0,
+                },
+                zoom: 8.0,
+                rotation_deg: 0.0,
+                pitch_deg: 0.0,
+            },
+            512.0,
+            512.0,
+            blank_now,
+        )
+        .expect("query blank nexrad frame");
+        let HadOperationOutcome::Complete {
+            result,
+            invalidations,
+        } = outcome
+        else {
+            panic!("expected complete blank nexrad query");
+        };
+        assert!(invalidations.contains(&UiInvalidation::SessionSnapshot));
+        let query: NexradOverlayQueryResult =
+            serde_json::from_value(result).expect("blank nexrad result");
+        assert_eq!(query.animation.phase, NexradOverlayAnimationPhase::Blank);
+        assert_eq!(query.animation.selected_frame_index, None);
+        let snapshot = get_session_snapshot(init.handle).expect("blank snapshot");
+        let nexrad_age_cell = snapshot
+            .app_ui_state
+            .flight_data_banner
+            .cells
+            .iter()
+            .find(|cell| cell.id == "nexrad_age")
+            .expect("blank nexrad age cell");
+        assert_eq!(nexrad_age_cell.value.as_deref(), Some("---"));
 
         set_map_layer_visibility_in_session(init.handle, "nexrad", false).expect("hide nexrad");
         let snapshot = get_session_snapshot(init.handle).expect("hidden snapshot");

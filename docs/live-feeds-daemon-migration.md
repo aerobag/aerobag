@@ -105,8 +105,7 @@ Publication ordering is part of the contract:
   `PublishedCycleDataProvider` reads them from the published nav-db
   `navref/symbol/airport/*` keyspace.
 - Done: first-pass product poll intervals are encoded in the live-feed engine:
-  NEXRAD 60 seconds, METARs/TFRs 5 minutes, winds aloft 1 hour, obstacles 6
-  hours.
+  NEXRAD/METARs/TFRs 5 minutes, winds aloft 1 hour, obstacles 6 hours.
 - Done: simulation scaffolding exists in `preprocessor-live-feeds`. Compiled
   fixture timelines can be replayed as accelerated `UpstreamSource` events.
   Each product's fixture start maps to the same daemon-start zero point, emitted

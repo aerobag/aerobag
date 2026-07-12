@@ -1,8 +1,45 @@
 {
-"type": "FeatureCollection",
-"name": "Cleveland TAC.tif",
-"crs": { "type": "name", "properties": { "name": "urn:ogc:def:crs:EPSG::3857" } },
-"features": [
-{ "type": "Feature", "properties": { "location": "Cleveland TAC.tif" }, "geometry": { "type": "Polygon", "coordinates": [ [ [ -9195717.456905603408813, 5158869.055058551952243 ], [ -9024888.277250118553638, 5160644.826156842522323 ], [ -9024888.277250118553638, 4986974.412744091823697 ], [ -9195717.456905603408813, 4987684.721183408051729 ], [ -9195717.456905603408813, 5158869.055058551952243 ] ] ] } }
-]
+  "type": "FeatureCollection",
+  "name": "Cleveland TAC.tif",
+  "crs": {
+    "type": "name",
+    "properties": {
+      "name": "urn:ogc:def:crs:EPSG::3857"
+    }
+  },
+  "features": [
+    {
+      "type": "Feature",
+      "properties": {
+        "location": "Cleveland TAC.tif"
+      },
+      "geometry": {
+        "type": "Polygon",
+        "coordinates": [
+          [
+            [
+              -9195314.805512678,
+              5146437.110924623
+            ],
+            [
+              -9026618.067738743,
+              5146148.671185833
+            ],
+            [
+              -9028168.185345152,
+              4992853.628992214
+            ],
+            [
+              -9194309.127134584,
+              4993133.244582038
+            ],
+            [
+              -9195314.805512678,
+              5146437.110924623
+            ]
+          ]
+        ]
+      }
+    }
+  ]
 }

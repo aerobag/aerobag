@@ -1,13 +1,45 @@
 {
-"type": "FeatureCollection",
-"name": "Puerto Rico -VI TAC.tif",
-"crs": { "type": "name", "properties": { "name": "urn:ogc:def:crs:EPSG::3857" } },
-"features": [
-{ "type": "Feature", "properties": { "location": "Puerto Rico -VI TAC.tif" }, "geometry": { "type": "Polygon", "coordinates": [ [
- [ -7541895.501244285143912, 2126700.079190467949957 ],
- [ -7148937.698744029738009, 2126700.079190467949957 ],
- [ -7148937.698744029738009, 1994285.767626464832574 ],
- [ -7541895.501244285143912, 1994285.767626464832574 ],
- [ -7541895.501244285143912, 2126700.079190467949957 ] ] ] } }
-]
+  "type": "FeatureCollection",
+  "name": "Puerto Rico -VI TAC.tif",
+  "crs": {
+    "type": "name",
+    "properties": {
+      "name": "urn:ogc:def:crs:EPSG::3857"
+    }
+  },
+  "features": [
+    {
+      "type": "Feature",
+      "properties": {
+        "location": "Puerto Rico -VI TAC.tif"
+      },
+      "geometry": {
+        "type": "Polygon",
+        "coordinates": [
+          [
+            [
+              -7515797.218877155,
+              2129788.9857559646
+            ],
+            [
+              -7150975.293057206,
+              2129529.5993055548
+            ],
+            [
+              -7151961.042646824,
+              1995145.3181961016
+            ],
+            [
+              -7514999.79564527,
+              1995402.195672783
+            ],
+            [
+              -7515797.218877155,
+              2129788.9857559646
+            ]
+          ]
+        ]
+      }
+    }
+  ]
 }

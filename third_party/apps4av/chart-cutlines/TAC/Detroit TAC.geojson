@@ -1,13 +1,45 @@
 {
-"type": "FeatureCollection",
-"name": "Detroit TAC.tif",
-"crs": { "type": "name", "properties": { "name": "urn:ogc:def:crs:EPSG::3857" } },
-"features": [
-{ "type": "Feature", "properties": { "location": "Detroit TAC.tif" }, "geometry": { "type": "Polygon", "coordinates": [ [
- [ -9439892.819269601255655, 5273996.38361220061779 ],
- [ -9201669.108971994370222, 5273996.38361220061779 ],
- [ -9201669.108971994370222, 5074490.348485559225082 ],
- [ -9439892.819269601255655, 5074490.348485559225082 ],
- [ -9439892.819269601255655, 5273996.38361220061779 ] ] ] } }
-]
+  "type": "FeatureCollection",
+  "name": "Detroit TAC.tif",
+  "crs": {
+    "type": "name",
+    "properties": {
+      "name": "urn:ogc:def:crs:EPSG::3857"
+    }
+  },
+  "features": [
+    {
+      "type": "Feature",
+      "properties": {
+        "location": "Detroit TAC.tif"
+      },
+      "geometry": {
+        "type": "Polygon",
+        "coordinates": [
+          [
+            [
+              -9382752.58812009,
+              5290364.663119504
+            ],
+            [
+              -9170277.949397149,
+              5290050.694121121
+            ],
+            [
+              -9172330.640274625,
+              5105642.641778437
+            ],
+            [
+              -9381009.02755095,
+              5105919.318335179
+            ],
+            [
+              -9382752.58812009,
+              5290364.663119504
+            ]
+          ]
+        ]
+      }
+    }
+  ]
 }

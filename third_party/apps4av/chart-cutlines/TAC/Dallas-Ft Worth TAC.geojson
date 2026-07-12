@@ -1,13 +1,45 @@
 {
-"type": "FeatureCollection",
-"name": "Dallas -Ft Worth TAC.tif",
-"crs": { "type": "name", "properties": { "name": "urn:ogc:def:crs:EPSG::3857" } },
-"features": [
-{ "type": "Feature", "properties": { "location": "Dallas -Ft Worth TAC.tif" }, "geometry": { "type": "Polygon", "coordinates": [ [
- [ -10964969.843137448653579, 3984576.69424295052886 ],
- [ -10669973.192535273730755, 3984576.69424295052886 ],
- [ -10669973.192535273730755, 3769875.695081888698041 ],
- [ -10964969.843137448653579, 3769875.695081888698041 ],
- [ -10964969.843137448653579, 3984576.69424295052886 ] ] ] } }
-]
+  "type": "FeatureCollection",
+  "name": "Dallas -Ft Worth TAC.tif",
+  "crs": {
+    "type": "name",
+    "properties": {
+      "name": "urn:ogc:def:crs:EPSG::3857"
+    }
+  },
+  "features": [
+    {
+      "type": "Feature",
+      "properties": {
+        "location": "Dallas -Ft Worth TAC.tif"
+      },
+      "geometry": {
+        "type": "Polygon",
+        "coordinates": [
+          [
+            [
+              -10934361.335095119,
+              3984150.287168293
+            ],
+            [
+              -10672806.677493809,
+              3984176.5550372982
+            ],
+            [
+              -10675559.15171956,
+              3769911.2687379103
+            ],
+            [
+              -10931633.25660415,
+              3769935.287483811
+            ],
+            [
+              -10934361.335095119,
+              3984150.287168293
+            ]
+          ]
+        ]
+      }
+    }
+  ]
 }

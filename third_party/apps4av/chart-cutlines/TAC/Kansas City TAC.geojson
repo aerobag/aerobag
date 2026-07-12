@@ -1,13 +1,45 @@
 {
-"type": "FeatureCollection",
-"name": "Kansas City TAC.tif",
-"crs": { "type": "name", "properties": { "name": "urn:ogc:def:crs:EPSG::3857" } },
-"features": [
-{ "type": "Feature", "properties": { "location": "Kansas City TAC.tif" }, "geometry": { "type": "Polygon", "coordinates": [ [
- [ -10686671.116154264658689, 4865942.279503175988793 ],
- [ -10464032.134567717090249, 4865942.279503175988793 ],
- [ -10464032.134567717090249, 4673085.847655734047294 ],
- [ -10686671.116154264658689, 4673085.847655734047294 ],
- [ -10686671.116154264658689, 4865942.279503175988793 ] ] ] } }
-]
+  "type": "FeatureCollection",
+  "name": "Kansas City TAC.tif",
+  "crs": {
+    "type": "name",
+    "properties": {
+      "name": "urn:ogc:def:crs:EPSG::3857"
+    }
+  },
+  "features": [
+    {
+      "type": "Feature",
+      "properties": {
+        "location": "Kansas City TAC.tif"
+      },
+      "geometry": {
+        "type": "Polygon",
+        "coordinates": [
+          [
+            [
+              -10676921.252931744,
+              4865247.657531148
+            ],
+            [
+              -10471498.855223108,
+              4865224.38364703
+            ],
+            [
+              -10473339.842636548,
+              4683567.005781653
+            ],
+            [
+              -10675120.733196596,
+              4683589.465112774
+            ],
+            [
+              -10676921.252931744,
+              4865247.657531148
+            ]
+          ]
+        ]
+      }
+    }
+  ]
 }

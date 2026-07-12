@@ -1,13 +1,45 @@
 {
-"type": "FeatureCollection",
-"name": "Minneapolis -St Paul TAC.tif",
-"crs": { "type": "name", "properties": { "name": "urn:ogc:def:crs:EPSG::3857" } },
-"features": [
-{ "type": "Feature", "properties": { "location": "Minneapolis -St Paul TAC.tif" }, "geometry": { "type": "Polygon", "coordinates": [ [
- [ -10497427.981805698946118, 5700582.732404125854373 ],
- [ -10241393.152981169521809, 5700582.732404125854373 ],
- [ -10241393.152981169521809, 5511985.856793080456555 ],
- [ -10497427.981805698946118, 5511985.856793080456555 ],
- [ -10497427.981805698946118, 5700582.732404125854373 ] ] ] } }
-]
+  "type": "FeatureCollection",
+  "name": "Minneapolis -St Paul TAC.tif",
+  "crs": {
+    "type": "name",
+    "properties": {
+      "name": "urn:ogc:def:crs:EPSG::3857"
+    }
+  },
+  "features": [
+    {
+      "type": "Feature",
+      "properties": {
+        "location": "Minneapolis -St Paul TAC.tif"
+      },
+      "geometry": {
+        "type": "Polygon",
+        "coordinates": [
+          [
+            [
+              -10468111.623295212,
+              5682074.569926368
+            ],
+            [
+              -10290913.57735406,
+              5681730.391490493
+            ],
+            [
+              -10292618.839911576,
+              5520464.043700658
+            ],
+            [
+              -10467083.065104313,
+              5520826.790842366
+            ],
+            [
+              -10468111.623295212,
+              5682074.569926368
+            ]
+          ]
+        ]
+      }
+    }
+  ]
 }

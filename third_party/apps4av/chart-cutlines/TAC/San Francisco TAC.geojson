@@ -1,13 +1,45 @@
 {
-"type": "FeatureCollection",
-"name": "San Francisco TAC.tif",
-"crs": { "type": "name", "properties": { "name": "urn:ogc:def:crs:EPSG::3857" } },
-"features": [
-{ "type": "Feature", "properties": { "location": "San Francisco TAC.tif" }, "geometry": { "type": "Polygon", "coordinates": [ [
- [ -13781352.960207272320986, 4607717.759142002090812 ],
- [ -13509733.402671683579683, 4607717.759142002090812 ],
- [ -13509733.402671683579683, 4425177.227865093387663 ],
- [ -13781352.960207272320986, 4425177.227865093387663 ],
- [ -13781352.960207272320986, 4607717.759142002090812 ] ] ] } }
-]
+  "type": "FeatureCollection",
+  "name": "San Francisco TAC.tif",
+  "crs": {
+    "type": "name",
+    "properties": {
+      "name": "urn:ogc:def:crs:EPSG::3857"
+    }
+  },
+  "features": [
+    {
+      "type": "Feature",
+      "properties": {
+        "location": "San Francisco TAC.tif"
+      },
+      "geometry": {
+        "type": "Polygon",
+        "coordinates": [
+          [
+            [
+              -13710490.491056815,
+              4606051.669925962
+            ],
+            [
+              -13510881.43702832,
+              4606170.359659117
+            ],
+            [
+              -13512495.303017437,
+              4440164.401729783
+            ],
+            [
+              -13708843.678228486,
+              4440181.55240478
+            ],
+            [
+              -13710490.491056815,
+              4606051.669925962
+            ]
+          ]
+        ]
+      }
+    }
+  ]
 }

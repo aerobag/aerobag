@@ -1,13 +1,45 @@
 {
-"type": "FeatureCollection",
-"name": "Denver TAC.tif",
-"crs": { "type": "name", "properties": { "name": "urn:ogc:def:crs:EPSG::3857" } },
-"features": [
-{ "type": "Feature", "properties": { "location": "Denver TAC.tif" }, "geometry": { "type": "Polygon", "coordinates": [ [
- [ -11788734.075007673352957, 4953519.586791803129017 ],
- [ -11547170.779986269772053, 4953519.586791803129017 ],
- [ -11547170.779986269772053, 4757545.456296020187438 ],
- [ -11788734.075007673352957, 4757545.456296020187438 ],
- [ -11788734.075007673352957, 4953519.586791803129017 ] ] ] } }
-]
+  "type": "FeatureCollection",
+  "name": "Denver TAC.tif",
+  "crs": {
+    "type": "name",
+    "properties": {
+      "name": "urn:ogc:def:crs:EPSG::3857"
+    }
+  },
+  "features": [
+    {
+      "type": "Feature",
+      "properties": {
+        "location": "Denver TAC.tif"
+      },
+      "geometry": {
+        "type": "Polygon",
+        "coordinates": [
+          [
+            [
+              -11753854.123337723,
+              4949039.731464694
+            ],
+            [
+              -11546408.11092194,
+              4948536.4707096005
+            ],
+            [
+              -11548839.986709874,
+              4756513.893795363
+            ],
+            [
+              -11752345.476469982,
+              4756998.360209497
+            ],
+            [
+              -11753854.123337723,
+              4949039.731464694
+            ]
+          ]
+        ]
+      }
+    }
+  ]
 }

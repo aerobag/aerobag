@@ -1,13 +1,45 @@
 {
-"type": "FeatureCollection",
-"name": "Pittsburgh TAC.tif",
-"crs": { "type": "name", "properties": { "name": "urn:ogc:def:crs:EPSG::3857" } },
-"features": [
-{ "type": "Feature", "properties": { "location": "Pittsburgh TAC.tif" }, "geometry": { "type": "Polygon", "coordinates": [ [
- [ -9016878.754255160689354, 5019719.452103293500841 ],
- [ -8794239.772668614983559, 5019719.452103293500841 ],
- [ -8794239.772668614983559, 4858679.07377125043422 ],
- [ -9016878.754255160689354, 4858679.07377125043422 ],
- [ -9016878.754255160689354, 5019719.452103293500841 ] ] ] } }
-]
+  "type": "FeatureCollection",
+  "name": "Pittsburgh TAC.tif",
+  "crs": {
+    "type": "name",
+    "properties": {
+      "name": "urn:ogc:def:crs:EPSG::3857"
+    }
+  },
+  "features": [
+    {
+      "type": "Feature",
+      "properties": {
+        "location": "Pittsburgh TAC.tif"
+      },
+      "geometry": {
+        "type": "Polygon",
+        "coordinates": [
+          [
+            [
+              -9013205.605474878,
+              5012546.83436938
+            ],
+            [
+              -8847096.296163682,
+              5012401.708669497
+            ],
+            [
+              -8848453.557810886,
+              4861233.473683704
+            ],
+            [
+              -9012108.495444458,
+              4861374.359342441
+            ],
+            [
+              -9013205.605474878,
+              5012546.83436938
+            ]
+          ]
+        ]
+      }
+    }
+  ]
 }

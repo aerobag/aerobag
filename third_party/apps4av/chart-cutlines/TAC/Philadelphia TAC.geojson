@@ -1,13 +1,45 @@
 {
-"type": "FeatureCollection",
-"name": "Philadelphia TAC.tif",
-"crs": { "type": "name", "properties": { "name": "urn:ogc:def:crs:EPSG::3857" } },
-"features": [
-{ "type": "Feature", "properties": { "location": "Philadelphia TAC.tif" }, "geometry": { "type": "Polygon", "coordinates": [ [
- [ -8451004.713162517175078, 4938869.175786294974387 ],
- [ -8295157.426051933318377, 4938869.175786294974387 ],
- [ -8295157.426051933318377, 4776729.99886014405638 ],
- [ -8451004.713162517175078, 4776729.99886014405638 ],
- [ -8451004.713162517175078, 4938869.175786294974387 ] ] ] } }
-]
+  "type": "FeatureCollection",
+  "name": "Philadelphia TAC.tif",
+  "crs": {
+    "type": "name",
+    "properties": {
+      "name": "urn:ogc:def:crs:EPSG::3857"
+    }
+  },
+  "features": [
+    {
+      "type": "Feature",
+      "properties": {
+        "location": "Philadelphia TAC.tif"
+      },
+      "geometry": {
+        "type": "Polygon",
+        "coordinates": [
+          [
+            [
+              -8458897.111577354,
+              4939169.292721062
+            ],
+            [
+              -8293796.365573156,
+              4938963.189677246
+            ],
+            [
+              -8295476.486668003,
+              4775755.433195841
+            ],
+            [
+              -8458055.008610556,
+              4775924.173955146
+            ],
+            [
+              -8458897.111577354,
+              4939169.292721062
+            ]
+          ]
+        ]
+      }
+    }
+  ]
 }

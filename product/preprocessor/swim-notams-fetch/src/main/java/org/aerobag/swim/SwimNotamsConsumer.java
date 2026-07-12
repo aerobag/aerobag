@@ -61,10 +61,18 @@ public final class SwimNotamsConsumer {
         summary.startedAtUtc = Instant.now().toString();
         summary.queue = config.queue;
         summary.providerUrl = config.providerUrl;
+        summary.normalizedProviderUrl = normalizeProviderUrl(config.providerUrl);
         summary.connectionFactory = config.connectionFactory;
         summary.vpn = config.vpn;
         summary.maxMessages = config.maxMessages;
         summary.receiveTimeoutMillis = config.receiveTimeoutMillis;
+        System.err.printf(
+                "SWIM NOTAM collector connecting providerUrl=%s normalizedProviderUrl=%s vpn=%s queue=%s%n",
+                summary.providerUrl,
+                summary.normalizedProviderUrl,
+                summary.vpn,
+                summary.queue
+        );
 
         Connection connection = null;
         Session session = null;
@@ -500,6 +508,7 @@ public final class SwimNotamsConsumer {
         public String startedAtUtc;
         public String finishedAtUtc;
         public String providerUrl;
+        public String normalizedProviderUrl;
         public String queue;
         public String connectionFactory;
         public String vpn;

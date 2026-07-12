@@ -9102,6 +9102,28 @@ function WeatherDetailModal(props: { detail: WeatherDetailUiView; className?: st
           ageWarning={detail.taf_age_warning ?? false}
           text={detail.taf_text ?? null}
         />
+        <AirportNotamSection notams={detail.notams ?? []} />
+      </div>
+    </section>
+  );
+}
+
+function AirportNotamSection(props: { notams: NonNullable<WeatherDetailUiView["notams"]> }) {
+  return (
+    <section className="weatherDetailSection airportNotamSection">
+      <div className="weatherDetailSectionTitle">
+        <span>NOTAM</span>
+        <span>{props.notams.length}</span>
+      </div>
+      <div className="airportNotamList">
+        {props.notams.length > 0 ? props.notams.map((notam) => (
+          <article className="airportNotamCell" key={notam.id}>
+            <div className="airportNotamLabel">{notam.label}</div>
+            <div className="airportNotamText">{notam.text}</div>
+          </article>
+        )) : (
+          <div className="airportNotamEmpty">No airport NOTAMs available.</div>
+        )}
       </div>
     </section>
   );

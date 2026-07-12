@@ -3022,7 +3022,9 @@ fn row_action_disabled_reason(id: &FlightPlanRowActionId, enabled: bool) -> Opti
             FlightPlanRowActionId::MoveUp => "This route element is already at the top.",
             FlightPlanRowActionId::MoveDown => "This route element is already at the bottom.",
             FlightPlanRowActionId::WaypointInfo => "Waypoint info is not available yet.",
-            FlightPlanRowActionId::Weather => "No METAR or TAF is available for this station.",
+            FlightPlanRowActionId::Weather => {
+                "No METAR, TAF, or airport NOTAM is available for this station."
+            }
             FlightPlanRowActionId::AddAirway => {
                 "Airway insertion requires a named waypoint with airway connections."
             }

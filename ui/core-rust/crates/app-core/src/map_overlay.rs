@@ -359,6 +359,92 @@ pub struct TafProductPayload {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct NotamRecord {
+    pub id: String,
+    #[serde(default)]
+    pub airport_id: Option<String>,
+    #[serde(default)]
+    pub notam_keyword: Option<String>,
+    #[serde(default)]
+    pub effective_start_utc: Option<String>,
+    #[serde(default)]
+    pub effective_end_utc: Option<String>,
+    #[serde(default)]
+    pub text: Option<String>,
+    #[serde(default)]
+    pub local_text: Option<String>,
+    #[serde(default)]
+    pub icao_text: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct NotamProductPayload {
+    pub schema_version: u32,
+    pub version_label: String,
+    #[serde(default)]
+    pub notam_count: Option<u32>,
+    pub notams_by_id: HashMap<String, NotamRecord>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AirportNotamUiView {
+    pub id: String,
+    pub label: String,
+    pub text: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AirportNotamIndex {
+    pub version_label: String,
+    by_airport_id: HashMap<String, Vec<AirportNotamUiView>>,
+}
+
+impl AirportNotamIndex {
+    pub fn from_payload(payload: NotamProductPayload) -> Self {
+        let mut by_airport_id = HashMap::<String, Vec<AirportNotamUiView>>::new();
+        for record in payload.notams_by_id.into_values() {
+            let Some(airport_id) = record
+                .airport_id
+                .map(|value| value.trim().to_ascii_uppercase())
+                .filter(|value| !value.is_empty())
+            else {
+                continue;
+            };
+            let Some(text) = record
+                .text
+                .as_deref()
+                .or(record.local_text.as_deref())
+                .or(record.icao_text.as_deref())
+                .map(str::trim)
+                .filter(|value| !value.is_empty())
+            else {
+                continue;
+            };
+            by_airport_id
+                .entry(airport_id)
+                .or_default()
+                .push(AirportNotamUiView {
+                    id: record.id,
+                    label: record
+                        .notam_keyword
+                        .as_deref()
+                        .unwrap_or("NOTAM")
+                        .trim()
+                        .to_ascii_uppercase(),
+                    text: text.to_string(),
+                });
+        }
+        for notams in by_airport_id.values_mut() {
+            sort_airport_notam_views(notams);
+        }
+        Self {
+            version_label: payload.version_label,
+            by_airport_id,
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct WeatherDetailUiView {
     pub station_id: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -373,6 +459,8 @@ pub struct WeatherDetailUiView {
     pub taf_age_label: Option<String>,
     #[serde(default)]
     pub taf_age_warning: bool,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub notams: Vec<AirportNotamUiView>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -2458,6 +2546,7 @@ pub fn query_map_selection(
     metar_tile_cache: &HashMap<String, MetarTilePayload>,
     metar_payload: Option<&MetarProductPayload>,
     taf_payload: Option<&TafProductPayload>,
+    notam_payload: Option<&AirportNotamIndex>,
     offline_region_records: &[OfflineRegionRecord],
     airspace_feature_cache: &HashMap<String, AirspaceFeaturePayload>,
     tfr_payload: Option<&TfrProductPayload>,
@@ -2475,6 +2564,7 @@ pub fn query_map_selection(
         metar_tile_cache,
         metar_payload,
         taf_payload,
+        notam_payload,
         offline_region_records,
         airspace_feature_cache,
         tfr_payload,
@@ -2495,6 +2585,7 @@ pub fn query_map_selection_with_point_display_scale(
     metar_tile_cache: &HashMap<String, MetarTilePayload>,
     metar_payload: Option<&MetarProductPayload>,
     taf_payload: Option<&TafProductPayload>,
+    notam_payload: Option<&AirportNotamIndex>,
     offline_region_records: &[OfflineRegionRecord],
     airspace_feature_cache: &HashMap<String, AirspaceFeaturePayload>,
     tfr_payload: Option<&TfrProductPayload>,
@@ -2512,6 +2603,7 @@ pub fn query_map_selection_with_point_display_scale(
         metar_tile_cache,
         metar_payload,
         taf_payload,
+        notam_payload,
         offline_region_records,
         airspace_feature_cache,
         tfr_payload,
@@ -2530,6 +2622,7 @@ pub fn query_map_selection_for_surface(
     metar_tile_cache: &HashMap<String, MetarTilePayload>,
     metar_payload: Option<&MetarProductPayload>,
     taf_payload: Option<&TafProductPayload>,
+    notam_payload: Option<&AirportNotamIndex>,
     offline_region_records: &[OfflineRegionRecord],
     airspace_feature_cache: &HashMap<String, AirspaceFeaturePayload>,
     tfr_payload: Option<&TfrProductPayload>,
@@ -2616,6 +2709,7 @@ pub fn query_map_selection_for_surface(
                         airport_id,
                         metar_payload,
                         taf_payload,
+                        notam_payload,
                         weather_age_reference_utc,
                     )
                 });
@@ -2653,6 +2747,7 @@ pub fn query_map_selection_for_surface(
         &matched_nav_refs,
         metar_payload,
         taf_payload,
+        notam_payload,
         airport_plate_availability,
         weather_age_reference_utc,
     ) {
@@ -2699,6 +2794,7 @@ pub fn query_map_selection_for_surface(
             metar_tile_cache,
             metar_payload,
             taf_payload,
+            notam_payload,
             weather_age_reference_utc,
         ));
         weather.extend(query_pirep_selection_matches(
@@ -2786,6 +2882,7 @@ fn query_metar_selection_matches(
     metar_tile_cache: &HashMap<String, MetarTilePayload>,
     metar_payload: &MetarProductPayload,
     taf_payload: Option<&TafProductPayload>,
+    notam_payload: Option<&AirportNotamIndex>,
     weather_age_reference_utc: Option<DateTime<Utc>>,
 ) -> Vec<MapSelectionPointMatch> {
     let Some(metar_layer) = config.metar_layer.as_ref() else {
@@ -2830,6 +2927,7 @@ fn query_metar_selection_matches(
                             payload.tafs_by_station.get(record.station_id.trim())
                         }),
                         feature,
+                        notam_payload,
                         weather_age_reference_utc,
                     ),
                     distance_px,
@@ -3029,6 +3127,7 @@ fn query_flight_plan_selection_matches(
     matched_nav_refs: &BTreeSet<String>,
     metar_payload: Option<&MetarProductPayload>,
     taf_payload: Option<&TafProductPayload>,
+    notam_payload: Option<&AirportNotamIndex>,
     airport_plate_availability: &mut dyn FnMut(&str) -> AirportPlateAvailability,
     weather_age_reference_utc: Option<DateTime<Utc>>,
 ) -> Vec<MapSelectionPointMatch> {
@@ -3054,6 +3153,7 @@ fn query_flight_plan_selection_matches(
                 plan,
                 metar_payload,
                 taf_payload,
+                notam_payload,
                 airport_plate_availability,
                 weather_age_reference_utc,
             ),
@@ -3068,6 +3168,7 @@ fn selection_item_for_flight_plan_point(
     plan: Option<&FlightPlan>,
     metar_payload: Option<&MetarProductPayload>,
     taf_payload: Option<&TafProductPayload>,
+    notam_payload: Option<&AirportNotamIndex>,
     airport_plate_availability: &mut dyn FnMut(&str) -> AirportPlateAvailability,
     weather_age_reference_utc: Option<DateTime<Utc>>,
 ) -> MapSelectionItem {
@@ -3105,6 +3206,7 @@ fn selection_item_for_flight_plan_point(
             airport_id,
             metar_payload,
             taf_payload,
+            notam_payload,
             weather_age_reference_utc,
         ),
         _ => None,
@@ -3234,12 +3336,15 @@ fn selection_item_for_metar(
     record: &MetarRecord,
     taf: Option<&TafRecord>,
     feature: VisibleMetarFeature,
+    notam_payload: Option<&AirportNotamIndex>,
     weather_age_reference_utc: Option<DateTime<Utc>>,
 ) -> MapSelectionItem {
+    let notams = airport_notam_views(record.station_id.trim(), notam_payload);
     let weather_detail = weather_detail_from_records(
         record.station_id.trim(),
         Some(record),
         taf,
+        notams,
         weather_age_reference_utc,
     );
     MapSelectionItem {
@@ -3320,6 +3425,7 @@ pub(crate) fn weather_detail_for_station(
     station_id: &str,
     metar_payload: Option<&MetarProductPayload>,
     taf_payload: Option<&TafProductPayload>,
+    notam_index: Option<&AirportNotamIndex>,
     age_reference_utc: Option<DateTime<Utc>>,
 ) -> Option<WeatherDetailUiView> {
     let station_id = station_id.trim().to_ascii_uppercase();
@@ -3328,13 +3434,15 @@ pub(crate) fn weather_detail_for_station(
     }
     let metar = metar_payload.and_then(|payload| payload.metars_by_station.get(&station_id));
     let taf = taf_payload.and_then(|payload| payload.tafs_by_station.get(&station_id));
-    weather_detail_from_records(&station_id, metar, taf, age_reference_utc)
+    let notams = airport_notam_views(&station_id, notam_index);
+    weather_detail_from_records(&station_id, metar, taf, notams, age_reference_utc)
 }
 
 fn weather_detail_from_records(
     station_id: &str,
     metar: Option<&MetarRecord>,
     taf: Option<&TafRecord>,
+    notams: Vec<AirportNotamUiView>,
     age_reference_utc: Option<DateTime<Utc>>,
 ) -> Option<WeatherDetailUiView> {
     let metar_text = metar.map(|record| record.raw_text.clone());
@@ -3349,7 +3457,7 @@ fn weather_detail_from_records(
         age_reference_utc,
         TAF_AGE_WARNING_MS,
     );
-    if metar_text.is_none() && taf_text.is_none() {
+    if metar_text.is_none() && taf_text.is_none() && notams.is_empty() {
         return None;
     }
     Some(WeatherDetailUiView {
@@ -3360,7 +3468,48 @@ fn weather_detail_from_records(
         taf_text,
         taf_age_label,
         taf_age_warning,
+        notams,
     })
+}
+
+fn airport_notam_views(
+    airport_id: &str,
+    index: Option<&AirportNotamIndex>,
+) -> Vec<AirportNotamUiView> {
+    let Some(index) = index else {
+        return Vec::new();
+    };
+    let lookup_ids = airport_notam_lookup_ids(airport_id);
+    let mut notams = lookup_ids
+        .into_iter()
+        .filter_map(|lookup_id| index.by_airport_id.get(&lookup_id))
+        .flatten()
+        .cloned()
+        .collect::<Vec<_>>();
+    notams.sort_by(|left, right| left.id.cmp(&right.id));
+    notams.dedup_by(|left, right| left.id == right.id);
+    sort_airport_notam_views(&mut notams);
+    notams
+}
+
+fn sort_airport_notam_views(notams: &mut [AirportNotamUiView]) {
+    notams.sort_by(|left, right| {
+        left.label
+            .cmp(&right.label)
+            .then_with(|| left.text.cmp(&right.text))
+            .then_with(|| left.id.cmp(&right.id))
+    });
+}
+
+fn airport_notam_lookup_ids(airport_id: &str) -> HashSet<String> {
+    let airport_id = airport_id.trim().to_ascii_uppercase();
+    let mut ids = HashSet::from([airport_id.clone()]);
+    if airport_id.len() == 4 && airport_id.starts_with('K') {
+        ids.insert(airport_id[1..].to_string());
+    } else if airport_id.len() == 3 && airport_id.chars().all(|ch| ch.is_ascii_alphabetic()) {
+        ids.insert(format!("K{airport_id}"));
+    }
+    ids
 }
 
 const MINUTE_MS: i64 = 60_000;
@@ -3840,7 +3989,7 @@ fn weather_action(weather_detail: Option<WeatherDetailUiView>) -> MapSelectionAc
         detail_title: None,
         disabled_reason: weather_detail
             .is_none()
-            .then(|| "No METAR or TAF is available for this station.".to_string()),
+            .then(|| "No METAR, TAF, or airport NOTAM is available for this station.".to_string()),
         weather_detail,
         airspace_limit: None,
         session_action: None,
@@ -7603,6 +7752,7 @@ mod tests {
             &metar_tile_cache,
             Some(&metars),
             Some(&tafs),
+            None,
             &[],
             &HashMap::new(),
             None,
@@ -7672,6 +7822,7 @@ mod tests {
             "KAAA",
             Some(&metar),
             Some(&taf),
+            Vec::new(),
             crate::freshness::parse_utc_instant("2026-05-03T01:12:00Z"),
         )
         .expect("weather detail");
@@ -7680,6 +7831,66 @@ mod tests {
         assert!(detail.metar_age_warning);
         assert_eq!(detail.taf_age_label.as_deref(), Some("14m old"));
         assert!(!detail.taf_age_warning);
+    }
+
+    #[test]
+    fn weather_detail_includes_only_matching_airport_notams() {
+        let payload = NotamProductPayload {
+            schema_version: 1,
+            version_label: "v1".to_string(),
+            notam_count: Some(3),
+            notams_by_id: HashMap::from([
+                (
+                    "airport".to_string(),
+                    NotamRecord {
+                        id: "airport".to_string(),
+                        airport_id: Some("AAA".to_string()),
+                        notam_keyword: Some("RWY".to_string()),
+                        effective_start_utc: None,
+                        effective_end_utc: None,
+                        text: Some("RWY 18 CLSD".to_string()),
+                        local_text: None,
+                        icao_text: None,
+                    },
+                ),
+                (
+                    "other-airport".to_string(),
+                    NotamRecord {
+                        id: "other-airport".to_string(),
+                        airport_id: Some("KBBB".to_string()),
+                        notam_keyword: Some("TWY".to_string()),
+                        effective_start_utc: None,
+                        effective_end_utc: None,
+                        text: Some("TWY A CLSD".to_string()),
+                        local_text: None,
+                        icao_text: None,
+                    },
+                ),
+                (
+                    "not-airport".to_string(),
+                    NotamRecord {
+                        id: "not-airport".to_string(),
+                        airport_id: None,
+                        notam_keyword: Some("NAV".to_string()),
+                        effective_start_utc: None,
+                        effective_end_utc: None,
+                        text: Some("VOR U/S".to_string()),
+                        local_text: None,
+                        icao_text: None,
+                    },
+                ),
+            ]),
+        };
+
+        let index = AirportNotamIndex::from_payload(payload);
+        let detail = weather_detail_for_station("KAAA", None, None, Some(&index), None)
+            .expect("airport NOTAM should enable detail");
+
+        assert_eq!(detail.notams.len(), 1);
+        assert_eq!(detail.notams[0].label, "RWY");
+        assert_eq!(detail.notams[0].text, "RWY 18 CLSD");
+        assert_eq!(detail.metar_text, None);
+        assert_eq!(detail.taf_text, None);
     }
 
     #[test]
@@ -7783,6 +7994,7 @@ mod tests {
             &metar_tile_cache,
             Some(&metars),
             None,
+            None,
             &[],
             &HashMap::new(),
             None,
@@ -7854,6 +8066,7 @@ mod tests {
             LatLon { lat: 0.0, lon: 0.0 },
             &HashMap::new(),
             &HashMap::new(),
+            None,
             None,
             None,
             &regions,
@@ -7988,6 +8201,7 @@ mod tests {
             &HashMap::new(),
             None,
             None,
+            None,
             &[],
             &HashMap::from([(feature.id.clone(), feature)]),
             None,
@@ -8061,6 +8275,7 @@ mod tests {
             LatLon { lat: 0.0, lon: 0.0 },
             &vector_cache,
             &HashMap::new(),
+            None,
             None,
             None,
             &[],
@@ -9092,6 +9307,7 @@ mod tests {
             &HashMap::new(),
             None,
             None,
+            None,
             &[],
             &HashMap::new(),
             None,
@@ -9259,6 +9475,7 @@ mod tests {
                 ),
                 taf_age_label: None,
                 taf_age_warning: false,
+                notams: Vec::new(),
             }),
         );
         let remove = item
@@ -9474,6 +9691,7 @@ mod tests {
             viewport.center,
             &HashMap::new(),
             &HashMap::new(),
+            None,
             None,
             None,
             &[],
@@ -9823,6 +10041,7 @@ mod tests {
             viewport.center,
             &vector_cache,
             &HashMap::new(),
+            None,
             None,
             None,
             &[],

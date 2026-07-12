@@ -282,6 +282,7 @@ import org.aerobag.app.domain.VisibleMapFeature
 import org.aerobag.app.domain.VisibleMetarFeature
 import org.aerobag.app.domain.VisiblePirepFeature
 import org.aerobag.app.domain.WeatherDetailUiView
+import org.aerobag.app.domain.AirportNotamUiView
 import org.aerobag.app.domain.applyPinchGesture
 import org.aerobag.app.domain.clampZoom
 import org.aerobag.app.domain.createInitialImageViewport
@@ -3895,7 +3896,7 @@ internal fun MapSelectionDetailModal(
     Surface(
         modifier = modifier
             .widthIn(max = ThumbSize * 9.5f)
-            .heightIn(max = ThumbSize * 8.5f),
+            .heightIn(max = ThumbSize * 11.5f),
         shape = RoundedCornerShape(ThumbRadius + 4.dp),
         color = uiTheme.controls.panelBg.copy(alpha = 0.98f),
         contentColor = uiTheme.controls.panelFg,
@@ -3969,6 +3970,97 @@ internal fun WeatherDetailModal(
                 ageWarning = detail.tafAgeWarning,
                 text = detail.tafText,
             )
+            AirportNotamSection(notams = detail.notams)
+        }
+    }
+}
+
+@Composable
+private fun AirportNotamSection(notams: List<AirportNotamUiView>) {
+    val uiTheme = LocalAerobagUiTheme.current
+    Column(
+        modifier = Modifier
+            .fillMaxWidth()
+            .heightIn(min = ThumbSize * 1.8f, max = ThumbSize * 4.1f)
+            .background(
+                uiTheme.controls.mapSelectionDisplayBg.copy(alpha = 0.72f),
+                RoundedCornerShape(ThumbRadius),
+            )
+            .border(
+                1.dp,
+                uiTheme.controls.panelBorder.copy(alpha = 0.4f),
+                RoundedCornerShape(ThumbRadius),
+            )
+            .padding(ThumbSize * 0.13f),
+        verticalArrangement = Arrangement.spacedBy(ThumbGap * 0.45f),
+    ) {
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.SpaceBetween,
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Text(
+                text = "NOTAM",
+                style = MaterialTheme.typography.labelSmall.copy(
+                    fontWeight = FontWeight.Black,
+                    letterSpacing = 0.6.sp,
+                ),
+                color = uiTheme.controls.panelFg,
+            )
+            Text(
+                text = notams.size.toString(),
+                style = MaterialTheme.typography.labelSmall.copy(fontWeight = FontWeight.Black),
+                color = uiTheme.controls.panelFg,
+            )
+        }
+        if (notams.isEmpty()) {
+            Text(
+                text = "No airport NOTAMs available.",
+                style = MaterialTheme.typography.bodyMedium.copy(fontWeight = FontWeight.Bold),
+                color = uiTheme.controls.panelFg.copy(alpha = 0.65f),
+            )
+        } else {
+            LazyColumn(
+                modifier = Modifier.fillMaxWidth(),
+                verticalArrangement = Arrangement.spacedBy(ThumbGap * 0.65f),
+            ) {
+                lazyColumnItems(notams, key = { it.id }) { notam ->
+                    Column(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .background(
+                                uiTheme.controls.mapSelectionDisplayBg,
+                                RoundedCornerShape(ThumbRadius * 0.75f),
+                            )
+                            .border(
+                                1.dp,
+                                uiTheme.controls.panelBorder.copy(alpha = 0.5f),
+                                RoundedCornerShape(ThumbRadius * 0.75f),
+                            )
+                            .padding(ThumbSize * 0.11f),
+                        verticalArrangement = Arrangement.spacedBy(ThumbGap * 0.35f),
+                    ) {
+                        Text(
+                            text = notam.label,
+                            style = MaterialTheme.typography.labelSmall.copy(
+                                fontWeight = FontWeight.Black,
+                                letterSpacing = 0.6.sp,
+                            ),
+                            color = uiTheme.controls.panelFg,
+                        )
+                        Text(
+                            text = notam.text,
+                            style = MaterialTheme.typography.bodyMedium.copy(
+                                fontSize = 15.sp,
+                                lineHeight = 19.sp,
+                                fontWeight = FontWeight.Bold,
+                                fontFamily = FontFamily.Monospace,
+                            ),
+                            color = uiTheme.controls.panelFg,
+                        )
+                    }
+                }
+            }
         }
     }
 }

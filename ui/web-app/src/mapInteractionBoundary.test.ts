@@ -27,7 +27,7 @@ describe("map interaction boundaries", () => {
       "{result.categories.map",
     );
     const detailShell = sourceBetween(
-      'className="mapSelectionDetailModal"',
+      'className="mapSelectionDetailModal weatherDetailModal"',
       '<div className="mapSelectionDetailTitle">',
     );
     const requiredHandlers = [

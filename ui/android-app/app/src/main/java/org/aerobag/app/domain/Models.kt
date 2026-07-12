@@ -401,6 +401,13 @@ data class WeatherDetailUiView(
     val tafText: String?,
     val tafAgeLabel: String?,
     val tafAgeWarning: Boolean = false,
+    val notams: List<AirportNotamUiView> = emptyList(),
+)
+
+data class AirportNotamUiView(
+    val id: String,
+    val label: String,
+    val text: String,
 )
 
 sealed interface FlightPlanRowNavigationAction {

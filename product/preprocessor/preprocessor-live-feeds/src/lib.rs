@@ -194,6 +194,8 @@ pub struct StructuredNotamRecord {
     pub last_updated_utc: Option<String>,
     pub location_designator: Option<String>,
     pub icao_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub airport_id: Option<String>,
     pub airport_name: Option<String>,
     pub airport_position: Option<StructuredPoint>,
     pub location: Option<String>,
@@ -217,6 +219,72 @@ pub struct StructuredNotamRecord {
 pub struct StructuredPoint {
     pub lat: f64,
     pub lon: f64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct CanonicalNotamIdentity {
+    source_type: String,
+    location: String,
+    year: String,
+    notam_type: String,
+    number: String,
+}
+
+impl CanonicalNotamIdentity {
+    fn new(
+        source_type: Option<&str>,
+        location: Option<&str>,
+        year: Option<&str>,
+        notam_type: Option<&str>,
+        number: Option<&str>,
+    ) -> anyhow::Result<Self> {
+        let source_type = required_uppercase_notam_field(source_type, "source type")?;
+        if !matches!(source_type.as_str(), "D" | "F") {
+            bail!("unsupported NOTAM source type {source_type}");
+        }
+        let location = required_uppercase_notam_field(location, "location")?;
+        let year = required_uppercase_notam_field(year, "year")?;
+        if year.len() != 4 || !year.chars().all(|ch| ch.is_ascii_digit()) {
+            bail!("invalid NOTAM year {year}");
+        }
+        let notam_type = notam_type
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .unwrap_or("N")
+            .to_ascii_uppercase();
+        if notam_type != "N" {
+            bail!("unsupported NOTAM type {notam_type}");
+        }
+        let raw_number = number
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .context("NOTAM number is missing")?;
+        let number = raw_number
+            .rsplit_once('/')
+            .map(|(_, number)| number)
+            .unwrap_or(raw_number);
+        if !number.chars().all(|ch| ch.is_ascii_digit()) {
+            bail!("invalid NOTAM number {number}");
+        }
+        let number = number
+            .parse::<u64>()
+            .with_context(|| format!("invalid NOTAM number {number}"))?
+            .to_string();
+        Ok(Self {
+            source_type,
+            location,
+            year,
+            notam_type,
+            number,
+        })
+    }
+
+    fn id(&self) -> String {
+        format!(
+            "{}:{}:{}:{}:{}",
+            self.source_type, self.location, self.year, self.notam_type, self.number
+        )
+    }
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -1414,10 +1482,7 @@ pub fn build_notam_dataset(request: &BuildNotamRequest) -> anyhow::Result<BuildN
     fs::create_dir_all(&request.output_dir)
         .with_context(|| format!("failed to create {}", request.output_dir.display()))?;
 
-    let notams_by_id = structured_notam_records(&request.input_jsonl_path)?
-        .into_iter()
-        .map(|record| (record.id.clone(), record))
-        .collect::<BTreeMap<_, _>>();
+    let notams_by_id = current_structured_notam_records(&request.input_jsonl_path)?;
     let notams = notams_by_id.values().cloned().collect::<Vec<_>>();
     let structured_json_path = request.output_dir.join("notams.json");
     let manifest_path = request
@@ -1506,12 +1571,33 @@ fn parse_geo_csv(path: &Path) -> anyhow::Result<Vec<GeoGridPoint>> {
 pub fn structured_notam_records(
     input_jsonl_path: &Path,
 ) -> anyhow::Result<Vec<StructuredNotamRecord>> {
-    let mut records = load_json_lines::<CapturedNotamMessage>(input_jsonl_path)?
-        .into_iter()
-        .filter_map(|message| normalize_captured_notam(message).transpose())
-        .collect::<anyhow::Result<Vec<_>>>()?;
+    let mut records = normalized_notam_events(input_jsonl_path)?;
     sort_structured_notam_records(&mut records);
     Ok(records)
+}
+
+fn normalized_notam_events(input_jsonl_path: &Path) -> anyhow::Result<Vec<StructuredNotamRecord>> {
+    load_json_lines::<CapturedNotamMessage>(input_jsonl_path)?
+        .into_iter()
+        .filter_map(|message| normalize_captured_notam(message).transpose())
+        .collect()
+}
+
+fn current_structured_notam_records(
+    input_jsonl_path: &Path,
+) -> anyhow::Result<BTreeMap<String, StructuredNotamRecord>> {
+    let mut current = BTreeMap::new();
+    for record in normalized_notam_events(input_jsonl_path)? {
+        match notam_projection_action(&record)? {
+            NotamProjectionAction::Upsert => {
+                current.insert(record.id.clone(), record);
+            }
+            NotamProjectionAction::Remove => {
+                current.remove(&record.id);
+            }
+        }
+    }
+    Ok(current)
 }
 
 pub fn structured_notam_record_from_json(
@@ -1565,13 +1651,17 @@ fn normalize_captured_notam(
         .descendants()
         .find(|node| node.tag_name().name() == "EventTimeSlice");
 
+    let text = child_text(&notam_node, "text");
     let local_text = find_translation_text(&notam_node, "LOCAL_FORMAT");
     let icao_text = find_translation_text(&notam_node, "OTHER:ICAO");
-    let location_designator = property_string(
+    let location_designator = normalize_optional_notam_field(property_string(
         &message.properties,
         "us_gov_dot_faa_aim_fns_nds_LocationDesignator",
-    );
-    let icao_id = property_string(&message.properties, "us_gov_dot_faa_aim_fns_nds_ICAOId");
+    ));
+    let icao_id = normalize_optional_notam_field(property_string(
+        &message.properties,
+        "us_gov_dot_faa_aim_fns_nds_ICAOId",
+    ));
     let source_type = property_string(&message.properties, "us_gov_dot_faa_aim_fns_nds_SourceType");
     let notam_number_prop = property_string(
         &message.properties,
@@ -1581,68 +1671,223 @@ fn normalize_captured_notam(
     let notam_year = child_text(&notam_node, "year");
     let notam_type = child_text(&notam_node, "type");
     let location = child_text(&notam_node, "location");
+    let identity = CanonicalNotamIdentity::new(
+        source_type.as_deref(),
+        location
+            .as_deref()
+            .or(location_designator.as_deref())
+            .or(icao_id.as_deref()),
+        notam_year.as_deref(),
+        notam_type.as_deref(),
+        notam_number.as_deref(),
+    )?;
+    let notam_status = canonical_notam_status(property_string(
+        &message.properties,
+        "us_gov_dot_faa_aim_fns_nds_NOTAMStatus",
+    ))?;
+    let notam_function = canonical_notam_function(property_string(
+        &message.properties,
+        "us_gov_dot_faa_aim_fns_nds_NOTAMFunction",
+    ))?;
+    let notam_keyword = canonical_notam_keyword(
+        &identity.source_type,
+        property_string(
+            &message.properties,
+            "us_gov_dot_faa_aim_fns_nds_NOTAMKeyword",
+        ),
+        text.as_deref(),
+    );
+    let airport_id = airport_id_for_notam(
+        notam_keyword.as_deref(),
+        icao_id.as_deref(),
+        location_designator.as_deref(),
+        Some(identity.location.as_str()),
+    );
     let account_id = find_first_text(&xml, "accountId");
     let xover_notam_id = find_first_text(&xml, "xovernotamID");
-    let id = [
-        source_type.clone(),
-        location
-            .clone()
-            .or(location_designator.clone())
-            .or(icao_id.clone()),
-        notam_year.clone(),
-        notam_type.clone(),
-        notam_number.clone(),
-    ]
-    .into_iter()
-    .flatten()
-    .collect::<Vec<_>>()
-    .join(":");
     let airport_position = find_airport_position(&xml)?;
 
     Ok(Some(StructuredNotamRecord {
-        id,
+        id: identity.id(),
         jms_message_id: message.jms_message_id,
         nms_id: property_string(&message.properties, "m_msg_nms_id"),
         correlation_id: property_string(
             &message.properties,
             "us_gov_dot_faa_aim_fns_nds_CorrelationID",
         ),
-        source_type,
-        notam_status: property_string(
-            &message.properties,
-            "us_gov_dot_faa_aim_fns_nds_NOTAMStatus",
-        ),
-        notam_function: property_string(
-            &message.properties,
-            "us_gov_dot_faa_aim_fns_nds_NOTAMFunction",
-        ),
-        notam_keyword: property_string(
-            &message.properties,
-            "us_gov_dot_faa_aim_fns_nds_NOTAMKeyword",
-        ),
+        source_type: Some(identity.source_type.clone()),
+        notam_status: Some(notam_status),
+        notam_function,
+        notam_keyword,
         last_updated_utc: property_string(&message.properties, "m_msg_last_updated"),
         location_designator,
         icao_id,
+        airport_id,
         airport_name: find_first_text(&xml, "airportname").or(find_first_text(&xml, "name")),
         airport_position,
-        location,
+        location: Some(identity.location.clone()),
         classification: find_first_text(&xml, "classification"),
         account_id,
         xover_account_id: find_first_text(&xml, "xoveraccountID"),
         xover_notam_id,
-        notam_number,
-        notam_year,
-        notam_type,
+        notam_number: Some(identity.number.clone()),
+        notam_year: Some(identity.year.clone()),
+        notam_type: Some(identity.notam_type.clone()),
         issued_utc: child_text(&notam_node, "issued"),
         effective_start_utc: child_text(&notam_node, "effectiveStart")
             .and_then(|value| parse_compact_notam_timestamp(&value).ok()),
         effective_end_utc: child_text(&notam_node, "effectiveEnd")
             .and_then(|value| parse_compact_notam_timestamp(&value).ok()),
-        text: child_text(&notam_node, "text"),
+        text,
         local_text,
         icao_text,
         scenario: event_time_slice.and_then(|node| child_text(&node, "scenario")),
     }))
+}
+
+fn canonicalize_structured_notam_record(
+    mut record: StructuredNotamRecord,
+) -> anyhow::Result<StructuredNotamRecord> {
+    record.location_designator = normalize_optional_notam_field(record.location_designator);
+    record.icao_id = normalize_optional_notam_field(record.icao_id);
+    let identity = CanonicalNotamIdentity::new(
+        record.source_type.as_deref(),
+        record
+            .location
+            .as_deref()
+            .or(record.location_designator.as_deref())
+            .or(record.icao_id.as_deref()),
+        record.notam_year.as_deref(),
+        record.notam_type.as_deref(),
+        record.notam_number.as_deref(),
+    )?;
+    record.id = identity.id();
+    record.source_type = Some(identity.source_type.clone());
+    record.location = Some(identity.location);
+    record.notam_year = Some(identity.year);
+    record.notam_type = Some(identity.notam_type);
+    record.notam_number = Some(identity.number);
+    record.notam_status = Some(canonical_notam_status(record.notam_status)?);
+    record.notam_function = canonical_notam_function(record.notam_function)?;
+    record.notam_keyword = canonical_notam_keyword(
+        record.source_type.as_deref().unwrap(),
+        record.notam_keyword,
+        record.text.as_deref(),
+    );
+    record.airport_id = airport_id_for_notam(
+        record.notam_keyword.as_deref(),
+        record.icao_id.as_deref(),
+        record.location_designator.as_deref(),
+        record.location.as_deref(),
+    );
+    Ok(record)
+}
+
+pub(crate) fn validate_canonical_structured_notam_record(
+    record: &StructuredNotamRecord,
+) -> anyhow::Result<()> {
+    let canonical = canonicalize_structured_notam_record(record.clone())?;
+    if canonical != *record {
+        bail!("NOTAM {} is not canonical", record.id);
+    }
+    Ok(())
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum NotamProjectionAction {
+    Upsert,
+    Remove,
+}
+
+pub(crate) fn notam_projection_action(
+    record: &StructuredNotamRecord,
+) -> anyhow::Result<NotamProjectionAction> {
+    match record.notam_status.as_deref() {
+        Some("ACTIVE") => Ok(NotamProjectionAction::Upsert),
+        Some("CANCELLED") => Ok(NotamProjectionAction::Remove),
+        status => bail!(
+            "canonical NOTAM {} has unsupported projected status {status:?}",
+            record.id
+        ),
+    }
+}
+
+fn required_uppercase_notam_field(value: Option<&str>, label: &str) -> anyhow::Result<String> {
+    value
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(str::to_ascii_uppercase)
+        .with_context(|| format!("NOTAM {label} is missing"))
+}
+
+fn normalize_optional_notam_field(value: Option<String>) -> Option<String> {
+    value
+        .map(|value| value.trim().to_ascii_uppercase())
+        .filter(|value| !value.is_empty())
+}
+
+fn canonical_notam_status(value: Option<String>) -> anyhow::Result<String> {
+    let value = required_uppercase_notam_field(value.as_deref(), "status")?;
+    match value.as_str() {
+        "ACTIVE" | "PUBLISHED" => Ok("ACTIVE".to_string()),
+        "CANCELED" | "CANCELLED" => Ok("CANCELLED".to_string()),
+        _ => bail!("unsupported NOTAM status {value}"),
+    }
+}
+
+fn canonical_notam_function(value: Option<String>) -> anyhow::Result<Option<String>> {
+    let Some(value) = normalize_optional_notam_field(value) else {
+        return Ok(None);
+    };
+    match value.as_str() {
+        "N" | "NOTAMN" => Ok(Some("NOTAMN".to_string())),
+        "R" | "NOTAMR" => Ok(Some("NOTAMR".to_string())),
+        "C" | "NOTAMC" => Ok(Some("NOTAMC".to_string())),
+        _ => bail!("unsupported NOTAM function {value}"),
+    }
+}
+
+fn canonical_notam_keyword(
+    source_type: &str,
+    property_keyword: Option<String>,
+    text: Option<&str>,
+) -> Option<String> {
+    let property_keyword = normalize_optional_notam_field(property_keyword);
+    let text_keyword = text.and_then(notam_keyword_from_text);
+    if source_type == "D" {
+        text_keyword.or(property_keyword)
+    } else {
+        property_keyword.or(text_keyword)
+    }
+}
+
+fn notam_keyword_from_text(text: &str) -> Option<String> {
+    const KEYWORDS: &[&str] = &[
+        "AD", "AIRSPACE", "APRON", "COM", "IAP", "NAV", "OBST", "ODP", "RWY", "SID", "SPECIAL",
+        "SVC", "TWY",
+    ];
+    let candidate = text
+        .split_whitespace()
+        .next()?
+        .trim_matches(|ch: char| !ch.is_ascii_alphanumeric())
+        .to_ascii_uppercase();
+    KEYWORDS.contains(&candidate.as_str()).then_some(candidate)
+}
+
+fn airport_id_for_notam(
+    keyword: Option<&str>,
+    icao_id: Option<&str>,
+    location_designator: Option<&str>,
+    location: Option<&str>,
+) -> Option<String> {
+    const AIRPORT_KEYWORDS: &[&str] = &["AD", "APRON", "IAP", "ODP", "RWY", "SID", "TWY"];
+    AIRPORT_KEYWORDS
+        .contains(&keyword?)
+        .then(|| icao_id.or(location_designator).or(location))
+        .flatten()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(str::to_ascii_uppercase)
 }
 
 fn load_json_lines<T: for<'de> Deserialize<'de>>(path: &Path) -> anyhow::Result<Vec<T>> {
@@ -2743,6 +2988,7 @@ mod tests {
             last_updated_utc: None,
             location_designator: Some(facility.to_string()),
             icao_id: None,
+            airport_id: None,
             airport_name: None,
             airport_position: None,
             location: Some(facility.to_string()),
@@ -3171,7 +3417,7 @@ mod tests {
             .expect("valid fixture timestamp")
             .with_timezone(&Utc);
         let result = build_notam_dataset(&BuildNotamRequest {
-            input_jsonl_path: input_jsonl,
+            input_jsonl_path: input_jsonl.clone(),
             output_dir: output_dir.path().join("out"),
             version_label: "fixture".to_string(),
             generated_at_utc,
@@ -3192,6 +3438,27 @@ mod tests {
             record.effective_start_utc.clone()
         );
         assert!(result.zip_path.exists());
+
+        let mut cancelled = line.clone();
+        cancelled["properties"]["us_gov_dot_faa_aim_fns_nds_NOTAMStatus"] =
+            serde_json::json!("CANCELLED");
+        cancelled["bodyText"] = serde_json::json!(xml
+            .replace(
+                "<event:number>198</event:number>",
+                "<event:number>0198</event:number>"
+            )
+            .replace("<event:type>N</event:type>", ""));
+        fs::write(&input_jsonl, format!("{line}\n{cancelled}\n"))?;
+        let cancelled_result = build_notam_dataset(&BuildNotamRequest {
+            input_jsonl_path: input_jsonl,
+            output_dir: output_dir.path().join("out-cancelled"),
+            version_label: "cancelled-fixture".to_string(),
+            generated_at_utc,
+        })?;
+        let cancelled_dataset: StructuredNotamDataset =
+            serde_json::from_slice(&fs::read(cancelled_result.structured_json_path)?)?;
+        assert_eq!(0, cancelled_dataset.notam_count);
+        assert!(cancelled_dataset.notams_by_id.is_empty());
         Ok(())
     }
 

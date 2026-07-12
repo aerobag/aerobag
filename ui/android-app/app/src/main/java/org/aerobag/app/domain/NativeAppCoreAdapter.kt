@@ -2907,6 +2907,13 @@ private fun WireWeatherDetailUiView.toUi() = WeatherDetailUiView(
     tafText = taf_text,
     tafAgeLabel = taf_age_label,
     tafAgeWarning = taf_age_warning,
+    notams = notams.map { it.toUi() },
+)
+
+private fun WireAirportNotamUiView.toUi() = AirportNotamUiView(
+    id = id,
+    label = label,
+    text = text,
 )
 
 private fun WeatherDetailUiView.toWire() = WireWeatherDetailUiView(
@@ -2917,6 +2924,13 @@ private fun WeatherDetailUiView.toWire() = WireWeatherDetailUiView(
     taf_text = tafText,
     taf_age_label = tafAgeLabel,
     taf_age_warning = tafAgeWarning,
+    notams = notams.map { it.toWire() },
+)
+
+private fun AirportNotamUiView.toWire() = WireAirportNotamUiView(
+    id = id,
+    label = label,
+    text = text,
 )
 
 private fun WireMapSelectionFlightPlanRowAction.toUi() = MapSelectionFlightPlanRowAction(

@@ -50,7 +50,7 @@ use crate::{
     playback::PlaybackSessionState,
     project_nav_symbol_feature,
     publication::{PublicationResolvedResource, PublicationResolver},
-    query_map_overlay_for_surface_at, query_map_selection_for_surface, state,
+    query_map_overlay_for_surface_at, query_map_selection_for_surface, state, AirportNotamIndex,
     AirportPlateAvailability, AirspaceFeaturePayload, AirspaceLabelTilePayload,
     AirspaceReferenceTilePayload, AirwayPresentationPlan, AppError, AppErrorKind, AppEvent,
     AppResult, AppState, AppUiState, FlightPlan, FlightPlanDisplayRowKind,
@@ -58,8 +58,8 @@ use crate::{
     LegDisplayElement, MapOverlayConfig, MapOverlayQueryResult, MapSelectionForNavRefResult,
     MapSelectionQueryResult, MapSelectionSessionAction, MapSurfaceMetrics, MapViewport,
     MetarProductPayload, MetarTilePayload, NavDbOpenResult, NavKvLookup, NavKvPageProbeStats,
-    NavKvQuery, NavKvRoot, NavKvStore, NavRef, OfflinePackagesLibraryCache, PlaybackUiState,
-    PointTilePayload, ProcedureDiscontinuity, ProcedureKind, ProcedureLoadCommand,
+    NavKvQuery, NavKvRoot, NavKvStore, NavRef, NotamProductPayload, OfflinePackagesLibraryCache,
+    PlaybackUiState, PointTilePayload, ProcedureDiscontinuity, ProcedureKind, ProcedureLoadCommand,
     RasterMapCatalog, RasterResourceMode, RasterTilePlan, ResolvedLeg, ResolvedLegSource,
     RouteComponentViewKind, SequencingMode, SituationControlInput, SituationControlMenuItem,
     TafProductPayload, TerrainOverlayQueryResult, TfrProductPayload, UiSnapshotAppState,
@@ -365,6 +365,7 @@ struct UiSession {
     obstacle_had: Option<LiveObstacleHadState>,
     obstacle_tile_cache: HashMap<String, PointTilePayload>,
     taf_payload: Option<TafProductPayload>,
+    airport_notam_index: Option<AirportNotamIndex>,
     airspace_feature_cache: HashMap<String, AirspaceFeaturePayload>,
     tfr_payload: Option<TfrProductPayload>,
     nexrad_installed: Option<LiveNexradInstalledState>,
@@ -3325,6 +3326,7 @@ fn create_ui_session_inner(
             nexrad_installed: None,
             nexrad_tile_cache: HashMap::new(),
             taf_payload: None,
+            airport_notam_index: None,
             airspace_feature_cache: HashMap::new(),
             tfr_payload: None,
             terrain_source_tile_cache: HashMap::new(),
@@ -6405,6 +6407,11 @@ fn install_live_feed_payloads(session: &mut UiSession) -> AppResult<()> {
             let status_id = live_feed_unavailable_status_record("tafs", String::new()).id;
             clear_data_status_record(session, &status_id);
         }
+        if !session.live_feeds.has_product_current_version("notams") {
+            session.airport_notam_index = None;
+            let status_id = live_feed_unavailable_status_record("notams", String::new()).id;
+            clear_data_status_record(session, &status_id);
+        }
         if !session.live_feeds.has_product_current_version("tfrs") {
             session.tfr_payload = None;
             clear_data_status_record(session, LIVE_FEED_TFRS_STATUS_ID);
@@ -6467,6 +6474,33 @@ fn install_live_feed_payloads(session: &mut UiSession) -> AppResult<()> {
                         live_feed_unavailable_status_record(
                             "tafs",
                             format!("TAF live feed unavailable: failed to parse state: {err}"),
+                        ),
+                    );
+                }
+            }
+        }
+    }
+    let loaded_notams_version = session.live_feeds.product_loaded_version("notams");
+    let notams_installed = session
+        .airport_notam_index
+        .as_ref()
+        .and_then(|payload| loaded_notams_version.map(|version| payload.version_label == version))
+        .unwrap_or(false);
+    if !notams_installed {
+        if let Some(notams_value) = session.live_feeds.product_state_manifest("notams").cloned() {
+            match serde_json::from_value::<NotamProductPayload>(notams_value) {
+                Ok(payload) => {
+                    session.airport_notam_index = Some(AirportNotamIndex::from_payload(payload));
+                    let status_id = live_feed_unavailable_status_record("notams", String::new()).id;
+                    clear_data_status_record(session, &status_id);
+                }
+                Err(err) => {
+                    session.airport_notam_index = None;
+                    upsert_data_status_record(
+                        session,
+                        live_feed_unavailable_status_record(
+                            "notams",
+                            format!("NOTAM live feed unavailable: failed to parse state: {err}"),
                         ),
                     );
                 }
@@ -7971,6 +8005,7 @@ fn materialize_map_selection_in_session(
         &session.metar_tile_cache,
         session.metar_payload.as_ref(),
         session.taf_payload.as_ref(),
+        session.airport_notam_index.as_ref(),
         &offline_region_records,
         &session.airspace_feature_cache,
         session.tfr_payload.as_ref(),
@@ -9832,6 +9867,7 @@ fn enrich_flight_plan_weather_actions(session: &UiSession, active_plan: &mut Fli
                 station_id,
                 session.metar_payload.as_ref(),
                 session.taf_payload.as_ref(),
+                session.airport_notam_index.as_ref(),
                 Some(session_wall_clock_utc(session)),
             )
         });
@@ -12585,6 +12621,57 @@ mod tests {
     }
 
     #[test]
+    fn live_feed_notams_install_airport_records() {
+        let init =
+            create_ui_session(FlightPlan::default(), &[], None, None).expect("create session");
+        let state = serde_json::json!({
+            "schema_version": 1,
+            "version_label": "v1",
+            "notam_count": 2,
+            "notams_by_id": {
+                "D:AAA:2026:N:1": {
+                    "id": "D:AAA:2026:N:1",
+                    "airport_id": "KAAA",
+                    "notam_keyword": "RWY",
+                    "text": "RWY 18 CLSD"
+                },
+                "D:AAA:2026:N:2": {
+                    "id": "D:AAA:2026:N:2",
+                    "airport_id": null,
+                    "notam_keyword": "NAV",
+                    "text": "VOR U/S"
+                }
+            }
+        });
+        {
+            let mut sessions = lock_sessions();
+            let session = sessions.get_mut(&init.handle).expect("session");
+            session.live_feeds.mark_durable_product_loaded(
+                "notams".to_string(),
+                "v1".to_string(),
+                "state-hash".to_string(),
+                Some(state),
+            );
+            install_live_feed_payloads(session).expect("install NOTAM state");
+            let index = session
+                .airport_notam_index
+                .as_ref()
+                .expect("airport NOTAM index");
+            assert_eq!(index.version_label, "v1");
+            let detail = crate::map_overlay::weather_detail_for_station(
+                "KAAA",
+                None,
+                None,
+                Some(index),
+                None,
+            )
+            .expect("airport NOTAM detail");
+            assert_eq!(detail.notams.len(), 1);
+            assert_eq!(detail.notams[0].text, "RWY 18 CLSD");
+        }
+    }
+
+    #[test]
     fn airport_flight_plan_rows_project_weather_action_from_session_payloads() {
         let plan = FlightPlan {
             route_components: vec![RouteComponent::Waypoint {
@@ -12638,6 +12725,25 @@ mod tests {
                 taf_count: Some(1),
                 tafs_by_station,
             });
+            session.airport_notam_index =
+                Some(AirportNotamIndex::from_payload(NotamProductPayload {
+                    schema_version: 1,
+                    version_label: "v1".to_string(),
+                    notam_count: Some(1),
+                    notams_by_id: HashMap::from([(
+                        "D:AAA:2026:N:1".to_string(),
+                        crate::NotamRecord {
+                            id: "D:AAA:2026:N:1".to_string(),
+                            airport_id: Some("KAAA".to_string()),
+                            notam_keyword: Some("RWY".to_string()),
+                            effective_start_utc: None,
+                            effective_end_utc: None,
+                            text: Some("RWY 18 CLSD".to_string()),
+                            local_text: None,
+                            icao_text: None,
+                        },
+                    )]),
+                }));
         }
 
         let snapshot = get_session_snapshot_at_epoch_ms(
@@ -12673,6 +12779,8 @@ mod tests {
         );
         assert_eq!(detail.taf_age_label.as_deref(), Some("14m old"));
         assert!(!detail.taf_age_warning);
+        assert_eq!(detail.notams.len(), 1);
+        assert_eq!(detail.notams[0].text, "RWY 18 CLSD");
     }
 
     #[test]
@@ -12960,6 +13068,7 @@ mod tests {
             nexrad_installed: None,
             nexrad_tile_cache: HashMap::new(),
             taf_payload: None,
+            airport_notam_index: None,
             airspace_feature_cache: HashMap::new(),
             tfr_payload: None,
             terrain_source_tile_cache: HashMap::new(),
@@ -13149,6 +13258,7 @@ mod tests {
             nexrad_installed: None,
             nexrad_tile_cache: HashMap::new(),
             taf_payload: None,
+            airport_notam_index: None,
             airspace_feature_cache: HashMap::new(),
             tfr_payload: None,
             terrain_source_tile_cache: HashMap::new(),
@@ -13589,6 +13699,7 @@ mod tests {
             nexrad_installed: None,
             nexrad_tile_cache: HashMap::new(),
             taf_payload: None,
+            airport_notam_index: None,
             airspace_feature_cache: HashMap::new(),
             tfr_payload: None,
             terrain_source_tile_cache: HashMap::new(),

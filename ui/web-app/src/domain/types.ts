@@ -423,6 +423,13 @@ export type WeatherDetailUiView = {
   taf_text?: string | null;
   taf_age_label?: string | null;
   taf_age_warning?: boolean | null;
+  notams?: AirportNotamUiView[];
+};
+
+export type AirportNotamUiView = {
+  id: string;
+  label: string;
+  text: string;
 };
 
 export type FlightPlanRowActionUiView = {

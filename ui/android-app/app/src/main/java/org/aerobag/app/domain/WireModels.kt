@@ -766,6 +766,14 @@ data class WireWeatherDetailUiView(
     val taf_text: String? = null,
     val taf_age_label: String? = null,
     val taf_age_warning: Boolean = false,
+    val notams: List<WireAirportNotamUiView> = emptyList(),
+)
+
+@Serializable
+data class WireAirportNotamUiView(
+    val id: String,
+    val label: String,
+    val text: String,
 )
 
 @Serializable

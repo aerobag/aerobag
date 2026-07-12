@@ -8,12 +8,16 @@ use std::{
 
 use anyhow::{bail, Context};
 use chrono::Utc;
-use rusqlite::{params, Connection, OptionalExtension};
+use rusqlite::{params, Connection, OptionalExtension, Transaction};
 use serde::{Deserialize, Serialize};
 
-use crate::{engine::sha256_hex, structured_notam_record_from_json, StructuredNotamRecord};
+use crate::NotamProjectionAction;
+use crate::{
+    engine::sha256_hex, notam_projection_action, structured_notam_record_from_json,
+    validate_canonical_structured_notam_record, StructuredNotamRecord,
+};
 
-const NOTAM_STORE_SCHEMA_VERSION: u32 = 2;
+const NOTAM_STORE_SCHEMA_VERSION: u32 = 3;
 const RAW_INGEST_CURSOR_METADATA_KEY: &str = "raw_ingest_cursor";
 const RAW_INGEST_RETENTION_DAYS: i64 = 7;
 
@@ -152,49 +156,14 @@ impl NotamPersistentStore {
             if let Some(record) = structured_notam_record_from_json(message_json)
                 .with_context(|| format!("failed to normalize raw NOTAM ingest row {ingest_seq}"))?
             {
-                let status = record.notam_status.as_deref().unwrap_or("");
-                if status.eq_ignore_ascii_case("CANCELLED")
-                    || status.eq_ignore_ascii_case("CANCELED")
-                {
-                    let removed = tx
-                        .execute("DELETE FROM current_notams WHERE id = ?1", [&record.id])
-                        .with_context(|| format!("failed to delete NOTAM {}", record.id))?;
-                    if removed > 0 {
-                        removed_count += 1;
-                    }
-                } else {
-                    let record_json = serde_json::to_string(&record)
-                        .with_context(|| format!("failed to encode NOTAM {}", record.id))?;
-                    let existing: Option<String> = tx
-                        .query_row(
-                            "SELECT record_json FROM current_notams WHERE id = ?1",
-                            [&record.id],
-                            |row| row.get(0),
-                        )
-                        .optional()
-                        .with_context(|| format!("failed to query NOTAM {}", record.id))?;
-                    tx.execute(
-                        "INSERT INTO current_notams (
-                            id, status, last_updated_utc, record_json, updated_at_utc
-                        ) VALUES (?1, ?2, ?3, ?4, ?5)
-                        ON CONFLICT(id) DO UPDATE SET
-                            status = excluded.status,
-                            last_updated_utc = excluded.last_updated_utc,
-                            record_json = excluded.record_json,
-                            updated_at_utc = excluded.updated_at_utc",
-                        params![
-                            record.id.as_str(),
-                            record.notam_status.as_deref(),
-                            record.last_updated_utc.as_deref(),
-                            record_json,
-                            applied_at_utc.as_str()
-                        ],
-                    )
-                    .with_context(|| format!("failed to upsert NOTAM {}", record.id))?;
-                    if existing.as_deref() != Some(record_json.as_str()) {
-                        changed_count += 1;
-                    }
-                }
+                let (changed, removed) = apply_record_to_projection(
+                    &tx,
+                    ProjectionTable::Current,
+                    &record,
+                    &applied_at_utc,
+                )?;
+                changed_count += changed;
+                removed_count += removed;
             }
         }
         let max_ingest_seq_text = max_ingest_seq.to_string();
@@ -236,10 +205,11 @@ impl NotamPersistentStore {
         let mut records = Vec::new();
         for row in rows {
             let record_json = row.context("failed to read NOTAM record JSON")?;
-            records.push(
-                serde_json::from_str::<StructuredNotamRecord>(&record_json)
-                    .context("failed to parse NOTAM record JSON")?,
-            );
+            let record = serde_json::from_str::<StructuredNotamRecord>(&record_json)
+                .context("failed to parse NOTAM record JSON")?;
+            validate_canonical_structured_notam_record(&record)
+                .with_context(|| format!("failed to validate canonical NOTAM {}", record.id))?;
+            records.push(record);
         }
         Ok(records)
     }
@@ -315,7 +285,7 @@ impl NotamPersistentStore {
     fn open_connection(&self) -> anyhow::Result<Connection> {
         fs::create_dir_all(self.state_root())
             .with_context(|| format!("failed to create {}", self.state_root().display()))?;
-        let connection = Connection::open(self.sqlite_path())
+        let mut connection = Connection::open(self.sqlite_path())
             .with_context(|| format!("failed to open {}", self.sqlite_path().display()))?;
         connection
             .busy_timeout(std::time::Duration::from_secs(5))
@@ -356,14 +326,123 @@ impl NotamPersistentStore {
                 ",
             )
             .context("failed to initialize NOTAM sqlite schema")?;
-        connection
-            .execute(
-                "INSERT INTO metadata(key, value) VALUES ('schema_version', ?1)
-                 ON CONFLICT(key) DO UPDATE SET value = excluded.value",
-                [NOTAM_STORE_SCHEMA_VERSION.to_string()],
-            )
-            .context("failed to record NOTAM sqlite schema version")?;
+        self.ensure_schema(&mut connection)?;
         Ok(connection)
+    }
+
+    fn ensure_schema(&self, connection: &mut Connection) -> anyhow::Result<()> {
+        let schema_version = connection
+            .query_row(
+                "SELECT value FROM metadata WHERE key = 'schema_version'",
+                [],
+                |row| row.get::<_, String>(0),
+            )
+            .optional()
+            .context("failed to query NOTAM sqlite schema version")?;
+        match schema_version.as_deref() {
+            None => {
+                connection
+                    .execute(
+                        "INSERT INTO metadata(key, value) VALUES ('schema_version', ?1)",
+                        [NOTAM_STORE_SCHEMA_VERSION.to_string()],
+                    )
+                    .context("failed to initialize NOTAM sqlite schema version")?;
+                Ok(())
+            }
+            Some("3") => Ok(()),
+            Some("2") => self.reproject_schema_v2(connection),
+            Some(version) => bail!(
+                "unsupported NOTAM sqlite schema {version}; required {NOTAM_STORE_SCHEMA_VERSION}"
+            ),
+        }
+    }
+
+    fn reproject_schema_v2(&self, connection: &mut Connection) -> anyhow::Result<()> {
+        let raw_rows = {
+            let mut statement = connection
+                .prepare(
+                    "SELECT ingest_seq, message_json
+                     FROM raw_notam_messages
+                     ORDER BY ingest_seq",
+                )
+                .context("failed to prepare NOTAM schema reprojection query")?;
+            let rows = statement
+                .query_map([], |row| {
+                    Ok((row.get::<_, i64>(0)?, row.get::<_, String>(1)?))
+                })
+                .context("failed to query NOTAM schema reprojection rows")?
+                .collect::<Result<Vec<_>, _>>()
+                .context("failed to read NOTAM schema reprojection rows")?;
+            rows
+        };
+        let current_count: i64 = connection
+            .query_row("SELECT COUNT(*) FROM current_notams", [], |row| row.get(0))
+            .context("failed to count current NOTAM projection")?;
+        if current_count > 0 && raw_rows.first().map(|row| row.0) != Some(1) {
+            bail!(
+                "cannot reproject NOTAM schema 2 without complete raw history beginning at ingest sequence 1"
+            );
+        }
+
+        let reprojected_at_utc = Utc::now().to_rfc3339();
+        let max_ingest_seq = raw_rows.last().map(|row| row.0).unwrap_or(0);
+        let tx = connection
+            .transaction()
+            .context("failed to start NOTAM schema reprojection transaction")?;
+        tx.execute_batch(
+            "DROP TABLE IF EXISTS current_notams_v3;
+             CREATE TABLE current_notams_v3 (
+                id TEXT PRIMARY KEY,
+                status TEXT,
+                last_updated_utc TEXT,
+                record_json TEXT NOT NULL,
+                updated_at_utc TEXT NOT NULL
+             );",
+        )
+        .context("failed to create NOTAM schema 3 projection")?;
+        for (ingest_seq, message_json) in &raw_rows {
+            if let Some(record) =
+                structured_notam_record_from_json(message_json).with_context(|| {
+                    format!("failed to normalize raw NOTAM reprojection row {ingest_seq}")
+                })?
+            {
+                apply_record_to_projection(
+                    &tx,
+                    ProjectionTable::SchemaV3,
+                    &record,
+                    &reprojected_at_utc,
+                )?;
+            }
+        }
+        tx.execute(
+            "INSERT INTO metadata(key, value) VALUES (?1, ?2)
+             ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+            params![RAW_INGEST_CURSOR_METADATA_KEY, max_ingest_seq.to_string()],
+        )
+        .context("failed to update NOTAM reprojection cursor")?;
+        tx.execute(
+            "UPDATE raw_notam_messages
+             SET applied_at_utc = COALESCE(applied_at_utc, ?1)",
+            [&reprojected_at_utc],
+        )
+        .context("failed to mark reprojected NOTAM rows applied")?;
+        tx.execute(
+            "UPDATE metadata SET value = ?1 WHERE key = 'schema_version'",
+            [NOTAM_STORE_SCHEMA_VERSION.to_string()],
+        )
+        .context("failed to promote NOTAM sqlite schema version")?;
+        tx.execute_batch(
+            "ALTER TABLE current_notams RENAME TO current_notams_v2_retired;
+             ALTER TABLE current_notams_v3 RENAME TO current_notams;
+             DROP TABLE current_notams_v2_retired;
+             CREATE INDEX current_notams_status_idx ON current_notams(status);
+             CREATE INDEX current_notams_last_updated_idx
+                ON current_notams(last_updated_utc);",
+        )
+        .context("failed to atomically promote NOTAM schema 3 projection")?;
+        tx.commit()
+            .context("failed to commit NOTAM schema reprojection")?;
+        Ok(())
     }
 
     fn prune_applied_raw_messages(&self) -> anyhow::Result<()> {
@@ -398,6 +477,75 @@ impl NotamPersistentStore {
     fn state_root(&self) -> PathBuf {
         self.root.join("state")
     }
+}
+
+#[derive(Clone, Copy)]
+enum ProjectionTable {
+    Current,
+    SchemaV3,
+}
+
+impl ProjectionTable {
+    fn name(self) -> &'static str {
+        match self {
+            Self::Current => "current_notams",
+            Self::SchemaV3 => "current_notams_v3",
+        }
+    }
+}
+
+fn apply_record_to_projection(
+    tx: &Transaction<'_>,
+    table: ProjectionTable,
+    record: &StructuredNotamRecord,
+    updated_at_utc: &str,
+) -> anyhow::Result<(usize, usize)> {
+    let table = table.name();
+    match notam_projection_action(record)? {
+        NotamProjectionAction::Remove => {
+            let sql = format!("DELETE FROM {table} WHERE id = ?1");
+            let removed = tx
+                .execute(&sql, [&record.id])
+                .with_context(|| format!("failed to delete NOTAM {}", record.id))?;
+            return Ok((0, removed));
+        }
+        NotamProjectionAction::Upsert => {}
+    }
+
+    let record_json = serde_json::to_string(record)
+        .with_context(|| format!("failed to encode NOTAM {}", record.id))?;
+    let existing: Option<String> = tx
+        .query_row(
+            &format!("SELECT record_json FROM {table} WHERE id = ?1"),
+            [&record.id],
+            |row| row.get(0),
+        )
+        .optional()
+        .with_context(|| format!("failed to query NOTAM {}", record.id))?;
+    tx.execute(
+        &format!(
+            "INSERT INTO {table} (
+            id, status, last_updated_utc, record_json, updated_at_utc
+         ) VALUES (?1, ?2, ?3, ?4, ?5)
+         ON CONFLICT(id) DO UPDATE SET
+            status = excluded.status,
+            last_updated_utc = excluded.last_updated_utc,
+            record_json = excluded.record_json,
+            updated_at_utc = excluded.updated_at_utc"
+        ),
+        params![
+            record.id.as_str(),
+            record.notam_status.as_deref(),
+            record.last_updated_utc.as_deref(),
+            record_json,
+            updated_at_utc,
+        ],
+    )
+    .with_context(|| format!("failed to upsert NOTAM {}", record.id))?;
+    Ok((
+        (existing.as_deref() != Some(record_json.as_str())) as usize,
+        0,
+    ))
 }
 
 impl Drop for NotamStoreLock {
@@ -510,7 +658,12 @@ mod tests {
         assert_eq!(summary.applied_count, 1);
         assert_eq!(summary.changed_count, 1);
         assert_eq!(summary.removed_count, 0);
-        assert_eq!(store.current_records()?.len(), 1);
+        let records = store.current_records()?;
+        assert_eq!(records.len(), 1);
+        assert_eq!(records[0].id, "D:AAA:2026:N:1");
+        assert_eq!(records[0].notam_status.as_deref(), Some("ACTIVE"));
+        assert_eq!(records[0].notam_function.as_deref(), Some("NOTAMN"));
+        assert_eq!(records[0].airport_id.as_deref(), Some("KAAA"));
         assert!(store.apply_pending_raw_messages(10)?.is_none());
         Ok(())
     }
@@ -520,19 +673,13 @@ mod tests {
         let temp = tempdir()?;
         let store = NotamPersistentStore::new(temp.path());
         store.initialize(&identity("queue-a"))?;
-        store.insert_raw_message_for_test(
-            "message-a",
-            "2026-07-11T02:03:00Z",
-            &captured_notam_line("PUBLISHED"),
-        )?;
+        let published_json = captured_notam_line("PUBLISHED");
+        let cancelled_json = captured_notam_line("CANCELLED");
+        store.insert_raw_message_for_test("message-a", "2026-07-11T02:03:00Z", &published_json)?;
         store.apply_pending_raw_messages(10)?;
         assert_eq!(store.current_records()?.len(), 1);
 
-        store.insert_raw_message_for_test(
-            "message-b",
-            "2026-07-11T02:04:00Z",
-            &captured_notam_line("CANCELLED"),
-        )?;
+        store.insert_raw_message_for_test("message-b", "2026-07-11T02:04:00Z", &cancelled_json)?;
 
         let summary = store
             .apply_pending_raw_messages(10)?
@@ -542,6 +689,147 @@ mod tests {
         assert_eq!(summary.changed_count, 0);
         assert_eq!(summary.removed_count, 1);
         assert!(store.current_records()?.is_empty());
+        let connection = Connection::open(store.sqlite_path())?;
+        let raw_messages = connection
+            .prepare("SELECT message_json FROM raw_notam_messages ORDER BY ingest_seq")?
+            .query_map([], |row| row.get::<_, String>(0))?
+            .collect::<Result<Vec<_>, _>>()?;
+        assert_eq!(raw_messages, vec![published_json, cancelled_json]);
+        Ok(())
+    }
+
+    #[test]
+    fn cancellation_uses_same_identity_across_swim_dialects() -> anyhow::Result<()> {
+        let temp = tempdir()?;
+        let store = NotamPersistentStore::new(temp.path());
+        store.initialize(&identity("queue-a"))?;
+        store.insert_raw_message_for_test(
+            "message-a",
+            "2026-07-11T02:03:00Z",
+            &captured_notam_variant(
+                "PUBLISHED",
+                "N",
+                Some("RWY"),
+                "001",
+                Some("N"),
+                "RWY 01 CLSD.",
+            ),
+        )?;
+        store.apply_pending_raw_messages(10)?;
+        assert_eq!(store.current_records()?[0].id, "D:AAA:2026:N:1");
+
+        store.insert_raw_message_for_test(
+            "message-b",
+            "2026-07-11T02:04:00Z",
+            &captured_notam_variant(
+                "CANCELLED",
+                "NOTAMN",
+                Some("RWY"),
+                "1",
+                None,
+                "RWY 01 CLSD.",
+            ),
+        )?;
+        let summary = store
+            .apply_pending_raw_messages(10)?
+            .expect("cancellation row should apply");
+        assert_eq!(summary.removed_count, 1);
+        assert!(store.current_records()?.is_empty());
+        Ok(())
+    }
+
+    #[test]
+    fn domestic_keyword_comes_from_body_when_transport_is_missing_or_wrong() -> anyhow::Result<()> {
+        let missing = structured_notam_record_from_json(&captured_notam_variant(
+            "ACTIVE",
+            "NOTAMN",
+            None,
+            "2",
+            Some("N"),
+            "AD AP CLSD.",
+        ))?
+        .expect("record");
+        assert_eq!(missing.notam_keyword.as_deref(), Some("AD"));
+
+        let conflicting = structured_notam_record_from_json(&captured_notam_variant(
+            "ACTIVE",
+            "NOTAMN",
+            Some("RWY"),
+            "3",
+            Some("N"),
+            "NAV ILS RWY 33L U/S.",
+        ))?
+        .expect("record");
+        assert_eq!(conflicting.notam_keyword.as_deref(), Some("NAV"));
+        assert_eq!(conflicting.airport_id, None);
+        Ok(())
+    }
+
+    #[test]
+    fn schema_v2_reprojection_replays_canonical_cancellation() -> anyhow::Result<()> {
+        let temp = tempdir()?;
+        let store = NotamPersistentStore::new(temp.path());
+        store.initialize(&identity("queue-a"))?;
+        store.insert_raw_message_for_test(
+            "message-a",
+            "2026-07-11T02:03:00Z",
+            &captured_notam_variant(
+                "PUBLISHED",
+                "N",
+                Some("RWY"),
+                "001",
+                Some("N"),
+                "RWY 01 CLSD.",
+            ),
+        )?;
+        store.insert_raw_message_for_test(
+            "message-b",
+            "2026-07-11T02:04:00Z",
+            &captured_notam_variant(
+                "CANCELLED",
+                "NOTAMN",
+                Some("RWY"),
+                "1",
+                None,
+                "RWY 01 CLSD.",
+            ),
+        )?;
+
+        let connection = Connection::open(store.sqlite_path())?;
+        let mut stale =
+            structured_notam_record_from_json(&captured_notam_line("PUBLISHED"))?.expect("record");
+        stale.id = "D:AAA:2026:N:001".to_string();
+        stale.notam_number = Some("001".to_string());
+        stale.notam_status = Some("PUBLISHED".to_string());
+        stale.notam_function = Some("N".to_string());
+        connection.execute(
+            "INSERT INTO current_notams (
+                id, status, last_updated_utc, record_json, updated_at_utc
+             ) VALUES (?1, ?2, NULL, ?3, ?4)",
+            params![
+                stale.id,
+                stale.notam_status,
+                serde_json::to_string(&stale)?,
+                "2026-07-11T02:03:00Z",
+            ],
+        )?;
+        connection.execute(
+            "UPDATE metadata SET value = '2' WHERE key = 'schema_version'",
+            [],
+        )?;
+        drop(connection);
+
+        assert!(store.current_records()?.is_empty());
+        let connection = Connection::open(store.sqlite_path())?;
+        assert_eq!(
+            connection.query_row(
+                "SELECT value FROM metadata WHERE key = 'schema_version'",
+                [],
+                |row| row.get::<_, String>(0),
+            )?,
+            "3"
+        );
+        assert_eq!(raw_ingest_cursor(&connection)?, 2);
         Ok(())
     }
 
@@ -556,7 +844,29 @@ mod tests {
     }
 
     fn captured_notam_line(status: &str) -> String {
-        let xml = r#"<?xml version="1.0" encoding="UTF-8"?>
+        captured_notam_variant(
+            status,
+            "NOTAMN",
+            Some("RWY"),
+            "1",
+            Some("N"),
+            "RWY 01 CLSD.",
+        )
+    }
+
+    fn captured_notam_variant(
+        status: &str,
+        function: &str,
+        keyword: Option<&str>,
+        number: &str,
+        notam_type: Option<&str>,
+        text: &str,
+    ) -> String {
+        let notam_type = notam_type
+            .map(|value| format!("<event:type>{value}</event:type>"))
+            .unwrap_or_default();
+        let xml = format!(
+            r#"<?xml version="1.0" encoding="UTF-8"?>
 <AIXMBasicMessage xmlns:event="http://www.aixm.aero/schema/5.1/event">
   <hasMember>
     <event:Event>
@@ -565,32 +875,54 @@ mod tests {
           <event:scenario>95</event:scenario>
           <event:textNOTAM>
             <event:NOTAM>
-              <event:number>1</event:number>
+              <event:number>{number}</event:number>
               <event:year>2026</event:year>
-              <event:type>N</event:type>
+              {notam_type}
               <event:issued>2026-07-11T02:00:00.000Z</event:issued>
               <event:location>AAA</event:location>
               <event:effectiveStart>202607110200</event:effectiveStart>
               <event:effectiveEnd>202607111200</event:effectiveEnd>
-              <event:text>RWY 01 CLSD.</event:text>
+              <event:text>{text}</event:text>
             </event:NOTAM>
           </event:textNOTAM>
         </event:EventTimeSlice>
       </event:timeSlice>
     </event:Event>
   </hasMember>
-</AIXMBasicMessage>"#;
+</AIXMBasicMessage>"#
+        );
+        let mut properties = serde_json::Map::from_iter([
+            (
+                "us_gov_dot_faa_aim_fns_nds_SourceType".to_string(),
+                serde_json::json!("D"),
+            ),
+            (
+                "us_gov_dot_faa_aim_fns_nds_ICAOId".to_string(),
+                serde_json::json!("KAAA"),
+            ),
+            (
+                "us_gov_dot_faa_aim_fns_nds_LocationDesignator".to_string(),
+                serde_json::json!("AAA"),
+            ),
+            (
+                "us_gov_dot_faa_aim_fns_nds_NOTAMStatus".to_string(),
+                serde_json::json!(status),
+            ),
+            (
+                "us_gov_dot_faa_aim_fns_nds_NOTAMFunction".to_string(),
+                serde_json::json!(function),
+            ),
+        ]);
+        if let Some(keyword) = keyword {
+            properties.insert(
+                "us_gov_dot_faa_aim_fns_nds_NOTAMKeyword".to_string(),
+                serde_json::json!(keyword),
+            );
+        }
         serde_json::json!({
             "jmsMessageId": "ID:test",
             "receivedAtUtc": "2026-07-11T02:03:00Z",
-            "properties": {
-                "us_gov_dot_faa_aim_fns_nds_SourceType": "D",
-                "us_gov_dot_faa_aim_fns_nds_ICAOId": "KAAA",
-                "us_gov_dot_faa_aim_fns_nds_LocationDesignator": "AAA",
-                "us_gov_dot_faa_aim_fns_nds_NOTAMStatus": status,
-                "us_gov_dot_faa_aim_fns_nds_NOTAMFunction": "NOTAMN",
-                "us_gov_dot_faa_aim_fns_nds_NOTAMKeyword": "RWY"
-            },
+            "properties": properties,
             "bodyText": xml
         })
         .to_string()

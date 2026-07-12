@@ -1,13 +1,45 @@
 {
-"type": "FeatureCollection",
-"name": "Charlotte TAC.tif",
-"crs": { "type": "name", "properties": { "name": "urn:ogc:def:crs:EPSG::3857" } },
-"features": [
-{ "type": "Feature", "properties": { "location": "Charlotte TAC.tif" }, "geometry": { "type": "Polygon", "coordinates": [ [
- [ -9109261.686469592154026, 4286870.236044280230999 ],
- [ -8914464.822725350037217, 4286870.236044280230999 ],
- [ -8914464.822725350037217, 4106950.294863093178719 ],
- [ -9109261.686469592154026, 4106950.294863093178719 ],
- [ -9109261.686469592154026, 4286870.236044280230999 ] ] ] } }
-]
+  "type": "FeatureCollection",
+  "name": "Charlotte TAC.tif",
+  "crs": {
+    "type": "name",
+    "properties": {
+      "name": "urn:ogc:def:crs:EPSG::3857"
+    }
+  },
+  "features": [
+    {
+      "type": "Feature",
+      "properties": {
+        "location": "Charlotte TAC.tif"
+      },
+      "geometry": {
+        "type": "Polygon",
+        "coordinates": [
+          [
+            [
+              -9109196.923908822,
+              4286672.332020398
+            ],
+            [
+              -8915050.170559857,
+              4286512.846020167
+            ],
+            [
+              -8916875.620903395,
+              4107324.3309961935
+            ],
+            [
+              -9107544.873769801,
+              4107466.392516488
+            ],
+            [
+              -9109196.923908822,
+              4286672.332020398
+            ]
+          ]
+        ]
+      }
+    }
+  ]
 }

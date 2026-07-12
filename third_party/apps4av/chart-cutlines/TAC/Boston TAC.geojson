@@ -1,13 +1,45 @@
 {
-"type": "FeatureCollection",
-"name": "Boston TAC.tif",
-"crs": { "type": "name", "properties": { "name": "urn:ogc:def:crs:EPSG::3857" } },
-"features": [
-{ "type": "Feature", "properties": { "location": "Boston TAC.tif" }, "geometry": { "type": "Polygon", "coordinates": [ [
- [ -8001227.550130031071603, 5296763.192592258565128 ],
- [ -7743231.271877724677324, 5296763.192592258565128 ],
- [ -7743231.271877724677324, 5049286.834623009897768 ],
- [ -8001227.550130031071603, 5049286.834623009897768 ],
- [ -8001227.550130031071603, 5296763.192592258565128 ] ] ] } }
-]
+  "type": "FeatureCollection",
+  "name": "Boston TAC.tif",
+  "crs": {
+    "type": "name",
+    "properties": {
+      "name": "urn:ogc:def:crs:EPSG::3857"
+    }
+  },
+  "features": [
+    {
+      "type": "Feature",
+      "properties": {
+        "location": "Boston TAC.tif"
+      },
+      "geometry": {
+        "type": "Polygon",
+        "coordinates": [
+          [
+            [
+              -8001148.067830645,
+              5292619.989986605
+            ],
+            [
+              -7743320.7468244145,
+              5291537.986696471
+            ],
+            [
+              -7747371.502679548,
+              5048851.35357695
+            ],
+            [
+              -7999108.4214117555,
+              5049861.604827319
+            ],
+            [
+              -8001148.067830645,
+              5292619.989986605
+            ]
+          ]
+        ]
+      }
+    }
+  ]
 }

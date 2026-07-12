@@ -1,13 +1,45 @@
 {
-"type": "FeatureCollection",
-"name": "Atlanta TAC.tif",
-"crs": { "type": "name", "properties": { "name": "urn:ogc:def:crs:EPSG::3857" } },
-"features": [
-{ "type": "Feature", "properties": { "location": "Atlanta TAC.tif" }, "geometry": { "type": "Polygon", "coordinates": [ [
- [ -9496239.405924430117011, 4070288.167334891390055 ],
- [ -9306309.430317671969533, 4070288.167334891390055 ],
- [ -9306309.430317671969533, 3895303.963393894489855 ],
- [ -9496239.405924430117011, 3895303.963393894489855 ],
- [ -9496239.405924430117011, 4070288.167334891390055 ] ] ] } }
-]
+  "type": "FeatureCollection",
+  "name": "Atlanta TAC.tif",
+  "crs": {
+    "type": "name",
+    "properties": {
+      "name": "urn:ogc:def:crs:EPSG::3857"
+    }
+  },
+  "features": [
+    {
+      "type": "Feature",
+      "properties": {
+        "location": "Atlanta TAC.tif"
+      },
+      "geometry": {
+        "type": "Polygon",
+        "coordinates": [
+          [
+            [
+              -9496148.709711157,
+              4070207.160760885
+            ],
+            [
+              -9305743.753069032,
+              4070446.584914021
+            ],
+            [
+              -9307163.822964976,
+              3892544.053603381
+            ],
+            [
+              -9494271.079437017,
+              3892306.662515578
+            ],
+            [
+              -9496148.709711157,
+              4070207.160760885
+            ]
+          ]
+        ]
+      }
+    }
+  ]
 }

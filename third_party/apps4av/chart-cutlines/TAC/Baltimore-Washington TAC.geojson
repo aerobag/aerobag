@@ -1,13 +1,45 @@
 {
-"type": "FeatureCollection",
-"name": "Baltimore -Washington TAC.tif",
-"crs": { "type": "name", "properties": { "name": "urn:ogc:def:crs:EPSG::3857" } },
-"features": [
-{ "type": "Feature", "properties": { "location": "Baltimore -Washington TAC.tif" }, "geometry": { "type": "Polygon", "coordinates": [ [
- [ -8721149.621403565630317, 4836921.246399850584567 ],
- [ -8434677.81740633957088, 4836921.246399850584567 ],
- [ -8434677.81740633957088, 4603001.770965472795069 ],
- [ -8721149.621403565630317, 4603001.770965472795069 ],
- [ -8721149.621403565630317, 4836921.246399850584567 ] ] ] } }
-]
+  "type": "FeatureCollection",
+  "name": "Baltimore -Washington TAC.tif",
+  "crs": {
+    "type": "name",
+    "properties": {
+      "name": "urn:ogc:def:crs:EPSG::3857"
+    }
+  },
+  "features": [
+    {
+      "type": "Feature",
+      "properties": {
+        "location": "Baltimore -Washington TAC.tif"
+      },
+      "geometry": {
+        "type": "Polygon",
+        "coordinates": [
+          [
+            [
+              -8721074.633602677,
+              4836366.420742632
+            ],
+            [
+              -8432983.253116941,
+              4836355.536300375
+            ],
+            [
+              -8436240.56052457,
+              4605247.313954968
+            ],
+            [
+              -8717830.565060508,
+              4605278.135952506
+            ],
+            [
+              -8721074.633602677,
+              4836366.420742632
+            ]
+          ]
+        ]
+      }
+    }
+  ]
 }

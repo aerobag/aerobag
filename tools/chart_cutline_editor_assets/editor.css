@@ -1,0 +1,365 @@
+:root {
+  color-scheme: light;
+  font-family: Inter, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  color: #17242d;
+  background: #eef2f4;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body {
+  width: 100%;
+  height: 100%;
+  margin: 0;
+  overflow: hidden;
+}
+
+button,
+select,
+input {
+  min-height: 34px;
+  border: 1px solid #aebbc3;
+  border-radius: 5px;
+  background: #fff;
+  color: #17242d;
+  font: inherit;
+}
+
+button {
+  padding: 0 11px;
+  cursor: pointer;
+}
+
+button:hover:not(:disabled) {
+  background: #edf4f7;
+  border-color: #6e8794;
+}
+
+button:disabled {
+  cursor: default;
+  opacity: 0.42;
+}
+
+button:focus-visible,
+select:focus-visible,
+input:focus-visible {
+  outline: 3px solid rgba(15, 128, 143, 0.28);
+  outline-offset: 1px;
+}
+
+.toolbar {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  min-height: 52px;
+  padding: 8px 10px;
+  background: #fff;
+  border-bottom: 1px solid #cbd5da;
+}
+
+.brand {
+  margin-right: 5px;
+  font-size: 16px;
+  font-weight: 750;
+  white-space: nowrap;
+}
+
+#chartSelect {
+  width: min(300px, 26vw);
+  padding: 0 30px 0 9px;
+}
+
+.iconButton {
+  width: 36px;
+  padding: 0;
+  font-size: 24px;
+  line-height: 1;
+}
+
+.toolbarDivider {
+  width: 1px;
+  height: 28px;
+  margin: 0 3px;
+  background: #d7dfe3;
+}
+
+.toolbarSpacer {
+  flex: 1;
+}
+
+.primaryButton {
+  border-color: #006c78;
+  background: #007d89;
+  color: #fff;
+  font-weight: 700;
+}
+
+.primaryButton:hover:not(:disabled) {
+  border-color: #005864;
+  background: #006c78;
+}
+
+.saveState {
+  min-width: 70px;
+  color: #5a6a73;
+  font-size: 13px;
+  text-align: right;
+}
+
+.saveState.dirty {
+  color: #a34113;
+  font-weight: 700;
+}
+
+.workspace {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(440px, 44vw);
+  height: calc(100vh - 52px);
+}
+
+.overviewPane,
+.loupePane {
+  display: flex;
+  min-width: 0;
+  min-height: 0;
+  flex-direction: column;
+  background: #f7f9fa;
+}
+
+.loupePane {
+  border-left: 1px solid #cbd5da;
+  background: #e8edef;
+}
+
+.paneHeader {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 14px;
+  min-height: 62px;
+  padding: 9px 13px;
+  background: #fff;
+  border-bottom: 1px solid #d5dde1;
+}
+
+h1,
+h2 {
+  margin: 0;
+  font-size: 16px;
+  line-height: 1.2;
+  letter-spacing: 0;
+}
+
+.muted {
+  color: #62737c;
+  font-size: 12px;
+}
+
+.overviewViewport {
+  min-height: 0;
+  flex: 1;
+  overflow: auto;
+  padding: 14px;
+}
+
+.overviewStage {
+  position: relative;
+  width: 100%;
+  overflow: hidden;
+  background: #d9e0e3;
+  box-shadow: 0 1px 4px rgba(27, 43, 52, 0.18);
+  user-select: none;
+}
+
+.overviewStage img,
+.overviewStage svg,
+.loupeStage img,
+.loupeStage svg {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+}
+
+.overviewStage img,
+.loupeStage img {
+  display: block;
+  pointer-events: none;
+}
+
+.overviewStage svg,
+.loupeStage svg {
+  touch-action: none;
+}
+
+.cutlinePolygon {
+  fill: rgba(224, 24, 128, 0.12);
+  stroke: #dd167d;
+  stroke-width: 3;
+  vector-effect: non-scaling-stroke;
+}
+
+.cutlineLine {
+  fill: none;
+  stroke: #dd167d;
+  stroke-width: 3;
+  vector-effect: non-scaling-stroke;
+}
+
+.vertexHandle {
+  fill: #dd167d;
+  stroke: #fff;
+  stroke-width: 2;
+  vector-effect: non-scaling-stroke;
+  cursor: grab;
+}
+
+.vertexHandle:hover,
+.vertexHandle.selected {
+  fill: #008c99;
+  stroke: #fff;
+}
+
+.vertexHandle:active {
+  cursor: grabbing;
+}
+
+.loupeHeader {
+  min-height: 72px;
+}
+
+.coordinateInputs {
+  display: flex;
+  gap: 8px;
+  margin-top: 5px;
+}
+
+.coordinateInputs label {
+  color: #61717a;
+  font-size: 12px;
+}
+
+.coordinateInputs input {
+  width: 104px;
+  min-height: 28px;
+  margin-left: 3px;
+  padding: 2px 6px;
+  font-family: "SFMono-Regular", Consolas, monospace;
+  font-size: 12px;
+}
+
+.segmented {
+  display: flex;
+}
+
+.segmented button {
+  min-height: 30px;
+  border-radius: 0;
+  margin-left: -1px;
+  padding: 0 9px;
+  font-size: 12px;
+}
+
+.segmented button:first-child {
+  margin-left: 0;
+  border-radius: 5px 0 0 5px;
+}
+
+.segmented button:last-child {
+  border-radius: 0 5px 5px 0;
+}
+
+.segmented button.active {
+  z-index: 1;
+  border-color: #007d89;
+  background: #007d89;
+  color: #fff;
+}
+
+.loupeViewport {
+  position: relative;
+  min-height: 0;
+  flex: 1;
+  overflow: auto;
+  background: #cbd3d7;
+}
+
+.loupeStage {
+  position: relative;
+  transform-origin: 0 0;
+  background: #cbd3d7;
+  user-select: none;
+}
+
+.loupeStage img {
+  image-rendering: auto;
+}
+
+.loupeStage.zoomed img {
+  image-rendering: pixelated;
+}
+
+.crosshair {
+  stroke: rgba(0, 95, 105, 0.72);
+  stroke-width: 1;
+  stroke-dasharray: 4 4;
+  vector-effect: non-scaling-stroke;
+  pointer-events: none;
+}
+
+#loupeHandle {
+  vector-effect: non-scaling-stroke;
+}
+
+.loupeFooter {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  min-height: 38px;
+  padding: 7px 11px;
+  background: #fff;
+  border-top: 1px solid #cbd5da;
+  font-size: 12px;
+}
+
+#message {
+  min-width: 0;
+  overflow: hidden;
+  color: #31515b;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+#message.error {
+  color: #aa241c;
+}
+
+@media (max-width: 1000px) {
+  html,
+  body {
+    overflow: auto;
+  }
+
+  .toolbar {
+    flex-wrap: wrap;
+  }
+
+  .workspace {
+    grid-template-columns: 1fr;
+    height: auto;
+  }
+
+  .overviewPane,
+  .loupePane {
+    min-height: 70vh;
+  }
+
+  .loupePane {
+    border-top: 1px solid #cbd5da;
+    border-left: 0;
+  }
+}

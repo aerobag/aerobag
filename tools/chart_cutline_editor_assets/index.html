@@ -1,0 +1,82 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Chart cutline editor</title>
+  <link rel="stylesheet" href="/assets/editor.css">
+</head>
+<body>
+  <header class="toolbar">
+    <div class="brand">Cutline editor</div>
+    <button id="previousChart" class="iconButton" type="button" title="Previous chart" aria-label="Previous chart">&#x2039;</button>
+    <select id="chartSelect" aria-label="Chart"></select>
+    <button id="nextChart" class="iconButton" type="button" title="Next chart" aria-label="Next chart">&#x203a;</button>
+    <div class="toolbarDivider"></div>
+    <button id="undo" class="iconButton" type="button" title="Undo" aria-label="Undo">&#x21b6;</button>
+    <button id="redo" class="iconButton" type="button" title="Redo" aria-label="Redo">&#x21b7;</button>
+    <button id="addVertex" type="button">Add point</button>
+    <button id="deleteVertex" type="button">Delete point</button>
+    <button id="snapVertex" type="button">Snap</button>
+    <div class="toolbarSpacer"></div>
+    <span id="saveState" class="saveState">Loading</span>
+    <button id="reloadChart" type="button">Reload</button>
+    <button id="saveChart" class="primaryButton" type="button">Save</button>
+  </header>
+
+  <main class="workspace">
+    <section class="overviewPane" aria-label="Chart overview">
+      <div class="paneHeader">
+        <div>
+          <h1 id="chartTitle">Chart</h1>
+          <span id="chartFacts" class="muted"></span>
+        </div>
+        <span id="vertexCount" class="muted"></span>
+      </div>
+      <div id="overviewViewport" class="overviewViewport">
+        <div id="overviewStage" class="overviewStage">
+          <img id="overviewImage" alt="Chart source overview" draggable="false">
+          <svg id="overviewSvg" aria-label="Editable cutline overlay">
+            <polygon id="overviewPolygon" class="cutlinePolygon"></polygon>
+            <g id="overviewHandles"></g>
+          </svg>
+        </div>
+      </div>
+    </section>
+
+    <section class="loupePane" aria-label="Selected vertex detail">
+      <div class="paneHeader loupeHeader">
+        <div>
+          <h2 id="vertexTitle">Point</h2>
+          <div class="coordinateInputs">
+            <label>X <input id="pointX" type="number" step="0.1"></label>
+            <label>Y <input id="pointY" type="number" step="0.1"></label>
+          </div>
+        </div>
+        <div class="segmented" aria-label="Loupe scale">
+          <button type="button" data-zoom="1" class="zoomButton active">1:1</button>
+          <button type="button" data-zoom="2" class="zoomButton">2:1</button>
+          <button type="button" data-zoom="4" class="zoomButton">4:1</button>
+        </div>
+      </div>
+      <div id="loupeViewport" class="loupeViewport">
+        <div id="loupeStage" class="loupeStage">
+          <img id="loupeImage" alt="Full-resolution crop around selected cutline point" draggable="false">
+          <svg id="loupeSvg" aria-label="Selected cutline point detail">
+            <polyline id="loupeLine" class="cutlineLine"></polyline>
+            <line id="crosshairH" class="crosshair"></line>
+            <line id="crosshairV" class="crosshair"></line>
+            <circle id="loupeHandle" class="vertexHandle selected" r="7"></circle>
+          </svg>
+        </div>
+      </div>
+      <div class="loupeFooter">
+        <span id="cropFacts" class="muted"></span>
+        <span id="message" role="status"></span>
+      </div>
+    </section>
+  </main>
+
+  <script src="/assets/editor.js"></script>
+</body>
+</html>

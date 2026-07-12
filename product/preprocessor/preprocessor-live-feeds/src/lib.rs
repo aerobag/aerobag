@@ -1510,6 +1510,19 @@ pub fn structured_notam_records(
         .into_iter()
         .filter_map(|message| normalize_captured_notam(message).transpose())
         .collect::<anyhow::Result<Vec<_>>>()?;
+    sort_structured_notam_records(&mut records);
+    Ok(records)
+}
+
+pub fn structured_notam_record_from_json(
+    message_json: &str,
+) -> anyhow::Result<Option<StructuredNotamRecord>> {
+    let message = serde_json::from_str::<CapturedNotamMessage>(message_json)
+        .context("failed to parse captured NOTAM message JSON")?;
+    normalize_captured_notam(message)
+}
+
+fn sort_structured_notam_records(records: &mut [StructuredNotamRecord]) {
     records.sort_by(|left, right| {
         (
             &left.icao_id,
@@ -1526,7 +1539,6 @@ pub fn structured_notam_records(
                 &right.id,
             ))
     });
-    Ok(records)
 }
 
 fn normalize_captured_notam(

@@ -20,15 +20,15 @@ import javax.jms.Queue;
 import javax.jms.Session;
 import javax.jms.StreamMessage;
 import javax.jms.TextMessage;
-import java.io.BufferedWriter;
 import java.io.Closeable;
-import java.io.FileOutputStream;
 import java.io.IOException;
-import java.io.OutputStream;
-import java.io.OutputStreamWriter;
-import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
+import java.nio.charset.StandardCharsets;
 import java.nio.file.Path;
+import java.security.MessageDigest;
+import java.sql.DriverManager;
+import java.sql.PreparedStatement;
+import java.sql.SQLException;
 import java.time.Instant;
 import java.util.ArrayList;
 import java.util.Base64;
@@ -53,16 +53,9 @@ public final class SwimNotamsConsumer {
         if (cli.maxMessagesOverride != null) {
             config.maxMessages = cli.maxMessagesOverride;
         }
-        if (cli.idleExitAfterMillisOverride != null) {
-            config.idleExitAfterMillis = cli.idleExitAfterMillisOverride;
-        }
         if (cli.receiveTimeoutMillisOverride != null) {
             config.receiveTimeoutMillis = cli.receiveTimeoutMillisOverride;
         }
-
-        Files.createDirectories(cli.outputDir);
-        Path messagesPath = cli.outputDir.resolve("messages.jsonl");
-        Path summaryPath = cli.outputDir.resolve("summary.json");
 
         Summary summary = new Summary();
         summary.startedAtUtc = Instant.now().toString();
@@ -72,14 +65,11 @@ public final class SwimNotamsConsumer {
         summary.vpn = config.vpn;
         summary.maxMessages = config.maxMessages;
         summary.receiveTimeoutMillis = config.receiveTimeoutMillis;
-        summary.idleExitAfterMillis = config.idleExitAfterMillis;
 
         Connection connection = null;
         Session session = null;
         MessageConsumer consumer = null;
-        FileOutputStream messageStream = null;
-        BufferedWriter writer = null;
-        try {
+        try (RawMessageStore store = RawMessageStore.open(cli.sqlitePath)) {
             ConnectionFactory factory = createConnectionFactory(config);
             connection = factory.createConnection();
             session = connection.createSession(false, Session.CLIENT_ACKNOWLEDGE);
@@ -87,27 +77,14 @@ public final class SwimNotamsConsumer {
             consumer = session.createConsumer(queue);
             connection.start();
 
-            messageStream = new FileOutputStream(messagesPath.toFile());
-            writer = new BufferedWriter(new OutputStreamWriter(messageStream, StandardCharsets.UTF_8));
-
-            long lastMessageAt = System.currentTimeMillis();
-            while (summary.messageCount < config.maxMessages) {
+            while (config.maxMessages == 0 || summary.messageCount < config.maxMessages) {
                 Message message = consumer.receive(config.receiveTimeoutMillis);
-                long now = System.currentTimeMillis();
                 if (message == null) {
-                    if (now - lastMessageAt >= config.idleExitAfterMillis) {
-                        summary.exitReason = "idle_timeout";
-                        break;
-                    }
                     continue;
                 }
-                lastMessageAt = now;
 
                 CapturedMessage captured = capture(message, summary.messageCount + 1);
-                writer.write(JSON_LINE.writeValueAsString(captured));
-                writer.write('\n');
-                writer.flush();
-                messageStream.getChannel().force(true);
+                store.insert(captured);
 
                 message.acknowledge();
 
@@ -120,22 +97,18 @@ public final class SwimNotamsConsumer {
                 summary.totalBodyBytes += captured.bodySizeBytes;
             }
             if (summary.exitReason == null) {
-                summary.exitReason = summary.messageCount >= config.maxMessages
+                summary.exitReason = config.maxMessages > 0 && summary.messageCount >= config.maxMessages
                         ? "max_messages"
                         : "completed";
             }
         } finally {
-            closeQuietly(writer);
-            closeQuietly(messageStream);
             closeQuietly(consumer);
             closeQuietly(session);
             closeQuietly(connection);
         }
 
         summary.finishedAtUtc = Instant.now().toString();
-        try (OutputStream output = Files.newOutputStream(summaryPath)) {
-            JSON_PRETTY.writeValue(output, summary);
-        }
+        System.out.println(JSON_PRETTY.writeValueAsString(summary));
     }
 
     private static ConnectionFactory createConnectionFactory(SwimConfig config) throws Exception {
@@ -302,15 +275,94 @@ public final class SwimNotamsConsumer {
         return Integer.toString(mode);
     }
 
+    private static final class RawMessageStore implements AutoCloseable {
+        private final java.sql.Connection connection;
+        private final PreparedStatement insert;
+
+        private RawMessageStore(java.sql.Connection connection) throws SQLException {
+            this.connection = connection;
+            this.insert = connection.prepareStatement(
+                    "INSERT OR IGNORE INTO raw_notam_messages ("
+                            + "dedupe_key, jms_message_id, received_at_utc, message_json, message_sha256, committed_at_utc"
+                            + ") VALUES (?, ?, ?, ?, ?, ?)"
+            );
+        }
+
+        static RawMessageStore open(Path sqlitePath) throws Exception {
+            Path parent = sqlitePath.getParent();
+            if (parent != null) {
+                Files.createDirectories(parent);
+            }
+            java.sql.Connection connection = DriverManager.getConnection("jdbc:sqlite:" + sqlitePath);
+            connection.setAutoCommit(false);
+            try (java.sql.Statement statement = connection.createStatement()) {
+                statement.execute("PRAGMA busy_timeout = 5000");
+                statement.execute("PRAGMA journal_mode = WAL");
+                statement.execute("PRAGMA synchronous = FULL");
+                statement.execute(
+                        "CREATE TABLE IF NOT EXISTS raw_notam_messages ("
+                                + "ingest_seq INTEGER PRIMARY KEY AUTOINCREMENT,"
+                                + "dedupe_key TEXT NOT NULL UNIQUE,"
+                                + "jms_message_id TEXT,"
+                                + "received_at_utc TEXT NOT NULL,"
+                                + "message_json TEXT NOT NULL,"
+                                + "message_sha256 TEXT NOT NULL,"
+                                + "committed_at_utc TEXT NOT NULL,"
+                                + "applied_at_utc TEXT"
+                                + ")"
+                );
+                statement.execute(
+                        "CREATE INDEX IF NOT EXISTS raw_notam_messages_applied_idx "
+                                + "ON raw_notam_messages(applied_at_utc, ingest_seq)"
+                );
+            }
+            connection.commit();
+            return new RawMessageStore(connection);
+        }
+
+        void insert(CapturedMessage captured) throws Exception {
+            String messageJson = JSON_LINE.writeValueAsString(captured);
+            String messageSha256 = sha256Hex(messageJson);
+            insert.setString(1, dedupeKey(captured, messageSha256));
+            insert.setString(2, captured.jmsMessageId);
+            insert.setString(3, captured.receivedAtUtc);
+            insert.setString(4, messageJson);
+            insert.setString(5, messageSha256);
+            insert.setString(6, Instant.now().toString());
+            insert.executeUpdate();
+            connection.commit();
+        }
+
+        @Override
+        public void close() throws SQLException {
+            insert.close();
+            connection.close();
+        }
+    }
+
+    private static String dedupeKey(CapturedMessage captured, String messageSha256) {
+        if (captured.jmsMessageId != null && !captured.jmsMessageId.isBlank()) {
+            return "jms:" + captured.jmsMessageId;
+        }
+        return "sha256:" + messageSha256;
+    }
+
+    private static String sha256Hex(String value) throws Exception {
+        MessageDigest digest = MessageDigest.getInstance("SHA-256");
+        byte[] hash = digest.digest(value.getBytes(StandardCharsets.UTF_8));
+        StringBuilder out = new StringBuilder(hash.length * 2);
+        for (byte b : hash) {
+            out.append(String.format("%02x", b));
+        }
+        return out.toString();
+    }
+
     private static void closeQuietly(Object closeable) {
         if (closeable == null) {
             return;
         }
         try {
-            if (closeable instanceof BufferedWriter) {
-                BufferedWriter writer = (BufferedWriter) closeable;
-                writer.close();
-            } else if (closeable instanceof MessageConsumer) {
+            if (closeable instanceof MessageConsumer) {
                 MessageConsumer consumer = (MessageConsumer) closeable;
                 consumer.close();
             } else if (closeable instanceof Session) {
@@ -329,30 +381,26 @@ public final class SwimNotamsConsumer {
 
     static final class CliArgs {
         final Path configPath;
-        final Path outputDir;
+        final Path sqlitePath;
         final Integer maxMessagesOverride;
-        final Long idleExitAfterMillisOverride;
         final Long receiveTimeoutMillisOverride;
 
         CliArgs(
                 Path configPath,
-                Path outputDir,
+                Path sqlitePath,
                 Integer maxMessagesOverride,
-                Long idleExitAfterMillisOverride,
                 Long receiveTimeoutMillisOverride
         ) {
             this.configPath = configPath;
-            this.outputDir = outputDir;
+            this.sqlitePath = sqlitePath;
             this.maxMessagesOverride = maxMessagesOverride;
-            this.idleExitAfterMillisOverride = idleExitAfterMillisOverride;
             this.receiveTimeoutMillisOverride = receiveTimeoutMillisOverride;
         }
 
         static CliArgs parse(String[] args) {
             Path configPath = null;
-            Path outputDir = null;
+            Path sqlitePath = null;
             Integer maxMessages = null;
-            Long idleExitAfterMillis = null;
             Long receiveTimeoutMillis = null;
             for (int i = 0; i < args.length; i += 2) {
                 if (i + 1 >= args.length) {
@@ -364,14 +412,11 @@ public final class SwimNotamsConsumer {
                     case "--config":
                         configPath = Path.of(value);
                         break;
-                    case "--output-dir":
-                        outputDir = Path.of(value);
+                    case "--sqlite":
+                        sqlitePath = Path.of(value);
                         break;
                     case "--max-messages":
                         maxMessages = Integer.parseInt(value);
-                        break;
-                    case "--idle-exit-ms":
-                        idleExitAfterMillis = Long.parseLong(value);
                         break;
                     case "--receive-timeout-ms":
                         receiveTimeoutMillis = Long.parseLong(value);
@@ -380,15 +425,15 @@ public final class SwimNotamsConsumer {
                         throw new IllegalArgumentException(usage());
                 }
             }
-            if (configPath == null || outputDir == null) {
+            if (configPath == null || sqlitePath == null) {
                 throw new IllegalArgumentException(usage());
             }
-            return new CliArgs(configPath, outputDir, maxMessages, idleExitAfterMillis, receiveTimeoutMillis);
+            return new CliArgs(configPath, sqlitePath, maxMessages, receiveTimeoutMillis);
         }
 
         static String usage() {
-            return "usage: java -jar swim-notams-fetch.jar --config <path> --output-dir <path> "
-                    + "[--max-messages <count>] [--idle-exit-ms <ms>] [--receive-timeout-ms <ms>]";
+            return "usage: java -jar swim-notams-fetch.jar --config <path> --sqlite <path> "
+                    + "[--max-messages <count>] [--receive-timeout-ms <ms>]";
         }
     }
 
@@ -399,8 +444,7 @@ public final class SwimNotamsConsumer {
         public String username;
         public String password;
         public String vpn;
-        public Integer maxMessages = 100;
-        public Long idleExitAfterMillis = 15000L;
+        public Integer maxMessages = 0;
         public Long receiveTimeoutMillis = 2000L;
         public String trustStorePath;
         public String trustStoreFormat;
@@ -413,11 +457,8 @@ public final class SwimNotamsConsumer {
             require(username, "username");
             require(password, "password");
             require(vpn, "vpn");
-            if (maxMessages == null || maxMessages <= 0) {
-                throw new IllegalArgumentException("maxMessages must be positive");
-            }
-            if (idleExitAfterMillis == null || idleExitAfterMillis <= 0) {
-                throw new IllegalArgumentException("idleExitAfterMillis must be positive");
+            if (maxMessages == null || maxMessages < 0) {
+                throw new IllegalArgumentException("maxMessages must be non-negative");
             }
             if (receiveTimeoutMillis == null || receiveTimeoutMillis <= 0) {
                 throw new IllegalArgumentException("receiveTimeoutMillis must be positive");
@@ -463,7 +504,6 @@ public final class SwimNotamsConsumer {
         public String connectionFactory;
         public String vpn;
         public int maxMessages;
-        public long idleExitAfterMillis;
         public long receiveTimeoutMillis;
         public int messageCount;
         public long totalBodyBytes;

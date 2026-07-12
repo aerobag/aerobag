@@ -13,6 +13,7 @@ repositories {
 dependencies {
     implementation 'com.solacesystems:sol-jms:10.29.1'
     implementation 'com.fasterxml.jackson.core:jackson-databind:2.17.1'
+    implementation 'org.xerial:sqlite-jdbc:3.46.1.0'
 }
 
 mainClassName = 'org.aerobag.swim.SwimNotamsConsumer'

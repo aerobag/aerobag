@@ -1296,8 +1296,6 @@ mod tests {
     fn notam_live_feed_builder_publishes_keyed_record_state() -> anyhow::Result<()> {
         let temp = tempdir()?;
         let state_root = temp.path().join("notam-state");
-        let segments_root = state_root.join("ingest").join("segments");
-        fs::create_dir_all(&segments_root)?;
         let xml = r#"<?xml version="1.0" encoding="UTF-8"?>
 <AIXMBasicMessage xmlns:event="http://www.aixm.aero/schema/5.1/event">
   <hasMember>
@@ -1335,8 +1333,6 @@ mod tests {
             },
             "bodyText": xml
         });
-        let segment_path = segments_root.join("001.jsonl");
-        fs::write(&segment_path, format!("{line}\n"))?;
         let store = NotamPersistentStore::new(&state_root);
         store.initialize(&crate::notam_store::SwimNotamSubscriptionIdentity {
             provider_url: "smfs://example.test:55443".to_string(),
@@ -1345,12 +1341,12 @@ mod tests {
             username: "example.user".to_string(),
             vpn: "example-vpn".to_string(),
         })?;
-        store.apply_segment(&crate::notam_store::NotamIngestedSegment {
-            path: segment_path.clone(),
-            sha256: hash_file(&segment_path)?,
-            message_count: 1,
-            last_received_at_utc: Some("2026-07-11T02:03:00Z".to_string()),
-        })?;
+        store.insert_raw_message_for_test(
+            "message-a",
+            "2026-07-11T02:03:00Z",
+            &line.to_string(),
+        )?;
+        store.apply_pending_raw_messages(10)?;
 
         let observed_at_utc = Utc.with_ymd_and_hms(2026, 7, 11, 2, 3, 0).unwrap();
         let event = UpstreamEvent {
@@ -1358,7 +1354,7 @@ mod tests {
             source_id: "notams:test".to_string(),
             previous_source_id: None,
             observed_at_utc,
-            payload_path: Some(segments_root.join("001.jsonl")),
+            payload_path: None,
         };
         let builder = NotamLiveFeedBuilder::new(&state_root);
         let built = builder.build_state(&event, &temp.path().join("scratch"))?;

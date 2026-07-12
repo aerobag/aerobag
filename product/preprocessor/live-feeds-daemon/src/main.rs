@@ -4,7 +4,7 @@ use std::{
     io::{BufRead, BufReader, Write},
     net::{SocketAddr, TcpListener, TcpStream},
     path::{Component, Path, PathBuf},
-    process::Command,
+    process::{Child, Command, Stdio},
     sync::{
         mpsc::{self, Receiver, RecvTimeoutError, Sender},
         Arc, Mutex,
@@ -26,7 +26,7 @@ use preprocessor_live_feeds::{
         QueuedLiveFeedSource, SseBroker, SystemClock, UpstreamEvent, LIVE_FEEDS_SCHEMA_VERSION,
         LIVE_FEED_FAILED_SCRATCH_RETAIN_COUNT,
     },
-    notam_store::{NotamIngestedSegment, NotamPersistentStore, SwimNotamSubscriptionIdentity},
+    notam_store::{AppliedRawNotamSummary, NotamPersistentStore, SwimNotamSubscriptionIdentity},
     products::{
         fetch_tfr_detail_backfill_once, LiveFeedFetchConfig, MetarLiveFeedBuilder,
         NexradSourceGridLiveFeedBuilder, NotamLiveFeedBuilder, ObstaclesLiveFeedBuilder,
@@ -102,16 +102,6 @@ struct SwimNotamsConfig {
     collector_path: PathBuf,
     state_root: PathBuf,
     retry_interval_ms: u64,
-}
-
-#[derive(Debug, Clone, Deserialize)]
-struct SwimNotamsCollectorSummary {
-    #[serde(rename = "messageCount")]
-    message_count: u64,
-    #[serde(rename = "exitReason")]
-    exit_reason: Option<String>,
-    #[serde(rename = "lastReceivedAtUtc")]
-    last_received_at_utc: Option<String>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -1382,25 +1372,6 @@ where
     }
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum SwimNotamsCollectorOutcome {
-    Success,
-    Failure,
-}
-
-fn swim_notams_collector_restart_delay(
-    outcome: SwimNotamsCollectorOutcome,
-    retry_interval_ms: u64,
-) -> Duration {
-    match outcome {
-        // The collector exits on idle so the daemon can close and apply a durable
-        // segment. That is not a failed subscription and must not leave the FAA
-        // queue unconsumed for the failure backoff interval.
-        SwimNotamsCollectorOutcome::Success => Duration::from_secs(1),
-        SwimNotamsCollectorOutcome::Failure => Duration::from_millis(retry_interval_ms),
-    }
-}
-
 fn start_swim_notams_supervisor(
     config: SwimNotamsConfig,
     state_root: PathBuf,
@@ -1411,54 +1382,59 @@ fn start_swim_notams_supervisor(
     let store = NotamPersistentStore::new(state_root);
     store.initialize(&identity)?;
     let lock = store.acquire_lock()?;
-    recover_and_queue_swim_notams(&store, &sender, &status)?;
+    apply_and_queue_swim_notams(&store, &sender, &status)?;
     queue_persisted_notam_state_event(&store, &sender, &status)?;
     thread::spawn(move || {
         let _lock = lock;
-        let mut run_counter = 0_u64;
         loop {
-            run_counter = run_counter.saturating_add(1);
-            if let Err(error) = recover_and_queue_swim_notams(&store, &sender, &status) {
-                status.record_source_failure("notams", format!("{error:#}"));
-            }
-            let started_at = Utc::now();
-            let result = run_swim_notams_collector_once(&config, &store, started_at, run_counter);
-            let outcome = match result {
-                Ok(Some(segment)) => match store.apply_segment(&segment) {
-                    Ok(true) => {
-                        if let Err(error) = queue_notam_segment_event(&sender, &status, &segment) {
+            match start_swim_notams_collector_process(&config, &store) {
+                Ok(mut child) => {
+                    status.record_source_success("notams", None, "source_connected");
+                    let mut failure_after_start = false;
+                    loop {
+                        if let Err(error) = apply_and_queue_swim_notams(&store, &sender, &status) {
                             status.record_source_failure("notams", format!("{error:#}"));
-                            SwimNotamsCollectorOutcome::Failure
-                        } else {
-                            SwimNotamsCollectorOutcome::Success
+                        }
+                        match child.try_wait() {
+                            Ok(Some(exit_status)) => {
+                                if exit_status.success() {
+                                    status.record_source_success(
+                                        "notams",
+                                        None,
+                                        "collector_exited",
+                                    );
+                                } else {
+                                    status.record_source_failure(
+                                        "notams",
+                                        format!("SWIM NOTAM collector exited with {exit_status}"),
+                                    );
+                                    failure_after_start = true;
+                                }
+                                break;
+                            }
+                            Ok(None) => thread::sleep(Duration::from_secs(1)),
+                            Err(error) => {
+                                status.record_source_failure(
+                                    "notams",
+                                    format!("failed to poll SWIM NOTAM collector: {error:#}"),
+                                );
+                                let _ = child.kill();
+                                failure_after_start = true;
+                                break;
+                            }
                         }
                     }
-                    Ok(false) => {
-                        status.record_source_success(
-                            "notams",
-                            segment.last_received_at_utc.clone(),
-                            "source_duplicate_segment",
-                        );
-                        SwimNotamsCollectorOutcome::Success
+                    if failure_after_start {
+                        thread::sleep(Duration::from_millis(config.retry_interval_ms));
+                    } else {
+                        thread::sleep(Duration::from_secs(1));
                     }
-                    Err(error) => {
-                        status.record_source_failure("notams", format!("{error:#}"));
-                        SwimNotamsCollectorOutcome::Failure
-                    }
-                },
-                Ok(None) => {
-                    status.record_source_success("notams", None, "source_idle");
-                    SwimNotamsCollectorOutcome::Success
                 }
                 Err(error) => {
                     status.record_source_failure("notams", format!("{error:#}"));
-                    SwimNotamsCollectorOutcome::Failure
+                    thread::sleep(Duration::from_millis(config.retry_interval_ms));
                 }
-            };
-            thread::sleep(swim_notams_collector_restart_delay(
-                outcome,
-                config.retry_interval_ms,
-            ));
+            }
         }
     });
     Ok(())
@@ -1554,65 +1530,40 @@ fn queue_persisted_notam_state_event(
     Ok(())
 }
 
-fn recover_and_queue_swim_notams(
+fn apply_and_queue_swim_notams(
     store: &NotamPersistentStore,
     sender: &Sender<UpstreamEvent>,
     status: &DaemonStatus,
 ) -> anyhow::Result<()> {
-    let recovered = store.recover_active_runs()?;
-    for segment in recovered {
-        if store.apply_segment(&segment)? {
-            queue_notam_segment_event(sender, status, &segment)?;
+    while let Some(summary) = store.apply_pending_raw_messages(500)? {
+        queue_notam_raw_ingest_event(sender, status, &summary)?;
+        if summary.applied_count < 500 {
+            break;
         }
     }
     Ok(())
 }
 
-fn run_swim_notams_collector_once(
+fn start_swim_notams_collector_process(
     config: &SwimNotamsConfig,
     store: &NotamPersistentStore,
-    started_at: chrono::DateTime<Utc>,
-    run_counter: u64,
-) -> anyhow::Result<Option<NotamIngestedSegment>> {
-    let run_dir = store.prepare_active_run(started_at, run_counter)?;
-    let output = Command::new(&config.collector_path)
+) -> anyhow::Result<Child> {
+    Command::new(&config.collector_path)
         .arg("--config")
         .arg(&config.config_path)
-        .arg("--output-dir")
-        .arg(&run_dir)
-        .output()
+        .arg("--sqlite")
+        .arg(store.sqlite_path())
+        .arg("--max-messages")
+        .arg("0")
+        .stdout(Stdio::inherit())
+        .stderr(Stdio::inherit())
+        .spawn()
         .with_context(|| {
             format!(
-                "failed to run SWIM NOTAM collector {}",
+                "failed to start SWIM NOTAM collector {}",
                 config.collector_path.display()
             )
-        })?;
-    if !output.status.success() {
-        bail!(
-            "SWIM NOTAM collector failed with status {}: {}",
-            output.status,
-            summarize_swim_notams_collector_output(&output.stdout, &output.stderr)
-        );
-    }
-    let summary_path = run_dir.join("summary.json");
-    let summary: SwimNotamsCollectorSummary = serde_json::from_slice(
-        &fs::read(&summary_path)
-            .with_context(|| format!("failed to read {}", summary_path.display()))?,
-    )
-    .with_context(|| format!("failed to parse {}", summary_path.display()))?;
-    if summary.message_count == 0 {
-        eprintln!(
-            "SWIM NOTAM collector exited with no messages ({})",
-            summary.exit_reason.as_deref().unwrap_or("unknown")
-        );
-        remove_path_if_exists(&run_dir)?;
-        return Ok(None);
-    }
-    store.complete_collector_run(
-        &run_dir,
-        summary.message_count as usize,
-        summary.last_received_at_utc,
-    )
+        })
 }
 
 fn read_swim_notams_subscription_identity(
@@ -1632,12 +1583,12 @@ fn read_swim_notams_subscription_identity(
     })
 }
 
-fn queue_notam_segment_event(
+fn queue_notam_raw_ingest_event(
     sender: &Sender<UpstreamEvent>,
     status: &DaemonStatus,
-    segment: &NotamIngestedSegment,
+    summary: &AppliedRawNotamSummary,
 ) -> anyhow::Result<()> {
-    let observed_at_utc = segment
+    let observed_at_utc = summary
         .last_received_at_utc
         .as_deref()
         .and_then(|value| chrono::DateTime::parse_from_rfc3339(value).ok())
@@ -1646,87 +1597,26 @@ fn queue_notam_segment_event(
     let source_timestamp = observed_at_utc.to_rfc3339_opts(chrono::SecondsFormat::Secs, true);
     let event = UpstreamEvent {
         product: "notams".to_string(),
-        source_id: format!("notams:{}", segment.path.display()),
+        source_id: format!("notams:raw:{}", summary.max_ingest_seq),
         previous_source_id: None,
         observed_at_utc,
-        payload_path: Some(segment.path.clone()),
+        payload_path: None,
     };
     sender
         .send(event)
-        .context("failed to queue NOTAM segment event")?;
-    status.record_source_success("notams", Some(source_timestamp), "source_messages");
-    Ok(())
-}
-
-fn summarize_swim_notams_collector_output(stdout: &[u8], stderr: &[u8]) -> String {
-    let text = format!(
-        "{}\n{}",
-        String::from_utf8_lossy(stdout),
-        String::from_utf8_lossy(stderr)
+        .context("failed to queue NOTAM raw ingest event")?;
+    status.record_source_success(
+        "notams",
+        Some(source_timestamp),
+        format!(
+            "source_messages applied={} changed={} removed={} cursor={}",
+            summary.applied_count,
+            summary.changed_count,
+            summary.removed_count,
+            summary.max_ingest_seq
+        ),
     );
-    let mut lines = text
-        .lines()
-        .map(str::trim)
-        .filter_map(summarize_swim_notams_collector_line)
-        .collect::<Vec<_>>();
-    if lines.is_empty() {
-        lines = text
-            .lines()
-            .rev()
-            .take(8)
-            .map(str::trim)
-            .filter(|line| !line.is_empty())
-            .map(sanitize_swim_notams_collector_line)
-            .collect::<Vec<_>>();
-        lines.reverse();
-    }
-    lines.dedup();
-    let mut summary = lines.join(" | ");
-    const MAX_COLLECTOR_ERROR_BYTES: usize = 2000;
-    if summary.len() > MAX_COLLECTOR_ERROR_BYTES {
-        summary.truncate(MAX_COLLECTOR_ERROR_BYTES);
-        summary.push_str("...");
-    }
-    if summary.is_empty() {
-        "no collector output".to_string()
-    } else {
-        summary
-    }
-}
-
-fn summarize_swim_notams_collector_line(line: &str) -> Option<String> {
-    let lower = line.to_ascii_lowercase();
-    if lower.contains("error response") && lower.contains("queue shutdown") {
-        return Some("Solace queue bind failed: 503 Queue Shutdown".to_string());
-    }
-    if lower.contains("jcsmperrorresponseexception") && lower.contains("queue shutdown") {
-        return Some(
-            "Caused by: JCSMPErrorResponseException: 503 Queue Shutdown [Subcode:31]".to_string(),
-        );
-    }
-    if line.starts_with("Exception in thread ") {
-        return Some(sanitize_swim_notams_collector_line(line));
-    }
-    if lower.contains("failed") && !line.starts_with("at ") {
-        return Some(sanitize_swim_notams_collector_line(line));
-    }
-    None
-}
-
-fn sanitize_swim_notams_collector_line(line: &str) -> String {
-    let mut sanitized = line.to_string();
-    if let Some(start) = sanitized.find("Got BIND ('") {
-        if let Some(end) = sanitized[start + "Got BIND ('".len()..].find("')") {
-            let name_start = start + "Got BIND ('".len();
-            let name_end = name_start + end;
-            sanitized.replace_range(name_start..name_end, "<queue>");
-        }
-    }
-    if let Some(start) = sanitized.find("Client name:") {
-        sanitized.truncate(start);
-        sanitized.push_str("Client name: <redacted>)");
-    }
-    sanitized
+    Ok(())
 }
 
 fn failure_retry_delay(nominal_interval: Duration, consecutive_failures: u32) -> Duration {
@@ -2748,43 +2638,6 @@ mod tests {
         assert!(response.contains("Content-Type: text/html"), "{response}");
         assert!(response.contains("Aerobag Live Feeds"), "{response}");
         Ok(())
-    }
-
-    #[test]
-    fn swim_notam_collector_error_summary_keeps_status_small() {
-        let noisy = [
-            "INFO: TLS Ciphers: lots and lots",
-            "INFO: Connected to host",
-            "INFO: Got BIND ('queue-name.from.credentials') Error Response (503) - Queue Shutdown",
-            "Exception in thread \"main\" javax.jms.JMSSecurityException: Error creating consumer",
-            "\tat com.solacesystems.jms.impl.JMSExceptionValue.newInstance(JMSExceptionValue.java:36)",
-            "Caused by: ((Client name: aerobag-dev/123/secret local(/10.0.0.1:1) remote(example/1.2.3.4:55443)) - ) com.solacesystems.jcsmp.JCSMPErrorResponseException: 503: Queue Shutdown [Subcode:31]",
-        ]
-        .join("\n");
-
-        let summary = summarize_swim_notams_collector_output(b"", noisy.as_bytes());
-
-        assert!(summary.contains("Queue Shutdown"));
-        assert!(summary.contains("JMSSecurityException"));
-        assert!(summary.contains("JCSMPErrorResponseException"));
-        assert!(!summary.contains("TLS Ciphers"));
-        assert!(!summary.contains("queue-name.from.credentials"));
-        assert!(!summary.contains("Client name"));
-        assert!(!summary.contains("JMSExceptionValue"));
-        assert!(!summary.contains("10.0.0.1"));
-        assert!(summary.len() < 600);
-    }
-
-    #[test]
-    fn swim_notam_idle_exits_restart_promptly_without_failure_backoff() {
-        assert_eq!(
-            swim_notams_collector_restart_delay(SwimNotamsCollectorOutcome::Success, 60_000),
-            Duration::from_secs(1)
-        );
-        assert_eq!(
-            swim_notams_collector_restart_delay(SwimNotamsCollectorOutcome::Failure, 60_000),
-            Duration::from_secs(60)
-        );
     }
 
     #[test]

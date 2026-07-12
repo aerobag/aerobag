@@ -7,14 +7,15 @@ use std::{
 };
 
 use anyhow::{bail, Context};
-use chrono::{DateTime, Datelike, Utc};
+use chrono::Utc;
 use rusqlite::{params, Connection, OptionalExtension};
 use serde::{Deserialize, Serialize};
-use sha2::{Digest, Sha256};
 
-use crate::{engine::sha256_hex, structured_notam_records, StructuredNotamRecord};
+use crate::{engine::sha256_hex, structured_notam_record_from_json, StructuredNotamRecord};
 
-const NOTAM_STORE_SCHEMA_VERSION: u32 = 1;
+const NOTAM_STORE_SCHEMA_VERSION: u32 = 2;
+const RAW_INGEST_CURSOR_METADATA_KEY: &str = "raw_ingest_cursor";
+const RAW_INGEST_RETENTION_DAYS: i64 = 7;
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct SwimNotamSubscriptionIdentity {
@@ -37,10 +38,11 @@ pub struct NotamStoreLock {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct NotamIngestedSegment {
-    pub path: PathBuf,
-    pub sha256: String,
-    pub message_count: usize,
+pub struct AppliedRawNotamSummary {
+    pub applied_count: usize,
+    pub changed_count: usize,
+    pub removed_count: usize,
+    pub max_ingest_seq: i64,
     pub last_received_at_utc: Option<String>,
 }
 
@@ -54,10 +56,6 @@ impl NotamPersistentStore {
     }
 
     pub fn initialize(&self, identity: &SwimNotamSubscriptionIdentity) -> anyhow::Result<()> {
-        fs::create_dir_all(self.active_root())
-            .with_context(|| format!("failed to create {}", self.active_root().display()))?;
-        fs::create_dir_all(self.segments_root())
-            .with_context(|| format!("failed to create {}", self.segments_root().display()))?;
         fs::create_dir_all(self.state_root())
             .with_context(|| format!("failed to create {}", self.state_root().display()))?;
         self.check_or_write_identity(identity)?;
@@ -100,139 +98,131 @@ impl NotamPersistentStore {
         Ok(NotamStoreLock { file, path })
     }
 
-    pub fn prepare_active_run(
+    pub fn apply_pending_raw_messages(
         &self,
-        started_at_utc: DateTime<Utc>,
-        run_counter: u64,
-    ) -> anyhow::Result<PathBuf> {
-        let run_dir = self.active_root().join(format!(
-            "{}_{run_counter:06}.open",
-            started_at_utc.format("%Y%m%dT%H%M%SZ")
-        ));
-        remove_path_if_exists(&run_dir)?;
-        fs::create_dir_all(&run_dir)
-            .with_context(|| format!("failed to create {}", run_dir.display()))?;
-        sync_dir(&self.active_root())?;
-        Ok(run_dir)
-    }
-
-    pub fn complete_collector_run(
-        &self,
-        run_dir: &Path,
-        message_count_hint: usize,
-        last_received_at_utc: Option<String>,
-    ) -> anyhow::Result<Option<NotamIngestedSegment>> {
-        let messages_path = run_dir.join("messages.jsonl");
-        if !messages_path.is_file() {
-            remove_path_if_exists(run_dir)?;
+        limit: usize,
+    ) -> anyhow::Result<Option<AppliedRawNotamSummary>> {
+        if limit == 0 {
+            bail!("NOTAM raw ingest apply limit must be greater than zero");
+        }
+        let mut connection = self.open_connection()?;
+        let last_cursor = raw_ingest_cursor(&connection)?;
+        let rows = {
+            let mut statement = connection
+                .prepare(
+                    "
+                    SELECT ingest_seq, received_at_utc, message_json
+                    FROM raw_notam_messages
+                    WHERE ingest_seq > ?1
+                    ORDER BY ingest_seq
+                    LIMIT ?2
+                    ",
+                )
+                .context("failed to query raw NOTAM ingest messages")?;
+            let rows = statement
+                .query_map(params![last_cursor, limit as i64], |row| {
+                    Ok((
+                        row.get::<_, i64>(0)?,
+                        row.get::<_, String>(1)?,
+                        row.get::<_, String>(2)?,
+                    ))
+                })
+                .context("failed to query raw NOTAM ingest messages")?
+                .collect::<Result<Vec<_>, _>>()
+                .context("failed to read raw NOTAM ingest message")?;
+            rows
+        };
+        if rows.is_empty() {
             return Ok(None);
         }
-        let segment =
-            self.promote_messages_file(&messages_path, message_count_hint, last_received_at_utc)?;
-        remove_path_if_exists(run_dir)?;
-        sync_dir(&self.active_root())?;
-        Ok(segment)
-    }
 
-    pub fn recover_active_runs(&self) -> anyhow::Result<Vec<NotamIngestedSegment>> {
-        let mut recovered = Vec::new();
-        if !self.active_root().is_dir() {
-            return Ok(recovered);
-        }
-        let mut active_runs = fs::read_dir(self.active_root())
-            .with_context(|| format!("failed to read {}", self.active_root().display()))?
-            .collect::<Result<Vec<_>, _>>()
-            .with_context(|| format!("failed to read {}", self.active_root().display()))?;
-        active_runs.sort_by_key(|entry| entry.path());
-        for entry in active_runs {
-            if !entry
-                .file_type()
-                .with_context(|| format!("failed to stat {}", entry.path().display()))?
-                .is_dir()
-            {
-                continue;
-            }
-            let run_dir = entry.path();
-            let messages_path = run_dir.join("messages.jsonl");
-            if messages_path.is_file() {
-                if let Some(segment) = self.promote_messages_file(&messages_path, 0, None)? {
-                    recovered.push(segment);
-                }
-            }
-            remove_path_if_exists(&run_dir)?;
-        }
-        sync_dir(&self.active_root())?;
-        Ok(recovered)
-    }
-
-    pub fn apply_segment(&self, segment: &NotamIngestedSegment) -> anyhow::Result<bool> {
-        let mut connection = self.open_connection()?;
+        let applied_at_utc = Utc::now().to_rfc3339();
+        let mut changed_count = 0_usize;
+        let mut removed_count = 0_usize;
+        let mut last_received_at_utc = None;
+        let max_ingest_seq = rows
+            .last()
+            .map(|row| row.0)
+            .context("raw NOTAM rows unexpectedly empty")?;
         let tx = connection
             .transaction()
-            .context("failed to start NOTAM sqlite transaction")?;
-        let existing: Option<String> = tx
-            .query_row(
-                "SELECT sha256 FROM ingest_segments WHERE path = ?1",
-                [segment.path.to_string_lossy().as_ref()],
-                |row| row.get(0),
-            )
-            .optional()
-            .context("failed to query NOTAM ingest segment")?;
-        if let Some(existing_sha256) = existing {
-            if existing_sha256 != segment.sha256 {
-                bail!(
-                    "NOTAM ingest segment {} was previously applied with a different content hash",
-                    segment.path.display()
-                );
+            .context("failed to start NOTAM raw ingest apply transaction")?;
+        for (ingest_seq, received_at_utc, message_json) in &rows {
+            last_received_at_utc = Some(received_at_utc.clone());
+            if let Some(record) = structured_notam_record_from_json(message_json)
+                .with_context(|| format!("failed to normalize raw NOTAM ingest row {ingest_seq}"))?
+            {
+                let status = record.notam_status.as_deref().unwrap_or("");
+                if status.eq_ignore_ascii_case("CANCELLED")
+                    || status.eq_ignore_ascii_case("CANCELED")
+                {
+                    let removed = tx
+                        .execute("DELETE FROM current_notams WHERE id = ?1", [&record.id])
+                        .with_context(|| format!("failed to delete NOTAM {}", record.id))?;
+                    if removed > 0 {
+                        removed_count += 1;
+                    }
+                } else {
+                    let record_json = serde_json::to_string(&record)
+                        .with_context(|| format!("failed to encode NOTAM {}", record.id))?;
+                    let existing: Option<String> = tx
+                        .query_row(
+                            "SELECT record_json FROM current_notams WHERE id = ?1",
+                            [&record.id],
+                            |row| row.get(0),
+                        )
+                        .optional()
+                        .with_context(|| format!("failed to query NOTAM {}", record.id))?;
+                    tx.execute(
+                        "INSERT INTO current_notams (
+                            id, status, last_updated_utc, record_json, updated_at_utc
+                        ) VALUES (?1, ?2, ?3, ?4, ?5)
+                        ON CONFLICT(id) DO UPDATE SET
+                            status = excluded.status,
+                            last_updated_utc = excluded.last_updated_utc,
+                            record_json = excluded.record_json,
+                            updated_at_utc = excluded.updated_at_utc",
+                        params![
+                            record.id.as_str(),
+                            record.notam_status.as_deref(),
+                            record.last_updated_utc.as_deref(),
+                            record_json,
+                            applied_at_utc.as_str()
+                        ],
+                    )
+                    .with_context(|| format!("failed to upsert NOTAM {}", record.id))?;
+                    if existing.as_deref() != Some(record_json.as_str()) {
+                        changed_count += 1;
+                    }
+                }
             }
-            return Ok(false);
         }
-
-        let records = structured_notam_records(&segment.path)?;
-        for record in records {
-            let status = record.notam_status.as_deref().unwrap_or("");
-            if status.eq_ignore_ascii_case("CANCELLED") || status.eq_ignore_ascii_case("CANCELED") {
-                tx.execute("DELETE FROM current_notams WHERE id = ?1", [&record.id])
-                    .with_context(|| format!("failed to delete NOTAM {}", record.id))?;
-            } else {
-                let record_json = serde_json::to_string(&record)
-                    .with_context(|| format!("failed to encode NOTAM {}", record.id))?;
-                tx.execute(
-                    "INSERT INTO current_notams (
-                        id, status, last_updated_utc, record_json, updated_at_utc
-                    ) VALUES (?1, ?2, ?3, ?4, ?5)
-                    ON CONFLICT(id) DO UPDATE SET
-                        status = excluded.status,
-                        last_updated_utc = excluded.last_updated_utc,
-                        record_json = excluded.record_json,
-                        updated_at_utc = excluded.updated_at_utc",
-                    params![
-                        record.id.as_str(),
-                        record.notam_status.as_deref(),
-                        record.last_updated_utc.as_deref(),
-                        record_json,
-                        Utc::now().to_rfc3339()
-                    ],
-                )
-                .with_context(|| format!("failed to upsert NOTAM {}", record.id))?;
-            }
-        }
+        let max_ingest_seq_text = max_ingest_seq.to_string();
         tx.execute(
-            "INSERT INTO ingest_segments (
-                path, sha256, message_count, ingested_at_utc, last_received_at_utc
-            ) VALUES (?1, ?2, ?3, ?4, ?5)",
-            params![
-                segment.path.to_string_lossy(),
-                segment.sha256.as_str(),
-                segment.message_count as i64,
-                Utc::now().to_rfc3339(),
-                segment.last_received_at_utc.as_deref()
-            ],
+            "INSERT INTO metadata(key, value) VALUES (?1, ?2)
+             ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+            params![RAW_INGEST_CURSOR_METADATA_KEY, max_ingest_seq_text.as_str()],
         )
-        .context("failed to record NOTAM ingest segment")?;
+        .context("failed to update NOTAM raw ingest cursor")?;
+        tx.execute(
+            "UPDATE raw_notam_messages
+             SET applied_at_utc = ?1
+             WHERE ingest_seq <= ?2 AND applied_at_utc IS NULL",
+            params![applied_at_utc.as_str(), max_ingest_seq],
+        )
+        .context("failed to mark raw NOTAM ingest rows applied")?;
         tx.commit()
-            .context("failed to commit NOTAM sqlite transaction")?;
-        Ok(true)
+            .context("failed to commit NOTAM raw ingest apply transaction")?;
+
+        self.prune_applied_raw_messages()?;
+
+        Ok(Some(AppliedRawNotamSummary {
+            applied_count: rows.len(),
+            changed_count,
+            removed_count,
+            max_ingest_seq,
+            last_received_at_utc,
+        }))
     }
 
     pub fn current_records(&self) -> anyhow::Result<Vec<StructuredNotamRecord>> {
@@ -268,6 +258,37 @@ impl NotamPersistentStore {
         self.state_root().join("current.sqlite")
     }
 
+    #[cfg(test)]
+    pub fn insert_raw_message_for_test(
+        &self,
+        dedupe_key: &str,
+        received_at_utc: &str,
+        message_json: &str,
+    ) -> anyhow::Result<()> {
+        let connection = self.open_connection()?;
+        connection
+            .execute(
+                "INSERT OR IGNORE INTO raw_notam_messages (
+                    dedupe_key, jms_message_id, received_at_utc, message_json, message_sha256, committed_at_utc
+                ) VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+                params![
+                    dedupe_key,
+                    serde_json::from_str::<serde_json::Value>(message_json)
+                        .ok()
+                        .and_then(|value| value
+                            .get("jmsMessageId")
+                            .and_then(|message_id| message_id.as_str())
+                            .map(str::to_string)),
+                    received_at_utc,
+                    message_json,
+                    sha256_hex(message_json.as_bytes()),
+                    Utc::now().to_rfc3339()
+                ],
+            )
+            .context("failed to insert raw NOTAM test message")?;
+        Ok(())
+    }
+
     fn check_or_write_identity(
         &self,
         identity: &SwimNotamSubscriptionIdentity,
@@ -297,20 +318,30 @@ impl NotamPersistentStore {
         let connection = Connection::open(self.sqlite_path())
             .with_context(|| format!("failed to open {}", self.sqlite_path().display()))?;
         connection
+            .busy_timeout(std::time::Duration::from_secs(5))
+            .context("failed to configure NOTAM sqlite busy timeout")?;
+        connection
             .execute_batch(
                 "
                 PRAGMA journal_mode = WAL;
+                PRAGMA synchronous = FULL;
+                PRAGMA auto_vacuum = INCREMENTAL;
                 CREATE TABLE IF NOT EXISTS metadata (
                     key TEXT PRIMARY KEY,
                     value TEXT NOT NULL
                 );
-                CREATE TABLE IF NOT EXISTS ingest_segments (
-                    path TEXT PRIMARY KEY,
-                    sha256 TEXT NOT NULL,
-                    message_count INTEGER NOT NULL,
-                    ingested_at_utc TEXT NOT NULL,
-                    last_received_at_utc TEXT
+                CREATE TABLE IF NOT EXISTS raw_notam_messages (
+                    ingest_seq INTEGER PRIMARY KEY AUTOINCREMENT,
+                    dedupe_key TEXT NOT NULL UNIQUE,
+                    jms_message_id TEXT,
+                    received_at_utc TEXT NOT NULL,
+                    message_json TEXT NOT NULL,
+                    message_sha256 TEXT NOT NULL,
+                    committed_at_utc TEXT NOT NULL,
+                    applied_at_utc TEXT
                 );
+                CREATE INDEX IF NOT EXISTS raw_notam_messages_applied_idx
+                    ON raw_notam_messages(applied_at_utc, ingest_seq);
                 CREATE TABLE IF NOT EXISTS current_notams (
                     id TEXT PRIMARY KEY,
                     status TEXT,
@@ -335,78 +366,33 @@ impl NotamPersistentStore {
         Ok(connection)
     }
 
-    fn promote_messages_file(
-        &self,
-        messages_path: &Path,
-        message_count_hint: usize,
-        last_received_at_utc: Option<String>,
-    ) -> anyhow::Result<Option<NotamIngestedSegment>> {
-        let bytes = complete_jsonl_bytes(messages_path)?;
-        if bytes.is_empty() {
-            return Ok(None);
-        }
-        let message_count = count_json_lines(&bytes)?;
-        if message_count_hint != 0 && message_count != message_count_hint {
-            bail!(
-                "NOTAM collector summary reported {message_count_hint} messages, but {} contains {message_count} complete records",
-                messages_path.display()
-            );
-        }
-        let last_received_at_utc =
-            last_received_at_utc.or_else(|| last_received_at_from_jsonl_bytes(&bytes));
-        let timestamp = last_received_at_utc
-            .as_deref()
-            .and_then(|value| DateTime::parse_from_rfc3339(value).ok())
-            .map(|value| value.with_timezone(&Utc))
-            .unwrap_or_else(Utc::now);
-        let hash = Sha256::digest(&bytes);
-        let sha256 = format!("{hash:x}");
-        let segment_dir = self
-            .segments_root()
-            .join(format!("{:04}", timestamp.year()))
-            .join(format!("{:02}", timestamp.month()))
-            .join(format!("{:02}", timestamp.day()));
-        fs::create_dir_all(&segment_dir)
-            .with_context(|| format!("failed to create {}", segment_dir.display()))?;
-        let segment_path = segment_dir.join(format!(
-            "{}_{}_{}.jsonl",
-            timestamp.format("%Y%m%dT%H%M%SZ"),
-            message_count,
-            &sha256[..16]
-        ));
-        if !segment_path.is_file() {
-            let temp_path = segment_path.with_extension("jsonl.tmp");
-            {
-                let mut file = File::create(&temp_path)
-                    .with_context(|| format!("failed to create {}", temp_path.display()))?;
-                file.write_all(&bytes)
-                    .with_context(|| format!("failed to write {}", temp_path.display()))?;
-                file.sync_all()
-                    .with_context(|| format!("failed to sync {}", temp_path.display()))?;
-            }
-            fs::rename(&temp_path, &segment_path).with_context(|| {
-                format!(
-                    "failed to promote {} to {}",
-                    temp_path.display(),
-                    segment_path.display()
+    fn prune_applied_raw_messages(&self) -> anyhow::Result<()> {
+        let connection = self.open_connection()?;
+        let deleted = connection
+            .execute(
+                "
+                DELETE FROM raw_notam_messages
+                WHERE applied_at_utc IS NOT NULL
+                  AND ingest_seq <= ?1
+                  AND julianday(applied_at_utc) < julianday('now', ?2)
+                ",
+                params![
+                    raw_ingest_cursor(&connection)?,
+                    format!("-{} days", RAW_INGEST_RETENTION_DAYS)
+                ],
+            )
+            .context("failed to prune applied raw NOTAM ingest rows")?;
+        if deleted > 0 {
+            connection
+                .execute_batch(
+                    "
+                    PRAGMA wal_checkpoint(TRUNCATE);
+                    PRAGMA incremental_vacuum;
+                    ",
                 )
-            })?;
-            sync_dir(&segment_dir)?;
+                .context("failed to compact NOTAM sqlite after raw ingest prune")?;
         }
-        Ok(Some(NotamIngestedSegment {
-            path: segment_path,
-            sha256,
-            message_count,
-            last_received_at_utc,
-        }))
-    }
-
-    fn active_root(&self) -> PathBuf {
-        self.root.join("ingest").join("active")
-    }
-
-    fn segments_root(&self) -> PathBuf {
-        self.root.join("ingest").join("segments")
+        Ok(())
     }
 
     fn state_root(&self) -> PathBuf {
@@ -422,52 +408,20 @@ impl Drop for NotamStoreLock {
     }
 }
 
-fn complete_jsonl_bytes(path: &Path) -> anyhow::Result<Vec<u8>> {
-    let bytes = fs::read(path).with_context(|| format!("failed to read {}", path.display()))?;
-    if bytes.is_empty() {
-        return Ok(bytes);
-    }
-    let complete_len = if bytes.ends_with(b"\n") {
-        bytes.len()
-    } else {
-        match bytes.iter().rposition(|byte| *byte == b'\n') {
-            Some(index) => index + 1,
-            None => 0,
-        }
-    };
-    let bytes = bytes[..complete_len].to_vec();
-    count_json_lines(&bytes)?;
-    Ok(bytes)
-}
-
-fn count_json_lines(bytes: &[u8]) -> anyhow::Result<usize> {
-    let mut count = 0;
-    for (index, line) in bytes.split(|byte| *byte == b'\n').enumerate() {
-        if line.iter().all(u8::is_ascii_whitespace) {
-            continue;
-        }
-        serde_json::from_slice::<serde_json::Value>(line)
-            .with_context(|| format!("failed to parse NOTAM journal line {}", index + 1))?;
-        count += 1;
-    }
-    Ok(count)
-}
-
-fn last_received_at_from_jsonl_bytes(bytes: &[u8]) -> Option<String> {
-    bytes
-        .split(|byte| *byte == b'\n')
-        .rev()
-        .filter(|line| !line.iter().all(u8::is_ascii_whitespace))
-        .find_map(|line| {
-            serde_json::from_slice::<serde_json::Value>(line)
-                .ok()
-                .and_then(|value| {
-                    value
-                        .get("receivedAtUtc")
-                        .and_then(|received| received.as_str())
-                        .map(str::to_string)
-                })
-        })
+fn raw_ingest_cursor(connection: &Connection) -> anyhow::Result<i64> {
+    let value: Option<String> = connection
+        .query_row(
+            "SELECT value FROM metadata WHERE key = ?1",
+            [RAW_INGEST_CURSOR_METADATA_KEY],
+            |row| row.get(0),
+        )
+        .optional()
+        .context("failed to query NOTAM raw ingest cursor")?;
+    value
+        .as_deref()
+        .unwrap_or("0")
+        .parse::<i64>()
+        .context("failed to parse NOTAM raw ingest cursor")
 }
 
 fn write_json_pretty_file<T: Serialize>(path: &Path, value: &T) -> anyhow::Result<()> {
@@ -498,23 +452,6 @@ fn sync_dir(path: &Path) -> anyhow::Result<()> {
     let dir = File::open(path).with_context(|| format!("failed to open {}", path.display()))?;
     dir.sync_all()
         .with_context(|| format!("failed to sync {}", path.display()))
-}
-
-fn remove_path_if_exists(path: &Path) -> anyhow::Result<()> {
-    match fs::symlink_metadata(path) {
-        Ok(metadata) => {
-            if metadata.is_dir() {
-                fs::remove_dir_all(path)
-                    .with_context(|| format!("failed to remove {}", path.display()))?;
-            } else {
-                fs::remove_file(path)
-                    .with_context(|| format!("failed to remove {}", path.display()))?;
-            }
-            Ok(())
-        }
-        Err(error) if error.kind() == ErrorKind::NotFound => Ok(()),
-        Err(error) => Err(error).with_context(|| format!("failed to stat {}", path.display())),
-    }
 }
 
 #[cfg(test)]
@@ -556,48 +493,54 @@ mod tests {
     }
 
     #[test]
-    fn active_run_recovery_promotes_complete_lines_and_ignores_partial_tail() -> anyhow::Result<()>
-    {
+    fn committed_raw_messages_advance_projection_cursor() -> anyhow::Result<()> {
         let temp = tempdir()?;
         let store = NotamPersistentStore::new(temp.path());
         store.initialize(&identity("queue-a"))?;
-        let run_dir = store.prepare_active_run(Utc::now(), 1)?;
-        fs::write(
-            run_dir.join("messages.jsonl"),
-            format!("{}\n{{\"partial\"", captured_notam_line("PUBLISHED")),
+        store.insert_raw_message_for_test(
+            "message-a",
+            "2026-07-11T02:03:00Z",
+            &captured_notam_line("PUBLISHED"),
         )?;
 
-        let recovered = store.recover_active_runs()?;
+        let summary = store
+            .apply_pending_raw_messages(10)?
+            .expect("raw row should apply");
 
-        assert_eq!(recovered.len(), 1);
-        assert_eq!(recovered[0].message_count, 1);
-        assert!(!run_dir.exists());
-        assert_eq!(count_json_lines(&fs::read(&recovered[0].path)?)?, 1);
+        assert_eq!(summary.applied_count, 1);
+        assert_eq!(summary.changed_count, 1);
+        assert_eq!(summary.removed_count, 0);
+        assert_eq!(store.current_records()?.len(), 1);
+        assert!(store.apply_pending_raw_messages(10)?.is_none());
         Ok(())
     }
 
     #[test]
-    fn applying_cancelled_notam_deletes_current_record() -> anyhow::Result<()> {
+    fn committed_cancelled_notam_deletes_current_record() -> anyhow::Result<()> {
         let temp = tempdir()?;
         let store = NotamPersistentStore::new(temp.path());
         store.initialize(&identity("queue-a"))?;
-        let segment_dir = temp.path().join("segments");
-        fs::create_dir_all(&segment_dir)?;
-        let published_path = segment_dir.join("published.jsonl");
-        let cancelled_path = segment_dir.join("cancelled.jsonl");
-        fs::write(
-            &published_path,
-            format!("{}\n", captured_notam_line("PUBLISHED")),
+        store.insert_raw_message_for_test(
+            "message-a",
+            "2026-07-11T02:03:00Z",
+            &captured_notam_line("PUBLISHED"),
         )?;
-        fs::write(
-            &cancelled_path,
-            format!("{}\n", captured_notam_line("CANCELLED")),
-        )?;
-
-        store.apply_segment(&segment(&published_path, 1)?)?;
+        store.apply_pending_raw_messages(10)?;
         assert_eq!(store.current_records()?.len(), 1);
 
-        store.apply_segment(&segment(&cancelled_path, 1)?)?;
+        store.insert_raw_message_for_test(
+            "message-b",
+            "2026-07-11T02:04:00Z",
+            &captured_notam_line("CANCELLED"),
+        )?;
+
+        let summary = store
+            .apply_pending_raw_messages(10)?
+            .expect("cancellation row should apply");
+
+        assert_eq!(summary.applied_count, 1);
+        assert_eq!(summary.changed_count, 0);
+        assert_eq!(summary.removed_count, 1);
         assert!(store.current_records()?.is_empty());
         Ok(())
     }
@@ -610,16 +553,6 @@ mod tests {
             username: "example.user".to_string(),
             vpn: "example-vpn".to_string(),
         }
-    }
-
-    fn segment(path: &Path, message_count: usize) -> anyhow::Result<NotamIngestedSegment> {
-        let bytes = fs::read(path)?;
-        Ok(NotamIngestedSegment {
-            path: path.to_path_buf(),
-            sha256: sha256_hex(&bytes),
-            message_count,
-            last_received_at_utc: Some("2026-07-11T02:03:00Z".to_string()),
-        })
     }
 
     fn captured_notam_line(status: &str) -> String {

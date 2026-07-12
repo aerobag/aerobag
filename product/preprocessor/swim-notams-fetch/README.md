@@ -20,8 +20,7 @@ Shape:
   "username": "jonh.faaswim.jonh.net",
   "password": "fill-me-in-locally",
   "vpn": "AIM_FNS",
-  "maxMessages": 100,
-  "idleExitAfterMillis": 15000,
+  "maxMessages": 0,
   "receiveTimeoutMillis": 2000
 }
 ```
@@ -45,7 +44,7 @@ Run:
 ```bash
 product/preprocessor/swim-notams-fetch/build/install/swim-notams-fetch/bin/swim-notams-fetch \
   --config /root/aerobag-credentials/swim-notams.json \
-  --output-dir /tmp/swim-notams-raw
+  --sqlite /path/to/swim-notams/state/current.sqlite
 ```
 
 Alternative if using the Maven assembly jar:
@@ -53,16 +52,21 @@ Alternative if using the Maven assembly jar:
 ```bash
 java -jar target/swim-notams-fetch-0.1.0-jar-with-dependencies.jar \
   --config /root/aerobag-credentials/swim-notams.json \
-  --output-dir /tmp/swim-notams-raw
+  --sqlite /path/to/swim-notams/state/current.sqlite
 ```
 
-Outputs:
-- `messages.jsonl`
-- `summary.json`
+Output:
+- committed rows in SQLite table `raw_notam_messages`
+
+Durability behavior:
+- the collector stays connected and waits on the SWIM queue
+- for each message, it inserts one `raw_notam_messages` row in a SQLite transaction
+- it acknowledges the JMS message only after the SQLite commit succeeds
+- `maxMessages = 0` means run forever; positive values are for manual bounded captures
 
 Current scope:
 - capture raw queue messages and JMS metadata
-- durably flush each captured message before acknowledging it
+- durably commit each captured message before acknowledging it
 - leave all NOTAM normalization and live-feed publication to Rust
 
 Daemon integration:

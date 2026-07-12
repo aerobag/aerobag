@@ -28,14 +28,15 @@ use preprocessor_live_feeds::{
     },
     notam_store::{NotamIngestedSegment, NotamPersistentStore, SwimNotamSubscriptionIdentity},
     products::{
-        LiveFeedFetchConfig, MetarLiveFeedBuilder, NexradSourceGridLiveFeedBuilder,
-        NotamLiveFeedBuilder, ObstaclesLiveFeedBuilder, TafLiveFeedBuilder, TfrLiveFeedBuilder,
-        WindsAloftLiveFeedBuilder,
+        fetch_tfr_detail_backfill_once, LiveFeedFetchConfig, MetarLiveFeedBuilder,
+        NexradSourceGridLiveFeedBuilder, NotamLiveFeedBuilder, ObstaclesLiveFeedBuilder,
+        TafLiveFeedBuilder, TfrLiveFeedBuilder, WindsAloftLiveFeedBuilder,
     },
     simulation::{
         fixture_loop_duration, next_fixture_loop_virtual_zero, timeline_from_live_feed_root,
         CompiledFixtureStateBuilder, SimulatedLiveFeedSource,
     },
+    tfr_detail_backfill::TfrDetailBackfillStore,
 };
 use serde::{Deserialize, Serialize};
 
@@ -83,6 +84,7 @@ struct DaemonConfig {
     event_interval_ms: u64,
     simulation: Option<SimulationConfig>,
     swim_notams: Option<SwimNotamsConfig>,
+    tfr_detail_backfill_state_root: PathBuf,
     check_config: bool,
     sse_event_limit: Option<usize>,
 }
@@ -597,6 +599,7 @@ impl DaemonConfig {
         let mut swim_notams_collector = None;
         let mut swim_notams_state_root = None;
         let mut swim_notams_retry_interval_ms = 60_000_u64;
+        let mut tfr_detail_backfill_state_root = None;
         let mut event_interval_ms = 5_000_u64;
         let mut check_config = false;
 
@@ -671,6 +674,10 @@ impl DaemonConfig {
                         bail!("--swim-notams-retry-interval-ms must be greater than zero");
                     }
                 }
+                "--tfr-detail-backfill-state-root" => {
+                    tfr_detail_backfill_state_root =
+                        Some(next_path(&mut args, "--tfr-detail-backfill-state-root")?)
+                }
                 "--event-interval-ms" => {
                     let value = next_value(&mut args, "--event-interval-ms")?;
                     event_interval_ms = value
@@ -719,6 +726,8 @@ impl DaemonConfig {
         if swim_notams.is_none() && swim_notams_state_root_supplied {
             bail!("--swim-notams-state-root requires --swim-notams-config and --swim-notams-collector");
         }
+        let tfr_detail_backfill_state_root = tfr_detail_backfill_state_root
+            .unwrap_or_else(|| live_root.join("../state/tfr-detail-backfill"));
 
         Ok(Self {
             live_root,
@@ -731,6 +740,7 @@ impl DaemonConfig {
             event_interval_ms,
             simulation,
             swim_notams,
+            tfr_detail_backfill_state_root,
             check_config,
             sse_event_limit: None,
         })
@@ -799,6 +809,10 @@ fn validate_config(config: &DaemonConfig) -> anyhow::Result<()> {
         }
         ensure_parent(&swim_notams.state_root, "--swim-notams-state-root")?;
     }
+    ensure_parent(
+        &config.tfr_detail_backfill_state_root,
+        "--tfr-detail-backfill-state-root",
+    )?;
     let _clock = SystemClock;
     Ok(())
 }
@@ -846,6 +860,7 @@ fn start_live_feed_driver(
     let poll_interval = Duration::from_millis(config.poll_loop_interval_ms);
     let fetch = live_feed_fetch_config(config)?;
     let swim_notams = config.swim_notams.clone();
+    let tfr_detail_backfill_state_root = config.tfr_detail_backfill_state_root.clone();
     if let Err(error) =
         prune_live_feed_scratch_root(&scratch_root, LIVE_FEED_FAILED_SCRATCH_RETAIN_COUNT)
     {
@@ -856,7 +871,17 @@ fn start_live_feed_driver(
         let notam_state_root_for_enrichment = swim_notams
             .as_ref()
             .map(|swim_notams| swim_notams.state_root.clone());
-        let mut tasks = production_tasks(fetch, notam_state_root_for_enrichment);
+        let mut tasks = production_tasks(
+            fetch.clone(),
+            notam_state_root_for_enrichment,
+            tfr_detail_backfill_state_root.clone(),
+        );
+        start_tfr_detail_backfill_supervisor(
+            fetch.clone(),
+            tfr_detail_backfill_state_root,
+            scratch_root.join("tfr-detail-backfill"),
+            status.clone(),
+        );
         if let Some(swim_notams) = swim_notams {
             let source = QueuedLiveFeedSource::new("notams");
             let notam_state_root = swim_notams.state_root.clone();
@@ -1404,6 +1429,59 @@ fn start_swim_notams_supervisor(
     Ok(())
 }
 
+fn start_tfr_detail_backfill_supervisor(
+    fetch: LiveFeedFetchConfig,
+    state_root: PathBuf,
+    scratch_root: PathBuf,
+    status: DaemonStatus,
+) {
+    const PRODUCT: &str = "tfr-detail-backfill";
+    const INTERVAL: Duration = Duration::from_secs(60);
+    const MAX_FETCHES_PER_TICK: usize = 12;
+    status.register_product(PRODUCT, INTERVAL);
+    thread::spawn(move || {
+        let store = TfrDetailBackfillStore::new(&state_root);
+        if let Err(error) = store.initialize() {
+            status.record_source_failure(PRODUCT, format!("{error:#}"));
+            return;
+        }
+        let _lock = match store.acquire_lock() {
+            Ok(lock) => lock,
+            Err(error) => {
+                status.record_source_failure(PRODUCT, format!("{error:#}"));
+                return;
+            }
+        };
+        loop {
+            let tick_scratch = scratch_root.join(Utc::now().format("%Y%m%dT%H%M%SZ").to_string());
+            match fetch_tfr_detail_backfill_once(
+                &fetch,
+                &state_root,
+                &tick_scratch,
+                MAX_FETCHES_PER_TICK,
+            ) {
+                Ok(summary) if summary.failed == 0 => status.record_source_success(
+                    PRODUCT,
+                    None,
+                    format!(
+                        "attempted={} succeeded={} remaining_due={}",
+                        summary.attempted, summary.succeeded, summary.remaining_due
+                    ),
+                ),
+                Ok(summary) => status.record_source_failure(
+                    PRODUCT,
+                    format!(
+                        "attempted={} succeeded={} failed={} remaining_due={}",
+                        summary.attempted, summary.succeeded, summary.failed, summary.remaining_due
+                    ),
+                ),
+                Err(error) => status.record_source_failure(PRODUCT, format!("{error:#}")),
+            }
+            thread::sleep(INTERVAL);
+        }
+    });
+}
+
 fn queue_persisted_notam_state_event(
     store: &NotamPersistentStore,
     sender: &Sender<UpstreamEvent>,
@@ -1616,13 +1694,15 @@ fn chrono_duration_from_std(duration: Duration) -> chrono::Duration {
 fn production_tasks(
     fetch: LiveFeedFetchConfig,
     notam_state_root_for_tfr_enrichment: Option<PathBuf>,
+    tfr_detail_backfill_state_root: PathBuf,
 ) -> Vec<Box<dyn DaemonLiveFeedTask + Send>> {
     let tfr_builder = match notam_state_root_for_tfr_enrichment {
         Some(state_root) => {
             TfrLiveFeedBuilder::new(fetch.clone()).with_notam_state_root(state_root)
         }
         None => TfrLiveFeedBuilder::new(fetch.clone()),
-    };
+    }
+    .with_tfr_detail_backfill_state_root(tfr_detail_backfill_state_root);
     vec![
         production_task("metars", MetarLiveFeedBuilder::new(fetch.clone())),
         production_task("tafs", TafLiveFeedBuilder::new(fetch.clone())),
@@ -2964,6 +3044,7 @@ mod tests {
             event_interval_ms: 1,
             simulation: None,
             swim_notams: None,
+            tfr_detail_backfill_state_root: root.join("../state/tfr-detail-backfill"),
             check_config: false,
             sse_event_limit: Some(1),
         };

@@ -15,6 +15,7 @@ pub mod engine;
 pub mod notam_store;
 pub mod products;
 pub mod simulation;
+pub mod tfr_detail_backfill;
 
 const METAR_PRODUCT_CONTRACT_VERSION: u32 = 9;
 const TAF_PRODUCT_CONTRACT_VERSION: u32 = 1;
@@ -384,7 +385,7 @@ pub struct StructuredTfrArea {
     notam: Option<StructuredTfrNotamMetadata>,
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct StructuredTfrNotamMetadata {
     record_id: String,
     #[serde(skip_serializing_if = "Option::is_none")]

@@ -24,8 +24,10 @@ use crate::{
     },
     load_tfr_notam_ids, metar_content_fingerprint,
     notam_store::NotamPersistentStore,
-    taf_content_fingerprint, tfr_notam_metadata_by_fdc_id, BuildMetarRequest, BuildTafRequest,
-    BuildTfrRequest, StructuredTfrNotamMetadata,
+    sanitize_notam_id, taf_content_fingerprint,
+    tfr_detail_backfill::{TfrDetailBackfillStore, TfrDetailFetchTarget},
+    tfr_notam_metadata_by_fdc_id, BuildMetarRequest, BuildTafRequest, BuildTfrRequest,
+    StructuredTfrNotamMetadata,
 };
 
 const METAR_XML_URL: &str = "https://aviationweather.gov/data/cache/metars.cache.xml.gz";
@@ -499,6 +501,7 @@ impl ProductBuilder for TafLiveFeedBuilder {
 pub struct TfrLiveFeedBuilder {
     fetch: LiveFeedFetchConfig,
     notam_state_root: Option<PathBuf>,
+    tfr_detail_backfill_state_root: Option<PathBuf>,
 }
 
 impl TfrLiveFeedBuilder {
@@ -506,11 +509,17 @@ impl TfrLiveFeedBuilder {
         Self {
             fetch,
             notam_state_root: None,
+            tfr_detail_backfill_state_root: None,
         }
     }
 
     pub fn with_notam_state_root(mut self, state_root: impl Into<PathBuf>) -> Self {
         self.notam_state_root = Some(state_root.into());
+        self
+    }
+
+    pub fn with_tfr_detail_backfill_state_root(mut self, state_root: impl Into<PathBuf>) -> Self {
+        self.tfr_detail_backfill_state_root = Some(state_root.into());
         self
     }
 }
@@ -544,7 +553,19 @@ impl ProductBuilder for TfrLiveFeedBuilder {
         let tfr_notam_ids = load_tfr_notam_ids(&input_dir)?
             .into_iter()
             .collect::<BTreeSet<_>>();
-        let notams_by_fdc_id = self.current_tfr_notam_metadata_by_fdc_id(&tfr_notam_ids);
+        let mut notams_by_fdc_id = self.current_tfr_notam_metadata_by_fdc_id(&tfr_notam_ids);
+        let missing_from_swim = tfr_notam_ids
+            .iter()
+            .filter(|tfr_id| !notams_by_fdc_id.contains_key(*tfr_id))
+            .cloned()
+            .collect::<BTreeSet<_>>();
+        if let Some(backfill_metadata) =
+            self.current_tfr_detail_backfill_metadata(&missing_from_swim)
+        {
+            for (fdc_id, metadata) in backfill_metadata {
+                notams_by_fdc_id.entry(fdc_id).or_insert(metadata);
+            }
+        }
         write_json_pretty_file(
             &input_dir.join("notam-enrichment-by-fdc-id.json"),
             &notams_by_fdc_id,
@@ -596,6 +617,100 @@ impl TfrLiveFeedBuilder {
             }
         }
     }
+
+    fn current_tfr_detail_backfill_metadata(
+        &self,
+        missing_tfr_ids: &BTreeSet<String>,
+    ) -> Option<Vec<(String, StructuredTfrNotamMetadata)>> {
+        let Some(state_root) = &self.tfr_detail_backfill_state_root else {
+            return None;
+        };
+        let store = TfrDetailBackfillStore::new(state_root);
+        if let Err(error) = store.record_desired_tfrs(missing_tfr_ids) {
+            eprintln!(
+                "TFR detail backfill queue unavailable from {}: {error:#}",
+                state_root.display()
+            );
+        }
+        match store.current_metadata_by_fdc_id(missing_tfr_ids) {
+            Ok(metadata) => Some(metadata),
+            Err(error) => {
+                eprintln!(
+                    "TFR detail backfill metadata unavailable from {}: {error:#}",
+                    state_root.display()
+                );
+                None
+            }
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TfrDetailBackfillRunSummary {
+    pub attempted: usize,
+    pub succeeded: usize,
+    pub failed: usize,
+    pub remaining_due: usize,
+}
+
+pub fn fetch_tfr_detail_backfill_once(
+    fetch: &LiveFeedFetchConfig,
+    store_root: &Path,
+    scratch_dir: &Path,
+    max_fetches: usize,
+) -> anyhow::Result<TfrDetailBackfillRunSummary> {
+    let store = TfrDetailBackfillStore::new(store_root);
+    store.initialize()?;
+    let targets = store.due_fetch_targets(max_fetches)?;
+    let input_root = fresh_dir(scratch_dir)?;
+    let mut succeeded = 0_usize;
+    let mut failed = 0_usize;
+    for target in &targets {
+        match fetch_one_tfr_detail_backfill(fetch, &store, &input_root, target) {
+            Ok(()) => succeeded += 1,
+            Err(error) => {
+                failed += 1;
+                let _ = store.record_failure(target, format!("{error:#}"));
+                eprintln!(
+                    "TFR detail backfill failed for {}: {error:#}",
+                    target.tfr_id
+                );
+            }
+        }
+    }
+    Ok(TfrDetailBackfillRunSummary {
+        attempted: targets.len(),
+        succeeded,
+        failed,
+        remaining_due: store.due_fetch_targets(1)?.len(),
+    })
+}
+
+fn fetch_one_tfr_detail_backfill(
+    fetch: &LiveFeedFetchConfig,
+    store: &TfrDetailBackfillStore,
+    input_root: &Path,
+    target: &TfrDetailFetchTarget,
+) -> anyhow::Result<()> {
+    let file_name = format!("{}.xml", sanitize_notam_id(&target.tfr_id));
+    let input_dir = fresh_dir(&input_root.join(sanitize_notam_id(&target.tfr_id)))?;
+    let provenance_dir = input_dir.join("provenance");
+    let request = PrefetchRequest::new(&target.source_url)
+        .with_logical_file_name(&file_name)
+        .with_cache_key(format!("tfr-detail-backfill:{}", target.tfr_id));
+    prefetch_requests_with_provenance(
+        &[request],
+        &input_dir,
+        1,
+        fetch.fetch_cache.as_ref(),
+        &provenance_dir,
+        "tfr-detail-backfill",
+    )?;
+    let xml_path = input_dir.join(&file_name);
+    let xml = fs::read_to_string(&xml_path)
+        .with_context(|| format!("failed to read TFR detail XML {}", xml_path.display()))?;
+    store.record_success(target, &xml)?;
+    Ok(())
 }
 
 #[derive(Debug, Clone)]
@@ -1258,6 +1373,64 @@ mod tests {
         assert_eq!(update.changed_count, 1);
         let current = read_live_feeds_current(&live_root)?.expect("current manifest");
         assert!(current.products.contains_key("notams"));
+        Ok(())
+    }
+
+    #[test]
+    fn tfr_builder_queues_and_consumes_detail_backfill_metadata() -> anyhow::Result<()> {
+        let temp = tempdir()?;
+        let state_root = temp.path().join("tfr-detail-backfill");
+        let builder = TfrLiveFeedBuilder::new(LiveFeedFetchConfig::cache_first(
+            1,
+            temp.path().join("cache"),
+        ))
+        .with_tfr_detail_backfill_state_root(&state_root);
+        let missing = BTreeSet::from(["6/8212".to_string()]);
+
+        let first = builder
+            .current_tfr_detail_backfill_metadata(&missing)
+            .expect("metadata query");
+        assert!(first.is_empty());
+        let store = TfrDetailBackfillStore::new(&state_root);
+        let targets = store.due_fetch_targets(10)?;
+        assert_eq!(targets.len(), 1);
+        assert_eq!(
+            targets[0].source_url,
+            "https://tfr.faa.gov/download/detail_6_8212.xml"
+        );
+
+        store.record_success(
+            &targets[0],
+            r#"
+            <XNOTAM-Update>
+              <Not>
+                <NotUid><dateIndexYear>2026</dateIndexYear><noSeqNo>8212</noSeqNo></NotUid>
+                <codeFacility>ZTL</codeFacility>
+                <dateEffective>2026-06-17T04:01:00</dateEffective>
+                <dateExpire>2026-07-17T03:59:00</dateExpire>
+                <txtNameCity>Kennesaw</txtNameCity>
+                <txtNameUSState>GEORGIA</txtNameUSState>
+                <valDistVerUpper>400</valDistVerUpper>
+                <uomDistVerUpper>FT</uomDistVerUpper>
+                <valDistVerLower>0</valDistVerLower>
+                <uomDistVerLower>FT</uomDistVerLower>
+              </Not>
+            </XNOTAM-Update>
+            "#,
+        )?;
+
+        let second = builder
+            .current_tfr_detail_backfill_metadata(&missing)
+            .expect("metadata query");
+        assert_eq!(second.len(), 1);
+        assert_eq!(second[0].0, "6/8212");
+        assert_eq!(second[0].1.record_id, "F:ZTL:2026:N:8212");
+        assert!(second[0]
+            .1
+            .text
+            .as_deref()
+            .expect("text")
+            .contains("SFC-400FT"));
         Ok(())
     }
 

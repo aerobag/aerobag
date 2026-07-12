@@ -29,7 +29,10 @@ Required connection fields:
 
 Credential storage convention:
 - keep them out of the repo
-- current local path: `/root/aerobag-credentials/swim-notams.json`
+- environment bundle: `/root/aerobag-credentials/swim-notams.environments.json`
+- dev generated credential: `/root/aerobag-credentials/dev-stack/swim-notams.json`
+- prod installed credential: `/etc/aerobag/secrets/swim-notams.json`
+- dev and prod entries must use separate SWIM subscriptions
 
 Important implementation note:
 - FAA’s portal currently presents the broker URL as `tcps://...`
@@ -44,7 +47,7 @@ Standalone collector location:
 Purpose:
 - connect to the FAA queue using the vendor-supported Java/Solace path
 - capture raw messages without putting secrets into the Rust workspace
-- write raw message dumps for later Rust normalization
+- write raw messages to SQLite for Rust normalization and live-feed publication
 
 Build:
 - `gradle installDist`
@@ -53,26 +56,16 @@ Run:
 
 ```bash
 product/preprocessor/swim-notams-fetch/build/install/swim-notams-fetch/bin/swim-notams-fetch \
-  --config /root/aerobag-credentials/swim-notams.json \
-  --output-dir /tmp/swim-notams-raw
+  --config /root/aerobag-credentials/dev-stack/swim-notams.json \
+  --sqlite /path/to/swim-notams/state/current.sqlite
 ```
 
 Outputs:
-- `messages.jsonl`
-- `summary.json`
+- committed rows in SQLite table `raw_notam_messages`
 
 The collector uses client acknowledgement, so reading from the queue is real consumption, not a harmless peek.
 
-Rust normalizer:
-
-```bash
-/root/aerobag-artifacts/target/debug/preprocessor-cli normalize-swim-notams \
-  --input-jsonl /tmp/swim-notams-raw/messages.jsonl \
-  --output-dir /tmp/notams-normalized \
-  --version-label sample_20260425
-```
-
-This emits:
+The live-feeds daemon snapshots the SQLite current state and emits:
 - `notams.json`
 - `notams_<label>.manifest.json`
 - `notams_<label>.zip`
@@ -85,7 +78,7 @@ Observed behavior:
 - connection succeeds over TLS
 - messages arrive as `SolTextMessage`
 - queue messages are persistent
-- captured output works as true JSONL now
+- captured messages commit cleanly to SQLite before acknowledgement
 
 Observed payload shape:
 - body is FAA AIXM 5.1 XML

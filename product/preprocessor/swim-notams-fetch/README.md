@@ -5,15 +5,25 @@ Small standalone Java collector for FAA SWIFT/SCDS NOTAM Distribution queues.
 Purpose:
 - keep the FAA queue credentials out of the Rust repo
 - use the vendor-supported Solace JMS path to drain messages
-- write raw captured messages as JSONL so Rust can normalize them into a live feed
+- write raw captured messages to SQLite so Rust can normalize them into a live feed
 
 Expected credential file:
-- `/root/aerobag-credentials/swim-notams.json`
+- dev-stack generated file: `/root/aerobag-credentials/dev-stack/swim-notams.json`
+- prod installed file: `/etc/aerobag/secrets/swim-notams.json`
+
+These single-environment files are generated from an operator-owned source bundle:
+
+- `/root/aerobag-credentials/swim-notams.environments.json`
+
+Do not point dev and prod at the same SWIM queue. SWIM subscriptions are stateful
+queues; two Aerobag daemons consuming the same queue would split the stream and
+neither daemon could reconstruct complete NOTAM state.
 
 Shape:
 
 ```json
 {
+  "aerobagEnvironment": "dev",
   "providerUrl": "tcps://ems1.swim.faa.gov:55443",
   "queue": "jonh.faaswim.jonh.net.AIM_FNS....OUT",
   "connectionFactory": "jonh.faaswim.jonh.net.CF",
@@ -43,7 +53,7 @@ Run:
 
 ```bash
 product/preprocessor/swim-notams-fetch/build/install/swim-notams-fetch/bin/swim-notams-fetch \
-  --config /root/aerobag-credentials/swim-notams.json \
+  --config /root/aerobag-credentials/dev-stack/swim-notams.json \
   --sqlite /path/to/swim-notams/state/current.sqlite
 ```
 
@@ -51,7 +61,7 @@ Alternative if using the Maven assembly jar:
 
 ```bash
 java -jar target/swim-notams-fetch-0.1.0-jar-with-dependencies.jar \
-  --config /root/aerobag-credentials/swim-notams.json \
+  --config /root/aerobag-credentials/dev-stack/swim-notams.json \
   --sqlite /path/to/swim-notams/state/current.sqlite
 ```
 
@@ -76,12 +86,18 @@ aerobag-live-feedsd \
   --live-root <live_root> \
   --scratch-root <scratch_root> \
   --listen <addr> \
-  --swim-notams-config /root/aerobag-credentials/swim-notams.json \
+  --swim-notams-config /root/aerobag-credentials/dev-stack/swim-notams.json \
+  --swim-notams-environment dev \
   --swim-notams-collector product/preprocessor/swim-notams-fetch/build/install/swim-notams-fetch/bin/swim-notams-fetch \
   --swim-notams-state-root <artifact_root>/state/swim-notams
 ```
 
-When enabled, the live-feeds daemon runs this collector in an isolated supervisor loop, promotes complete collector runs into immutable NOTAM JSONL segments, applies those segments into SQLite current state, and publishes a `notams` live-feed product from SQLite. Collector failures show up as `notams` source health in `/live-feeds/status.html` and do not block the other live-feed products.
+When enabled, the live-feeds daemon verifies that the credential file declares
+the expected environment, runs this collector in an isolated supervisor loop,
+applies committed raw SQLite rows into current NOTAM state, and publishes a
+`notams` live-feed product from SQLite. Collector failures show up as `notams`
+source health in `/live-feeds/status.html` and do not block the other live-feed
+products.
 
 Observed live payload shape:
 - messages are `SolTextMessage`

@@ -62,7 +62,7 @@ fn live_feeds_contract_root(live_root: &Path) -> PathBuf {
 
 fn usage() -> &'static str {
     "usage:
-  aerobag-live-feedsd --live-root <path> --listen <addr> [--scratch-root <path>] [--event-interval-ms <n>] [--swim-notams-config <path> --swim-notams-collector <path> [--swim-notams-state-root <path>]]
+  aerobag-live-feedsd --live-root <path> --listen <addr> [--scratch-root <path>] [--event-interval-ms <n>] [--swim-notams-config <path> --swim-notams-environment <dev|prod> --swim-notams-collector <path> [--swim-notams-state-root <path>]]
   aerobag-live-feedsd --simulation --live-root <path> --listen <addr> [--fixture-root <path>] [--fixture-cache <path>] [--speedup <n>] [--event-interval-ms <n>]
   aerobag-live-feedsd --check-config --live-root <path> --listen <addr> [--simulation --fixture-root <path>]
 
@@ -99,6 +99,7 @@ struct SimulationConfig {
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct SwimNotamsConfig {
     config_path: PathBuf,
+    environment: String,
     collector_path: PathBuf,
     state_root: PathBuf,
     retry_interval_ms: u64,
@@ -106,6 +107,8 @@ struct SwimNotamsConfig {
 
 #[derive(Debug, Clone, Deserialize)]
 struct SwimNotamsCredentialFile {
+    #[serde(rename = "aerobagEnvironment", alias = "aerobag_environment")]
+    aerobag_environment: String,
     #[serde(rename = "providerUrl")]
     provider_url: String,
     queue: String,
@@ -630,6 +633,7 @@ impl DaemonConfig {
         let mut fixture_cache = None;
         let mut speedup = 1_u32;
         let mut swim_notams_config = None;
+        let mut swim_notams_environment = None;
         let mut swim_notams_collector = None;
         let mut swim_notams_state_root = None;
         let mut swim_notams_retry_interval_ms = 60_000_u64;
@@ -693,6 +697,13 @@ impl DaemonConfig {
                 "--swim-notams-config" => {
                     swim_notams_config = Some(next_path(&mut args, "--swim-notams-config")?)
                 }
+                "--swim-notams-environment" => {
+                    let value = next_value(&mut args, "--swim-notams-environment")?;
+                    match value.as_str() {
+                        "dev" | "prod" => swim_notams_environment = Some(value),
+                        _ => bail!("--swim-notams-environment must be dev or prod"),
+                    }
+                }
                 "--swim-notams-collector" => {
                     swim_notams_collector = Some(next_path(&mut args, "--swim-notams-collector")?)
                 }
@@ -745,20 +756,30 @@ impl DaemonConfig {
             None
         };
         let swim_notams_state_root_supplied = swim_notams_state_root.is_some();
-        let swim_notams = match (swim_notams_config, swim_notams_collector) {
-            (Some(config_path), Some(collector_path)) => Some(SwimNotamsConfig {
+        let swim_notams_environment_supplied = swim_notams_environment.is_some();
+        let swim_notams = match (
+            swim_notams_config,
+            swim_notams_environment,
+            swim_notams_collector,
+        ) {
+            (Some(config_path), Some(environment), Some(collector_path)) => Some(SwimNotamsConfig {
                 config_path,
+                environment,
                 collector_path,
                 state_root: swim_notams_state_root
                     .unwrap_or_else(|| live_root.join("../state/swim-notams")),
                 retry_interval_ms: swim_notams_retry_interval_ms,
             }),
-            (None, None) => None,
-            (Some(_), None) => bail!("--swim-notams-config requires --swim-notams-collector"),
-            (None, Some(_)) => bail!("--swim-notams-collector requires --swim-notams-config"),
+            (None, None, None) => None,
+            _ => bail!(
+                "--swim-notams-config, --swim-notams-environment, and --swim-notams-collector must be supplied together"
+            ),
         };
         if swim_notams.is_none() && swim_notams_state_root_supplied {
             bail!("--swim-notams-state-root requires --swim-notams-config and --swim-notams-collector");
+        }
+        if swim_notams.is_none() && swim_notams_environment_supplied {
+            bail!("--swim-notams-environment requires --swim-notams-config and --swim-notams-collector");
         }
         let tfr_detail_backfill_state_root = tfr_detail_backfill_state_root
             .unwrap_or_else(|| live_root.join("../state/tfr-detail-backfill"));
@@ -833,6 +854,15 @@ fn validate_config(config: &DaemonConfig) -> anyhow::Result<()> {
             bail!(
                 "--swim-notams-config does not exist: {}",
                 swim_notams.config_path.display()
+            );
+        }
+        let credential = read_swim_notams_credential_file(&swim_notams.config_path)?;
+        if credential.aerobag_environment != swim_notams.environment {
+            bail!(
+                "--swim-notams-config {} declares environment {}, but daemon expected {}",
+                swim_notams.config_path.display(),
+                credential.aerobag_environment,
+                swim_notams.environment
             );
         }
         if !swim_notams.collector_path.is_file() {
@@ -1613,11 +1643,7 @@ fn start_swim_notams_collector_process(
 fn read_swim_notams_subscription_identity(
     config_path: &Path,
 ) -> anyhow::Result<SwimNotamSubscriptionIdentity> {
-    let config: SwimNotamsCredentialFile = serde_json::from_slice(
-        &fs::read(config_path)
-            .with_context(|| format!("failed to read {}", config_path.display()))?,
-    )
-    .with_context(|| format!("failed to parse {}", config_path.display()))?;
+    let config = read_swim_notams_credential_file(config_path)?;
     Ok(SwimNotamSubscriptionIdentity {
         provider_url: config.provider_url,
         queue: config.queue,
@@ -1625,6 +1651,16 @@ fn read_swim_notams_subscription_identity(
         username: config.username,
         vpn: config.vpn,
     })
+}
+
+fn read_swim_notams_credential_file(
+    config_path: &Path,
+) -> anyhow::Result<SwimNotamsCredentialFile> {
+    serde_json::from_slice(
+        &fs::read(config_path)
+            .with_context(|| format!("failed to read {}", config_path.display()))?,
+    )
+    .with_context(|| format!("failed to parse {}", config_path.display()))
 }
 
 fn queue_notam_raw_ingest_event(
@@ -2870,6 +2906,88 @@ mod tests {
             metars.attempts[0].error.as_deref(),
             Some("builder exploded")
         );
+    }
+
+    #[test]
+    fn swim_notams_config_requires_matching_environment() -> anyhow::Result<()> {
+        let temp = tempdir()?;
+        fs::create_dir_all(temp.path().join("live"))?;
+        fs::create_dir_all(temp.path().join("scratch"))?;
+        fs::create_dir_all(temp.path().join("cache"))?;
+        fs::create_dir_all(temp.path().join("state"))?;
+        let config_path = temp.path().join("swim-notams.json");
+        let collector_path = temp.path().join("collector");
+        fs::write(
+            &config_path,
+            r#"{
+              "aerobagEnvironment": "dev",
+              "providerUrl": "tcps://example.test:55443",
+              "queue": "dev.queue",
+              "connectionFactory": "dev.CF",
+              "username": "dev-user",
+              "password": "dev-pass",
+              "vpn": "dev-vpn"
+            }"#,
+        )?;
+        fs::write(&collector_path, "#!/bin/sh\n")?;
+
+        let config = DaemonConfig::parse(
+            [
+                "aerobag-live-feedsd",
+                "--live-root",
+                temp.path().join("live").to_str().expect("utf8 temp path"),
+                "--listen",
+                "127.0.0.1:0",
+                "--swim-notams-config",
+                config_path.to_str().expect("utf8 temp path"),
+                "--swim-notams-environment",
+                "prod",
+                "--swim-notams-collector",
+                collector_path.to_str().expect("utf8 temp path"),
+            ]
+            .into_iter()
+            .map(str::to_string),
+        )?;
+
+        let error = validate_config(&config).expect_err("environment mismatch should fail");
+        assert!(
+            format!("{error:#}").contains("declares environment dev, but daemon expected prod"),
+            "{error:#}"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn swim_notams_args_must_include_environment() -> anyhow::Result<()> {
+        let temp = tempdir()?;
+        let config_path = temp.path().join("swim-notams.json");
+        let collector_path = temp.path().join("collector");
+        fs::write(&config_path, "{}")?;
+        fs::write(&collector_path, "#!/bin/sh\n")?;
+
+        let error = DaemonConfig::parse(
+            [
+                "aerobag-live-feedsd",
+                "--live-root",
+                temp.path().join("live").to_str().expect("utf8 temp path"),
+                "--listen",
+                "127.0.0.1:0",
+                "--swim-notams-config",
+                config_path.to_str().expect("utf8 temp path"),
+                "--swim-notams-collector",
+                collector_path.to_str().expect("utf8 temp path"),
+            ]
+            .into_iter()
+            .map(str::to_string),
+        )
+        .expect_err("missing environment should fail");
+        assert!(
+            format!("{error:#}").contains(
+                "--swim-notams-config, --swim-notams-environment, and --swim-notams-collector must be supplied together"
+            ),
+            "{error:#}"
+        );
+        Ok(())
     }
 
     #[test]

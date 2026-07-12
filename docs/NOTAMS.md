@@ -29,19 +29,23 @@ Queue access is handled outside the deterministic Rust build DAG.
 
 Current implementation:
 - Java collector under [product/preprocessor/swim-notams-fetch](/root/aerobag-preprocessor/aerobag/product/preprocessor/swim-notams-fetch)
-- optional live-feed daemon supervisor enabled with `--swim-notams-config <path> --swim-notams-collector <path>`
+- optional live-feed daemon supervisor enabled with `--swim-notams-config <path> --swim-notams-environment <dev|prod> --swim-notams-collector <path>`
 
 Role:
 - connect to the FAA SWIM/SCDS Solace JMS queue
 - receive messages
 - durably persist raw messages before acknowledging them
-- promote complete raw JSONL runs into immutable daemon state segments
-- trigger the normal `notams` live-feed product builder after a complete segment lands
+- apply committed raw messages into daemon-owned current state
+- trigger the normal `notams` live-feed product builder after raw messages are applied
 
 Important rule:
 - the collector must not acknowledge a message before it has been durably written to local storage
 
 The NOTAM supervisor is isolated from the other live-feed products. A broken SWIM queue connection records `notams` source health failures and retries, but it does not stop METARs, TAFs, NEXRAD, TFRs, obstacles, or winds-aloft from publishing.
+
+SWIM subscriptions are stateful queues. Dev and prod must use separate
+subscriptions. A daemon must be started with an expected environment and refuses
+to consume a credential file that declares a different environment.
 
 ### 2. Producer-Owned State Store
 
@@ -59,12 +63,8 @@ Current storage shape:
   - non-secret subscription identity for the SWIM queue this state belongs to
 - `artifact-root/state/swim-notams/lock`
   - process lock protecting the queue subscription and local state
-- `artifact-root/state/swim-notams/ingest/active/`
-  - per-run collector directories while messages are being consumed
-- `artifact-root/state/swim-notams/ingest/segments/YYYY/MM/DD/*.jsonl`
-  - immutable append-only raw message segments after a collector run completes
 - `artifact-root/state/swim-notams/state/current.sqlite`
-  - current normalized state and applied segment checkpoints
+  - committed raw messages, applied raw cursor, and current normalized state
 
 SQLite is the preferred state format because:
 - idempotent upserts are easy
@@ -72,7 +72,10 @@ SQLite is the preferred state format because:
 - crash recovery is straightforward
 - snapshot export into a live-feed product is simple
 
-The raw segment journal is the disaster-recovery truth. SQLite is the internal communication boundary between ingestion and export: ingestion idempotently applies completed segments into SQLite, and the `notams` live-feed builder snapshots SQLite current state.
+SQLite is the internal communication boundary between ingestion and export: the
+Java collector writes one raw row transactionally before acknowledging each JMS
+message, Rust applies committed raw rows idempotently into current state, and the
+`notams` live-feed builder snapshots SQLite current state.
 
 ### 3. Snapshot / Export
 
@@ -91,7 +94,7 @@ That means the content-addressed identity belongs to the exported snapshot, not 
 
 A long-lived ingest process owns the mutable state:
 - consume FAA queue
-- append raw segments
+- commit raw messages
 - parse / normalize
 - upsert current state
 - maintain checkpoints
@@ -125,18 +128,19 @@ So:
 
 ## Raw Message Handoff Between Java And Rust
 
-The Java-to-Rust handoff must not be a single mutable file.
+The Java-to-Rust handoff is the SWIM NOTAM SQLite file.
 
 Current safe shape:
-- Java writes `messages.jsonl` in a per-run directory
-- each message is flushed/fsynced before JMS acknowledgement
-- the daemon promotes complete runs to immutable JSONL segment files
-- Rust ingests only complete promoted segments
-- Rust tracks applied segment checkpoints and idempotently upserts into SQLite
+- Java inserts one `raw_notam_messages` row in a SQLite transaction
+- Java acknowledges the JMS message only after that transaction commits
+- Rust reads committed raw rows above `raw_ingest_cursor`
+- Rust idempotently applies those rows into `current_notams`
+- Rust marks raw rows applied and advances the cursor in the same apply flow
 
 This avoids:
 - acked-but-not-persisted message loss
-- races on a single shared mutable file
+- tailing partially-written files
+- split state between collector output and daemon state
 
 Duplicates are acceptable and expected around crashes/restarts.
 The Rust-side normalization/state-upsert logic must therefore be idempotent.
@@ -145,26 +149,19 @@ The Rust-side normalization/state-upsert logic must therefore be idempotent.
 
 We now have:
 - Java queue collector
-- Rust offline normalizer from captured messages
 - first-stage live-feed daemon integration for a `notams` product
-- durable NOTAM store with subscription lock, raw segments, and SQLite current state
+- durable NOTAM store with subscription lock, raw messages, applied cursor, and SQLite current state
 - client/cache registry support for the `notams` record-json live-feed schema
-
-Current Rust tool:
-
-```bash
-/root/aerobag-artifacts/target/debug/preprocessor-cli normalize-swim-notams \
-  --input-jsonl <captured_messages.jsonl> \
-  --output-dir <out_dir> \
-  --version-label <label>
-```
 
 This proves:
 - SWIM connectivity works
 - AIXM XML can be parsed in Rust
 - we can emit a product-shaped `notams.json` artifact
 
-The daemon publishes the normalized current record set as a live-feed product from SQLite state. Complete raw segments remain available to rebuild that state if the SQLite file is lost or the normalizer changes.
+The daemon publishes the normalized current record set as a live-feed product
+from SQLite state. Committed raw rows remain available for a retention window so
+we can diagnose recent ingestion and replay recent applies if the normalizer
+changes.
 
 ## Client Contract
 

@@ -45,6 +45,43 @@ The package list is not host config. It lives in
 The deploy script installs only a tiny bootstrap set before the checkout exists:
 `ca-certificates`, `git`, and `rsync`.
 
+## SWIM NOTAM Credentials
+
+SWIM NOTAM subscriptions are stateful queues. Dev and prod must not consume the
+same queue. The operator-owned credential bundle lives outside the repo:
+
+```text
+/root/aerobag-credentials/swim-notams.environments.json
+```
+
+Its `subscriptions.dev` and `subscriptions.prod` entries must point at separate
+SWIM subscriptions. `tools/run_dev_stack.py` extracts only the dev entry to:
+
+```text
+/root/aerobag-credentials/dev-stack/swim-notams.json
+```
+
+Production deploys install only the prod entry to:
+
+```text
+/etc/aerobag/secrets/swim-notams.json
+```
+
+Enable prod NOTAM ingestion in `deploy/aerobag-prod.json` only after the prod
+subscription exists:
+
+```json
+{
+  "swim_notams_enabled": true,
+  "swim_notams_environment": "prod",
+  "swim_notams_credential_bundle": "/root/aerobag-credentials/swim-notams.environments.json",
+  "swim_notams_prod_config": "/etc/aerobag/secrets/swim-notams.json"
+}
+```
+
+The live-feeds daemon is also started with `--swim-notams-environment prod` and
+refuses to consume a credential file that declares any other environment.
+
 Production APK builds use the Android SDK under `/usr/lib/android-sdk`.
 They require a full JDK, not just a JRE, because Android Gradle transforms use
 `jlink` while processing platform modules. Prod installs `openjdk-21-jdk` from

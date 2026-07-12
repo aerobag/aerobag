@@ -437,6 +437,7 @@ public final class SwimNotamsConsumer {
     }
 
     public static final class SwimConfig {
+        public String aerobagEnvironment;
         public String providerUrl;
         public String queue;
         public String connectionFactory;

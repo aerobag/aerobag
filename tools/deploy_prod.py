@@ -14,6 +14,7 @@ from pathlib import Path
 from typing import Any
 
 from admin_index import admin_index_html
+from swim_notams_credentials import write_environment_credential
 
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
@@ -51,6 +52,11 @@ DEFAULT_ANDROID_SIGNING_BOOTSTRAP_KEYSTORE = Path("/root/.android/debug.keystore
 DEFAULT_ANDROID_SIGNING_PROD_KEYSTORE = (
     "/etc/aerobag/secrets/android/aerobag-app.keystore"
 )
+DEFAULT_SWIM_NOTAMS_CREDENTIAL_BUNDLE = Path(
+    "/root/aerobag-credentials/swim-notams.environments.json"
+)
+DEFAULT_SWIM_NOTAMS_PROD_CONFIG = "/etc/aerobag/secrets/swim-notams.json"
+SWIM_NOTAMS_ENVIRONMENTS = {"dev", "prod"}
 
 
 def parse_args() -> argparse.Namespace:
@@ -211,6 +217,21 @@ def load_config(path: Path) -> dict[str, Any]:
     )
     config.setdefault("android_signing_key_alias", ANDROID_SIGNING_KEY_ALIAS)
     config.setdefault("android_signing_key_password", ANDROID_SIGNING_KEY_PASSWORD)
+    config.setdefault("swim_notams_enabled", False)
+    config.setdefault("swim_notams_environment", "prod")
+    config.setdefault(
+        "swim_notams_credential_bundle",
+        os.fspath(DEFAULT_SWIM_NOTAMS_CREDENTIAL_BUNDLE),
+    )
+    config.setdefault("swim_notams_prod_config", DEFAULT_SWIM_NOTAMS_PROD_CONFIG)
+    if config["swim_notams_enabled"]:
+        if config["swim_notams_environment"] not in SWIM_NOTAMS_ENVIRONMENTS:
+            raise SystemExit(
+                "swim_notams_environment must be one of: "
+                + ", ".join(sorted(SWIM_NOTAMS_ENVIRONMENTS))
+            )
+        if config["swim_notams_environment"] != "prod":
+            raise SystemExit("production deploy requires swim_notams_environment=prod")
     return config
 
 
@@ -363,6 +384,40 @@ def install_android_signing_key(config: dict[str, Any], *, dry_run: bool) -> Non
         ).strip(),
         dry_run=dry_run,
     )
+
+
+def install_swim_notams_credential(config: dict[str, Any], *, dry_run: bool) -> None:
+    if not config["swim_notams_enabled"]:
+        return
+    target = config["swim_notams_prod_config"]
+    target_dir = os.path.dirname(target)
+    source_bundle = Path(config["swim_notams_credential_bundle"]).expanduser()
+    run_ssh(
+        config,
+        textwrap.dedent(
+            f"""
+            set -euo pipefail
+            install -d -m 0700 {shell_quote(target_dir)}
+            """
+        ).strip(),
+        dry_run=dry_run,
+    )
+    with tempfile.TemporaryDirectory(prefix="aerobag-swim-notams-") as temp_dir:
+        extracted = Path(temp_dir) / "swim-notams.json"
+        extracted_ok = write_environment_credential(
+            bundle_path=source_bundle,
+            environment=config["swim_notams_environment"],
+            output_path=extracted,
+            forbidden_roots=[REPO_ROOT],
+            dry_run=dry_run,
+        )
+        if not extracted_ok:
+            raise SystemExit(f"missing SWIM NOTAM credential bundle: {source_bundle}")
+        run_local(
+            ["rsync", "-az", "--chmod=F600", extracted, f"{ssh_target(config)}:{target}"],
+            cwd=REPO_ROOT,
+            dry_run=dry_run,
+        )
 
 
 def install_bootstrap_packages(config: dict[str, Any], *, dry_run: bool) -> None:
@@ -548,6 +603,9 @@ rustup target add \
 
 cd "$SOURCE_ROOT/product/preprocessor"
 cargo build --release -p preprocessor-cli -p live-feeds-daemon
+
+cd "$SOURCE_ROOT/product/preprocessor/swim-notams-fetch"
+gradle installDist
 
 WASM_BINDGEN_VERSION="$(python3 - "$SOURCE_ROOT/ui/core-rust/Cargo.lock" <<'PY'
 from pathlib import Path
@@ -1034,8 +1092,16 @@ WantedBy=timers.target
 """
 
 
-def live_feeds_unit() -> str:
-    return """[Unit]
+def live_feeds_unit(config: dict[str, Any]) -> str:
+    swim_args = ""
+    if config["swim_notams_enabled"]:
+        swim_args = (
+            f" --swim-notams-config {shell_quote(config['swim_notams_prod_config'])}"
+            f" --swim-notams-environment {shell_quote(config['swim_notams_environment'])}"
+            ' --swim-notams-collector "$SOURCE_ROOT/product/preprocessor/swim-notams-fetch/build/install/swim-notams-fetch/bin/swim-notams-fetch"'
+            ' --swim-notams-state-root "$ARTIFACT_ROOT/state/swim-notams"'
+        )
+    return f"""[Unit]
 Description=Aerobag live-feeds daemon
 After=network-online.target
 Wants=network-online.target
@@ -1043,7 +1109,7 @@ Wants=network-online.target
 [Service]
 Type=simple
 EnvironmentFile=/etc/aerobag/env
-ExecStart=/bin/bash -lc 'source /etc/aerobag/env; exec "$CARGO_TARGET_DIR/release/aerobag-live-feedsd" --live-root "$ARTIFACT_ROOT/live-feeds" --scratch-root "$ARTIFACT_ROOT/scratch/live-feeds" --fetch-cache-root "$ARTIFACT_ROOT/cache/fetch" --fetch-cache-mode fill --listen "$AEROBAG_LIVE_FEEDS_LISTEN"'
+ExecStart=/bin/bash -lc 'source /etc/aerobag/env; exec "$CARGO_TARGET_DIR/release/aerobag-live-feedsd" --live-root "$ARTIFACT_ROOT/live-feeds" --scratch-root "$ARTIFACT_ROOT/scratch/live-feeds" --fetch-cache-root "$ARTIFACT_ROOT/cache/fetch" --fetch-cache-mode fill --listen "$AEROBAG_LIVE_FEEDS_LISTEN"{swim_args}'
 Restart=always
 RestartSec=10
 
@@ -1219,7 +1285,7 @@ def write_remote_config(
     write_remote_file(
         config,
         f"{SYSTEMD_DIR}/aerobag-live-feeds.service",
-        live_feeds_unit(),
+        live_feeds_unit(config),
         dry_run=dry_run,
     )
     write_remote_file(
@@ -1344,6 +1410,7 @@ def run_web_android_build(config: dict[str, Any], *, dry_run: bool) -> None:
 def deploy(config: dict[str, Any], args: argparse.Namespace) -> None:
     if args.runtime_config_only:
         prepare_remote_paths(config, dry_run=args.dry_run)
+        install_swim_notams_credential(config, dry_run=args.dry_run)
         write_remote_config(config, include_build_config=False, dry_run=args.dry_run)
         reload_services(config, dry_run=args.dry_run)
         start_runtime(config, skip_build=True, dry_run=args.dry_run)
@@ -1371,6 +1438,7 @@ def deploy(config: dict[str, Any], args: argparse.Namespace) -> None:
 
     install_repo_packages(config, dry_run=args.dry_run)
     install_android_signing_key(config, dry_run=args.dry_run)
+    install_swim_notams_credential(config, dry_run=args.dry_run)
     write_remote_file(
         config,
         DEPLOY_CONFIG_FILE,

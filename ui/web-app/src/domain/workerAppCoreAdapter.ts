@@ -6,7 +6,7 @@ import type {
   UiInvalidationListener,
   UiSession,
 } from "./appCoreAdapter";
-import { debugLog, getBrowserInstanceId } from "./debugLog";
+import { debugLog, getBrowserInstanceId, isDebugLogEnabled, type DebugLogRecord } from "./debugLog";
 import type { SituationRingCandidate } from "./types";
 
 type WorkerCallTarget =
@@ -18,6 +18,7 @@ type WorkerCallRequest = {
   id: number;
   sentAtEpochMs: number;
   browserInstanceId: string;
+  debugLogEnabled: boolean;
   debugRunId?: string;
   target: WorkerCallTarget;
   method: string;
@@ -47,7 +48,12 @@ type WorkerCoreSettingsChanged = {
   settingsJson: string | null;
 };
 
-type WorkerMessage = WorkerCallResponse | WorkerResponseReady | WorkerSessionInvalidation | WorkerCoreSettingsChanged;
+type WorkerDebugLog = {
+  kind: "workerDebugLog";
+  record: DebugLogRecord;
+};
+
+type WorkerMessage = WorkerCallResponse | WorkerResponseReady | WorkerSessionInvalidation | WorkerCoreSettingsChanged | WorkerDebugLog;
 
 type WorkerErrorPayload = {
   name?: string;
@@ -117,6 +123,7 @@ class AppCoreWorkerClient {
       id,
       sentAtEpochMs: Date.now(),
       browserInstanceId: getBrowserInstanceId(),
+      debugLogEnabled: isDebugLogEnabled(),
       ...(currentDebugRunId() ? { debugRunId: currentDebugRunId() ?? undefined } : {}),
       target,
       method,
@@ -141,6 +148,15 @@ class AppCoreWorkerClient {
     }
     if (message.kind === "coreSettingsChanged") {
       writePersistedCoreSettingsJson(message.settingsJson);
+      return;
+    }
+    if (message.kind === "workerDebugLog") {
+      debugLog(`worker.${message.record.tag}`, {
+        worker_seq: message.record.seq,
+        worker_ts_ms: message.record.ts_ms,
+        worker_run_id: message.record.run_id ?? null,
+        data: message.record.data ?? null,
+      });
       return;
     }
     if (message.kind === "responseReady") {

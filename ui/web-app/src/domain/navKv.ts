@@ -1,4 +1,5 @@
 import { debugLog, debugTiming, installRustDebugLogBridge } from "./debugLog";
+import { resolveLiveFeedResourceUrl } from "./liveFeedUrls";
 
 type NavKvWasmModule = {
   default?: (moduleOrPath?: string | URL | Request) => Promise<unknown>;
@@ -504,7 +505,7 @@ export async function resolveChartAssetUrl(
   return publicResourceUrl({ id: `chart_asset/${assetKind}/${chartId}`, source: result.source });
 }
 
-type CoreResourceRequest = {
+export type CoreResourceRequest = {
   id: string;
   source: CoreResourceSource;
   optional?: boolean;
@@ -589,12 +590,20 @@ async function fetchAndIngestResource(
 }
 
 function publicResourceUrl(resource: CoreResourceRequest): string {
+  return resolvePublicResourceUrl(resource);
+}
+
+export function resolvePublicResourceUrl(
+  resource: CoreResourceRequest,
+  configuredLiveFeedOrigin?: string | null,
+  runtime?: Parameters<typeof resolveLiveFeedResourceUrl>[2],
+): string {
   const source = resource.source;
   if (!source) {
     throw new Error(`core resource ${resource.id} is missing typed source`);
   }
   if (source.kind === "public_url") {
-    return source.url;
+    return resolveLiveFeedResourceUrl(source.url, configuredLiveFeedOrigin, runtime);
   }
   if (source.kind === "unavailable") {
     throw new Error(`core resource ${resource.id} is unavailable: ${source.message}`);

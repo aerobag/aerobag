@@ -67,7 +67,8 @@
         "frame_count",
         "age_labels",
         "age_summary",
-        "next_update_delay_ms"
+        "next_update_delay_ms",
+        "next_update_epoch_ms"
       ],
       "properties": {
         "phase": {
@@ -92,6 +93,10 @@
           "default": "---"
         },
         "next_update_delay_ms": {
+          "type": ["integer", "null"],
+          "default": null
+        },
+        "next_update_epoch_ms": {
           "type": ["integer", "null"],
           "default": null
         }

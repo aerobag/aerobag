@@ -169,7 +169,99 @@
     </div>
     <div id="root"></div>
     <script>
+      (function () {
+        const storageKey = "aerobag.web.debugLogToDeveloperServer.v1";
+        const params = new URLSearchParams(window.location.search);
+        const hasDeveloperLogFlag = params.has("debugLogToDeveloperServer");
+        const hasLegacyDebugLogFlag = params.has("debugLog");
+        const requestedValue = hasDeveloperLogFlag
+          ? params.get("debugLogToDeveloperServer")
+          : hasLegacyDebugLogFlag
+            ? params.get("debugLog")
+            : null;
+        const explicitEnable = requestedValue === "" || /^(1|true|yes|on)$/i.test(String(requestedValue));
+        const explicitDisable = /^(0|false|no|off)$/i.test(String(requestedValue));
+        try {
+          if (explicitEnable) {
+            window.localStorage.setItem(storageKey, "1");
+          } else if (explicitDisable) {
+            window.localStorage.setItem(storageKey, "0");
+          }
+        } catch {
+          // Losing persistence here should not change startup behavior.
+        }
+        let uploadEnabled = explicitEnable;
+        try {
+          uploadEnabled = uploadEnabled || window.localStorage.getItem(storageKey) === "1";
+        } catch {
+          // Keep the URL flag useful even when storage is unavailable.
+        }
+        if (!uploadEnabled) {
+          return;
+        }
+        const cryptoApi = window.crypto;
+        const browserInstanceId = window.__aerobagBrowserInstanceId
+          || (cryptoApi && cryptoApi.randomUUID
+            ? cryptoApi.randomUUID()
+            : "browser-" + Date.now().toString(36) + "-" + Math.random().toString(36).slice(2, 10));
+        const runId = params.get("debugRunId") || ("startup-" + Date.now().toString(36));
+        window.__aerobagBrowserInstanceId = browserInstanceId;
+        window.__aerobagDebugLogEnabled = true;
+        window.__aerobagPerfRunId = runId;
+        let startupSeq = 0;
+        let startupDebugFlushTimer = null;
+        const startupDebugQueue = [];
+        function flushStartupDebugLog() {
+          startupDebugFlushTimer = null;
+          if (startupDebugQueue.length === 0) {
+            return;
+          }
+          const payload = JSON.stringify(startupDebugQueue.splice(0, startupDebugQueue.length));
+          try {
+            if (
+              navigator.sendBeacon
+              && navigator.sendBeacon("/__debug_log", new Blob([payload], { type: "application/json" }))
+            ) {
+              return;
+            }
+          } catch {
+            // Fall through to fetch.
+          }
+          try {
+            fetch("/__debug_log", {
+              method: "POST",
+              headers: { "Content-Type": "application/json" },
+              body: payload,
+              keepalive: true,
+            });
+          } catch {
+            // Startup diagnostics must not affect app loading.
+          }
+        }
+        window.__aerobagStartupDebugLog = function (tag, data) {
+          startupDebugQueue.push({
+            seq: ++startupSeq,
+            ts_ms: Math.round(performance.now()),
+            tag: tag,
+            browser_instance_id: browserInstanceId,
+            run_id: runId,
+            data: data,
+          });
+          if (startupDebugFlushTimer == null) {
+            startupDebugFlushTimer = window.setTimeout(flushStartupDebugLog, 100);
+          }
+        };
+        window.addEventListener("pagehide", flushStartupDebugLog);
+        window.addEventListener("beforeunload", flushStartupDebugLog);
+        window.__aerobagStartupDebugLog("startup.html.debug_log.enabled", {
+          href: window.location.href,
+          userAgent: navigator.userAgent,
+        });
+      })();
       window.__aerobag_html_start = performance.now();
+      window.__aerobagStartupDebugLog?.("startup.html.start", {
+        html_start_ms: window.__aerobag_html_start,
+      });
       window.__aerobag_startup_cache_warm = (function () {
         const startedAtMs = performance.now();
         const packagesRoot = new URL("/packages/", window.location.origin);
@@ -187,6 +279,14 @@
           if (extra) {
             Object.assign(state, extra);
           }
+          window.__aerobagStartupDebugLog?.("startup.html.cache_warm.done", {
+            status: state.status,
+            elapsed_ms: state.elapsed_ms,
+            resource_count: state.resource_count,
+            failed_count: state.failed_count || 0,
+            status_code: state.status_code || null,
+            error: state.error || null,
+          });
           return state;
         }
         function selectStartupPrefetchCycle(prefetch) {
@@ -318,6 +418,7 @@
         const shell = document.getElementById("startup-shell");
         const copyNode = shell ? shell.querySelector(".startup-copy") : null;
         const elapsedNode = document.getElementById("startup-elapsed");
+        window.__aerobagStartupDebugLog?.("startup.html.shell.ready", {});
         function renderElapsed() {
           if (!elapsedNode) {
             return;
@@ -330,6 +431,11 @@
           if (!shell || !copyNode || shell.classList.contains("is-hidden")) {
             return;
           }
+          window.__aerobagStartupDebugLog?.("startup.html.error_shown", {
+            message: message,
+            detail: detail || null,
+            elapsed_ms: Math.round(performance.now() - window.__aerobag_html_start),
+          });
           shell.classList.add("has-error");
           copyNode.replaceChildren();
           const title = document.createElement("div");
@@ -343,12 +449,21 @@
 
         window.__aerobag_show_startup_shell_error = showStartupShellError;
         window.__aerobag_mark_startup_shell_managed = function () {
+          window.__aerobagStartupDebugLog?.("startup.html.shell.managed", {
+            elapsed_ms: Math.round(performance.now() - window.__aerobag_html_start),
+          });
           if (window.__aerobag_startup_watchdog != null) {
             window.clearTimeout(window.__aerobag_startup_watchdog);
             window.__aerobag_startup_watchdog = undefined;
           }
         };
         window.addEventListener("error", function (event) {
+          window.__aerobagStartupDebugLog?.("startup.html.window_error", {
+            message: event.message || null,
+            filename: event.filename || null,
+            lineno: event.lineno || null,
+            colno: event.colno || null,
+          });
           showStartupShellError(
             "Startup failed",
             event.message || "The browser failed while loading Aerobag.",
@@ -357,9 +472,15 @@
         window.addEventListener("unhandledrejection", function (event) {
           const reason = event.reason;
           const detail = reason && reason.message ? reason.message : String(reason || "Unhandled startup rejection");
+          window.__aerobagStartupDebugLog?.("startup.html.unhandled_rejection", {
+            detail: detail,
+          });
           showStartupShellError("Startup failed", detail);
         });
         window.__aerobag_startup_watchdog = window.setTimeout(function () {
+          window.__aerobagStartupDebugLog?.("startup.html.watchdog", {
+            elapsed_ms: Math.round(performance.now() - window.__aerobag_html_start),
+          });
           showStartupShellError(
             "Startup timed out",
             "Aerobag loaded the HTML shell, but the app JavaScript did not report that it mounted.",

@@ -363,6 +363,25 @@ function finiteOrNull(value: number | null | undefined): number | null {
   return typeof value === "number" && Number.isFinite(value) ? value : null;
 }
 
+type NexradPaintTiming = {
+  paintedAtMs: number;
+  requestId: number;
+  phase: string;
+  selectedFrameIndex: number | null;
+  frameCount: number;
+  nextUpdateDelayMs: number | null;
+  nextUpdateEpochMs: number | null;
+  status: string;
+};
+
+function temporaryNexradTimingLog(event: string, data: Record<string, unknown>) {
+  debugLog("nexrad.overlay.frame_timing", {
+    event,
+    now_ms: typeof performance !== "undefined" ? Math.round(performance.now()) : null,
+    ...data,
+  });
+}
+
 function isInvalidUiSessionHandleError(error: unknown): boolean {
   return error instanceof Error && error.message.includes("invalid ui session handle");
 }
@@ -873,6 +892,7 @@ const HOME_PAGE_BACKDROP_SRC = "/icons/backdrops/home-page-backdrop.jpg?v=202606
 const LAYER_VECTORS_ICON_SRC = "/icons/icons/layer-vectors-icon.png?v=20260424b";
 const LAYER_NEXRAD_ICON_SRC = "/icons/icons/layer-nexrad-icon.png?v=20260424b";
 const LAYER_TERRAIN_WARNING_ICON_SRC = "/icons/icons/layer-terrain-warning-icon.png?v=20260424b";
+const NEXRAD_VIEWPORT_REFRESH_THROTTLE_MS = 1_000;
 const HOME_GRID_COLUMN_COUNT = 3;
 const HOME_GRID_BUTTONS: Array<{ id: string; label: string; page: AppPage; iconSrc?: string }> = [
   // Three columns, row 1.
@@ -1770,6 +1790,7 @@ function emptyNexradOverlayAnimation(): NexradOverlayQueryResult["animation"] {
     age_labels: [],
     age_summary: "---",
     next_update_delay_ms: null,
+    next_update_epoch_ms: null,
   };
 }
 
@@ -3483,6 +3504,7 @@ function MapPage(props: {
     animation: emptyNexradOverlayAnimation(),
   });
   const [nexradAnimationTick, setNexradAnimationTick] = useState(0);
+  const [nexradViewportRefreshTick, setNexradViewportRefreshTick] = useState(0);
   const [nexradTransferSamples, setNexradTransferSamples] = useState<
     Array<{ atMs: number; transferBytes: number; encodedBytes: number; decodedBytes: number }>
   >([]);
@@ -3498,6 +3520,10 @@ function MapPage(props: {
   const nexradQueryRequestIdRef = useRef(0);
   const nexradQueryPendingRef = useRef(false);
   const nexradQueryPumpActiveRef = useRef(false);
+  const nexradLastPaintTimingRef = useRef<NexradPaintTiming | null>(null);
+  const nexradTimerSeqRef = useRef(0);
+  const nexradViewportRefreshTimerRef = useRef<number | null>(null);
+  const nexradHasPaintableFrameRef = useRef(false);
   const [terrainOverlay, setTerrainOverlay] = useState<TerrainOverlayUiState>({ query: null, images: [] });
   const terrainTileCacheRef = useRef<Map<string, TerrainTileCacheEntry>>(new Map());
   const terrainTileInFlightRef = useRef<Set<string>>(new Set());
@@ -3786,15 +3812,59 @@ function MapPage(props: {
           const startedAt = performance.now();
           try {
             const query = await request.session.queryNexradOverlay(request.viewport, request.width, request.height);
+            const queryDoneAt = performance.now();
             if (nexradQueryRequestRef.current?.id !== request.id) {
               continue;
             }
+            const preloadStartedAt = performance.now();
             const preload = await preloadNexradOverlayImages(query);
+            const preloadDoneAt = performance.now();
             if (nexradQueryRequestRef.current?.id !== request.id) {
               continue;
             }
             setNexradOverlay(query);
             setNexradOverlayFrame({ viewport: request.viewport, width: request.width, height: request.height });
+            const commitQueuedAt = performance.now();
+            const previousPaint = nexradLastPaintTimingRef.current;
+            window.requestAnimationFrame(() => {
+              window.requestAnimationFrame(() => {
+                const paintedAt = performance.now();
+                const currentPaint: NexradPaintTiming = {
+                  paintedAtMs: paintedAt,
+                  requestId: request.id,
+                  phase: query.animation.phase,
+                  selectedFrameIndex: query.animation.selected_frame_index,
+                  frameCount: query.animation.frame_count,
+                  nextUpdateDelayMs: query.animation.next_update_delay_ms,
+                  nextUpdateEpochMs: query.animation.next_update_epoch_ms,
+                  status: query.status.state,
+                };
+                nexradLastPaintTimingRef.current = currentPaint;
+                temporaryNexradTimingLog("frame_painted", {
+                  request_id: request.id,
+                  status: query.status.state,
+                  phase: query.animation.phase,
+                  selected_frame_index: query.animation.selected_frame_index,
+                  frame_count: query.animation.frame_count,
+                  next_update_delay_ms: query.animation.next_update_delay_ms,
+                  next_update_epoch_ms: query.animation.next_update_epoch_ms,
+                  previous_request_id: previousPaint?.requestId ?? null,
+                  previous_status: previousPaint?.status ?? null,
+                  previous_phase: previousPaint?.phase ?? null,
+                  previous_selected_frame_index: previousPaint?.selectedFrameIndex ?? null,
+                  previous_next_update_delay_ms: previousPaint?.nextUpdateDelayMs ?? null,
+                  previous_next_update_epoch_ms: previousPaint?.nextUpdateEpochMs ?? null,
+                  visible_dwell_ms: previousPaint ? Math.round(paintedAt - previousPaint.paintedAtMs) : null,
+                  query_elapsed_ms: Math.round(queryDoneAt - startedAt),
+                  preload_elapsed_ms: Math.round(preloadDoneAt - preloadStartedAt),
+                  commit_to_paint_ms: Math.round(paintedAt - commitQueuedAt),
+                  total_query_to_paint_ms: Math.round(paintedAt - startedAt),
+                  tiles: query.tiles.length,
+                  loaded_images: preload.loaded,
+                  failed_images: preload.failed,
+                });
+              });
+            });
             perfDebugLog("nexrad.overlay.frame.ready", () => ({
               status: query.status,
               tiles: query.tiles.length,
@@ -3827,6 +3897,25 @@ function MapPage(props: {
         }
       }
     })();
+  }
+
+  function clearNexradViewportRefreshTimer() {
+    const timer = nexradViewportRefreshTimerRef.current;
+    if (timer == null) {
+      return;
+    }
+    window.clearTimeout(timer);
+    nexradViewportRefreshTimerRef.current = null;
+  }
+
+  function requestThrottledNexradViewportRefresh() {
+    if (nexradViewportRefreshTimerRef.current != null) {
+      return;
+    }
+    nexradViewportRefreshTimerRef.current = window.setTimeout(() => {
+      nexradViewportRefreshTimerRef.current = null;
+      setNexradViewportRefreshTick((tick) => tick + 1);
+    }, NEXRAD_VIEWPORT_REFRESH_THROTTLE_MS);
   }
 
   function pumpMapOverlayQueryQueue() {
@@ -4557,9 +4646,28 @@ function MapPage(props: {
   }, [mapIsVisible, mapLayerState.terrain_warning.visible, surfaceSize.height, surfaceSize.width, terrainAltitudeBucket, uiInvalidationRevisions.terrain_overlay, uiSession, viewport]);
 
   useEffect(() => {
+    nexradHasPaintableFrameRef.current = nexradOverlayFrame != null && nexradOverlay.tiles.length > 0;
+  }, [nexradOverlay.tiles.length, nexradOverlayFrame]);
+
+  useEffect(() => () => clearNexradViewportRefreshTimer(), []);
+
+  useEffect(() => {
+    if (!mapIsVisible || !uiSession || surfaceSize.width <= 0 || surfaceSize.height <= 0 || !mapLayerState.nexrad.visible) {
+      clearNexradViewportRefreshTimer();
+      return;
+    }
+    if (!nexradHasPaintableFrameRef.current) {
+      return;
+    }
+    requestThrottledNexradViewportRefresh();
+  }, [mapIsVisible, mapLayerState.nexrad.visible, surfaceSize.height, surfaceSize.width, uiSession, viewport]);
+
+  useEffect(() => {
     if (!mapIsVisible || !uiSession || surfaceSize.width <= 0 || surfaceSize.height <= 0 || !mapLayerState.nexrad.visible) {
       nexradQueryRequestRef.current = null;
       nexradQueryPendingRef.current = false;
+      nexradLastPaintTimingRef.current = null;
+      clearNexradViewportRefreshTimer();
       setNexradOverlay({
         status: { state: "hidden" },
         tiles: [],
@@ -4579,20 +4687,58 @@ function MapPage(props: {
     };
     nexradQueryPendingRef.current = true;
     pumpNexradQueryQueue();
-  }, [debugState.nexrad_tile_labels, mapIsVisible, mapLayerState.nexrad.visible, nexradAnimationTick, surfaceSize.height, surfaceSize.width, uiInvalidationRevisions.nexrad_overlay, uiSession, viewport]);
+  }, [debugState.nexrad_tile_labels, mapIsVisible, mapLayerState.nexrad.visible, nexradAnimationTick, nexradViewportRefreshTick, surfaceSize.height, surfaceSize.width, uiInvalidationRevisions.nexrad_overlay, uiSession]);
 
   useEffect(() => {
     if (!mapIsVisible || !mapLayerState.nexrad.visible || !uiSession) {
       return;
     }
-    const delayMs = nexradOverlay.animation.next_update_delay_ms;
-    if (delayMs == null) {
+    const targetEpochMs = finiteOrNull(nexradOverlay.animation.next_update_epoch_ms);
+    if (targetEpochMs == null) {
       return;
     }
+    const scheduledAt = performance.now();
+    const scheduledEpochMs = Date.now();
+    const timerId = ++nexradTimerSeqRef.current;
+    const delayToTargetMs = targetEpochMs - scheduledEpochMs;
+    const clampedDelayMs = Math.max(0, delayToTargetMs);
+    const targetPerformanceMs = scheduledAt + delayToTargetMs;
+    temporaryNexradTimingLog("timer_scheduled", {
+      timer_id: timerId,
+      requested_delay_ms: nexradOverlay.animation.next_update_delay_ms,
+      target_epoch_ms: targetEpochMs,
+      scheduled_epoch_ms: scheduledEpochMs,
+      delay_to_target_ms: Math.round(delayToTargetMs),
+      clamped_delay_ms: clampedDelayMs,
+      target_performance_ms: Math.round(targetPerformanceMs),
+      phase: nexradOverlay.animation.phase,
+      selected_frame_index: nexradOverlay.animation.selected_frame_index,
+      frame_count: nexradOverlay.animation.frame_count,
+    });
     const timer = window.setTimeout(() => {
+      const firedAt = performance.now();
+      const firedEpochMs = Date.now();
+      temporaryNexradTimingLog("timer_fired", {
+        timer_id: timerId,
+        requested_delay_ms: nexradOverlay.animation.next_update_delay_ms,
+        target_epoch_ms: targetEpochMs,
+        scheduled_epoch_ms: scheduledEpochMs,
+        fired_epoch_ms: firedEpochMs,
+        delay_to_target_ms: Math.round(delayToTargetMs),
+        clamped_delay_ms: clampedDelayMs,
+        actual_delay_ms: Math.round(firedAt - scheduledAt),
+        timer_late_ms: Math.round(firedAt - scheduledAt - clampedDelayMs),
+        target_late_ms: Math.round(firedAt - targetPerformanceMs),
+        epoch_target_late_ms: Math.round(firedEpochMs - targetEpochMs),
+        phase: nexradOverlay.animation.phase,
+        selected_frame_index: nexradOverlay.animation.selected_frame_index,
+        frame_count: nexradOverlay.animation.frame_count,
+      });
       setNexradAnimationTick((tick) => tick + 1);
-    }, Math.max(0, delayMs));
-    return () => window.clearTimeout(timer);
+    }, clampedDelayMs);
+    return () => {
+      window.clearTimeout(timer);
+    };
   }, [mapIsVisible, mapLayerState.nexrad.visible, nexradOverlay, uiSession]);
 
   useEffect(() => {

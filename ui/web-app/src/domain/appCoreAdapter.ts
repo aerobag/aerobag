@@ -33,8 +33,9 @@ import type { NexradOverlayQueryResult } from "../generated/nexradOverlayWire";
 import { viewportCenterLatLon, type MapViewportState } from "./mapViewport";
 import { attachNavKvStoreToSession, resolveChartAssetUrl, runCoreHadOperation, runCoreHadSessionOperation, type UiInvalidation, type UiInvalidationListener } from "./navKv";
 import { debugLog, debugTiming, installRustDebugLogBridge, perfDebugLog } from "./debugLog";
+import { liveFeedSourceUrl } from "./liveFeedUrls";
+export { resolveLiveFeedResourceUrl, resolveLiveFeedSourceUrl } from "./liveFeedUrls";
 
-declare const __AEROBAG_LIVE_FEEDS_ORIGIN__: string | null;
 declare const __AEROBAG_CLIENT_BUILD_INFO__: ClientBuildInfo;
 
 type LiveFeedE2eProbeState = {
@@ -1852,14 +1853,8 @@ export async function loadBestAvailableAdapter(
 
 async function loadDefaultAdapter(): Promise<LoadedAdapter> {
   if (shouldUseWorkerAppCore()) {
-    try {
-      const { loadWorkerBackedAdapter } = await import("./workerAppCoreAdapter");
-      return await loadWorkerBackedAdapter();
-    } catch (error) {
-      debugLog("app_core.worker.load.failed", {
-        error: error instanceof Error ? error.message : String(error),
-      });
-    }
+    const { loadWorkerBackedAdapter } = await import("./workerAppCoreAdapter");
+    return await loadWorkerBackedAdapter();
   }
   return loadWasmAdapterOnThisThread();
 }
@@ -2050,49 +2045,6 @@ type LiveFeedRuntimeDecision = {
   refresh_current?: boolean;
   reconnect_delay_ms?: number | null;
 };
-
-type LiveFeedSourceRuntime = {
-  window?: { location?: { origin?: string | null } } | null;
-  location?: { origin?: string | null } | null;
-};
-
-export function resolveLiveFeedSourceUrl(
-  configuredOrigin: string | null | undefined,
-  runtime: LiveFeedSourceRuntime = globalThis as unknown as LiveFeedSourceRuntime,
-): string {
-  const configured = configuredOrigin?.trim();
-  if (configured) {
-    return configured.replace(/\/+$/, "");
-  }
-  const origin = runtime.window?.location?.origin ?? runtime.location?.origin ?? "";
-  if (origin) {
-    return origin;
-  }
-  return "";
-}
-
-export function resolveLiveFeedResourceUrl(
-  resourceUrl: string,
-  configuredOrigin: string | null | undefined = __AEROBAG_LIVE_FEEDS_ORIGIN__,
-  runtime: LiveFeedSourceRuntime = globalThis as unknown as LiveFeedSourceRuntime,
-): string {
-  if (/^[a-z][a-z0-9+.-]*:/i.test(resourceUrl)) {
-    return resourceUrl;
-  }
-  const liveFeedsPrefix = "/live-feeds";
-  if (resourceUrl !== liveFeedsPrefix && !resourceUrl.startsWith(`${liveFeedsPrefix}/`)) {
-    return resourceUrl;
-  }
-  const sourceUrl = resolveLiveFeedSourceUrl(configuredOrigin, runtime);
-  if (!sourceUrl) {
-    return resourceUrl;
-  }
-  return `${sourceUrl}${resourceUrl}`;
-}
-
-function liveFeedSourceUrl(): string {
-  return resolveLiveFeedSourceUrl(__AEROBAG_LIVE_FEEDS_ORIGIN__);
-}
 
 export function createLiveFeedSubscription(
   liveFeedEventsUrl: () => Promise<string> | string,

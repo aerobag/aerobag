@@ -371,6 +371,7 @@ internal data class NexradOverlayFrame(
 )
 
 private const val TerrainTileBitmapCacheMaxEntries = 256
+private const val NexradViewportRefreshThrottleMs = 1_000L
 private const val PerfScenarioKorsOwnshipSourceId = "perf:kors-terrain-ownship"
 private const val PerfScenarioKorsStressCenterLat = 48.6760
 private const val PerfScenarioKorsStressCenterLon = -122.8600
@@ -672,10 +673,14 @@ internal fun MapExplorerPage(
     val nexradRenderRequests = remember(uiSession) {
         Channel<Unit>(Channel.CONFLATED)
     }
-    DisposableEffect(terrainRenderRequests, nexradRenderRequests) {
+    val nexradViewportRefreshRequests = remember(uiSession) {
+        Channel<Unit>(Channel.CONFLATED)
+    }
+    DisposableEffect(terrainRenderRequests, nexradRenderRequests, nexradViewportRefreshRequests) {
         onDispose {
             terrainRenderRequests.close()
             nexradRenderRequests.close()
+            nexradViewportRefreshRequests.close()
         }
     }
     var flightPlanRoute by remember(plan.id, plan.version) { mutableStateOf<List<FlightPlanRouteSegment>>(emptyList()) }
@@ -722,6 +727,7 @@ internal fun MapExplorerPage(
     val nexradVisibleState = rememberUpdatedState(page == AppPage.Map && mapLayerState.nexrad.visible)
     val nexradEnabledState = rememberUpdatedState(mapLayerState.nexrad.enabled)
     val nexradDevServerBaseUrlState = rememberUpdatedState(devServerBaseUrl)
+    val nexradFrameState = rememberUpdatedState(nexradFrame)
     val terrainOverlayImageCountState = rememberUpdatedState(terrainOverlay.size)
     val terrainLastQueryDiagnosticsState = rememberUpdatedState(terrainLastQueryDiagnostics)
     val terrainOwnshipAltitudeBucketState = rememberUpdatedState(ownship.terrainAltitudeBucketFt)
@@ -1957,7 +1963,34 @@ internal fun MapExplorerPage(
             }
         }
     }
-    LaunchedEffect(uiSession, liveFeedGeneration, currentViewport, surfaceSize, mapLayerState.nexrad.visible, mapLayerState.nexrad.enabled, page, devServerBaseUrl) {
+    LaunchedEffect(uiSession, nexradViewportRefreshRequests) {
+        for (ignored in nexradViewportRefreshRequests) {
+            delay(NexradViewportRefreshThrottleMs)
+            val latestSurfaceSize = nexradSurfaceSizeState.value
+            val latestFrame = nexradFrameState.value
+            if (
+                latestSurfaceSize.width > 0 &&
+                latestSurfaceSize.height > 0 &&
+                nexradVisibleState.value &&
+                nexradEnabledState.value &&
+                latestFrame != null &&
+                latestFrame.images.isNotEmpty()
+            ) {
+                nexradRenderRequests.trySend(Unit)
+            }
+        }
+    }
+    LaunchedEffect(uiSession, currentViewport, page, mapLayerState.nexrad.visible, mapLayerState.nexrad.enabled) {
+        if (
+            page == AppPage.Map &&
+            mapLayerState.nexrad.visible &&
+            mapLayerState.nexrad.enabled &&
+            nexradFrameState.value?.images?.isNotEmpty() == true
+        ) {
+            nexradViewportRefreshRequests.trySend(Unit)
+        }
+    }
+    LaunchedEffect(uiSession, liveFeedGeneration, surfaceSize, mapLayerState.nexrad.visible, mapLayerState.nexrad.enabled, page, devServerBaseUrl) {
         if (surfaceSize.width <= 0 || surfaceSize.height <= 0) {
             nexradFrame = null
             return@LaunchedEffect

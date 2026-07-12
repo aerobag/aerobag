@@ -1,5 +1,5 @@
 import { loadWasmAdapterOnThisThread, type AppCoreAdapter, type UiInvalidation, type UiSession } from "./appCoreAdapter";
-import { debugLog, setBrowserInstanceId } from "./debugLog";
+import { debugLog, observeDebugLog, setBrowserInstanceId, type DebugLogRecord } from "./debugLog";
 
 type WorkerCallTarget =
   | { kind: "adapter" }
@@ -10,6 +10,7 @@ type WorkerCallRequest = {
   id: number;
   sentAtEpochMs: number;
   browserInstanceId: string;
+  debugLogEnabled: boolean;
   debugRunId?: string;
   target: WorkerCallTarget;
   method: string;
@@ -39,6 +40,11 @@ type WorkerCoreSettingsChanged = {
   settingsJson: string | null;
 };
 
+type WorkerDebugLog = {
+  kind: "workerDebugLog";
+  record: DebugLogRecord;
+};
+
 type WorkerErrorPayload = {
   name?: string;
   message: string;
@@ -52,7 +58,7 @@ type WorkerSessionMarker = {
 
 type WorkerRuntime = {
   addEventListener(type: "message", listener: (event: MessageEvent<WorkerCallRequest>) => void): void;
-  postMessage(message: WorkerCallResponse | WorkerResponseReady | WorkerSessionInvalidation | WorkerCoreSettingsChanged, transfer?: Transferable[]): void;
+  postMessage(message: WorkerCallResponse | WorkerResponseReady | WorkerSessionInvalidation | WorkerCoreSettingsChanged | WorkerDebugLog, transfer?: Transferable[]): void;
 };
 
 const ctx = self as unknown as WorkerRuntime;
@@ -60,6 +66,7 @@ let adapterPromise: Promise<AppCoreAdapter> | null = null;
 let nextSessionId = 1;
 const sessions = new Map<number, UiSession>();
 const pendingCalls = new Map<number, PendingWorkerCall>();
+let workerDebugForwardingEnabled = false;
 
 ctx.addEventListener("message", (event: MessageEvent<WorkerCallRequest>) => {
   const message = event.data;
@@ -71,9 +78,18 @@ ctx.addEventListener("message", (event: MessageEvent<WorkerCallRequest>) => {
 
 async function handleCall(message: WorkerCallRequest): Promise<void> {
   setBrowserInstanceId(message.browserInstanceId);
+  if (message.debugLogEnabled) {
+    enableWorkerDebugForwarding();
+    (globalThis as unknown as { __aerobagDebugLogEnabled?: boolean }).__aerobagDebugLogEnabled = true;
+  }
   if (message.debugRunId) {
     (globalThis as unknown as { __aerobagPerfRunId?: string }).__aerobagPerfRunId = message.debugRunId;
   }
+  debugLog("app_core.worker.message.received", {
+    id: message.id,
+    target: message.target.kind,
+    method: message.method,
+  });
   pendingCalls.set(message.id, { target: message.target, method: message.method });
   const startedAt = performance.now();
   try {
@@ -143,7 +159,9 @@ async function dispatchCall(message: WorkerCallRequest): Promise<unknown> {
 }
 
 async function callAdapterMethod(method: string, args: unknown[]): Promise<unknown> {
+  debugLog("app_core.worker.adapter_call.start", { method });
   const adapter = await ensureAdapter();
+  debugLog("app_core.worker.adapter_ready", { method });
   if (method === "createUiSession") {
     const sessionArgs = args.slice(0, 4);
     setWorkerCoreSettingsJson(typeof args[4] === "string" ? args[4] : null);
@@ -187,8 +205,32 @@ async function callSessionMethod(
 }
 
 async function ensureAdapter(): Promise<AppCoreAdapter> {
-  adapterPromise ??= loadWasmAdapterOnThisThread().then((loaded) => loaded.adapter);
+  if (!adapterPromise) {
+    debugLog("app_core.worker.adapter_load.start");
+    adapterPromise = loadWasmAdapterOnThisThread().then(
+      (loaded) => {
+        debugLog("app_core.worker.adapter_load.done", { backend: loaded.backend });
+        return loaded.adapter;
+      },
+      (error) => {
+        debugLog("app_core.worker.adapter_load.error", {
+          error: error instanceof Error ? error.message : String(error),
+        });
+        throw error;
+      },
+    );
+  }
   return adapterPromise;
+}
+
+function enableWorkerDebugForwarding(): void {
+  if (workerDebugForwardingEnabled) {
+    return;
+  }
+  workerDebugForwardingEnabled = true;
+  observeDebugLog((record) => {
+    ctx.postMessage({ kind: "workerDebugLog", record });
+  });
 }
 
 async function callMethod<T>(target: unknown, method: string, args: unknown[]): Promise<T> {

@@ -17,6 +17,7 @@ export type NexradOverlayAnimation = {
   age_labels: string[];
   age_summary: string;
   next_update_delay_ms: number | null;
+  next_update_epoch_ms: number | null;
 };
 
 export type NexradOverlayScreenPoint = {

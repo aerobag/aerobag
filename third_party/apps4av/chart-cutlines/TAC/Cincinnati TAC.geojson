@@ -1,13 +1,45 @@
 {
-"type": "FeatureCollection",
-"name": "Cincinnati TAC.tif",
-"crs": { "type": "name", "properties": { "name": "urn:ogc:def:crs:EPSG::3857" } },
-"features": [
-{ "type": "Feature", "properties": { "location": "Cincinnati TAC.tif" }, "geometry": { "type": "Polygon", "coordinates": [ [
- [ -9562344.259142203256488, 4880484.665662283077836 ],
- [ -9317441.379397001117468, 4880484.665662283077836 ],
- [ -9317441.379397001117468, 4644613.748702690005302 ],
- [ -9562344.259142203256488, 4644613.748702690005302 ],
- [ -9562344.259142203256488, 4880484.665662283077836 ] ] ] } }
-]
+  "type": "FeatureCollection",
+  "name": "Cincinnati TAC.tif",
+  "crs": {
+    "type": "name",
+    "properties": {
+      "name": "urn:ogc:def:crs:EPSG::3857"
+    }
+  },
+  "features": [
+    {
+      "type": "Feature",
+      "properties": {
+        "location": "Cincinnati TAC.tif"
+      },
+      "geometry": {
+        "type": "Polygon",
+        "coordinates": [
+          [
+            [
+              -9522436.312130822,
+              4876434.961496275
+            ],
+            [
+              -9316503.876664296,
+              4876447.728551921
+            ],
+            [
+              -9320040.094508266,
+              4646212.210875365
+            ],
+            [
+              -9521266.752811141,
+              4647123.013516957
+            ],
+            [
+              -9522436.312130822,
+              4876434.961496275
+            ]
+          ]
+        ]
+      }
+    }
+  ]
 }

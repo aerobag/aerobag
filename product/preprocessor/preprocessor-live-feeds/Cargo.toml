@@ -14,6 +14,7 @@ preprocessor-core = { path = "../preprocessor-core" }
 preprocessor-fetch = { path = "../preprocessor-fetch" }
 preprocessor-vectors = { path = "../preprocessor-vectors" }
 preprocessor-zip = { path = "../preprocessor-zip" }
+product-contracts = { path = "../../../crates/product-contracts" }
 quick-xml.workspace = true
 roxmltree.workspace = true
 libc = "0.2"

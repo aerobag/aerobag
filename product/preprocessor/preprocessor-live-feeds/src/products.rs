@@ -13,6 +13,7 @@ use preprocessor_fetch::{
 };
 use preprocessor_vectors::{build_obstacle_dataset, BuildObstacleDatasetRequest};
 use preprocessor_zip::{write_deterministic_zip, ZipSource};
+use product_contracts::{AirportNotamEffect, NOTAM_LIVE_FEED_CONTRACT_VERSION};
 use serde_json::Value;
 use sha2::{Digest, Sha256};
 
@@ -142,14 +143,32 @@ impl ProductBuilder for NotamLiveFeedBuilder {
         let output_dir = fresh_dir(&scratch_dir.join("output"))?;
         let store = NotamPersistentStore::new(&self.state_root);
         let records = store.current_records()?;
+        let airport_notam_count = records
+            .iter()
+            .filter(|record| record.airport_id.is_some())
+            .count();
+        let airport_notams_with_multiple_effects = records
+            .iter()
+            .filter(|record| record.airport_id.is_some() && record.airport_effects.len() > 1)
+            .count();
+        let airport_notams_with_other_effect = records
+            .iter()
+            .filter(|record| {
+                record.airport_id.is_some()
+                    && record.airport_effects.contains(&AirportNotamEffect::Other)
+            })
+            .count();
         let notams_by_id = records
             .into_iter()
             .map(|record| (record.id.clone(), record))
             .collect::<BTreeMap<_, _>>();
         let notam_count = notams_by_id.len();
         let content_for_version = serde_json::json!({
-            "schema_version": 1,
+            "schema_version": NOTAM_LIVE_FEED_CONTRACT_VERSION,
             "notam_count": notam_count,
+            "airport_notam_count": airport_notam_count,
+            "airport_notams_with_multiple_effects": airport_notams_with_multiple_effects,
+            "airport_notams_with_other_effect": airport_notams_with_other_effect,
             "notams_by_id": notams_by_id,
         });
         let fingerprint = sha256_hex(
@@ -159,9 +178,12 @@ impl ProductBuilder for NotamLiveFeedBuilder {
         let version = content_version_label(&fingerprint);
         let structured_json_path = output_dir.join("notams.json");
         let state_value = serde_json::json!({
-            "schema_version": 1,
+            "schema_version": NOTAM_LIVE_FEED_CONTRACT_VERSION,
             "version_label": version.clone(),
             "notam_count": notam_count,
+            "airport_notam_count": airport_notam_count,
+            "airport_notams_with_multiple_effects": airport_notams_with_multiple_effects,
+            "airport_notams_with_other_effect": airport_notams_with_other_effect,
             "notams_by_id": content_for_version["notams_by_id"].clone(),
         });
         write_json_pretty_file(&structured_json_path, &state_value)?;
@@ -1362,10 +1384,18 @@ mod tests {
         let LiveFeedStatePayload::JsonFile { value, .. } = &built.payload else {
             panic!("NOTAM live-feed state should be JSON");
         };
+        assert_eq!(value["schema_version"], NOTAM_LIVE_FEED_CONTRACT_VERSION);
         assert_eq!(value["notam_count"], 1);
+        assert_eq!(value["airport_notam_count"], 1);
+        assert_eq!(value["airport_notams_with_multiple_effects"], 1);
+        assert_eq!(value["airport_notams_with_other_effect"], 0);
         assert_eq!(
             value["notams_by_id"]["D:AAA:2026:N:1"]["text"],
             "RWY 01 CLSD."
+        );
+        assert_eq!(
+            value["notams_by_id"]["D:AAA:2026:N:1"]["airport_effects"],
+            serde_json::json!(["runway_closed", "surface_condition"])
         );
 
         let live_root = temp.path().join("live");

@@ -5,6 +5,7 @@ use std::path::{Path, PathBuf};
 use anyhow::{bail, Context};
 use chrono::{DateTime, NaiveDateTime, Utc};
 use preprocessor_zip::{write_deterministic_zip, ZipSource};
+use product_contracts::{AirportNotamEffect, NOTAM_LIVE_FEED_CONTRACT_VERSION};
 use quick_xml::events::Event;
 use quick_xml::Reader;
 use serde::{Deserialize, Serialize};
@@ -170,6 +171,9 @@ struct NotamManifestFiles {
 #[derive(Debug, Clone, Serialize)]
 struct NotamManifestCounts {
     notams: usize,
+    airport_notams: usize,
+    airport_notams_with_multiple_effects: usize,
+    airport_notams_with_other_effect: usize,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -196,6 +200,8 @@ pub struct StructuredNotamRecord {
     pub icao_id: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub airport_id: Option<String>,
+    #[serde(default)]
+    pub airport_effects: BTreeSet<AirportNotamEffect>,
     pub airport_name: Option<String>,
     pub airport_position: Option<StructuredPoint>,
     pub location: Option<String>,
@@ -1484,6 +1490,10 @@ pub fn build_notam_dataset(request: &BuildNotamRequest) -> anyhow::Result<BuildN
 
     let notams_by_id = current_structured_notam_records(&request.input_jsonl_path)?;
     let notams = notams_by_id.values().cloned().collect::<Vec<_>>();
+    let airport_notams = notams
+        .iter()
+        .filter(|record| record.airport_id.is_some())
+        .collect::<Vec<_>>();
     let structured_json_path = request.output_dir.join("notams.json");
     let manifest_path = request
         .output_dir
@@ -1495,7 +1505,7 @@ pub fn build_notam_dataset(request: &BuildNotamRequest) -> anyhow::Result<BuildN
     write_json_pretty(
         &structured_json_path,
         &StructuredNotamDataset {
-            schema_version: 1,
+            schema_version: NOTAM_LIVE_FEED_CONTRACT_VERSION,
             version_label: request.version_label.clone(),
             notam_count: notams.len(),
             notams: notams.clone(),
@@ -1505,7 +1515,7 @@ pub fn build_notam_dataset(request: &BuildNotamRequest) -> anyhow::Result<BuildN
     write_json_pretty(
         &manifest_path,
         &NotamManifest {
-            schema_version: 1,
+            schema_version: NOTAM_LIVE_FEED_CONTRACT_VERSION,
             version_label: request.version_label.clone(),
             generated_at_utc: request.generated_at_utc.to_rfc3339(),
             files: NotamManifestFiles {
@@ -1518,6 +1528,15 @@ pub fn build_notam_dataset(request: &BuildNotamRequest) -> anyhow::Result<BuildN
             },
             counts: NotamManifestCounts {
                 notams: notams.len(),
+                airport_notams: airport_notams.len(),
+                airport_notams_with_multiple_effects: airport_notams
+                    .iter()
+                    .filter(|record| record.airport_effects.len() > 1)
+                    .count(),
+                airport_notams_with_other_effect: airport_notams
+                    .iter()
+                    .filter(|record| record.airport_effects.contains(&AirportNotamEffect::Other))
+                    .count(),
             },
         },
     )?;
@@ -1703,6 +1722,17 @@ fn normalize_captured_notam(
         location_designator.as_deref(),
         Some(identity.location.as_str()),
     );
+    let scenario = event_time_slice.and_then(|node| child_text(&node, "scenario"));
+    let airport_effects = airport_id
+        .as_ref()
+        .map(|_| {
+            airport_effects_for_notam(
+                notam_keyword.as_deref(),
+                scenario.as_deref(),
+                text.as_deref(),
+            )
+        })
+        .unwrap_or_default();
     let account_id = find_first_text(&xml, "accountId");
     let xover_notam_id = find_first_text(&xml, "xovernotamID");
     let airport_position = find_airport_position(&xml)?;
@@ -1723,6 +1753,7 @@ fn normalize_captured_notam(
         location_designator,
         icao_id,
         airport_id,
+        airport_effects,
         airport_name: find_first_text(&xml, "airportname").or(find_first_text(&xml, "name")),
         airport_position,
         location: Some(identity.location.clone()),
@@ -1741,11 +1772,11 @@ fn normalize_captured_notam(
         text,
         local_text,
         icao_text,
-        scenario: event_time_slice.and_then(|node| child_text(&node, "scenario")),
+        scenario,
     }))
 }
 
-fn canonicalize_structured_notam_record(
+pub(crate) fn canonicalize_structured_notam_record(
     mut record: StructuredNotamRecord,
 ) -> anyhow::Result<StructuredNotamRecord> {
     record.location_designator = normalize_optional_notam_field(record.location_designator);
@@ -1780,6 +1811,17 @@ fn canonicalize_structured_notam_record(
         record.location_designator.as_deref(),
         record.location.as_deref(),
     );
+    record.airport_effects = record
+        .airport_id
+        .as_ref()
+        .map(|_| {
+            airport_effects_for_notam(
+                record.notam_keyword.as_deref(),
+                record.scenario.as_deref(),
+                record.text.as_deref(),
+            )
+        })
+        .unwrap_or_default();
     Ok(record)
 }
 
@@ -1888,6 +1930,148 @@ fn airport_id_for_notam(
         .map(str::trim)
         .filter(|value| !value.is_empty())
         .map(str::to_ascii_uppercase)
+}
+
+fn airport_effects_for_notam(
+    keyword: Option<&str>,
+    scenario: Option<&str>,
+    text: Option<&str>,
+) -> BTreeSet<AirportNotamEffect> {
+    let Some(keyword) = keyword.map(str::trim).filter(|value| !value.is_empty()) else {
+        return BTreeSet::from([AirportNotamEffect::Other]);
+    };
+    let keyword = keyword.to_ascii_uppercase();
+    let scenario = scenario
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(str::to_ascii_uppercase);
+    let (known_scenario, scenario_effect) =
+        airport_effect_for_scenario(&keyword, scenario.as_deref());
+    let mut effects = BTreeSet::new();
+    effects.extend(scenario_effect);
+    effects.extend(airport_effects_from_text(
+        &keyword,
+        text.unwrap_or_default(),
+    ));
+
+    // Preserve an explicit signal for new FAA scenarios even when their text happens
+    // to match one of the narrow recognizers below.
+    if scenario.is_some() && !known_scenario {
+        effects.insert(AirportNotamEffect::Other);
+    }
+    if effects.is_empty() {
+        effects.insert(AirportNotamEffect::Other);
+    }
+    effects
+}
+
+fn airport_effect_for_scenario(
+    keyword: &str,
+    scenario: Option<&str>,
+) -> (bool, Option<AirportNotamEffect>) {
+    use AirportNotamEffect as Effect;
+
+    let Some(scenario) = scenario else {
+        return (false, None);
+    };
+    let effect = match (keyword, scenario) {
+        ("AD", "25") => Some(Effect::AirportClosed),
+        ("AD", "302") => Some(Effect::WorkInProgress),
+        ("AD", "26" | "100" | "22") => Some(Effect::RoutineAdvisory),
+        ("AD", "27" | "34") => Some(Effect::MovementAreaEquipmentUnavailable),
+        ("AD", "576") => Some(Effect::RunwayEquipmentUnavailable),
+        ("AD", "78") => Some(Effect::SurfaceCondition),
+        ("APRON", "28") => Some(Effect::ApronClosed),
+        ("APRON", "304") => Some(Effect::WorkInProgress),
+        ("APRON", "43" | "111") => Some(Effect::SurfaceCondition),
+        ("IAP", "802" | "FDC001") => Some(Effect::ProcedureRestricted),
+        ("ODP", "811") | ("SID", "812") => Some(Effect::ProcedureRestricted),
+        ("RWY", "50" | "82" | "86") => Some(Effect::RunwayClosed),
+        ("RWY", "18" | "29" | "49" | "100" | "461" | "522" | "526") => {
+            Some(Effect::RunwayEquipmentUnavailable)
+        }
+        ("RWY", "301") => Some(Effect::WorkInProgress),
+        ("RWY", "95") => Some(Effect::SurfaceCondition),
+        ("RWY", "87") => Some(Effect::RoutineAdvisory),
+        ("TWY", "30" | "115") => Some(Effect::TaxiwayClosed),
+        ("TWY", "303") => Some(Effect::WorkInProgress),
+        ("TWY", "36" | "39" | "305") => Some(Effect::MovementAreaEquipmentUnavailable),
+        ("TWY", "42" | "110") => Some(Effect::SurfaceCondition),
+        // FF001 is FAA's generic/free-form scenario. Its standardized NOTAM text is
+        // the semantic source, so this tuple is known even though it adds no effect.
+        ("AD" | "APRON" | "RWY" | "TWY", "FF001") => None,
+        _ => return (false, None),
+    };
+    (true, effect)
+}
+
+fn airport_effects_from_text(keyword: &str, text: &str) -> BTreeSet<AirportNotamEffect> {
+    use AirportNotamEffect as Effect;
+
+    let text = text.to_ascii_uppercase();
+    let mut effects = BTreeSet::new();
+    if has_notam_token(&text, "CLSD") {
+        match keyword {
+            "AD" => {
+                effects.insert(Effect::AirportClosed);
+            }
+            "RWY" => {
+                effects.insert(Effect::RunwayClosed);
+                if text.contains("CLSD TO") || text.contains("CLSD EXC") {
+                    effects.insert(Effect::RunwayRestricted);
+                }
+            }
+            "TWY" => {
+                effects.insert(Effect::TaxiwayClosed);
+            }
+            "APRON" => {
+                effects.insert(Effect::ApronClosed);
+            }
+            "IAP" | "ODP" | "SID" => {
+                effects.insert(Effect::ProcedureUnavailable);
+            }
+            _ => {}
+        }
+    }
+    if matches!(keyword, "IAP" | "ODP" | "SID") && has_notam_token(&text, "NA") {
+        effects.insert(Effect::ProcedureUnavailable);
+    }
+    if has_notam_token(&text, "U/S")
+        || text.contains("OUT OF SERVICE")
+        || has_notam_token(&text, "UNMONITORED")
+        || text.contains("NOT STD")
+    {
+        match keyword {
+            "RWY" => {
+                effects.insert(Effect::RunwayEquipmentUnavailable);
+            }
+            "IAP" | "ODP" | "SID" => {
+                effects.insert(Effect::ProcedureRestricted);
+            }
+            "AD" | "APRON" | "TWY" => {
+                effects.insert(Effect::MovementAreaEquipmentUnavailable);
+            }
+            _ => {}
+        }
+    }
+    if has_notam_token(&text, "FICON") || text.contains("SFC COND") {
+        effects.insert(Effect::SurfaceCondition);
+    }
+    if has_notam_token(&text, "WIP")
+        || has_notam_token(&text, "MOWING")
+        || text.contains("GRASS CUTTING")
+        || has_notam_token(&text, "CONSTRUCTION")
+        || has_notam_token(&text, "MAINT")
+    {
+        effects.insert(Effect::WorkInProgress);
+    }
+    effects
+}
+
+fn has_notam_token(text: &str, expected: &str) -> bool {
+    text.split_whitespace().any(|token| {
+        token.trim_matches(|ch: char| !ch.is_ascii_alphanumeric() && ch != '/') == expected
+    })
 }
 
 fn load_json_lines<T: for<'de> Deserialize<'de>>(path: &Path) -> anyhow::Result<Vec<T>> {
@@ -2808,6 +2992,53 @@ mod tests {
     use std::process::Command;
     use tempfile::TempDir;
 
+    #[test]
+    fn airport_notam_effects_combine_structured_and_text_signals() {
+        assert_eq!(
+            airport_effects_for_notam(
+                Some("AD"),
+                Some("302"),
+                Some("AD AP CLSD EXC AIR AMBULANCE; WIP GRASS CUTTING"),
+            ),
+            BTreeSet::from([
+                AirportNotamEffect::AirportClosed,
+                AirportNotamEffect::WorkInProgress,
+            ])
+        );
+    }
+
+    #[test]
+    fn airport_notam_effects_keep_unknown_scenarios_visible() {
+        assert_eq!(
+            airport_effects_for_notam(
+                Some("RWY"),
+                Some("NEW999"),
+                Some("RWY 18 CLSD TO LDG EXC MIL OPS"),
+            ),
+            BTreeSet::from([
+                AirportNotamEffect::RunwayClosed,
+                AirportNotamEffect::RunwayRestricted,
+                AirportNotamEffect::Other,
+            ])
+        );
+        assert_eq!(
+            airport_effects_for_notam(Some("AD"), Some("NEW999"), Some("AD AP INFO")),
+            BTreeSet::from([AirportNotamEffect::Other])
+        );
+    }
+
+    #[test]
+    fn airport_notam_effects_distinguish_closures_from_routine_work() {
+        assert_eq!(
+            airport_effects_for_notam(Some("RWY"), Some("82"), Some("RWY 16/34 CLSD")),
+            BTreeSet::from([AirportNotamEffect::RunwayClosed])
+        );
+        assert_eq!(
+            airport_effects_for_notam(Some("AD"), Some("FF001"), Some("AD AP ALL SFC WIP MOWING"),),
+            BTreeSet::from([AirportNotamEffect::WorkInProgress])
+        );
+    }
+
     fn geo_grid_fixture_path() -> PathBuf {
         Path::new(env!("CARGO_MANIFEST_DIR"))
             .ancestors()
@@ -2989,6 +3220,7 @@ mod tests {
             location_designator: Some(facility.to_string()),
             icao_id: None,
             airport_id: None,
+            airport_effects: BTreeSet::new(),
             airport_name: None,
             airport_position: None,
             location: Some(facility.to_string()),

@@ -6488,9 +6488,12 @@ fn install_live_feed_payloads(session: &mut UiSession) -> AppResult<()> {
         .unwrap_or(false);
     if !notams_installed {
         if let Some(notams_value) = session.live_feeds.product_state_manifest("notams").cloned() {
-            match serde_json::from_value::<NotamProductPayload>(notams_value) {
-                Ok(payload) => {
-                    session.airport_notam_index = Some(AirportNotamIndex::from_payload(payload));
+            let index = serde_json::from_value::<NotamProductPayload>(notams_value)
+                .map_err(|error| error.to_string())
+                .and_then(AirportNotamIndex::from_payload);
+            match index {
+                Ok(index) => {
+                    session.airport_notam_index = Some(index);
                     let status_id = live_feed_unavailable_status_record("notams", String::new()).id;
                     clear_data_status_record(session, &status_id);
                 }
@@ -12625,19 +12628,21 @@ mod tests {
         let init =
             create_ui_session(FlightPlan::default(), &[], None, None).expect("create session");
         let state = serde_json::json!({
-            "schema_version": 1,
+            "schema_version": product_contracts::NOTAM_LIVE_FEED_CONTRACT_VERSION,
             "version_label": "v1",
             "notam_count": 2,
             "notams_by_id": {
                 "D:AAA:2026:N:1": {
                     "id": "D:AAA:2026:N:1",
                     "airport_id": "KAAA",
+                    "airport_effects": ["runway_closed"],
                     "notam_keyword": "RWY",
                     "text": "RWY 18 CLSD"
                 },
                 "D:AAA:2026:N:2": {
                     "id": "D:AAA:2026:N:2",
                     "airport_id": null,
+                    "airport_effects": [],
                     "notam_keyword": "NAV",
                     "text": "VOR U/S"
                 }
@@ -12653,10 +12658,9 @@ mod tests {
                 Some(state),
             );
             install_live_feed_payloads(session).expect("install NOTAM state");
-            let index = session
-                .airport_notam_index
-                .as_ref()
-                .expect("airport NOTAM index");
+            let index = session.airport_notam_index.as_ref().unwrap_or_else(|| {
+                panic!("airport NOTAM index: {:?}", session.data_status_records)
+            });
             assert_eq!(index.version_label, "v1");
             let detail = crate::map_overlay::weather_detail_for_station(
                 "KAAA",
@@ -12725,9 +12729,9 @@ mod tests {
                 taf_count: Some(1),
                 tafs_by_station,
             });
-            session.airport_notam_index =
-                Some(AirportNotamIndex::from_payload(NotamProductPayload {
-                    schema_version: 1,
+            session.airport_notam_index = Some(
+                AirportNotamIndex::from_payload(NotamProductPayload {
+                    schema_version: product_contracts::NOTAM_LIVE_FEED_CONTRACT_VERSION,
                     version_label: "v1".to_string(),
                     notam_count: Some(1),
                     notams_by_id: HashMap::from([(
@@ -12735,6 +12739,9 @@ mod tests {
                         crate::NotamRecord {
                             id: "D:AAA:2026:N:1".to_string(),
                             airport_id: Some("KAAA".to_string()),
+                            airport_effects: BTreeSet::from([
+                                product_contracts::AirportNotamEffect::RunwayClosed,
+                            ]),
                             notam_keyword: Some("RWY".to_string()),
                             effective_start_utc: None,
                             effective_end_utc: None,
@@ -12743,7 +12750,9 @@ mod tests {
                             icao_text: None,
                         },
                     )]),
-                }));
+                })
+                .expect("supported NOTAM fixture"),
+            );
         }
 
         let snapshot = get_session_snapshot_at_epoch_ms(

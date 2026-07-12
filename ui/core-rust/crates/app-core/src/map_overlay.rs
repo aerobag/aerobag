@@ -2,6 +2,7 @@ use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 
 use airspace_geometry::{expand_airspace_path, AirspaceSegment};
 use chrono::{DateTime, Utc};
+use product_contracts::{AirportNotamEffect, NOTAM_LIVE_FEED_CONTRACT_VERSION};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 
@@ -363,6 +364,7 @@ pub struct NotamRecord {
     pub id: String,
     #[serde(default)]
     pub airport_id: Option<String>,
+    pub airport_effects: BTreeSet<AirportNotamEffect>,
     #[serde(default)]
     pub notam_keyword: Option<String>,
     #[serde(default)]
@@ -391,6 +393,8 @@ pub struct AirportNotamUiView {
     pub id: String,
     pub label: String,
     pub text: String,
+    #[serde(skip)]
+    priority: u8,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -400,7 +404,13 @@ pub struct AirportNotamIndex {
 }
 
 impl AirportNotamIndex {
-    pub fn from_payload(payload: NotamProductPayload) -> Self {
+    pub fn from_payload(payload: NotamProductPayload) -> Result<Self, String> {
+        if payload.schema_version != NOTAM_LIVE_FEED_CONTRACT_VERSION {
+            return Err(format!(
+                "unsupported NOTAM live-feed schema {}; expected {}",
+                payload.schema_version, NOTAM_LIVE_FEED_CONTRACT_VERSION
+            ));
+        }
         let mut by_airport_id = HashMap::<String, Vec<AirportNotamUiView>>::new();
         for record in payload.notams_by_id.into_values() {
             let Some(airport_id) = record
@@ -432,15 +442,16 @@ impl AirportNotamIndex {
                         .trim()
                         .to_ascii_uppercase(),
                     text: text.to_string(),
+                    priority: airport_notam_priority(&record.airport_effects),
                 });
         }
         for notams in by_airport_id.values_mut() {
             sort_airport_notam_views(notams);
         }
-        Self {
+        Ok(Self {
             version_label: payload.version_label,
             by_airport_id,
-        }
+        })
     }
 }
 
@@ -3494,11 +3505,34 @@ fn airport_notam_views(
 
 fn sort_airport_notam_views(notams: &mut [AirportNotamUiView]) {
     notams.sort_by(|left, right| {
-        left.label
-            .cmp(&right.label)
+        left.priority
+            .cmp(&right.priority)
+            .then_with(|| left.label.cmp(&right.label))
             .then_with(|| left.text.cmp(&right.text))
             .then_with(|| left.id.cmp(&right.id))
     });
+}
+
+fn airport_notam_priority(effects: &BTreeSet<AirportNotamEffect>) -> u8 {
+    effects
+        .iter()
+        .map(|effect| match effect {
+            AirportNotamEffect::AirportClosed => 0,
+            AirportNotamEffect::RunwayClosed => 1,
+            AirportNotamEffect::ProcedureUnavailable => 2,
+            AirportNotamEffect::RunwayRestricted => 3,
+            AirportNotamEffect::RunwayEquipmentUnavailable => 4,
+            AirportNotamEffect::TaxiwayClosed => 5,
+            AirportNotamEffect::ApronClosed => 6,
+            AirportNotamEffect::ProcedureRestricted => 7,
+            AirportNotamEffect::MovementAreaEquipmentUnavailable => 8,
+            AirportNotamEffect::SurfaceCondition => 9,
+            AirportNotamEffect::WorkInProgress => 10,
+            AirportNotamEffect::RoutineAdvisory => 11,
+            AirportNotamEffect::Other => 12,
+        })
+        .min()
+        .unwrap_or(12)
 }
 
 fn airport_notam_lookup_ids(airport_id: &str) -> HashSet<String> {
@@ -7836,7 +7870,7 @@ mod tests {
     #[test]
     fn weather_detail_includes_only_matching_airport_notams() {
         let payload = NotamProductPayload {
-            schema_version: 1,
+            schema_version: NOTAM_LIVE_FEED_CONTRACT_VERSION,
             version_label: "v1".to_string(),
             notam_count: Some(3),
             notams_by_id: HashMap::from([
@@ -7845,6 +7879,7 @@ mod tests {
                     NotamRecord {
                         id: "airport".to_string(),
                         airport_id: Some("AAA".to_string()),
+                        airport_effects: BTreeSet::from([AirportNotamEffect::RunwayClosed]),
                         notam_keyword: Some("RWY".to_string()),
                         effective_start_utc: None,
                         effective_end_utc: None,
@@ -7858,6 +7893,7 @@ mod tests {
                     NotamRecord {
                         id: "other-airport".to_string(),
                         airport_id: Some("KBBB".to_string()),
+                        airport_effects: BTreeSet::from([AirportNotamEffect::TaxiwayClosed]),
                         notam_keyword: Some("TWY".to_string()),
                         effective_start_utc: None,
                         effective_end_utc: None,
@@ -7871,6 +7907,7 @@ mod tests {
                     NotamRecord {
                         id: "not-airport".to_string(),
                         airport_id: None,
+                        airport_effects: BTreeSet::new(),
                         notam_keyword: Some("NAV".to_string()),
                         effective_start_utc: None,
                         effective_end_utc: None,
@@ -7882,7 +7919,7 @@ mod tests {
             ]),
         };
 
-        let index = AirportNotamIndex::from_payload(payload);
+        let index = AirportNotamIndex::from_payload(payload).expect("supported NOTAM fixture");
         let detail = weather_detail_for_station("KAAA", None, None, Some(&index), None)
             .expect("airport NOTAM should enable detail");
 
@@ -7891,6 +7928,85 @@ mod tests {
         assert_eq!(detail.notams[0].text, "RWY 18 CLSD");
         assert_eq!(detail.metar_text, None);
         assert_eq!(detail.taf_text, None);
+    }
+
+    #[test]
+    fn weather_detail_sorts_airport_notams_by_highest_semantic_priority() {
+        let record = |id: &str, keyword: &str, text: &str, effects: &[AirportNotamEffect]| {
+            (
+                id.to_string(),
+                NotamRecord {
+                    id: id.to_string(),
+                    airport_id: Some("KAAA".to_string()),
+                    airport_effects: effects.iter().copied().collect(),
+                    notam_keyword: Some(keyword.to_string()),
+                    effective_start_utc: None,
+                    effective_end_utc: None,
+                    text: Some(text.to_string()),
+                    local_text: None,
+                    icao_text: None,
+                },
+            )
+        };
+        let index = AirportNotamIndex::from_payload(NotamProductPayload {
+            schema_version: NOTAM_LIVE_FEED_CONTRACT_VERSION,
+            version_label: "v1".to_string(),
+            notam_count: Some(4),
+            notams_by_id: HashMap::from([
+                record(
+                    "mowing",
+                    "AD",
+                    "AD AP ALL SFC WIP MOWING",
+                    &[AirportNotamEffect::WorkInProgress],
+                ),
+                record(
+                    "taxiway",
+                    "TWY",
+                    "TWY A CLSD",
+                    &[AirportNotamEffect::TaxiwayClosed],
+                ),
+                record(
+                    "runway",
+                    "RWY",
+                    "RWY 18 CLSD EXC XNG",
+                    &[
+                        AirportNotamEffect::RunwayClosed,
+                        AirportNotamEffect::RunwayRestricted,
+                    ],
+                ),
+                record(
+                    "airport",
+                    "AD",
+                    "AD AP CLSD",
+                    &[AirportNotamEffect::AirportClosed],
+                ),
+            ]),
+        })
+        .expect("supported NOTAM fixture");
+
+        let detail = weather_detail_for_station("KAAA", None, None, Some(&index), None)
+            .expect("airport NOTAMs should enable detail");
+        assert_eq!(
+            detail
+                .notams
+                .iter()
+                .map(|notam| notam.id.as_str())
+                .collect::<Vec<_>>(),
+            vec!["airport", "runway", "taxiway", "mowing"]
+        );
+    }
+
+    #[test]
+    fn airport_notam_index_rejects_old_product_contract() {
+        let error = AirportNotamIndex::from_payload(NotamProductPayload {
+            schema_version: NOTAM_LIVE_FEED_CONTRACT_VERSION - 1,
+            version_label: "old".to_string(),
+            notam_count: Some(0),
+            notams_by_id: HashMap::new(),
+        })
+        .expect_err("old NOTAM products lack semantic effects");
+
+        assert!(error.contains("unsupported NOTAM live-feed schema"));
     }
 
     #[test]

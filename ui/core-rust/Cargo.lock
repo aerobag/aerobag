@@ -1065,6 +1065,9 @@ dependencies = [
 [[package]]
 name = "product-contracts"
 version = "0.1.0"
+dependencies = [
+ "serde",
+]
 
 [[package]]
 name = "profiling"

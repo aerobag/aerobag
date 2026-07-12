@@ -952,6 +952,7 @@ dependencies = [
  "preprocessor-fetch",
  "preprocessor-vectors",
  "preprocessor-zip",
+ "product-contracts",
  "quick-xml",
  "roxmltree",
  "rusqlite",
@@ -1077,6 +1078,9 @@ dependencies = [
 [[package]]
 name = "product-contracts"
 version = "0.1.0"
+dependencies = [
+ "serde",
+]
 
 [[package]]
 name = "pxfm"

@@ -1,7 +1,28 @@
+use serde::{Deserialize, Serialize};
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct ProductContract {
     pub family_id: &'static str,
     pub contract_id: &'static str,
+}
+
+/// Semantic effects extracted from airport-associated NOTAMs at ingestion time.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum AirportNotamEffect {
+    AirportClosed,
+    RunwayClosed,
+    ProcedureUnavailable,
+    RunwayRestricted,
+    RunwayEquipmentUnavailable,
+    TaxiwayClosed,
+    ApronClosed,
+    ProcedureRestricted,
+    MovementAreaEquipmentUnavailable,
+    SurfaceCondition,
+    WorkInProgress,
+    RoutineAdvisory,
+    Other,
 }
 
 pub const NAV_DB_CONTRACT_ID: &str = "NAV12";
@@ -17,6 +38,7 @@ pub const TERRAIN_TER2_HEIGHT_QUANTIZATION_FT: i16 = 64;
 pub const SHADED_RELIEF_CONTRACT_ID: &str = "SHD1";
 pub const WORLD_BASEMAP_CONTRACT_ID: &str = "WBM1";
 pub const GEO_CONTRACT_ID: &str = "GEO1";
+pub const NOTAM_LIVE_FEED_CONTRACT_VERSION: u32 = 2;
 
 pub const PRODUCT_CONTRACTS: &[ProductContract] = &[
     ProductContract {

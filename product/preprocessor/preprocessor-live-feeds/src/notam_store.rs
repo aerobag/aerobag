@@ -13,11 +13,12 @@ use serde::{Deserialize, Serialize};
 
 use crate::NotamProjectionAction;
 use crate::{
-    engine::sha256_hex, notam_projection_action, structured_notam_record_from_json,
-    validate_canonical_structured_notam_record, StructuredNotamRecord,
+    canonicalize_structured_notam_record, engine::sha256_hex, notam_projection_action,
+    structured_notam_record_from_json, validate_canonical_structured_notam_record,
+    StructuredNotamRecord,
 };
 
-const NOTAM_STORE_SCHEMA_VERSION: u32 = 3;
+const NOTAM_STORE_SCHEMA_VERSION: u32 = 4;
 const RAW_INGEST_CURSOR_METADATA_KEY: &str = "raw_ingest_cursor";
 const RAW_INGEST_RETENTION_DAYS: i64 = 7;
 
@@ -349,7 +350,8 @@ impl NotamPersistentStore {
                     .context("failed to initialize NOTAM sqlite schema version")?;
                 Ok(())
             }
-            Some("3") => Ok(()),
+            Some("4") => Ok(()),
+            Some("3") => self.reproject_schema_v3(connection),
             Some("2") => self.reproject_schema_v2(connection),
             Some(version) => bail!(
                 "unsupported NOTAM sqlite schema {version}; required {NOTAM_STORE_SCHEMA_VERSION}"
@@ -390,8 +392,8 @@ impl NotamPersistentStore {
             .transaction()
             .context("failed to start NOTAM schema reprojection transaction")?;
         tx.execute_batch(
-            "DROP TABLE IF EXISTS current_notams_v3;
-             CREATE TABLE current_notams_v3 (
+            "DROP TABLE IF EXISTS current_notams_v4;
+             CREATE TABLE current_notams_v4 (
                 id TEXT PRIMARY KEY,
                 status TEXT,
                 last_updated_utc TEXT,
@@ -399,7 +401,7 @@ impl NotamPersistentStore {
                 updated_at_utc TEXT NOT NULL
              );",
         )
-        .context("failed to create NOTAM schema 3 projection")?;
+        .context("failed to create NOTAM schema 4 projection")?;
         for (ingest_seq, message_json) in &raw_rows {
             if let Some(record) =
                 structured_notam_record_from_json(message_json).with_context(|| {
@@ -408,7 +410,7 @@ impl NotamPersistentStore {
             {
                 apply_record_to_projection(
                     &tx,
-                    ProjectionTable::SchemaV3,
+                    ProjectionTable::SchemaV4,
                     &record,
                     &reprojected_at_utc,
                 )?;
@@ -433,15 +435,70 @@ impl NotamPersistentStore {
         .context("failed to promote NOTAM sqlite schema version")?;
         tx.execute_batch(
             "ALTER TABLE current_notams RENAME TO current_notams_v2_retired;
-             ALTER TABLE current_notams_v3 RENAME TO current_notams;
+             ALTER TABLE current_notams_v4 RENAME TO current_notams;
              DROP TABLE current_notams_v2_retired;
              CREATE INDEX current_notams_status_idx ON current_notams(status);
              CREATE INDEX current_notams_last_updated_idx
                 ON current_notams(last_updated_utc);",
         )
-        .context("failed to atomically promote NOTAM schema 3 projection")?;
+        .context("failed to atomically promote NOTAM schema 4 projection")?;
         tx.commit()
             .context("failed to commit NOTAM schema reprojection")?;
+        Ok(())
+    }
+
+    fn reproject_schema_v3(&self, connection: &mut Connection) -> anyhow::Result<()> {
+        let rows = {
+            let mut statement = connection
+                .prepare("SELECT record_json, updated_at_utc FROM current_notams ORDER BY id")
+                .context("failed to prepare NOTAM schema 3 reprojection query")?;
+            let rows = statement
+                .query_map([], |row| {
+                    Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+                })
+                .context("failed to query NOTAM schema 3 projection rows")?
+                .collect::<Result<Vec<_>, _>>()
+                .context("failed to read NOTAM schema 3 projection rows")?;
+            rows
+        };
+
+        let tx = connection
+            .transaction()
+            .context("failed to start NOTAM schema 3 reprojection transaction")?;
+        tx.execute_batch(
+            "DROP TABLE IF EXISTS current_notams_v4;
+             CREATE TABLE current_notams_v4 (
+                id TEXT PRIMARY KEY,
+                status TEXT,
+                last_updated_utc TEXT,
+                record_json TEXT NOT NULL,
+                updated_at_utc TEXT NOT NULL
+             );",
+        )
+        .context("failed to create NOTAM schema 4 projection")?;
+        for (record_json, updated_at_utc) in rows {
+            let record = serde_json::from_str::<StructuredNotamRecord>(&record_json)
+                .context("failed to decode NOTAM schema 3 projection row")?;
+            let record = canonicalize_structured_notam_record(record)
+                .context("failed to classify NOTAM schema 3 projection row")?;
+            apply_record_to_projection(&tx, ProjectionTable::SchemaV4, &record, &updated_at_utc)?;
+        }
+        tx.execute(
+            "UPDATE metadata SET value = ?1 WHERE key = 'schema_version'",
+            [NOTAM_STORE_SCHEMA_VERSION.to_string()],
+        )
+        .context("failed to promote NOTAM sqlite schema version")?;
+        tx.execute_batch(
+            "ALTER TABLE current_notams RENAME TO current_notams_v3_retired;
+             ALTER TABLE current_notams_v4 RENAME TO current_notams;
+             DROP TABLE current_notams_v3_retired;
+             CREATE INDEX current_notams_status_idx ON current_notams(status);
+             CREATE INDEX current_notams_last_updated_idx
+                ON current_notams(last_updated_utc);",
+        )
+        .context("failed to atomically promote NOTAM schema 4 projection")?;
+        tx.commit()
+            .context("failed to commit NOTAM schema 3 reprojection")?;
         Ok(())
     }
 
@@ -482,14 +539,14 @@ impl NotamPersistentStore {
 #[derive(Clone, Copy)]
 enum ProjectionTable {
     Current,
-    SchemaV3,
+    SchemaV4,
 }
 
 impl ProjectionTable {
     fn name(self) -> &'static str {
         match self {
             Self::Current => "current_notams",
-            Self::SchemaV3 => "current_notams_v3",
+            Self::SchemaV4 => "current_notams_v4",
         }
     }
 }
@@ -827,9 +884,60 @@ mod tests {
                 [],
                 |row| row.get::<_, String>(0),
             )?,
-            "3"
+            "4"
         );
         assert_eq!(raw_ingest_cursor(&connection)?, 2);
+        Ok(())
+    }
+
+    #[test]
+    fn schema_v3_reprojection_adds_airport_effects_to_current_records() -> anyhow::Result<()> {
+        let temp = tempdir()?;
+        let store = NotamPersistentStore::new(temp.path());
+        store.initialize(&identity("queue-a"))?;
+        let record =
+            structured_notam_record_from_json(&captured_notam_line("PUBLISHED"))?.expect("record");
+        let mut stale_json = serde_json::to_value(&record)?;
+        stale_json
+            .as_object_mut()
+            .expect("record object")
+            .remove("airport_effects");
+        let connection = Connection::open(store.sqlite_path())?;
+        connection.execute(
+            "INSERT INTO current_notams (
+                id, status, last_updated_utc, record_json, updated_at_utc
+             ) VALUES (?1, ?2, NULL, ?3, ?4)",
+            params![
+                record.id,
+                record.notam_status,
+                serde_json::to_string(&stale_json)?,
+                "2026-07-11T02:03:00Z",
+            ],
+        )?;
+        connection.execute(
+            "UPDATE metadata SET value = '3' WHERE key = 'schema_version'",
+            [],
+        )?;
+        drop(connection);
+
+        let records = store.current_records()?;
+        assert_eq!(records.len(), 1);
+        assert_eq!(
+            records[0].airport_effects,
+            std::collections::BTreeSet::from([
+                product_contracts::AirportNotamEffect::RunwayClosed,
+                product_contracts::AirportNotamEffect::SurfaceCondition,
+            ])
+        );
+        let connection = Connection::open(store.sqlite_path())?;
+        assert_eq!(
+            connection.query_row(
+                "SELECT value FROM metadata WHERE key = 'schema_version'",
+                [],
+                |row| row.get::<_, String>(0),
+            )?,
+            "4"
+        );
         Ok(())
     }
 

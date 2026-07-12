@@ -162,6 +162,7 @@ struct ProductStatusHistory {
     quality: Option<serde_json::Value>,
     attempts: VecDeque<ProductAttemptSample>,
     samples: VecDeque<ProductUpdateSample>,
+    source_samples: VecDeque<SourceIngestSample>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -203,6 +204,7 @@ struct ProductStatusSnapshot {
     quality: Option<serde_json::Value>,
     attempts: Vec<ProductAttemptSample>,
     samples: Vec<ProductUpdateSample>,
+    source_samples: Vec<SourceIngestSample>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -232,6 +234,18 @@ struct ProductUpdateSample {
     state_bytes: Option<u64>,
     changed_count: usize,
     removed_count: usize,
+}
+
+#[derive(Debug, Clone, Serialize)]
+struct SourceIngestSample {
+    observed_at_utc: chrono::DateTime<Utc>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    source_timestamp_utc: Option<String>,
+    interval_ms: Option<u64>,
+    message_count: usize,
+    changed_count: usize,
+    removed_count: usize,
+    cursor: i64,
 }
 
 impl Default for DaemonStatus {
@@ -313,6 +327,35 @@ impl DaemonStatus {
                 source_timestamp_utc,
                 phase: Some("source".to_string()),
                 error: None,
+            },
+        );
+    }
+
+    fn record_source_ingest(
+        &self,
+        product: &str,
+        observed_at_utc: chrono::DateTime<Utc>,
+        source_timestamp_utc: Option<String>,
+        message_count: usize,
+        changed_count: usize,
+        removed_count: usize,
+        cursor: i64,
+    ) {
+        let mut state = self.inner.lock().expect("live-feed status lock");
+        let history = state.products.entry(product.to_string()).or_default();
+        let interval_ms = history.source_samples.back().and_then(|last| {
+            checked_duration_ms(observed_at_utc.signed_duration_since(last.observed_at_utc))
+        });
+        push_limited(
+            &mut history.source_samples,
+            SourceIngestSample {
+                observed_at_utc,
+                source_timestamp_utc,
+                interval_ms,
+                message_count,
+                changed_count,
+                removed_count,
+                cursor,
             },
         );
     }
@@ -439,6 +482,7 @@ impl DaemonStatus {
                         quality: history.quality.clone(),
                         attempts: history.attempts.iter().cloned().collect(),
                         samples: history.samples.iter().cloned().collect(),
+                        source_samples: history.source_samples.iter().cloned().collect(),
                     },
                 )
             })
@@ -1605,6 +1649,15 @@ fn queue_notam_raw_ingest_event(
     sender
         .send(event)
         .context("failed to queue NOTAM raw ingest event")?;
+    status.record_source_ingest(
+        "notams",
+        observed_at_utc,
+        Some(source_timestamp.clone()),
+        summary.applied_count,
+        summary.changed_count,
+        summary.removed_count,
+        summary.max_ingest_seq,
+    );
     status.record_source_success(
         "notams",
         Some(source_timestamp),
@@ -2222,6 +2275,54 @@ function renderSizePlot(product, data) {
   layout.legend = { orientation: "h", x: 0, y: 1.12 };
   Plotly.react(node, traces, layout, { responsive: true, displaylogo: false });
 }
+function minuteBucketMs(timestamp) {
+  return Math.floor(new Date(timestamp).getTime() / 60000) * 60000;
+}
+function renderSourceRatePlot(product, data, generatedAtUtc) {
+  const samples = data.source_samples || [];
+  const node = document.getElementById(plotId(product, "source_rate"));
+  if (!node) return;
+  if (!window.Plotly) {
+    node.textContent = "Plotly failed to load.";
+    node.className = "plot muted";
+    return;
+  }
+  if (samples.length === 0) {
+    node.textContent = "No source-rate samples yet.";
+    node.className = "plot muted";
+    return;
+  }
+  const firstBucket = minuteBucketMs(samples[0].observed_at_utc);
+  const lastBucket = minuteBucketMs(generatedAtUtc);
+  const buckets = new Map();
+  for (let bucket = firstBucket; bucket <= lastBucket; bucket += 60000) {
+    buckets.set(bucket, { messages: 0, changed: 0, removed: 0, cursor: null });
+  }
+  for (const sample of samples) {
+    const bucket = minuteBucketMs(sample.observed_at_utc);
+    const value = buckets.get(bucket) || { messages: 0, changed: 0, removed: 0, cursor: null };
+    value.messages += sample.message_count;
+    value.changed += sample.changed_count;
+    value.removed += sample.removed_count;
+    value.cursor = value.cursor == null ? sample.cursor : Math.max(value.cursor, sample.cursor);
+    buckets.set(bucket, value);
+  }
+  const entries = Array.from(buckets.entries()).sort(([left], [right]) => left - right);
+  Plotly.react(node, [{
+    type: "scatter",
+    mode: "lines+markers",
+    x: entries.map(([bucket]) => new Date(bucket).toISOString()),
+    y: entries.map(([, value]) => value.messages),
+    text: entries.map(([, value]) =>
+      `${value.messages} messages/min<br>` +
+      `${value.changed} changed, ${value.removed} removed<br>` +
+      `cursor ${value.cursor ?? "-"}`
+    ),
+    hovertemplate: "%{x}<br>%{text}<extra></extra>",
+    line: { color: "#4b7d19", width: 2 },
+    marker: { color: "#4b7d19", size: 5 },
+  }], basePlotLayout(`${product} source message rate`, "messages/min"), { responsive: true, displaylogo: false });
+}
 async function render() {
   const response = await fetch("/live-feeds/status.json", { cache: "no-store" });
   const status = await response.json();
@@ -2244,6 +2345,7 @@ async function render() {
         <div class="plots">
           <div id="${plotId(product, "update_interval_ms")}" class="plot"></div>
           <div id="${plotId(product, "delta_bytes")}" class="plot"></div>
+          ${(data.source_samples || []).length > 0 ? `<div id="${plotId(product, "source_rate")}" class="plot"></div>` : ""}
         </div>
       </div>
     `).join("")}
@@ -2251,6 +2353,7 @@ async function render() {
   for (const [product, data] of products) {
     renderUpdateIntervalPlot(product, data);
     renderSizePlot(product, data);
+    renderSourceRatePlot(product, data, status.generated_at_utc);
   }
 }
 render().catch((error) => { statusEl.textContent = String(error); });
@@ -2695,6 +2798,50 @@ mod tests {
         assert_eq!(metars.attempts[0].result, "success");
         assert_eq!(metars.attempts[0].unchanged, Some(true));
         assert!(metars.samples.is_empty());
+    }
+
+    #[test]
+    fn status_records_structured_source_ingest_samples() {
+        let status = DaemonStatus::default();
+        let first = chrono::DateTime::parse_from_rfc3339("2026-07-12T02:47:00Z")
+            .expect("test timestamp")
+            .with_timezone(&Utc);
+        let second = chrono::DateTime::parse_from_rfc3339("2026-07-12T02:48:00Z")
+            .expect("test timestamp")
+            .with_timezone(&Utc);
+
+        status.record_source_ingest(
+            "notams",
+            first,
+            Some("2026-07-12T02:47:00Z".to_string()),
+            3,
+            2,
+            1,
+            42,
+        );
+        status.record_source_ingest(
+            "notams",
+            second,
+            Some("2026-07-12T02:48:00Z".to_string()),
+            6,
+            4,
+            0,
+            48,
+        );
+
+        let snapshot = status.snapshot();
+        let notams = snapshot.products.get("notams").expect("NOTAM status");
+        assert_eq!(notams.source_samples.len(), 2);
+        assert_eq!(notams.source_samples[0].interval_ms, None);
+        assert_eq!(notams.source_samples[0].message_count, 3);
+        assert_eq!(notams.source_samples[0].changed_count, 2);
+        assert_eq!(notams.source_samples[0].removed_count, 1);
+        assert_eq!(notams.source_samples[0].cursor, 42);
+        assert_eq!(notams.source_samples[1].interval_ms, Some(60_000));
+        assert_eq!(notams.source_samples[1].message_count, 6);
+        assert_eq!(notams.source_samples[1].changed_count, 4);
+        assert_eq!(notams.source_samples[1].removed_count, 0);
+        assert_eq!(notams.source_samples[1].cursor, 48);
     }
 
     #[test]

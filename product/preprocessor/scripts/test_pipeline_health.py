@@ -53,6 +53,37 @@ class PipelineHealthTests(unittest.TestCase):
         self.assertEqual(failure_rate["value"], 0.666667)
         self.assertEqual(failure_rate["severity"], "critical")
 
+    def test_nexrad_staleness_allows_five_minute_fetch_interval(self) -> None:
+        now = datetime(2026, 6, 19, 12, 10, 0, tzinfo=timezone.utc)
+        facts = {
+            "inputs": {
+                "current_artifacts": {"error": None, "payload": []},
+                "deploy_health": {"error": None, "payload": {}},
+                "live_feeds_status": {
+                    "error": None,
+                    "payload": {
+                        "products": {
+                            "nexrad": {
+                                "last_source_timestamp_utc": "2026-06-19T12:00:00Z",
+                                "consecutive_failure_count": 0,
+                            }
+                        }
+                    },
+                },
+                "build_watch": {"error": None, "payload": {}},
+                "faa_cycle_calendar": {"error": None, "payload": {"cycles": []}},
+                "product_facts": [],
+            }
+        }
+
+        evaluation = pipeline_health.evaluate_health(facts, [], now)
+
+        stale = metric(evaluation, "live_feed.nexrad.stale_seconds")
+        self.assertEqual(stale["value"], 600)
+        self.assertEqual(stale["severity"], "ok")
+        self.assertEqual(stale["warning_threshold"], 700)
+        self.assertEqual(stale["critical_threshold"], 900)
+
     def test_live_feed_failure_rate_exposes_failure_details(self) -> None:
         now = datetime(2026, 6, 19, 12, 0, 0, tzinfo=timezone.utc)
         facts = {

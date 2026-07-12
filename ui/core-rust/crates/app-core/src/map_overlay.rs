@@ -636,7 +636,7 @@ pub struct AirspaceDisplayStroke {
     pub line_cap: String,
 }
 
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
 pub struct AirspaceScreenPoint {
     pub x: f64,
     pub y: f64,
@@ -1833,6 +1833,8 @@ pub(crate) fn query_map_overlay_for_surface_at(
             scale,
             tfr_payload,
             point_display_scale,
+            &visible_features,
+            protected_point_features,
             tfr_reference_utc,
         )
     } else {
@@ -4281,6 +4283,13 @@ impl LabelRect {
             && self.top < other.bottom
             && self.bottom > other.top
     }
+
+    fn center(self) -> AirspaceScreenPoint {
+        AirspaceScreenPoint {
+            x: (self.left + self.right) / 2.0,
+            y: (self.top + self.bottom) / 2.0,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -4386,22 +4395,62 @@ fn point_feature_label_priority(feature: &VisibleMapFeature) -> u8 {
     }
 }
 
-fn airspace_label_rect(label: &AirspaceDisplayLabel, scale: f64) -> Option<LabelRect> {
-    if !label.screen_x.is_finite() || !label.screen_y.is_finite() {
+fn point_feature_symbol_rect(feature: &VisibleMapFeature, scale: f64) -> Option<LabelRect> {
+    if !feature.screen_x.is_finite() || !feature.screen_y.is_finite() {
         return None;
     }
     let scale = scale.max(0.1);
-    let width = label
-        .glyph
-        .upper
-        .chars()
-        .count()
-        .max(label.glyph.lower.chars().count()) as f64
-        * 8.2
-        * scale
-        + 10.0 * scale;
+    let size = match feature.symbol_kind.as_str() {
+        "airport" => {
+            let runway_span = if feature.has_paved_runway != Some(false)
+                && !feature.heliport.unwrap_or(false)
+                && !feature.has_water_runway.unwrap_or(false)
+                && feature.longest_runway_heading_true_deg.is_some()
+            {
+                16.0 * feature.runway_length_ratio.max(0.2) + 8.0
+            } else {
+                20.0
+            };
+            runway_span.max(20.0)
+        }
+        "nav" => 22.0,
+        "obstacle" => 18.0,
+        "fix" => 18.0,
+        _ => 16.0,
+    } * scale;
+    Some(centered_rect(
+        feature.screen_x,
+        feature.screen_y,
+        size,
+        size,
+    ))
+}
+
+fn airspace_label_rect(label: &AirspaceDisplayLabel, scale: f64) -> Option<LabelRect> {
+    airspace_limit_label_rect(
+        &label.glyph.upper,
+        &label.glyph.lower,
+        label.screen_x,
+        label.screen_y,
+        scale,
+    )
+}
+
+fn airspace_limit_label_rect(
+    upper: &str,
+    lower: &str,
+    screen_x: f64,
+    screen_y: f64,
+    scale: f64,
+) -> Option<LabelRect> {
+    if !screen_x.is_finite() || !screen_y.is_finite() {
+        return None;
+    }
+    let scale = scale.max(0.1);
+    let width =
+        upper.chars().count().max(lower.chars().count()) as f64 * 8.2 * scale + 10.0 * scale;
     let height = 30.0 * scale;
-    Some(centered_rect(label.screen_x, label.screen_y, width, height))
+    Some(centered_rect(screen_x, screen_y, width, height))
 }
 
 fn point_feature_label_rect(feature: &VisibleMapFeature, scale: f64) -> Option<LabelRect> {
@@ -4455,6 +4504,8 @@ fn query_tfr_overlay(
     scale: f64,
     tfr_payload: Option<&TfrProductPayload>,
     display_scale: f64,
+    point_features: &[VisibleMapFeature],
+    protected_point_features: &[VisibleMapFeature],
     reference_utc: Option<DateTime<Utc>>,
 ) -> TfrOverlayProjection {
     if width_px <= 0.0 || height_px <= 0.0 || viewport.zoom < AIRSPACE_MIN_DISPLAY_ZOOM {
@@ -4473,6 +4524,15 @@ fn query_tfr_overlay(
     };
     let mut paths = Vec::new();
     let mut labels = Vec::new();
+    let mut point_obstacle_rects = Vec::new();
+    for feature in point_features.iter().chain(protected_point_features.iter()) {
+        if let Some(rect) = point_feature_symbol_rect(feature, display_scale) {
+            point_obstacle_rects.push(rect.padded(LABEL_COLLISION_PADDING_PX));
+        }
+        if let Some(rect) = point_feature_label_rect(feature, display_scale) {
+            point_obstacle_rects.push(rect.padded(LABEL_COLLISION_PADDING_PX));
+        }
+    }
     for area in &payload.areas {
         if area.polygon.len() < 3 {
             continue;
@@ -4512,6 +4572,7 @@ fn query_tfr_overlay(
             width_px,
             height_px,
             display_scale,
+            &point_obstacle_rects,
         ) {
             labels.push(AirspaceDisplayLabel {
                 feature_id: format!("tfr:{}:{}", area.notam_id.trim(), area.area_index),
@@ -4568,6 +4629,7 @@ fn tfr_label_screen_point(
     width_px: f64,
     height_px: f64,
     display_scale: f64,
+    point_obstacle_rects: &[LabelRect],
 ) -> Option<AirspaceScreenPoint> {
     if !tfr_polygon_can_fit_label(area, projected_points, display_scale) {
         return None;
@@ -4577,10 +4639,226 @@ fn tfr_label_screen_point(
     if point.x < 0.0 || point.x > width_px || point.y < 0.0 || point.y > height_px {
         return None;
     }
-    Some(AirspaceScreenPoint {
+    let centroid_point = AirspaceScreenPoint {
         x: point.x,
         y: point.y,
-    })
+    };
+    if point_obstacle_rects.is_empty() {
+        return Some(centroid_point);
+    }
+    let upper = tfr_limit_label(&area.upper_limit);
+    let lower = tfr_limit_label(&area.lower_limit);
+    let Some(centroid_rect) = airspace_limit_label_rect(
+        &upper,
+        &lower,
+        centroid_point.x,
+        centroid_point.y,
+        display_scale,
+    )
+    .map(|rect| rect.padded(LABEL_COLLISION_PADDING_PX)) else {
+        return Some(centroid_point);
+    };
+    if !point_obstacle_rects
+        .iter()
+        .any(|obstacle| centroid_rect.overlaps(*obstacle))
+    {
+        return Some(centroid_point);
+    }
+    tfr_decentered_label_point(
+        projected_points,
+        centroid_point,
+        &upper,
+        &lower,
+        display_scale,
+        width_px,
+        height_px,
+        point_obstacle_rects,
+    )
+    .or(Some(centroid_point))
+}
+
+fn tfr_decentered_label_point(
+    projected_points: &[AirspaceScreenPoint],
+    centroid: AirspaceScreenPoint,
+    upper: &str,
+    lower: &str,
+    display_scale: f64,
+    width_px: f64,
+    height_px: f64,
+    point_obstacle_rects: &[LabelRect],
+) -> Option<AirspaceScreenPoint> {
+    let mut best_clear = None::<TfrLabelCandidateScore>;
+    let mut best_any = None::<TfrLabelCandidateScore>;
+    for candidate in tfr_half_radius_label_candidates(projected_points, centroid) {
+        if candidate.x < 0.0
+            || candidate.x > width_px
+            || candidate.y < 0.0
+            || candidate.y > height_px
+            || !screen_polygon_contains(projected_points, candidate)
+        {
+            continue;
+        }
+        let Some(rect) =
+            airspace_limit_label_rect(upper, lower, candidate.x, candidate.y, display_scale)
+                .map(|rect| rect.padded(LABEL_COLLISION_PADDING_PX))
+        else {
+            continue;
+        };
+        let obstacle_distance_sq = point_obstacle_rects
+            .iter()
+            .map(|obstacle| squared_screen_distance(rect.center(), obstacle.center()))
+            .fold(f64::INFINITY, f64::min);
+        let boundary_distance_sq =
+            squared_distance_to_nearest_screen_boundary(candidate, projected_points);
+        let score = TfrLabelCandidateScore {
+            point: candidate,
+            score: obstacle_distance_sq.min(boundary_distance_sq * 4.0),
+            movement_sq: squared_screen_distance(candidate, centroid),
+        };
+        update_best_tfr_label_candidate(&mut best_any, score);
+        if !point_obstacle_rects
+            .iter()
+            .any(|obstacle| rect.overlaps(*obstacle))
+        {
+            update_best_tfr_label_candidate(&mut best_clear, score);
+        }
+    }
+    best_clear.or(best_any).map(|candidate| candidate.point)
+}
+
+#[derive(Clone, Copy)]
+struct TfrLabelCandidateScore {
+    point: AirspaceScreenPoint,
+    score: f64,
+    movement_sq: f64,
+}
+
+fn update_best_tfr_label_candidate(
+    best: &mut Option<TfrLabelCandidateScore>,
+    candidate: TfrLabelCandidateScore,
+) {
+    let replace = match *best {
+        None => true,
+        Some(current) => {
+            candidate.score > current.score + 1.0e-6
+                || ((candidate.score - current.score).abs() <= 1.0e-6
+                    && candidate.movement_sq < current.movement_sq)
+        }
+    };
+    if replace {
+        *best = Some(candidate);
+    }
+}
+
+fn tfr_half_radius_label_candidates(
+    projected_points: &[AirspaceScreenPoint],
+    centroid: AirspaceScreenPoint,
+) -> Vec<AirspaceScreenPoint> {
+    let mut candidates = Vec::new();
+    for point in projected_points.iter().copied() {
+        push_unique_screen_point(&mut candidates, halfway_screen_point(centroid, point));
+    }
+    for index in 0..projected_points.len() {
+        let current = projected_points[index];
+        let next = projected_points[(index + 1) % projected_points.len()];
+        let edge_midpoint = halfway_screen_point(current, next);
+        push_unique_screen_point(
+            &mut candidates,
+            halfway_screen_point(centroid, edge_midpoint),
+        );
+    }
+    candidates
+}
+
+fn push_unique_screen_point(points: &mut Vec<AirspaceScreenPoint>, point: AirspaceScreenPoint) {
+    if !point.x.is_finite() || !point.y.is_finite() {
+        return;
+    }
+    if points
+        .iter()
+        .any(|existing| squared_screen_distance(*existing, point) < 1.0)
+    {
+        return;
+    }
+    points.push(point);
+}
+
+fn halfway_screen_point(
+    first: AirspaceScreenPoint,
+    second: AirspaceScreenPoint,
+) -> AirspaceScreenPoint {
+    AirspaceScreenPoint {
+        x: (first.x + second.x) / 2.0,
+        y: (first.y + second.y) / 2.0,
+    }
+}
+
+fn screen_polygon_contains(points: &[AirspaceScreenPoint], point: AirspaceScreenPoint) -> bool {
+    if points.len() < 3 || !point.x.is_finite() || !point.y.is_finite() {
+        return false;
+    }
+    let mut inside = false;
+    let mut previous = points.len() - 1;
+    for current in 0..points.len() {
+        let current_point = points[current];
+        let previous_point = points[previous];
+        let crosses = (current_point.y > point.y) != (previous_point.y > point.y);
+        if crosses {
+            let crossing_x = (previous_point.x - current_point.x) * (point.y - current_point.y)
+                / (previous_point.y - current_point.y)
+                + current_point.x;
+            if point.x < crossing_x {
+                inside = !inside;
+            }
+        }
+        previous = current;
+    }
+    inside
+}
+
+fn squared_distance_to_nearest_screen_boundary(
+    point: AirspaceScreenPoint,
+    polygon: &[AirspaceScreenPoint],
+) -> f64 {
+    if polygon.len() < 2 {
+        return f64::INFINITY;
+    }
+    let mut best = f64::INFINITY;
+    for index in 0..polygon.len() {
+        best = best.min(squared_distance_to_screen_segment(
+            point,
+            polygon[index],
+            polygon[(index + 1) % polygon.len()],
+        ));
+    }
+    best
+}
+
+fn squared_distance_to_screen_segment(
+    point: AirspaceScreenPoint,
+    start: AirspaceScreenPoint,
+    end: AirspaceScreenPoint,
+) -> f64 {
+    let dx = end.x - start.x;
+    let dy = end.y - start.y;
+    let length_sq = dx * dx + dy * dy;
+    if length_sq <= f64::EPSILON {
+        return squared_screen_distance(point, start);
+    }
+    let t = (((point.x - start.x) * dx + (point.y - start.y) * dy) / length_sq).clamp(0.0, 1.0);
+    squared_screen_distance(
+        point,
+        AirspaceScreenPoint {
+            x: start.x + t * dx,
+            y: start.y + t * dy,
+        },
+    )
+}
+
+fn squared_screen_distance(first: AirspaceScreenPoint, second: AirspaceScreenPoint) -> f64 {
+    let dx = first.x - second.x;
+    let dy = first.y - second.y;
+    dx * dx + dy * dy
 }
 
 fn tfr_polygon_centroid(area: &TfrAreaPayload) -> Option<LatLon> {
@@ -8083,6 +8361,8 @@ mod tests {
             scale,
             Some(&payload),
             1.0,
+            &[],
+            &[],
             crate::freshness::parse_utc_instant("2026-07-11T12:00:00Z"),
         );
 
@@ -8094,6 +8374,129 @@ mod tests {
         assert_eq!(result.labels[0].glyph.lower, "SFC");
         assert!((result.labels[0].screen_x - width_px / 2.0).abs() < 1.0);
         assert!((result.labels[0].screen_y - height_px / 2.0).abs() < 1.0);
+    }
+
+    #[test]
+    fn tfr_overlay_offsets_fraction_label_from_centered_point_symbol() {
+        let viewport = MapViewport {
+            center: LatLon {
+                lat: 47.0,
+                lon: -122.0,
+            },
+            zoom: 10.0,
+            rotation_deg: 0.0,
+            pitch_deg: 0.0,
+        };
+        let width_px = 1200.0;
+        let height_px = 900.0;
+        let scale = 2.0_f64.powf(viewport.zoom);
+        let center_world = lat_lon_to_world(viewport.center);
+        let payload = TfrProductPayload {
+            schema_version: 1,
+            version_label: "test".to_string(),
+            generated_at_utc: None,
+            notam_count: 1,
+            area_group_count: 1,
+            areas: vec![TfrAreaPayload {
+                notam_id: "1/2345".to_string(),
+                area_index: 0,
+                schedule_fragments: Vec::new(),
+                upper_limit: TfrAltitudeLimit {
+                    value_text: "180".to_string(),
+                    unit: "FL".to_string(),
+                },
+                lower_limit: TfrAltitudeLimit {
+                    value_text: "0".to_string(),
+                    unit: "FT".to_string(),
+                },
+                polygon: vec![
+                    TfrLatLonPoint {
+                        lat: 47.08,
+                        lon: -122.08,
+                    },
+                    TfrLatLonPoint {
+                        lat: 47.08,
+                        lon: -121.92,
+                    },
+                    TfrLatLonPoint {
+                        lat: 46.92,
+                        lon: -121.92,
+                    },
+                    TfrLatLonPoint {
+                        lat: 46.92,
+                        lon: -122.08,
+                    },
+                ],
+                summary_text: String::new(),
+                notam: None,
+            }],
+        };
+        let airport = test_visible_feature(
+            "airports:KPWT",
+            "airport",
+            "airport",
+            "PWT",
+            width_px / 2.0,
+            height_px / 2.0,
+        );
+        let obstacle_rect = point_feature_symbol_rect(&airport, 1.0)
+            .expect("airport symbol rect")
+            .padded(LABEL_COLLISION_PADDING_PX);
+        let centroid_label = AirspaceDisplayLabel {
+            feature_id: "tfr:1/2345:0".to_string(),
+            glyph: AirspaceLimitGlyph {
+                upper: "FL180".to_string(),
+                lower: "SFC".to_string(),
+                style_key: TFR_ACTIVE_STYLE_KEY.to_string(),
+                color_key: TFR_ACTIVE_STYLE_KEY.to_string(),
+            },
+            screen_x: width_px / 2.0,
+            screen_y: height_px / 2.0,
+        };
+        assert!(
+            airspace_label_rect(&centroid_label, 1.0)
+                .expect("centroid label rect")
+                .padded(LABEL_COLLISION_PADDING_PX)
+                .overlaps(obstacle_rect),
+            "centroid TFR label should reproduce the airport-symbol overlap"
+        );
+
+        let result = query_tfr_overlay(
+            &viewport,
+            width_px,
+            height_px,
+            center_world,
+            scale,
+            Some(&payload),
+            1.0,
+            std::slice::from_ref(&airport),
+            &[],
+            crate::freshness::parse_utc_instant("2026-07-11T12:00:00Z"),
+        );
+
+        assert_eq!(result.paths.len(), 1);
+        assert_eq!(result.labels.len(), 1);
+        assert!(
+            (result.labels[0].screen_x - width_px / 2.0).abs() > 1.0
+                || (result.labels[0].screen_y - height_px / 2.0).abs() > 1.0,
+            "TFR label should be moved away from the airport symbol at polygon center"
+        );
+        assert!(
+            !airspace_label_rect(&result.labels[0], 1.0)
+                .expect("shifted label rect")
+                .padded(LABEL_COLLISION_PADDING_PX)
+                .overlaps(obstacle_rect),
+            "shifted TFR label should not cover the airport symbol"
+        );
+
+        let mut visible_features = vec![airport];
+        let mut airspace_labels = result.labels.clone();
+        suppress_overlapping_vector_labels(&mut visible_features, &mut airspace_labels, &[], 1.0);
+        assert_eq!(
+            airspace_labels.len(),
+            1,
+            "shifted TFR label should survive the shared label collision pass"
+        );
     }
 
     #[test]
@@ -8173,6 +8576,8 @@ mod tests {
             scale,
             Some(&payload),
             1.0,
+            &[],
+            &[],
             crate::freshness::parse_utc_instant("2026-07-11T12:00:00Z"),
         );
 
@@ -8313,6 +8718,8 @@ mod tests {
             scale,
             Some(&payload),
             1.0,
+            &[],
+            &[],
             crate::freshness::parse_utc_instant("2026-07-11T12:00:00Z"),
         );
 

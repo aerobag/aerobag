@@ -208,19 +208,21 @@ impl TfrDetailBackfillStore {
         }
         let connection = self.open_connection()?;
         let mut statement = connection
-            .prepare("SELECT metadata_json FROM detail_records WHERE tfr_id = ?1")
+            .prepare("SELECT source_url, raw_xml FROM detail_records WHERE tfr_id = ?1")
             .context("failed to prepare TFR detail metadata query")?;
         let mut metadata = Vec::new();
         for tfr_id in tfr_ids {
             let rows = statement
-                .query_map([tfr_id], |row| row.get::<_, String>(0))
+                .query_map([tfr_id], |row| {
+                    Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+                })
                 .with_context(|| format!("failed to query TFR detail metadata {tfr_id}"))?;
             for row in rows {
-                let metadata_json =
+                let (source_url, raw_xml) =
                     row.with_context(|| format!("failed to read TFR detail metadata {tfr_id}"))?;
-                let record = serde_json::from_str::<StructuredTfrNotamMetadata>(&metadata_json)
-                    .with_context(|| format!("failed to decode TFR detail metadata {tfr_id}"))?;
-                metadata.push((tfr_id.clone(), record));
+                let parsed = parse_tfr_detail_xml(tfr_id, &source_url, &raw_xml)
+                    .with_context(|| format!("failed to parse stored TFR detail {tfr_id}"))?;
+                metadata.push((tfr_id.clone(), parsed.metadata));
             }
         }
         Ok(metadata)
@@ -447,7 +449,7 @@ pub fn parse_tfr_detail_xml(
         (Some(lower), Some(upper)) => format!("{lower}-{upper}"),
         _ => "altitudes unavailable".to_string(),
     };
-    let text = format!(
+    let summary_text = format!(
         "{}..AIRSPACE {}..TEMPORARY FLIGHT RESTRICTIONS. {}.{}{}",
         state.as_deref().unwrap_or("US"),
         location,
@@ -461,6 +463,12 @@ pub fn parse_tfr_detail_xml(
             .map(|value| format!(" Expires {value}."))
             .unwrap_or_default()
     );
+    let text = child_text(&document, "txtDescrTraditional")
+        .or_else(|| child_text(&document, "txtDescrUSNS"))
+        .unwrap_or_else(|| match child_text(&document, "txtDescrPurpose") {
+            Some(purpose) => format!("{summary_text} {purpose}"),
+            None => summary_text.clone(),
+        });
     let record_id = match (&facility, year.as_str()) {
         (Some(facility), year) if year.chars().all(|ch| ch.is_ascii_digit()) => {
             format!("F:{facility}:{year}:N:{number}")
@@ -568,6 +576,7 @@ mod tests {
               <txtNameUSState>GEORGIA</txtNameUSState>
             </AffLocGroup>
             <codeFacility>ZTL</codeFacility>
+            <txtDescrTraditional>!FDC 6/8212 ZTL GA..AIRSPACE KENNESAW, GA..TEMPORARY FLIGHT RESTRICTIONS. PURSUANT TO 14 CFR SECTION 91.145, ACFT OPS ARE PROHIBITED WI AN AREA DEFINED AS 2NM RADIUS SFC-400FT MSL EFFECTIVE 2606170401 UTC UNTIL 2607170359 UTC.</txtDescrTraditional>
             <TfrNot><TFRAreaGroup><aseTFRArea>
               <valDistVerUpper>400</valDistVerUpper>
               <uomDistVerUpper>FT</uomDistVerUpper>
@@ -587,7 +596,34 @@ mod tests {
         );
         let text = parsed.metadata.text.as_deref().expect("text");
         assert!(text.contains("TEMPORARY FLIGHT RESTRICTIONS"));
+        assert!(text.contains("PURSUANT TO 14 CFR SECTION 91.145"));
         assert!(text.contains("SFC-400FT"));
+    }
+
+    #[test]
+    fn parser_falls_back_to_synthesized_text_without_body() {
+        let xml = r#"
+        <XNOTAM-Update>
+          <Not>
+            <NotUid><dateIndexYear>2026</dateIndexYear><noSeqNo>8212</noSeqNo></NotUid>
+            <codeFacility>ZTL</codeFacility>
+            <dateEffective>2026-06-17T04:01:00</dateEffective>
+            <dateExpire>2026-07-17T03:59:00</dateExpire>
+            <txtNameCity>Kennesaw</txtNameCity>
+            <txtNameUSState>GEORGIA</txtNameUSState>
+            <valDistVerUpper>400</valDistVerUpper>
+            <uomDistVerUpper>FT</uomDistVerUpper>
+            <valDistVerLower>0</valDistVerLower>
+            <uomDistVerLower>FT</uomDistVerLower>
+          </Not>
+        </XNOTAM-Update>
+        "#;
+        let parsed = parse_tfr_detail_xml("6/8212", "https://example.test/detail.xml", xml)
+            .expect("parsed detail");
+        let text = parsed.metadata.text.as_deref().expect("text");
+        assert!(text.contains("TEMPORARY FLIGHT RESTRICTIONS"));
+        assert!(text.contains("SFC-400FT"));
+        assert!(text.contains("Expires 2026-07-17T03:59:00+00:00"));
     }
 
     #[test]
@@ -613,6 +649,7 @@ mod tests {
                     <dateExpire>2026-07-17T03:59:00</dateExpire>
                     <txtNameCity>Kennesaw</txtNameCity>
                     <txtNameUSState>GEORGIA</txtNameUSState>
+                    <txtDescrTraditional>!FDC 6/8212 ZTL GA..AIRSPACE KENNESAW, GA..TEMPORARY FLIGHT RESTRICTIONS. FULL BODY.</txtDescrTraditional>
                     <valDistVerUpper>400</valDistVerUpper>
                     <uomDistVerUpper>FT</uomDistVerUpper>
                     <valDistVerLower>0</valDistVerLower>
@@ -628,5 +665,51 @@ mod tests {
             .expect("metadata");
         assert_eq!(records.len(), 1);
         assert_eq!(records[0].0, "6/8212");
+        assert!(records[0]
+            .1
+            .text
+            .as_deref()
+            .expect("text")
+            .contains("FULL BODY"));
+    }
+
+    #[test]
+    fn store_reparses_raw_xml_instead_of_trusting_stale_metadata() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let store = TfrDetailBackfillStore::new(temp.path());
+        store.initialize().expect("initialize");
+        let connection = store.open_connection().expect("connection");
+        connection
+            .execute(
+                "INSERT INTO detail_records (
+                    tfr_id, source_url, fetched_at_utc, sha256, raw_xml, metadata_json
+                 ) VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+                params![
+                    "6/8212",
+                    "https://example.test/detail.xml",
+                    "2026-07-12T00:00:00Z",
+                    "stale",
+                    r#"
+                    <XNOTAM-Update>
+                      <Not>
+                        <NotUid><dateIndexYear>2026</dateIndexYear><noSeqNo>8212</noSeqNo></NotUid>
+                        <codeFacility>ZTL</codeFacility>
+                        <txtDescrTraditional>!FDC 6/8212 ZTL GA..AIRSPACE KENNESAW FULL FAA BODY.</txtDescrTraditional>
+                      </Not>
+                    </XNOTAM-Update>
+                    "#,
+                    r#"{"record_id":"STALE","text":"stale terse text"}"#,
+                ],
+            )
+            .expect("insert");
+        let records = store
+            .current_metadata_by_fdc_id(&BTreeSet::from(["6/8212".to_string()]))
+            .expect("metadata");
+        assert_eq!(records.len(), 1);
+        assert_eq!(records[0].1.record_id, "F:ZTL:2026:N:8212");
+        assert_eq!(
+            records[0].1.text.as_deref(),
+            Some("!FDC 6/8212 ZTL GA..AIRSPACE KENNESAW FULL FAA BODY.")
+        );
     }
 }

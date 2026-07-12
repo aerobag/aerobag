@@ -1,0 +1,15 @@
+{
+  "schema_version": 1,
+  "source": "Las Vegas TAC.tif",
+  "source_width": 10565,
+  "source_height": 6251,
+  "max_output_width": 1210,
+  "regions": [
+    {
+      "x": 1555,
+      "y": 84,
+      "width": 1471,
+      "height": 5258
+    }
+  ]
+}

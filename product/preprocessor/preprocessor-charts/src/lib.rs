@@ -73,23 +73,46 @@ pub struct PackageBuildResult {
 }
 
 #[derive(Debug, Clone)]
-pub struct LegendBuildResult {
+pub struct ExtractBuildResult {
     pub family: ChartFamily,
+    pub kind: ChartExtractKind,
     pub output_paths: Vec<PathBuf>,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ChartExtractKind {
+    Legend,
+    Inset,
+}
+
+impl ChartExtractKind {
+    fn metadata_type(self) -> &'static str {
+        match self {
+            Self::Legend => "legend",
+            Self::Inset => "inset",
+        }
+    }
+
+    fn output_dir(self) -> &'static str {
+        match self {
+            Self::Legend => "legends",
+            Self::Inset => "insets",
+        }
+    }
+}
+
 #[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
-pub struct ChartLegendLayout {
+pub struct ChartExtractLayout {
     pub schema_version: u32,
     pub source: String,
     pub source_width: u32,
     pub source_height: u32,
     pub max_output_width: u32,
-    pub regions: Vec<ChartLegendRegion>,
+    pub regions: Vec<ChartExtractRegion>,
 }
 
 #[derive(Debug, Clone, Copy, Deserialize, PartialEq, Eq)]
-pub struct ChartLegendRegion {
+pub struct ChartExtractRegion {
     pub x: u32,
     pub y: u32,
     pub width: u32,
@@ -295,6 +318,7 @@ pub fn run_native_family(request: &NativeChartRunRequest) -> anyhow::Result<Nati
 
     let vrt_result = build_family_vrts(request.family, &work_dir, request.cpu_jobs)?;
     build_family_legends(request.family, &work_dir)?;
+    build_family_insets(request.family, &work_dir)?;
     let tile_result = build_family_tiles(request.family, &work_dir, request.cpu_jobs)?;
     let package_result = package_regions_from_spec(
         &work_dir,
@@ -510,11 +534,26 @@ pub fn build_family_vrts(
 pub fn build_family_legends(
     family: ChartFamily,
     work_dir: impl AsRef<Path>,
-) -> anyhow::Result<LegendBuildResult> {
+) -> anyhow::Result<ExtractBuildResult> {
+    build_family_extracts(family, work_dir, ChartExtractKind::Legend)
+}
+
+pub fn build_family_insets(
+    family: ChartFamily,
+    work_dir: impl AsRef<Path>,
+) -> anyhow::Result<ExtractBuildResult> {
+    build_family_extracts(family, work_dir, ChartExtractKind::Inset)
+}
+
+pub fn build_family_extracts(
+    family: ChartFamily,
+    work_dir: impl AsRef<Path>,
+    kind: ChartExtractKind,
+) -> anyhow::Result<ExtractBuildResult> {
     let work_dir = work_dir.as_ref();
     let spec = ChartSpec::for_family(family);
     let layout_dir = work_dir.join(spec.chart_dir_name);
-    let output_root = work_dir.join("legends");
+    let output_root = work_dir.join(kind.output_dir());
     if output_root.exists() {
         fs::remove_dir_all(&output_root)
             .with_context(|| format!("failed to clear {}", output_root.display()))?;
@@ -529,36 +568,39 @@ pub fn build_family_legends(
         .filter(|path| {
             path.file_name()
                 .and_then(|name| name.to_str())
-                .is_some_and(|name| name.ends_with(".legend.json"))
+                .is_some_and(|name| name.ends_with(&format!(".{}.json", kind.metadata_type())))
         })
         .collect::<Vec<_>>();
     layouts.sort();
 
     let mut output_paths = Vec::with_capacity(layouts.len());
     for layout_path in layouts {
-        if let Some(output_path) = render_chart_legend(work_dir, &output_root, &layout_path)? {
+        if let Some(output_path) = render_chart_extract(work_dir, &output_root, &layout_path, kind)?
+        {
             output_paths.push(output_path);
         }
     }
-    Ok(LegendBuildResult {
+    Ok(ExtractBuildResult {
         family,
+        kind,
         output_paths,
     })
 }
 
-fn render_chart_legend(
+fn render_chart_extract(
     work_dir: &Path,
     output_root: &Path,
     layout_path: &Path,
+    kind: ChartExtractKind,
 ) -> anyhow::Result<Option<PathBuf>> {
-    let layout: ChartLegendLayout = serde_json::from_slice(
+    let layout: ChartExtractLayout = serde_json::from_slice(
         &fs::read(layout_path)
             .with_context(|| format!("failed to read {}", layout_path.display()))?,
     )
     .with_context(|| format!("failed to parse {}", layout_path.display()))?;
     let source_path = work_dir.join(&layout.source);
     let actual_dimensions = identify_image_dimensions(&source_path)?;
-    validate_chart_legend_layout(&layout, layout_path, actual_dimensions)?;
+    validate_chart_extract_layout(&layout, layout_path, actual_dimensions, kind)?;
     if layout.regions.is_empty() {
         return Ok(None);
     }
@@ -568,14 +610,20 @@ fn render_chart_legend(
         .iter()
         .map(|region| region.width)
         .max()
-        .context("legend layout unexpectedly had no regions")?;
+        .with_context(|| {
+            format!(
+                "{} layout unexpectedly had no regions",
+                kind.metadata_type()
+            )
+        })?;
     let scale = (f64::from(layout.max_output_width) / f64::from(widest_region)).min(1.0);
     let source_stem = Path::new(&layout.source)
         .file_stem()
         .and_then(|value| value.to_str())
-        .context("legend source has no UTF-8 file stem")?;
+        .with_context(|| format!("{} source has no UTF-8 file stem", kind.metadata_type()))?;
     let temp_dir = work_dir
-        .join(".legend-parts")
+        .join(".chart-extract-parts")
+        .join(kind.metadata_type())
         .join(sanitize_label(source_stem));
     if temp_dir.exists() {
         fs::remove_dir_all(&temp_dir)
@@ -606,7 +654,11 @@ fn render_chart_legend(
                 rgb_part_path.to_string_lossy().to_string(),
             ],
             cwd: work_dir.to_path_buf(),
-            label: format!("legend-expand-{}-{index:02}", sanitize_label(source_stem)),
+            label: format!(
+                "{}-expand-{}-{index:02}",
+                kind.metadata_type(),
+                sanitize_label(source_stem)
+            ),
             env: Vec::new(),
             stdin_text: None,
         };
@@ -614,7 +666,8 @@ fn render_chart_legend(
         expand.ensure_success(
             &expand_outcome,
             &format!(
-                "failed to expand legend region {} from {} to RGB",
+                "failed to expand {} region {} from {} to RGB",
+                kind.metadata_type(),
                 index + 1,
                 layout.source
             ),
@@ -635,7 +688,11 @@ fn render_chart_legend(
                 part_path.to_string_lossy().to_string(),
             ],
             cwd: work_dir.to_path_buf(),
-            label: format!("legend-crop-{}-{index:02}", sanitize_label(source_stem)),
+            label: format!(
+                "{}-crop-{}-{index:02}",
+                kind.metadata_type(),
+                sanitize_label(source_stem)
+            ),
             env: Vec::new(),
             stdin_text: None,
         };
@@ -643,7 +700,8 @@ fn render_chart_legend(
         invocation.ensure_success(
             &outcome,
             &format!(
-                "failed to crop legend region {} from {}",
+                "failed to crop {} region {} from {}",
+                kind.metadata_type(),
                 index + 1,
                 layout.source
             ),
@@ -657,7 +715,11 @@ fn render_chart_legend(
         &logs_dir,
         &part_paths,
         &output_path,
-        &format!("legend-append-{}", sanitize_label(source_stem)),
+        &format!(
+            "{}-append-{}",
+            kind.metadata_type(),
+            sanitize_label(source_stem)
+        ),
     )?;
     flatten_png_onto_white(&output_path)?;
     fs::remove_dir_all(&temp_dir)
@@ -696,14 +758,16 @@ fn identify_image_dimensions(path: &Path) -> anyhow::Result<(u32, u32)> {
     Ok((width, height))
 }
 
-fn validate_chart_legend_layout(
-    layout: &ChartLegendLayout,
+fn validate_chart_extract_layout(
+    layout: &ChartExtractLayout,
     layout_path: &Path,
     actual_dimensions: (u32, u32),
+    kind: ChartExtractKind,
 ) -> anyhow::Result<()> {
+    let metadata_type = kind.metadata_type();
     if layout.schema_version != 1 {
         bail!(
-            "unsupported legend schema_version {} in {}",
+            "unsupported {metadata_type} schema_version {} in {}",
             layout.schema_version,
             layout_path.display()
         );
@@ -711,26 +775,26 @@ fn validate_chart_legend_layout(
     let source = Path::new(&layout.source);
     if source.components().count() != 1 || source.file_name().is_none() {
         bail!(
-            "legend source must be a file name in {}",
+            "{metadata_type} source must be a file name in {}",
             layout_path.display()
         );
     }
     let expected_layout_name = format!(
-        "{}.legend.json",
+        "{}.{metadata_type}.json",
         source
             .file_stem()
             .and_then(|value| value.to_str())
-            .context("legend source has no UTF-8 file stem")?
+            .with_context(|| format!("{metadata_type} source has no UTF-8 file stem"))?
     );
     if layout_path.file_name().and_then(|value| value.to_str()) != Some(&expected_layout_name) {
         bail!(
-            "legend layout {} must be named {expected_layout_name}",
+            "{metadata_type} layout {} must be named {expected_layout_name}",
             layout_path.display()
         );
     }
     if (layout.source_width, layout.source_height) != actual_dimensions {
         bail!(
-            "legend layout {} expects {}x{} source but {} is {}x{}",
+            "{metadata_type} layout {} expects {}x{} source but {} is {}x{}",
             layout_path.display(),
             layout.source_width,
             layout.source_height,
@@ -740,23 +804,23 @@ fn validate_chart_legend_layout(
         );
     }
     if !(320..=4096).contains(&layout.max_output_width) {
-        bail!("legend max_output_width must be between 320 and 4096");
+        bail!("{metadata_type} max_output_width must be between 320 and 4096");
     }
     for (index, region) in layout.regions.iter().enumerate() {
         if region.width == 0 || region.height == 0 {
-            bail!("legend region {} has zero area", index + 1);
+            bail!("{metadata_type} region {} has zero area", index + 1);
         }
         let right = region
             .x
             .checked_add(region.width)
-            .context("legend region x overflow")?;
+            .with_context(|| format!("{metadata_type} region x overflow"))?;
         let bottom = region
             .y
             .checked_add(region.height)
-            .context("legend region y overflow")?;
+            .with_context(|| format!("{metadata_type} region y overflow"))?;
         if right > layout.source_width || bottom > layout.source_height {
             bail!(
-                "legend region {} exceeds {}x{} source bounds",
+                "{metadata_type} region {} exceeds {}x{} source bounds",
                 index + 1,
                 layout.source_width,
                 layout.source_height
@@ -1852,10 +1916,10 @@ fn count_files_recursive(path: &Path, count: &mut u64) -> anyhow::Result<()> {
 #[cfg(test)]
 mod tests {
     use super::{
-        antimeridian_supplement_from_html, build_family_legends, copy_dir_recursive,
-        identify_image_dimensions, resolve_chart_input_filename, tile_belongs_to_region,
-        validate_chart_legend_layout, vfr_vrt_paths, AntimeridianSupplement, ChartLegendLayout,
-        ChartLegendRegion,
+        antimeridian_supplement_from_html, build_family_insets, build_family_legends,
+        copy_dir_recursive, identify_image_dimensions, resolve_chart_input_filename,
+        tile_belongs_to_region, validate_chart_extract_layout, vfr_vrt_paths,
+        AntimeridianSupplement, ChartExtractKind, ChartExtractLayout, ChartExtractRegion,
     };
     use preprocessor_core::{ChartFamily, Region};
     use std::{
@@ -1894,23 +1958,43 @@ mod tests {
     #[test]
     fn chart_legend_layout_rejects_stale_dimensions_and_out_of_bounds_regions() {
         let path = Path::new("Seattle TAC.legend.json");
-        let mut layout = ChartLegendLayout {
+        let mut layout = ChartExtractLayout {
             schema_version: 1,
             source: "Seattle TAC.tif".to_string(),
             source_width: 1000,
             source_height: 800,
             max_output_width: 1210,
-            regions: vec![ChartLegendRegion {
+            regions: vec![ChartExtractRegion {
                 x: 100,
                 y: 200,
                 width: 300,
                 height: 400,
             }],
         };
-        validate_chart_legend_layout(&layout, path, (1000, 800)).unwrap();
-        assert!(validate_chart_legend_layout(&layout, path, (1001, 800)).is_err());
+        validate_chart_extract_layout(&layout, path, (1000, 800), ChartExtractKind::Legend)
+            .unwrap();
+        assert!(validate_chart_extract_layout(
+            &layout,
+            path,
+            (1001, 800),
+            ChartExtractKind::Legend
+        )
+        .is_err());
+        assert!(validate_chart_extract_layout(
+            &layout,
+            Path::new("Seattle TAC.inset.json"),
+            (1000, 800),
+            ChartExtractKind::Inset
+        )
+        .is_ok());
         layout.regions[0].width = 901;
-        assert!(validate_chart_legend_layout(&layout, path, (1000, 800)).is_err());
+        assert!(validate_chart_extract_layout(
+            &layout,
+            path,
+            (1000, 800),
+            ChartExtractKind::Legend
+        )
+        .is_err());
     }
 
     #[test]
@@ -1941,13 +2025,27 @@ mod tests {
             .unwrap(),
         )
         .unwrap();
+        fs::copy(
+            layout_dir.join("Test TAC.legend.json"),
+            layout_dir.join("Test TAC.inset.json"),
+        )
+        .unwrap();
 
         let result = build_family_legends(ChartFamily::Tac, &work_dir).unwrap();
+        let inset_result = build_family_insets(ChartFamily::Tac, &work_dir).unwrap();
+        assert_eq!(result.kind, ChartExtractKind::Legend);
+        assert_eq!(inset_result.kind, ChartExtractKind::Inset);
         assert_eq!(result.output_paths.len(), 1);
+        assert_eq!(inset_result.output_paths.len(), 1);
         assert_eq!(
             identify_image_dimensions(&result.output_paths[0]).unwrap(),
             (4, 5)
         );
+        assert_eq!(
+            identify_image_dimensions(&inset_result.output_paths[0]).unwrap(),
+            (4, 5)
+        );
+        assert_ne!(result.output_paths[0], inset_result.output_paths[0]);
     }
 
     #[test]

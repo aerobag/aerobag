@@ -1,0 +1,27 @@
+{
+  "schema_version": 1,
+  "source": "Los Angeles TAC.tif",
+  "source_width": 16501,
+  "source_height": 6040,
+  "max_output_width": 1210,
+  "regions": [
+    {
+      "x": 1544,
+      "y": 19,
+      "width": 1530,
+      "height": 3940
+    },
+    {
+      "x": 3051,
+      "y": 0,
+      "width": 1506,
+      "height": 4350
+    },
+    {
+      "x": 1506,
+      "y": 3955,
+      "width": 1507,
+      "height": 2085
+    }
+  ]
+}

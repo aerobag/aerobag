@@ -3,13 +3,17 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>Chart legend regions</title>
+  <title>Chart extract regions</title>
   <link rel="stylesheet" href="/assets/editor.css">
-  <link rel="stylesheet" href="/assets/legends.css">
+  <link rel="stylesheet" href="/assets/extracts.css">
 </head>
 <body>
   <header class="toolbar">
-    <div class="brand">Legend regions</div>
+    <div class="brand">Chart extracts</div>
+    <select id="extractType" aria-label="Extract type">
+      <option value="legend">Legends</option>
+      <option value="inset">Insets</option>
+    </select>
     <select id="familySelect" aria-label="Chart family"></select>
     <button id="previousChart" class="iconButton" type="button" title="Previous chart" aria-label="Previous chart">&#x2039;</button>
     <select id="chartSelect" aria-label="Chart"></select>
@@ -28,7 +32,7 @@
     <button id="saveLayout" class="primaryButton" type="button">Save</button>
   </header>
 
-  <main class="legendWorkspace">
+  <main class="extractWorkspace">
     <section class="overviewPane">
       <div class="paneHeader">
         <div>
@@ -38,9 +42,9 @@
         <span id="regionCount" class="muted"></span>
       </div>
       <div class="overviewViewport">
-        <div id="overviewStage" class="overviewStage legendOverviewStage">
+        <div id="overviewStage" class="overviewStage extractOverviewStage">
           <img id="overviewImage" alt="Chart source overview" draggable="false">
-          <svg id="overviewSvg" aria-label="Editable legend regions">
+          <svg id="overviewSvg" aria-label="Editable extract regions">
             <g id="regionShapes"></g>
             <g id="regionHandles"></g>
           </svg>
@@ -48,7 +52,7 @@
       </div>
     </section>
 
-    <section class="legendDetailPane">
+    <section class="extractDetailPane">
       <div class="paneHeader detailHeader">
         <div>
           <h2 id="regionTitle">No region selected</h2>
@@ -69,12 +73,12 @@
         <span id="previewFacts" class="muted"></span>
         <span id="message" role="status"></span>
       </div>
-      <div id="previewViewport" class="legendPreviewViewport">
-        <img id="previewImage" alt="Selected legend region at source resolution" draggable="false">
+      <div id="previewViewport" class="extractPreviewViewport">
+        <img id="previewImage" alt="Selected extract region at source resolution" draggable="false">
       </div>
     </section>
   </main>
 
-  <script src="/assets/legends.js"></script>
+  <script src="/assets/extracts.js"></script>
 </body>
 </html>

@@ -1,0 +1,15 @@
+{
+  "schema_version": 1,
+  "source": "San Diego TAC.tif",
+  "source_width": 12103,
+  "source_height": 6175,
+  "max_output_width": 1210,
+  "regions": [
+    {
+      "x": 3094,
+      "y": 3854,
+      "width": 1506,
+      "height": 2307
+    }
+  ]
+}

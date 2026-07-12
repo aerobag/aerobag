@@ -197,17 +197,17 @@ class EditorStateTest(unittest.TestCase):
         finally:
             gdal.Unlink(vsi_path)
 
-    def test_legend_layout_round_trip_and_revision_guard(self) -> None:
-        initial = self.state.legend_payload("Test TAC")
+    def test_extract_layouts_round_trip_independently_with_revision_guards(self) -> None:
+        initial = self.state.extract_payload("Test TAC", "legend")
         self.assertIsNone(initial["revision"])
         self.assertEqual(initial["regions"], [])
         regions = [
             {"x": 3, "y": 4, "width": 20, "height": 30},
             {"x": 40.4, "y": 10.6, "width": 50.2, "height": 60.1},
         ]
-        saved = self.state.save_legend("Test TAC", regions, 1210, None)
+        saved = self.state.save_extract("Test TAC", "legend", regions, 1210, None)
         self.assertIsInstance(saved["revision"], str)
-        loaded = self.state.legend_payload("Test TAC")
+        loaded = self.state.extract_payload("Test TAC", "legend")
         self.assertEqual(
             loaded["regions"],
             [
@@ -216,8 +216,18 @@ class EditorStateTest(unittest.TestCase):
             ],
         )
         self.assertEqual(loaded["max_output_width"], 1210)
+        inset = self.state.extract_payload("Test TAC", "inset")
+        self.assertIsNone(inset["revision"])
+        self.assertEqual(inset["regions"], [])
+        inset_saved = self.state.save_extract("Test TAC", "inset", regions[:1], 1210, None)
+        self.assertNotEqual(saved["revision"], inset_saved["revision"])
+        self.assertEqual(
+            self.state.extract_payload("Test TAC", "inset")["regions"],
+            [{"x": 3, "y": 4, "width": 20, "height": 30}],
+        )
+        self.assertEqual(len(self.state.extract_payload("Test TAC", "legend")["regions"]), 2)
         with self.assertRaises(RevisionConflict):
-            self.state.save_legend("Test TAC", regions, 1210, None)
+            self.state.save_extract("Test TAC", "legend", regions, 1210, None)
 
     def test_catalog_routes_charts_and_overviews_by_family(self) -> None:
         catalog = EditorCatalog({"SEC": self.state, "TAC": self.state})

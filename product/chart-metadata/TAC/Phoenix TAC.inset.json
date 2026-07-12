@@ -1,0 +1,15 @@
+{
+  "schema_version": 1,
+  "source": "Phoenix TAC.tif",
+  "source_width": 10518,
+  "source_height": 7548,
+  "max_output_width": 1210,
+  "regions": [
+    {
+      "x": 1525,
+      "y": 36,
+      "width": 1476,
+      "height": 5030
+    }
+  ]
+}

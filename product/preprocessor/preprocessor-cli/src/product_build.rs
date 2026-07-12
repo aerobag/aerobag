@@ -21,7 +21,7 @@ use crossbeam_channel::{self, RecvTimeoutError};
 use geo::{BooleanOps, Coord, LineString, MultiPolygon, Polygon};
 use had_key::{component as had_key_component, upper_component as had_upper_key_component};
 use preprocessor_charts::{
-    build_family_legends, build_family_tiles, build_family_vrts,
+    build_family_insets, build_family_legends, build_family_tiles, build_family_vrts,
     package_family_region_versioned_to, package_family_wide_angle_versioned_to, stage_work_dir,
     FULL_COVERAGE_ZOOM, WIDE_ANGLE_REGION_ID,
 };

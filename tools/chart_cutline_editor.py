@@ -52,6 +52,7 @@ FAMILY_LABELS = {
     "ENR_L": "IFR-L",
     "ENR_H": "IFR-H",
 }
+EXTRACT_TYPES = {"legend", "inset"}
 
 
 @dataclass(frozen=True)
@@ -173,9 +174,10 @@ class EditorState:
             "cutline_file": chart.cutline_path.name,
         }
 
-    def legend_payload(self, name: str) -> dict[str, object]:
+    def extract_payload(self, name: str, extract_type_value: object) -> dict[str, object]:
+        extract_type = validate_extract_type(extract_type_value)
         chart = self.chart(name)
-        path = self.legend_path(chart)
+        path = self.extract_path(chart, extract_type)
         if not path.is_file():
             return {
                 "name": chart.name,
@@ -188,14 +190,14 @@ class EditorState:
             }
         document = json.loads(path.read_text(encoding="utf-8"))
         if not isinstance(document, dict) or document.get("schema_version") != 1:
-            raise EditorError(f"unsupported legend layout schema in {path.name}")
+            raise EditorError(f"unsupported {extract_type} layout schema in {path.name}")
         if document.get("source") != chart.source_path.name:
-            raise EditorError(f"legend layout source mismatch in {path.name}")
+            raise EditorError(f"{extract_type} layout source mismatch in {path.name}")
         if document.get("source_width") != chart.width or document.get("source_height") != chart.height:
             raise EditorError(
-                f"legend layout dimensions in {path.name} do not match {chart.source_path.name}"
+                f"{extract_type} layout dimensions in {path.name} do not match {chart.source_path.name}"
             )
-        regions = validate_legend_regions(document.get("regions"), chart)
+        regions = validate_extract_regions(document.get("regions"), chart, extract_type)
         max_output_width = validate_max_output_width(document.get("max_output_width", 1210))
         return {
             "name": chart.name,
@@ -207,19 +209,21 @@ class EditorState:
             "revision": file_revision(path),
         }
 
-    def save_legend(
+    def save_extract(
         self,
         name: str,
+        extract_type_value: object,
         regions_value: object,
         max_output_width_value: object,
         expected_revision: object,
     ) -> dict[str, object]:
+        extract_type = validate_extract_type(extract_type_value)
         chart = self.chart(name)
-        regions = validate_legend_regions(regions_value, chart)
+        regions = validate_extract_regions(regions_value, chart, extract_type)
         max_output_width = validate_max_output_width(max_output_width_value)
-        path = self.legend_path(chart)
+        path = self.extract_path(chart, extract_type)
         if expected_revision is not None and not isinstance(expected_revision, str):
-            raise EditorError("legend save revision must be a string or null")
+            raise EditorError(f"{extract_type} save revision must be a string or null")
         with self._write_lock:
             current_revision = file_revision(path) if path.is_file() else None
             if current_revision != expected_revision:
@@ -238,8 +242,8 @@ class EditorState:
             revision = file_revision(path)
         return {"revision": revision, "regions": regions}
 
-    def legend_path(self, chart: Chart) -> Path:
-        return self.cutline_dir / f"{chart.name}.legend.json"
+    def extract_path(self, chart: Chart, extract_type: str) -> Path:
+        return self.cutline_dir / f"{chart.name}.{extract_type}.json"
 
     def _pixel_points(self, chart: Chart) -> list[tuple[float, float]]:
         polygons = read_geojson_polygons(chart.cutline_path)
@@ -522,37 +526,47 @@ def validate_pixel_points(value: object, chart: Chart) -> list[tuple[float, floa
     return points
 
 
-def validate_legend_regions(value: object, chart: Chart) -> list[dict[str, int]]:
+def validate_extract_type(value: object) -> str:
+    if not isinstance(value, str) or value not in EXTRACT_TYPES:
+        raise EditorError(f"extract type must be one of {', '.join(sorted(EXTRACT_TYPES))}")
+    return value
+
+
+def validate_extract_regions(
+    value: object,
+    chart: Chart,
+    extract_type: str,
+) -> list[dict[str, int]]:
     if not isinstance(value, list):
-        raise EditorError("legend regions must be an array")
+        raise EditorError(f"{extract_type} regions must be an array")
     if len(value) > 100:
-        raise EditorError("legend layout has too many regions")
+        raise EditorError(f"{extract_type} layout has too many regions")
     result = []
     for index, region in enumerate(value):
         if not isinstance(region, dict):
-            raise EditorError(f"legend region {index + 1} must be an object")
+            raise EditorError(f"{extract_type} region {index + 1} must be an object")
         parsed: dict[str, int] = {}
         for key in ("x", "y", "width", "height"):
             raw = region.get(key)
             if isinstance(raw, bool):
-                raise EditorError(f"legend region {index + 1} {key} must be a number")
+                raise EditorError(f"{extract_type} region {index + 1} {key} must be a number")
             try:
                 number = float(raw)
             except (TypeError, ValueError) as error:
                 raise EditorError(
-                    f"legend region {index + 1} {key} must be a number"
+                    f"{extract_type} region {index + 1} {key} must be a number"
                 ) from error
             if not math.isfinite(number):
-                raise EditorError(f"legend region {index + 1} {key} must be finite")
+                raise EditorError(f"{extract_type} region {index + 1} {key} must be finite")
             parsed[key] = int(round(number))
         if parsed["width"] < 1 or parsed["height"] < 1:
-            raise EditorError(f"legend region {index + 1} must have positive dimensions")
+            raise EditorError(f"{extract_type} region {index + 1} must have positive dimensions")
         if parsed["x"] < 0 or parsed["y"] < 0:
-            raise EditorError(f"legend region {index + 1} starts outside the source chart")
+            raise EditorError(f"{extract_type} region {index + 1} starts outside the source chart")
         if parsed["x"] + parsed["width"] > chart.width:
-            raise EditorError(f"legend region {index + 1} exceeds the source chart width")
+            raise EditorError(f"{extract_type} region {index + 1} exceeds the source chart width")
         if parsed["y"] + parsed["height"] > chart.height:
-            raise EditorError(f"legend region {index + 1} exceeds the source chart height")
+            raise EditorError(f"{extract_type} region {index + 1} exceeds the source chart height")
         result.append(parsed)
     return result
 
@@ -763,16 +777,16 @@ class EditorRequestHandler(BaseHTTPRequestHandler):
             query = parse_qs(parsed.query)
             if parsed.path == "/":
                 self._send_file(ASSET_DIR / "index.html", "text/html; charset=utf-8")
-            elif parsed.path in {"/legends", "/legends.html"}:
-                self._send_file(ASSET_DIR / "legends.html", "text/html; charset=utf-8")
+            elif parsed.path in {"/extracts", "/extracts.html"}:
+                self._send_file(ASSET_DIR / "extracts.html", "text/html; charset=utf-8")
             elif parsed.path == "/assets/editor.css":
                 self._send_file(ASSET_DIR / "editor.css", "text/css; charset=utf-8")
             elif parsed.path == "/assets/editor.js":
                 self._send_file(ASSET_DIR / "editor.js", "text/javascript; charset=utf-8")
-            elif parsed.path == "/assets/legends.css":
-                self._send_file(ASSET_DIR / "legends.css", "text/css; charset=utf-8")
-            elif parsed.path == "/assets/legends.js":
-                self._send_file(ASSET_DIR / "legends.js", "text/javascript; charset=utf-8")
+            elif parsed.path == "/assets/extracts.css":
+                self._send_file(ASSET_DIR / "extracts.css", "text/css; charset=utf-8")
+            elif parsed.path == "/assets/extracts.js":
+                self._send_file(ASSET_DIR / "extracts.js", "text/javascript; charset=utf-8")
             elif parsed.path == "/api/families":
                 self._send_json({"families": self.state.family_list()})
             elif parsed.path == "/api/charts":
@@ -785,10 +799,13 @@ class EditorRequestHandler(BaseHTTPRequestHandler):
                         required_query(query, "name"),
                     )
                 )
-            elif parsed.path == "/api/legend":
+            elif parsed.path == "/api/extract":
                 family = required_query(query, "family")
                 self._send_json(
-                    self.state.family(family).legend_payload(required_query(query, "name"))
+                    self.state.family(family).extract_payload(
+                        required_query(query, "name"),
+                        required_query(query, "type"),
+                    )
                 )
             elif parsed.path == "/api/overview":
                 family = required_query(query, "family")
@@ -837,9 +854,10 @@ class EditorRequestHandler(BaseHTTPRequestHandler):
                     int(body.get("radius", 192)),
                 )
                 self._send_json(result)
-            elif parsed.path == "/api/legend/save":
-                result = family.save_legend(
+            elif parsed.path == "/api/extract/save":
+                result = family.save_extract(
                     str(body.get("name", "")),
+                    body.get("type"),
                     body.get("regions"),
                     body.get("max_output_width", 1210),
                     body.get("revision"),

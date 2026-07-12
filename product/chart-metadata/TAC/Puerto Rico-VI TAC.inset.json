@@ -1,0 +1,33 @@
+{
+  "schema_version": 1,
+  "source": "Puerto Rico-VI TAC.tif",
+  "source_width": 17871,
+  "source_height": 6195,
+  "max_output_width": 1210,
+  "regions": [
+    {
+      "x": 10341,
+      "y": 0,
+      "width": 1978,
+      "height": 1550
+    },
+    {
+      "x": 12340,
+      "y": 61,
+      "width": 1794,
+      "height": 1320
+    },
+    {
+      "x": 14155,
+      "y": 265,
+      "width": 1672,
+      "height": 1100
+    },
+    {
+      "x": 13910,
+      "y": 1350,
+      "width": 960,
+      "height": 160
+    }
+  ]
+}

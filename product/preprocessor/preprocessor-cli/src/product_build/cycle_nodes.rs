@@ -167,15 +167,21 @@ pub(super) fn build_chart_process_node(
     let work_dir = prepared.dir.join("work").join(family.capture_label());
     let tiles_root = work_dir.join("tiles");
     let legends_root = work_dir.join("legends");
+    let insets_root = work_dir.join("insets");
     run_cached_node(
         prepared,
         inputs,
-        &[tiles_root.clone(), legends_root.clone()],
+        &[
+            tiles_root.clone(),
+            legends_root.clone(),
+            insets_root.clone(),
+        ],
         |prepared| {
             let work_dir = stage_work_dir(family, source_repo, &prepared.dir)?;
             seed_prefetched_source_tree(&source_fetch_root, &work_dir)?;
             build_family_vrts(family, &work_dir, cpu_jobs)?;
             build_family_legends(family, &work_dir)?;
+            build_family_insets(family, &work_dir)?;
             build_family_tiles(family, &work_dir, cpu_jobs)?;
             prune_chart_render_intermediates(&work_dir)?;
             Ok(BTreeMap::from([
@@ -190,6 +196,10 @@ pub(super) fn build_chart_process_node(
                 (
                     "legends_root".to_string(),
                     relative_artifact_path(&legends_root, &config.build_root),
+                ),
+                (
+                    "insets_root".to_string(),
+                    relative_artifact_path(&insets_root, &config.build_root),
                 ),
             ]))
         },
@@ -207,7 +217,7 @@ fn prune_chart_render_intermediates_dir(dir: &Path, in_output_dir: bool) -> anyh
         let file_type = entry.file_type()?;
         let is_output_dir = matches!(
             entry.file_name().to_string_lossy().as_ref(),
-            "tiles" | "legends"
+            "tiles" | "legends" | "insets"
         );
         let child_in_output = in_output_dir || is_output_dir;
         if file_type.is_dir() {
@@ -2827,15 +2837,18 @@ mod tests {
     }
 
     #[test]
-    fn chart_render_cleanup_keeps_tiles_and_legends_and_removes_source_work_files() {
+    fn chart_render_cleanup_keeps_tiles_extracts_and_removes_source_work_files() {
         let temp = tempdir().unwrap();
         let work_dir = temp.path().join("charts-sec");
         let tile_path = work_dir.join("tiles").join("0").join("1").join("2.webp");
         let legend_path = work_dir.join("legends").join("Seattle SEC.png");
+        let inset_path = work_dir.join("insets").join("Seattle SEC.png");
         fs::create_dir_all(tile_path.parent().unwrap()).unwrap();
         fs::create_dir_all(legend_path.parent().unwrap()).unwrap();
+        fs::create_dir_all(inset_path.parent().unwrap()).unwrap();
         fs::write(&tile_path, b"tile").unwrap();
         fs::write(&legend_path, b"legend").unwrap();
+        fs::write(&inset_path, b"inset").unwrap();
         fs::write(work_dir.join("Seattle SEC.tif"), b"tiff").unwrap();
         fs::write(work_dir.join("Seattle.zip"), b"zip").unwrap();
         fs::write(work_dir.join("Seattle.vrt"), b"vrt").unwrap();
@@ -2848,6 +2861,8 @@ mod tests {
         assert!(work_dir.join("tiles").exists());
         assert!(legend_path.exists());
         assert!(work_dir.join("legends").exists());
+        assert!(inset_path.exists());
+        assert!(work_dir.join("insets").exists());
         assert!(!work_dir.join("Seattle SEC.tif").exists());
         assert!(!work_dir.join("Seattle.zip").exists());
         assert!(!work_dir.join("Seattle.vrt").exists());

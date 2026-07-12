@@ -3,6 +3,7 @@
 const SVG_NS = "http://www.w3.org/2000/svg";
 
 const elements = {
+  extractType: document.querySelector("#extractType"),
   familySelect: document.querySelector("#familySelect"),
   chartSelect: document.querySelector("#chartSelect"),
   previousChart: document.querySelector("#previousChart"),
@@ -38,6 +39,7 @@ const elements = {
 };
 
 const state = {
+  extractType: "legend",
   families: [],
   family: null,
   charts: [],
@@ -67,6 +69,12 @@ async function api(url, options) {
 async function initialize() {
   bindControls();
   try {
+    const parameters = new URLSearchParams(window.location.search);
+    const requestedType = parameters.get("type");
+    const rememberedType = window.localStorage.getItem("aerobag-extract-type");
+    state.extractType = [requestedType, rememberedType, "legend"]
+      .find((value) => value === "legend" || value === "inset");
+    elements.extractType.value = state.extractType;
     const result = await api("/api/families");
     state.families = result.families;
     for (const family of state.families) {
@@ -76,7 +84,7 @@ async function initialize() {
       elements.familySelect.append(option);
     }
     const requested = new URLSearchParams(window.location.search).get("family");
-    const remembered = window.localStorage.getItem("aerobag-legend-family");
+    const remembered = window.localStorage.getItem("aerobag-extract-family");
     const initial = [requested, remembered, "TAC", state.families[0].id]
       .find((id) => state.families.some((family) => family.id === id));
     await loadFamily(initial);
@@ -86,6 +94,15 @@ async function initialize() {
 }
 
 function bindControls() {
+  elements.extractType.addEventListener("change", async () => {
+    if (!canLeaveDirtyChart()) {
+      elements.extractType.value = state.extractType;
+      return;
+    }
+    state.extractType = elements.extractType.value;
+    window.localStorage.setItem("aerobag-extract-type", state.extractType);
+    await loadChart(state.chart.name);
+  });
   elements.familySelect.addEventListener("change", async () => {
     if (!canLeaveDirtyChart()) {
       elements.familySelect.value = state.family.id;
@@ -140,10 +157,12 @@ async function loadFamily(familyId) {
       option.textContent = chart.name;
       elements.chartSelect.append(option);
     }
-    window.localStorage.setItem("aerobag-legend-family", familyId);
+    window.localStorage.setItem("aerobag-extract-family", familyId);
     const parameters = new URLSearchParams(window.location.search);
     const requested = parameters.get("family") === familyId ? parameters.get("chart") : null;
-    const remembered = window.localStorage.getItem("aerobag-legend-chart-" + familyId);
+    const remembered = window.localStorage.getItem(
+      "aerobag-extract-chart-" + state.extractType + "-" + familyId,
+    );
     const preferred = {
       SEC: "Seattle SEC",
       TAC: "Seattle TAC",
@@ -168,7 +187,11 @@ async function loadChart(name) {
   try {
     const familyQuery = "family=" + encodeURIComponent(state.family.id);
     const chart = await api("/api/chart?" + familyQuery + "&name=" + encodeURIComponent(name));
-    const layout = await api("/api/legend?" + familyQuery + "&name=" + encodeURIComponent(name));
+    const layout = await api(
+      "/api/extract?" + familyQuery
+      + "&type=" + encodeURIComponent(state.extractType)
+      + "&name=" + encodeURIComponent(name),
+    );
     state.chart = chart;
     state.regions = layout.regions.map(copyRegion);
     state.revision = layout.revision;
@@ -185,10 +208,14 @@ async function loadChart(name) {
     elements.overviewSvg.setAttribute("viewBox", "0 0 " + chart.width + " " + chart.height);
     elements.chartTitle.textContent = chart.name;
     elements.chartFacts.textContent = chart.width + " x " + chart.height + " source pixels";
-    window.localStorage.setItem("aerobag-legend-chart-" + state.family.id, name);
+    window.localStorage.setItem(
+      "aerobag-extract-chart-" + state.extractType + "-" + state.family.id,
+      name,
+    );
     const url = new URL(window.location.href);
     url.searchParams.set("family", state.family.id);
     url.searchParams.set("chart", name);
+    url.searchParams.set("type", state.extractType);
     window.history.replaceState(null, "", url);
     render();
     updatePreview();
@@ -217,7 +244,7 @@ function renderOverview() {
   const badgeRadius = Math.max(10 * scale, 24);
   state.regions.forEach((region, index) => {
     const rect = document.createElementNS(SVG_NS, "rect");
-    rect.classList.add("legendRegion");
+    rect.classList.add("extractRegion");
     if (index === state.selectedIndex) {
       rect.classList.add("selected");
     }
@@ -299,7 +326,7 @@ function beginPointerAction(event) {
     };
     return;
   }
-  const rect = event.target.closest(".legendRegion");
+  const rect = event.target.closest(".extractRegion");
   if (rect) {
     event.preventDefault();
     const index = Number(rect.dataset.index);
@@ -566,11 +593,12 @@ async function saveLayout() {
   }
   setBusy(true);
   try {
-    const result = await api("/api/legend/save", {
+    const result = await api("/api/extract/save", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
         family: state.family.id,
+        type: state.extractType,
         name: state.chart.name,
         regions: state.regions,
         max_output_width: state.maxOutputWidth,
@@ -583,7 +611,7 @@ async function saveLayout() {
     state.undo = [];
     state.redo = [];
     render();
-    showMessage("Saved " + state.chart.name + ".legend.json", false);
+    showMessage("Saved " + state.chart.name + "." + state.extractType + ".json", false);
   } catch (error) {
     showMessage(error.message, true, 0);
   } finally {
@@ -608,7 +636,7 @@ async function moveChart(direction) {
 }
 
 function canLeaveDirtyChart() {
-  return !state.dirty || window.confirm("Discard unsaved legend-region edits?");
+  return !state.dirty || window.confirm("Discard unsaved extract-region edits?");
 }
 
 function markDirty() {
@@ -631,6 +659,7 @@ function updateUiState() {
 }
 
 function setBusy(busy) {
+  elements.extractType.disabled = busy;
   elements.familySelect.disabled = busy;
   elements.chartSelect.disabled = busy;
   elements.reloadLayout.disabled = busy;

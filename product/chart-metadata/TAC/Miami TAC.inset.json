@@ -1,0 +1,15 @@
+{
+  "schema_version": 1,
+  "source": "Miami TAC.tif",
+  "source_width": 10552,
+  "source_height": 8984,
+  "max_output_width": 1210,
+  "regions": [
+    {
+      "x": 6407,
+      "y": 6961,
+      "width": 3986,
+      "height": 1818
+    }
+  ]
+}

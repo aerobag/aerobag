@@ -650,6 +650,10 @@ pub struct TfrDetailBackfillRunSummary {
     pub attempted: usize,
     pub succeeded: usize,
     pub failed: usize,
+    pub desired: usize,
+    pub stored: usize,
+    pub total_failures: usize,
+    pub remaining_unfetched: usize,
     pub remaining_due: usize,
 }
 
@@ -678,11 +682,16 @@ pub fn fetch_tfr_detail_backfill_once(
             }
         }
     }
+    let summary = store.summary()?;
     Ok(TfrDetailBackfillRunSummary {
         attempted: targets.len(),
         succeeded,
         failed,
-        remaining_due: store.due_fetch_targets(1)?.len(),
+        desired: summary.desired,
+        stored: summary.stored,
+        total_failures: summary.failures,
+        remaining_unfetched: summary.remaining_unfetched,
+        remaining_due: summary.due,
     })
 }
 

@@ -35,6 +35,15 @@ pub struct TfrDetailFetchTarget {
     pub source_url: String,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TfrDetailBackfillStoreSummary {
+    pub desired: usize,
+    pub stored: usize,
+    pub failures: usize,
+    pub remaining_unfetched: usize,
+    pub due: usize,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct ParsedTfrDetailBackfill {
     pub tfr_id: String,
@@ -152,6 +161,42 @@ impl TfrDetailBackfillStore {
             targets.push(row.context("failed to read due TFR detail row")?);
         }
         Ok(targets)
+    }
+
+    pub fn summary(&self) -> anyhow::Result<TfrDetailBackfillStoreSummary> {
+        let connection = self.open_connection()?;
+        let now = Utc::now().to_rfc3339();
+        let desired = scalar_count(&connection, "SELECT COUNT(*) FROM desired_tfrs", [])?;
+        let stored = scalar_count(&connection, "SELECT COUNT(*) FROM detail_records", [])?;
+        let failures = scalar_count(&connection, "SELECT COUNT(*) FROM fetch_failures", [])?;
+        let remaining_unfetched = scalar_count(
+            &connection,
+            "SELECT COUNT(*)
+             FROM desired_tfrs
+             LEFT JOIN detail_records ON detail_records.tfr_id = desired_tfrs.tfr_id
+             WHERE detail_records.tfr_id IS NULL",
+            [],
+        )?;
+        let due = scalar_count(
+            &connection,
+            "SELECT COUNT(*)
+             FROM desired_tfrs
+             LEFT JOIN detail_records ON detail_records.tfr_id = desired_tfrs.tfr_id
+             LEFT JOIN fetch_failures ON fetch_failures.tfr_id = desired_tfrs.tfr_id
+             WHERE detail_records.tfr_id IS NULL
+               AND (
+                 fetch_failures.next_retry_after_utc IS NULL
+                 OR fetch_failures.next_retry_after_utc <= ?1
+               )",
+            [now],
+        )?;
+        Ok(TfrDetailBackfillStoreSummary {
+            desired,
+            stored,
+            failures,
+            remaining_unfetched,
+            due,
+        })
     }
 
     pub fn current_metadata_by_fdc_id(
@@ -331,6 +376,16 @@ impl TfrDetailBackfillStore {
     fn state_root(&self) -> PathBuf {
         self.root.join("state")
     }
+}
+
+fn scalar_count<P>(connection: &Connection, sql: &str, params: P) -> anyhow::Result<usize>
+where
+    P: rusqlite::Params,
+{
+    let count = connection
+        .query_row(sql, params, |row| row.get::<_, i64>(0))
+        .context("failed to query TFR detail backfill count")?;
+    Ok(count.max(0) as usize)
 }
 
 impl Drop for TfrDetailBackfillLock {

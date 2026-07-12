@@ -1382,6 +1382,25 @@ where
     }
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum SwimNotamsCollectorOutcome {
+    Success,
+    Failure,
+}
+
+fn swim_notams_collector_restart_delay(
+    outcome: SwimNotamsCollectorOutcome,
+    retry_interval_ms: u64,
+) -> Duration {
+    match outcome {
+        // The collector exits on idle so the daemon can close and apply a durable
+        // segment. That is not a failed subscription and must not leave the FAA
+        // queue unconsumed for the failure backoff interval.
+        SwimNotamsCollectorOutcome::Success => Duration::from_secs(1),
+        SwimNotamsCollectorOutcome::Failure => Duration::from_millis(retry_interval_ms),
+    }
+}
+
 fn start_swim_notams_supervisor(
     config: SwimNotamsConfig,
     state_root: PathBuf,
@@ -1404,11 +1423,14 @@ fn start_swim_notams_supervisor(
             }
             let started_at = Utc::now();
             let result = run_swim_notams_collector_once(&config, &store, started_at, run_counter);
-            match result {
+            let outcome = match result {
                 Ok(Some(segment)) => match store.apply_segment(&segment) {
                     Ok(true) => {
                         if let Err(error) = queue_notam_segment_event(&sender, &status, &segment) {
                             status.record_source_failure("notams", format!("{error:#}"));
+                            SwimNotamsCollectorOutcome::Failure
+                        } else {
+                            SwimNotamsCollectorOutcome::Success
                         }
                     }
                     Ok(false) => {
@@ -1417,13 +1439,26 @@ fn start_swim_notams_supervisor(
                             segment.last_received_at_utc.clone(),
                             "source_duplicate_segment",
                         );
+                        SwimNotamsCollectorOutcome::Success
                     }
-                    Err(error) => status.record_source_failure("notams", format!("{error:#}")),
+                    Err(error) => {
+                        status.record_source_failure("notams", format!("{error:#}"));
+                        SwimNotamsCollectorOutcome::Failure
+                    }
                 },
-                Ok(None) => status.record_source_success("notams", None, "source_idle"),
-                Err(error) => status.record_source_failure("notams", format!("{error:#}")),
-            }
-            thread::sleep(Duration::from_millis(config.retry_interval_ms));
+                Ok(None) => {
+                    status.record_source_success("notams", None, "source_idle");
+                    SwimNotamsCollectorOutcome::Success
+                }
+                Err(error) => {
+                    status.record_source_failure("notams", format!("{error:#}"));
+                    SwimNotamsCollectorOutcome::Failure
+                }
+            };
+            thread::sleep(swim_notams_collector_restart_delay(
+                outcome,
+                config.retry_interval_ms,
+            ));
         }
     });
     Ok(())
@@ -1464,15 +1499,28 @@ fn start_tfr_detail_backfill_supervisor(
                     PRODUCT,
                     None,
                     format!(
-                        "attempted={} succeeded={} remaining_due={}",
-                        summary.attempted, summary.succeeded, summary.remaining_due
+                        "attempted={} succeeded={} stored={}/{} remaining_unfetched={} remaining_due={} failures={}",
+                        summary.attempted,
+                        summary.succeeded,
+                        summary.stored,
+                        summary.desired,
+                        summary.remaining_unfetched,
+                        summary.remaining_due,
+                        summary.total_failures
                     ),
                 ),
                 Ok(summary) => status.record_source_failure(
                     PRODUCT,
                     format!(
-                        "attempted={} succeeded={} failed={} remaining_due={}",
-                        summary.attempted, summary.succeeded, summary.failed, summary.remaining_due
+                        "attempted={} succeeded={} failed={} stored={}/{} remaining_unfetched={} remaining_due={} failures={}",
+                        summary.attempted,
+                        summary.succeeded,
+                        summary.failed,
+                        summary.stored,
+                        summary.desired,
+                        summary.remaining_unfetched,
+                        summary.remaining_due,
+                        summary.total_failures
                     ),
                 ),
                 Err(error) => status.record_source_failure(PRODUCT, format!("{error:#}")),
@@ -2153,9 +2201,19 @@ function cdfTable(title, cdf) {
   return `<h2>${title}</h2><table><tr><th>samples</th><th>min</th><th>p50</th><th>p90</th><th>p95</th><th>p99</th><th>max</th></tr>` +
     `<tr><td>${cdf.sample_count}</td><td>${ms(cdf.min_ms)}</td><td>${ms(cdf.p50_ms)}</td><td>${ms(cdf.p90_ms)}</td><td>${ms(cdf.p95_ms)}</td><td>${ms(cdf.p99_ms)}</td><td>${ms(cdf.max_ms)}</td></tr></table>`;
 }
-function productDetails(data) {
+const detailsOpenState = new Map();
+function detailsKey(product) {
+  return encodeURIComponent(product);
+}
+function captureDetailsOpenState() {
+  document.querySelectorAll("details.product-details[data-details-key]").forEach((details) => {
+    detailsOpenState.set(details.dataset.detailsKey, details.open);
+  });
+}
+function productDetails(product, data) {
   const latestAttempt = data.attempts.length === 0 ? null : data.attempts[data.attempts.length - 1];
-  return `<details class="product-details">
+  const key = detailsKey(product);
+  return `<details class="product-details" data-details-key="${key}"${detailsOpenState.get(key) ? " open" : ""}>
     <summary>Status details</summary>
     <table>
     <tr><th>current version</th><td>${data.current_version ?? "-"}</td></tr>
@@ -2279,6 +2337,7 @@ async function render() {
   const status = await response.json();
   const products = Object.entries(status.products).sort(([left], [right]) => left.localeCompare(right));
   statusEl.className = "";
+  captureDetailsOpenState();
   purgeExistingPlots();
   statusEl.innerHTML = `
     <div class="summary">
@@ -2291,7 +2350,7 @@ async function render() {
     ${products.map(([product, data]) => `
       <div class="product">
         <h2>${product}</h2>
-        ${productDetails(data)}
+        ${productDetails(product, data)}
         <div class="plots">
           <div id="${plotId(product, "update_interval_ms")}" class="plot"></div>
           <div id="${plotId(product, "delta_bytes")}" class="plot"></div>
@@ -2714,6 +2773,18 @@ mod tests {
         assert!(!summary.contains("JMSExceptionValue"));
         assert!(!summary.contains("10.0.0.1"));
         assert!(summary.len() < 600);
+    }
+
+    #[test]
+    fn swim_notam_idle_exits_restart_promptly_without_failure_backoff() {
+        assert_eq!(
+            swim_notams_collector_restart_delay(SwimNotamsCollectorOutcome::Success, 60_000),
+            Duration::from_secs(1)
+        );
+        assert_eq!(
+            swim_notams_collector_restart_delay(SwimNotamsCollectorOutcome::Failure, 60_000),
+            Duration::from_secs(60)
+        );
     }
 
     #[test]

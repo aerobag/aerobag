@@ -294,7 +294,6 @@ public final class SwimNotamsConsumer {
                 Files.createDirectories(parent);
             }
             java.sql.Connection connection = DriverManager.getConnection("jdbc:sqlite:" + sqlitePath);
-            connection.setAutoCommit(false);
             try (java.sql.Statement statement = connection.createStatement()) {
                 statement.execute("PRAGMA busy_timeout = 5000");
                 statement.execute("PRAGMA journal_mode = WAL");
@@ -316,7 +315,7 @@ public final class SwimNotamsConsumer {
                                 + "ON raw_notam_messages(applied_at_utc, ingest_seq)"
                 );
             }
-            connection.commit();
+            connection.setAutoCommit(false);
             return new RawMessageStore(connection);
         }
 

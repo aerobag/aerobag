@@ -22,7 +22,7 @@ gdal.UseExceptions()
 
 try:
     from chart_cutline_audit import (
-        DEFAULT_CUTLINE_ROOT,
+        DEFAULT_CHART_METADATA_ROOT,
         geojson_srs,
         project_to_pixel,
         read_geojson_polygons,
@@ -31,7 +31,7 @@ try:
     )
 except ImportError:
     from tools.chart_cutline_audit import (
-        DEFAULT_CUTLINE_ROOT,
+        DEFAULT_CHART_METADATA_ROOT,
         geojson_srs,
         project_to_pixel,
         read_geojson_polygons,
@@ -43,6 +43,15 @@ except ImportError:
 ASSET_DIR = Path(__file__).with_name("chart_cutline_editor_assets")
 DEFAULT_CACHE_DIR = Path("/tmp/aerobag-chart-cutline-editor")
 MAX_BODY_BYTES = 2 * 1024 * 1024
+MAX_CROP_DIMENSION = 8192
+MAX_CROP_PIXELS = 16 * 1024 * 1024
+OVERVIEW_RENDER_VERSION = 2
+FAMILY_LABELS = {
+    "SEC": "Sectional",
+    "TAC": "TAC",
+    "ENR_L": "IFR-L",
+    "ENR_H": "IFR-H",
+}
 
 
 @dataclass(frozen=True)
@@ -60,6 +69,38 @@ class EditorError(RuntimeError):
 
 class RevisionConflict(EditorError):
     pass
+
+
+class EditorCatalog:
+    def __init__(self, families: dict[str, "EditorState"]) -> None:
+        if not families:
+            raise EditorError("editor requires at least one chart family")
+        self.families = families
+
+    def family(self, family_id: str) -> "EditorState":
+        state = self.families.get(family_id)
+        if state is None:
+            raise EditorError(f"unknown chart family {family_id!r}")
+        return state
+
+    def family_list(self) -> list[dict[str, object]]:
+        return [
+            {
+                "id": family_id,
+                "label": FAMILY_LABELS.get(family_id, family_id),
+                "chart_count": len(state.charts),
+            }
+            for family_id, state in self.families.items()
+        ]
+
+    def chart_payload(self, family_id: str, name: str) -> dict[str, object]:
+        payload = self.family(family_id).chart_payload(name)
+        payload["family"] = family_id
+        payload["overview_url"] = (
+            f"/api/overview?family={quote_query_value(family_id)}"
+            f"&name={quote_query_value(name)}"
+        )
+        return payload
 
 
 class EditorState:
@@ -132,6 +173,74 @@ class EditorState:
             "cutline_file": chart.cutline_path.name,
         }
 
+    def legend_payload(self, name: str) -> dict[str, object]:
+        chart = self.chart(name)
+        path = self.legend_path(chart)
+        if not path.is_file():
+            return {
+                "name": chart.name,
+                "source": chart.source_path.name,
+                "source_width": chart.width,
+                "source_height": chart.height,
+                "max_output_width": 1210,
+                "regions": [],
+                "revision": None,
+            }
+        document = json.loads(path.read_text(encoding="utf-8"))
+        if not isinstance(document, dict) or document.get("schema_version") != 1:
+            raise EditorError(f"unsupported legend layout schema in {path.name}")
+        if document.get("source") != chart.source_path.name:
+            raise EditorError(f"legend layout source mismatch in {path.name}")
+        if document.get("source_width") != chart.width or document.get("source_height") != chart.height:
+            raise EditorError(
+                f"legend layout dimensions in {path.name} do not match {chart.source_path.name}"
+            )
+        regions = validate_legend_regions(document.get("regions"), chart)
+        max_output_width = validate_max_output_width(document.get("max_output_width", 1210))
+        return {
+            "name": chart.name,
+            "source": chart.source_path.name,
+            "source_width": chart.width,
+            "source_height": chart.height,
+            "max_output_width": max_output_width,
+            "regions": regions,
+            "revision": file_revision(path),
+        }
+
+    def save_legend(
+        self,
+        name: str,
+        regions_value: object,
+        max_output_width_value: object,
+        expected_revision: object,
+    ) -> dict[str, object]:
+        chart = self.chart(name)
+        regions = validate_legend_regions(regions_value, chart)
+        max_output_width = validate_max_output_width(max_output_width_value)
+        path = self.legend_path(chart)
+        if expected_revision is not None and not isinstance(expected_revision, str):
+            raise EditorError("legend save revision must be a string or null")
+        with self._write_lock:
+            current_revision = file_revision(path) if path.is_file() else None
+            if current_revision != expected_revision:
+                raise RevisionConflict(
+                    f"{path.name} changed on disk; reload before saving"
+                )
+            document = {
+                "schema_version": 1,
+                "source": chart.source_path.name,
+                "source_width": chart.width,
+                "source_height": chart.height,
+                "max_output_width": max_output_width,
+                "regions": regions,
+            }
+            atomic_write_json(path, document)
+            revision = file_revision(path)
+        return {"revision": revision, "regions": regions}
+
+    def legend_path(self, chart: Chart) -> Path:
+        return self.cutline_dir / f"{chart.name}.legend.json"
+
     def _pixel_points(self, chart: Chart) -> list[tuple[float, float]]:
         polygons = read_geojson_polygons(chart.cutline_path)
         if len(polygons) != 1:
@@ -203,16 +312,13 @@ class EditorState:
         chart = self.chart(name)
         source_revision = file_revision(chart.source_path)
         cache_path = self.cache_dir / (
-            f"{slug(chart.name)}-{source_revision}-{self.overview_width}.png"
+            f"{slug(chart.name)}-{source_revision}-{self.overview_width}"
+            f"-v{OVERVIEW_RENDER_VERSION}.png"
         )
         lock = self._overview_locks.setdefault(chart.name, threading.Lock())
         with lock:
             if not cache_path.is_file():
-                options = translate_png_options(chart.source_path, width=self.overview_width)
-                result = gdal.Translate(str(cache_path), str(chart.source_path), options=options)
-                if result is None:
-                    raise EditorError(f"failed to generate overview for {chart.name}")
-                result = None
+                render_overview_png(chart.source_path, cache_path, self.overview_width)
                 remove_aux_xml(cache_path)
         return cache_path.read_bytes()
 
@@ -225,8 +331,16 @@ class EditorState:
         height: int,
     ) -> bytes:
         chart = self.chart(name)
-        if width < 1 or height < 1 or width > 1536 or height > 1536:
-            raise EditorError("crop dimensions must be between 1 and 1536 pixels")
+        if width < 1 or height < 1:
+            raise EditorError("crop dimensions must be positive")
+        if width > MAX_CROP_DIMENSION or height > MAX_CROP_DIMENSION:
+            raise EditorError(
+                f"crop dimensions must not exceed {MAX_CROP_DIMENSION} pixels"
+            )
+        if width * height > MAX_CROP_PIXELS:
+            raise EditorError(
+                f"crop area must not exceed {MAX_CROP_PIXELS} source pixels"
+            )
         if x < 0 or y < 0 or x + width > chart.width or y + height > chart.height:
             raise EditorError("crop falls outside source chart")
         vsi_path = f"/vsimem/cutline-editor-{uuid.uuid4().hex}.png"
@@ -308,6 +422,52 @@ def translate_png_options(
     return gdal.TranslateOptions(**kwargs)
 
 
+def render_overview_png(source_path: Path, output_path: Path, width: int) -> None:
+    dataset = gdal.Open(str(source_path))
+    if dataset is None:
+        raise EditorError(f"failed to open {source_path}")
+    first_band = dataset.GetRasterBand(1)
+    is_paletted = dataset.RasterCount == 1 and first_band.GetColorTable() is not None
+    if not is_paletted:
+        options = gdal.TranslateOptions(
+            format="PNG",
+            width=width,
+            height=0,
+            resampleAlg="average",
+        )
+        result = gdal.Translate(str(output_path), dataset, options=options)
+        if result is None:
+            raise EditorError(f"failed to generate overview for {source_path.name}")
+        result = None
+        return
+
+    rgb_vrt_path = f"/vsimem/cutline-editor-overview-{uuid.uuid4().hex}.vrt"
+    try:
+        expanded = gdal.Translate(
+            rgb_vrt_path,
+            dataset,
+            options=gdal.TranslateOptions(format="VRT", rgbExpand="rgb"),
+        )
+        if expanded is None:
+            raise EditorError(f"failed to expand {source_path.name} to RGB")
+        expanded = None
+        result = gdal.Warp(
+            str(output_path),
+            rgb_vrt_path,
+            options=gdal.WarpOptions(
+                format="PNG",
+                width=width,
+                height=0,
+                resampleAlg="average",
+            ),
+        )
+        if result is None:
+            raise EditorError(f"failed to generate overview for {source_path.name}")
+        result = None
+    finally:
+        gdal.Unlink(rgb_vrt_path)
+
+
 def remove_aux_xml(path: Path) -> None:
     aux_path = path.with_name(path.name + ".aux.xml")
     if aux_path.exists():
@@ -360,6 +520,53 @@ def validate_pixel_points(value: object, chart: Chart) -> list[tuple[float, floa
         if y < -chart.height or y > chart.height * 2:
             raise EditorError("cutline y coordinate is implausibly far outside the chart")
     return points
+
+
+def validate_legend_regions(value: object, chart: Chart) -> list[dict[str, int]]:
+    if not isinstance(value, list):
+        raise EditorError("legend regions must be an array")
+    if len(value) > 100:
+        raise EditorError("legend layout has too many regions")
+    result = []
+    for index, region in enumerate(value):
+        if not isinstance(region, dict):
+            raise EditorError(f"legend region {index + 1} must be an object")
+        parsed: dict[str, int] = {}
+        for key in ("x", "y", "width", "height"):
+            raw = region.get(key)
+            if isinstance(raw, bool):
+                raise EditorError(f"legend region {index + 1} {key} must be a number")
+            try:
+                number = float(raw)
+            except (TypeError, ValueError) as error:
+                raise EditorError(
+                    f"legend region {index + 1} {key} must be a number"
+                ) from error
+            if not math.isfinite(number):
+                raise EditorError(f"legend region {index + 1} {key} must be finite")
+            parsed[key] = int(round(number))
+        if parsed["width"] < 1 or parsed["height"] < 1:
+            raise EditorError(f"legend region {index + 1} must have positive dimensions")
+        if parsed["x"] < 0 or parsed["y"] < 0:
+            raise EditorError(f"legend region {index + 1} starts outside the source chart")
+        if parsed["x"] + parsed["width"] > chart.width:
+            raise EditorError(f"legend region {index + 1} exceeds the source chart width")
+        if parsed["y"] + parsed["height"] > chart.height:
+            raise EditorError(f"legend region {index + 1} exceeds the source chart height")
+        result.append(parsed)
+    return result
+
+
+def validate_max_output_width(value: object) -> int:
+    if isinstance(value, bool):
+        raise EditorError("maximum output width must be an integer")
+    try:
+        width = int(value)
+    except (TypeError, ValueError) as error:
+        raise EditorError("maximum output width must be an integer") from error
+    if width < 320 or width > 4096:
+        raise EditorError("maximum output width must be between 320 and 4096")
+    return width
 
 
 def single_polygon_feature(document: object, path: Path) -> dict[str, object]:
@@ -548,7 +755,7 @@ def quote_query_value(value: str) -> str:
 
 
 class EditorRequestHandler(BaseHTTPRequestHandler):
-    state: EditorState
+    state: EditorCatalog
 
     def do_GET(self) -> None:
         try:
@@ -556,23 +763,44 @@ class EditorRequestHandler(BaseHTTPRequestHandler):
             query = parse_qs(parsed.query)
             if parsed.path == "/":
                 self._send_file(ASSET_DIR / "index.html", "text/html; charset=utf-8")
+            elif parsed.path in {"/legends", "/legends.html"}:
+                self._send_file(ASSET_DIR / "legends.html", "text/html; charset=utf-8")
             elif parsed.path == "/assets/editor.css":
                 self._send_file(ASSET_DIR / "editor.css", "text/css; charset=utf-8")
             elif parsed.path == "/assets/editor.js":
                 self._send_file(ASSET_DIR / "editor.js", "text/javascript; charset=utf-8")
+            elif parsed.path == "/assets/legends.css":
+                self._send_file(ASSET_DIR / "legends.css", "text/css; charset=utf-8")
+            elif parsed.path == "/assets/legends.js":
+                self._send_file(ASSET_DIR / "legends.js", "text/javascript; charset=utf-8")
+            elif parsed.path == "/api/families":
+                self._send_json({"families": self.state.family_list()})
             elif parsed.path == "/api/charts":
-                self._send_json({"charts": self.state.chart_list()})
+                family = required_query(query, "family")
+                self._send_json({"charts": self.state.family(family).chart_list()})
             elif parsed.path == "/api/chart":
-                self._send_json(self.state.chart_payload(required_query(query, "name")))
+                self._send_json(
+                    self.state.chart_payload(
+                        required_query(query, "family"),
+                        required_query(query, "name"),
+                    )
+                )
+            elif parsed.path == "/api/legend":
+                family = required_query(query, "family")
+                self._send_json(
+                    self.state.family(family).legend_payload(required_query(query, "name"))
+                )
             elif parsed.path == "/api/overview":
+                family = required_query(query, "family")
                 self._send_bytes(
-                    self.state.overview_png(required_query(query, "name")),
+                    self.state.family(family).overview_png(required_query(query, "name")),
                     "image/png",
                     cache_control="private, max-age=3600",
                 )
             elif parsed.path == "/api/crop":
+                family = required_query(query, "family")
                 self._send_bytes(
-                    self.state.crop_png(
+                    self.state.family(family).crop_png(
                         required_query(query, "name"),
                         int_query(query, "x"),
                         int_query(query, "y"),
@@ -594,18 +822,27 @@ class EditorRequestHandler(BaseHTTPRequestHandler):
         try:
             parsed = urlparse(self.path)
             body = self._read_json_body()
+            family = self.state.family(str(body.get("family", "")))
             if parsed.path == "/api/save":
-                result = self.state.save_points(
+                result = family.save_points(
                     str(body.get("name", "")),
                     body.get("points"),
                     body.get("revision"),
                 )
                 self._send_json(result)
             elif parsed.path == "/api/snap":
-                result = self.state.snap_point(
+                result = family.snap_point(
                     str(body.get("name", "")),
                     body.get("point"),
                     int(body.get("radius", 192)),
+                )
+                self._send_json(result)
+            elif parsed.path == "/api/legend/save":
+                result = family.save_legend(
+                    str(body.get("name", "")),
+                    body.get("regions"),
+                    body.get("max_output_width", 1210),
+                    body.get("revision"),
                 )
                 self._send_json(result)
             else:
@@ -683,9 +920,16 @@ def int_query(query: dict[str, list[str]], key: str) -> int:
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--work-dir", required=True, type=Path)
-    parser.add_argument("--cutline-root", type=Path, default=DEFAULT_CUTLINE_ROOT)
+    parser.add_argument("--work-dir", type=Path)
+    parser.add_argument("--chart-metadata-root", type=Path, default=DEFAULT_CHART_METADATA_ROOT)
     parser.add_argument("--family", default="TAC")
+    parser.add_argument(
+        "--family-work",
+        action="append",
+        default=[],
+        metavar="FAMILY=WORK_DIR",
+        help="add a chart family; may be repeated (SEC, TAC, ENR_L, ENR_H)",
+    )
     parser.add_argument("--cache-dir", type=Path, default=DEFAULT_CACHE_DIR)
     parser.add_argument("--overview-width", type=int, default=1000)
     parser.add_argument("--host", default="0.0.0.0")
@@ -696,19 +940,30 @@ def parse_args() -> argparse.Namespace:
 def main() -> None:
     gdal.UseExceptions()
     args = parse_args()
-    work_dir = args.work_dir.resolve()
-    cutline_dir = (args.cutline_root / args.family).resolve()
-    if not work_dir.is_dir():
-        raise SystemExit(f"work directory does not exist: {work_dir}")
-    if not cutline_dir.is_dir():
-        raise SystemExit(f"cutline directory does not exist: {cutline_dir}")
     if not ASSET_DIR.is_dir():
         raise SystemExit(f"editor asset directory does not exist: {ASSET_DIR}")
-    state = EditorState(work_dir, cutline_dir, args.cache_dir, args.overview_width)
-    handler = type("BoundEditorRequestHandler", (EditorRequestHandler,), {"state": state})
+    family_work = parse_family_work_args(args)
+    families: dict[str, EditorState] = {}
+    for family_id, work_dir in family_work:
+        cutline_dir = (args.chart_metadata_root / family_id).resolve()
+        if not work_dir.is_dir():
+            raise SystemExit(f"work directory does not exist: {work_dir}")
+        if not cutline_dir.is_dir():
+            raise SystemExit(f"cutline directory does not exist: {cutline_dir}")
+        families[family_id] = EditorState(
+            work_dir,
+            cutline_dir,
+            args.cache_dir / family_id,
+            args.overview_width,
+        )
+    catalog = EditorCatalog(families)
+    handler = type("BoundEditorRequestHandler", (EditorRequestHandler,), {"state": catalog})
     server = ThreadingHTTPServer((args.host, args.port), handler)
+    family_summary = ", ".join(
+        f"{family_id}={len(state.charts)}" for family_id, state in families.items()
+    )
     print(
-        f"chart cutline editor: {len(state.charts)} {args.family} charts at "
+        f"chart cutline editor: {family_summary} charts at "
         f"http://{args.host}:{args.port}/",
         flush=True,
     )
@@ -718,6 +973,32 @@ def main() -> None:
         pass
     finally:
         server.server_close()
+
+
+def parse_family_work_args(args: argparse.Namespace) -> list[tuple[str, Path]]:
+    if args.family_work and args.work_dir is not None:
+        raise SystemExit("use either --work-dir/--family or --family-work, not both")
+    raw_values = args.family_work
+    if not raw_values:
+        if args.work_dir is None:
+            raise SystemExit("--work-dir or at least one --family-work is required")
+        raw_values = [f"{args.family}={args.work_dir}"]
+
+    result: list[tuple[str, Path]] = []
+    seen: set[str] = set()
+    for value in raw_values:
+        family_id, separator, raw_path = value.partition("=")
+        family_id = family_id.strip().upper().replace("-", "_")
+        if not separator or not family_id or not raw_path:
+            raise SystemExit(f"invalid --family-work {value!r}; expected FAMILY=WORK_DIR")
+        if family_id not in FAMILY_LABELS:
+            choices = ", ".join(FAMILY_LABELS)
+            raise SystemExit(f"unknown chart family {family_id!r}; expected one of {choices}")
+        if family_id in seen:
+            raise SystemExit(f"duplicate --family-work for {family_id}")
+        seen.add(family_id)
+        result.append((family_id, Path(raw_path).expanduser().resolve()))
+    return result
 
 
 if __name__ == "__main__":

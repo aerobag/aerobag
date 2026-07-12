@@ -20,9 +20,11 @@ use preprocessor_fetch::{
     PackageOutputRecord,
 };
 use preprocessor_tools::{
-    command_output_diagnostic_summary, sanitize_label, ToolInvocation, ToolOutcome,
+    append_pngs_vertical, command_output_diagnostic_summary, flatten_png_onto_white,
+    sanitize_label, ToolInvocation, ToolOutcome,
 };
 use preprocessor_zip::{write_deterministic_zip, ZipSource};
+use serde::Deserialize;
 
 pub const FULL_COVERAGE_ZOOM: u32 = 7;
 pub const WIDE_ANGLE_REGION_ID: &str = "wide";
@@ -68,6 +70,30 @@ pub struct PackageBuildResult {
     pub family: ChartFamily,
     pub package_count: usize,
     pub elapsed_ms: u128,
+}
+
+#[derive(Debug, Clone)]
+pub struct LegendBuildResult {
+    pub family: ChartFamily,
+    pub output_paths: Vec<PathBuf>,
+}
+
+#[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
+pub struct ChartLegendLayout {
+    pub schema_version: u32,
+    pub source: String,
+    pub source_width: u32,
+    pub source_height: u32,
+    pub max_output_width: u32,
+    pub regions: Vec<ChartLegendRegion>,
+}
+
+#[derive(Debug, Clone, Copy, Deserialize, PartialEq, Eq)]
+pub struct ChartLegendRegion {
+    pub x: u32,
+    pub y: u32,
+    pub width: u32,
+    pub height: u32,
 }
 
 #[derive(Debug, Clone)]
@@ -268,6 +294,7 @@ pub fn run_native_family(request: &NativeChartRunRequest) -> anyhow::Result<Nati
     }
 
     let vrt_result = build_family_vrts(request.family, &work_dir, request.cpu_jobs)?;
+    build_family_legends(request.family, &work_dir)?;
     let tile_result = build_family_tiles(request.family, &work_dir, request.cpu_jobs)?;
     let package_result = package_regions_from_spec(
         &work_dir,
@@ -478,6 +505,265 @@ pub fn build_family_vrts(
 ) -> anyhow::Result<VrtBuildResult> {
     let spec = ChartSpec::for_family(family);
     build_vrts_from_spec(work_dir.as_ref(), spec, cpu_jobs)
+}
+
+pub fn build_family_legends(
+    family: ChartFamily,
+    work_dir: impl AsRef<Path>,
+) -> anyhow::Result<LegendBuildResult> {
+    let work_dir = work_dir.as_ref();
+    let spec = ChartSpec::for_family(family);
+    let layout_dir = work_dir.join(spec.chart_dir_name);
+    let output_root = work_dir.join("legends");
+    if output_root.exists() {
+        fs::remove_dir_all(&output_root)
+            .with_context(|| format!("failed to clear {}", output_root.display()))?;
+    }
+    fs::create_dir_all(&output_root)
+        .with_context(|| format!("failed to create {}", output_root.display()))?;
+
+    let mut layouts = fs::read_dir(&layout_dir)
+        .with_context(|| format!("failed to read {}", layout_dir.display()))?
+        .filter_map(|entry| entry.ok())
+        .map(|entry| entry.path())
+        .filter(|path| {
+            path.file_name()
+                .and_then(|name| name.to_str())
+                .is_some_and(|name| name.ends_with(".legend.json"))
+        })
+        .collect::<Vec<_>>();
+    layouts.sort();
+
+    let mut output_paths = Vec::with_capacity(layouts.len());
+    for layout_path in layouts {
+        if let Some(output_path) = render_chart_legend(work_dir, &output_root, &layout_path)? {
+            output_paths.push(output_path);
+        }
+    }
+    Ok(LegendBuildResult {
+        family,
+        output_paths,
+    })
+}
+
+fn render_chart_legend(
+    work_dir: &Path,
+    output_root: &Path,
+    layout_path: &Path,
+) -> anyhow::Result<Option<PathBuf>> {
+    let layout: ChartLegendLayout = serde_json::from_slice(
+        &fs::read(layout_path)
+            .with_context(|| format!("failed to read {}", layout_path.display()))?,
+    )
+    .with_context(|| format!("failed to parse {}", layout_path.display()))?;
+    let source_path = work_dir.join(&layout.source);
+    let actual_dimensions = identify_image_dimensions(&source_path)?;
+    validate_chart_legend_layout(&layout, layout_path, actual_dimensions)?;
+    if layout.regions.is_empty() {
+        return Ok(None);
+    }
+
+    let widest_region = layout
+        .regions
+        .iter()
+        .map(|region| region.width)
+        .max()
+        .context("legend layout unexpectedly had no regions")?;
+    let scale = (f64::from(layout.max_output_width) / f64::from(widest_region)).min(1.0);
+    let source_stem = Path::new(&layout.source)
+        .file_stem()
+        .and_then(|value| value.to_str())
+        .context("legend source has no UTF-8 file stem")?;
+    let temp_dir = work_dir
+        .join(".legend-parts")
+        .join(sanitize_label(source_stem));
+    if temp_dir.exists() {
+        fs::remove_dir_all(&temp_dir)
+            .with_context(|| format!("failed to clear {}", temp_dir.display()))?;
+    }
+    fs::create_dir_all(&temp_dir)
+        .with_context(|| format!("failed to create {}", temp_dir.display()))?;
+
+    let logs_dir = work_dir.join(".rust-logs");
+    let mut part_paths = Vec::with_capacity(layout.regions.len());
+    for (index, region) in layout.regions.iter().enumerate() {
+        let output_width = (f64::from(region.width) * scale).round().max(1.0) as u32;
+        let output_height = (f64::from(region.height) * scale).round().max(1.0) as u32;
+        let rgb_part_path = temp_dir.join(format!("part-{index:02}-rgb.tif"));
+        let expand = ToolInvocation {
+            program: "gdal_translate".to_string(),
+            args: vec![
+                "-of".to_string(),
+                "GTiff".to_string(),
+                "-expand".to_string(),
+                "rgb".to_string(),
+                "-srcwin".to_string(),
+                region.x.to_string(),
+                region.y.to_string(),
+                region.width.to_string(),
+                region.height.to_string(),
+                layout.source.clone(),
+                rgb_part_path.to_string_lossy().to_string(),
+            ],
+            cwd: work_dir.to_path_buf(),
+            label: format!("legend-expand-{}-{index:02}", sanitize_label(source_stem)),
+            env: Vec::new(),
+            stdin_text: None,
+        };
+        let expand_outcome = expand.run_logged(&logs_dir)?;
+        expand.ensure_success(
+            &expand_outcome,
+            &format!(
+                "failed to expand legend region {} from {} to RGB",
+                index + 1,
+                layout.source
+            ),
+        )?;
+
+        let part_path = temp_dir.join(format!("part-{index:02}.png"));
+        let invocation = ToolInvocation {
+            program: "gdal_translate".to_string(),
+            args: vec![
+                "-of".to_string(),
+                "PNG".to_string(),
+                "-r".to_string(),
+                "lanczos".to_string(),
+                "-outsize".to_string(),
+                output_width.to_string(),
+                output_height.to_string(),
+                rgb_part_path.to_string_lossy().to_string(),
+                part_path.to_string_lossy().to_string(),
+            ],
+            cwd: work_dir.to_path_buf(),
+            label: format!("legend-crop-{}-{index:02}", sanitize_label(source_stem)),
+            env: Vec::new(),
+            stdin_text: None,
+        };
+        let outcome = invocation.run_logged(&logs_dir)?;
+        invocation.ensure_success(
+            &outcome,
+            &format!(
+                "failed to crop legend region {} from {}",
+                index + 1,
+                layout.source
+            ),
+        )?;
+        part_paths.push(part_path);
+    }
+
+    let output_path = output_root.join(format!("{source_stem}.png"));
+    append_pngs_vertical(
+        work_dir,
+        &logs_dir,
+        &part_paths,
+        &output_path,
+        &format!("legend-append-{}", sanitize_label(source_stem)),
+    )?;
+    flatten_png_onto_white(&output_path)?;
+    fs::remove_dir_all(&temp_dir)
+        .with_context(|| format!("failed to remove {}", temp_dir.display()))?;
+    Ok(Some(output_path))
+}
+
+fn identify_image_dimensions(path: &Path) -> anyhow::Result<(u32, u32)> {
+    let output = Command::new("identify")
+        .args(["-format", "%w %h"])
+        .arg(path)
+        .output()
+        .with_context(|| format!("failed to inspect {}", path.display()))?;
+    if !output.status.success() {
+        bail!(
+            "identify failed for {}: {}",
+            path.display(),
+            command_output_diagnostic_summary(&output)
+        );
+    }
+    let text = String::from_utf8(output.stdout).context("identify dimensions were not UTF-8")?;
+    let mut fields = text.split_whitespace();
+    let width = fields
+        .next()
+        .context("identify omitted image width")?
+        .parse::<u32>()
+        .context("identify image width was not an integer")?;
+    let height = fields
+        .next()
+        .context("identify omitted image height")?
+        .parse::<u32>()
+        .context("identify image height was not an integer")?;
+    if fields.next().is_some() {
+        bail!("identify returned unexpected dimensions {text:?}");
+    }
+    Ok((width, height))
+}
+
+fn validate_chart_legend_layout(
+    layout: &ChartLegendLayout,
+    layout_path: &Path,
+    actual_dimensions: (u32, u32),
+) -> anyhow::Result<()> {
+    if layout.schema_version != 1 {
+        bail!(
+            "unsupported legend schema_version {} in {}",
+            layout.schema_version,
+            layout_path.display()
+        );
+    }
+    let source = Path::new(&layout.source);
+    if source.components().count() != 1 || source.file_name().is_none() {
+        bail!(
+            "legend source must be a file name in {}",
+            layout_path.display()
+        );
+    }
+    let expected_layout_name = format!(
+        "{}.legend.json",
+        source
+            .file_stem()
+            .and_then(|value| value.to_str())
+            .context("legend source has no UTF-8 file stem")?
+    );
+    if layout_path.file_name().and_then(|value| value.to_str()) != Some(&expected_layout_name) {
+        bail!(
+            "legend layout {} must be named {expected_layout_name}",
+            layout_path.display()
+        );
+    }
+    if (layout.source_width, layout.source_height) != actual_dimensions {
+        bail!(
+            "legend layout {} expects {}x{} source but {} is {}x{}",
+            layout_path.display(),
+            layout.source_width,
+            layout.source_height,
+            layout.source,
+            actual_dimensions.0,
+            actual_dimensions.1
+        );
+    }
+    if !(320..=4096).contains(&layout.max_output_width) {
+        bail!("legend max_output_width must be between 320 and 4096");
+    }
+    for (index, region) in layout.regions.iter().enumerate() {
+        if region.width == 0 || region.height == 0 {
+            bail!("legend region {} has zero area", index + 1);
+        }
+        let right = region
+            .x
+            .checked_add(region.width)
+            .context("legend region x overflow")?;
+        let bottom = region
+            .y
+            .checked_add(region.height)
+            .context("legend region y overflow")?;
+        if right > layout.source_width || bottom > layout.source_height {
+            bail!(
+                "legend region {} exceeds {}x{} source bounds",
+                index + 1,
+                layout.source_width,
+                layout.source_height
+            );
+        }
+    }
+    Ok(())
 }
 
 fn build_vrts_from_spec(
@@ -1566,13 +1852,16 @@ fn count_files_recursive(path: &Path, count: &mut u64) -> anyhow::Result<()> {
 #[cfg(test)]
 mod tests {
     use super::{
-        antimeridian_supplement_from_html, copy_dir_recursive, resolve_chart_input_filename,
-        tile_belongs_to_region, vfr_vrt_paths, AntimeridianSupplement,
+        antimeridian_supplement_from_html, build_family_legends, copy_dir_recursive,
+        identify_image_dimensions, resolve_chart_input_filename, tile_belongs_to_region,
+        validate_chart_legend_layout, vfr_vrt_paths, AntimeridianSupplement, ChartLegendLayout,
+        ChartLegendRegion,
     };
-    use preprocessor_core::Region;
+    use preprocessor_core::{ChartFamily, Region};
     use std::{
         fs,
         path::{Path, PathBuf},
+        process::Command,
         time::{SystemTime, UNIX_EPOCH},
     };
 
@@ -1600,6 +1889,118 @@ mod tests {
         fn drop(&mut self) {
             let _ = fs::remove_dir_all(&self.path);
         }
+    }
+
+    #[test]
+    fn chart_legend_layout_rejects_stale_dimensions_and_out_of_bounds_regions() {
+        let path = Path::new("Seattle TAC.legend.json");
+        let mut layout = ChartLegendLayout {
+            schema_version: 1,
+            source: "Seattle TAC.tif".to_string(),
+            source_width: 1000,
+            source_height: 800,
+            max_output_width: 1210,
+            regions: vec![ChartLegendRegion {
+                x: 100,
+                y: 200,
+                width: 300,
+                height: 400,
+            }],
+        };
+        validate_chart_legend_layout(&layout, path, (1000, 800)).unwrap();
+        assert!(validate_chart_legend_layout(&layout, path, (1001, 800)).is_err());
+        layout.regions[0].width = 901;
+        assert!(validate_chart_legend_layout(&layout, path, (1000, 800)).is_err());
+    }
+
+    #[test]
+    fn chart_legend_renderer_crops_and_stacks_regions() {
+        let temp = TempDir::new("chart-legend-render");
+        let work_dir = temp.path().join("charts-tac");
+        let layout_dir = work_dir.join("TAC");
+        fs::create_dir_all(&layout_dir).unwrap();
+        assert!(Command::new("convert")
+            .args(["-size", "8x6", "gradient:white-black", "-colors", "16"])
+            .arg(format!("PNG8:{}", work_dir.join("Test TAC.tif").display()))
+            .status()
+            .unwrap()
+            .success());
+        fs::write(
+            layout_dir.join("Test TAC.legend.json"),
+            serde_json::to_vec_pretty(&serde_json::json!({
+                "schema_version": 1,
+                "source": "Test TAC.tif",
+                "source_width": 8,
+                "source_height": 6,
+                "max_output_width": 320,
+                "regions": [
+                    {"x": 0, "y": 0, "width": 4, "height": 2},
+                    {"x": 4, "y": 2, "width": 4, "height": 3}
+                ]
+            }))
+            .unwrap(),
+        )
+        .unwrap();
+
+        let result = build_family_legends(ChartFamily::Tac, &work_dir).unwrap();
+        assert_eq!(result.output_paths.len(), 1);
+        assert_eq!(
+            identify_image_dimensions(&result.output_paths[0]).unwrap(),
+            (4, 5)
+        );
+    }
+
+    #[test]
+    fn chart_legend_renderer_expands_palette_before_resampling() {
+        let temp = TempDir::new("chart-legend-palette-resample");
+        let work_dir = temp.path().join("charts-tac");
+        let layout_dir = work_dir.join("TAC");
+        fs::create_dir_all(&layout_dir).unwrap();
+        let palette_path = work_dir.join("palette.png");
+        assert!(Command::new("convert")
+            .args(["-size", "641x201", "pattern:checkerboard", "-colors", "2"])
+            .arg(format!("PNG8:{}", palette_path.display()))
+            .status()
+            .unwrap()
+            .success());
+        assert!(Command::new("gdal_translate")
+            .args(["-q", "-of", "GTiff"])
+            .arg(&palette_path)
+            .arg(work_dir.join("Test TAC.tif"))
+            .status()
+            .unwrap()
+            .success());
+        fs::write(
+            layout_dir.join("Test TAC.legend.json"),
+            serde_json::to_vec_pretty(&serde_json::json!({
+                "schema_version": 1,
+                "source": "Test TAC.tif",
+                "source_width": 641,
+                "source_height": 201,
+                "max_output_width": 320,
+                "regions": [
+                    {"x": 0, "y": 0, "width": 641, "height": 201}
+                ]
+            }))
+            .unwrap(),
+        )
+        .unwrap();
+
+        let result = build_family_legends(ChartFamily::Tac, &work_dir).unwrap();
+        let output = Command::new("identify")
+            .args(["-format", "%k"])
+            .arg(&result.output_paths[0])
+            .output()
+            .unwrap();
+        assert!(output.status.success());
+        let color_count = String::from_utf8(output.stdout)
+            .unwrap()
+            .parse::<u32>()
+            .unwrap();
+        assert!(
+            color_count > 2,
+            "RGB resampling should introduce anti-aliased intermediate colors, got {color_count}"
+        );
     }
 
     #[test]

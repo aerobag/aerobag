@@ -1,0 +1,80 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Chart legend regions</title>
+  <link rel="stylesheet" href="/assets/editor.css">
+  <link rel="stylesheet" href="/assets/legends.css">
+</head>
+<body>
+  <header class="toolbar">
+    <div class="brand">Legend regions</div>
+    <select id="familySelect" aria-label="Chart family"></select>
+    <button id="previousChart" class="iconButton" type="button" title="Previous chart" aria-label="Previous chart">&#x2039;</button>
+    <select id="chartSelect" aria-label="Chart"></select>
+    <button id="nextChart" class="iconButton" type="button" title="Next chart" aria-label="Next chart">&#x203a;</button>
+    <div class="toolbarDivider"></div>
+    <button id="undo" class="iconButton" type="button" title="Undo" aria-label="Undo">&#x21b6;</button>
+    <button id="redo" class="iconButton" type="button" title="Redo" aria-label="Redo">&#x21b7;</button>
+    <button id="drawRegion" type="button" title="Draw a new region on the chart overview">Draw region</button>
+    <button id="deleteRegion" type="button">Delete</button>
+    <button id="moveEarlier" class="iconButton" type="button" title="Move region earlier" aria-label="Move region earlier">&#x2191;</button>
+    <button id="moveLater" class="iconButton" type="button" title="Move region later" aria-label="Move region later">&#x2193;</button>
+    <div class="toolbarSpacer"></div>
+    <a class="toolLink" href="/">Cutlines</a>
+    <span id="saveState" class="saveState">Loading</span>
+    <button id="reloadLayout" type="button">Reload</button>
+    <button id="saveLayout" class="primaryButton" type="button">Save</button>
+  </header>
+
+  <main class="legendWorkspace">
+    <section class="overviewPane">
+      <div class="paneHeader">
+        <div>
+          <h1 id="chartTitle">Chart</h1>
+          <span id="chartFacts" class="muted"></span>
+        </div>
+        <span id="regionCount" class="muted"></span>
+      </div>
+      <div class="overviewViewport">
+        <div id="overviewStage" class="overviewStage legendOverviewStage">
+          <img id="overviewImage" alt="Chart source overview" draggable="false">
+          <svg id="overviewSvg" aria-label="Editable legend regions">
+            <g id="regionShapes"></g>
+            <g id="regionHandles"></g>
+          </svg>
+        </div>
+      </div>
+    </section>
+
+    <section class="legendDetailPane">
+      <div class="paneHeader detailHeader">
+        <div>
+          <h2 id="regionTitle">No region selected</h2>
+          <span class="muted">Composite order</span>
+        </div>
+        <label class="outputWidthLabel">Max width
+          <input id="maxOutputWidth" type="number" min="320" max="4096" step="10" value="1210">
+        </label>
+      </div>
+      <div class="regionInputs">
+        <label>X <input id="regionX" type="number" step="1"></label>
+        <label>Y <input id="regionY" type="number" step="1"></label>
+        <label>Width <input id="regionWidth" type="number" min="1" step="1"></label>
+        <label>Height <input id="regionHeight" type="number" min="1" step="1"></label>
+      </div>
+      <ol id="regionList" class="regionList"></ol>
+      <div class="previewHeader">
+        <span id="previewFacts" class="muted"></span>
+        <span id="message" role="status"></span>
+      </div>
+      <div id="previewViewport" class="legendPreviewViewport">
+        <img id="previewImage" alt="Selected legend region at source resolution" draggable="false">
+      </div>
+    </section>
+  </main>
+
+  <script src="/assets/legends.js"></script>
+</body>
+</html>

@@ -166,44 +166,58 @@ pub(super) fn build_chart_process_node(
     )?;
     let work_dir = prepared.dir.join("work").join(family.capture_label());
     let tiles_root = work_dir.join("tiles");
-    run_cached_node(prepared, inputs, &[tiles_root.clone()], |prepared| {
-        let work_dir = stage_work_dir(family, source_repo, &prepared.dir)?;
-        seed_prefetched_source_tree(&source_fetch_root, &work_dir)?;
-        build_family_vrts(family, &work_dir, cpu_jobs)?;
-        build_family_tiles(family, &work_dir, cpu_jobs)?;
-        prune_chart_render_intermediates(&work_dir)?;
-        Ok(BTreeMap::from([
-            (
-                "work_dir".to_string(),
-                relative_artifact_path(&work_dir, &config.build_root),
-            ),
-            (
-                "tiles_root".to_string(),
-                relative_artifact_path(&tiles_root, &config.build_root),
-            ),
-        ]))
-    })
+    let legends_root = work_dir.join("legends");
+    run_cached_node(
+        prepared,
+        inputs,
+        &[tiles_root.clone(), legends_root.clone()],
+        |prepared| {
+            let work_dir = stage_work_dir(family, source_repo, &prepared.dir)?;
+            seed_prefetched_source_tree(&source_fetch_root, &work_dir)?;
+            build_family_vrts(family, &work_dir, cpu_jobs)?;
+            build_family_legends(family, &work_dir)?;
+            build_family_tiles(family, &work_dir, cpu_jobs)?;
+            prune_chart_render_intermediates(&work_dir)?;
+            Ok(BTreeMap::from([
+                (
+                    "work_dir".to_string(),
+                    relative_artifact_path(&work_dir, &config.build_root),
+                ),
+                (
+                    "tiles_root".to_string(),
+                    relative_artifact_path(&tiles_root, &config.build_root),
+                ),
+                (
+                    "legends_root".to_string(),
+                    relative_artifact_path(&legends_root, &config.build_root),
+                ),
+            ]))
+        },
+    )
 }
 
 pub(super) fn prune_chart_render_intermediates(work_dir: &Path) -> anyhow::Result<()> {
     prune_chart_render_intermediates_dir(work_dir, false)
 }
 
-fn prune_chart_render_intermediates_dir(dir: &Path, in_tiles_dir: bool) -> anyhow::Result<()> {
+fn prune_chart_render_intermediates_dir(dir: &Path, in_output_dir: bool) -> anyhow::Result<()> {
     for entry in fs::read_dir(dir).with_context(|| format!("failed to read {}", dir.display()))? {
         let entry = entry?;
         let path = entry.path();
         let file_type = entry.file_type()?;
-        let is_tiles_dir = entry.file_name().to_string_lossy() == "tiles";
-        let child_in_tiles = in_tiles_dir || is_tiles_dir;
+        let is_output_dir = matches!(
+            entry.file_name().to_string_lossy().as_ref(),
+            "tiles" | "legends"
+        );
+        let child_in_output = in_output_dir || is_output_dir;
         if file_type.is_dir() {
-            prune_chart_render_intermediates_dir(&path, child_in_tiles)?;
-            if !child_in_tiles {
+            prune_chart_render_intermediates_dir(&path, child_in_output)?;
+            if !child_in_output {
                 remove_empty_dir(&path)?;
             }
             continue;
         }
-        if !child_in_tiles {
+        if !child_in_output {
             fs::remove_file(&path)
                 .with_context(|| format!("failed to remove {}", path.display()))?;
         }
@@ -330,7 +344,7 @@ pub(super) fn build_chart_package_nodes(
     let process_node_name = format!("charts-{family_id}-process");
     let process_inputs = chart_process_inputs(
         family,
-        &config.chart_cutline_root,
+        &config.chart_metadata_root,
         &source_urls_path,
         source_content_fingerprint(source_fetch_record)?,
         config.cpu_jobs.min(8).max(1),
@@ -2642,7 +2656,7 @@ mod tests {
             .join("test")
             .join("20260602T000000Z");
         ProductBuildConfig {
-            chart_cutline_root: root.join("cutlines"),
+            chart_metadata_root: root.join("chart-metadata"),
             build_root,
             publish_dir: publish_dir.clone(),
             packaged_dir: publish_dir.join("packaged"),
@@ -2813,12 +2827,15 @@ mod tests {
     }
 
     #[test]
-    fn chart_render_cleanup_keeps_tiles_and_removes_source_work_files() {
+    fn chart_render_cleanup_keeps_tiles_and_legends_and_removes_source_work_files() {
         let temp = tempdir().unwrap();
         let work_dir = temp.path().join("charts-sec");
         let tile_path = work_dir.join("tiles").join("0").join("1").join("2.webp");
+        let legend_path = work_dir.join("legends").join("Seattle SEC.png");
         fs::create_dir_all(tile_path.parent().unwrap()).unwrap();
+        fs::create_dir_all(legend_path.parent().unwrap()).unwrap();
         fs::write(&tile_path, b"tile").unwrap();
+        fs::write(&legend_path, b"legend").unwrap();
         fs::write(work_dir.join("Seattle SEC.tif"), b"tiff").unwrap();
         fs::write(work_dir.join("Seattle.zip"), b"zip").unwrap();
         fs::write(work_dir.join("Seattle.vrt"), b"vrt").unwrap();
@@ -2829,6 +2846,8 @@ mod tests {
 
         assert!(tile_path.exists());
         assert!(work_dir.join("tiles").exists());
+        assert!(legend_path.exists());
+        assert!(work_dir.join("legends").exists());
         assert!(!work_dir.join("Seattle SEC.tif").exists());
         assert!(!work_dir.join("Seattle.zip").exists());
         assert!(!work_dir.join("Seattle.vrt").exists());

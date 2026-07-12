@@ -1,0 +1,27 @@
+{
+  "schema_version": 1,
+  "source": "Seattle TAC.tif",
+  "source_width": 9306,
+  "source_height": 7708,
+  "max_output_width": 1210,
+  "regions": [
+    {
+      "x": 53,
+      "y": 21,
+      "width": 1572,
+      "height": 3080
+    },
+    {
+      "x": 117,
+      "y": 3123,
+      "width": 1519,
+      "height": 4407
+    },
+    {
+      "x": 7690,
+      "y": 2326,
+      "width": 1529,
+      "height": 3006
+    }
+  ]
+}

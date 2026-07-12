@@ -11,7 +11,7 @@ from osgeo import gdal, osr
 
 
 DEFAULT_THUMB_WIDTH = 1000
-DEFAULT_CUTLINE_ROOT = Path("third_party/apps4av/chart-cutlines")
+DEFAULT_CHART_METADATA_ROOT = Path("product/chart-metadata")
 
 
 @dataclass
@@ -40,10 +40,10 @@ def parse_args() -> argparse.Namespace:
         help="Chart work directory containing source GeoTIFFs, such as a charts-tac work dir.",
     )
     parser.add_argument(
-        "--cutline-root",
-        default=DEFAULT_CUTLINE_ROOT,
+        "--chart-metadata-root",
+        default=DEFAULT_CHART_METADATA_ROOT,
         type=Path,
-        help="Root containing family cutline directories.",
+        help="Root containing family neatline and legend metadata directories.",
     )
     parser.add_argument(
         "--family",
@@ -80,7 +80,7 @@ def main() -> None:
     gdal.UseExceptions()
     args = parse_args()
     work_dir = args.work_dir.resolve()
-    cutline_dir = (args.cutline_root / args.family).resolve()
+    cutline_dir = (args.chart_metadata_root / args.family).resolve()
     output_dir = args.output_dir.resolve()
     thumb_dir = output_dir / "thumbs"
 

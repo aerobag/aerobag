@@ -21,9 +21,9 @@ use crossbeam_channel::{self, RecvTimeoutError};
 use geo::{BooleanOps, Coord, LineString, MultiPolygon, Polygon};
 use had_key::{component as had_key_component, upper_component as had_upper_key_component};
 use preprocessor_charts::{
-    build_family_tiles, build_family_vrts, package_family_region_versioned_to,
-    package_family_wide_angle_versioned_to, stage_work_dir, FULL_COVERAGE_ZOOM,
-    WIDE_ANGLE_REGION_ID,
+    build_family_legends, build_family_tiles, build_family_vrts,
+    package_family_region_versioned_to, package_family_wide_angle_versioned_to, stage_work_dir,
+    FULL_COVERAGE_ZOOM, WIDE_ANGLE_REGION_ID,
 };
 use preprocessor_core::nav_kv::{
     build_nav_kv_sorted, NavKvPair, NavKvRoot, NAVKV_STORAGE_FORMAT as NAV_KV_STORAGE_FORMAT,
@@ -114,7 +114,7 @@ fn log_field(value: &str) -> String {
 
 #[derive(Debug, Clone)]
 pub struct ProductBuildConfig {
-    pub chart_cutline_root: PathBuf,
+    pub chart_metadata_root: PathBuf,
     pub build_root: PathBuf,
     pub publish_dir: PathBuf,
     pub packaged_dir: PathBuf,
@@ -1218,8 +1218,8 @@ pub fn explain_product_build(config: &ProductBuildConfig) -> anyhow::Result<Stri
     lines.push(format!("publish_dir {}", config.publish_dir.display()));
     lines.push(format!("packaged_dir {}", config.packaged_dir.display()));
     lines.push(format!(
-        "chart_cutline_root {}",
-        config.chart_cutline_root.display()
+        "chart_metadata_root {}",
+        config.chart_metadata_root.display()
     ));
     lines.push(format!(
         "fetch_cache_root {}",
@@ -2611,7 +2611,7 @@ mod tests {
         let temp = tempdir().expect("tempdir");
         let build_root = temp.path().join("artifacts");
         let config = ProductBuildConfig {
-            chart_cutline_root: temp.path().join("chart-cutlines"),
+            chart_metadata_root: temp.path().join("chart-metadata"),
             build_root: build_root.clone(),
             publish_dir: build_root
                 .join("published")

@@ -363,7 +363,7 @@ pub fn build_cycle(config: &ProductBuildConfig) -> anyhow::Result<PathBuf> {
                         let record = build_chart_process_node(
                             &config,
                             family,
-                            &config.chart_cutline_root,
+                            &config.chart_metadata_root,
                             &source_urls_dir.join(format!("charts-{family_id}/source_urls.jsonl")),
                             &source_fetch,
                             config.cpu_jobs.min(8).max(1),

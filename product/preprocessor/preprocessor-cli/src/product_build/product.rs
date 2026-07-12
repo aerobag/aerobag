@@ -732,7 +732,7 @@ pub fn build_product(config: &ProductBuildConfig) -> anyhow::Result<ProductBuild
                         let record = build_chart_process_node(
                             &cycle_config,
                             family,
-                            &cycle_config.chart_cutline_root,
+                            &cycle_config.chart_metadata_root,
                             &source_urls.join(format!("charts-{family_id}/source_urls.jsonl")),
                             &source_fetch,
                             cycle_config.cpu_jobs.min(8).max(1),

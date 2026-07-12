@@ -10,6 +10,7 @@ from osgeo import gdal, osr
 
 try:
     from chart_cutline_editor import (
+        EditorCatalog,
         EditorState,
         RevisionConflict,
         file_revision,
@@ -17,6 +18,7 @@ try:
     )
 except ImportError:
     from tools.chart_cutline_editor import (
+        EditorCatalog,
         EditorState,
         RevisionConflict,
         file_revision,
@@ -151,6 +153,87 @@ class EditorStateTest(unittest.TestCase):
         self.assertTrue(overview.startswith(b"\x89PNG\r\n\x1a\n"))
         self.assertTrue(crop.startswith(b"\x89PNG\r\n\x1a\n"))
         self.assertTrue(edge_sliver.startswith(b"\x89PNG\r\n\x1a\n"))
+
+    def test_paletted_overview_expands_to_rgb_before_resampling(self) -> None:
+        dataset = gdal.GetDriverByName("GTiff").Create(
+            str(self.source_path),
+            121,
+            101,
+            1,
+            gdal.GDT_Byte,
+        )
+        dataset.SetGeoTransform((1000.0, 2.0, 0.0, 2000.0, 0.0, -2.0))
+        srs = osr.SpatialReference()
+        srs.ImportFromEPSG(3857)
+        dataset.SetProjection(srs.ExportToWkt())
+        color_table = gdal.ColorTable()
+        color_table.SetColorEntry(0, (0, 0, 0, 255))
+        color_table.SetColorEntry(1, (255, 255, 255, 255))
+        band = dataset.GetRasterBand(1)
+        band.SetRasterColorTable(color_table)
+        band.WriteArray((np.indices((101, 121)).sum(axis=0) % 2).astype(np.uint8))
+        dataset = None
+
+        state = EditorState(
+            self.work_dir,
+            self.cutline_dir,
+            self.cache_dir / "palette",
+            overview_width=60,
+        )
+        overview = state.overview_png("Test TAC")
+        vsi_path = "/vsimem/chart-cutline-editor-overview-test.png"
+        try:
+            gdal.FileFromMemBuffer(vsi_path, overview)
+            rendered = gdal.Open(vsi_path)
+            self.assertIsNotNone(rendered)
+            assert rendered is not None
+            pixels = rendered.ReadAsArray()
+            rendered = None
+            values = np.unique(pixels)
+            self.assertTrue(
+                np.any((values > 0) & (values < 255)),
+                f"expected anti-aliased intermediate values, got {values}",
+            )
+        finally:
+            gdal.Unlink(vsi_path)
+
+    def test_legend_layout_round_trip_and_revision_guard(self) -> None:
+        initial = self.state.legend_payload("Test TAC")
+        self.assertIsNone(initial["revision"])
+        self.assertEqual(initial["regions"], [])
+        regions = [
+            {"x": 3, "y": 4, "width": 20, "height": 30},
+            {"x": 40.4, "y": 10.6, "width": 50.2, "height": 60.1},
+        ]
+        saved = self.state.save_legend("Test TAC", regions, 1210, None)
+        self.assertIsInstance(saved["revision"], str)
+        loaded = self.state.legend_payload("Test TAC")
+        self.assertEqual(
+            loaded["regions"],
+            [
+                {"x": 3, "y": 4, "width": 20, "height": 30},
+                {"x": 40, "y": 11, "width": 50, "height": 60},
+            ],
+        )
+        self.assertEqual(loaded["max_output_width"], 1210)
+        with self.assertRaises(RevisionConflict):
+            self.state.save_legend("Test TAC", regions, 1210, None)
+
+    def test_catalog_routes_charts_and_overviews_by_family(self) -> None:
+        catalog = EditorCatalog({"SEC": self.state, "TAC": self.state})
+        self.assertEqual(
+            catalog.family_list(),
+            [
+                {"id": "SEC", "label": "Sectional", "chart_count": 1},
+                {"id": "TAC", "label": "TAC", "chart_count": 1},
+            ],
+        )
+        payload = catalog.chart_payload("SEC", "Test TAC")
+        self.assertEqual(payload["family"], "SEC")
+        self.assertEqual(
+            payload["overview_url"],
+            "/api/overview?family=SEC&name=Test%20TAC",
+        )
 
 
 class SnapTest(unittest.TestCase):

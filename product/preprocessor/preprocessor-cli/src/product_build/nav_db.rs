@@ -1070,7 +1070,7 @@ pub(super) fn build_nav_kv_artifact(
                 let started_at_utc = utc_now_string();
                 let started = Instant::now();
                 let chart_cutline_polygon_sets =
-                    build_chart_cutline_polygon_sets(&config.chart_cutline_root, &resource_index)?;
+                    build_chart_cutline_polygon_sets(&config.chart_metadata_root, &resource_index)?;
                 let chart_catalog =
                     build_nav_kv_chart_catalog(&resource_index, static_raster_tile_levels);
                 let chart_catalog_bytes = serde_json::to_vec(&chart_catalog)
@@ -2117,7 +2117,7 @@ pub(super) fn build_nav_kv_static_raster_catalog_entries(
 }
 
 pub(super) fn build_chart_cutline_polygon_sets(
-    chart_cutline_root: &Path,
+    chart_metadata_root: &Path,
     resource_index: &ResourceIndex,
 ) -> anyhow::Result<BTreeMap<String, ChartCutlinePolygonSetRecord>> {
     let mut sets = BTreeMap::new();
@@ -2135,7 +2135,7 @@ pub(super) fn build_chart_cutline_polygon_sets(
         if family_collections.is_empty() {
             continue;
         }
-        let polygons = read_chart_cutline_polygons(&chart_cutline_root.join(cutline_dir_name))?;
+        let polygons = read_chart_cutline_polygons(&chart_metadata_root.join(cutline_dir_name))?;
         for cutline in polygons {
             for target_collection in
                 collections_for_cutline_polygon(&cutline.points, &family_collections)

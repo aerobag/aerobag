@@ -284,7 +284,7 @@ pub fn gc_build_cache(config: &BuildCacheGcConfig) -> anyhow::Result<BuildCacheG
         .join("gc")
         .join("00000000T000000Z");
     let product_config = ProductBuildConfig {
-        chart_cutline_root: PathBuf::new(),
+        chart_metadata_root: PathBuf::new(),
         build_root: config.build_root.clone(),
         publish_dir: publish_dir.clone(),
         packaged_dir: publish_dir.join("packaged"),
@@ -494,7 +494,7 @@ fn collect_candidate_inodes(
 
 pub fn gc_fetch_cache(config: &FetchCacheGcConfig) -> anyhow::Result<FetchCacheGcReport> {
     let current = current_build_manifests(&ProductBuildConfig {
-        chart_cutline_root: PathBuf::new(),
+        chart_metadata_root: PathBuf::new(),
         build_root: config.build_root.clone(),
         publish_dir: config
             .build_root
@@ -735,7 +735,7 @@ mod tests {
             .join("gc")
             .join("00000000T000000Z");
         ProductBuildConfig {
-            chart_cutline_root: PathBuf::new(),
+            chart_metadata_root: PathBuf::new(),
             build_root,
             publish_dir: publish_dir.clone(),
             packaged_dir: publish_dir.join("packaged"),

@@ -849,6 +849,7 @@ dependencies = [
  "preprocessor-fetch",
  "preprocessor-tools",
  "preprocessor-zip",
+ "serde",
  "serde_json",
 ]
 

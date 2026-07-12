@@ -1,0 +1,21 @@
+{
+  "schema_version": 1,
+  "source": "ENR_H01.tif",
+  "source_width": 24000,
+  "source_height": 8000,
+  "max_output_width": 1210,
+  "regions": [
+    {
+      "x": 0,
+      "y": 0,
+      "width": 2004,
+      "height": 2110
+    },
+    {
+      "x": 0,
+      "y": 3807,
+      "width": 2098,
+      "height": 2311
+    }
+  ]
+}

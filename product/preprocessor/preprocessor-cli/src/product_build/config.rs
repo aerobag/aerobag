@@ -14,10 +14,7 @@ impl ProductBuildConfig {
             .to_path_buf();
         let mut build_root = default_artifact_write_path(&repo_root);
 
-        let mut chart_cutline_root = repo_root
-            .join("third_party")
-            .join("apps4av")
-            .join("chart-cutlines");
+        let mut chart_metadata_root = repo_root.join("product").join("chart-metadata");
         let mut publish_label = env::var("AEROBAG_PUBLISH_LABEL")
             .ok()
             .map(|value| parse_publish_component("AEROBAG_PUBLISH_LABEL", value))
@@ -36,10 +33,10 @@ impl ProductBuildConfig {
         let mut index = 0;
         while index < args.len() {
             match args[index].as_str() {
-                "--chart-cutline-root" => {
-                    chart_cutline_root = PathBuf::from(
+                "--chart-metadata-root" => {
+                    chart_metadata_root = PathBuf::from(
                         args.get(index + 1)
-                            .context("missing value for --chart-cutline-root")?,
+                            .context("missing value for --chart-metadata-root")?,
                     );
                     index += 2;
                 }
@@ -124,7 +121,7 @@ impl ProductBuildConfig {
             fetch_cache_root.unwrap_or_else(|| build_root.join("cache").join("fetch"));
 
         Ok(Self {
-            chart_cutline_root,
+            chart_metadata_root,
             build_root,
             publish_dir,
             packaged_dir,

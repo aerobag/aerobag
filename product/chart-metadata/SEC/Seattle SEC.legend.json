@@ -1,0 +1,51 @@
+{
+  "schema_version": 1,
+  "source": "Seattle SEC.tif",
+  "source_width": 17869,
+  "source_height": 12333,
+  "max_output_width": 1210,
+  "regions": [
+    {
+      "x": 18,
+      "y": 9,
+      "width": 1500,
+      "height": 3063
+    },
+    {
+      "x": 1589,
+      "y": 88,
+      "width": 980,
+      "height": 1413
+    },
+    {
+      "x": 1553,
+      "y": 1500,
+      "width": 1027,
+      "height": 1518
+    },
+    {
+      "x": 1615,
+      "y": 3186,
+      "width": 930,
+      "height": 386
+    },
+    {
+      "x": 1562,
+      "y": 5450,
+      "width": 843,
+      "height": 553
+    },
+    {
+      "x": 61,
+      "y": 10883,
+      "width": 1466,
+      "height": 1079
+    },
+    {
+      "x": 61,
+      "y": 3177,
+      "width": 1510,
+      "height": 2949
+    }
+  ]
+}

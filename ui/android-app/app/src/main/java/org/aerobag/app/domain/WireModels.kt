@@ -748,6 +748,7 @@ data class WireMapSelectionAction(
     val enabled: Boolean,
     val display_only: Boolean,
     val detail_text: String? = null,
+    val detail_title: String? = null,
     val disabled_reason: String? = null,
     val weather_detail: WireWeatherDetailUiView? = null,
     val airspace_limit: WireAirspaceLimitGlyph? = null,

@@ -50,7 +50,8 @@ data class PlateFolderTheme(
 data class AviationTheme(
     val classBDBlue: Color,
     val classCMagenta: Color,
-    val tfrRed: Color,
+    val tfrActive: Color,
+    val tfrUpcoming: Color,
     val intersectionCyan: Color,
     val darkGray: Color,
     val obstacleDanger: Color,
@@ -115,7 +116,8 @@ private data class WirePlateFolderTheme(
 private data class WireAviationTheme(
     val class_b_d_blue: String,
     val class_c_magenta: String,
-    val tfr_red: String,
+    val tfr_active: String,
+    val tfr_upcoming: String,
     val intersection_cyan: String,
     val dark_gray: String,
     val obstacle_danger: String,
@@ -175,7 +177,8 @@ object UiThemeLoader {
             aviation = AviationTheme(
                 classBDBlue = wire.aviation.class_b_d_blue.toColor(),
                 classCMagenta = wire.aviation.class_c_magenta.toColor(),
-                tfrRed = wire.aviation.tfr_red.toColor(),
+                tfrActive = wire.aviation.tfr_active.toColor(),
+                tfrUpcoming = wire.aviation.tfr_upcoming.toColor(),
                 intersectionCyan = wire.aviation.intersection_cyan.toColor(),
                 darkGray = wire.aviation.dark_gray.toColor(),
                 obstacleDanger = wire.aviation.obstacle_danger.toColor(),

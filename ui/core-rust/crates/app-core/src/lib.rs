@@ -86,6 +86,7 @@ pub use live_feeds::{
     PreparedMetarTile,
 };
 pub use map_follow::MapFollowUiState;
+pub(crate) use map_overlay::query_map_overlay_for_surface_at;
 pub use map_overlay::{
     aggregate_vector_tile_cache_key, airspace_feature_path, airspace_label_tile_key,
     airspace_ref_tile_key, chart_ident_label_for_nav_ref_symbol,

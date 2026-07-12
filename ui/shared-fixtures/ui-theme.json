@@ -31,7 +31,8 @@
   "aviation": {
     "class_b_d_blue": "#245ee0",
     "class_c_magenta": "#be32a0",
-    "tfr_red": "#e04646",
+    "tfr_active": "#e04646",
+    "tfr_upcoming": "#b88700",
     "intersection_cyan": "#39d9ff",
     "dark_gray": "#202a31",
     "obstacle_danger": "#d83a2e",

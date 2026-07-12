@@ -332,7 +332,8 @@ import kotlin.math.sin
 internal fun aviationColor(uiTheme: UiTheme, colorKey: String): Color = when (colorKey) {
     "class_c_magenta", "magenta" -> uiTheme.aviation.classCMagenta
     "class_b_d_blue", "blue" -> uiTheme.aviation.classBDBlue
-    "tfr_red", "red" -> uiTheme.aviation.tfrRed
+    "tfr_active" -> uiTheme.aviation.tfrActive
+    "tfr_upcoming" -> uiTheme.aviation.tfrUpcoming
     "intersection_cyan", "cyan" -> uiTheme.aviation.intersectionCyan
     "dark_gray" -> uiTheme.aviation.darkGray
     else -> uiTheme.aviation.classBDBlue

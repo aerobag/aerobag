@@ -409,12 +409,19 @@ button {
   --airspace-label-color: var(--theme-class-b-d-blue);
 }
 
-.airspaceLabel-tfr .airspaceLabel {
-  --airspace-label-color: var(--theme-tfr-red);
+.airspaceLabel-tfr .airspaceLabel,
+.airspaceLabel-tfr_active .airspaceLabel {
+  --airspace-label-color: var(--theme-tfr-active);
 }
 
-.airspaceLabel-tfr .airspaceLabelDivider {
-  --airspace-label-color: var(--theme-tfr-red);
+.airspaceLabel-tfr .airspaceLabelDivider,
+.airspaceLabel-tfr_active .airspaceLabelDivider {
+  --airspace-label-color: var(--theme-tfr-active);
+}
+
+.airspaceLabel-tfr_upcoming .airspaceLabel,
+.airspaceLabel-tfr_upcoming .airspaceLabelDivider {
+  --airspace-label-color: var(--theme-tfr-upcoming);
 }
 
 .terrainOverlay {
@@ -1555,6 +1562,18 @@ button {
   display: grid;
   grid-template-rows: auto minmax(0, 1fr);
   gap: calc(var(--thumb-gap) * 0.9);
+}
+
+.mapSelectionTextDetailSections {
+  grid-template-rows: minmax(0, 1fr);
+}
+
+.mapSelectionTextDetailSections .weatherDetailSection {
+  min-height: calc(var(--thumb) * 6.4);
+}
+
+.mapSelectionTextDetailSections .weatherDetailText {
+  max-height: calc(var(--thumb) * 6);
 }
 
 .weatherDetailSection {

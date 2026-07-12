@@ -50,7 +50,7 @@ use crate::{
     playback::PlaybackSessionState,
     project_nav_symbol_feature,
     publication::{PublicationResolvedResource, PublicationResolver},
-    query_map_overlay_for_surface, query_map_selection_for_surface, state,
+    query_map_overlay_for_surface_at, query_map_selection_for_surface, state,
     AirportPlateAvailability, AirspaceFeaturePayload, AirspaceLabelTilePayload,
     AirspaceReferenceTilePayload, AirwayPresentationPlan, AppError, AppErrorKind, AppEvent,
     AppResult, AppState, AppUiState, FlightPlan, FlightPlanDisplayRowKind,
@@ -7608,7 +7608,7 @@ pub fn get_map_overlay_in_session_with_point_display_scale_at_epoch_ms(
     };
     let flight_plan_ms = elapsed_ms(flight_plan_started_at);
     let overlay_started_at = crate::core_clock_ms();
-    let mut overlay = query_map_overlay_for_surface(
+    let mut overlay = query_map_overlay_for_surface_at(
         &metrics,
         &session.map_overlay_config,
         display_vectors,
@@ -7622,6 +7622,7 @@ pub fn get_map_overlay_in_session_with_point_display_scale_at_epoch_ms(
         &session.airspace_feature_cache,
         session.tfr_payload.as_ref(),
         &flight_plan_features,
+        Some(session_wall_clock_utc(session)),
     );
     let overlay_ms = elapsed_ms(overlay_started_at);
     overlay.flight_plan_features = flight_plan_features;
@@ -11864,7 +11865,7 @@ mod tests {
                 session.obstacle_tile_cache.clone(),
             )
         };
-        let overlay = query_map_overlay_for_surface(
+        let overlay = crate::query_map_overlay_for_surface(
             metrics,
             &config,
             true,
@@ -13838,7 +13839,7 @@ mod tests {
                 session.obstacle_tile_cache.clone(),
             )
         };
-        let overlay = query_map_overlay_for_surface(
+        let overlay = crate::query_map_overlay_for_surface(
             &metrics,
             &config,
             true,
@@ -14048,7 +14049,7 @@ mod tests {
         };
         assert!(statuses.is_empty());
         assert!(effects.is_empty());
-        let overlay = query_map_overlay_for_surface(
+        let overlay = crate::query_map_overlay_for_surface(
             &metrics,
             &config,
             true,
@@ -17868,6 +17869,7 @@ mod tests {
                         enabled: true,
                         display_only: false,
                         detail_text: None,
+                        detail_title: None,
                         disabled_reason: None,
                         weather_detail: None,
                         airspace_limit: None,

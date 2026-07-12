@@ -2737,7 +2737,7 @@ internal fun MapExplorerPage(
                                     mapSelection = selection.copy(
                                         selectedItem = item,
                                         detailModal = MapSelectionDetailModalState(
-                                            title = action.label,
+                                            title = action.detailTitle ?: action.label,
                                             text = detail,
                                         ),
                                     )
@@ -3861,8 +3861,8 @@ internal fun MapSelectionDetailModal(
     val uiTheme = LocalAerobagUiTheme.current
     Surface(
         modifier = modifier
-            .widthIn(max = ThumbSize * 8f)
-            .heightIn(max = ThumbSize * 7f),
+            .widthIn(max = ThumbSize * 9.5f)
+            .heightIn(max = ThumbSize * 8.5f),
         shape = RoundedCornerShape(ThumbRadius + 4.dp),
         color = uiTheme.controls.panelBg.copy(alpha = 0.98f),
         contentColor = uiTheme.controls.panelFg,
@@ -3870,10 +3870,8 @@ internal fun MapSelectionDetailModal(
         border = BorderStroke(1.dp, uiTheme.controls.panelBorder.copy(alpha = 0.85f)),
     ) {
         Column(
-            modifier = Modifier
-                .padding(ThumbSize * 0.18f)
-                .verticalScroll(rememberScrollState()),
-            verticalArrangement = Arrangement.spacedBy(ThumbGap * 0.5f),
+            modifier = Modifier.padding(ThumbSize * 0.18f),
+            verticalArrangement = Arrangement.spacedBy(ThumbGap * 0.85f),
         ) {
             Text(
                 text = title.uppercase(),
@@ -3885,14 +3883,12 @@ internal fun MapSelectionDetailModal(
                 maxLines = 1,
                 overflow = TextOverflow.Ellipsis,
             )
-            Text(
+            WeatherDetailSection(
+                label = null,
+                ageLabel = null,
+                ageWarning = false,
                 text = text,
-                style = MaterialTheme.typography.bodyMedium.copy(
-                    fontWeight = FontWeight.Bold,
-                    fontSize = 15.sp,
-                    lineHeight = 17.sp,
-                ),
-                color = uiTheme.controls.panelFg,
+                expanded = true,
             )
         }
     }
@@ -3946,49 +3942,56 @@ internal fun WeatherDetailModal(
 
 @Composable
 private fun WeatherDetailSection(
-    label: String,
+    label: String?,
     ageLabel: String?,
     ageWarning: Boolean,
     text: String?,
+    expanded: Boolean = false,
 ) {
     val uiTheme = LocalAerobagUiTheme.current
+    val minHeight = if (expanded) ThumbSize * 6.4f else ThumbSize * 1.2f
+    val maxHeight = if (expanded) ThumbSize * 6.8f else ThumbSize * 3.3f
     Column(
         modifier = Modifier
             .fillMaxWidth()
-            .heightIn(min = ThumbSize * 1.2f, max = ThumbSize * 3.3f)
+            .heightIn(min = minHeight, max = maxHeight)
             .background(uiTheme.controls.mapSelectionDisplayBg.copy(alpha = 0.72f), RoundedCornerShape(ThumbRadius))
             .border(1.dp, uiTheme.controls.panelBorder.copy(alpha = 0.4f), RoundedCornerShape(ThumbRadius))
             .padding(ThumbSize * 0.13f),
         verticalArrangement = Arrangement.spacedBy(ThumbGap * 0.45f),
     ) {
-        Row(
-            modifier = Modifier.fillMaxWidth(),
-            horizontalArrangement = Arrangement.SpaceBetween,
-            verticalAlignment = Alignment.CenterVertically,
-        ) {
-            Text(
-                text = label,
-                style = MaterialTheme.typography.labelSmall.copy(
-                    fontWeight = FontWeight.Black,
-                    letterSpacing = 0.6.sp,
-                ),
-                color = uiTheme.controls.panelFg,
-            )
-            ageLabel?.let { labelText ->
-                Text(
-                    text = labelText,
-                    style = MaterialTheme.typography.labelSmall.copy(
-                        fontWeight = FontWeight.Black,
-                        letterSpacing = 0.6.sp,
-                    ),
-                    color = if (ageWarning) uiTheme.controls.dataStatusWarningStroke else uiTheme.controls.panelFg,
-                    maxLines = 1,
-                    overflow = TextOverflow.Ellipsis,
-                )
+        if (label != null || ageLabel != null) {
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                label?.let { labelText ->
+                    Text(
+                        text = labelText,
+                        style = MaterialTheme.typography.labelSmall.copy(
+                            fontWeight = FontWeight.Black,
+                            letterSpacing = 0.6.sp,
+                        ),
+                        color = uiTheme.controls.panelFg,
+                    )
+                } ?: Spacer(modifier = Modifier)
+                ageLabel?.let { labelText ->
+                    Text(
+                        text = labelText,
+                        style = MaterialTheme.typography.labelSmall.copy(
+                            fontWeight = FontWeight.Black,
+                            letterSpacing = 0.6.sp,
+                        ),
+                        color = if (ageWarning) uiTheme.controls.dataStatusWarningStroke else uiTheme.controls.panelFg,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                    )
+                }
             }
         }
         Text(
-            text = text ?: "No $label available.",
+            text = text ?: "No ${label ?: "text"} available.",
             modifier = Modifier
                 .fillMaxWidth()
                 .verticalScroll(rememberScrollState()),

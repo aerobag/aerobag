@@ -838,7 +838,8 @@ type UiThemeJson = {
   aviation: {
     class_b_d_blue: string;
     class_c_magenta: string;
-    tfr_red: string;
+    tfr_active: string;
+    tfr_upcoming: string;
     intersection_cyan: string;
     dark_gray: string;
     obstacle_danger: string;
@@ -2977,7 +2978,8 @@ export default function App() {
         "--theme-cdi-pointer": controlTheme.cdi_pointer,
         "--theme-class-b-d-blue": loadedUiTheme.aviation.class_b_d_blue,
         "--theme-class-c-magenta": loadedUiTheme.aviation.class_c_magenta,
-        "--theme-tfr-red": loadedUiTheme.aviation.tfr_red,
+        "--theme-tfr-active": loadedUiTheme.aviation.tfr_active,
+        "--theme-tfr-upcoming": loadedUiTheme.aviation.tfr_upcoming,
         "--theme-intersection-cyan": loadedUiTheme.aviation.intersection_cyan,
         "--theme-aviation-dark-gray": loadedUiTheme.aviation.dark_gray,
         "--theme-obstacle-danger": loadedUiTheme.aviation.obstacle_danger,
@@ -8836,7 +8838,7 @@ function MapSelectionTray(props: {
                     return;
                   }
                   if (action.detail_text) {
-                    onSelectDetail(action.label, action.detail_text);
+                    onSelectDetail(action.detail_title ?? action.label, action.detail_text);
                     return;
                   }
                   void onSelectAction(selectedItem, action);
@@ -8865,7 +8867,7 @@ function MapSelectionTray(props: {
 function MapSelectionDetailModal(props: { title: string; text: string }) {
   return (
     <section
-      className="mapSelectionDetailModal"
+      className="mapSelectionDetailModal weatherDetailModal"
       aria-label={props.title}
       onPointerDown={stopPointer}
       onPointerMove={stopPointer}
@@ -8876,7 +8878,14 @@ function MapSelectionDetailModal(props: { title: string; text: string }) {
       onDoubleClick={stopDoubleClick}
     >
       <div className="mapSelectionDetailTitle">{props.title}</div>
-      <div className="mapSelectionDetailText">{props.text}</div>
+      <div className="weatherDetailSections mapSelectionTextDetailSections">
+        <WeatherDetailSection
+          label={null}
+          ageLabel={null}
+          ageWarning={false}
+          text={props.text}
+        />
+      </div>
     </section>
   );
 }
@@ -8952,19 +8961,21 @@ function WeatherDetailModal(props: { detail: WeatherDetailUiView; className?: st
   );
 }
 
-function WeatherDetailSection(props: { label: string; ageLabel: string | null; ageWarning: boolean; text: string | null }) {
+function WeatherDetailSection(props: { label: string | null; ageLabel: string | null; ageWarning: boolean; text: string | null }) {
   return (
     <section className="weatherDetailSection">
-      <div className="weatherDetailSectionTitle">
-        <span>{props.label}</span>
-        {props.ageLabel ? (
-          <span className={`weatherDetailAge${props.ageWarning ? " isWarning" : ""}`}>
-            {props.ageLabel}
-          </span>
-        ) : null}
-      </div>
+      {props.label || props.ageLabel ? (
+        <div className="weatherDetailSectionTitle">
+          {props.label ? <span>{props.label}</span> : <span />}
+          {props.ageLabel ? (
+            <span className={`weatherDetailAge${props.ageWarning ? " isWarning" : ""}`}>
+              {props.ageLabel}
+            </span>
+          ) : null}
+        </div>
+      ) : null}
       <pre className={`weatherDetailText${props.text ? "" : " isMissing"}`}>
-        {props.text ?? `No ${props.label} available.`}
+        {props.text ?? `No ${props.label ?? "text"} available.`}
       </pre>
     </section>
   );

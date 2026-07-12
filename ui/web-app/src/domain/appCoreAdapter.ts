@@ -527,6 +527,7 @@ export type MapSelectionAction = {
   enabled: boolean;
   display_only: boolean;
   detail_text?: string | null;
+  detail_title?: string | null;
   disabled_reason?: string | null;
   weather_detail?: WeatherDetailUiView | null;
   airspace_limit?: AirspaceLimitGlyph | null;

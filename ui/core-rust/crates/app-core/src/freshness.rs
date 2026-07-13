@@ -13,6 +13,7 @@ pub struct CycleProductFreshnessPolicy {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct LiveFeedFreshnessPolicies {
+    pub notams: AgeFreshnessPolicy,
     pub metars: AgeFreshnessPolicy,
     pub tafs: AgeFreshnessPolicy,
     pub nexrad: AgeFreshnessPolicy,
@@ -47,6 +48,10 @@ pub const DATA_FRESHNESS_POLICIES: DataFreshnessPolicies = DataFreshnessPolicies
         warning_after_expiration: true,
     },
     live_feeds: LiveFeedFreshnessPolicies {
+        notams: AgeFreshnessPolicy {
+            info_after_ms: Some(HOUR_MS),
+            warning_after_ms: Some(DAY_MS),
+        },
         metars: AgeFreshnessPolicy {
             info_after_ms: None,
             warning_after_ms: Some(30 * MINUTE_MS),

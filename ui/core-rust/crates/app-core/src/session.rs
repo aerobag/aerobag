@@ -1915,6 +1915,18 @@ fn project_data_status_page_state(session: &UiSession) -> UiDataStatusPageState 
         ),
         live_feed_product_status_page_row(
             session,
+            "notams",
+            "NOTAMs",
+            session.airport_notam_index.is_some(),
+            live_feed_status_timestamp(session, "notams"),
+            DATA_FRESHNESS_POLICIES.live_feeds.notams,
+            session
+                .live_feeds
+                .product_loaded_version("notams")
+                .map(str::to_string),
+        ),
+        live_feed_product_status_page_row(
+            session,
             "metars",
             "METARs",
             metars_status.loaded,
@@ -12630,17 +12642,38 @@ mod tests {
         let state = serde_json::json!({
             "schema_version": product_contracts::NOTAM_LIVE_FEED_CONTRACT_VERSION,
             "version_label": "v1",
-            "notam_count": 2,
+            "notam_count": 5,
             "notams_by_id": {
                 "D:AAA:2026:N:1": {
                     "id": "D:AAA:2026:N:1",
                     "airport_id": "KAAA",
-                    "airport_effects": ["runway_closed"],
+                    "airport_effects": ["surface_condition"],
                     "notam_keyword": "RWY",
-                    "text": "RWY 18 CLSD"
+                    "text": "RWY 10L FICON 5/5/5 100 PCT WET"
                 },
                 "D:AAA:2026:N:2": {
                     "id": "D:AAA:2026:N:2",
+                    "airport_id": "KAAA",
+                    "airport_effects": ["runway_closed"],
+                    "notam_keyword": "RWY",
+                    "text": "RWY 10L/28R CLSD"
+                },
+                "D:AAA:2026:N:3": {
+                    "id": "D:AAA:2026:N:3",
+                    "airport_id": "KAAA",
+                    "airport_effects": ["surface_condition"],
+                    "notam_keyword": "RWY",
+                    "text": "RWY 10R FICON 5/5/5 100 PCT WET"
+                },
+                "D:AAA:2026:N:4": {
+                    "id": "D:AAA:2026:N:4",
+                    "airport_id": "KAAA",
+                    "airport_effects": ["surface_condition"],
+                    "notam_keyword": "RWY",
+                    "text": "RWY 14 FICON 5/5/5 100 PCT WET"
+                },
+                "D:AAA:2026:N:5": {
+                    "id": "D:AAA:2026:N:5",
                     "airport_id": null,
                     "airport_effects": [],
                     "notam_keyword": "NAV",
@@ -12670,9 +12703,23 @@ mod tests {
                 None,
             )
             .expect("airport NOTAM detail");
-            assert_eq!(detail.notams.len(), 1);
-            assert_eq!(detail.notams[0].text, "RWY 18 CLSD");
+            assert_eq!(detail.notams.len(), 4);
+            assert_eq!(detail.notams[0].text, "RWY 10L/28R CLSD");
         }
+        let snapshot = get_session_snapshot(init.handle).expect("snapshot");
+        let status = snapshot
+            .data_status_page_state
+            .rows
+            .iter()
+            .find(|row| row.id == "live_feed:notams")
+            .expect("NOTAM status row");
+        assert_eq!(status.label, "NOTAMs");
+        assert_eq!(status.value, "CACHED");
+        assert_eq!(status.severity, UiStatusSeverity::Info);
+        assert!(status
+            .facts
+            .iter()
+            .any(|fact| fact.label == "Version" && fact.value == "v1"));
     }
 
     #[test]
@@ -16119,7 +16166,7 @@ mod tests {
             .data_status_page_state
             .rows
             .iter()
-            .take(13)
+            .take(14)
             .map(|row| row.id.as_str())
             .collect::<Vec<_>>();
 
@@ -16135,6 +16182,7 @@ mod tests {
                 "static:base_data",
                 "live_feed:connection",
                 "live_feed:tfrs",
+                "live_feed:notams",
                 "live_feed:metars",
                 "live_feed:tafs",
                 "live_feed:nexrad",

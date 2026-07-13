@@ -128,6 +128,12 @@ struct ChartReferenceCatalog {
     assets: Vec<ChartReferenceAssetRecord>,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct RasterInspection {
+    dimensions: (u32, u32),
+    has_palette: bool,
+}
+
 #[derive(Debug, Clone)]
 pub struct NativeChartRunRequest {
     pub family: ChartFamily,
@@ -689,8 +695,8 @@ fn render_chart_extract(
     )
     .with_context(|| format!("failed to parse {}", layout_path.display()))?;
     let source_path = work_dir.join(&layout.source);
-    let actual_dimensions = identify_image_dimensions(&source_path)?;
-    validate_chart_extract_layout(&layout, layout_path, actual_dimensions, kind)?;
+    let source_raster = inspect_raster(&source_path)?;
+    validate_chart_extract_layout(&layout, layout_path, source_raster.dimensions, kind)?;
     if layout.regions.is_empty() {
         return Ok(None);
     }
@@ -728,21 +734,22 @@ fn render_chart_extract(
         let output_width = (f64::from(region.width) * scale).round().max(1.0) as u32;
         let output_height = (f64::from(region.height) * scale).round().max(1.0) as u32;
         let rgb_part_path = temp_dir.join(format!("part-{index:02}-rgb.tif"));
+        let mut expand_args = vec!["-of".to_string(), "GTiff".to_string()];
+        if source_raster.has_palette {
+            expand_args.extend(["-expand".to_string(), "rgb".to_string()]);
+        }
+        expand_args.extend([
+            "-srcwin".to_string(),
+            region.x.to_string(),
+            region.y.to_string(),
+            region.width.to_string(),
+            region.height.to_string(),
+            layout.source.clone(),
+            rgb_part_path.to_string_lossy().to_string(),
+        ]);
         let expand = ToolInvocation {
             program: "gdal_translate".to_string(),
-            args: vec![
-                "-of".to_string(),
-                "GTiff".to_string(),
-                "-expand".to_string(),
-                "rgb".to_string(),
-                "-srcwin".to_string(),
-                region.x.to_string(),
-                region.y.to_string(),
-                region.width.to_string(),
-                region.height.to_string(),
-                layout.source.clone(),
-                rgb_part_path.to_string_lossy().to_string(),
-            ],
+            args: expand_args,
             cwd: work_dir.to_path_buf(),
             label: format!(
                 "{}-expand-{}-{index:02}",
@@ -848,12 +855,14 @@ fn source_chart_coverage(
         .pointer("/crs/properties/name")
         .and_then(|value| value.as_str())
         .unwrap_or_default();
-    if !crs.ends_with("3857") {
-        bail!(
-            "chart reference coverage requires EPSG:3857 cutline in {}",
+    let coordinates_are_lon_lat = match crs {
+        value if value.ends_with("3857") => false,
+        "urn:ogc:def:crs:OGC:1.3:CRS84" => true,
+        _ => bail!(
+            "chart reference coverage requires EPSG:3857 or CRS84 cutline in {}; got {crs:?}",
             path.display()
-        );
-    }
+        ),
+    };
     let coordinates = document
         .pointer("/features/0/geometry/coordinates")
         .with_context(|| format!("{} has no polygon coordinates", path.display()))?;
@@ -869,7 +878,11 @@ fn source_chart_coverage(
         lon_max: f64::NEG_INFINITY,
     };
     for (x, y) in mercator_points {
-        let (lat, lon) = web_mercator_to_lat_lon(x, y);
+        let (lat, lon) = if coordinates_are_lon_lat {
+            (y, x)
+        } else {
+            web_mercator_to_lat_lon(x, y)
+        };
         coverage.lat_min = coverage.lat_min.min(lat);
         coverage.lat_max = coverage.lat_max.max(lat);
         coverage.lon_min = coverage.lon_min.min(lon);
@@ -900,35 +913,48 @@ fn web_mercator_to_lat_lon(x: f64, y: f64) -> (f64, f64) {
     (lat, lon)
 }
 
-fn identify_image_dimensions(path: &Path) -> anyhow::Result<(u32, u32)> {
-    let output = Command::new("identify")
-        .args(["-format", "%w %h"])
+fn inspect_raster(path: &Path) -> anyhow::Result<RasterInspection> {
+    let output = Command::new("gdalinfo")
+        .args(["-json", "-nomd", "-noct"])
         .arg(path)
         .output()
         .with_context(|| format!("failed to inspect {}", path.display()))?;
     if !output.status.success() {
         bail!(
-            "identify failed for {}: {}",
+            "gdalinfo failed for {}: {}",
             path.display(),
             command_output_diagnostic_summary(&output)
         );
     }
-    let text = String::from_utf8(output.stdout).context("identify dimensions were not UTF-8")?;
-    let mut fields = text.split_whitespace();
-    let width = fields
-        .next()
-        .context("identify omitted image width")?
-        .parse::<u32>()
-        .context("identify image width was not an integer")?;
-    let height = fields
-        .next()
-        .context("identify omitted image height")?
-        .parse::<u32>()
-        .context("identify image height was not an integer")?;
-    if fields.next().is_some() {
-        bail!("identify returned unexpected dimensions {text:?}");
-    }
-    Ok((width, height))
+    let document: serde_json::Value = serde_json::from_slice(&output.stdout)
+        .with_context(|| format!("gdalinfo output for {} was not JSON", path.display()))?;
+    let size = document
+        .get("size")
+        .and_then(|value| value.as_array())
+        .filter(|value| value.len() == 2)
+        .with_context(|| format!("gdalinfo omitted raster size for {}", path.display()))?;
+    let width = size[0]
+        .as_u64()
+        .and_then(|value| u32::try_from(value).ok())
+        .with_context(|| format!("gdalinfo returned invalid width for {}", path.display()))?;
+    let height = size[1]
+        .as_u64()
+        .and_then(|value| u32::try_from(value).ok())
+        .with_context(|| format!("gdalinfo returned invalid height for {}", path.display()))?;
+    let has_palette = document
+        .get("bands")
+        .and_then(|value| value.as_array())
+        .is_some_and(|bands| {
+            bands.iter().any(|band| {
+                band.get("colorInterpretation")
+                    .and_then(|value| value.as_str())
+                    == Some("Palette")
+            })
+        });
+    Ok(RasterInspection {
+        dimensions: (width, height),
+        has_palette,
+    })
 }
 
 fn validate_chart_extract_layout(
@@ -2179,11 +2205,11 @@ fn count_files_recursive(path: &Path, count: &mut u64) -> anyhow::Result<()> {
 mod tests {
     use super::{
         antimeridian_supplement_from_html, build_family_insets, build_family_legends,
-        copy_dir_recursive, identify_image_dimensions, package_family_region_versioned_to,
+        copy_dir_recursive, inspect_raster, package_family_region_versioned_to,
         package_family_wide_angle_versioned_to, resolve_chart_input_filename,
-        tile_belongs_to_region, validate_chart_extract_layout, vfr_vrt_paths,
-        AntimeridianSupplement, ChartExtractKind, ChartExtractLayout, ChartExtractRegion,
-        ChartReferenceCatalog, CHART_REFERENCE_CATALOG_NAME,
+        source_chart_coverage, tile_belongs_to_region, validate_chart_extract_layout,
+        vfr_vrt_paths, AntimeridianSupplement, ChartExtractKind, ChartExtractLayout,
+        ChartExtractRegion, ChartReferenceCatalog, CHART_REFERENCE_CATALOG_NAME,
     };
     use preprocessor_core::{
         ChartFamily, ChartReferenceAssetRecord, ChartReferenceCoverage, Region,
@@ -2304,11 +2330,13 @@ mod tests {
         assert_eq!(result.output_paths.len(), 1);
         assert_eq!(inset_result.output_paths.len(), 1);
         assert_eq!(
-            identify_image_dimensions(&result.output_paths[0]).unwrap(),
+            inspect_raster(&result.output_paths[0]).unwrap().dimensions,
             (4, 5)
         );
         assert_eq!(
-            identify_image_dimensions(&inset_result.output_paths[0]).unwrap(),
+            inspect_raster(&inset_result.output_paths[0])
+                .unwrap()
+                .dimensions,
             (4, 5)
         );
         assert_ne!(result.output_paths[0], inset_result.output_paths[0]);
@@ -2364,6 +2392,94 @@ mod tests {
         assert!(
             color_count > 2,
             "RGB resampling should introduce anti-aliased intermediate colors, got {color_count}"
+        );
+    }
+
+    #[test]
+    fn chart_legend_renderer_accepts_rgb_source_without_palette_expansion() {
+        let temp = TempDir::new("chart-legend-rgb-source");
+        let work_dir = temp.path().join("charts-enr-l");
+        let layout_dir = work_dir.join("ENR_L");
+        fs::create_dir_all(&layout_dir).unwrap();
+        let ppm_path = work_dir.join("source.ppm");
+        let mut ppm = b"P6\n8 6\n255\n".to_vec();
+        for index in 0..48_u8 {
+            ppm.extend([index, 255 - index, index.saturating_mul(3)]);
+        }
+        fs::write(&ppm_path, ppm).unwrap();
+        assert!(Command::new("gdal_translate")
+            .args(["-q", "-of", "GTiff"])
+            .arg(&ppm_path)
+            .arg(work_dir.join("Test IFR.tif"))
+            .status()
+            .unwrap()
+            .success());
+        fs::write(
+            layout_dir.join("Test IFR.legend.json"),
+            serde_json::to_vec_pretty(&serde_json::json!({
+                "schema_version": 1,
+                "source": "Test IFR.tif",
+                "source_width": 8,
+                "source_height": 6,
+                "max_output_width": 320,
+                "regions": [
+                    {"x": 1, "y": 1, "width": 6, "height": 4}
+                ]
+            }))
+            .unwrap(),
+        )
+        .unwrap();
+
+        assert!(
+            !inspect_raster(&work_dir.join("Test IFR.tif"))
+                .unwrap()
+                .has_palette
+        );
+        let result = build_family_legends(ChartFamily::EnrL, &work_dir).unwrap();
+        assert_eq!(result.output_paths.len(), 1);
+        assert_eq!(
+            inspect_raster(&result.output_paths[0]).unwrap().dimensions,
+            (6, 4)
+        );
+    }
+
+    #[test]
+    fn chart_reference_coverage_accepts_crs84_lon_lat_coordinates() {
+        let temp = TempDir::new("chart-reference-crs84");
+        fs::write(
+            temp.path().join("Las Vegas TAC.geojson"),
+            serde_json::to_vec(&serde_json::json!({
+                "type": "FeatureCollection",
+                "crs": {
+                    "type": "name",
+                    "properties": {"name": "urn:ogc:def:crs:OGC:1.3:CRS84"}
+                },
+                "features": [{
+                    "type": "Feature",
+                    "geometry": {
+                        "type": "Polygon",
+                        "coordinates": [[
+                            [-115.6, 35.7],
+                            [-113.8, 35.7],
+                            [-113.8, 36.8],
+                            [-115.6, 36.8],
+                            [-115.6, 35.7]
+                        ]]
+                    }
+                }]
+            }))
+            .unwrap(),
+        )
+        .unwrap();
+
+        assert_eq!(
+            source_chart_coverage(temp.path(), "Las Vegas TAC").unwrap(),
+            ChartReferenceCoverage {
+                lat_min: 35.7,
+                lat_max: 36.8,
+                lon_min: -115.6,
+                lon_max: -113.8,
+            }
         );
     }
 

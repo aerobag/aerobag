@@ -371,6 +371,11 @@ internal data class NexradOverlayFrame(
     val decodedBytes: Long,
 )
 
+private data class RasterPlanFrame(
+    val tiles: List<RenderTile> = emptyList(),
+    val chartReferenceAction: WireChartReferenceAction? = null,
+)
+
 private const val TerrainTileBitmapCacheMaxEntries = 256
 private const val NexradViewportRefreshThrottleMs = 1_000L
 private const val PerfScenarioKorsOwnshipSourceId = "perf:kors-terrain-ownship"
@@ -595,6 +600,7 @@ internal fun MapExplorerPage(
     onSituationControlInput: (SituationControlInput) -> Unit,
     onPlaybackSourcePathChange: (String) -> Unit,
     onSelectMapFamily: (String) -> Unit,
+    onOpenChartReference: (familyId: String, suggestedChartIds: List<String>) -> Unit,
     onSelectPage: (AppPage) -> Unit,
     onOpenPlateTarget: (airportId: String, target: String, chartId: String) -> Unit,
     onOpenPlan: () -> Unit,
@@ -740,9 +746,9 @@ internal fun MapExplorerPage(
     val situationDockLowered = surfaceWidthDp.dp < SituationDockOverlapWidth
     val situationDockTopPadding =
         if (situationDockLowered) ThumbSize + (ThumbGap * 2f) else ThumbGap
-    val tiles = remember(selectedMapId, currentViewport, surfaceSize, mapDisplayScale, uiSession, debugState.fastTiles) {
+    val rasterPlanFrame = remember(selectedMapId, currentViewport, surfaceSize, mapDisplayScale, uiSession, debugState.fastTiles) {
         if (surfaceSize.width == 0 || surfaceSize.height == 0) {
-            emptyList()
+            RasterPlanFrame()
         } else {
             val planStartMs = SystemClock.elapsedRealtime()
             val plan = json.decodeFromString<WireRasterTilePlan>(
@@ -759,7 +765,7 @@ internal fun MapExplorerPage(
                     "tile-paint-plan id=${timing.id} trigger=${timing.trigger} from=${timing.fromPage} elapsedMs=${SystemClock.elapsedRealtime() - timing.startedMs} planMs=$planMs tiles=${plan.tiles.size} fastTiles=${debugState.fastTiles}"
                 }
             }
-            plan.tiles.mapNotNull { tile ->
+            val renderTiles = plan.tiles.mapNotNull { tile ->
                 val sources = (listOf(tile.primary) + tile.fallbacks)
                     .mapNotNull { source -> source.toRenderTileSource() }
                 if (sources.isEmpty()) {
@@ -776,8 +782,11 @@ internal fun MapExplorerPage(
                     sources = sources,
                 )
             }
+            RasterPlanFrame(renderTiles, plan.chart_reference_action)
         }
     }
+    val tiles = rasterPlanFrame.tiles
+    val chartReferenceAction = rasterPlanFrame.chartReferenceAction
     val terrainVisibleState = rememberUpdatedState(mapLayerState.terrainWarning.visible)
     LaunchedEffect(uiSession) {
         while (true) {
@@ -2615,6 +2624,12 @@ internal fun MapExplorerPage(
                 situationTrayOpen = false
             },
             selectedLabel = selectedLauncher.launcherLabel,
+            chartReferenceAvailable = chartReferenceAction != null,
+            onOpenChartReference = {
+                chartReferenceAction?.let { action ->
+                    onOpenChartReference(action.family_id, action.suggested_chart_ids)
+                }
+            },
             trayOptions = trayOptions,
             trayOpen = chartTrayOpen,
             onToggle = {

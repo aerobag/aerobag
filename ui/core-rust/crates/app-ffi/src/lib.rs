@@ -762,6 +762,23 @@ pub fn select_chart_in_session_json(handle: u64, chart_id_json: &str) -> Result<
     serde_json::to_string(&snapshot).map_err(|err| err.to_string())
 }
 
+pub fn select_chart_reference_in_session_json(
+    handle: u64,
+    family_id_json: &str,
+    suggested_chart_ids_json: &str,
+) -> Result<String, String> {
+    let family_id: String = serde_json::from_str(family_id_json).map_err(|err| err.to_string())?;
+    let suggested_chart_ids: Vec<String> =
+        serde_json::from_str(suggested_chart_ids_json).map_err(|err| err.to_string())?;
+    let snapshot = app_core::select_chart_reference_in_session(
+        handle as u32,
+        &family_id,
+        &suggested_chart_ids,
+    )
+    .map_err(|err| err.to_string())?;
+    serde_json::to_string(&snapshot).map_err(|err| err.to_string())
+}
+
 pub fn set_map_layer_visibility_in_session_json(
     handle: u64,
     layer_id_json: &str,
@@ -3429,6 +3446,22 @@ pub extern "system" fn Java_org_aerobag_app_domain_NativeBindings_selectChartInS
     let result = (|| {
         let chart_id = get_java_string(&mut env, chart_id_json)?;
         select_chart_in_session_json(handle as u64, &chart_id)
+    })();
+    return_string(&mut env, result)
+}
+
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_org_aerobag_app_domain_NativeBindings_selectChartReferenceInSessionJson(
+    mut env: JNIEnv,
+    _class: JClass,
+    handle: i64,
+    family_id_json: JString,
+    suggested_chart_ids_json: JString,
+) -> jstring {
+    let result = (|| {
+        let family_id = get_java_string(&mut env, family_id_json)?;
+        let suggested_chart_ids = get_java_string(&mut env, suggested_chart_ids_json)?;
+        select_chart_reference_in_session_json(handle as u64, &family_id, &suggested_chart_ids)
     })();
     return_string(&mut env, result)
 }

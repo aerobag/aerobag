@@ -1247,6 +1247,16 @@ button {
   pointer-events: none;
 }
 
+.chartReferenceButton {
+  width: calc(var(--thumb) * 0.58);
+  min-width: calc(var(--thumb) * 0.58);
+  padding: 0 calc(var(--thumb) * 0.05);
+}
+
+.chartReferenceButton .chartButtonLabel {
+  font-size: calc(var(--thumb) * 0.18);
+}
+
 .chartSearch {
   position: relative;
   width: calc(var(--thumb) * 2);
@@ -3670,6 +3680,15 @@ button {
 .plateThumb.isActive {
   outline: 2px solid var(--accent);
   outline-offset: 2px;
+}
+
+.plateThumb.isSuggested {
+  box-shadow: 0 0 0 4px #f2c94c, var(--shadow);
+}
+
+.plateThumb.isActive.isSuggested {
+  outline-color: var(--accent);
+  box-shadow: 0 0 0 5px #f2c94c, var(--shadow);
 }
 
 .plateThumbMedia {

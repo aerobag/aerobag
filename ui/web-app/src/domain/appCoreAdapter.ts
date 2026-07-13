@@ -79,13 +79,17 @@ export type {
 
 export type DerivedChartPageState = {
   airports: ChartPageData["airports"];
+  reference_families: ChartPageData["airports"];
   airport_menu_entries: Array<
     | { kind: "separator"; label: string }
     | { kind: "airport"; airport: ChartPageData["airports"][number] }
+    | { kind: "reference"; reference: ChartPageData["airports"][number] }
   >;
   recent_airport_ids: string[];
   selected_airport_id: string;
+  selected_reference_family_id?: string | null;
   selected_chart_id: string;
+  suggested_chart_ids: string[];
 };
 
 export type RasterMapUiState = {
@@ -108,6 +112,7 @@ export type RasterMapUiState = {
     enabled: boolean;
     disabled_reason?: string | null;
     active: boolean;
+    has_references: boolean;
   }>;
 };
 
@@ -274,7 +279,9 @@ export type UiChartPageState = {
   recent_airport_ids: string[];
   plate_target_airport_id?: string | null;
   selected_airport_id: string;
+  selected_reference_family_id?: string | null;
   selected_chart_id: string;
+  suggested_chart_ids?: string[];
 };
 
 export type PointTilePayload = {
@@ -633,6 +640,10 @@ export type RasterTileDraw = {
 export type RasterTilePlan = {
   selected_map_id: string;
   tiles: RasterTileDraw[];
+  chart_reference_action?: {
+    family_id: ChartFamilyId;
+    suggested_chart_ids: string[];
+  } | null;
   debug_timing?: {
     planner_total_ms: number;
     planner_group_ms: number;
@@ -715,6 +726,7 @@ export interface UiSession {
   selectRasterMap(selectedMapId: string): Promise<UiSessionSnapshot>;
   selectAirport(airportId: string): Promise<UiSessionSnapshot>;
   selectChart(chartId: string): Promise<UiSessionSnapshot>;
+  selectChartReference(familyId: ChartFamilyId, suggestedChartIds: string[]): Promise<UiSessionSnapshot>;
   ingestPointTiles(tiles: PointTilePayload[]): Promise<void>;
   ingestAirspaceRefTiles(tiles: AirspaceReferenceTilePayload[]): Promise<void>;
   ingestAirspaceFeatures(features: AirspaceFeaturePayload[]): Promise<void>;
@@ -767,7 +779,9 @@ export interface AppCoreAdapter {
     recentAirportIds: string[],
     plateTargetAirportId?: string | null,
     selectedAirportId?: string,
+    selectedReferenceFamilyId?: string | null,
     selectedChartId?: string,
+    suggestedChartIds?: string[],
   ): Promise<DerivedChartPageState>;
   resolveWaypointIdentifier(identifier: string): Promise<NavRef | null>;
   resolveNavRefPosition(navRef: NavRef): Promise<LatLon>;
@@ -871,6 +885,7 @@ type WasmModule = {
   sequence_active_leg_in_session(sessionHandle: number): Promise<string> | string;
   select_airport_in_session(handle: number, airportIdJson: string): Promise<string> | string;
   select_chart_in_session(handle: number, chartIdJson: string): Promise<string> | string;
+  select_chart_reference_in_session(handle: number, familyIdJson: string, suggestedChartIdsJson: string): Promise<string> | string;
   ingest_point_tiles_in_session(handle: number, tilesJson: string): Promise<void> | void;
   ingest_airspace_ref_tiles_in_session(handle: number, tilesJson: string): Promise<void> | void;
   ingest_airspace_features_in_session(handle: number, featuresJson: string): Promise<void> | void;
@@ -1536,6 +1551,16 @@ export class WasmAppCoreAdapter implements AppCoreAdapter {
         );
         return snapshot;
       },
+      selectChartReference: async (familyId, suggestedChartIds) => {
+        snapshot = await withSessionRetry(async () =>
+          parseSessionSnapshot(this.module.select_chart_reference_in_session(
+            handle,
+            JSON.stringify(familyId),
+            JSON.stringify(suggestedChartIds),
+          )),
+        );
+        return snapshot;
+      },
       ingestPointTiles: async (tiles) => {
         await withSessionRetry(async () => {
           await this.module.ingest_point_tiles_in_session(handle, JSON.stringify(tiles));
@@ -1751,7 +1776,9 @@ export class WasmAppCoreAdapter implements AppCoreAdapter {
     recentAirportIds: string[],
     plateTargetAirportId?: string | null,
     selectedAirportId?: string,
+    selectedReferenceFamilyId?: string | null,
     selectedChartId?: string,
+    suggestedChartIds: string[] = [],
   ): Promise<DerivedChartPageState> {
     return runCoreHadOperation<DerivedChartPageState>({
       kind: "chart_page_state",
@@ -1759,7 +1786,9 @@ export class WasmAppCoreAdapter implements AppCoreAdapter {
       recent_airport_ids: recentAirportIds,
       plate_target_airport_id: plateTargetAirportId ?? null,
       selected_airport_id: selectedAirportId ?? null,
+      selected_reference_family_id: selectedReferenceFamilyId ?? null,
       selected_chart_id: selectedChartId ?? null,
+      suggested_chart_ids: suggestedChartIds,
     });
   }
 
@@ -1926,6 +1955,7 @@ async function loadBestAvailableAdapterUncached(
     "perform_map_selection_action_in_session",
     "select_airport_in_session",
     "select_chart_in_session",
+    "select_chart_reference_in_session",
     "ingest_point_tiles_in_session",
     "ingest_airspace_ref_tiles_in_session",
     "ingest_airspace_features_in_session",

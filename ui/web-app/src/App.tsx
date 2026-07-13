@@ -75,6 +75,7 @@ import {
   type MapSelectionQueryResult,
   type RasterMapUiState,
   type RasterTileDraw,
+  type RasterTilePlan,
   type SessionSnapshotRefreshDecision,
   type SessionSnapshotRefreshPriority,
   type UiMapLayerState,
@@ -1825,10 +1826,13 @@ export default function App() {
   const initialChartPageState = useMemo<DerivedChartPageState>(
     () => ({
       airports: emptyChartPage.airports,
+      reference_families: [],
       airport_menu_entries: [],
       recent_airport_ids: initialRecentAirportIds,
       selected_airport_id: persistedUiState.selectedAirportId ?? initialRecentAirportIds[0] ?? "",
+      selected_reference_family_id: null,
       selected_chart_id: persistedUiState.selectedChartId ?? "",
+      suggested_chart_ids: [],
     }),
     [initialRecentAirportIds, persistedUiState.selectedAirportId, persistedUiState.selectedChartId],
   );
@@ -2503,25 +2507,32 @@ export default function App() {
     const recentAirportIds = sessionSnapshot.chart_page_state.recent_airport_ids;
     const plateTargetAirportId = sessionSnapshot.chart_page_state.plate_target_airport_id ?? null;
     const selectedAirportId = sessionSnapshot.chart_page_state.selected_airport_id || undefined;
+    const selectedReferenceFamilyId = sessionSnapshot.chart_page_state.selected_reference_family_id ?? null;
     const selectedChartId = sessionSnapshot.chart_page_state.selected_chart_id || undefined;
+    const suggestedChartIds = sessionSnapshot.chart_page_state.suggested_chart_ids ?? [];
     return {
-      key: JSON.stringify([currentPlan, recentAirportIds, plateTargetAirportId, selectedAirportId ?? null, selectedChartId ?? null]),
+      key: JSON.stringify([currentPlan, recentAirportIds, plateTargetAirportId, selectedAirportId ?? null, selectedReferenceFamilyId, selectedChartId ?? null, suggestedChartIds]),
       plan: currentPlan,
       recentAirportIds,
       plateTargetAirportId,
       selectedAirportId,
+      selectedReferenceFamilyId,
       selectedChartId,
+      suggestedChartIds,
     };
   }, [
     currentPlan,
     sessionSnapshot.chart_page_state.recent_airport_ids,
     sessionSnapshot.chart_page_state.plate_target_airport_id,
     sessionSnapshot.chart_page_state.selected_airport_id,
+    sessionSnapshot.chart_page_state.selected_reference_family_id,
     sessionSnapshot.chart_page_state.selected_chart_id,
+    sessionSnapshot.chart_page_state.suggested_chart_ids,
   ]);
   const planUiState = appUiState.active_plan;
   const recentAirportIds = derivedChartPageState.recent_airport_ids;
   const selectedAirportId = derivedChartPageState.selected_airport_id;
+  const selectedReferenceFamilyId = derivedChartPageState.selected_reference_family_id ?? null;
   const selectedChartId = derivedChartPageState.selected_chart_id;
 
   const selectedMap = rasterMapState;
@@ -2536,9 +2547,16 @@ export default function App() {
     () => chartPageData.airports.find((airport) => airport.id === selectedAirportId) ?? chartPageData.airports[0] ?? null,
     [chartPageData, selectedAirportId],
   );
+  const selectedReferenceFamily = useMemo(
+    () => selectedReferenceFamilyId
+      ? derivedChartPageState.reference_families.find((family) => family.id === selectedReferenceFamilyId) ?? null
+      : null,
+    [derivedChartPageState.reference_families, selectedReferenceFamilyId],
+  );
+  const selectedChartCollection = selectedReferenceFamily ?? selectedAirport;
   const selectedChart = useMemo(
-    () => selectedAirport?.charts.find((chart) => chart.id === selectedChartId) ?? selectedAirport?.charts[0] ?? null,
-    [selectedAirport, selectedChartId],
+    () => selectedChartCollection?.charts.find((chart) => chart.id === selectedChartId) ?? selectedChartCollection?.charts[0] ?? null,
+    [selectedChartCollection, selectedChartId],
   );
 
   useEffect(() => {
@@ -2706,7 +2724,9 @@ export default function App() {
         chartPageStateRequest.recentAirportIds,
         chartPageStateRequest.plateTargetAirportId,
         chartPageStateRequest.selectedAirportId,
+        chartPageStateRequest.selectedReferenceFamilyId,
         chartPageStateRequest.selectedChartId,
+        chartPageStateRequest.suggestedChartIds,
       ),
     ).then((state) => {
       if (cancelled) {
@@ -3111,6 +3131,20 @@ export default function App() {
           onSelectPage={navigateToPage}
           onOpenPlan={() => navigateToPage("plan")}
           onOpenPlateTarget={openPlateTarget}
+          onOpenChartReference={(action) => {
+            if (!uiSession) {
+              return;
+            }
+            void uiSession.selectChartReference(action.family_id, action.suggested_chart_ids)
+              .then((nextSnapshot) => {
+                applySessionSnapshot(nextSnapshot, "select_chart_reference");
+                setChartFolderOpen(true);
+                navigateToPage("charts");
+              })
+              .catch((error) => {
+                setChartPageStateLoadError(`failed to open chart references: ${errorMessage(error)}`);
+              });
+          }}
           ownship={appUiState.ownship.render}
           ownshipControls={appUiState.ownship.controls}
           flightDataBanner={appUiState.flight_data_banner}
@@ -3283,8 +3317,9 @@ export default function App() {
           plan={currentPlan}
           planUiState={planUiState}
           airportMenuEntries={airportMenuEntries}
-          selectedAirport={selectedAirport}
+          selectedCollection={selectedChartCollection}
           selectedChart={selectedChart}
+          suggestedChartIds={derivedChartPageState.suggested_chart_ids}
           folderOpen={chartFolderOpen}
           viewport={chartViewport}
           onViewportChange={setChartViewport}
@@ -3313,10 +3348,20 @@ export default function App() {
               chartFolderOpen: false,
             });
           }}
+          onSelectReference={(familyId: ChartFamilyId) => {
+            if (!uiSession) {
+              return;
+            }
+            void uiSession.selectChartReference(familyId, []).then((nextSnapshot) => {
+              applySessionSnapshot(nextSnapshot, "select_chart_reference_menu");
+            }).catch(() => {});
+            setChartViewport(null);
+            setChartFolderOpen(true);
+          }}
           onSelectChart={(chartId) => {
-            const nextChart = selectedAirport?.charts.find((chart) => chart.id === chartId);
+            const nextChart = selectedChartCollection?.charts.find((chart) => chart.id === chartId);
             debugLog("charts.select.request", {
-              requested_airport_id: selectedAirport?.id ?? null,
+              requested_airport_id: selectedReferenceFamily ? null : selectedAirport?.id ?? null,
               requested_chart_id: chartId,
               requested_chart_label: nextChart?.label ?? null,
             });
@@ -3407,6 +3452,7 @@ function MapPage(props: {
   onSelectPage: (page: AppPage) => void;
   onOpenPlan: () => void;
   onOpenPlateTarget: (airportId: string, target: "Folder" | "CSup") => void;
+  onOpenChartReference: (action: NonNullable<RasterTilePlan["chart_reference_action"]>) => void;
   ownship: OwnshipRenderState;
   ownshipControls: OwnshipControlModel;
   flightDataBanner: FlightDataBannerModel;
@@ -3451,6 +3497,7 @@ function MapPage(props: {
     onSelectPage,
     onOpenPlan,
     onOpenPlateTarget,
+    onOpenChartReference,
     ownship,
     ownshipControls,
     flightDataBanner,
@@ -4165,6 +4212,7 @@ function MapPage(props: {
     };
   }, [chartSearch.open, chartSearch.query, chartSearchAnchor, props.appCoreAdapter]);
   const [tiles, setTiles] = useState<RasterRenderTile[]>([]);
+  const [chartReferenceAction, setChartReferenceAction] = useState<RasterTilePlan["chart_reference_action"]>(null);
   const [rasterTileViewport, setRasterTileViewport] = useState<MapViewportState | null>(null);
   const [rasterTileFrame, setRasterTileFrame] = useState<MapDisplayFrame | null>(null);
   const [failedRasterTileKeys, setFailedRasterTileKeys] = useState<Set<string>>(() => new Set());
@@ -4274,6 +4322,7 @@ function MapPage(props: {
   function landRasterTilePlan(
     request: NonNullable<typeof rasterTilePlanRequestRef.current>,
     nextTiles: RasterRenderTile[],
+    nextChartReferenceAction: RasterTilePlan["chart_reference_action"],
     superseded: boolean,
     startedAt: number,
   ) {
@@ -4297,6 +4346,7 @@ function MapPage(props: {
     setFailedRasterTileKeys(new Set());
     const failedStateQueuedAt = performance.now();
     setTiles(nextTiles);
+    setChartReferenceAction(nextChartReferenceAction ?? null);
     const tilesStateQueuedAt = performance.now();
     setRasterTileViewport(request.viewport);
     setRasterTileFrame({ viewport: request.viewport, width: request.width, height: request.height });
@@ -4470,7 +4520,13 @@ function MapPage(props: {
               elapsed_ms: Math.round(performance.now() - resolveStartedAt),
               tiles: nextTiles.length,
             }));
-            landRasterTilePlan(request, nextTiles, urlsSuperseded, startedAt);
+            landRasterTilePlan(
+              request,
+              nextTiles,
+              plan.chart_reference_action,
+              urlsSuperseded,
+              startedAt,
+            );
           } catch (error) {
             if (rasterTilePlanRequestRef.current?.id !== request.id) {
               perfDebugLog("map.raster.plan.stale_error", () => ({
@@ -4487,6 +4543,7 @@ function MapPage(props: {
             });
             console.error("failed to query raster tile plan", error);
             setTiles([]);
+            setChartReferenceAction(null);
             setRasterTileViewport(null);
             setRasterTileFrame(null);
           }
@@ -6584,6 +6641,9 @@ function MapPage(props: {
             onToggle={() => trayGroup.toggle("family")}
             ariaLabel="Chart family"
             testId="chart-family-button"
+            accessoryLabel={chartReferenceAction ? "REF" : undefined}
+            accessoryAriaLabel={chartReferenceAction ? `Open ${selectedFamily?.label ?? "chart"} legends and insets` : undefined}
+            onAccessoryClick={chartReferenceAction ? () => onOpenChartReference(chartReferenceAction) : undefined}
             onDisabledAction={showDisabledAction}
             options={familyOptions.map((family) => ({
               id: family.id,
@@ -8611,8 +8671,11 @@ function TrayDock(props: {
   options: TrayOption[];
   footer?: ReactNode;
   testId?: string;
+  accessoryLabel?: string;
+  accessoryAriaLabel?: string;
+  onAccessoryClick?: () => void;
 }) {
-  const { launcherLabel, launcherImageSrc, launcherStyle, open, onToggle, ariaLabel, disabled = false, disabledReason, onDisabledAction, style = "compact", launcherClassName, launcherAccentColor, options, footer, testId } = props;
+  const { launcherLabel, launcherImageSrc, launcherStyle, open, onToggle, ariaLabel, disabled = false, disabledReason, onDisabledAction, style = "compact", launcherClassName, launcherAccentColor, options, footer, testId, accessoryLabel, accessoryAriaLabel, onAccessoryClick } = props;
   const launcherRef = useRef<HTMLButtonElement | null>(null);
   const trayRef = useRef<HTMLElement | null>(null);
   const [trayPosition, setTrayPosition] = useState<{ left: number; top: number } | null>(null);
@@ -8686,6 +8749,20 @@ function TrayDock(props: {
         {launcherImageSrc ? <img className="chartButtonIcon" src={launcherImageSrc} alt="" aria-hidden="true" /> : null}
         <span className={`chartButtonLabel${launcherWide ? " chartButtonLabelWide" : ""}`}>{launcherLabel}</span>
       </button>
+      {accessoryLabel && onAccessoryClick ? (
+        <button
+          type="button"
+          className="chartButton chartReferenceButton"
+          aria-label={accessoryAriaLabel ?? accessoryLabel}
+          title={accessoryAriaLabel ?? accessoryLabel}
+          onPointerDown={stopPointer}
+          onPointerUp={stopPointer}
+          onDoubleClick={stopDoubleClick}
+          onClick={onAccessoryClick}
+        >
+          <span className="chartButtonLabel">{accessoryLabel}</span>
+        </button>
+      ) : null}
       {open && typeof document !== "undefined"
         ? createPortal(
             <section
@@ -9227,8 +9304,9 @@ function ChartsPage(props: {
   plan: FlightPlan;
   planUiState: FlightPlanUiState | null;
   airportMenuEntries: DerivedChartPageState["airport_menu_entries"];
-  selectedAirport: ChartPageData["airports"][number] | null;
+  selectedCollection: ChartPageData["airports"][number] | null;
   selectedChart: ChartAsset | null;
+  suggestedChartIds: string[];
   folderOpen: boolean;
   viewport: ImageViewportState | null;
   onViewportChange: (next: ImageViewportState | null) => void;
@@ -9236,6 +9314,7 @@ function ChartsPage(props: {
   onSelectPage: (page: AppPage) => void;
   onOpenPlan: () => void;
   onSelectAirport: (airportId: string) => void;
+  onSelectReference: (familyId: ChartFamilyId) => void;
   onSelectChart: (chartId: string) => void;
   playbackUiState: PlaybackUiState;
   playbackPanelState: UiPlaybackPanelState;
@@ -9250,7 +9329,7 @@ function ChartsPage(props: {
   debugWarningActive: boolean;
   onFirstVisualReady: () => void;
 }) {
-  const { appCoreAdapter, page, plan, planUiState, airportMenuEntries, selectedAirport, selectedChart, folderOpen, viewport, onViewportChange, onFolderOpenChange, onSelectPage, onOpenPlan, onSelectAirport, onSelectChart, uiSession, ownship, ownshipControls, onFirstVisualReady } = props;
+  const { appCoreAdapter, page, plan, planUiState, airportMenuEntries, selectedCollection, selectedChart, suggestedChartIds, folderOpen, viewport, onViewportChange, onFolderOpenChange, onSelectPage, onOpenPlan, onSelectAirport, onSelectReference, onSelectChart, uiSession, ownship, ownshipControls, onFirstVisualReady } = props;
   const containerRef = useRef<HTMLDivElement | null>(null);
   const imageRef = useRef<HTMLImageElement | null>(null);
   const [surfaceSize, setSurfaceSize] = useState<SurfaceSize>({ width: 0, height: 0 });
@@ -9269,7 +9348,7 @@ function ChartsPage(props: {
   const [resolvedChartUrls, setResolvedChartUrls] = useState<Record<string, ResolvedChartUrls>>({});
   const { toast: disabledActionToast, show: showDisabledAction } = useDisabledActionToast();
   const trayOpen = trayGroup.scrimOpen;
-  const sortedCharts = selectedAirport?.charts ?? [];
+  const sortedCharts = selectedCollection?.charts ?? [];
   const planProcedureLoadKey = `${plan.id}:${plan.version}`;
   const selectedImageSize = imageSize && imageSize.chartId === (selectedChart?.id ?? "") ? imageSize : null;
   const selectedChartAssetUrl = selectedChart ? resolvedChartUrls[selectedChart.id]?.assetUrl ?? null : null;
@@ -9487,7 +9566,7 @@ function ChartsPage(props: {
     if (page !== "charts") {
       return;
     }
-    if (!appCoreAdapter || !selectedChart) {
+    if (!appCoreAdapter || !selectedChart || selectedChart.kind !== "plate") {
       setPlateProcedureLoads([]);
       return;
     }
@@ -9744,7 +9823,7 @@ function ChartsPage(props: {
               <button
                 key={chart.id}
                 type="button"
-                className={`plateThumb${chart.id === selectedChart?.id ? " isActive" : ""}`}
+                className={`plateThumb${chart.id === selectedChart?.id ? " isActive" : ""}${suggestedChartIds.includes(chart.id) ? " isSuggested" : ""}`}
                 onPointerDown={stopPointer}
                 onPointerUp={stopPointer}
                 onDoubleClick={stopDoubleClick}
@@ -9809,7 +9888,11 @@ function ChartsPage(props: {
           <HomeNavButton active={page === "home"} onClick={() => onSelectPage("home")} />
           <ChartPlateToggleButton page={page} onSelectPage={onSelectPage} />
           <TrayDock
-            launcherLabel={selectedAirport?.id ?? "---"}
+            launcherLabel={selectedCollection
+              ? selectedCollection.charts[0]?.airport_id == null
+                ? selectedCollection.id.toUpperCase()
+                : selectedCollection.id
+              : "---"}
             open={trayGroup.isOpen("airport")}
             onToggle={() => trayGroup.toggle("airport")}
             ariaLabel="Airport"
@@ -9823,13 +9906,25 @@ function ChartsPage(props: {
                   label: entry.label,
                 };
               }
-              const { airport } = entry;
+              if (entry.kind === "airport") {
+                const { airport } = entry;
+                return {
+                  id: `airport:${airport.id}`,
+                  label: airport.id,
+                  active: airport.id === selectedCollection?.id,
+                  onSelect: () => {
+                    onSelectAirport(airport.id);
+                    trayGroup.close("airport");
+                  },
+                };
+              }
+              const { reference } = entry;
               return {
-                id: airport.id,
-                label: airport.id,
-                active: airport.id === selectedAirport?.id,
+                id: `reference:${reference.id}`,
+                label: reference.label,
+                active: reference.id === selectedCollection?.id,
                 onSelect: () => {
-                  onSelectAirport(airport.id);
+                  onSelectReference(reference.id as ChartFamilyId);
                   trayGroup.close("airport");
                 },
               };

@@ -933,7 +933,8 @@ export type ChartPageData = {
     label: string;
     charts: Array<{
       id: string;
-      airport_id: string;
+      airport_id?: string | null;
+      collection_id?: string;
       label: string;
       kind: string;
       folder_category: string;

@@ -11,8 +11,9 @@ use std::{
 use anyhow::{bail, Context};
 use chrono::Datelike;
 use preprocessor_core::{
-    ChartFamily, ConcurrencyConfig, Parallelism, PhasePlan, Region, RegionBounds, RunPaths,
-    WorkKind,
+    ChartFamily, ChartReferenceAssetRecord, ChartReferenceCoverage, ChartReferenceManifest,
+    ConcurrencyConfig, Parallelism, PhasePlan, Region, RegionBounds, RunPaths, WorkKind,
+    CHART_REFERENCE_MANIFEST_DIR,
 };
 use preprocessor_fetch::{
     copy_source_urls_provenance, hash_file, prefetch_archives, prefetch_archives_with_provenance,
@@ -21,13 +22,14 @@ use preprocessor_fetch::{
 };
 use preprocessor_tools::{
     append_pngs_vertical, command_output_diagnostic_summary, flatten_png_onto_white,
-    sanitize_label, ToolInvocation, ToolOutcome,
+    sanitize_label, write_thumbnail_from_png, ToolInvocation, ToolOutcome,
 };
 use preprocessor_zip::{write_deterministic_zip, ZipSource};
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 
 pub const FULL_COVERAGE_ZOOM: u32 = 7;
 pub const WIDE_ANGLE_REGION_ID: &str = "wide";
+pub const CHART_REFERENCE_CATALOG_NAME: &str = "chart-reference-catalog.json";
 
 #[derive(Debug, Clone)]
 pub struct ChartRunRequest {
@@ -117,6 +119,13 @@ pub struct ChartExtractRegion {
     pub y: u32,
     pub width: u32,
     pub height: u32,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+struct ChartReferenceCatalog {
+    schema_version: u32,
+    family_id: String,
+    assets: Vec<ChartReferenceAssetRecord>,
 }
 
 #[derive(Debug, Clone)]
@@ -545,6 +554,82 @@ pub fn build_family_insets(
     build_family_extracts(family, work_dir, ChartExtractKind::Inset)
 }
 
+pub fn build_family_reference_catalog(
+    family: ChartFamily,
+    work_dir: impl AsRef<Path>,
+) -> anyhow::Result<PathBuf> {
+    let work_dir = work_dir.as_ref();
+    let spec = ChartSpec::for_family(family);
+    let layout_dir = work_dir.join(spec.chart_dir_name);
+    let mut assets = Vec::new();
+    for kind in [ChartExtractKind::Legend, ChartExtractKind::Inset] {
+        let mut layouts = fs::read_dir(&layout_dir)
+            .with_context(|| format!("failed to read {}", layout_dir.display()))?
+            .filter_map(|entry| entry.ok())
+            .map(|entry| entry.path())
+            .filter(|path| {
+                path.file_name()
+                    .and_then(|name| name.to_str())
+                    .is_some_and(|name| name.ends_with(&format!(".{}.json", kind.metadata_type())))
+            })
+            .collect::<Vec<_>>();
+        layouts.sort();
+        for layout_path in layouts {
+            let layout: ChartExtractLayout = serde_json::from_slice(&fs::read(&layout_path)?)
+                .with_context(|| format!("failed to parse {}", layout_path.display()))?;
+            if layout.regions.is_empty() {
+                continue;
+            }
+            let source_chart_id = Path::new(&layout.source)
+                .file_stem()
+                .and_then(|value| value.to_str())
+                .with_context(|| format!("extract source {} has no UTF-8 stem", layout.source))?
+                .to_string();
+            let file_name = format!("{source_chart_id}.png");
+            let asset_path = format!("{}/{}", kind.output_dir(), file_name);
+            let thumbnail_path = format!("thumbnails/{}/{}", kind.output_dir(), file_name);
+            if !work_dir.join(&asset_path).is_file() || !work_dir.join(&thumbnail_path).is_file() {
+                bail!(
+                    "chart reference outputs missing for {source_chart_id} {}",
+                    kind.metadata_type()
+                );
+            }
+            let source_coverage = source_chart_coverage(&layout_dir, &source_chart_id)?;
+            let kind_label = match kind {
+                ChartExtractKind::Legend => "Legend",
+                ChartExtractKind::Inset => "Insets",
+            };
+            assets.push(ChartReferenceAssetRecord {
+                id: format!(
+                    "chart-reference:{}:{}:{}",
+                    chart_family_id(family),
+                    kind.metadata_type(),
+                    stable_id_component(&source_chart_id)
+                ),
+                family_id: chart_family_id(family).to_string(),
+                source_chart_id: source_chart_id.clone(),
+                label: format!("{source_chart_id} {kind_label}"),
+                kind: kind.metadata_type().to_string(),
+                asset_path,
+                thumbnail_path,
+                source_coverage: Some(source_coverage),
+            });
+        }
+    }
+    assets.sort_by(|left, right| left.id.cmp(&right.id));
+    let output_path = work_dir.join(CHART_REFERENCE_CATALOG_NAME);
+    fs::write(
+        &output_path,
+        serde_json::to_vec_pretty(&ChartReferenceCatalog {
+            schema_version: 1,
+            family_id: chart_family_id(family).to_string(),
+            assets,
+        })?,
+    )
+    .with_context(|| format!("failed to write {}", output_path.display()))?;
+    Ok(output_path)
+}
+
 pub fn build_family_extracts(
     family: ChartFamily,
     work_dir: impl AsRef<Path>,
@@ -554,12 +639,17 @@ pub fn build_family_extracts(
     let spec = ChartSpec::for_family(family);
     let layout_dir = work_dir.join(spec.chart_dir_name);
     let output_root = work_dir.join(kind.output_dir());
+    let thumbnail_output_root = work_dir.join("thumbnails").join(kind.output_dir());
     if output_root.exists() {
         fs::remove_dir_all(&output_root)
             .with_context(|| format!("failed to clear {}", output_root.display()))?;
     }
     fs::create_dir_all(&output_root)
         .with_context(|| format!("failed to create {}", output_root.display()))?;
+    if thumbnail_output_root.exists() {
+        fs::remove_dir_all(&thumbnail_output_root)
+            .with_context(|| format!("failed to clear {}", thumbnail_output_root.display()))?;
+    }
 
     let mut layouts = fs::read_dir(&layout_dir)
         .with_context(|| format!("failed to read {}", layout_dir.display()))?
@@ -722,9 +812,92 @@ fn render_chart_extract(
         ),
     )?;
     flatten_png_onto_white(&output_path)?;
+    write_thumbnail_from_png(
+        &output_path,
+        &work_dir.join("thumbnails"),
+        &Path::new(kind.output_dir()).join(format!("{source_stem}.png")),
+    )?;
     fs::remove_dir_all(&temp_dir)
         .with_context(|| format!("failed to remove {}", temp_dir.display()))?;
     Ok(Some(output_path))
+}
+
+fn chart_family_id(family: ChartFamily) -> &'static str {
+    match family {
+        ChartFamily::Sec => "sec",
+        ChartFamily::Tac => "tac",
+        ChartFamily::EnrL => "enr-l",
+        ChartFamily::EnrH => "enr-h",
+    }
+}
+
+fn stable_id_component(value: &str) -> String {
+    sanitize_label(value).trim_matches('-').to_ascii_lowercase()
+}
+
+fn source_chart_coverage(
+    layout_dir: &Path,
+    source_chart_id: &str,
+) -> anyhow::Result<ChartReferenceCoverage> {
+    let path = layout_dir.join(format!("{source_chart_id}.geojson"));
+    let document: serde_json::Value = serde_json::from_slice(
+        &fs::read(&path).with_context(|| format!("failed to read {}", path.display()))?,
+    )
+    .with_context(|| format!("failed to parse {}", path.display()))?;
+    let crs = document
+        .pointer("/crs/properties/name")
+        .and_then(|value| value.as_str())
+        .unwrap_or_default();
+    if !crs.ends_with("3857") {
+        bail!(
+            "chart reference coverage requires EPSG:3857 cutline in {}",
+            path.display()
+        );
+    }
+    let coordinates = document
+        .pointer("/features/0/geometry/coordinates")
+        .with_context(|| format!("{} has no polygon coordinates", path.display()))?;
+    let mut mercator_points = Vec::new();
+    collect_coordinate_pairs(coordinates, &mut mercator_points);
+    if mercator_points.is_empty() {
+        bail!("{} has no coordinate pairs", path.display());
+    }
+    let mut coverage = ChartReferenceCoverage {
+        lat_min: f64::INFINITY,
+        lat_max: f64::NEG_INFINITY,
+        lon_min: f64::INFINITY,
+        lon_max: f64::NEG_INFINITY,
+    };
+    for (x, y) in mercator_points {
+        let (lat, lon) = web_mercator_to_lat_lon(x, y);
+        coverage.lat_min = coverage.lat_min.min(lat);
+        coverage.lat_max = coverage.lat_max.max(lat);
+        coverage.lon_min = coverage.lon_min.min(lon);
+        coverage.lon_max = coverage.lon_max.max(lon);
+    }
+    Ok(coverage)
+}
+
+fn collect_coordinate_pairs(value: &serde_json::Value, output: &mut Vec<(f64, f64)>) {
+    let Some(values) = value.as_array() else {
+        return;
+    };
+    if values.len() >= 2 {
+        if let (Some(x), Some(y)) = (values[0].as_f64(), values[1].as_f64()) {
+            output.push((x, y));
+            return;
+        }
+    }
+    for child in values {
+        collect_coordinate_pairs(child, output);
+    }
+}
+
+fn web_mercator_to_lat_lon(x: f64, y: f64) -> (f64, f64) {
+    const EARTH_RADIUS_M: f64 = 6_378_137.0;
+    let lon = (x / EARTH_RADIUS_M).to_degrees();
+    let lat = (2.0 * (y / EARTH_RADIUS_M).exp().atan() - std::f64::consts::FRAC_PI_2).to_degrees();
+    (lat, lon)
 }
 
 fn identify_image_dimensions(path: &Path) -> anyhow::Result<(u32, u32)> {
@@ -1488,12 +1661,20 @@ fn package_region_records_from_spec(
         fs::write(&manifest_path, manifest_text)
             .with_context(|| format!("failed to write {}", manifest_path.display()))?;
 
+        let package_id = manifest_name.trim_end_matches(".manifest");
+        let reference_assets = chart_reference_assets_for_package(work_dir, Some(region))?;
+        let (reference_manifest_member, reference_manifest_path) =
+            write_chart_reference_manifest(output_dir, spec.family, package_id, &reference_assets)?;
+
         write_chart_package_zip(
             &zip_path,
             work_dir,
             &selected,
             &manifest_name,
             &manifest_path,
+            &reference_assets,
+            &reference_manifest_member,
+            &reference_manifest_path,
         )?;
 
         if produce_records {
@@ -1550,12 +1731,20 @@ fn package_wide_angle_record_from_spec(
     fs::write(&manifest_path, manifest_text)
         .with_context(|| format!("failed to write {}", manifest_path.display()))?;
 
+    let package_id = manifest_name.trim_end_matches(".manifest");
+    let reference_assets = chart_reference_assets_for_package(work_dir, None)?;
+    let (reference_manifest_member, reference_manifest_path) =
+        write_chart_reference_manifest(output_dir, spec.family, package_id, &reference_assets)?;
+
     write_chart_package_zip(
         &zip_path,
         work_dir,
         &selected,
         &manifest_name,
         &manifest_path,
+        &reference_assets,
+        &reference_manifest_member,
+        &reference_manifest_path,
     )?;
 
     if produce_record {
@@ -1581,13 +1770,86 @@ fn write_chart_package_zip(
     selected_tiles: &[String],
     manifest_name: &str,
     manifest_path: &Path,
+    reference_assets: &[ChartReferenceAssetRecord],
+    reference_manifest_member: &str,
+    reference_manifest_path: &Path,
 ) -> anyhow::Result<()> {
     let mut members = selected_tiles
         .iter()
         .map(|member| ZipSource::new(member, work_dir.join(member)).stored())
         .collect::<Vec<_>>();
+    for asset in reference_assets {
+        members.push(ZipSource::new(&asset.asset_path, work_dir.join(&asset.asset_path)).stored());
+        members.push(
+            ZipSource::new(&asset.thumbnail_path, work_dir.join(&asset.thumbnail_path)).stored(),
+        );
+    }
     members.push(ZipSource::new(manifest_name, manifest_path).stored());
+    members.push(ZipSource::new(reference_manifest_member, reference_manifest_path).stored());
     write_deterministic_zip(zip_path, &members)
+}
+
+fn chart_reference_assets_for_package(
+    work_dir: &Path,
+    region: Option<&Region>,
+) -> anyhow::Result<Vec<ChartReferenceAssetRecord>> {
+    let catalog_path = work_dir.join(CHART_REFERENCE_CATALOG_NAME);
+    let catalog: ChartReferenceCatalog = serde_json::from_slice(
+        &fs::read(&catalog_path)
+            .with_context(|| format!("failed to read {}", catalog_path.display()))?,
+    )
+    .with_context(|| format!("failed to parse {}", catalog_path.display()))?;
+    Ok(catalog
+        .assets
+        .into_iter()
+        .filter(|asset| match region {
+            None => asset.kind == "legend",
+            Some(region) => {
+                asset.kind == "inset"
+                    && asset.source_coverage.is_some_and(|coverage| {
+                        region
+                            .bounds_list()
+                            .iter()
+                            .any(|bounds| reference_coverage_intersects_region(coverage, *bounds))
+                    })
+            }
+        })
+        .collect())
+}
+
+fn reference_coverage_intersects_region(
+    coverage: ChartReferenceCoverage,
+    region: RegionBounds,
+) -> bool {
+    coverage.lon_min < region.lon_max
+        && coverage.lon_max > region.lon_min
+        && coverage.lat_min < region.lat_max
+        && coverage.lat_max > region.lat_min
+}
+
+fn write_chart_reference_manifest(
+    output_dir: &Path,
+    family: ChartFamily,
+    package_id: &str,
+    assets: &[ChartReferenceAssetRecord],
+) -> anyhow::Result<(String, PathBuf)> {
+    let member = format!("{CHART_REFERENCE_MANIFEST_DIR}/{package_id}.json");
+    let path = output_dir.join(&member);
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent)
+            .with_context(|| format!("failed to create {}", parent.display()))?;
+    }
+    fs::write(
+        &path,
+        serde_json::to_vec_pretty(&ChartReferenceManifest {
+            schema_version: 1,
+            family_id: chart_family_id(family).to_string(),
+            package_id: package_id.to_string(),
+            assets: assets.to_vec(),
+        })?,
+    )
+    .with_context(|| format!("failed to write {}", path.display()))?;
+    Ok((member, path))
 }
 
 fn collect_tile_paths_glob(work_dir: &Path, tile_index: &str) -> anyhow::Result<Vec<String>> {
@@ -1917,11 +2179,15 @@ fn count_files_recursive(path: &Path, count: &mut u64) -> anyhow::Result<()> {
 mod tests {
     use super::{
         antimeridian_supplement_from_html, build_family_insets, build_family_legends,
-        copy_dir_recursive, identify_image_dimensions, resolve_chart_input_filename,
+        copy_dir_recursive, identify_image_dimensions, package_family_region_versioned_to,
+        package_family_wide_angle_versioned_to, resolve_chart_input_filename,
         tile_belongs_to_region, validate_chart_extract_layout, vfr_vrt_paths,
         AntimeridianSupplement, ChartExtractKind, ChartExtractLayout, ChartExtractRegion,
+        ChartReferenceCatalog, CHART_REFERENCE_CATALOG_NAME,
     };
-    use preprocessor_core::{ChartFamily, Region};
+    use preprocessor_core::{
+        ChartFamily, ChartReferenceAssetRecord, ChartReferenceCoverage, Region,
+    };
     use std::{
         fs,
         path::{Path, PathBuf},
@@ -2099,6 +2365,126 @@ mod tests {
             color_count > 2,
             "RGB resampling should introduce anti-aliased intermediate colors, got {color_count}"
         );
+    }
+
+    #[test]
+    fn chart_packages_put_legends_in_wide_and_insets_with_source_region() {
+        let temp = TempDir::new("chart-reference-packages");
+        let work_dir = temp.path.join("work");
+        let output_dir = temp.path.join("packages");
+        for member in [
+            "legends/Seattle TAC.png",
+            "thumbnails/legends/Seattle TAC.png",
+            "insets/Los Angeles TAC.png",
+            "thumbnails/insets/Los Angeles TAC.png",
+            "insets/Miami TAC.png",
+            "thumbnails/insets/Miami TAC.png",
+        ] {
+            let path = work_dir.join(member);
+            fs::create_dir_all(path.parent().unwrap()).unwrap();
+            fs::write(path, b"image").unwrap();
+        }
+        let asset =
+            |id: &str, source: &str, kind: &str, path: &str, coverage| ChartReferenceAssetRecord {
+                id: id.to_string(),
+                family_id: "tac".to_string(),
+                source_chart_id: source.to_string(),
+                label: source.to_string(),
+                kind: kind.to_string(),
+                asset_path: path.to_string(),
+                thumbnail_path: format!("thumbnails/{path}"),
+                source_coverage: coverage,
+            };
+        let catalog = ChartReferenceCatalog {
+            schema_version: 1,
+            family_id: "tac".to_string(),
+            assets: vec![
+                asset(
+                    "legend",
+                    "Seattle TAC",
+                    "legend",
+                    "legends/Seattle TAC.png",
+                    None,
+                ),
+                asset(
+                    "la",
+                    "Los Angeles TAC",
+                    "inset",
+                    "insets/Los Angeles TAC.png",
+                    Some(ChartReferenceCoverage {
+                        lat_min: 32.0,
+                        lat_max: 35.0,
+                        lon_min: -120.0,
+                        lon_max: -116.0,
+                    }),
+                ),
+                asset(
+                    "miami",
+                    "Miami TAC",
+                    "inset",
+                    "insets/Miami TAC.png",
+                    Some(ChartReferenceCoverage {
+                        lat_min: 24.0,
+                        lat_max: 27.0,
+                        lon_min: -82.0,
+                        lon_max: -79.0,
+                    }),
+                ),
+            ],
+        };
+        fs::write(
+            work_dir.join(CHART_REFERENCE_CATALOG_NAME),
+            serde_json::to_vec(&catalog).unwrap(),
+        )
+        .unwrap();
+
+        let wide = package_family_wide_angle_versioned_to(
+            ChartFamily::Tac,
+            &work_dir,
+            &output_dir,
+            "2607",
+            "2607-test",
+        )
+        .unwrap();
+        let sw = package_family_region_versioned_to(
+            ChartFamily::Tac,
+            &work_dir,
+            &output_dir,
+            Region::Sw,
+            "2607",
+            "2607-test",
+        )
+        .unwrap();
+        let wide_entries = zip_entries(&output_dir.join(wide.zip));
+        let sw_entries = zip_entries(&output_dir.join(sw.zip));
+        assert!(wide_entries
+            .iter()
+            .any(|entry| entry == "legends/Seattle TAC.png"));
+        assert!(!wide_entries.iter().any(|entry| entry.contains("insets/")));
+        assert!(sw_entries
+            .iter()
+            .any(|entry| entry == "insets/Los Angeles TAC.png"));
+        assert!(!sw_entries
+            .iter()
+            .any(|entry| entry == "insets/Miami TAC.png"));
+    }
+
+    fn zip_entries(path: &Path) -> Vec<String> {
+        let output = Command::new("unzip")
+            .args(["-Z1"])
+            .arg(path)
+            .output()
+            .expect("run unzip");
+        assert!(
+            output.status.success(),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        String::from_utf8(output.stdout)
+            .unwrap()
+            .lines()
+            .map(str::to_string)
+            .collect()
     }
 
     #[test]

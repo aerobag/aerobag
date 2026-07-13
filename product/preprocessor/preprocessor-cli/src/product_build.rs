@@ -21,9 +21,9 @@ use crossbeam_channel::{self, RecvTimeoutError};
 use geo::{BooleanOps, Coord, LineString, MultiPolygon, Polygon};
 use had_key::{component as had_key_component, upper_component as had_upper_key_component};
 use preprocessor_charts::{
-    build_family_insets, build_family_legends, build_family_tiles, build_family_vrts,
-    package_family_region_versioned_to, package_family_wide_angle_versioned_to, stage_work_dir,
-    FULL_COVERAGE_ZOOM, WIDE_ANGLE_REGION_ID,
+    build_family_insets, build_family_legends, build_family_reference_catalog, build_family_tiles,
+    build_family_vrts, package_family_region_versioned_to, package_family_wide_angle_versioned_to,
+    stage_work_dir, CHART_REFERENCE_CATALOG_NAME, FULL_COVERAGE_ZOOM, WIDE_ANGLE_REGION_ID,
 };
 use preprocessor_core::nav_kv::{
     build_nav_kv_sorted, NavKvPair, NavKvRoot, NAVKV_STORAGE_FORMAT as NAV_KV_STORAGE_FORMAT,
@@ -2769,6 +2769,7 @@ mod tests {
                     zoom: 8.0,
                 },
             }],
+            chart_references: vec![],
             airports: Vec::<AirportRecord>::new(),
             airport_resources: Vec::<AirportResourcesRecord>::new(),
             plates: Vec::<PlateRecord>::new(),

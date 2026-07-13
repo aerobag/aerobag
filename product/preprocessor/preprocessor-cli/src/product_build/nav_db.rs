@@ -1094,6 +1094,7 @@ pub(super) fn build_nav_kv_artifact(
                 )?);
                 pairs.extend(build_nav_kv_resource_summary_pairs(&resource_index)?);
                 pairs.extend(build_nav_kv_plate_pairs(&resource_index)?);
+                pairs.extend(build_nav_kv_chart_reference_pairs(&resource_index)?);
                 pairs.extend(build_nav_kv_package_pairs(&package_artifacts)?);
                 pairs.extend(build_nav_kv_navref_pairs(intermediate_sqlite_db_path)?);
                 pairs.extend(build_nav_kv_vector_pairs(vector_had_pairs_path)?);
@@ -1384,6 +1385,18 @@ pub(super) fn build_nav_kv_chart_catalog(
         })
         .map(|collection| {
             let levels = tile_levels_json(&collection.levels);
+            let reference_assets = resource_index
+                .chart_references
+                .iter()
+                .filter(|reference| reference.family_id == collection.family_id)
+                .map(|reference| {
+                    serde_json::json!({
+                        "id": reference.id,
+                        "kind": reference.kind,
+                        "source_coverage": reference.source_coverage,
+                    })
+                })
+                .collect::<Vec<_>>();
             let wide_angle = wide_angle_collections
                 .get(&collection.family_id)
                 .map(|wide_collection| {
@@ -1406,6 +1419,7 @@ pub(super) fn build_nav_kv_chart_catalog(
                     family_display_name(resource_index, &collection.family_id),
                 ),
                 "region_id": collection.region_id,
+                "reference_assets": reference_assets,
                 "map_view": {
                     "chart_family": collection.family_id,
                     "chart_name": format!(
@@ -2400,6 +2414,76 @@ pub(super) fn build_nav_kv_plate_pairs(
                     format!("failed to encode nav_kv plate/by-id/{plate_id} value")
                 })?,
             });
+        }
+    }
+    Ok(pairs)
+}
+
+pub(super) fn build_nav_kv_chart_reference_pairs(
+    resource_index: &ResourceIndex,
+) -> anyhow::Result<Vec<NavKvPair>> {
+    let mut by_family =
+        BTreeMap::<String, Vec<&preprocessor_resource_index::ChartReferenceRecord>>::new();
+    for reference in &resource_index.chart_references {
+        by_family
+            .entry(reference.family_id.clone())
+            .or_default()
+            .push(reference);
+    }
+    let family_index = by_family
+        .keys()
+        .map(|family_id| {
+            serde_json::json!({
+                "id": family_id,
+                "label": family_display_name(resource_index, family_id),
+            })
+        })
+        .collect::<Vec<_>>();
+    let mut pairs = vec![json_pair(
+        "chart-reference/family-index".to_string(),
+        &serde_json::Value::Array(family_index),
+        "chart-reference/family-index",
+    )?];
+    for (family_id, mut references) in by_family {
+        references.sort_by(|left, right| {
+            let left_rank = if left.kind == "legend" { 0 } else { 1 };
+            let right_rank = if right.kind == "legend" { 0 } else { 1 };
+            left_rank
+                .cmp(&right_rank)
+                .then_with(|| left.label.cmp(&right.label))
+        });
+        let chart_ids = references
+            .iter()
+            .map(|reference| reference.id.as_str())
+            .collect::<Vec<_>>();
+        pairs.push(json_pair(
+            format!("chart-reference/family/{}", had_key_component(&family_id)),
+            &serde_json::json!({
+                "id": family_id,
+                "label": family_display_name(resource_index, &family_id),
+                "chart_ids": chart_ids,
+            }),
+            "chart-reference/family",
+        )?);
+        for reference in references {
+            let package_id = reference.package_ids.first().with_context(|| {
+                format!("chart reference {} has no package sources", reference.id)
+            })?;
+            pairs.push(json_pair(
+                format!("plate/by-id/{}", had_key_component(&reference.id)),
+                &serde_json::json!({
+                    "id": reference.id,
+                    "collection_id": format!("reference:{}", reference.family_id),
+                    "package_id": package_id,
+                    "package_ids": reference.package_ids,
+                    "label": reference.label,
+                    "kind": reference.kind,
+                    "folder_category": reference.kind,
+                    "asset_path": reference.asset_path,
+                    "thumbnail_path": reference.thumbnail_path,
+                }),
+                "chart-reference/by-id",
+            )?);
         }
     }
     Ok(pairs)
@@ -4700,6 +4784,7 @@ pub(super) fn nav_kv_plate_asset(
     let mut value = serde_json::json!({
         "id": format!("plate:{airport_id}:{filename}"),
         "airport_id": airport_id,
+        "collection_id": format!("airport:{airport_id}"),
         "package_id": plate.package_id,
         "label": plate.label,
         "kind": "plate",
@@ -4727,6 +4812,7 @@ pub(super) fn nav_kv_csup_asset(
     let mut value = serde_json::json!({
         "id": format!("csup:{airport_id}:{filename}"),
         "airport_id": airport_id,
+        "collection_id": format!("airport:{airport_id}"),
         "package_id": csup.package_id,
         "label": csup.label,
         "kind": "csup",
@@ -4971,6 +5057,7 @@ mod tests {
             serde_json::json!({
                 "id": "plate:KRNT:APD-WA-AIRPORT DIAGRAM.png",
                 "airport_id": "KRNT",
+                "collection_id": "airport:KRNT",
                 "package_id": "NW_TPP_TPP1_2606_01",
                 "label": "Airport Diagram",
                 "kind": "plate",
@@ -5000,6 +5087,7 @@ mod tests {
             serde_json::json!({
                 "id": "csup:KRNT:CSUP-WA_0.png",
                 "airport_id": "KRNT",
+                "collection_id": "airport:KRNT",
                 "package_id": "NW_CSUP_CSUP1_2606_01",
                 "label": "Chart Supplement",
                 "kind": "csup",

@@ -390,6 +390,7 @@ function workerBackedSession(client: AppCoreWorkerClient, sessionId: number, ini
     selectRasterMap: (...args) => updateSnapshot(call("selectRasterMap", args)),
     selectAirport: (...args) => updateSnapshot(call("selectAirport", args)),
     selectChart: (...args) => updateSnapshot(call("selectChart", args)),
+    selectChartReference: (...args) => updateSnapshot(call("selectChartReference", args)),
     ingestPointTiles: (...args) => call("ingestPointTiles", args),
     ingestAirspaceRefTiles: (...args) => call("ingestAirspaceRefTiles", args),
     ingestAirspaceFeatures: (...args) => call("ingestAirspaceFeatures", args),

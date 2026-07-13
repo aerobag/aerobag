@@ -1241,6 +1241,16 @@ pub fn select_chart_in_session(handle: u32, chart_id_json: &str) -> Result<Strin
 }
 
 #[wasm_bindgen]
+pub fn select_chart_reference_in_session(
+    handle: u32,
+    family_id_json: &str,
+    suggested_chart_ids_json: &str,
+) -> Result<String, JsValue> {
+    select_chart_reference_in_session_json(handle, family_id_json, suggested_chart_ids_json)
+        .map_err(|err| JsValue::from_str(&err))
+}
+
+#[wasm_bindgen]
 pub fn set_map_layer_visibility_in_session(
     handle: u32,
     layer_id_json: &str,
@@ -2041,6 +2051,20 @@ fn select_chart_in_session_json(handle: u32, chart_id_json: &str) -> Result<Stri
     let chart_id: String = serde_json::from_str(chart_id_json).map_err(|err| err.to_string())?;
     let snapshot =
         app_core::select_chart_in_session(handle, &chart_id).map_err(|err| err.to_string())?;
+    serde_json::to_string(&snapshot).map_err(|err| err.to_string())
+}
+
+fn select_chart_reference_in_session_json(
+    handle: u32,
+    family_id_json: &str,
+    suggested_chart_ids_json: &str,
+) -> Result<String, String> {
+    let family_id: String = serde_json::from_str(family_id_json).map_err(|err| err.to_string())?;
+    let suggested_chart_ids: Vec<String> =
+        serde_json::from_str(suggested_chart_ids_json).map_err(|err| err.to_string())?;
+    let snapshot =
+        app_core::select_chart_reference_in_session(handle, &family_id, &suggested_chart_ids)
+            .map_err(|err| err.to_string())?;
     serde_json::to_string(&snapshot).map_err(|err| err.to_string())
 }
 

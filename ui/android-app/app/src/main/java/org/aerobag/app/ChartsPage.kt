@@ -355,10 +355,10 @@ internal fun ChartsPage(
     page: AppPage,
     pageHistory: List<AppViewSnapshot>,
     uptimeLabel: String,
-    airports: List<ChartAirport>,
     airportMenuEntries: List<ChartAirportMenuEntry>,
-    selectedAirport: ChartAirport?,
+    selectedCollection: ChartAirport?,
     selectedChart: ChartAsset?,
+    suggestedChartIds: List<String>,
     chartAssetDataRevision: Int,
     plan: FlightPlan,
     uiTheme: UiTheme,
@@ -378,6 +378,7 @@ internal fun ChartsPage(
     onOpenPlan: () -> Unit,
     onStatusAction: (String) -> Unit,
     onSelectAirport: (String) -> Unit,
+    onSelectReference: (String) -> Unit,
     onSelectChart: (String) -> Unit,
     onSelectOwnshipSource: (String) -> Unit,
 ) {
@@ -387,9 +388,6 @@ internal fun ChartsPage(
     val density = LocalDensity.current
     val focusRequester = remember { FocusRequester() }
     val devServerBaseUrl = remember(context) { loadAndroidDevServerBaseUrl(context.applicationContext) }
-    val chartLabelsById = remember(airports) {
-        airports.flatMap { airport -> airport.charts }.associate { chart -> chart.id to chart.label }
-    }
     var airportTrayOpen by remember { mutableStateOf(false) }
     var chartTrayOpen by remember { mutableStateOf(false) }
     var loadTrayOpen by remember { mutableStateOf(false) }
@@ -409,7 +407,7 @@ internal fun ChartsPage(
     val situationDockLowered = surfaceWidthDp.dp < SituationDockOverlapWidth
     val situationDockTopPadding =
         if (situationDockLowered) ThumbSize + (ThumbGap * 2f) else ThumbGap
-    val sortedCharts = selectedAirport?.charts ?: emptyList()
+    val sortedCharts = selectedCollection?.charts ?: emptyList()
     val overscrollPx = with(density) { ThumbSize.toPx() }
     val bitmapLoadKey = chartAssetLoadKey(selectedChart?.id, chartAssetDataRevision)
     val bitmap by produceState<androidx.compose.ui.graphics.ImageBitmap?>(
@@ -461,7 +459,7 @@ internal fun ChartsPage(
     val trayOpen = airportTrayOpen || chartTrayOpen || loadTrayOpen || dataStatusTrayOpen || situationTrayOpen
     val plateProcedureLoads by produceState<List<ProcedureLoadOption>>(initialValue = emptyList(), plan.version, selectedChart?.id) {
         val chart = selectedChart
-        value = if (chart == null) {
+        value = if (chart == null || chart.kind != "plate") {
             emptyList()
         } else {
             withContext(Dispatchers.IO) {
@@ -634,6 +632,7 @@ internal fun ChartsPage(
                 modifier = Modifier.fillMaxSize(),
                 charts = sortedCharts,
                 selectedChartId = selectedChart?.id,
+                suggestedChartIds = suggestedChartIds,
                 uiSession = uiSession,
                 uiTheme = uiTheme,
                 devServerBaseUrl = devServerBaseUrl,
@@ -754,7 +753,7 @@ internal fun ChartsPage(
             modifier = Modifier.align(Alignment.TopStart),
             currentPage = page,
             airportMenuEntries = airportMenuEntries,
-            selectedAirport = selectedAirport,
+            selectedCollection = selectedCollection,
             selectedChart = selectedChart,
             folderOpen = folderOpen,
             airportTrayOpen = airportTrayOpen,
@@ -800,6 +799,13 @@ internal fun ChartsPage(
             },
             onSelectAirport = {
                 onSelectAirport(it)
+                airportTrayOpen = false
+                loadTrayOpen = false
+                dataStatusTrayOpen = false
+                situationTrayOpen = false
+            },
+            onSelectReference = {
+                onSelectReference(it)
                 airportTrayOpen = false
                 loadTrayOpen = false
                 dataStatusTrayOpen = false
@@ -1040,6 +1046,8 @@ internal fun MapTopLeftControls(
     currentPage: AppPage,
     onSelectPage: (AppPage) -> Unit,
     selectedLabel: String,
+    chartReferenceAvailable: Boolean,
+    onOpenChartReference: () -> Unit,
     trayOptions: List<ChartTrayOption>,
     trayOpen: Boolean,
     onToggle: () -> Unit,
@@ -1088,6 +1096,16 @@ internal fun MapTopLeftControls(
                 ) { option.select?.invoke() }
             },
         )
+        if (chartReferenceAvailable) {
+            CompactSquareButton(
+                label = "REF",
+                modifier = Modifier
+                    .width(ThumbSize * 0.58f)
+                    .height(ThumbSize),
+                testTag = "parity:chart-reference-button",
+                onClick = onOpenChartReference,
+            )
+        }
         MenuDock(
             launcherLabel = "LAYERS",
             launcherIconResId = mapLayerIconResId(MapLayerId.Vectors),
@@ -1263,7 +1281,7 @@ internal fun ChartViewerSelectors(
     modifier: Modifier = Modifier,
     currentPage: AppPage,
     airportMenuEntries: List<ChartAirportMenuEntry>,
-    selectedAirport: ChartAirport?,
+    selectedCollection: ChartAirport?,
     selectedChart: ChartAsset?,
     folderOpen: Boolean,
     airportTrayOpen: Boolean,
@@ -1276,6 +1294,7 @@ internal fun ChartViewerSelectors(
     onToggleLoadTray: () -> Unit,
     onToggleFolder: () -> Unit,
     onSelectAirport: (String) -> Unit,
+    onSelectReference: (String) -> Unit,
     onSelectChart: (String) -> Unit,
     onSelectProcedureLoad: (String) -> Unit,
 ) {
@@ -1304,7 +1323,9 @@ internal fun ChartViewerSelectors(
             )
 
             MenuDock(
-                launcherLabel = selectedAirport?.id ?: "---",
+                launcherLabel = selectedCollection?.let { collection ->
+                    if (collection.charts.firstOrNull()?.airportId == null) collection.id.uppercase() else collection.id
+                } ?: "---",
                 launcherTestTag = "parity:plate-airport-button",
                 optionTestTagPrefix = "parity:tray-option",
                 open = airportTrayOpen,
@@ -1318,8 +1339,14 @@ internal fun ChartViewerSelectors(
                             MenuDockOption(
                                 entry.airport.id,
                                 entry.airport.id,
-                                active = entry.airport.id == selectedAirport?.id,
+                                active = entry.airport.id == selectedCollection?.id,
                             ) { onSelectAirport(entry.airport.id) }
+                        is ChartAirportMenuEntry.Reference ->
+                            MenuDockOption(
+                                "reference:${entry.reference.id}",
+                                entry.reference.label,
+                                active = entry.reference.id == selectedCollection?.id,
+                            ) { onSelectReference(entry.reference.id) }
                     }
                 },
             )
@@ -1332,7 +1359,7 @@ internal fun ChartViewerSelectors(
                 onToggle = onToggleChartTray,
                 style = MenuDockStyle.PlateWide,
                 buttonWidthOverride = chartButtonWidth,
-                options = (selectedAirport?.charts ?: emptyList()).map { chart ->
+                options = (selectedCollection?.charts ?: emptyList()).map { chart ->
                     MenuDockOption(
                         chart.id,
                         chart.label,
@@ -1374,6 +1401,7 @@ internal fun PlateFolderGrid(
     modifier: Modifier = Modifier,
     charts: List<ChartAsset>,
     selectedChartId: String?,
+    suggestedChartIds: List<String>,
     uiSession: NativeUiSession,
     uiTheme: UiTheme,
     devServerBaseUrl: String,
@@ -1420,8 +1448,16 @@ internal fun PlateFolderGrid(
                     .height(PlateFolderTileHeight)
                     .testTag("parity:plate-folder-tile:${chart.id}")
                     .border(
-                        width = if (chart.id == selectedChartId) 2.dp else 1.dp,
-                        color = if (chart.id == selectedChartId) MaterialTheme.colorScheme.primary else Color(0x26132129),
+                        width = when {
+                            chart.id == selectedChartId -> 2.dp
+                            chart.id in suggestedChartIds -> 3.dp
+                            else -> 1.dp
+                        },
+                        color = when {
+                            chart.id == selectedChartId -> MaterialTheme.colorScheme.primary
+                            chart.id in suggestedChartIds -> Color(0xFFF2C94C)
+                            else -> Color(0x26132129)
+                        },
                         shape = RoundedCornerShape(ThumbRadius),
                     )
                     .clickable { onSelectChart(chart.id) },

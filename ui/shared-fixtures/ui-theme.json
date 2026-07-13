@@ -56,6 +56,8 @@
       "approach": "#b1591ad9",
       "departure": "#518b12d9",
       "star": "#b93f8ad9",
+      "legend": "#287f8fd9",
+      "inset": "#8b6f16d9",
       "other": "#52656dd9"
     }
   }

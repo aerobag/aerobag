@@ -10,10 +10,16 @@ pub struct DerivedChartPage {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct DerivedChartPageState {
     pub airports: Vec<DerivedChartAirport>,
+    #[serde(default)]
+    pub reference_families: Vec<DerivedChartReferenceFamily>,
     pub airport_menu_entries: Vec<DerivedChartAirportMenuEntry>,
     pub recent_airport_ids: Vec<String>,
     pub selected_airport_id: String,
+    #[serde(default)]
+    pub selected_reference_family_id: Option<String>,
     pub selected_chart_id: String,
+    #[serde(default)]
+    pub suggested_chart_ids: Vec<String>,
 }
 
 pub type DerivedChartCatalog = DerivedChartPage;
@@ -26,10 +32,37 @@ pub struct DerivedChartAirport {
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct DerivedChartReferenceFamily {
+    pub id: String,
+    pub label: String,
+    pub charts: Vec<DerivedChartAsset>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum DerivedChartAirportMenuEntry {
-    Separator { label: String },
-    Airport { airport: DerivedChartAirport },
+    Separator {
+        label: String,
+    },
+    Airport {
+        airport: DerivedChartAirport,
+    },
+    Reference {
+        reference: DerivedChartReferenceFamily,
+    },
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ChartReferenceFamilySummary {
+    pub id: String,
+    pub label: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ChartReferenceFamilyRecord {
+    pub id: String,
+    pub label: String,
+    pub chart_ids: Vec<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -46,7 +79,10 @@ pub struct PlateAirportRecord {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct DerivedChartAsset {
     pub id: String,
-    pub airport_id: String,
+    #[serde(default)]
+    pub airport_id: Option<String>,
+    #[serde(default)]
+    pub collection_id: String,
     pub label: String,
     pub kind: String,
     pub folder_category: String,
@@ -56,10 +92,15 @@ pub struct DerivedChartAsset {
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub struct PlateChartAssetRecord {
+pub struct ChartAssetRecord {
     pub id: String,
-    pub airport_id: String,
+    #[serde(default)]
+    pub airport_id: Option<String>,
+    #[serde(default)]
+    pub collection_id: String,
     pub package_id: String,
+    #[serde(default)]
+    pub package_ids: Vec<String>,
     pub label: String,
     pub kind: String,
     pub folder_category: String,
@@ -69,11 +110,12 @@ pub struct PlateChartAssetRecord {
     pub georef: Option<PlateGeoref>,
 }
 
-impl From<PlateChartAssetRecord> for DerivedChartAsset {
-    fn from(record: PlateChartAssetRecord) -> Self {
+impl From<ChartAssetRecord> for DerivedChartAsset {
+    fn from(record: ChartAssetRecord) -> Self {
         Self {
             id: record.id,
             airport_id: record.airport_id,
+            collection_id: record.collection_id,
             label: record.label,
             kind: record.kind,
             folder_category: record.folder_category,
@@ -110,26 +152,90 @@ pub fn derive_chart_page_state_from_airports(
     selected_airport_id: Option<&str>,
     candidate_chart_id: Option<&str>,
 ) -> DerivedChartPageState {
+    derive_chart_page_state_from_collections(
+        plan,
+        airports,
+        Vec::new(),
+        stored_recent_airport_ids,
+        plate_target_airport_id,
+        selected_airport_id,
+        None,
+        candidate_chart_id,
+        &[],
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+pub fn derive_chart_page_state_from_collections(
+    plan: &FlightPlan,
+    airports: Vec<DerivedChartAirport>,
+    reference_families: Vec<DerivedChartReferenceFamily>,
+    stored_recent_airport_ids: &[String],
+    plate_target_airport_id: Option<&str>,
+    selected_airport_id: Option<&str>,
+    selected_reference_family_id: Option<&str>,
+    candidate_chart_id: Option<&str>,
+    suggested_chart_ids: &[String],
+) -> DerivedChartPageState {
     let recent_airport_ids = merge_recent_airport_ids(&airports, stored_recent_airport_ids);
     let selected_airport_id = resolve_airport_id(
         &airports,
         selected_airport_id.or(plate_target_airport_id),
         &recent_airport_ids,
     );
-    let selected_chart_id = resolve_chart_id(&airports, &selected_airport_id, candidate_chart_id);
-    let airport_menu_entries = derive_airport_menu_entries(
+    let selected_reference_family_id = selected_reference_family_id
+        .filter(|family_id| {
+            reference_families
+                .iter()
+                .any(|family| family.id == *family_id)
+        })
+        .map(str::to_string);
+    let selected_chart_id = selected_reference_family_id
+        .as_deref()
+        .and_then(|family_id| {
+            reference_families
+                .iter()
+                .find(|family| family.id == family_id)
+                .and_then(|family| resolve_chart_in_assets(&family.charts, candidate_chart_id))
+        })
+        .unwrap_or_else(|| resolve_chart_id(&airports, &selected_airport_id, candidate_chart_id));
+    let mut airport_menu_entries = derive_airport_menu_entries(
         &airports,
         plan,
         stored_recent_airport_ids,
         plate_target_airport_id,
     );
+    if !reference_families.is_empty() {
+        airport_menu_entries.push(DerivedChartAirportMenuEntry::Separator {
+            label: "Chart references".to_string(),
+        });
+        airport_menu_entries.extend(
+            reference_families
+                .iter()
+                .cloned()
+                .map(|reference| DerivedChartAirportMenuEntry::Reference { reference }),
+        );
+    }
     DerivedChartPageState {
         airports,
+        reference_families,
         airport_menu_entries,
         recent_airport_ids,
         selected_airport_id,
+        selected_reference_family_id,
         selected_chart_id,
+        suggested_chart_ids: suggested_chart_ids.to_vec(),
     }
+}
+
+fn resolve_chart_in_assets(
+    charts: &[DerivedChartAsset],
+    candidate_chart_id: Option<&str>,
+) -> Option<String> {
+    candidate_chart_id
+        .filter(|chart_id| charts.iter().any(|chart| chart.id == *chart_id))
+        .map(str::to_string)
+        .or_else(|| charts.first().map(|chart| chart.id.clone()))
 }
 
 pub fn airport_ids_from_plan(plan: &FlightPlan) -> Vec<String> {
@@ -454,7 +560,8 @@ mod tests {
     fn chart(airport_id: &str, id: &str, kind: &str, folder_category: &str) -> DerivedChartAsset {
         DerivedChartAsset {
             id: id.to_string(),
-            airport_id: airport_id.to_string(),
+            airport_id: Some(airport_id.to_string()),
+            collection_id: format!("airport:{airport_id}"),
             label: id.to_string(),
             kind: kind.to_string(),
             folder_category: folder_category.to_string(),
@@ -557,6 +664,7 @@ mod tests {
             .map(|entry| match entry {
                 DerivedChartAirportMenuEntry::Separator { label } => format!("--{label}"),
                 DerivedChartAirportMenuEntry::Airport { airport } => airport.id.clone(),
+                DerivedChartAirportMenuEntry::Reference { reference } => reference.id.clone(),
             })
             .collect::<Vec<_>>();
         assert_eq!(
@@ -579,5 +687,55 @@ mod tests {
                 "KOLM",
             ]
         );
+    }
+
+    #[test]
+    fn chart_reference_target_preserves_airport_recents_and_multiple_suggestions() {
+        let reference = DerivedChartReferenceFamily {
+            id: "tac".to_string(),
+            label: "TAC".to_string(),
+            charts: vec![
+                DerivedChartAsset {
+                    id: "legend".to_string(),
+                    airport_id: None,
+                    collection_id: "reference:tac".to_string(),
+                    label: "TAC Legend".to_string(),
+                    kind: "legend".to_string(),
+                    folder_category: "legend".to_string(),
+                    has_thumbnail: true,
+                    georef: None,
+                },
+                DerivedChartAsset {
+                    id: "la-inset".to_string(),
+                    airport_id: None,
+                    collection_id: "reference:tac".to_string(),
+                    label: "Los Angeles Insets".to_string(),
+                    kind: "inset".to_string(),
+                    folder_category: "inset".to_string(),
+                    has_thumbnail: true,
+                    georef: None,
+                },
+            ],
+        };
+        let state = derive_chart_page_state_from_collections(
+            &FlightPlan::default(),
+            vec![airport_with_id("KSEA")],
+            vec![reference],
+            &["KSEA".to_string()],
+            None,
+            Some("KSEA"),
+            Some("tac"),
+            None,
+            &["la-inset".to_string(), "other-inset".to_string()],
+        );
+
+        assert_eq!(state.selected_reference_family_id.as_deref(), Some("tac"));
+        assert_eq!(state.selected_chart_id, "legend");
+        assert_eq!(state.recent_airport_ids, vec!["KSEA"]);
+        assert_eq!(state.suggested_chart_ids, vec!["la-inset", "other-inset"]);
+        assert!(state.airport_menu_entries.iter().any(|entry| matches!(
+            entry,
+            DerivedChartAirportMenuEntry::Reference { reference } if reference.id == "tac"
+        )));
     }
 }

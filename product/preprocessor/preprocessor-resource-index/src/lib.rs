@@ -1,7 +1,9 @@
 use anyhow::{bail, Context};
 use chrono::{Datelike, Duration, NaiveDate, Utc};
 use preprocessor_core::{
-    PackageAssetManifest, PackageAssetRecord, PlateGeoref, Region, PACKAGE_ASSET_MANIFEST_NAME,
+    ChartReferenceAssetRecord, ChartReferenceCoverage, ChartReferenceManifest,
+    PackageAssetManifest, PackageAssetRecord, PlateGeoref, Region, CHART_REFERENCE_MANIFEST_DIR,
+    PACKAGE_ASSET_MANIFEST_NAME,
 };
 use preprocessor_data::INTERMEDIATE_SQLITE_BASENAME;
 use preprocessor_fetch::PackageOutputRecord;
@@ -55,6 +57,8 @@ pub struct ResourceIndex {
     pub regions: Vec<ResourceRegion>,
     pub packages: Vec<ResourcePackage>,
     pub chart_collections: Vec<ChartCollectionRecord>,
+    #[serde(default)]
+    pub chart_references: Vec<ChartReferenceRecord>,
     pub airports: Vec<AirportRecord>,
     pub airport_resources: Vec<AirportResourcesRecord>,
     pub plates: Vec<PlateRecord>,
@@ -231,6 +235,20 @@ pub struct ChartCollectionRecord {
     pub default_view: DefaultView,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct ChartReferenceRecord {
+    pub id: String,
+    pub family_id: String,
+    pub source_chart_id: String,
+    pub label: String,
+    pub kind: String,
+    pub asset_path: String,
+    pub thumbnail_path: String,
+    pub package_ids: Vec<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source_coverage: Option<ChartReferenceCoverage>,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, PartialOrd, Ord)]
 pub struct TileLevelRecord {
     pub zoom: u32,
@@ -339,6 +357,8 @@ pub fn build_resource_index(request: &BuildResourceIndexRequest) -> anyhow::Resu
     let temporal_summary = build_temporal_summary(&packages, &nav_temporal);
     let chart_collections = collect_chart_collections(&request.chart_sources)?;
     log_progress(request, "collected chart collections")?;
+    let chart_references = collect_chart_references(&request.chart_sources)?;
+    log_progress(request, "collected chart references")?;
     let sqlite_path = extract_sqlite_entry(&request.nav_db_zip, INTERMEDIATE_SQLITE_BASENAME)?;
     log_progress(request, "extracted nav sqlite")?;
     let connection = Connection::open(sqlite_path.path())
@@ -373,7 +393,7 @@ pub fn build_resource_index(request: &BuildResourceIndexRequest) -> anyhow::Resu
     log_progress(request, "collected regions")?;
 
     let index = ResourceIndex {
-        schema_version: 5,
+        schema_version: 6,
         cycle,
         generated_at_utc: Utc::now().format("%Y-%m-%dT%H:%M:%SZ").to_string(),
         temporal_summary,
@@ -392,6 +412,7 @@ pub fn build_resource_index(request: &BuildResourceIndexRequest) -> anyhow::Resu
         regions,
         packages,
         chart_collections,
+        chart_references,
         airports,
         airport_resources,
         plates,
@@ -962,6 +983,99 @@ fn collect_chart_collections(
         .collect::<Vec<_>>();
     collections.sort_by(|left, right| left.id.cmp(&right.id));
     Ok(collections)
+}
+
+fn collect_chart_references(
+    chart_sources: &[ChartSource],
+) -> anyhow::Result<Vec<ChartReferenceRecord>> {
+    let mut by_id = BTreeMap::<String, ChartReferenceRecord>::new();
+    for source in chart_sources {
+        for package in read_package_outputs(&source.package_outputs_path)? {
+            let package_id = package_id_from_manifest_name(&package.manifest);
+            let zip_path = source.package_root.join(&package.zip);
+            let manifest = read_chart_reference_manifest(&zip_path, &package_id)?;
+            if manifest.family_id != source.family_id {
+                bail!(
+                    "chart reference manifest family {} != source family {} in {}",
+                    manifest.family_id,
+                    source.family_id,
+                    zip_path.display()
+                );
+            }
+            if manifest.package_id != package_id {
+                bail!(
+                    "chart reference manifest package {} != expected {} in {}",
+                    manifest.package_id,
+                    package_id,
+                    zip_path.display()
+                );
+            }
+            for asset in manifest.assets {
+                merge_chart_reference(&mut by_id, asset, &package_id, &zip_path)?;
+            }
+        }
+    }
+    Ok(by_id.into_values().collect())
+}
+
+fn read_chart_reference_manifest(
+    zip_path: &Path,
+    package_id: &str,
+) -> anyhow::Result<ChartReferenceManifest> {
+    let file = fs::File::open(zip_path)
+        .with_context(|| format!("failed to open {}", zip_path.display()))?;
+    let mut archive = ZipArchive::new(file)
+        .with_context(|| format!("failed to open zip {}", zip_path.display()))?;
+    let member = format!("{CHART_REFERENCE_MANIFEST_DIR}/{package_id}.json");
+    let entry = archive
+        .by_name(&member)
+        .with_context(|| format!("missing {member} in {}", zip_path.display()))?;
+    serde_json::from_reader(entry)
+        .with_context(|| format!("failed to parse {member} in {}", zip_path.display()))
+}
+
+fn merge_chart_reference(
+    by_id: &mut BTreeMap<String, ChartReferenceRecord>,
+    asset: ChartReferenceAssetRecord,
+    package_id: &str,
+    zip_path: &Path,
+) -> anyhow::Result<()> {
+    if let Some(existing) = by_id.get_mut(&asset.id) {
+        let matches = existing.family_id == asset.family_id
+            && existing.source_chart_id == asset.source_chart_id
+            && existing.label == asset.label
+            && existing.kind == asset.kind
+            && existing.asset_path == asset.asset_path
+            && existing.thumbnail_path == asset.thumbnail_path
+            && existing.source_coverage == asset.source_coverage;
+        if !matches {
+            bail!(
+                "conflicting chart reference {} metadata in {}",
+                asset.id,
+                zip_path.display()
+            );
+        }
+        if !existing.package_ids.iter().any(|id| id == package_id) {
+            existing.package_ids.push(package_id.to_string());
+            existing.package_ids.sort();
+        }
+        return Ok(());
+    }
+    by_id.insert(
+        asset.id.clone(),
+        ChartReferenceRecord {
+            id: asset.id,
+            family_id: asset.family_id,
+            source_chart_id: asset.source_chart_id,
+            label: asset.label,
+            kind: asset.kind,
+            asset_path: asset.asset_path,
+            thumbnail_path: asset.thumbnail_path,
+            package_ids: vec![package_id.to_string()],
+            source_coverage: asset.source_coverage,
+        },
+    );
+    Ok(())
 }
 
 #[derive(Debug)]
@@ -2275,6 +2389,18 @@ mod tests {
             zip.start_file("tiles/0/7/21/49.webp", SimpleFileOptions::default())
                 .expect("start chart tile");
             zip.write_all(b"webp").expect("write chart tile");
+            zip.start_file("chart-references/NW_SEC.json", SimpleFileOptions::default())
+                .expect("start chart reference manifest");
+            zip.write_all(
+                &serde_json::to_vec(&ChartReferenceManifest {
+                    schema_version: 1,
+                    family_id: "sec".to_string(),
+                    package_id: "NW_SEC".to_string(),
+                    assets: vec![],
+                })
+                .unwrap(),
+            )
+            .expect("write chart reference manifest");
             zip.finish().expect("finish chart zip");
         }
         let chart_outputs = temp.path().join("chart-package-outputs.jsonl");
@@ -2776,5 +2902,32 @@ mod tests {
             "Hot Spot 1"
         );
         assert_eq!(pretty_tpp_label("HOT-WA-HOT SPOT", "hotspot"), "Hot Spot");
+    }
+
+    #[test]
+    fn duplicate_packaged_chart_references_merge_package_sources() {
+        let asset = ChartReferenceAssetRecord {
+            id: "chart-reference:tac:inset:los-angeles-tac".to_string(),
+            family_id: "tac".to_string(),
+            source_chart_id: "Los Angeles TAC".to_string(),
+            label: "Los Angeles TAC Insets".to_string(),
+            kind: "inset".to_string(),
+            asset_path: "insets/Los Angeles TAC.png".to_string(),
+            thumbnail_path: "thumbnails/insets/Los Angeles TAC.png".to_string(),
+            source_coverage: Some(ChartReferenceCoverage {
+                lat_min: 32.0,
+                lat_max: 35.0,
+                lon_min: -120.0,
+                lon_max: -116.0,
+            }),
+        };
+        let mut records = BTreeMap::new();
+        merge_chart_reference(&mut records, asset.clone(), "SW_TAC", Path::new("sw.zip")).unwrap();
+        merge_chart_reference(&mut records, asset, "SC_TAC", Path::new("sc.zip")).unwrap();
+
+        assert_eq!(
+            records.values().next().unwrap().package_ids,
+            vec!["SC_TAC", "SW_TAC"]
+        );
     }
 }

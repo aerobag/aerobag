@@ -9,6 +9,7 @@ use std::{
 use anyhow::{bail, Context};
 
 pub const PACKAGE_ASSET_MANIFEST_NAME: &str = "package-assets.json";
+pub const CHART_REFERENCE_MANIFEST_DIR: &str = "chart-references";
 
 pub use had_nav_kv as nav_kv;
 
@@ -89,6 +90,35 @@ pub struct PackageAssetRecord {
     pub procedure_uid: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub georef: Option<PlateGeoref>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct ChartReferenceManifest {
+    pub schema_version: u32,
+    pub family_id: String,
+    pub package_id: String,
+    pub assets: Vec<ChartReferenceAssetRecord>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct ChartReferenceAssetRecord {
+    pub id: String,
+    pub family_id: String,
+    pub source_chart_id: String,
+    pub label: String,
+    pub kind: String,
+    pub asset_path: String,
+    pub thumbnail_path: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source_coverage: Option<ChartReferenceCoverage>,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq)]
+pub struct ChartReferenceCoverage {
+    pub lat_min: f64,
+    pub lat_max: f64,
+    pub lon_min: f64,
+    pub lon_max: f64,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]

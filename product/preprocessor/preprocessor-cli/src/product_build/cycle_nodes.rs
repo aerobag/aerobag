@@ -168,6 +168,8 @@ pub(super) fn build_chart_process_node(
     let tiles_root = work_dir.join("tiles");
     let legends_root = work_dir.join("legends");
     let insets_root = work_dir.join("insets");
+    let thumbnails_root = work_dir.join("thumbnails");
+    let reference_catalog_path = work_dir.join(CHART_REFERENCE_CATALOG_NAME);
     run_cached_node(
         prepared,
         inputs,
@@ -175,6 +177,8 @@ pub(super) fn build_chart_process_node(
             tiles_root.clone(),
             legends_root.clone(),
             insets_root.clone(),
+            thumbnails_root.clone(),
+            reference_catalog_path.clone(),
         ],
         |prepared| {
             let work_dir = stage_work_dir(family, source_repo, &prepared.dir)?;
@@ -182,6 +186,7 @@ pub(super) fn build_chart_process_node(
             build_family_vrts(family, &work_dir, cpu_jobs)?;
             build_family_legends(family, &work_dir)?;
             build_family_insets(family, &work_dir)?;
+            build_family_reference_catalog(family, &work_dir)?;
             build_family_tiles(family, &work_dir, cpu_jobs)?;
             prune_chart_render_intermediates(&work_dir)?;
             Ok(BTreeMap::from([
@@ -201,6 +206,14 @@ pub(super) fn build_chart_process_node(
                     "insets_root".to_string(),
                     relative_artifact_path(&insets_root, &config.build_root),
                 ),
+                (
+                    "thumbnails_root".to_string(),
+                    relative_artifact_path(&thumbnails_root, &config.build_root),
+                ),
+                (
+                    "reference_catalog".to_string(),
+                    relative_artifact_path(&reference_catalog_path, &config.build_root),
+                ),
             ]))
         },
     )
@@ -217,8 +230,9 @@ fn prune_chart_render_intermediates_dir(dir: &Path, in_output_dir: bool) -> anyh
         let file_type = entry.file_type()?;
         let is_output_dir = matches!(
             entry.file_name().to_string_lossy().as_ref(),
-            "tiles" | "legends" | "insets"
+            "tiles" | "legends" | "insets" | "thumbnails"
         );
+        let is_output_file = entry.file_name().to_string_lossy() == CHART_REFERENCE_CATALOG_NAME;
         let child_in_output = in_output_dir || is_output_dir;
         if file_type.is_dir() {
             prune_chart_render_intermediates_dir(&path, child_in_output)?;
@@ -227,7 +241,7 @@ fn prune_chart_render_intermediates_dir(dir: &Path, in_output_dir: bool) -> anyh
             }
             continue;
         }
-        if !child_in_output {
+        if !child_in_output && !is_output_file {
             fs::remove_file(&path)
                 .with_context(|| format!("failed to remove {}", path.display()))?;
         }
@@ -474,7 +488,7 @@ pub(super) fn build_chart_package_nodes(
                 &work_dir,
                 &package_root,
                 &unpack_source_root,
-                &[],
+                &["chart-references/"],
             )?;
             let outputs = BTreeMap::from([
                 (

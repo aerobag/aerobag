@@ -13,7 +13,8 @@ use serde_json::Value;
 use crate::planning::FlightPlanRowActionId;
 use crate::{
     chart_page::{
-        chart_page_airport_ids_from_plan, derive_chart_page_state_from_airports, PlateAirportRecord,
+        chart_page_airport_ids_from_plan, derive_chart_page_state_from_collections,
+        ChartReferenceFamilyRecord, ChartReferenceFamilySummary, PlateAirportRecord,
     },
     describe_plate_procedure_load_options, describe_show_plate_for_procedure,
     flight_leg_distance_nm, flight_plan_contains_nav_ref, flight_plan_has_direct_to_overlay,
@@ -631,7 +632,11 @@ pub enum HadOperation {
         #[serde(default)]
         plate_target_airport_id: Option<String>,
         selected_airport_id: Option<String>,
+        #[serde(default)]
+        selected_reference_family_id: Option<String>,
         selected_chart_id: Option<String>,
+        #[serde(default)]
+        suggested_chart_ids: Vec<String>,
     },
     PlateAirport {
         airport_id: String,
@@ -905,14 +910,18 @@ fn run_had_operation_value(store: &NavKvStore, op: HadOperation) -> Result<Value
             recent_airport_ids,
             plate_target_airport_id,
             selected_airport_id,
+            selected_reference_family_id,
             selected_chart_id,
+            suggested_chart_ids,
         } => serde_json::to_value(chart_page_state(
             store,
             &plan,
             &recent_airport_ids,
             plate_target_airport_id.as_deref(),
             selected_airport_id.as_deref(),
+            selected_reference_family_id.as_deref(),
             selected_chart_id.as_deref(),
+            &suggested_chart_ids,
         )?)?,
         HadOperation::PlateAirport { airport_id } => {
             serde_json::to_value(resolve_plate_airport(store, &airport_id)?)?
@@ -1105,6 +1114,8 @@ struct MapFamilyOption {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     disabled_reason: Option<String>,
     active: bool,
+    #[serde(default)]
+    has_references: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -1112,6 +1123,8 @@ struct MapViewOptionRecord {
     id: String,
     label: String,
     region_id: String,
+    #[serde(default)]
+    reference_assets: Vec<crate::RasterChartReferenceAsset>,
     map_view: MapViewRecord,
 }
 
@@ -1643,7 +1656,9 @@ fn chart_page_state(
     stored_recent_airport_ids: &[String],
     plate_target_airport_id: Option<&str>,
     candidate_airport_id: Option<&str>,
+    selected_reference_family_id: Option<&str>,
     candidate_chart_id: Option<&str>,
+    suggested_chart_ids: &[String],
 ) -> Result<crate::DerivedChartPageState, HadReadError> {
     let mut airports = Vec::new();
     for airport_id in chart_page_airport_candidates(
@@ -1662,14 +1677,69 @@ fn chart_page_state(
             airports.push(airport);
         }
     }
-    Ok(derive_chart_page_state_from_airports(
+    let reference_families = resolve_chart_reference_families(store, selected_reference_family_id)?;
+    Ok(derive_chart_page_state_from_collections(
         plan,
         airports,
+        reference_families,
         stored_recent_airport_ids,
         plate_target_airport_id,
         candidate_airport_id,
+        selected_reference_family_id,
         candidate_chart_id,
+        suggested_chart_ids,
     ))
+}
+
+fn resolve_chart_reference_families(
+    store: &NavKvStore,
+    selected_family_id: Option<&str>,
+) -> Result<Vec<crate::DerivedChartReferenceFamily>, HadReadError> {
+    let summaries = read_optional::<Vec<ChartReferenceFamilySummary>>(
+        store,
+        NavKvQuery::ChartReferenceFamilyIndex,
+    )?
+    .unwrap_or_default();
+    let mut families = Vec::with_capacity(summaries.len());
+    for summary in summaries {
+        if selected_family_id != Some(summary.id.as_str()) {
+            families.push(crate::DerivedChartReferenceFamily {
+                id: summary.id,
+                label: summary.label,
+                charts: Vec::new(),
+            });
+            continue;
+        }
+        let Some(record) = read_optional::<ChartReferenceFamilyRecord>(
+            store,
+            NavKvQuery::ChartReferenceFamily {
+                family_id: summary.id.clone(),
+            },
+        )?
+        else {
+            return Err(HadReadError::Fatal(format!(
+                "chart reference family index names missing family {}",
+                summary.id
+            )));
+        };
+        let mut charts = Vec::with_capacity(record.chart_ids.len());
+        let mut missing_pages = Vec::new();
+        for chart_id in &record.chart_ids {
+            match read_chart_asset_by_id(store, chart_id)? {
+                ChartAssetByIdRead::Hit(chart) => charts.push(chart.into()),
+                ChartAssetByIdRead::MissingPages(pages) => missing_pages.extend(pages),
+            }
+        }
+        if !missing_pages.is_empty() {
+            return Err(HadReadError::NeedPages(missing_pages));
+        }
+        families.push(crate::DerivedChartReferenceFamily {
+            id: record.id,
+            label: record.label,
+            charts,
+        });
+    }
+    Ok(families)
 }
 
 fn resolve_plate_airport(
@@ -1689,9 +1759,9 @@ fn resolve_plate_airport(
     let mut charts = Vec::with_capacity(record.chart_ids.len());
     let mut missing_pages = Vec::new();
     for plate_id in &record.chart_ids {
-        match read_plate_by_id(store, plate_id)? {
-            PlateByIdRead::Hit(chart) => charts.push(chart.into()),
-            PlateByIdRead::MissingPages(pages) => missing_pages.extend(pages),
+        match read_chart_asset_by_id(store, plate_id)? {
+            ChartAssetByIdRead::Hit(chart) => charts.push(chart.into()),
+            ChartAssetByIdRead::MissingPages(pages) => missing_pages.extend(pages),
         }
     }
     if !missing_pages.is_empty() {
@@ -1705,25 +1775,28 @@ fn resolve_plate_airport(
     }))
 }
 
-enum PlateByIdRead {
-    Hit(crate::PlateChartAssetRecord),
+enum ChartAssetByIdRead {
+    Hit(crate::ChartAssetRecord),
     MissingPages(Vec<u32>),
 }
 
-fn read_plate_by_id(store: &NavKvStore, plate_id: &str) -> Result<PlateByIdRead, HadReadError> {
+fn read_chart_asset_by_id(
+    store: &NavKvStore,
+    chart_id: &str,
+) -> Result<ChartAssetByIdRead, HadReadError> {
     let query = NavKvQuery::PlateById {
-        plate_id: plate_id.to_string(),
+        plate_id: chart_id.to_string(),
     };
     let key = crate::nav_kv_key_for_query(&query)
         .ok_or_else(|| HadReadError::Fatal("invalid plate id query".to_string()))?;
     match store.get_bytes(&key).map_err(HadReadError::Fatal)? {
         NavKvLookup::Hit(bytes) => serde_json::from_slice(&bytes)
-            .map(PlateByIdRead::Hit)
+            .map(ChartAssetByIdRead::Hit)
             .map_err(|err| HadReadError::Fatal(format!("HAD JSON decode failed for {key}: {err}"))),
         NavKvLookup::MissingKey => Err(HadReadError::Fatal(format!(
-            "HAD missing required plate asset key: {key}"
+            "HAD missing required chart asset key: {key}"
         ))),
-        NavKvLookup::MissingPages(pages) => Ok(PlateByIdRead::MissingPages(pages)),
+        NavKvLookup::MissingPages(pages) => Ok(ChartAssetByIdRead::MissingPages(pages)),
     }
 }
 
@@ -1838,6 +1911,9 @@ fn map_selector_state(
                 enabled,
                 disabled_reason: (!enabled).then(|| format!("{label} charts are not available.")),
                 active: selected_family_id == id,
+                has_references: map_views.iter().any(|view| {
+                    view.map_view.chart_family == id && !view.reference_assets.is_empty()
+                }),
             }
         })
         .collect();

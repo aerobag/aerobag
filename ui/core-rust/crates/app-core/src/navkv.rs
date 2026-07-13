@@ -24,6 +24,10 @@ pub enum NavKvQuery {
     PlateById {
         plate_id: String,
     },
+    ChartReferenceFamilyIndex,
+    ChartReferenceFamily {
+        family_id: String,
+    },
     PlateCifpMatch {
         airport_id: String,
         cifp_id: String,
@@ -92,6 +96,10 @@ pub fn nav_kv_key_for_query(query: &NavKvQuery) -> Option<String> {
             Some(format!("plate/airport/{}", upper_component(airport_id)))
         }
         NavKvQuery::PlateById { plate_id } => Some(format!("plate/by-id/{}", component(plate_id))),
+        NavKvQuery::ChartReferenceFamilyIndex => Some("chart-reference/family-index".to_string()),
+        NavKvQuery::ChartReferenceFamily { family_id } => {
+            Some(format!("chart-reference/family/{}", component(family_id)))
+        }
         NavKvQuery::PlateCifpMatch {
             airport_id,
             cifp_id,

@@ -397,6 +397,13 @@ internal data class PageTilePaintTiming(
 @kotlinx.serialization.Serializable
 internal data class WireRasterTilePlan(
     val tiles: List<WireRasterTileDraw> = emptyList(),
+    val chart_reference_action: WireChartReferenceAction? = null,
+)
+
+@kotlinx.serialization.Serializable
+internal data class WireChartReferenceAction(
+    val family_id: String,
+    val suggested_chart_ids: List<String> = emptyList(),
 )
 
 @kotlinx.serialization.Serializable
@@ -2474,10 +2481,13 @@ internal fun AerobagApp(
         mutableStateOf(
             DerivedChartPageState(
                 airports = emptyList<ChartAirport>(),
+                referenceFamilies = emptyList(),
                 airportMenuEntries = emptyList<ChartAirportMenuEntry>(),
                 recentAirportIds = sessionSnapshot.chartPageState.recentAirportIds,
                 selectedAirportId = sessionSnapshot.chartPageState.selectedAirportId,
+                selectedReferenceFamilyId = sessionSnapshot.chartPageState.selectedReferenceFamilyId,
                 selectedChartId = sessionSnapshot.chartPageState.selectedChartId,
+                suggestedChartIds = sessionSnapshot.chartPageState.suggestedChartIds,
             ),
         )
     }
@@ -2505,12 +2515,17 @@ internal fun AerobagApp(
     val orderedChartAirports = remember(derivedChartPageState.airports) { derivedChartPageState.airports }
     val recentAirportIds = derivedChartPageState.recentAirportIds
     val selectedAirportId = derivedChartPageState.selectedAirportId
+    val selectedReferenceFamilyId = derivedChartPageState.selectedReferenceFamilyId
     val selectedChartId = derivedChartPageState.selectedChartId
     val selectedAirport = remember(selectedAirportId, orderedChartAirports) {
         orderedChartAirports.find { it.id == selectedAirportId } ?: orderedChartAirports.firstOrNull()
     }
-    val selectedChart = remember(selectedAirport, selectedChartId) {
-        selectedAirport?.charts?.find { it.id == selectedChartId } ?: selectedAirport?.charts?.firstOrNull()
+    val selectedReferenceFamily = remember(selectedReferenceFamilyId, derivedChartPageState.referenceFamilies) {
+        derivedChartPageState.referenceFamilies.find { it.id == selectedReferenceFamilyId }
+    }
+    val selectedChartCollection = selectedReferenceFamily ?: selectedAirport
+    val selectedChart = remember(selectedChartCollection, selectedChartId) {
+        selectedChartCollection?.charts?.find { it.id == selectedChartId } ?: selectedChartCollection?.charts?.firstOrNull()
     }
 
     LaunchedEffect(page, selectedAirportId, selectedChartId, recentAirportIds) {
@@ -2529,7 +2544,9 @@ internal fun AerobagApp(
         sessionSnapshot.chartPageState.recentAirportIds,
         sessionSnapshot.chartPageState.plateTargetAirportId,
         sessionSnapshot.chartPageState.selectedAirportId,
+        sessionSnapshot.chartPageState.selectedReferenceFamilyId,
         sessionSnapshot.chartPageState.selectedChartId,
+        sessionSnapshot.chartPageState.suggestedChartIds,
     ) {
         derivedChartPageState =
             appCore.deriveChartPageState(
@@ -2537,7 +2554,9 @@ internal fun AerobagApp(
                 sessionSnapshot.chartPageState.recentAirportIds,
                 sessionSnapshot.chartPageState.plateTargetAirportId,
                 sessionSnapshot.chartPageState.selectedAirportId.ifBlank { null },
+                sessionSnapshot.chartPageState.selectedReferenceFamilyId,
                 sessionSnapshot.chartPageState.selectedChartId.ifBlank { null },
+                sessionSnapshot.chartPageState.suggestedChartIds,
             )
     }
     LaunchedEffect(uiSession) {
@@ -2831,6 +2850,16 @@ internal fun AerobagApp(
                                 }
                             }
                         },
+                        onOpenChartReference = { familyId, suggestedChartIds ->
+                            if (applySessionCommand("selectChartReference") {
+                                    uiSession.selectChartReference(familyId, suggestedChartIds)
+                                } != null
+                            ) {
+                                chartViewport = null
+                                chartFolderOpen = true
+                                navigateToPage(AppPage.Charts)
+                            }
+                        },
                         onSelectPage = ::navigateToPage,
                         onOpenPlateTarget = ::openPlateTarget,
                         onOpenPlan = { navigateToPage(AppPage.Plan) },
@@ -2866,10 +2895,10 @@ internal fun AerobagApp(
                         page = page,
                         pageHistory = pageHistory,
                         uptimeLabel = uptimeLabel,
-                        airports = orderedChartAirports,
                         airportMenuEntries = derivedChartPageState.airportMenuEntries,
-                        selectedAirport = selectedAirport,
+                        selectedCollection = selectedChartCollection,
                         selectedChart = selectedChart,
+                        suggestedChartIds = derivedChartPageState.suggestedChartIds,
                         chartAssetDataRevision = chartAssetDataRevision,
                         plan = currentPlan,
                         uiTheme = uiTheme,
@@ -2917,13 +2946,22 @@ internal fun AerobagApp(
                                 )
                             }
                         },
+                        onSelectReference = { familyId ->
+                            if (applySessionCommand("selectChartReference") {
+                                    uiSession.selectChartReference(familyId, emptyList())
+                                } != null
+                            ) {
+                                chartViewport = null
+                                chartFolderOpen = true
+                            }
+                        },
                         onSelectChart = {
                             if (applySessionCommand("selectChart") { uiSession.selectChart(it) } != null) {
                                 restoreSnapshot(
                                     currentSnapshot().copy(
                                         page = AppPage.Charts,
                                         selectedChartId = it,
-                                        selectedChartLabel = chartAirportById[sessionSnapshot.chartPageState.selectedAirportId]
+                                        selectedChartLabel = selectedChartCollection
                                             ?.charts
                                             ?.firstOrNull { chart -> chart.id == it }
                                             ?.label

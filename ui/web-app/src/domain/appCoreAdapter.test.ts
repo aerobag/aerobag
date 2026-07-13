@@ -129,6 +129,7 @@ describe("loadBestAvailableAdapter", () => {
       project_flight_plan_route_in_session: async () => JSON.stringify({ state: "complete", result: [] }),
       select_airport_in_session: async () => snapshotJson,
       select_chart_in_session: async () => snapshotJson,
+      select_chart_reference_in_session: async () => snapshotJson,
       ingest_point_tiles_in_session: async () => {},
       ingest_airspace_ref_tiles_in_session: async () => {},
       ingest_airspace_features_in_session: async () => {},

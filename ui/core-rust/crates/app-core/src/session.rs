@@ -15,7 +15,7 @@ use crate::CoreResourcePolicy;
 use crate::{
     chart_ident_label_for_nav_ref_symbol,
     chart_page::chart_page_airport_ids_from_plan,
-    chart_page::PlateChartAssetRecord,
+    chart_page::ChartAssetRecord,
     data_status::{
         parse_status_action_id, project_data_status_state, DataStatusRecord, UiDataStatusPageFact,
         UiDataStatusPageRow, UiDataStatusPageState, UiDataStatusPageTimeDisplay, UiDataStatusState,
@@ -139,7 +139,11 @@ pub struct UiChartPageState {
     #[serde(default)]
     pub plate_target_airport_id: Option<String>,
     pub selected_airport_id: String,
+    #[serde(default)]
+    pub selected_reference_family_id: Option<String>,
     pub selected_chart_id: String,
+    #[serde(default)]
+    pub suggested_chart_ids: Vec<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -3470,9 +3474,40 @@ pub fn resolve_chart_asset_resource_in_session(
         message: format!("chart {chart_id} has no {asset_kind} asset"),
     })?;
     let target_resource_id = format!("chart_asset/{asset_kind}/{chart_id}");
+    let mut package_ids = chart.package_ids.clone();
+    if package_ids.is_empty() {
+        package_ids.push(chart.package_id.clone());
+    }
+    if let Some(preferred_package_id) = session
+        .raster_map_catalog
+        .as_ref()
+        .and_then(|catalog| {
+            catalog
+                .displayed_maps
+                .iter()
+                .find(|view| view.id == catalog.selected_map_id)
+                .and_then(|view| view.map_view.package_name.as_ref())
+        })
+        .filter(|package_id| package_ids.iter().any(|candidate| candidate == *package_id))
+    {
+        package_ids.retain(|package_id| package_id != preferred_package_id);
+        package_ids.insert(0, preferred_package_id.clone());
+    }
+    if let Some(installed_package_id) = package_ids
+        .iter()
+        .find(|package_id| session.installed_package_ids.contains(*package_id))
+        .cloned()
+    {
+        package_ids.retain(|package_id| package_id != &installed_package_id);
+        package_ids.insert(0, installed_package_id);
+    }
+    let package_id = package_ids.first().ok_or_else(|| AppError {
+        kind: AppErrorKind::InvalidManifest,
+        message: format!("chart {chart_id} has no package source"),
+    })?;
     let resources = session
         .publication_resolver
-        .package_resource_requests(&target_resource_id, &chart.package_id, member_path, false)
+        .package_resource_requests(&target_resource_id, package_id, member_path, false)
         .map_err(|message| AppError {
             kind: AppErrorKind::InvalidManifest,
             message,
@@ -4109,12 +4144,37 @@ pub fn select_chart_in_session(handle: u32, chart_id: &str) -> AppResult<UiSessi
     let mut sessions = lock_sessions();
     let session = session_mut(&mut sessions, handle)?;
     let plan = session_plan(session)?;
-    session.chart_page_state = derive_compact_chart_page_state(
+    session.chart_page_state = derive_compact_chart_page_state_with_reference(
         &plan,
         &session.chart_page_state.recent_airport_ids,
         session.chart_page_state.plate_target_airport_id.as_deref(),
         Some(&session.chart_page_state.selected_airport_id),
+        session
+            .chart_page_state
+            .selected_reference_family_id
+            .as_deref(),
         Some(chart_id),
+        &session.chart_page_state.suggested_chart_ids,
+    );
+    snapshot_for_changed_session(session)
+}
+
+pub fn select_chart_reference_in_session(
+    handle: u32,
+    family_id: &str,
+    suggested_chart_ids: &[String],
+) -> AppResult<UiSessionSnapshot> {
+    let mut sessions = lock_sessions();
+    let session = session_mut(&mut sessions, handle)?;
+    let plan = session_plan(session)?;
+    session.chart_page_state = derive_compact_chart_page_state_with_reference(
+        &plan,
+        &session.chart_page_state.recent_airport_ids,
+        session.chart_page_state.plate_target_airport_id.as_deref(),
+        Some(&session.chart_page_state.selected_airport_id),
+        Some(family_id),
+        None,
+        suggested_chart_ids,
     );
     snapshot_for_changed_session(session)
 }
@@ -9258,16 +9318,16 @@ fn session_nav_kv_store(session: &UiSession) -> AppResult<&NavKvStore> {
 fn read_chart_asset_by_id(
     store: &NavKvStore,
     chart_id: &str,
-) -> Result<PlateChartAssetRecord, HadReadError> {
+) -> Result<ChartAssetRecord, HadReadError> {
     let key = nav_kv_key_for_query(&NavKvQuery::PlateById {
         plate_id: chart_id.to_string(),
     })
-    .ok_or_else(|| HadReadError::Fatal("invalid plate id query".to_string()))?;
+    .ok_or_else(|| HadReadError::Fatal("invalid chart asset id query".to_string()))?;
     match store.get_bytes(&key).map_err(HadReadError::Fatal)? {
         NavKvLookup::Hit(bytes) => serde_json::from_slice(&bytes)
             .map_err(|err| HadReadError::Fatal(format!("HAD JSON decode failed for {key}: {err}"))),
         NavKvLookup::MissingKey => Err(HadReadError::Fatal(format!(
-            "HAD missing required plate asset key: {key}"
+            "HAD missing required chart asset key: {key}"
         ))),
         NavKvLookup::MissingPages(pages) => Err(HadReadError::NeedPages(pages)),
     }
@@ -9316,12 +9376,17 @@ fn replace_session_flight_plan(session: &mut UiSession, plan: FlightPlan) -> App
     } else {
         session.guidance_leg_geometry.clear();
     }
-    session.chart_page_state = derive_compact_chart_page_state(
+    session.chart_page_state = derive_compact_chart_page_state_with_reference(
         &normalized_plan,
         &session.chart_page_state.recent_airport_ids,
         session.chart_page_state.plate_target_airport_id.as_deref(),
         Some(&session.chart_page_state.selected_airport_id),
+        session
+            .chart_page_state
+            .selected_reference_family_id
+            .as_deref(),
         Some(&session.chart_page_state.selected_chart_id),
+        &session.chart_page_state.suggested_chart_ids,
     );
     sync_procedure_geometry_status_records(session, &normalized_plan);
     Ok(())
@@ -11429,6 +11494,27 @@ fn derive_compact_chart_page_state(
     candidate_airport_id: Option<&str>,
     candidate_chart_id: Option<&str>,
 ) -> UiChartPageState {
+    derive_compact_chart_page_state_with_reference(
+        plan,
+        stored_recent_airport_ids,
+        plate_target_airport_id,
+        candidate_airport_id,
+        None,
+        candidate_chart_id,
+        &[],
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+fn derive_compact_chart_page_state_with_reference(
+    plan: &FlightPlan,
+    stored_recent_airport_ids: &[String],
+    plate_target_airport_id: Option<&str>,
+    candidate_airport_id: Option<&str>,
+    selected_reference_family_id: Option<&str>,
+    candidate_chart_id: Option<&str>,
+    suggested_chart_ids: &[String],
+) -> UiChartPageState {
     let mut ordered_airport_ids = Vec::new();
     for airport_id in compact_chart_page_airport_candidates(
         plan,
@@ -11483,7 +11569,9 @@ fn derive_compact_chart_page_state(
         recent_airport_ids,
         plate_target_airport_id,
         selected_airport_id,
+        selected_reference_family_id: selected_reference_family_id.map(str::to_string),
         selected_chart_id: candidate_chart_id.unwrap_or_default().to_string(),
+        suggested_chart_ids: suggested_chart_ids.to_vec(),
     }
 }
 
@@ -12098,6 +12186,7 @@ mod tests {
             id: id.to_string(),
             label: label.to_string(),
             region_id: "nw".to_string(),
+            reference_assets: Vec::new(),
             map_view: crate::RasterMapView {
                 chart_family: id.split(':').next().unwrap_or("sec").to_string(),
                 chart_name: label.to_string(),

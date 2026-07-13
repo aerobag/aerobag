@@ -534,7 +534,8 @@ sealed interface PlateGeoref {
 
 data class ChartAsset(
     val id: String,
-    val airportId: String,
+    val airportId: String?,
+    val collectionId: String,
     val label: String,
     val kind: String,
     val folderCategory: String,
@@ -551,6 +552,7 @@ data class ChartAirport(
 sealed interface ChartAirportMenuEntry {
     data class Separator(val label: String) : ChartAirportMenuEntry
     data class Airport(val airport: ChartAirport) : ChartAirportMenuEntry
+    data class Reference(val reference: ChartAirport) : ChartAirportMenuEntry
 }
 
 data class ChartPageFixture(

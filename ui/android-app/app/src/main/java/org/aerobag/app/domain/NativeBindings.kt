@@ -319,6 +319,12 @@ interface NativeBridge {
         chartIdJson: String,
     ): String
 
+    fun selectChartReferenceInSessionJson(
+        handle: Long,
+        familyIdJson: String,
+        suggestedChartIdsJson: String,
+    ): String
+
     fun setMapLayerVisibilityInSessionJson(
         handle: Long,
         layerIdJson: String,
@@ -884,6 +890,12 @@ object NativeBindings : NativeBridge {
     external override fun selectChartInSessionJson(
         handle: Long,
         chartIdJson: String,
+    ): String
+
+    external override fun selectChartReferenceInSessionJson(
+        handle: Long,
+        familyIdJson: String,
+        suggestedChartIdsJson: String,
     ): String
 
     external override fun setMapLayerVisibilityInSessionJson(

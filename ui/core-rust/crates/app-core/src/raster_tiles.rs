@@ -34,6 +34,8 @@ pub struct RasterMapFamilyOption {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub disabled_reason: Option<String>,
     pub active: bool,
+    #[serde(default)]
+    pub has_references: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -55,7 +57,25 @@ pub struct RasterMapViewOption {
     pub id: String,
     pub label: String,
     pub region_id: String,
+    #[serde(default)]
+    pub reference_assets: Vec<RasterChartReferenceAsset>,
     pub map_view: RasterMapView,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+pub struct RasterChartReferenceCoverage {
+    pub lat_min: f64,
+    pub lat_max: f64,
+    pub lon_min: f64,
+    pub lon_max: f64,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct RasterChartReferenceAsset {
+    pub id: String,
+    pub kind: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source_coverage: Option<RasterChartReferenceCoverage>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
@@ -149,7 +169,16 @@ pub struct RasterTilePlan {
     pub selected_map_id: String,
     pub tiles: Vec<RasterTileDraw>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub chart_reference_action: Option<RasterChartReferenceAction>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub debug_timing: Option<RasterTilePlanDebugTiming>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct RasterChartReferenceAction {
+    pub family_id: String,
+    #[serde(default)]
+    pub suggested_chart_ids: Vec<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -432,6 +461,7 @@ pub fn raster_tile_plan_with_options(
         return RasterTilePlan {
             selected_map_id: catalog.selected_map_id.clone(),
             tiles: Vec::new(),
+            chart_reference_action: chart_reference_action(catalog, viewport, 0.0, 0.0),
             debug_timing: None,
         };
     }
@@ -526,8 +556,72 @@ pub fn raster_tile_plan_with_options(
     RasterTilePlan {
         selected_map_id: catalog.selected_map_id.clone(),
         tiles,
+        chart_reference_action: chart_reference_action(catalog, viewport, width_px, height_px),
         debug_timing,
     }
+}
+
+fn chart_reference_action(
+    catalog: &RasterMapCatalog,
+    viewport: &MapViewport,
+    width_px: f64,
+    height_px: f64,
+) -> Option<RasterChartReferenceAction> {
+    if catalog.selected_map_id == NO_RASTER_SELECTED_MAP_ID {
+        return None;
+    }
+    let selected_map = catalog
+        .available_maps
+        .iter()
+        .find(|view| view.id == catalog.selected_map_id)
+        .or(catalog.selected_map.as_ref())?;
+    if selected_map.reference_assets.is_empty() {
+        return None;
+    }
+    let viewport_bounds = viewport_geo_bounds(viewport, width_px, height_px);
+    let suggested_chart_ids = selected_map
+        .reference_assets
+        .iter()
+        .filter(|asset| asset.kind == "inset")
+        .filter(|asset| {
+            asset
+                .source_coverage
+                .is_some_and(|coverage| coverage_intersects(coverage, viewport_bounds))
+        })
+        .map(|asset| asset.id.clone())
+        .collect();
+    Some(RasterChartReferenceAction {
+        family_id: selected_map.map_view.chart_family.clone(),
+        suggested_chart_ids,
+    })
+}
+
+fn viewport_geo_bounds(
+    viewport: &MapViewport,
+    width_px: f64,
+    height_px: f64,
+) -> RasterChartReferenceCoverage {
+    let center = lat_lon_to_world(viewport.center);
+    let scale = scale_for_zoom(viewport.zoom);
+    let half_extent = width_px.hypot(height_px) / 2.0 / scale;
+    let (lat_max, lon_min) = world_to_lat_lon(center.0 - half_extent, center.1 - half_extent);
+    let (lat_min, lon_max) = world_to_lat_lon(center.0 + half_extent, center.1 + half_extent);
+    RasterChartReferenceCoverage {
+        lat_min,
+        lat_max,
+        lon_min,
+        lon_max,
+    }
+}
+
+fn coverage_intersects(
+    left: RasterChartReferenceCoverage,
+    right: RasterChartReferenceCoverage,
+) -> bool {
+    left.lon_min < right.lon_max
+        && left.lon_max > right.lon_min
+        && left.lat_min < right.lat_max
+        && left.lat_max > right.lat_min
 }
 
 fn elapsed_ms(started_at: Option<f64>) -> u64 {
@@ -694,6 +788,7 @@ fn render_wide_angle_tiles_for_family(
         id: format!("{}:{}", map_view.chart_family, wide_angle.region_id),
         label: option.label.clone(),
         region_id: wide_angle.region_id.clone(),
+        reference_assets: option.reference_assets.clone(),
         map_view,
     };
     Some(render_tiles_for_single_map_view(
@@ -1128,6 +1223,13 @@ fn lat_lon_to_world(point: LatLon) -> (f64, f64) {
     (x, y)
 }
 
+fn world_to_lat_lon(x: f64, y: f64) -> (f64, f64) {
+    let lon = x / WORLD_SIZE * 360.0 - 180.0;
+    let mercator = std::f64::consts::PI * (1.0 - 2.0 * y / WORLD_SIZE);
+    let lat = mercator.sinh().atan().to_degrees();
+    (lat, lon)
+}
+
 fn scale_for_zoom(zoom: f64) -> f64 {
     2_f64.powf(zoom)
 }
@@ -1158,6 +1260,7 @@ mod tests {
             id: id.to_string(),
             label: id.to_string(),
             region_id: id.split(':').nth(1).unwrap_or(id).to_string(),
+            reference_assets: Vec::new(),
             map_view: RasterMapView {
                 chart_family: family.to_string(),
                 chart_name: id.to_string(),
@@ -1216,6 +1319,7 @@ mod tests {
                     enabled: true,
                     disabled_reason: None,
                     active: false,
+                    has_references: false,
                 },
                 RasterMapFamilyOption {
                     id: "sec".to_string(),
@@ -1224,6 +1328,7 @@ mod tests {
                     enabled: true,
                     disabled_reason: None,
                     active: true,
+                    has_references: false,
                 },
             ],
         };
@@ -2065,5 +2170,68 @@ mod tests {
             .iter()
             .all(|tile| tile.source_zoom == 9 && tile.size_px <= 1024.0));
         assert!(fast.tiles.len() < normal.tiles.len());
+    }
+
+    #[test]
+    fn raster_plan_suggests_all_reference_insets_overlapping_viewport() {
+        let mut selected = option(
+            "tac:sw",
+            "tac",
+            "SW_TAC_2607",
+            vec![level(8, 0, 255, 0, 255)],
+        );
+        selected.reference_assets = vec![
+            RasterChartReferenceAsset {
+                id: "legend".to_string(),
+                kind: "legend".to_string(),
+                source_coverage: None,
+            },
+            RasterChartReferenceAsset {
+                id: "la-one".to_string(),
+                kind: "inset".to_string(),
+                source_coverage: Some(RasterChartReferenceCoverage {
+                    lat_min: 33.0,
+                    lat_max: 35.0,
+                    lon_min: -119.0,
+                    lon_max: -117.0,
+                }),
+            },
+            RasterChartReferenceAsset {
+                id: "la-two".to_string(),
+                kind: "inset".to_string(),
+                source_coverage: Some(RasterChartReferenceCoverage {
+                    lat_min: 33.5,
+                    lat_max: 34.5,
+                    lon_min: -118.5,
+                    lon_max: -117.5,
+                }),
+            },
+        ];
+        let catalog = RasterMapCatalog {
+            selected_map_id: selected.id.clone(),
+            selected_map: Some(selected.clone()),
+            available_maps: vec![selected.clone()],
+            displayed_maps: vec![selected],
+            geometry: RasterDisplayGeometry::default(),
+            family_options: vec![],
+        };
+        let plan = raster_tile_plan(
+            &catalog,
+            &MapViewport {
+                center: LatLon {
+                    lat: 34.0,
+                    lon: -118.0,
+                },
+                zoom: 9.0,
+                rotation_deg: 0.0,
+                pitch_deg: 0.0,
+            },
+            800.0,
+            600.0,
+        );
+
+        let action = plan.chart_reference_action.expect("reference action");
+        assert_eq!(action.family_id, "tac");
+        assert_eq!(action.suggested_chart_ids, vec!["la-one", "la-two"]);
     }
 }

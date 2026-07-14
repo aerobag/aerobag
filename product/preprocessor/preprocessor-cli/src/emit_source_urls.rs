@@ -150,6 +150,19 @@ fn build_records_for_cycle(
                             && href.ends_with("/Hawaiian_Islands.zip")
                     },
                 )?,
+                list_crawl_record(
+                    "charts-tac",
+                    VFR_URL,
+                    format!(
+                        "^http.*{charts_start}/grand_canyon_files/Grand_Canyon.zip$"
+                    ),
+                    &catalog.vfr,
+                    &|href| {
+                        href.starts_with("http")
+                            && href.contains(&format!("{charts_start}/grand_canyon_files/"))
+                            && href.ends_with("/Grand_Canyon.zip")
+                    },
+                )?,
             ],
         ),
         (
@@ -716,12 +729,16 @@ mod tests {
                 "https://aeronav.faa.gov/visual/06-11-2026/Caribbean/Caribbean_1_VFR.zip"
                     .to_string(),
                 "https://aeronav.faa.gov/visual/06-11-2026/tac-files/Seattle_TAC.zip".to_string(),
+                "https://aeronav.faa.gov/visual/06-11-2026/grand_canyon_files/Grand_Canyon.zip"
+                    .to_string(),
                 "https://aeronav.faa.gov/visual/07-09-2026/sectional-files/Seattle.zip".to_string(),
                 "https://aeronav.faa.gov/visual/07-09-2026/sectional-files/Hawaiian_Islands.zip"
                     .to_string(),
                 "https://aeronav.faa.gov/visual/07-09-2026/Caribbean/Caribbean_1_VFR.zip"
                     .to_string(),
                 "https://aeronav.faa.gov/visual/07-09-2026/tac-files/Seattle_TAC.zip".to_string(),
+                "https://aeronav.faa.gov/visual/07-09-2026/grand_canyon_files/Grand_Canyon.zip"
+                    .to_string(),
             ],
             ifr: vec![
                 "https://aeronav.faa.gov/enroute/06-11-2026/enr_l01.zip".to_string(),
@@ -747,12 +764,14 @@ mod tests {
     }
 
     #[test]
-    fn tac_sources_include_hawaiian_archive_for_honolulu_inset() {
+    fn tac_sources_include_required_non_tac_archives() {
         let catalog = SourceCatalog {
             vfr: vec![
                 "https://aeronav.faa.gov/visual/06-11-2026/sectional-files/Hawaiian_Islands.zip"
                     .to_string(),
                 "https://aeronav.faa.gov/visual/06-11-2026/tac-files/Seattle_TAC.zip".to_string(),
+                "https://aeronav.faa.gov/visual/06-11-2026/grand_canyon_files/Grand_Canyon.zip"
+                    .to_string(),
             ],
             ifr: Vec::new(),
             dafd: Vec::new(),
@@ -785,6 +804,7 @@ mod tests {
             vec![
                 "https://aeronav.faa.gov/visual/06-11-2026/tac-files/Seattle_TAC.zip",
                 "https://aeronav.faa.gov/visual/06-11-2026/sectional-files/Hawaiian_Islands.zip",
+                "https://aeronav.faa.gov/visual/06-11-2026/grand_canyon_files/Grand_Canyon.zip",
             ]
         );
     }

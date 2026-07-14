@@ -125,13 +125,32 @@ fn build_records_for_cycle(
         ),
         (
             "charts-tac".to_string(),
-            vec![list_crawl_record(
-                "charts-tac",
-                VFR_URL,
-                format!("^http.*{charts_start}.*_TAC.zip$"),
-                &catalog.vfr,
-                &|href| href.starts_with("http") && href.contains(&charts_start) && href.ends_with("_TAC.zip"),
-            )?],
+            vec![
+                list_crawl_record(
+                    "charts-tac",
+                    VFR_URL,
+                    format!("^http.*{charts_start}.*_TAC.zip$"),
+                    &catalog.vfr,
+                    &|href| {
+                        href.starts_with("http")
+                            && href.contains(&charts_start)
+                            && href.ends_with("_TAC.zip")
+                    },
+                )?,
+                list_crawl_record(
+                    "charts-tac",
+                    VFR_URL,
+                    format!(
+                        "^http.*{charts_start}/sectional-files/Hawaiian_Islands.zip$"
+                    ),
+                    &catalog.vfr,
+                    &|href| {
+                        href.starts_with("http")
+                            && href.contains(&format!("{charts_start}/sectional-files/"))
+                            && href.ends_with("/Hawaiian_Islands.zip")
+                    },
+                )?,
+            ],
         ),
         (
             "charts-enr-l".to_string(),
@@ -692,10 +711,14 @@ mod tests {
         let catalog = SourceCatalog {
             vfr: vec![
                 "https://aeronav.faa.gov/visual/06-11-2026/sectional-files/Seattle.zip".to_string(),
+                "https://aeronav.faa.gov/visual/06-11-2026/sectional-files/Hawaiian_Islands.zip"
+                    .to_string(),
                 "https://aeronav.faa.gov/visual/06-11-2026/Caribbean/Caribbean_1_VFR.zip"
                     .to_string(),
                 "https://aeronav.faa.gov/visual/06-11-2026/tac-files/Seattle_TAC.zip".to_string(),
                 "https://aeronav.faa.gov/visual/07-09-2026/sectional-files/Seattle.zip".to_string(),
+                "https://aeronav.faa.gov/visual/07-09-2026/sectional-files/Hawaiian_Islands.zip"
+                    .to_string(),
                 "https://aeronav.faa.gov/visual/07-09-2026/Caribbean/Caribbean_1_VFR.zip"
                     .to_string(),
                 "https://aeronav.faa.gov/visual/07-09-2026/tac-files/Seattle_TAC.zip".to_string(),
@@ -720,6 +743,49 @@ mod tests {
         assert_eq!(
             discover_published_cycles_from_catalog(&catalog).unwrap(),
             vec!["2606".to_string()]
+        );
+    }
+
+    #[test]
+    fn tac_sources_include_hawaiian_archive_for_honolulu_inset() {
+        let catalog = SourceCatalog {
+            vfr: vec![
+                "https://aeronav.faa.gov/visual/06-11-2026/sectional-files/Hawaiian_Islands.zip"
+                    .to_string(),
+                "https://aeronav.faa.gov/visual/06-11-2026/tac-files/Seattle_TAC.zip".to_string(),
+            ],
+            ifr: Vec::new(),
+            dafd: Vec::new(),
+            dtpp: Vec::new(),
+        };
+        let records = build_records_for_cycle(
+            "2606",
+            &catalog,
+            &BTreeSet::from([NaiveDate::from_ymd_opt(2026, 6, 11).unwrap()]),
+        )
+        .unwrap();
+        let tac_urls = records
+            .iter()
+            .find(|(label, _)| label == "charts-tac")
+            .unwrap()
+            .1
+            .iter()
+            .flat_map(|record| {
+                record
+                    .get("results")
+                    .and_then(Value::as_array)
+                    .into_iter()
+                    .flatten()
+                    .filter_map(Value::as_str)
+            })
+            .collect::<Vec<_>>();
+
+        assert_eq!(
+            tac_urls,
+            vec![
+                "https://aeronav.faa.gov/visual/06-11-2026/tac-files/Seattle_TAC.zip",
+                "https://aeronav.faa.gov/visual/06-11-2026/sectional-files/Hawaiian_Islands.zip",
+            ]
         );
     }
 

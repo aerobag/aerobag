@@ -146,7 +146,9 @@ function bindControls() {
 async function loadFamily(familyId) {
   setBusy(true);
   try {
-    const result = await api("/api/charts?family=" + encodeURIComponent(familyId));
+    const result = await api(
+      "/api/charts?family=" + encodeURIComponent(familyId) + "&purpose=extract",
+    );
     state.family = state.families.find((family) => family.id === familyId);
     state.charts = result.charts;
     elements.familySelect.value = familyId;

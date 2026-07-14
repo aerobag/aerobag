@@ -45,7 +45,7 @@ DEFAULT_CACHE_DIR = Path("/tmp/aerobag-chart-cutline-editor")
 MAX_BODY_BYTES = 2 * 1024 * 1024
 MAX_CROP_DIMENSION = 8192
 MAX_CROP_PIXELS = 16 * 1024 * 1024
-OVERVIEW_RENDER_VERSION = 2
+OVERVIEW_RENDER_VERSION = 3
 FAMILY_LABELS = {
     "SEC": "Sectional",
     "TAC": "TAC",
@@ -59,7 +59,7 @@ EXTRACT_TYPES = {"legend", "inset"}
 class Chart:
     name: str
     source_path: Path
-    cutline_path: Path
+    cutline_path: Path | None
     width: int
     height: int
 
@@ -138,9 +138,32 @@ class EditorState:
                 height=dataset.RasterYSize,
             )
             charts[chart.name] = chart
+
+        for extract_type in sorted(EXTRACT_TYPES):
+            for layout_path in sorted(self.cutline_dir.glob(f"*.{extract_type}.json")):
+                document = json.loads(layout_path.read_text(encoding="utf-8"))
+                source_name = document.get("source")
+                if not isinstance(source_name, str) or Path(source_name).name != source_name:
+                    raise EditorError(f"invalid {extract_type} source in {layout_path.name}")
+                source_path = self.work_dir / source_name
+                if not source_path.is_file():
+                    continue
+                name = Path(source_name).stem
+                if name in charts:
+                    continue
+                dataset = gdal.Open(str(source_path))
+                if dataset is None:
+                    raise EditorError(f"failed to open source chart {source_path}")
+                charts[name] = Chart(
+                    name=name,
+                    source_path=source_path,
+                    cutline_path=None,
+                    width=dataset.RasterXSize,
+                    height=dataset.RasterYSize,
+                )
         if not charts:
             raise EditorError(
-                f"no matching GeoTIFF/cutline pairs in {self.work_dir} and {self.cutline_dir}"
+                f"no editable chart sources in {self.work_dir} and {self.cutline_dir}"
             )
         return charts
 
@@ -150,7 +173,7 @@ class EditorState:
             raise EditorError(f"unknown chart {name!r}")
         return chart
 
-    def chart_list(self) -> list[dict[str, object]]:
+    def chart_list(self, include_extract_only: bool = False) -> list[dict[str, object]]:
         return [
             {
                 "name": chart.name,
@@ -158,20 +181,22 @@ class EditorState:
                 "height": chart.height,
             }
             for chart in self.charts.values()
+            if include_extract_only or chart.cutline_path is not None
         ]
 
     def chart_payload(self, name: str) -> dict[str, object]:
         chart = self.chart(name)
-        points = self._pixel_points(chart)
+        points = self._pixel_points(chart) if chart.cutline_path is not None else []
         return {
             "name": chart.name,
             "width": chart.width,
             "height": chart.height,
             "points": [[x, y] for x, y in points],
-            "revision": file_revision(chart.cutline_path),
+            "revision": file_revision(chart.cutline_path) if chart.cutline_path else None,
             "overview_url": f"/api/overview?name={quote_query_value(chart.name)}",
             "source_file": chart.source_path.name,
-            "cutline_file": chart.cutline_path.name,
+            "cutline_file": chart.cutline_path.name if chart.cutline_path else None,
+            "cutline_editable": chart.cutline_path is not None,
         }
 
     def extract_payload(self, name: str, extract_type_value: object) -> dict[str, object]:
@@ -238,6 +263,11 @@ class EditorState:
                 "max_output_width": max_output_width,
                 "regions": regions,
             }
+            if current_revision is not None:
+                current_document = json.loads(path.read_text(encoding="utf-8"))
+                coverage_source = current_document.get("coverage_source")
+                if coverage_source is not None:
+                    document["coverage_source"] = coverage_source
             atomic_write_json(path, document)
             revision = file_revision(path)
         return {"revision": revision, "regions": regions}
@@ -246,6 +276,8 @@ class EditorState:
         return self.cutline_dir / f"{chart.name}.{extract_type}.json"
 
     def _pixel_points(self, chart: Chart) -> list[tuple[float, float]]:
+        if chart.cutline_path is None:
+            raise EditorError(f"{chart.name} has no georeferenced cutline")
         polygons = read_geojson_polygons(chart.cutline_path)
         if len(polygons) != 1:
             raise EditorError(
@@ -271,6 +303,8 @@ class EditorState:
         expected_revision: object,
     ) -> dict[str, object]:
         chart = self.chart(name)
+        if chart.cutline_path is None:
+            raise EditorError(f"{chart.name} has no georeferenced cutline")
         points = validate_pixel_points(points_value, chart)
         if not isinstance(expected_revision, str):
             raise EditorError("save request is missing revision")
@@ -297,6 +331,8 @@ class EditorState:
         chart: Chart,
         points: list[tuple[float, float]],
     ) -> list[tuple[float, float]]:
+        if chart.cutline_path is None:
+            raise EditorError(f"{chart.name} has no georeferenced cutline")
         dataset = self._open_dataset(chart)
         polygons = read_geojson_polygons(chart.cutline_path)
         cutline_srs = geojson_srs(chart.cutline_path, polygons)
@@ -454,6 +490,11 @@ def render_overview_png(source_path: Path, output_path: Path, width: int) -> Non
         )
         if expanded is None:
             raise EditorError(f"failed to expand {source_path.name} to RGB")
+        if not dataset.GetProjection():
+            expanded.SetGeoTransform(
+                (0.0, 1.0, 0.0, float(dataset.RasterYSize), 0.0, -1.0)
+            )
+            expanded.FlushCache()
         expanded = None
         result = gdal.Warp(
             str(output_path),
@@ -791,7 +832,13 @@ class EditorRequestHandler(BaseHTTPRequestHandler):
                 self._send_json({"families": self.state.family_list()})
             elif parsed.path == "/api/charts":
                 family = required_query(query, "family")
-                self._send_json({"charts": self.state.family(family).chart_list()})
+                self._send_json(
+                    {
+                        "charts": self.state.family(family).chart_list(
+                            include_extract_only=query.get("purpose") == ["extract"]
+                        )
+                    }
+                )
             elif parsed.path == "/api/chart":
                 self._send_json(
                     self.state.chart_payload(

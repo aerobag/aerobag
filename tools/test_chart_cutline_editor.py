@@ -229,6 +229,80 @@ class EditorStateTest(unittest.TestCase):
         with self.assertRaises(RevisionConflict):
             self.state.save_extract("Test TAC", "legend", regions, 1210, None)
 
+    def test_extract_editor_supports_unreferenced_source_with_parent_coverage(self) -> None:
+        source_path = self.work_dir / "Reference Sheet.tif"
+        dataset = gdal.GetDriverByName("GTiff").Create(
+            str(source_path),
+            80,
+            60,
+            1,
+            gdal.GDT_Byte,
+        )
+        color_table = gdal.ColorTable()
+        color_table.SetColorEntry(0, (255, 255, 255, 255))
+        color_table.SetColorEntry(1, (255, 0, 0, 255))
+        color_table.SetColorEntry(2, (0, 0, 255, 255))
+        band = dataset.GetRasterBand(1)
+        band.SetRasterColorTable(color_table)
+        pixels = np.ones((60, 80), dtype=np.uint8)
+        pixels[30:, :] = 2
+        band.WriteArray(pixels)
+        dataset = None
+        layout_path = self.cutline_dir / "Reference Sheet.inset.json"
+        layout_path.write_text(
+            json.dumps(
+                {
+                    "schema_version": 1,
+                    "source": "Reference Sheet.tif",
+                    "source_width": 80,
+                    "source_height": 60,
+                    "max_output_width": 1210,
+                    "coverage_source": "Test TAC",
+                    "regions": [],
+                }
+            ),
+            encoding="utf-8",
+        )
+
+        state = EditorState(
+            self.work_dir,
+            self.cutline_dir,
+            self.cache_dir / "extract-only",
+            overview_width=60,
+        )
+        self.assertEqual([chart["name"] for chart in state.chart_list()], ["Test TAC"])
+        self.assertEqual(
+            [chart["name"] for chart in state.chart_list(include_extract_only=True)],
+            ["Test TAC", "Reference Sheet"],
+        )
+        payload = state.chart_payload("Reference Sheet")
+        self.assertFalse(payload["cutline_editable"])
+        self.assertEqual(payload["points"], [])
+        overview = state.overview_png("Reference Sheet")
+        vsi_path = "/vsimem/chart-cutline-editor-unreferenced-overview.png"
+        try:
+            gdal.FileFromMemBuffer(vsi_path, overview)
+            rendered = gdal.Open(vsi_path)
+            self.assertIsNotNone(rendered)
+            assert rendered is not None
+            rgb = rendered.ReadAsArray()
+            rendered = None
+            self.assertGreater(rgb[0, 2, 2], rgb[2, 2, 2])
+            self.assertGreater(rgb[2, -3, 2], rgb[0, -3, 2])
+        finally:
+            gdal.Unlink(vsi_path)
+        extract = state.extract_payload("Reference Sheet", "inset")
+        saved = state.save_extract(
+            "Reference Sheet",
+            "inset",
+            [{"x": 1, "y": 2, "width": 30, "height": 40}],
+            1210,
+            extract["revision"],
+        )
+        self.assertIsInstance(saved["revision"], str)
+        document = json.loads(layout_path.read_text(encoding="utf-8"))
+        self.assertEqual(document["coverage_source"], "Test TAC")
+
     def test_catalog_routes_charts_and_overviews_by_family(self) -> None:
         catalog = EditorCatalog({"SEC": self.state, "TAC": self.state})
         self.assertEqual(

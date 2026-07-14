@@ -1,0 +1,22 @@
+{
+  "schema_version": 1,
+  "source": "New York TAC VFR Planning Charts.tif",
+  "source_width": 7856,
+  "source_height": 5903,
+  "max_output_width": 1210,
+  "regions": [
+    {
+      "x": 143,
+      "y": 45,
+      "width": 3255,
+      "height": 5801
+    },
+    {
+      "x": 4465,
+      "y": 45,
+      "width": 3264,
+      "height": 5765
+    }
+  ],
+  "coverage_source": "New York TAC"
+}

@@ -1,0 +1,28 @@
+{
+  "schema_version": 1,
+  "source": "Anchorage Graphic.tif",
+  "source_width": 4501,
+  "source_height": 5963,
+  "max_output_width": 1210,
+  "regions": [
+    {
+      "x": 26,
+      "y": 21,
+      "width": 4464,
+      "height": 3678
+    },
+    {
+      "x": 3021,
+      "y": 3616,
+      "width": 1474,
+      "height": 2266
+    },
+    {
+      "x": 31,
+      "y": 3858,
+      "width": 2573,
+      "height": 2014
+    }
+  ],
+  "coverage_source": "Anchorage TAC"
+}

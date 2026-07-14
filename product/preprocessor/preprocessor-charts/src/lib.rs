@@ -110,6 +110,8 @@ pub struct ChartExtractLayout {
     pub source_width: u32,
     pub source_height: u32,
     pub max_output_width: u32,
+    #[serde(default)]
+    pub coverage_source: Option<String>,
     pub regions: Vec<ChartExtractRegion>,
 }
 
@@ -600,7 +602,11 @@ pub fn build_family_reference_catalog(
                     kind.metadata_type()
                 );
             }
-            let source_coverage = source_chart_coverage(&layout_dir, &source_chart_id)?;
+            let coverage_source = layout
+                .coverage_source
+                .as_deref()
+                .unwrap_or(&source_chart_id);
+            let source_coverage = source_chart_coverage(&layout_dir, coverage_source)?;
             let kind_label = match kind {
                 ChartExtractKind::Legend => "Legend",
                 ChartExtractKind::Inset => "Insets",
@@ -1001,6 +1007,18 @@ fn validate_chart_extract_layout(
             actual_dimensions.0,
             actual_dimensions.1
         );
+    }
+    if let Some(coverage_source) = &layout.coverage_source {
+        let path = Path::new(coverage_source);
+        if coverage_source.is_empty()
+            || path.components().count() != 1
+            || path.file_name().and_then(|value| value.to_str()) != Some(coverage_source)
+        {
+            bail!(
+                "{metadata_type} coverage_source must be a chart stem in {}",
+                layout_path.display()
+            );
+        }
     }
     if !(320..=4096).contains(&layout.max_output_width) {
         bail!("{metadata_type} max_output_width must be between 320 and 4096");
@@ -2205,11 +2223,12 @@ fn count_files_recursive(path: &Path, count: &mut u64) -> anyhow::Result<()> {
 mod tests {
     use super::{
         antimeridian_supplement_from_html, build_family_insets, build_family_legends,
-        copy_dir_recursive, inspect_raster, package_family_region_versioned_to,
-        package_family_wide_angle_versioned_to, resolve_chart_input_filename,
-        source_chart_coverage, tile_belongs_to_region, validate_chart_extract_layout,
-        vfr_vrt_paths, AntimeridianSupplement, ChartExtractKind, ChartExtractLayout,
-        ChartExtractRegion, ChartReferenceCatalog, CHART_REFERENCE_CATALOG_NAME,
+        build_family_reference_catalog, copy_dir_recursive, inspect_raster,
+        package_family_region_versioned_to, package_family_wide_angle_versioned_to,
+        resolve_chart_input_filename, source_chart_coverage, tile_belongs_to_region,
+        validate_chart_extract_layout, vfr_vrt_paths, AntimeridianSupplement, ChartExtractKind,
+        ChartExtractLayout, ChartExtractRegion, ChartReferenceCatalog,
+        CHART_REFERENCE_CATALOG_NAME,
     };
     use preprocessor_core::{
         ChartFamily, ChartReferenceAssetRecord, ChartReferenceCoverage, Region,
@@ -2256,6 +2275,7 @@ mod tests {
             source_width: 1000,
             source_height: 800,
             max_output_width: 1210,
+            coverage_source: None,
             regions: vec![ChartExtractRegion {
                 x: 100,
                 y: 200,
@@ -2484,6 +2504,77 @@ mod tests {
     }
 
     #[test]
+    fn unreferenced_extract_uses_parent_chart_coverage() {
+        let temp = TempDir::new("chart-reference-parent-coverage");
+        let work_dir = temp.path().join("charts-tac");
+        let layout_dir = work_dir.join("TAC");
+        fs::create_dir_all(work_dir.join("insets")).unwrap();
+        fs::create_dir_all(work_dir.join("thumbnails/insets")).unwrap();
+        fs::create_dir_all(&layout_dir).unwrap();
+        fs::write(work_dir.join("insets/Reference Sheet.png"), b"image").unwrap();
+        fs::write(
+            work_dir.join("thumbnails/insets/Reference Sheet.png"),
+            b"thumbnail",
+        )
+        .unwrap();
+        fs::write(
+            layout_dir.join("Reference Sheet.inset.json"),
+            serde_json::to_vec(&serde_json::json!({
+                "schema_version": 1,
+                "source": "Reference Sheet.tif",
+                "source_width": 100,
+                "source_height": 100,
+                "max_output_width": 1210,
+                "coverage_source": "Parent TAC",
+                "regions": [{"x": 0, "y": 0, "width": 100, "height": 100}]
+            }))
+            .unwrap(),
+        )
+        .unwrap();
+        fs::write(
+            layout_dir.join("Parent TAC.geojson"),
+            serde_json::to_vec(&serde_json::json!({
+                "type": "FeatureCollection",
+                "crs": {
+                    "type": "name",
+                    "properties": {"name": "urn:ogc:def:crs:OGC:1.3:CRS84"}
+                },
+                "features": [{
+                    "type": "Feature",
+                    "geometry": {
+                        "type": "Polygon",
+                        "coordinates": [[
+                            [-150.0, 60.0],
+                            [-149.0, 60.0],
+                            [-149.0, 61.0],
+                            [-150.0, 61.0],
+                            [-150.0, 60.0]
+                        ]]
+                    }
+                }]
+            }))
+            .unwrap(),
+        )
+        .unwrap();
+
+        let catalog_path = build_family_reference_catalog(ChartFamily::Tac, &work_dir).unwrap();
+        let catalog: ChartReferenceCatalog =
+            serde_json::from_slice(&fs::read(catalog_path).unwrap()).unwrap();
+
+        assert_eq!(catalog.assets.len(), 1);
+        assert_eq!(catalog.assets[0].source_chart_id, "Reference Sheet");
+        assert_eq!(
+            catalog.assets[0].source_coverage,
+            Some(ChartReferenceCoverage {
+                lat_min: 60.0,
+                lat_max: 61.0,
+                lon_min: -150.0,
+                lon_max: -149.0,
+            })
+        );
+    }
+
+    #[test]
     fn chart_packages_put_legends_in_wide_and_insets_with_source_region() {
         let temp = TempDir::new("chart-reference-packages");
         let work_dir = temp.path.join("work");
@@ -2656,6 +2747,10 @@ mod tests {
     fn pac_region_admits_detailed_hawaii_samoa_and_guam_tiles() {
         assert!(tile_belongs_to_region(
             "tiles/0/8/13/141.webp",
+            &Region::Pac
+        ));
+        assert!(tile_belongs_to_region(
+            "tiles/1/11/125/1146.webp",
             &Region::Pac
         ));
         assert!(tile_belongs_to_region("tiles/0/8/7/117.webp", &Region::Pac));

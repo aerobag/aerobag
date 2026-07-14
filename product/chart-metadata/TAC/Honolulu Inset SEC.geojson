@@ -1,0 +1,49 @@
+{
+  "type": "FeatureCollection",
+  "name": "Honolulu Inset SEC.tif",
+  "crs": {
+    "type": "name",
+    "properties": {
+      "name": "urn:ogc:def:crs:EPSG::3857"
+    }
+  },
+  "features": [
+    {
+      "type": "Feature",
+      "properties": {
+        "location": "Honolulu Inset SEC.tif"
+      },
+      "geometry": {
+        "type": "Polygon",
+        "coordinates": [
+          [
+            [
+              -17643257.242527734,
+              2464793.2696793578
+            ],
+            [
+              -17642900.337387152,
+              2363650.3875667453
+            ],
+            [
+              -17549334.11168487,
+              2363715.3747586277
+            ],
+            [
+              -17516860.440409962,
+              2392269.699555245
+            ],
+            [
+              -17516557.127187345,
+              2464729.1008287547
+            ],
+            [
+              -17643257.242527734,
+              2464793.2696793578
+            ]
+          ]
+        ]
+      }
+    }
+  ]
+}

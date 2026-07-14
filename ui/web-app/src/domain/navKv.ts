@@ -42,6 +42,24 @@ type PendingNavKvPageInsert = {
   reject: (error: unknown) => void;
 };
 
+export class ResourceIngestCoordinator {
+  private readonly inFlight = new Map<string, Promise<void>>();
+
+  run(resourceId: string, load: () => Promise<void>): Promise<void> {
+    const existing = this.inFlight.get(resourceId);
+    if (existing) {
+      return existing;
+    }
+    const pending = load().finally(() => {
+      if (this.inFlight.get(resourceId) === pending) {
+        this.inFlight.delete(resourceId);
+      }
+    });
+    this.inFlight.set(resourceId, pending);
+    return pending;
+  }
+}
+
 let wasmReady: Promise<NavKvWasmModule> | null = null;
 let sharedNavKvStorePromise: Promise<NavKvStore | null> | null = null;
 
@@ -60,6 +78,7 @@ async function ensureWasmReady(): Promise<NavKvWasmModule> {
 
 export class NavKvStore {
   private readonly inFlightPageFetches = new Map<number, Promise<void>>();
+  private readonly resourceIngestCoordinator = new ResourceIngestCoordinator();
   private readonly pendingPageInserts = new Map<number, PendingNavKvPageInsert>();
   private readonly pageRequestPriorities = new Map<number, number>();
   private pageInsertPumpActive = false;
@@ -287,7 +306,13 @@ export class NavKvStore {
     if (!ingestSessionResource) {
       throw new Error(`core requested unsupported resource outside a session operation: ${resource.id}`);
     }
-    await fetchAndIngestResource(resource, ingestSessionResource, "core.resource.fetch", reportResourceFailure);
+    await this.resourceIngestCoordinator.run(resource.id, () =>
+      fetchAndIngestResource(
+        resource,
+        ingestSessionResource,
+        "core.resource.fetch",
+        reportResourceFailure,
+      ));
   }
 
   private launchSessionEffectPump(

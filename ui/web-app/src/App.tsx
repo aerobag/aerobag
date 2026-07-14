@@ -792,6 +792,12 @@ type TrayOption =
     disabled?: boolean;
     disabledReason?: string | null;
     accentColor?: string;
+    accessory?: {
+      iconSrc: string;
+      ariaLabel: string;
+      onSelect: () => void;
+    };
+    dismissTrayOnSelect?: boolean;
     onSelect: () => void;
   }
   | {
@@ -893,6 +899,7 @@ const HOME_PAGE_BACKDROP_SRC = "/icons/backdrops/home-page-backdrop.jpg?v=202606
 const LAYER_VECTORS_ICON_SRC = "/icons/icons/layer-vectors-icon.png?v=20260424b";
 const LAYER_NEXRAD_ICON_SRC = "/icons/icons/layer-nexrad-icon.png?v=20260424b";
 const LAYER_TERRAIN_WARNING_ICON_SRC = "/icons/icons/layer-terrain-warning-icon.png?v=20260424b";
+const CHART_REFERENCE_ICON_SRC = "/icons/icons/chart-reference-icon.png?v=20260713a";
 const NEXRAD_VIEWPORT_REFRESH_THROTTLE_MS = 1_000;
 const HOME_GRID_COLUMN_COUNT = 3;
 const HOME_GRID_BUTTONS: Array<{ id: string; label: string; page: AppPage; iconSrc?: string }> = [
@@ -1192,8 +1199,10 @@ type AppViewSnapshot = {
   mapViewport: MapViewportState;
   plateTargetAirportId: string | null;
   selectedAirportId: string;
+  selectedReferenceFamilyId: string | null;
   selectedChartId: string;
   selectedChartLabel: string;
+  suggestedChartIds: string[];
   recentAirportIds: string[];
   chartViewport: ImageViewportState | null;
   chartFolderOpen: boolean;
@@ -2816,17 +2825,26 @@ export default function App() {
       mapViewport,
       plateTargetAirportId: sessionSnapshot.chart_page_state.plate_target_airport_id ?? null,
       selectedAirportId,
+      selectedReferenceFamilyId,
       selectedChartId,
       selectedChartLabel: selectedChart?.label ?? "",
+      suggestedChartIds: derivedChartPageState.suggested_chart_ids,
       recentAirportIds,
       chartViewport,
       chartFolderOpen,
     };
   }
 
-  function restoreSnapshot(snapshot: AppViewSnapshot, history: AppViewSnapshot[]) {
+  function applySnapshotLocally(snapshot: AppViewSnapshot, history: AppViewSnapshot[]) {
     setPageHistory(history);
     setPage(snapshot.page);
+    setMapViewport(snapshot.mapViewport);
+    setChartViewport(snapshot.chartViewport);
+    setChartFolderOpen(snapshot.chartFolderOpen);
+  }
+
+  function restoreSnapshot(snapshot: AppViewSnapshot, history: AppViewSnapshot[]) {
+    applySnapshotLocally(snapshot, history);
     if (snapshot.selectedMapId && uiSession) {
       void uiSession.selectRasterMap(snapshot.selectedMapId).then((nextSnapshot) => {
         applySessionSnapshot(nextSnapshot, "restore_view_map");
@@ -2834,15 +2852,14 @@ export default function App() {
         setMapSelectorLoadError(`failed to restore map selector state: ${errorMessage(error)}`);
       });
     }
-    setMapViewport(snapshot.mapViewport);
-    setChartViewport(snapshot.chartViewport);
-    setChartFolderOpen(snapshot.chartFolderOpen);
     if (uiSession) {
       void uiSession.restoreChartPageState(
         snapshot.recentAirportIds,
         snapshot.plateTargetAirportId ?? null,
         snapshot.selectedAirportId || undefined,
+        snapshot.selectedReferenceFamilyId ?? null,
         snapshot.selectedChartId || undefined,
+        snapshot.suggestedChartIds ?? [],
       ).then((nextSnapshot) => {
         applySessionSnapshot(nextSnapshot, "restore_view_chart");
       }).catch(() => {});
@@ -2869,7 +2886,7 @@ export default function App() {
       window.history.replaceState(state, "", urlForAppPage(page));
     }, 120);
     return () => window.clearTimeout(timeoutId);
-  }, [appReady, page, pageHistory, rasterMapState?.selected_map_id, mapViewport, selectedAirportId, selectedChartId, recentAirportIds, chartViewport, chartFolderOpen]);
+  }, [appReady, page, pageHistory, rasterMapState?.selected_map_id, mapViewport, selectedAirportId, selectedReferenceFamilyId, selectedChartId, recentAirportIds, derivedChartPageState.suggested_chart_ids, chartViewport, chartFolderOpen]);
 
   useEffect(() => {
     if (typeof window === "undefined") {
@@ -2922,14 +2939,20 @@ export default function App() {
     }
   }
 
-  function pushViewSnapshot(next: Partial<AppViewSnapshot> & Pick<AppViewSnapshot, "page">) {
+  function pushViewSnapshot(
+    next: Partial<AppViewSnapshot> & Pick<AppViewSnapshot, "page">,
+    restoreCore = false,
+  ) {
     const nextHistory = boundedHistory([...pageHistory, currentSnapshot()]);
     const nextCurrent: AppViewSnapshot = {
       ...currentSnapshot(),
       ...next,
     };
-    setPageHistory(nextHistory);
-    restoreSnapshot(nextCurrent, nextHistory);
+    if (restoreCore) {
+      restoreSnapshot(nextCurrent, nextHistory);
+    } else {
+      applySnapshotLocally(nextCurrent, nextHistory);
+    }
     if (typeof window !== "undefined") {
       window.history.pushState(
         {
@@ -2949,7 +2972,7 @@ export default function App() {
       .reverse()
       .find((snapshot) => snapshot.page === "map" || snapshot.page === "charts");
     if (target) {
-      pushViewSnapshot(target);
+      pushViewSnapshot(target, true);
       return;
     }
     navigateToPage("map");
@@ -2964,7 +2987,9 @@ export default function App() {
         nextRecentAirportIds,
         airportId,
         airportId,
+        null,
         targetChartId,
+        [],
       ).then((nextSnapshot) => {
         applySessionSnapshot(nextSnapshot, "open_plate_target");
       }).catch((error) => {
@@ -2979,9 +3004,11 @@ export default function App() {
       page: "charts",
       plateTargetAirportId: airportId,
       selectedAirportId: airportId,
+      selectedReferenceFamilyId: null,
       selectedChartId: targetChartId,
       selectedChartLabel: "",
       recentAirportIds: nextRecentAirportIds,
+      suggestedChartIds: [],
       chartViewport: null,
       chartFolderOpen: target === "Folder",
     });
@@ -3210,7 +3237,9 @@ export default function App() {
                 moveAirportToFront(recentAirportIds, airportId, chartPageData.airports),
                 airportId,
                 airportId,
+                null,
                 resolvedChartId || undefined,
+                [],
               ).then((nextSnapshot) => {
                 debugLog("charts.open.snapshot", {
                   requested_airport_id: airportId,
@@ -3225,9 +3254,11 @@ export default function App() {
               page: "charts",
               plateTargetAirportId: airportId,
               selectedAirportId: airportId,
+              selectedReferenceFamilyId: null,
               selectedChartId: resolvedChartId,
               selectedChartLabel: resolvedChartLabel,
               recentAirportIds: moveAirportToFront(recentAirportIds, airportId, chartPageData.airports),
+              suggestedChartIds: [],
               chartViewport: null,
               chartFolderOpen: !chartId,
             });
@@ -3341,9 +3372,11 @@ export default function App() {
             pushViewSnapshot({
               page: "charts",
               selectedAirportId: airportId,
+              selectedReferenceFamilyId: null,
               selectedChartId: airport?.charts[0]?.id ?? "",
               selectedChartLabel: airport?.charts[0]?.label ?? "",
               recentAirportIds: moveAirportToFront(recentAirportIds, airportId, chartPageData.airports),
+              suggestedChartIds: [],
               chartViewport: null,
               chartFolderOpen: false,
             });
@@ -3377,8 +3410,10 @@ export default function App() {
             }
             pushViewSnapshot({
               page: "charts",
+              selectedReferenceFamilyId,
               selectedChartId: chartId,
               selectedChartLabel: nextChart?.label ?? "",
+              suggestedChartIds: derivedChartPageState.suggested_chart_ids,
               chartViewport: null,
               chartFolderOpen: false,
             });
@@ -6641,9 +6676,6 @@ function MapPage(props: {
             onToggle={() => trayGroup.toggle("family")}
             ariaLabel="Chart family"
             testId="chart-family-button"
-            accessoryLabel={chartReferenceAction ? "REF" : undefined}
-            accessoryAriaLabel={chartReferenceAction ? `Open ${selectedFamily?.label ?? "chart"} legends and insets` : undefined}
-            onAccessoryClick={chartReferenceAction ? () => onOpenChartReference(chartReferenceAction) : undefined}
             onDisabledAction={showDisabledAction}
             options={familyOptions.map((family) => ({
               id: family.id,
@@ -6652,9 +6684,16 @@ function MapPage(props: {
               active: family.active,
               disabled: !family.enabled,
               disabledReason: family.disabled_reason ?? null,
+              dismissTrayOnSelect: true,
+              accessory: chartReferenceAction?.family_id === family.id
+                ? {
+                  iconSrc: CHART_REFERENCE_ICON_SRC,
+                  ariaLabel: `Open ${family.label} legends and insets`,
+                  onSelect: () => onOpenChartReference(chartReferenceAction),
+                }
+                : undefined,
               onSelect: () => {
                 onSelectMapFamily(family.id);
-                trayGroup.close("family");
               },
             }))}
           />
@@ -8671,11 +8710,8 @@ function TrayDock(props: {
   options: TrayOption[];
   footer?: ReactNode;
   testId?: string;
-  accessoryLabel?: string;
-  accessoryAriaLabel?: string;
-  onAccessoryClick?: () => void;
 }) {
-  const { launcherLabel, launcherImageSrc, launcherStyle, open, onToggle, ariaLabel, disabled = false, disabledReason, onDisabledAction, style = "compact", launcherClassName, launcherAccentColor, options, footer, testId, accessoryLabel, accessoryAriaLabel, onAccessoryClick } = props;
+  const { launcherLabel, launcherImageSrc, launcherStyle, open, onToggle, ariaLabel, disabled = false, disabledReason, onDisabledAction, style = "compact", launcherClassName, launcherAccentColor, options, footer, testId } = props;
   const launcherRef = useRef<HTMLButtonElement | null>(null);
   const trayRef = useRef<HTMLElement | null>(null);
   const [trayPosition, setTrayPosition] = useState<{ left: number; top: number } | null>(null);
@@ -8749,20 +8785,6 @@ function TrayDock(props: {
         {launcherImageSrc ? <img className="chartButtonIcon" src={launcherImageSrc} alt="" aria-hidden="true" /> : null}
         <span className={`chartButtonLabel${launcherWide ? " chartButtonLabelWide" : ""}`}>{launcherLabel}</span>
       </button>
-      {accessoryLabel && onAccessoryClick ? (
-        <button
-          type="button"
-          className="chartButton chartReferenceButton"
-          aria-label={accessoryAriaLabel ?? accessoryLabel}
-          title={accessoryAriaLabel ?? accessoryLabel}
-          onPointerDown={stopPointer}
-          onPointerUp={stopPointer}
-          onDoubleClick={stopDoubleClick}
-          onClick={onAccessoryClick}
-        >
-          <span className="chartButtonLabel">{accessoryLabel}</span>
-        </button>
-      ) : null}
       {open && typeof document !== "undefined"
         ? createPortal(
             <section
@@ -8797,7 +8819,7 @@ function TrayDock(props: {
                   }
                   const optionDisabledReason = disabledReasonText(option.disabledReason);
                   const optionDisabled = option.disabled ?? false;
-                  return (
+                  const optionButton = (
                     <button
                       key={option.id}
                       type="button"
@@ -8818,6 +8840,9 @@ function TrayDock(props: {
                           return;
                         }
                         option.onSelect();
+                        if (option.dismissTrayOnSelect) {
+                          onToggle();
+                        }
                       }}
                     >
                       {option.iconSrc || option.toggleState ? (
@@ -8839,6 +8864,37 @@ function TrayDock(props: {
                         </span>
                       ) : option.label}
                     </button>
+                  );
+                  if (!option.accessory) {
+                    return optionButton;
+                  }
+                  return (
+                    <div key={option.id} className="trayButtonSplit">
+                      {optionButton}
+                      <button
+                        type="button"
+                        className="trayButtonAccessory"
+                        data-testid={`tray-option-accessory-${option.id}`}
+                        aria-label={option.accessory.ariaLabel}
+                        title={option.accessory.ariaLabel}
+                        onPointerDown={stopPointer}
+                        onPointerUp={stopPointer}
+                        onDoubleClick={stopDoubleClick}
+                        onClick={() => {
+                          option.accessory?.onSelect();
+                          if (option.dismissTrayOnSelect) {
+                            onToggle();
+                          }
+                        }}
+                      >
+                        <img
+                          className="trayButtonAccessoryIcon"
+                          src={option.accessory.iconSrc}
+                          alt=""
+                          aria-hidden="true"
+                        />
+                      </button>
+                    </div>
                   );
                 })}
               </div>

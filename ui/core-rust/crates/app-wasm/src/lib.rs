@@ -84,6 +84,8 @@ static NEXT_SESSION_SNAPSHOT_REFRESH_SCHEDULER_HANDLE: AtomicU32 = AtomicU32::ne
 static SESSION_SNAPSHOT_REFRESH_SCHEDULERS: OnceLock<
     Mutex<HashMap<u32, app_core::SessionSnapshotRefreshScheduler>>,
 > = OnceLock::new();
+static LIVE_FEED_PREP_STATES: OnceLock<Mutex<HashMap<(String, String), serde_json::Value>>> =
+    OnceLock::new();
 
 struct StoredNavKvStore {
     store: app_core::NavKvStore,
@@ -108,6 +110,14 @@ fn session_snapshot_refresh_schedulers(
 fn lock_session_snapshot_refresh_schedulers(
 ) -> MutexGuard<'static, HashMap<u32, app_core::SessionSnapshotRefreshScheduler>> {
     session_snapshot_refresh_schedulers()
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+}
+
+fn lock_live_feed_prep_states() -> MutexGuard<'static, HashMap<(String, String), serde_json::Value>>
+{
+    LIVE_FEED_PREP_STATES
+        .get_or_init(|| Mutex::new(HashMap::new()))
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner())
 }
@@ -1354,6 +1364,121 @@ pub fn ingest_resource_in_session(
 }
 
 #[wasm_bindgen]
+pub fn ingest_prepared_live_feed_resource_in_session(
+    handle: u32,
+    resource_id: &str,
+    prepared_resource_bytes: &[u8],
+) -> Result<(), JsValue> {
+    app_core::ingest_prepared_live_feed_resource_in_session(
+        handle,
+        resource_id,
+        prepared_resource_bytes,
+    )
+    .map_err(|err| JsValue::from_str(&err.to_string()))
+}
+
+#[wasm_bindgen]
+pub fn prepare_live_feed_resource(
+    resource_id: &str,
+    resource_bytes: &[u8],
+) -> Result<Vec<u8>, JsValue> {
+    let request = prepared_live_feed_request(resource_id)?;
+    let (next_state, prepared) = match &request {
+        PreparedLiveFeedRequest::State { .. } => {
+            app_core::prepare_live_feed_state_resource(resource_id, resource_bytes)
+        }
+        PreparedLiveFeedRequest::Delta {
+            product,
+            from_version,
+            ..
+        } => {
+            let states = lock_live_feed_prep_states();
+            let state = states
+                .get(&(product.clone(), from_version.clone()))
+                .ok_or_else(|| {
+                    JsValue::from_str(&format!(
+                        "live-feed preparer has no {product} {from_version} state for delta"
+                    ))
+                })?;
+            app_core::prepare_live_feed_delta_resource(resource_id, state, resource_bytes)
+        }
+    }
+    .map_err(|err| JsValue::from_str(&err.to_string()))?;
+    let mut states = lock_live_feed_prep_states();
+    if let PreparedLiveFeedRequest::Delta {
+        product,
+        from_version,
+        ..
+    } = &request
+    {
+        states.remove(&(product.clone(), from_version.clone()));
+    }
+    states.insert(request.target_key(), next_state);
+    Ok(prepared)
+}
+
+#[wasm_bindgen]
+pub fn reset_live_feed_preparer() {
+    lock_live_feed_prep_states().clear();
+}
+
+enum PreparedLiveFeedRequest {
+    State {
+        product: String,
+        version: String,
+    },
+    Delta {
+        product: String,
+        from_version: String,
+        to_version: String,
+    },
+}
+
+impl PreparedLiveFeedRequest {
+    fn target_key(&self) -> (String, String) {
+        match self {
+            Self::State { product, version } => (product.clone(), version.clone()),
+            Self::Delta {
+                product,
+                to_version,
+                ..
+            } => (product.clone(), to_version.clone()),
+        }
+    }
+}
+
+fn prepared_live_feed_request(resource_id: &str) -> Result<PreparedLiveFeedRequest, JsValue> {
+    let parts = resource_id.split('/').collect::<Vec<_>>();
+    if parts.first() != Some(&"live_feeds") {
+        return Err(JsValue::from_str(&format!(
+            "unsupported live-feed prep resource: {resource_id}"
+        )));
+    }
+    let product = parts.get(2).copied().unwrap_or_default();
+    if !app_core::supports_prepared_live_feed(product) {
+        return Err(JsValue::from_str(&format!(
+            "unsupported prepared live-feed product: {product}"
+        )));
+    }
+    match parts.as_slice() {
+        ["live_feeds", "state", _, version] => Ok(PreparedLiveFeedRequest::State {
+            product: product.to_string(),
+            version: (*version).to_string(),
+        }),
+        ["live_feeds", "delta", _, from_version, to_version] => {
+            Ok(PreparedLiveFeedRequest::Delta {
+                product: product.to_string(),
+                from_version: (*from_version).to_string(),
+                to_version: (*to_version).to_string(),
+            })
+        }
+        _ => Err(JsValue::from_str(&format!(
+            "unsupported live-feed prep resource: {resource_id}"
+        ))),
+    }
+}
+
+#[wasm_bindgen]
 pub fn report_session_resource_failure_in_session(
     handle: u32,
     resource_id: &str,
@@ -1518,14 +1643,18 @@ pub fn restore_chart_page_state_in_session(
     recent_airport_ids_json: &str,
     plate_target_airport_id_json: &str,
     selected_airport_id_json: &str,
+    selected_reference_family_id_json: &str,
     selected_chart_id_json: &str,
+    suggested_chart_ids_json: &str,
 ) -> Result<String, JsValue> {
     restore_chart_page_state_in_session_json(
         handle,
         recent_airport_ids_json,
         plate_target_airport_id_json,
         selected_airport_id_json,
+        selected_reference_family_id_json,
         selected_chart_id_json,
+        suggested_chart_ids_json,
     )
     .map_err(|err| JsValue::from_str(&err))
 }
@@ -2383,7 +2512,9 @@ fn restore_chart_page_state_in_session_json(
     recent_airport_ids_json: &str,
     plate_target_airport_id_json: &str,
     selected_airport_id_json: &str,
+    selected_reference_family_id_json: &str,
     selected_chart_id_json: &str,
+    suggested_chart_ids_json: &str,
 ) -> Result<String, String> {
     let recent_airport_ids: Vec<String> =
         serde_json::from_str(recent_airport_ids_json).map_err(|err| err.to_string())?;
@@ -2391,14 +2522,20 @@ fn restore_chart_page_state_in_session_json(
         serde_json::from_str(plate_target_airport_id_json).map_err(|err| err.to_string())?;
     let selected_airport_id: Option<String> =
         serde_json::from_str(selected_airport_id_json).map_err(|err| err.to_string())?;
+    let selected_reference_family_id: Option<String> =
+        serde_json::from_str(selected_reference_family_id_json).map_err(|err| err.to_string())?;
     let selected_chart_id: Option<String> =
         serde_json::from_str(selected_chart_id_json).map_err(|err| err.to_string())?;
+    let suggested_chart_ids: Vec<String> =
+        serde_json::from_str(suggested_chart_ids_json).map_err(|err| err.to_string())?;
     let snapshot = app_core::restore_chart_page_state_in_session(
         handle,
         &recent_airport_ids,
         plate_target_airport_id.as_deref(),
         selected_airport_id.as_deref(),
+        selected_reference_family_id.as_deref(),
         selected_chart_id.as_deref(),
+        &suggested_chart_ids,
     )
     .map_err(|err| err.to_string())?;
     serde_json::to_string(&snapshot).map_err(|err| err.to_string())

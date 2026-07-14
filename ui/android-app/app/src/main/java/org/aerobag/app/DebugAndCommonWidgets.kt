@@ -144,6 +144,7 @@ import androidx.compose.ui.platform.LocalSoftwareKeyboardController
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.semantics.semantics
+import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.selected
 import androidx.compose.ui.semantics.testTagsAsResourceId
 import androidx.compose.ui.semantics.disabled
@@ -494,8 +495,10 @@ internal fun formatPageStack(
         mapViewport = MapViewportState(0.0, 0.0, 0.0),
         plateTargetAirportId = null,
         selectedAirportId = selectedAirportId,
+        selectedReferenceFamilyId = null,
         selectedChartId = selectedChartId,
         selectedChartLabel = selectedChartLabel,
+        suggestedChartIds = emptyList(),
         recentAirportIds = emptyList(),
         chartViewport = null,
         chartFolderOpen = chartFolderOpen,
@@ -725,6 +728,7 @@ internal fun CompactSquareButton(
     selectedColor: Color? = null,
     accentColor: Color? = null,
     @DrawableRes iconResId: Int? = null,
+    showLabel: Boolean = true,
     wide: Boolean = false,
     centered: Boolean = true,
     textStartPadding: Dp = 0.dp,
@@ -749,6 +753,9 @@ internal fun CompactSquareButton(
         modifier = modifier
             .testTag(testTag ?: "parity:button:$label")
             .semantics {
+                if (!showLabel) {
+                    contentDescription = renderedLabel
+                }
                 if (!enabled) {
                     disabled()
                 }
@@ -839,17 +846,19 @@ internal fun CompactSquareButton(
                         .fillMaxSize()
                         .padding(8.dp),
                 )
-                OutlinedButtonLabel(
-                    text = renderedLabel,
-                    modifier = Modifier
-                        .align(Alignment.BottomCenter)
-                        .fillMaxWidth()
-                .padding(horizontal = if (wide) 0.dp else 1.dp, vertical = 2.dp)
-                        .then(textModifier),
-                    style = renderedLabelStyle.copy(fontSize = 13.sp),
-                    maxLines = if (renderedLabel.contains('\n')) maxLines else 1,
-                    color = resolvedContentColor,
-                )
+                if (showLabel) {
+                    OutlinedButtonLabel(
+                        text = renderedLabel,
+                        modifier = Modifier
+                            .align(Alignment.BottomCenter)
+                            .fillMaxWidth()
+                            .padding(horizontal = if (wide) 0.dp else 1.dp, vertical = 2.dp)
+                            .then(textModifier),
+                        style = renderedLabelStyle.copy(fontSize = 13.sp),
+                        maxLines = if (renderedLabel.contains('\n')) maxLines else 1,
+                        color = resolvedContentColor,
+                    )
+                }
             } else {
                 if (maxLines == 1 && !renderedLabel.contains('\n')) {
                     FittedSingleLineText(

@@ -855,7 +855,9 @@ pub fn restore_chart_page_state_in_session_json(
     recent_airport_ids_json: &str,
     plate_target_airport_id_json: &str,
     selected_airport_id_json: &str,
+    selected_reference_family_id_json: &str,
     selected_chart_id_json: &str,
+    suggested_chart_ids_json: &str,
 ) -> Result<String, String> {
     let recent_airport_ids: Vec<String> =
         serde_json::from_str(recent_airport_ids_json).map_err(|err| err.to_string())?;
@@ -863,14 +865,20 @@ pub fn restore_chart_page_state_in_session_json(
         serde_json::from_str(plate_target_airport_id_json).map_err(|err| err.to_string())?;
     let selected_airport_id: Option<String> =
         serde_json::from_str(selected_airport_id_json).map_err(|err| err.to_string())?;
+    let selected_reference_family_id: Option<String> =
+        serde_json::from_str(selected_reference_family_id_json).map_err(|err| err.to_string())?;
     let selected_chart_id: Option<String> =
         serde_json::from_str(selected_chart_id_json).map_err(|err| err.to_string())?;
+    let suggested_chart_ids: Vec<String> =
+        serde_json::from_str(suggested_chart_ids_json).map_err(|err| err.to_string())?;
     let snapshot = app_core::restore_chart_page_state_in_session(
         handle as u32,
         &recent_airport_ids,
         plate_target_airport_id.as_deref(),
         selected_airport_id.as_deref(),
+        selected_reference_family_id.as_deref(),
         selected_chart_id.as_deref(),
+        &suggested_chart_ids,
     )
     .map_err(|err| err.to_string())?;
     serde_json::to_string(&snapshot).map_err(|err| err.to_string())
@@ -3579,19 +3587,26 @@ pub extern "system" fn Java_org_aerobag_app_domain_NativeBindings_restoreChartPa
     recent_airport_ids_json: JString,
     plate_target_airport_id_json: JString,
     selected_airport_id_json: JString,
+    selected_reference_family_id_json: JString,
     selected_chart_id_json: JString,
+    suggested_chart_ids_json: JString,
 ) -> jstring {
     let result = (|| {
         let recent_airport_ids = get_java_string(&mut env, recent_airport_ids_json)?;
         let plate_target_airport_id = get_java_string(&mut env, plate_target_airport_id_json)?;
         let selected_airport_id = get_java_string(&mut env, selected_airport_id_json)?;
+        let selected_reference_family_id =
+            get_java_string(&mut env, selected_reference_family_id_json)?;
         let selected_chart_id = get_java_string(&mut env, selected_chart_id_json)?;
+        let suggested_chart_ids = get_java_string(&mut env, suggested_chart_ids_json)?;
         restore_chart_page_state_in_session_json(
             handle as u64,
             &recent_airport_ids,
             &plate_target_airport_id,
             &selected_airport_id,
+            &selected_reference_family_id,
             &selected_chart_id,
+            &suggested_chart_ids,
         )
     })();
     return_string(&mut env, result)

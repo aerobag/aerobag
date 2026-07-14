@@ -1046,7 +1046,7 @@ internal fun MapTopLeftControls(
     currentPage: AppPage,
     onSelectPage: (AppPage) -> Unit,
     selectedLabel: String,
-    chartReferenceAvailable: Boolean,
+    chartReferenceFamilyId: String?,
     onOpenChartReference: () -> Unit,
     trayOptions: List<ChartTrayOption>,
     trayOpen: Boolean,
@@ -1093,19 +1093,19 @@ internal fun MapTopLeftControls(
                     enabled = option.available,
                     disabledReason = option.disabledReason,
                     iconResId = option.iconResId,
+                    accessoryContentDescription = if (chartReferenceFamilyId == option.id) {
+                        "Open ${option.label} legends and insets"
+                    } else {
+                        null
+                    },
+                    accessoryIconResId = if (chartReferenceFamilyId == option.id) R.drawable.chart_reference_icon else null,
+                    accessoryTestTag = if (chartReferenceFamilyId == option.id) "parity:chart-reference-button" else null,
+                    onAccessorySelect = if (chartReferenceFamilyId == option.id) onOpenChartReference else null,
+                    dismissTrayOnSelect = true,
                 ) { option.select?.invoke() }
             },
+            trayWidthOverride = ThumbSize * 4f,
         )
-        if (chartReferenceAvailable) {
-            CompactSquareButton(
-                label = "REF",
-                modifier = Modifier
-                    .width(ThumbSize * 0.58f)
-                    .height(ThumbSize),
-                testTag = "parity:chart-reference-button",
-                onClick = onOpenChartReference,
-            )
-        }
         MenuDock(
             launcherLabel = "LAYERS",
             launcherIconResId = mapLayerIconResId(MapLayerId.Vectors),
@@ -1586,10 +1586,26 @@ internal fun MenuDock(
                                         accentColor = option.accentColor,
                                         toggleState = option.toggleState,
                                         iconResId = option.iconResId,
+                                        accessoryContentDescription = option.accessoryContentDescription,
+                                        accessoryIconResId = option.accessoryIconResId,
+                                        accessoryTestTag = option.accessoryTestTag,
+                                        onAccessorySelect = option.onAccessorySelect?.let { action ->
+                                            {
+                                                action()
+                                                if (option.dismissTrayOnSelect) {
+                                                    onToggle()
+                                                }
+                                            }
+                                        },
                                         testTag = optionTestTagPrefix?.let { "$it:${option.key}" },
                                         disabledReason = option.disabledReason,
                                         width = trayWidth,
-                                        onSelect = option.onSelect,
+                                        onSelect = {
+                                            option.onSelect()
+                                            if (option.dismissTrayOnSelect) {
+                                                onToggle()
+                                            }
+                                        },
                                     )
                                 }
                             }
@@ -1658,6 +1674,10 @@ internal fun MenuPanelRow(
     accentColor: Color? = null,
     toggleState: UiMapLayerToggleState? = null,
     @DrawableRes iconResId: Int? = null,
+    accessoryContentDescription: String? = null,
+    @DrawableRes accessoryIconResId: Int? = null,
+    accessoryTestTag: String? = null,
+    onAccessorySelect: (() -> Unit)? = null,
     testTag: String? = null,
     disabledReason: String? = null,
     modifier: Modifier = Modifier,
@@ -1710,7 +1730,7 @@ internal fun MenuPanelRow(
                     .background(accentColor.copy(alpha = if (enabled) 1f else 0.45f)),
             )
         }
-        if (iconResId != null || toggleState != null) {
+        if (iconResId != null || toggleState != null || accessoryIconResId != null) {
             Row(
                 modifier = Modifier
                     .fillMaxWidth()
@@ -1737,6 +1757,16 @@ internal fun MenuPanelRow(
                         visible = toggleState.visible,
                         enabled = toggleState.enabled,
                         modifier = Modifier.padding(start = 4.dp),
+                    )
+                }
+                if (accessoryContentDescription != null && accessoryIconResId != null && onAccessorySelect != null) {
+                    CompactSquareButton(
+                        label = accessoryContentDescription,
+                        iconResId = accessoryIconResId,
+                        showLabel = false,
+                        modifier = Modifier.size(ThumbSize),
+                        testTag = accessoryTestTag,
+                        onClick = onAccessorySelect,
                     )
                 }
             }

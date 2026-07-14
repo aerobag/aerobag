@@ -2624,7 +2624,7 @@ internal fun MapExplorerPage(
                 situationTrayOpen = false
             },
             selectedLabel = selectedLauncher.launcherLabel,
-            chartReferenceAvailable = chartReferenceAction != null,
+            chartReferenceFamilyId = chartReferenceAction?.family_id,
             onOpenChartReference = {
                 chartReferenceAction?.let { action ->
                     onOpenChartReference(action.family_id, action.suggested_chart_ids)

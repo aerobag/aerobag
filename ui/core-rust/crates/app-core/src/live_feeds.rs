@@ -5,7 +5,10 @@ use serde_json::Value;
 use sha2::{Digest, Sha256};
 
 use crate::{
-    map_overlay::{MetarProductPayload, MetarRecord},
+    map_overlay::{
+        AirportNotamIndex, MetarProductPayload, NotamProductPayload, TafProductPayload,
+        TfrProductPayload,
+    },
     AppError, AppErrorKind, AppResult, CoreResourceRequest, HadOperationOutcome, UiInvalidation,
 };
 
@@ -209,9 +212,10 @@ struct LiveFeedRecordDelta {
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub struct PreparedMetarLiveFeedEnvelope {
+pub struct PreparedLiveFeedEnvelope {
     pub schema_version: u32,
     pub resource_id: String,
+    pub product: String,
     pub version: String,
     pub state_sha256: String,
     #[serde(default)]
@@ -220,18 +224,21 @@ pub struct PreparedMetarLiveFeedEnvelope {
     pub from_state_sha256: Option<String>,
     #[serde(default)]
     pub delta_blob_sha256: Option<String>,
-    pub feed: PreparedMetarLiveFeed,
+    pub payload: PreparedLiveFeedPayload,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub enum PreparedLiveFeedPayload {
+    Metars(PreparedMetarLiveFeed),
+    Tafs(TafProductPayload),
+    Tfrs(TfrProductPayload),
+    Notams(AirportNotamIndex),
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct PreparedMetarLiveFeed {
     pub schema_version: u32,
-    pub version_label: String,
-    #[serde(default)]
-    pub generated_at_utc: Option<String>,
-    #[serde(default)]
-    pub observed_at_utc: Option<String>,
-    pub records: Vec<MetarRecord>,
+    pub payload: MetarProductPayload,
     pub tiles: Vec<PreparedMetarTile>,
 }
 
@@ -240,7 +247,27 @@ pub struct PreparedMetarTile {
     pub z: u32,
     pub x: u32,
     pub y: u32,
-    pub record_indexes: Vec<u32>,
+    pub station_ids: Vec<String>,
+}
+
+impl PreparedLiveFeedPayload {
+    fn product(&self) -> &'static str {
+        match self {
+            Self::Metars(_) => "metars",
+            Self::Tafs(_) => "tafs",
+            Self::Tfrs(_) => "tfrs",
+            Self::Notams(_) => "notams",
+        }
+    }
+
+    fn version_label(&self) -> &str {
+        match self {
+            Self::Metars(feed) => &feed.payload.version_label,
+            Self::Tafs(payload) => &payload.version_label,
+            Self::Tfrs(payload) => &payload.version_label,
+            Self::Notams(index) => &index.version_label,
+        }
+    }
 }
 
 #[derive(Debug, Deserialize)]
@@ -644,44 +671,53 @@ impl LiveFeedsState {
         }
     }
 
-    pub fn ingest_prepared_metar_live_feed(
+    pub fn ingest_prepared_live_feed(
         &mut self,
         resource_id: &str,
-        envelope: &PreparedMetarLiveFeedEnvelope,
+        envelope: &PreparedLiveFeedEnvelope,
     ) -> AppResult<()> {
-        if envelope.schema_version != 1 || envelope.feed.schema_version != 1 {
+        if envelope.schema_version != 1 {
             return Err(invalid_live_feed(format!(
-                "unsupported prepared METAR schema {}/{}",
-                envelope.schema_version, envelope.feed.schema_version
+                "unsupported prepared live-feed schema {}",
+                envelope.schema_version
             )));
         }
         if envelope.resource_id != resource_id {
             return Err(invalid_live_feed(format!(
-                "prepared METAR envelope for {} cannot satisfy {resource_id}",
+                "prepared live-feed envelope for {} cannot satisfy {resource_id}",
                 envelope.resource_id
+            )));
+        }
+        if envelope.payload.product() != envelope.product {
+            return Err(invalid_live_feed(format!(
+                "prepared {} envelope contained {} payload",
+                envelope.product,
+                envelope.payload.product()
             )));
         }
         if let Some(rest) = resource_id.strip_prefix("live_feeds/state/") {
             let (product, version) = split_product_version(resource_id, rest)?;
-            if product != "metars" {
+            if product != envelope.product {
                 return Err(invalid_live_feed(format!(
-                    "prepared METAR full resource used for {product}"
+                    "prepared {} full resource used for {product}",
+                    envelope.product
                 )));
             }
-            let entry = self.products.entry(product).or_default();
+            let entry = self.products.entry(product.clone()).or_default();
             if entry.current_version.as_deref() != Some(version.as_str()) {
                 return Ok(());
             }
-            if envelope.version != version || envelope.feed.version_label != version {
+            if envelope.version != version || envelope.payload.version_label() != version {
                 return Err(invalid_live_feed(format!(
-                    "prepared METAR full resource {resource_id} contained {} / {}",
-                    envelope.version, envelope.feed.version_label
+                    "prepared {product} full resource {resource_id} contained {} / {}",
+                    envelope.version,
+                    envelope.payload.version_label()
                 )));
             }
             if let Some(expected) = &entry.expected_state_sha256 {
                 if &envelope.state_sha256 != expected {
                     return Err(invalid_live_feed(format!(
-                        "prepared METAR state hash mismatch for {resource_id}: expected {expected}, got {}",
+                        "prepared {product} state hash mismatch for {resource_id}: expected {expected}, got {}",
                         envelope.state_sha256
                     )));
                 }
@@ -692,12 +728,13 @@ impl LiveFeedsState {
         }
         if let Some(rest) = resource_id.strip_prefix("live_feeds/delta/") {
             let (product, from_version, to_version) = split_product_from_to(resource_id, rest)?;
-            if product != "metars" {
+            if product != envelope.product || !supports_record_delta(&product) {
                 return Err(invalid_live_feed(format!(
-                    "prepared METAR delta resource used for {product}"
+                    "prepared {} delta resource used for {product}",
+                    envelope.product
                 )));
             }
-            let entry = self.products.entry(product).or_default();
+            let entry = self.products.entry(product.clone()).or_default();
             if entry.current_version.as_deref() != Some(to_version.as_str()) {
                 return Ok(());
             }
@@ -717,11 +754,13 @@ impl LiveFeedsState {
             }
             if envelope.from_version.as_deref() != Some(from_version.as_str())
                 || envelope.version != to_version
-                || envelope.feed.version_label != to_version
+                || envelope.payload.version_label() != to_version
             {
                 return Err(invalid_live_feed(format!(
-                    "prepared delta {resource_id} contained {:?} -> {} / {}",
-                    envelope.from_version, envelope.version, envelope.feed.version_label
+                    "prepared {product} delta {resource_id} contained {:?} -> {} / {}",
+                    envelope.from_version,
+                    envelope.version,
+                    envelope.payload.version_label()
                 )));
             }
             if envelope.from_state_sha256.as_deref() != Some(delta_ref.from_state_sha256.as_str()) {
@@ -749,7 +788,7 @@ impl LiveFeedsState {
             return Ok(());
         }
         Err(invalid_live_feed(format!(
-            "unsupported prepared METAR resource id: {resource_id}"
+            "unsupported prepared live-feed resource id: {resource_id}"
         )))
     }
 
@@ -1640,7 +1679,7 @@ fn sha256_hex(bytes: &[u8]) -> String {
     format!("{:x}", Sha256::digest(bytes))
 }
 
-pub fn prepare_metar_live_feed_state_resource(
+pub fn prepare_live_feed_state_resource(
     resource_id: &str,
     bytes: &[u8],
 ) -> AppResult<(Value, Vec<u8>)> {
@@ -1650,38 +1689,34 @@ pub fn prepare_metar_live_feed_state_resource(
         )));
     };
     let (product, version) = split_product_version(resource_id, rest)?;
-    if product != "metars" {
-        return Err(invalid_live_feed(format!(
-            "cannot prepare METAR state from {product}"
-        )));
-    }
-    let state: Value = serde_json::from_slice(bytes).map_err(invalid_live_feed_json)?;
+    let decoded = nav_kv_package::decode_xz_if_needed(bytes).map_err(invalid_live_feed)?;
+    let state: Value = serde_json::from_slice(decoded.as_ref()).map_err(invalid_live_feed_json)?;
     let state_sha256 = canonical_json_sha256(&state)?;
-    let payload: MetarProductPayload =
-        serde_json::from_value(state.clone()).map_err(invalid_live_feed_json)?;
-    if payload.version_label != version {
+    let payload = prepare_live_feed_payload(&product, state.clone())?;
+    if payload.version_label() != version {
         return Err(invalid_live_feed(format!(
-            "METAR state {resource_id} contained version {}",
-            payload.version_label
+            "{product} state {resource_id} contained version {}",
+            payload.version_label()
         )));
     }
-    let envelope = PreparedMetarLiveFeedEnvelope {
+    let envelope = PreparedLiveFeedEnvelope {
         schema_version: 1,
         resource_id: resource_id.to_string(),
+        product,
         version,
         state_sha256,
         from_version: None,
         from_state_sha256: None,
         delta_blob_sha256: None,
-        feed: prepare_metar_live_feed(&payload),
+        payload,
     };
     let envelope_bytes = postcard::to_allocvec(&envelope).map_err(|err| {
-        invalid_live_feed(format!("failed to encode prepared METAR state: {err}"))
+        invalid_live_feed(format!("failed to encode prepared live-feed state: {err}"))
     })?;
     Ok((state, envelope_bytes))
 }
 
-pub fn prepare_metar_live_feed_delta_resource(
+pub fn prepare_live_feed_delta_resource(
     resource_id: &str,
     current_state: &Value,
     bytes: &[u8],
@@ -1692,62 +1727,95 @@ pub fn prepare_metar_live_feed_delta_resource(
         )));
     };
     let (product, from_version, to_version) = split_product_from_to(resource_id, rest)?;
-    if product != "metars" {
+    if !supports_record_delta(&product) || !supports_prepared_live_feed(&product) {
         return Err(invalid_live_feed(format!(
-            "cannot prepare METAR delta from {product}"
+            "cannot prepare live-feed delta from {product}"
         )));
     }
     let from_state_sha256 = canonical_json_sha256(current_state)?;
     let delta_blob_sha256 = sha256_hex(bytes);
+    let decoded = nav_kv_package::decode_xz_if_needed(bytes).map_err(invalid_live_feed)?;
     let delta: LiveFeedRecordDelta =
-        serde_json::from_slice(bytes).map_err(invalid_live_feed_json)?;
-    if delta.product != "metars"
+        serde_json::from_slice(decoded.as_ref()).map_err(invalid_live_feed_json)?;
+    validate_live_feeds_schema("record delta", delta.schema_version)?;
+    if delta.product != product
         || delta.from_version != from_version
         || delta.to_version != to_version
     {
         return Err(invalid_live_feed(format!(
-            "METAR delta {resource_id} contained {} {} -> {}",
+            "live-feed delta {resource_id} contained {} {} -> {}",
             delta.product, delta.from_version, delta.to_version
         )));
     }
     let next_state = apply_live_feed_record_delta(current_state, &delta)?;
     let state_sha256 = canonical_json_sha256(&next_state)?;
-    let payload: MetarProductPayload =
-        serde_json::from_value(next_state.clone()).map_err(invalid_live_feed_json)?;
-    if payload.version_label != to_version {
+    let payload = prepare_live_feed_payload(&product, next_state.clone())?;
+    if payload.version_label() != to_version {
         return Err(invalid_live_feed(format!(
-            "prepared METAR delta {resource_id} produced version {}",
-            payload.version_label
+            "prepared {product} delta {resource_id} produced version {}",
+            payload.version_label()
         )));
     }
-    let envelope = PreparedMetarLiveFeedEnvelope {
+    let envelope = PreparedLiveFeedEnvelope {
         schema_version: 1,
         resource_id: resource_id.to_string(),
+        product,
         version: to_version,
         state_sha256,
         from_version: Some(from_version),
         from_state_sha256: Some(from_state_sha256),
         delta_blob_sha256: Some(delta_blob_sha256),
-        feed: prepare_metar_live_feed(&payload),
+        payload,
     };
     let envelope_bytes = postcard::to_allocvec(&envelope).map_err(|err| {
-        invalid_live_feed(format!("failed to encode prepared METAR delta: {err}"))
+        invalid_live_feed(format!("failed to encode prepared live-feed delta: {err}"))
     })?;
     Ok((next_state, envelope_bytes))
 }
 
-pub fn decode_prepared_metar_live_feed(bytes: &[u8]) -> AppResult<PreparedMetarLiveFeedEnvelope> {
+pub fn decode_prepared_live_feed(bytes: &[u8]) -> AppResult<PreparedLiveFeedEnvelope> {
     postcard::from_bytes(bytes)
-        .map_err(|err| invalid_live_feed(format!("failed to decode prepared METAR feed: {err}")))
+        .map_err(|err| invalid_live_feed(format!("failed to decode prepared live feed: {err}")))
 }
 
-fn prepare_metar_live_feed(payload: &MetarProductPayload) -> PreparedMetarLiveFeed {
-    let records = sorted_record_values_by_key(&payload.metars_by_station, |record| {
-        record.station_id.as_str()
-    });
-    let mut tiles = std::collections::BTreeMap::<(u32, u32, u32), Vec<u32>>::new();
+pub fn supports_prepared_live_feed(product: &str) -> bool {
+    matches!(product, "metars" | "tafs" | "tfrs" | "notams")
+}
+
+fn prepare_live_feed_payload(product: &str, state: Value) -> AppResult<PreparedLiveFeedPayload> {
+    match product {
+        "metars" => {
+            let payload: MetarProductPayload =
+                serde_json::from_value(state).map_err(invalid_live_feed_json)?;
+            Ok(PreparedLiveFeedPayload::Metars(prepare_metar_live_feed(
+                payload,
+            )))
+        }
+        "tafs" => serde_json::from_value(state)
+            .map(PreparedLiveFeedPayload::Tafs)
+            .map_err(invalid_live_feed_json),
+        "tfrs" => serde_json::from_value(state)
+            .map(PreparedLiveFeedPayload::Tfrs)
+            .map_err(invalid_live_feed_json),
+        "notams" => {
+            let payload: NotamProductPayload =
+                serde_json::from_value(state).map_err(invalid_live_feed_json)?;
+            AirportNotamIndex::from_payload(payload)
+                .map(PreparedLiveFeedPayload::Notams)
+                .map_err(invalid_live_feed)
+        }
+        _ => Err(invalid_live_feed(format!(
+            "unsupported prepared live-feed product: {product}"
+        ))),
+    }
+}
+
+fn prepare_metar_live_feed(payload: MetarProductPayload) -> PreparedMetarLiveFeed {
+    let mut records = payload.metars_by_station.values().collect::<Vec<_>>();
+    records.sort_by(|left, right| left.station_id.cmp(&right.station_id));
+    let mut tiles = std::collections::BTreeMap::<(u32, u32, u32), Vec<String>>::new();
     for zoom in [5_u32, 6, 7] {
-        for (record_index, record) in records.iter().enumerate() {
+        for record in &records {
             let Some((x, y)) = live_feed_metar_tile_xy(record.latitude, record.longitude, zoom)
             else {
                 continue;
@@ -1755,35 +1823,22 @@ fn prepare_metar_live_feed(payload: &MetarProductPayload) -> PreparedMetarLiveFe
             tiles
                 .entry((zoom, x, y))
                 .or_default()
-                .push(record_index as u32);
+                .push(record.station_id.clone());
         }
     }
     PreparedMetarLiveFeed {
         schema_version: 1,
-        version_label: payload.version_label.clone(),
-        generated_at_utc: payload.generated_at_utc.map(|value| value.to_rfc3339()),
-        observed_at_utc: payload.observed_at_utc.map(|value| value.to_rfc3339()),
-        records,
+        payload,
         tiles: tiles
             .into_iter()
-            .map(|((z, x, y), record_indexes)| PreparedMetarTile {
+            .map(|((z, x, y), station_ids)| PreparedMetarTile {
                 z,
                 x,
                 y,
-                record_indexes,
+                station_ids,
             })
             .collect(),
     }
-}
-
-fn sorted_record_values_by_key<T, F>(records: &HashMap<String, T>, key: F) -> Vec<T>
-where
-    T: Clone,
-    F: Fn(&T) -> &str,
-{
-    let mut values = records.values().cloned().collect::<Vec<_>>();
-    values.sort_by(|left, right| key(left).cmp(key(right)));
-    values
 }
 
 fn supports_record_delta(product: &str) -> bool {
@@ -1791,7 +1846,7 @@ fn supports_record_delta(product: &str) -> bool {
 }
 
 fn product_supports_prepared_record_delta_without_raw_state(product: &str) -> bool {
-    product == "metars"
+    supports_prepared_live_feed(product) && supports_record_delta(product)
 }
 
 fn record_delta_schema(product: &str) -> Option<(String, Option<String>)> {
@@ -1983,6 +2038,186 @@ mod tests {
             "changed": changed,
             "removed": removed
         })
+    }
+
+    #[test]
+    fn prepared_live_feed_states_decode_xz_and_encode_typed_postcard_payloads() {
+        let states = vec![
+            ("metars", metar_state("v1", &[("KSEA", "METAR KSEA")])),
+            ("tafs", taf_state("v1", &[("KSEA", "TAF KSEA")])),
+            (
+                "tfrs",
+                serde_json::json!({
+                    "schema_version": 1,
+                    "version_label": "v1",
+                    "generated_at_utc": "2026-05-18T20:00:00Z",
+                    "notam_count": 0,
+                    "area_group_count": 0,
+                    "areas": []
+                }),
+            ),
+            (
+                "notams",
+                serde_json::json!({
+                    "schema_version": product_contracts::NOTAM_LIVE_FEED_CONTRACT_VERSION,
+                    "version_label": "v1",
+                    "notam_count": 1,
+                    "notams_by_id": {
+                        "D:SEA:2026:N:1": {
+                            "id": "D:SEA:2026:N:1",
+                            "airport_id": "KSEA",
+                            "airport_effects": ["runway_closed"],
+                            "notam_keyword": "RWY",
+                            "text": "RWY 16L/34R CLSD"
+                        }
+                    }
+                }),
+            ),
+        ];
+
+        for (product, state) in states {
+            let resource_id = format!("live_feeds/state/{product}/v1");
+            let encoded =
+                nav_kv_package::xz_frame_uncompressed_bytes(&serde_json::to_vec(&state).unwrap())
+                    .unwrap();
+            let (decoded_state, prepared_bytes) =
+                prepare_live_feed_state_resource(&resource_id, &encoded).unwrap();
+            let envelope = decode_prepared_live_feed(&prepared_bytes).unwrap();
+
+            assert_eq!(decoded_state, state);
+            assert_eq!(envelope.resource_id, resource_id);
+            assert_eq!(envelope.product, product);
+            assert_eq!(envelope.version, "v1");
+            assert_eq!(envelope.payload.product(), product);
+            assert_eq!(envelope.payload.version_label(), "v1");
+            assert_eq!(
+                envelope.state_sha256,
+                canonical_json_sha256(&state).unwrap()
+            );
+        }
+    }
+
+    #[test]
+    fn prepared_live_feed_delta_carries_early_indexed_target_state() {
+        let first = taf_state("v1", &[("KSEA", "TAF KSEA OLD")]);
+        let second = taf_state("v2", &[("KSEA", "TAF KSEA NEW"), ("KPAE", "TAF KPAE")]);
+        let delta = taf_delta(&first, &second);
+        let encoded_delta =
+            nav_kv_package::xz_frame_uncompressed_bytes(&serde_json::to_vec(&delta).unwrap())
+                .unwrap();
+
+        let (next_state, prepared_bytes) =
+            prepare_live_feed_delta_resource("live_feeds/delta/tafs/v1/v2", &first, &encoded_delta)
+                .unwrap();
+        let envelope = decode_prepared_live_feed(&prepared_bytes).unwrap();
+
+        assert_eq!(next_state, second);
+        assert_eq!(envelope.product, "tafs");
+        assert_eq!(envelope.from_version.as_deref(), Some("v1"));
+        assert_eq!(envelope.version, "v2");
+        let PreparedLiveFeedPayload::Tafs(payload) = envelope.payload else {
+            panic!("expected prepared TAF payload");
+        };
+        assert_eq!(payload.tafs_by_station.len(), 2);
+        assert_eq!(payload.tafs_by_station["KSEA"].raw_text, "TAF KSEA NEW");
+    }
+
+    #[test]
+    fn prepared_record_delta_advances_core_without_retaining_raw_state() {
+        let first = taf_state("v1", &[("KSEA", "TAF KSEA OLD")]);
+        let second = taf_state("v2", &[("KSEA", "TAF KSEA NEW")]);
+        let delta = taf_delta(&first, &second);
+        let encoded_first =
+            nav_kv_package::xz_frame_uncompressed_bytes(&serde_json::to_vec(&first).unwrap())
+                .unwrap();
+        let encoded_delta =
+            nav_kv_package::xz_frame_uncompressed_bytes(&serde_json::to_vec(&delta).unwrap())
+                .unwrap();
+        let (_, first_prepared) =
+            prepare_live_feed_state_resource("live_feeds/state/tafs/v1", &encoded_first).unwrap();
+        let first_envelope = decode_prepared_live_feed(&first_prepared).unwrap();
+        let (_, delta_prepared) =
+            prepare_live_feed_delta_resource("live_feeds/delta/tafs/v1/v2", &first, &encoded_delta)
+                .unwrap();
+        let delta_envelope = decode_prepared_live_feed(&delta_prepared).unwrap();
+        let mut state = live_feeds_state();
+        state
+            .ingest_resource(
+                "live_feeds/current",
+                format!(
+                    r#"{{
+                        "schema_version": {LIVE_FEEDS_SCHEMA_VERSION},
+                        "products": {{
+                            "tafs": {{
+                                "current": "v1",
+                                "version_manifest_url": "versions/tafs/v1.json",
+                                "state_url": "states/tafs/v1.json.xz",
+                                "state_sha256": "{}"
+                            }}
+                        }}
+                    }}"#,
+                    canonical_json_sha256(&first).unwrap()
+                )
+                .as_bytes(),
+            )
+            .unwrap();
+        state
+            .ingest_prepared_live_feed("live_feeds/state/tafs/v1", &first_envelope)
+            .unwrap();
+        assert_eq!(state.product_loaded_version("tafs"), Some("v1"));
+        assert_eq!(state.product_state_manifest("tafs"), None);
+
+        state
+            .ingest_sse_event(LiveFeedSseEvent {
+                id: Some("tafs:v2".to_string()),
+                event: Some("live-feed-current".to_string()),
+                data: format!(
+                    r#"{{
+                        "schema_version": {LIVE_FEEDS_SCHEMA_VERSION},
+                        "product": "tafs",
+                        "version": "v2",
+                        "version_manifest_url": "versions/tafs/v2.json"
+                    }}"#
+                ),
+            })
+            .unwrap();
+        state
+            .ingest_resource(
+                "live_feeds/version/tafs/v2",
+                format!(
+                    r#"{{
+                        "schema_version": {LIVE_FEEDS_SCHEMA_VERSION},
+                        "product": "tafs",
+                        "version": "v2",
+                        "state": {{
+                            "kind": "json_xz",
+                            "url": "states/tafs/v2.json.xz",
+                            "state_sha256": "{}"
+                        }},
+                        "delta_from_previous": {{
+                            "kind": "record_json_delta_xz",
+                            "from_version": "v1",
+                            "from_state_sha256": "{}",
+                            "to_version": "v2",
+                            "to_state_sha256": "{}",
+                            "url": "deltas/tafs/v1__v2.json.xz",
+                            "blob_sha256": "{}"
+                        }}
+                    }}"#,
+                    canonical_json_sha256(&second).unwrap(),
+                    canonical_json_sha256(&first).unwrap(),
+                    canonical_json_sha256(&second).unwrap(),
+                    sha256_hex(&encoded_delta),
+                )
+                .as_bytes(),
+            )
+            .unwrap();
+        state
+            .ingest_prepared_live_feed("live_feeds/delta/tafs/v1/v2", &delta_envelope)
+            .unwrap();
+
+        assert_eq!(state.product_loaded_version("tafs"), Some("v2"));
+        assert_eq!(state.product_state_manifest("tafs"), None);
     }
 
     fn assert_record_delta_sync_installs_product(

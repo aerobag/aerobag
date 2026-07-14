@@ -1,5 +1,45 @@
 import { describe, expect, it } from "vitest";
-import { resolvePublicResourceUrl } from "./navKv";
+import { ResourceIngestCoordinator, resolvePublicResourceUrl } from "./navKv";
+
+describe("ResourceIngestCoordinator", () => {
+  it("shares one in-flight ingestion between concurrent requesters", async () => {
+    const coordinator = new ResourceIngestCoordinator();
+    let finish!: () => void;
+    const load = new Promise<void>((resolve) => {
+      finish = resolve;
+    });
+    let loadCount = 0;
+
+    const first = coordinator.run("live_feeds/state/metars/v1", () => {
+      loadCount += 1;
+      return load;
+    });
+    const second = coordinator.run("live_feeds/state/metars/v1", () => {
+      loadCount += 1;
+      return load;
+    });
+
+    expect(first).toBe(second);
+    expect(loadCount).toBe(1);
+    finish();
+    await Promise.all([first, second]);
+  });
+
+  it("allows a failed resource to be retried", async () => {
+    const coordinator = new ResourceIngestCoordinator();
+    let loadCount = 0;
+
+    await expect(coordinator.run("live_feeds/state/tafs/v1", async () => {
+      loadCount += 1;
+      throw new Error("temporary failure");
+    })).rejects.toThrow("temporary failure");
+    await coordinator.run("live_feeds/state/tafs/v1", async () => {
+      loadCount += 1;
+    });
+
+    expect(loadCount).toBe(2);
+  });
+});
 
 describe("resolvePublicResourceUrl", () => {
   it("resolves public live-feed member resources against the configured live-feed origin", () => {

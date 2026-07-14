@@ -33,6 +33,7 @@ import type { NexradOverlayQueryResult } from "../generated/nexradOverlayWire";
 import { viewportCenterLatLon, type MapViewportState } from "./mapViewport";
 import { attachNavKvStoreToSession, resolveChartAssetUrl, runCoreHadOperation, runCoreHadSessionOperation, type UiInvalidation, type UiInvalidationListener } from "./navKv";
 import { debugLog, debugTiming, installRustDebugLogBridge, perfDebugLog } from "./debugLog";
+import { ingestPreparedLiveFeedResource, resetLiveFeedPrep } from "./liveFeedPrep";
 import { liveFeedSourceUrl } from "./liveFeedUrls";
 export { resolveLiveFeedResourceUrl, resolveLiveFeedSourceUrl } from "./liveFeedUrls";
 
@@ -751,7 +752,14 @@ export interface UiSession {
   stopLiveFeedSubscription(): Promise<void>;
   ingestLiveFeedSseEvent(event: LiveFeedSseEvent): Promise<void>;
   ingestLiveFeedSseEvents(events: LiveFeedSseEvent[]): Promise<void>;
-  restoreChartPageState(recentAirportIds: string[], plateTargetAirportId?: string | null, selectedAirportId?: string, selectedChartId?: string): Promise<UiSessionSnapshot>;
+  restoreChartPageState(
+    recentAirportIds: string[],
+    plateTargetAirportId?: string | null,
+    selectedAirportId?: string,
+    selectedReferenceFamilyId?: string | null,
+    selectedChartId?: string,
+    suggestedChartIds?: string[],
+  ): Promise<UiSessionSnapshot>;
   destroy(): Promise<void>;
 }
 
@@ -890,6 +898,7 @@ type WasmModule = {
   ingest_airspace_ref_tiles_in_session(handle: number, tilesJson: string): Promise<void> | void;
   ingest_airspace_features_in_session(handle: number, featuresJson: string): Promise<void> | void;
   ingest_airspace_label_tiles_in_session(handle: number, tilesJson: string): Promise<void> | void;
+  ingest_prepared_live_feed_resource_in_session(handle: number, resourceId: string, preparedResourceBytes: Uint8Array): Promise<void> | void;
   ingest_resource_in_session(handle: number, resourceId: string, resourceBytes: Uint8Array): Promise<void> | void;
   report_session_resource_failure_in_session(handle: number, resourceId: string, message: string): Promise<string> | string;
   report_session_resource_failure_in_session_at_epoch_ms(handle: number, resourceId: string, message: string, nowEpochMs: number): Promise<string> | string;
@@ -910,7 +919,7 @@ type WasmModule = {
   session_snapshot_refresh_scheduler_viewport_activity(handle: number): Promise<string> | string;
   session_snapshot_refresh_scheduler_refresh_completed(handle: number): Promise<string> | string;
   session_snapshot_refresh_scheduler_poll(handle: number): Promise<string> | string;
-  restore_chart_page_state_in_session(handle: number, recentAirportIdsJson: string, plateTargetAirportIdJson: string, selectedAirportIdJson: string, selectedChartIdJson: string): Promise<string> | string;
+  restore_chart_page_state_in_session(handle: number, recentAirportIdsJson: string, plateTargetAirportIdJson: string, selectedAirportIdJson: string, selectedReferenceFamilyIdJson: string, selectedChartIdJson: string, suggestedChartIdsJson: string): Promise<string> | string;
   destroy_session(handle: number): void;
   install_rust_debug_logger(): Promise<void> | void;
   nav_db_open_controller_create(candidatesJson: string): Promise<number> | number;
@@ -977,6 +986,23 @@ export class WasmAppCoreAdapter implements AppCoreAdapter {
       resourceId: string,
       resourceBytes: Uint8Array,
     ) => {
+      if (await ingestPreparedLiveFeedResource(
+        sessionHandle,
+        resourceId,
+        resourceBytes,
+        (preparedSessionHandle, preparedResourceId, preparedBytes) =>
+          debugTiming("live_feed.prepared.core_ingest", () =>
+            this.module.ingest_prepared_live_feed_resource_in_session(
+              preparedSessionHandle,
+              preparedResourceId,
+              preparedBytes,
+            ), {
+              resource_id: preparedResourceId,
+              prepared_bytes: preparedBytes.byteLength,
+            }),
+      )) {
+        return;
+      }
       await this.module.ingest_resource_in_session(sessionHandle, resourceId, resourceBytes);
     };
     const runSessionOperationForHandle = <T>(
@@ -1020,6 +1046,7 @@ export class WasmAppCoreAdapter implements AppCoreAdapter {
         debugLog("startup.session.core_profile", { timings: createdEnvelope.timings });
       }
       const created = createdEnvelope.result ?? createdEnvelope;
+      await debugTiming("startup.session.reset_live_feed_prep", () => resetLiveFeedPrep());
       await debugTiming("startup.session.set_resource_policy", () =>
         module.set_resource_policy_in_session(created.handle, JSON.stringify("public_unpacked")),
       );
@@ -1748,7 +1775,14 @@ export class WasmAppCoreAdapter implements AppCoreAdapter {
           ),
         );
       },
-      restoreChartPageState: async (nextRecentAirportIds, nextPlateTargetAirportId, nextSelectedAirportId, nextSelectedChartId) => {
+      restoreChartPageState: async (
+        nextRecentAirportIds,
+        nextPlateTargetAirportId,
+        nextSelectedAirportId,
+        nextSelectedReferenceFamilyId,
+        nextSelectedChartId,
+        nextSuggestedChartIds = [],
+      ) => {
         snapshot = await withSessionRetry(async () =>
           parseSessionSnapshot(
             this.module.restore_chart_page_state_in_session(
@@ -1756,7 +1790,9 @@ export class WasmAppCoreAdapter implements AppCoreAdapter {
               JSON.stringify(nextRecentAirportIds),
               JSON.stringify(nextPlateTargetAirportId ?? null),
               JSON.stringify(nextSelectedAirportId ?? null),
+              JSON.stringify(nextSelectedReferenceFamilyId ?? null),
               JSON.stringify(nextSelectedChartId ?? null),
+              JSON.stringify(nextSuggestedChartIds),
             ),
           ),
         );

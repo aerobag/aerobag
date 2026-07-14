@@ -529,8 +529,10 @@ internal data class AppViewSnapshot(
     val mapViewport: MapViewportState,
     val plateTargetAirportId: String?,
     val selectedAirportId: String,
+    val selectedReferenceFamilyId: String?,
     val selectedChartId: String,
     val selectedChartLabel: String,
+    val suggestedChartIds: List<String>,
     val recentAirportIds: List<String>,
     val chartViewport: org.aerobag.app.domain.ImageViewportState?,
     val chartFolderOpen: Boolean,
@@ -1073,6 +1075,11 @@ internal data class MenuDockOption(
     val accentColor: Color? = null,
     val toggleState: UiMapLayerToggleState? = null,
     @DrawableRes val iconResId: Int? = null,
+    val accessoryContentDescription: String? = null,
+    @DrawableRes val accessoryIconResId: Int? = null,
+    val accessoryTestTag: String? = null,
+    val onAccessorySelect: (() -> Unit)? = null,
+    val dismissTrayOnSelect: Boolean = false,
     val onSelect: () -> Unit = {},
 ) {
     companion object {
@@ -2637,12 +2644,22 @@ internal fun AerobagApp(
         mapViewport = mapViewport,
         plateTargetAirportId = sessionSnapshot.chartPageState.plateTargetAirportId,
         selectedAirportId = selectedAirportId,
+        selectedReferenceFamilyId = selectedReferenceFamilyId,
         selectedChartId = selectedChartId,
         selectedChartLabel = selectedChart?.label.orEmpty(),
+        suggestedChartIds = derivedChartPageState.suggestedChartIds,
         recentAirportIds = recentAirportIds,
         chartViewport = chartViewport,
         chartFolderOpen = chartFolderOpen,
     )
+
+    fun applySnapshotLocally(snapshot: AppViewSnapshot, history: List<AppViewSnapshot>) {
+        pageHistory = history
+        page = snapshot.page
+        mapViewport = snapshot.mapViewport
+        chartViewport = snapshot.chartViewport
+        chartFolderOpen = snapshot.chartFolderOpen
+    }
 
     fun restoreSnapshot(snapshot: AppViewSnapshot, history: List<AppViewSnapshot>) {
         if (snapshot.plateTargetAirportId != null || snapshot.selectedAirportId.isNotBlank() || snapshot.selectedChartId.isNotBlank() || snapshot.recentAirportIds.isNotEmpty()) {
@@ -2651,12 +2668,13 @@ internal fun AerobagApp(
                     recentAirportIds = snapshot.recentAirportIds,
                     plateTargetAirportId = snapshot.plateTargetAirportId,
                     selectedAirportId = snapshot.selectedAirportId.ifBlank { null },
+                    selectedReferenceFamilyId = snapshot.selectedReferenceFamilyId,
                     selectedChartId = snapshot.selectedChartId.ifBlank { null },
+                    suggestedChartIds = snapshot.suggestedChartIds,
                 )
             }
         }
-        pageHistory = history
-        page = snapshot.page
+        applySnapshotLocally(snapshot, history)
         val nextSnapshot =
             applySessionCommand(if (snapshot.selectedMapId.isBlank()) "refreshSnapshot" else "selectRasterMap") {
                 if (snapshot.selectedMapId.isBlank()) {
@@ -2672,9 +2690,6 @@ internal fun AerobagApp(
             rasterMapState = nextRasterMapState
             selectedMapId = nextRasterMapState.selectedMapId
         }
-        mapViewport = snapshot.mapViewport
-        chartViewport = snapshot.chartViewport
-        chartFolderOpen = snapshot.chartFolderOpen
     }
 
     fun navigateToPage(nextPage: AppPage) {
@@ -2701,8 +2716,13 @@ internal fun AerobagApp(
         }
     }
 
-    fun pushViewSnapshot(snapshot: AppViewSnapshot) {
-        restoreSnapshot(snapshot, boundedHistory(pageHistory + currentSnapshot()))
+    fun pushViewSnapshot(snapshot: AppViewSnapshot, restoreCore: Boolean = false) {
+        val history = boundedHistory(pageHistory + currentSnapshot())
+        if (restoreCore) {
+            restoreSnapshot(snapshot, history)
+        } else {
+            applySnapshotLocally(snapshot, history)
+        }
     }
 
     fun navigateToMostRecentChartOrPlate() {
@@ -2711,7 +2731,7 @@ internal fun AerobagApp(
                 .asReversed()
                 .firstOrNull { it.page == AppPage.Map || it.page == AppPage.Charts }
         if (target != null) {
-            pushViewSnapshot(target)
+            pushViewSnapshot(target, restoreCore = true)
         } else {
             navigateToPage(AppPage.Map)
         }
@@ -2726,19 +2746,35 @@ internal fun AerobagApp(
     }
 
     fun openChartsForAirport(airportId: String, chartId: String? = null) {
-        applySessionCommand("selectAirport") { uiSession.selectAirport(airportId) } ?: return
         val airport = chartAirportById[airportId]
         val selectedChart = chartId
             ?.let { requestedChartId -> airport?.charts?.find { it.id == requestedChartId } }
             ?: airport?.charts?.firstOrNull()
-        restoreSnapshot(
+        val nextRecentAirportIds = moveAirportToFront(
+            sessionSnapshot.chartPageState.recentAirportIds,
+            airportId,
+            derivedChartPageState.airports,
+        )
+        applySessionCommand("restoreChartPageState") {
+            uiSession.restoreChartPageState(
+                recentAirportIds = nextRecentAirportIds,
+                plateTargetAirportId = airportId,
+                selectedAirportId = airportId,
+                selectedReferenceFamilyId = null,
+                selectedChartId = selectedChart?.id,
+                suggestedChartIds = emptyList(),
+            )
+        } ?: return
+        applySnapshotLocally(
             currentSnapshot().copy(
                 page = AppPage.Charts,
                 plateTargetAirportId = airportId,
                 selectedAirportId = airportId,
+                selectedReferenceFamilyId = null,
                 selectedChartId = selectedChart?.id.orEmpty(),
                 selectedChartLabel = selectedChart?.label.orEmpty(),
-                recentAirportIds = sessionSnapshot.chartPageState.recentAirportIds,
+                recentAirportIds = nextRecentAirportIds,
+                suggestedChartIds = emptyList(),
                 chartViewport = null,
                 chartFolderOpen = chartId == null,
             ),
@@ -2752,14 +2788,26 @@ internal fun AerobagApp(
             airportId,
             derivedChartPageState.airports,
         )
-        restoreSnapshot(
+        applySessionCommand("restoreChartPageState") {
+            uiSession.restoreChartPageState(
+                recentAirportIds = nextRecentAirportIds,
+                plateTargetAirportId = airportId,
+                selectedAirportId = airportId,
+                selectedReferenceFamilyId = null,
+                selectedChartId = chartId,
+                suggestedChartIds = emptyList(),
+            )
+        } ?: return
+        applySnapshotLocally(
             currentSnapshot().copy(
                 page = AppPage.Charts,
                 plateTargetAirportId = airportId,
                 selectedAirportId = airportId,
+                selectedReferenceFamilyId = null,
                 selectedChartId = chartId,
                 selectedChartLabel = "",
                 recentAirportIds = nextRecentAirportIds,
+                suggestedChartIds = emptyList(),
                 chartViewport = null,
                 chartFolderOpen = target == "Folder",
             ),
@@ -2914,7 +2962,7 @@ internal fun AerobagApp(
                         onSessionSnapshotChange = { applySessionSnapshot(it) },
                         onSessionCommandFailure = { recoverSessionCommandFailure(it) },
                         onFolderOpenChange = {
-                            restoreSnapshot(
+                            applySnapshotLocally(
                                 currentSnapshot().copy(
                                     page = AppPage.Charts,
                                     chartFolderOpen = it,
@@ -2932,13 +2980,15 @@ internal fun AerobagApp(
                         onSelectAirport = { airportId ->
                             if (applySessionCommand("selectAirport") { uiSession.selectAirport(airportId) } != null) {
                                 val airport = chartAirportById[airportId]
-                                restoreSnapshot(
+                                applySnapshotLocally(
                                     currentSnapshot().copy(
                                         page = AppPage.Charts,
                                         selectedAirportId = airportId,
+                                        selectedReferenceFamilyId = null,
                                         selectedChartId = airport?.charts?.firstOrNull()?.id.orEmpty(),
                                         selectedChartLabel = airport?.charts?.firstOrNull()?.label.orEmpty(),
                                         recentAirportIds = sessionSnapshot.chartPageState.recentAirportIds,
+                                        suggestedChartIds = emptyList(),
                                         chartViewport = null,
                                         chartFolderOpen = false,
                                     ),
@@ -2957,15 +3007,17 @@ internal fun AerobagApp(
                         },
                         onSelectChart = {
                             if (applySessionCommand("selectChart") { uiSession.selectChart(it) } != null) {
-                                restoreSnapshot(
+                                applySnapshotLocally(
                                     currentSnapshot().copy(
                                         page = AppPage.Charts,
+                                        selectedReferenceFamilyId = selectedReferenceFamilyId,
                                         selectedChartId = it,
                                         selectedChartLabel = selectedChartCollection
                                             ?.charts
                                             ?.firstOrNull { chart -> chart.id == it }
                                             ?.label
                                             .orEmpty(),
+                                        suggestedChartIds = derivedChartPageState.suggestedChartIds,
                                         chartViewport = null,
                                         chartFolderOpen = false,
                                     ),

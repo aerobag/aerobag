@@ -406,7 +406,9 @@ interface NativeBridge {
         recentAirportIdsJson: String,
         plateTargetAirportIdJson: String,
         selectedAirportIdJson: String,
+        selectedReferenceFamilyIdJson: String,
         selectedChartIdJson: String,
+        suggestedChartIdsJson: String,
     ): String
 
     fun ingestPointTilesInSessionJson(
@@ -979,7 +981,9 @@ object NativeBindings : NativeBridge {
         recentAirportIdsJson: String,
         plateTargetAirportIdJson: String,
         selectedAirportIdJson: String,
+        selectedReferenceFamilyIdJson: String,
         selectedChartIdJson: String,
+        suggestedChartIdsJson: String,
     ): String
 
     external override fun ingestPointTilesInSessionJson(

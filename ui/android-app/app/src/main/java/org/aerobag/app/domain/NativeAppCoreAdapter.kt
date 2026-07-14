@@ -1157,7 +1157,9 @@ class NativeUiSession internal constructor(
         recentAirportIds: List<String>,
         plateTargetAirportId: String?,
         selectedAirportId: String?,
+        selectedReferenceFamilyId: String?,
         selectedChartId: String?,
+        suggestedChartIds: List<String>,
     ): UiSessionSnapshot {
         return runPlainSnapshot("restoreChartPageState") {
             bridge.restoreChartPageStateInSessionJson(
@@ -1165,7 +1167,9 @@ class NativeUiSession internal constructor(
                 json.encodeToString(recentAirportIds),
                 json.encodeToString(plateTargetAirportId),
                 json.encodeToString(selectedAirportId),
+                json.encodeToString(selectedReferenceFamilyId),
                 json.encodeToString(selectedChartId),
+                json.encodeToString(suggestedChartIds),
             )
         }
     }

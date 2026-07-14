@@ -1503,6 +1503,15 @@ fn startup_prefetch_pages(root: &NavKvRoot, pages: &[Vec<u8>]) -> Result<Vec<u32
     for key in package_keys {
         trace_extract_value(root, pages, &mut touched, &key)?;
     }
+    let chart_reference_keys = trace_prefix_keys(root, pages, &mut touched, "chart-reference/")?;
+    for key in chart_reference_keys {
+        trace_extract_value(root, pages, &mut touched, &key)?;
+    }
+    let chart_reference_asset_keys =
+        trace_prefix_keys(root, pages, &mut touched, "plate/by-id/chart-reference%3A")?;
+    for key in chart_reference_asset_keys {
+        trace_extract_value(root, pages, &mut touched, &key)?;
+    }
     trace_extract_value(root, pages, &mut touched, "vector/manifest")?;
     Ok(touched.into_iter().collect())
 }
@@ -1849,8 +1858,14 @@ mod tests {
         let built = build_nav_kv_sorted(
             vec![
                 pair("chart/catalog", "catalog-value"),
+                pair("chart-reference/family-index", "reference-index"),
+                pair("chart-reference/family/tac", "reference-family"),
                 pair("package/by-id/a", "package-a"),
                 pair("package/by-id/b", "package-b"),
+                pair(
+                    "plate/by-id/chart-reference%3Atac%3Alegend%3Aseattle-tac",
+                    "reference-chart",
+                ),
                 pair("resource/families", "families-value"),
                 pair("weather/metar-important-stations", "metar-importance"),
                 pair("vector/manifest", "vector-manifest"),
@@ -1903,6 +1918,28 @@ mod tests {
                 .cloned())
                 .as_deref(),
             Some(b"metar-importance".as_slice())
+        );
+        assert_eq!(
+            root.extract_value("chart-reference/family-index", |page| cache
+                .get(&page)
+                .cloned())
+                .as_deref(),
+            Some(b"reference-index".as_slice())
+        );
+        assert_eq!(
+            root.extract_value("chart-reference/family/tac", |page| cache
+                .get(&page)
+                .cloned())
+                .as_deref(),
+            Some(b"reference-family".as_slice())
+        );
+        assert_eq!(
+            root.extract_value(
+                "plate/by-id/chart-reference%3Atac%3Alegend%3Aseattle-tac",
+                |page| cache.get(&page).cloned(),
+            )
+            .as_deref(),
+            Some(b"reference-chart".as_slice())
         );
     }
 

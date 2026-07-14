@@ -397,7 +397,7 @@ pub struct AirportNotamUiView {
     priority: u8,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct AirportNotamIndex {
     pub version_label: String,
     by_airport_id: HashMap<String, Vec<AirportNotamUiView>>,

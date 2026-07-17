@@ -14,6 +14,7 @@ def admin_index_html(
     *,
     title: str,
     front_door: str,
+    commit_hash: str,
     cycle_products_root: str,
     live_feed_output_root: str,
 ) -> str:
@@ -36,11 +37,13 @@ body {{ margin: 32px; font: 15px/1.45 system-ui, sans-serif; color: #17201b; bac
 main {{ max-width: 880px; }}
 a {{ color: #075985; }}
 code {{ background: #e7e5df; padding: 1px 4px; border-radius: 4px; }}
+.commit {{ overflow-wrap: anywhere; }}
 li {{ margin: 8px 0; }}
 </style>
 <main>
   <h1>{escape(title)}</h1>
   <p>Front door: <code>{escape(front_door)}</code></p>
+  <p>Commit: <code class="commit">{escape(commit_hash)}</code></p>
   <ul>
 {link_items}
   </ul>

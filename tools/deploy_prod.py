@@ -278,6 +278,21 @@ def local_ref_sha(ref: str, *, dry_run: bool) -> str:
     return result.stdout.strip() if result.stdout else "<dry-run>"
 
 
+def remote_deployed_rev(config: dict[str, Any], *, dry_run: bool) -> str:
+    result = run_ssh(
+        config,
+        f"cat {shell_quote(DEPLOYED_REV_FILE)}",
+        capture=True,
+        dry_run=dry_run,
+    )
+    if dry_run:
+        return "<dry-run>"
+    deployed_rev = result.stdout.strip()
+    if not deployed_rev:
+        raise RuntimeError(f"empty deployed revision in {DEPLOYED_REV_FILE}")
+    return deployed_rev
+
+
 def normalize_cert_fingerprint(value: str) -> str:
     return "".join(ch for ch in value.lower() if ch in "0123456789abcdef")
 
@@ -579,11 +594,12 @@ def public_front_door(config: dict[str, Any]) -> str:
     return f"http://{host}"
 
 
-def prod_admin_index(config: dict[str, Any]) -> str:
+def prod_admin_index(config: dict[str, Any], deployed_rev: str) -> str:
     artifact_root = config["artifact_root"]
     return admin_index_html(
         title="Aerobag Prod",
         front_door=public_front_door(config),
+        commit_hash=deployed_rev,
         cycle_products_root=f"{artifact_root}/published",
         live_feed_output_root=f"{artifact_root}/live-feeds/{LIVE_FEEDS_CONTRACT_PATH}",
     )
@@ -1196,13 +1212,17 @@ WantedBy=timers.target
 
 
 def write_remote_config(
-    config: dict[str, Any], *, include_build_config: bool = True, dry_run: bool
+    config: dict[str, Any],
+    *,
+    deployed_rev: str,
+    include_build_config: bool = True,
+    dry_run: bool,
 ) -> None:
     write_remote_file(config, ENV_FILE, env_file(config), dry_run=dry_run)
     write_remote_file(
         config,
         f"{config['data_root']}/admin/index.html",
-        prod_admin_index(config),
+        prod_admin_index(config, deployed_rev),
         dry_run=dry_run,
     )
     write_remote_file(
@@ -1409,9 +1429,15 @@ def run_web_android_build(config: dict[str, Any], *, dry_run: bool) -> None:
 
 def deploy(config: dict[str, Any], args: argparse.Namespace) -> None:
     if args.runtime_config_only:
+        deployed_rev = remote_deployed_rev(config, dry_run=args.dry_run)
         prepare_remote_paths(config, dry_run=args.dry_run)
         install_swim_notams_credential(config, dry_run=args.dry_run)
-        write_remote_config(config, include_build_config=False, dry_run=args.dry_run)
+        write_remote_config(
+            config,
+            deployed_rev=deployed_rev,
+            include_build_config=False,
+            dry_run=args.dry_run,
+        )
         reload_services(config, dry_run=args.dry_run)
         start_runtime(config, skip_build=True, dry_run=args.dry_run)
         return
@@ -1445,7 +1471,7 @@ def deploy(config: dict[str, Any], args: argparse.Namespace) -> None:
         deploy_config_json(config, deployed_rev),
         dry_run=args.dry_run,
     )
-    write_remote_config(config, dry_run=args.dry_run)
+    write_remote_config(config, deployed_rev=deployed_rev, dry_run=args.dry_run)
     run_initial_toolchain_build(config, dry_run=args.dry_run)
     run_android_sdk_setup(config, dry_run=args.dry_run)
     reload_services(config, dry_run=args.dry_run)

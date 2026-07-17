@@ -145,6 +145,7 @@ def child_preexec() -> None:
 class DevStackConfig:
     artifact_root: Path
     stack_root: Path
+    source_commit: str
     web_dist: Path | None
     target_dir: Path
     listen: str
@@ -627,6 +628,7 @@ def index_html(config: DevStackConfig) -> str:
     return admin_index_html(
         title="Aerobag Dev Stack",
         front_door=display_url(config.listen),
+        commit_hash=config.source_commit,
         cycle_products_root=str(config.published_root),
         live_feed_output_root=str(config.live_contract_root),
     )
@@ -728,6 +730,13 @@ def config_from_args(args: argparse.Namespace) -> DevStackConfig:
     return DevStackConfig(
         artifact_root=artifact_root,
         stack_root=stack_root,
+        source_commit=subprocess.run(
+            ["git", "rev-parse", "HEAD"],
+            cwd=REPO_ROOT,
+            text=True,
+            stdout=subprocess.PIPE,
+            check=True,
+        ).stdout.strip(),
         web_dist=web_dist,
         target_dir=target_dir,
         listen=args.listen,

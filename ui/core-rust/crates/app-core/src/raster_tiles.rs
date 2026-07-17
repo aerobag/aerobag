@@ -1372,7 +1372,7 @@ mod tests {
             family_options: vec![RasterMapFamilyOption {
                 id: "flyway".to_string(),
                 label: "FLYWAY".to_string(),
-                launcher_label: "FLY".to_string(),
+                launcher_label: "FLYWAY".to_string(),
                 enabled: true,
                 disabled_reason: None,
                 active: false,

@@ -919,6 +919,8 @@ function chartFamilyIconSrc(familyId: ChartFamilyId | null | undefined): string 
       return "/icons/icons/sectional-icon.png?v=20260424b";
     case "tac":
       return "/icons/icons/tac-icon.png?v=20260424b";
+    case "flyway":
+      return "/icons/icons/flyway-icon.png?v=20260717a";
     case "enr-l":
       return "/icons/icons/ifr-l-icon.png?v=20260424b";
     case "enr-h":

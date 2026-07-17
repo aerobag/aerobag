@@ -2056,7 +2056,7 @@ fn supported_chart_families() -> [(&'static str, &'static str, &'static str); 7]
         (NO_RASTER_FAMILY_ID, "NONE", "NONE"),
         ("sec", "SECTIONAL", "SEC"),
         ("tac", "TAC", "TAC"),
-        ("flyway", "FLYWAY", "FLY"),
+        ("flyway", "FLYWAY", "FLYWAY"),
         ("enr-l", "IFR-LOW", "IFR L"),
         ("enr-h", "IFR-HIGH", "IFR H"),
         ("shaded-relief", "SHADED RELIEF", "RELIEF"),
@@ -3979,6 +3979,11 @@ mod tests {
             key: key.to_string(),
             value: value.to_vec(),
         }
+    }
+
+    #[test]
+    fn flyway_family_uses_full_launcher_label() {
+        assert!(supported_chart_families().contains(&("flyway", "FLYWAY", "FLYWAY")));
     }
 
     #[test]

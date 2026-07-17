@@ -1191,6 +1191,7 @@ internal fun mergeRecentAirportIds(
 internal fun chartFamilyIconResId(chartFamilyId: String): Int = when (chartFamilyId) {
     "sec" -> R.drawable.sectional_icon
     "tac" -> R.drawable.tac_icon
+    "flyway" -> R.drawable.flyway_icon
     "enr-l" -> R.drawable.ifr_l_icon
     "enr-h" -> R.drawable.ifr_h_icon
     "shaded-relief" -> R.drawable.shaded_relief_icon

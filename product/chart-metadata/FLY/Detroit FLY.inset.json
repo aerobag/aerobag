@@ -1,0 +1,15 @@
+{
+  "schema_version": 1,
+  "source": "Detroit FLY.tif",
+  "source_width": 10645,
+  "source_height": 6824,
+  "max_output_width": 1210,
+  "regions": [
+    {
+      "x": 486,
+      "y": 3791,
+      "width": 2017,
+      "height": 2757
+    }
+  ]
+}

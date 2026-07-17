@@ -1,0 +1,15 @@
+{
+  "schema_version": 1,
+  "source": "Las Vegas FLY.tif",
+  "source_width": 10785,
+  "source_height": 6299,
+  "max_output_width": 1210,
+  "regions": [
+    {
+      "x": 0,
+      "y": 2154,
+      "width": 1563,
+      "height": 2819
+    }
+  ]
+}

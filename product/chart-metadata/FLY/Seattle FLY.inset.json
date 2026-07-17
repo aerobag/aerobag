@@ -1,0 +1,15 @@
+{
+  "schema_version": 1,
+  "source": "Seattle FLY.tif",
+  "source_width": 9170,
+  "source_height": 7292,
+  "max_output_width": 1210,
+  "regions": [
+    {
+      "x": 7577,
+      "y": 1162,
+      "width": 1593,
+      "height": 4406
+    }
+  ]
+}

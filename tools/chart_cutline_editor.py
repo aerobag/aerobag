@@ -49,6 +49,7 @@ OVERVIEW_RENDER_VERSION = 3
 FAMILY_LABELS = {
     "SEC": "Sectional",
     "TAC": "TAC",
+    "FLY": "Flyway",
     "ENR_L": "IFR-L",
     "ENR_H": "IFR-H",
 }
@@ -993,7 +994,7 @@ def parse_args() -> argparse.Namespace:
         action="append",
         default=[],
         metavar="FAMILY=WORK_DIR",
-        help="add a chart family; may be repeated (SEC, TAC, ENR_L, ENR_H)",
+        help="add a chart family; may be repeated (SEC, TAC, FLY, ENR_L, ENR_H)",
     )
     parser.add_argument("--cache-dir", type=Path, default=DEFAULT_CACHE_DIR)
     parser.add_argument("--overview-width", type=int, default=1000)

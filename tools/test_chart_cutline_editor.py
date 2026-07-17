@@ -304,12 +304,13 @@ class EditorStateTest(unittest.TestCase):
         self.assertEqual(document["coverage_source"], "Test TAC")
 
     def test_catalog_routes_charts_and_overviews_by_family(self) -> None:
-        catalog = EditorCatalog({"SEC": self.state, "TAC": self.state})
+        catalog = EditorCatalog({"SEC": self.state, "TAC": self.state, "FLY": self.state})
         self.assertEqual(
             catalog.family_list(),
             [
                 {"id": "SEC", "label": "Sectional", "chart_count": 1},
                 {"id": "TAC", "label": "TAC", "chart_count": 1},
+                {"id": "FLY", "label": "Flyway", "chart_count": 1},
             ],
         )
         payload = catalog.chart_payload("SEC", "Test TAC")

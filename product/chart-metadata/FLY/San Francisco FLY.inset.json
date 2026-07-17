@@ -1,0 +1,15 @@
+{
+  "schema_version": 1,
+  "source": "San Francisco FLY.tif",
+  "source_width": 10823,
+  "source_height": 7098,
+  "max_output_width": 1210,
+  "regions": [
+    {
+      "x": 148,
+      "y": 4224,
+      "width": 3051,
+      "height": 2681
+    }
+  ]
+}

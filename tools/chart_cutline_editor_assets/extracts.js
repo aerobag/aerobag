@@ -168,6 +168,7 @@ async function loadFamily(familyId) {
     const preferred = {
       SEC: "Seattle SEC",
       TAC: "Seattle TAC",
+      FLY: "Seattle FLY",
       ENR_L: "ENR_L01",
       ENR_H: "ENR_H01",
     }[familyId];

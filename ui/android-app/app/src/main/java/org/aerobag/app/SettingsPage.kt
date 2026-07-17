@@ -5,6 +5,7 @@ import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
@@ -22,6 +23,7 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
+import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
@@ -31,6 +33,7 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.zIndex
+import kotlin.math.floor
 import kotlin.math.roundToInt
 import org.aerobag.app.domain.UiSettingsPageRow
 import org.aerobag.app.domain.UiSettingsPageState
@@ -118,15 +121,48 @@ private fun SettingsPageRowView(
     row: UiSettingsPageRow,
     onSettingsAction: (String, String) -> Unit,
 ) {
-    val uiTheme = LocalAerobagUiTheme.current
-    if (row.kind != "slider" || row.stops.isEmpty()) {
-        return
+    when (row.kind) {
+        "grid_choices" -> SettingsGridChoicesRow(row, onSettingsAction)
+        "slider" -> SettingsSliderRow(row, onSettingsAction)
     }
-    val selectedIndex = row.stops.indexOfFirst { it.id == row.valueId }.takeIf { it >= 0 } ?: 0
-    var sliderIndex by remember(row.id, row.valueId, row.stops) {
-        mutableStateOf(selectedIndex.toFloat())
+}
+
+@Composable
+private fun SettingsGridChoicesRow(
+    row: UiSettingsPageRow,
+    onSettingsAction: (String, String) -> Unit,
+) {
+    val gap = ThumbSize * 0.1f
+    SettingsPageRowSurface(title = row.title) {
+        BoxWithConstraints(modifier = Modifier.fillMaxWidth()) {
+            val columnCount = floor(
+                (maxWidth.value + gap.value) /
+                    (FlightDataCellMinWidth.value + gap.value),
+            ).toInt().coerceAtLeast(1)
+            Column(verticalArrangement = Arrangement.spacedBy(gap)) {
+                row.items.chunked(columnCount).forEach { items ->
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.spacedBy(gap, Alignment.CenterHorizontally),
+                    ) {
+                        items.forEach { item ->
+                            FlightDataSettingsCell(
+                                item = item,
+                                onClick = { onSettingsAction(row.actionId, item.cell.id) },
+                            )
+                        }
+                    }
+                }
+            }
+        }
     }
-    val maxIndex = (row.stops.size - 1).coerceAtLeast(0)
+}
+
+@Composable
+private fun SettingsPageRowSurface(
+    title: String,
+    content: @Composable () -> Unit,
+) {
     Column(
         modifier = Modifier
             .fillMaxWidth()
@@ -136,7 +172,7 @@ private fun SettingsPageRowView(
         verticalArrangement = Arrangement.spacedBy(ThumbSize * 0.14f),
     ) {
         Text(
-            text = row.title,
+            text = title,
             style = MaterialTheme.typography.titleLarge.copy(
                 fontSize = SettingsPageRowTitleTextSize,
                 lineHeight = SettingsPageRowTitleTextSize * 1.08f,
@@ -146,6 +182,24 @@ private fun SettingsPageRowView(
             maxLines = 2,
             overflow = TextOverflow.Ellipsis,
         )
+        content()
+    }
+}
+
+@Composable
+private fun SettingsSliderRow(
+    row: UiSettingsPageRow,
+    onSettingsAction: (String, String) -> Unit,
+) {
+    if (row.stops.isEmpty()) {
+        return
+    }
+    val selectedIndex = row.stops.indexOfFirst { it.id == row.valueId }.takeIf { it >= 0 } ?: 0
+    var sliderIndex by remember(row.id, row.valueId, row.stops) {
+        mutableStateOf(selectedIndex.toFloat())
+    }
+    val maxIndex = (row.stops.size - 1).coerceAtLeast(0)
+    SettingsPageRowSurface(title = row.title) {
         Slider(
             value = sliderIndex.coerceIn(0f, maxIndex.toFloat()),
             onValueChange = { value ->

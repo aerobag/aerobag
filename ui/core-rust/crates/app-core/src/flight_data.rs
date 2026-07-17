@@ -43,7 +43,7 @@ pub struct FlightDataComputer {
     now_epoch_ms: Option<i64>,
 }
 
-#[derive(Debug, Clone, Copy, Default)]
+#[derive(Debug, Clone, Default)]
 pub struct FlightDataBannerInput {
     pub altitude_ft: Option<f64>,
     pub vertical_speed_fpm: Option<f64>,
@@ -51,6 +51,69 @@ pub struct FlightDataBannerInput {
     pub desired_track_magnetic_deg: Option<f64>,
     pub waypoint_distance_nm: Option<f64>,
     pub final_distance_nm: Option<f64>,
+    pub nexrad_age: Option<String>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum FlightDataBannerField {
+    Altitude,
+    GroundSpeed,
+    VerticalSpeed,
+    Track,
+    DesiredTrack,
+    WaypointDistance,
+    WaypointEte,
+    FinalDistance,
+    FinalEte,
+    FinalFuel,
+    FinalEta,
+    NexradAge,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct FlightDataBannerCellDefinition {
+    field: FlightDataBannerField,
+    id: &'static str,
+    label: &'static str,
+}
+
+const FLIGHT_DATA_BANNER_CELLS: [FlightDataBannerCellDefinition; 12] = [
+    banner_cell(FlightDataBannerField::Altitude, "altitude", "ALT ft"),
+    banner_cell(FlightDataBannerField::GroundSpeed, "ground_speed", "GS kt"),
+    banner_cell(
+        FlightDataBannerField::VerticalSpeed,
+        "vertical_speed",
+        "VS fpm",
+    ),
+    banner_cell(FlightDataBannerField::Track, "track", "TRK °M"),
+    banner_cell(
+        FlightDataBannerField::DesiredTrack,
+        "desired_track",
+        "DTK °M",
+    ),
+    banner_cell(
+        FlightDataBannerField::WaypointDistance,
+        "waypoint_distance",
+        "WPT nm",
+    ),
+    banner_cell(FlightDataBannerField::WaypointEte, "waypoint_ete", "ETE"),
+    banner_cell(
+        FlightDataBannerField::FinalDistance,
+        "final_distance",
+        "FINAL nm",
+    ),
+    banner_cell(FlightDataBannerField::FinalEte, "final_ete", "F-ETE"),
+    banner_cell(FlightDataBannerField::FinalFuel, "final_fuel", "F-FUEL gal"),
+    banner_cell(FlightDataBannerField::FinalEta, "final_eta", "ETA"),
+    banner_cell(FlightDataBannerField::NexradAge, "nexrad_age", "NEXRAD"),
+];
+
+const fn banner_cell(
+    field: FlightDataBannerField,
+    id: &'static str,
+    label: &'static str,
+) -> FlightDataBannerCellDefinition {
+    FlightDataBannerCellDefinition { field, id, label }
 }
 
 impl FlightDataComputer {
@@ -93,43 +156,38 @@ impl FlightDataComputer {
             .and_then(|distance| self.format_eta(distance));
 
         FlightDataBannerModel {
-            cells: vec![
-                cell("altitude", "ALT ft", input.altitude_ft.map(format_feet)),
-                cell(
-                    "ground_speed",
-                    "GS kt",
-                    self.ground_speed_kt.map(format_knots),
-                ),
-                cell(
-                    "vertical_speed",
-                    "VS fpm",
-                    input.vertical_speed_fpm.map(format_feet_per_minute),
-                ),
-                cell(
-                    "track",
-                    "TRK °M",
-                    input.track_magnetic_deg.map(format_course_degrees),
-                ),
-                cell(
-                    "desired_track",
-                    "DTK °M",
-                    input.desired_track_magnetic_deg.map(format_course_degrees),
-                ),
-                cell(
-                    "waypoint_distance",
-                    "WPT nm",
-                    input.waypoint_distance_nm.map(format_nm),
-                ),
-                cell("waypoint_ete", "ETE", waypoint_ete),
-                cell(
-                    "final_distance",
-                    "FINAL nm",
-                    input.final_distance_nm.map(format_nm),
-                ),
-                cell("final_ete", "F-ETE", final_ete),
-                cell("final_fuel", "F-FUEL gal", final_fuel),
-                cell("final_eta", "ETA", final_eta),
-            ],
+            cells: FLIGHT_DATA_BANNER_CELLS
+                .iter()
+                .map(|definition| {
+                    let value = match definition.field {
+                        FlightDataBannerField::Altitude => input.altitude_ft.map(format_feet),
+                        FlightDataBannerField::GroundSpeed => {
+                            self.ground_speed_kt.map(format_knots)
+                        }
+                        FlightDataBannerField::VerticalSpeed => {
+                            input.vertical_speed_fpm.map(format_feet_per_minute)
+                        }
+                        FlightDataBannerField::Track => {
+                            input.track_magnetic_deg.map(format_course_degrees)
+                        }
+                        FlightDataBannerField::DesiredTrack => {
+                            input.desired_track_magnetic_deg.map(format_course_degrees)
+                        }
+                        FlightDataBannerField::WaypointDistance => {
+                            input.waypoint_distance_nm.map(format_nm)
+                        }
+                        FlightDataBannerField::WaypointEte => waypoint_ete.clone(),
+                        FlightDataBannerField::FinalDistance => {
+                            input.final_distance_nm.map(format_nm)
+                        }
+                        FlightDataBannerField::FinalEte => final_ete.clone(),
+                        FlightDataBannerField::FinalFuel => final_fuel.clone(),
+                        FlightDataBannerField::FinalEta => final_eta.clone(),
+                        FlightDataBannerField::NexradAge => input.nexrad_age.clone(),
+                    };
+                    cell(definition.id, definition.label, value)
+                })
+                .collect(),
         }
     }
 
@@ -251,20 +309,18 @@ pub fn flight_plan_columns() -> Vec<FlightDataColumn> {
 }
 
 pub fn possible_columns() -> Vec<FlightDataColumn> {
-    vec![
-        column("altitude", "ALT ft"),
-        column("ground_speed", "GS kt"),
-        column("vertical_speed", "VS fpm"),
-        column("track", "TRK °M"),
-        column("desired_track", "DTK °M"),
-        column("waypoint_distance", "DIST nm"),
-        column("waypoint_ete", "ETE"),
-        column("final_distance", "FINAL nm"),
-        column("final_ete", "F-ETE"),
-        column("final_fuel", "F-FUEL gal"),
-        column("final_eta", "ETA"),
-        column("fuel", "FUEL gal"),
-    ]
+    let mut columns = FLIGHT_DATA_BANNER_CELLS
+        .iter()
+        .map(|definition| column(definition.id, definition.label))
+        .collect::<Vec<_>>();
+    columns.push(column("fuel", "FUEL gal"));
+    columns
+}
+
+pub fn is_flight_data_banner_cell_id(id: &str) -> bool {
+    FLIGHT_DATA_BANNER_CELLS
+        .iter()
+        .any(|definition| definition.id == id)
 }
 
 pub fn cell(id: &str, label: &str, value: Option<String>) -> FlightDataCell {
@@ -479,6 +535,28 @@ mod tests {
                 .and_then(|cell| cell.value.as_deref()),
             Some("450")
         );
+    }
+
+    #[test]
+    fn banner_uses_one_ordered_definition_set_for_all_twelve_cells() {
+        let banner = FlightDataComputer::default().banner(FlightDataBannerInput {
+            nexrad_age: Some("4m".to_string()),
+            ..FlightDataBannerInput::default()
+        });
+
+        assert_eq!(banner.cells.len(), 12);
+        assert_eq!(
+            banner.cells.last().map(|cell| cell.id.as_str()),
+            Some("nexrad_age")
+        );
+        assert_eq!(
+            banner.cells.last().and_then(|cell| cell.value.as_deref()),
+            Some("4m")
+        );
+        assert!(banner
+            .cells
+            .iter()
+            .all(|cell| is_flight_data_banner_cell_id(&cell.id)));
     }
 
     #[test]

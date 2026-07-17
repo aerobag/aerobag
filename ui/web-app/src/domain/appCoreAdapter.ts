@@ -10,6 +10,7 @@ import type {
   FlightPlanEntryPreview,
   FlightPlanRouteSegment,
   ChartFamilyId,
+  FlightDataCell,
   LatLon,
   MapFollowUiState,
   NavRef,
@@ -223,12 +224,18 @@ export type UiSettingsSliderStop = {
   label: string;
 };
 
+export type UiSettingsGridItem = {
+  cell: FlightDataCell;
+  enabled: boolean;
+};
+
 export type UiSettingsPageRow = {
   kind: string;
   id: string;
   title: string;
   value_id: string;
   stops: UiSettingsSliderStop[];
+  items: UiSettingsGridItem[];
   action_id: string;
 };
 
@@ -720,6 +727,7 @@ export interface UiSession {
   setMapLayerVisibility(layerId: MapLayerId, visible: boolean): Promise<UiSessionSnapshot>;
   setMapLayerEnabled(layerId: MapLayerId, enabled: boolean): Promise<UiSessionSnapshot>;
   setDebugFlag(flagId: DebugFlagId, enabled: boolean): Promise<UiSessionSnapshot>;
+  performSettingsAction(actionId: string, valueId: string): Promise<UiSessionSnapshot>;
   acceptDisclaimer(agreementId: string): Promise<UiSessionSnapshot>;
   loadRasterMapCatalog(): Promise<UiSessionSnapshot>;
   resolveChartAssetUrl(chartId: string, assetKind: "asset" | "thumbnail"): Promise<string>;
@@ -860,6 +868,7 @@ type WasmModule = {
   set_map_layer_visibility_in_session(handle: number, layerIdJson: string, visible: boolean): Promise<string> | string;
   set_map_layer_enabled_in_session(handle: number, layerIdJson: string, enabled: boolean): Promise<string> | string;
   set_debug_flag_in_session(handle: number, flagIdJson: string, enabled: boolean): Promise<string> | string;
+  perform_settings_action_in_session(handle: number, actionJson: string): Promise<string> | string;
   accept_disclaimer_in_session(handle: number, agreementId: string): Promise<string> | string;
   load_raster_map_catalog_in_session(handle: number): Promise<string> | string;
   sync_guidance_geometry_in_session(handle: number): Promise<string> | string;
@@ -1442,6 +1451,17 @@ export class WasmAppCoreAdapter implements AppCoreAdapter {
         );
         return snapshot;
       },
+      performSettingsAction: async (actionId, valueId) => {
+        snapshot = await withSessionRetry(async () =>
+          parseSessionSnapshot(
+            this.module.perform_settings_action_in_session(
+              handle,
+              JSON.stringify({ action_id: actionId, value_id: valueId }),
+            ),
+          ),
+        );
+        return snapshot;
+      },
       acceptDisclaimer: async (agreementId) => {
         snapshot = await withSessionRetry(async () =>
           parseSessionSnapshot(this.module.accept_disclaimer_in_session(handle, agreementId)),
@@ -1981,6 +2001,7 @@ async function loadBestAvailableAdapterUncached(
     "set_map_layer_visibility_in_session",
     "set_map_layer_enabled_in_session",
     "set_debug_flag_in_session",
+    "perform_settings_action_in_session",
     "accept_disclaimer_in_session",
     "load_raster_map_catalog_in_session",
     "resolve_chart_asset_resource_in_session",

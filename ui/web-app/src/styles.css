@@ -2852,6 +2852,118 @@ button {
   color: var(--theme-button-normal-fg);
 }
 
+.settingsPage {
+  display: flex;
+  flex-direction: column;
+  padding: calc(var(--thumb) * 1.25) var(--thumb-gap) calc(var(--thumb) * 0.45);
+  background:
+    radial-gradient(circle at 86% 12%, rgba(255, 255, 255, 0.46), transparent 30%),
+    var(--theme-chart-surface-bg);
+  color: var(--theme-panel-fg);
+}
+
+.settingsPagePanel {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow-y: auto;
+  border: 1px solid var(--theme-panel-border);
+  border-radius: calc(var(--thumb-radius) * 0.85);
+  padding: calc(var(--thumb) * 0.32);
+  background: var(--theme-panel-bg);
+  box-shadow: var(--shadow);
+}
+
+.settingsPageHeader {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: calc(var(--thumb) * 0.3);
+  margin-bottom: calc(var(--thumb) * 0.22);
+}
+
+.settingsPageHeader h1,
+.settingsPageHeader p,
+.settingsPageRow h2 {
+  margin: 0;
+}
+
+.settingsPageHeader h1 {
+  font-size: calc(var(--thumb) * 0.34);
+  font-weight: 900;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+
+.settingsPageHeader p {
+  color: var(--theme-panel-muted);
+  font-size: calc(var(--thumb) * 0.2);
+  font-weight: 800;
+}
+
+.settingsPageRows {
+  display: grid;
+  gap: calc(var(--thumb) * 0.24);
+}
+
+.settingsPageRow {
+  padding: calc(var(--thumb) * 0.24);
+  border-radius: calc(var(--thumb-radius) * 0.65);
+  background: color-mix(in srgb, white 90%, var(--theme-button-unchecked) 10%);
+}
+
+.settingsPageRow h2 {
+  margin-bottom: calc(var(--thumb) * 0.18);
+  color: #101820;
+  font-size: calc(var(--thumb) * 0.25);
+  font-weight: 900;
+  letter-spacing: 0.03em;
+  text-transform: uppercase;
+}
+
+.settingsFlightDataGrid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(calc(var(--thumb) * 1.28), 1fr));
+  gap: calc(var(--thumb) * 0.08);
+}
+
+.settingsFlightDataCell {
+  position: relative;
+  width: auto;
+  overflow: hidden;
+  cursor: pointer;
+  font-family: inherit;
+}
+
+.settingsFlightDataCell.isDisabled::after {
+  position: absolute;
+  inset: 0;
+  background: color-mix(in srgb, transparent 60%, var(--theme-button-disabled) 40%);
+  content: "";
+  pointer-events: none;
+}
+
+.settingsSliderStops {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--thumb-gap);
+}
+
+.settingsSliderStops button {
+  min-width: var(--thumb);
+  min-height: calc(var(--thumb) * 0.58);
+  border: 1px solid var(--theme-panel-border);
+  border-radius: calc(var(--thumb-radius) * 0.65);
+  background: var(--theme-button-unchecked);
+  color: var(--theme-button-fg);
+  font: inherit;
+  font-size: calc(var(--thumb) * 0.18);
+  font-weight: 900;
+}
+
+.settingsSliderStops button.isActive {
+  background: var(--theme-button-checked);
+}
+
 .dataStatusPagePanel {
   flex: 1 1 auto;
   min-height: 0;

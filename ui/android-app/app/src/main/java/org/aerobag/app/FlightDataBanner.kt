@@ -2,6 +2,7 @@ package org.aerobag.app
 
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -17,6 +18,10 @@ import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.draw.drawWithContent
+import androidx.compose.ui.graphics.Brush
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
@@ -26,13 +31,14 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import org.aerobag.app.domain.FlightDataBannerModel
 import org.aerobag.app.domain.FlightDataCell
+import org.aerobag.app.domain.UiSettingsGridItem
 import org.aerobag.app.domain.UiTheme
 import kotlin.math.ceil
 import kotlin.math.floor
 import kotlin.math.max
 import kotlin.math.min
 
-private val FlightDataCellMinWidth = ThumbSize * 1.85f
+internal val FlightDataCellMinWidth = ThumbSize * 1.85f
 private val FlightDataCellMinHeight = ThumbSize * 1.02f
 private val FlightDataGap = ThumbSize * 0.06f
 private val FlightDataTextGap = ThumbSize * 0.025f
@@ -160,11 +166,37 @@ private fun flightDataCellHeight(density: androidx.compose.ui.unit.Density): Dp 
 }
 
 @Composable
+internal fun FlightDataSettingsCell(
+    item: UiSettingsGridItem,
+    modifier: Modifier = Modifier,
+    onClick: () -> Unit,
+) {
+    val uiTheme = LocalAerobagUiTheme.current
+    val density = LocalDensity.current
+    val cellHeight = remember(density.fontScale) { flightDataCellHeight(density) }
+    FlightDataBannerCell(
+        cell = item.cell,
+        uiTheme = uiTheme,
+        cellWidth = FlightDataCellMinWidth,
+        cellHeight = cellHeight,
+        modifier = modifier.clickable(onClick = onClick),
+        foregroundOverlay = if (item.enabled) {
+            Color.Transparent
+        } else {
+            uiTheme.controls.buttonDisabled.copy(alpha = 0.4f)
+        },
+    )
+}
+
+@Composable
 private fun FlightDataBannerCell(
     cell: FlightDataCell,
     uiTheme: UiTheme,
     cellWidth: Dp,
     cellHeight: Dp,
+    modifier: Modifier = Modifier,
+    background: Brush = SolidColor(uiTheme.controls.flightDataBg),
+    foregroundOverlay: Color = Color.Transparent,
 ) {
     val shape = RoundedCornerShape(ThumbRadius * 0.38f)
     val labelStyle = buttonLabelStyle().copy(
@@ -178,11 +210,17 @@ private fun FlightDataBannerCell(
         lineHeight = FlightDataValueLineHeight,
     )
     Box(
-        modifier = Modifier
+        modifier = modifier
             .width(cellWidth)
             .height(cellHeight)
             .clip(shape)
-            .background(uiTheme.controls.flightDataBg)
+            .background(background)
+            .drawWithContent {
+                drawContent()
+                if (foregroundOverlay.alpha > 0f) {
+                    drawRect(foregroundOverlay)
+                }
+            }
             .border(1.dp, uiTheme.controls.flightDataBorder, shape)
             .padding(horizontal = ThumbSize * 0.08f, vertical = FlightDataCellVerticalPadding),
         contentAlignment = Alignment.Center,

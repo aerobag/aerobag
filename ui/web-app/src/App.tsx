@@ -768,7 +768,7 @@ function offlineRegionSummaryIcon(action: string): string {
   }
 }
 
-type AppPage = "map" | "plan" | "charts" | "home" | "data" | "about";
+type AppPage = "map" | "plan" | "charts" | "home" | "data" | "settings" | "about";
 
 type WebPageTilePaintTiming = {
   id: number;
@@ -909,6 +909,7 @@ const HOME_GRID_BUTTONS: Array<{ id: string; label: string; page: AppPage; iconS
   { id: "flight-plan", label: "FLIGHT\nPLAN", page: "plan" },
   // Three columns, row 2.
   { id: "data-status", label: "STATUS", page: "data" },
+  { id: "settings", label: "SETTINGS", page: "settings" },
   { id: "about", label: "ABOUT", page: "about" },
 ];
 
@@ -1157,6 +1158,7 @@ const pageOptions: Array<{ id: AppPage; label: string; launcherLabel: string; ic
   { id: "charts", label: "PLATE", launcherLabel: "PLATE", iconSrc: PAGE_PLATE_ICON_SRC },
   { id: "plan", label: "FLIGHT PLAN", launcherLabel: "PLAN", iconSrc: PAGE_PLAN_ICON_SRC },
   { id: "data", label: "STATUS", launcherLabel: "STATUS" },
+  { id: "settings", label: "SETTINGS", launcherLabel: "SET" },
   { id: "home", label: "HOME", launcherLabel: "HOME", iconSrc: PAGE_HOME_ICON_SRC },
 ];
 
@@ -3453,6 +3455,23 @@ export default function App() {
           mostRecentChartOrPlatePage={mostRecentChartOrPlatePage}
           onOpenRecentChartOrPlate={navigateToMostRecentChartOrPlate}
           onSelectPage={navigateToPage}
+        />
+      </div>
+      <div className={`pageLayer${page === "settings" ? " isActive" : ""}`} aria-hidden={page !== "settings"}>
+        <SettingsPage
+          page={page}
+          state={sessionSnapshot.settings_page_state}
+          mostRecentChartOrPlatePage={mostRecentChartOrPlatePage}
+          onOpenRecentChartOrPlate={navigateToMostRecentChartOrPlate}
+          onSelectPage={navigateToPage}
+          onSettingsAction={(actionId, valueId) => {
+            if (!uiSession) {
+              return;
+            }
+            void uiSession.performSettingsAction(actionId, valueId).then((nextSnapshot) => {
+              applySessionSnapshot(nextSnapshot, "settings_action");
+            });
+          }}
         />
       </div>
       {sessionSnapshot.disclaimer_state.required ? (
@@ -6857,13 +6876,21 @@ function FlightDataBanner(props: {
     >
       {cells.map((cell) => (
         <div key={cell.id} className="flightDataCell">
-          <span className="flightDataLabel">{cell.label}</span>
-          <span className={`flightDataValue${cell.value ? "" : " isMissing"}`}>
-            {cell.value ?? "\u2014"}
-          </span>
+          <FlightDataCellContents cell={cell} />
         </div>
       ))}
     </div>
+  );
+}
+
+function FlightDataCellContents(props: { cell: FlightDataBannerModel["cells"][number] }) {
+  return (
+    <>
+      <span className="flightDataLabel">{props.cell.label}</span>
+      <span className={`flightDataValue${props.cell.value ? "" : " isMissing"}`}>
+        {props.cell.value ?? "\u2014"}
+      </span>
+    </>
   );
 }
 
@@ -10249,6 +10276,71 @@ function formatApkSize(bytes: number): string {
   return `${megabytes >= 10 ? megabytes.toFixed(0) : megabytes.toFixed(1)} MB`;
 }
 
+function SettingsPage(props: {
+  page: AppPage;
+  state: UiSessionSnapshot["settings_page_state"];
+  mostRecentChartOrPlatePage: AppPage;
+  onOpenRecentChartOrPlate: () => void;
+  onSelectPage: (page: AppPage) => void;
+  onSettingsAction: (actionId: string, valueId: string) => void;
+}) {
+  return (
+    <section className="appPage settingsPage">
+      <div className="chartDock">
+        <HomeNavButton active={props.page === "home"} onClick={() => props.onSelectPage("home")} />
+        <ChartPlateReturnButton
+          targetPage={props.mostRecentChartOrPlatePage}
+          onClick={props.onOpenRecentChartOrPlate}
+        />
+      </div>
+
+      <div className="settingsPagePanel" aria-label={props.state.title}>
+        <header className="settingsPageHeader">
+          <h1>{props.state.title}</h1>
+          {props.state.summary ? <p>{props.state.summary}</p> : null}
+        </header>
+        <div className="settingsPageRows">
+          {props.state.rows.map((row) => (
+            <section key={row.id} className="settingsPageRow">
+              <h2>{row.title}</h2>
+              {row.kind === "grid_choices" ? (
+                <div className="settingsFlightDataGrid">
+                  {row.items.map((item) => (
+                    <button
+                      key={item.cell.id}
+                      type="button"
+                      className={`flightDataCell settingsFlightDataCell${item.enabled ? "" : " isDisabled"}`}
+                      aria-pressed={item.enabled}
+                      onClick={() => props.onSettingsAction(row.action_id, item.cell.id)}
+                    >
+                      <FlightDataCellContents cell={item.cell} />
+                    </button>
+                  ))}
+                </div>
+              ) : null}
+              {row.kind === "slider" && row.stops.length > 0 ? (
+                <div className="settingsSliderStops">
+                  {row.stops.map((stop) => (
+                    <button
+                      key={stop.id}
+                      type="button"
+                      className={stop.id === row.value_id ? "isActive" : ""}
+                      aria-pressed={stop.id === row.value_id}
+                      onClick={() => props.onSettingsAction(row.action_id, stop.id)}
+                    >
+                      {stop.label}
+                    </button>
+                  ))}
+                </div>
+              ) : null}
+            </section>
+          ))}
+        </div>
+      </div>
+    </section>
+  );
+}
+
 function DataStatusPage(props: {
   page: AppPage;
   state: UiDataStatusPageState;
@@ -10581,9 +10673,9 @@ function readPersistedWebUiState(): PersistedWebUiState {
     }
     const parsed = JSON.parse(raw) as PersistedWebUiState;
     const rawPage = (parsed as { page?: string }).page;
-    const page = rawPage === "settings" ? "home" : rawPage;
+    const page = rawPage;
     return {
-      page: page === "map" || page === "plan" || page === "charts" || page === "home" || page === "data" ? page : undefined,
+      page: page === "map" || page === "plan" || page === "charts" || page === "home" || page === "data" || page === "settings" ? page : undefined,
       selectedAirportId: parsed.selectedAirportId,
       selectedChartId: parsed.selectedChartId,
       recentAirportIds: Array.isArray(parsed.recentAirportIds) ? parsed.recentAirportIds.filter((value): value is string => typeof value === "string") : [],

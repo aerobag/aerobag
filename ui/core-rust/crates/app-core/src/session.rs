@@ -72,6 +72,8 @@ const NO_WARRANTY_DISCLAIMER_HTML: &str = include_str!("../../../../shared/no-wa
 const NO_WARRANTY_DISCLAIMER_AGREEMENT_ID: &str = "no-warranty-v1";
 const DISPLAY_DIM_TIMEOUT_ROW_ID: &str = "display_dim_timeout";
 const DISPLAY_DIM_TIMEOUT_ACTION_ID: &str = "display_dim_timeout";
+const FLIGHT_DATA_VISIBILITY_ROW_ID: &str = "flight_data_visibility";
+const FLIGHT_DATA_VISIBILITY_ACTION_ID: &str = "flight_data_visibility";
 const DISPLAY_DIM_BRIGHTNESS: f32 = 0.05;
 
 impl DisplayDimTimeout {
@@ -238,6 +240,8 @@ pub struct SettingsPreferences {
     #[serde(default)]
     pub display_dim_timeout: DisplayDimTimeout,
     #[serde(default)]
+    pub disabled_flight_data_cell_ids: BTreeSet<String>,
+    #[serde(default)]
     pub accepted_disclaimer_agreement_ids: BTreeSet<String>,
 }
 
@@ -248,12 +252,20 @@ pub struct UiSettingsSliderStop {
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct UiSettingsGridItem {
+    pub cell: crate::FlightDataCell,
+    pub enabled: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct UiSettingsPageRow {
     pub kind: String,
     pub id: String,
     pub title: String,
     pub value_id: String,
     pub stops: Vec<UiSettingsSliderStop>,
+    #[serde(default)]
+    pub items: Vec<UiSettingsGridItem>,
     pub action_id: String,
 }
 
@@ -3602,6 +3614,25 @@ pub fn perform_settings_action_in_session(
                 invalid_settings_action_value(&action.action_id, &action.value_id)
             })?;
             session.settings_preferences.display_dim_timeout = timeout;
+            write_settings_preferences_to_storage(session)?;
+        }
+        FLIGHT_DATA_VISIBILITY_ACTION_ID => {
+            if !crate::flight_data::is_flight_data_banner_cell_id(&action.value_id) {
+                return Err(invalid_settings_action_value(
+                    &action.action_id,
+                    &action.value_id,
+                ));
+            }
+            if !session
+                .settings_preferences
+                .disabled_flight_data_cell_ids
+                .remove(&action.value_id)
+            {
+                session
+                    .settings_preferences
+                    .disabled_flight_data_cell_ids
+                    .insert(action.value_id);
+            }
             write_settings_preferences_to_storage(session)?;
         }
         _ => return Err(invalid_settings_action(&action.action_id)),
@@ -9524,7 +9555,7 @@ fn session_snapshot_outcome_with_invalidations(
 fn try_snapshot_for_session(session: &mut UiSession) -> Result<UiSessionSnapshot, HadReadError> {
     let total_started_at = crate::core_clock_ms();
     let app_ui_started_at = crate::core_clock_ms();
-    let app_ui_state = project_session_app_ui_state(session)?;
+    let mut app_ui_state = project_session_app_ui_state(session)?;
     let app_ui_ms = elapsed_ms(app_ui_started_at);
     let debug_started_at = crate::core_clock_ms();
     let debug_state = session.debug_state.clone();
@@ -9548,7 +9579,14 @@ fn try_snapshot_for_session(session: &mut UiSession) -> Result<UiSessionSnapshot
     let map_layer_state = session.map_layer_state.clone();
     let data_status_state = session.data_status_state.clone();
     let data_status_page_state = project_data_status_page_state(session);
-    let settings_page_state = project_settings_page_state(session);
+    let settings_page_state =
+        project_settings_page_state(session, &app_ui_state.flight_data_banner);
+    app_ui_state.flight_data_banner.cells.retain(|cell| {
+        !session
+            .settings_preferences
+            .disabled_flight_data_cell_ids
+            .contains(&cell.id)
+    });
     let display_policy = project_display_policy(session);
     let clone_ms = elapsed_ms(clone_started_at);
     let raster_started_at = crate::core_clock_ms();
@@ -9731,8 +9769,29 @@ fn default_settings_page_state() -> UiSettingsPageState {
     }
 }
 
-fn project_settings_page_state(session: &UiSession) -> UiSettingsPageState {
-    let mut rows = Vec::new();
+fn project_settings_page_state(
+    session: &UiSession,
+    flight_data_banner: &crate::FlightDataBannerModel,
+) -> UiSettingsPageState {
+    let mut rows = vec![UiSettingsPageRow {
+        kind: "grid_choices".to_string(),
+        id: FLIGHT_DATA_VISIBILITY_ROW_ID.to_string(),
+        title: "Flight data grid".to_string(),
+        value_id: String::new(),
+        stops: Vec::new(),
+        items: flight_data_banner
+            .cells
+            .iter()
+            .map(|cell| UiSettingsGridItem {
+                cell: cell.clone(),
+                enabled: !session
+                    .settings_preferences
+                    .disabled_flight_data_cell_ids
+                    .contains(&cell.id),
+            })
+            .collect(),
+        action_id: FLIGHT_DATA_VISIBILITY_ACTION_ID.to_string(),
+    }];
     if session.platform_capabilities.display_policy.is_some() {
         rows.push(UiSettingsPageRow {
             kind: "slider".to_string(),
@@ -9750,6 +9809,7 @@ fn project_settings_page_state(session: &UiSession) -> UiSettingsPageState {
                     label: timeout.label().to_string(),
                 })
                 .collect(),
+            items: Vec::new(),
             action_id: DISPLAY_DIM_TIMEOUT_ACTION_ID.to_string(),
         });
     }
@@ -10024,7 +10084,7 @@ fn project_flight_data_banner(
         }
     }
 
-    let mut banner = flight_data_computer.banner(crate::FlightDataBannerInput {
+    let banner = flight_data_computer.banner(crate::FlightDataBannerInput {
         altitude_ft,
         vertical_speed_fpm: session
             .app_state
@@ -10037,12 +10097,8 @@ fn project_flight_data_banner(
         desired_track_magnetic_deg,
         waypoint_distance_nm,
         final_distance_nm,
+        nexrad_age: Some(nexrad_frame_age_banner_value(session)),
     });
-    banner.cells.push(crate::flight_data::cell(
-        "nexrad_age",
-        "NEXRAD",
-        Some(nexrad_frame_age_banner_value(session)),
-    ));
     Ok(banner)
 }
 
@@ -11741,12 +11797,23 @@ mod tests {
     }
 
     #[test]
-    fn settings_page_omits_display_row_without_platform_capability() {
+    fn settings_page_always_contains_flight_data_grid_choices() {
         let init =
             create_ui_session(FlightPlan::default(), &[], None, None).expect("create session");
+        let snapshot = configure_platform_capabilities_in_session(
+            init.handle,
+            PlatformCapabilities::default(),
+            Some(Arc::new(MemorySettingsStorage::default())),
+        )
+        .expect("configure platform capabilities");
 
-        assert!(init.snapshot.settings_page_state.rows.is_empty());
-        assert!(init.snapshot.display_policy.is_none());
+        assert_eq!(snapshot.settings_page_state.rows.len(), 1);
+        let row = &snapshot.settings_page_state.rows[0];
+        assert_eq!(row.id, "flight_data_visibility");
+        assert_eq!(row.kind, "grid_choices");
+        assert_eq!(row.items.len(), 12);
+        assert!(row.items.iter().all(|item| item.enabled));
+        assert!(snapshot.display_policy.is_none());
     }
 
     #[test]
@@ -11764,8 +11831,8 @@ mod tests {
         )
         .expect("configure platform capabilities");
 
-        assert_eq!(snapshot.settings_page_state.rows.len(), 1);
-        assert_eq!(snapshot.settings_page_state.rows[0].value_id, "2m");
+        assert_eq!(snapshot.settings_page_state.rows.len(), 2);
+        assert_eq!(snapshot.settings_page_state.rows[1].value_id, "2m");
         assert_eq!(
             snapshot
                 .display_policy
@@ -11782,7 +11849,7 @@ mod tests {
             },
         )
         .expect("perform settings action");
-        assert_eq!(snapshot.settings_page_state.rows[0].value_id, "30s");
+        assert_eq!(snapshot.settings_page_state.rows[1].value_id, "30s");
         assert_eq!(
             snapshot
                 .display_policy
@@ -11811,7 +11878,7 @@ mod tests {
             Some(storage),
         )
         .expect("configure platform capabilities");
-        assert_eq!(next_snapshot.settings_page_state.rows[0].value_id, "30s");
+        assert_eq!(next_snapshot.settings_page_state.rows[1].value_id, "30s");
         assert_eq!(
             next_snapshot
                 .display_policy
@@ -11819,6 +11886,82 @@ mod tests {
                 .and_then(|policy| policy.dim_after_ms),
             Some(30_000)
         );
+    }
+
+    #[test]
+    fn flight_data_visibility_setting_filters_snapshot_and_persists() {
+        let storage: SettingsStorageHandle = Arc::new(MemorySettingsStorage::default());
+        let init =
+            create_ui_session(FlightPlan::default(), &[], None, None).expect("create session");
+        let snapshot = configure_platform_capabilities_in_session(
+            init.handle,
+            PlatformCapabilities::default(),
+            Some(storage.clone()),
+        )
+        .expect("configure platform capabilities");
+        assert_eq!(snapshot.app_ui_state.flight_data_banner.cells.len(), 12);
+
+        let snapshot = perform_settings_action_in_session(
+            init.handle,
+            UiSettingsAction {
+                action_id: "flight_data_visibility".to_string(),
+                value_id: "nexrad_age".to_string(),
+            },
+        )
+        .expect("disable NEXRAD cell");
+        assert!(!snapshot
+            .app_ui_state
+            .flight_data_banner
+            .cells
+            .iter()
+            .any(|cell| cell.id == "nexrad_age"));
+        let settings_item = snapshot.settings_page_state.rows[0]
+            .items
+            .iter()
+            .find(|item| item.cell.id == "nexrad_age")
+            .expect("NEXRAD settings item");
+        assert!(!settings_item.enabled);
+
+        let persisted = storage
+            .read_settings()
+            .expect("read settings")
+            .expect("persisted bytes");
+        let persisted_json: serde_json::Value =
+            serde_json::from_slice(&persisted).expect("persisted json");
+        assert_eq!(
+            persisted_json["preferences"]["disabled_flight_data_cell_ids"][0],
+            "nexrad_age"
+        );
+
+        let next =
+            create_ui_session(FlightPlan::default(), &[], None, None).expect("create session");
+        let next_snapshot = configure_platform_capabilities_in_session(
+            next.handle,
+            PlatformCapabilities::default(),
+            Some(storage),
+        )
+        .expect("load persisted preferences");
+        assert!(!next_snapshot
+            .app_ui_state
+            .flight_data_banner
+            .cells
+            .iter()
+            .any(|cell| cell.id == "nexrad_age"));
+
+        let restored_snapshot = perform_settings_action_in_session(
+            next.handle,
+            UiSettingsAction {
+                action_id: "flight_data_visibility".to_string(),
+                value_id: "nexrad_age".to_string(),
+            },
+        )
+        .expect("re-enable NEXRAD cell");
+        assert!(restored_snapshot
+            .app_ui_state
+            .flight_data_banner
+            .cells
+            .iter()
+            .any(|cell| cell.id == "nexrad_age"));
     }
 
     #[test]

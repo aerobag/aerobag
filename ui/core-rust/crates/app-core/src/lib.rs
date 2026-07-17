@@ -261,8 +261,8 @@ pub use session::{
     PlatformDisplayPolicyCapability, SettingsPreferences, SettingsStorage, SettingsStorageHandle,
     UiChartPageState, UiDebugState, UiDisclaimerState, UiDisplayPolicy, UiMapLayerState,
     UiMapLayerToggleState, UiPlaybackPanelState, UiSessionInitResult, UiSessionResourceEffect,
-    UiSessionSnapshot, UiSettingsAction, UiSettingsPageRow, UiSettingsPageState,
-    UiSettingsSliderStop,
+    UiSessionSnapshot, UiSettingsAction, UiSettingsGridItem, UiSettingsPageRow,
+    UiSettingsPageState, UiSettingsSliderStop,
 };
 pub use situation::{Situation, SituationPosition};
 pub use state::{

@@ -2042,12 +2042,19 @@ private data class WireUiSettingsSliderStop(
 )
 
 @kotlinx.serialization.Serializable
+private data class WireUiSettingsGridItem(
+    val cell: WireFlightDataCell,
+    val enabled: Boolean,
+)
+
+@kotlinx.serialization.Serializable
 private data class WireUiSettingsPageRow(
     val kind: String,
     val id: String,
     val title: String,
     val value_id: String,
     val stops: List<WireUiSettingsSliderStop> = emptyList(),
+    val items: List<WireUiSettingsGridItem> = emptyList(),
     val action_id: String,
 )
 
@@ -2351,12 +2358,18 @@ data class UiSettingsSliderStop(
     val label: String,
 )
 
+data class UiSettingsGridItem(
+    val cell: FlightDataCell,
+    val enabled: Boolean,
+)
+
 data class UiSettingsPageRow(
     val kind: String,
     val id: String,
     val title: String,
     val valueId: String,
     val stops: List<UiSettingsSliderStop>,
+    val items: List<UiSettingsGridItem>,
     val actionId: String,
 )
 
@@ -2540,12 +2553,18 @@ private fun WireUiSettingsSliderStop.toUi() = UiSettingsSliderStop(
     label = label,
 )
 
+private fun WireUiSettingsGridItem.toUi() = UiSettingsGridItem(
+    cell = cell.toUi(),
+    enabled = enabled,
+)
+
 private fun WireUiSettingsPageRow.toUi() = UiSettingsPageRow(
     kind = kind,
     id = id,
     title = title,
     valueId = value_id,
     stops = stops.map { it.toUi() },
+    items = items.map { it.toUi() },
     actionId = action_id,
 )
 

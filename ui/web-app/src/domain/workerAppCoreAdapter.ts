@@ -383,6 +383,7 @@ function workerBackedSession(client: AppCoreWorkerClient, sessionId: number, ini
     setMapLayerVisibility: (...args) => updateSnapshot(call("setMapLayerVisibility", args)),
     setMapLayerEnabled: (...args) => updateSnapshot(call("setMapLayerEnabled", args)),
     setDebugFlag: (...args) => updateSnapshot(call("setDebugFlag", args)),
+    performSettingsAction: (...args) => updateSnapshot(call("performSettingsAction", args)),
     acceptDisclaimer: (...args) => updateSnapshot(call("acceptDisclaimer", args)),
     loadRasterMapCatalog: () => updateSnapshot(call("loadRasterMapCatalog")),
     resolveChartAssetUrl: (...args) => call("resolveChartAssetUrl", args),

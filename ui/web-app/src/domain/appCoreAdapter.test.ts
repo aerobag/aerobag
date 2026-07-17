@@ -116,6 +116,7 @@ describe("loadBestAvailableAdapter", () => {
       set_map_layer_visibility_in_session: async () => snapshotJson,
       set_map_layer_enabled_in_session: async () => snapshotJson,
       set_debug_flag_in_session: async () => snapshotJson,
+      perform_settings_action_in_session: async () => snapshotJson,
       accept_disclaimer_in_session: async () => snapshotJson,
       set_resource_policy_in_session: async () => snapshotJson,
       configure_platform_capabilities_in_session: async () => snapshotJson,

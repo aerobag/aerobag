@@ -363,12 +363,12 @@ fn displayed_family_maps<'a>(
     map_views: &'a [RasterMapViewOption],
     family_id: &str,
 ) -> Vec<&'a RasterMapViewOption> {
-    if family_id == "tac" {
+    if matches!(family_id, "tac" | "flyway") {
         return map_views
             .iter()
             .filter(|view| {
                 let chart_family = view.map_view.chart_family.as_str();
-                chart_family == "sec" || chart_family == "tac"
+                chart_family == "sec" || chart_family == family_id
             })
             .collect();
     }
@@ -1210,7 +1210,7 @@ fn chart_family_render_priority(family: &str) -> i64 {
     match family {
         "world-basemap" => -1000,
         "shaded-relief" => -10,
-        "tac" => 1,
+        "tac" | "flyway" => 1,
         _ => 0,
     }
 }
@@ -1355,6 +1355,42 @@ mod tests {
         assert!(catalog.family_options[0].active);
         assert_eq!(plan.selected_map_id, "none");
         assert!(plan.tiles.is_empty());
+    }
+
+    #[test]
+    fn flyway_family_displays_sectionals_and_flyway_but_not_tac() {
+        let mut catalog = RasterMapCatalog {
+            selected_map_id: "tac:nw".to_string(),
+            selected_map: Some(option("tac:nw", "tac", "NW_TAC", vec![])),
+            available_maps: vec![
+                option("sec:nw", "sec", "NW_SEC", vec![]),
+                option("tac:nw", "tac", "NW_TAC", vec![]),
+                option("flyway:nw", "flyway", "NW_TAC", vec![]),
+            ],
+            displayed_maps: Vec::new(),
+            geometry: RasterDisplayGeometry::default(),
+            family_options: vec![RasterMapFamilyOption {
+                id: "flyway".to_string(),
+                label: "FLYWAY".to_string(),
+                launcher_label: "FLY".to_string(),
+                enabled: true,
+                disabled_reason: None,
+                active: false,
+                has_references: true,
+            }],
+        };
+
+        select_map_family_in_catalog(&mut catalog, "flyway");
+
+        assert_eq!(catalog.selected_map_id, "flyway:nw");
+        assert_eq!(
+            catalog
+                .displayed_maps
+                .iter()
+                .map(|view| view.id.as_str())
+                .collect::<Vec<_>>(),
+            vec!["sec:nw", "flyway:nw"]
+        );
     }
 
     #[test]

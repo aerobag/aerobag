@@ -1380,7 +1380,7 @@ pub(super) fn build_nav_kv_chart_catalog(
         .filter(|collection| {
             matches!(
                 collection.family_id.as_str(),
-                "sec" | "tac" | "enr-l" | "enr-h"
+                "sec" | "tac" | "flyway" | "enr-l" | "enr-h"
             ) && collection.region_id != WIDE_ANGLE_REGION_ID
         })
         .map(|collection| {
@@ -1537,7 +1537,7 @@ pub(super) fn pretty_chart_offline_region_polygons(
     chart_cutline_polygon_sets: &BTreeMap<String, ChartCutlinePolygonSetRecord>,
 ) -> Option<Vec<Vec<OfflineRegionLatLon>>> {
     let mut union = MultiPolygon(Vec::new());
-    for family_id in ["sec", "tac", "enr-l", "enr-h"] {
+    for family_id in ["sec", "tac", "flyway", "enr-l", "enr-h"] {
         let collection_id = format!("{family_id}:{region_id}");
         let Some(polygon_set) = chart_cutline_polygon_sets.get(&collection_id) else {
             continue;
@@ -2135,7 +2135,7 @@ pub(super) fn build_chart_cutline_polygon_sets(
     resource_index: &ResourceIndex,
 ) -> anyhow::Result<BTreeMap<String, ChartCutlinePolygonSetRecord>> {
     let mut sets = BTreeMap::new();
-    for family_id in ["sec", "tac", "enr-l", "enr-h"] {
+    for family_id in ["sec", "tac", "flyway", "enr-l", "enr-h"] {
         let Some(cutline_dir_name) = chart_cutline_dir_name(family_id) else {
             continue;
         };
@@ -2176,6 +2176,7 @@ pub(super) fn chart_cutline_dir_name(family_id: &str) -> Option<&'static str> {
     match family_id {
         "sec" => Some("SEC"),
         "tac" => Some("TAC"),
+        "flyway" => Some("FLY"),
         "enr-l" => Some("ENR_L"),
         "enr-h" => Some("ENR_H"),
         _ => None,

@@ -1,9 +1,9 @@
 use anyhow::{bail, Context};
 use chrono::{Datelike, Duration, NaiveDate, Utc};
 use preprocessor_core::{
-    ChartReferenceAssetRecord, ChartReferenceCoverage, ChartReferenceManifest,
-    PackageAssetManifest, PackageAssetRecord, PlateGeoref, Region, CHART_REFERENCE_MANIFEST_DIR,
-    PACKAGE_ASSET_MANIFEST_NAME,
+    ChartPackageCollection, ChartReferenceAssetRecord, ChartReferenceCoverage,
+    ChartReferenceManifest, PackageAssetManifest, PackageAssetRecord, PlateGeoref, Region,
+    CHART_REFERENCE_MANIFEST_DIR, PACKAGE_ASSET_MANIFEST_NAME,
 };
 use preprocessor_data::INTERMEDIATE_SQLITE_BASENAME;
 use preprocessor_fetch::PackageOutputRecord;
@@ -379,7 +379,12 @@ pub fn build_resource_index(request: &BuildResourceIndexRequest) -> anyhow::Resu
     log_progress(request, "collected csup records")?;
     let airport_resources = collect_airport_resources(&plates, &csups);
     log_progress(request, "collected airport resources")?;
-    let families = collect_families(&packages, !plates.is_empty(), !csups.is_empty());
+    let families = collect_families(
+        &packages,
+        &chart_collections,
+        !plates.is_empty(),
+        !csups.is_empty(),
+    );
     log_progress(request, "collected families")?;
     let regions = Region::ALL
         .iter()
@@ -490,6 +495,7 @@ pub fn build_catalog(index: &ResourceIndex) -> Catalog {
     let supported_families = BTreeSet::from([
         "sec".to_string(),
         "tac".to_string(),
+        "flyway".to_string(),
         "enr-l".to_string(),
         "enr-h".to_string(),
     ]);
@@ -935,36 +941,45 @@ fn collect_chart_collections(
                 })
                 .map(|entry| {
                     let (record, artifact_path) = entry?;
-                    let metadata = read_chart_zip_metadata(&artifact_path).with_context(|| {
-                        format!(
-                            "failed to read chart tile metadata for {} region {} from {}",
-                            source.family_id,
-                            record.region,
-                            artifact_path.display()
-                        )
-                    })?;
-                    let collection = ChartCollectionRecord {
-                        id: format!(
-                            "{}:{}",
-                            source.family_id,
-                            record.region.to_ascii_lowercase()
-                        ),
-                        family_id: source.family_id.clone(),
-                        region_id: record.region.to_ascii_lowercase(),
-                        package_id: package_id_from_manifest_name(&record.manifest),
-                        chart_index: metadata.chart_index,
-                        tile_path_template: format!(
-                            "tiles/{}/{}/{{x}}/{{y}}.webp",
-                            metadata.chart_index, "{z}"
-                        ),
-                        levels: metadata.levels,
-                        coverage_bounds: metadata.coverage_bounds,
-                        default_view: metadata.default_view,
-                    };
-                    Ok::<_, anyhow::Error>(ChartCollectionWithTiles {
-                        collection,
-                        tiles: metadata.tiles,
-                    })
+                    chart_collections_for_package(&record, &source.family_id)?
+                        .into_iter()
+                        .map(|collection_source| {
+                            let metadata = read_chart_zip_metadata_for_index(
+                                &artifact_path,
+                                collection_source.chart_index,
+                            )
+                            .with_context(|| {
+                                format!(
+                                    "failed to read chart tile metadata for {} region {} from {}",
+                                    collection_source.family_id,
+                                    record.region,
+                                    artifact_path.display()
+                                )
+                            })?;
+                            let collection = ChartCollectionRecord {
+                                id: format!(
+                                    "{}:{}",
+                                    collection_source.family_id,
+                                    record.region.to_ascii_lowercase()
+                                ),
+                                family_id: collection_source.family_id,
+                                region_id: record.region.to_ascii_lowercase(),
+                                package_id: package_id_from_manifest_name(&record.manifest),
+                                chart_index: metadata.chart_index,
+                                tile_path_template: format!(
+                                    "tiles/{}/{}/{{x}}/{{y}}.webp",
+                                    metadata.chart_index, "{z}"
+                                ),
+                                levels: metadata.levels,
+                                coverage_bounds: metadata.coverage_bounds,
+                                default_view: metadata.default_view,
+                            };
+                            Ok::<_, anyhow::Error>(ChartCollectionWithTiles {
+                                collection,
+                                tiles: metadata.tiles,
+                            })
+                        })
+                        .collect::<anyhow::Result<Vec<_>>>()
                 })
                 .collect::<Vec<_>>()
                 .into_iter()
@@ -974,6 +989,7 @@ fn collect_chart_collections(
         .into_iter()
         .collect::<anyhow::Result<Vec<_>>>()?
         .into_iter()
+        .flatten()
         .flatten()
         .collect::<Vec<_>>();
     validate_chart_tile_bbox_invariant(&collections_with_tiles)?;
@@ -993,25 +1009,32 @@ fn collect_chart_references(
         for package in read_package_outputs(&source.package_outputs_path)? {
             let package_id = package_id_from_manifest_name(&package.manifest);
             let zip_path = source.package_root.join(&package.zip);
-            let manifest = read_chart_reference_manifest(&zip_path, &package_id)?;
-            if manifest.family_id != source.family_id {
-                bail!(
-                    "chart reference manifest family {} != source family {} in {}",
-                    manifest.family_id,
-                    source.family_id,
-                    zip_path.display()
-                );
-            }
-            if manifest.package_id != package_id {
-                bail!(
-                    "chart reference manifest package {} != expected {} in {}",
-                    manifest.package_id,
-                    package_id,
-                    zip_path.display()
-                );
-            }
-            for asset in manifest.assets {
-                merge_chart_reference(&mut by_id, asset, &package_id, &zip_path)?;
+            for collection in chart_collections_for_package(&package, &source.family_id)? {
+                let manifest = read_chart_reference_manifest(
+                    &zip_path,
+                    &package_id,
+                    &source.family_id,
+                    &collection.family_id,
+                )?;
+                if manifest.family_id != collection.family_id {
+                    bail!(
+                        "chart reference manifest family {} != collection family {} in {}",
+                        manifest.family_id,
+                        collection.family_id,
+                        zip_path.display()
+                    );
+                }
+                if manifest.package_id != package_id {
+                    bail!(
+                        "chart reference manifest package {} != expected {} in {}",
+                        manifest.package_id,
+                        package_id,
+                        zip_path.display()
+                    );
+                }
+                for asset in manifest.assets {
+                    merge_chart_reference(&mut by_id, asset, &package_id, &zip_path)?;
+                }
             }
         }
     }
@@ -1021,12 +1044,18 @@ fn collect_chart_references(
 fn read_chart_reference_manifest(
     zip_path: &Path,
     package_id: &str,
+    primary_family_id: &str,
+    family_id: &str,
 ) -> anyhow::Result<ChartReferenceManifest> {
     let file = fs::File::open(zip_path)
         .with_context(|| format!("failed to open {}", zip_path.display()))?;
     let mut archive = ZipArchive::new(file)
         .with_context(|| format!("failed to open zip {}", zip_path.display()))?;
-    let member = format!("{CHART_REFERENCE_MANIFEST_DIR}/{package_id}.json");
+    let member = if family_id == primary_family_id {
+        format!("{CHART_REFERENCE_MANIFEST_DIR}/{package_id}.json")
+    } else {
+        format!("{CHART_REFERENCE_MANIFEST_DIR}/{package_id}-{family_id}.json")
+    };
     let entry = archive
         .by_name(&member)
         .with_context(|| format!("missing {member} in {}", zip_path.display()))?;
@@ -1212,12 +1241,16 @@ fn count_chart_zip_tile_entries(path: &Path) -> anyhow::Result<u64> {
 
 fn collect_families(
     packages: &[ResourcePackage],
+    chart_collections: &[ChartCollectionRecord],
     has_tpp: bool,
     has_csup: bool,
 ) -> Vec<ResourceFamily> {
     let mut ids = BTreeSet::new();
     for package in packages {
         ids.insert(package.family_id.clone());
+    }
+    for collection in chart_collections {
+        ids.insert(collection.family_id.clone());
     }
     if has_tpp {
         ids.insert("tpp".to_string());
@@ -2088,13 +2121,78 @@ struct ChartZipMetadata {
     default_view: DefaultView,
 }
 
+fn chart_collections_for_package(
+    record: &PackageOutputRecord,
+    default_family_id: &str,
+) -> anyhow::Result<Vec<ChartPackageCollection>> {
+    let Some(value) = record.metadata.get("chart_collections") else {
+        return Ok(vec![ChartPackageCollection {
+            family_id: default_family_id.to_string(),
+            chart_index: chart_index_for_family(default_family_id)
+                .with_context(|| format!("missing chart index for family {default_family_id}"))?,
+        }]);
+    };
+    let collections: Vec<ChartPackageCollection> = serde_json::from_value(value.clone())
+        .context("invalid chart_collections package metadata")?;
+    if collections.is_empty() {
+        bail!("chart_collections package metadata is empty");
+    }
+    Ok(collections)
+}
+
+fn chart_index_for_family(family_id: &str) -> Option<u32> {
+    match family_id {
+        "sec" => Some(0),
+        "tac" => Some(1),
+        "flyway" => Some(2),
+        "enr-l" => Some(3),
+        "enr-h" => Some(4),
+        _ => None,
+    }
+}
+
+#[cfg(test)]
 fn read_chart_zip_metadata(path: &Path) -> anyhow::Result<ChartZipMetadata> {
+    let indexes = chart_indexes_in_zip(path)?;
+    let chart_index = indexes
+        .iter()
+        .next()
+        .copied()
+        .context("no tile entries found in chart zip")?;
+    if indexes.len() != 1 {
+        bail!(
+            "chart zip {} contains multiple chart indexes {:?}; select one explicitly",
+            path.display(),
+            indexes
+        );
+    }
+    read_chart_zip_metadata_for_index(path, chart_index)
+}
+
+#[cfg(test)]
+fn chart_indexes_in_zip(path: &Path) -> anyhow::Result<BTreeSet<u32>> {
+    let file =
+        fs::File::open(path).with_context(|| format!("failed to open {}", path.display()))?;
+    let archive = ZipArchive::new(file).context("failed to open chart zip")?;
+    archive
+        .file_names()
+        .filter_map(|name| {
+            let parts = name.split('/').collect::<Vec<_>>();
+            (parts.len() == 5 && parts[0] == "tiles" && name.ends_with(".webp"))
+                .then(|| parts[1].parse::<u32>().context("invalid chart index"))
+        })
+        .collect()
+}
+
+fn read_chart_zip_metadata_for_index(
+    path: &Path,
+    selected_chart_index: u32,
+) -> anyhow::Result<ChartZipMetadata> {
     let file =
         fs::File::open(path).with_context(|| format!("failed to open {}", path.display()))?;
     let archive = ZipArchive::new(file).context("failed to open chart zip")?;
     let mut tiles_by_zoom: BTreeMap<u32, BTreeSet<(u32, u32)>> = BTreeMap::new();
     let mut tiles = BTreeSet::new();
-    let mut chart_index = None;
     for name in archive.file_names() {
         if !name.ends_with(".webp") {
             continue;
@@ -2104,6 +2202,9 @@ fn read_chart_zip_metadata(path: &Path) -> anyhow::Result<ChartZipMetadata> {
             continue;
         }
         let parsed_chart_index: u32 = parts[1].parse().context("invalid chart index")?;
+        if parsed_chart_index != selected_chart_index {
+            continue;
+        }
         let zoom: u32 = parts[2].parse().context("invalid zoom")?;
         let x: u32 = parts[3].parse().context("invalid x tile")?;
         let y_tms: u32 = parts[4]
@@ -2111,11 +2212,16 @@ fn read_chart_zip_metadata(path: &Path) -> anyhow::Result<ChartZipMetadata> {
             .context("missing webp suffix")?
             .parse()
             .context("invalid tms y tile")?;
-        chart_index.get_or_insert(parsed_chart_index);
         tiles.insert((zoom, x, y_tms));
         tiles_by_zoom.entry(zoom).or_default().insert((x, y_tms));
     }
-    let chart_index = chart_index.context("no tile entries found in chart zip")?;
+    if tiles.is_empty() {
+        bail!(
+            "no tile entries found for chart index {} in {}",
+            selected_chart_index,
+            path.display()
+        );
+    }
     let level_records = tiles_by_zoom
         .into_iter()
         .map(|(zoom, tiles)| TileLevelRecord {
@@ -2128,7 +2234,7 @@ fn read_chart_zip_metadata(path: &Path) -> anyhow::Result<ChartZipMetadata> {
     let default_view = default_view_from_levels(&level_records)
         .context("failed to derive default view from levels")?;
     Ok(ChartZipMetadata {
-        chart_index,
+        chart_index: selected_chart_index,
         levels: level_records,
         tiles,
         coverage_bounds,
@@ -2255,6 +2361,7 @@ fn family_display_name(id: &str) -> &'static str {
     match id {
         "sec" => "Sectional",
         "tac" => "TAC",
+        "flyway" => "Flyway",
         "enr-l" => "IFR Low",
         "enr-h" => "IFR High",
         "tpp" => "TPP",
@@ -2265,7 +2372,7 @@ fn family_display_name(id: &str) -> &'static str {
 
 fn family_kind(id: &str) -> &'static str {
     match id {
-        "sec" | "tac" | "enr-l" | "enr-h" => "tiled_raster",
+        "sec" | "tac" | "flyway" | "enr-l" | "enr-h" => "tiled_raster",
         "tpp" | "csup" => "flat_image",
         _ => "unknown",
     }
@@ -2325,6 +2432,97 @@ mod tests {
             zip.write_all(b"tile").expect("write tile");
         }
         zip.finish().expect("finish chart zip");
+    }
+
+    #[test]
+    fn composite_tac_package_indexes_tac_and_flyway_collections() {
+        let temp = tempdir().expect("tempdir");
+        let package_root = temp.path().join("packages");
+        fs::create_dir_all(&package_root).expect("package root");
+        let zip_path = package_root.join("NW_TAC_TAC1_2607.zip");
+        let file = fs::File::create(&zip_path).expect("create chart zip");
+        let mut zip = ZipWriter::new(file);
+        for member in ["tiles/1/8/40/90.webp", "tiles/2/8/40/90.webp"] {
+            zip.start_file(member, SimpleFileOptions::default())
+                .expect("start tile");
+            zip.write_all(b"tile").expect("write tile");
+        }
+        for (member, family_id) in [
+            ("chart-references/NW_TAC_TAC1_2607.json", "tac"),
+            ("chart-references/NW_TAC_TAC1_2607-flyway.json", "flyway"),
+        ] {
+            zip.start_file(member, SimpleFileOptions::default())
+                .expect("start reference manifest");
+            zip.write_all(
+                &serde_json::to_vec(&ChartReferenceManifest {
+                    schema_version: 1,
+                    family_id: family_id.to_string(),
+                    package_id: "NW_TAC_TAC1_2607".to_string(),
+                    assets: vec![],
+                })
+                .unwrap(),
+            )
+            .expect("write reference manifest");
+        }
+        zip.finish().expect("finish chart zip");
+        let package_outputs_path = package_root.join("package_outputs.jsonl");
+        fs::write(
+            &package_outputs_path,
+            serde_json::json!({
+                "event": "package_output",
+                "label": "charts-tac",
+                "chart": "TAC",
+                "region": "NW",
+                "manifest": "NW_TAC_TAC1_2607.manifest",
+                "manifest_sha256": "manifest",
+                "zip": "NW_TAC_TAC1_2607.zip",
+                "zip_sha256": "zip",
+                "metadata": {
+                    "tile_count": 2,
+                    "chart_collections": [
+                        {"family_id": "tac", "chart_index": 1},
+                        {"family_id": "flyway", "chart_index": 2}
+                    ]
+                }
+            })
+            .to_string()
+                + "\n",
+        )
+        .expect("package outputs");
+
+        let source = ChartSource {
+            family_id: "tac".to_string(),
+            package_outputs_path: package_outputs_path.clone(),
+            asset_root: temp.path().join("assets"),
+            package_root: package_root.clone(),
+            unpack_source_root: temp.path().join("unpacked"),
+            source_urls_path: None,
+        };
+        let collections =
+            collect_chart_collections(&[source.clone()]).expect("collect chart collections");
+
+        assert_eq!(
+            collections
+                .iter()
+                .map(|collection| (
+                    collection.id.as_str(),
+                    collection.package_id.as_str(),
+                    collection.chart_index,
+                ))
+                .collect::<Vec<_>>(),
+            vec![
+                ("flyway:nw", "NW_TAC_TAC1_2607", 2),
+                ("tac:nw", "NW_TAC_TAC1_2607", 1),
+            ]
+        );
+        assert_eq!(
+            collect_families(&[], &collections, false, false)
+                .iter()
+                .map(|family| family.id.as_str())
+                .collect::<Vec<_>>(),
+            vec!["flyway", "tac"]
+        );
+        assert!(collect_chart_references(&[source]).is_ok());
     }
 
     // TODO: if you touch this test, you need to refactor away the synthetic

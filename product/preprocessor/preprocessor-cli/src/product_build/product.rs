@@ -302,7 +302,15 @@ pub fn build_product(config: &ProductBuildConfig) -> anyhow::Result<ProductBuild
                 });
                 pending_tasks.push(GraphScheduledTask {
                     id: package_id.clone(),
-                    deps: vec![process_id, fetch_id],
+                    deps: if family == ChartFamily::Tac {
+                        vec![
+                            process_id,
+                            cycle_task_id(cycle, "charts-flyway-process"),
+                            fetch_id,
+                        ]
+                    } else {
+                        vec![process_id, fetch_id]
+                    },
                     weight: LIGHT_TASK_WEIGHT,
                     kind: ProductScheduledTaskKind::ChartPackage {
                         cycle: cycle.clone(),
@@ -310,6 +318,15 @@ pub fn build_product(config: &ProductBuildConfig) -> anyhow::Result<ProductBuild
                     },
                 });
             }
+            pending_tasks.push(GraphScheduledTask {
+                id: cycle_task_id(cycle, "charts-flyway-process"),
+                deps: vec![cycle_task_id(cycle, "charts-tac-fetch")],
+                weight: CHART_PROCESS_WEIGHT,
+                kind: ProductScheduledTaskKind::ChartProcess {
+                    cycle: cycle.clone(),
+                    family: ChartFamily::Flyway,
+                },
+            });
 
             pending_tasks.push(GraphScheduledTask {
                 id: cycle_task_id(cycle, "csup-fetch"),
@@ -723,9 +740,11 @@ pub fn build_product(config: &ProductBuildConfig) -> anyhow::Result<ProductBuild
                         let mut cycle_config = config.clone();
                         cycle_config.target_cycle = Some(cycle.clone());
                         let family_id = family_slug(family).to_string();
-                        let source_fetch = match task_values_snapshot
-                            .get(&cycle_task_id(&cycle, &format!("charts-{family_id}-fetch")))
-                        {
+                        let source_family_id = family_slug(chart_source_family(family));
+                        let source_fetch = match task_values_snapshot.get(&cycle_task_id(
+                            &cycle,
+                            &format!("charts-{source_family_id}-fetch"),
+                        )) {
                             Some(ProductTaskValue::ChartFetch { record }) => record,
                             _ => bail!("missing chart fetch for cycle {cycle} family {family_id}"),
                         };
@@ -733,7 +752,7 @@ pub fn build_product(config: &ProductBuildConfig) -> anyhow::Result<ProductBuild
                             &cycle_config,
                             family,
                             &cycle_config.chart_metadata_root,
-                            &source_urls.join(format!("charts-{family_id}/source_urls.jsonl")),
+                            &chart_source_urls_path(&source_urls, family),
                             &source_fetch,
                             cycle_config.cpu_jobs.min(8).max(1),
                         )?;

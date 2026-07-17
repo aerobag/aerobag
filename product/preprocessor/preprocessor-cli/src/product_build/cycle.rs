@@ -167,7 +167,15 @@ pub fn build_cycle(config: &ProductBuildConfig) -> anyhow::Result<PathBuf> {
             });
             pending_tasks.push(GraphScheduledTask {
                 id: format!("charts-{family_id}-package"),
-                deps: vec![process_id, format!("charts-{family_id}-fetch")],
+                deps: if family == ChartFamily::Tac {
+                    vec![
+                        process_id,
+                        "charts-flyway-process".to_string(),
+                        format!("charts-{family_id}-fetch"),
+                    ]
+                } else {
+                    vec![process_id, format!("charts-{family_id}-fetch")]
+                },
                 weight: LIGHT_TASK_WEIGHT,
                 kind: ScheduledTaskKind::ChartPackage { family },
             });
@@ -187,6 +195,14 @@ pub fn build_cycle(config: &ProductBuildConfig) -> anyhow::Result<PathBuf> {
                 });
             }
         }
+        pending_tasks.push(GraphScheduledTask {
+            id: "charts-flyway-process".to_string(),
+            deps: vec!["charts-tac-fetch".to_string()],
+            weight: CHART_PROCESS_WEIGHT,
+            kind: ScheduledTaskKind::ChartProcess {
+                family: ChartFamily::Flyway,
+            },
+        });
         pending_tasks.push(GraphScheduledTask {
             id: "csup-fetch".to_string(),
             deps: vec![],
@@ -354,17 +370,18 @@ pub fn build_cycle(config: &ProductBuildConfig) -> anyhow::Result<PathBuf> {
                         record
                     }
                     ScheduledTaskKind::ChartProcess { family } => {
-                        let family_id = family_slug(family).to_string();
-                        let source_fetch =
-                            match task_values_snapshot.get(&format!("charts-{family_id}-fetch")) {
-                                Some(TaskValue::ChartFetch { record }) => record,
-                                _ => unreachable!("chart fetch dependency should have completed"),
-                            };
+                        let source_family_id = family_slug(chart_source_family(family));
+                        let source_fetch = match task_values_snapshot
+                            .get(&format!("charts-{source_family_id}-fetch"))
+                        {
+                            Some(TaskValue::ChartFetch { record }) => record,
+                            _ => unreachable!("chart fetch dependency should have completed"),
+                        };
                         let record = build_chart_process_node(
                             &config,
                             family,
                             &config.chart_metadata_root,
-                            &source_urls_dir.join(format!("charts-{family_id}/source_urls.jsonl")),
+                            &chart_source_urls_path(&source_urls_dir, family),
                             &source_fetch,
                             config.cpu_jobs.min(8).max(1),
                         )

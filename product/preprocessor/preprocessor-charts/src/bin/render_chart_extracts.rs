@@ -11,12 +11,13 @@ fn main() -> anyhow::Result<()> {
         Some("inset") => ChartExtractKind::Inset,
         Some(other) => bail!("unsupported chart extract type {other:?}"),
         None => bail!(
-            "usage: render_chart_extracts <legend|inset> <sec|tac|enr-l|enr-h> <chart-work-dir>"
+            "usage: render_chart_extracts <legend|inset> <sec|tac|flyway|enr-l|enr-h> <chart-work-dir>"
         ),
     };
     let family = match args.next().as_deref() {
         Some("sec") => ChartFamily::Sec,
         Some("tac") => ChartFamily::Tac,
+        Some("flyway") => ChartFamily::Flyway,
         Some("enr-l") => ChartFamily::EnrL,
         Some("enr-h") => ChartFamily::EnrH,
         Some(other) => bail!("unsupported chart family {other:?}"),

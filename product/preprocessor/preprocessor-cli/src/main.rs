@@ -1544,6 +1544,7 @@ fn parse_family(value: &str) -> anyhow::Result<ChartFamily> {
     match value {
         "sec" => Ok(ChartFamily::Sec),
         "tac" => Ok(ChartFamily::Tac),
+        "flyway" => Ok(ChartFamily::Flyway),
         "enr-l" => Ok(ChartFamily::EnrL),
         "enr-h" => Ok(ChartFamily::EnrH),
         _ => anyhow::bail!("unknown family: {value}"),

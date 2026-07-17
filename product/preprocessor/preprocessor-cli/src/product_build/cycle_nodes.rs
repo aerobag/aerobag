@@ -364,7 +364,7 @@ pub(super) fn build_chart_package_nodes(
     let family_id = family_slug(family).to_string();
     let contract_id = product_contract_id_for_family(&family_id)?;
     let artifact_version = contract_artifact_version(contract_id, version_label);
-    let source_urls_path = source_urls_dir.join(format!("charts-{family_id}/source_urls.jsonl"));
+    let source_urls_path = chart_source_urls_path(source_urls_dir, family);
     let process_node_name = format!("charts-{family_id}-process");
     let process_inputs = chart_process_inputs(
         family,
@@ -381,11 +381,41 @@ pub(super) fn build_chart_package_nodes(
     let process_record =
         load_existing_node_record(&process_prepared.record_path, &process_node_name)?;
     let work_dir = resolve_artifact_path(config, output_path(&process_record, "work_dir")?);
+    let bundled_process = if family == ChartFamily::Tac {
+        let bundled_family = ChartFamily::Flyway;
+        let bundled_node_name = format!("charts-{}-process", family_slug(bundled_family));
+        let bundled_inputs = chart_process_inputs(
+            bundled_family,
+            &config.chart_metadata_root,
+            &source_urls_path,
+            source_content_fingerprint(source_fetch_record)?,
+            config.cpu_jobs.min(8).max(1),
+        )?;
+        let bundled_prepared = prepare_node_at(
+            &build_shared_node_dir(config, &bundled_node_name)?,
+            &bundled_node_name,
+            &bundled_inputs,
+        )?;
+        let bundled_record =
+            load_existing_node_record(&bundled_prepared.record_path, &bundled_node_name)?;
+        let bundled_work_dir =
+            resolve_artifact_path(config, output_path(&bundled_record, "work_dir")?);
+        Some((bundled_record, bundled_work_dir))
+    } else {
+        None
+    };
     let node_name = format!("charts-{family_id}-package");
     let inputs = BTreeMap::from([
         (
             "process_fingerprint".to_string(),
             process_record.fingerprint.clone(),
+        ),
+        (
+            "bundled_process_fingerprint".to_string(),
+            bundled_process
+                .as_ref()
+                .map(|(record, _)| record.fingerprint.clone())
+                .unwrap_or_default(),
         ),
         (
             "package_node_contract".to_string(),
@@ -458,10 +488,15 @@ pub(super) fn build_chart_package_nodes(
             fs::create_dir_all(&package_root)
                 .with_context(|| format!("failed to create {}", package_root.display()))?;
             let mut package_records = Vec::new();
+            let bundled_families = bundled_process
+                .as_ref()
+                .map(|(_, work_dir)| vec![(ChartFamily::Flyway, work_dir.as_path())])
+                .unwrap_or_default();
             for region in Region::ALL.iter() {
-                let record = package_family_region_versioned_to(
+                let record = package_family_bundle_region_versioned_to(
                     family,
                     &work_dir,
+                    &bundled_families,
                     &package_root,
                     *region,
                     version_label,
@@ -471,9 +506,10 @@ pub(super) fn build_chart_package_nodes(
                     package_records.push(record);
                 }
             }
-            package_records.push(package_family_wide_angle_versioned_to(
+            package_records.push(package_family_bundle_wide_angle_versioned_to(
                 family,
                 &work_dir,
+                &bundled_families,
                 &package_root,
                 version_label,
                 &artifact_version,
@@ -483,12 +519,21 @@ pub(super) fn build_chart_package_nodes(
                 .iter()
                 .map(|record| package_root.join(&record.zip))
                 .collect::<Vec<_>>();
-            prepare_package_unpack_source_root(
+            let bundled_member_sources = bundled_process
+                .as_ref()
+                .map(|(_, work_dir)| {
+                    let mut entries = Vec::new();
+                    collect_files(work_dir, work_dir, &mut entries)?;
+                    Ok::<_, anyhow::Error>(entries.into_iter().collect::<BTreeMap<_, _>>())
+                })
+                .transpose()?;
+            prepare_package_unpack_source_root_with_member_sources(
                 &zip_paths,
                 &work_dir,
                 &package_root,
                 &unpack_source_root,
                 &["chart-references/"],
+                bundled_member_sources.as_ref(),
             )?;
             let outputs = BTreeMap::from([
                 (

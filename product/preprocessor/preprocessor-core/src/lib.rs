@@ -113,6 +113,12 @@ pub struct ChartReferenceAssetRecord {
     pub source_coverage: Option<ChartReferenceCoverage>,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ChartPackageCollection {
+    pub family_id: String,
+    pub chart_index: u32,
+}
+
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq)]
 pub struct ChartReferenceCoverage {
     pub lat_min: f64,
@@ -185,6 +191,7 @@ impl ExpectedTileCounts {
 pub enum ChartFamily {
     Sec,
     Tac,
+    Flyway,
     EnrL,
     EnrH,
 }
@@ -194,6 +201,7 @@ impl ChartFamily {
         match self {
             Self::Sec => "charts-sec",
             Self::Tac => "charts-tac",
+            Self::Flyway => "charts-flyway",
             Self::EnrL => "charts-enr-l",
             Self::EnrH => "charts-enr-h",
         }
@@ -203,6 +211,7 @@ impl ChartFamily {
         match self {
             Self::Sec => Some(ExpectedTileCounts::CURRENT_BASELINE.sec),
             Self::Tac => Some(ExpectedTileCounts::CURRENT_BASELINE.tac),
+            Self::Flyway => None,
             Self::EnrL => Some(ExpectedTileCounts::CURRENT_BASELINE.enr_l),
             Self::EnrH => None,
         }
@@ -212,6 +221,7 @@ impl ChartFamily {
         match label {
             "charts-sec" => Some(Self::Sec),
             "charts-tac" => Some(Self::Tac),
+            "charts-flyway" => Some(Self::Flyway),
             "charts-enr-l" => Some(Self::EnrL),
             "charts-enr-h" => Some(Self::EnrH),
             _ => None,

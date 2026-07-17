@@ -83,7 +83,7 @@ impl PackageId {
             ChartFamilyId::IfrLow => "ENR_L",
             ChartFamilyId::IfrHigh => "ENR_H",
             ChartFamilyId::IfrArea => "ENR_A",
-            ChartFamilyId::Flyway => "FLY",
+            ChartFamilyId::Flyway => "TAC",
             ChartFamilyId::Heli => "HEL",
             ChartFamilyId::Misc => "MISC",
         };
@@ -119,13 +119,13 @@ mod tests {
     }
 
     #[test]
-    fn package_name_matches_legacy_flyway_contract() {
+    fn flyway_package_name_uses_shared_tac_package() {
         let id = PackageId {
             region: RegionId::Sw,
             family: ChartFamilyId::Flyway,
             cycle: "2026-04-16".to_string(),
         };
 
-        assert_eq!(id.package_name(), "SW_FLY");
+        assert_eq!(id.package_name(), "SW_TAC");
     }
 }

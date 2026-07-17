@@ -11,9 +11,9 @@ use std::{
 use anyhow::{bail, Context};
 use chrono::Datelike;
 use preprocessor_core::{
-    ChartFamily, ChartReferenceAssetRecord, ChartReferenceCoverage, ChartReferenceManifest,
-    ConcurrencyConfig, Parallelism, PhasePlan, Region, RegionBounds, RunPaths, WorkKind,
-    CHART_REFERENCE_MANIFEST_DIR,
+    ChartFamily, ChartPackageCollection, ChartReferenceAssetRecord, ChartReferenceCoverage,
+    ChartReferenceManifest, ConcurrencyConfig, Parallelism, PhasePlan, Region, RegionBounds,
+    RunPaths, WorkKind, CHART_REFERENCE_MANIFEST_DIR,
 };
 use preprocessor_fetch::{
     copy_source_urls_provenance, hash_file, prefetch_archives, prefetch_archives_with_provenance,
@@ -177,6 +177,12 @@ struct ChartSpec {
     vrt_kind: VrtKind,
 }
 
+#[derive(Debug, Clone, Copy)]
+struct PackageChartSource<'a> {
+    spec: ChartSpec,
+    work_dir: &'a Path,
+}
+
 impl ChartSpec {
     fn for_family(family: ChartFamily) -> Self {
         match family {
@@ -195,6 +201,15 @@ impl ChartSpec {
                 script_name: "tac.py",
                 chart_dir_name: "TAC",
                 tile_index: "1",
+                max_zoom: 11,
+                vrt_kind: VrtKind::Vfr,
+            },
+            ChartFamily::Flyway => Self {
+                family,
+                chart_name: "FLY",
+                script_name: "flyway.py",
+                chart_dir_name: "FLY",
+                tile_index: "2",
                 max_zoom: 11,
                 vrt_kind: VrtKind::Vfr,
             },
@@ -221,6 +236,9 @@ impl ChartSpec {
 }
 
 pub fn run_family(request: &ChartRunRequest) -> anyhow::Result<ChartRunResult> {
+    if request.family == ChartFamily::Flyway {
+        bail!("Flyway has no legacy Python chart pipeline; use the native chart pipeline");
+    }
     let paths = RunPaths::new(&request.run_root);
     fs::create_dir_all(&paths.logs).context("failed to create logs dir")?;
     fs::create_dir_all(&paths.meta).context("failed to create meta dir")?;
@@ -360,6 +378,7 @@ pub fn phase_plan(family: ChartFamily, concurrency: &ConcurrencyConfig) -> Vec<P
     let crawl_note = match family {
         ChartFamily::Sec => "crawl VFR and Caribbean FAA pages for sectional ZIPs",
         ChartFamily::Tac => "crawl FAA VFR pages for TAC ZIPs",
+        ChartFamily::Flyway => "reuse FAA TAC archives for Flyway chart TIFFs",
         ChartFamily::EnrL => "crawl FAA IFR pages for low chart ZIPs",
         ChartFamily::EnrH => "crawl FAA IFR pages for high chart ZIPs",
     };
@@ -491,11 +510,41 @@ pub fn package_family_region_versioned_to(
     manifest_version: &str,
     artifact_version: &str,
 ) -> anyhow::Result<PackageOutputRecord> {
-    let spec = ChartSpec::for_family(family);
-    package_region_records_from_spec(
+    package_family_bundle_region_versioned_to(
+        family,
         work_dir.as_ref(),
+        &[],
         output_dir.as_ref(),
-        spec,
+        region,
+        manifest_version,
+        artifact_version,
+    )
+}
+
+pub fn package_family_bundle_region_versioned_to(
+    family: ChartFamily,
+    work_dir: &Path,
+    bundled_families: &[(ChartFamily, &Path)],
+    output_dir: &Path,
+    region: Region,
+    manifest_version: &str,
+    artifact_version: &str,
+) -> anyhow::Result<PackageOutputRecord> {
+    let mut sources = vec![PackageChartSource {
+        spec: ChartSpec::for_family(family),
+        work_dir,
+    }];
+    sources.extend(
+        bundled_families
+            .iter()
+            .map(|(family, work_dir)| PackageChartSource {
+                spec: ChartSpec::for_family(*family),
+                work_dir,
+            }),
+    );
+    package_region_records_from_sources(
+        output_dir,
+        &sources,
         &[region],
         true,
         manifest_version,
@@ -528,11 +577,39 @@ pub fn package_family_wide_angle_versioned_to(
     manifest_version: &str,
     artifact_version: &str,
 ) -> anyhow::Result<PackageOutputRecord> {
-    let spec = ChartSpec::for_family(family);
-    package_wide_angle_record_from_spec(
+    package_family_bundle_wide_angle_versioned_to(
+        family,
         work_dir.as_ref(),
+        &[],
         output_dir.as_ref(),
-        spec,
+        manifest_version,
+        artifact_version,
+    )
+}
+
+pub fn package_family_bundle_wide_angle_versioned_to(
+    family: ChartFamily,
+    work_dir: &Path,
+    bundled_families: &[(ChartFamily, &Path)],
+    output_dir: &Path,
+    manifest_version: &str,
+    artifact_version: &str,
+) -> anyhow::Result<PackageOutputRecord> {
+    let mut sources = vec![PackageChartSource {
+        spec: ChartSpec::for_family(family),
+        work_dir,
+    }];
+    sources.extend(
+        bundled_families
+            .iter()
+            .map(|(family, work_dir)| PackageChartSource {
+                spec: ChartSpec::for_family(*family),
+                work_dir,
+            }),
+    );
+    package_wide_angle_record_from_sources(
+        output_dir,
+        &sources,
         true,
         manifest_version,
         artifact_version,
@@ -839,6 +916,7 @@ fn chart_family_id(family: ChartFamily) -> &'static str {
     match family {
         ChartFamily::Sec => "sec",
         ChartFamily::Tac => "tac",
+        ChartFamily::Flyway => "flyway",
         ChartFamily::EnrL => "enr-l",
         ChartFamily::EnrH => "enr-h",
     }
@@ -1624,19 +1702,18 @@ fn package_regions_from_spec(
     let start = Instant::now();
     let regions = Region::ALL;
     let manifest_cycle = calculate_manifest_cycle();
-    let mut package_records = package_region_records_from_spec(
+    let sources = [PackageChartSource { spec, work_dir }];
+    let mut package_records = package_region_records_from_sources(
         work_dir,
-        work_dir,
-        spec,
+        &sources,
         &regions,
         true,
         &manifest_cycle,
         &manifest_cycle,
     )?;
-    package_records.push(package_wide_angle_record_from_spec(
+    package_records.push(package_wide_angle_record_from_sources(
         work_dir,
-        work_dir,
-        spec,
+        &sources,
         true,
         &manifest_cycle,
         &manifest_cycle,
@@ -1653,31 +1730,39 @@ fn package_regions_from_spec(
     })
 }
 
-fn package_region_records_from_spec(
-    work_dir: &Path,
+fn package_region_records_from_sources(
     output_dir: &Path,
-    spec: ChartSpec,
+    sources: &[PackageChartSource<'_>],
     regions: &[Region],
     produce_records: bool,
     manifest_version: &str,
     artifact_version: &str,
 ) -> anyhow::Result<Vec<PackageOutputRecord>> {
+    let primary = sources.first().context("chart package has no sources")?;
     fs::create_dir_all(output_dir)
         .with_context(|| format!("failed to create {}", output_dir.display()))?;
-    let tile_paths = collect_tile_paths_glob(work_dir, spec.tile_index)?;
+    let tile_paths = sources
+        .iter()
+        .map(|source| {
+            Ok((
+                *source,
+                collect_tile_paths_glob(source.work_dir, source.spec.tile_index)?,
+            ))
+        })
+        .collect::<anyhow::Result<Vec<_>>>()?;
     let mut package_records = Vec::with_capacity(regions.len());
 
     for region in regions {
         let manifest_name = format!(
             "{}_{}_{}.manifest",
             region.code(),
-            spec.chart_name,
+            primary.spec.chart_name,
             artifact_version
         );
         let zip_name = format!(
             "{}_{}_{}.zip",
             region.code(),
-            spec.chart_name,
+            primary.spec.chart_name,
             artifact_version
         );
         let manifest_path = output_dir.join(&manifest_name);
@@ -1688,17 +1773,27 @@ fn package_region_records_from_spec(
                 .with_context(|| format!("failed to remove {}", zip_path.display()))?;
         }
 
-        let mut selected = Vec::new();
-        for tile_path in &tile_paths {
-            if tile_belongs_to_region(tile_path, region) {
-                selected.push(tile_path.clone());
+        let mut selected = Vec::<(String, PathBuf)>::new();
+        for (source, paths) in &tile_paths {
+            for tile_path in paths {
+                if tile_belongs_to_region(tile_path, region) {
+                    selected.push((tile_path.clone(), source.work_dir.join(tile_path)));
+                }
             }
         }
+        let included_sources = sources
+            .iter()
+            .copied()
+            .filter(|source| {
+                let prefix = format!("tiles/{}/", source.spec.tile_index);
+                selected.iter().any(|(path, _)| path.starts_with(&prefix))
+            })
+            .collect::<Vec<_>>();
 
         let mut manifest_text = String::new();
         manifest_text.push_str(manifest_version);
         manifest_text.push('\n');
-        for path in &selected {
+        for (path, _) in &selected {
             manifest_text.push_str(path);
             manifest_text.push('\n');
         }
@@ -1706,26 +1801,34 @@ fn package_region_records_from_spec(
             .with_context(|| format!("failed to write {}", manifest_path.display()))?;
 
         let package_id = manifest_name.trim_end_matches(".manifest");
-        let reference_assets = chart_reference_assets_for_package(work_dir, Some(region))?;
-        let (reference_manifest_member, reference_manifest_path) =
-            write_chart_reference_manifest(output_dir, spec.family, package_id, &reference_assets)?;
+        let reference_groups = sources
+            .iter()
+            .map(|source| {
+                let assets = chart_reference_assets_for_package(source.work_dir, Some(region))?;
+                let manifest = write_chart_reference_manifest(
+                    output_dir,
+                    source.spec.family,
+                    package_id,
+                    &assets,
+                    source.spec.family == primary.spec.family,
+                )?;
+                Ok((*source, assets, manifest))
+            })
+            .collect::<anyhow::Result<Vec<_>>>()?;
 
         write_chart_package_zip(
             &zip_path,
-            work_dir,
             &selected,
             &manifest_name,
             &manifest_path,
-            &reference_assets,
-            &reference_manifest_member,
-            &reference_manifest_path,
+            &reference_groups,
         )?;
 
         if produce_records {
-            let metadata = chart_package_metadata(false, selected.len() as u64);
+            let metadata = chart_package_metadata(false, selected.len() as u64, &included_sources);
             package_records.push(PackageOutputRecord {
-                label: spec.family.capture_label().to_string(),
-                chart: Some(spec.chart_name.to_string()),
+                label: primary.spec.family.capture_label().to_string(),
+                chart: Some(primary.spec.chart_name.to_string()),
                 region: region.code().to_ascii_lowercase(),
                 manifest: manifest_name,
                 manifest_sha256: hash_file(&manifest_path)?,
@@ -1739,19 +1842,21 @@ fn package_region_records_from_spec(
     Ok(package_records)
 }
 
-fn package_wide_angle_record_from_spec(
-    work_dir: &Path,
+fn package_wide_angle_record_from_sources(
     output_dir: &Path,
-    spec: ChartSpec,
+    sources: &[PackageChartSource<'_>],
     produce_record: bool,
     manifest_version: &str,
     artifact_version: &str,
 ) -> anyhow::Result<PackageOutputRecord> {
+    let primary = sources.first().context("chart package has no sources")?;
     fs::create_dir_all(output_dir)
         .with_context(|| format!("failed to create {}", output_dir.display()))?;
-    let tile_paths = collect_tile_paths_glob(work_dir, spec.tile_index)?;
-    let manifest_name = format!("WIDE_{}_{}.manifest", spec.chart_name, artifact_version);
-    let zip_name = format!("WIDE_{}_{}.zip", spec.chart_name, artifact_version);
+    let manifest_name = format!(
+        "WIDE_{}_{}.manifest",
+        primary.spec.chart_name, artifact_version
+    );
+    let zip_name = format!("WIDE_{}_{}.zip", primary.spec.chart_name, artifact_version);
     let manifest_path = output_dir.join(&manifest_name);
     let zip_path = output_dir.join(&zip_name);
 
@@ -1760,15 +1865,27 @@ fn package_wide_angle_record_from_spec(
             .with_context(|| format!("failed to remove {}", zip_path.display()))?;
     }
 
-    let selected = tile_paths
-        .into_iter()
-        .filter(|tile_path| tile_belongs_to_wide_angle(tile_path))
+    let mut selected = Vec::<(String, PathBuf)>::new();
+    for source in sources {
+        for tile_path in collect_tile_paths_glob(source.work_dir, source.spec.tile_index)? {
+            if tile_belongs_to_wide_angle(&tile_path) {
+                selected.push((tile_path.clone(), source.work_dir.join(tile_path)));
+            }
+        }
+    }
+    let included_sources = sources
+        .iter()
+        .copied()
+        .filter(|source| {
+            let prefix = format!("tiles/{}/", source.spec.tile_index);
+            selected.iter().any(|(path, _)| path.starts_with(&prefix))
+        })
         .collect::<Vec<_>>();
 
     let mut manifest_text = String::new();
     manifest_text.push_str(manifest_version);
     manifest_text.push('\n');
-    for path in &selected {
+    for (path, _) in &selected {
         manifest_text.push_str(path);
         manifest_text.push('\n');
     }
@@ -1776,26 +1893,34 @@ fn package_wide_angle_record_from_spec(
         .with_context(|| format!("failed to write {}", manifest_path.display()))?;
 
     let package_id = manifest_name.trim_end_matches(".manifest");
-    let reference_assets = chart_reference_assets_for_package(work_dir, None)?;
-    let (reference_manifest_member, reference_manifest_path) =
-        write_chart_reference_manifest(output_dir, spec.family, package_id, &reference_assets)?;
+    let reference_groups = sources
+        .iter()
+        .map(|source| {
+            let assets = chart_reference_assets_for_package(source.work_dir, None)?;
+            let manifest = write_chart_reference_manifest(
+                output_dir,
+                source.spec.family,
+                package_id,
+                &assets,
+                source.spec.family == primary.spec.family,
+            )?;
+            Ok((*source, assets, manifest))
+        })
+        .collect::<anyhow::Result<Vec<_>>>()?;
 
     write_chart_package_zip(
         &zip_path,
-        work_dir,
         &selected,
         &manifest_name,
         &manifest_path,
-        &reference_assets,
-        &reference_manifest_member,
-        &reference_manifest_path,
+        &reference_groups,
     )?;
 
     if produce_record {
-        let metadata = chart_package_metadata(true, selected.len() as u64);
+        let metadata = chart_package_metadata(true, selected.len() as u64, &included_sources);
         Ok(PackageOutputRecord {
-            label: spec.family.capture_label().to_string(),
-            chart: Some(spec.chart_name.to_string()),
+            label: primary.spec.family.capture_label().to_string(),
+            chart: Some(primary.spec.chart_name.to_string()),
             region: WIDE_ANGLE_REGION_ID.to_string(),
             manifest: manifest_name,
             manifest_sha256: hash_file(&manifest_path)?,
@@ -1810,26 +1935,35 @@ fn package_wide_angle_record_from_spec(
 
 fn write_chart_package_zip(
     zip_path: &Path,
-    work_dir: &Path,
-    selected_tiles: &[String],
+    selected_tiles: &[(String, PathBuf)],
     manifest_name: &str,
     manifest_path: &Path,
-    reference_assets: &[ChartReferenceAssetRecord],
-    reference_manifest_member: &str,
-    reference_manifest_path: &Path,
+    reference_groups: &[(
+        PackageChartSource<'_>,
+        Vec<ChartReferenceAssetRecord>,
+        (String, PathBuf),
+    )],
 ) -> anyhow::Result<()> {
     let mut members = selected_tiles
         .iter()
-        .map(|member| ZipSource::new(member, work_dir.join(member)).stored())
+        .map(|(member, source)| ZipSource::new(member, source).stored())
         .collect::<Vec<_>>();
-    for asset in reference_assets {
-        members.push(ZipSource::new(&asset.asset_path, work_dir.join(&asset.asset_path)).stored());
-        members.push(
-            ZipSource::new(&asset.thumbnail_path, work_dir.join(&asset.thumbnail_path)).stored(),
-        );
+    for (source, assets, (manifest_member, manifest_path)) in reference_groups {
+        for asset in assets {
+            members.push(
+                ZipSource::new(&asset.asset_path, source.work_dir.join(&asset.asset_path)).stored(),
+            );
+            members.push(
+                ZipSource::new(
+                    &asset.thumbnail_path,
+                    source.work_dir.join(&asset.thumbnail_path),
+                )
+                .stored(),
+            );
+        }
+        members.push(ZipSource::new(manifest_member, manifest_path).stored());
     }
     members.push(ZipSource::new(manifest_name, manifest_path).stored());
-    members.push(ZipSource::new(reference_manifest_member, reference_manifest_path).stored());
     write_deterministic_zip(zip_path, &members)
 }
 
@@ -1876,8 +2010,16 @@ fn write_chart_reference_manifest(
     family: ChartFamily,
     package_id: &str,
     assets: &[ChartReferenceAssetRecord],
+    primary: bool,
 ) -> anyhow::Result<(String, PathBuf)> {
-    let member = format!("{CHART_REFERENCE_MANIFEST_DIR}/{package_id}.json");
+    let member = if primary {
+        format!("{CHART_REFERENCE_MANIFEST_DIR}/{package_id}.json")
+    } else {
+        format!(
+            "{CHART_REFERENCE_MANIFEST_DIR}/{package_id}-{}.json",
+            chart_family_id(family)
+        )
+    };
     let path = output_dir.join(&member);
     if let Some(parent) = path.parent() {
         fs::create_dir_all(parent)
@@ -2001,6 +2143,7 @@ fn tile_path_xyz(tile_path: &str) -> Option<(u32, u32, u32)> {
 fn chart_package_metadata(
     is_wide_angle: bool,
     tile_count: u64,
+    sources: &[PackageChartSource<'_>],
 ) -> BTreeMap<String, serde_json::Value> {
     let mut metadata = BTreeMap::from([
         (
@@ -2031,6 +2174,23 @@ fn chart_package_metadata(
     metadata.insert(
         "tile_count".to_string(),
         serde_json::Value::from(tile_count),
+    );
+    metadata.insert(
+        "chart_collections".to_string(),
+        serde_json::to_value(
+            sources
+                .iter()
+                .map(|source| ChartPackageCollection {
+                    family_id: chart_family_id(source.spec.family).to_string(),
+                    chart_index: source
+                        .spec
+                        .tile_index
+                        .parse::<u32>()
+                        .expect("numeric chart tile index"),
+                })
+                .collect::<Vec<_>>(),
+        )
+        .expect("chart package collection metadata is serializable"),
     );
     metadata
 }
@@ -2224,11 +2384,11 @@ mod tests {
     use super::{
         antimeridian_supplement_from_html, build_family_insets, build_family_legends,
         build_family_reference_catalog, copy_dir_recursive, inspect_raster,
-        package_family_region_versioned_to, package_family_wide_angle_versioned_to,
-        resolve_chart_input_filename, source_chart_coverage, tile_belongs_to_region,
-        validate_chart_extract_layout, vfr_vrt_paths, AntimeridianSupplement, ChartExtractKind,
-        ChartExtractLayout, ChartExtractRegion, ChartReferenceCatalog,
-        CHART_REFERENCE_CATALOG_NAME,
+        package_family_bundle_region_versioned_to, package_family_region_versioned_to,
+        package_family_wide_angle_versioned_to, resolve_chart_input_filename,
+        source_chart_coverage, tile_belongs_to_region, validate_chart_extract_layout,
+        vfr_vrt_paths, AntimeridianSupplement, ChartExtractKind, ChartExtractLayout,
+        ChartExtractRegion, ChartReferenceCatalog, CHART_REFERENCE_CATALOG_NAME,
     };
     use preprocessor_core::{
         ChartFamily, ChartReferenceAssetRecord, ChartReferenceCoverage, Region,
@@ -2674,6 +2834,64 @@ mod tests {
         assert!(!sw_entries
             .iter()
             .any(|entry| entry == "insets/Miami TAC.png"));
+    }
+
+    #[test]
+    fn tac_package_can_carry_independent_flyway_tiles_and_references() {
+        let temp = TempDir::new("tac-flyway-package");
+        let tac_work = temp.path.join("tac");
+        let flyway_work = temp.path.join("flyway");
+        let output_dir = temp.path.join("packages");
+        for (work_dir, family_id, tile_path) in [
+            (&tac_work, "tac", "tiles/1/11/125/1146.webp"),
+            (&flyway_work, "flyway", "tiles/2/11/125/1146.webp"),
+        ] {
+            let path = work_dir.join(tile_path);
+            fs::create_dir_all(path.parent().unwrap()).unwrap();
+            fs::write(path, family_id.as_bytes()).unwrap();
+            fs::write(
+                work_dir.join(CHART_REFERENCE_CATALOG_NAME),
+                serde_json::to_vec(&ChartReferenceCatalog {
+                    schema_version: 1,
+                    family_id: family_id.to_string(),
+                    assets: vec![],
+                })
+                .unwrap(),
+            )
+            .unwrap();
+        }
+
+        let record = package_family_bundle_region_versioned_to(
+            ChartFamily::Tac,
+            &tac_work,
+            &[(ChartFamily::Flyway, flyway_work.as_path())],
+            &output_dir,
+            Region::Pac,
+            "2607",
+            "TAC1_2607",
+        )
+        .unwrap();
+
+        let entries = zip_entries(&output_dir.join(record.zip));
+        assert!(entries
+            .iter()
+            .any(|entry| entry == "tiles/1/11/125/1146.webp"));
+        assert!(entries
+            .iter()
+            .any(|entry| entry == "tiles/2/11/125/1146.webp"));
+        assert!(entries
+            .iter()
+            .any(|entry| entry == "chart-references/PAC_TAC_TAC1_2607.json"));
+        assert!(entries
+            .iter()
+            .any(|entry| { entry == "chart-references/PAC_TAC_TAC1_2607-flyway.json" }));
+        assert_eq!(
+            record.metadata["chart_collections"],
+            serde_json::json!([
+                {"family_id": "tac", "chart_index": 1},
+                {"family_id": "flyway", "chart_index": 2}
+            ])
+        );
     }
 
     fn zip_entries(path: &Path) -> Vec<String> {

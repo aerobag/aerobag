@@ -1678,6 +1678,7 @@ fn sync_cycle_product_freshness_status_records(session: &mut UiSession) -> Vec<U
 fn chart_family_status_label(chart_family: &str) -> (&'static str, u8) {
     match chart_family {
         "tac" => ("TAC", 10),
+        "flyway" => ("Flyway", 15),
         "sec" => ("Sectional", 20),
         "enr-l" => ("IFR-Low", 30),
         "enr-h" => ("IFR-High", 40),
@@ -1748,7 +1749,7 @@ fn nav_db_family_warning_status_record(family: &NavDbFamilyRecord) -> Option<Dat
 fn family_warning_is_supported(family_id: &str) -> bool {
     matches!(
         family_id,
-        "sec" | "tac" | "enr-l" | "enr-h" | "tpp" | "csup"
+        "sec" | "tac" | "flyway" | "enr-l" | "enr-h" | "tpp" | "csup"
     )
 }
 
@@ -1772,6 +1773,7 @@ fn package_warning_label(family_id: &str) -> String {
         "nav-db" => "NAV DB".to_string(),
         "sec" => "Sectional".to_string(),
         "tac" => "TAC".to_string(),
+        "flyway" => "Flyway".to_string(),
         "enr-l" => "IFR-L".to_string(),
         "enr-h" => "IFR-H".to_string(),
         "tpp" => "TPP".to_string(),

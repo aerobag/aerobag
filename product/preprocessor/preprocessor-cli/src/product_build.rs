@@ -22,8 +22,9 @@ use geo::{BooleanOps, Coord, LineString, MultiPolygon, Polygon};
 use had_key::{component as had_key_component, upper_component as had_upper_key_component};
 use preprocessor_charts::{
     build_family_insets, build_family_legends, build_family_reference_catalog, build_family_tiles,
-    build_family_vrts, package_family_region_versioned_to, package_family_wide_angle_versioned_to,
-    stage_work_dir, CHART_REFERENCE_CATALOG_NAME, FULL_COVERAGE_ZOOM, WIDE_ANGLE_REGION_ID,
+    build_family_vrts, package_family_bundle_region_versioned_to,
+    package_family_bundle_wide_angle_versioned_to, stage_work_dir, CHART_REFERENCE_CATALOG_NAME,
+    FULL_COVERAGE_ZOOM, WIDE_ANGLE_REGION_ID,
 };
 use preprocessor_core::nav_kv::{
     build_nav_kv_sorted, NavKvPair, NavKvRoot, NAVKV_STORAGE_FORMAT as NAV_KV_STORAGE_FORMAT,
@@ -1229,7 +1230,7 @@ pub fn explain_product_build(config: &ProductBuildConfig) -> anyhow::Result<Stri
     lines.push(format!("max_heavy_jobs {}", config.max_heavy_jobs));
     lines.push("nodes".to_string());
     lines.push("  source-urls".to_string());
-    for family in ["sec", "tac", "enr-l", "enr-h"] {
+    for family in ["sec", "tac", "flyway", "enr-l", "enr-h"] {
         lines.push(format!("  charts-{family}"));
     }
     lines.push("  csup".to_string());
@@ -2062,6 +2063,7 @@ fn manifest_chart_name(family: ChartFamily) -> &'static str {
     match family {
         ChartFamily::Sec => "SEC",
         ChartFamily::Tac => "TAC",
+        ChartFamily::Flyway => "FLY",
         ChartFamily::EnrL => "ENR_L",
         ChartFamily::EnrH => "ENR_H",
     }
@@ -2216,17 +2218,31 @@ fn family_slug(family: ChartFamily) -> &'static str {
     match family {
         ChartFamily::Sec => "sec",
         ChartFamily::Tac => "tac",
+        ChartFamily::Flyway => "flyway",
         ChartFamily::EnrL => "enr-l",
         ChartFamily::EnrH => "enr-h",
     }
+}
+
+fn chart_source_family(family: ChartFamily) -> ChartFamily {
+    match family {
+        ChartFamily::Flyway => ChartFamily::Tac,
+        family => family,
+    }
+}
+
+fn chart_source_urls_path(source_urls_dir: &Path, family: ChartFamily) -> PathBuf {
+    source_urls_dir.join(format!(
+        "charts-{}/source_urls.jsonl",
+        family_slug(chart_source_family(family))
+    ))
 }
 
 fn chart_family_version_label(
     source_urls_dir: &Path,
     family: ChartFamily,
 ) -> anyhow::Result<String> {
-    let source_urls =
-        source_urls_dir.join(format!("charts-{}/source_urls.jsonl", family_slug(family)));
+    let source_urls = chart_source_urls_path(source_urls_dir, family);
     let effective = find_effective_date_from_urls(&read_source_urls_jsonl(&source_urls)?)
         .with_context(|| format!("missing chart effective date in {}", source_urls.display()))?;
     cycle_code_from_effective_date(effective)
@@ -3307,7 +3323,20 @@ mod tests {
 
     #[test]
     fn nav_kv_chart_catalog_emits_tile_path_templates_for_chart_packages() {
-        let catalog = build_nav_kv_chart_catalog(&minimal_resource_index(), &[]);
+        let mut resource_index = minimal_resource_index();
+        let mut flyway = resource_index.chart_collections[0].clone();
+        flyway.id = "flyway:nw".to_string();
+        flyway.family_id = "flyway".to_string();
+        flyway.package_id = "NW_TAC_TAC1_2607".to_string();
+        flyway.chart_index = 2;
+        flyway.tile_path_template = "tiles/2/{z}/{x}/{y}.webp".to_string();
+        resource_index.chart_collections.push(flyway);
+        resource_index.families.push(ResourceFamily {
+            id: "flyway".to_string(),
+            display_name: "Flyway".to_string(),
+            kind: "tiled_raster".to_string(),
+        });
+        let catalog = build_nav_kv_chart_catalog(&resource_index, &[]);
         let entries = catalog
             .as_array()
             .expect("chart catalog should be an array");
@@ -3320,6 +3349,15 @@ mod tests {
         assert_eq!(
             sectional["map_view"]["tile_path_template"],
             "0/{z}/{x}/{y}.webp"
+        );
+        let flyway = entries
+            .iter()
+            .find(|entry| entry["id"] == "flyway:nw")
+            .expect("flyway entry");
+        assert_eq!(flyway["map_view"]["package_name"], "NW_TAC_TAC1_2607");
+        assert_eq!(
+            flyway["map_view"]["tile_path_template"],
+            "2/{z}/{x}/{y}.webp"
         );
     }
 
@@ -4834,6 +4872,10 @@ mod tests {
 
         assert_eq!(
             chart_family_version_label(temp.path(), ChartFamily::Sec).unwrap(),
+            "2603"
+        );
+        assert_eq!(
+            chart_family_version_label(temp.path(), ChartFamily::Flyway).unwrap(),
             "2603"
         );
         assert_eq!(

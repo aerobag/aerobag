@@ -2051,11 +2051,12 @@ fn displayed_geometry() -> DisplayGeometryRecord {
     }
 }
 
-fn supported_chart_families() -> [(&'static str, &'static str, &'static str); 6] {
+fn supported_chart_families() -> [(&'static str, &'static str, &'static str); 7] {
     [
         (NO_RASTER_FAMILY_ID, "NONE", "NONE"),
         ("sec", "SECTIONAL", "SEC"),
         ("tac", "TAC", "TAC"),
+        ("flyway", "FLYWAY", "FLY"),
         ("enr-l", "IFR-LOW", "IFR L"),
         ("enr-h", "IFR-HIGH", "IFR H"),
         ("shaded-relief", "SHADED RELIEF", "RELIEF"),
@@ -2066,12 +2067,12 @@ fn displayed_family_maps<'a>(
     map_views: &'a [MapViewOptionRecord],
     family_id: &str,
 ) -> Vec<&'a MapViewOptionRecord> {
-    if family_id == "tac" {
+    if matches!(family_id, "tac" | "flyway") {
         return map_views
             .iter()
             .filter(|view| {
                 let chart_family = view.map_view.chart_family.as_str();
-                chart_family == "sec" || chart_family == "tac"
+                chart_family == "sec" || chart_family == family_id
             })
             .collect();
     }

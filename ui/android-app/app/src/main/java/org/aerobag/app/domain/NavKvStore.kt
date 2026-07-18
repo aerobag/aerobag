@@ -267,10 +267,13 @@ class NavKvStore private constructor(
         fetchSessionResource: ((CoreResourceRequest) -> ByteArray)? = null,
         ingestSessionResource: ((CoreResourceRequest, ByteArray) -> Unit)? = null,
         drainSessionResourceEffects: (() -> String)? = null,
+        resumeSnapshot: (() -> String)? = null,
         operation: () -> String,
     ): PagedSessionOperationResult {
+        var activeOperation = operation
+        val pendingInvalidations = linkedSetOf<String>()
         while (true) {
-            val outcome = json.parseToJsonElement(operation()).jsonObject
+            val outcome = json.parseToJsonElement(activeOperation()).jsonObject
             return when (val state = outcome.getValue("state").jsonPrimitive.content) {
                 "complete" -> {
                     val effectInvalidations = drainSessionResourceEffects
@@ -284,14 +287,24 @@ class NavKvStore private constructor(
                         ?: emptyList()
                     PagedSessionOperationResult(
                         result = outcome["result"] ?: JsonNull,
-                        invalidations = outcome["invalidations"]
-                            ?.jsonArray
-                            ?.map { it.jsonPrimitive.content }
-                            ?: emptyList(),
+                        invalidations = (pendingInvalidations + (
+                            outcome["invalidations"]
+                                ?.jsonArray
+                                ?.map { it.jsonPrimitive.content }
+                                ?: emptyList()
+                            )).toList(),
                         effectInvalidations = effectInvalidations,
                     )
                 }
-                "need_resources" -> {
+                "need_resources", "need_snapshot_resources" -> {
+                    if (state == "need_snapshot_resources") {
+                        pendingInvalidations += outcome["invalidations"]
+                            ?.jsonArray
+                            ?.map { it.jsonPrimitive.content }
+                            ?: emptyList()
+                        activeOperation = resumeSnapshot
+                            ?: error("committed session mutation requires a snapshot-resume operation")
+                    }
                     var loadedAnyResource = false
                     for (resource in parseCoreResourceRequests(outcome)) {
                         if (resource.id.startsWith("nav_kv/page/")) {

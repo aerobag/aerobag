@@ -177,19 +177,9 @@ interface NativeBridge {
         enrouteTransitionJson: String,
     ): String
 
-    fun registerOwnshipSourceInSessionJson(
-        handle: Long,
-        registrationJson: String,
-    ): String
-
     fun registerOwnshipSourceInSessionPagedJson(
         handle: Long,
         registrationJson: String,
-    ): String
-
-    fun updateOwnshipSourceStatusInSessionJson(
-        handle: Long,
-        updateJson: String,
     ): String
 
     fun updateOwnshipSourceStatusInSessionPagedJson(
@@ -197,19 +187,9 @@ interface NativeBridge {
         updateJson: String,
     ): String
 
-    fun pushSituationSampleInSessionJson(
-        handle: Long,
-        sampleJson: String,
-    ): String
-
     fun pushSituationSampleInSessionPagedJson(
         handle: Long,
         sampleJson: String,
-    ): String
-
-    fun selectOwnshipSourceInSessionJson(
-        handle: Long,
-        selectionJson: String,
     ): String
 
     fun selectOwnshipSourceInSessionPagedJson(
@@ -233,29 +213,13 @@ interface NativeBridge {
         viewportJson: String,
     ): String
 
-    fun loadPlaybackTraceInSessionJson(
-        handle: Long,
-        sourcePathJson: String,
-        traceJson: String,
-    ): String
-
     fun loadPlaybackTraceInSessionPagedJson(
         handle: Long,
         sourcePathJson: String,
         traceJson: String,
     ): String
 
-    fun playPlaybackInSessionJson(
-        handle: Long,
-        nowEpochMs: Double,
-    ): String
-
     fun playPlaybackInSessionPagedJson(
-        handle: Long,
-        nowEpochMs: Double,
-    ): String
-
-    fun pausePlaybackInSessionJson(
         handle: Long,
         nowEpochMs: Double,
     ): String
@@ -265,21 +229,9 @@ interface NativeBridge {
         nowEpochMs: Double,
     ): String
 
-    fun seekPlaybackInSessionJson(
-        handle: Long,
-        cursorSeconds: Double,
-        nowEpochMs: Double,
-    ): String
-
     fun seekPlaybackInSessionPagedJson(
         handle: Long,
         cursorSeconds: Double,
-        nowEpochMs: Double,
-    ): String
-
-    fun setPlaybackRateInSessionJson(
-        handle: Long,
-        rate: Double,
         nowEpochMs: Double,
     ): String
 
@@ -289,17 +241,7 @@ interface NativeBridge {
         nowEpochMs: Double,
     ): String
 
-    fun tickPlaybackInSessionJson(
-        handle: Long,
-        nowEpochMs: Double,
-    ): String
-
     fun tickPlaybackInSessionPagedJson(
-        handle: Long,
-        nowEpochMs: Double,
-    ): String
-
-    fun tickBadAutopilotInSessionJson(
         handle: Long,
         nowEpochMs: Double,
     ): String
@@ -355,9 +297,9 @@ interface NativeBridge {
         selectedMapIdJson: String,
     ): String
 
-    fun getSessionSnapshotJson(handle: Long): String
+    fun getSessionSnapshotPagedJson(handle: Long): String
 
-    fun getSessionSnapshotAtEpochMsJson(handle: Long, epochMs: Long): String
+    fun getSessionSnapshotAtEpochMsPagedJson(handle: Long, epochMs: Long): String
 
     fun performFlightPlanRowActionInSessionJson(
         handle: Long,
@@ -752,19 +694,9 @@ object NativeBindings : NativeBridge {
         enrouteTransitionJson: String,
     ): String
 
-    external override fun registerOwnshipSourceInSessionJson(
-        handle: Long,
-        registrationJson: String,
-    ): String
-
     external override fun registerOwnshipSourceInSessionPagedJson(
         handle: Long,
         registrationJson: String,
-    ): String
-
-    external override fun updateOwnshipSourceStatusInSessionJson(
-        handle: Long,
-        updateJson: String,
     ): String
 
     external override fun updateOwnshipSourceStatusInSessionPagedJson(
@@ -772,19 +704,9 @@ object NativeBindings : NativeBridge {
         updateJson: String,
     ): String
 
-    external override fun pushSituationSampleInSessionJson(
-        handle: Long,
-        sampleJson: String,
-    ): String
-
     external override fun pushSituationSampleInSessionPagedJson(
         handle: Long,
         sampleJson: String,
-    ): String
-
-    external override fun selectOwnshipSourceInSessionJson(
-        handle: Long,
-        selectionJson: String,
     ): String
 
     external override fun selectOwnshipSourceInSessionPagedJson(
@@ -808,29 +730,13 @@ object NativeBindings : NativeBridge {
         viewportJson: String,
     ): String
 
-    external override fun loadPlaybackTraceInSessionJson(
-        handle: Long,
-        sourcePathJson: String,
-        traceJson: String,
-    ): String
-
     external override fun loadPlaybackTraceInSessionPagedJson(
         handle: Long,
         sourcePathJson: String,
         traceJson: String,
     ): String
 
-    external override fun playPlaybackInSessionJson(
-        handle: Long,
-        nowEpochMs: Double,
-    ): String
-
     external override fun playPlaybackInSessionPagedJson(
-        handle: Long,
-        nowEpochMs: Double,
-    ): String
-
-    external override fun pausePlaybackInSessionJson(
         handle: Long,
         nowEpochMs: Double,
     ): String
@@ -840,21 +746,9 @@ object NativeBindings : NativeBridge {
         nowEpochMs: Double,
     ): String
 
-    external override fun seekPlaybackInSessionJson(
-        handle: Long,
-        cursorSeconds: Double,
-        nowEpochMs: Double,
-    ): String
-
     external override fun seekPlaybackInSessionPagedJson(
         handle: Long,
         cursorSeconds: Double,
-        nowEpochMs: Double,
-    ): String
-
-    external override fun setPlaybackRateInSessionJson(
-        handle: Long,
-        rate: Double,
         nowEpochMs: Double,
     ): String
 
@@ -864,17 +758,7 @@ object NativeBindings : NativeBridge {
         nowEpochMs: Double,
     ): String
 
-    external override fun tickPlaybackInSessionJson(
-        handle: Long,
-        nowEpochMs: Double,
-    ): String
-
     external override fun tickPlaybackInSessionPagedJson(
-        handle: Long,
-        nowEpochMs: Double,
-    ): String
-
-    external override fun tickBadAutopilotInSessionJson(
         handle: Long,
         nowEpochMs: Double,
     ): String
@@ -930,9 +814,9 @@ object NativeBindings : NativeBridge {
         selectedMapIdJson: String,
     ): String
 
-    external override fun getSessionSnapshotJson(handle: Long): String
+    external override fun getSessionSnapshotPagedJson(handle: Long): String
 
-    external override fun getSessionSnapshotAtEpochMsJson(handle: Long, epochMs: Long): String
+    external override fun getSessionSnapshotAtEpochMsPagedJson(handle: Long, epochMs: Long): String
 
     external override fun performFlightPlanRowActionInSessionJson(
         handle: Long,

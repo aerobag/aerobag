@@ -203,6 +203,7 @@ export class NavKvStore {
     reportResourceFailure?: ResourceFailureReporter,
     drainSessionEffects?: () => Promise<string> | string,
     operationLabel?: string,
+    resumeSnapshot?: () => Promise<string> | string,
   ): Promise<T> {
     const result = await this.runPagedOperation<T>(
       () => operation(this.handle),
@@ -210,6 +211,7 @@ export class NavKvStore {
       onInvalidations,
       reportResourceFailure,
       operationLabel,
+      resumeSnapshot,
     );
     if (drainSessionEffects) {
       this.launchSessionEffectPump(
@@ -251,17 +253,21 @@ export class NavKvStore {
     onInvalidations?: UiInvalidationListener,
     reportResourceFailure?: ResourceFailureReporter,
     operationLabel?: string,
+    resumeSnapshot?: () => Promise<string> | string,
   ): Promise<T> {
     let iteration = 0;
+    let activeOperation = operation;
+    const pendingInvalidations = new Set<UiInvalidation>();
     for (;;) {
       iteration += 1;
       const operationStartedAt = performance.now();
-      const responseJson = await operation();
+      const responseJson = await activeOperation();
       const operationMs = performance.now() - operationStartedAt;
       const parseStartedAt = performance.now();
       const response = JSON.parse(responseJson) as
         | { state: "complete"; result: T; invalidations?: UiInvalidation[] }
-        | { state: "need_resources"; resources: CoreResourceRequest[] };
+        | { state: "need_resources"; resources: CoreResourceRequest[] }
+        | { state: "need_snapshot_resources"; resources: CoreResourceRequest[]; invalidations?: UiInvalidation[] };
       const parseMs = performance.now() - parseStartedAt;
       if (operationLabel) {
         debugLog(`${operationLabel}.core_had.step`, {
@@ -270,22 +276,35 @@ export class NavKvStore {
           operation_ms: Math.round(operationMs),
           parse_ms: Math.round(parseMs),
           json_bytes: responseJson.length,
-          resource_count: response.state === "need_resources" ? response.resources.length : 0,
-          resources: response.state === "need_resources"
+          resource_count: response.state === "complete" ? 0 : response.resources.length,
+          resources: response.state !== "complete"
             ? response.resources.map((resource) => resource.id)
             : undefined,
         });
       }
       if (response.state === "complete") {
-        if (response.invalidations && response.invalidations.length > 0) {
+        for (const invalidation of response.invalidations ?? []) {
+          pendingInvalidations.add(invalidation);
+        }
+        if (pendingInvalidations.size > 0) {
+          const invalidations = [...pendingInvalidations];
           debugLog("core.ui.invalidations.source", {
             source: "paged_operation_complete",
             operation_label: operationLabel ?? null,
-            invalidations: response.invalidations,
+            invalidations,
           });
-          onInvalidations?.(response.invalidations);
+          onInvalidations?.(invalidations);
         }
         return response.result;
+      }
+      if (response.state === "need_snapshot_resources") {
+        for (const invalidation of response.invalidations ?? []) {
+          pendingInvalidations.add(invalidation);
+        }
+        if (!resumeSnapshot) {
+          throw new Error("committed session mutation requires a snapshot-resume operation");
+        }
+        activeOperation = resumeSnapshot;
       }
       await Promise.all(
         response.resources.map((resource) =>
@@ -714,6 +733,7 @@ export async function runCoreHadSessionOperation<T>(
   reportResourceFailure?: ResourceFailureReporter,
   drainSessionEffects?: () => Promise<string> | string,
   operationLabel?: string,
+  resumeSnapshot?: () => Promise<string> | string,
 ): Promise<T> {
   const store = await getNavKvStore(sessionHandle);
   if (!store) {
@@ -726,6 +746,7 @@ export async function runCoreHadSessionOperation<T>(
     reportResourceFailure,
     drainSessionEffects,
     operationLabel,
+    resumeSnapshot,
   );
 }
 

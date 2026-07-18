@@ -3560,7 +3560,7 @@ pub fn resolve_metar_manifest_in_session(handle: u32) -> AppResult<HadOperationO
 pub fn set_resource_policy_in_session(
     handle: u32,
     policy: CoreResourcePolicy,
-) -> AppResult<UiSessionSnapshot> {
+) -> AppResult<HadOperationOutcome> {
     let mut sessions = lock_sessions();
     let session = session_mut(&mut sessions, handle)?;
     if session.resource_policy != policy {
@@ -3568,13 +3568,13 @@ pub fn set_resource_policy_in_session(
         session.publication_resolver.set_resource_policy(policy);
         session.raster_map_catalog = None;
     }
-    snapshot_for_changed_session(session)
+    changed_session_snapshot_outcome(session)
 }
 
 pub fn load_offline_package_library_cache_in_session(
     handle: u32,
     cache: OfflinePackagesLibraryCache,
-) -> AppResult<UiSessionSnapshot> {
+) -> AppResult<HadOperationOutcome> {
     let mut sessions = lock_sessions();
     let session = session_mut(&mut sessions, handle)?;
     advance_session_wall_clock(session, cache.fetched_at_epoch_ms);
@@ -3586,26 +3586,26 @@ pub fn load_offline_package_library_cache_in_session(
             message,
         })?;
     mark_cycle_product_freshness_dirty(session);
-    snapshot_for_changed_session(session)
+    changed_session_snapshot_outcome(session)
 }
 
 pub fn configure_platform_capabilities_in_session(
     handle: u32,
     capabilities: PlatformCapabilities,
     settings_storage: Option<SettingsStorageHandle>,
-) -> AppResult<UiSessionSnapshot> {
+) -> AppResult<HadOperationOutcome> {
     let mut sessions = lock_sessions();
     let session = session_mut(&mut sessions, handle)?;
     session.platform_capabilities = capabilities;
     session.settings_storage = settings_storage;
     load_settings_preferences_from_storage(session)?;
-    snapshot_for_changed_session(session)
+    changed_session_snapshot_outcome(session)
 }
 
 pub fn perform_settings_action_in_session(
     handle: u32,
     action: UiSettingsAction,
-) -> AppResult<UiSessionSnapshot> {
+) -> AppResult<HadOperationOutcome> {
     let mut sessions = lock_sessions();
     let session = session_mut(&mut sessions, handle)?;
     match action.action_id.as_str() {
@@ -3640,13 +3640,13 @@ pub fn perform_settings_action_in_session(
         }
         _ => return Err(invalid_settings_action(&action.action_id)),
     }
-    snapshot_for_changed_session(session)
+    changed_session_snapshot_outcome(session)
 }
 
 pub fn accept_disclaimer_in_session(
     handle: u32,
     agreement_id: &str,
-) -> AppResult<UiSessionSnapshot> {
+) -> AppResult<HadOperationOutcome> {
     let mut sessions = lock_sessions();
     let session = session_mut(&mut sessions, handle)?;
     if agreement_id != NO_WARRANTY_DISCLAIMER_AGREEMENT_ID {
@@ -3660,17 +3660,17 @@ pub fn accept_disclaimer_in_session(
         .accepted_disclaimer_agreement_ids
         .insert(agreement_id.to_string());
     write_settings_preferences_to_storage(session)?;
-    snapshot_for_changed_session(session)
+    changed_session_snapshot_outcome(session)
 }
 
 pub fn set_installed_package_ids_in_session(
     handle: u32,
     package_ids: Vec<String>,
-) -> AppResult<UiSessionSnapshot> {
+) -> AppResult<HadOperationOutcome> {
     let mut sessions = lock_sessions();
     let session = session_mut(&mut sessions, handle)?;
     session.installed_package_ids = package_ids.into_iter().collect();
-    snapshot_for_changed_session(session)
+    changed_session_snapshot_outcome(session)
 }
 
 fn raster_resource_mode_for_policy(policy: CoreResourcePolicy) -> RasterResourceMode {
@@ -3707,7 +3707,7 @@ pub fn select_map_family_in_session(
 pub fn select_raster_map_in_session(
     handle: u32,
     selected_map_id: &str,
-) -> AppResult<UiSessionSnapshot> {
+) -> AppResult<HadOperationOutcome> {
     let mut sessions = lock_sessions();
     let session = session_mut(&mut sessions, handle)?;
     let Some(catalog) = session.raster_map_catalog.as_mut() else {
@@ -3718,7 +3718,7 @@ pub fn select_raster_map_in_session(
     };
     crate::select_map_in_catalog(catalog, selected_map_id);
     sync_cycle_product_freshness_status_records(session);
-    snapshot_for_changed_session(session)
+    changed_session_snapshot_outcome(session)
 }
 
 pub fn get_raster_tile_plan_in_session(
@@ -3957,11 +3957,11 @@ pub fn set_map_layer_enabled_in_session(
 pub(crate) fn set_guidance_leg_geometry_in_session(
     handle: u32,
     geometries: Vec<GuidanceLegGeometry>,
-) -> AppResult<UiSessionSnapshot> {
+) -> AppResult<HadOperationOutcome> {
     let mut sessions = lock_sessions();
     let session = session_mut(&mut sessions, handle)?;
     install_guidance_leg_geometry(session, geometries)?;
-    snapshot_for_changed_session(session)
+    changed_session_snapshot_outcome(session)
 }
 
 fn install_guidance_leg_geometry(
@@ -4156,7 +4156,7 @@ pub fn project_flight_plan_route_in_session(handle: u32) -> AppResult<HadOperati
     }
 }
 
-pub fn select_airport_in_session(handle: u32, airport_id: &str) -> AppResult<UiSessionSnapshot> {
+pub fn select_airport_in_session(handle: u32, airport_id: &str) -> AppResult<HadOperationOutcome> {
     let mut sessions = lock_sessions();
     let session = session_mut(&mut sessions, handle)?;
     let plan = session_plan(session)?;
@@ -4176,10 +4176,10 @@ pub fn select_airport_in_session(handle: u32, airport_id: &str) -> AppResult<UiS
         Some(airport_id),
         None,
     );
-    snapshot_for_changed_session(session)
+    changed_session_snapshot_outcome(session)
 }
 
-pub fn select_chart_in_session(handle: u32, chart_id: &str) -> AppResult<UiSessionSnapshot> {
+pub fn select_chart_in_session(handle: u32, chart_id: &str) -> AppResult<HadOperationOutcome> {
     let mut sessions = lock_sessions();
     let session = session_mut(&mut sessions, handle)?;
     let plan = session_plan(session)?;
@@ -4195,14 +4195,14 @@ pub fn select_chart_in_session(handle: u32, chart_id: &str) -> AppResult<UiSessi
         Some(chart_id),
         &session.chart_page_state.suggested_chart_ids,
     );
-    snapshot_for_changed_session(session)
+    changed_session_snapshot_outcome(session)
 }
 
 pub fn select_chart_reference_in_session(
     handle: u32,
     family_id: &str,
     suggested_chart_ids: &[String],
-) -> AppResult<UiSessionSnapshot> {
+) -> AppResult<HadOperationOutcome> {
     let mut sessions = lock_sessions();
     let session = session_mut(&mut sessions, handle)?;
     let plan = session_plan(session)?;
@@ -4215,23 +4215,10 @@ pub fn select_chart_reference_in_session(
         None,
         suggested_chart_ids,
     );
-    snapshot_for_changed_session(session)
+    changed_session_snapshot_outcome(session)
 }
 
 pub fn register_ownship_source_in_session(
-    handle: u32,
-    registration: crate::OwnshipSourceRegistration,
-) -> AppResult<UiSessionSnapshot> {
-    let mut sessions = lock_sessions();
-    let session = session_mut(&mut sessions, handle)?;
-    session.app_state = state::reduce(
-        &session.app_state,
-        AppEvent::RegisterOwnshipSource(registration),
-    )?;
-    snapshot_for_changed_session(session)
-}
-
-pub fn register_ownship_source_in_session_outcome(
     handle: u32,
     registration: crate::OwnshipSourceRegistration,
 ) -> AppResult<HadOperationOutcome> {
@@ -4247,20 +4234,6 @@ pub fn register_ownship_source_in_session_outcome(
 pub fn update_ownship_source_status_in_session(
     handle: u32,
     update: crate::OwnshipSourceStatusUpdate,
-) -> AppResult<UiSessionSnapshot> {
-    let mut sessions = lock_sessions();
-    let session = session_mut(&mut sessions, handle)?;
-    maybe_log_gps_capture_status(session, &update);
-    session.app_state = state::reduce(
-        &session.app_state,
-        AppEvent::UpdateOwnshipSourceStatus(update),
-    )?;
-    snapshot_for_changed_session(session)
-}
-
-pub fn update_ownship_source_status_in_session_outcome(
-    handle: u32,
-    update: crate::OwnshipSourceStatusUpdate,
 ) -> AppResult<HadOperationOutcome> {
     let mut sessions = lock_sessions();
     let session = session_mut(&mut sessions, handle)?;
@@ -4273,16 +4246,6 @@ pub fn update_ownship_source_status_in_session_outcome(
 }
 
 pub fn push_situation_sample_in_session(
-    handle: u32,
-    sample: crate::SituationSample,
-) -> AppResult<UiSessionSnapshot> {
-    let mut sessions = lock_sessions();
-    let session = session_mut(&mut sessions, handle)?;
-    apply_ownship_sample(session, sample)?;
-    snapshot_for_changed_session(session)
-}
-
-pub fn push_situation_sample_in_session_outcome(
     handle: u32,
     sample: crate::SituationSample,
 ) -> AppResult<HadOperationOutcome> {
@@ -4353,50 +4316,14 @@ fn is_gps_capture_source_kind(source_kind: crate::OwnshipSourceKind) -> bool {
 pub fn set_ownship_policy_in_session(
     handle: u32,
     policy: crate::OwnshipPolicy,
-) -> AppResult<UiSessionSnapshot> {
+) -> AppResult<HadOperationOutcome> {
     let mut sessions = lock_sessions();
     let session = session_mut(&mut sessions, handle)?;
     session.app_state = state::reduce(&session.app_state, AppEvent::SetOwnshipPolicy(policy))?;
-    snapshot_for_changed_session(session)
+    changed_session_snapshot_outcome(session)
 }
 
 pub fn select_ownship_source_in_session(
-    handle: u32,
-    selection: crate::OwnshipSelectionCommand,
-) -> AppResult<UiSessionSnapshot> {
-    let mut sessions = lock_sessions();
-    let session = session_mut(&mut sessions, handle)?;
-    let selected_source_kind = match &selection {
-        crate::OwnshipSelectionCommand::Source { source_id } => session
-            .app_state
-            .ownship
-            .sources
-            .iter()
-            .find(|source| source.source_id == *source_id)
-            .map(|source| source.source_kind),
-        crate::OwnshipSelectionCommand::Auto => None,
-    };
-    if selected_source_kind == Some(crate::OwnshipSourceKind::BadAutopilot)
-        && !bad_autopilot_selectable(session)
-    {
-        return snapshot_for_session(session);
-    }
-    session.app_state =
-        state::reduce(&session.app_state, AppEvent::SelectOwnshipSource(selection))?;
-    match selected_source_kind {
-        Some(crate::OwnshipSourceKind::FlightPlanSimulator) => {
-            sync_plan_preview_to_active_leg(session)?;
-        }
-        Some(crate::OwnshipSourceKind::BadAutopilot) => {
-            session.bad_autopilot = BadAutopilotState::default();
-            tick_bad_autopilot(session, 0.0)?;
-        }
-        _ => {}
-    }
-    snapshot_for_changed_session(session)
-}
-
-pub fn select_ownship_source_in_session_outcome(
     handle: u32,
     selection: crate::OwnshipSelectionCommand,
 ) -> AppResult<HadOperationOutcome> {
@@ -4451,28 +4378,14 @@ pub fn apply_situation_control_input_in_session(
     handle: u32,
     input: SituationControlInput,
     now_epoch_ms: f64,
-) -> AppResult<UiSessionSnapshot> {
+) -> AppResult<HadOperationOutcome> {
     let mut sessions = lock_sessions();
     let session = session_mut(&mut sessions, handle)?;
     situation_source_handler_for_session(session).apply_input(session, input, now_epoch_ms)?;
-    snapshot_for_changed_session(session)
+    changed_session_snapshot_outcome(session)
 }
 
 pub fn load_playback_trace_in_session(
-    handle: u32,
-    source_path: &str,
-    trace_json: &str,
-) -> AppResult<UiSessionSnapshot> {
-    let mut sessions = lock_sessions();
-    let session = session_mut(&mut sessions, handle)?;
-    let playback_state = session
-        .playback
-        .load_trace_json(source_path.to_string(), trace_json)?;
-    apply_playback_state_to_ownship(session, playback_state, 0)?;
-    snapshot_for_changed_session(session)
-}
-
-pub fn load_playback_trace_in_session_outcome(
     handle: u32,
     source_path: &str,
     trace_json: &str,
@@ -4486,19 +4399,7 @@ pub fn load_playback_trace_in_session_outcome(
     changed_session_snapshot_outcome_for_ownship_motion(session, Some(motion))
 }
 
-pub fn play_playback_in_session(handle: u32, now_epoch_ms: f64) -> AppResult<UiSessionSnapshot> {
-    let mut sessions = lock_sessions();
-    let session = session_mut(&mut sessions, handle)?;
-    if let Some(playback_state) = session.playback.play(now_epoch_ms) {
-        apply_playback_state_to_ownship(session, playback_state, now_epoch_ms as i64)?;
-    }
-    snapshot_for_changed_session(session)
-}
-
-pub fn play_playback_in_session_outcome(
-    handle: u32,
-    now_epoch_ms: f64,
-) -> AppResult<HadOperationOutcome> {
+pub fn play_playback_in_session(handle: u32, now_epoch_ms: f64) -> AppResult<HadOperationOutcome> {
     let mut sessions = lock_sessions();
     let session = session_mut(&mut sessions, handle)?;
     let motion = session
@@ -4511,19 +4412,7 @@ pub fn play_playback_in_session_outcome(
     changed_session_snapshot_outcome_for_ownship_motion(session, motion)
 }
 
-pub fn pause_playback_in_session(handle: u32, now_epoch_ms: f64) -> AppResult<UiSessionSnapshot> {
-    let mut sessions = lock_sessions();
-    let session = session_mut(&mut sessions, handle)?;
-    if let Some(playback_state) = session.playback.pause(now_epoch_ms) {
-        apply_playback_state_to_ownship(session, playback_state, now_epoch_ms as i64)?;
-    }
-    snapshot_for_changed_session(session)
-}
-
-pub fn pause_playback_in_session_outcome(
-    handle: u32,
-    now_epoch_ms: f64,
-) -> AppResult<HadOperationOutcome> {
+pub fn pause_playback_in_session(handle: u32, now_epoch_ms: f64) -> AppResult<HadOperationOutcome> {
     let mut sessions = lock_sessions();
     let session = session_mut(&mut sessions, handle)?;
     let motion = session
@@ -4537,19 +4426,6 @@ pub fn pause_playback_in_session_outcome(
 }
 
 pub fn seek_playback_in_session(
-    handle: u32,
-    cursor_seconds: f64,
-    now_epoch_ms: f64,
-) -> AppResult<UiSessionSnapshot> {
-    let mut sessions = lock_sessions();
-    let session = session_mut(&mut sessions, handle)?;
-    if let Some(playback_state) = session.playback.seek(cursor_seconds, now_epoch_ms) {
-        apply_playback_state_to_ownship(session, playback_state, now_epoch_ms as i64)?;
-    }
-    snapshot_for_changed_session(session)
-}
-
-pub fn seek_playback_in_session_outcome(
     handle: u32,
     cursor_seconds: f64,
     now_epoch_ms: f64,
@@ -4570,19 +4446,6 @@ pub fn set_playback_rate_in_session(
     handle: u32,
     rate: f64,
     now_epoch_ms: f64,
-) -> AppResult<UiSessionSnapshot> {
-    let mut sessions = lock_sessions();
-    let session = session_mut(&mut sessions, handle)?;
-    if let Some(playback_state) = session.playback.set_rate(rate, now_epoch_ms) {
-        apply_playback_state_to_ownship(session, playback_state, now_epoch_ms as i64)?;
-    }
-    snapshot_for_changed_session(session)
-}
-
-pub fn set_playback_rate_in_session_outcome(
-    handle: u32,
-    rate: f64,
-    now_epoch_ms: f64,
 ) -> AppResult<HadOperationOutcome> {
     let mut sessions = lock_sessions();
     let session = session_mut(&mut sessions, handle)?;
@@ -4596,19 +4459,7 @@ pub fn set_playback_rate_in_session_outcome(
     changed_session_snapshot_outcome_for_ownship_motion(session, motion)
 }
 
-pub fn tick_playback_in_session(handle: u32, now_epoch_ms: f64) -> AppResult<UiSessionSnapshot> {
-    let mut sessions = lock_sessions();
-    let session = session_mut(&mut sessions, handle)?;
-    if let Some(playback_state) = session.playback.tick(now_epoch_ms) {
-        apply_playback_state_to_ownship(session, playback_state, now_epoch_ms as i64)?;
-    }
-    snapshot_for_changed_session(session)
-}
-
-pub fn tick_playback_in_session_outcome(
-    handle: u32,
-    now_epoch_ms: f64,
-) -> AppResult<HadOperationOutcome> {
+pub fn tick_playback_in_session(handle: u32, now_epoch_ms: f64) -> AppResult<HadOperationOutcome> {
     let mut sessions = lock_sessions();
     let session = session_mut(&mut sessions, handle)?;
     let motion = session
@@ -4622,23 +4473,6 @@ pub fn tick_playback_in_session_outcome(
 }
 
 pub fn set_situation_in_session(
-    handle: u32,
-    situation: crate::Situation,
-) -> AppResult<UiSessionSnapshot> {
-    let mut sessions = lock_sessions();
-    let session = session_mut(&mut sessions, handle)?;
-    apply_situation_to_ownship(
-        session,
-        DIRECT_SITUATION_SOURCE_ID,
-        crate::OwnshipSourceKind::FlightPlanSimulator,
-        "Plan Preview",
-        situation,
-        0,
-    )?;
-    snapshot_for_changed_session(session)
-}
-
-pub fn set_situation_in_session_outcome(
     handle: u32,
     situation: crate::Situation,
 ) -> AppResult<HadOperationOutcome> {
@@ -4658,16 +4492,6 @@ pub fn set_situation_in_session_outcome(
 pub fn tick_bad_autopilot_in_session(
     handle: u32,
     now_epoch_ms: f64,
-) -> AppResult<UiSessionSnapshot> {
-    let mut sessions = lock_sessions();
-    let session = session_mut(&mut sessions, handle)?;
-    tick_bad_autopilot(session, now_epoch_ms)?;
-    snapshot_for_changed_session(session)
-}
-
-pub fn tick_bad_autopilot_in_session_outcome(
-    handle: u32,
-    now_epoch_ms: f64,
 ) -> AppResult<HadOperationOutcome> {
     let mut sessions = lock_sessions();
     let session = session_mut(&mut sessions, handle)?;
@@ -4676,55 +4500,55 @@ pub fn tick_bad_autopilot_in_session_outcome(
 }
 
 #[allow(dead_code)]
-fn replace_flight_plan_in_session(handle: u32, plan: FlightPlan) -> AppResult<UiSessionSnapshot> {
+fn replace_flight_plan_in_session(handle: u32, plan: FlightPlan) -> AppResult<HadOperationOutcome> {
     let mut sessions = lock_sessions();
     let session = session_mut(&mut sessions, handle)?;
     replace_session_flight_plan(session, plan)?;
-    snapshot_for_changed_session(session)
+    changed_session_snapshot_outcome(session)
 }
 
-pub fn activate_next_leg_in_session(handle: u32) -> AppResult<UiSessionSnapshot> {
+pub fn activate_next_leg_in_session(handle: u32) -> AppResult<HadOperationOutcome> {
     mutate_session_flight_plan(handle, crate::activate_next_leg)
 }
 
-pub fn stop_navigation_in_session(handle: u32) -> AppResult<UiSessionSnapshot> {
+pub fn stop_navigation_in_session(handle: u32) -> AppResult<HadOperationOutcome> {
     mutate_session_flight_plan(handle, crate::stop_navigation)
 }
 
-pub fn suspend_sequencing_in_session(handle: u32) -> AppResult<UiSessionSnapshot> {
+pub fn suspend_sequencing_in_session(handle: u32) -> AppResult<HadOperationOutcome> {
     mutate_session_guidance(handle, crate::suspend_sequencing)
 }
 
-pub fn unsuspend_sequencing_in_session(handle: u32) -> AppResult<UiSessionSnapshot> {
+pub fn unsuspend_sequencing_in_session(handle: u32) -> AppResult<HadOperationOutcome> {
     mutate_session_guidance(handle, crate::unsuspend_sequencing)
 }
 
-pub fn sequence_active_leg_in_session(handle: u32) -> AppResult<UiSessionSnapshot> {
+pub fn sequence_active_leg_in_session(handle: u32) -> AppResult<HadOperationOutcome> {
     mutate_session_flight_plan(handle, crate::sequence_active_leg)
 }
 
 fn mutate_session_flight_plan(
     handle: u32,
     mutation: impl FnOnce(&FlightPlan) -> AppResult<FlightPlan>,
-) -> AppResult<UiSessionSnapshot> {
+) -> AppResult<HadOperationOutcome> {
     let mut sessions = lock_sessions();
     let session = session_mut(&mut sessions, handle)?;
     let plan = session_plan(session)?;
     let next_plan = mutation(&plan)?;
     replace_session_flight_plan(session, next_plan)?;
-    snapshot_for_changed_session(session)
+    changed_session_snapshot_outcome(session)
 }
 
 fn mutate_session_guidance(
     handle: u32,
     mutation: impl FnOnce(&FlightPlan) -> AppResult<FlightPlan>,
-) -> AppResult<UiSessionSnapshot> {
+) -> AppResult<HadOperationOutcome> {
     let mut sessions = lock_sessions();
     let session = session_mut(&mut sessions, handle)?;
     let plan = session_plan(session)?;
     let next_plan = mutation(&plan)?;
     session.app_state = state::reduce(&session.app_state, AppEvent::ReplaceFlightPlan(next_plan))?;
-    snapshot_for_changed_session(session)
+    changed_session_snapshot_outcome(session)
 }
 
 pub fn perform_map_selection_action_in_session(
@@ -5302,7 +5126,7 @@ fn activate_direct_to_nav_ref_in_session_outcome(
 pub fn activate_direct_to_leg_in_session(
     handle: u32,
     target_leg_index: usize,
-) -> AppResult<UiSessionSnapshot> {
+) -> AppResult<HadOperationOutcome> {
     let mut sessions = lock_sessions();
     let session = session_mut(&mut sessions, handle)?;
     let plan = session_plan(session)?;
@@ -5325,13 +5149,13 @@ pub fn activate_direct_to_leg_in_session(
         })?;
     let next_plan = crate::activate_direct_to_leg(&plan, from_position, &target_leg_id)?;
     replace_session_flight_plan(session, next_plan)?;
-    snapshot_for_changed_session(session)
+    changed_session_snapshot_outcome(session)
 }
 
 pub fn perform_status_action_in_session(
     handle: u32,
     action_id: String,
-) -> AppResult<UiSessionSnapshot> {
+) -> AppResult<HadOperationOutcome> {
     let mut sessions = lock_sessions();
     let session = session_mut(&mut sessions, handle)?;
     let command =
@@ -5352,7 +5176,7 @@ pub fn perform_status_action_in_session(
             sync_data_status_projection(session);
         }
     }
-    snapshot_for_changed_session(session)
+    changed_session_snapshot_outcome(session)
 }
 
 fn invalid_status_action(action_id: &str) -> AppError {
@@ -5517,16 +5341,7 @@ pub fn perform_flight_plan_row_action_in_session(
     commit_session_flight_plan_with_invalidations_outcome(session, next_plan)
 }
 
-pub fn restore_direct_to_in_session(handle: u32) -> AppResult<UiSessionSnapshot> {
-    let mut sessions = lock_sessions();
-    let session = session_mut(&mut sessions, handle)?;
-    let plan = session_plan(session)?;
-    let next_plan = crate::restore_direct_to(&plan)?;
-    replace_session_flight_plan(session, next_plan)?;
-    snapshot_for_changed_session(session)
-}
-
-pub fn restore_direct_to_in_session_outcome(handle: u32) -> AppResult<HadOperationOutcome> {
+pub fn restore_direct_to_in_session(handle: u32) -> AppResult<HadOperationOutcome> {
     let mut sessions = lock_sessions();
     let session = session_mut(&mut sessions, handle)?;
     let plan = session_plan(session)?;
@@ -5581,21 +5396,21 @@ pub fn insert_nav_kv_page_for_attached_sessions(store_id: u32, page_index: u32, 
 pub fn engage_map_follow_in_session(
     handle: u32,
     viewport: MapViewport,
-) -> AppResult<UiSessionSnapshot> {
+) -> AppResult<HadOperationOutcome> {
     let mut sessions = lock_sessions();
     let session = session_mut(&mut sessions, handle)?;
     session.map_follow.engage(viewport);
-    snapshot_for_changed_session(session)
+    changed_session_snapshot_outcome(session)
 }
 
 pub fn disengage_map_follow_in_session(
     handle: u32,
     viewport: MapViewport,
-) -> AppResult<UiSessionSnapshot> {
+) -> AppResult<HadOperationOutcome> {
     let mut sessions = lock_sessions();
     let session = session_mut(&mut sessions, handle)?;
     session.map_follow.disengage(viewport);
-    snapshot_for_changed_session(session)
+    changed_session_snapshot_outcome(session)
 }
 
 pub fn set_map_follow_offset_in_session(
@@ -5603,13 +5418,13 @@ pub fn set_map_follow_offset_in_session(
     viewport: MapViewport,
     offset_x_px: f64,
     offset_y_px: f64,
-) -> AppResult<UiSessionSnapshot> {
+) -> AppResult<HadOperationOutcome> {
     let mut sessions = lock_sessions();
     let session = session_mut(&mut sessions, handle)?;
     session
         .map_follow
         .set_anchor_offset(viewport, offset_x_px, offset_y_px);
-    snapshot_for_changed_session(session)
+    changed_session_snapshot_outcome(session)
 }
 
 pub fn sync_map_follow_in_session(
@@ -5617,7 +5432,7 @@ pub fn sync_map_follow_in_session(
     viewport: MapViewport,
     width_px: f64,
     height_px: f64,
-) -> AppResult<UiSessionSnapshot> {
+) -> AppResult<HadOperationOutcome> {
     let mut sessions = lock_sessions();
     let session = session_mut(&mut sessions, handle)?;
     session.map_follow.sync_for_viewport(
@@ -5626,7 +5441,7 @@ pub fn sync_map_follow_in_session(
         width_px,
         height_px,
     );
-    snapshot_for_changed_session(session)
+    changed_session_snapshot_outcome(session)
 }
 
 pub fn restore_chart_page_state_in_session(
@@ -5637,7 +5452,7 @@ pub fn restore_chart_page_state_in_session(
     selected_reference_family_id: Option<&str>,
     selected_chart_id: Option<&str>,
     suggested_chart_ids: &[String],
-) -> AppResult<UiSessionSnapshot> {
+) -> AppResult<HadOperationOutcome> {
     let mut sessions = lock_sessions();
     let session = session_mut(&mut sessions, handle)?;
     let plan = session_plan(session)?;
@@ -5650,14 +5465,14 @@ pub fn restore_chart_page_state_in_session(
         selected_chart_id,
         suggested_chart_ids,
     );
-    snapshot_for_changed_session(session)
+    changed_session_snapshot_outcome(session)
 }
 
 pub fn set_debug_flag_in_session(
     handle: u32,
     flag_id: &str,
     enabled: bool,
-) -> AppResult<UiSessionSnapshot> {
+) -> AppResult<HadOperationOutcome> {
     let mut sessions = lock_sessions();
     let session = session_mut(&mut sessions, handle)?;
     match flag_id {
@@ -5693,17 +5508,17 @@ pub fn set_debug_flag_in_session(
             });
         }
     }
-    snapshot_for_changed_session(session)
+    changed_session_snapshot_outcome(session)
 }
 
-pub fn get_session_snapshot(handle: u32) -> AppResult<UiSessionSnapshot> {
+pub fn get_session_snapshot(handle: u32) -> AppResult<HadOperationOutcome> {
     get_session_snapshot_at_epoch_ms(handle, 0)
 }
 
 pub fn get_session_snapshot_at_epoch_ms(
     handle: u32,
     epoch_ms: i64,
-) -> AppResult<UiSessionSnapshot> {
+) -> AppResult<HadOperationOutcome> {
     let total_started_at = crate::core_clock_ms();
     let lock_started_at = crate::core_clock_ms();
     let mut sessions = lock_sessions();
@@ -5722,7 +5537,7 @@ pub fn get_session_snapshot_at_epoch_ms(
     let status_record_count = session.data_status_records.len();
     let pending_resource_effect_count = session.pending_resource_effects.len();
     let snapshot_started_at = crate::core_clock_ms();
-    let result = snapshot_for_session(session);
+    let result = session_snapshot_outcome(session);
     let snapshot_ms = elapsed_ms(snapshot_started_at);
     crate::core_perf_debug_log("session.snapshot.total", || {
         serde_json::json!({
@@ -6076,11 +5891,11 @@ pub fn report_live_feed_connection_event_in_session(
     handle: u32,
     event: LiveFeedConnectionEvent,
     epoch_ms: i64,
-) -> AppResult<UiSessionSnapshot> {
+) -> AppResult<HadOperationOutcome> {
     let mut sessions = lock_sessions();
     let session = session_mut(&mut sessions, handle)?;
     record_live_feed_connection_event(session, event, epoch_ms);
-    snapshot_for_changed_session(session)
+    changed_session_snapshot_outcome(session)
 }
 
 fn record_live_feed_connection_event(
@@ -6168,11 +5983,11 @@ pub fn ingest_prepared_live_feed_resource_in_session(
 pub fn install_live_feed_installed_state_in_session(
     handle: u32,
     installed: &crate::LiveFeedInstalledState,
-) -> AppResult<UiSessionSnapshot> {
+) -> AppResult<HadOperationOutcome> {
     let mut sessions = lock_sessions();
     let session = session_mut(&mut sessions, handle)?;
     install_live_feed_installed_state(session, installed)?;
-    snapshot_for_changed_session(session)
+    changed_session_snapshot_outcome(session)
 }
 
 fn install_live_feed_installed_state(
@@ -6273,12 +6088,12 @@ fn install_live_feed_installed_state(
 pub fn sync_live_feed_catalog_in_session(
     handle: u32,
     live_feeds: &crate::LiveFeedsState,
-) -> AppResult<UiSessionSnapshot> {
+) -> AppResult<HadOperationOutcome> {
     let mut sessions = lock_sessions();
     let session = session_mut(&mut sessions, handle)?;
     session.live_feeds.merge_catalog_from(live_feeds);
     sync_live_feed_overlay_status_records(session);
-    snapshot_for_changed_session(session)
+    changed_session_snapshot_outcome(session)
 }
 
 fn installed_live_feed_state_manifest(
@@ -6406,7 +6221,7 @@ pub fn report_session_resource_failure_in_session(
     handle: u32,
     resource_id: &str,
     message: &str,
-) -> AppResult<UiSessionSnapshot> {
+) -> AppResult<HadOperationOutcome> {
     report_session_resource_failure_in_session_at_epoch_ms(handle, resource_id, message, 0)
 }
 
@@ -6415,7 +6230,7 @@ pub fn report_session_resource_failure_in_session_at_epoch_ms(
     resource_id: &str,
     message: &str,
     epoch_ms: i64,
-) -> AppResult<UiSessionSnapshot> {
+) -> AppResult<HadOperationOutcome> {
     let mut sessions = lock_sessions();
     let session = session_mut(&mut sessions, handle)?;
     advance_session_wall_clock(session, epoch_ms);
@@ -6447,7 +6262,7 @@ pub fn report_session_resource_failure_in_session_at_epoch_ms(
             ),
         );
     }
-    snapshot_for_changed_session(session)
+    changed_session_snapshot_outcome(session)
 }
 
 fn ingest_live_obstacle_had_resource(
@@ -8073,13 +7888,13 @@ enum MapSelectionMaterialization {
 fn had_read_error_to_map_selection_materialization(
     err: HadReadError,
 ) -> AppResult<MapSelectionMaterialization> {
-    match had_read_error_to_overlay_outcome(err)? {
-        HadOperationOutcome::NeedResources { resources } => {
-            Ok(MapSelectionMaterialization::NeedResources(resources))
-        }
-        HadOperationOutcome::Complete { .. } => Err(AppError {
+    match err {
+        HadReadError::NeedPages(pages) => Ok(MapSelectionMaterialization::NeedResources(
+            nav_kv_page_resources(pages),
+        )),
+        HadReadError::Fatal(message) => Err(AppError {
             kind: AppErrorKind::Internal,
-            message: "HAD read error unexpectedly materialized a complete selection".to_string(),
+            message,
         }),
     }
 }
@@ -9493,27 +9308,6 @@ fn advance_session_revision(session: &mut UiSession) {
     session.session_revision = session.session_revision.saturating_add(1);
 }
 
-fn snapshot_for_changed_session(session: &mut UiSession) -> AppResult<UiSessionSnapshot> {
-    advance_session_revision(session);
-    snapshot_for_session(session)
-}
-
-fn snapshot_for_session(session: &mut UiSession) -> AppResult<UiSessionSnapshot> {
-    try_snapshot_for_session(session).map_err(|err| match err {
-        HadReadError::NeedPages(pages) => AppError {
-            kind: AppErrorKind::Internal,
-            message: format!(
-                "session snapshot requires nav-kv resources in non-paged API: {:?}",
-                nav_kv_page_resources(pages)
-            ),
-        },
-        HadReadError::Fatal(message) => AppError {
-            kind: AppErrorKind::InvalidFlightPlan,
-            message,
-        },
-    })
-}
-
 fn session_snapshot_outcome(session: &mut UiSession) -> AppResult<HadOperationOutcome> {
     session_snapshot_outcome_with_invalidations(session, Vec::new())
 }
@@ -9541,10 +9335,32 @@ fn changed_session_snapshot_outcome(session: &mut UiSession) -> AppResult<HadOpe
 
 fn changed_session_snapshot_outcome_with_invalidations(
     session: &mut UiSession,
-    invalidations: Vec<UiInvalidation>,
+    mut invalidations: Vec<UiInvalidation>,
 ) -> AppResult<HadOperationOutcome> {
     advance_session_revision(session);
-    session_snapshot_outcome_with_invalidations(session, invalidations)
+    dedupe_invalidations(&mut invalidations);
+    match try_snapshot_for_session(session) {
+        Ok(snapshot) => serde_json::to_value(snapshot)
+            .map(|snapshot| {
+                if invalidations.is_empty() {
+                    HadOperationOutcome::complete(snapshot)
+                } else {
+                    HadOperationOutcome::complete_with_invalidations(snapshot, invalidations)
+                }
+            })
+            .map_err(|err| AppError {
+                kind: AppErrorKind::Internal,
+                message: err.to_string(),
+            }),
+        Err(HadReadError::NeedPages(pages)) => Ok(HadOperationOutcome::NeedSnapshotResources {
+            resources: nav_kv_page_resources(pages),
+            invalidations,
+        }),
+        Err(HadReadError::Fatal(message)) => Err(AppError {
+            kind: AppErrorKind::InvalidFlightPlan,
+            message,
+        }),
+    }
 }
 
 fn session_snapshot_outcome_with_invalidations(
@@ -11810,6 +11626,195 @@ mod tests {
         serde_json::from_value(result).expect("session snapshot")
     }
 
+    macro_rules! snapshot_wrapper {
+        ($name:ident($($arg:ident: $arg_type:ty),* $(,)?)) => {
+            #[allow(dead_code)]
+            fn $name($($arg: $arg_type),*) -> AppResult<UiSessionSnapshot> {
+                super::$name($($arg),*).map(snapshot_from_outcome)
+            }
+        };
+    }
+
+    snapshot_wrapper!(set_map_layer_visibility_in_session(
+        handle: u32,
+        layer_id: &str,
+        visible: bool,
+    ));
+    snapshot_wrapper!(set_guidance_leg_geometry_in_session(
+        handle: u32,
+        geometries: Vec<GuidanceLegGeometry>,
+    ));
+    snapshot_wrapper!(load_raster_map_catalog_in_session(handle: u32));
+    snapshot_wrapper!(set_resource_policy_in_session(
+        handle: u32,
+        policy: CoreResourcePolicy,
+    ));
+    snapshot_wrapper!(load_offline_package_library_cache_in_session(
+        handle: u32,
+        cache: OfflinePackagesLibraryCache,
+    ));
+    snapshot_wrapper!(configure_platform_capabilities_in_session(
+        handle: u32,
+        capabilities: PlatformCapabilities,
+        settings_storage: Option<SettingsStorageHandle>,
+    ));
+    snapshot_wrapper!(perform_settings_action_in_session(
+        handle: u32,
+        action: UiSettingsAction,
+    ));
+    snapshot_wrapper!(accept_disclaimer_in_session(
+        handle: u32,
+        agreement_id: &str,
+    ));
+    snapshot_wrapper!(set_installed_package_ids_in_session(
+        handle: u32,
+        package_ids: Vec<String>,
+    ));
+    snapshot_wrapper!(select_map_family_in_session(handle: u32, family_id: &str));
+    snapshot_wrapper!(select_raster_map_in_session(
+        handle: u32,
+        selected_map_id: &str,
+    ));
+    snapshot_wrapper!(select_airport_in_session(handle: u32, airport_id: &str));
+    snapshot_wrapper!(select_chart_in_session(handle: u32, chart_id: &str));
+    snapshot_wrapper!(select_chart_reference_in_session(
+        handle: u32,
+        family_id: &str,
+        suggested_chart_ids: &[String],
+    ));
+    snapshot_wrapper!(register_ownship_source_in_session(
+        handle: u32,
+        registration: crate::OwnshipSourceRegistration,
+    ));
+    snapshot_wrapper!(update_ownship_source_status_in_session(
+        handle: u32,
+        update: crate::OwnshipSourceStatusUpdate,
+    ));
+    snapshot_wrapper!(push_situation_sample_in_session(
+        handle: u32,
+        sample: crate::SituationSample,
+    ));
+    snapshot_wrapper!(set_ownship_policy_in_session(
+        handle: u32,
+        policy: crate::OwnshipPolicy,
+    ));
+    snapshot_wrapper!(select_ownship_source_in_session(
+        handle: u32,
+        selection: crate::OwnshipSelectionCommand,
+    ));
+    snapshot_wrapper!(apply_situation_control_input_in_session(
+        handle: u32,
+        input: SituationControlInput,
+        now_epoch_ms: f64,
+    ));
+    snapshot_wrapper!(load_playback_trace_in_session(
+        handle: u32,
+        source_path: &str,
+        trace_json: &str,
+    ));
+    snapshot_wrapper!(play_playback_in_session(handle: u32, now_epoch_ms: f64));
+    snapshot_wrapper!(pause_playback_in_session(handle: u32, now_epoch_ms: f64));
+    snapshot_wrapper!(seek_playback_in_session(
+        handle: u32,
+        cursor_seconds: f64,
+        now_epoch_ms: f64,
+    ));
+    snapshot_wrapper!(set_playback_rate_in_session(
+        handle: u32,
+        rate: f64,
+        now_epoch_ms: f64,
+    ));
+    snapshot_wrapper!(tick_playback_in_session(handle: u32, now_epoch_ms: f64));
+    snapshot_wrapper!(set_situation_in_session(handle: u32, situation: Situation));
+    snapshot_wrapper!(tick_bad_autopilot_in_session(handle: u32, now_epoch_ms: f64));
+    snapshot_wrapper!(activate_next_leg_in_session(handle: u32));
+    snapshot_wrapper!(stop_navigation_in_session(handle: u32));
+    snapshot_wrapper!(suspend_sequencing_in_session(handle: u32));
+    snapshot_wrapper!(unsuspend_sequencing_in_session(handle: u32));
+    snapshot_wrapper!(sequence_active_leg_in_session(handle: u32));
+    snapshot_wrapper!(replace_flight_plan_in_session(
+        handle: u32,
+        plan: FlightPlan,
+    ));
+    snapshot_wrapper!(activate_direct_to_leg_in_session(
+        handle: u32,
+        target_leg_index: usize,
+    ));
+    snapshot_wrapper!(perform_status_action_in_session(
+        handle: u32,
+        action_id: String,
+    ));
+    snapshot_wrapper!(restore_direct_to_in_session(handle: u32));
+    snapshot_wrapper!(engage_map_follow_in_session(
+        handle: u32,
+        viewport: MapViewport,
+    ));
+    snapshot_wrapper!(disengage_map_follow_in_session(
+        handle: u32,
+        viewport: MapViewport,
+    ));
+    snapshot_wrapper!(set_map_follow_offset_in_session(
+        handle: u32,
+        viewport: MapViewport,
+        offset_x_px: f64,
+        offset_y_px: f64,
+    ));
+    snapshot_wrapper!(sync_map_follow_in_session(
+        handle: u32,
+        viewport: MapViewport,
+        width_px: f64,
+        height_px: f64,
+    ));
+    snapshot_wrapper!(restore_chart_page_state_in_session(
+        handle: u32,
+        recent_airport_ids: &[String],
+        plate_target_airport_id: Option<&str>,
+        selected_airport_id: Option<&str>,
+        selected_reference_family_id: Option<&str>,
+        selected_chart_id: Option<&str>,
+        suggested_chart_ids: &[String],
+    ));
+    snapshot_wrapper!(set_debug_flag_in_session(
+        handle: u32,
+        flag_id: &str,
+        enabled: bool,
+    ));
+    snapshot_wrapper!(report_live_feed_connection_event_in_session(
+        handle: u32,
+        event: LiveFeedConnectionEvent,
+        epoch_ms: i64,
+    ));
+    snapshot_wrapper!(install_live_feed_installed_state_in_session(
+        handle: u32,
+        installed: &crate::LiveFeedInstalledState,
+    ));
+    snapshot_wrapper!(sync_live_feed_catalog_in_session(
+        handle: u32,
+        live_feeds: &crate::LiveFeedsState,
+    ));
+    snapshot_wrapper!(report_session_resource_failure_in_session(
+        handle: u32,
+        resource_id: &str,
+        message: &str,
+    ));
+    snapshot_wrapper!(report_session_resource_failure_in_session_at_epoch_ms(
+        handle: u32,
+        resource_id: &str,
+        message: &str,
+        epoch_ms: i64,
+    ));
+
+    fn get_session_snapshot(handle: u32) -> AppResult<UiSessionSnapshot> {
+        super::get_session_snapshot(handle).map(snapshot_from_outcome)
+    }
+
+    fn get_session_snapshot_at_epoch_ms(
+        handle: u32,
+        epoch_ms: i64,
+    ) -> AppResult<UiSessionSnapshot> {
+        super::get_session_snapshot_at_epoch_ms(handle, epoch_ms).map(snapshot_from_outcome)
+    }
+
     #[derive(Default)]
     struct MemorySettingsStorage {
         bytes: Mutex<Option<Vec<u8>>>,
@@ -12392,6 +12397,9 @@ mod tests {
             HadOperationOutcome::Complete { invalidations, .. } => invalidations,
             HadOperationOutcome::NeedResources { resources } => {
                 panic!("unexpected resource request: {resources:?}")
+            }
+            HadOperationOutcome::NeedSnapshotResources { .. } => {
+                panic!("generic outcome unexpectedly requested snapshot continuation")
             }
         }
     }
@@ -14758,7 +14766,7 @@ mod tests {
             session.session_revision
         };
 
-        let outcome = set_map_layer_visibility_in_session(init.handle, "nexrad", true)
+        let outcome = super::set_map_layer_visibility_in_session(init.handle, "nexrad", true)
             .expect("request layer visibility");
         let HadOperationOutcome::NeedResources { resources } = outcome else {
             panic!("missing snapshot pages must suspend the layer command: {outcome:?}");
@@ -14774,12 +14782,73 @@ mod tests {
         for (page_index, page) in pages.iter().enumerate() {
             insert_nav_kv_page_for_attached_sessions(store_id, page_index as u32, page);
         }
-        let snapshot = snapshot_from_outcome(
-            set_map_layer_visibility_in_session(init.handle, "nexrad", true)
-                .expect("retry layer visibility"),
-        );
+        let snapshot = set_map_layer_visibility_in_session(init.handle, "nexrad", true)
+            .expect("retry layer visibility");
         assert!(snapshot.map_layer_state.nexrad.visible);
         assert_eq!(snapshot.session_revision, revision_before + 1);
+        destroy_session(init.handle);
+    }
+
+    #[test]
+    fn committed_mutation_page_fault_resumes_snapshot_without_repeating_mutation() {
+        let init =
+            create_ui_session(FlightPlan::default(), &[], None, None).expect("create session");
+        let (store, pages) = crate::navkv::nav_kv_store_without_pages_and_pages_for_test(
+            &[
+                ("magvar/48/-110", b"14"),
+                ("magvar/48/-109", b"14"),
+                ("magvar/49/-110", b"14"),
+                ("magvar/49/-109", b"14"),
+            ],
+            256,
+        );
+        let store_id = 91_002;
+        attach_nav_kv_store_to_session(init.handle, store_id, &store).expect("attach nav kv");
+        let position = LatLon {
+            lat: 48.54,
+            lon: -109.76,
+        };
+
+        let outcome = super::set_situation_in_session(
+            init.handle,
+            Situation {
+                position: SituationPosition::LatLon {
+                    lat: position.lat,
+                    lon: position.lon,
+                },
+                orientation_deg: None,
+                speed_kt: None,
+                altitude_msl_ft: Some(3_000.0),
+            },
+        )
+        .expect("set ownship position");
+        let HadOperationOutcome::NeedSnapshotResources {
+            resources,
+            invalidations,
+        } = outcome
+        else {
+            panic!("committed snapshot fault must request snapshot resources: {outcome:?}");
+        };
+        assert!(!resources.is_empty());
+        assert!(invalidations.contains(&UiInvalidation::TerrainOverlay));
+        {
+            let sessions = lock_sessions();
+            let session = session_ref(&sessions, init.handle).expect("session");
+            assert_eq!(session.session_revision, 1);
+            assert_eq!(session.app_state.ownship.render.position, Some(position));
+        }
+
+        for (page_index, page) in pages.iter().enumerate() {
+            insert_nav_kv_page_for_attached_sessions(store_id, page_index as u32, page);
+        }
+        let snapshot = snapshot_from_outcome(
+            super::get_session_snapshot(init.handle).expect("resume snapshot projection"),
+        );
+        assert_eq!(snapshot.session_revision, 1);
+        assert_eq!(
+            snapshot.app_ui_state.ownship.render.position,
+            Some(position)
+        );
         destroy_session(init.handle);
     }
 
@@ -14791,9 +14860,8 @@ mod tests {
         report_session_resource_failure_in_session(init.handle, "live_feeds/current", "404")
             .expect("report failure");
 
-        let snapshot = snapshot_from_outcome(
-            set_map_layer_visibility_in_session(init.handle, "nexrad", false).expect("hide nexrad"),
-        );
+        let snapshot =
+            set_map_layer_visibility_in_session(init.handle, "nexrad", false).expect("hide nexrad");
 
         assert!(!snapshot
             .data_status_state
@@ -15714,6 +15782,9 @@ mod tests {
                 assert_no_session_snapshot_invalidation(&invalidations);
             }
             HadOperationOutcome::NeedResources { .. } => panic!("unexpected resource request"),
+            HadOperationOutcome::NeedSnapshotResources { .. } => {
+                panic!("overlay query unexpectedly requested snapshot continuation")
+            }
         }
 
         let stale_snapshot = get_session_snapshot(init.handle).expect("stale snapshot");
@@ -17011,7 +17082,7 @@ mod tests {
             create_ui_session(FlightPlan::default(), &[], None, None).expect("create session");
 
         let load_invalidations = complete_invalidations(
-            load_playback_trace_in_session_outcome(
+            super::load_playback_trace_in_session(
                 init.handle,
                 "test-trace.json",
                 r#"{"trace":[[0.0,47.0,-122.0,0,100.0,90.0],[10.0,47.1,-122.1,1000,100.0,90.0]]}"#,
@@ -17021,12 +17092,12 @@ mod tests {
         assert_only_terrain_overlay_invalidated(&load_invalidations);
 
         let play_invalidations = complete_invalidations(
-            play_playback_in_session_outcome(init.handle, 0.0).expect("play replay"),
+            super::play_playback_in_session(init.handle, 0.0).expect("play replay"),
         );
         assert!(play_invalidations.is_empty());
 
         let tick_invalidations = complete_invalidations(
-            tick_playback_in_session_outcome(init.handle, 10_000.0).expect("tick replay"),
+            super::tick_playback_in_session(init.handle, 10_000.0).expect("tick replay"),
         );
         assert_only_terrain_overlay_invalidated(&tick_invalidations);
     }
@@ -17149,6 +17220,9 @@ mod tests {
             }
             HadOperationOutcome::NeedResources { resources } => {
                 panic!("unexpected session snapshot resource request: {resources:?}")
+            }
+            HadOperationOutcome::NeedSnapshotResources { resources, .. } => {
+                panic!("unexpected session snapshot continuation request: {resources:?}")
             }
         }
     }
@@ -18676,7 +18750,7 @@ mod tests {
         let init = create_ui_session(direct_to_plan, &[], None, None).expect("create session");
 
         let outcome =
-            restore_direct_to_in_session_outcome(init.handle).expect("restore direct-to outcome");
+            super::restore_direct_to_in_session(init.handle).expect("restore direct-to outcome");
         let HadOperationOutcome::Complete {
             result,
             invalidations,
@@ -19246,7 +19320,7 @@ mod tests {
         )
         .expect("install guidance geometry");
 
-        let outcome = push_situation_sample_in_session_outcome(
+        let outcome = super::push_situation_sample_in_session(
             init.handle,
             SituationSample {
                 source_id: OwnshipSourceId("test-gps".to_string()),

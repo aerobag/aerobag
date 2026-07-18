@@ -689,33 +689,34 @@ class NativeUiSession internal constructor(
         invalidationListener = listener
     }
 
-    private fun runPlainSnapshot(commandName: String, operation: () -> String): UiSessionSnapshot {
-        val result = runNativeSessionCommand(commandName, operation) ?: return snapshot
-        snapshot = decodeSnapshot(result)
-        return snapshot
-    }
-
     private fun runPagedSnapshot(commandName: String, operation: () -> String): UiSessionSnapshot {
         val outcome = runNativeSessionCommand(commandName) {
-            navKvStore?.runPagedSessionOperation(
-                operation = operation,
-                drainSessionResourceEffects = { bridge.drainSessionResourceEffectsJson(handle) },
-            )
-                ?: run {
-                    val outcome = json.parseToJsonElement(operation()).jsonObject
-                    when (val state = outcome.getValue("state").jsonPrimitive.content) {
-                        "complete" -> PagedSessionOperationResult(
-                            result = outcome["result"] ?: JsonNull,
-                            invalidations = outcome["invalidations"]
-                                ?.jsonArray
-                                ?.map { it.jsonPrimitive.content }
-                                ?: emptyList(),
-                        )
-                        "need_resources" -> error("nav_kv store is required for paged session resources")
-                        else -> error("unknown HAD session operation state: $state")
-                    }
-                }
+            executePagedSnapshot(commandName, operation)
         } ?: return snapshot
+        return outcome
+    }
+
+    private fun executePagedSnapshot(commandName: String, operation: () -> String): UiSessionSnapshot {
+        val outcome = navKvStore?.runPagedSessionOperation(
+            operation = operation,
+            drainSessionResourceEffects = { bridge.drainSessionResourceEffectsJson(handle) },
+            resumeSnapshot = { bridge.getSessionSnapshotPagedJson(handle) },
+        )
+            ?: run {
+                val outcome = json.parseToJsonElement(operation()).jsonObject
+                when (val state = outcome.getValue("state").jsonPrimitive.content) {
+                    "complete" -> PagedSessionOperationResult(
+                        result = outcome["result"] ?: JsonNull,
+                        invalidations = outcome["invalidations"]
+                            ?.jsonArray
+                            ?.map { it.jsonPrimitive.content }
+                            ?: emptyList(),
+                    )
+                    "need_resources", "need_snapshot_resources" ->
+                        error("nav_kv store is required for paged session resources")
+                    else -> error("unknown HAD session operation state: $state")
+                }
+            }
         snapshot = json.decodeFromJsonElement<WireUiSessionSnapshot>(outcome.result).toUi()
         publishInvalidations(commandName, outcome.invalidations)
         val effectInvalidations = outcome.effectInvalidations
@@ -745,7 +746,9 @@ class NativeUiSession internal constructor(
     private fun refreshSnapshotAfterRejectedCommand(commandName: String, error: RuntimeException): UiSessionSnapshot {
         Log.w("AerobagSessionCommand", "session command failed; refreshing snapshot command=$commandName", error)
         return try {
-            snapshot = decodeSnapshot(bridge.getSessionSnapshotAtEpochMsJson(handle, System.currentTimeMillis()))
+            snapshot = executePagedSnapshot("refreshSnapshotAfterRejectedCommand") {
+                bridge.getSessionSnapshotAtEpochMsPagedJson(handle, System.currentTimeMillis())
+            }
             snapshot
         } catch (refreshError: RuntimeException) {
             Log.e(
@@ -764,24 +767,20 @@ class NativeUiSession internal constructor(
     }
 
     fun installLiveFeedCacheProduct(cache: LiveFeedCache, product: String): UiSessionSnapshot {
-        val result = runNativeSessionCommand("installLiveFeedCacheProduct") {
+        return runPagedSnapshot("installLiveFeedCacheProduct") {
             cache.installProductInSessionJson(handle, product)
-        } ?: return snapshot
-        snapshot = json.decodeFromJsonElement<WireUiSessionSnapshot>(json.parseToJsonElement(result)).toUi()
-        return snapshot
+        }
     }
 
     fun syncLiveFeedCacheCatalog(cache: LiveFeedCache): UiSessionSnapshot {
-        val result = runNativeSessionCommand("syncLiveFeedCacheCatalog") {
+        return runPagedSnapshot("syncLiveFeedCacheCatalog") {
             cache.syncCatalogInSessionJson(handle)
-        } ?: return snapshot
-        snapshot = json.decodeFromJsonElement<WireUiSessionSnapshot>(json.parseToJsonElement(result)).toUi()
-        return snapshot
+        }
     }
 
     fun loadOfflinePackageLibraryCache(libraryCacheJson: String?): UiSessionSnapshot {
         val payload = libraryCacheJson?.takeIf { it.isNotBlank() } ?: return snapshot
-        return runPlainSnapshot("loadOfflinePackageLibraryCache") {
+        return runPagedSnapshot("loadOfflinePackageLibraryCache") {
             bridge.loadOfflinePackageLibraryCacheInSessionJson(handle, payload)
         }
     }
@@ -938,7 +937,7 @@ class NativeUiSession internal constructor(
     }
 
     fun applySituationControlInput(input: SituationControlInput, nowEpochMs: Double): UiSessionSnapshot {
-        return runPlainSnapshot("applySituationControlInput") {
+        return runPagedSnapshot("applySituationControlInput") {
             bridge.applySituationControlInputInSessionJson(
                 handle,
                 input.toCoreJson(json),
@@ -948,13 +947,13 @@ class NativeUiSession internal constructor(
     }
 
     fun engageMapFollow(viewport: MapViewportState): UiSessionSnapshot {
-        return runPlainSnapshot("engageMapFollow") {
+        return runPagedSnapshot("engageMapFollow") {
             bridge.engageMapFollowInSessionJson(handle, viewport.toCoreViewport().toCoreJson(json))
         }
     }
 
     fun disengageMapFollow(viewport: MapViewportState): UiSessionSnapshot {
-        return runPlainSnapshot("disengageMapFollow") {
+        return runPagedSnapshot("disengageMapFollow") {
             bridge.disengageMapFollowInSessionJson(handle, viewport.toCoreViewport().toCoreJson(json))
         }
     }
@@ -1006,13 +1005,13 @@ class NativeUiSession internal constructor(
     }
 
     fun selectAirport(airportId: String): UiSessionSnapshot {
-        return runPlainSnapshot("selectAirport") {
+        return runPagedSnapshot("selectAirport") {
             bridge.selectAirportInSessionJson(handle, json.encodeToString(airportId))
         }
     }
 
     fun selectChart(chartId: String): UiSessionSnapshot {
-        return runPlainSnapshot("selectChart") {
+        return runPagedSnapshot("selectChart") {
             bridge.selectChartInSessionJson(handle, json.encodeToString(chartId))
         }
     }
@@ -1021,7 +1020,7 @@ class NativeUiSession internal constructor(
         familyId: String,
         suggestedChartIds: List<String>,
     ): UiSessionSnapshot {
-        return runPlainSnapshot("selectChartReference") {
+        return runPagedSnapshot("selectChartReference") {
             bridge.selectChartReferenceInSessionJson(
                 handle,
                 json.encodeToString(familyId),
@@ -1043,7 +1042,7 @@ class NativeUiSession internal constructor(
     }
 
     fun setDebugFlag(flagId: String, enabled: Boolean): UiSessionSnapshot {
-        return runPlainSnapshot("setDebugFlag") {
+        return runPagedSnapshot("setDebugFlag") {
             bridge.setDebugFlagInSessionJson(handle, json.encodeToString(flagId), enabled)
         }
     }
@@ -1061,20 +1060,20 @@ class NativeUiSession internal constructor(
     }
 
     fun selectRasterMap(selectedMapId: String): UiSessionSnapshot {
-        return runPlainSnapshot("selectRasterMap") {
+        return runPagedSnapshot("selectRasterMap") {
             bridge.selectRasterMapInSessionJson(handle, json.encodeToString(selectedMapId))
         }
     }
 
     fun refreshSnapshot(): UiSessionSnapshot {
-        runPlainSnapshot("refreshSnapshot") {
-            bridge.getSessionSnapshotAtEpochMsJson(handle, System.currentTimeMillis())
+        runPagedSnapshot("refreshSnapshot") {
+            bridge.getSessionSnapshotAtEpochMsPagedJson(handle, System.currentTimeMillis())
         }
         return syncGuidanceGeometry()
     }
 
     fun setInstalledPackageIds(packageIds: List<String>): UiSessionSnapshot {
-        return runPlainSnapshot("setInstalledPackageIds") {
+        return runPagedSnapshot("setInstalledPackageIds") {
             bridge.setInstalledPackageIdsInSessionJson(handle, json.encodeToString(packageIds))
         }
     }
@@ -1083,7 +1082,7 @@ class NativeUiSession internal constructor(
         capabilitiesJson: String,
         settingsStore: CoreSettingsStore,
     ): UiSessionSnapshot {
-        return runPlainSnapshot("configurePlatformCapabilities") {
+        return runPagedSnapshot("configurePlatformCapabilities") {
             bridge.configurePlatformCapabilitiesInSessionJson(handle, capabilitiesJson, settingsStore)
         }
     }
@@ -1095,13 +1094,13 @@ class NativeUiSession internal constructor(
     }
 
     fun performStatusAction(actionId: String): UiSessionSnapshot {
-        return runPlainSnapshot("performStatusAction") {
+        return runPagedSnapshot("performStatusAction") {
             bridge.performStatusActionInSessionJson(handle, actionId)
         }
     }
 
     fun performSettingsAction(actionId: String, valueId: String): UiSessionSnapshot {
-        return runPlainSnapshot("performSettingsAction") {
+        return runPagedSnapshot("performSettingsAction") {
             bridge.performSettingsActionInSessionJson(
                 handle,
                 buildJsonObject {
@@ -1113,41 +1112,41 @@ class NativeUiSession internal constructor(
     }
 
     fun acceptDisclaimer(agreementId: String): UiSessionSnapshot {
-        return runPlainSnapshot("acceptDisclaimer") {
+        return runPagedSnapshot("acceptDisclaimer") {
             bridge.acceptDisclaimerInSessionJson(handle, agreementId)
         }
     }
 
     fun activateNextLeg(): UiSessionSnapshot {
-        runPlainSnapshot("activateNextLeg") {
+        runPagedSnapshot("activateNextLeg") {
             bridge.activateNextLegInSessionJson(handle)
         }
         return syncGuidanceGeometry("activateNextLeg.syncGuidanceGeometry")
     }
 
     fun stopNavigation(): UiSessionSnapshot {
-        runPlainSnapshot("stopNavigation") {
+        runPagedSnapshot("stopNavigation") {
             bridge.stopNavigationInSessionJson(handle)
         }
         return syncGuidanceGeometry("stopNavigation.syncGuidanceGeometry")
     }
 
     fun suspendSequencing(): UiSessionSnapshot {
-        runPlainSnapshot("suspendSequencing") {
+        runPagedSnapshot("suspendSequencing") {
             bridge.suspendSequencingInSessionJson(handle)
         }
         return syncGuidanceGeometry("suspendSequencing.syncGuidanceGeometry")
     }
 
     fun unsuspendSequencing(): UiSessionSnapshot {
-        runPlainSnapshot("unsuspendSequencing") {
+        runPagedSnapshot("unsuspendSequencing") {
             bridge.unsuspendSequencingInSessionJson(handle)
         }
         return syncGuidanceGeometry("unsuspendSequencing.syncGuidanceGeometry")
     }
 
     fun sequenceActiveLeg(): UiSessionSnapshot {
-        runPlainSnapshot("sequenceActiveLeg") {
+        runPagedSnapshot("sequenceActiveLeg") {
             bridge.sequenceActiveLegInSessionJson(handle)
         }
         return syncGuidanceGeometry("sequenceActiveLeg.syncGuidanceGeometry")
@@ -1161,7 +1160,7 @@ class NativeUiSession internal constructor(
         selectedChartId: String?,
         suggestedChartIds: List<String>,
     ): UiSessionSnapshot {
-        return runPlainSnapshot("restoreChartPageState") {
+        return runPagedSnapshot("restoreChartPageState") {
             bridge.restoreChartPageStateInSessionJson(
                 handle,
                 json.encodeToString(recentAirportIds),
@@ -1228,7 +1227,7 @@ class NativeUiSession internal constructor(
     }
 
     fun reportLiveFeedConnectionEvent(event: LiveFeedConnectionEvent): UiSessionSnapshot {
-        return runPlainSnapshot("reportLiveFeedConnectionEvent") {
+        return runPagedSnapshot("reportLiveFeedConnectionEvent") {
             bridge.reportLiveFeedConnectionEventInSessionJson(handle, json.encodeToString(event))
         }
     }
@@ -1474,7 +1473,7 @@ class NativeUiSession internal constructor(
 
     fun syncMapFollow(viewport: MapViewportState, widthPx: Double, heightPx: Double): UiSessionSnapshot {
         val viewportJson = json.encodeToString(viewport.toWire())
-        return runPlainSnapshot("syncMapFollow") {
+        return runPagedSnapshot("syncMapFollow") {
             bridge.syncMapFollowInSessionJson(handle, viewportJson, widthPx, heightPx)
         }
     }
@@ -1483,8 +1482,6 @@ class NativeUiSession internal constructor(
         bridge.destroySession(handle)
     }
 
-    private fun decodeSnapshot(snapshotJson: String): UiSessionSnapshot =
-        json.decodeFromString<WireUiSessionSnapshot>(snapshotJson).toUi()
 }
 
 private fun RuntimeException.isNativeSessionCommandFailure(): Boolean =

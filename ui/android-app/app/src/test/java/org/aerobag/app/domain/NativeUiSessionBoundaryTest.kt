@@ -12,12 +12,16 @@ class NativeUiSessionBoundaryTest {
         val sessionBody = balancedBlockAfterMarker(source, "class NativeUiSession")
 
         assertTrue(
-            "NativeUiSession needs one central helper for direct snapshot mutations.",
-            sessionBody.contains("private fun runPlainSnapshot(commandName: String"),
+            "NativeUiSession needs one central helper for every snapshot mutation.",
+            sessionBody.contains("private fun runPagedSnapshot(commandName: String"),
+        )
+        assertFalse(
+            "Plain snapshot mutation paths erase HAD page faults and must not exist.",
+            sessionBody.contains("runPlainSnapshot"),
         )
         assertTrue(
-            "NativeUiSession needs one central helper for paged snapshot mutations.",
-            sessionBody.contains("private fun runPagedSnapshot(commandName: String"),
+            "Committed mutations must resume snapshot projection instead of running twice.",
+            sessionBody.contains("resumeSnapshot = { bridge.getSessionSnapshotPagedJson(handle) }"),
         )
         assertTrue(
             "NativeUiSession must expose core invalidations from paged mutations.",
@@ -46,8 +50,26 @@ class NativeUiSessionBoundaryTest {
             Regex("""runPagedSnapshot\s*\{""").containsMatchIn(sessionBody),
         )
         assertFalse(
-            "Direct native snapshot mutations must pass through runPlainSnapshot; only recovery may read the current snapshot directly.",
-            Regex("""decodeSnapshot\(\s*bridge\.(?!getSessionSnapshotAtEpochMsJson)""").containsMatchIn(sessionBody),
+            "Snapshot-producing JNI calls must not be decoded outside the paged runner.",
+            Regex("""decodeSnapshot\(\s*bridge\.""").containsMatchIn(sessionBody),
+        )
+        assertTrue(
+            "NativeUiSession must have exactly one snapshot-wire decoder, inside the paged runner.",
+            Regex("""decodeFromJsonElement<WireUiSessionSnapshot>""")
+                .findAll(sessionBody)
+                .count() == 1,
+        )
+        assertFalse(
+            "NativeUiSession must not retain a direct snapshot JSON decoder.",
+            sessionBody.contains("decodeFromString<WireUiSessionSnapshot>"),
+        )
+        assertTrue(
+            "Durable live-feed product installation must use the same paged snapshot runner.",
+            sessionBody.contains("return runPagedSnapshot(\"installLiveFeedCacheProduct\")"),
+        )
+        assertTrue(
+            "Durable live-feed catalog synchronization must use the same paged snapshot runner.",
+            sessionBody.contains("return runPagedSnapshot(\"syncLiveFeedCacheCatalog\")"),
         )
     }
 

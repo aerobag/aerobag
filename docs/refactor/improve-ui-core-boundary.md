@@ -1,5 +1,7 @@
 # Improve UI/Core Boundary
 
+Status: implemented.
+
 ## Problem
 
 We hit the same two bugs twice:
@@ -7,44 +9,66 @@ We hit the same two bugs twice:
 - A Rust panic crossed a UI boundary and left the UI runtime in a permanently bad state.
 - A session API returned a plain `UiSessionSnapshot` even though snapshot projection could require lazy HAD/nav-db pages.
 
-The second bug created the first. The first fix made `performFlightPlanRowAction` paged; the next failure showed `insertWaypointAtFlightPlanRow` had the same shape. Then the paged retry loop exposed a third invariant: paged mutations must not commit side effects before all required resources are available.
+The second bug created the first. Fixing individual entry points would only
+leave more latent copies, so the boundary now makes an unpaged session snapshot
+unrepresentable in production code.
 
 ## Contract
 
 All exported UI/core calls must obey these rules:
 
 - No exported core, WASM, FFI, or JNI-facing code may panic for recoverable conditions.
-- Any operation that can touch HAD/nav-db must return `HadOperationOutcome`.
-- `HadOperationOutcome::NeedResources` must be side-effect free. Retrying the same operation after fetching resources must apply the logical mutation exactly once.
-- Plain `UiSessionSnapshot` exports are allowed only for operations classified as pure/local: they must not perform HAD reads during mutation or projection.
+- Every production session operation that returns a snapshot returns
+  `HadOperationOutcome`; there is no pure/local snapshot allowlist.
+- `HadOperationOutcome::NeedResources` means the operation has not committed.
+  Fetch the resources and retry that same operation.
+- `HadOperationOutcome::NeedSnapshotResources` means the mutation has committed
+  exactly once, but projecting its resulting snapshot needs resources. Fetch the
+  resources and resume the generic snapshot operation. Never replay the
+  mutation.
 - UI platforms fetch resources and render snapshots. They do not participate in model mutation logic.
 
 ## Architecture
 
-Use these helpers as the default shapes:
+Core uses these shapes:
 
 - `session_snapshot_outcome(session)` for read-only paged snapshot projection.
-- `commit_session_flight_plan_with_snapshot_outcome(session, plan)` for flight-plan mutations whose resulting projected UI may need HAD pages.
-- Platform wrappers (`runCoreHadSessionOperation` on web and `runPagedSessionOperationElement` on Android) for every paged session operation.
+- `changed_session_snapshot_outcome_with_invalidations(...)` after a mutation
+  commits. It advances the revision once, preserves invalidations, and reports
+  `NeedSnapshotResources` if projection faults.
+- Staged mutation helpers when the mutation itself can fault before commit. A
+  pre-commit `NeedResources` outcome must leave the session unchanged.
 
-The current transactional helper clones `UiSession` and commits the candidate only after snapshot projection succeeds. That is intentionally conservative. If it becomes a performance problem, replace the broad clone with a narrower staged state object, but preserve the invariant that `NeedResources` commits nothing.
+Both platform runners implement the same state machine:
+
+1. Run the requested operation.
+2. On `NeedResources`, load pages and retry it.
+3. On `NeedSnapshotResources`, retain invalidations, load pages, and replace the
+   active continuation with the generic paged snapshot operation.
+4. On `Complete`, publish the snapshot and accumulated invalidations.
 
 ## Implementation Checklist
 
-- Convert row-action mutations to paged outcomes.
-- Convert row insert mutations to paged outcomes.
-- Stage flight-plan mutations until snapshot projection succeeds.
-- Recover poisoned session locks instead of panicking forever.
-- Recover poisoned WASM/FFI handle stores instead of panicking.
-- Add boundary tests that fail if new exported session APIs return plain snapshots without allowlisting.
-- Add boundary tests that fail if boundary modules gain panic-prone calls outside tests.
-- Add a retry/idempotency test for paged flight-plan mutation.
+- [x] Convert every production snapshot-producing session API to a paged outcome.
+- [x] Distinguish pre-commit resource faults from post-commit projection faults.
+- [x] Resume generic snapshot projection without replaying committed mutations.
+- [x] Delete duplicate plain/paged WASM, FFI, JNI, TypeScript, and Kotlin APIs.
+- [x] Delete web and Android plain-snapshot adapter escape hatches.
+- [x] Add a regression proving a committed mutation survives a snapshot page
+  fault and is not applied twice.
+- [x] Add boundary tests that reject plain production session snapshots and
+  platform adapters without the generic snapshot continuation.
 
 ## Prevention
 
-When adding a new UI/core API:
+The resistance to regression is structural rather than an allowlist:
 
-- If it can read nav-db/HAD directly or indirectly, return `HadOperationOutcome`.
-- If it mutates session state and returns `HadOperationOutcome`, make `NeedResources` side-effect free.
-- If it returns `UiSessionSnapshot`, add it to the pure snapshot allowlist with a reason.
-- Do not add `expect`, `unwrap`, `panic!`, `unreachable!`, or `todo!` in exported boundary code. Convert to `AppError`, `String`, or `JsValue`.
+- Production `session.rs` must not contain a function returning
+  `AppResult<UiSessionSnapshot>`.
+- Platform adapters must not expose a plain snapshot decoder/runner.
+- Every platform paged runner must provide the generic snapshot-resume
+  continuation.
+- A new snapshot-producing operation therefore has one available boundary
+  shape: `HadOperationOutcome`.
+- Do not add `expect`, `unwrap`, `panic!`, `unreachable!`, or `todo!` in exported
+  boundary code. Convert recoverable failures to the boundary error type.

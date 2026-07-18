@@ -39,10 +39,10 @@ declare module "@generated/app_wasm.js" {
   export const seek_playback_in_session_paged: (...args: unknown[]) => string;
   export const set_playback_rate_in_session_paged: (...args: unknown[]) => string;
   export const tick_playback_in_session_paged: (...args: unknown[]) => string;
-  export const register_ownship_source_in_session: (...args: unknown[]) => string;
-  export const update_ownship_source_status_in_session: (...args: unknown[]) => string;
-  export const push_situation_sample_in_session: (...args: unknown[]) => string;
-  export const select_ownship_source_in_session: (...args: unknown[]) => string;
+  export const register_ownship_source_in_session_paged: (...args: unknown[]) => string;
+  export const update_ownship_source_status_in_session_paged: (...args: unknown[]) => string;
+  export const push_situation_sample_in_session_paged: (...args: unknown[]) => string;
+  export const select_ownship_source_in_session_paged: (...args: unknown[]) => string;
   export const apply_situation_control_input_in_session: (...args: unknown[]) => string;
   export const set_map_layer_visibility_in_session_paged: (...args: unknown[]) => string;
   export const set_map_layer_enabled_in_session_paged: (...args: unknown[]) => string;
@@ -55,7 +55,6 @@ declare module "@generated/app_wasm.js" {
   export const select_procedure_at_flight_plan_row_in_session: (...args: unknown[]) => string;
   export const load_plate_procedure_in_session: (...args: unknown[]) => string;
   export const restore_direct_to_in_session: (...args: unknown[]) => string;
-  export const restore_direct_to_in_session_outcome: (...args: unknown[]) => string;
   export const accept_disclaimer_in_session: (...args: unknown[]) => string;
   export const perform_settings_action_in_session: (...args: unknown[]) => string;
   export const select_airport_in_session: (...args: unknown[]) => string;
@@ -80,7 +79,8 @@ declare module "@generated/app_wasm.js" {
   export const render_terrain_overlay_tiles_in_session: (...args: unknown[]) => Uint8Array;
   export const render_terrain_warning_raw_rgba: (...args: unknown[]) => Uint8Array;
   export const render_terrain_warning_raw_rgba_from_packed_tiles: (...args: unknown[]) => Uint8Array;
-  export const get_session_snapshot: (...args: unknown[]) => string;
+  export const get_session_snapshot_paged: (...args: unknown[]) => string;
+  export const get_session_snapshot_at_epoch_ms_paged: (...args: unknown[]) => string;
   export const create_session_snapshot_refresh_scheduler: (...args: unknown[]) => number;
   export const destroy_session_snapshot_refresh_scheduler: (...args: unknown[]) => void;
   export const session_snapshot_refresh_scheduler_request: (...args: unknown[]) => string;

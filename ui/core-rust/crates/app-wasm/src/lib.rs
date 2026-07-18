@@ -747,14 +747,7 @@ pub fn load_plate_procedure_in_session(
 
 #[wasm_bindgen]
 pub fn restore_direct_to_in_session(session_handle: u32) -> Result<String, JsValue> {
-    let snapshot = app_core::session::restore_direct_to_in_session(session_handle)
-        .map_err(|err| JsValue::from_str(&err.to_string()))?;
-    serde_json::to_string(&snapshot).map_err(|err| JsValue::from_str(&err.to_string()))
-}
-
-#[wasm_bindgen]
-pub fn restore_direct_to_in_session_outcome(session_handle: u32) -> Result<String, JsValue> {
-    let outcome = app_core::session::restore_direct_to_in_session_outcome(session_handle)
+    let outcome = app_core::session::restore_direct_to_in_session(session_handle)
         .map_err(|err| JsValue::from_str(&err.to_string()))?;
     serde_json::to_string(&outcome).map_err(|err| JsValue::from_str(&err.to_string()))
 }
@@ -882,7 +875,7 @@ pub fn startup_smoke_test() -> Result<(), JsValue> {
     );
     attach_nav_kv_store_to_session(nav_kv_handle, init.handle)?;
     sync_guidance_geometry_in_session(init.handle)?;
-    get_session_snapshot(init.handle)?;
+    get_session_snapshot_paged(init.handle)?;
     lock_nav_kv_stores().remove(&nav_kv_handle);
     app_core::destroy_session(init.handle);
     Ok(())
@@ -1002,29 +995,11 @@ pub fn select_airport_in_session(handle: u32, airport_id_json: &str) -> Result<S
 }
 
 #[wasm_bindgen]
-pub fn register_ownship_source_in_session(
-    handle: u32,
-    registration_json: &str,
-) -> Result<String, JsValue> {
-    register_ownship_source_in_session_json(handle, registration_json)
-        .map_err(|err| JsValue::from_str(&err))
-}
-
-#[wasm_bindgen]
 pub fn register_ownship_source_in_session_paged(
     handle: u32,
     registration_json: &str,
 ) -> Result<String, JsValue> {
     register_ownship_source_in_session_paged_json(handle, registration_json)
-        .map_err(|err| JsValue::from_str(&err))
-}
-
-#[wasm_bindgen]
-pub fn update_ownship_source_status_in_session(
-    handle: u32,
-    update_json: &str,
-) -> Result<String, JsValue> {
-    update_ownship_source_status_in_session_json(handle, update_json)
         .map_err(|err| JsValue::from_str(&err))
 }
 
@@ -1038,26 +1013,11 @@ pub fn update_ownship_source_status_in_session_paged(
 }
 
 #[wasm_bindgen]
-pub fn push_situation_sample_in_session(handle: u32, sample_json: &str) -> Result<String, JsValue> {
-    push_situation_sample_in_session_json(handle, sample_json)
-        .map_err(|err| JsValue::from_str(&err))
-}
-
-#[wasm_bindgen]
 pub fn push_situation_sample_in_session_paged(
     handle: u32,
     sample_json: &str,
 ) -> Result<String, JsValue> {
     push_situation_sample_in_session_paged_json(handle, sample_json)
-        .map_err(|err| JsValue::from_str(&err))
-}
-
-#[wasm_bindgen]
-pub fn select_ownship_source_in_session(
-    handle: u32,
-    selection_json: &str,
-) -> Result<String, JsValue> {
-    select_ownship_source_in_session_json(handle, selection_json)
         .map_err(|err| JsValue::from_str(&err))
 }
 
@@ -1081,22 +1041,12 @@ pub fn apply_situation_control_input_in_session(
 }
 
 #[wasm_bindgen]
-pub fn set_situation_in_session(handle: u32, situation_json: &str) -> Result<String, JsValue> {
-    set_situation_in_session_json(handle, situation_json).map_err(|err| JsValue::from_str(&err))
-}
-
-#[wasm_bindgen]
 pub fn set_situation_in_session_paged(
     handle: u32,
     situation_json: &str,
 ) -> Result<String, JsValue> {
     set_situation_in_session_paged_json(handle, situation_json)
         .map_err(|err| JsValue::from_str(&err))
-}
-
-#[wasm_bindgen]
-pub fn tick_bad_autopilot_in_session(handle: u32, now_epoch_ms: f64) -> Result<String, JsValue> {
-    tick_bad_autopilot_in_session_json(handle, now_epoch_ms).map_err(|err| JsValue::from_str(&err))
 }
 
 #[wasm_bindgen]
@@ -1155,16 +1105,6 @@ pub fn project_flight_plan_route_in_session(handle: u32) -> Result<String, JsVal
 }
 
 #[wasm_bindgen]
-pub fn load_playback_trace_in_session(
-    handle: u32,
-    source_path_json: &str,
-    trace_json: &str,
-) -> Result<String, JsValue> {
-    load_playback_trace_in_session_json(handle, source_path_json, trace_json)
-        .map_err(|err| JsValue::from_str(&err))
-}
-
-#[wasm_bindgen]
 pub fn load_playback_trace_in_session_paged(
     handle: u32,
     source_path_json: &str,
@@ -1175,33 +1115,13 @@ pub fn load_playback_trace_in_session_paged(
 }
 
 #[wasm_bindgen]
-pub fn play_playback_in_session(handle: u32, now_epoch_ms: f64) -> Result<String, JsValue> {
-    play_playback_in_session_json(handle, now_epoch_ms).map_err(|err| JsValue::from_str(&err))
-}
-
-#[wasm_bindgen]
 pub fn play_playback_in_session_paged(handle: u32, now_epoch_ms: f64) -> Result<String, JsValue> {
     play_playback_in_session_paged_json(handle, now_epoch_ms).map_err(|err| JsValue::from_str(&err))
 }
 
 #[wasm_bindgen]
-pub fn pause_playback_in_session(handle: u32, now_epoch_ms: f64) -> Result<String, JsValue> {
-    pause_playback_in_session_json(handle, now_epoch_ms).map_err(|err| JsValue::from_str(&err))
-}
-
-#[wasm_bindgen]
 pub fn pause_playback_in_session_paged(handle: u32, now_epoch_ms: f64) -> Result<String, JsValue> {
     pause_playback_in_session_paged_json(handle, now_epoch_ms)
-        .map_err(|err| JsValue::from_str(&err))
-}
-
-#[wasm_bindgen]
-pub fn seek_playback_in_session(
-    handle: u32,
-    cursor_seconds: f64,
-    now_epoch_ms: f64,
-) -> Result<String, JsValue> {
-    seek_playback_in_session_json(handle, cursor_seconds, now_epoch_ms)
         .map_err(|err| JsValue::from_str(&err))
 }
 
@@ -1216,16 +1136,6 @@ pub fn seek_playback_in_session_paged(
 }
 
 #[wasm_bindgen]
-pub fn set_playback_rate_in_session(
-    handle: u32,
-    rate: f64,
-    now_epoch_ms: f64,
-) -> Result<String, JsValue> {
-    set_playback_rate_in_session_json(handle, rate, now_epoch_ms)
-        .map_err(|err| JsValue::from_str(&err))
-}
-
-#[wasm_bindgen]
 pub fn set_playback_rate_in_session_paged(
     handle: u32,
     rate: f64,
@@ -1233,11 +1143,6 @@ pub fn set_playback_rate_in_session_paged(
 ) -> Result<String, JsValue> {
     set_playback_rate_in_session_paged_json(handle, rate, now_epoch_ms)
         .map_err(|err| JsValue::from_str(&err))
-}
-
-#[wasm_bindgen]
-pub fn tick_playback_in_session(handle: u32, now_epoch_ms: f64) -> Result<String, JsValue> {
-    tick_playback_in_session_json(handle, now_epoch_ms).map_err(|err| JsValue::from_str(&err))
 }
 
 #[wasm_bindgen]
@@ -1310,13 +1215,17 @@ pub fn select_raster_map_in_session(
 }
 
 #[wasm_bindgen]
-pub fn get_session_snapshot(handle: u32) -> Result<String, JsValue> {
-    get_session_snapshot_json(handle).map_err(|err| JsValue::from_str(&err))
+pub fn get_session_snapshot_paged(handle: u32) -> Result<String, JsValue> {
+    get_session_snapshot_paged_json(handle).map_err(|err| JsValue::from_str(&err))
 }
 
 #[wasm_bindgen]
-pub fn get_session_snapshot_at_epoch_ms(handle: u32, epoch_ms: i64) -> Result<String, JsValue> {
-    get_session_snapshot_at_epoch_ms_json(handle, epoch_ms).map_err(|err| JsValue::from_str(&err))
+pub fn get_session_snapshot_at_epoch_ms_paged(
+    handle: u32,
+    epoch_ms: i64,
+) -> Result<String, JsValue> {
+    get_session_snapshot_at_epoch_ms_paged_json(handle, epoch_ms)
+        .map_err(|err| JsValue::from_str(&err))
 }
 
 #[wasm_bindgen]
@@ -1886,37 +1795,15 @@ fn select_airport_in_session_json(handle: u32, airport_id_json: &str) -> Result<
     serde_json::to_string(&snapshot).map_err(|err| err.to_string())
 }
 
-fn register_ownship_source_in_session_json(
-    handle: u32,
-    registration_json: &str,
-) -> Result<String, String> {
-    let registration: app_core::OwnshipSourceRegistration =
-        serde_json::from_str(registration_json).map_err(|err| err.to_string())?;
-    let snapshot = app_core::register_ownship_source_in_session(handle, registration)
-        .map_err(|err| err.to_string())?;
-    serde_json::to_string(&snapshot).map_err(|err| err.to_string())
-}
-
 fn register_ownship_source_in_session_paged_json(
     handle: u32,
     registration_json: &str,
 ) -> Result<String, String> {
     let registration: app_core::OwnshipSourceRegistration =
         serde_json::from_str(registration_json).map_err(|err| err.to_string())?;
-    let outcome = app_core::register_ownship_source_in_session_outcome(handle, registration)
+    let outcome = app_core::register_ownship_source_in_session(handle, registration)
         .map_err(|err| err.to_string())?;
     serde_json::to_string(&outcome).map_err(|err| err.to_string())
-}
-
-fn update_ownship_source_status_in_session_json(
-    handle: u32,
-    update_json: &str,
-) -> Result<String, String> {
-    let update: app_core::OwnshipSourceStatusUpdate =
-        serde_json::from_str(update_json).map_err(|err| err.to_string())?;
-    let snapshot = app_core::update_ownship_source_status_in_session(handle, update)
-        .map_err(|err| err.to_string())?;
-    serde_json::to_string(&snapshot).map_err(|err| err.to_string())
 }
 
 fn update_ownship_source_status_in_session_paged_json(
@@ -1925,17 +1812,9 @@ fn update_ownship_source_status_in_session_paged_json(
 ) -> Result<String, String> {
     let update: app_core::OwnshipSourceStatusUpdate =
         serde_json::from_str(update_json).map_err(|err| err.to_string())?;
-    let outcome = app_core::update_ownship_source_status_in_session_outcome(handle, update)
+    let outcome = app_core::update_ownship_source_status_in_session(handle, update)
         .map_err(|err| err.to_string())?;
     serde_json::to_string(&outcome).map_err(|err| err.to_string())
-}
-
-fn push_situation_sample_in_session_json(handle: u32, sample_json: &str) -> Result<String, String> {
-    let sample: app_core::SituationSample =
-        serde_json::from_str(sample_json).map_err(|err| err.to_string())?;
-    let snapshot = app_core::push_situation_sample_in_session(handle, sample)
-        .map_err(|err| err.to_string())?;
-    serde_json::to_string(&snapshot).map_err(|err| err.to_string())
 }
 
 fn push_situation_sample_in_session_paged_json(
@@ -1944,20 +1823,9 @@ fn push_situation_sample_in_session_paged_json(
 ) -> Result<String, String> {
     let sample: app_core::SituationSample =
         serde_json::from_str(sample_json).map_err(|err| err.to_string())?;
-    let outcome = app_core::push_situation_sample_in_session_outcome(handle, sample)
+    let outcome = app_core::push_situation_sample_in_session(handle, sample)
         .map_err(|err| err.to_string())?;
     serde_json::to_string(&outcome).map_err(|err| err.to_string())
-}
-
-fn select_ownship_source_in_session_json(
-    handle: u32,
-    selection_json: &str,
-) -> Result<String, String> {
-    let selection: app_core::OwnshipSelectionCommand =
-        serde_json::from_str(selection_json).map_err(|err| err.to_string())?;
-    let snapshot = app_core::select_ownship_source_in_session(handle, selection)
-        .map_err(|err| err.to_string())?;
-    serde_json::to_string(&snapshot).map_err(|err| err.to_string())
 }
 
 fn select_ownship_source_in_session_paged_json(
@@ -1966,7 +1834,7 @@ fn select_ownship_source_in_session_paged_json(
 ) -> Result<String, String> {
     let selection: app_core::OwnshipSelectionCommand =
         serde_json::from_str(selection_json).map_err(|err| err.to_string())?;
-    let outcome = app_core::select_ownship_source_in_session_outcome(handle, selection)
+    let outcome = app_core::select_ownship_source_in_session(handle, selection)
         .map_err(|err| err.to_string())?;
     serde_json::to_string(&outcome).map_err(|err| err.to_string())
 }
@@ -1983,36 +1851,22 @@ fn apply_situation_control_input_in_session_json(
     serde_json::to_string(&snapshot).map_err(|err| err.to_string())
 }
 
-fn set_situation_in_session_json(handle: u32, situation_json: &str) -> Result<String, String> {
-    let situation: app_core::Situation =
-        serde_json::from_str(situation_json).map_err(|err| err.to_string())?;
-    let snapshot =
-        app_core::set_situation_in_session(handle, situation).map_err(|err| err.to_string())?;
-    serde_json::to_string(&snapshot).map_err(|err| err.to_string())
-}
-
 fn set_situation_in_session_paged_json(
     handle: u32,
     situation_json: &str,
 ) -> Result<String, String> {
     let situation: app_core::Situation =
         serde_json::from_str(situation_json).map_err(|err| err.to_string())?;
-    let outcome = app_core::set_situation_in_session_outcome(handle, situation)
-        .map_err(|err| err.to_string())?;
+    let outcome =
+        app_core::set_situation_in_session(handle, situation).map_err(|err| err.to_string())?;
     serde_json::to_string(&outcome).map_err(|err| err.to_string())
-}
-
-fn tick_bad_autopilot_in_session_json(handle: u32, now_epoch_ms: f64) -> Result<String, String> {
-    let snapshot = app_core::tick_bad_autopilot_in_session(handle, now_epoch_ms)
-        .map_err(|err| err.to_string())?;
-    serde_json::to_string(&snapshot).map_err(|err| err.to_string())
 }
 
 fn tick_bad_autopilot_in_session_paged_json(
     handle: u32,
     now_epoch_ms: f64,
 ) -> Result<String, String> {
-    let outcome = app_core::tick_bad_autopilot_in_session_outcome(handle, now_epoch_ms)
+    let outcome = app_core::tick_bad_autopilot_in_session(handle, now_epoch_ms)
         .map_err(|err| err.to_string())?;
     serde_json::to_string(&outcome).map_err(|err| err.to_string())
 }
@@ -2075,18 +1929,6 @@ fn project_flight_plan_route_in_session_json(handle: u32) -> Result<String, Stri
     serde_json::to_string(&outcome).map_err(|err| err.to_string())
 }
 
-fn load_playback_trace_in_session_json(
-    handle: u32,
-    source_path_json: &str,
-    trace_json: &str,
-) -> Result<String, String> {
-    let source_path: String =
-        serde_json::from_str(source_path_json).map_err(|err| err.to_string())?;
-    let snapshot = app_core::load_playback_trace_in_session(handle, &source_path, trace_json)
-        .map_err(|err| err.to_string())?;
-    serde_json::to_string(&snapshot).map_err(|err| err.to_string())
-}
-
 fn load_playback_trace_in_session_paged_json(
     handle: u32,
     source_path_json: &str,
@@ -2094,44 +1936,21 @@ fn load_playback_trace_in_session_paged_json(
 ) -> Result<String, String> {
     let source_path: String =
         serde_json::from_str(source_path_json).map_err(|err| err.to_string())?;
-    let outcome =
-        app_core::load_playback_trace_in_session_outcome(handle, &source_path, trace_json)
-            .map_err(|err| err.to_string())?;
+    let outcome = app_core::load_playback_trace_in_session(handle, &source_path, trace_json)
+        .map_err(|err| err.to_string())?;
     serde_json::to_string(&outcome).map_err(|err| err.to_string())
-}
-
-fn play_playback_in_session_json(handle: u32, now_epoch_ms: f64) -> Result<String, String> {
-    let snapshot =
-        app_core::play_playback_in_session(handle, now_epoch_ms).map_err(|err| err.to_string())?;
-    serde_json::to_string(&snapshot).map_err(|err| err.to_string())
 }
 
 fn play_playback_in_session_paged_json(handle: u32, now_epoch_ms: f64) -> Result<String, String> {
-    let outcome = app_core::play_playback_in_session_outcome(handle, now_epoch_ms)
-        .map_err(|err| err.to_string())?;
+    let outcome =
+        app_core::play_playback_in_session(handle, now_epoch_ms).map_err(|err| err.to_string())?;
     serde_json::to_string(&outcome).map_err(|err| err.to_string())
-}
-
-fn pause_playback_in_session_json(handle: u32, now_epoch_ms: f64) -> Result<String, String> {
-    let snapshot =
-        app_core::pause_playback_in_session(handle, now_epoch_ms).map_err(|err| err.to_string())?;
-    serde_json::to_string(&snapshot).map_err(|err| err.to_string())
 }
 
 fn pause_playback_in_session_paged_json(handle: u32, now_epoch_ms: f64) -> Result<String, String> {
-    let outcome = app_core::pause_playback_in_session_outcome(handle, now_epoch_ms)
-        .map_err(|err| err.to_string())?;
+    let outcome =
+        app_core::pause_playback_in_session(handle, now_epoch_ms).map_err(|err| err.to_string())?;
     serde_json::to_string(&outcome).map_err(|err| err.to_string())
-}
-
-fn seek_playback_in_session_json(
-    handle: u32,
-    cursor_seconds: f64,
-    now_epoch_ms: f64,
-) -> Result<String, String> {
-    let snapshot = app_core::seek_playback_in_session(handle, cursor_seconds, now_epoch_ms)
-        .map_err(|err| err.to_string())?;
-    serde_json::to_string(&snapshot).map_err(|err| err.to_string())
 }
 
 fn seek_playback_in_session_paged_json(
@@ -2139,19 +1958,9 @@ fn seek_playback_in_session_paged_json(
     cursor_seconds: f64,
     now_epoch_ms: f64,
 ) -> Result<String, String> {
-    let outcome = app_core::seek_playback_in_session_outcome(handle, cursor_seconds, now_epoch_ms)
+    let outcome = app_core::seek_playback_in_session(handle, cursor_seconds, now_epoch_ms)
         .map_err(|err| err.to_string())?;
     serde_json::to_string(&outcome).map_err(|err| err.to_string())
-}
-
-fn set_playback_rate_in_session_json(
-    handle: u32,
-    rate: f64,
-    now_epoch_ms: f64,
-) -> Result<String, String> {
-    let snapshot = app_core::set_playback_rate_in_session(handle, rate, now_epoch_ms)
-        .map_err(|err| err.to_string())?;
-    serde_json::to_string(&snapshot).map_err(|err| err.to_string())
 }
 
 fn set_playback_rate_in_session_paged_json(
@@ -2159,20 +1968,14 @@ fn set_playback_rate_in_session_paged_json(
     rate: f64,
     now_epoch_ms: f64,
 ) -> Result<String, String> {
-    let outcome = app_core::set_playback_rate_in_session_outcome(handle, rate, now_epoch_ms)
+    let outcome = app_core::set_playback_rate_in_session(handle, rate, now_epoch_ms)
         .map_err(|err| err.to_string())?;
     serde_json::to_string(&outcome).map_err(|err| err.to_string())
 }
 
-fn tick_playback_in_session_json(handle: u32, now_epoch_ms: f64) -> Result<String, String> {
-    let snapshot =
-        app_core::tick_playback_in_session(handle, now_epoch_ms).map_err(|err| err.to_string())?;
-    serde_json::to_string(&snapshot).map_err(|err| err.to_string())
-}
-
 fn tick_playback_in_session_paged_json(handle: u32, now_epoch_ms: f64) -> Result<String, String> {
-    let outcome = app_core::tick_playback_in_session_outcome(handle, now_epoch_ms)
-        .map_err(|err| err.to_string())?;
+    let outcome =
+        app_core::tick_playback_in_session(handle, now_epoch_ms).map_err(|err| err.to_string())?;
     serde_json::to_string(&outcome).map_err(|err| err.to_string())
 }
 
@@ -2254,18 +2057,21 @@ fn select_raster_map_in_session_json(
     serde_json::to_string(&snapshot).map_err(|err| err.to_string())
 }
 
-fn get_session_snapshot_json(handle: u32) -> Result<String, String> {
-    get_session_snapshot_at_epoch_ms_json(handle, 0)
+fn get_session_snapshot_paged_json(handle: u32) -> Result<String, String> {
+    get_session_snapshot_at_epoch_ms_paged_json(handle, 0)
 }
 
-fn get_session_snapshot_at_epoch_ms_json(handle: u32, epoch_ms: i64) -> Result<String, String> {
+fn get_session_snapshot_at_epoch_ms_paged_json(
+    handle: u32,
+    epoch_ms: i64,
+) -> Result<String, String> {
     let total_started_at = now_ms();
     let core_started_at = now_ms();
-    let snapshot = app_core::get_session_snapshot_at_epoch_ms(handle, epoch_ms)
+    let outcome = app_core::get_session_snapshot_at_epoch_ms(handle, epoch_ms)
         .map_err(|err| err.to_string())?;
     let core_ms = now_ms() - core_started_at;
     let serialize_started_at = now_ms();
-    let serialized = serde_json::to_string(&snapshot).map_err(|err| err.to_string())?;
+    let serialized = serde_json::to_string(&outcome).map_err(|err| err.to_string())?;
     let serialize_ms = now_ms() - serialize_started_at;
     app_core::core_debug_log(
         "session.snapshot.wasm",

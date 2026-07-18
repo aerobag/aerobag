@@ -50,6 +50,11 @@ pub enum HadOperationOutcome {
     NeedResources {
         resources: Vec<CoreResourceRequest>,
     },
+    NeedSnapshotResources {
+        resources: Vec<CoreResourceRequest>,
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        invalidations: Vec<UiInvalidation>,
+    },
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -4030,6 +4035,9 @@ mod tests {
             HadOperationOutcome::NeedResources { resources } => {
                 panic!("unexpected resources: {resources:?}")
             }
+            HadOperationOutcome::NeedSnapshotResources { .. } => {
+                panic!("generic HAD operation requested a session snapshot continuation")
+            }
         }
     }
 
@@ -4243,6 +4251,9 @@ mod tests {
                     assert_eq!(result.statuses.len(), 2);
                     assert!(result.statuses.iter().all(|status| status.readable));
                     break;
+                }
+                HadOperationOutcome::NeedSnapshotResources { .. } => {
+                    panic!("nav-db open requested a session snapshot continuation")
                 }
             }
         }
@@ -5637,6 +5648,9 @@ mod tests {
             HadOperationOutcome::NeedResources { resources } => {
                 panic!("expected complete outcome, got missing resources: {resources:?}");
             }
+            HadOperationOutcome::NeedSnapshotResources { .. } => {
+                panic!("generic HAD operation requested a session snapshot continuation")
+            }
         };
         let mutation = crate::insert_procedure_materialized_ui(&plan, 1, 2, built)
             .expect("insert KPAE VOR-A ECEPO");
@@ -5868,6 +5882,9 @@ mod tests {
             HadOperationOutcome::NeedResources { resources } => {
                 panic!("expected complete outcome, got missing resources: {resources:?}");
             }
+            HadOperationOutcome::NeedSnapshotResources { .. } => {
+                panic!("generic HAD operation requested a session snapshot continuation")
+            }
         }
     }
 
@@ -5997,6 +6014,9 @@ mod tests {
             HadOperationOutcome::NeedResources { resources } => {
                 panic!("expected complete outcome, got missing resources: {resources:?}");
             }
+            HadOperationOutcome::NeedSnapshotResources { .. } => {
+                panic!("generic HAD operation requested a session snapshot continuation")
+            }
         }
     }
 
@@ -6019,6 +6039,9 @@ mod tests {
                 panic!(
                     "expected complete KPAE plate airport, got missing resources: {resources:?}"
                 );
+            }
+            HadOperationOutcome::NeedSnapshotResources { .. } => {
+                panic!("generic HAD operation requested a session snapshot continuation")
             }
         };
         let vor_a = kpae
@@ -6074,8 +6097,13 @@ mod tests {
         let init = crate::create_ui_session(plan, &["KPAE".to_string()], Some("KPAE"), None)
             .expect("create ui session");
 
-        let snapshot = crate::select_chart_in_session(init.handle, &vor_a.id)
+        let outcome = crate::select_chart_in_session(init.handle, &vor_a.id)
             .expect("select KPAE VOR-A chart in session");
+        let HadOperationOutcome::Complete { result, .. } = outcome else {
+            panic!("chart selection unexpectedly needed resources: {outcome:?}");
+        };
+        let snapshot: crate::session::UiSessionSnapshot =
+            serde_json::from_value(result).expect("decode session snapshot");
 
         assert_eq!(snapshot.chart_page_state.selected_airport_id, "KPAE");
         assert_eq!(snapshot.chart_page_state.selected_chart_id, vor_a.id);
@@ -6241,6 +6269,9 @@ mod tests {
             HadOperationOutcome::NeedResources { resources } => {
                 panic!("expected complete outcome, got missing resources: {resources:?}");
             }
+            HadOperationOutcome::NeedSnapshotResources { .. } => {
+                panic!("generic HAD operation requested a session snapshot continuation")
+            }
         }
     }
 
@@ -6326,7 +6357,12 @@ mod tests {
         let HadOperationOutcome::Complete { .. } = outcome else {
             panic!("expected complete outcome, got missing resources: {outcome:?}");
         };
-        let snapshot = crate::get_session_snapshot(init.handle).expect("session snapshot");
+        let outcome = crate::get_session_snapshot(init.handle).expect("session snapshot");
+        let HadOperationOutcome::Complete { result, .. } = outcome else {
+            panic!("session snapshot unexpectedly needed resources: {outcome:?}");
+        };
+        let snapshot: crate::session::UiSessionSnapshot =
+            serde_json::from_value(result).expect("decode session snapshot");
         let warning = snapshot
             .data_status_state
             .boxes
@@ -6536,6 +6572,9 @@ mod tests {
             HadOperationOutcome::NeedResources { resources } => {
                 panic!("expected complete outcome, got missing resources: {resources:?}");
             }
+            HadOperationOutcome::NeedSnapshotResources { .. } => {
+                panic!("generic HAD operation requested a session snapshot continuation")
+            }
         }
     }
 
@@ -6589,6 +6628,9 @@ mod tests {
             }
             HadOperationOutcome::NeedResources { resources } => {
                 panic!("expected complete outcome, got missing resources: {resources:?}");
+            }
+            HadOperationOutcome::NeedSnapshotResources { .. } => {
+                panic!("generic HAD operation requested a session snapshot continuation")
             }
         }
     }
@@ -6665,6 +6707,9 @@ mod tests {
             HadOperationOutcome::NeedResources { resources } => {
                 panic!("expected complete outcome, got missing resources: {resources:?}");
             }
+            HadOperationOutcome::NeedSnapshotResources { .. } => {
+                panic!("generic HAD operation requested a session snapshot continuation")
+            }
         }
     }
 
@@ -6687,6 +6732,9 @@ mod tests {
             }
             HadOperationOutcome::NeedResources { resources } => {
                 panic!("expected complete outcome, got missing resources: {resources:?}");
+            }
+            HadOperationOutcome::NeedSnapshotResources { .. } => {
+                panic!("generic HAD operation requested a session snapshot continuation")
             }
         };
 
@@ -6720,6 +6768,9 @@ mod tests {
             }
             HadOperationOutcome::NeedResources { resources } => {
                 panic!("expected complete outcome, got missing resources: {resources:?}");
+            }
+            HadOperationOutcome::NeedSnapshotResources { .. } => {
+                panic!("generic HAD operation requested a session snapshot continuation")
             }
         };
 
@@ -6789,6 +6840,9 @@ mod tests {
             HadOperationOutcome::NeedResources { resources } => {
                 panic!("expected complete preview, got missing resources: {resources:?}");
             }
+            HadOperationOutcome::NeedSnapshotResources { .. } => {
+                panic!("generic HAD operation requested a session snapshot continuation")
+            }
         };
 
         assert!(!preview.can_commit);
@@ -6849,6 +6903,9 @@ mod tests {
             }
             HadOperationOutcome::NeedResources { resources } => {
                 panic!("expected complete append, got missing resources: {resources:?}");
+            }
+            HadOperationOutcome::NeedSnapshotResources { .. } => {
+                panic!("generic HAD operation requested a session snapshot continuation")
             }
         };
 
@@ -7311,6 +7368,9 @@ mod tests {
             }
             HadOperationOutcome::NeedResources { resources } => {
                 panic!("expected complete append, got missing resources: {resources:?}");
+            }
+            HadOperationOutcome::NeedSnapshotResources { .. } => {
+                panic!("generic HAD operation requested a session snapshot continuation")
             }
         };
 

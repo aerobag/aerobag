@@ -1,7 +1,4 @@
-use std::{
-    collections::BTreeSet,
-    path::{Path, PathBuf},
-};
+use std::path::{Path, PathBuf};
 
 fn repo_root() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))
@@ -81,64 +78,42 @@ fn balanced_block_after_marker<'a>(source: &'a str, marker: &str) -> &'a str {
 }
 
 #[test]
-fn exported_plain_snapshot_session_apis_are_allowlisted() {
+fn production_session_snapshot_apis_are_always_paged() {
     let source_text = read_repo_file("ui/core-rust/crates/app-core/src/session.rs");
     let source = strip_rust_tests(&source_text);
-    let allowed: BTreeSet<&str> = [
-        "set_resource_policy_in_session",
-        "select_raster_map_in_session",
-        "project_flight_plan_route_in_session",
-        "select_airport_in_session",
-        "select_chart_in_session",
-        "register_ownship_source_in_session",
-        "update_ownship_source_status_in_session",
-        "push_situation_sample_in_session",
-        "set_ownship_policy_in_session",
-        "select_ownship_source_in_session",
-        "apply_situation_control_input_in_session",
-        "load_playback_trace_in_session",
-        "play_playback_in_session",
-        "pause_playback_in_session",
-        "seek_playback_in_session",
-        "set_playback_rate_in_session",
-        "tick_playback_in_session",
-        "set_situation_in_session",
-        "tick_bad_autopilot_in_session",
-        "activate_next_leg_in_session",
-        "stop_navigation_in_session",
-        "suspend_sequencing_in_session",
-        "unsuspend_sequencing_in_session",
-        "sequence_active_leg_in_session",
-        "activate_direct_to_leg_in_session",
-        "restore_direct_to_in_session",
-        "engage_map_follow_in_session",
-        "disengage_map_follow_in_session",
-        "set_map_follow_offset_in_session",
-        "sync_map_follow_in_session",
-        "restore_chart_page_state_in_session",
-        "set_debug_flag_in_session",
-        "get_session_snapshot",
-    ]
-    .into_iter()
-    .collect();
+    assert!(
+        !source.contains("AppResult<UiSessionSnapshot>"),
+        "production session APIs must return HadOperationOutcome; plain snapshots erase HAD page faults"
+    );
+    assert!(
+        !source.contains("snapshot_for_changed_session")
+            && !source.contains("fn snapshot_for_session"),
+        "runtime snapshot helpers must not convert HAD page faults into ordinary command failures"
+    );
+}
 
-    let mut violations = Vec::new();
-    for line in source.lines() {
-        let Some(rest) = line.trim_start().strip_prefix("pub fn ") else {
-            continue;
-        };
-        if !line.contains("AppResult<UiSessionSnapshot>") {
-            continue;
-        }
-        let name = rest.split('(').next().unwrap_or(rest);
-        if !allowed.contains(name) {
-            violations.push(name.to_string());
-        }
-    }
+#[test]
+fn platform_session_adapters_have_no_plain_snapshot_escape_hatch() {
+    let web = read_repo_file("ui/web-app/src/domain/appCoreAdapter.ts");
+    let android = read_repo_file(
+        "ui/android-app/app/src/main/java/org/aerobag/app/domain/NativeAppCoreAdapter.kt",
+    );
 
     assert!(
-        violations.is_empty(),
-        "new plain UiSessionSnapshot exports must be explicitly classified or converted to HadOperationOutcome: {violations:?}"
+        !web.contains("const parseSessionSnapshot ="),
+        "web snapshot-producing commands must use the paged session runner"
+    );
+    assert!(
+        web.contains("() => this.module.get_session_snapshot_paged(sessionHandle)"),
+        "web paged mutations need the generic snapshot-resume continuation"
+    );
+    assert!(
+        !android.contains("runPlainSnapshot"),
+        "Android snapshot-producing commands must use the paged session runner"
+    );
+    assert!(
+        android.contains("resumeSnapshot = { bridge.getSessionSnapshotPagedJson(handle) }"),
+        "Android paged mutations need the generic snapshot-resume continuation"
     );
 }
 
@@ -237,7 +212,7 @@ fn platform_adapters_use_paged_loops_for_paged_session_exports() {
         "insert_airway_at_flight_plan_row_in_session",
         "select_procedure_at_flight_plan_row_in_session",
         "load_plate_procedure_in_session",
-        "restore_direct_to_in_session_outcome",
+        "restore_direct_to_in_session",
         "perform_flight_plan_row_action_in_session",
         "sync_guidance_geometry_in_session",
         "project_flight_plan_route_in_session",

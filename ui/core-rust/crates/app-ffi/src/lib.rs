@@ -779,26 +779,26 @@ pub fn select_chart_reference_in_session_json(
     serde_json::to_string(&snapshot).map_err(|err| err.to_string())
 }
 
-pub fn set_map_layer_visibility_in_session_json(
+pub fn set_map_layer_visibility_in_session_paged_json(
     handle: u64,
     layer_id_json: &str,
     visible: bool,
 ) -> Result<String, String> {
     let layer_id: String = serde_json::from_str(layer_id_json).map_err(|err| err.to_string())?;
-    let snapshot = app_core::set_map_layer_visibility_in_session(handle as u32, &layer_id, visible)
+    let outcome = app_core::set_map_layer_visibility_in_session(handle as u32, &layer_id, visible)
         .map_err(|err| err.to_string())?;
-    serde_json::to_string(&snapshot).map_err(|err| err.to_string())
+    serde_json::to_string(&outcome).map_err(|err| err.to_string())
 }
 
-pub fn set_map_layer_enabled_in_session_json(
+pub fn set_map_layer_enabled_in_session_paged_json(
     handle: u64,
     layer_id_json: &str,
     enabled: bool,
 ) -> Result<String, String> {
     let layer_id: String = serde_json::from_str(layer_id_json).map_err(|err| err.to_string())?;
-    let snapshot = app_core::set_map_layer_enabled_in_session(handle as u32, &layer_id, enabled)
+    let outcome = app_core::set_map_layer_enabled_in_session(handle as u32, &layer_id, enabled)
         .map_err(|err| err.to_string())?;
-    serde_json::to_string(&snapshot).map_err(|err| err.to_string())
+    serde_json::to_string(&outcome).map_err(|err| err.to_string())
 }
 
 pub fn set_debug_flag_in_session_json(
@@ -3475,7 +3475,7 @@ pub extern "system" fn Java_org_aerobag_app_domain_NativeBindings_selectChartRef
 }
 
 #[unsafe(no_mangle)]
-pub extern "system" fn Java_org_aerobag_app_domain_NativeBindings_setMapLayerVisibilityInSessionJson(
+pub extern "system" fn Java_org_aerobag_app_domain_NativeBindings_setMapLayerVisibilityInSessionPagedJson(
     mut env: JNIEnv,
     _class: JClass,
     handle: i64,
@@ -3484,13 +3484,13 @@ pub extern "system" fn Java_org_aerobag_app_domain_NativeBindings_setMapLayerVis
 ) -> jstring {
     let result = (|| {
         let layer_id = get_java_string(&mut env, layer_id_json)?;
-        set_map_layer_visibility_in_session_json(handle as u64, &layer_id, visible)
+        set_map_layer_visibility_in_session_paged_json(handle as u64, &layer_id, visible)
     })();
     return_string(&mut env, result)
 }
 
 #[unsafe(no_mangle)]
-pub extern "system" fn Java_org_aerobag_app_domain_NativeBindings_setMapLayerEnabledInSessionJson(
+pub extern "system" fn Java_org_aerobag_app_domain_NativeBindings_setMapLayerEnabledInSessionPagedJson(
     mut env: JNIEnv,
     _class: JClass,
     handle: i64,
@@ -3499,7 +3499,7 @@ pub extern "system" fn Java_org_aerobag_app_domain_NativeBindings_setMapLayerEna
 ) -> jstring {
     let result = (|| {
         let layer_id = get_java_string(&mut env, layer_id_json)?;
-        set_map_layer_enabled_in_session_json(handle as u64, &layer_id, enabled)
+        set_map_layer_enabled_in_session_paged_json(handle as u64, &layer_id, enabled)
     })();
     return_string(&mut env, result)
 }

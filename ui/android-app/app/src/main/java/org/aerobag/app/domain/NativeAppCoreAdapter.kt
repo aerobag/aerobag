@@ -1031,14 +1031,14 @@ class NativeUiSession internal constructor(
     }
 
     fun setMapLayerVisibility(layerId: MapLayerId, visible: Boolean): UiSessionSnapshot {
-        return runPlainSnapshot("setMapLayerVisibility") {
-            bridge.setMapLayerVisibilityInSessionJson(handle, json.encodeToString(layerId.toWire()), visible)
+        return runPagedSnapshot("setMapLayerVisibility") {
+            bridge.setMapLayerVisibilityInSessionPagedJson(handle, json.encodeToString(layerId.toWire()), visible)
         }
     }
 
     fun setMapLayerEnabled(layerId: MapLayerId, enabled: Boolean): UiSessionSnapshot {
-        return runPlainSnapshot("setMapLayerEnabled") {
-            bridge.setMapLayerEnabledInSessionJson(handle, json.encodeToString(layerId.toWire()), enabled)
+        return runPagedSnapshot("setMapLayerEnabled") {
+            bridge.setMapLayerEnabledInSessionPagedJson(handle, json.encodeToString(layerId.toWire()), enabled)
         }
     }
 

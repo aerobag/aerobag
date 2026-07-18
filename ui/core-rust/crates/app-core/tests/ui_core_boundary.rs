@@ -85,10 +85,8 @@ fn exported_plain_snapshot_session_apis_are_allowlisted() {
     let source_text = read_repo_file("ui/core-rust/crates/app-core/src/session.rs");
     let source = strip_rust_tests(&source_text);
     let allowed: BTreeSet<&str> = [
-        "set_map_layer_visibility_in_session",
         "set_resource_policy_in_session",
         "select_raster_map_in_session",
-        "set_map_layer_enabled_in_session",
         "project_flight_plan_route_in_session",
         "select_airport_in_session",
         "select_chart_in_session",
@@ -255,6 +253,8 @@ fn platform_adapters_use_paged_loops_for_paged_session_exports() {
         "seek_playback_in_session_paged",
         "set_playback_rate_in_session_paged",
         "tick_playback_in_session_paged",
+        "set_map_layer_visibility_in_session_paged",
+        "set_map_layer_enabled_in_session_paged",
     ];
     let mut violations = Vec::new();
     for export in paged_web_exports {
@@ -314,6 +314,8 @@ fn platform_adapters_use_paged_loops_for_paged_session_exports() {
         "setPlaybackRateInSessionPagedJson",
         "tickPlaybackInSessionPagedJson",
         "tickBadAutopilotInSessionPagedJson",
+        "setMapLayerVisibilityInSessionPagedJson",
+        "setMapLayerEnabledInSessionPagedJson",
     ];
     for export in paged_android_snapshot_helper_exports {
         let needle = format!("bridge.{export}");
@@ -349,6 +351,8 @@ fn platform_adapters_do_not_call_plain_had_sensitive_snapshot_exports() {
         "update_ownship_source_status_in_session",
         "push_situation_sample_in_session",
         "select_ownship_source_in_session",
+        "set_map_layer_visibility_in_session",
+        "set_map_layer_enabled_in_session",
     ] {
         if web.contains(&format!("this.module.{export}(")) {
             violations.push(format!("web calls plain HAD-sensitive export {export}"));
@@ -361,6 +365,8 @@ fn platform_adapters_do_not_call_plain_had_sensitive_snapshot_exports() {
         "pushSituationSampleInSessionJson",
         "selectOwnshipSourceInSessionJson",
         "tickBadAutopilotInSessionJson",
+        "setMapLayerVisibilityInSessionJson",
+        "setMapLayerEnabledInSessionJson",
     ] {
         if android.contains(&format!("bridge.{export}(")) {
             violations.push(format!("android calls plain HAD-sensitive export {export}"));

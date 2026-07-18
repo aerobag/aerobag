@@ -3395,10 +3395,13 @@ pub fn set_map_layer_visibility_in_session(
     handle: u32,
     layer_id: &str,
     visible: bool,
-) -> AppResult<UiSessionSnapshot> {
+) -> AppResult<HadOperationOutcome> {
     let mut sessions = lock_sessions();
     let session = session_mut(&mut sessions, handle)?;
     let layer = parse_map_layer_id(layer_id)?;
+    if let Some(outcome) = preflight_session_snapshot_resources(session)? {
+        return Ok(outcome);
+    }
     map_layer_toggle_mut(&mut session.map_layer_state, layer).visible = visible;
     match layer {
         MapLayerId::Metars | MapLayerId::Vectors => {
@@ -3415,7 +3418,7 @@ pub fn set_map_layer_visibility_in_session(
         | MapLayerId::WorldBasemap
         | MapLayerId::OfflineRegions => {}
     }
-    snapshot_for_changed_session(session)
+    changed_session_snapshot_outcome(session)
 }
 
 pub fn load_raster_map_catalog_in_session(handle: u32) -> AppResult<HadOperationOutcome> {
@@ -3934,17 +3937,20 @@ pub fn set_map_layer_enabled_in_session(
     handle: u32,
     layer_id: &str,
     enabled: bool,
-) -> AppResult<UiSessionSnapshot> {
+) -> AppResult<HadOperationOutcome> {
     let mut sessions = lock_sessions();
     let session = session_mut(&mut sessions, handle)?;
     let layer = parse_map_layer_id(layer_id)?;
+    if let Some(outcome) = preflight_session_snapshot_resources(session)? {
+        return Ok(outcome);
+    }
     let toggle = map_layer_toggle_mut(&mut session.map_layer_state, layer);
     toggle.enabled = enabled;
     toggle.disabled_reason = (!enabled).then(|| map_layer_disabled_reason(layer).to_string());
     if !enabled {
         toggle.visible = false;
     }
-    snapshot_for_changed_session(session)
+    changed_session_snapshot_outcome(session)
 }
 
 #[allow(dead_code)]
@@ -9512,6 +9518,23 @@ fn session_snapshot_outcome(session: &mut UiSession) -> AppResult<HadOperationOu
     session_snapshot_outcome_with_invalidations(session, Vec::new())
 }
 
+// Layer commands do not change the snapshot's HAD read set. Fault every required page
+// before mutating so NeedResources remains side-effect free across platform retries.
+fn preflight_session_snapshot_resources(
+    session: &mut UiSession,
+) -> AppResult<Option<HadOperationOutcome>> {
+    match try_snapshot_for_session(session) {
+        Ok(_) => Ok(None),
+        Err(HadReadError::NeedPages(pages)) => Ok(Some(HadOperationOutcome::NeedResources {
+            resources: nav_kv_page_resources(pages),
+        })),
+        Err(HadReadError::Fatal(message)) => Err(AppError {
+            kind: AppErrorKind::InvalidFlightPlan,
+            message,
+        }),
+    }
+}
+
 fn changed_session_snapshot_outcome(session: &mut UiSession) -> AppResult<HadOperationOutcome> {
     changed_session_snapshot_outcome_with_invalidations(session, Vec::new())
 }
@@ -11778,6 +11801,13 @@ mod tests {
 
     fn utc(value: &str) -> DateTime<Utc> {
         parse_utc_instant(value).expect("UTC timestamp")
+    }
+
+    fn snapshot_from_outcome(outcome: HadOperationOutcome) -> UiSessionSnapshot {
+        let HadOperationOutcome::Complete { result, .. } = outcome else {
+            panic!("session operation unexpectedly needed resources: {outcome:?}");
+        };
+        serde_json::from_value(result).expect("session snapshot")
     }
 
     #[derive(Default)]
@@ -14694,6 +14724,66 @@ mod tests {
     }
 
     #[test]
+    fn map_layer_mutation_waits_for_snapshot_pages_before_committing() {
+        let init =
+            create_ui_session(FlightPlan::default(), &[], None, None).expect("create session");
+        set_situation_in_session(
+            init.handle,
+            Situation {
+                position: SituationPosition::LatLon {
+                    lat: 48.54,
+                    lon: -109.76,
+                },
+                orientation_deg: None,
+                speed_kt: None,
+                altitude_msl_ft: None,
+            },
+        )
+        .expect("set ownship position");
+        let (store, pages) = crate::navkv::nav_kv_store_without_pages_and_pages_for_test(
+            &[
+                ("magvar/48/-110", b"14"),
+                ("magvar/48/-109", b"14"),
+                ("magvar/49/-110", b"14"),
+                ("magvar/49/-109", b"14"),
+            ],
+            256,
+        );
+        let store_id = 91_001;
+        attach_nav_kv_store_to_session(init.handle, store_id, &store).expect("attach nav kv");
+        let revision_before = {
+            let sessions = lock_sessions();
+            let session = session_ref(&sessions, init.handle).expect("session");
+            assert!(!session.map_layer_state.nexrad.visible);
+            session.session_revision
+        };
+
+        let outcome = set_map_layer_visibility_in_session(init.handle, "nexrad", true)
+            .expect("request layer visibility");
+        let HadOperationOutcome::NeedResources { resources } = outcome else {
+            panic!("missing snapshot pages must suspend the layer command: {outcome:?}");
+        };
+        assert!(!resources.is_empty());
+        {
+            let sessions = lock_sessions();
+            let session = session_ref(&sessions, init.handle).expect("session");
+            assert!(!session.map_layer_state.nexrad.visible);
+            assert_eq!(session.session_revision, revision_before);
+        }
+
+        for (page_index, page) in pages.iter().enumerate() {
+            insert_nav_kv_page_for_attached_sessions(store_id, page_index as u32, page);
+        }
+        let snapshot = snapshot_from_outcome(
+            set_map_layer_visibility_in_session(init.handle, "nexrad", true)
+                .expect("retry layer visibility"),
+        );
+        assert!(snapshot.map_layer_state.nexrad.visible);
+        assert_eq!(snapshot.session_revision, revision_before + 1);
+        destroy_session(init.handle);
+    }
+
+    #[test]
     fn hiding_nexrad_layer_clears_nexrad_caution() {
         let init =
             create_ui_session(FlightPlan::default(), &[], None, None).expect("create session");
@@ -14701,8 +14791,9 @@ mod tests {
         report_session_resource_failure_in_session(init.handle, "live_feeds/current", "404")
             .expect("report failure");
 
-        let snapshot =
-            set_map_layer_visibility_in_session(init.handle, "nexrad", false).expect("hide nexrad");
+        let snapshot = snapshot_from_outcome(
+            set_map_layer_visibility_in_session(init.handle, "nexrad", false).expect("hide nexrad"),
+        );
 
         assert!(!snapshot
             .data_status_state

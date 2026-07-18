@@ -1261,22 +1261,22 @@ pub fn select_chart_reference_in_session(
 }
 
 #[wasm_bindgen]
-pub fn set_map_layer_visibility_in_session(
+pub fn set_map_layer_visibility_in_session_paged(
     handle: u32,
     layer_id_json: &str,
     visible: bool,
 ) -> Result<String, JsValue> {
-    set_map_layer_visibility_in_session_json(handle, layer_id_json, visible)
+    set_map_layer_visibility_in_session_paged_json(handle, layer_id_json, visible)
         .map_err(|err| JsValue::from_str(&err))
 }
 
 #[wasm_bindgen]
-pub fn set_map_layer_enabled_in_session(
+pub fn set_map_layer_enabled_in_session_paged(
     handle: u32,
     layer_id_json: &str,
     enabled: bool,
 ) -> Result<String, JsValue> {
-    set_map_layer_enabled_in_session_json(handle, layer_id_json, enabled)
+    set_map_layer_enabled_in_session_paged_json(handle, layer_id_json, enabled)
         .map_err(|err| JsValue::from_str(&err))
 }
 
@@ -2197,26 +2197,26 @@ fn select_chart_reference_in_session_json(
     serde_json::to_string(&snapshot).map_err(|err| err.to_string())
 }
 
-fn set_map_layer_visibility_in_session_json(
+fn set_map_layer_visibility_in_session_paged_json(
     handle: u32,
     layer_id_json: &str,
     visible: bool,
 ) -> Result<String, String> {
     let layer_id: String = serde_json::from_str(layer_id_json).map_err(|err| err.to_string())?;
-    let snapshot = app_core::set_map_layer_visibility_in_session(handle, &layer_id, visible)
+    let outcome = app_core::set_map_layer_visibility_in_session(handle, &layer_id, visible)
         .map_err(|err| err.to_string())?;
-    serde_json::to_string(&snapshot).map_err(|err| err.to_string())
+    serde_json::to_string(&outcome).map_err(|err| err.to_string())
 }
 
-fn set_map_layer_enabled_in_session_json(
+fn set_map_layer_enabled_in_session_paged_json(
     handle: u32,
     layer_id_json: &str,
     enabled: bool,
 ) -> Result<String, String> {
     let layer_id: String = serde_json::from_str(layer_id_json).map_err(|err| err.to_string())?;
-    let snapshot = app_core::set_map_layer_enabled_in_session(handle, &layer_id, enabled)
+    let outcome = app_core::set_map_layer_enabled_in_session(handle, &layer_id, enabled)
         .map_err(|err| err.to_string())?;
-    serde_json::to_string(&snapshot).map_err(|err| err.to_string())
+    serde_json::to_string(&outcome).map_err(|err| err.to_string())
 }
 
 fn set_debug_flag_in_session_json(

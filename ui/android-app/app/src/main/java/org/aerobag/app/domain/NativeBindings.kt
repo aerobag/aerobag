@@ -325,13 +325,13 @@ interface NativeBridge {
         suggestedChartIdsJson: String,
     ): String
 
-    fun setMapLayerVisibilityInSessionJson(
+    fun setMapLayerVisibilityInSessionPagedJson(
         handle: Long,
         layerIdJson: String,
         visible: Boolean,
     ): String
 
-    fun setMapLayerEnabledInSessionJson(
+    fun setMapLayerEnabledInSessionPagedJson(
         handle: Long,
         layerIdJson: String,
         enabled: Boolean,
@@ -900,13 +900,13 @@ object NativeBindings : NativeBridge {
         suggestedChartIdsJson: String,
     ): String
 
-    external override fun setMapLayerVisibilityInSessionJson(
+    external override fun setMapLayerVisibilityInSessionPagedJson(
         handle: Long,
         layerIdJson: String,
         visible: Boolean,
     ): String
 
-    external override fun setMapLayerEnabledInSessionJson(
+    external override fun setMapLayerEnabledInSessionPagedJson(
         handle: Long,
         layerIdJson: String,
         enabled: Boolean,

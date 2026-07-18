@@ -865,8 +865,8 @@ type WasmModule = {
   push_situation_sample_in_session_paged(handle: number, sampleJson: string): Promise<string> | string;
   select_ownship_source_in_session_paged(handle: number, selectionJson: string): Promise<string> | string;
   apply_situation_control_input_in_session(handle: number, inputJson: string, nowEpochMs: number): Promise<string> | string;
-  set_map_layer_visibility_in_session(handle: number, layerIdJson: string, visible: boolean): Promise<string> | string;
-  set_map_layer_enabled_in_session(handle: number, layerIdJson: string, enabled: boolean): Promise<string> | string;
+  set_map_layer_visibility_in_session_paged(handle: number, layerIdJson: string, visible: boolean): Promise<string> | string;
+  set_map_layer_enabled_in_session_paged(handle: number, layerIdJson: string, enabled: boolean): Promise<string> | string;
   set_debug_flag_in_session(handle: number, flagIdJson: string, enabled: boolean): Promise<string> | string;
   perform_settings_action_in_session(handle: number, actionJson: string): Promise<string> | string;
   accept_disclaimer_in_session(handle: number, agreementId: string): Promise<string> | string;
@@ -1429,16 +1429,16 @@ export class WasmAppCoreAdapter implements AppCoreAdapter {
       },
       setMapLayerVisibility: async (layerId, visible) => {
         snapshot = await withSessionRetry(async () =>
-          parseSessionSnapshot(
-            this.module.set_map_layer_visibility_in_session(handle, JSON.stringify(layerId), visible),
+          runSessionOperation<UiSessionSnapshot>(
+            () => this.module.set_map_layer_visibility_in_session_paged(handle, JSON.stringify(layerId), visible),
           ),
         );
         return snapshot;
       },
       setMapLayerEnabled: async (layerId, enabled) => {
         snapshot = await withSessionRetry(async () =>
-          parseSessionSnapshot(
-            this.module.set_map_layer_enabled_in_session(handle, JSON.stringify(layerId), enabled),
+          runSessionOperation<UiSessionSnapshot>(
+            () => this.module.set_map_layer_enabled_in_session_paged(handle, JSON.stringify(layerId), enabled),
           ),
         );
         return snapshot;
@@ -1998,8 +1998,8 @@ async function loadBestAvailableAdapterUncached(
     "push_situation_sample_in_session_paged",
     "select_ownship_source_in_session_paged",
     "apply_situation_control_input_in_session",
-    "set_map_layer_visibility_in_session",
-    "set_map_layer_enabled_in_session",
+    "set_map_layer_visibility_in_session_paged",
+    "set_map_layer_enabled_in_session_paged",
     "set_debug_flag_in_session",
     "perform_settings_action_in_session",
     "accept_disclaimer_in_session",

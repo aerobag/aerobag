@@ -1,0 +1,15 @@
+{
+  "schema_version": 1,
+  "source": "Miami FLY.tif",
+  "source_width": 10547,
+  "source_height": 8980,
+  "max_output_width": 1210,
+  "regions": [
+    {
+      "x": 6356,
+      "y": 6946,
+      "width": 4008,
+      "height": 1865
+    }
+  ]
+}

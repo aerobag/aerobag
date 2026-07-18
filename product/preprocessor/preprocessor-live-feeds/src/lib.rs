@@ -253,14 +253,15 @@ impl CanonicalNotamIdentity {
         if year.len() != 4 || !year.chars().all(|ch| ch.is_ascii_digit()) {
             bail!("invalid NOTAM year {year}");
         }
-        let notam_type = notam_type
+        let source_notam_type = notam_type
             .map(str::trim)
             .filter(|value| !value.is_empty())
             .unwrap_or("N")
             .to_ascii_uppercase();
-        if notam_type != "N" {
-            bail!("unsupported NOTAM type {notam_type}");
-        }
+        let notam_type = match source_notam_type.as_str() {
+            "N" | "R" | "C" => "N".to_string(),
+            _ => bail!("unsupported NOTAM type {source_notam_type}"),
+        };
         let raw_number = number
             .map(str::trim)
             .filter(|value| !value.is_empty())

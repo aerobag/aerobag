@@ -18,7 +18,7 @@ use crate::{
     StructuredNotamRecord,
 };
 
-const NOTAM_STORE_SCHEMA_VERSION: u32 = 4;
+const NOTAM_STORE_SCHEMA_VERSION: u32 = 5;
 const RAW_INGEST_CURSOR_METADATA_KEY: &str = "raw_ingest_cursor";
 const RAW_INGEST_RETENTION_DAYS: i64 = 7;
 
@@ -47,8 +47,38 @@ pub struct AppliedRawNotamSummary {
     pub applied_count: usize,
     pub changed_count: usize,
     pub removed_count: usize,
+    pub rejected_count: usize,
+    pub new_rejected_count: usize,
     pub max_ingest_seq: i64,
     pub last_received_at_utc: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct NotamRejectionStatus {
+    pub unresolved_count: usize,
+    pub oldest_unresolved_ingest_seq: Option<i64>,
+    pub latest_unresolved_ingest_seq: Option<i64>,
+    pub last_error: Option<String>,
+    pub recent_rejections: Vec<NotamRejectionDetail>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct NotamRejectionDetail {
+    pub ingest_seq: i64,
+    pub first_rejected_at_utc: String,
+    pub last_rejected_at_utc: String,
+    pub rejection_count: usize,
+    pub error: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RetriedRejectedNotamSummary {
+    pub retried_count: usize,
+    pub resolved_count: usize,
+    pub applied_count: usize,
+    pub superseded_count: usize,
+    pub changed_count: usize,
+    pub removed_count: usize,
 }
 
 impl NotamPersistentStore {
@@ -144,6 +174,8 @@ impl NotamPersistentStore {
         let applied_at_utc = Utc::now().to_rfc3339();
         let mut changed_count = 0_usize;
         let mut removed_count = 0_usize;
+        let mut rejected_count = 0_usize;
+        let mut new_rejected_count = 0_usize;
         let mut last_received_at_utc = None;
         let max_ingest_seq = rows
             .last()
@@ -154,17 +186,29 @@ impl NotamPersistentStore {
             .context("failed to start NOTAM raw ingest apply transaction")?;
         for (ingest_seq, received_at_utc, message_json) in &rows {
             last_received_at_utc = Some(received_at_utc.clone());
-            if let Some(record) = structured_notam_record_from_json(message_json)
-                .with_context(|| format!("failed to normalize raw NOTAM ingest row {ingest_seq}"))?
-            {
-                let (changed, removed) = apply_record_to_projection(
-                    &tx,
-                    ProjectionTable::Current,
-                    &record,
-                    &applied_at_utc,
-                )?;
-                changed_count += changed;
-                removed_count += removed;
+            match structured_notam_record_from_json(message_json) {
+                Ok(Some(record)) => {
+                    let (changed, removed) = apply_record_to_projection(
+                        &tx,
+                        ProjectionTable::Current,
+                        &record,
+                        &applied_at_utc,
+                    )?;
+                    changed_count += changed;
+                    removed_count += removed;
+                    record_notam_identity_cursor(&tx, &record.id, *ingest_seq)?;
+                }
+                Ok(None) => {}
+                Err(error) => {
+                    let is_new = quarantine_raw_notam_message(
+                        &tx,
+                        *ingest_seq,
+                        &applied_at_utc,
+                        &format!("{error:#}"),
+                    )?;
+                    rejected_count += 1;
+                    new_rejected_count += usize::from(is_new);
+                }
             }
         }
         let max_ingest_seq_text = max_ingest_seq.to_string();
@@ -190,8 +234,177 @@ impl NotamPersistentStore {
             applied_count: rows.len(),
             changed_count,
             removed_count,
+            rejected_count,
+            new_rejected_count,
             max_ingest_seq,
             last_received_at_utc,
+        }))
+    }
+
+    pub fn rejection_status(&self) -> anyhow::Result<NotamRejectionStatus> {
+        let connection = self.open_connection()?;
+        let (unresolved_count, oldest, latest) = connection
+            .query_row(
+                "SELECT COUNT(*), MIN(ingest_seq), MAX(ingest_seq)
+                 FROM rejected_notam_messages
+                 WHERE resolved_at_utc IS NULL",
+                [],
+                |row| {
+                    Ok((
+                        row.get::<_, i64>(0)?,
+                        row.get::<_, Option<i64>>(1)?,
+                        row.get::<_, Option<i64>>(2)?,
+                    ))
+                },
+            )
+            .context("failed to summarize rejected NOTAM messages")?;
+        let last_error = connection
+            .query_row(
+                "SELECT error
+                 FROM rejected_notam_messages
+                 WHERE resolved_at_utc IS NULL
+                 ORDER BY ingest_seq DESC
+                 LIMIT 1",
+                [],
+                |row| row.get::<_, String>(0),
+            )
+            .optional()
+            .context("failed to read latest rejected NOTAM error")?;
+        let recent_rejections = {
+            let mut statement = connection
+                .prepare(
+                    "SELECT ingest_seq, first_rejected_at_utc, last_rejected_at_utc,
+                            rejection_count, error
+                     FROM rejected_notam_messages
+                     WHERE resolved_at_utc IS NULL
+                     ORDER BY ingest_seq DESC
+                     LIMIT 20",
+                )
+                .context("failed to prepare recent rejected NOTAM query")?;
+            let rows = statement
+                .query_map([], |row| {
+                    Ok(NotamRejectionDetail {
+                        ingest_seq: row.get(0)?,
+                        first_rejected_at_utc: row.get(1)?,
+                        last_rejected_at_utc: row.get(2)?,
+                        rejection_count: row.get::<_, i64>(3)? as usize,
+                        error: row.get(4)?,
+                    })
+                })
+                .context("failed to query recent rejected NOTAM messages")?
+                .collect::<Result<Vec<_>, _>>()
+                .context("failed to read recent rejected NOTAM messages")?;
+            rows
+        };
+        Ok(NotamRejectionStatus {
+            unresolved_count: unresolved_count as usize,
+            oldest_unresolved_ingest_seq: oldest,
+            latest_unresolved_ingest_seq: latest,
+            last_error,
+            recent_rejections,
+        })
+    }
+
+    pub fn retry_rejected_raw_messages(
+        &self,
+    ) -> anyhow::Result<Option<RetriedRejectedNotamSummary>> {
+        let mut connection = self.open_connection()?;
+        let rejected_rows = {
+            let mut statement = connection
+                .prepare(
+                    "SELECT rejected.ingest_seq, raw.message_json
+                     FROM rejected_notam_messages AS rejected
+                     LEFT JOIN raw_notam_messages AS raw
+                       ON raw.ingest_seq = rejected.ingest_seq
+                     WHERE rejected.resolved_at_utc IS NULL
+                     ORDER BY rejected.ingest_seq",
+                )
+                .context("failed to prepare rejected NOTAM retry query")?;
+            let rows = statement
+                .query_map([], |row| {
+                    Ok((row.get::<_, i64>(0)?, row.get::<_, Option<String>>(1)?))
+                })
+                .context("failed to query rejected NOTAM messages")?
+                .collect::<Result<Vec<_>, _>>()
+                .context("failed to read rejected NOTAM messages")?;
+            rows
+        };
+        if rejected_rows.is_empty() {
+            return Ok(None);
+        }
+        for (ingest_seq, message_json) in &rejected_rows {
+            if message_json.is_none() {
+                bail!("rejected NOTAM row {ingest_seq} is missing its retained raw message");
+            }
+        }
+        let retried_at_utc = Utc::now().to_rfc3339();
+        let tx = connection
+            .transaction()
+            .context("failed to start rejected NOTAM retry transaction")?;
+        let mut resolved_count = 0_usize;
+        let mut applied_count = 0_usize;
+        let mut superseded_count = 0_usize;
+        let mut changed_count = 0_usize;
+        let mut removed_count = 0_usize;
+        for (ingest_seq, message_json) in &rejected_rows {
+            let message_json = message_json.as_deref().with_context(|| {
+                format!("rejected NOTAM row {ingest_seq} is missing its retained raw message")
+            })?;
+            match structured_notam_record_from_json(message_json) {
+                Ok(record) => {
+                    if let Some(record) = record {
+                        let latest_ingest_seq = latest_notam_identity_cursor(&tx, &record.id)?;
+                        if latest_ingest_seq.is_some_and(|latest| latest > *ingest_seq) {
+                            superseded_count += 1;
+                        } else {
+                            let (changed, removed) = apply_record_to_projection(
+                                &tx,
+                                ProjectionTable::Current,
+                                &record,
+                                &retried_at_utc,
+                            )?;
+                            changed_count += changed;
+                            removed_count += removed;
+                            record_notam_identity_cursor(&tx, &record.id, *ingest_seq)?;
+                            applied_count += 1;
+                        }
+                    }
+                    tx.execute(
+                        "UPDATE rejected_notam_messages
+                         SET resolved_at_utc = ?1
+                         WHERE ingest_seq = ?2 AND resolved_at_utc IS NULL",
+                        params![retried_at_utc.as_str(), ingest_seq],
+                    )
+                    .with_context(|| {
+                        format!("failed to resolve rejected NOTAM row {ingest_seq}")
+                    })?;
+                    resolved_count += 1;
+                }
+                Err(error) => {
+                    tx.execute(
+                        "UPDATE rejected_notam_messages
+                         SET last_rejected_at_utc = ?1,
+                             rejection_count = rejection_count + 1,
+                             error = ?2
+                         WHERE ingest_seq = ?3 AND resolved_at_utc IS NULL",
+                        params![retried_at_utc.as_str(), format!("{error:#}"), ingest_seq],
+                    )
+                    .with_context(|| {
+                        format!("failed to refresh rejected NOTAM row {ingest_seq}")
+                    })?;
+                }
+            }
+        }
+        tx.commit()
+            .context("failed to commit rejected NOTAM retry transaction")?;
+        self.prune_applied_raw_messages()?;
+        Ok(Some(RetriedRejectedNotamSummary {
+            retried_count: rejected_rows.len(),
+            resolved_count,
+            applied_count,
+            superseded_count,
+            changed_count,
+            removed_count,
         }))
     }
 
@@ -324,6 +537,20 @@ impl NotamPersistentStore {
                     ON current_notams(status);
                 CREATE INDEX IF NOT EXISTS current_notams_last_updated_idx
                     ON current_notams(last_updated_utc);
+                CREATE TABLE IF NOT EXISTS rejected_notam_messages (
+                    ingest_seq INTEGER PRIMARY KEY,
+                    first_rejected_at_utc TEXT NOT NULL,
+                    last_rejected_at_utc TEXT NOT NULL,
+                    resolved_at_utc TEXT,
+                    rejection_count INTEGER NOT NULL,
+                    error TEXT NOT NULL
+                );
+                CREATE INDEX IF NOT EXISTS rejected_notam_messages_unresolved_idx
+                    ON rejected_notam_messages(resolved_at_utc, ingest_seq);
+                CREATE TABLE IF NOT EXISTS notam_identity_cursors (
+                    id TEXT PRIMARY KEY,
+                    ingest_seq INTEGER NOT NULL
+                );
                 ",
             )
             .context("failed to initialize NOTAM sqlite schema")?;
@@ -350,7 +577,16 @@ impl NotamPersistentStore {
                     .context("failed to initialize NOTAM sqlite schema version")?;
                 Ok(())
             }
-            Some("4") => Ok(()),
+            Some("5") => Ok(()),
+            Some("4") => {
+                connection
+                    .execute(
+                        "UPDATE metadata SET value = ?1 WHERE key = 'schema_version'",
+                        [NOTAM_STORE_SCHEMA_VERSION.to_string()],
+                    )
+                    .context("failed to promote NOTAM sqlite schema 4")?;
+                Ok(())
+            }
             Some("3") => self.reproject_schema_v3(connection),
             Some("2") => self.reproject_schema_v2(connection),
             Some(version) => bail!(
@@ -414,6 +650,7 @@ impl NotamPersistentStore {
                     &record,
                     &reprojected_at_utc,
                 )?;
+                record_notam_identity_cursor(&tx, &record.id, *ingest_seq)?;
             }
         }
         tx.execute(
@@ -510,6 +747,12 @@ impl NotamPersistentStore {
                 DELETE FROM raw_notam_messages
                 WHERE applied_at_utc IS NOT NULL
                   AND ingest_seq <= ?1
+                  AND NOT EXISTS (
+                      SELECT 1
+                      FROM rejected_notam_messages AS rejected
+                      WHERE rejected.ingest_seq = raw_notam_messages.ingest_seq
+                        AND rejected.resolved_at_utc IS NULL
+                  )
                   AND julianday(applied_at_utc) < julianday('now', ?2)
                 ",
                 params![
@@ -549,6 +792,65 @@ impl ProjectionTable {
             Self::SchemaV4 => "current_notams_v4",
         }
     }
+}
+
+fn latest_notam_identity_cursor(tx: &Transaction<'_>, id: &str) -> anyhow::Result<Option<i64>> {
+    tx.query_row(
+        "SELECT ingest_seq FROM notam_identity_cursors WHERE id = ?1",
+        [id],
+        |row| row.get::<_, i64>(0),
+    )
+    .optional()
+    .with_context(|| format!("failed to read NOTAM identity cursor for {id}"))
+}
+
+fn record_notam_identity_cursor(
+    tx: &Transaction<'_>,
+    id: &str,
+    ingest_seq: i64,
+) -> anyhow::Result<()> {
+    tx.execute(
+        "INSERT INTO notam_identity_cursors(id, ingest_seq) VALUES (?1, ?2)
+         ON CONFLICT(id) DO UPDATE SET ingest_seq = excluded.ingest_seq
+         WHERE excluded.ingest_seq > notam_identity_cursors.ingest_seq",
+        params![id, ingest_seq],
+    )
+    .with_context(|| format!("failed to record NOTAM identity cursor for {id}"))?;
+    Ok(())
+}
+
+fn quarantine_raw_notam_message(
+    tx: &Transaction<'_>,
+    ingest_seq: i64,
+    rejected_at_utc: &str,
+    error: &str,
+) -> anyhow::Result<bool> {
+    let inserted = tx
+        .execute(
+            "INSERT OR IGNORE INTO rejected_notam_messages (
+                ingest_seq,
+                first_rejected_at_utc,
+                last_rejected_at_utc,
+                resolved_at_utc,
+                rejection_count,
+                error
+             ) VALUES (?1, ?2, ?2, NULL, 1, ?3)",
+            params![ingest_seq, rejected_at_utc, error],
+        )
+        .with_context(|| format!("failed to quarantine raw NOTAM row {ingest_seq}"))?;
+    if inserted == 0 {
+        tx.execute(
+            "UPDATE rejected_notam_messages
+             SET last_rejected_at_utc = ?1,
+                 resolved_at_utc = NULL,
+                 rejection_count = rejection_count + 1,
+                 error = ?2
+             WHERE ingest_seq = ?3",
+            params![rejected_at_utc, error, ingest_seq],
+        )
+        .with_context(|| format!("failed to refresh quarantined raw NOTAM row {ingest_seq}"))?;
+    }
+    Ok(inserted > 0)
 }
 
 fn apply_record_to_projection(
@@ -726,6 +1028,249 @@ mod tests {
     }
 
     #[test]
+    fn rejected_raw_message_does_not_block_later_messages() -> anyhow::Result<()> {
+        let temp = tempdir()?;
+        let store = NotamPersistentStore::new(temp.path());
+        store.initialize(&identity("queue-a"))?;
+        store.insert_raw_message_for_test(
+            "message-a",
+            "2026-07-11T02:03:00Z",
+            &captured_notam_variant(
+                "PUBLISHED",
+                "NOTAMN",
+                Some("RWY"),
+                "1",
+                Some("N"),
+                "RWY 01 CLSD.",
+            ),
+        )?;
+        store.insert_raw_message_for_test(
+            "message-b",
+            "2026-07-11T02:04:00Z",
+            &captured_notam_variant(
+                "PUBLISHED",
+                "NOTAMN",
+                Some("RWY"),
+                "2",
+                Some("UNEXPECTED"),
+                "RWY 02 CLSD.",
+            ),
+        )?;
+        store.insert_raw_message_for_test(
+            "message-c",
+            "2026-07-11T02:05:00Z",
+            &captured_notam_variant(
+                "PUBLISHED",
+                "NOTAMN",
+                Some("RWY"),
+                "3",
+                Some("N"),
+                "RWY 03 CLSD.",
+            ),
+        )?;
+
+        let summary = store
+            .apply_pending_raw_messages(10)?
+            .expect("raw rows should be consumed");
+
+        assert_eq!(summary.applied_count, 3);
+        assert_eq!(summary.changed_count, 2);
+        assert_eq!(summary.rejected_count, 1);
+        assert_eq!(summary.new_rejected_count, 1);
+        assert_eq!(summary.max_ingest_seq, 3);
+        assert_eq!(
+            store
+                .current_records()?
+                .into_iter()
+                .map(|record| record.id)
+                .collect::<Vec<_>>(),
+            vec!["D:AAA:2026:N:1", "D:AAA:2026:N:3"]
+        );
+        assert!(store.apply_pending_raw_messages(10)?.is_none());
+        let rejection = store.rejection_status()?;
+        assert_eq!(rejection.unresolved_count, 1);
+        assert_eq!(rejection.oldest_unresolved_ingest_seq, Some(2));
+        assert_eq!(rejection.latest_unresolved_ingest_seq, Some(2));
+        assert_eq!(
+            rejection.last_error.as_deref(),
+            Some("unsupported NOTAM type UNEXPECTED")
+        );
+        assert_eq!(rejection.recent_rejections.len(), 1);
+        assert_eq!(rejection.recent_rejections[0].ingest_seq, 2);
+        assert_eq!(
+            rejection.recent_rejections[0].error,
+            "unsupported NOTAM type UNEXPECTED"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn repaired_rejection_does_not_override_later_identity_update() -> anyhow::Result<()> {
+        let temp = tempdir()?;
+        let store = NotamPersistentStore::new(temp.path());
+        store.initialize(&identity("queue-a"))?;
+        store.insert_raw_message_for_test(
+            "message-a",
+            "2026-07-11T02:03:00Z",
+            &captured_notam_variant(
+                "PUBLISHED",
+                "NOTAMN",
+                Some("RWY"),
+                "9",
+                Some("N"),
+                "RWY 09 CLSD.",
+            ),
+        )?;
+        store.insert_raw_message_for_test(
+            "message-b",
+            "2026-07-11T02:04:00Z",
+            &captured_notam_variant(
+                "CANCELLED",
+                "NOTAMN",
+                Some("RWY"),
+                "9",
+                Some("N"),
+                "RWY 09 CLSD.",
+            ),
+        )?;
+        let connection = Connection::open(store.sqlite_path())?;
+        connection.execute(
+            "INSERT INTO metadata(key, value) VALUES (?1, '2')
+             ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+            [RAW_INGEST_CURSOR_METADATA_KEY],
+        )?;
+        connection.execute(
+            "UPDATE raw_notam_messages SET applied_at_utc = '2026-07-11T02:05:00Z'",
+            [],
+        )?;
+        connection.execute(
+            "INSERT INTO rejected_notam_messages (
+                ingest_seq, first_rejected_at_utc, last_rejected_at_utc,
+                resolved_at_utc, rejection_count, error
+             ) VALUES (1, '2026-07-11T02:05:00Z', '2026-07-11T02:05:00Z', NULL, 1, 'old parser rejection')",
+            [],
+        )?;
+        connection.execute(
+            "INSERT INTO notam_identity_cursors(id, ingest_seq)
+             VALUES ('D:AAA:2026:N:9', 2)",
+            [],
+        )?;
+        drop(connection);
+
+        let summary = store
+            .retry_rejected_raw_messages()?
+            .expect("repaired row should retry");
+
+        assert_eq!(summary.retried_count, 1);
+        assert_eq!(summary.resolved_count, 1);
+        assert_eq!(summary.applied_count, 0);
+        assert_eq!(summary.superseded_count, 1);
+        assert_eq!(summary.changed_count, 0);
+        assert_eq!(summary.removed_count, 0);
+        assert!(store.current_records()?.is_empty());
+        assert_eq!(store.rejection_status()?.unresolved_count, 0);
+        Ok(())
+    }
+
+    #[test]
+    fn repaired_rejection_applies_when_not_superseded() -> anyhow::Result<()> {
+        let temp = tempdir()?;
+        let store = NotamPersistentStore::new(temp.path());
+        store.initialize(&identity("queue-a"))?;
+        store.insert_raw_message_for_test(
+            "message-a",
+            "2026-07-11T02:03:00Z",
+            &captured_notam_variant(
+                "PUBLISHED",
+                "NOTAMN",
+                Some("RWY"),
+                "9",
+                Some("N"),
+                "RWY 09 CLSD.",
+            ),
+        )?;
+        let connection = Connection::open(store.sqlite_path())?;
+        connection.execute(
+            "INSERT INTO metadata(key, value) VALUES (?1, '1')
+             ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+            [RAW_INGEST_CURSOR_METADATA_KEY],
+        )?;
+        connection.execute(
+            "UPDATE raw_notam_messages SET applied_at_utc = '2026-07-11T02:05:00Z'",
+            [],
+        )?;
+        connection.execute(
+            "INSERT INTO rejected_notam_messages (
+                ingest_seq, first_rejected_at_utc, last_rejected_at_utc,
+                resolved_at_utc, rejection_count, error
+             ) VALUES (1, '2026-07-11T02:05:00Z', '2026-07-11T02:05:00Z', NULL, 1, 'old parser rejection')",
+            [],
+        )?;
+        drop(connection);
+
+        let summary = store
+            .retry_rejected_raw_messages()?
+            .expect("repaired row should retry");
+
+        assert_eq!(summary.resolved_count, 1);
+        assert_eq!(summary.applied_count, 1);
+        assert_eq!(summary.superseded_count, 0);
+        assert_eq!(summary.changed_count, 1);
+        assert_eq!(store.current_records()?[0].id, "D:AAA:2026:N:9");
+        assert_eq!(store.rejection_status()?.unresolved_count, 0);
+        Ok(())
+    }
+
+    #[test]
+    fn raw_retention_preserves_only_unresolved_rejections() -> anyhow::Result<()> {
+        let temp = tempdir()?;
+        let store = NotamPersistentStore::new(temp.path());
+        store.initialize(&identity("queue-a"))?;
+        for index in 1..=3 {
+            store.insert_raw_message_for_test(
+                &format!("message-{index}"),
+                "2000-01-01T00:00:00Z",
+                &captured_notam_variant(
+                    "PUBLISHED",
+                    "NOTAMN",
+                    Some("RWY"),
+                    &index.to_string(),
+                    Some("N"),
+                    "RWY CLSD.",
+                ),
+            )?;
+        }
+        let connection = Connection::open(store.sqlite_path())?;
+        connection.execute(
+            "INSERT INTO metadata(key, value) VALUES (?1, '3')
+             ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+            [RAW_INGEST_CURSOR_METADATA_KEY],
+        )?;
+        connection.execute(
+            "UPDATE raw_notam_messages SET applied_at_utc = '2000-01-01T00:00:00Z'",
+            [],
+        )?;
+        connection.execute(
+            "INSERT INTO rejected_notam_messages (
+                ingest_seq, first_rejected_at_utc, last_rejected_at_utc,
+                resolved_at_utc, rejection_count, error
+             ) VALUES (2, '2000-01-01T00:00:00Z', '2000-01-01T00:00:00Z', NULL, 1, 'old parser rejection')",
+            [],
+        )?;
+        drop(connection);
+
+        store.prune_applied_raw_messages()?;
+
+        let connection = Connection::open(store.sqlite_path())?;
+        let retained = connection
+            .prepare("SELECT ingest_seq FROM raw_notam_messages ORDER BY ingest_seq")?
+            .query_map([], |row| row.get::<_, i64>(0))?
+            .collect::<Result<Vec<_>, _>>()?;
+        assert_eq!(retained, vec![2]);
+        Ok(())
+    }
+
+    #[test]
     fn committed_cancelled_notam_deletes_current_record() -> anyhow::Result<()> {
         let temp = tempdir()?;
         let store = NotamPersistentStore::new(temp.path());
@@ -796,6 +1341,47 @@ mod tests {
     }
 
     #[test]
+    fn replacement_type_cancellation_uses_canonical_new_notam_identity() -> anyhow::Result<()> {
+        let temp = tempdir()?;
+        let store = NotamPersistentStore::new(temp.path());
+        store.initialize(&identity("queue-a"))?;
+        store.insert_raw_message_for_test(
+            "message-a",
+            "2026-07-11T02:03:00Z",
+            &captured_notam_variant(
+                "PUBLISHED",
+                "N",
+                Some("TWY"),
+                "057",
+                Some("N"),
+                "TWY K HOLD PAD CLSD.",
+            ),
+        )?;
+        store.apply_pending_raw_messages(10)?;
+        assert_eq!(store.current_records()?[0].id, "D:AAA:2026:N:57");
+
+        store.insert_raw_message_for_test(
+            "message-b",
+            "2026-07-11T02:04:00Z",
+            &captured_notam_variant(
+                "CANCELLED",
+                "N",
+                Some("TWY"),
+                "057",
+                Some("R"),
+                "TWY K HOLD PAD CLSD.",
+            ),
+        )?;
+        let summary = store
+            .apply_pending_raw_messages(10)?
+            .expect("replacement-type cancellation row should apply");
+
+        assert_eq!(summary.removed_count, 1);
+        assert!(store.current_records()?.is_empty());
+        Ok(())
+    }
+
+    #[test]
     fn domestic_keyword_comes_from_body_when_transport_is_missing_or_wrong() -> anyhow::Result<()> {
         let missing = structured_notam_record_from_json(&captured_notam_variant(
             "ACTIVE",
@@ -819,6 +1405,43 @@ mod tests {
         .expect("record");
         assert_eq!(conflicting.notam_keyword.as_deref(), Some("NAV"));
         assert_eq!(conflicting.airport_id, None);
+        Ok(())
+    }
+
+    #[test]
+    fn schema_v4_migration_adds_rejection_tracking() -> anyhow::Result<()> {
+        let temp = tempdir()?;
+        let store = NotamPersistentStore::new(temp.path());
+        store.initialize(&identity("queue-a"))?;
+        let connection = Connection::open(store.sqlite_path())?;
+        connection.execute_batch(
+            "DROP TABLE rejected_notam_messages;
+             DROP TABLE notam_identity_cursors;
+             UPDATE metadata SET value = '4' WHERE key = 'schema_version';",
+        )?;
+        drop(connection);
+
+        store.initialize(&identity("queue-a"))?;
+
+        let connection = Connection::open(store.sqlite_path())?;
+        assert_eq!(
+            connection.query_row(
+                "SELECT value FROM metadata WHERE key = 'schema_version'",
+                [],
+                |row| row.get::<_, String>(0),
+            )?,
+            "5"
+        );
+        for table in ["rejected_notam_messages", "notam_identity_cursors"] {
+            assert_eq!(
+                connection.query_row(
+                    "SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = ?1",
+                    [table],
+                    |row| row.get::<_, i64>(0),
+                )?,
+                1
+            );
+        }
         Ok(())
     }
 
@@ -884,7 +1507,7 @@ mod tests {
                 [],
                 |row| row.get::<_, String>(0),
             )?,
-            "4"
+            "5"
         );
         assert_eq!(raw_ingest_cursor(&connection)?, 2);
         Ok(())
@@ -936,7 +1559,7 @@ mod tests {
                 [],
                 |row| row.get::<_, String>(0),
             )?,
-            "4"
+            "5"
         );
         Ok(())
     }

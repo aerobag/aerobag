@@ -132,6 +132,79 @@ class PipelineHealthTests(unittest.TestCase):
             "2026-06-19T11:00:00Z",
         )
 
+    def test_notams_without_a_successful_sample_are_critical(self) -> None:
+        now = datetime(2026, 7, 17, 20, 0, 0, tzinfo=timezone.utc)
+        facts = {
+            "inputs": {
+                "current_artifacts": {"error": None, "payload": []},
+                "deploy_health": {"error": None, "payload": {}},
+                "live_feeds_status": {
+                    "error": None,
+                    "payload": {
+                        "products": {
+                            "notams": {
+                                "last_source_timestamp_utc": None,
+                                "last_success_at_utc": None,
+                                "last_failure_at_utc": "2026-07-17T16:30:53Z",
+                                "last_failure_phase": "poll",
+                                "last_error": "unsupported NOTAM type R",
+                                "consecutive_failure_count": 1,
+                                "quality": {
+                                    "rejected_row_count": 1,
+                                    "oldest_rejected_ingest_seq": 6922,
+                                    "latest_rejected_ingest_seq": 6922,
+                                    "last_rejection_error": "unsupported NOTAM type R",
+                                    "recent_rejections": [
+                                        {
+                                            "ingest_seq": 6922,
+                                            "first_rejected_at_utc": "2026-07-17T16:30:53Z",
+                                            "last_rejected_at_utc": "2026-07-17T16:30:53Z",
+                                            "rejection_count": 1,
+                                            "error": "unsupported NOTAM type R",
+                                        }
+                                    ],
+                                },
+                                "attempts": [
+                                    {
+                                        "attempted_at_utc": "2026-07-17T16:30:53Z",
+                                        "result": "failure",
+                                        "phase": "poll",
+                                        "error": "unsupported NOTAM type R",
+                                    }
+                                ],
+                            }
+                        }
+                    },
+                },
+                "build_watch": {"error": None, "payload": {}},
+                "faa_cycle_calendar": {"error": None, "payload": {"cycles": []}},
+                "product_facts": [],
+            }
+        }
+
+        evaluation = pipeline_health.evaluate_health(facts, [], now)
+
+        stale = metric(evaluation, "live_feed.notams.stale_seconds")
+        self.assertEqual(stale["severity"], "critical")
+        self.assertEqual(stale["warning_threshold"], 5 * 60)
+        self.assertEqual(stale["critical_threshold"], 15 * 60)
+        failures = metric(evaluation, "live_feed.notams.consecutive_failures")
+        self.assertEqual(failures["severity"], "warning")
+        failure_rate = metric(evaluation, "live_feed.notams.recent_failure_rate")
+        self.assertEqual(failure_rate["details"]["last_error"], "unsupported NOTAM type R")
+        rejected = metric(evaluation, "live_feed.notams.rejected_row_count")
+        self.assertEqual(rejected["value"], 1)
+        self.assertEqual(rejected["severity"], "warning")
+        self.assertEqual(rejected["details"]["oldest_rejected_ingest_seq"], 6922)
+        self.assertEqual(
+            rejected["details"]["last_rejection_error"],
+            "unsupported NOTAM type R",
+        )
+        self.assertEqual(
+            rejected["details"]["recent_rejections"][0]["ingest_seq"], 6922
+        )
+        self.assertEqual(evaluation["top_line_status"], "critical")
+
     def test_product_facts_compare_against_previous_history(self) -> None:
         current_facts = {
             "inputs": {

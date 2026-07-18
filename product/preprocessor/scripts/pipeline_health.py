@@ -31,6 +31,7 @@ LIVE_FEED_STALE_THRESHOLDS: dict[str, tuple[int, int]] = {
     "obstacles": (2 * 24 * 60 * 60, 7 * 24 * 60 * 60),
     "tfrs": (3 * 60 * 60, 6 * 60 * 60),
     "nexrad": (700, 15 * 60),
+    "notams": (5 * 60, 15 * 60),
 }
 
 LIVE_FEED_DISPLAY_NAMES = {
@@ -39,6 +40,7 @@ LIVE_FEED_DISPLAY_NAMES = {
     "obstacles": "Obstacles",
     "tfrs": "TFRs",
     "nexrad": "NEXRAD",
+    "notams": "NOTAMs",
 }
 
 SECONDS_PER_DAY = 24 * 60 * 60
@@ -534,6 +536,30 @@ def add_live_feed_metrics(
                     "failures": detail_failures,
                 },
             )
+        if product == "notams":
+            quality = status.get("quality")
+            if isinstance(quality, dict):
+                rejected_count = int(quality.get("rejected_row_count") or 0)
+                add_metric(
+                    metrics,
+                    metric_id="live_feed.notams.rejected_row_count",
+                    label="NOTAM rejected source rows",
+                    value=rejected_count,
+                    unit="rows",
+                    severity="warning" if rejected_count > 0 else "ok",
+                    warning_threshold=1,
+                    message=f"NOTAM rejected source rows: {rejected_count}",
+                    details={
+                        "oldest_rejected_ingest_seq": quality.get(
+                            "oldest_rejected_ingest_seq"
+                        ),
+                        "latest_rejected_ingest_seq": quality.get(
+                            "latest_rejected_ingest_seq"
+                        ),
+                        "last_rejection_error": quality.get("last_rejection_error"),
+                        "recent_rejections": quality.get("recent_rejections") or [],
+                    },
+                )
         if product == "nexrad":
             quality = status.get("quality")
             if isinstance(quality, dict):

@@ -26,7 +26,10 @@ use preprocessor_live_feeds::{
         QueuedLiveFeedSource, SseBroker, SystemClock, UpstreamEvent, LIVE_FEEDS_SCHEMA_VERSION,
         LIVE_FEED_FAILED_SCRATCH_RETAIN_COUNT,
     },
-    notam_store::{AppliedRawNotamSummary, NotamPersistentStore, SwimNotamSubscriptionIdentity},
+    notam_store::{
+        AppliedRawNotamSummary, NotamPersistentStore, NotamRejectionStatus,
+        SwimNotamSubscriptionIdentity,
+    },
     products::{
         fetch_tfr_detail_backfill_once, LiveFeedFetchConfig, MetarLiveFeedBuilder,
         NexradSourceGridLiveFeedBuilder, NotamLiveFeedBuilder, ObstaclesLiveFeedBuilder,
@@ -248,6 +251,9 @@ struct SourceIngestSample {
     message_count: usize,
     changed_count: usize,
     removed_count: usize,
+    rejected_count: usize,
+    new_rejected_count: usize,
+    unresolved_rejected_count: usize,
     cursor: i64,
 }
 
@@ -342,6 +348,9 @@ impl DaemonStatus {
         message_count: usize,
         changed_count: usize,
         removed_count: usize,
+        rejected_count: usize,
+        new_rejected_count: usize,
+        unresolved_rejected_count: usize,
         cursor: i64,
     ) {
         let mut state = self.inner.lock().expect("live-feed status lock");
@@ -358,9 +367,24 @@ impl DaemonStatus {
                 message_count,
                 changed_count,
                 removed_count,
+                rejected_count,
+                new_rejected_count,
+                unresolved_rejected_count,
                 cursor,
             },
         );
+    }
+
+    fn record_notam_rejection_status(&self, rejection: &NotamRejectionStatus) {
+        let mut state = self.inner.lock().expect("live-feed status lock");
+        let history = state.products.entry("notams".to_string()).or_default();
+        history.quality = Some(serde_json::json!({
+            "rejected_row_count": rejection.unresolved_count,
+            "oldest_rejected_ingest_seq": rejection.oldest_unresolved_ingest_seq,
+            "latest_rejected_ingest_seq": rejection.latest_unresolved_ingest_seq,
+            "last_rejection_error": rejection.last_error,
+            "recent_rejections": rejection.recent_rejections,
+        }));
     }
 
     fn record_source_failure(&self, product: &str, error: impl Into<String>) {
@@ -949,14 +973,12 @@ fn start_live_feed_driver(
         if let Some(swim_notams) = swim_notams {
             let source = QueuedLiveFeedSource::new("notams");
             let notam_state_root = swim_notams.state_root.clone();
-            if let Err(error) = start_swim_notams_supervisor(
+            start_swim_notams_supervisor(
                 swim_notams,
                 notam_state_root.clone(),
                 source.sender(),
                 status.clone(),
-            ) {
-                status.record_source_failure("notams", format!("{error:#}"));
-            }
+            );
             tasks.push(Box::new(QueuedDaemonLiveFeedTask::new(
                 LiveFeedSourceAndBuilder::new(source, NotamLiveFeedBuilder::new(notam_state_root)),
                 Duration::from_secs(60),
@@ -1451,67 +1473,113 @@ fn start_swim_notams_supervisor(
     state_root: PathBuf,
     sender: Sender<UpstreamEvent>,
     status: DaemonStatus,
+) {
+    thread::spawn(move || loop {
+        if let Err(error) =
+            run_swim_notams_supervisor_session(&config, &state_root, &sender, &status)
+        {
+            status.record_source_failure(
+                "notams",
+                format!("NOTAM supervisor session failed: {error:#}"),
+            );
+        }
+        thread::sleep(Duration::from_millis(config.retry_interval_ms));
+    });
+}
+
+fn run_swim_notams_supervisor_session(
+    config: &SwimNotamsConfig,
+    state_root: &Path,
+    sender: &Sender<UpstreamEvent>,
+    status: &DaemonStatus,
 ) -> anyhow::Result<()> {
     let identity = read_swim_notams_subscription_identity(&config.config_path)?;
     let store = NotamPersistentStore::new(state_root);
     store.initialize(&identity)?;
-    let lock = store.acquire_lock()?;
-    apply_and_queue_swim_notams(&store, &sender, &status)?;
-    queue_persisted_notam_state_event(&store, &sender, &status)?;
-    thread::spawn(move || {
-        let _lock = lock;
-        loop {
-            match start_swim_notams_collector_process(&config, &store) {
-                Ok(mut child) => {
-                    status.record_source_success("notams", None, "source_connected");
-                    let mut failure_after_start = false;
-                    loop {
-                        if let Err(error) = apply_and_queue_swim_notams(&store, &sender, &status) {
-                            status.record_source_failure("notams", format!("{error:#}"));
-                        }
-                        match child.try_wait() {
-                            Ok(Some(exit_status)) => {
-                                if exit_status.success() {
-                                    status.record_source_success(
-                                        "notams",
-                                        None,
-                                        "collector_exited",
-                                    );
-                                } else {
-                                    status.record_source_failure(
-                                        "notams",
-                                        format!("SWIM NOTAM collector exited with {exit_status}"),
-                                    );
-                                    failure_after_start = true;
-                                }
-                                break;
-                            }
-                            Ok(None) => thread::sleep(Duration::from_secs(1)),
-                            Err(error) => {
+    let _lock = store.acquire_lock()?;
+    let retry_resolved_rows = match store.retry_rejected_raw_messages() {
+        Ok(Some(summary)) => {
+            eprintln!(
+                "NOTAM quarantine retry resolved={} retried={} applied={} superseded={} changed={} removed={}",
+                summary.resolved_count,
+                summary.retried_count,
+                summary.applied_count,
+                summary.superseded_count,
+                summary.changed_count,
+                summary.removed_count
+            );
+            summary.resolved_count > 0
+        }
+        Ok(None) => false,
+        Err(error) => {
+            status.record_source_failure(
+                "notams",
+                format!("failed to retry rejected NOTAM messages: {error:#}"),
+            );
+            false
+        }
+    };
+    match store.rejection_status() {
+        Ok(rejection) => status.record_notam_rejection_status(&rejection),
+        Err(error) => status.record_source_failure(
+            "notams",
+            format!("failed to read rejected NOTAM status: {error:#}"),
+        ),
+    }
+    if let Err(error) = apply_and_queue_swim_notams(&store, &sender, &status) {
+        status.record_source_failure("notams", format!("{error:#}"));
+    }
+    if let Err(error) =
+        queue_persisted_notam_state_event(&store, &sender, &status, retry_resolved_rows)
+    {
+        status.record_source_failure("notams", format!("{error:#}"));
+    }
+    loop {
+        match start_swim_notams_collector_process(config, &store) {
+            Ok(mut child) => {
+                status.record_source_success("notams", None, "source_connected");
+                let mut failure_after_start = false;
+                loop {
+                    if let Err(error) = apply_and_queue_swim_notams(&store, sender, status) {
+                        status.record_source_failure("notams", format!("{error:#}"));
+                    }
+                    match child.try_wait() {
+                        Ok(Some(exit_status)) => {
+                            if exit_status.success() {
+                                status.record_source_success("notams", None, "collector_exited");
+                            } else {
                                 status.record_source_failure(
                                     "notams",
-                                    format!("failed to poll SWIM NOTAM collector: {error:#}"),
+                                    format!("SWIM NOTAM collector exited with {exit_status}"),
                                 );
-                                let _ = child.kill();
                                 failure_after_start = true;
-                                break;
                             }
+                            break;
+                        }
+                        Ok(None) => thread::sleep(Duration::from_secs(1)),
+                        Err(error) => {
+                            status.record_source_failure(
+                                "notams",
+                                format!("failed to poll SWIM NOTAM collector: {error:#}"),
+                            );
+                            let _ = child.kill();
+                            failure_after_start = true;
+                            break;
                         }
                     }
-                    if failure_after_start {
-                        thread::sleep(Duration::from_millis(config.retry_interval_ms));
-                    } else {
-                        thread::sleep(Duration::from_secs(1));
-                    }
                 }
-                Err(error) => {
-                    status.record_source_failure("notams", format!("{error:#}"));
+                if failure_after_start {
                     thread::sleep(Duration::from_millis(config.retry_interval_ms));
+                } else {
+                    thread::sleep(Duration::from_secs(1));
                 }
             }
+            Err(error) => {
+                status.record_source_failure("notams", format!("{error:#}"));
+                thread::sleep(Duration::from_millis(config.retry_interval_ms));
+            }
         }
-    });
-    Ok(())
+    }
 }
 
 fn start_tfr_detail_backfill_supervisor(
@@ -1584,8 +1652,9 @@ fn queue_persisted_notam_state_event(
     store: &NotamPersistentStore,
     sender: &Sender<UpstreamEvent>,
     status: &DaemonStatus,
+    include_empty: bool,
 ) -> anyhow::Result<()> {
-    if store.current_records()?.is_empty() {
+    if !include_empty && store.current_records()?.is_empty() {
         return Ok(());
     }
     let observed_at_utc = Utc::now();
@@ -1610,7 +1679,9 @@ fn apply_and_queue_swim_notams(
     status: &DaemonStatus,
 ) -> anyhow::Result<()> {
     while let Some(summary) = store.apply_pending_raw_messages(500)? {
-        queue_notam_raw_ingest_event(sender, status, &summary)?;
+        let rejection = store.rejection_status()?;
+        status.record_notam_rejection_status(&rejection);
+        queue_notam_raw_ingest_event(sender, status, &summary, &rejection)?;
         if summary.applied_count < 500 {
             break;
         }
@@ -1667,6 +1738,7 @@ fn queue_notam_raw_ingest_event(
     sender: &Sender<UpstreamEvent>,
     status: &DaemonStatus,
     summary: &AppliedRawNotamSummary,
+    rejection: &NotamRejectionStatus,
 ) -> anyhow::Result<()> {
     let observed_at_utc = summary
         .last_received_at_utc
@@ -1692,16 +1764,22 @@ fn queue_notam_raw_ingest_event(
         summary.applied_count,
         summary.changed_count,
         summary.removed_count,
+        summary.rejected_count,
+        summary.new_rejected_count,
+        rejection.unresolved_count,
         summary.max_ingest_seq,
     );
     status.record_source_success(
         "notams",
         Some(source_timestamp),
         format!(
-            "source_messages applied={} changed={} removed={} cursor={}",
+            "source_messages applied={} changed={} removed={} rejected={} new_rejected={} unresolved_rejected={} cursor={}",
             summary.applied_count,
             summary.changed_count,
             summary.removed_count,
+            summary.rejected_count,
+            summary.new_rejected_count,
+            rejection.unresolved_count,
             summary.max_ingest_seq
         ),
     );
@@ -2853,6 +2931,9 @@ mod tests {
             3,
             2,
             1,
+            0,
+            0,
+            0,
             42,
         );
         status.record_source_ingest(
@@ -2862,8 +2943,24 @@ mod tests {
             6,
             4,
             0,
+            1,
+            1,
+            1,
             48,
         );
+        status.record_notam_rejection_status(&NotamRejectionStatus {
+            unresolved_count: 1,
+            oldest_unresolved_ingest_seq: Some(47),
+            latest_unresolved_ingest_seq: Some(47),
+            last_error: Some("unsupported NOTAM type X".to_string()),
+            recent_rejections: vec![preprocessor_live_feeds::notam_store::NotamRejectionDetail {
+                ingest_seq: 47,
+                first_rejected_at_utc: "2026-07-12T02:48:00Z".to_string(),
+                last_rejected_at_utc: "2026-07-12T02:48:00Z".to_string(),
+                rejection_count: 1,
+                error: "unsupported NOTAM type X".to_string(),
+            }],
+        });
 
         let snapshot = status.snapshot();
         let notams = snapshot.products.get("notams").expect("NOTAM status");
@@ -2872,12 +2969,47 @@ mod tests {
         assert_eq!(notams.source_samples[0].message_count, 3);
         assert_eq!(notams.source_samples[0].changed_count, 2);
         assert_eq!(notams.source_samples[0].removed_count, 1);
+        assert_eq!(notams.source_samples[0].rejected_count, 0);
+        assert_eq!(notams.source_samples[0].unresolved_rejected_count, 0);
         assert_eq!(notams.source_samples[0].cursor, 42);
         assert_eq!(notams.source_samples[1].interval_ms, Some(60_000));
         assert_eq!(notams.source_samples[1].message_count, 6);
         assert_eq!(notams.source_samples[1].changed_count, 4);
         assert_eq!(notams.source_samples[1].removed_count, 0);
+        assert_eq!(notams.source_samples[1].rejected_count, 1);
+        assert_eq!(notams.source_samples[1].new_rejected_count, 1);
+        assert_eq!(notams.source_samples[1].unresolved_rejected_count, 1);
         assert_eq!(notams.source_samples[1].cursor, 48);
+        assert_eq!(notams.quality.as_ref().unwrap()["rejected_row_count"], 1);
+        assert_eq!(
+            notams.quality.as_ref().unwrap()["last_rejection_error"],
+            "unsupported NOTAM type X"
+        );
+        assert_eq!(
+            notams.quality.as_ref().unwrap()["recent_rejections"][0]["ingest_seq"],
+            47
+        );
+    }
+
+    #[test]
+    fn repaired_empty_notam_projection_is_queued_for_publication() -> anyhow::Result<()> {
+        let temp = tempfile::tempdir()?;
+        let store = NotamPersistentStore::new(temp.path());
+        store.initialize(&SwimNotamSubscriptionIdentity {
+            provider_url: "smfs://example.test:55443".to_string(),
+            queue: "example.queue".to_string(),
+            connection_factory: "example.CF".to_string(),
+            username: "example.user".to_string(),
+            vpn: "example-vpn".to_string(),
+        })?;
+        let (sender, receiver) = mpsc::channel();
+
+        queue_persisted_notam_state_event(&store, &sender, &DaemonStatus::default(), true)?;
+
+        let event = receiver.recv_timeout(Duration::from_secs(1))?;
+        assert_eq!(event.product, "notams");
+        assert!(event.source_id.starts_with("notams:persisted:"));
+        Ok(())
     }
 
     #[test]

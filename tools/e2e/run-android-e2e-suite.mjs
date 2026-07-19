@@ -45,7 +45,6 @@ const BAD_AUTOPILOT_DEBUG_TAG = "parity:debug-flag:bad_autopilot";
 const PLATE_SURFACE_TAG = "parity:plate-surface";
 const PLATE_FOLDER_TILE_PREFIX = "parity:plate-folder-tile:";
 const ARM_LAYER_NAV_KV_FAULT_DEBUG_TAG = "parity:debug-action:arm-layer-nav-kv-fault";
-const LAYER_TOGGLE_FAILURE_NOTICE = "Action failed; app state was refreshed.";
 const E2E_ARTIFACT_DIR = process.env.AEROBAG_E2E_ARTIFACT_DIR ?? join(tmpdir(), "aerobag-e2e-artifacts");
 
 function usage() {
@@ -830,17 +829,17 @@ function rejectedLayerCommandCount(serial) {
   return (logcat.match(/recovered rejected session command command=setMapLayerVisibility/g) ?? []).length;
 }
 
-function captureLayerToggleFaultScreenshot(serial, result) {
+function captureLayerToggleRegressionScreenshot(serial, result) {
   mkdirSync(E2E_ARTIFACT_DIR, { recursive: true });
-  const screenshotPath = join(E2E_ARTIFACT_DIR, "android-layer-toggle-navdb-fault.png");
+  const screenshotPath = join(E2E_ARTIFACT_DIR, "android-layer-toggle-navdb-regression.png");
   writeFileSync(screenshotPath, screencapPng(serial));
   result.diagnostics.screenshot = screenshotPath;
-  recordStep(result, "layer-toggle fault screenshot captured", screenshotPath);
+  recordStep(result, "layer-toggle regression screenshot captured", screenshotPath);
   return screenshotPath;
 }
 
-async function runLayerToggleNavDbFaultRepro({ serial, route, packageSourcePort, syncOfflinePackages }) {
-  const result = createTestResult("android.layer-toggle-navdb-fault-repro");
+async function runLayerToggleNavDbRegression({ serial, route, packageSourcePort, syncOfflinePackages }) {
+  const result = createTestResult("android.layer-toggle-navdb-regression");
   adb(serial, ["logcat", "-c"]);
   await launchFreshAndroidApp(serial, { clearUiPrefs: true, clearCoreSettings: false });
   recordStep(result, "app launched", serial || "default adb device");
@@ -871,22 +870,19 @@ async function runLayerToggleNavDbFaultRepro({ serial, route, packageSourcePort,
 
   await tapTag(serial, "parity:tray-option:terrain_warning", 10000);
   await delay(500);
-  recordCheck(result, "layers.terrainCommandRejected", rejectedLayerCommandCount(serial) >= 1);
-  recordStep(result, "Terrain disable reproduced session-command warning");
-  await delay(4000);
+  recordCheck(result, "layers.terrainCommandAccepted", rejectedLayerCommandCount(serial) === 0);
+  recordStep(result, "Terrain disabled without a session-command warning");
 
   xml = await openLayersTray(serial, result);
-  recordCheck(result, "layers.terrainTurnedOffDespiteFailure", !layerToggleIsOn(xml, "terrain_warning"));
+  recordCheck(result, "layers.terrainTurnedOff", !layerToggleIsOn(xml, "terrain_warning"));
   await tapTag(serial, "parity:tray-option:nexrad", 10000);
   await delay(500);
-  const screenshotPath = captureLayerToggleFaultScreenshot(serial, result);
-  recordCheck(result, "layers.nexradCommandRejected", rejectedLayerCommandCount(serial) >= 2, screenshotPath);
-  recordStep(result, "NEXRAD enable reproduced session-command warning");
+  const screenshotPath = captureLayerToggleRegressionScreenshot(serial, result);
+  recordCheck(result, "layers.nexradCommandAccepted", rejectedLayerCommandCount(serial) === 0, screenshotPath);
+  recordStep(result, "NEXRAD enabled without a session-command warning");
 
-  await delay(4000);
   xml = dumpAndroid(serial);
-  recordCheck(result, "layers.nexradTurnedOnDespiteFailure", layerToggleIsOn(xml, "nexrad"));
-  result.diagnostics.expectedNotice = LAYER_TOGGLE_FAILURE_NOTICE;
+  recordCheck(result, "layers.nexradTurnedOn", layerToggleIsOn(xml, "nexrad"));
   result.status = "pass";
   result.finished_at = new Date().toISOString();
   return result;
@@ -971,8 +967,8 @@ const tests = [
     run: runMapFollowCtrGestureSmoke,
   },
   {
-    id: "android.layer-toggle-navdb-fault-repro",
-    run: runLayerToggleNavDbFaultRepro,
+    id: "android.layer-toggle-navdb-regression",
+    run: runLayerToggleNavDbRegression,
   },
 ];
 

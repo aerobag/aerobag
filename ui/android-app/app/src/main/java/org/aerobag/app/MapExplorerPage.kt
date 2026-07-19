@@ -596,6 +596,7 @@ internal fun MapExplorerPage(
     onViewportChange: (MapViewportState) -> Unit,
     onSessionSnapshotChange: (UiSessionSnapshot) -> Unit,
     onSessionCommandFailure: (Throwable) -> Unit,
+    onBeforeMapLayerCommand: () -> Unit,
     onSelectOwnshipSource: (String) -> Unit,
     onSituationControlInput: (SituationControlInput) -> Unit,
     onPlaybackSourcePathChange: (String) -> Unit,
@@ -927,6 +928,7 @@ internal fun MapExplorerPage(
             ) {
                 val visible = !mapLayerState.nexrad.visible
                 val startMs = SystemClock.elapsedRealtime()
+                onBeforeMapLayerCommand()
                 if (applySessionCommand("setMapLayerVisibility") {
                         uiSession.setMapLayerVisibility(MapLayerId.Nexrad, visible)
                     } != null) {
@@ -945,6 +947,7 @@ internal fun MapExplorerPage(
             ) {
                 val visible = !mapLayerState.terrainWarning.visible
                 val startMs = SystemClock.elapsedRealtime()
+                onBeforeMapLayerCommand()
                 if (applySessionCommand("setMapLayerVisibility") {
                         uiSession.setMapLayerVisibility(MapLayerId.TerrainWarning, visible)
                     } != null) {

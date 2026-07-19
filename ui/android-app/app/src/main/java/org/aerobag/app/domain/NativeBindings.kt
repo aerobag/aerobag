@@ -87,6 +87,8 @@ interface NativeBridge {
 
     fun navKvInsertResource(handle: Long, resourceId: String, resourceBytes: ByteArray)
 
+    fun debugDropNavKvPagesForAttachedSessions(handle: Long)
+
     fun navKvDestroy(handle: Long)
 
     fun attachNavKvStoreToSession(navKvHandle: Long, sessionHandle: Long)
@@ -603,6 +605,8 @@ object NativeBindings : NativeBridge {
     external override fun navDbOpenControllerDestroy(handle: Long)
 
     external override fun navKvInsertResource(handle: Long, resourceId: String, resourceBytes: ByteArray)
+
+    external override fun debugDropNavKvPagesForAttachedSessions(handle: Long)
 
     external override fun navKvDestroy(handle: Long)
 

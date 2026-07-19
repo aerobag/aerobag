@@ -343,6 +343,7 @@ internal fun CommonDebugPanel(
     uptimeLabel: String,
     debugState: UiDebugState,
     onDebugFlagChange: (String, Boolean) -> Unit,
+    onArmLayerNavKvFault: () -> Unit,
 ) {
     Text("up $uptimeLabel", style = MaterialTheme.typography.labelSmall, color = Color(0xFF52656D))
     DebugCheckbox("tile labels", debugState.tileLabels) { onDebugFlagChange("tile_labels", it) }
@@ -355,6 +356,14 @@ internal fun CommonDebugPanel(
         onDebugFlagChange("bad_autopilot", it)
     }
     DebugCheckbox("capture GPS samples", debugState.gpsCapture) { onDebugFlagChange("gps_capture", it) }
+    if (BuildConfig.DEBUG) {
+        Button(
+            onClick = onArmLayerNavKvFault,
+            modifier = Modifier.testTag("parity:debug-action:arm-layer-nav-kv-fault"),
+        ) {
+            Text("Arm layer nav fault")
+        }
+    }
 }
 
 @Composable

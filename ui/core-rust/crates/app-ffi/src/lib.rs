@@ -1716,6 +1716,17 @@ pub fn nav_kv_insert_resource_bytes(
     nav_kv_insert_page_bytes(handle, page_index, decoded_bytes.as_ref())
 }
 
+pub fn debug_drop_nav_kv_pages_for_attached_sessions(handle: u64) -> Result<(), String> {
+    let stores = nav_kv_stores()
+        .lock()
+        .map_err(|_| "nav kv store poisoned".to_string())?;
+    if !stores.contains_key(&(handle as u32)) {
+        return Err(format!("invalid nav kv handle: {handle}"));
+    }
+    app_core::debug_drop_nav_kv_pages_for_attached_sessions(handle as u32);
+    Ok(())
+}
+
 pub fn attach_nav_kv_store_to_session_json(
     nav_kv_handle: u64,
     session_handle: u64,
@@ -3946,6 +3957,17 @@ pub extern "system" fn Java_org_aerobag_app_domain_NativeBindings_navKvInsertRes
         nav_kv_insert_resource_bytes(handle as u64, &resource_id, &bytes)
     })();
     if let Err(message) = result {
+        let _ = env.throw_new("java/lang/RuntimeException", message);
+    }
+}
+
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_org_aerobag_app_domain_NativeBindings_debugDropNavKvPagesForAttachedSessions(
+    mut env: JNIEnv,
+    _class: JClass,
+    handle: i64,
+) {
+    if let Err(message) = debug_drop_nav_kv_pages_for_attached_sessions(handle as u64) {
         let _ = env.throw_new("java/lang/RuntimeException", message);
     }
 }

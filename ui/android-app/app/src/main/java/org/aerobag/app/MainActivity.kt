@@ -2516,6 +2516,7 @@ internal fun AerobagApp(
     var pageTilePaintTiming by remember { mutableStateOf<PageTilePaintTiming?>(null) }
     var nextPageTilePaintTimingId by remember { mutableStateOf(1L) }
     var debugPanelOpen by remember { mutableStateOf(false) }
+    var debugLayerNavKvFaultsRemaining by remember { mutableIntStateOf(0) }
     val decodedTileBitmapCache = retainedCoreSession.decodedTileBitmapCache
     var playbackSourcePath by remember { mutableStateOf(DefaultPlaybackTracePath) }
     val planListState = rememberLazyListState()
@@ -2862,6 +2863,12 @@ internal fun AerobagApp(
                         onViewportChange = { mapViewport = it },
                         onSessionSnapshotChange = { applySessionSnapshot(it) },
                         onSessionCommandFailure = { recoverSessionCommandFailure(it) },
+                        onBeforeMapLayerCommand = {
+                            if (debugLayerNavKvFaultsRemaining > 0) {
+                                fixture.navKvStore.debugDropAttachedSessionPages()
+                                debugLayerNavKvFaultsRemaining -= 1
+                            }
+                        },
                         onSelectOwnshipSource = ::selectOwnshipSource,
                         onSituationControlInput = { input ->
                             applySessionCommand("applySituationControlInput") {
@@ -3114,6 +3121,7 @@ internal fun AerobagApp(
                     uptimeLabel = uptimeLabel,
                     debugState = sessionSnapshot.debugState,
                     onDebugFlagChange = ::setDebugFlag,
+                    onArmLayerNavKvFault = { debugLayerNavKvFaultsRemaining = 2 },
                 )
             }
             if (sessionSnapshot.disclaimerState.required) {

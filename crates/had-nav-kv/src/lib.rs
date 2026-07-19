@@ -742,6 +742,10 @@ impl NavKvStore {
         self.pages.insert(page_index, bytes);
     }
 
+    pub fn clear_pages(&mut self) {
+        self.pages.clear();
+    }
+
     pub fn missing_prefetch_pages(&self) -> Vec<u32> {
         self.root
             .prefetch_pages()

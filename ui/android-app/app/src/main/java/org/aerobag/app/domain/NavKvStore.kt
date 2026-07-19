@@ -448,6 +448,12 @@ class NavKvStore private constructor(
         return true
     }
 
+    @Synchronized
+    fun debugDropAttachedSessionPages() {
+        bridge.debugDropNavKvPagesForAttachedSessions(handle)
+        loadedPages.clear()
+    }
+
     override fun close() {
         bridge.navKvDestroy(handle)
     }

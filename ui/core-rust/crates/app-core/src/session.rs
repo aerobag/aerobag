@@ -5393,6 +5393,17 @@ pub fn insert_nav_kv_page_for_attached_sessions(store_id: u32, page_index: u32, 
     }
 }
 
+pub fn debug_drop_nav_kv_pages_for_attached_sessions(store_id: u32) {
+    let mut sessions = lock_sessions();
+    for session in sessions.values_mut() {
+        if session.nav_kv_store_id == Some(store_id) {
+            if let Some(store) = session.nav_kv_store.as_mut() {
+                store.clear_pages();
+            }
+        }
+    }
+}
+
 pub fn engage_map_follow_in_session(
     handle: u32,
     viewport: MapViewport,

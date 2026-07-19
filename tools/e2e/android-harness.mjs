@@ -44,7 +44,10 @@ export function adbBuffer(serial, args, options = {}) {
 }
 
 export function screencapPng(serial) {
-  return adbBuffer(serial, ["exec-out", "screencap", "-p"], { timeout: 20000 });
+  return adbBuffer(serial, ["exec-out", "screencap", "-p"], {
+    timeout: 20000,
+    maxBuffer: 16 * 1024 * 1024,
+  });
 }
 
 export function dumpAndroid(serial, dumpPath = "/sdcard/aerobag-e2e.xml") {

@@ -1705,8 +1705,22 @@ fn resolve_chart_reference_families(
         NavKvQuery::ChartReferenceFamilyIndex,
     )?
     .unwrap_or_default();
-    let mut families = Vec::with_capacity(summaries.len());
-    for summary in summaries {
+    let mut ranked_summaries = summaries
+        .into_iter()
+        .map(|summary| {
+            let rank = chart_family_order(&summary.id).ok_or_else(|| {
+                HadReadError::Fatal(format!(
+                    "chart reference family index contains unsupported family {}",
+                    summary.id
+                ))
+            })?;
+            Ok((rank, summary))
+        })
+        .collect::<Result<Vec<_>, HadReadError>>()?;
+    ranked_summaries.sort_by_key(|(rank, _)| *rank);
+
+    let mut families = Vec::with_capacity(ranked_summaries.len());
+    for (_, summary) in ranked_summaries {
         if selected_family_id != Some(summary.id.as_str()) {
             families.push(crate::DerivedChartReferenceFamily {
                 id: summary.id,
@@ -2066,6 +2080,12 @@ fn supported_chart_families() -> [(&'static str, &'static str, &'static str); 7]
         ("enr-h", "IFR-HIGH", "IFR H"),
         ("shaded-relief", "SHADED RELIEF", "RELIEF"),
     ]
+}
+
+fn chart_family_order(family_id: &str) -> Option<usize> {
+    supported_chart_families()
+        .iter()
+        .position(|(id, _, _)| *id == family_id)
 }
 
 fn displayed_family_maps<'a>(
@@ -3989,6 +4009,78 @@ mod tests {
     #[test]
     fn flyway_family_uses_full_launcher_label() {
         assert!(supported_chart_families().contains(&("flyway", "FLYWAY", "FLYWAY")));
+    }
+
+    #[test]
+    fn chart_reference_families_follow_map_selector_order() {
+        let family_index = br#"[
+          {"id":"enr-h","label":"IFR-HIGH"},
+          {"id":"enr-l","label":"IFR-LOW"},
+          {"id":"flyway","label":"FLYWAY"},
+          {"id":"sec","label":"SECTIONAL"},
+          {"id":"shaded-relief","label":"SHADED RELIEF"},
+          {"id":"tac","label":"TAC"}
+        ]"#;
+        let (root, pages) = fixture(
+            &[("chart-reference/family-index", family_index.as_slice())],
+            4096,
+        );
+        let mut store = NavKvStore::new(root);
+        for (index, page) in pages.into_iter().enumerate() {
+            store.insert_page(index as u32, page);
+        }
+
+        let state = chart_page_state(
+            &store,
+            &FlightPlan::default(),
+            &[],
+            None,
+            None,
+            None,
+            None,
+            &[],
+        )
+        .expect("derive chart page state");
+        let family_ids = state
+            .reference_families
+            .into_iter()
+            .map(|family| family.id)
+            .collect::<Vec<_>>();
+        let menu_family_ids = state
+            .airport_menu_entries
+            .into_iter()
+            .filter_map(|entry| match entry {
+                crate::DerivedChartAirportMenuEntry::Reference { reference } => Some(reference.id),
+                _ => None,
+            })
+            .collect::<Vec<_>>();
+        let expected = vec!["sec", "tac", "flyway", "enr-l", "enr-h", "shaded-relief"];
+
+        assert_eq!(family_ids, expected);
+        assert_eq!(menu_family_ids, expected);
+    }
+
+    #[test]
+    fn chart_reference_families_reject_unknown_map_family() {
+        let family_index = br#"[{"id":"future-chart","label":"FUTURE CHART"}]"#;
+        let (root, pages) = fixture(
+            &[("chart-reference/family-index", family_index.as_slice())],
+            4096,
+        );
+        let mut store = NavKvStore::new(root);
+        for (index, page) in pages.into_iter().enumerate() {
+            store.insert_page(index as u32, page);
+        }
+
+        let error = resolve_chart_reference_families(&store, None)
+            .expect_err("unsupported reference family must fail the nav-db contract");
+
+        assert_eq!(
+            error,
+            HadReadError::Fatal(
+                "chart reference family index contains unsupported family future-chart".to_string()
+            )
+        );
     }
 
     #[test]

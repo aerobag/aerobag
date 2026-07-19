@@ -427,6 +427,7 @@ class NativeAppCoreAdapter(
                         JsonNull
                     },
                 )
+                put("offline_packages", buildJsonObject {})
                 put(
                     "client_build",
                     clientBuildInfo?.let { buildInfo ->
@@ -2063,6 +2064,19 @@ private data class WireUiSettingsPageState(
 )
 
 @kotlinx.serialization.Serializable
+private data class WireUiHomePageButton(
+    val id: String,
+    val label: String,
+    val enabled: Boolean,
+    val disabled_reason: String? = null,
+)
+
+@kotlinx.serialization.Serializable
+private data class WireUiHomePageState(
+    val buttons: List<WireUiHomePageButton>,
+)
+
+@kotlinx.serialization.Serializable
 private data class WireUiDisplayPolicy(
     val keep_screen_on: Boolean,
     val dim_after_ms: Long? = null,
@@ -2108,6 +2122,7 @@ private data class WireUiSessionSnapshot(
     val data_status_state: WireUiDataStatusState,
     val data_status_page_state: WireUiDataStatusPageState,
     val settings_page_state: WireUiSettingsPageState = WireUiSettingsPageState(),
+    val home_page_state: WireUiHomePageState,
     val display_policy: WireUiDisplayPolicy? = null,
     val disclaimer_state: WireUiDisclaimerState = WireUiDisclaimerState(),
     val debug_state: WireUiDebugState = WireUiDebugState(),
@@ -2272,11 +2287,23 @@ data class UiSessionSnapshot(
     val dataStatusState: UiDataStatusState,
     val dataStatusPageState: UiDataStatusPageState,
     val settingsPageState: UiSettingsPageState,
+    val homePageState: UiHomePageState,
     val displayPolicy: UiDisplayPolicy?,
     val disclaimerState: UiDisclaimerState,
     val debugState: UiDebugState,
     val rasterMap: RasterMapUiState?,
     val nextCycleProductFreshnessCheckEpochMs: Long?,
+)
+
+data class UiHomePageButton(
+    val id: String,
+    val label: String,
+    val enabled: Boolean,
+    val disabledReason: String?,
+)
+
+data class UiHomePageState(
+    val buttons: List<UiHomePageButton>,
 )
 
 data class MapOverlayQueryOutcome(
@@ -2571,6 +2598,17 @@ private fun WireUiSettingsPageState.toUi() = UiSettingsPageState(
     rows = rows.map { it.toUi() },
 )
 
+private fun WireUiHomePageButton.toUi() = UiHomePageButton(
+    id = id,
+    label = label,
+    enabled = enabled,
+    disabledReason = disabled_reason,
+)
+
+private fun WireUiHomePageState.toUi() = UiHomePageState(
+    buttons = buttons.map { it.toUi() },
+)
+
 private fun WireUiDisplayPolicy.toUi() = UiDisplayPolicy(
     keepScreenOn = keep_screen_on,
     dimAfterMs = dim_after_ms,
@@ -2612,6 +2650,7 @@ private fun WireUiSessionSnapshot.toUi() = UiSessionSnapshot(
     dataStatusState = data_status_state.toUi(),
     dataStatusPageState = data_status_page_state.toUi(),
     settingsPageState = settings_page_state.toUi(),
+    homePageState = home_page_state.toUi(),
     displayPolicy = display_policy?.toUi(),
     disclaimerState = disclaimer_state.toUi(),
     debugState = debug_state.toUi(),

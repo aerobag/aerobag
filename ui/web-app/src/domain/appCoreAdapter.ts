@@ -136,11 +136,23 @@ export type UiSessionSnapshot = {
   data_status_state: UiDataStatusState;
   data_status_page_state: UiDataStatusPageState;
   settings_page_state: UiSettingsPageState;
+  home_page_state: UiHomePageState;
   display_policy: UiDisplayPolicy | null;
   disclaimer_state: UiDisclaimerState;
   debug_state: UiDebugState;
   raster_map?: RasterMapUiState | null;
   next_cycle_product_freshness_check_epoch_ms?: number | null;
+};
+
+export type UiHomePageButton = {
+  id: string;
+  label: string;
+  enabled: boolean;
+  disabled_reason: string | null;
+};
+
+export type UiHomePageState = {
+  buttons: UiHomePageButton[];
 };
 
 export type UiDisclaimerState = {
@@ -1064,6 +1076,7 @@ export class WasmAppCoreAdapter implements AppCoreAdapter {
           created.handle,
           JSON.stringify({
             display_policy: null,
+            offline_packages: null,
             client_build: __AEROBAG_CLIENT_BUILD_INFO__,
           }),
         ),

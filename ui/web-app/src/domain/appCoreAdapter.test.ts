@@ -65,6 +65,9 @@ const snapshotJson = JSON.stringify({
     summary: "No platform settings are available.",
     rows: [],
   },
+  home_page_state: {
+    buttons: [],
+  },
   display_policy: null,
   disclaimer_state: {
     agreement_id: "no-warranty-v1",

@@ -186,6 +186,9 @@ pub struct UiDebugState {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
 pub struct PlatformDisplayPolicyCapability {}
 
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
+pub struct PlatformOfflinePackagesCapability {}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ClientBuildInfo {
     pub platform: String,
@@ -202,6 +205,8 @@ pub struct ClientBuildInfo {
 pub struct PlatformCapabilities {
     #[serde(default)]
     pub display_policy: Option<PlatformDisplayPolicyCapability>,
+    #[serde(default)]
+    pub offline_packages: Option<PlatformOfflinePackagesCapability>,
     #[serde(default)]
     pub client_build: Option<ClientBuildInfo>,
 }
@@ -276,6 +281,19 @@ pub struct UiSettingsPageState {
     pub rows: Vec<UiSettingsPageRow>,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct UiHomePageButton {
+    pub id: String,
+    pub label: String,
+    pub enabled: bool,
+    pub disabled_reason: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct UiHomePageState {
+    pub buttons: Vec<UiHomePageButton>,
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct UiDisplayPolicy {
     pub keep_screen_on: bool,
@@ -323,6 +341,7 @@ pub struct UiSessionSnapshot {
     pub data_status_state: UiDataStatusState,
     pub data_status_page_state: UiDataStatusPageState,
     pub settings_page_state: UiSettingsPageState,
+    pub home_page_state: UiHomePageState,
     pub display_policy: Option<UiDisplayPolicy>,
     pub disclaimer_state: UiDisclaimerState,
     pub debug_state: UiDebugState,
@@ -3288,6 +3307,7 @@ fn create_ui_session_inner(
     let settings_page_state = default_settings_page_state();
     let settings_preferences = SettingsPreferences::default();
     let platform_capabilities = PlatformCapabilities::default();
+    let home_page_state = project_home_page_state(&platform_capabilities);
     let snapshot = UiSessionSnapshot {
         session_revision: 0,
         app_state: snapshot_app_state,
@@ -3301,6 +3321,7 @@ fn create_ui_session_inner(
         data_status_state: data_status_state.clone(),
         data_status_page_state,
         settings_page_state,
+        home_page_state,
         display_policy: None,
         disclaimer_state: project_disclaimer_state(&settings_preferences),
         debug_state: debug_state.clone(),
@@ -9431,6 +9452,7 @@ fn try_snapshot_for_session(session: &mut UiSession) -> Result<UiSessionSnapshot
     let data_status_page_state = project_data_status_page_state(session);
     let settings_page_state =
         project_settings_page_state(session, &app_ui_state.flight_data_banner);
+    let home_page_state = project_home_page_state(&session.platform_capabilities);
     app_ui_state.flight_data_banner.cells.retain(|cell| {
         !session
             .settings_preferences
@@ -9476,6 +9498,7 @@ fn try_snapshot_for_session(session: &mut UiSession) -> Result<UiSessionSnapshot
         data_status_state,
         data_status_page_state,
         settings_page_state,
+        home_page_state,
         display_policy,
         disclaimer_state: project_disclaimer_state(&session.settings_preferences),
         debug_state,
@@ -9616,6 +9639,35 @@ fn default_settings_page_state() -> UiSettingsPageState {
         title: "Settings".to_string(),
         summary: String::new(),
         rows: Vec::new(),
+    }
+}
+
+fn project_home_page_state(capabilities: &PlatformCapabilities) -> UiHomePageState {
+    let offline_packages_enabled = capabilities.offline_packages.is_some();
+    let button = |id: &str, label: &str| UiHomePageButton {
+        id: id.to_string(),
+        label: label.to_string(),
+        enabled: true,
+        disabled_reason: None,
+    };
+    UiHomePageState {
+        buttons: vec![
+            button("chart", "CHART"),
+            button("plate", "PLATE"),
+            button("flight-plan", "FLIGHT\nPLAN"),
+            button("data-status", "STATUS"),
+            button("settings", "SETTINGS"),
+            UiHomePageButton {
+                id: "offline-packages".to_string(),
+                label: "OFFLINE\nPACKAGES".to_string(),
+                enabled: offline_packages_enabled,
+                disabled_reason: (!offline_packages_enabled).then(|| {
+                    "This client fetches data as needed and does not support managing Offline Packages."
+                        .to_string()
+                }),
+            },
+            button("about", "ABOUT"),
+        ],
     }
 }
 
@@ -11840,6 +11892,81 @@ mod tests {
             *self.bytes.lock().expect("settings lock") = Some(bytes.to_vec());
             Ok(())
         }
+    }
+
+    #[test]
+    fn home_page_buttons_are_stable_and_explain_unavailable_offline_packages() {
+        let init =
+            create_ui_session(FlightPlan::default(), &[], None, None).expect("create session");
+        let web_snapshot = configure_platform_capabilities_in_session(
+            init.handle,
+            PlatformCapabilities::default(),
+            None,
+        )
+        .expect("configure web-like platform capabilities");
+
+        assert_eq!(
+            web_snapshot
+                .home_page_state
+                .buttons
+                .iter()
+                .map(|button| (button.id.as_str(), button.label.as_str()))
+                .collect::<Vec<_>>(),
+            vec![
+                ("chart", "CHART"),
+                ("plate", "PLATE"),
+                ("flight-plan", "FLIGHT\nPLAN"),
+                ("data-status", "STATUS"),
+                ("settings", "SETTINGS"),
+                ("offline-packages", "OFFLINE\nPACKAGES"),
+                ("about", "ABOUT"),
+            ]
+        );
+        let web_offline = web_snapshot
+            .home_page_state
+            .buttons
+            .iter()
+            .find(|button| button.id == "offline-packages")
+            .expect("offline packages button");
+        assert!(!web_offline.enabled);
+        assert_eq!(
+            web_offline.disabled_reason.as_deref(),
+            Some(
+                "This client fetches data as needed and does not support managing Offline Packages."
+            )
+        );
+
+        let android_snapshot = configure_platform_capabilities_in_session(
+            init.handle,
+            PlatformCapabilities {
+                offline_packages: Some(PlatformOfflinePackagesCapability::default()),
+                ..PlatformCapabilities::default()
+            },
+            None,
+        )
+        .expect("configure Android-like platform capabilities");
+        assert_eq!(
+            android_snapshot
+                .home_page_state
+                .buttons
+                .iter()
+                .map(|button| (&button.id, &button.label))
+                .collect::<Vec<_>>(),
+            web_snapshot
+                .home_page_state
+                .buttons
+                .iter()
+                .map(|button| (&button.id, &button.label))
+                .collect::<Vec<_>>()
+        );
+        let android_offline = android_snapshot
+            .home_page_state
+            .buttons
+            .iter()
+            .find(|button| button.id == "offline-packages")
+            .expect("offline packages button");
+        assert!(android_offline.enabled);
+        assert_eq!(android_offline.disabled_reason, None);
     }
 
     #[test]

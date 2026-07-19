@@ -253,6 +253,8 @@ import org.aerobag.app.domain.SituationControlInput
 import org.aerobag.app.domain.SituationRingCandidate
 import org.aerobag.app.domain.TileStorageKind
 import org.aerobag.app.domain.UiDebugState
+import org.aerobag.app.domain.UiHomePageButton
+import org.aerobag.app.domain.UiHomePageState
 import org.aerobag.app.domain.UiMapLayerToggleState
 import org.aerobag.app.domain.UiTheme
 import org.aerobag.app.domain.UiThemeLoader
@@ -335,6 +337,59 @@ private val HomeGridWidth =
     (HomeGridTileSize * HomeGridColumnCount.toFloat()) +
         (ThumbGap * (HomeGridColumnCount - 1).toFloat())
 
+private fun UiHomePageButton.toHomeGridButton(): HomeGridButton {
+    val targetPage: AppPage?
+    val externalUrl: String?
+    val iconResId: Int?
+    when (id) {
+        "chart" -> {
+            targetPage = AppPage.Map
+            externalUrl = null
+            iconResId = R.drawable.page_chart_icon
+        }
+        "plate" -> {
+            targetPage = AppPage.Charts
+            externalUrl = null
+            iconResId = R.drawable.page_plate_icon
+        }
+        "flight-plan" -> {
+            targetPage = AppPage.Plan
+            externalUrl = null
+            iconResId = null
+        }
+        "data-status" -> {
+            targetPage = AppPage.DataStatus
+            externalUrl = null
+            iconResId = null
+        }
+        "settings" -> {
+            targetPage = AppPage.Settings
+            externalUrl = null
+            iconResId = null
+        }
+        "offline-packages" -> {
+            targetPage = AppPage.OfflinePackages
+            externalUrl = null
+            iconResId = null
+        }
+        "about" -> {
+            targetPage = null
+            externalUrl = "https://aerobag.org/about"
+            iconResId = null
+        }
+        else -> error("Unsupported core Home button id: $id")
+    }
+    return HomeGridButton(
+        key = id,
+        label = label,
+        targetPage = targetPage,
+        externalUrl = externalUrl,
+        enabled = enabled,
+        disabledReason = disabledReason,
+        iconResId = iconResId,
+    )
+}
+
 @Composable
 private fun HomePageBackdrop() {
     BoxWithConstraints(modifier = Modifier.fillMaxSize()) {
@@ -356,6 +411,7 @@ private fun HomePageBackdrop() {
 @Composable
 internal fun HomePage(
     page: AppPage,
+    homePageState: UiHomePageState? = null,
     pageHistory: List<AppViewSnapshot>,
     mostRecentChartOrPlatePage: AppPage = AppPage.Map,
     uptimeLabel: String,
@@ -383,6 +439,13 @@ internal fun HomePage(
         mutableStateOf(readPackageSourceBaseUrl(context.applicationContext, prefs))
     }
     val offlinePackagesRouted = page == AppPage.OfflinePackages
+    val homeGridButtons = if (offlinePackagesRouted) {
+        emptyList()
+    } else {
+        requireNotNull(homePageState) { "Home page requires the core Home page model" }
+            .buttons
+            .map { it.toHomeGridButton() }
+    }
     var offlinePackagesControllerResult by remember { mutableStateOf<OfflinePackagesControllerResultWire?>(null) }
     var offlinePackageOperationJob by remember { mutableStateOf<Job?>(null) }
     var offlinePackageCancelRequested by remember { mutableStateOf(false) }
@@ -571,7 +634,7 @@ internal fun HomePage(
         }
 
         val homeGridRowCount =
-            ((HomeGridButtons.size + HomeGridColumnCount - 1) / HomeGridColumnCount)
+            ((homeGridButtons.size + HomeGridColumnCount - 1) / HomeGridColumnCount)
                 .coerceAtLeast(1)
         val homeGridHeight =
             (HomeGridTileSize * homeGridRowCount.toFloat()) +
@@ -598,7 +661,7 @@ internal fun HomePage(
                 verticalArrangement = Arrangement.spacedBy(ThumbGap),
                 userScrollEnabled = false,
             ) {
-                lazyGridItems(HomeGridButtons, key = { it.key }) { button ->
+                lazyGridItems(homeGridButtons, key = { it.key }) { button ->
                     CompactSquareButton(
                         label = button.label,
                         modifier = Modifier
@@ -608,6 +671,9 @@ internal fun HomePage(
                         enabled = button.enabled,
                         iconResId = button.iconResId,
                         wide = true,
+                        onDisabledClick = button.disabledReason?.let { reason ->
+                            { showDisabledActionToast(context, reason) }
+                        },
                         onClick = {
                             diagnosticLogInfo("AerobagNavigation") {
                                 "home button key=${button.key} target=${button.targetPage} external=${button.externalUrl}"

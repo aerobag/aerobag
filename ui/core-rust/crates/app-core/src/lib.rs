@@ -253,11 +253,11 @@ pub use session::{
     tick_bad_autopilot_in_session, tick_playback_in_session, unsuspend_sequencing_in_session,
     update_ownship_source_status_in_session, ClientBuildInfo, DisplayDimTimeout,
     GuidanceLegGeometry, PlatformCapabilities, PlatformDisplayPolicyCapability,
-    SettingsPreferences, SettingsStorage, SettingsStorageHandle, UiChartPageState, UiDebugState,
-    UiDisclaimerState, UiDisplayPolicy, UiMapLayerState, UiMapLayerToggleState,
-    UiPlaybackPanelState, UiSessionInitResult, UiSessionResourceEffect, UiSessionSnapshot,
-    UiSettingsAction, UiSettingsGridItem, UiSettingsPageRow, UiSettingsPageState,
-    UiSettingsSliderStop,
+    PlatformOfflinePackagesCapability, SettingsPreferences, SettingsStorage, SettingsStorageHandle,
+    UiChartPageState, UiDebugState, UiDisclaimerState, UiDisplayPolicy, UiHomePageButton,
+    UiHomePageState, UiMapLayerState, UiMapLayerToggleState, UiPlaybackPanelState,
+    UiSessionInitResult, UiSessionResourceEffect, UiSessionSnapshot, UiSettingsAction,
+    UiSettingsGridItem, UiSettingsPageRow, UiSettingsPageState, UiSettingsSliderStop,
 };
 pub use situation::{Situation, SituationPosition};
 pub use state::{

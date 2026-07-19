@@ -88,6 +88,7 @@ import {
   type UiDataStatusState,
   type UiSession,
   type UiSessionSnapshot,
+  type UiHomePageState,
   type UiInvalidation,
 } from "./domain/appCoreAdapter";
 import {
@@ -902,16 +903,27 @@ const LAYER_TERRAIN_WARNING_ICON_SRC = "/icons/icons/layer-terrain-warning-icon.
 const CHART_REFERENCE_ICON_SRC = "/icons/icons/chart-reference-icon.png?v=20260713a";
 const NEXRAD_VIEWPORT_REFRESH_THROTTLE_MS = 1_000;
 const HOME_GRID_COLUMN_COUNT = 3;
-const HOME_GRID_BUTTONS: Array<{ id: string; label: string; page: AppPage; iconSrc?: string }> = [
-  // Three columns, row 1.
-  { id: "chart", label: "CHART", page: "map", iconSrc: PAGE_CHART_ICON_SRC },
-  { id: "plate", label: "PLATE", page: "charts", iconSrc: PAGE_PLATE_ICON_SRC },
-  { id: "flight-plan", label: "FLIGHT\nPLAN", page: "plan" },
-  // Three columns, row 2.
-  { id: "data-status", label: "STATUS", page: "data" },
-  { id: "settings", label: "SETTINGS", page: "settings" },
-  { id: "about", label: "ABOUT", page: "about" },
-];
+
+function webHomeButtonPresentation(id: string): { page: AppPage | null; iconSrc?: string } {
+  switch (id) {
+    case "chart":
+      return { page: "map", iconSrc: PAGE_CHART_ICON_SRC };
+    case "plate":
+      return { page: "charts", iconSrc: PAGE_PLATE_ICON_SRC };
+    case "flight-plan":
+      return { page: "plan" };
+    case "data-status":
+      return { page: "data" };
+    case "settings":
+      return { page: "settings" };
+    case "offline-packages":
+      return { page: null };
+    case "about":
+      return { page: "about" };
+    default:
+      throw new Error(`Unsupported core Home button id: ${id}`);
+  }
+}
 
 function chartFamilyIconSrc(familyId: ChartFamilyId | null | undefined): string | undefined {
   switch (familyId) {
@@ -1923,6 +1935,9 @@ export default function App() {
       title: "Settings",
       summary: "No platform settings are available.",
       rows: [],
+    },
+    home_page_state: {
+      buttons: [],
     },
     display_policy: null,
     disclaimer_state: {
@@ -3440,6 +3455,7 @@ export default function App() {
       <div className={`pageLayer${page === "home" ? " isActive" : ""}`} aria-hidden={page !== "home"}>
         <HomePage
           page={page}
+          state={sessionSnapshot.home_page_state}
           planUiState={planUiState}
           mostRecentChartOrPlatePage={mostRecentChartOrPlatePage}
           onOpenRecentChartOrPlate={navigateToMostRecentChartOrPlate}
@@ -10105,6 +10121,7 @@ function ChartsPage(props: {
 
 function HomePage(props: {
   page: AppPage;
+  state: UiHomePageState;
   planUiState: FlightPlanUiState | null;
   mostRecentChartOrPlatePage: AppPage;
   onOpenRecentChartOrPlate: () => void;
@@ -10113,6 +10130,7 @@ function HomePage(props: {
   debugWarningActive: boolean;
 }) {
   const { page, planUiState, onSelectPage, onOpenPlan } = props;
+  const { toast: disabledActionToast, show: showDisabledAction } = useDisabledActionToast();
 
   return (
     <section
@@ -10132,20 +10150,40 @@ function HomePage(props: {
         aria-label="Home navigation"
         style={{ "--home-grid-column-count": HOME_GRID_COLUMN_COUNT } as CSSProperties}
       >
-        {HOME_GRID_BUTTONS.map((button) => (
-          <button
-            key={button.id}
-            type="button"
-            className={`chartButton chartButtonDouble homeButton${button.page === page ? " isOpen" : ""}`}
-            onPointerDown={stopPointer}
-            onPointerUp={stopPointer}
-            onDoubleClick={stopDoubleClick}
-            onClick={() => onSelectPage(button.page)}
-          >
-            {button.iconSrc ? <img className="chartButtonIcon" src={button.iconSrc} alt="" aria-hidden="true" /> : null}
-            <span className="chartButtonLabel chartButtonLabelDouble">{button.label}</span>
-          </button>
-        ))}
+        {props.state.buttons.map((button) => {
+          const presentation = webHomeButtonPresentation(button.id);
+          const disabledReason = disabledReasonText(button.disabled_reason);
+          const disabled = !button.enabled;
+          return (
+            <button
+              key={button.id}
+              type="button"
+              className={`chartButton chartButtonDouble homeButton${presentation.page === page ? " isOpen" : ""}${disabled ? " isDisabled" : ""}`}
+              data-testid={`home-button-${button.id}`}
+              disabled={disabled && !disabledReason}
+              aria-disabled={disabled ? "true" : undefined}
+              title={disabledReason ?? undefined}
+              onPointerDown={stopPointer}
+              onPointerUp={stopPointer}
+              onDoubleClick={stopDoubleClick}
+              onClick={() => {
+                if (disabled) {
+                  if (disabledReason) {
+                    showDisabledAction(disabledReason);
+                  }
+                  return;
+                }
+                if (!presentation.page) {
+                  throw new Error(`Enabled core Home button has no web navigation target: ${button.id}`);
+                }
+                onSelectPage(presentation.page);
+              }}
+            >
+              {presentation.iconSrc ? <img className="chartButtonIcon" src={presentation.iconSrc} alt="" aria-hidden="true" /> : null}
+              <span className="chartButtonLabel chartButtonLabelDouble">{button.label}</span>
+            </button>
+          );
+        })}
       </div>
 
       <NavElementButton
@@ -10155,6 +10193,11 @@ function HomePage(props: {
         onDoubleClick={stopDoubleClick}
         onClick={onOpenPlan}
       />
+      {disabledActionToast ? (
+        <div className="mapSelectionToast" role="status" aria-live="polite">
+          {disabledActionToast.message}
+        </div>
+      ) : null}
     </section>
   );
 }

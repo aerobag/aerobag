@@ -1062,6 +1062,7 @@ internal data class HomeGridButton(
     val targetPage: AppPage? = null,
     val externalUrl: String? = null,
     val enabled: Boolean = false,
+    val disabledReason: String? = null,
     @DrawableRes val iconResId: Int? = null,
 )
 
@@ -1147,19 +1148,6 @@ internal fun mostRecentChartOrPlatePageFromHistory(pageHistory: List<AppViewSnap
         .firstOrNull { it.page == AppPage.Map || it.page == AppPage.Charts }
         ?.page
         ?: AppPage.Map
-
-internal val HomeGridButtons = listOf(
-    // Three columns, row 1.
-    HomeGridButton("chart", "CHART", targetPage = AppPage.Map, enabled = true, iconResId = R.drawable.page_chart_icon),
-    HomeGridButton("plate", "PLATE", targetPage = AppPage.Charts, enabled = true, iconResId = R.drawable.page_plate_icon),
-    HomeGridButton("flight-plan", "FLIGHT\nPLAN", targetPage = AppPage.Plan, enabled = true),
-    // Three columns, row 2.
-    HomeGridButton("data-status", "STATUS", targetPage = AppPage.DataStatus, enabled = true),
-    HomeGridButton("settings", "SETTINGS", targetPage = AppPage.Settings, enabled = true),
-    // Three columns, row 3.
-    HomeGridButton("offline-packages", "OFFLINE\nPACKAGES", targetPage = AppPage.OfflinePackages, enabled = true),
-    HomeGridButton("about", "ABOUT", externalUrl = "https://aerobag.org/about", enabled = true),
-)
 
 internal data class ChartTrayOption(
     val id: String,
@@ -3040,6 +3028,7 @@ internal fun AerobagApp(
                     diagnosticLogInfo("AerobagNavigation") { "render home history=${pageHistory.size}" }
                     HomePage(
                         page = page,
+                        homePageState = sessionSnapshot.homePageState,
                         pageHistory = pageHistory,
                         mostRecentChartOrPlatePage = mostRecentChartOrPlatePageFromHistory(pageHistory),
                         uptimeLabel = uptimeLabel,

@@ -1427,6 +1427,25 @@ def run_web_android_build(config: dict[str, Any], *, dry_run: bool) -> None:
     run_ssh(config, "/usr/local/bin/aerobag-build-web-and-android", dry_run=dry_run)
 
 
+def verify_async_product_build(config: dict[str, Any], *, dry_run: bool) -> None:
+    command = textwrap.dedent(
+        """
+        set -euo pipefail
+        unit=aerobag-build-product.service
+        active_state="$(systemctl show "$unit" --property=ActiveState --value)"
+        result="$(systemctl show "$unit" --property=Result --value)"
+        if [ "$active_state" = failed ] || [ "$result" != success ]; then
+          echo "asynchronous cycle build failed: active_state=$active_state result=$result" >&2
+          systemctl status "$unit" --no-pager >&2 || true
+          journalctl -u "$unit" -n 80 --no-pager >&2 || true
+          exit 1
+        fi
+        echo "asynchronous cycle build state: active_state=$active_state result=$result"
+        """
+    ).strip()
+    run_ssh(config, command, dry_run=dry_run)
+
+
 def deploy(config: dict[str, Any], args: argparse.Namespace) -> None:
     if args.runtime_config_only:
         deployed_rev = remote_deployed_rev(config, dry_run=args.dry_run)
@@ -1478,6 +1497,7 @@ def deploy(config: dict[str, Any], args: argparse.Namespace) -> None:
     start_runtime(config, skip_build=args.skip_build, dry_run=args.dry_run)
     if not args.skip_build:
         run_web_android_build(config, dry_run=args.dry_run)
+        verify_async_product_build(config, dry_run=args.dry_run)
 
 
 def main() -> int:

@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import argparse
+import fcntl
 import os
 import re
 import shutil
@@ -36,7 +37,7 @@ def parse_args() -> argparse.Namespace:
         type=Path,
         default=None,
         help=(
-            "directory for persistent git worktrees "
+            "directory for ephemeral git worktrees "
             "(default: artifact-root/worktrees/multi-version)"
         ),
     )
@@ -61,16 +62,6 @@ def parse_args() -> argparse.Namespace:
         "--as-of-utc",
         default=None,
         help="RFC3339 UTC timestamp recorded in the merged current_artifacts file",
-    )
-    parser.add_argument(
-        "--keep-worktrees",
-        action="store_true",
-        help="deprecated; worktrees are persistent by default",
-    )
-    parser.add_argument(
-        "--remove-worktrees",
-        action="store_true",
-        help="remove the per-ref worktrees after this run",
     )
     parser.add_argument(
         "build_args",
@@ -118,11 +109,6 @@ def safe_ref_name(ref: str, sha: str) -> str:
     return f"{safe or 'ref'}-{sha[:12]}"
 
 
-def safe_worktree_name(ref: str) -> str:
-    safe = re.sub(r"[^A-Za-z0-9_.-]+", "-", ref).strip("-")
-    return safe or "ref"
-
-
 def build_timestamp() -> str:
     return datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
 
@@ -144,39 +130,41 @@ def remove_worktree(repo_root: Path, path: Path) -> None:
         stdout=subprocess.DEVNULL,
         stderr=subprocess.DEVNULL,
     )
-    if path.exists():
+    if path.is_dir() and not path.is_symlink():
         shutil.rmtree(path)
+    elif path.exists() or path.is_symlink():
+        path.unlink()
 
 
-def worktree_is_git_checkout(path: Path) -> bool:
-    return (
-        path.is_dir()
-        and subprocess.run(
-            ["git", "-C", str(path), "rev-parse", "--is-inside-work-tree"],
-            check=False,
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
-        ).returncode
-        == 0
-    )
-
-
-def ensure_clean_worktree(path: Path) -> None:
-    result = run(["git", "status", "--porcelain"], cwd=path, capture=True)
-    if result.stdout.strip():
+def acquire_worktree_lock(worktree_root: Path):
+    lock_path = worktree_root / ".coordinator.lock"
+    lock_file = lock_path.open("a+", encoding="utf-8")
+    try:
+        fcntl.flock(lock_file.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except BlockingIOError:
+        lock_file.close()
         raise RuntimeError(
-            f"persistent worktree {path} has local changes; clean it or remove it before rebuilding"
-        )
+            f"another multi-version publication owns worktree root {worktree_root}"
+        ) from None
+    return lock_file
 
 
-def ensure_worktree(repo_root: Path, path: Path, sha: str) -> None:
+def prune_worktree_metadata(repo_root: Path) -> None:
+    run(["git", "worktree", "prune"], cwd=repo_root)
+
+
+def remove_abandoned_worktrees(repo_root: Path, worktree_root: Path) -> None:
+    for path in sorted(worktree_root.iterdir()):
+        if path.name == ".coordinator.lock":
+            continue
+        print(f"removing abandoned multi-version worktree state {path}", flush=True)
+        remove_worktree(repo_root, path)
+    prune_worktree_metadata(repo_root)
+
+
+def create_worktree(repo_root: Path, path: Path, sha: str) -> None:
     if path.exists():
-        if not worktree_is_git_checkout(path):
-            raise RuntimeError(f"persistent worktree path exists but is not a git checkout: {path}")
-        ensure_clean_worktree(path)
-        run(["git", "checkout", "--detach", sha], cwd=path)
-        return
-
+        raise RuntimeError(f"ephemeral worktree path already exists: {path}")
     path.parent.mkdir(parents=True, exist_ok=True)
     run(["git", "worktree", "add", "--detach", str(path), sha], cwd=repo_root)
 
@@ -194,7 +182,7 @@ def build_ref(
     release: bool,
     build_args: list[str],
 ) -> Path:
-    ensure_worktree(repo_root, worktree, sha)
+    create_worktree(repo_root, worktree, sha)
     cargo_command = ["cargo", "build"]
     if release:
         cargo_command.append("--release")
@@ -242,6 +230,10 @@ def main() -> int:
     )
     worktree_root.mkdir(parents=True, exist_ok=True)
     target_dir.mkdir(parents=True, exist_ok=True)
+    worktree_lock = acquire_worktree_lock(worktree_root)
+    remove_abandoned_worktrees(repo_root, worktree_root)
+    run_worktree_root = worktree_root / f"run-{build_timestamp()}-{os.getpid()}"
+    run_worktree_root.mkdir()
 
     env = os.environ.copy()
     env["CARGO_TARGET_DIR"] = str(target_dir)
@@ -257,7 +249,7 @@ def main() -> int:
         for ref in args.refs:
             sha = resolve_commit(repo_root, ref)
             ref_name = safe_ref_name(ref, sha)
-            worktree = worktree_root / safe_worktree_name(ref)
+            worktree = run_worktree_root / ref_name
             timestamp = build_timestamp()
             worktrees.append(worktree)
             print(
@@ -302,13 +294,13 @@ def main() -> int:
         ]
         run(gc_command, cwd=repo_root / PREPROCESSOR_DIR, env=env, capture=True)
     finally:
-        if args.keep_worktrees and not args.remove_worktrees:
-            print(f"kept worktrees under {worktree_root}", flush=True)
-        elif args.remove_worktrees:
-            for worktree in worktrees:
-                remove_worktree(repo_root, worktree)
-        else:
-            print(f"kept persistent worktrees under {worktree_root}", flush=True)
+        for worktree in reversed(worktrees):
+            remove_worktree(repo_root, worktree)
+        if run_worktree_root.exists():
+            shutil.rmtree(run_worktree_root)
+        prune_worktree_metadata(repo_root)
+        worktree_lock.close()
+        print(f"removed ephemeral worktrees under {worktree_root}", flush=True)
     return 0
 
 

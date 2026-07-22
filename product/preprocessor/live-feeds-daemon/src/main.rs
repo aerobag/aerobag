@@ -979,7 +979,7 @@ fn start_live_feed_driver(
                 source.sender(),
                 status.clone(),
             );
-            tasks.push(Box::new(QueuedDaemonLiveFeedTask::new(
+            tasks.push(Box::new(CoalescingQueuedDaemonLiveFeedTask::new(
                 LiveFeedSourceAndBuilder::new(source, NotamLiveFeedBuilder::new(notam_state_root)),
                 Duration::from_secs(60),
             )));
@@ -1424,21 +1424,29 @@ impl LiveFeedPollingTask for ProductionLiveFeedTask {
     }
 }
 
-struct QueuedDaemonLiveFeedTask<T> {
+struct CoalescingQueuedDaemonLiveFeedTask<T> {
     task: T,
     nominal_interval: Duration,
+    next_due_at_utc: Option<chrono::DateTime<Utc>>,
+    consecutive_failures: u32,
+    pending_event: Option<UpstreamEvent>,
+    in_flight_event: Option<UpstreamEvent>,
 }
 
-impl<T> QueuedDaemonLiveFeedTask<T> {
+impl<T> CoalescingQueuedDaemonLiveFeedTask<T> {
     fn new(task: T, nominal_interval: Duration) -> Self {
         Self {
             task,
             nominal_interval,
+            next_due_at_utc: None,
+            consecutive_failures: 0,
+            pending_event: None,
+            in_flight_event: None,
         }
     }
 }
 
-impl<T> LiveFeedPollingTask for QueuedDaemonLiveFeedTask<T>
+impl<T> LiveFeedPollingTask for CoalescingQueuedDaemonLiveFeedTask<T>
 where
     T: LiveFeedPollingTask + Send,
 {
@@ -1447,7 +1455,17 @@ where
     }
 
     fn poll_due(&mut self, now: chrono::DateTime<Utc>) -> anyhow::Result<Vec<UpstreamEvent>> {
-        self.task.poll_due(now)
+        if let Some(latest) = self.task.poll_due(now)?.into_iter().last() {
+            self.pending_event = Some(latest);
+        }
+        if self.next_due_at_utc.is_some_and(|next_due| now < next_due) {
+            return Ok(Vec::new());
+        }
+        let Some(event) = self.pending_event.take() else {
+            return Ok(Vec::new());
+        };
+        self.in_flight_event = Some(event.clone());
+        Ok(vec![event])
     }
 
     fn build_state(
@@ -1459,12 +1477,44 @@ where
     }
 }
 
-impl<T> DaemonLiveFeedTask for QueuedDaemonLiveFeedTask<T>
+impl<T> DaemonLiveFeedTask for CoalescingQueuedDaemonLiveFeedTask<T>
 where
     T: LiveFeedPollingTask + Send,
 {
     fn nominal_interval(&self) -> Duration {
         self.nominal_interval
+    }
+
+    fn observe_tick_result(&mut self, now: chrono::DateTime<Utc>, result: &LiveFeedTickResult) {
+        let Some(event) = self.in_flight_event.take() else {
+            return;
+        };
+        let succeeded = result
+            .published
+            .iter()
+            .any(|update| update.product == self.product_id());
+        if succeeded {
+            self.consecutive_failures = 0;
+            self.next_due_at_utc = Some(now + chrono_duration_from_std(self.nominal_interval));
+            return;
+        }
+        let failed = result
+            .failures
+            .iter()
+            .any(|failure| failure.product == self.product_id());
+        if failed {
+            self.consecutive_failures = self.consecutive_failures.saturating_add(1);
+            self.pending_event.get_or_insert(event);
+            self.next_due_at_utc = Some(
+                now + chrono_duration_from_std(failure_retry_delay(
+                    self.nominal_interval,
+                    self.consecutive_failures,
+                )),
+            );
+        } else {
+            self.pending_event.get_or_insert(event);
+            self.next_due_at_utc = Some(now);
+        }
     }
 }
 
@@ -3252,6 +3302,88 @@ mod tests {
                 .len(),
             1
         );
+        Ok(())
+    }
+
+    #[test]
+    fn queued_live_feed_task_coalesces_events_and_retries_the_latest_state() -> anyhow::Result<()> {
+        let start =
+            chrono::DateTime::parse_from_rfc3339("2026-06-19T18:00:00Z")?.with_timezone(&Utc);
+        let source = QueuedLiveFeedSource::new("notams");
+        let sender = source.sender();
+        let mut task = CoalescingQueuedDaemonLiveFeedTask::new(
+            LiveFeedSourceAndBuilder::new(
+                source,
+                NoopProductBuilder {
+                    product: "notams".to_string(),
+                },
+            ),
+            Duration::from_secs(60),
+        );
+        let event = |source_id: &str, observed_at_utc| UpstreamEvent {
+            product: "notams".to_string(),
+            source_id: source_id.to_string(),
+            previous_source_id: None,
+            observed_at_utc,
+            payload_path: None,
+        };
+
+        sender.send(event("event-1", start))?;
+        sender.send(event("event-2", start + chrono::Duration::seconds(1)))?;
+        let first = task.poll_due(start)?;
+        assert_eq!(first.len(), 1);
+        assert_eq!(first[0].source_id, "event-2");
+        task.observe_tick_result(
+            start,
+            &LiveFeedTickResult {
+                published: vec![PublishedLiveFeedUpdate {
+                    product: "notams".to_string(),
+                    version: "n1".to_string(),
+                    unchanged: false,
+                    state_path: PathBuf::from("states/notams/n1.json.xz"),
+                    version_manifest_path: PathBuf::from("versions/notams/n1.json"),
+                    version_manifest_url: "versions/notams/n1.json".to_string(),
+                    state_url: "states/notams/n1.json.xz".to_string(),
+                    state_sha256: "sha".to_string(),
+                    published_at_utc: None,
+                    collected_at_utc: None,
+                    history: Vec::new(),
+                    delta_path: None,
+                    changed_count: 1,
+                    removed_count: 0,
+                }],
+                failures: Vec::new(),
+            },
+        );
+
+        sender.send(event("event-3", start + chrono::Duration::seconds(5)))?;
+        assert!(task
+            .poll_due(start + chrono::Duration::seconds(5))?
+            .is_empty());
+        assert!(task
+            .poll_due(start + chrono::Duration::seconds(59))?
+            .is_empty());
+        let second = task.poll_due(start + chrono::Duration::seconds(60))?;
+        assert_eq!(second.len(), 1);
+        assert_eq!(second[0].source_id, "event-3");
+
+        task.observe_tick_result(
+            start + chrono::Duration::seconds(60),
+            &LiveFeedTickResult {
+                published: Vec::new(),
+                failures: vec![preprocessor_live_feeds::engine::FailedLiveFeedTask {
+                    product: "notams".to_string(),
+                    phase: LiveFeedTaskPhase::Build,
+                    error: "temporary failure".to_string(),
+                }],
+            },
+        );
+        assert!(task
+            .poll_due(start + chrono::Duration::seconds(89))?
+            .is_empty());
+        let retry = task.poll_due(start + chrono::Duration::seconds(90))?;
+        assert_eq!(retry.len(), 1);
+        assert_eq!(retry[0].source_id, "event-3");
         Ok(())
     }
 

@@ -58,8 +58,8 @@ use crate::{
     LegDisplayElement, MapOverlayConfig, MapOverlayQueryResult, MapSelectionForNavRefResult,
     MapSelectionQueryResult, MapSelectionSessionAction, MapSurfaceMetrics, MapViewport,
     MetarProductPayload, MetarTilePayload, NavDbOpenResult, NavKvLookup, NavKvPageProbeStats,
-    NavKvQuery, NavKvRoot, NavKvStore, NavRef, NotamProductPayload, OfflinePackagesLibraryCache,
-    PlaybackUiState, PointTilePayload, ProcedureDiscontinuity, ProcedureKind, ProcedureLoadCommand,
+    NavKvQuery, NavKvRoot, NavKvStore, NavRef, OfflinePackagesLibraryCache, PlaybackUiState,
+    PointTilePayload, ProcedureDiscontinuity, ProcedureKind, ProcedureLoadCommand,
     RasterMapCatalog, RasterResourceMode, RasterTilePlan, ResolvedLeg, ResolvedLegSource,
     RouteComponentViewKind, SequencingMode, SituationControlInput, SituationControlMenuItem,
     TafProductPayload, TerrainOverlayQueryResult, TfrProductPayload, UiSnapshotAppState,
@@ -5996,20 +5996,68 @@ pub fn ingest_prepared_live_feed_resource_in_session(
     let envelope = crate::decode_prepared_live_feed(bytes)?;
     let envelope_version = envelope.version.clone();
     let envelope_product = envelope.product.clone();
+    let notam_mutation_count = match &envelope.payload {
+        crate::PreparedLiveFeedPayload::Notams(crate::PreparedNotamPayload::InstallCheckpoint(
+            checkpoint,
+        )) => Some(checkpoint.records.len()),
+        crate::PreparedLiveFeedPayload::Notams(crate::PreparedNotamPayload::ApplyDelta(delta)) => {
+            Some(delta.mutations.len())
+        }
+        _ => None,
+    };
     let mut sessions = lock_sessions();
     let session = session_mut(&mut sessions, handle)?;
-    session
-        .live_feeds
-        .ingest_prepared_live_feed(resource_id, &envelope)?;
-    if session.live_feeds.product_loaded_version(&envelope_product)
-        != Some(envelope_version.as_str())
+    let mut next_live_feeds = session.live_feeds.clone();
+    next_live_feeds.ingest_prepared_live_feed(resource_id, &envelope)?;
+    if next_live_feeds.product_loaded_version(&envelope_product) != Some(envelope_version.as_str())
     {
         return Ok(());
     }
-    install_prepared_live_feed(session, envelope.payload)?;
+    if let Err(error) = install_prepared_live_feed(session, envelope.payload) {
+        if envelope_product == "notams" {
+            crate::core_debug_log(
+                "live_feed.notams.integrity_failure",
+                &serde_json::json!({
+                    "severity": "critical",
+                    "live_feed_schema_version": product_contracts::LIVE_FEEDS_SCHEMA_VERSION,
+                    "notam_contract_version": product_contracts::NOTAM_LIVE_FEED_CONTRACT_VERSION,
+                    "blob_sha256": envelope.delta_blob_sha256,
+                    "expected_from_state_id": envelope.from_state_sha256,
+                    "expected_to_state_id": envelope.state_sha256,
+                    "actual_state_id": session
+                        .airport_notam_index
+                        .as_ref()
+                        .map(AirportNotamIndex::state_id),
+                    "mutation_count": notam_mutation_count,
+                    "failure_class": notam_failure_class(&error),
+                }),
+            );
+        }
+        if envelope_product == "notams" && session.airport_notam_index.is_none() {
+            session.live_feeds.mark_product_no_state("notams");
+        }
+        return Err(error);
+    }
+    session.live_feeds = next_live_feeds;
     clear_live_feed_resource_error(session);
     sync_live_feed_overlay_status_records(session);
     Ok(())
+}
+
+fn notam_failure_class(error: &AppError) -> &'static str {
+    if error.message.contains("starts at") || error.message.contains("without installed state") {
+        "base_state"
+    } else if error.message.contains("target state") {
+        "target_state"
+    } else if error.message.contains("counter mismatch") {
+        "counters"
+    } else if error.message.contains("ordered") || error.message.contains("ordering") {
+        "mutation_order"
+    } else if error.message.contains("contract") {
+        "contract"
+    } else {
+        "validation"
+    }
 }
 
 pub fn install_live_feed_installed_state_in_session(
@@ -6056,6 +6104,11 @@ fn install_live_feed_installed_state(
                 })?;
             session.tfr_payload = Some(payload);
             clear_data_status_record(session, LIVE_FEED_TFRS_STATUS_ID);
+        }
+        ("notams", crate::LiveFeedInstalledPayload::NotamResources { checkpoint, deltas }) => {
+            install_notam_resource_chain(session, installed, checkpoint, deltas)?;
+            let status_id = live_feed_unavailable_status_record("notams", String::new()).id;
+            clear_data_status_record(session, &status_id);
         }
         (
             "obstacles",
@@ -6137,7 +6190,103 @@ fn installed_live_feed_state_manifest(
             serde_json::from_slice(manifest).ok()
         }
         crate::LiveFeedInstalledPayload::Opaque { .. } => None,
+        crate::LiveFeedInstalledPayload::NotamResources { .. } => None,
     }
+}
+
+fn install_notam_resource_chain(
+    session: &mut UiSession,
+    installed: &crate::LiveFeedInstalledState,
+    checkpoint_bytes: &[u8],
+    delta_bytes: &[std::sync::Arc<Vec<u8>>],
+) -> AppResult<()> {
+    let deltas = delta_bytes
+        .iter()
+        .map(|bytes| {
+            let decoded =
+                nav_kv_package::decode_xz_if_needed(bytes).map_err(|message| AppError {
+                    kind: AppErrorKind::InvalidManifest,
+                    message,
+                })?;
+            serde_json::from_slice::<notam_state::NotamDelta>(decoded.as_ref()).map_err(|error| {
+                AppError {
+                    kind: AppErrorKind::InvalidManifest,
+                    message: format!("failed to decode installed NOTAM delta: {error}"),
+                }
+            })
+        })
+        .collect::<AppResult<Vec<_>>>()?;
+    let start = session.airport_notam_index.as_ref().and_then(|index| {
+        deltas
+            .iter()
+            .position(|delta| delta.from_state_id == index.state_id())
+    });
+    let mut work = notam_state::NotamApplyWork::default();
+    if let Some(start) = start {
+        let index = session
+            .airport_notam_index
+            .as_mut()
+            .ok_or_else(|| AppError {
+                kind: AppErrorKind::Internal,
+                message: "NOTAM index disappeared during installed delta replay".to_string(),
+            })?;
+        for delta in deltas.into_iter().skip(start) {
+            if let Err(error) = index.apply_delta(delta, &mut work) {
+                session.airport_notam_index = None;
+                return Err(AppError {
+                    kind: AppErrorKind::InvalidManifest,
+                    message: format!("failed to replay installed NOTAM delta: {error}"),
+                });
+            }
+        }
+    } else {
+        let decoded =
+            nav_kv_package::decode_xz_if_needed(checkpoint_bytes).map_err(|message| AppError {
+                kind: AppErrorKind::InvalidManifest,
+                message,
+            })?;
+        let checkpoint: notam_state::NotamCheckpoint = serde_json::from_slice(decoded.as_ref())
+            .map_err(|error| AppError {
+                kind: AppErrorKind::InvalidManifest,
+                message: format!("failed to decode installed NOTAM checkpoint: {error}"),
+            })?;
+        let mut index =
+            AirportNotamIndex::from_checkpoint(checkpoint, &mut work).map_err(|error| {
+                AppError {
+                    kind: AppErrorKind::InvalidManifest,
+                    message: format!("failed to install NOTAM checkpoint: {error}"),
+                }
+            })?;
+        for delta in deltas {
+            index
+                .apply_delta(delta, &mut work)
+                .map_err(|error| AppError {
+                    kind: AppErrorKind::InvalidManifest,
+                    message: format!("failed to replay installed NOTAM delta: {error}"),
+                })?;
+        }
+        session.airport_notam_index = Some(index);
+    }
+    let actual = session
+        .airport_notam_index
+        .as_ref()
+        .map(AirportNotamIndex::state_id)
+        .ok_or_else(|| AppError {
+            kind: AppErrorKind::Internal,
+            message: "NOTAM resource replay produced no state".to_string(),
+        })?
+        .to_string();
+    if actual != installed.state_sha256 || actual != installed.version {
+        session.airport_notam_index = None;
+        return Err(AppError {
+            kind: AppErrorKind::InvalidManifest,
+            message: format!(
+                "installed NOTAM resources end at {actual}, expected {}/{}",
+                installed.version, installed.state_sha256
+            ),
+        });
+    }
+    Ok(())
 }
 
 fn install_prepared_live_feed(
@@ -6166,8 +6315,43 @@ fn install_prepared_live_feed(
             session.tfr_payload = Some(payload);
             clear_data_status_record(session, LIVE_FEED_TFRS_STATUS_ID);
         }
-        crate::PreparedLiveFeedPayload::Notams(index) => {
-            session.airport_notam_index = Some(index);
+        crate::PreparedLiveFeedPayload::Notams(message) => {
+            let mut work = notam_state::NotamApplyWork::default();
+            match message {
+                crate::PreparedNotamPayload::InstallCheckpoint(checkpoint) => {
+                    let index = AirportNotamIndex::from_checkpoint(checkpoint, &mut work).map_err(
+                        |error| AppError {
+                            kind: AppErrorKind::InvalidManifest,
+                            message: format!("failed to install NOTAM checkpoint: {error}"),
+                        },
+                    )?;
+                    session.airport_notam_index = Some(index);
+                }
+                crate::PreparedNotamPayload::ApplyDelta(delta) => {
+                    let index = session
+                        .airport_notam_index
+                        .as_mut()
+                        .ok_or_else(|| AppError {
+                            kind: AppErrorKind::InvalidManifest,
+                            message: "cannot apply NOTAM delta without installed state".to_string(),
+                        })?;
+                    if let Err(error) = index.apply_delta(delta, &mut work) {
+                        let preserve = matches!(
+                            error,
+                            notam_state::NotamStateError::Contract(_)
+                                | notam_state::NotamStateError::InvalidOrdering(_)
+                                | notam_state::NotamStateError::BaseStateMismatch { .. }
+                        );
+                        if !preserve {
+                            session.airport_notam_index = None;
+                        }
+                        return Err(AppError {
+                            kind: AppErrorKind::InvalidManifest,
+                            message: format!("failed to apply NOTAM delta: {error}"),
+                        });
+                    }
+                }
+            }
             let status_id = live_feed_unavailable_status_record("notams", String::new()).id;
             clear_data_status_record(session, &status_id);
         }
@@ -6448,36 +6632,6 @@ fn install_live_feed_payloads(session: &mut UiSession) -> AppResult<()> {
                         live_feed_unavailable_status_record(
                             "tafs",
                             format!("TAF live feed unavailable: failed to parse state: {err}"),
-                        ),
-                    );
-                }
-            }
-        }
-    }
-    let loaded_notams_version = session.live_feeds.product_loaded_version("notams");
-    let notams_installed = session
-        .airport_notam_index
-        .as_ref()
-        .and_then(|payload| loaded_notams_version.map(|version| payload.version_label == version))
-        .unwrap_or(false);
-    if !notams_installed {
-        if let Some(notams_value) = session.live_feeds.product_state_manifest("notams").cloned() {
-            let index = serde_json::from_value::<NotamProductPayload>(notams_value)
-                .map_err(|error| error.to_string())
-                .and_then(AirportNotamIndex::from_payload);
-            match index {
-                Ok(index) => {
-                    session.airport_notam_index = Some(index);
-                    let status_id = live_feed_unavailable_status_record("notams", String::new()).id;
-                    clear_data_status_record(session, &status_id);
-                }
-                Err(err) => {
-                    session.airport_notam_index = None;
-                    upsert_data_status_record(
-                        session,
-                        live_feed_unavailable_status_record(
-                            "notams",
-                            format!("NOTAM live feed unavailable: failed to parse state: {err}"),
                         ),
                     );
                 }
@@ -8518,7 +8672,7 @@ fn nexrad_installed_member_path(src: &str) -> Option<String> {
     let src = src.trim_start_matches('/');
     let (_, rest) = src.split_once("/tiles/")?;
     // The installed package is rooted at the state directory, while web URLs include
-    // live-feeds/v2/states/nexrad/<state-id>/.
+    // live-feeds/v3/states/nexrad/<state-id>/.
     Some(format!("tiles/{rest}"))
 }
 
@@ -11598,12 +11752,12 @@ fn normalize_compact_airport_id(airport_id: Option<&str>) -> Option<String> {
 mod tests {
     use super::*;
     use crate::{
-        AirportId, FlightPlan, GuidanceState, LegDisplayElement, LegDisplayPath,
-        LegDisplayPathStyle, MapSelectionAction, MapSelectionCategory, MapSelectionHighlight,
-        MapSelectionItem, NavRef, OwnshipSourceId, OwnshipSourceKind, PathTermination,
-        PointVectorRecord, ProcedureLegProvenance, ProcedureSegmentRole, ResolvedLeg,
-        ResolvedLegSource, RouteComponent, SequencingMode, Situation, SituationPosition,
-        SituationSample,
+        map_overlay::NotamProductPayload, AirportId, FlightPlan, GuidanceState, LegDisplayElement,
+        LegDisplayPath, LegDisplayPathStyle, MapSelectionAction, MapSelectionCategory,
+        MapSelectionHighlight, MapSelectionItem, NavRef, OwnshipSourceId, OwnshipSourceKind,
+        PathTermination, PointVectorRecord, ProcedureLegProvenance, ProcedureSegmentRole,
+        ResolvedLeg, ResolvedLegSource, RouteComponent, SequencingMode, Situation,
+        SituationPosition, SituationSample,
     };
 
     #[test]
@@ -12282,7 +12436,7 @@ mod tests {
             "live_feeds/current",
             format!(
                 r#"{{
-                    "schema_version": 2,
+                    "schema_version": 3,
                     "products": {{
                         "obstacles": {{
                             "current": "{version}",
@@ -12302,7 +12456,7 @@ mod tests {
             &format!("live_feeds/version/obstacles/{version}"),
             format!(
                 r#"{{
-                    "schema_version": 2,
+                    "schema_version": 3,
                     "product": "obstacles",
                     "version": "{version}",
                     "state": {{
@@ -12717,7 +12871,7 @@ mod tests {
                 .ingest_resource(
                     "live_feeds/current",
                     br#"{
-                        "schema_version": 2,
+                        "schema_version": 3,
                         "products": {
                             "metars": {
                                 "current": "v1",
@@ -12771,7 +12925,7 @@ mod tests {
             init.handle,
             "live_feeds/current",
             br#"{
-                "schema_version": 2,
+                "schema_version": 3,
                 "products": {
                     "metars": {
                         "current": "v1",
@@ -12941,7 +13095,7 @@ mod tests {
                     "live_feeds/current",
                     format!(
                         r#"{{
-                            "schema_version": 2,
+                            "schema_version": 3,
                             "products": {{
                                 "metars": {{
                                     "current": "v1",
@@ -13017,23 +13171,6 @@ mod tests {
                     "areas": []
                 }),
             ),
-            (
-                "notams",
-                serde_json::json!({
-                    "schema_version": product_contracts::NOTAM_LIVE_FEED_CONTRACT_VERSION,
-                    "version_label": "v1",
-                    "notam_count": 1,
-                    "notams_by_id": {
-                        "D:SEA:2026:N:1": {
-                            "id": "D:SEA:2026:N:1",
-                            "airport_id": "KSEA",
-                            "airport_effects": ["runway_closed"],
-                            "notam_keyword": "RWY",
-                            "text": "RWY 16L/34R CLSD"
-                        }
-                    }
-                }),
-            ),
         ];
 
         for (product, state) in cases {
@@ -13051,7 +13188,7 @@ mod tests {
                 "live_feeds/current",
                 format!(
                     r#"{{
-                        "schema_version": 2,
+                        "schema_version": 3,
                         "products": {{
                             "{product}": {{
                                 "current": "v1",
@@ -13131,7 +13268,7 @@ mod tests {
             "live_feeds/current",
             format!(
                 r#"{{
-                    "schema_version": 2,
+                    "schema_version": 3,
                     "products": {{
                         "tafs": {{
                             "current": "v1",
@@ -13151,7 +13288,7 @@ mod tests {
             "live_feeds/version/tafs/v1",
             format!(
                 r#"{{
-                    "schema_version": 2,
+                    "schema_version": 3,
                     "product": "tafs",
                     "version": "v1",
                     "state": {{
@@ -13214,6 +13351,95 @@ mod tests {
     }
 
     #[test]
+    fn notam_postcondition_failure_discards_state_but_stale_base_preserves_it() {
+        let init =
+            create_ui_session(FlightPlan::default(), &[], None, None).expect("create session");
+        let record = |id: &str, text: &str| notam_state::NotamRecord {
+            id: id.to_string(),
+            airport_id: Some("KSEA".to_string()),
+            airport_effects: [product_contracts::AirportNotamEffect::RoutineAdvisory]
+                .into_iter()
+                .collect(),
+            notam_keyword: Some("AD".to_string()),
+            effective_start_utc: None,
+            effective_end_utc: None,
+            text: Some(text.to_string()),
+            local_text: None,
+            icao_text: None,
+        };
+        let mut source = notam_state::NotamState::empty();
+        source
+            .apply_mutation(
+                notam_state::NotamMutation::Upsert {
+                    record: record("A", "initial"),
+                },
+                &mut notam_state::NotamApplyWork::default(),
+            )
+            .unwrap();
+        let checkpoint = source.checkpoint();
+        let base_id = source.state_id().to_string();
+        let mutation = notam_state::NotamMutation::Upsert {
+            record: record("B", "changed"),
+        };
+        source
+            .apply_mutation(
+                mutation.clone(),
+                &mut notam_state::NotamApplyWork::default(),
+            )
+            .unwrap();
+
+        let mut sessions = lock_sessions();
+        let session = session_mut(&mut sessions, init.handle).expect("session");
+        install_prepared_live_feed(
+            session,
+            crate::PreparedLiveFeedPayload::Notams(crate::PreparedNotamPayload::InstallCheckpoint(
+                checkpoint.clone(),
+            )),
+        )
+        .unwrap();
+        let bad_target = notam_state::NotamDelta::new(
+            base_id.clone(),
+            "f".repeat(64),
+            source.counters(),
+            vec![mutation],
+        );
+        assert!(install_prepared_live_feed(
+            session,
+            crate::PreparedLiveFeedPayload::Notams(crate::PreparedNotamPayload::ApplyDelta(
+                bad_target
+            )),
+        )
+        .is_err());
+        assert!(session.airport_notam_index.is_none());
+
+        install_prepared_live_feed(
+            session,
+            crate::PreparedLiveFeedPayload::Notams(crate::PreparedNotamPayload::InstallCheckpoint(
+                checkpoint,
+            )),
+        )
+        .unwrap();
+        let stale = notam_state::NotamDelta::new(
+            "e".repeat(64),
+            "d".repeat(64),
+            notam_state::NotamCounters::default(),
+            Vec::new(),
+        );
+        assert!(install_prepared_live_feed(
+            session,
+            crate::PreparedLiveFeedPayload::Notams(crate::PreparedNotamPayload::ApplyDelta(stale)),
+        )
+        .is_err());
+        assert_eq!(
+            session
+                .airport_notam_index
+                .as_ref()
+                .map(AirportNotamIndex::state_id),
+            Some(base_id.as_str())
+        );
+    }
+
+    #[test]
     fn live_feed_notams_install_airport_records() {
         let init =
             create_ui_session(FlightPlan::default(), &[], None, None).expect("create session");
@@ -13259,20 +13485,81 @@ mod tests {
                 }
             }
         });
+        let mut records = state["notams_by_id"]
+            .as_object()
+            .expect("NOTAM records")
+            .values()
+            .map(|record| serde_json::from_value::<notam_state::NotamRecord>(record.clone()))
+            .collect::<Result<Vec<_>, _>>()
+            .expect("decode NOTAM records");
+        records.sort_by(|left, right| left.id.cmp(&right.id));
+        let mut notam_state = notam_state::NotamState::empty();
+        let mut work = notam_state::NotamApplyWork::default();
+        for record in records {
+            notam_state
+                .apply_mutation(notam_state::NotamMutation::Upsert { record }, &mut work)
+                .expect("build NOTAM checkpoint");
+        }
+        let checkpoint = notam_state.checkpoint();
+        let state_id = checkpoint.state_id.clone();
+        let checkpoint_bytes = nav_kv_package::xz_frame_uncompressed_bytes(
+            &serde_json::to_vec(&checkpoint).expect("checkpoint JSON"),
+        )
+        .expect("checkpoint XZ");
+        let resource_id = format!("live_feeds/state/notams/{state_id}");
+        let (_, prepared_bytes) =
+            crate::prepare_live_feed_state_resource(&resource_id, &checkpoint_bytes)
+                .expect("prepare NOTAM checkpoint");
         {
             let mut sessions = lock_sessions();
             let session = sessions.get_mut(&init.handle).expect("session");
-            session.live_feeds.mark_durable_product_loaded(
-                "notams".to_string(),
-                "v1".to_string(),
-                "state-hash".to_string(),
-                Some(state),
-            );
-            install_live_feed_payloads(session).expect("install NOTAM state");
+            session
+                .live_feeds
+                .ingest_resource(
+                    "live_feeds/current",
+                    serde_json::to_string(&serde_json::json!({
+                        "schema_version": crate::live_feeds::LIVE_FEEDS_SCHEMA_VERSION,
+                        "products": {
+                            "notams": {
+                                "current": state_id,
+                                "version_manifest_url": format!("versions/notams/{state_id}.json"),
+                                "state_url": format!("states/notams/{state_id}.json.xz"),
+                                "state_sha256": state_id,
+                            }
+                        }
+                    }))
+                    .expect("current JSON")
+                    .as_bytes(),
+                )
+                .expect("install NOTAM current");
+            session
+                .live_feeds
+                .ingest_resource(
+                    &format!("live_feeds/version/notams/{state_id}"),
+                    serde_json::to_string(&serde_json::json!({
+                        "schema_version": crate::live_feeds::LIVE_FEEDS_SCHEMA_VERSION,
+                        "product": "notams",
+                        "version": state_id,
+                        "state": {
+                            "kind": "notam_checkpoint_xz",
+                            "url": format!("states/notams/{state_id}.json.xz"),
+                            "state_sha256": state_id,
+                        }
+                    }))
+                    .expect("version JSON")
+                    .as_bytes(),
+                )
+                .expect("install NOTAM version");
+        }
+        ingest_prepared_live_feed_resource_in_session(init.handle, &resource_id, &prepared_bytes)
+            .expect("install NOTAM checkpoint");
+        {
+            let mut sessions = lock_sessions();
+            let session = sessions.get_mut(&init.handle).expect("session");
             let index = session.airport_notam_index.as_ref().unwrap_or_else(|| {
                 panic!("airport NOTAM index: {:?}", session.data_status_records)
             });
-            assert_eq!(index.version_label, "v1");
+            assert_eq!(index.version_label, state_id);
             let detail = crate::map_overlay::weather_detail_for_station(
                 "KAAA",
                 None,
@@ -13297,7 +13584,7 @@ mod tests {
         assert!(status
             .facts
             .iter()
-            .any(|fact| fact.label == "Version" && fact.value == "v1"));
+            .any(|fact| fact.label == "Version" && fact.value == state_id));
     }
 
     #[test]
@@ -13443,7 +13730,7 @@ mod tests {
             "live_feeds/current",
             format!(
                 r#"{{
-                    "schema_version": 2,
+                    "schema_version": 3,
                     "products": {{
                         "tafs": {{
                             "current": "v1",
@@ -14375,7 +14662,7 @@ mod tests {
                 "live_feeds/current",
                 format!(
                     r#"{{
-                    "schema_version": 2,
+                    "schema_version": 3,
                     "products": {{
                         "tfrs": {{
                             "current": "bad",
@@ -14396,7 +14683,7 @@ mod tests {
                 "live_feeds/version/tfrs/bad",
                 format!(
                     r#"{{
-                    "schema_version": 2,
+                    "schema_version": 3,
                     "product": "tfrs",
                     "version": "bad",
                     "state": {{
@@ -14526,7 +14813,7 @@ mod tests {
             "live_feeds/current",
             format!(
                 r#"{{
-                    "schema_version": 2,
+                    "schema_version": 3,
                     "products": {{
                         "obstacles": {{
                             "current": "v1",
@@ -14545,7 +14832,7 @@ mod tests {
             "live_feeds/version/obstacles/v1",
             format!(
                 r#"{{
-                    "schema_version": 2,
+                    "schema_version": 3,
                     "product": "obstacles",
                     "version": "v1",
                     "state": {{
@@ -14667,7 +14954,7 @@ mod tests {
             "live_feeds/current",
             format!(
                 r#"{{
-                    "schema_version": 2,
+                    "schema_version": 3,
                     "products": {{
                         "obstacles": {{
                             "current": "v2",
@@ -14854,7 +15141,7 @@ mod tests {
         let snapshot = report_session_resource_failure_in_session(
             init.handle,
             "live_feeds/current",
-            "failed to fetch /live-feeds/v2/current.json: 404",
+            "failed to fetch /live-feeds/v3/current.json: 404",
         )
         .expect("report failure");
 
@@ -15120,7 +15407,7 @@ mod tests {
     fn ingest_nexrad_live_test_state(handle: u32, version: &str, manifest: &serde_json::Value) {
         let state_sha256 = canonical_json_sha256_value(manifest).expect("state hash");
         let version_manifest = serde_json::json!({
-            "schema_version": 2,
+            "schema_version": 3,
             "product": "nexrad",
             "version": version,
             "state": {
@@ -15194,7 +15481,7 @@ mod tests {
             })
             .collect::<Vec<_>>();
         let current = serde_json::json!({
-            "schema_version": 2,
+            "schema_version": 3,
             "products": {
                 "nexrad": {
                     "current": "nexrad-v7",
@@ -15478,7 +15765,7 @@ mod tests {
             .map(|(version, _)| version.as_str())
             .expect("current version");
         let current = serde_json::json!({
-            "schema_version": 2,
+            "schema_version": 3,
             "products": {
                 "nexrad": {
                     "current": current_version,
@@ -15559,7 +15846,7 @@ mod tests {
     fn nexrad_tile_prepare_faults_and_caches_live_feed_tile_resource() {
         let init =
             create_ui_session(FlightPlan::default(), &[], None, None).expect("create session");
-        let src = "/live-feeds/v2/states/nexrad/state-v1/tiles/res3/0/0.png";
+        let src = "/live-feeds/v3/states/nexrad/state-v1/tiles/res3/0/0.png";
 
         let outcome = prepare_nexrad_tile_in_session(init.handle, src).expect("prepare tile");
         let HadOperationOutcome::NeedResources { resources } = outcome else {
@@ -15596,7 +15883,7 @@ mod tests {
         ingest_resource_in_session(
             init.handle,
             "live_feeds/current",
-            br#"{"schema_version":2,"products":{}}"#,
+            br#"{"schema_version":3,"products":{}}"#,
         )
         .expect("ingest empty current manifest");
 
@@ -15972,7 +16259,7 @@ mod tests {
             "live_feeds/current",
             format!(
                 r#"{{
-                    "schema_version": 2,
+                    "schema_version": 3,
                     "products": {{
                         "obstacles": {{
                             "current": "v1",
@@ -15991,7 +16278,7 @@ mod tests {
             "live_feeds/version/obstacles/v1",
             format!(
                 r#"{{
-                    "schema_version": 2,
+                    "schema_version": 3,
                     "product": "obstacles",
                     "version": "v1",
                     "state": {{
@@ -16052,7 +16339,7 @@ mod tests {
         ingest_resource_in_session(
             init.handle,
             "live_feeds/current",
-            br#"{"schema_version":2,"products":{"nexrad":{"current":"nexrad-old","version_manifest_url":"versions/nexrad/nexrad-old.json"}}}"#,
+            br#"{"schema_version":3,"products":{"nexrad":{"current":"nexrad-old","version_manifest_url":"versions/nexrad/nexrad-old.json"}}}"#,
         )
         .expect("ingest current");
         ingest_nexrad_live_test_state(init.handle, version, &manifest);
@@ -16763,11 +17050,11 @@ mod tests {
         ));
         assert!(row
             .detail
-            .contains("current manifest has schema_version 1; client requires schema_version 2"));
+            .contains("current manifest has schema_version 1; client requires schema_version 3"));
         assert!(row.facts.iter().any(|fact| {
             fact.label == "Error"
                 && fact.value.contains(
-                    "current manifest has schema_version 1; client requires schema_version 2",
+                    "current manifest has schema_version 1; client requires schema_version 3",
                 )
         }));
     }

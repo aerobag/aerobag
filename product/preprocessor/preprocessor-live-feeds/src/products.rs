@@ -13,7 +13,6 @@ use preprocessor_fetch::{
 };
 use preprocessor_vectors::{build_obstacle_dataset, BuildObstacleDatasetRequest};
 use preprocessor_zip::{write_deterministic_zip, ZipSource};
-use product_contracts::{AirportNotamEffect, NOTAM_LIVE_FEED_CONTRACT_VERSION};
 use serde_json::Value;
 use sha2::{Digest, Sha256};
 
@@ -137,66 +136,25 @@ impl ProductBuilder for NotamLiveFeedBuilder {
     fn build_state(
         &self,
         event: &UpstreamEvent,
-        scratch_dir: &Path,
+        _scratch_dir: &Path,
     ) -> anyhow::Result<BuiltLiveFeedState> {
         let generated_at_utc = normalized_event_time(event.observed_at_utc);
-        let output_dir = fresh_dir(&scratch_dir.join("output"))?;
         let store = NotamPersistentStore::new(&self.state_root);
-        let records = store.current_records()?;
-        let airport_notam_count = records
-            .iter()
-            .filter(|record| record.airport_id.is_some())
-            .count();
-        let airport_notams_with_multiple_effects = records
-            .iter()
-            .filter(|record| record.airport_id.is_some() && record.airport_effects.len() > 1)
-            .count();
-        let airport_notams_with_other_effect = records
-            .iter()
-            .filter(|record| {
-                record.airport_id.is_some()
-                    && record.airport_effects.contains(&AirportNotamEffect::Other)
-            })
-            .count();
-        let notams_by_id = records
-            .into_iter()
-            .map(|record| (record.id.clone(), record))
-            .collect::<BTreeMap<_, _>>();
-        let notam_count = notams_by_id.len();
-        let content_for_version = serde_json::json!({
-            "schema_version": NOTAM_LIVE_FEED_CONTRACT_VERSION,
-            "notam_count": notam_count,
-            "airport_notam_count": airport_notam_count,
-            "airport_notams_with_multiple_effects": airport_notams_with_multiple_effects,
-            "airport_notams_with_other_effect": airport_notams_with_other_effect,
-            "notams_by_id": notams_by_id,
-        });
-        let fingerprint = sha256_hex(
-            &serde_json::to_vec(&content_for_version)
-                .context("failed to encode NOTAM live-feed version content")?,
-        );
-        let version = content_version_label(&fingerprint);
-        let structured_json_path = output_dir.join("notams.json");
-        let state_value = serde_json::json!({
-            "schema_version": NOTAM_LIVE_FEED_CONTRACT_VERSION,
-            "version_label": version.clone(),
-            "notam_count": notam_count,
-            "airport_notam_count": airport_notam_count,
-            "airport_notams_with_multiple_effects": airport_notams_with_multiple_effects,
-            "airport_notams_with_other_effect": airport_notams_with_other_effect,
-            "notams_by_id": content_for_version["notams_by_id"].clone(),
-        });
-        write_json_pretty_file(&structured_json_path, &state_value)?;
+        let (state_id, _counters) = store.current_state_summary()?;
         Ok(with_collected_at(
-            keyed_record_json_live_feed_state(
-                "notams",
-                version,
-                structured_json_path.clone(),
-                state_value,
-                "notams_by_id",
-                Some("notam_count"),
-                notam_count,
-            ),
+            BuiltLiveFeedState {
+                product: "notams".to_string(),
+                version: state_id,
+                payload: LiveFeedStatePayload::NotamIncremental {
+                    state_root: self.state_root.clone(),
+                },
+                state_sha256: None,
+                state_payload_kind: None,
+                status_timestamps: Default::default(),
+                delta_policy: DeltaPolicy::None,
+                precomputed_delta: None,
+                changed_count_if_no_delta: 0,
+            },
             generated_at_utc,
         ))
     }
@@ -1243,6 +1201,35 @@ mod tests {
     use serde::Deserialize;
     use tempfile::tempdir;
 
+    fn incremental_test_notam_line(number: u32, text: &str) -> Value {
+        let xml = format!(
+            r#"<?xml version="1.0" encoding="UTF-8"?>
+<AIXMBasicMessage xmlns:event="http://www.aixm.aero/schema/5.1/event">
+  <hasMember><event:Event><event:timeSlice><event:EventTimeSlice>
+    <event:scenario>95</event:scenario><event:textNOTAM><event:NOTAM>
+      <event:number>{number}</event:number><event:year>2026</event:year>
+      <event:type>N</event:type><event:issued>2026-07-11T02:00:00.000Z</event:issued>
+      <event:location>AAA</event:location><event:effectiveStart>202607110200</event:effectiveStart>
+      <event:effectiveEnd>202607111200</event:effectiveEnd><event:text>{text}</event:text>
+    </event:NOTAM></event:textNOTAM>
+  </event:EventTimeSlice></event:timeSlice></event:Event></hasMember>
+</AIXMBasicMessage>"#
+        );
+        serde_json::json!({
+            "jmsMessageId": format!("ID:test-{number}"),
+            "receivedAtUtc": "2026-07-11T02:03:00Z",
+            "properties": {
+                "us_gov_dot_faa_aim_fns_nds_SourceType": "D",
+                "us_gov_dot_faa_aim_fns_nds_ICAOId": "KAAA",
+                "us_gov_dot_faa_aim_fns_nds_LocationDesignator": "AAA",
+                "us_gov_dot_faa_aim_fns_nds_NOTAMStatus": "ACTIVE",
+                "us_gov_dot_faa_aim_fns_nds_NOTAMFunction": "NOTAMN",
+                "us_gov_dot_faa_aim_fns_nds_NOTAMKeyword": "RWY"
+            },
+            "bodyText": xml
+        })
+    }
+
     #[test]
     fn winds_aloft_cycle_selection_uses_conservative_gfs_lag() {
         let now = DateTime::parse_from_rfc3339("2026-05-09T15:10:00Z")
@@ -1315,7 +1302,7 @@ mod tests {
     }
 
     #[test]
-    fn notam_live_feed_builder_publishes_keyed_record_state() -> anyhow::Result<()> {
+    fn notam_live_feed_builder_publishes_checkpoint_then_ordered_delta() -> anyhow::Result<()> {
         let temp = tempdir()?;
         let state_root = temp.path().join("notam-state");
         let xml = r#"<?xml version="1.0" encoding="UTF-8"?>
@@ -1381,22 +1368,13 @@ mod tests {
         let builder = NotamLiveFeedBuilder::new(&state_root);
         let built = builder.build_state(&event, &temp.path().join("scratch"))?;
         assert_eq!(built.product, "notams");
-        let LiveFeedStatePayload::JsonFile { value, .. } = &built.payload else {
-            panic!("NOTAM live-feed state should be JSON");
+        let LiveFeedStatePayload::NotamIncremental {
+            state_root: built_state_root,
+        } = &built.payload
+        else {
+            panic!("NOTAM live-feed state should be incremental");
         };
-        assert_eq!(value["schema_version"], NOTAM_LIVE_FEED_CONTRACT_VERSION);
-        assert_eq!(value["notam_count"], 1);
-        assert_eq!(value["airport_notam_count"], 1);
-        assert_eq!(value["airport_notams_with_multiple_effects"], 1);
-        assert_eq!(value["airport_notams_with_other_effect"], 0);
-        assert_eq!(
-            value["notams_by_id"]["D:AAA:2026:N:1"]["text"],
-            "RWY 01 CLSD."
-        );
-        assert_eq!(
-            value["notams_by_id"]["D:AAA:2026:N:1"]["airport_effects"],
-            serde_json::json!(["runway_closed", "surface_condition"])
-        );
+        assert_eq!(built_state_root, &state_root);
 
         let live_root = temp.path().join("live");
         let publisher = FileLiveFeedPublisher::new(
@@ -1404,10 +1382,173 @@ mod tests {
             FixedClock::new(Utc.with_ymd_and_hms(2026, 7, 11, 2, 4, 0).unwrap()),
         );
         let update = publisher.publish(built)?;
+        publisher.acknowledge(&update)?;
         assert_eq!(update.product, "notams");
         assert_eq!(update.changed_count, 1);
+        let checkpoint: notam_state::NotamCheckpoint =
+            serde_json::from_value(read_json_value(&update.state_path)?)?;
+        assert_eq!(checkpoint.counters.notam_count, 1);
+        assert_eq!(checkpoint.counters.airport_notam_count, 1);
+        assert_eq!(checkpoint.counters.airport_notams_with_multiple_effects, 1);
+        assert_eq!(checkpoint.counters.airport_notams_with_other_effect, 0);
+        assert_eq!(checkpoint.records[0].text.as_deref(), Some("RWY 01 CLSD."));
+        assert_eq!(
+            checkpoint.records[0].airport_effects,
+            [
+                product_contracts::AirportNotamEffect::RunwayClosed,
+                product_contracts::AirportNotamEffect::SurfaceCondition,
+            ]
+            .into_iter()
+            .collect()
+        );
         let current = read_live_feeds_current(&live_root)?.expect("current manifest");
         assert!(current.products.contains_key("notams"));
+
+        let mut client_work = notam_state::NotamApplyWork::default();
+        let mut client = notam_state::NotamState::from_checkpoint(checkpoint, &mut client_work)
+            .map_err(anyhow::Error::msg)?;
+        let mut second = line.clone();
+        second["jmsMessageId"] = serde_json::json!("ID:test-2");
+        second["bodyText"] =
+            serde_json::json!(xml.replace("RWY 01 CLSD.", "RWY 01 CLSD. TWY A CLSD."));
+        store.insert_raw_message_for_test(
+            "message-b",
+            "2026-07-11T02:05:00Z",
+            &second.to_string(),
+        )?;
+        store.apply_pending_raw_messages(10)?;
+        let second_event = UpstreamEvent {
+            source_id: "notams:test-2".to_string(),
+            observed_at_utc: Utc.with_ymd_and_hms(2026, 7, 11, 2, 5, 0).unwrap(),
+            ..event
+        };
+        let second_built = builder.build_state(&second_event, &temp.path().join("scratch-2"))?;
+        let second_update = publisher.publish(second_built)?;
+        assert_eq!(second_update.changed_count, 1);
+        assert_eq!(second_update.removed_count, 0);
+        assert_eq!(second_update.state_path, update.state_path);
+        let delta_path = second_update.delta_path.context("missing NOTAM delta")?;
+        let delta: notam_state::NotamDelta = serde_json::from_value(read_json_value(&delta_path)?)?;
+        assert_eq!(delta.mutations.len(), 1);
+        client
+            .apply_delta(delta, &mut client_work)
+            .map_err(anyhow::Error::msg)?;
+        let expected = store.current_checkpoint()?;
+        assert_eq!(client.state_id(), expected.state_id);
+        assert_eq!(client.checkpoint(), expected);
+        let manifest: LiveFeedVersionManifest =
+            serde_json::from_slice(&fs::read(second_update.version_manifest_path)?)?;
+        assert_eq!(manifest.recent_deltas.len(), 1);
+        assert_eq!(manifest.recent_deltas[0].mutation_count, Some(1));
+
+        let recovery_built =
+            builder.build_state(&second_event, &temp.path().join("scratch-recovery"))?;
+        let recovered = publisher.publish(recovery_built)?;
+        assert!(!recovered.unchanged);
+        assert_eq!(recovered.version, second_update.version);
+        publisher.acknowledge(&recovered)?;
+        assert_eq!(
+            store.publication_cursor()?.published_head_state_id,
+            Some(second_update.version)
+        );
+
+        fs::write(&delta_path, b"corrupt retained delta")?;
+        let corrupt_built =
+            builder.build_state(&second_event, &temp.path().join("scratch-corrupt"))?;
+        let error = publisher
+            .publish(corrupt_built)
+            .expect_err("restart must reject a corrupt retained delta");
+        assert!(
+            format!("{error:#}").contains("immutable blob identity mismatch"),
+            "{error:#}"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn notam_checkpoint_compaction_follows_delta_acknowledgement() -> anyhow::Result<()> {
+        let temp = tempdir()?;
+        let state_root = temp.path().join("notam-state");
+        let store = NotamPersistentStore::new(&state_root);
+        store.initialize(&crate::notam_store::SwimNotamSubscriptionIdentity {
+            provider_url: "smfs://example.test:55443".to_string(),
+            queue: "example.queue".to_string(),
+            connection_factory: "example.CF".to_string(),
+            username: "example.user".to_string(),
+            vpn: "example-vpn".to_string(),
+        })?;
+        let initial = incremental_test_notam_line(1, "RWY 01 CLSD.");
+        store.insert_raw_message_for_test(
+            "message-1",
+            "2026-07-11T02:03:00Z",
+            &initial.to_string(),
+        )?;
+        store.apply_pending_raw_messages(200)?;
+
+        let builder = NotamLiveFeedBuilder::new(&state_root);
+        let event = UpstreamEvent {
+            product: "notams".to_string(),
+            source_id: "notams:initial".to_string(),
+            previous_source_id: None,
+            observed_at_utc: Utc.with_ymd_and_hms(2026, 7, 11, 2, 3, 0).unwrap(),
+            payload_path: None,
+        };
+        let live_root = temp.path().join("live");
+        let publisher = FileLiveFeedPublisher::new(
+            live_root.clone(),
+            FixedClock::new(Utc.with_ymd_and_hms(2026, 7, 11, 2, 4, 0).unwrap()),
+        );
+        let initial_update =
+            publisher.publish(builder.build_state(&event, &temp.path().join("scratch"))?)?;
+        publisher.acknowledge(&initial_update)?;
+        publisher.maintain_after_acknowledgement(&initial_update)?;
+
+        for number in 2..=101 {
+            let line = incremental_test_notam_line(number, "RWY EDGE LIGHTS U/S.");
+            store.insert_raw_message_for_test(
+                &format!("message-{number}"),
+                "2026-07-11T02:05:00Z",
+                &line.to_string(),
+            )?;
+        }
+        let applied = store
+            .apply_pending_raw_messages(200)?
+            .context("missing 100-record NOTAM update")?;
+        assert_eq!(applied.changed_count, 100);
+
+        let update = publisher.publish(builder.build_state(
+            &UpstreamEvent {
+                source_id: "notams:hundred-mutations".to_string(),
+                observed_at_utc: Utc.with_ymd_and_hms(2026, 7, 11, 2, 5, 0).unwrap(),
+                ..event
+            },
+            &temp.path().join("scratch-2"),
+        )?)?;
+        assert!(update.notam_compaction.is_some());
+        let before = read_live_feeds_current(&live_root)?.context("missing current manifest")?;
+        assert_eq!(
+            before.products["notams"].state_url, initial_update.state_url,
+            "delta publication must not wait for or preemptively expose a checkpoint"
+        );
+
+        publisher.acknowledge(&update)?;
+        publisher.maintain_after_acknowledgement(&update)?;
+        let after = read_live_feeds_current(&live_root)?.context("missing compacted current")?;
+        let entry = &after.products["notams"];
+        assert_eq!(entry.current, update.version);
+        assert!(entry.version_manifest_url.ends_with(".checkpoint.json"));
+        let manifest: LiveFeedVersionManifest =
+            serde_json::from_slice(&fs::read(live_root.join(&entry.version_manifest_url))?)?;
+        assert_eq!(manifest.state.state_sha256, update.version);
+        assert_eq!(manifest.state.kind.as_deref(), Some("notam_checkpoint_xz"));
+        assert!(
+            manifest
+                .recent_deltas
+                .iter()
+                .map(|delta| delta.mutation_count.unwrap_or_default())
+                .sum::<u64>()
+                <= 100
+        );
         Ok(())
     }
 

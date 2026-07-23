@@ -15,6 +15,7 @@ preprocessor-fetch = { path = "../preprocessor-fetch" }
 preprocessor-vectors = { path = "../preprocessor-vectors" }
 preprocessor-zip = { path = "../preprocessor-zip" }
 product-contracts = { path = "../../../crates/product-contracts" }
+notam-state = { path = "../../../crates/notam-state" }
 quick-xml.workspace = true
 roxmltree.workspace = true
 libc = "0.2"
@@ -24,5 +25,6 @@ serde_json.workspace = true
 sha2.workspace = true
 
 [dev-dependencies]
+app-core = { path = "../../../ui/core-rust/crates/app-core" }
 tempfile.workspace = true
 zip.workspace = true

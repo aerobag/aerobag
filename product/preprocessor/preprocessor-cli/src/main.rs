@@ -8,7 +8,9 @@ use std::{
 use anyhow::Context;
 use chrono::{DateTime, NaiveDate, Utc};
 mod emit_source_urls;
+mod notam_trace_capture;
 mod product_build;
+use notam_trace_capture::{capture_notam_incremental_trace, CaptureNotamTraceRequest};
 use preprocessor_charts::{
     build_family_tiles, build_family_vrts, likely_current_bottleneck, package_family_regions,
     phase_plan, run_family, run_native_family, ChartRunRequest, NativeChartRunRequest,
@@ -56,6 +58,7 @@ fn usage() -> &'static str {
   preprocessor-cli gc [--build-root <path>] [--dry-run|--execute] [--grace-hours <count>]
   preprocessor-cli analyze-obstacle-thresholds --input-dir <path> [--cap <count>] [--min-zoom <z>] [--max-zoom <z>] [--step-ft <count>]
   preprocessor-cli normalize-swim-notams --input-jsonl <path> --output-dir <path> --version-label <label>
+  preprocessor-cli capture-notam-incremental-trace --start-sqlite <path> --source-sqlite <path> --output-dir <path> --source-commit <git-hash>
 
 Use --long-help to show internal/debug commands."
 }
@@ -498,6 +501,34 @@ fn run_normalize_swim_notams_command(
         result.structured_json_path,
         result.zip_path,
     ))
+}
+
+fn run_capture_notam_incremental_trace_command(args: &[String]) -> anyhow::Result<PathBuf> {
+    let mut start_sqlite = None;
+    let mut source_sqlite = None;
+    let mut output_dir = None;
+    let mut source_commit = None;
+    let mut index = 0;
+    while index < args.len() {
+        let value = args
+            .get(index + 1)
+            .cloned()
+            .ok_or_else(|| anyhow::anyhow!("{}", usage()))?;
+        match args[index].as_str() {
+            "--start-sqlite" => start_sqlite = Some(PathBuf::from(value)),
+            "--source-sqlite" => source_sqlite = Some(PathBuf::from(value)),
+            "--output-dir" => output_dir = Some(PathBuf::from(value)),
+            "--source-commit" => source_commit = Some(value),
+            _ => anyhow::bail!("{}", usage()),
+        }
+        index += 2;
+    }
+    capture_notam_incremental_trace(&CaptureNotamTraceRequest {
+        start_sqlite: start_sqlite.ok_or_else(|| anyhow::anyhow!("{}", usage()))?,
+        source_sqlite: source_sqlite.ok_or_else(|| anyhow::anyhow!("{}", usage()))?,
+        output_dir: output_dir.ok_or_else(|| anyhow::anyhow!("{}", usage()))?,
+        source_commit: source_commit.ok_or_else(|| anyhow::anyhow!("{}", usage()))?,
+    })
 }
 
 fn visit_files(
@@ -2638,6 +2669,10 @@ fn main() -> anyhow::Result<()> {
             println!("manifest {}", manifest_path.display());
             println!("structured_json {}", structured_json_path.display());
             println!("zip {}", zip_path.display());
+        }
+        Some("capture-notam-incremental-trace") => {
+            let manifest = run_capture_notam_incremental_trace_command(&args[2..])?;
+            println!("{}", manifest.display());
         }
         Some("build-cycle") => {
             if maybe_reexec_build_under_cgroup("build-cycle", &args[2..])? {

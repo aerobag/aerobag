@@ -1,23 +1,21 @@
 use std::collections::HashMap;
 
+use notam_state::{NotamCheckpoint, NotamDelta};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use sha2::{Digest, Sha256};
 
 use crate::{
-    map_overlay::{
-        AirportNotamIndex, MetarProductPayload, NotamProductPayload, TafProductPayload,
-        TfrProductPayload,
-    },
+    map_overlay::{MetarProductPayload, TafProductPayload, TfrProductPayload},
     AppError, AppErrorKind, AppResult, CoreResourceRequest, HadOperationOutcome, UiInvalidation,
 };
 
 const CURRENT_RESOURCE_ID: &str = "live_feeds/current";
-pub const LIVE_FEEDS_SCHEMA_VERSION: u32 = 2;
-pub const LIVE_FEEDS_BASE_PATH: &str = "/live-feeds/v2";
-pub const LIVE_FEEDS_EVENTS_PATH: &str = "/live-feeds/v2/events";
-const CURRENT_ADDRESS: &str = "/live-feeds/v2/current.json";
-const LIVE_FEEDS_PREFIX: &str = "/live-feeds/v2/";
+pub use product_contracts::LIVE_FEEDS_SCHEMA_VERSION;
+pub const LIVE_FEEDS_BASE_PATH: &str = "/live-feeds/v3";
+pub const LIVE_FEEDS_EVENTS_PATH: &str = "/live-feeds/v3/events";
+const CURRENT_ADDRESS: &str = "/live-feeds/v3/current.json";
+const LIVE_FEEDS_PREFIX: &str = "/live-feeds/v3/";
 const LIVE_FEEDS_STATUS_PATH: &str = "/live-feeds/status.html";
 const FAILED_RESOURCE_RETRY_DELAY_MS: i64 = 5 * 60 * 1000;
 pub const LIVE_FEED_HISTORY_MAX_ENTRIES: usize = 12;
@@ -43,6 +41,7 @@ struct LiveFeedProductState {
     state_ref: Option<LiveFeedPayloadRef>,
     install_state_ref: Option<LiveFeedPayloadRef>,
     delta_from_previous: Option<LiveFeedDeltaRef>,
+    recent_deltas: Vec<LiveFeedDeltaRef>,
     version_manifest: Option<Value>,
     state_manifest: Option<Value>,
     history: Vec<LiveFeedProductHistoryState>,
@@ -146,6 +145,8 @@ struct VersionManifest {
     install_state: Option<LiveFeedPayloadRef>,
     #[serde(default)]
     delta_from_previous: Option<LiveFeedDeltaRef>,
+    #[serde(default)]
+    recent_deltas: Vec<LiveFeedDeltaRef>,
     state: LiveFeedPayloadRef,
 }
 
@@ -162,6 +163,8 @@ pub struct LiveFeedDeltaRef {
     pub bytes: Option<u64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub blob_sha256: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub mutation_count: Option<u64>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -232,7 +235,21 @@ pub enum PreparedLiveFeedPayload {
     Metars(PreparedMetarLiveFeed),
     Tafs(TafProductPayload),
     Tfrs(TfrProductPayload),
-    Notams(AirportNotamIndex),
+    Notams(PreparedNotamPayload),
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub enum PreparedNotamPayload {
+    InstallCheckpoint(NotamCheckpoint),
+    ApplyDelta(NotamDelta),
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct BackgroundNotamWork {
+    pub compressed_bytes_read: u64,
+    pub json_bytes_decoded: u64,
+    pub records_decoded: u64,
+    pub postcard_bytes_written: u64,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -265,7 +282,10 @@ impl PreparedLiveFeedPayload {
             Self::Metars(feed) => &feed.payload.version_label,
             Self::Tafs(payload) => &payload.version_label,
             Self::Tfrs(payload) => &payload.version_label,
-            Self::Notams(index) => &index.version_label,
+            Self::Notams(PreparedNotamPayload::InstallCheckpoint(checkpoint)) => {
+                &checkpoint.state_id
+            }
+            Self::Notams(PreparedNotamPayload::ApplyDelta(delta)) => &delta.to_state_id,
         }
     }
 }
@@ -501,7 +521,27 @@ impl LiveFeedsState {
                     )));
                 }
             }
-            let entry = self.products.entry(product).or_default();
+            for delta in &manifest.recent_deltas {
+                validate_relative_url(&delta.url)?;
+                if delta.kind.is_none() {
+                    return Err(invalid_live_feed(format!(
+                        "version resource {resource_id} retained delta missing kind"
+                    )));
+                }
+            }
+            if product == "notams" {
+                let expected_head = self
+                    .products
+                    .get(&product)
+                    .and_then(|entry| entry.current_version.as_deref())
+                    .ok_or_else(|| {
+                        invalid_live_feed(
+                            "NOTAM version manifest arrived before current manifest".to_string(),
+                        )
+                    })?;
+                validate_notam_version_manifest(&manifest, expected_head)?;
+            }
+            let entry = self.products.entry(product.clone()).or_default();
             if entry.current_version.as_deref() != Some(version.as_str()) {
                 let Some(history) = entry
                     .history
@@ -523,11 +563,14 @@ impl LiveFeedsState {
                 return Ok(());
             }
             entry.state_url = Some(manifest.state.url.clone());
-            entry.expected_state_sha256 = Some(manifest.state.state_sha256.clone());
+            if product != "notams" {
+                entry.expected_state_sha256 = Some(manifest.state.state_sha256.clone());
+            }
             entry.state_kind = manifest.state.kind.clone();
             entry.state_ref = Some(manifest.state);
             entry.install_state_ref = manifest.install_state;
             entry.delta_from_previous = manifest.delta_from_previous;
+            entry.recent_deltas = manifest.recent_deltas;
             entry.version_manifest =
                 Some(serde_json::from_slice(bytes).map_err(invalid_live_feed_json)?);
             self.resource_failure_retry_after_epoch_ms
@@ -704,6 +747,40 @@ impl LiveFeedsState {
                 )));
             }
             let entry = self.products.entry(product.clone()).or_default();
+            if product == "notams" {
+                let state_ref = entry.state_ref.as_ref().ok_or_else(|| {
+                    invalid_live_feed("NOTAM version manifest has no checkpoint".to_string())
+                })?;
+                if state_ref.state_sha256 != version {
+                    return Err(invalid_live_feed(format!(
+                        "prepared NOTAM checkpoint {version} does not match manifest {}",
+                        state_ref.state_sha256
+                    )));
+                }
+                if envelope.version != version
+                    || envelope.payload.version_label() != version
+                    || envelope.state_sha256 != version
+                {
+                    return Err(invalid_live_feed(format!(
+                        "prepared NOTAM checkpoint {resource_id} contained {} / {} / {}",
+                        envelope.version,
+                        envelope.payload.version_label(),
+                        envelope.state_sha256
+                    )));
+                }
+                if let Some(expected_blob_sha256) = &state_ref.blob_sha256 {
+                    if envelope.delta_blob_sha256.as_deref() != Some(expected_blob_sha256.as_str())
+                    {
+                        return Err(invalid_live_feed(format!(
+                            "prepared NOTAM checkpoint {resource_id} blob hash mismatch: expected {expected_blob_sha256}, got {:?}",
+                            envelope.delta_blob_sha256
+                        )));
+                    }
+                }
+                entry.state_manifest = None;
+                entry.loaded_version = Some(version);
+                return Ok(());
+            }
             if entry.current_version.as_deref() != Some(version.as_str()) {
                 return Ok(());
             }
@@ -728,14 +805,15 @@ impl LiveFeedsState {
         }
         if let Some(rest) = resource_id.strip_prefix("live_feeds/delta/") {
             let (product, from_version, to_version) = split_product_from_to(resource_id, rest)?;
-            if product != envelope.product || !supports_record_delta(&product) {
+            if product != envelope.product || !supports_live_feed_delta(&product) {
                 return Err(invalid_live_feed(format!(
                     "prepared {} delta resource used for {product}",
                     envelope.product
                 )));
             }
             let entry = self.products.entry(product.clone()).or_default();
-            if entry.current_version.as_deref() != Some(to_version.as_str()) {
+            if product != "notams" && entry.current_version.as_deref() != Some(to_version.as_str())
+            {
                 return Ok(());
             }
             if entry.loaded_version.as_deref() != Some(from_version.as_str()) {
@@ -744,7 +822,12 @@ impl LiveFeedsState {
                     entry.loaded_version
                 )));
             }
-            let delta_ref = entry.delta_from_previous.as_ref().ok_or_else(|| {
+            let delta_ref = if product == "notams" {
+                entry.notam_delta(&from_version, &to_version)
+            } else {
+                entry.delta_from_previous.as_ref()
+            }
+            .ok_or_else(|| {
                 invalid_live_feed(format!("prepared delta {resource_id} was not expected"))
             })?;
             if delta_ref.from_version != from_version || delta_ref.to_version != to_version {
@@ -961,6 +1044,7 @@ impl LiveFeedsState {
         entry.state_ref = None;
         entry.install_state_ref = None;
         entry.delta_from_previous = None;
+        entry.recent_deltas.clear();
         entry.version_manifest = None;
         entry.sync_history(history);
         Ok(())
@@ -997,6 +1081,13 @@ impl LiveFeedsState {
         }
     }
 
+    pub(crate) fn mark_product_no_state(&mut self, product: &str) {
+        if let Some(entry) = self.products.get_mut(product) {
+            entry.loaded_version = None;
+            entry.state_manifest = None;
+        }
+    }
+
     pub fn merge_catalog_from(&mut self, source: &Self) {
         if source.current_loaded {
             self.current_loaded = true;
@@ -1015,6 +1106,7 @@ impl LiveFeedsState {
             entry.state_ref = source_entry.state_ref.clone();
             entry.install_state_ref = source_entry.install_state_ref.clone();
             entry.delta_from_previous = source_entry.delta_from_previous.clone();
+            entry.recent_deltas = source_entry.recent_deltas.clone();
             entry.version_manifest = source_entry.version_manifest.clone();
             entry.history = source_entry.history.clone();
         }
@@ -1057,6 +1149,38 @@ impl LiveFeedsState {
                         kind: LiveFeedCacheRequestKind::Version {
                             product: product.to_string(),
                             version: version.clone(),
+                        },
+                    });
+                }
+                continue;
+            }
+            if product == "notams" {
+                if let Some(installed) = installed_by_product.get(product) {
+                    if let Some(delta) = entry.notam_delta_from(&installed.version) {
+                        requests.push(LiveFeedCacheRequest {
+                            id: format!(
+                                "live_feeds/delta/{}/{}/{}",
+                                product, delta.from_version, delta.to_version
+                            ),
+                            url: self.required_live_feed_url(&delta.url),
+                            kind: LiveFeedCacheRequestKind::Delta {
+                                product: product.to_string(),
+                                from_version: delta.from_version.clone(),
+                                to_version: delta.to_version.clone(),
+                                payload_kind: delta.kind.clone(),
+                            },
+                        });
+                        continue;
+                    }
+                }
+                if let Some(state) = entry.state_ref.as_ref() {
+                    requests.push(LiveFeedCacheRequest {
+                        id: format!("live_feeds/full/{product}/{}", state.state_sha256),
+                        url: self.required_live_feed_url(&state.url),
+                        kind: LiveFeedCacheRequestKind::Full {
+                            product: product.to_string(),
+                            version: state.state_sha256.clone(),
+                            payload_kind: state.kind.clone(),
                         },
                     });
                 }
@@ -1171,6 +1295,17 @@ impl LiveFeedsState {
             .products
             .get(product)
             .ok_or_else(|| invalid_live_feed(format!("missing live-feed product {product}")))?;
+        if product == "notams" {
+            return entry
+                .state_ref
+                .as_ref()
+                .filter(|state| state.state_sha256 == version)
+                .ok_or_else(|| {
+                    invalid_live_feed(format!(
+                        "NOTAM checkpoint {version} does not match version manifest"
+                    ))
+                });
+        }
         if entry.current_version.as_deref() != Some(version) {
             return Err(invalid_live_feed(format!(
                 "{product} current version is {:?}, expected {version}",
@@ -1194,10 +1329,12 @@ impl LiveFeedsState {
             .products
             .get(product)
             .ok_or_else(|| invalid_live_feed(format!("missing live-feed product {product}")))?;
-        let delta = entry
-            .delta_from_previous
-            .as_ref()
-            .ok_or_else(|| invalid_live_feed(format!("{product}/{to_version} has no delta")))?;
+        let delta = (if product == "notams" {
+            entry.notam_delta(from_version, to_version)
+        } else {
+            entry.delta_from_previous.as_ref()
+        })
+        .ok_or_else(|| invalid_live_feed(format!("{product}/{to_version} has no delta")))?;
         if delta.from_version != from_version || delta.to_version != to_version {
             return Err(invalid_live_feed(format!(
                 "requested delta {product}/{from_version}/{to_version} does not match manifest"
@@ -1273,6 +1410,27 @@ impl LiveFeedsState {
                 }
             }
             if entry.loaded_version.as_deref() == Some(version.as_str()) {
+                continue;
+            }
+            if product == "notams" {
+                if let Some(delta) = entry.applicable_notam_delta() {
+                    resources.push(self.public_live_feed_resource(
+                        format!(
+                            "live_feeds/delta/{}/{}/{}",
+                            product, delta.from_version, delta.to_version
+                        ),
+                        &delta.url,
+                        false,
+                    ));
+                    continue;
+                }
+                if let Some(state) = entry.state_ref.as_ref() {
+                    resources.push(self.public_live_feed_resource(
+                        format!("live_feeds/state/{product}/{}", state.state_sha256),
+                        &state.url,
+                        false,
+                    ));
+                }
                 continue;
             }
             if let Some(delta) = entry.applicable_delta(product) {
@@ -1399,6 +1557,40 @@ impl LiveFeedsState {
 }
 
 impl LiveFeedProductState {
+    fn applicable_notam_delta(&self) -> Option<&LiveFeedDeltaRef> {
+        let loaded = self.loaded_version.as_deref()?;
+        self.recent_deltas
+            .iter()
+            .find(|delta| delta.from_version == loaded)
+            .or_else(|| {
+                self.delta_from_previous
+                    .as_ref()
+                    .filter(|delta| delta.from_version == loaded)
+            })
+    }
+
+    fn notam_delta(&self, from_version: &str, to_version: &str) -> Option<&LiveFeedDeltaRef> {
+        self.recent_deltas
+            .iter()
+            .find(|delta| delta.from_version == from_version && delta.to_version == to_version)
+            .or_else(|| {
+                self.delta_from_previous.as_ref().filter(|delta| {
+                    delta.from_version == from_version && delta.to_version == to_version
+                })
+            })
+    }
+
+    fn notam_delta_from(&self, from_version: &str) -> Option<&LiveFeedDeltaRef> {
+        self.recent_deltas
+            .iter()
+            .find(|delta| delta.from_version == from_version)
+            .or_else(|| {
+                self.delta_from_previous
+                    .as_ref()
+                    .filter(|delta| delta.from_version == from_version)
+            })
+    }
+
     fn sync_history(&mut self, history: Vec<CurrentProductHistoryEntry>) {
         let mut existing = std::mem::take(&mut self.history)
             .into_iter()
@@ -1601,7 +1793,11 @@ fn decode_live_feed_payload<'a>(
     bytes: &'a [u8],
 ) -> AppResult<std::borrow::Cow<'a, [u8]>> {
     match payload_kind {
-        Some("json_xz") | Some("record_json_delta_xz") | Some("nav_kv_delta_xz") => {
+        Some("json_xz")
+        | Some("record_json_delta_xz")
+        | Some("nav_kv_delta_xz")
+        | Some("notam_checkpoint_xz")
+        | Some("notam_ordered_delta_xz") => {
             nav_kv_package::decode_xz_if_needed(bytes).map_err(invalid_live_feed)
         }
         _ => Ok(std::borrow::Cow::Borrowed(bytes)),
@@ -1611,10 +1807,9 @@ fn decode_live_feed_payload<'a>(
 pub fn normalize_live_feed_source_root_url(source_root_url: &str) -> AppResult<String> {
     let mut normalized = source_root_url.trim().trim_end_matches('/').to_string();
     for suffix in [
-        "/live-feeds/v2/current.json",
-        "/live-feeds/v2/events",
-        "/live-feeds/v2",
-        "/live-feeds/events",
+        "/live-feeds/v3/current.json",
+        "/live-feeds/v3/events",
+        "/live-feeds/v3",
         "/live-feeds/status.html",
         "/live-feeds",
     ] {
@@ -1670,6 +1865,87 @@ fn validate_relative_url(url: &str) -> AppResult<()> {
     Ok(())
 }
 
+fn validate_notam_version_manifest(
+    manifest: &VersionManifest,
+    expected_head: &str,
+) -> AppResult<()> {
+    if manifest.version != expected_head {
+        return Err(invalid_live_feed(format!(
+            "NOTAM manifest head {} does not match current {expected_head}",
+            manifest.version
+        )));
+    }
+    if manifest.state.kind.as_deref() != Some("notam_checkpoint_xz") {
+        return Err(invalid_live_feed(
+            "NOTAM manifest state is not a checkpoint".to_string(),
+        ));
+    }
+    if manifest.recent_deltas.is_empty() {
+        if manifest.state.state_sha256 != expected_head {
+            return Err(invalid_live_feed(format!(
+                "NOTAM checkpoint is {}, but head is {expected_head} with no deltas",
+                manifest.state.state_sha256
+            )));
+        }
+        if manifest.delta_from_previous.is_some() {
+            return Err(invalid_live_feed(
+                "NOTAM checkpoint-only manifest unexpectedly has a latest delta".to_string(),
+            ));
+        }
+        return Ok(());
+    }
+
+    let mut state_id = manifest.recent_deltas[0].from_state_sha256.as_str();
+    let mut checkpoint_reachable = state_id == manifest.state.state_sha256;
+    for delta in &manifest.recent_deltas {
+        if delta.kind.as_deref() != Some("notam_ordered_delta_xz")
+            || delta.from_version != state_id
+            || delta.from_state_sha256 != state_id
+            || delta.to_version != delta.to_state_sha256
+            || delta.mutation_count.is_none()
+        {
+            return Err(invalid_live_feed(format!(
+                "NOTAM retained delta chain is invalid at {}",
+                delta.url
+            )));
+        }
+        state_id = &delta.to_state_sha256;
+        checkpoint_reachable |= state_id == manifest.state.state_sha256;
+    }
+    if state_id != expected_head {
+        return Err(invalid_live_feed(format!(
+            "NOTAM retained delta chain ends at {state_id}, expected {expected_head}"
+        )));
+    }
+    if !checkpoint_reachable {
+        return Err(invalid_live_feed(format!(
+            "NOTAM checkpoint {} is outside the retained delta chain",
+            manifest.state.state_sha256
+        )));
+    }
+    if let Some(delta) = manifest.delta_from_previous.as_ref() {
+        if delta.kind.as_deref() != Some("notam_ordered_delta_xz")
+            || delta.to_version != expected_head
+            || delta.to_state_sha256 != expected_head
+            || delta.mutation_count.is_none()
+        {
+            return Err(invalid_live_feed(
+                "NOTAM latest delta metadata is invalid".to_string(),
+            ));
+        }
+        if manifest.recent_deltas.last() != Some(delta) {
+            return Err(invalid_live_feed(
+                "NOTAM latest delta is not the retained chain tail".to_string(),
+            ));
+        }
+    } else {
+        return Err(invalid_live_feed(
+            "NOTAM delta-chain manifest has no latest delta".to_string(),
+        ));
+    }
+    Ok(())
+}
+
 fn canonical_json_sha256(value: &Value) -> AppResult<String> {
     let bytes = serde_json::to_vec(value).map_err(invalid_live_feed_json)?;
     Ok(sha256_hex(&bytes))
@@ -1683,6 +1959,18 @@ pub fn prepare_live_feed_state_resource(
     resource_id: &str,
     bytes: &[u8],
 ) -> AppResult<(Value, Vec<u8>)> {
+    prepare_live_feed_state_resource_with_notam_work(
+        resource_id,
+        bytes,
+        &mut BackgroundNotamWork::default(),
+    )
+}
+
+pub fn prepare_live_feed_state_resource_with_notam_work(
+    resource_id: &str,
+    bytes: &[u8],
+    work: &mut BackgroundNotamWork,
+) -> AppResult<(Value, Vec<u8>)> {
     let Some(rest) = resource_id.strip_prefix("live_feeds/state/") else {
         return Err(invalid_live_feed(format!(
             "not a live-feed state resource: {resource_id}"
@@ -1690,6 +1978,40 @@ pub fn prepare_live_feed_state_resource(
     };
     let (product, version) = split_product_version(resource_id, rest)?;
     let decoded = nav_kv_package::decode_xz_if_needed(bytes).map_err(invalid_live_feed)?;
+    if product == "notams" {
+        work.compressed_bytes_read += bytes.len() as u64;
+        work.json_bytes_decoded += decoded.len() as u64;
+        let checkpoint: NotamCheckpoint =
+            serde_json::from_slice(decoded.as_ref()).map_err(invalid_live_feed_json)?;
+        work.records_decoded += checkpoint.records.len() as u64;
+        checkpoint
+            .validate_contract()
+            .map_err(|err| invalid_live_feed(err.to_string()))?;
+        if checkpoint.state_id != version {
+            return Err(invalid_live_feed(format!(
+                "NOTAM checkpoint {resource_id} contained state {}",
+                checkpoint.state_id
+            )));
+        }
+        let envelope = PreparedLiveFeedEnvelope {
+            schema_version: 1,
+            resource_id: resource_id.to_string(),
+            product,
+            version,
+            state_sha256: checkpoint.state_id.clone(),
+            from_version: None,
+            from_state_sha256: None,
+            delta_blob_sha256: Some(sha256_hex(bytes)),
+            payload: PreparedLiveFeedPayload::Notams(PreparedNotamPayload::InstallCheckpoint(
+                checkpoint,
+            )),
+        };
+        let envelope_bytes = postcard::to_allocvec(&envelope).map_err(|err| {
+            invalid_live_feed(format!("failed to encode prepared NOTAM checkpoint: {err}"))
+        })?;
+        work.postcard_bytes_written += envelope_bytes.len() as u64;
+        return Ok((Value::Null, envelope_bytes));
+    }
     let state: Value = serde_json::from_slice(decoded.as_ref()).map_err(invalid_live_feed_json)?;
     let state_sha256 = canonical_json_sha256(&state)?;
     let payload = prepare_live_feed_payload(&product, state.clone())?;
@@ -1721,20 +2043,66 @@ pub fn prepare_live_feed_delta_resource(
     current_state: &Value,
     bytes: &[u8],
 ) -> AppResult<(Value, Vec<u8>)> {
+    prepare_live_feed_delta_resource_with_notam_work(
+        resource_id,
+        current_state,
+        bytes,
+        &mut BackgroundNotamWork::default(),
+    )
+}
+
+pub fn prepare_live_feed_delta_resource_with_notam_work(
+    resource_id: &str,
+    current_state: &Value,
+    bytes: &[u8],
+    work: &mut BackgroundNotamWork,
+) -> AppResult<(Value, Vec<u8>)> {
     let Some(rest) = resource_id.strip_prefix("live_feeds/delta/") else {
         return Err(invalid_live_feed(format!(
             "not a live-feed delta resource: {resource_id}"
         )));
     };
     let (product, from_version, to_version) = split_product_from_to(resource_id, rest)?;
-    if !supports_record_delta(&product) || !supports_prepared_live_feed(&product) {
+    if !supports_live_feed_delta(&product) || !supports_prepared_live_feed(&product) {
         return Err(invalid_live_feed(format!(
             "cannot prepare live-feed delta from {product}"
         )));
     }
-    let from_state_sha256 = canonical_json_sha256(current_state)?;
     let delta_blob_sha256 = sha256_hex(bytes);
     let decoded = nav_kv_package::decode_xz_if_needed(bytes).map_err(invalid_live_feed)?;
+    if product == "notams" {
+        work.compressed_bytes_read += bytes.len() as u64;
+        work.json_bytes_decoded += decoded.len() as u64;
+        let delta: NotamDelta =
+            serde_json::from_slice(decoded.as_ref()).map_err(invalid_live_feed_json)?;
+        work.records_decoded += delta.mutations.len() as u64;
+        delta
+            .validate_contract()
+            .map_err(|err| invalid_live_feed(err.to_string()))?;
+        if delta.from_state_id != from_version || delta.to_state_id != to_version {
+            return Err(invalid_live_feed(format!(
+                "NOTAM delta {resource_id} contained {} -> {}",
+                delta.from_state_id, delta.to_state_id
+            )));
+        }
+        let envelope = PreparedLiveFeedEnvelope {
+            schema_version: 1,
+            resource_id: resource_id.to_string(),
+            product,
+            version: to_version,
+            state_sha256: delta.to_state_id.clone(),
+            from_version: Some(from_version),
+            from_state_sha256: Some(delta.from_state_id.clone()),
+            delta_blob_sha256: Some(delta_blob_sha256),
+            payload: PreparedLiveFeedPayload::Notams(PreparedNotamPayload::ApplyDelta(delta)),
+        };
+        let envelope_bytes = postcard::to_allocvec(&envelope).map_err(|err| {
+            invalid_live_feed(format!("failed to encode prepared NOTAM delta: {err}"))
+        })?;
+        work.postcard_bytes_written += envelope_bytes.len() as u64;
+        return Ok((Value::Null, envelope_bytes));
+    }
+    let from_state_sha256 = canonical_json_sha256(current_state)?;
     let delta: LiveFeedRecordDelta =
         serde_json::from_slice(decoded.as_ref()).map_err(invalid_live_feed_json)?;
     validate_live_feeds_schema("record delta", delta.schema_version)?;
@@ -1782,6 +2150,16 @@ pub fn supports_prepared_live_feed(product: &str) -> bool {
     matches!(product, "metars" | "tafs" | "tfrs" | "notams")
 }
 
+pub fn should_prepare_live_feed_resource(resource_id: &str) -> bool {
+    let parts = resource_id.split('/').collect::<Vec<_>>();
+    match parts.as_slice() {
+        ["live_feeds", "state", product, _] | ["live_feeds", "delta", product, _, _] => {
+            supports_prepared_live_feed(product)
+        }
+        _ => false,
+    }
+}
+
 fn prepare_live_feed_payload(product: &str, state: Value) -> AppResult<PreparedLiveFeedPayload> {
     match product {
         "metars" => {
@@ -1797,13 +2175,9 @@ fn prepare_live_feed_payload(product: &str, state: Value) -> AppResult<PreparedL
         "tfrs" => serde_json::from_value(state)
             .map(PreparedLiveFeedPayload::Tfrs)
             .map_err(invalid_live_feed_json),
-        "notams" => {
-            let payload: NotamProductPayload =
-                serde_json::from_value(state).map_err(invalid_live_feed_json)?;
-            AirportNotamIndex::from_payload(payload)
-                .map(PreparedLiveFeedPayload::Notams)
-                .map_err(invalid_live_feed)
-        }
+        "notams" => Err(invalid_live_feed(
+            "NOTAMs require checkpoint or ordered-delta preparation".to_string(),
+        )),
         _ => Err(invalid_live_feed(format!(
             "unsupported prepared live-feed product: {product}"
         ))),
@@ -1843,6 +2217,10 @@ fn prepare_metar_live_feed(payload: MetarProductPayload) -> PreparedMetarLiveFee
 
 fn supports_record_delta(product: &str) -> bool {
     record_delta_schema(product).is_some()
+}
+
+fn supports_live_feed_delta(product: &str) -> bool {
+    product == "notams" || supports_record_delta(product)
 }
 
 fn product_supports_prepared_record_delta_without_raw_state(product: &str) -> bool {
@@ -1973,7 +2351,7 @@ mod tests {
             );
         }
         serde_json::json!({
-            "schema_version": 2,
+            "schema_version": 3,
             "version_label": version,
             "generated_at_utc": "2026-05-18T20:00:00Z",
             "observed_at_utc": "2026-05-18T20:00:00Z",
@@ -2040,6 +2418,73 @@ mod tests {
         })
     }
 
+    fn test_notam_record(id: &str, airport_id: &str, text: &str) -> notam_state::NotamRecord {
+        notam_state::NotamRecord {
+            id: id.to_string(),
+            airport_id: Some(airport_id.to_string()),
+            airport_effects: [product_contracts::AirportNotamEffect::RoutineAdvisory]
+                .into_iter()
+                .collect(),
+            notam_keyword: Some("AD".to_string()),
+            effective_start_utc: Some("2026-07-23T00:00:00Z".to_string()),
+            effective_end_utc: None,
+            text: Some(text.to_string()),
+            local_text: None,
+            icao_text: None,
+        }
+    }
+
+    fn test_notam_delta_ref(from: &str, to: &str) -> LiveFeedDeltaRef {
+        LiveFeedDeltaRef {
+            kind: Some("notam_ordered_delta_xz".to_string()),
+            from_version: from.to_string(),
+            from_state_sha256: from.to_string(),
+            to_version: to.to_string(),
+            to_state_sha256: to.to_string(),
+            url: format!("deltas/notams/{from}__{to}.json.xz"),
+            bytes: Some(1),
+            blob_sha256: Some("a".repeat(64)),
+            mutation_count: Some(1),
+        }
+    }
+
+    #[test]
+    fn shared_core_owns_background_preparation_routing() {
+        for product in ["metars", "tafs", "tfrs", "notams"] {
+            assert!(should_prepare_live_feed_resource(&format!(
+                "live_feeds/state/{product}/v1"
+            )));
+        }
+        assert!(should_prepare_live_feed_resource(
+            "live_feeds/delta/notams/v1/v2"
+        ));
+        assert!(!should_prepare_live_feed_resource(
+            "live_feeds/state/obstacles/v1"
+        ));
+        assert!(!should_prepare_live_feed_resource("live_feeds/current"));
+    }
+
+    #[test]
+    fn notam_manifest_accepts_checkpoint_inside_retained_suffix() {
+        let latest = test_notam_delta_ref("s1", "s2");
+        let manifest = VersionManifest {
+            schema_version: LIVE_FEEDS_SCHEMA_VERSION,
+            product: "notams".to_string(),
+            version: "s2".to_string(),
+            install_state: None,
+            delta_from_previous: Some(latest.clone()),
+            recent_deltas: vec![test_notam_delta_ref("s0", "s1"), latest],
+            state: LiveFeedPayloadRef {
+                kind: Some("notam_checkpoint_xz".to_string()),
+                url: "states/notams/s1.json.xz".to_string(),
+                bytes: Some(1),
+                blob_sha256: Some("b".repeat(64)),
+                state_sha256: "s1".to_string(),
+            },
+        };
+        validate_notam_version_manifest(&manifest, "s2").unwrap();
+    }
+
     #[test]
     fn prepared_live_feed_states_decode_xz_and_encode_typed_postcard_payloads() {
         let states = vec![
@@ -2054,23 +2499,6 @@ mod tests {
                     "notam_count": 0,
                     "area_group_count": 0,
                     "areas": []
-                }),
-            ),
-            (
-                "notams",
-                serde_json::json!({
-                    "schema_version": product_contracts::NOTAM_LIVE_FEED_CONTRACT_VERSION,
-                    "version_label": "v1",
-                    "notam_count": 1,
-                    "notams_by_id": {
-                        "D:SEA:2026:N:1": {
-                            "id": "D:SEA:2026:N:1",
-                            "airport_id": "KSEA",
-                            "airport_effects": ["runway_closed"],
-                            "notam_keyword": "RWY",
-                            "text": "RWY 16L/34R CLSD"
-                        }
-                    }
                 }),
             ),
         ];
@@ -2120,6 +2548,186 @@ mod tests {
         };
         assert_eq!(payload.tafs_by_station.len(), 2);
         assert_eq!(payload.tafs_by_station["KSEA"].raw_text, "TAF KSEA NEW");
+    }
+
+    #[test]
+    fn notam_checkpoint_then_one_record_delta_stays_incremental_end_to_end() {
+        let mut producer_state = notam_state::NotamState::empty();
+        for index in 0..256 {
+            producer_state
+                .apply_mutation(
+                    notam_state::NotamMutation::Upsert {
+                        record: test_notam_record(
+                            &format!("N{index:04}"),
+                            "KSEA",
+                            &format!("initial text {index}"),
+                        ),
+                    },
+                    &mut notam_state::NotamApplyWork::default(),
+                )
+                .unwrap();
+        }
+        let checkpoint = producer_state.checkpoint();
+        let checkpoint_id = checkpoint.state_id.clone();
+        let mutation = notam_state::NotamMutation::Upsert {
+            record: test_notam_record("N0042", "KPAE", "one changed record"),
+        };
+        producer_state
+            .apply_mutation(
+                mutation.clone(),
+                &mut notam_state::NotamApplyWork::default(),
+            )
+            .unwrap();
+        let head_id = producer_state.state_id().to_string();
+        let delta = notam_state::NotamDelta::new(
+            checkpoint_id.clone(),
+            head_id.clone(),
+            producer_state.counters(),
+            vec![mutation],
+        );
+        let checkpoint_bytes =
+            nav_kv_package::xz_frame_uncompressed_bytes(&serde_json::to_vec(&checkpoint).unwrap())
+                .unwrap();
+        let delta_bytes =
+            nav_kv_package::xz_frame_uncompressed_bytes(&serde_json::to_vec(&delta).unwrap())
+                .unwrap();
+        let checkpoint_blob_sha256 = sha256_hex(&checkpoint_bytes);
+        let delta_blob_sha256 = sha256_hex(&delta_bytes);
+
+        let mut feeds = live_feeds_state();
+        feeds
+            .ingest_resource(
+                "live_feeds/current",
+                &serde_json::to_vec(&serde_json::json!({
+                    "schema_version": LIVE_FEEDS_SCHEMA_VERSION,
+                    "products": {
+                        "notams": {
+                            "current": head_id,
+                            "version_manifest_url": format!("versions/notams/{head_id}.json"),
+                            "state_url": format!("states/notams/{checkpoint_id}.json.xz"),
+                            "state_sha256": head_id
+                        }
+                    }
+                }))
+                .unwrap(),
+            )
+            .unwrap();
+        let delta_url = format!("deltas/notams/{checkpoint_id}__{head_id}.json.xz");
+        let delta_ref = serde_json::json!({
+            "kind": "notam_ordered_delta_xz",
+            "from_version": checkpoint_id,
+            "from_state_sha256": checkpoint_id,
+            "to_version": head_id,
+            "to_state_sha256": head_id,
+            "url": delta_url,
+            "bytes": delta_bytes.len(),
+            "blob_sha256": delta_blob_sha256,
+            "mutation_count": 1
+        });
+        feeds
+            .ingest_resource(
+                &format!("live_feeds/version/notams/{head_id}"),
+                &serde_json::to_vec(&serde_json::json!({
+                    "schema_version": LIVE_FEEDS_SCHEMA_VERSION,
+                    "product": "notams",
+                    "version": head_id,
+                    "previous": checkpoint_id,
+                    "state": {
+                        "kind": "notam_checkpoint_xz",
+                        "url": format!("states/notams/{checkpoint_id}.json.xz"),
+                        "bytes": checkpoint_bytes.len(),
+                        "blob_sha256": checkpoint_blob_sha256,
+                        "state_sha256": checkpoint_id
+                    },
+                    "delta_from_previous": delta_ref,
+                    "recent_deltas": [delta_ref]
+                }))
+                .unwrap(),
+            )
+            .unwrap();
+
+        let HadOperationOutcome::NeedResources { resources } = feeds.sync_outcome() else {
+            panic!("cold NOTAM client should request checkpoint");
+        };
+        assert_eq!(
+            resources[0].id,
+            format!("live_feeds/state/notams/{checkpoint_id}")
+        );
+        let mut checkpoint_prepare_work = BackgroundNotamWork::default();
+        let (_, checkpoint_postcard) = prepare_live_feed_state_resource_with_notam_work(
+            &resources[0].id,
+            &checkpoint_bytes,
+            &mut checkpoint_prepare_work,
+        )
+        .unwrap();
+        let checkpoint_envelope = decode_prepared_live_feed(&checkpoint_postcard).unwrap();
+        feeds
+            .ingest_prepared_live_feed(&resources[0].id, &checkpoint_envelope)
+            .unwrap();
+
+        let HadOperationOutcome::NeedResources { resources } = feeds.sync_outcome() else {
+            panic!("checkpoint client should request the next NOTAM delta");
+        };
+        assert_eq!(
+            resources[0].id,
+            format!("live_feeds/delta/notams/{checkpoint_id}/{head_id}")
+        );
+        let mut delta_prepare_work = BackgroundNotamWork::default();
+        let (_, delta_postcard) = prepare_live_feed_delta_resource_with_notam_work(
+            &resources[0].id,
+            &Value::Null,
+            &delta_bytes,
+            &mut delta_prepare_work,
+        )
+        .unwrap();
+        assert!(delta_postcard.len() * 10 < checkpoint_postcard.len());
+        assert_eq!(checkpoint_prepare_work.records_decoded, 256);
+        assert_eq!(delta_prepare_work.records_decoded, 1);
+        assert_eq!(
+            delta_prepare_work.compressed_bytes_read,
+            delta_bytes.len() as u64
+        );
+        assert_eq!(
+            delta_prepare_work.postcard_bytes_written,
+            delta_postcard.len() as u64
+        );
+        let delta_envelope = decode_prepared_live_feed(&delta_postcard).unwrap();
+        feeds
+            .ingest_prepared_live_feed(&resources[0].id, &delta_envelope)
+            .unwrap();
+        assert_eq!(
+            feeds.product_loaded_version("notams"),
+            Some(head_id.as_str())
+        );
+
+        let PreparedLiveFeedPayload::Notams(PreparedNotamPayload::InstallCheckpoint(checkpoint)) =
+            checkpoint_envelope.payload
+        else {
+            panic!("expected prepared NOTAM checkpoint");
+        };
+        let mut client = notam_state::NotamState::from_checkpoint(
+            checkpoint,
+            &mut notam_state::NotamApplyWork::default(),
+        )
+        .unwrap();
+        let PreparedLiveFeedPayload::Notams(PreparedNotamPayload::ApplyDelta(delta)) =
+            delta_envelope.payload
+        else {
+            panic!("expected prepared NOTAM delta");
+        };
+        let mut work = notam_state::NotamApplyWork::default();
+        client.apply_delta(delta, &mut work).unwrap();
+        assert_eq!(client.state_id(), producer_state.state_id());
+        assert_eq!(
+            client.canonical_records().collect::<Vec<_>>(),
+            producer_state.canonical_records().collect::<Vec<_>>()
+        );
+        assert_eq!(work.mutations_applied, 1);
+        assert_eq!(work.full_record_collection_iterations, 0);
+        assert_eq!(work.full_state_serializations, 0);
+        assert_eq!(work.bucket_hashes_computed, 1);
+        assert_eq!(work.group_hashes_computed, 1);
+        assert_eq!(work.roots_computed, 1);
     }
 
     #[test]
@@ -2397,7 +3005,7 @@ mod tests {
             .ingest_resource(
                 "live_feeds/current",
                 br#"{
-                    "schema_version": 2,
+                    "schema_version": 3,
                     "products": {}
                 }"#,
             )
@@ -2437,7 +3045,7 @@ mod tests {
             .ingest_resource(
                 "live_feeds/current",
                 br#"{
-                    "schema_version": 2,
+                    "schema_version": 3,
                     "products": {
                         "nexrad": {
                             "current": "v1",
@@ -2479,7 +3087,7 @@ mod tests {
                 "live_feeds/current",
                 format!(
                     r#"{{
-                    "schema_version": 2,
+                    "schema_version": 3,
                     "products": {{
                         "nexrad": {{
                             "current": "v2",
@@ -2508,7 +3116,7 @@ mod tests {
                 "live_feeds/version/nexrad/v1",
                 format!(
                     r#"{{
-                    "schema_version": 2,
+                    "schema_version": 3,
                     "product": "nexrad",
                     "version": "v1",
                     "state": {{
@@ -2557,7 +3165,7 @@ mod tests {
                 "live_feeds/current",
                 format!(
                     r#"{{
-                    "schema_version": 2,
+                    "schema_version": 3,
                     "products": {{
                         "nexrad": {{
                             "current": "v-current",
@@ -2580,7 +3188,7 @@ mod tests {
             .ingest_resource(
                 "live_feeds/current",
                 br#"{
-                    "schema_version": 2,
+                    "schema_version": 3,
                     "products": {
                         "metars": {
                             "current": "v1",
@@ -2605,7 +3213,7 @@ mod tests {
             .ingest_resource(
                 "live_feeds/current",
                 br#"{
-                    "schema_version": 2,
+                    "schema_version": 3,
                     "products": {
                         "metars": {
                             "current": "v2",
@@ -2629,7 +3237,7 @@ mod tests {
             .ingest_resource(
                 "live_feeds/current",
                 br#"{
-                    "schema_version": 2,
+                    "schema_version": 3,
                     "products": {
                         "tafs": {
                             "current": "v1",
@@ -2659,7 +3267,7 @@ mod tests {
         state
             .ingest_resource(
                 "live_feeds/current",
-                br#"{"schema_version": 2, "products": {}}"#,
+                br#"{"schema_version": 3, "products": {}}"#,
             )
             .unwrap();
 
@@ -2803,7 +3411,7 @@ mod tests {
             .ingest_resource(
                 "live_feeds/current",
                 br#"{
-                    "schema_version": 2,
+                    "schema_version": 3,
                     "products": {
                         "obstacles": {
                             "current": "v1",
@@ -2819,7 +3427,7 @@ mod tests {
             .ingest_resource(
                 "live_feeds/version/obstacles/v1",
                 br#"{
-                    "schema_version": 2,
+                    "schema_version": 3,
                     "product": "obstacles",
                     "version": "v1",
                     "state": {
@@ -2862,7 +3470,7 @@ mod tests {
                 id: Some("nexrad:v2".to_string()),
                 event: Some("live-feed-current".to_string()),
                 data: r#"{
-                    "schema_version": 2,
+                    "schema_version": 3,
                     "product": "nexrad",
                     "version": "v2",
                     "version_manifest_url": "versions/nexrad/v2.json"
@@ -2888,7 +3496,7 @@ mod tests {
                     id: Some("metars:v1".to_string()),
                     event: Some("live-feed-current".to_string()),
                     data: r#"{
-                        "schema_version": 2,
+                        "schema_version": 3,
                         "product": "metars",
                         "version": "v1",
                         "version_manifest_url": "versions/metars/v1.json"
@@ -2899,7 +3507,7 @@ mod tests {
                     id: Some("metars:v2".to_string()),
                     event: Some("live-feed-current".to_string()),
                     data: r#"{
-                        "schema_version": 2,
+                        "schema_version": 3,
                         "product": "metars",
                         "version": "v2",
                         "version_manifest_url": "versions/metars/v2.json"
@@ -2910,7 +3518,7 @@ mod tests {
                     id: Some("nexrad:v7".to_string()),
                     event: Some("live-feed-current".to_string()),
                     data: r#"{
-                        "schema_version": 2,
+                        "schema_version": 3,
                         "product": "nexrad",
                         "version": "v7",
                         "version_manifest_url": "versions/nexrad/v7.json"
@@ -2949,7 +3557,7 @@ mod tests {
                 id: Some("metars:v1".to_string()),
                 event: Some("live-feed-current".to_string()),
                 data: r#"{
-                    "schema_version": 2,
+                    "schema_version": 3,
                     "product": "metars",
                     "version": "v1",
                     "version_manifest_url": "versions/metars/v1.json"
@@ -2960,7 +3568,7 @@ mod tests {
                 id: Some("metars:v2".to_string()),
                 event: Some("live-feed-current".to_string()),
                 data: r#"{
-                    "schema_version": 2,
+                    "schema_version": 3,
                     "product": "metars",
                     "version": "v2",
                     "version_manifest_url": "versions/metars/v2.json"
@@ -2973,7 +3581,7 @@ mod tests {
             .ingest_resource(
                 "live_feeds/version/metars/v2",
                 br#"{
-                    "schema_version": 2,
+                    "schema_version": 3,
                     "product": "metars",
                     "version": "v2",
                     "state": {

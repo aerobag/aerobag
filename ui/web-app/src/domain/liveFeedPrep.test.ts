@@ -1,8 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
-import {
-  ingestPreparedLiveFeedResource,
-  isPreparedLiveFeedPayloadResource,
-} from "./liveFeedPrep";
+import { ingestPreparedLiveFeedResource } from "./liveFeedPrep";
 
 describe("live-feed preparation routing", () => {
   it.each(["metars", "tafs", "tfrs", "notams"])(
@@ -13,25 +10,22 @@ describe("live-feed preparation routing", () => {
       const preparedBytes = new Uint8Array([4, 5]);
       const prepare = vi.fn(async () => preparedBytes);
       const ingest = vi.fn(async () => undefined);
+      const shouldPrepare = vi.fn(() => true);
 
       await expect(ingestPreparedLiveFeedResource(
         17,
         resourceId,
         rawBytes,
         ingest,
+        shouldPrepare,
         prepare,
       )).resolves.toBe(true);
 
       expect(prepare).toHaveBeenCalledWith(resourceId, rawBytes);
       expect(ingest).toHaveBeenCalledWith(17, resourceId, preparedBytes);
+      expect(shouldPrepare).toHaveBeenCalledWith(resourceId);
     },
   );
-
-  it("routes supported record deltas through the preparation boundary", () => {
-    expect(isPreparedLiveFeedPayloadResource("live_feeds/delta/metars/v1/v2")).toBe(true);
-    expect(isPreparedLiveFeedPayloadResource("live_feeds/delta/tafs/v1/v2")).toBe(true);
-    expect(isPreparedLiveFeedPayloadResource("live_feeds/delta/notams/v1/v2")).toBe(true);
-  });
 
   it("leaves unrelated core resources on the ordinary ingestion path", async () => {
     const prepare = vi.fn(async () => new Uint8Array());
@@ -42,6 +36,7 @@ describe("live-feed preparation routing", () => {
       "live_feeds/state/obstacles/v1",
       new Uint8Array(),
       ingest,
+      () => false,
       prepare,
     )).resolves.toBe(false);
 

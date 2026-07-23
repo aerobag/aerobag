@@ -10,6 +10,7 @@ had-key = { path = "../../../../crates/had-key" }
 had-nav-kv = { path = "../../../../crates/had-nav-kv" }
 nav-kv-package = { path = "../../../../crates/nav-kv-package" }
 product-contracts = { path = "../../../../crates/product-contracts" }
+notam-state = { path = "../../../../crates/notam-state" }
 procedure-geometry-types = { path = "../../../../crates/procedure-geometry-types" }
 chrono.workspace = true
 flate2.workspace = true

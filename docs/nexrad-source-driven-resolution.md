@@ -11,13 +11,13 @@ opaque resources and draw the core-provided image geometry.
 Each upstream NEXRAD frame publishes one immutable state:
 
 ```text
-/live-feeds/v2/current.json
-/live-feeds/v2/states/nexrad/<state-id>/manifest.json
-/live-feeds/v2/states/nexrad/<state-id>/tiles/res0/<tile-x>/<tile-y>.png
-/live-feeds/v2/states/nexrad/<state-id>/tiles/res1/<tile-x>/<tile-y>.png
-/live-feeds/v2/states/nexrad/<state-id>/tiles/res2/<tile-x>/<tile-y>.png
-/live-feeds/v2/states/nexrad/<state-id>/tiles/res3/<tile-x>/<tile-y>.png
-/live-feeds/v2/versions/nexrad/<state-id>.json
+/live-feeds/v3/current.json
+/live-feeds/v3/states/nexrad/<state-id>/manifest.json
+/live-feeds/v3/states/nexrad/<state-id>/tiles/res0/<tile-x>/<tile-y>.png
+/live-feeds/v3/states/nexrad/<state-id>/tiles/res1/<tile-x>/<tile-y>.png
+/live-feeds/v3/states/nexrad/<state-id>/tiles/res2/<tile-x>/<tile-y>.png
+/live-feeds/v3/states/nexrad/<state-id>/tiles/res3/<tile-x>/<tile-y>.png
+/live-feeds/v3/versions/nexrad/<state-id>.json
 ```
 
 `current.json` names the current NEXRAD state and points at that state's

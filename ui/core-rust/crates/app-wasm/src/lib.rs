@@ -1301,6 +1301,15 @@ pub fn prepare_live_feed_resource(
             from_version,
             ..
         } => {
+            if product == "notams" {
+                return app_core::prepare_live_feed_delta_resource(
+                    resource_id,
+                    &serde_json::Value::Null,
+                    resource_bytes,
+                )
+                .map(|(_, prepared)| prepared)
+                .map_err(|err| JsValue::from_str(&err.to_string()));
+            }
             let states = lock_live_feed_prep_states();
             let state = states
                 .get(&(product.clone(), from_version.clone()))
@@ -1322,8 +1331,15 @@ pub fn prepare_live_feed_resource(
     {
         states.remove(&(product.clone(), from_version.clone()));
     }
-    states.insert(request.target_key(), next_state);
+    if request.product() != "notams" {
+        states.insert(request.target_key(), next_state);
+    }
     Ok(prepared)
+}
+
+#[wasm_bindgen]
+pub fn should_prepare_live_feed_resource(resource_id: &str) -> bool {
+    app_core::should_prepare_live_feed_resource(resource_id)
 }
 
 #[wasm_bindgen]
@@ -1344,6 +1360,12 @@ enum PreparedLiveFeedRequest {
 }
 
 impl PreparedLiveFeedRequest {
+    fn product(&self) -> &str {
+        match self {
+            Self::State { product, .. } | Self::Delta { product, .. } => product,
+        }
+    }
+
     fn target_key(&self) -> (String, String) {
         match self {
             Self::State { product, version } => (product.clone(), version.clone()),

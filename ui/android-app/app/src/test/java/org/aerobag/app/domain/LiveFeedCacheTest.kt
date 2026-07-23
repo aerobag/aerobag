@@ -121,7 +121,7 @@ class LiveFeedCacheTest {
         ) { _, method, args ->
             when (method.name) {
                 "createLiveFeedCache" -> 1L
-                "liveFeedEventsUrl" -> "http://live.test/live-feeds/v2/events"
+                "liveFeedEventsUrl" -> "http://live.test/live-feeds/v3/events"
                 "liveFeedStatusUrl" -> "http://live.test/live-feeds/status.html"
                 "normalizeLiveFeedSourceRootUrl" -> args?.first() as String
                 "liveFeedCacheMissingRequestsJson" -> missingRequestsJson()

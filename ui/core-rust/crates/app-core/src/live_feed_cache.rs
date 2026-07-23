@@ -1,9 +1,10 @@
-use std::collections::BTreeMap;
+use std::{collections::BTreeMap, sync::Arc};
 
 use had_nav_kv::{
     apply_nav_kv_delta, build_nav_kv_strict, nav_kv_canonical_sha256_from_pairs, NavKvDelta,
     NavKvDeltaEntry, NavKvRoot, VERSION as NAV_KV_VERSION,
 };
+use notam_state::{NotamApplyWork, NotamCheckpoint, NotamDelta, NotamState};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use sha2::{Digest, Sha256};
@@ -24,6 +25,10 @@ pub struct LiveFeedCache {
     #[serde(skip)]
     runtime: LiveFeedRuntimeState,
     installed: BTreeMap<String, LiveFeedInstalledState>,
+    #[serde(skip)]
+    pending_installed: BTreeMap<String, LiveFeedInstalledState>,
+    #[serde(skip)]
+    restoring_resources: BTreeMap<String, RestoringLiveFeedResources>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -43,6 +48,25 @@ pub struct LiveFeedInstalledSummary {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct LiveFeedResourceManifest {
+    pub summary: LiveFeedInstalledSummary,
+    pub resources: Vec<LiveFeedResourceRef>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct LiveFeedResourceRef {
+    pub kind: String,
+    pub blob_sha256: String,
+    pub bytes: u64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct RestoringLiveFeedResources {
+    manifest: LiveFeedResourceManifest,
+    resources: BTreeMap<String, Vec<u8>>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum LiveFeedInstalledPayload {
     Json {
@@ -55,6 +79,10 @@ pub enum LiveFeedInstalledPayload {
     },
     Opaque {
         bytes: Vec<u8>,
+    },
+    NotamResources {
+        checkpoint: Arc<Vec<u8>>,
+        deltas: Vec<Arc<Vec<u8>>>,
     },
 }
 
@@ -87,6 +115,9 @@ pub enum LiveFeedProductDriver {
         product: String,
     },
     OpaqueFull {
+        product: String,
+    },
+    Notam {
         product: String,
     },
 }
@@ -141,7 +172,7 @@ impl LiveFeedCache {
         let mut cache = Self::default();
         cache.live_feeds.set_source_root_url(source_root_url)?;
         for state in installed {
-            cache.remember_installed_state(state);
+            cache.stage_or_remember_installed_state(state);
         }
         Ok(cache)
     }
@@ -170,10 +201,183 @@ impl LiveFeedCache {
 
     pub fn installed_payload_bytes(&self, product: &str) -> AppResult<Vec<u8>> {
         let installed = self
-            .installed
+            .pending_installed
             .get(product)
+            .or_else(|| self.installed.get(product))
             .ok_or_else(|| cache_error(format!("{product} is not installed")))?;
         installed.payload_bytes()
+    }
+
+    pub fn resource_manifest(&self, product: &str) -> AppResult<Option<LiveFeedResourceManifest>> {
+        let installed = self
+            .install_candidate(product)
+            .ok_or_else(|| cache_error(format!("{product} is not installed")))?;
+        Ok(installed.resource_manifest())
+    }
+
+    pub fn resource_bytes(&self, product: &str, blob_sha256: &str) -> AppResult<Vec<u8>> {
+        let installed = self
+            .install_candidate(product)
+            .ok_or_else(|| cache_error(format!("{product} is not installed")))?;
+        installed.resource_bytes(blob_sha256).ok_or_else(|| {
+            cache_error(format!("{product} has no immutable resource {blob_sha256}"))
+        })
+    }
+
+    pub fn begin_restoring_resources(
+        &mut self,
+        manifest: LiveFeedResourceManifest,
+    ) -> AppResult<()> {
+        validate_resource_manifest(&manifest)?;
+        let product = manifest.summary.product.clone();
+        if self.restoring_resources.contains_key(&product) {
+            return Err(cache_error(format!(
+                "resource restoration already active for {product}"
+            )));
+        }
+        self.restoring_resources.insert(
+            product,
+            RestoringLiveFeedResources {
+                manifest,
+                resources: BTreeMap::new(),
+            },
+        );
+        Ok(())
+    }
+
+    pub fn restore_resource_bytes(
+        &mut self,
+        product: &str,
+        blob_sha256: &str,
+        bytes: &[u8],
+    ) -> AppResult<()> {
+        let restoring = self.restoring_resources.get_mut(product).ok_or_else(|| {
+            cache_error(format!("resource restoration is not active for {product}"))
+        })?;
+        let resource_ref = restoring
+            .manifest
+            .resources
+            .iter()
+            .find(|resource| resource.blob_sha256 == blob_sha256)
+            .ok_or_else(|| {
+                cache_error(format!(
+                    "{product} restoration does not reference {blob_sha256}"
+                ))
+            })?;
+        if resource_ref.bytes != bytes.len() as u64 {
+            return Err(cache_error(format!(
+                "{product} resource {blob_sha256} has {} bytes, expected {}",
+                bytes.len(),
+                resource_ref.bytes
+            )));
+        }
+        verify_blob_sha256("persisted resource", bytes, blob_sha256)?;
+        restoring
+            .resources
+            .insert(blob_sha256.to_string(), bytes.to_vec());
+        Ok(())
+    }
+
+    pub fn finish_restoring_resources(
+        &mut self,
+        registry: &LiveFeedProductRegistry,
+        product: &str,
+    ) -> AppResult<()> {
+        let restoring = self.restoring_resources.remove(product).ok_or_else(|| {
+            cache_error(format!("resource restoration is not active for {product}"))
+        })?;
+        let result = (|| {
+            let driver = registry.required_driver(product)?;
+            let installed = driver.install_persisted_resources(&restoring)?;
+            self.stage_or_remember_installed_state(installed);
+            Ok(())
+        })();
+        if result.is_err() {
+            self.restoring_resources
+                .insert(product.to_string(), restoring);
+        }
+        result
+    }
+
+    pub fn install_candidate(&self, product: &str) -> Option<&LiveFeedInstalledState> {
+        self.pending_installed
+            .get(product)
+            .or_else(|| self.installed.get(product))
+    }
+
+    pub fn install_candidate_for_main(&self, product: &str) -> AppResult<LiveFeedInstalledState> {
+        let candidate = self
+            .install_candidate(product)
+            .ok_or_else(|| cache_error(format!("{product} is not installed")))?;
+        if product != "notams" {
+            return Ok(candidate.clone());
+        }
+        let Some(installed) = self.installed.get(product) else {
+            return Ok(candidate.clone());
+        };
+        let (
+            LiveFeedInstalledPayload::NotamResources {
+                checkpoint: installed_checkpoint,
+                deltas: installed_deltas,
+            },
+            LiveFeedInstalledPayload::NotamResources {
+                checkpoint: candidate_checkpoint,
+                deltas: candidate_deltas,
+            },
+        ) = (&installed.payload, &candidate.payload)
+        else {
+            return Err(cache_error(
+                "installed NOTAM cache state is not an immutable resource chain".to_string(),
+            ));
+        };
+        if installed_checkpoint != candidate_checkpoint
+            || !candidate_deltas.starts_with(installed_deltas)
+        {
+            return Err(cache_error(
+                "pending NOTAM resources do not extend the acknowledged chain".to_string(),
+            ));
+        }
+        Ok(LiveFeedInstalledState {
+            product: candidate.product.clone(),
+            version: candidate.version.clone(),
+            state_sha256: candidate.state_sha256.clone(),
+            payload: LiveFeedInstalledPayload::NotamResources {
+                checkpoint: Arc::new(Vec::new()),
+                deltas: candidate_deltas[installed_deltas.len()..].to_vec(),
+            },
+        })
+    }
+
+    pub fn acknowledge_install_candidate(&mut self, product: &str, version: &str) -> AppResult<()> {
+        let Some(candidate) = self.pending_installed.remove(product) else {
+            return self
+                .installed
+                .get(product)
+                .filter(|installed| installed.version == version)
+                .map(|_| ())
+                .ok_or_else(|| {
+                    cache_error(format!(
+                        "no pending {product}/{version} live-feed candidate to acknowledge"
+                    ))
+                });
+        };
+        if candidate.version != version {
+            self.pending_installed
+                .insert(product.to_string(), candidate);
+            return Err(cache_error(format!(
+                "pending {product} candidate does not match acknowledged version {version}"
+            )));
+        }
+        self.remember_installed_state(candidate);
+        Ok(())
+    }
+
+    pub fn reject_install_candidate(&mut self, product: &str) {
+        self.pending_installed.remove(product);
+        if product == "notams" {
+            self.installed.remove(product);
+            self.live_feeds.mark_product_no_state(product);
+        }
     }
 
     pub fn ingest_installed_payload_bytes(
@@ -184,7 +388,7 @@ impl LiveFeedCache {
     ) -> AppResult<()> {
         let driver = registry.required_driver(&summary.product)?;
         let installed = driver.install_persisted(summary, bytes)?;
-        self.remember_installed_state(installed);
+        self.stage_or_remember_installed_state(installed);
         Ok(())
     }
 
@@ -279,7 +483,7 @@ impl LiveFeedCache {
                     .live_feeds
                     .durable_full_payload_ref_for_request(product, version)?;
                 let installed = driver.install_full(product, version, full_ref, payload)?;
-                self.remember_installed_state(installed.clone());
+                self.stage_or_remember_installed_state(installed.clone());
                 Ok(Some(installed))
             }
             LiveFeedCacheRequestKind::Delta {
@@ -309,7 +513,7 @@ impl LiveFeedCache {
                 })?;
                 let driver = registry.required_driver(product)?;
                 let installed = driver.apply_delta(current, delta, &bytes)?;
-                self.remember_installed_state(installed.clone());
+                self.stage_or_remember_installed_state(installed.clone());
                 Ok(Some(installed))
             }
         }
@@ -323,6 +527,15 @@ impl LiveFeedCache {
             state_manifest_for_installed(&installed),
         );
         self.installed.insert(installed.product.clone(), installed);
+    }
+
+    fn stage_or_remember_installed_state(&mut self, installed: LiveFeedInstalledState) {
+        if installed.product == "notams" {
+            self.pending_installed
+                .insert(installed.product.clone(), installed);
+        } else {
+            self.remember_installed_state(installed);
+        }
     }
 }
 
@@ -345,8 +558,87 @@ impl LiveFeedInstalledState {
                 root,
                 pages,
             } => write_nav_kv_zip_bytes(&manifest, root, pages),
+            LiveFeedInstalledPayload::NotamResources { .. } => Err(cache_error(
+                "NOTAM resources must be persisted as immutable blobs".to_string(),
+            )),
         }
     }
+
+    fn resource_manifest(&self) -> Option<LiveFeedResourceManifest> {
+        let LiveFeedInstalledPayload::NotamResources { checkpoint, deltas } = &self.payload else {
+            return None;
+        };
+        let mut resources = Vec::with_capacity(1 + deltas.len());
+        resources.push(resource_ref("notam_checkpoint_xz", checkpoint));
+        resources.extend(
+            deltas
+                .iter()
+                .map(|delta| resource_ref("notam_ordered_delta_xz", delta)),
+        );
+        Some(LiveFeedResourceManifest {
+            summary: self.summary(),
+            resources,
+        })
+    }
+
+    fn resource_bytes(&self, blob_sha256: &str) -> Option<Vec<u8>> {
+        let LiveFeedInstalledPayload::NotamResources { checkpoint, deltas } = &self.payload else {
+            return None;
+        };
+        if sha256_hex(checkpoint) == blob_sha256 {
+            return Some(checkpoint.as_ref().clone());
+        }
+        deltas
+            .iter()
+            .find(|delta| sha256_hex(delta) == blob_sha256)
+            .map(|delta| delta.as_ref().clone())
+    }
+}
+
+fn resource_ref(kind: &str, bytes: &[u8]) -> LiveFeedResourceRef {
+    LiveFeedResourceRef {
+        kind: kind.to_string(),
+        blob_sha256: sha256_hex(bytes),
+        bytes: bytes.len() as u64,
+    }
+}
+
+fn validate_resource_manifest(manifest: &LiveFeedResourceManifest) -> AppResult<()> {
+    if manifest.summary.payload_kind != "notam_resources" {
+        return Err(cache_error(format!(
+            "{} does not use immutable resource persistence",
+            manifest.summary.product
+        )));
+    }
+    if manifest.resources.is_empty() {
+        return Err(cache_error(
+            "immutable resource manifest is empty".to_string(),
+        ));
+    }
+    if manifest.resources[0].kind != "notam_checkpoint_xz" {
+        return Err(cache_error(
+            "immutable NOTAM resources must begin with a checkpoint".to_string(),
+        ));
+    }
+    if manifest.resources[1..]
+        .iter()
+        .any(|resource| resource.kind != "notam_ordered_delta_xz")
+    {
+        return Err(cache_error(
+            "immutable NOTAM resources contain an unsupported delta kind".to_string(),
+        ));
+    }
+    let mut hashes = std::collections::BTreeSet::new();
+    if manifest
+        .resources
+        .iter()
+        .any(|resource| !hashes.insert(resource.blob_sha256.as_str()))
+    {
+        return Err(cache_error(
+            "immutable resource manifest contains duplicate blob hashes".to_string(),
+        ));
+    }
+    Ok(())
 }
 
 fn state_manifest_for_installed(installed: &LiveFeedInstalledState) -> Option<Value> {
@@ -354,6 +646,7 @@ fn state_manifest_for_installed(installed: &LiveFeedInstalledState) -> Option<Va
         LiveFeedInstalledPayload::Json { bytes } => serde_json::from_slice(bytes).ok(),
         LiveFeedInstalledPayload::NavKv { manifest, .. } => serde_json::from_slice(manifest).ok(),
         LiveFeedInstalledPayload::Opaque { .. } => None,
+        LiveFeedInstalledPayload::NotamResources { .. } => None,
     }
 }
 
@@ -363,6 +656,7 @@ impl LiveFeedInstalledPayload {
             Self::Json { .. } => "json",
             Self::NavKv { .. } => "nav_kv_package",
             Self::Opaque { .. } => "opaque",
+            Self::NotamResources { .. } => "notam_resources",
         }
     }
 }
@@ -410,10 +704,8 @@ pub fn live_feed_product_registry() -> LiveFeedProductRegistry {
             records_key: "tafs_by_station".to_string(),
             count_key: Some("taf_count".to_string()),
         },
-        LiveFeedProductDriver::RecordJson {
+        LiveFeedProductDriver::Notam {
             product: "notams".to_string(),
-            records_key: "notams_by_id".to_string(),
-            count_key: Some("notam_count".to_string()),
         },
         LiveFeedProductDriver::FullJson {
             product: "tfrs".to_string(),
@@ -436,7 +728,8 @@ impl LiveFeedProductDriver {
             Self::RecordJson { product, .. }
             | Self::NavKv { product }
             | Self::FullJson { product }
-            | Self::OpaqueFull { product } => product,
+            | Self::OpaqueFull { product }
+            | Self::Notam { product } => product,
         }
     }
 
@@ -447,7 +740,10 @@ impl LiveFeedProductDriver {
                 count_key,
                 ..
             } => Some((records_key, count_key.as_deref())),
-            Self::NavKv { .. } | Self::FullJson { .. } | Self::OpaqueFull { .. } => None,
+            Self::NavKv { .. }
+            | Self::FullJson { .. }
+            | Self::OpaqueFull { .. }
+            | Self::Notam { .. } => None,
         }
     }
 
@@ -515,6 +811,40 @@ impl LiveFeedProductDriver {
                     }
                 };
                 verify_nav_kv_state(product, version, payload_ref, manifest, root, pages)
+            }
+            Self::Notam { product } => {
+                if product != product_id {
+                    return Err(cache_error(format!(
+                        "live-feed driver {product} cannot install {product_id}"
+                    )));
+                }
+                let LiveFeedFetchedPayload::Bytes(bytes) = payload else {
+                    return Err(cache_error("NOTAM checkpoint must be bytes".to_string()));
+                };
+                verify_blob_sha256(
+                    "NOTAM checkpoint",
+                    &bytes,
+                    required_blob_sha256("checkpoint", product, payload_ref)?,
+                )?;
+                let checkpoint = decode_notam_checkpoint(payload_ref.kind.as_deref(), &bytes)?;
+                if checkpoint.state_id != version || checkpoint.state_id != payload_ref.state_sha256
+                {
+                    return Err(cache_error(format!(
+                        "NOTAM checkpoint identity {} does not match {version}/{}",
+                        checkpoint.state_id, payload_ref.state_sha256
+                    )));
+                }
+                NotamState::from_checkpoint(checkpoint, &mut NotamApplyWork::default())
+                    .map_err(|error| cache_error(format!("invalid NOTAM checkpoint: {error}")))?;
+                Ok(LiveFeedInstalledState {
+                    product: product.clone(),
+                    version: version.to_string(),
+                    state_sha256: version.to_string(),
+                    payload: LiveFeedInstalledPayload::NotamResources {
+                        checkpoint: Arc::new(bytes),
+                        deltas: Vec::new(),
+                    },
+                })
             }
             Self::OpaqueFull { product } => {
                 if product != product_id {
@@ -607,7 +937,68 @@ impl LiveFeedProductDriver {
                     },
                 })
             }
+            Self::Notam { product } => {
+                let _ = (product, summary, bytes);
+                Err(cache_error(
+                    "NOTAM cache requires immutable resource restoration".to_string(),
+                ))
+            }
         }
+    }
+
+    fn install_persisted_resources(
+        &self,
+        restoring: &RestoringLiveFeedResources,
+    ) -> AppResult<LiveFeedInstalledState> {
+        let Self::Notam { product } = self else {
+            return Err(cache_error(format!(
+                "{} does not support immutable resource persistence",
+                self.product()
+            )));
+        };
+        if restoring.manifest.summary.product != *product {
+            return Err(cache_error(format!(
+                "resource manifest is for {}, not {product}",
+                restoring.manifest.summary.product
+            )));
+        }
+        let ordered = restoring
+            .manifest
+            .resources
+            .iter()
+            .map(|resource| {
+                restoring
+                    .resources
+                    .get(&resource.blob_sha256)
+                    .cloned()
+                    .ok_or_else(|| {
+                        cache_error(format!(
+                            "missing persisted {product} resource {}",
+                            resource.blob_sha256
+                        ))
+                    })
+            })
+            .collect::<AppResult<Vec<_>>>()?;
+        let (checkpoint, deltas) = ordered
+            .split_first()
+            .ok_or_else(|| cache_error("immutable resource manifest is empty".to_string()))?;
+        let state_id = verify_notam_resource_chain(checkpoint, deltas)?;
+        let summary = &restoring.manifest.summary;
+        if state_id != summary.state_sha256 || state_id != summary.version {
+            return Err(cache_error(format!(
+                "persisted NOTAM resources end at {state_id}, expected {}/{}",
+                summary.version, summary.state_sha256
+            )));
+        }
+        Ok(LiveFeedInstalledState {
+            product: product.clone(),
+            version: state_id.clone(),
+            state_sha256: state_id,
+            payload: LiveFeedInstalledPayload::NotamResources {
+                checkpoint: Arc::new(checkpoint.clone()),
+                deltas: deltas.iter().cloned().map(Arc::new).collect(),
+            },
+        })
     }
 
     fn apply_delta(
@@ -746,11 +1137,95 @@ impl LiveFeedProductDriver {
                     },
                 })
             }
+            Self::Notam { product } => {
+                if installed.product != *product
+                    || installed.version != delta_ref.from_version
+                    || installed.state_sha256 != delta_ref.from_state_sha256
+                {
+                    return Err(cache_error(
+                        "NOTAM installed head does not match delta source".to_string(),
+                    ));
+                }
+                let LiveFeedInstalledPayload::NotamResources { checkpoint, deltas } =
+                    &installed.payload
+                else {
+                    return Err(cache_error(
+                        "NOTAM installed payload is not a resource chain".to_string(),
+                    ));
+                };
+                let delta = decode_notam_delta(delta_ref.kind.as_deref(), bytes)?;
+                if delta.from_state_id != delta_ref.from_state_sha256
+                    || delta.to_state_id != delta_ref.to_state_sha256
+                    || delta.from_state_id != delta_ref.from_version
+                    || delta.to_state_id != delta_ref.to_version
+                    || delta_ref.mutation_count != Some(delta.mutations.len() as u64)
+                {
+                    return Err(cache_error(
+                        "NOTAM delta payload does not match manifest reference".to_string(),
+                    ));
+                }
+                let mut next_deltas = deltas.clone();
+                next_deltas.push(Arc::new(bytes.to_vec()));
+                Ok(LiveFeedInstalledState {
+                    product: product.clone(),
+                    version: delta.to_state_id.clone(),
+                    state_sha256: delta.to_state_id,
+                    payload: LiveFeedInstalledPayload::NotamResources {
+                        checkpoint: checkpoint.clone(),
+                        deltas: next_deltas,
+                    },
+                })
+            }
             Self::FullJson { product } | Self::OpaqueFull { product } => {
                 Err(cache_error(format!("{product} does not support deltas")))
             }
         }
     }
+}
+
+fn decode_notam_checkpoint(payload_kind: Option<&str>, bytes: &[u8]) -> AppResult<NotamCheckpoint> {
+    if payload_kind != Some("notam_checkpoint_xz") {
+        return Err(cache_error(format!(
+            "unsupported NOTAM checkpoint kind {payload_kind:?}"
+        )));
+    }
+    let decoded = nav_kv_package::decode_xz_if_needed(bytes).map_err(cache_error)?;
+    let checkpoint: NotamCheckpoint =
+        serde_json::from_slice(decoded.as_ref()).map_err(cache_json_error)?;
+    checkpoint
+        .validate_contract()
+        .map_err(|error| cache_error(error.to_string()))?;
+    Ok(checkpoint)
+}
+
+fn decode_notam_delta(payload_kind: Option<&str>, bytes: &[u8]) -> AppResult<NotamDelta> {
+    if payload_kind != Some("notam_ordered_delta_xz") {
+        return Err(cache_error(format!(
+            "unsupported NOTAM delta kind {payload_kind:?}"
+        )));
+    }
+    let decoded = nav_kv_package::decode_xz_if_needed(bytes).map_err(cache_error)?;
+    let delta: NotamDelta = serde_json::from_slice(decoded.as_ref()).map_err(cache_json_error)?;
+    delta
+        .validate_contract()
+        .map_err(|error| cache_error(error.to_string()))?;
+    Ok(delta)
+}
+
+fn verify_notam_resource_chain(
+    checkpoint_bytes: &[u8],
+    delta_bytes: &[Vec<u8>],
+) -> AppResult<String> {
+    let checkpoint = decode_notam_checkpoint(Some("notam_checkpoint_xz"), checkpoint_bytes)?;
+    let mut state = NotamState::from_checkpoint(checkpoint, &mut NotamApplyWork::default())
+        .map_err(|error| cache_error(format!("invalid persisted NOTAM checkpoint: {error}")))?;
+    for bytes in delta_bytes {
+        let delta = decode_notam_delta(Some("notam_ordered_delta_xz"), bytes)?;
+        state
+            .apply_delta(delta, &mut NotamApplyWork::default())
+            .map_err(|error| cache_error(format!("invalid persisted NOTAM delta: {error}")))?;
+    }
+    Ok(state.state_id().to_string())
 }
 
 fn verify_nav_kv_state(
@@ -1043,6 +1518,174 @@ mod tests {
         nav_kv_package::xz_frame_uncompressed_bytes(&serde_json::to_vec(value).unwrap()).unwrap()
     }
 
+    fn notam_record(id: &str, text: &str) -> notam_state::NotamRecord {
+        notam_state::NotamRecord {
+            id: id.to_string(),
+            airport_id: Some("KSEA".to_string()),
+            airport_effects: [product_contracts::AirportNotamEffect::RoutineAdvisory]
+                .into_iter()
+                .collect(),
+            notam_keyword: Some("AD".to_string()),
+            effective_start_utc: None,
+            effective_end_utc: None,
+            text: Some(text.to_string()),
+            local_text: None,
+            icao_text: None,
+        }
+    }
+
+    #[test]
+    fn notam_cache_stages_until_main_ack_and_persists_immutable_resource_chain() {
+        let registry = live_feed_product_registry();
+        let driver = registry.required_driver("notams").unwrap();
+        let mut source = NotamState::empty();
+        for index in 0..128 {
+            source
+                .apply_mutation(
+                    notam_state::NotamMutation::Upsert {
+                        record: notam_record(&format!("N{index:04}"), "initial"),
+                    },
+                    &mut NotamApplyWork::default(),
+                )
+                .unwrap();
+        }
+        let checkpoint = source.checkpoint();
+        let checkpoint_id = checkpoint.state_id.clone();
+        let checkpoint_bytes =
+            nav_kv_package::xz_frame_uncompressed_bytes(&serde_json::to_vec(&checkpoint).unwrap())
+                .unwrap();
+        let checkpoint_ref = LiveFeedPayloadRef {
+            kind: Some("notam_checkpoint_xz".to_string()),
+            url: format!("states/notams/{checkpoint_id}.json.xz"),
+            bytes: Some(checkpoint_bytes.len() as u64),
+            blob_sha256: Some(sha256_hex(&checkpoint_bytes)),
+            state_sha256: checkpoint_id.clone(),
+        };
+        let installed = driver
+            .install_full(
+                "notams",
+                &checkpoint_id,
+                &checkpoint_ref,
+                LiveFeedFetchedPayload::Bytes(checkpoint_bytes.clone()),
+            )
+            .unwrap();
+        let mut cache = live_feed_cache();
+        cache.stage_or_remember_installed_state(installed);
+        assert!(cache.installed("notams").is_none());
+        assert_eq!(
+            cache
+                .install_candidate("notams")
+                .map(|state| state.version.as_str()),
+            Some(checkpoint_id.as_str())
+        );
+        let initial_for_main = cache.install_candidate_for_main("notams").unwrap();
+        let LiveFeedInstalledPayload::NotamResources {
+            checkpoint: initial_checkpoint,
+            deltas: initial_deltas,
+        } = initial_for_main.payload
+        else {
+            panic!("initial NOTAM candidate should be a resource chain");
+        };
+        assert_eq!(initial_checkpoint.as_ref(), &checkpoint_bytes);
+        assert!(initial_deltas.is_empty());
+        cache
+            .acknowledge_install_candidate("notams", &checkpoint_id)
+            .unwrap();
+
+        let mutation = notam_state::NotamMutation::Upsert {
+            record: notam_record("N0042", "changed"),
+        };
+        source
+            .apply_mutation(mutation.clone(), &mut NotamApplyWork::default())
+            .unwrap();
+        let head_id = source.state_id().to_string();
+        let delta = NotamDelta::new(
+            checkpoint_id.clone(),
+            head_id.clone(),
+            source.counters(),
+            vec![mutation],
+        );
+        let delta_bytes =
+            nav_kv_package::xz_frame_uncompressed_bytes(&serde_json::to_vec(&delta).unwrap())
+                .unwrap();
+        let delta_ref = LiveFeedDeltaRef {
+            kind: Some("notam_ordered_delta_xz".to_string()),
+            from_version: checkpoint_id.clone(),
+            from_state_sha256: checkpoint_id.clone(),
+            to_version: head_id.clone(),
+            to_state_sha256: head_id.clone(),
+            url: format!("deltas/notams/{checkpoint_id}__{head_id}.json.xz"),
+            bytes: Some(delta_bytes.len() as u64),
+            blob_sha256: Some(sha256_hex(&delta_bytes)),
+            mutation_count: Some(1),
+        };
+        let installed_checkpoint = match &cache.installed("notams").unwrap().payload {
+            LiveFeedInstalledPayload::NotamResources { checkpoint, .. } => checkpoint.clone(),
+            _ => unreachable!(),
+        };
+        let next = driver
+            .apply_delta(cache.installed("notams").unwrap(), &delta_ref, &delta_bytes)
+            .unwrap();
+        let LiveFeedInstalledPayload::NotamResources {
+            checkpoint: retained_checkpoint,
+            deltas,
+        } = &next.payload
+        else {
+            panic!("NOTAM cache should retain immutable resources");
+        };
+        assert!(Arc::ptr_eq(&installed_checkpoint, retained_checkpoint));
+        assert_eq!(retained_checkpoint.as_ref(), &checkpoint_bytes);
+        assert_eq!(deltas.len(), 1);
+        assert_eq!(deltas[0].as_ref(), &delta_bytes);
+        cache.stage_or_remember_installed_state(next);
+        assert_eq!(
+            cache
+                .installed("notams")
+                .map(|state| state.version.as_str()),
+            Some(checkpoint_id.as_str())
+        );
+        let delta_for_main = cache.install_candidate_for_main("notams").unwrap();
+        let LiveFeedInstalledPayload::NotamResources {
+            checkpoint: delta_checkpoint,
+            deltas: delta_suffix,
+        } = delta_for_main.payload
+        else {
+            panic!("incremental NOTAM candidate should be a resource chain");
+        };
+        assert!(delta_checkpoint.is_empty());
+        assert_eq!(delta_suffix.len(), 1);
+        let manifest = cache.resource_manifest("notams").unwrap().unwrap();
+        assert_eq!(manifest.resources.len(), 2);
+        assert_eq!(manifest.resources[0].kind, "notam_checkpoint_xz");
+        assert_eq!(manifest.resources[1].kind, "notam_ordered_delta_xz");
+        let persisted_delta = cache
+            .resource_bytes("notams", &manifest.resources[1].blob_sha256)
+            .unwrap();
+        assert_eq!(persisted_delta.as_slice(), delta_suffix[0].as_slice());
+        assert!(cache.installed_payload_bytes("notams").is_err());
+        cache
+            .acknowledge_install_candidate("notams", &head_id)
+            .unwrap();
+        let mut restored_cache = live_feed_cache();
+        restored_cache
+            .begin_restoring_resources(manifest.clone())
+            .unwrap();
+        for resource in &manifest.resources {
+            let bytes = cache
+                .resource_bytes("notams", &resource.blob_sha256)
+                .unwrap();
+            restored_cache
+                .restore_resource_bytes("notams", &resource.blob_sha256, &bytes)
+                .unwrap();
+        }
+        restored_cache
+            .finish_restoring_resources(&registry, "notams")
+            .unwrap();
+        let restored = restored_cache.install_candidate("notams").unwrap();
+        assert_eq!(restored.version, head_id);
+        assert_eq!(restored.state_sha256, source.state_id());
+    }
+
     fn json_version_manifest(
         product: &str,
         version: &str,
@@ -1091,10 +1734,7 @@ mod tests {
             registry.record_json_delta_schema("tafs"),
             Some(("tafs_by_station".to_string(), Some("taf_count".to_string())))
         );
-        assert_eq!(
-            registry.record_json_delta_schema("notams"),
-            Some(("notams_by_id".to_string(), Some("notam_count".to_string())))
-        );
+        assert_eq!(registry.record_json_delta_schema("notams"), None);
         assert_eq!(registry.record_json_delta_schema("tfrs"), None);
     }
 
@@ -1195,6 +1835,7 @@ mod tests {
             url: "deltas/metars/v1__v2.json.xz".to_string(),
             bytes: Some(delta_bytes.len() as u64),
             blob_sha256: Some(sha256_hex(&delta_bytes)),
+            mutation_count: None,
         };
         let (v2_manifest, _, _) =
             json_version_manifest("metars", "v2", &v2, Some(delta_ref.clone()));
@@ -1269,6 +1910,7 @@ mod tests {
             url: "deltas/metars/v1__v2.json.xz".to_string(),
             bytes: Some(10_000_000),
             blob_sha256: Some(sha256_hex(&delta_bytes)),
+            mutation_count: None,
         };
         let (v2_manifest, _, _) =
             json_version_manifest("metars", "v2", &v2, Some(delta_ref.clone()));
@@ -1343,6 +1985,7 @@ mod tests {
             url: "deltas/tafs/v1__v2.json.xz".to_string(),
             bytes: Some(delta_bytes.len() as u64),
             blob_sha256: Some(sha256_hex(&delta_bytes)),
+            mutation_count: None,
         };
         let (v2_manifest, _, _) = json_version_manifest("tafs", "v2", &v2, Some(delta_ref));
         let v2_manifest =

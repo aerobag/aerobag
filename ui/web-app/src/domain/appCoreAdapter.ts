@@ -860,6 +860,7 @@ type WasmModule = {
   create_ui_session_profiled?: (planJson: string, recentAirportIdsJson: string, selectedAirportIdJson: string, selectedChartIdJson: string, nowEpochMs: number) => Promise<string> | string;
   set_resource_policy_in_session(handle: number, policyJson: string): Promise<string> | string;
   configure_platform_capabilities_in_session(handle: number, capabilitiesJson: string): Promise<string> | string;
+  should_prepare_live_feed_resource(resourceId: string): boolean;
   set_situation_in_session_paged(handle: number, situationJson: string): Promise<string> | string;
   tick_bad_autopilot_in_session_paged(handle: number, nowEpochMs: number): Promise<string> | string;
   engage_map_follow_in_session(handle: number, viewportJson: string): Promise<string> | string;
@@ -1020,6 +1021,8 @@ export class WasmAppCoreAdapter implements AppCoreAdapter {
               resource_id: preparedResourceId,
               prepared_bytes: preparedBytes.byteLength,
             }),
+        (candidateResourceId) =>
+          this.module.should_prepare_live_feed_resource(candidateResourceId),
       )) {
         return;
       }
@@ -2012,6 +2015,7 @@ async function loadBestAvailableAdapterUncached(
     "create_ui_session",
     "set_resource_policy_in_session",
     "configure_platform_capabilities_in_session",
+    "should_prepare_live_feed_resource",
     "perform_flight_plan_row_action_in_session",
     "perform_status_action_in_session",
     "set_situation_in_session_paged",

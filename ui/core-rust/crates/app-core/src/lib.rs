@@ -70,7 +70,7 @@ pub use ids::{AirportId, ChartFamilyId, ChartId, PackageId, PlateId, RegionId};
 pub use live_feed_cache::{
     live_feed_product_registry, LiveFeedCache, LiveFeedFetchedPayload, LiveFeedInstalledPayload,
     LiveFeedInstalledState, LiveFeedInstalledSummary, LiveFeedProductDriver,
-    LiveFeedProductRegistry,
+    LiveFeedProductRegistry, LiveFeedResourceManifest, LiveFeedResourceRef,
 };
 pub use live_feed_runtime::{
     live_feed_runtime_decision, LiveFeedConnectionEvent, LiveFeedConnectionEventKind,
@@ -81,10 +81,13 @@ pub use live_feed_runtime::{
 pub use live_feeds::{
     decode_prepared_live_feed, live_feed_events_url, live_feed_status_url,
     normalize_live_feed_source_root_url, prepare_live_feed_delta_resource,
-    prepare_live_feed_state_resource, supports_prepared_live_feed, LiveFeedCacheRequest,
+    prepare_live_feed_delta_resource_with_notam_work, prepare_live_feed_state_resource,
+    prepare_live_feed_state_resource_with_notam_work, should_prepare_live_feed_resource,
+    supports_prepared_live_feed, BackgroundNotamWork, LiveFeedCacheRequest,
     LiveFeedCacheRequestKind, LiveFeedDeltaRef, LiveFeedDurableInstalledProduct,
     LiveFeedPayloadRef, LiveFeedSseEvent, LiveFeedsSnapshot, LiveFeedsState,
     PreparedLiveFeedEnvelope, PreparedLiveFeedPayload, PreparedMetarLiveFeed, PreparedMetarTile,
+    PreparedNotamPayload,
 };
 pub use map_follow::MapFollowUiState;
 pub(crate) use map_overlay::query_map_overlay_for_surface_at;
@@ -103,14 +106,13 @@ pub use map_overlay::{
     AirspaceReferenceTilePayload, AirspaceScreenPoint, MapOverlayConfig, MapOverlayQueryResult,
     MapSelectionAction, MapSelectionCategory, MapSelectionForNavRefResult, MapSelectionHighlight,
     MapSelectionItem, MapSelectionQueryResult, MapSelectionSessionAction, MapSurfaceMetrics,
-    MetarProductPayload, MetarRecord, MetarTilePayload, NavSymbolFeature, NotamProductPayload,
-    NotamRecord, ObstacleOverlayContext, OfflineRegionCatalog, OfflineRegionDisplay,
-    OfflineRegionRecord, OverlaySurfaceDecision, PirepRecord, PointTilePayload, PointVectorRecord,
-    TafProductPayload, TafRecord, TfrAltitudeLimit, TfrAreaPayload, TfrLatLonPoint,
-    TfrNotamMetadata, TfrProductPayload, TfrScheduleFragment, VectorAggregateTilePayload,
-    VectorIdentLabelStyle, VectorTileRequest, VisibleMapFeature, VisibleMetarFeature,
-    VisiblePirepFeature, WeatherDetailUiView, AIRSPACE_DISPLAY_FEATURE_LIMIT,
-    VECTOR_DISPLAY_FEATURE_LIMIT,
+    MetarProductPayload, MetarRecord, MetarTilePayload, NavSymbolFeature, NotamRecord,
+    ObstacleOverlayContext, OfflineRegionCatalog, OfflineRegionDisplay, OfflineRegionRecord,
+    OverlaySurfaceDecision, PirepRecord, PointTilePayload, PointVectorRecord, TafProductPayload,
+    TafRecord, TfrAltitudeLimit, TfrAreaPayload, TfrLatLonPoint, TfrNotamMetadata,
+    TfrProductPayload, TfrScheduleFragment, VectorAggregateTilePayload, VectorIdentLabelStyle,
+    VectorTileRequest, VisibleMapFeature, VisibleMetarFeature, VisiblePirepFeature,
+    WeatherDetailUiView, AIRSPACE_DISPLAY_FEATURE_LIMIT, VECTOR_DISPLAY_FEATURE_LIMIT,
 };
 pub use navdb_types::{
     AirwayAutoSelection, AirwayBranch, AirwayEntryCandidate, AirwayExitCandidate,

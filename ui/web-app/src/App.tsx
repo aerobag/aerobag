@@ -4880,7 +4880,7 @@ function MapPage(props: {
         if (!(entry instanceof PerformanceResourceTiming)) {
           continue;
         }
-        if (!entry.name.includes("/live-feeds/v2/states/nexrad/") || !entry.name.endsWith(".png")) {
+        if (!entry.name.includes("/live-feeds/v3/states/nexrad/") || !entry.name.endsWith(".png")) {
           continue;
         }
         const transferBytes = entry.transferSize || 0;

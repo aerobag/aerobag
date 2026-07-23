@@ -2,6 +2,12 @@
 
 This is the current architecture plan for bringing FAA NOTAM data into Aerobag.
 
+The incremental state-identity, delta-journal, and checkpoint publication design
+in [notam-incremental-publication-plan.md](notam-incremental-publication-plan.md)
+supersedes this document's replace-everything publication target. The SWIM
+collection, durable raw-message handoff, and normalized projection described
+here remain current.
+
 This is intentionally a plan doc, not a feed-details doc. Raw SWIM/SCDS connection and payload notes live in [NOTAMS_FEED.md](/root/aerobag-preprocessor/aerobag/docs/NOTAMS_FEED.md).
 
 ## Goals

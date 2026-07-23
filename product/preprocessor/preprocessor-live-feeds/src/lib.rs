@@ -4,6 +4,7 @@ use std::path::{Path, PathBuf};
 
 use anyhow::{bail, Context};
 use chrono::{DateTime, NaiveDateTime, Utc};
+use notam_state::NotamRecord;
 use preprocessor_zip::{write_deterministic_zip, ZipSource};
 use product_contracts::{AirportNotamEffect, NOTAM_LIVE_FEED_CONTRACT_VERSION};
 use quick_xml::events::Event;
@@ -225,6 +226,20 @@ pub struct StructuredNotamRecord {
 pub struct StructuredPoint {
     pub lat: f64,
     pub lon: f64,
+}
+
+pub fn published_notam_record(record: &StructuredNotamRecord) -> NotamRecord {
+    NotamRecord {
+        id: record.id.clone(),
+        airport_id: record.airport_id.clone(),
+        airport_effects: record.airport_effects.clone(),
+        notam_keyword: record.notam_keyword.clone(),
+        effective_start_utc: record.effective_start_utc.clone(),
+        effective_end_utc: record.effective_end_utc.clone(),
+        text: record.text.clone(),
+        local_text: record.local_text.clone(),
+        icao_text: record.icao_text.clone(),
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

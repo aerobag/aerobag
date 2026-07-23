@@ -1,8 +1,14 @@
-use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
+use std::{
+    collections::{BTreeMap, BTreeSet, HashMap, HashSet},
+    sync::Arc,
+};
 
 use airspace_geometry::{expand_airspace_path, AirspaceSegment};
 use chrono::{DateTime, Utc};
-use product_contracts::{AirportNotamEffect, NOTAM_LIVE_FEED_CONTRACT_VERSION};
+use notam_state::{NotamApplyWork, NotamCheckpoint, NotamDelta, NotamState, NotamStateError};
+use product_contracts::AirportNotamEffect;
+#[cfg(test)]
+use product_contracts::NOTAM_LIVE_FEED_CONTRACT_VERSION;
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 
@@ -359,26 +365,9 @@ pub struct TafProductPayload {
     pub tafs_by_station: HashMap<String, TafRecord>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct NotamRecord {
-    pub id: String,
-    #[serde(default)]
-    pub airport_id: Option<String>,
-    pub airport_effects: BTreeSet<AirportNotamEffect>,
-    #[serde(default)]
-    pub notam_keyword: Option<String>,
-    #[serde(default)]
-    pub effective_start_utc: Option<String>,
-    #[serde(default)]
-    pub effective_end_utc: Option<String>,
-    #[serde(default)]
-    pub text: Option<String>,
-    #[serde(default)]
-    pub local_text: Option<String>,
-    #[serde(default)]
-    pub icao_text: Option<String>,
-}
+pub use notam_state::NotamRecord;
 
+#[cfg(test)]
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct NotamProductPayload {
     pub schema_version: u32,
@@ -397,61 +386,86 @@ pub struct AirportNotamUiView {
     priority: u8,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct AirportNotamIndex {
     pub version_label: String,
-    by_airport_id: HashMap<String, Vec<AirportNotamUiView>>,
+    state: Arc<NotamState>,
 }
 
 impl AirportNotamIndex {
+    #[cfg(test)]
     pub fn from_payload(payload: NotamProductPayload) -> Result<Self, String> {
-        if payload.schema_version != NOTAM_LIVE_FEED_CONTRACT_VERSION {
+        if payload.schema_version != product_contracts::NOTAM_LIVE_FEED_CONTRACT_VERSION {
             return Err(format!(
                 "unsupported NOTAM live-feed schema {}; expected {}",
-                payload.schema_version, NOTAM_LIVE_FEED_CONTRACT_VERSION
+                payload.schema_version,
+                product_contracts::NOTAM_LIVE_FEED_CONTRACT_VERSION
             ));
         }
-        let mut by_airport_id = HashMap::<String, Vec<AirportNotamUiView>>::new();
-        for record in payload.notams_by_id.into_values() {
-            let Some(airport_id) = record
-                .airport_id
-                .map(|value| value.trim().to_ascii_uppercase())
-                .filter(|value| !value.is_empty())
-            else {
-                continue;
-            };
-            let Some(text) = record
-                .text
-                .as_deref()
-                .or(record.local_text.as_deref())
-                .or(record.icao_text.as_deref())
-                .map(str::trim)
-                .filter(|value| !value.is_empty())
-            else {
-                continue;
-            };
-            by_airport_id
-                .entry(airport_id)
-                .or_default()
-                .push(AirportNotamUiView {
-                    id: record.id,
-                    label: record
-                        .notam_keyword
-                        .as_deref()
-                        .unwrap_or("NOTAM")
-                        .trim()
-                        .to_ascii_uppercase(),
-                    text: text.to_string(),
-                    priority: airport_notam_priority(&record.airport_effects),
-                });
+        let mut records = payload.notams_by_id.into_values().collect::<Vec<_>>();
+        records.sort_by(|left, right| left.id.cmp(&right.id));
+        let mut state = NotamState::empty();
+        let mut work = NotamApplyWork::default();
+        for record in records {
+            state
+                .apply_mutation(notam_state::NotamMutation::Upsert { record }, &mut work)
+                .map_err(|error| error.to_string())?;
         }
-        for notams in by_airport_id.values_mut() {
-            sort_airport_notam_views(notams);
+        if payload
+            .notam_count
+            .is_some_and(|count| count as usize != state.len())
+        {
+            return Err("NOTAM fixture count does not match records".to_string());
         }
         Ok(Self {
             version_label: payload.version_label,
-            by_airport_id,
+            state: Arc::new(state),
         })
+    }
+
+    pub fn from_checkpoint(
+        checkpoint: NotamCheckpoint,
+        work: &mut NotamApplyWork,
+    ) -> Result<Self, NotamStateError> {
+        let version_label = checkpoint.state_id.clone();
+        let state = NotamState::from_checkpoint(checkpoint, work)?;
+        Ok(Self {
+            version_label,
+            state: Arc::new(state),
+        })
+    }
+
+    pub fn apply_delta(
+        &mut self,
+        delta: NotamDelta,
+        work: &mut NotamApplyWork,
+    ) -> Result<(), NotamStateError> {
+        let version_label = delta.to_state_id.clone();
+        Arc::get_mut(&mut self.state)
+            .ok_or_else(|| {
+                NotamStateError::Invariant(
+                    "NOTAM state is aliased while applying an update".to_string(),
+                )
+            })?
+            .apply_delta(delta, work)?;
+        self.version_label = version_label;
+        Ok(())
+    }
+
+    pub fn state_id(&self) -> &str {
+        self.state.state_id()
+    }
+
+    pub fn counters(&self) -> notam_state::NotamCounters {
+        self.state.counters()
+    }
+
+    pub fn checkpoint(&self) -> NotamCheckpoint {
+        self.state.checkpoint()
+    }
+
+    fn airport_records(&self, airport_id: &str) -> Vec<&NotamRecord> {
+        self.state.airport_records(airport_id)
     }
 }
 
@@ -3493,14 +3507,34 @@ fn airport_notam_views(
     let lookup_ids = airport_notam_lookup_ids(airport_id);
     let mut notams = lookup_ids
         .into_iter()
-        .filter_map(|lookup_id| index.by_airport_id.get(&lookup_id))
-        .flatten()
-        .cloned()
+        .flat_map(|lookup_id| index.airport_records(&lookup_id))
+        .filter_map(airport_notam_ui_view)
         .collect::<Vec<_>>();
     notams.sort_by(|left, right| left.id.cmp(&right.id));
     notams.dedup_by(|left, right| left.id == right.id);
     sort_airport_notam_views(&mut notams);
     notams
+}
+
+fn airport_notam_ui_view(record: &NotamRecord) -> Option<AirportNotamUiView> {
+    let text = record
+        .text
+        .as_deref()
+        .or(record.local_text.as_deref())
+        .or(record.icao_text.as_deref())
+        .map(str::trim)
+        .filter(|value| !value.is_empty())?;
+    Some(AirportNotamUiView {
+        id: record.id.clone(),
+        label: record
+            .notam_keyword
+            .as_deref()
+            .unwrap_or("NOTAM")
+            .trim()
+            .to_ascii_uppercase(),
+        text: text.to_string(),
+        priority: airport_notam_priority(&record.airport_effects),
+    })
 }
 
 fn sort_airport_notam_views(notams: &mut [AirportNotamUiView]) {

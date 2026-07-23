@@ -979,7 +979,7 @@ fn start_live_feed_driver(
                 source.sender(),
                 status.clone(),
             );
-            tasks.push(Box::new(CoalescingQueuedDaemonLiveFeedTask::new(
+            tasks.push(Box::new(ImmediateQueuedDaemonLiveFeedTask::new(
                 LiveFeedSourceAndBuilder::new(source, NotamLiveFeedBuilder::new(notam_state_root)),
                 Duration::from_secs(60),
             )));
@@ -1424,7 +1424,7 @@ impl LiveFeedPollingTask for ProductionLiveFeedTask {
     }
 }
 
-struct CoalescingQueuedDaemonLiveFeedTask<T> {
+struct ImmediateQueuedDaemonLiveFeedTask<T> {
     task: T,
     nominal_interval: Duration,
     next_due_at_utc: Option<chrono::DateTime<Utc>>,
@@ -1433,7 +1433,7 @@ struct CoalescingQueuedDaemonLiveFeedTask<T> {
     in_flight_event: Option<UpstreamEvent>,
 }
 
-impl<T> CoalescingQueuedDaemonLiveFeedTask<T> {
+impl<T> ImmediateQueuedDaemonLiveFeedTask<T> {
     fn new(task: T, nominal_interval: Duration) -> Self {
         Self {
             task,
@@ -1446,7 +1446,7 @@ impl<T> CoalescingQueuedDaemonLiveFeedTask<T> {
     }
 }
 
-impl<T> LiveFeedPollingTask for CoalescingQueuedDaemonLiveFeedTask<T>
+impl<T> LiveFeedPollingTask for ImmediateQueuedDaemonLiveFeedTask<T>
 where
     T: LiveFeedPollingTask + Send,
 {
@@ -1477,7 +1477,7 @@ where
     }
 }
 
-impl<T> DaemonLiveFeedTask for CoalescingQueuedDaemonLiveFeedTask<T>
+impl<T> DaemonLiveFeedTask for ImmediateQueuedDaemonLiveFeedTask<T>
 where
     T: LiveFeedPollingTask + Send,
 {
@@ -1495,7 +1495,7 @@ where
             .any(|update| update.product == self.product_id());
         if succeeded {
             self.consecutive_failures = 0;
-            self.next_due_at_utc = Some(now + chrono_duration_from_std(self.nominal_interval));
+            self.next_due_at_utc = None;
             return;
         }
         let failed = result
@@ -1704,12 +1704,13 @@ fn queue_persisted_notam_state_event(
     status: &DaemonStatus,
     include_empty: bool,
 ) -> anyhow::Result<()> {
-    if !include_empty && store.current_records()?.is_empty() {
+    let (state_id, counters) = store.current_state_summary()?;
+    if !include_empty && counters.notam_count == 0 {
         return Ok(());
     }
     let observed_at_utc = Utc::now();
     let source_timestamp = observed_at_utc.to_rfc3339_opts(chrono::SecondsFormat::Secs, true);
-    let source_id = format!("notams:persisted:{}", store.current_fingerprint()?);
+    let source_id = format!("notams:persisted:{state_id}");
     sender
         .send(UpstreamEvent {
             product: "notams".to_string(),
@@ -1797,16 +1798,17 @@ fn queue_notam_raw_ingest_event(
         .map(|value| value.with_timezone(&Utc))
         .unwrap_or_else(Utc::now);
     let source_timestamp = observed_at_utc.to_rfc3339_opts(chrono::SecondsFormat::Secs, true);
-    let event = UpstreamEvent {
-        product: "notams".to_string(),
-        source_id: format!("notams:raw:{}", summary.max_ingest_seq),
-        previous_source_id: None,
-        observed_at_utc,
-        payload_path: None,
-    };
-    sender
-        .send(event)
-        .context("failed to queue NOTAM raw ingest event")?;
+    if summary.changed_count + summary.removed_count > 0 {
+        sender
+            .send(UpstreamEvent {
+                product: "notams".to_string(),
+                source_id: format!("notams:raw:{}", summary.max_ingest_seq),
+                previous_source_id: None,
+                observed_at_utc,
+                payload_path: None,
+            })
+            .context("failed to queue NOTAM raw ingest event")?;
+    }
     status.record_source_ingest(
         "notams",
         observed_at_utc,
@@ -2709,7 +2711,7 @@ mod tests {
         let text = String::from_utf8(bytes)?;
         assert!(text.contains("id: metars:m1\n"));
         assert!(text.contains("event: live-feed-current\n"));
-        assert!(text.contains("\"schema_version\":2"), "{text}");
+        assert!(text.contains("\"schema_version\":3"), "{text}");
         assert!(text.contains("\"product\":\"metars\""));
         assert!(text.contains("\"history\":[{"), "{text}");
         assert!(text.contains("\"version\":\"m0\""), "{text}");
@@ -2837,7 +2839,7 @@ mod tests {
 
         let response = request_once(
             temp.path(),
-            "GET /live-feeds/v2/states/metars/m1.json HTTP/1.1\r\nHost: localhost\r\n\r\n",
+            "GET /live-feeds/v3/states/metars/m1.json HTTP/1.1\r\nHost: localhost\r\n\r\n",
         )?;
         assert!(response.starts_with("HTTP/1.1 200 OK"), "{response}");
         assert!(
@@ -2862,7 +2864,7 @@ mod tests {
 
         let response = request_once(
             temp.path(),
-            "GET /live-feeds/v2/events HTTP/1.1\r\nHost: localhost\r\n\r\n",
+            "GET /live-feeds/v3/events HTTP/1.1\r\nHost: localhost\r\n\r\n",
         )?;
         assert!(response.starts_with("HTTP/1.1 200 OK"), "{response}");
         assert!(
@@ -2874,7 +2876,7 @@ mod tests {
             "{response}"
         );
         assert!(response.contains("event: live-feed-current"), "{response}");
-        assert!(response.contains("\"schema_version\":2"), "{response}");
+        assert!(response.contains("\"schema_version\":3"), "{response}");
         assert!(response.contains("\"product\":\"metars\""), "{response}");
         Ok(())
     }
@@ -2912,7 +2914,7 @@ mod tests {
         let temp = tempdir()?;
         let response = request_once(
             temp.path(),
-            "OPTIONS /live-feeds/v2/current.json HTTP/1.1\r\nHost: localhost\r\nOrigin: http://example.test\r\nAccess-Control-Request-Method: GET\r\n\r\n",
+            "OPTIONS /live-feeds/v3/current.json HTTP/1.1\r\nHost: localhost\r\nOrigin: http://example.test\r\nAccess-Control-Request-Method: GET\r\n\r\n",
         )?;
         assert!(
             response.starts_with("HTTP/1.1 204 No Content"),
@@ -2948,6 +2950,8 @@ mod tests {
                 delta_path: None,
                 changed_count: 0,
                 removed_count: 0,
+                publication_ack: None,
+                notam_compaction: None,
             }],
             failures: Vec::new(),
         });
@@ -3059,6 +3063,38 @@ mod tests {
         let event = receiver.recv_timeout(Duration::from_secs(1))?;
         assert_eq!(event.product, "notams");
         assert!(event.source_id.starts_with("notams:persisted:"));
+        Ok(())
+    }
+
+    #[test]
+    fn zero_mutation_notam_batch_records_health_without_queuing_publication() -> anyhow::Result<()>
+    {
+        let (sender, receiver) = mpsc::channel();
+        let rejection = NotamRejectionStatus {
+            unresolved_count: 0,
+            oldest_unresolved_ingest_seq: None,
+            latest_unresolved_ingest_seq: None,
+            last_error: None,
+            recent_rejections: Vec::new(),
+        };
+        let mut summary = AppliedRawNotamSummary {
+            applied_count: 12,
+            changed_count: 0,
+            removed_count: 0,
+            rejected_count: 0,
+            new_rejected_count: 0,
+            max_ingest_seq: 42,
+            last_received_at_utc: Some("2026-07-23T00:00:00Z".to_string()),
+        };
+        queue_notam_raw_ingest_event(&sender, &DaemonStatus::default(), &summary, &rejection)?;
+        assert!(matches!(
+            receiver.try_recv(),
+            Err(std::sync::mpsc::TryRecvError::Empty)
+        ));
+
+        summary.changed_count = 1;
+        queue_notam_raw_ingest_event(&sender, &DaemonStatus::default(), &summary, &rejection)?;
+        assert_eq!(receiver.try_recv()?.source_id, "notams:raw:42");
         Ok(())
     }
 
@@ -3204,6 +3240,8 @@ mod tests {
                 delta_path: None,
                 changed_count: 0,
                 removed_count: 0,
+                publication_ack: None,
+                notam_compaction: None,
             }],
             failures: Vec::new(),
         });
@@ -3290,6 +3328,8 @@ mod tests {
                     delta_path: None,
                     changed_count: 1,
                     removed_count: 0,
+                    publication_ack: None,
+                    notam_compaction: None,
                 }],
                 failures: Vec::new(),
             },
@@ -3306,12 +3346,13 @@ mod tests {
     }
 
     #[test]
-    fn queued_live_feed_task_coalesces_events_and_retries_the_latest_state() -> anyhow::Result<()> {
+    fn queued_live_feed_task_publishes_new_events_immediately_and_retries_latest_state(
+    ) -> anyhow::Result<()> {
         let start =
             chrono::DateTime::parse_from_rfc3339("2026-06-19T18:00:00Z")?.with_timezone(&Utc);
         let source = QueuedLiveFeedSource::new("notams");
         let sender = source.sender();
-        let mut task = CoalescingQueuedDaemonLiveFeedTask::new(
+        let mut task = ImmediateQueuedDaemonLiveFeedTask::new(
             LiveFeedSourceAndBuilder::new(
                 source,
                 NoopProductBuilder {
@@ -3351,24 +3392,20 @@ mod tests {
                     delta_path: None,
                     changed_count: 1,
                     removed_count: 0,
+                    publication_ack: None,
+                    notam_compaction: None,
                 }],
                 failures: Vec::new(),
             },
         );
 
         sender.send(event("event-3", start + chrono::Duration::seconds(5)))?;
-        assert!(task
-            .poll_due(start + chrono::Duration::seconds(5))?
-            .is_empty());
-        assert!(task
-            .poll_due(start + chrono::Duration::seconds(59))?
-            .is_empty());
-        let second = task.poll_due(start + chrono::Duration::seconds(60))?;
+        let second = task.poll_due(start + chrono::Duration::seconds(5))?;
         assert_eq!(second.len(), 1);
         assert_eq!(second[0].source_id, "event-3");
 
         task.observe_tick_result(
-            start + chrono::Duration::seconds(60),
+            start + chrono::Duration::seconds(5),
             &LiveFeedTickResult {
                 published: Vec::new(),
                 failures: vec![preprocessor_live_feeds::engine::FailedLiveFeedTask {
@@ -3379,9 +3416,9 @@ mod tests {
             },
         );
         assert!(task
-            .poll_due(start + chrono::Duration::seconds(89))?
+            .poll_due(start + chrono::Duration::seconds(34))?
             .is_empty());
-        let retry = task.poll_due(start + chrono::Duration::seconds(90))?;
+        let retry = task.poll_due(start + chrono::Duration::seconds(35))?;
         assert_eq!(retry.len(), 1);
         assert_eq!(retry[0].source_id, "event-3");
         Ok(())

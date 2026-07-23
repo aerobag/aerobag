@@ -2433,7 +2433,7 @@ internal fun AerobagApp(
     LaunchedEffect(uiSession, liveFeedCache, context, prefs) {
         val appContext = context.applicationContext
         withContext(Dispatchers.IO) {
-            LiveFeedCacheStore.listInstalled(appContext).map { it.summary }
+            LiveFeedCacheStore.listInstalledSummaries(appContext)
         }.forEach { promoteLiveFeed(it) }
         AndroidLiveFeedClient(
             context = appContext,

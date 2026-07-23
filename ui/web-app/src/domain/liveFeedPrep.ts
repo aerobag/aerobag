@@ -1,7 +1,5 @@
 import { debugLog } from "./debugLog";
 
-const PREPARED_LIVE_FEED_PRODUCTS = new Set(["metars", "tafs", "tfrs", "notams"]);
-
 type LiveFeedPrepRequest =
   | {
       kind: "prepare";
@@ -126,14 +124,6 @@ class LiveFeedPrepClient {
 
 let sharedPrepClient: LiveFeedPrepClient | null = null;
 
-export function isPreparedLiveFeedPayloadResource(resourceId: string): boolean {
-  const parts = resourceId.split("/");
-  return parts.length >= 4
-    && parts[0] === "live_feeds"
-    && (parts[1] === "state" || parts[1] === "delta")
-    && PREPARED_LIVE_FEED_PRODUCTS.has(parts[2]);
-}
-
 export async function prepareLiveFeedResource(
   resourceId: string,
   resourceBytes: Uint8Array,
@@ -147,9 +137,10 @@ export async function ingestPreparedLiveFeedResource(
   resourceId: string,
   resourceBytes: Uint8Array,
   ingest: (sessionHandle: number, resourceId: string, preparedBytes: Uint8Array) => Promise<void> | void,
+  shouldPrepare: (resourceId: string) => boolean,
   prepare: (resourceId: string, resourceBytes: Uint8Array) => Promise<Uint8Array> = prepareLiveFeedResource,
 ): Promise<boolean> {
-  if (!isPreparedLiveFeedPayloadResource(resourceId)) {
+  if (!shouldPrepare(resourceId)) {
     return false;
   }
   const preparedBytes = await prepare(resourceId, resourceBytes);

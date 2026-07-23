@@ -13,7 +13,7 @@ class AdminIndexTests(unittest.TestCase):
             front_door="https://example.test",
             commit_hash="abc123<&>",
             cycle_products_root="/artifacts/published",
-            live_feed_output_root="/artifacts/live-feeds/v2",
+            live_feed_output_root="/artifacts/live-feeds/v3",
         )
 
         self.assertIn('Commit: <code class="commit">abc123&lt;&amp;&gt;</code>', html)

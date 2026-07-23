@@ -149,7 +149,7 @@ class ScriptedLiveFeedServer {
   manifestFor(version) {
     const entry = this.addVersion(version);
     return {
-      schema_version: 2,
+      schema_version: 3,
       product: "metars",
       version,
       state: {
@@ -165,7 +165,7 @@ class ScriptedLiveFeedServer {
   currentManifest() {
     const entry = this.addVersion(this.currentVersion);
     return {
-      schema_version: 2,
+      schema_version: 3,
       products: {
         metars: {
           current: entry.version,
@@ -183,7 +183,7 @@ class ScriptedLiveFeedServer {
     const entry = this.addVersion(version);
     this.currentVersion = version;
     const payload = JSON.stringify({
-      schema_version: 2,
+      schema_version: 3,
       product: "metars",
       version,
       version_manifest_url: `versions/metars/${version}.json`,
@@ -224,12 +224,12 @@ class ScriptedLiveFeedServer {
       sendText(res, 200, "text/html; charset=utf-8", "<!doctype html><title>test live feeds</title>");
       return;
     }
-    if (url.pathname === "/live-feeds/v2/current.json") {
+    if (url.pathname === "/live-feeds/v3/current.json") {
       this.requestCounts.current += 1;
       sendJson(res, this.currentManifest());
       return;
     }
-    if (url.pathname === "/live-feeds/v2/events") {
+    if (url.pathname === "/live-feeds/v3/events") {
       this.requestCounts.events += 1;
       if (!this.eventsAvailable) {
         sendText(res, 503, "text/plain; charset=utf-8", "events unavailable in test fixture");

@@ -8,18 +8,31 @@ use std::{
 
 use anyhow::{bail, Context};
 use chrono::Utc;
+use notam_state::{
+    bucket_for_id, compute_bucket_hash, compute_group_hash, compute_state_id, record_leaf_hash,
+    NotamCounters, NotamHash, NotamMutation, NotamRecord, NotamState,
+    NOTAM_MERKLE_BUCKETS_PER_GROUP, NOTAM_MERKLE_BUCKET_COUNT, NOTAM_MERKLE_GROUP_COUNT,
+};
 use rusqlite::{params, Connection, OptionalExtension, Transaction};
 use serde::{Deserialize, Serialize};
+#[cfg(test)]
+use serde_json::Value;
 
 use crate::NotamProjectionAction;
 use crate::{
     canonicalize_structured_notam_record, engine::sha256_hex, notam_projection_action,
-    structured_notam_record_from_json, validate_canonical_structured_notam_record,
-    StructuredNotamRecord,
+    published_notam_record, structured_notam_record_from_json,
+    validate_canonical_structured_notam_record, StructuredNotamRecord,
 };
 
-const NOTAM_STORE_SCHEMA_VERSION: u32 = 5;
+const NOTAM_STORE_SCHEMA_VERSION: u32 = 7;
+const LEGACY_PROJECTION_SCHEMA_VERSION: u32 = 5;
 const RAW_INGEST_CURSOR_METADATA_KEY: &str = "raw_ingest_cursor";
+const STATE_ID_METADATA_KEY: &str = "notam_state_id";
+const NOTAM_COUNT_METADATA_KEY: &str = "notam_count";
+const AIRPORT_NOTAM_COUNT_METADATA_KEY: &str = "airport_notam_count";
+const MULTIPLE_EFFECT_COUNT_METADATA_KEY: &str = "airport_notams_with_multiple_effects";
+const OTHER_EFFECT_COUNT_METADATA_KEY: &str = "airport_notams_with_other_effect";
 const RAW_INGEST_RETENTION_DAYS: i64 = 7;
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -79,6 +92,32 @@ pub struct RetriedRejectedNotamSummary {
     pub superseded_count: usize,
     pub changed_count: usize,
     pub removed_count: usize,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct NotamPublicationTransition {
+    pub journal_seq: i64,
+    pub source_first_ingest_seq: i64,
+    pub source_last_ingest_seq: i64,
+    pub observed_at_utc: String,
+    pub from_state_id: String,
+    pub to_state_id: String,
+    pub counters: NotamCounters,
+    pub mutations: Vec<NotamMutation>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct NotamPublicationCursor {
+    pub published_through_journal_seq: i64,
+    pub published_head_state_id: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct NotamPublicationSnapshot {
+    pub current_state_id: String,
+    pub counters: NotamCounters,
+    pub cursor: NotamPublicationCursor,
+    pub transitions: Vec<NotamPublicationTransition>,
 }
 
 impl NotamPersistentStore {
@@ -172,11 +211,13 @@ impl NotamPersistentStore {
         }
 
         let applied_at_utc = Utc::now().to_rfc3339();
-        let mut changed_count = 0_usize;
-        let mut removed_count = 0_usize;
         let mut rejected_count = 0_usize;
         let mut new_rejected_count = 0_usize;
         let mut last_received_at_utc = None;
+        let first_ingest_seq = rows
+            .first()
+            .map(|row| row.0)
+            .context("raw NOTAM rows unexpectedly empty")?;
         let max_ingest_seq = rows
             .last()
             .map(|row| row.0)
@@ -184,18 +225,20 @@ impl NotamPersistentStore {
         let tx = connection
             .transaction()
             .context("failed to start NOTAM raw ingest apply transaction")?;
+        let mut touched = BTreeMap::<String, Option<NotamRecord>>::new();
         for (ingest_seq, received_at_utc, message_json) in &rows {
             last_received_at_utc = Some(received_at_utc.clone());
             match structured_notam_record_from_json(message_json) {
                 Ok(Some(record)) => {
-                    let (changed, removed) = apply_record_to_projection(
+                    if !touched.contains_key(&record.id) {
+                        touched.insert(record.id.clone(), read_client_record(&tx, &record.id)?);
+                    }
+                    apply_record_to_projection(
                         &tx,
                         ProjectionTable::Current,
                         &record,
                         &applied_at_utc,
                     )?;
-                    changed_count += changed;
-                    removed_count += removed;
                     record_notam_identity_cursor(&tx, &record.id, *ingest_seq)?;
                 }
                 Ok(None) => {}
@@ -211,6 +254,15 @@ impl NotamPersistentStore {
                 }
             }
         }
+        let (changed_count, removed_count) = finalize_projection_transition(
+            &tx,
+            first_ingest_seq,
+            max_ingest_seq,
+            last_received_at_utc
+                .as_deref()
+                .unwrap_or(applied_at_utc.as_str()),
+            &touched,
+        )?;
         let max_ingest_seq_text = max_ingest_seq.to_string();
         tx.execute(
             "INSERT INTO metadata(key, value) VALUES (?1, ?2)
@@ -344,8 +396,7 @@ impl NotamPersistentStore {
         let mut resolved_count = 0_usize;
         let mut applied_count = 0_usize;
         let mut superseded_count = 0_usize;
-        let mut changed_count = 0_usize;
-        let mut removed_count = 0_usize;
+        let mut touched = BTreeMap::<String, Option<NotamRecord>>::new();
         for (ingest_seq, message_json) in &rejected_rows {
             let message_json = message_json.as_deref().with_context(|| {
                 format!("rejected NOTAM row {ingest_seq} is missing its retained raw message")
@@ -357,14 +408,18 @@ impl NotamPersistentStore {
                         if latest_ingest_seq.is_some_and(|latest| latest > *ingest_seq) {
                             superseded_count += 1;
                         } else {
-                            let (changed, removed) = apply_record_to_projection(
+                            if !touched.contains_key(&record.id) {
+                                touched.insert(
+                                    record.id.clone(),
+                                    read_client_record(&tx, &record.id)?,
+                                );
+                            }
+                            apply_record_to_projection(
                                 &tx,
                                 ProjectionTable::Current,
                                 &record,
                                 &retried_at_utc,
                             )?;
-                            changed_count += changed;
-                            removed_count += removed;
                             record_notam_identity_cursor(&tx, &record.id, *ingest_seq)?;
                             applied_count += 1;
                         }
@@ -395,6 +450,21 @@ impl NotamPersistentStore {
                 }
             }
         }
+        let source_first_ingest_seq = rejected_rows
+            .first()
+            .map(|row| row.0)
+            .context("rejected NOTAM retry rows unexpectedly empty")?;
+        let source_last_ingest_seq = rejected_rows
+            .last()
+            .map(|row| row.0)
+            .context("rejected NOTAM retry rows unexpectedly empty")?;
+        let (changed_count, removed_count) = finalize_projection_transition(
+            &tx,
+            source_first_ingest_seq,
+            source_last_ingest_seq,
+            &retried_at_utc,
+            &touched,
+        )?;
         tx.commit()
             .context("failed to commit rejected NOTAM retry transaction")?;
         self.prune_applied_raw_messages()?;
@@ -426,6 +496,265 @@ impl NotamPersistentStore {
             records.push(record);
         }
         Ok(records)
+    }
+
+    pub fn current_checkpoint(&self) -> anyhow::Result<notam_state::NotamCheckpoint> {
+        let mut connection = self.open_connection()?;
+        let tx = connection
+            .transaction()
+            .context("failed to start consistent NOTAM checkpoint read")?;
+        let state_id = read_metadata(&tx, STATE_ID_METADATA_KEY)?
+            .context("NOTAM projection is missing its current state ID")?;
+        let counters = read_projection_counters(&tx)?;
+        let records = {
+            let mut statement = tx
+                .prepare("SELECT record_json FROM notam_client_records ORDER BY id")
+                .context("failed to prepare NOTAM checkpoint query")?;
+            let rows = statement
+                .query_map([], |row| row.get::<_, String>(0))
+                .context("failed to query NOTAM checkpoint records")?
+                .collect::<Result<Vec<_>, _>>()
+                .context("failed to read NOTAM checkpoint records")?;
+            rows.into_iter()
+                .map(|json| {
+                    serde_json::from_str::<NotamRecord>(&json)
+                        .context("failed to decode NOTAM checkpoint record")
+                })
+                .collect::<anyhow::Result<Vec<_>>>()?
+        };
+        let checkpoint = notam_state::NotamCheckpoint::new(state_id, counters, records);
+        let verified = NotamState::from_checkpoint(
+            checkpoint.clone(),
+            &mut notam_state::NotamApplyWork::default(),
+        )
+        .map_err(anyhow::Error::msg)
+        .context("failed to verify NOTAM checkpoint")?;
+        if verified.state_id() != checkpoint.state_id {
+            bail!("verified NOTAM checkpoint changed state identity");
+        }
+        tx.commit()
+            .context("failed to finish consistent NOTAM checkpoint read")?;
+        Ok(checkpoint)
+    }
+
+    pub fn current_state_summary(&self) -> anyhow::Result<(String, NotamCounters)> {
+        let mut connection = self.open_connection()?;
+        let tx = connection
+            .transaction()
+            .context("failed to start consistent NOTAM summary read")?;
+        let state_id = read_metadata(&tx, STATE_ID_METADATA_KEY)?
+            .context("NOTAM projection is missing its current state ID")?;
+        let counters = read_projection_counters(&tx)?;
+        tx.commit()
+            .context("failed to finish consistent NOTAM summary read")?;
+        Ok((state_id, counters))
+    }
+
+    pub fn publication_snapshot(&self) -> anyhow::Result<NotamPublicationSnapshot> {
+        let mut connection = self.open_connection()?;
+        let tx = connection
+            .transaction()
+            .context("failed to start consistent NOTAM publication read")?;
+        let current_state_id = read_metadata(&tx, STATE_ID_METADATA_KEY)?
+            .context("NOTAM projection is missing its current state ID")?;
+        let counters = read_projection_counters(&tx)?;
+        let cursor = tx
+            .query_row(
+                "SELECT published_through_journal_seq, published_head_state_id
+                 FROM notam_publication_cursor WHERE singleton = 1",
+                [],
+                |row| {
+                    Ok(NotamPublicationCursor {
+                        published_through_journal_seq: row.get(0)?,
+                        published_head_state_id: row.get(1)?,
+                    })
+                },
+            )
+            .context("failed to read NOTAM publication cursor")?;
+        let transitions =
+            read_pending_publication_transitions(&tx, cursor.published_through_journal_seq)?;
+        if let Some(first) = transitions.first() {
+            if cursor.published_head_state_id.is_some()
+                && cursor.published_head_state_id.as_deref() != Some(&first.from_state_id)
+            {
+                bail!(
+                    "NOTAM publication cursor head {:?} does not join journal state {}",
+                    cursor.published_head_state_id,
+                    first.from_state_id
+                );
+            }
+        }
+        if let Some(last) = transitions.last() {
+            if last.to_state_id != current_state_id || last.counters != counters {
+                bail!(
+                    "NOTAM publication journal ends at {} {:?}, but projection is {} {:?}",
+                    last.to_state_id,
+                    last.counters,
+                    current_state_id,
+                    counters
+                );
+            }
+        } else if let Some(head) = cursor.published_head_state_id.as_deref() {
+            if head != current_state_id {
+                bail!(
+                    "NOTAM publication cursor is {head}, but projection is {current_state_id} with no pending journal"
+                );
+            }
+        }
+        tx.commit()
+            .context("failed to finish consistent NOTAM publication read")?;
+        Ok(NotamPublicationSnapshot {
+            current_state_id,
+            counters,
+            cursor,
+            transitions,
+        })
+    }
+
+    pub fn publication_cursor(&self) -> anyhow::Result<NotamPublicationCursor> {
+        let connection = self.open_connection()?;
+        connection
+            .query_row(
+                "SELECT published_through_journal_seq, published_head_state_id
+                 FROM notam_publication_cursor WHERE singleton = 1",
+                [],
+                |row| {
+                    Ok(NotamPublicationCursor {
+                        published_through_journal_seq: row.get(0)?,
+                        published_head_state_id: row.get(1)?,
+                    })
+                },
+            )
+            .context("failed to read NOTAM publication cursor")
+    }
+
+    #[cfg(test)]
+    pub fn set_publication_cursor_for_test(
+        &self,
+        cursor: &NotamPublicationCursor,
+    ) -> anyhow::Result<()> {
+        let connection = self.open_connection()?;
+        connection
+            .execute(
+                "UPDATE notam_publication_cursor
+                 SET published_through_journal_seq = ?1, published_head_state_id = ?2
+                 WHERE singleton = 1",
+                params![
+                    cursor.published_through_journal_seq,
+                    cursor.published_head_state_id
+                ],
+            )
+            .context("failed to set test NOTAM publication cursor")?;
+        Ok(())
+    }
+
+    pub fn pending_publication_transitions(
+        &self,
+    ) -> anyhow::Result<Vec<NotamPublicationTransition>> {
+        let connection = self.open_connection()?;
+        let cursor = connection
+            .query_row(
+                "SELECT published_through_journal_seq
+                 FROM notam_publication_cursor WHERE singleton = 1",
+                [],
+                |row| row.get::<_, i64>(0),
+            )
+            .context("failed to read NOTAM publication sequence")?;
+        read_pending_publication_transitions(&connection, cursor)
+    }
+
+    pub fn advance_publication_cursor(
+        &self,
+        journal_seq: i64,
+        expected_from_state_id: Option<&str>,
+        to_state_id: &str,
+    ) -> anyhow::Result<()> {
+        let mut connection = self.open_connection()?;
+        let tx = connection
+            .transaction()
+            .context("failed to start NOTAM publication cursor transaction")?;
+        let current = tx
+            .query_row(
+                "SELECT published_through_journal_seq, published_head_state_id
+                 FROM notam_publication_cursor WHERE singleton = 1",
+                [],
+                |row| Ok((row.get::<_, i64>(0)?, row.get::<_, Option<String>>(1)?)),
+            )
+            .context("failed to read NOTAM publication cursor for advancement")?;
+        if journal_seq < current.0 {
+            bail!(
+                "cannot move NOTAM publication cursor backward from {} to {journal_seq}",
+                current.0
+            );
+        }
+        if journal_seq == current.0 && current.1.as_deref() == Some(to_state_id) {
+            tx.commit()
+                .context("failed to finish idempotent NOTAM cursor advancement")?;
+            return Ok(());
+        }
+        if current.1.as_deref() != expected_from_state_id {
+            bail!(
+                "NOTAM publication cursor head {:?} does not match expected {:?}",
+                current.1,
+                expected_from_state_id
+            );
+        }
+        let published_at_utc = Utc::now().to_rfc3339();
+        tx.execute(
+            "UPDATE notam_publication_journal
+             SET published_at_utc = COALESCE(published_at_utc, ?1)
+             WHERE journal_seq > ?2 AND journal_seq <= ?3",
+            params![published_at_utc, current.0, journal_seq],
+        )
+        .context("failed to mark NOTAM journal rows published")?;
+        tx.execute(
+            "UPDATE notam_publication_cursor
+             SET published_through_journal_seq = ?1, published_head_state_id = ?2
+             WHERE singleton = 1",
+            params![journal_seq, to_state_id],
+        )
+        .context("failed to advance NOTAM publication cursor")?;
+        tx.commit()
+            .context("failed to commit NOTAM publication cursor")?;
+        Ok(())
+    }
+
+    pub fn prune_published_journal_before(&self, cutoff_utc: &str) -> anyhow::Result<usize> {
+        let mut connection = self.open_connection()?;
+        let tx = connection
+            .transaction()
+            .context("failed to start NOTAM journal prune transaction")?;
+        let cursor: i64 = tx
+            .query_row(
+                "SELECT published_through_journal_seq
+                 FROM notam_publication_cursor WHERE singleton = 1",
+                [],
+                |row| row.get(0),
+            )
+            .context("failed to read NOTAM publication cursor for pruning")?;
+        tx.execute(
+            "DELETE FROM notam_publication_operations
+             WHERE journal_seq IN (
+                 SELECT journal_seq FROM notam_publication_journal
+                 WHERE journal_seq <= ?1
+                   AND published_at_utc IS NOT NULL
+                   AND published_at_utc < ?2
+             )",
+            params![cursor, cutoff_utc],
+        )
+        .context("failed to prune published NOTAM journal operations")?;
+        let removed = tx
+            .execute(
+                "DELETE FROM notam_publication_journal
+                 WHERE journal_seq <= ?1
+                   AND published_at_utc IS NOT NULL
+                   AND published_at_utc < ?2",
+                params![cursor, cutoff_utc],
+            )
+            .context("failed to prune published NOTAM journal rows")?;
+        tx.commit()
+            .context("failed to commit NOTAM journal pruning")?;
+        Ok(removed)
     }
 
     pub fn current_fingerprint(&self) -> anyhow::Result<String> {
@@ -470,6 +799,101 @@ impl NotamPersistentStore {
                 ],
             )
             .context("failed to insert raw NOTAM test message")?;
+        Ok(())
+    }
+
+    #[cfg(test)]
+    pub(crate) fn bootstrap_incremental_trace_for_test(
+        &self,
+        start_ingest_seq: i64,
+        starting_records: &[(String, Option<String>, Option<String>, String, String)],
+        identity_cursors: &[(String, i64)],
+    ) -> anyhow::Result<()> {
+        self.initialize(&SwimNotamSubscriptionIdentity {
+            provider_url: "smfs://fixture.invalid:55443".to_string(),
+            queue: "fixture.queue".to_string(),
+            connection_factory: "fixture.CF".to_string(),
+            username: "fixture.user".to_string(),
+            vpn: "fixture-vpn".to_string(),
+        })?;
+        let mut connection = self.open_connection()?;
+        let tx = connection
+            .transaction()
+            .context("failed to start NOTAM trace bootstrap")?;
+        tx.execute_batch(
+            "DELETE FROM raw_notam_messages;
+             DELETE FROM rejected_notam_messages;
+             DELETE FROM notam_identity_cursors;
+             DELETE FROM current_notams;
+             DELETE FROM notam_client_records;
+             DELETE FROM notam_merkle_buckets;
+             DELETE FROM notam_merkle_groups;
+             DELETE FROM notam_publication_operations;
+             DELETE FROM notam_publication_journal;
+             DELETE FROM notam_publication_cursor;",
+        )
+        .context("failed to clear NOTAM trace bootstrap targets")?;
+        for (id, status, last_updated_utc, record_json, updated_at_utc) in starting_records {
+            tx.execute(
+                "INSERT INTO current_notams(
+                    id, status, last_updated_utc, record_json, updated_at_utc
+                 ) VALUES (?1, ?2, ?3, ?4, ?5)",
+                params![id, status, last_updated_utc, record_json, updated_at_utc],
+            )
+            .with_context(|| format!("failed to bootstrap NOTAM {id}"))?;
+        }
+        for (id, ingest_seq) in identity_cursors {
+            tx.execute(
+                "INSERT INTO notam_identity_cursors(id, ingest_seq) VALUES (?1, ?2)",
+                params![id, ingest_seq],
+            )
+            .with_context(|| format!("failed to bootstrap NOTAM identity cursor {id}"))?;
+        }
+        tx.execute(
+            "INSERT INTO metadata(key, value) VALUES ('raw_ingest_cursor', ?1)
+             ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+            [start_ingest_seq.to_string()],
+        )
+        .context("failed to bootstrap NOTAM raw ingest cursor")?;
+        tx.commit()
+            .context("failed to commit NOTAM trace bootstrap source rows")?;
+        self.migrate_incremental_schema(&mut connection)
+            .context("failed to build incremental state for NOTAM trace bootstrap")
+    }
+
+    #[cfg(test)]
+    pub(crate) fn insert_captured_raw_message_for_test(
+        &self,
+        ingest_seq: i64,
+        dedupe_key: &str,
+        received_at_utc: &str,
+        message_json: &str,
+    ) -> anyhow::Result<()> {
+        let connection = self.open_connection()?;
+        let jms_message_id = serde_json::from_str::<Value>(message_json)
+            .ok()
+            .and_then(|value| {
+                value
+                    .get("jmsMessageId")
+                    .and_then(Value::as_str)
+                    .map(str::to_string)
+            });
+        connection
+            .execute(
+                "INSERT INTO raw_notam_messages(
+                    ingest_seq, dedupe_key, jms_message_id, received_at_utc,
+                    message_json, message_sha256, committed_at_utc, applied_at_utc
+                 ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?4, NULL)",
+                params![
+                    ingest_seq,
+                    dedupe_key,
+                    jms_message_id,
+                    received_at_utc,
+                    message_json,
+                    sha256_hex(message_json.as_bytes())
+                ],
+            )
+            .with_context(|| format!("failed to insert captured raw NOTAM {ingest_seq}"))?;
         Ok(())
     }
 
@@ -551,6 +975,52 @@ impl NotamPersistentStore {
                     id TEXT PRIMARY KEY,
                     ingest_seq INTEGER NOT NULL
                 );
+                CREATE TABLE IF NOT EXISTS notam_client_records (
+                    id TEXT PRIMARY KEY,
+                    record_json TEXT NOT NULL,
+                    record_hash BLOB NOT NULL,
+                    merkle_bucket INTEGER NOT NULL
+                );
+                CREATE INDEX IF NOT EXISTS notam_client_records_bucket_idx
+                    ON notam_client_records(merkle_bucket, id);
+                CREATE TABLE IF NOT EXISTS notam_merkle_buckets (
+                    bucket INTEGER PRIMARY KEY,
+                    record_count INTEGER NOT NULL,
+                    bucket_hash BLOB NOT NULL
+                );
+                CREATE TABLE IF NOT EXISTS notam_merkle_groups (
+                    group_id INTEGER PRIMARY KEY,
+                    group_hash BLOB NOT NULL
+                );
+                CREATE TABLE IF NOT EXISTS notam_publication_journal (
+                    journal_seq INTEGER PRIMARY KEY AUTOINCREMENT,
+                    source_first_ingest_seq INTEGER NOT NULL,
+                    source_last_ingest_seq INTEGER NOT NULL,
+                    observed_at_utc TEXT NOT NULL,
+                    from_state_id TEXT NOT NULL,
+                    to_state_id TEXT NOT NULL,
+                    notam_count INTEGER NOT NULL,
+                    airport_notam_count INTEGER NOT NULL,
+                    airport_notams_with_multiple_effects INTEGER NOT NULL,
+                    airport_notams_with_other_effect INTEGER NOT NULL,
+                    mutation_count INTEGER NOT NULL,
+                    published_at_utc TEXT
+                );
+                CREATE TABLE IF NOT EXISTS notam_publication_operations (
+                    journal_seq INTEGER NOT NULL,
+                    operation_index INTEGER NOT NULL,
+                    notam_id TEXT NOT NULL,
+                    operation TEXT NOT NULL,
+                    record_json TEXT,
+                    PRIMARY KEY(journal_seq, operation_index),
+                    UNIQUE(journal_seq, notam_id),
+                    FOREIGN KEY(journal_seq) REFERENCES notam_publication_journal(journal_seq)
+                );
+                CREATE TABLE IF NOT EXISTS notam_publication_cursor (
+                    singleton INTEGER PRIMARY KEY CHECK(singleton = 1),
+                    published_through_journal_seq INTEGER NOT NULL,
+                    published_head_state_id TEXT
+                );
                 ",
             )
             .context("failed to initialize NOTAM sqlite schema")?;
@@ -568,31 +1038,173 @@ impl NotamPersistentStore {
             .optional()
             .context("failed to query NOTAM sqlite schema version")?;
         match schema_version.as_deref() {
-            None => {
-                connection
-                    .execute(
-                        "INSERT INTO metadata(key, value) VALUES ('schema_version', ?1)",
-                        [NOTAM_STORE_SCHEMA_VERSION.to_string()],
-                    )
-                    .context("failed to initialize NOTAM sqlite schema version")?;
-                Ok(())
-            }
-            Some("5") => Ok(()),
+            None => self.migrate_incremental_schema(connection),
+            Some("7") => Ok(()),
+            Some("6") => self.migrate_schema_v6_to_v7(connection),
+            Some("5") => self.migrate_incremental_schema(connection),
             Some("4") => {
                 connection
                     .execute(
                         "UPDATE metadata SET value = ?1 WHERE key = 'schema_version'",
-                        [NOTAM_STORE_SCHEMA_VERSION.to_string()],
+                        [LEGACY_PROJECTION_SCHEMA_VERSION.to_string()],
                     )
                     .context("failed to promote NOTAM sqlite schema 4")?;
-                Ok(())
+                self.migrate_incremental_schema(connection)
             }
-            Some("3") => self.reproject_schema_v3(connection),
-            Some("2") => self.reproject_schema_v2(connection),
+            Some("3") => {
+                self.reproject_schema_v3(connection)?;
+                self.migrate_incremental_schema(connection)
+            }
+            Some("2") => {
+                self.reproject_schema_v2(connection)?;
+                self.migrate_incremental_schema(connection)
+            }
             Some(version) => bail!(
                 "unsupported NOTAM sqlite schema {version}; required {NOTAM_STORE_SCHEMA_VERSION}"
             ),
         }
+    }
+
+    fn migrate_schema_v6_to_v7(&self, connection: &mut Connection) -> anyhow::Result<()> {
+        let migrated_at_utc = Utc::now().to_rfc3339();
+        let tx = connection
+            .transaction()
+            .context("failed to start NOTAM schema 6 journal migration")?;
+        tx.execute(
+            "ALTER TABLE notam_publication_journal ADD COLUMN published_at_utc TEXT",
+            [],
+        )
+        .context("failed to add NOTAM journal publication timestamp")?;
+        tx.execute(
+            "UPDATE notam_publication_journal
+             SET published_at_utc = ?1
+             WHERE journal_seq <= (
+                 SELECT published_through_journal_seq
+                 FROM notam_publication_cursor WHERE singleton = 1
+             )",
+            [migrated_at_utc],
+        )
+        .context("failed to timestamp migrated published NOTAM journal rows")?;
+        tx.execute(
+            "UPDATE metadata SET value = ?1 WHERE key = 'schema_version'",
+            [NOTAM_STORE_SCHEMA_VERSION.to_string()],
+        )
+        .context("failed to promote NOTAM sqlite schema 7")?;
+        tx.commit()
+            .context("failed to commit NOTAM schema 6 journal migration")
+    }
+
+    fn migrate_incremental_schema(&self, connection: &mut Connection) -> anyhow::Result<()> {
+        let source_rows = {
+            let mut statement = connection
+                .prepare("SELECT record_json FROM current_notams ORDER BY id")
+                .context("failed to prepare NOTAM incremental migration query")?;
+            let rows = statement
+                .query_map([], |row| row.get::<_, String>(0))
+                .context("failed to query NOTAM incremental migration rows")?
+                .collect::<Result<Vec<_>, _>>()
+                .context("failed to read NOTAM incremental migration rows")?;
+            rows
+        };
+
+        let tx = connection
+            .transaction()
+            .context("failed to start NOTAM incremental migration")?;
+        tx.execute_batch(
+            "DELETE FROM notam_client_records;
+             DELETE FROM notam_merkle_buckets;
+             DELETE FROM notam_merkle_groups;
+             DELETE FROM notam_publication_operations;
+             DELETE FROM notam_publication_journal;
+             DELETE FROM notam_publication_cursor;",
+        )
+        .context("failed to clear NOTAM incremental migration targets")?;
+
+        let mut state = NotamState::empty();
+        let mut work = Default::default();
+        let mut bucket_members = (0..NOTAM_MERKLE_BUCKET_COUNT)
+            .map(|_| BTreeMap::<String, NotamHash>::new())
+            .collect::<Vec<_>>();
+        for record_json in source_rows {
+            let structured = serde_json::from_str::<StructuredNotamRecord>(&record_json)
+                .context("failed to decode NOTAM incremental migration record")?;
+            let record = published_notam_record(&structured);
+            let client_json = serde_json::to_string(&record)
+                .with_context(|| format!("failed to encode published NOTAM {}", record.id))?;
+            let hash = record_leaf_hash(&record)
+                .map_err(anyhow::Error::msg)
+                .with_context(|| format!("failed to hash published NOTAM {}", record.id))?;
+            let bucket = bucket_for_id(&record.id);
+            tx.execute(
+                "INSERT INTO notam_client_records(id, record_json, record_hash, merkle_bucket)
+                 VALUES (?1, ?2, ?3, ?4)",
+                params![record.id, client_json, hash.as_slice(), bucket as i64],
+            )
+            .context("failed to insert NOTAM incremental migration record")?;
+            bucket_members[bucket].insert(record.id.clone(), hash);
+            state
+                .apply_mutation(NotamMutation::Upsert { record }, &mut work)
+                .map_err(anyhow::Error::msg)
+                .context("failed to build NOTAM incremental migration state")?;
+        }
+
+        let bucket_hashes = bucket_members
+            .iter()
+            .enumerate()
+            .map(|(bucket, members)| {
+                compute_bucket_hash(bucket, members.iter().map(|(id, hash)| (id.as_str(), hash)))
+            })
+            .collect::<Vec<_>>();
+        for (bucket, hash) in bucket_hashes.iter().enumerate() {
+            tx.execute(
+                "INSERT INTO notam_merkle_buckets(bucket, record_count, bucket_hash)
+                 VALUES (?1, ?2, ?3)",
+                params![
+                    bucket as i64,
+                    bucket_members[bucket].len() as i64,
+                    hash.as_slice()
+                ],
+            )
+            .context("failed to insert NOTAM Merkle migration bucket")?;
+        }
+        let mut group_hashes = Vec::with_capacity(NOTAM_MERKLE_GROUP_COUNT);
+        for group in 0..NOTAM_MERKLE_GROUP_COUNT {
+            let hash = compute_group_hash(group, &bucket_hashes)
+                .map_err(anyhow::Error::msg)
+                .context("failed to compute NOTAM Merkle migration group")?;
+            tx.execute(
+                "INSERT INTO notam_merkle_groups(group_id, group_hash) VALUES (?1, ?2)",
+                params![group as i64, hash.as_slice()],
+            )
+            .context("failed to insert NOTAM Merkle migration group")?;
+            group_hashes.push(hash);
+        }
+        let state_id = compute_state_id(&group_hashes, state.counters())
+            .map_err(anyhow::Error::msg)
+            .context("failed to compute NOTAM incremental migration root")?;
+        if state_id != state.state_id() {
+            bail!(
+                "NOTAM incremental migration root mismatch: SQL {state_id}, shared state {}",
+                state.state_id()
+            );
+        }
+        write_projection_metadata(&tx, &state_id, state.counters())?;
+        tx.execute(
+            "INSERT INTO notam_publication_cursor(
+                singleton, published_through_journal_seq, published_head_state_id
+             ) VALUES (1, 0, NULL)",
+            [],
+        )
+        .context("failed to initialize NOTAM publication cursor")?;
+        tx.execute(
+            "INSERT INTO metadata(key, value) VALUES ('schema_version', ?1)
+             ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+            [NOTAM_STORE_SCHEMA_VERSION.to_string()],
+        )
+        .context("failed to promote NOTAM incremental schema")?;
+        tx.commit()
+            .context("failed to commit NOTAM incremental migration")?;
+        Ok(())
     }
 
     fn reproject_schema_v2(&self, connection: &mut Connection) -> anyhow::Result<()> {
@@ -667,7 +1279,7 @@ impl NotamPersistentStore {
         .context("failed to mark reprojected NOTAM rows applied")?;
         tx.execute(
             "UPDATE metadata SET value = ?1 WHERE key = 'schema_version'",
-            [NOTAM_STORE_SCHEMA_VERSION.to_string()],
+            [LEGACY_PROJECTION_SCHEMA_VERSION.to_string()],
         )
         .context("failed to promote NOTAM sqlite schema version")?;
         tx.execute_batch(
@@ -722,7 +1334,7 @@ impl NotamPersistentStore {
         }
         tx.execute(
             "UPDATE metadata SET value = ?1 WHERE key = 'schema_version'",
-            [NOTAM_STORE_SCHEMA_VERSION.to_string()],
+            [LEGACY_PROJECTION_SCHEMA_VERSION.to_string()],
         )
         .context("failed to promote NOTAM sqlite schema version")?;
         tx.execute_batch(
@@ -779,7 +1391,7 @@ impl NotamPersistentStore {
     }
 }
 
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, PartialEq, Eq)]
 enum ProjectionTable {
     Current,
     SchemaV4,
@@ -866,6 +1478,13 @@ fn apply_record_to_projection(
             let removed = tx
                 .execute(&sql, [&record.id])
                 .with_context(|| format!("failed to delete NOTAM {}", record.id))?;
+            if table == ProjectionTable::Current.name() {
+                tx.execute(
+                    "DELETE FROM notam_client_records WHERE id = ?1",
+                    [&record.id],
+                )
+                .with_context(|| format!("failed to delete published NOTAM {}", record.id))?;
+            }
             return Ok((0, removed));
         }
         NotamProjectionAction::Upsert => {}
@@ -901,10 +1520,492 @@ fn apply_record_to_projection(
         ],
     )
     .with_context(|| format!("failed to upsert NOTAM {}", record.id))?;
+    if table == ProjectionTable::Current.name() {
+        let client_record = published_notam_record(record);
+        let client_json = serde_json::to_string(&client_record)
+            .with_context(|| format!("failed to encode published NOTAM {}", record.id))?;
+        let hash = record_leaf_hash(&client_record)
+            .map_err(anyhow::Error::msg)
+            .with_context(|| format!("failed to hash published NOTAM {}", record.id))?;
+        tx.execute(
+            "INSERT INTO notam_client_records(id, record_json, record_hash, merkle_bucket)
+             VALUES (?1, ?2, ?3, ?4)
+             ON CONFLICT(id) DO UPDATE SET
+                record_json = excluded.record_json,
+                record_hash = excluded.record_hash,
+                merkle_bucket = excluded.merkle_bucket",
+            params![
+                client_record.id,
+                client_json,
+                hash.as_slice(),
+                bucket_for_id(&record.id) as i64
+            ],
+        )
+        .with_context(|| format!("failed to upsert published NOTAM {}", record.id))?;
+    }
     Ok((
         (existing.as_deref() != Some(record_json.as_str())) as usize,
         0,
     ))
+}
+
+fn read_client_record(tx: &Transaction<'_>, id: &str) -> anyhow::Result<Option<NotamRecord>> {
+    let record_json = tx
+        .query_row(
+            "SELECT record_json FROM notam_client_records WHERE id = ?1",
+            [id],
+            |row| row.get::<_, String>(0),
+        )
+        .optional()
+        .with_context(|| format!("failed to read published NOTAM {id}"))?;
+    record_json
+        .map(|json| {
+            serde_json::from_str(&json)
+                .with_context(|| format!("failed to decode published NOTAM {id}"))
+        })
+        .transpose()
+}
+
+fn read_journal_mutations(
+    connection: &Connection,
+    journal_seq: i64,
+) -> anyhow::Result<Vec<NotamMutation>> {
+    let mut statement = connection
+        .prepare(
+            "SELECT notam_id, operation, record_json
+             FROM notam_publication_operations
+             WHERE journal_seq = ?1
+             ORDER BY operation_index",
+        )
+        .with_context(|| format!("failed to prepare NOTAM journal {journal_seq} operations"))?;
+    let rows = statement
+        .query_map([journal_seq], |row| {
+            Ok((
+                row.get::<_, String>(0)?,
+                row.get::<_, String>(1)?,
+                row.get::<_, Option<String>>(2)?,
+            ))
+        })
+        .with_context(|| format!("failed to query NOTAM journal {journal_seq} operations"))?
+        .collect::<Result<Vec<_>, _>>()
+        .with_context(|| format!("failed to read NOTAM journal {journal_seq} operations"))?;
+    rows.into_iter()
+        .map(
+            |(notam_id, operation, record_json)| match operation.as_str() {
+                "upsert" => {
+                    let json = record_json.with_context(|| {
+                        format!("NOTAM journal {journal_seq} upsert {notam_id} has no record")
+                    })?;
+                    let record = serde_json::from_str::<NotamRecord>(&json).with_context(|| {
+                        format!("failed to decode NOTAM journal {journal_seq} record {notam_id}")
+                    })?;
+                    if record.id != notam_id {
+                        bail!(
+                            "NOTAM journal {journal_seq} operation ID {notam_id} contains {}",
+                            record.id
+                        );
+                    }
+                    Ok(NotamMutation::Upsert { record })
+                }
+                "remove" => {
+                    if record_json.is_some() {
+                        bail!("NOTAM journal {journal_seq} removal {notam_id} contains a record");
+                    }
+                    Ok(NotamMutation::Remove { notam_id })
+                }
+                other => bail!(
+                    "NOTAM journal {journal_seq} operation {notam_id} has unknown kind {other}"
+                ),
+            },
+        )
+        .collect()
+}
+
+fn read_pending_publication_transitions(
+    connection: &Connection,
+    cursor: i64,
+) -> anyhow::Result<Vec<NotamPublicationTransition>> {
+    let parents = {
+        let mut statement = connection
+            .prepare(
+                "SELECT journal_seq, source_first_ingest_seq, source_last_ingest_seq,
+                        observed_at_utc, from_state_id, to_state_id, notam_count,
+                        airport_notam_count, airport_notams_with_multiple_effects,
+                        airport_notams_with_other_effect, mutation_count
+                 FROM notam_publication_journal
+                 WHERE journal_seq > ?1
+                 ORDER BY journal_seq",
+            )
+            .context("failed to prepare pending NOTAM publication query")?;
+        let rows = statement
+            .query_map([cursor], |row| {
+                Ok((
+                    row.get::<_, i64>(0)?,
+                    row.get::<_, i64>(1)?,
+                    row.get::<_, i64>(2)?,
+                    row.get::<_, String>(3)?,
+                    row.get::<_, String>(4)?,
+                    row.get::<_, String>(5)?,
+                    NotamCounters {
+                        notam_count: row.get::<_, i64>(6)? as u64,
+                        airport_notam_count: row.get::<_, i64>(7)? as u64,
+                        airport_notams_with_multiple_effects: row.get::<_, i64>(8)? as u64,
+                        airport_notams_with_other_effect: row.get::<_, i64>(9)? as u64,
+                    },
+                    row.get::<_, i64>(10)? as usize,
+                ))
+            })
+            .context("failed to query pending NOTAM publications")?
+            .collect::<Result<Vec<_>, _>>()
+            .context("failed to read pending NOTAM publications")?;
+        rows
+    };
+    let mut transitions = Vec::with_capacity(parents.len());
+    for (
+        journal_seq,
+        source_first_ingest_seq,
+        source_last_ingest_seq,
+        observed_at_utc,
+        from_state_id,
+        to_state_id,
+        counters,
+        expected_mutation_count,
+    ) in parents
+    {
+        let mutations = read_journal_mutations(connection, journal_seq)?;
+        if mutations.len() != expected_mutation_count {
+            bail!(
+                "NOTAM journal {journal_seq} has {} operations; expected {expected_mutation_count}",
+                mutations.len()
+            );
+        }
+        notam_state::validate_mutation_order(&mutations)
+            .map_err(anyhow::Error::msg)
+            .with_context(|| format!("invalid NOTAM journal {journal_seq}"))?;
+        transitions.push(NotamPublicationTransition {
+            journal_seq,
+            source_first_ingest_seq,
+            source_last_ingest_seq,
+            observed_at_utc,
+            from_state_id,
+            to_state_id,
+            counters,
+            mutations,
+        });
+    }
+    for pair in transitions.windows(2) {
+        if pair[0].to_state_id != pair[1].from_state_id {
+            bail!(
+                "NOTAM publication journal does not form one chain at {} -> {}",
+                pair[0].journal_seq,
+                pair[1].journal_seq
+            );
+        }
+    }
+    Ok(transitions)
+}
+
+fn finalize_projection_transition(
+    tx: &Transaction<'_>,
+    source_first_ingest_seq: i64,
+    source_last_ingest_seq: i64,
+    observed_at_utc: &str,
+    touched: &BTreeMap<String, Option<NotamRecord>>,
+) -> anyhow::Result<(usize, usize)> {
+    let mut mutations = BTreeMap::<String, NotamMutation>::new();
+    let mut counters = read_projection_counters(tx)?;
+    let mut affected_buckets = std::collections::BTreeSet::new();
+    for (id, old_record) in touched {
+        let new_record = read_client_record(tx, id)?;
+        if old_record == &new_record {
+            continue;
+        }
+        if let Some(record) = old_record {
+            subtract_counter_contribution(&mut counters, record)?;
+            affected_buckets.insert(bucket_for_id(&record.id));
+        }
+        let mutation = if let Some(record) = new_record {
+            add_counter_contribution(&mut counters, &record);
+            affected_buckets.insert(bucket_for_id(&record.id));
+            NotamMutation::Upsert { record }
+        } else {
+            NotamMutation::Remove {
+                notam_id: id.clone(),
+            }
+        };
+        mutations.insert(id.clone(), mutation);
+    }
+    if mutations.is_empty() {
+        return Ok((0, 0));
+    }
+
+    let from_state_id = read_metadata(tx, STATE_ID_METADATA_KEY)?
+        .context("NOTAM projection is missing its current state ID")?;
+    for bucket in &affected_buckets {
+        let members = {
+            let mut statement = tx
+                .prepare(
+                    "SELECT id, record_hash
+                     FROM notam_client_records
+                     WHERE merkle_bucket = ?1
+                     ORDER BY id",
+                )
+                .context("failed to prepare affected NOTAM bucket query")?;
+            let rows = statement
+                .query_map([*bucket as i64], |row| {
+                    Ok((row.get::<_, String>(0)?, row.get::<_, Vec<u8>>(1)?))
+                })
+                .context("failed to query affected NOTAM bucket")?
+                .collect::<Result<Vec<_>, _>>()
+                .context("failed to read affected NOTAM bucket")?;
+            rows
+        };
+        let members = members
+            .into_iter()
+            .map(|(id, hash)| Ok((id, decode_hash(&hash)?)))
+            .collect::<anyhow::Result<Vec<_>>>()?;
+        let bucket_hash = compute_bucket_hash(
+            *bucket,
+            members.iter().map(|(id, hash)| (id.as_str(), hash)),
+        );
+        tx.execute(
+            "UPDATE notam_merkle_buckets
+             SET record_count = ?1, bucket_hash = ?2
+             WHERE bucket = ?3",
+            params![members.len() as i64, bucket_hash.as_slice(), *bucket as i64],
+        )
+        .with_context(|| format!("failed to update NOTAM Merkle bucket {bucket}"))?;
+    }
+
+    let bucket_hashes = read_ordered_hashes(
+        tx,
+        "SELECT bucket_hash FROM notam_merkle_buckets ORDER BY bucket",
+        NOTAM_MERKLE_BUCKET_COUNT,
+        "NOTAM Merkle buckets",
+    )?;
+    let affected_groups = affected_buckets
+        .iter()
+        .map(|bucket| bucket / NOTAM_MERKLE_BUCKETS_PER_GROUP)
+        .collect::<std::collections::BTreeSet<_>>();
+    for group in affected_groups {
+        let group_hash = compute_group_hash(group, &bucket_hashes)
+            .map_err(anyhow::Error::msg)
+            .with_context(|| format!("failed to compute NOTAM Merkle group {group}"))?;
+        tx.execute(
+            "UPDATE notam_merkle_groups SET group_hash = ?1 WHERE group_id = ?2",
+            params![group_hash.as_slice(), group as i64],
+        )
+        .with_context(|| format!("failed to update NOTAM Merkle group {group}"))?;
+    }
+    let group_hashes = read_ordered_hashes(
+        tx,
+        "SELECT group_hash FROM notam_merkle_groups ORDER BY group_id",
+        NOTAM_MERKLE_GROUP_COUNT,
+        "NOTAM Merkle groups",
+    )?;
+    let to_state_id = compute_state_id(&group_hashes, counters)
+        .map_err(anyhow::Error::msg)
+        .context("failed to compute NOTAM projection state ID")?;
+    if to_state_id == from_state_id {
+        bail!("NOTAM mutations did not change the state ID");
+    }
+
+    let changed_count = mutations
+        .values()
+        .filter(|mutation| matches!(mutation, NotamMutation::Upsert { .. }))
+        .count();
+    let removed_count = mutations.len() - changed_count;
+    tx.execute(
+        "INSERT INTO notam_publication_journal(
+            source_first_ingest_seq,
+            source_last_ingest_seq,
+            observed_at_utc,
+            from_state_id,
+            to_state_id,
+            notam_count,
+            airport_notam_count,
+            airport_notams_with_multiple_effects,
+            airport_notams_with_other_effect,
+            mutation_count
+         ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
+        params![
+            source_first_ingest_seq,
+            source_last_ingest_seq,
+            observed_at_utc,
+            from_state_id,
+            to_state_id,
+            counters.notam_count as i64,
+            counters.airport_notam_count as i64,
+            counters.airport_notams_with_multiple_effects as i64,
+            counters.airport_notams_with_other_effect as i64,
+            mutations.len() as i64,
+        ],
+    )
+    .context("failed to append NOTAM publication journal transition")?;
+    let journal_seq = tx.last_insert_rowid();
+    for (operation_index, mutation) in mutations.into_values().enumerate() {
+        let (id, operation, record_json) = match mutation {
+            NotamMutation::Upsert { record } => {
+                let json = serde_json::to_string(&record)
+                    .with_context(|| format!("failed to journal published NOTAM {}", record.id))?;
+                (record.id, "upsert", Some(json))
+            }
+            NotamMutation::Remove { notam_id } => (notam_id, "remove", None),
+        };
+        tx.execute(
+            "INSERT INTO notam_publication_operations(
+                journal_seq, operation_index, notam_id, operation, record_json
+             ) VALUES (?1, ?2, ?3, ?4, ?5)",
+            params![
+                journal_seq,
+                operation_index as i64,
+                id,
+                operation,
+                record_json
+            ],
+        )
+        .context("failed to append NOTAM publication operation")?;
+    }
+    write_projection_metadata(tx, &to_state_id, counters)?;
+    Ok((changed_count, removed_count))
+}
+
+fn read_projection_counters(tx: &Transaction<'_>) -> anyhow::Result<NotamCounters> {
+    Ok(NotamCounters {
+        notam_count: read_metadata_u64(tx, NOTAM_COUNT_METADATA_KEY)?,
+        airport_notam_count: read_metadata_u64(tx, AIRPORT_NOTAM_COUNT_METADATA_KEY)?,
+        airport_notams_with_multiple_effects: read_metadata_u64(
+            tx,
+            MULTIPLE_EFFECT_COUNT_METADATA_KEY,
+        )?,
+        airport_notams_with_other_effect: read_metadata_u64(tx, OTHER_EFFECT_COUNT_METADATA_KEY)?,
+    })
+}
+
+fn write_projection_metadata(
+    tx: &Transaction<'_>,
+    state_id: &str,
+    counters: NotamCounters,
+) -> anyhow::Result<()> {
+    for (key, value) in [
+        (STATE_ID_METADATA_KEY, state_id.to_string()),
+        (NOTAM_COUNT_METADATA_KEY, counters.notam_count.to_string()),
+        (
+            AIRPORT_NOTAM_COUNT_METADATA_KEY,
+            counters.airport_notam_count.to_string(),
+        ),
+        (
+            MULTIPLE_EFFECT_COUNT_METADATA_KEY,
+            counters.airport_notams_with_multiple_effects.to_string(),
+        ),
+        (
+            OTHER_EFFECT_COUNT_METADATA_KEY,
+            counters.airport_notams_with_other_effect.to_string(),
+        ),
+    ] {
+        tx.execute(
+            "INSERT INTO metadata(key, value) VALUES (?1, ?2)
+             ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+            params![key, value],
+        )
+        .with_context(|| format!("failed to write NOTAM metadata {key}"))?;
+    }
+    Ok(())
+}
+
+fn read_metadata(tx: &Transaction<'_>, key: &str) -> anyhow::Result<Option<String>> {
+    tx.query_row("SELECT value FROM metadata WHERE key = ?1", [key], |row| {
+        row.get(0)
+    })
+    .optional()
+    .with_context(|| format!("failed to read NOTAM metadata {key}"))
+}
+
+fn read_metadata_u64(tx: &Transaction<'_>, key: &str) -> anyhow::Result<u64> {
+    read_metadata(tx, key)?
+        .with_context(|| format!("NOTAM projection is missing metadata {key}"))?
+        .parse()
+        .with_context(|| format!("failed to parse NOTAM metadata {key}"))
+}
+
+fn read_ordered_hashes(
+    tx: &Transaction<'_>,
+    sql: &str,
+    expected_count: usize,
+    label: &str,
+) -> anyhow::Result<Vec<NotamHash>> {
+    let mut statement = tx
+        .prepare(sql)
+        .with_context(|| format!("failed to prepare {label} query"))?;
+    let rows = statement
+        .query_map([], |row| row.get::<_, Vec<u8>>(0))
+        .with_context(|| format!("failed to query {label}"))?
+        .collect::<Result<Vec<_>, _>>()
+        .with_context(|| format!("failed to read {label}"))?;
+    if rows.len() != expected_count {
+        bail!("{label} has {} rows; expected {expected_count}", rows.len());
+    }
+    rows.iter().map(|row| decode_hash(row)).collect()
+}
+
+fn decode_hash(bytes: &[u8]) -> anyhow::Result<NotamHash> {
+    bytes
+        .try_into()
+        .map_err(|_| anyhow::anyhow!("NOTAM Merkle hash has {} bytes; expected 32", bytes.len()))
+}
+
+fn counter_contribution(record: &NotamRecord) -> NotamCounters {
+    let airport = record
+        .airport_id
+        .as_deref()
+        .map(str::trim)
+        .is_some_and(|value| !value.is_empty());
+    NotamCounters {
+        notam_count: 1,
+        airport_notam_count: u64::from(airport),
+        airport_notams_with_multiple_effects: u64::from(
+            airport && record.airport_effects.len() > 1,
+        ),
+        airport_notams_with_other_effect: u64::from(
+            airport
+                && record
+                    .airport_effects
+                    .contains(&product_contracts::AirportNotamEffect::Other),
+        ),
+    }
+}
+
+fn add_counter_contribution(counters: &mut NotamCounters, record: &NotamRecord) {
+    let contribution = counter_contribution(record);
+    counters.notam_count += contribution.notam_count;
+    counters.airport_notam_count += contribution.airport_notam_count;
+    counters.airport_notams_with_multiple_effects +=
+        contribution.airport_notams_with_multiple_effects;
+    counters.airport_notams_with_other_effect += contribution.airport_notams_with_other_effect;
+}
+
+fn subtract_counter_contribution(
+    counters: &mut NotamCounters,
+    record: &NotamRecord,
+) -> anyhow::Result<()> {
+    let contribution = counter_contribution(record);
+    counters.notam_count = counters
+        .notam_count
+        .checked_sub(contribution.notam_count)
+        .context("NOTAM count underflow")?;
+    counters.airport_notam_count = counters
+        .airport_notam_count
+        .checked_sub(contribution.airport_notam_count)
+        .context("airport NOTAM count underflow")?;
+    counters.airport_notams_with_multiple_effects = counters
+        .airport_notams_with_multiple_effects
+        .checked_sub(contribution.airport_notams_with_multiple_effects)
+        .context("multiple-effect NOTAM count underflow")?;
+    counters.airport_notams_with_other_effect = counters
+        .airport_notams_with_other_effect
+        .checked_sub(contribution.airport_notams_with_other_effect)
+        .context("other-effect NOTAM count underflow")?;
+    Ok(())
 }
 
 impl Drop for NotamStoreLock {
@@ -1024,6 +2125,107 @@ mod tests {
         assert_eq!(records[0].notam_function.as_deref(), Some("NOTAMN"));
         assert_eq!(records[0].airport_id.as_deref(), Some("KAAA"));
         assert!(store.apply_pending_raw_messages(10)?.is_none());
+        Ok(())
+    }
+
+    #[test]
+    fn projection_journal_replays_exactly_through_shared_state() -> anyhow::Result<()> {
+        let temp = tempdir()?;
+        let store = NotamPersistentStore::new(temp.path());
+        store.initialize(&identity("queue-a"))?;
+        let initial = store.current_checkpoint()?;
+
+        store.insert_raw_message_for_test(
+            "message-a",
+            "2026-07-11T02:03:00Z",
+            &captured_notam_line("PUBLISHED"),
+        )?;
+        store.apply_pending_raw_messages(10)?;
+        store.insert_raw_message_for_test(
+            "message-b",
+            "2026-07-11T02:04:00Z",
+            &captured_notam_line("CANCELLED"),
+        )?;
+        store.apply_pending_raw_messages(10)?;
+
+        let transitions = store.pending_publication_transitions()?;
+        assert_eq!(transitions.len(), 2);
+        assert_eq!(transitions[0].mutations.len(), 1);
+        assert!(matches!(
+            transitions[0].mutations[0],
+            NotamMutation::Upsert { .. }
+        ));
+        assert!(matches!(
+            transitions[1].mutations[0],
+            NotamMutation::Remove { .. }
+        ));
+        assert_eq!(transitions[0].to_state_id, transitions[1].from_state_id);
+
+        let mut replayed =
+            NotamState::from_checkpoint(initial, &mut notam_state::NotamApplyWork::default())
+                .map_err(anyhow::Error::msg)?;
+        for transition in &transitions {
+            replayed
+                .apply_delta(
+                    notam_state::NotamDelta::new(
+                        transition.from_state_id.clone(),
+                        transition.to_state_id.clone(),
+                        transition.counters,
+                        transition.mutations.clone(),
+                    ),
+                    &mut notam_state::NotamApplyWork::default(),
+                )
+                .map_err(anyhow::Error::msg)?;
+        }
+        let current = store.current_checkpoint()?;
+        assert_eq!(replayed.state_id(), current.state_id);
+        assert_eq!(replayed.counters(), current.counters);
+        assert_eq!(
+            replayed
+                .canonical_records()
+                .map(|(_, record)| record.clone())
+                .collect::<Vec<_>>(),
+            current.records
+        );
+
+        store.advance_publication_cursor(
+            transitions[1].journal_seq,
+            None,
+            &transitions[1].to_state_id,
+        )?;
+        assert!(store.pending_publication_transitions()?.is_empty());
+        assert_eq!(
+            store.publication_cursor()?.published_head_state_id,
+            Some(transitions[1].to_state_id.clone())
+        );
+        store.insert_raw_message_for_test(
+            "message-c",
+            "2026-07-11T02:05:00Z",
+            &captured_notam_line("PUBLISHED"),
+        )?;
+        store.apply_pending_raw_messages(10)?;
+        assert_eq!(
+            store.prune_published_journal_before("9999-01-01T00:00:00Z")?,
+            2
+        );
+        assert_eq!(store.pending_publication_transitions()?.len(), 1);
+        let connection = Connection::open(store.sqlite_path())?;
+        assert_eq!(
+            connection.query_row(
+                "SELECT COUNT(*) FROM notam_publication_journal",
+                [],
+                |row| { row.get::<_, i64>(0) }
+            )?,
+            1
+        );
+        assert_eq!(
+            connection.query_row(
+                "SELECT COUNT(*) FROM notam_publication_operations",
+                [],
+                |row| row.get::<_, i64>(0)
+            )?,
+            1
+        );
         Ok(())
     }
 
@@ -1430,7 +2632,7 @@ mod tests {
                 [],
                 |row| row.get::<_, String>(0),
             )?,
-            "5"
+            NOTAM_STORE_SCHEMA_VERSION.to_string()
         );
         for table in ["rejected_notam_messages", "notam_identity_cursors"] {
             assert_eq!(
@@ -1442,6 +2644,56 @@ mod tests {
                 1
             );
         }
+        Ok(())
+    }
+
+    #[test]
+    fn schema_v6_journal_migration_preserves_cursor_and_transitions() -> anyhow::Result<()> {
+        let temp = tempdir()?;
+        let store = NotamPersistentStore::new(temp.path());
+        store.initialize(&identity("queue-a"))?;
+        store.insert_raw_message_for_test(
+            "message-a",
+            "2026-07-11T02:03:00Z",
+            &captured_notam_line("PUBLISHED"),
+        )?;
+        store.apply_pending_raw_messages(10)?;
+        let transition = store.pending_publication_transitions()?.remove(0);
+        store.advance_publication_cursor(transition.journal_seq, None, &transition.to_state_id)?;
+
+        let connection = Connection::open(store.sqlite_path())?;
+        connection.execute(
+            "UPDATE metadata SET value = '6' WHERE key = 'schema_version'",
+            [],
+        )?;
+        connection.execute(
+            "ALTER TABLE notam_publication_journal DROP COLUMN published_at_utc",
+            [],
+        )?;
+        drop(connection);
+
+        store.initialize(&identity("queue-a"))?;
+
+        assert_eq!(
+            store.publication_cursor()?.published_head_state_id,
+            Some(transition.to_state_id)
+        );
+        let connection = Connection::open(store.sqlite_path())?;
+        assert_eq!(
+            connection.query_row(
+                "SELECT value FROM metadata WHERE key = 'schema_version'",
+                [],
+                |row| row.get::<_, String>(0),
+            )?,
+            NOTAM_STORE_SCHEMA_VERSION.to_string()
+        );
+        assert!(connection
+            .query_row(
+                "SELECT published_at_utc FROM notam_publication_journal",
+                [],
+                |row| row.get::<_, Option<String>>(0),
+            )?
+            .is_some());
         Ok(())
     }
 
@@ -1507,7 +2759,7 @@ mod tests {
                 [],
                 |row| row.get::<_, String>(0),
             )?,
-            "5"
+            NOTAM_STORE_SCHEMA_VERSION.to_string()
         );
         assert_eq!(raw_ingest_cursor(&connection)?, 2);
         Ok(())
@@ -1559,7 +2811,7 @@ mod tests {
                 [],
                 |row| row.get::<_, String>(0),
             )?,
-            "5"
+            NOTAM_STORE_SCHEMA_VERSION.to_string()
         );
         Ok(())
     }

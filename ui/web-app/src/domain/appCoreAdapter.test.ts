@@ -117,6 +117,7 @@ describe("loadBestAvailableAdapter", () => {
       accept_disclaimer_in_session: async () => snapshotJson,
       set_resource_policy_in_session: async () => snapshotJson,
       configure_platform_capabilities_in_session: async () => snapshotJson,
+      should_prepare_live_feed_resource: () => true,
       load_raster_map_catalog_in_session: async () => JSON.stringify({ state: "complete", result: JSON.parse(snapshotJson) }),
       select_map_family_in_session: async () => snapshotJson,
       select_raster_map_in_session: async () => snapshotJson,
@@ -169,7 +170,7 @@ describe("loadBestAvailableAdapter", () => {
       core_had_operation: async () => JSON.stringify({ state: "complete", result: null }),
       sync_live_feeds_in_session: async () => JSON.stringify({ state: "complete", result: { products: [] } }),
       configure_live_feed_source_in_session: async () => {},
-      live_feed_events_url: async (sourceRootUrl: string) => `${sourceRootUrl}/live-feeds/v2/events`,
+      live_feed_events_url: async (sourceRootUrl: string) => `${sourceRootUrl}/live-feeds/v3/events`,
       live_feed_status_url: async (sourceRootUrl: string) => `${sourceRootUrl}/live-feeds/status.html`,
       refresh_live_feed_current_in_session: async () => JSON.stringify({ state: "complete", result: { products: [] } }),
       live_feed_runtime_decision_in_session: async (_handle: number, inputJson: string) => {
@@ -219,26 +220,26 @@ describe("resolveLiveFeedSourceUrl", () => {
 describe("resolveLiveFeedResourceUrl", () => {
   it("resolves core-relative live-feed resources against the configured live-feed origin", () => {
     expect(resolveLiveFeedResourceUrl(
-      "/live-feeds/v2/states/nexrad/state-v1/tiles/res0/1/1.png",
+      "/live-feeds/v3/states/nexrad/state-v1/tiles/res0/1/1.png",
       " http://feeds.example.test:18080/// ",
       { location: { origin: "http://app.example.test" } },
-    )).toBe("http://feeds.example.test:18080/live-feeds/v2/states/nexrad/state-v1/tiles/res0/1/1.png");
+    )).toBe("http://feeds.example.test:18080/live-feeds/v3/states/nexrad/state-v1/tiles/res0/1/1.png");
   });
 
   it("resolves core-relative live-feed resources against same origin when no feed origin is configured", () => {
     expect(resolveLiveFeedResourceUrl(
-      "/live-feeds/v2/states/nexrad/state-v1/tiles/res0/1/1.png",
+      "/live-feeds/v3/states/nexrad/state-v1/tiles/res0/1/1.png",
       null,
       { location: { origin: "http://app.example.test" } },
-    )).toBe("http://app.example.test/live-feeds/v2/states/nexrad/state-v1/tiles/res0/1/1.png");
+    )).toBe("http://app.example.test/live-feeds/v3/states/nexrad/state-v1/tiles/res0/1/1.png");
   });
 
   it("leaves absolute and non-live-feed resource URLs unchanged", () => {
     expect(resolveLiveFeedResourceUrl(
-      "https://cdn.example.test/live-feeds/v2/states/nexrad/state-v1/tiles/res0/1/1.png",
+      "https://cdn.example.test/live-feeds/v3/states/nexrad/state-v1/tiles/res0/1/1.png",
       "http://feeds.example.test",
       { location: { origin: "http://app.example.test" } },
-    )).toBe("https://cdn.example.test/live-feeds/v2/states/nexrad/state-v1/tiles/res0/1/1.png");
+    )).toBe("https://cdn.example.test/live-feeds/v3/states/nexrad/state-v1/tiles/res0/1/1.png");
     expect(resolveLiveFeedResourceUrl(
       "/packages/cycle/manifest.json",
       "http://feeds.example.test",
@@ -318,7 +319,7 @@ describe("createLiveFeedSubscription", () => {
 
     const runtimeEvents: string[] = [];
     const subscription = createLiveFeedSubscription(
-      () => "https://feeds.example.test/live-feeds/v2/events",
+      () => "https://feeds.example.test/live-feeds/v3/events",
       async (input) => {
         runtimeEvents.push(input.kind);
         return {
@@ -362,7 +363,7 @@ describe("createLiveFeedSubscription", () => {
     delete global.__aerobagLiveFeedE2eState;
 
     const subscription = createLiveFeedSubscription(
-      () => "https://feeds.example.test/live-feeds/v2/events",
+      () => "https://feeds.example.test/live-feeds/v3/events",
       async (input) => ({
         reconnect_delay_ms: input.kind === "online" ? 0 : null,
         refresh_current: input.kind === "online",

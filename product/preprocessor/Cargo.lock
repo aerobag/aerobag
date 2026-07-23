@@ -52,6 +52,7 @@ dependencies = [
  "had-key",
  "had-nav-kv",
  "nav-kv-package",
+ "notam-state",
  "postcard",
  "procedure-geometry-types",
  "product-contracts",
@@ -792,6 +793,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "notam-state"
+version = "0.1.0"
+dependencies = [
+ "product-contracts",
+ "serde",
+ "serde_json",
+ "sha2",
+]
+
+[[package]]
 name = "num-traits"
 version = "0.2.19"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -944,11 +955,13 @@ name = "preprocessor-live-feeds"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "app-core",
  "chrono",
  "had-nav-kv",
  "image",
  "libc",
  "nav-kv-package",
+ "notam-state",
  "preprocessor-core",
  "preprocessor-fetch",
  "preprocessor-vectors",

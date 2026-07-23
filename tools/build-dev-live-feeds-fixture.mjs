@@ -375,7 +375,7 @@ function publishDirectoryStateSequence(root, product, states) {
     const stateBytes = fs.readFileSync(statePath);
     const stateSha256 = sha256Hex(canonicalJson(entry.manifest));
     const versionManifest = {
-      schema_version: 2,
+      schema_version: 3,
       product,
       version: entry.version,
       previous: previous?.version ?? null,
@@ -679,11 +679,11 @@ function buildMetarStationDelta(fromState, toState) {
 function setCurrentProduct(root, product, first, states = []) {
   const currentPath = path.join(root, "current.json");
   const current = readJsonIfExists(currentPath) ?? {
-    schema_version: 2,
+    schema_version: 3,
     generated_at_utc: new Date().toISOString(),
     products: {},
   };
-  current.schema_version = 2;
+  current.schema_version = 3;
   current.products ??= {};
   const entry = {
     current: first.version,
@@ -782,11 +782,11 @@ function resetCurrentToFirstFixtureVersions(root) {
   const versionsRoot = path.join(root, "versions");
   const currentPath = path.join(root, "current.json");
   const current = readJsonIfExists(currentPath) ?? {
-    schema_version: 2,
+    schema_version: 3,
     generated_at_utc: new Date().toISOString(),
     products: {},
   };
-  current.schema_version = 2;
+  current.schema_version = 3;
   current.products ??= {};
   if (!fs.existsSync(versionsRoot)) {
     fs.writeFileSync(currentPath, `${prettyJson(current)}\n`);

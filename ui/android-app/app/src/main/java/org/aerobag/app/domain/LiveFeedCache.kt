@@ -13,6 +13,9 @@ import java.io.InputStream
 import java.net.HttpURLConnection
 import java.net.SocketTimeoutException
 import java.net.URL
+import java.nio.file.Files
+import java.nio.file.StandardCopyOption.ATOMIC_MOVE
+import java.nio.file.StandardCopyOption.REPLACE_EXISTING
 import java.util.concurrent.TimeUnit
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Job
@@ -56,6 +59,20 @@ data class LiveFeedInstalledSummary(
     val stateSha256: String,
     @SerialName("payload_kind")
     val payloadKind: String,
+)
+
+@Serializable
+data class LiveFeedResourceManifest(
+    val summary: LiveFeedInstalledSummary,
+    val resources: List<LiveFeedResourceRef>,
+)
+
+@Serializable
+data class LiveFeedResourceRef(
+    val kind: String,
+    @SerialName("blob_sha256")
+    val blobSha256: String,
+    val bytes: Long,
 )
 
 @Serializable
@@ -183,6 +200,30 @@ class LiveFeedCache(
 
     fun installedPayloadBytes(product: String): ByteArray = withOpenHandle { handle ->
         bridge.liveFeedCacheInstalledPayloadBytes(handle, product)
+    }
+
+    fun resourceManifest(product: String): LiveFeedResourceManifest? = withOpenHandle { handle ->
+        json.decodeFromString(bridge.liveFeedCacheResourceManifestJson(handle, product))
+    }
+
+    fun resourceBytes(product: String, blobSha256: String): ByteArray = withOpenHandle { handle ->
+        bridge.liveFeedCacheResourceBytes(handle, product, blobSha256)
+    }
+
+    fun restoreInstalledResources(
+        manifest: LiveFeedResourceManifest,
+        readResource: (LiveFeedResourceRef) -> ByteArray,
+    ) = withOpenHandle { handle ->
+        bridge.liveFeedCacheBeginRestoringResources(handle, json.encodeToString(manifest))
+        for (resource in manifest.resources) {
+            bridge.liveFeedCacheRestoreResourceBytes(
+                handle,
+                manifest.summary.product,
+                resource.blobSha256,
+                readResource(resource),
+            )
+        }
+        bridge.liveFeedCacheFinishRestoringResources(handle, manifest.summary.product)
     }
 
     fun installProductInSessionJson(sessionHandle: Long, product: String): String = withOpenHandle { handle ->
@@ -385,11 +426,30 @@ class AndroidLiveFeedClient(
                     madeProgress = true
                     continue
                 }
-                val payloadBytes = cache.installedPayloadBytes(summary.product)
-                withContext(Dispatchers.IO) {
-                    LiveFeedCacheStore.persist(context, summary, payloadBytes)
+                val resourceManifest = cache.resourceManifest(summary.product)
+                if (resourceManifest != null) {
+                    withContext(Dispatchers.IO) {
+                        LiveFeedCacheStore.stageResources(context, resourceManifest) { resource ->
+                            cache.resourceBytes(summary.product, resource.blobSha256)
+                        }
+                    }
                 }
                 promote(summary)
+                val acknowledged = cache.installedSummary(summary.product)
+                check(acknowledged == summary) {
+                    "main core did not acknowledge ${summary.product}/${summary.version}"
+                }
+                withContext(Dispatchers.IO) {
+                    if (resourceManifest != null) {
+                        LiveFeedCacheStore.commitResourceManifest(context, resourceManifest)
+                    } else {
+                        LiveFeedCacheStore.persist(
+                            context,
+                            summary,
+                            cache.installedPayloadBytes(summary.product),
+                        )
+                    }
+                }
                 onChanged()
                 installs += 1
                 madeProgress = true
@@ -651,13 +711,84 @@ object LiveFeedCacheStore {
         bridge: NativeBridge = NativeBindings,
     ): LiveFeedCache {
         val cache = LiveFeedCache(sourceRootUrl = sourceRootUrl, bridge = bridge, json = json)
+        for (stored in listInstalledResourceManifests(context)) {
+            runCatching {
+                cache.restoreInstalledResources(stored.manifest) { resource ->
+                    stored.resourceFile(resource).readBytes()
+                }
+            }.onFailure {
+                stored.manifestFile.delete()
+            }
+        }
         for (entry in listInstalled(context)) {
             runCatching {
                 cache.ingestInstalledPayload(entry.summary, entry.payloadFile.readBytes())
+            }.onFailure {
+                entry.payloadFile.parentFile?.deleteRecursively()
             }
         }
         return cache
     }
+
+    fun stageResources(
+        context: Context,
+        manifest: LiveFeedResourceManifest,
+        readResource: (LiveFeedResourceRef) -> ByteArray,
+    ) {
+        val productDir = File(rootDir(context), safePathComponent(manifest.summary.product))
+        val resourcesDir = File(productDir, "resources")
+        resourcesDir.mkdirs()
+        for (resource in manifest.resources) {
+            require(resource.blobSha256.matches(Regex("[0-9a-f]{64}"))) {
+                "unsafe live-feed resource hash: ${resource.blobSha256}"
+            }
+            val target = File(resourcesDir, "${resource.blobSha256}.blob")
+            if (target.isFile && target.length() == resource.bytes) continue
+            val bytes = readResource(resource)
+            require(bytes.size.toLong() == resource.bytes) {
+                "live-feed resource ${resource.blobSha256} has ${bytes.size} bytes, expected ${resource.bytes}"
+            }
+            val temp = File(resourcesDir, ".${resource.blobSha256}.tmp")
+            temp.writeBytes(bytes)
+            Files.move(temp.toPath(), target.toPath(), ATOMIC_MOVE, REPLACE_EXISTING)
+        }
+    }
+
+    fun commitResourceManifest(context: Context, manifest: LiveFeedResourceManifest) {
+        val productDir = File(rootDir(context), safePathComponent(manifest.summary.product))
+        productDir.mkdirs()
+        val target = File(productDir, "installed-resources.json")
+        val temp = File(productDir, ".installed-resources.tmp")
+        temp.writeText(json.encodeToString(manifest))
+        Files.move(temp.toPath(), target.toPath(), ATOMIC_MOVE, REPLACE_EXISTING)
+        val retained = manifest.resources.mapTo(mutableSetOf()) { "${it.blobSha256}.blob" }
+        File(productDir, "resources")
+            .listFiles()
+            ?.filter { it.isFile && !it.name.startsWith(".") && it.name !in retained }
+            ?.forEach { it.delete() }
+        productDir
+            .listFiles()
+            ?.filter { it.isDirectory && it.name != "resources" }
+            ?.forEach { it.deleteRecursively() }
+    }
+
+    private fun listInstalledResourceManifests(context: Context): List<LiveFeedStoredResources> =
+        rootDir(context)
+            .takeIf { it.isDirectory }
+            ?.listFiles()
+            ?.asList()
+            .orEmpty()
+            .mapNotNull { productDir ->
+                val manifestFile = File(productDir, "installed-resources.json")
+                if (!manifestFile.isFile) return@mapNotNull null
+                runCatching {
+                    LiveFeedStoredResources(
+                        root = File(productDir, "resources"),
+                        manifest = json.decodeFromString(manifestFile.readText()),
+                        manifestFile = manifestFile,
+                    )
+                }.getOrNull()
+            }
 
     fun listInstalled(context: Context): List<LiveFeedStoredPayload> =
         rootDir(context)
@@ -682,6 +813,11 @@ object LiveFeedCacheStore {
                 }.getOrNull()
             }
             .sortedBy { "${it.summary.product}/${it.summary.version}" }
+
+    fun listInstalledSummaries(context: Context): List<LiveFeedInstalledSummary> =
+        (listInstalled(context).map { it.summary } +
+            listInstalledResourceManifests(context).map { it.manifest.summary })
+            .sortedBy { "${it.product}/${it.version}" }
 
     fun persist(
         context: Context,
@@ -726,3 +862,12 @@ data class LiveFeedStoredPayload(
     val summary: LiveFeedInstalledSummary,
     val payloadFile: File,
 )
+
+data class LiveFeedStoredResources(
+    val root: File,
+    val manifest: LiveFeedResourceManifest,
+    val manifestFile: File,
+) {
+    fun resourceFile(resource: LiveFeedResourceRef): File =
+        File(root, "${resource.blobSha256}.blob")
+}

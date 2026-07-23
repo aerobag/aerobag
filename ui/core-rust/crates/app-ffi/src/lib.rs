@@ -1523,6 +1523,89 @@ pub fn live_feed_cache_installed_payload_bytes(
         .map_err(|err| err.to_string())
 }
 
+pub fn live_feed_cache_resource_manifest_json(
+    handle: u64,
+    product: &str,
+) -> Result<String, String> {
+    let caches = live_feed_caches()
+        .lock()
+        .map_err(|_| "live feed cache store poisoned".to_string())?;
+    let cache = caches
+        .get(&(handle as u32))
+        .ok_or_else(|| format!("invalid live feed cache handle: {handle}"))?;
+    serde_json::to_string(
+        &cache
+            .resource_manifest(product)
+            .map_err(|err| err.to_string())?,
+    )
+    .map_err(|err| err.to_string())
+}
+
+pub fn live_feed_cache_resource_bytes(
+    handle: u64,
+    product: &str,
+    blob_sha256: &str,
+) -> Result<Vec<u8>, String> {
+    let caches = live_feed_caches()
+        .lock()
+        .map_err(|_| "live feed cache store poisoned".to_string())?;
+    let cache = caches
+        .get(&(handle as u32))
+        .ok_or_else(|| format!("invalid live feed cache handle: {handle}"))?;
+    cache
+        .resource_bytes(product, blob_sha256)
+        .map_err(|err| err.to_string())
+}
+
+pub fn live_feed_cache_begin_restoring_resources(
+    handle: u64,
+    manifest_json: &str,
+) -> Result<(), String> {
+    let manifest: app_core::LiveFeedResourceManifest =
+        serde_json::from_str(manifest_json).map_err(|err| err.to_string())?;
+    let mut caches = live_feed_caches()
+        .lock()
+        .map_err(|_| "live feed cache store poisoned".to_string())?;
+    let cache = caches
+        .get_mut(&(handle as u32))
+        .ok_or_else(|| format!("invalid live feed cache handle: {handle}"))?;
+    cache
+        .begin_restoring_resources(manifest)
+        .map_err(|err| err.to_string())
+}
+
+pub fn live_feed_cache_restore_resource_bytes(
+    handle: u64,
+    product: &str,
+    blob_sha256: &str,
+    bytes: &[u8],
+) -> Result<(), String> {
+    let mut caches = live_feed_caches()
+        .lock()
+        .map_err(|_| "live feed cache store poisoned".to_string())?;
+    let cache = caches
+        .get_mut(&(handle as u32))
+        .ok_or_else(|| format!("invalid live feed cache handle: {handle}"))?;
+    cache
+        .restore_resource_bytes(product, blob_sha256, bytes)
+        .map_err(|err| err.to_string())
+}
+
+pub fn live_feed_cache_finish_restoring_resources(
+    handle: u64,
+    product: &str,
+) -> Result<(), String> {
+    let mut caches = live_feed_caches()
+        .lock()
+        .map_err(|_| "live feed cache store poisoned".to_string())?;
+    let cache = caches
+        .get_mut(&(handle as u32))
+        .ok_or_else(|| format!("invalid live feed cache handle: {handle}"))?;
+    cache
+        .finish_restoring_resources(&app_core::live_feed_product_registry(), product)
+        .map_err(|err| err.to_string())
+}
+
 pub fn live_feed_cache_install_product_in_session_json(
     handle: u64,
     session_handle: u64,
@@ -1535,13 +1618,32 @@ pub fn live_feed_cache_install_product_in_session_json(
         caches
             .get(&(handle as u32))
             .ok_or_else(|| format!("invalid live feed cache handle: {handle}"))?
-            .installed(product)
-            .cloned()
-            .ok_or_else(|| format!("{product} is not installed"))?
+            .install_candidate_for_main(product)
+            .map_err(|err| err.to_string())?
     };
-    let snapshot =
-        app_core::install_live_feed_installed_state_in_session(session_handle as u32, &installed)
-            .map_err(|err| err.to_string())?;
+    let snapshot = match app_core::install_live_feed_installed_state_in_session(
+        session_handle as u32,
+        &installed,
+    ) {
+        Ok(snapshot) => {
+            live_feed_caches()
+                .lock()
+                .map_err(|_| "live feed cache store poisoned".to_string())?
+                .get_mut(&(handle as u32))
+                .ok_or_else(|| format!("invalid live feed cache handle: {handle}"))?
+                .acknowledge_install_candidate(product, &installed.version)
+                .map_err(|err| err.to_string())?;
+            snapshot
+        }
+        Err(error) => {
+            if let Ok(mut caches) = live_feed_caches().lock() {
+                if let Some(cache) = caches.get_mut(&(handle as u32)) {
+                    cache.reject_install_candidate(product);
+                }
+            }
+            return Err(error.to_string());
+        }
+    };
     serde_json::to_string(&snapshot).map_err(|err| err.to_string())
 }
 
@@ -2508,6 +2610,83 @@ pub extern "system" fn Java_org_aerobag_app_domain_NativeBindings_liveFeedCacheI
     let result = get_java_string(&mut env, product)
         .and_then(|product| live_feed_cache_installed_payload_bytes(handle as u64, &product));
     return_byte_array(&mut env, result)
+}
+
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_org_aerobag_app_domain_NativeBindings_liveFeedCacheResourceManifestJson(
+    mut env: JNIEnv,
+    _class: JClass,
+    handle: i64,
+    product: JString,
+) -> jstring {
+    let result = get_java_string(&mut env, product)
+        .and_then(|product| live_feed_cache_resource_manifest_json(handle as u64, &product));
+    return_string(&mut env, result)
+}
+
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_org_aerobag_app_domain_NativeBindings_liveFeedCacheResourceBytes(
+    mut env: JNIEnv,
+    _class: JClass,
+    handle: i64,
+    product: JString,
+    blob_sha256: JString,
+) -> jbyteArray {
+    let result = get_java_string(&mut env, product).and_then(|product| {
+        get_java_string(&mut env, blob_sha256).and_then(|blob_sha256| {
+            live_feed_cache_resource_bytes(handle as u64, &product, &blob_sha256)
+        })
+    });
+    return_byte_array(&mut env, result)
+}
+
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_org_aerobag_app_domain_NativeBindings_liveFeedCacheBeginRestoringResources(
+    mut env: JNIEnv,
+    _class: JClass,
+    handle: i64,
+    manifest_json: JString,
+) {
+    let result = get_java_string(&mut env, manifest_json).and_then(|manifest_json| {
+        live_feed_cache_begin_restoring_resources(handle as u64, &manifest_json)
+    });
+    if let Err(message) = result {
+        let _ = env.throw_new("java/lang/RuntimeException", message);
+    }
+}
+
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_org_aerobag_app_domain_NativeBindings_liveFeedCacheRestoreResourceBytes(
+    mut env: JNIEnv,
+    _class: JClass,
+    handle: i64,
+    product: JString,
+    blob_sha256: JString,
+    resource_bytes: JByteArray,
+) {
+    let result = (|| {
+        let product = get_java_string(&mut env, product)?;
+        let blob_sha256 = get_java_string(&mut env, blob_sha256)?;
+        let bytes = get_java_byte_array(&mut env, resource_bytes)?;
+        live_feed_cache_restore_resource_bytes(handle as u64, &product, &blob_sha256, &bytes)
+    })();
+    if let Err(message) = result {
+        let _ = env.throw_new("java/lang/RuntimeException", message);
+    }
+}
+
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_org_aerobag_app_domain_NativeBindings_liveFeedCacheFinishRestoringResources(
+    mut env: JNIEnv,
+    _class: JClass,
+    handle: i64,
+    product: JString,
+) {
+    let result = get_java_string(&mut env, product)
+        .and_then(|product| live_feed_cache_finish_restoring_resources(handle as u64, &product));
+    if let Err(message) = result {
+        let _ = env.throw_new("java/lang/RuntimeException", message);
+    }
 }
 
 #[unsafe(no_mangle)]

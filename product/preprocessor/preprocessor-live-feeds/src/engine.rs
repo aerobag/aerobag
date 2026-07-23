@@ -1,6 +1,7 @@
 use std::{
     collections::{BTreeMap, BTreeSet},
-    fs,
+    fs::{self, File},
+    io::Write,
     path::{Component, Path, PathBuf},
     sync::{
         mpsc::{self, Receiver, Sender, TryRecvError},
@@ -10,23 +11,29 @@ use std::{
 };
 
 use anyhow::{bail, Context};
-use chrono::{DateTime, SecondsFormat, Utc};
+use chrono::{DateTime, Duration, SecondsFormat, Utc};
 use had_nav_kv::{
     apply_nav_kv_delta, build_nav_kv_delta, nav_kv_canonical_sha256_from_pairs, NavKvDelta,
     NavKvPair, NavKvRoot,
 };
+use notam_state::{
+    NotamApplyWork, NotamCheckpoint, NotamDelta, NotamMutation, NotamState, NOTAM_PRODUCT_ID,
+};
 use preprocessor_core::xz_compress_bytes_with_system_xz;
 use preprocessor_zip::{write_deterministic_zip, ZipSource};
-use serde::{Deserialize, Serialize};
+use serde::{de::DeserializeOwned, Deserialize, Serialize};
 use serde_json::Value;
 use sha2::{Digest, Sha256};
 
-pub const LIVE_FEEDS_SCHEMA_VERSION: u32 = 2;
+use crate::notam_store::{NotamPersistentStore, NotamPublicationSnapshot};
+
+pub use product_contracts::LIVE_FEEDS_SCHEMA_VERSION;
 pub const LIVE_FEED_CURRENT_HISTORY_MAX_ENTRIES: usize = 12;
 pub const LIVE_FEED_FAILED_SCRATCH_RETAIN_COUNT: usize = 5;
 const NEXRAD_POLL_INTERVAL_SECS: u64 = 5 * 60;
 const NEXRAD_CURRENT_HISTORY_TAIL_SECS: u64 = 34 * 60;
 const LIVE_FEED_PUBLICATION_DIRS: &[&str] = &["states", "versions", "deltas", "packages"];
+const NOTAM_MAX_RETAINED_MUTATIONS: u64 = 100;
 
 pub trait Clock {
     fn now_utc(&self) -> DateTime<Utc>;
@@ -200,6 +207,9 @@ pub enum LiveFeedStatePayload {
         manifest_path: PathBuf,
         manifest_value: Value,
     },
+    NotamIncremental {
+        state_root: PathBuf,
+    },
 }
 
 #[derive(Debug, Clone)]
@@ -288,6 +298,8 @@ pub struct LiveFeedVersionManifest {
     pub install_state: Option<LivePayloadRef>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub delta_from_previous: Option<LiveDeltaRef>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub recent_deltas: Vec<LiveDeltaRef>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -300,7 +312,7 @@ pub struct LivePayloadRef {
     pub state_sha256: String,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct LiveDeltaRef {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub kind: Option<String>,
@@ -311,6 +323,8 @@ pub struct LiveDeltaRef {
     pub url: String,
     pub bytes: u64,
     pub blob_sha256: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub mutation_count: Option<u64>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -358,6 +372,24 @@ pub struct PublishedLiveFeedUpdate {
     pub delta_path: Option<PathBuf>,
     pub changed_count: usize,
     pub removed_count: usize,
+    #[doc(hidden)]
+    pub publication_ack: Option<NotamPublicationAck>,
+    #[doc(hidden)]
+    pub notam_compaction: Option<NotamCompactionRequest>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct NotamPublicationAck {
+    pub state_root: PathBuf,
+    pub journal_seq: i64,
+    pub expected_from_state_id: Option<String>,
+    pub to_state_id: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct NotamCompactionRequest {
+    pub state_root: PathBuf,
+    pub state_id: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -378,6 +410,17 @@ pub struct LiveFeedInvalidation {
 
 pub trait LiveFeedPublisher {
     fn publish(&self, built: BuiltLiveFeedState) -> anyhow::Result<PublishedLiveFeedUpdate>;
+
+    fn acknowledge(&self, _update: &PublishedLiveFeedUpdate) -> anyhow::Result<()> {
+        Ok(())
+    }
+
+    fn maintain_after_acknowledgement(
+        &self,
+        _update: &PublishedLiveFeedUpdate,
+    ) -> anyhow::Result<()> {
+        Ok(())
+    }
 }
 
 pub trait SseBroker {
@@ -618,6 +661,21 @@ where
         }
     };
     if update.unchanged {
+        if let Err(error) = publisher.acknowledge(&update) {
+            failures.push(FailedLiveFeedTask {
+                product: update.product.clone(),
+                phase: LiveFeedTaskPhase::Publish,
+                error: format!("failed to acknowledge published live feed: {error:#}"),
+            });
+            return None;
+        }
+        if let Err(error) = publisher.maintain_after_acknowledgement(&update) {
+            failures.push(FailedLiveFeedTask {
+                product: update.product.clone(),
+                phase: LiveFeedTaskPhase::Publish,
+                error: format!("failed post-publication maintenance: {error:#}"),
+            });
+        }
         return Some(update);
     }
     let invalidation = live_feed_invalidation_from_update(&update);
@@ -626,6 +684,22 @@ where
             product: update.product.clone(),
             phase: LiveFeedTaskPhase::Announce,
             error: format!("{error:#}"),
+        });
+        return None;
+    }
+    if let Err(error) = publisher.acknowledge(&update) {
+        failures.push(FailedLiveFeedTask {
+            product: update.product.clone(),
+            phase: LiveFeedTaskPhase::Publish,
+            error: format!("failed to acknowledge published live feed: {error:#}"),
+        });
+        return None;
+    }
+    if let Err(error) = publisher.maintain_after_acknowledgement(&update) {
+        failures.push(FailedLiveFeedTask {
+            product: update.product.clone(),
+            phase: LiveFeedTaskPhase::Publish,
+            error: format!("failed post-publication maintenance: {error:#}"),
         });
     }
     Some(update)
@@ -870,7 +944,41 @@ impl<C: Clock> LiveFeedPublisher for FileLiveFeedPublisher<C> {
                 precomputed_delta,
                 changed_count_if_no_delta,
             ),
+            LiveFeedStatePayload::NotamIncremental { state_root } => {
+                self.publish_notam_incremental(product, version, state_root, status_timestamps)
+            }
         }
+    }
+
+    fn acknowledge(&self, update: &PublishedLiveFeedUpdate) -> anyhow::Result<()> {
+        let Some(ack) = update.publication_ack.as_ref() else {
+            return Ok(());
+        };
+        if update.product != NOTAM_PRODUCT_ID || update.version != ack.to_state_id {
+            bail!(
+                "NOTAM publication acknowledgement does not match update {}/{}",
+                update.product,
+                update.version
+            );
+        }
+        let store = NotamPersistentStore::new(&ack.state_root);
+        store.advance_publication_cursor(
+            ack.journal_seq,
+            ack.expected_from_state_id.as_deref(),
+            &ack.to_state_id,
+        )?;
+        self.prune_notam_journal_best_effort(&store);
+        Ok(())
+    }
+
+    fn maintain_after_acknowledgement(
+        &self,
+        update: &PublishedLiveFeedUpdate,
+    ) -> anyhow::Result<()> {
+        let Some(request) = update.notam_compaction.as_ref() else {
+            return Ok(());
+        };
+        self.compact_notam_head(request)
     }
 }
 
@@ -1037,6 +1145,8 @@ impl<C: Clock> FileLiveFeedPublisher<C> {
                     delta_path: None,
                     changed_count: 0,
                     removed_count: 0,
+                    publication_ack: None,
+                    notam_compaction: None,
                 });
             }
         }
@@ -1099,6 +1209,7 @@ impl<C: Clock> FileLiveFeedPublisher<C> {
                 url: live_feeds_relative_url(&self.root, &path)?,
                 bytes: bytes.len() as u64,
                 blob_sha256: sha256_hex(&bytes),
+                mutation_count: None,
             });
             previous_version = Some(previous.current.clone());
             delta_path = Some(path);
@@ -1171,6 +1282,7 @@ impl<C: Clock> FileLiveFeedPublisher<C> {
                 url: live_feeds_relative_url(&self.root, &path)?,
                 bytes: bytes.len() as u64,
                 blob_sha256: sha256_hex(&bytes),
+                mutation_count: None,
             });
             previous_version = Some(previous.current.clone());
             delta_path = Some(path);
@@ -1217,6 +1329,7 @@ impl<C: Clock> FileLiveFeedPublisher<C> {
                 state: state_ref,
                 install_state: install_state_ref,
                 delta_from_previous: delta_ref,
+                recent_deltas: Vec::new(),
             },
         )?;
         let now = self.clock.now_utc();
@@ -1258,7 +1371,418 @@ impl<C: Clock> FileLiveFeedPublisher<C> {
             delta_path,
             changed_count,
             removed_count,
+            publication_ack: None,
+            notam_compaction: None,
         })
+    }
+
+    fn publish_notam_incremental(
+        &self,
+        product: String,
+        requested_version: String,
+        state_root: PathBuf,
+        status_timestamps: LiveFeedStatusTimestamps,
+    ) -> anyhow::Result<PublishedLiveFeedUpdate> {
+        if product != NOTAM_PRODUCT_ID {
+            bail!("incremental NOTAM payload declares product {product}");
+        }
+        let store = NotamPersistentStore::new(state_root);
+        let snapshot = store.publication_snapshot()?;
+        if requested_version != snapshot.current_state_id {
+            bail!(
+                "NOTAM build requested state {requested_version}, but projection is {}",
+                snapshot.current_state_id
+            );
+        }
+        let published_at_utc = status_timestamps.published_at_text();
+        let collected_at_utc = status_timestamps.collected_at_text();
+        let mut current =
+            read_live_feeds_current(&self.root)?.unwrap_or(LiveFeedsCurrentManifest {
+                schema_version: LIVE_FEEDS_SCHEMA_VERSION,
+                generated_at_utc: self
+                    .clock
+                    .now_utc()
+                    .to_rfc3339_opts(SecondsFormat::Secs, true),
+                products: BTreeMap::new(),
+            });
+        let previous_entry = current.products.get(NOTAM_PRODUCT_ID).cloned();
+
+        if previous_entry
+            .as_ref()
+            .is_some_and(|entry| entry.current == snapshot.current_state_id)
+        {
+            let previous = previous_entry.context("checked NOTAM current entry disappeared")?;
+            let manifest = validate_published_notam_head(&self.root, &previous, &snapshot)?;
+            let notam_compaction = (notam_mutations_after_state(
+                &manifest.state.state_sha256,
+                &manifest.recent_deltas,
+                &snapshot.current_state_id,
+            )? >= NOTAM_MAX_RETAINED_MUTATIONS)
+                .then(|| NotamCompactionRequest {
+                    state_root: store.root().to_path_buf(),
+                    state_id: snapshot.current_state_id.clone(),
+                });
+            let final_journal_seq = snapshot
+                .transitions
+                .last()
+                .map(|transition| transition.journal_seq)
+                .unwrap_or(snapshot.cursor.published_through_journal_seq);
+            let publication_ack = (snapshot.cursor.published_head_state_id.as_deref()
+                != Some(snapshot.current_state_id.as_str()))
+            .then(|| NotamPublicationAck {
+                state_root: store.root().to_path_buf(),
+                journal_seq: final_journal_seq,
+                expected_from_state_id: snapshot.cursor.published_head_state_id.clone(),
+                to_state_id: snapshot.current_state_id.clone(),
+            });
+            let now = self.clock.now_utc();
+            let history = live_feed_current_history_entries(
+                &self.root,
+                NOTAM_PRODUCT_ID,
+                &snapshot.current_state_id,
+                &self.retention,
+                now,
+            )?;
+            let next_entry = LiveFeedCurrentEntry {
+                current: previous.current.clone(),
+                version_manifest_url: previous.version_manifest_url.clone(),
+                state_url: previous.state_url.clone(),
+                state_sha256: previous.state_sha256.clone(),
+                published_at_utc: published_at_utc.clone(),
+                collected_at_utc: collected_at_utc.clone(),
+                history: history.clone(),
+            };
+            let metadata_changed = previous != next_entry;
+            if metadata_changed {
+                current.generated_at_utc = now.to_rfc3339_opts(SecondsFormat::Secs, true);
+                current
+                    .products
+                    .insert(NOTAM_PRODUCT_ID.to_string(), next_entry);
+                write_live_feeds_current_manifest(&self.root, &current)?;
+                self.prune_publication_best_effort();
+            }
+            let state_path = self.root.join(safe_relative_path(&manifest.state.url)?);
+            let delta_path = manifest
+                .delta_from_previous
+                .as_ref()
+                .map(|delta| safe_relative_path(&delta.url).map(|path| self.root.join(path)))
+                .transpose()?;
+            return Ok(PublishedLiveFeedUpdate {
+                product,
+                version: snapshot.current_state_id,
+                unchanged: !metadata_changed && publication_ack.is_none(),
+                state_path,
+                version_manifest_path: self.root.join(&previous.version_manifest_url),
+                version_manifest_url: previous.version_manifest_url,
+                state_url: previous.state_url,
+                state_sha256: previous.state_sha256,
+                published_at_utc,
+                collected_at_utc,
+                history,
+                delta_path,
+                changed_count: 0,
+                removed_count: 0,
+                publication_ack,
+                notam_compaction,
+            });
+        }
+
+        let (previous_version, delta, changed_count, removed_count) = if let Some(head) =
+            snapshot.cursor.published_head_state_id.as_deref()
+        {
+            let previous = previous_entry.as_ref().with_context(|| {
+                format!("NOTAM SQLite cursor is {head}, but current.json has no NOTAM product")
+            })?;
+            if previous.current != head {
+                bail!(
+                    "NOTAM SQLite cursor is {head}, but current.json points at {}",
+                    previous.current
+                );
+            }
+            let delta = collapse_notam_transitions(&snapshot)?;
+            let changed_count = delta
+                .mutations
+                .iter()
+                .filter(|mutation| matches!(mutation, NotamMutation::Upsert { .. }))
+                .count();
+            let removed_count = delta.mutations.len() - changed_count;
+            (
+                Some(head.to_string()),
+                Some(delta),
+                changed_count,
+                removed_count,
+            )
+        } else {
+            if previous_entry.is_some() {
+                bail!("NOTAM SQLite has no published cursor, but current.json already has NOTAMs");
+            }
+            (None, None, snapshot.counters.notam_count as usize, 0)
+        };
+
+        let mut delta_ref = None;
+        let mut delta_path = None;
+        let previous_manifest = previous_entry
+            .as_ref()
+            .map(|entry| read_notam_version_manifest(&self.root, entry))
+            .transpose()?;
+        if let Some(delta) = delta.as_ref() {
+            let product_delta_dir = self.root.join("deltas").join(NOTAM_PRODUCT_ID);
+            let path = product_delta_dir.join(format!(
+                "{}__{}.json.xz",
+                delta.from_state_id, delta.to_state_id
+            ));
+            let bytes = write_immutable_xz_json_pretty_file(&path, delta)?;
+            delta_ref = Some(LiveDeltaRef {
+                kind: Some("notam_ordered_delta_xz".to_string()),
+                from_version: delta.from_state_id.clone(),
+                from_state_sha256: delta.from_state_id.clone(),
+                to_version: delta.to_state_id.clone(),
+                to_state_sha256: delta.to_state_id.clone(),
+                url: live_feeds_relative_url(&self.root, &path)?,
+                bytes: bytes.len() as u64,
+                blob_sha256: sha256_hex(&bytes),
+                mutation_count: Some(delta.mutations.len() as u64),
+            });
+            delta_path = Some(path);
+        }
+
+        let mut recent_deltas = previous_manifest
+            .as_ref()
+            .map(|manifest| manifest.recent_deltas.clone())
+            .unwrap_or_default();
+        if let Some(delta) = delta_ref.clone() {
+            recent_deltas.push(delta);
+        }
+        let notam_compaction = match previous_manifest.as_ref() {
+            Some(manifest) => {
+                validate_notam_delta_chain(
+                    &manifest.state.state_sha256,
+                    &recent_deltas,
+                    &snapshot.current_state_id,
+                )?;
+                (notam_mutations_after_state(
+                    &manifest.state.state_sha256,
+                    &recent_deltas,
+                    &snapshot.current_state_id,
+                )? >= NOTAM_MAX_RETAINED_MUTATIONS)
+                    .then(|| NotamCompactionRequest {
+                        state_root: store.root().to_path_buf(),
+                        state_id: snapshot.current_state_id.clone(),
+                    })
+            }
+            None => None,
+        };
+
+        let state_ref = match previous_manifest.as_ref() {
+            Some(manifest) => manifest.state.clone(),
+            None => {
+                self.write_notam_checkpoint(&store, &snapshot.current_state_id, &snapshot.counters)?
+            }
+        };
+        trim_notam_delta_suffix(&state_ref.state_sha256, &mut recent_deltas)?;
+        validate_notam_delta_chain(
+            &state_ref.state_sha256,
+            &recent_deltas,
+            &snapshot.current_state_id,
+        )?;
+
+        let version_dir = self.root.join("versions").join(NOTAM_PRODUCT_ID);
+        fs::create_dir_all(&version_dir)
+            .with_context(|| format!("failed to create {}", version_dir.display()))?;
+        let version_manifest_path = version_dir.join(format!("{}.json", snapshot.current_state_id));
+        let version_manifest_url = live_feeds_relative_url(&self.root, &version_manifest_path)?;
+        let version_manifest = LiveFeedVersionManifest {
+            schema_version: LIVE_FEEDS_SCHEMA_VERSION,
+            product: NOTAM_PRODUCT_ID.to_string(),
+            version: snapshot.current_state_id.clone(),
+            previous: previous_version,
+            state: state_ref.clone(),
+            install_state: None,
+            delta_from_previous: delta_ref,
+            recent_deltas,
+        };
+        write_json_pretty_file(&version_manifest_path, &version_manifest)?;
+
+        let now = self.clock.now_utc();
+        let history = live_feed_current_history_entries(
+            &self.root,
+            NOTAM_PRODUCT_ID,
+            &snapshot.current_state_id,
+            &self.retention,
+            now,
+        )?;
+        current.generated_at_utc = now.to_rfc3339_opts(SecondsFormat::Secs, true);
+        current.products.insert(
+            NOTAM_PRODUCT_ID.to_string(),
+            LiveFeedCurrentEntry {
+                current: snapshot.current_state_id.clone(),
+                version_manifest_url: version_manifest_url.clone(),
+                state_url: state_ref.url.clone(),
+                state_sha256: snapshot.current_state_id.clone(),
+                published_at_utc: published_at_utc.clone(),
+                collected_at_utc: collected_at_utc.clone(),
+                history: history.clone(),
+            },
+        );
+        write_live_feeds_current_manifest(&self.root, &current)?;
+        let final_journal_seq = snapshot
+            .transitions
+            .last()
+            .map(|transition| transition.journal_seq)
+            .unwrap_or(snapshot.cursor.published_through_journal_seq);
+        self.prune_publication_best_effort();
+
+        Ok(PublishedLiveFeedUpdate {
+            product,
+            version: snapshot.current_state_id.clone(),
+            unchanged: false,
+            state_path: self.root.join(safe_relative_path(&state_ref.url)?),
+            version_manifest_path,
+            version_manifest_url,
+            state_url: state_ref.url,
+            state_sha256: snapshot.current_state_id.clone(),
+            published_at_utc,
+            collected_at_utc,
+            history,
+            delta_path,
+            changed_count,
+            removed_count,
+            publication_ack: Some(NotamPublicationAck {
+                state_root: store.root().to_path_buf(),
+                journal_seq: final_journal_seq,
+                expected_from_state_id: snapshot.cursor.published_head_state_id,
+                to_state_id: snapshot.current_state_id,
+            }),
+            notam_compaction,
+        })
+    }
+
+    fn write_notam_checkpoint(
+        &self,
+        store: &NotamPersistentStore,
+        expected_state_id: &str,
+        expected_counters: &notam_state::NotamCounters,
+    ) -> anyhow::Result<LivePayloadRef> {
+        let checkpoint = store.current_checkpoint()?;
+        self.write_notam_checkpoint_value(&checkpoint, expected_state_id, expected_counters)
+    }
+
+    fn write_notam_checkpoint_value(
+        &self,
+        checkpoint: &NotamCheckpoint,
+        expected_state_id: &str,
+        expected_counters: &notam_state::NotamCounters,
+    ) -> anyhow::Result<LivePayloadRef> {
+        if checkpoint.state_id != expected_state_id || checkpoint.counters != *expected_counters {
+            bail!(
+                "NOTAM projection changed while publishing checkpoint: expected {} {:?}, got {} {:?}",
+                expected_state_id,
+                expected_counters,
+                checkpoint.state_id,
+                checkpoint.counters
+            );
+        }
+        let (recomputed_state_id, recomputed_counters) =
+            notam_state::recompute_checkpoint_identity(&checkpoint.records)
+                .map_err(anyhow::Error::msg)
+                .context("failed to fully recompute NOTAM checkpoint identity")?;
+        if recomputed_state_id != checkpoint.state_id || recomputed_counters != checkpoint.counters
+        {
+            bail!(
+                "NOTAM checkpoint failed full recomputation: declared {} {:?}, recomputed {} {:?}",
+                checkpoint.state_id,
+                checkpoint.counters,
+                recomputed_state_id,
+                recomputed_counters
+            );
+        }
+        let state_path = self
+            .root
+            .join("states")
+            .join(NOTAM_PRODUCT_ID)
+            .join(format!("{}.json.xz", checkpoint.state_id));
+        let bytes = write_immutable_xz_json_pretty_file(&state_path, &checkpoint)?;
+        Ok(LivePayloadRef {
+            kind: Some("notam_checkpoint_xz".to_string()),
+            url: live_feeds_relative_url(&self.root, &state_path)?,
+            bytes: bytes.len() as u64,
+            blob_sha256: sha256_hex(&bytes),
+            state_sha256: checkpoint.state_id.clone(),
+        })
+    }
+
+    fn compact_notam_head(&self, request: &NotamCompactionRequest) -> anyhow::Result<()> {
+        let current = read_live_feeds_current(&self.root)?
+            .context("NOTAM checkpoint compaction requires current.json")?;
+        let Some(entry) = current.products.get(NOTAM_PRODUCT_ID).cloned() else {
+            bail!("NOTAM checkpoint compaction requires a current NOTAM entry");
+        };
+        if entry.current != request.state_id {
+            return Ok(());
+        }
+        let previous_manifest = read_notam_version_manifest(&self.root, &entry)?;
+        let replay_mutations = notam_mutations_after_state(
+            &previous_manifest.state.state_sha256,
+            &previous_manifest.recent_deltas,
+            &request.state_id,
+        )?;
+        if replay_mutations < NOTAM_MAX_RETAINED_MUTATIONS {
+            return Ok(());
+        }
+
+        let store = NotamPersistentStore::new(&request.state_root);
+        let checkpoint = store.current_checkpoint()?;
+        if checkpoint.state_id != request.state_id {
+            // Source ingestion advanced while the delta was being acknowledged.
+            // The next publication will compact the newer acknowledged head.
+            return Ok(());
+        }
+        let state_ref = self.write_notam_checkpoint_value(
+            &checkpoint,
+            &checkpoint.state_id,
+            &checkpoint.counters,
+        )?;
+        let mut recent_deltas = previous_manifest.recent_deltas.clone();
+        trim_notam_delta_suffix(&state_ref.state_sha256, &mut recent_deltas)?;
+        validate_notam_delta_chain(&state_ref.state_sha256, &recent_deltas, &request.state_id)?;
+
+        let compacted_manifest = LiveFeedVersionManifest {
+            schema_version: LIVE_FEEDS_SCHEMA_VERSION,
+            product: NOTAM_PRODUCT_ID.to_string(),
+            version: request.state_id.clone(),
+            previous: previous_manifest.previous,
+            state: state_ref.clone(),
+            install_state: None,
+            delta_from_previous: previous_manifest.delta_from_previous,
+            recent_deltas,
+        };
+        let manifest_path = self
+            .root
+            .join("versions")
+            .join(NOTAM_PRODUCT_ID)
+            .join(format!("{}.checkpoint.json", request.state_id));
+        write_immutable_json_pretty_file(&manifest_path, &compacted_manifest)?;
+        let manifest_url = live_feeds_relative_url(&self.root, &manifest_path)?;
+
+        let mut latest = read_live_feeds_current(&self.root)?
+            .context("NOTAM checkpoint compaction lost current.json")?;
+        let Some(latest_entry) = latest.products.get_mut(NOTAM_PRODUCT_ID) else {
+            bail!("NOTAM checkpoint compaction lost the current NOTAM entry");
+        };
+        if latest_entry.current != request.state_id
+            || latest_entry.version_manifest_url != entry.version_manifest_url
+        {
+            return Ok(());
+        }
+        latest_entry.version_manifest_url = manifest_url;
+        latest_entry.state_url = state_ref.url;
+        latest.generated_at_utc = self
+            .clock
+            .now_utc()
+            .to_rfc3339_opts(SecondsFormat::Secs, true);
+        write_live_feeds_current_manifest(&self.root, &latest)?;
+        self.prune_publication_best_effort();
+        Ok(())
     }
 
     fn prune_publication_best_effort(&self) {
@@ -1272,6 +1796,21 @@ impl<C: Clock> FileLiveFeedPublisher<C> {
                 })
         {
             eprintln!("live-feed publication GC failed: {error:#}");
+        }
+    }
+
+    fn prune_notam_journal_best_effort(&self, store: &NotamPersistentStore) {
+        let recent_tail = self.retention.recent_tail_for(NOTAM_PRODUCT_ID);
+        let Ok(recent_tail) = Duration::from_std(recent_tail) else {
+            eprintln!("NOTAM journal GC failed: publication grace does not fit chrono duration");
+            return;
+        };
+        let cutoff = (self.clock.now_utc() - recent_tail).to_rfc3339();
+        if let Err(error) = store
+            .prune_published_journal_before(&cutoff)
+            .context("failed to prune published NOTAM journal")
+        {
+            eprintln!("NOTAM journal GC failed: {error:#}");
         }
     }
 
@@ -1520,6 +2059,335 @@ fn state_object(state: &Value) -> anyhow::Result<&serde_json::Map<String, Value>
         .context("live feed state must be a JSON object")
 }
 
+fn collapse_notam_transitions(snapshot: &NotamPublicationSnapshot) -> anyhow::Result<NotamDelta> {
+    let first = snapshot
+        .transitions
+        .first()
+        .context("NOTAM publication has no pending transition")?;
+    let last = snapshot
+        .transitions
+        .last()
+        .context("NOTAM publication has no final transition")?;
+    if snapshot.cursor.published_head_state_id.as_deref() != Some(&first.from_state_id) {
+        bail!(
+            "NOTAM pending chain starts at {}, but publication cursor is {:?}",
+            first.from_state_id,
+            snapshot.cursor.published_head_state_id
+        );
+    }
+    let mut by_id = BTreeMap::new();
+    for transition in &snapshot.transitions {
+        for mutation in &transition.mutations {
+            by_id.insert(mutation.notam_id().to_string(), mutation.clone());
+        }
+    }
+    let delta = NotamDelta::new(
+        first.from_state_id.clone(),
+        last.to_state_id.clone(),
+        last.counters,
+        by_id.into_values().collect(),
+    );
+    notam_state::validate_mutation_order(&delta.mutations)
+        .map_err(anyhow::Error::msg)
+        .context("collapsed NOTAM publication mutations are not ordered")?;
+    Ok(delta)
+}
+
+fn read_notam_version_manifest(
+    live_root: &Path,
+    entry: &LiveFeedCurrentEntry,
+) -> anyhow::Result<LiveFeedVersionManifest> {
+    let path = live_root.join(safe_relative_path(&entry.version_manifest_url)?);
+    let manifest: LiveFeedVersionManifest = serde_json::from_slice(
+        &fs::read(&path).with_context(|| format!("failed to read {}", path.display()))?,
+    )
+    .with_context(|| format!("failed to parse {}", path.display()))?;
+    validate_live_feeds_schema("NOTAM version manifest", manifest.schema_version)?;
+    if manifest.product != NOTAM_PRODUCT_ID || manifest.version != entry.current {
+        bail!(
+            "NOTAM version manifest declares {}/{}, expected {}/{}",
+            manifest.product,
+            manifest.version,
+            NOTAM_PRODUCT_ID,
+            entry.current
+        );
+    }
+    validate_notam_delta_chain(
+        &manifest.state.state_sha256,
+        &manifest.recent_deltas,
+        &manifest.version,
+    )?;
+    if manifest.delta_from_previous.as_ref() != manifest.recent_deltas.last() {
+        bail!("NOTAM version manifest latest delta is not its retained chain tail");
+    }
+    Ok(manifest)
+}
+
+fn notam_delta_mutation_count(delta: &LiveDeltaRef) -> anyhow::Result<u64> {
+    delta
+        .mutation_count
+        .with_context(|| format!("NOTAM delta {} has no mutation_count", delta.url))
+}
+
+fn notam_mutations_after_state(
+    checkpoint_state_id: &str,
+    deltas: &[LiveDeltaRef],
+    target_state_id: &str,
+) -> anyhow::Result<u64> {
+    if checkpoint_state_id == target_state_id {
+        return Ok(0);
+    }
+    let mut state_id = deltas
+        .first()
+        .map(|delta| delta.from_state_sha256.as_str())
+        .context("NOTAM checkpoint is behind the head, but no deltas are retained")?;
+    let mut after_checkpoint = state_id == checkpoint_state_id;
+    let mut mutations = 0_u64;
+    for delta in deltas {
+        if after_checkpoint {
+            mutations = mutations.saturating_add(notam_delta_mutation_count(delta)?);
+        }
+        state_id = &delta.to_state_sha256;
+        if state_id == checkpoint_state_id {
+            after_checkpoint = true;
+        }
+    }
+    if !after_checkpoint {
+        bail!("NOTAM checkpoint {checkpoint_state_id} is outside the retained delta chain");
+    }
+    if state_id != target_state_id {
+        bail!("NOTAM retained chain ends at {state_id}, expected {target_state_id}");
+    }
+    Ok(mutations)
+}
+
+fn trim_notam_delta_suffix(
+    checkpoint_state_id: &str,
+    deltas: &mut Vec<LiveDeltaRef>,
+) -> anyhow::Result<()> {
+    let mut retained_mutations = deltas.iter().try_fold(0_u64, |total, delta| {
+        Ok::<_, anyhow::Error>(total.saturating_add(notam_delta_mutation_count(delta)?))
+    })?;
+    while deltas.len() > 1 && retained_mutations > NOTAM_MAX_RETAINED_MUTATIONS {
+        let remaining = &deltas[1..];
+        let checkpoint_remains_reachable = remaining
+            .first()
+            .is_some_and(|delta| delta.from_state_sha256 == checkpoint_state_id)
+            || remaining
+                .iter()
+                .any(|delta| delta.to_state_sha256 == checkpoint_state_id);
+        if !checkpoint_remains_reachable {
+            break;
+        }
+        retained_mutations =
+            retained_mutations.saturating_sub(notam_delta_mutation_count(&deltas[0])?);
+        deltas.remove(0);
+    }
+    Ok(())
+}
+
+fn validate_notam_delta_chain(
+    checkpoint_state_id: &str,
+    deltas: &[LiveDeltaRef],
+    target_state_id: &str,
+) -> anyhow::Result<()> {
+    if deltas.is_empty() {
+        if checkpoint_state_id != target_state_id {
+            bail!(
+                "NOTAM checkpoint is {checkpoint_state_id}, but head is {target_state_id} with no deltas"
+            );
+        }
+        return Ok(());
+    }
+    let mut head = deltas[0].from_state_sha256.as_str();
+    let mut checkpoint_reachable = head == checkpoint_state_id;
+    for delta in deltas {
+        if delta.kind.as_deref() != Some("notam_ordered_delta_xz") {
+            bail!("NOTAM retained delta {} has wrong kind", delta.url);
+        }
+        if delta.from_version != head || delta.from_state_sha256 != head {
+            bail!(
+                "NOTAM retained delta {} starts at {}/{}, expected {head}",
+                delta.url,
+                delta.from_version,
+                delta.from_state_sha256
+            );
+        }
+        if delta.to_version != delta.to_state_sha256 {
+            bail!(
+                "NOTAM retained delta {} has divergent target identities {}/{}",
+                delta.url,
+                delta.to_version,
+                delta.to_state_sha256
+            );
+        }
+        delta
+            .mutation_count
+            .context("NOTAM retained delta is missing mutation_count")?;
+        head = &delta.to_state_sha256;
+        checkpoint_reachable |= head == checkpoint_state_id;
+    }
+    if head != target_state_id {
+        bail!("NOTAM retained chain ends at {head}, expected {target_state_id}");
+    }
+    if !checkpoint_reachable {
+        bail!("NOTAM checkpoint {checkpoint_state_id} does not occur in the retained delta chain");
+    }
+    Ok(())
+}
+
+fn validate_published_notam_head(
+    live_root: &Path,
+    entry: &LiveFeedCurrentEntry,
+    snapshot: &NotamPublicationSnapshot,
+) -> anyhow::Result<LiveFeedVersionManifest> {
+    if entry.state_sha256 != snapshot.current_state_id {
+        bail!(
+            "NOTAM current entry identifies {}, expected {}",
+            entry.state_sha256,
+            snapshot.current_state_id
+        );
+    }
+    let manifest = read_notam_version_manifest(live_root, entry)?;
+    if entry.state_url != manifest.state.url {
+        bail!(
+            "NOTAM current state URL {} differs from version manifest {}",
+            entry.state_url,
+            manifest.state.url
+        );
+    }
+    validate_notam_delta_chain(
+        &manifest.state.state_sha256,
+        &manifest.recent_deltas,
+        &snapshot.current_state_id,
+    )?;
+    validate_notam_materialized_chain(live_root, &manifest)?;
+
+    if let Some(cursor_head) = snapshot.cursor.published_head_state_id.as_deref() {
+        if cursor_head != snapshot.current_state_id {
+            let expected = collapse_notam_transitions(snapshot)?;
+            let delta_ref = manifest.delta_from_previous.as_ref().context(
+                "published NOTAM head is ahead of SQLite cursor but has no latest delta",
+            )?;
+            if delta_ref.from_state_sha256 != expected.from_state_id
+                || delta_ref.to_state_sha256 != expected.to_state_id
+                || delta_ref.mutation_count != Some(expected.mutations.len() as u64)
+            {
+                bail!("published NOTAM delta does not match pending SQLite journal");
+            }
+            let delta_path = live_root.join(safe_relative_path(&delta_ref.url)?);
+            let published_delta: NotamDelta = serde_json::from_value(read_json_value(&delta_path)?)
+                .with_context(|| format!("failed to decode {}", delta_path.display()))?;
+            if published_delta != expected {
+                bail!("published NOTAM delta differs from pending SQLite journal");
+            }
+        } else if !snapshot.transitions.is_empty() {
+            bail!("NOTAM cursor is current but pending journal is not empty");
+        }
+    } else {
+        if manifest.state.state_sha256 != snapshot.current_state_id
+            || manifest.delta_from_previous.is_some()
+        {
+            bail!("initial published NOTAM head is not a full current checkpoint");
+        }
+    }
+    Ok(manifest)
+}
+
+fn validate_notam_materialized_chain(
+    live_root: &Path,
+    manifest: &LiveFeedVersionManifest,
+) -> anyhow::Result<()> {
+    if manifest.state.kind.as_deref() != Some("notam_checkpoint_xz") {
+        bail!("published NOTAM state is not a checkpoint");
+    }
+    let checkpoint: NotamCheckpoint = read_verified_notam_blob(
+        live_root,
+        &manifest.state.url,
+        manifest.state.bytes,
+        &manifest.state.blob_sha256,
+    )?;
+    if checkpoint.state_id != manifest.state.state_sha256 {
+        bail!(
+            "NOTAM checkpoint payload identifies {}, manifest identifies {}",
+            checkpoint.state_id,
+            manifest.state.state_sha256
+        );
+    }
+    let mut work = NotamApplyWork::default();
+    let mut state = NotamState::from_checkpoint(checkpoint, &mut work)
+        .map_err(anyhow::Error::msg)
+        .context("published NOTAM checkpoint failed full identity verification")?;
+
+    for delta_ref in &manifest.recent_deltas {
+        let delta: NotamDelta = read_verified_notam_blob(
+            live_root,
+            &delta_ref.url,
+            delta_ref.bytes,
+            &delta_ref.blob_sha256,
+        )?;
+        delta
+            .validate_contract()
+            .map_err(anyhow::Error::msg)
+            .context("published NOTAM delta has the wrong contract")?;
+        if delta.from_state_id != delta_ref.from_state_sha256
+            || delta.to_state_id != delta_ref.to_state_sha256
+            || delta.mutations.len() as u64 != notam_delta_mutation_count(delta_ref)?
+        {
+            bail!(
+                "published NOTAM delta payload does not match {}",
+                delta_ref.url
+            );
+        }
+        notam_state::validate_mutation_order(&delta.mutations)
+            .map_err(anyhow::Error::msg)
+            .with_context(|| {
+                format!("published NOTAM delta is not canonical: {}", delta_ref.url)
+            })?;
+
+        if delta.from_state_id == state.state_id() {
+            state
+                .apply_delta(delta, &mut work)
+                .map_err(anyhow::Error::msg)
+                .with_context(|| {
+                    format!("failed to replay published NOTAM delta {}", delta_ref.url)
+                })?;
+        } else if delta.to_state_id != state.state_id() {
+            // The retained suffix may begin before the checkpoint. Chain-shape
+            // validation guarantees these skipped transitions lead to it.
+            continue;
+        }
+    }
+    if state.state_id() != manifest.version {
+        bail!(
+            "published NOTAM payload chain ends at {}, manifest identifies {}",
+            state.state_id(),
+            manifest.version
+        );
+    }
+    Ok(())
+}
+
+fn read_verified_notam_blob<T: DeserializeOwned>(
+    live_root: &Path,
+    relative_url: &str,
+    expected_bytes: u64,
+    expected_sha256: &str,
+) -> anyhow::Result<T> {
+    let path = live_root.join(safe_relative_path(relative_url)?);
+    let encoded = fs::read(&path).with_context(|| format!("failed to read {}", path.display()))?;
+    if encoded.len() as u64 != expected_bytes || sha256_hex(&encoded) != expected_sha256 {
+        bail!(
+            "NOTAM immutable blob identity mismatch at {}",
+            path.display()
+        );
+    }
+    let decoded = nav_kv_package::decode_xz_if_needed(&encoded)
+        .map_err(|error| anyhow::anyhow!("failed to decode {}: {error}", path.display()))?;
+    serde_json::from_slice(decoded.as_ref())
+        .with_context(|| format!("failed to parse {}", path.display()))
+}
+
 pub fn read_live_feeds_current(root: &Path) -> anyhow::Result<Option<LiveFeedsCurrentManifest>> {
     let path = root.join("current.json");
     if !path.is_file() {
@@ -1720,6 +2588,9 @@ fn retain_version_manifest(
     if let Some(delta) = manifest.delta_from_previous.as_ref() {
         retain_live_relative_path(live_root, retained, &delta.url)?;
     }
+    for delta in &manifest.recent_deltas {
+        retain_live_relative_path(live_root, retained, &delta.url)?;
+    }
     Ok(manifest)
 }
 
@@ -1851,26 +2722,75 @@ pub fn read_json_value(path: &Path) -> anyhow::Result<Value> {
 }
 
 pub fn write_json_pretty_file(path: &Path, value: &impl Serialize) -> anyhow::Result<()> {
-    if let Some(parent) = path.parent() {
-        fs::create_dir_all(parent)
-            .with_context(|| format!("failed to create {}", parent.display()))?;
+    let bytes = serde_json::to_vec_pretty(value).context("failed to encode JSON")?;
+    atomic_write_bytes(path, &bytes)
+}
+
+fn write_immutable_json_pretty_file(path: &Path, value: &impl Serialize) -> anyhow::Result<()> {
+    let bytes = serde_json::to_vec_pretty(value).context("failed to encode immutable JSON")?;
+    if path.is_file() {
+        let existing = fs::read(path)
+            .with_context(|| format!("failed to read immutable {}", path.display()))?;
+        if existing != bytes {
+            bail!("immutable live-feed manifest changed at {}", path.display());
+        }
+        return Ok(());
     }
-    fs::write(
-        path,
-        serde_json::to_vec_pretty(value).context("failed to encode JSON")?,
-    )
-    .with_context(|| format!("failed to write {}", path.display()))
+    atomic_write_bytes(path, &bytes)
+        .with_context(|| format!("failed to write immutable {}", path.display()))
 }
 
 pub fn write_xz_json_pretty_file(path: &Path, value: &impl Serialize) -> anyhow::Result<()> {
-    if let Some(parent) = path.parent() {
-        fs::create_dir_all(parent)
-            .with_context(|| format!("failed to create {}", parent.display()))?;
-    }
     let bytes = serde_json::to_vec_pretty(value).context("failed to encode JSON")?;
     let encoded = producer_xz_compress_bytes(&bytes)
         .map_err(|err| anyhow::anyhow!("failed to xz-compress {}: {err}", path.display()))?;
-    fs::write(path, encoded).with_context(|| format!("failed to write {}", path.display()))
+    atomic_write_bytes(path, &encoded)
+}
+
+fn write_immutable_xz_json_pretty_file(
+    path: &Path,
+    value: &impl Serialize,
+) -> anyhow::Result<Vec<u8>> {
+    let json = serde_json::to_vec_pretty(value).context("failed to encode immutable JSON")?;
+    let encoded = producer_xz_compress_bytes(&json)
+        .map_err(|err| anyhow::anyhow!("failed to xz-compress {}: {err}", path.display()))?;
+    if path.is_file() {
+        let existing = fs::read(path)
+            .with_context(|| format!("failed to read immutable {}", path.display()))?;
+        if existing != encoded {
+            bail!("immutable live-feed payload changed at {}", path.display());
+        }
+        return Ok(existing);
+    }
+    atomic_write_bytes(path, &encoded)
+        .with_context(|| format!("failed to write immutable {}", path.display()))?;
+    Ok(encoded)
+}
+
+fn atomic_write_bytes(path: &Path, bytes: &[u8]) -> anyhow::Result<()> {
+    let parent = path
+        .parent()
+        .with_context(|| format!("{} has no parent directory", path.display()))?;
+    fs::create_dir_all(parent).with_context(|| format!("failed to create {}", parent.display()))?;
+    let file_name = path
+        .file_name()
+        .and_then(|name| name.to_str())
+        .with_context(|| format!("{} has no UTF-8 file name", path.display()))?;
+    let temp = parent.join(format!(".{file_name}.tmp-{}", std::process::id()));
+    {
+        let mut file =
+            File::create(&temp).with_context(|| format!("failed to create {}", temp.display()))?;
+        file.write_all(bytes)
+            .with_context(|| format!("failed to write {}", temp.display()))?;
+        file.sync_all()
+            .with_context(|| format!("failed to sync {}", temp.display()))?;
+    }
+    fs::rename(&temp, path)
+        .with_context(|| format!("failed to promote {} to {}", temp.display(), path.display()))?;
+    File::open(parent)
+        .with_context(|| format!("failed to open {}", parent.display()))?
+        .sync_all()
+        .with_context(|| format!("failed to sync {}", parent.display()))
 }
 
 fn producer_xz_compress_bytes(bytes: &[u8]) -> Result<Vec<u8>, String> {
@@ -2202,6 +3122,67 @@ mod tests {
     use zip::{
         write::SimpleFileOptions, CompressionMethod, DateTime as ZipDateTime, ZipArchive, ZipWriter,
     };
+
+    #[path = "notam_incremental_fixture_test.rs"]
+    mod notam_incremental_fixture;
+
+    fn notam_delta_ref(from: &str, to: &str, mutation_count: u64) -> LiveDeltaRef {
+        LiveDeltaRef {
+            kind: Some("notam_ordered_delta_xz".to_string()),
+            from_version: from.to_string(),
+            from_state_sha256: from.to_string(),
+            to_version: to.to_string(),
+            to_state_sha256: to.to_string(),
+            url: format!("deltas/notams/{from}__{to}.json.xz"),
+            bytes: 1,
+            blob_sha256: "a".repeat(64),
+            mutation_count: Some(mutation_count),
+        }
+    }
+
+    #[test]
+    fn notam_replay_cost_counts_only_deltas_after_checkpoint() -> anyhow::Result<()> {
+        let deltas = vec![
+            notam_delta_ref("s0", "s1", 60),
+            notam_delta_ref("s1", "s2", 50),
+            notam_delta_ref("s2", "s3", 40),
+        ];
+        validate_notam_delta_chain("s2", &deltas, "s3")?;
+        assert_eq!(notam_mutations_after_state("s2", &deltas, "s3")?, 40);
+        Ok(())
+    }
+
+    #[test]
+    fn notam_retention_trims_whole_deltas_and_keeps_checkpoint_reachable() -> anyhow::Result<()> {
+        let mut deltas = vec![
+            notam_delta_ref("s0", "s1", 60),
+            notam_delta_ref("s1", "s2", 50),
+            notam_delta_ref("s2", "s3", 40),
+        ];
+        trim_notam_delta_suffix("s2", &mut deltas)?;
+        assert_eq!(
+            deltas
+                .iter()
+                .map(|delta| (&*delta.from_version, &*delta.to_version))
+                .collect::<Vec<_>>(),
+            vec![("s1", "s2"), ("s2", "s3")]
+        );
+        validate_notam_delta_chain("s2", &deltas, "s3")?;
+
+        let mut rotated = vec![
+            notam_delta_ref("s0", "s1", 60),
+            notam_delta_ref("s1", "s2", 50),
+            notam_delta_ref("s2", "s3", 40),
+        ];
+        trim_notam_delta_suffix("s3", &mut rotated)?;
+        assert_eq!(rotated.len(), 2);
+        assert_eq!(rotated[0].from_version, "s1");
+
+        let mut oversized = vec![notam_delta_ref("a", "b", 140)];
+        trim_notam_delta_suffix("b", &mut oversized)?;
+        assert_eq!(oversized.len(), 1);
+        Ok(())
+    }
 
     #[test]
     fn record_delta_round_trips_canonical_state() -> anyhow::Result<()> {
@@ -3233,6 +4214,39 @@ mod tests {
     }
 
     #[test]
+    fn publication_is_acknowledged_only_after_successful_announcement() -> anyhow::Result<()> {
+        let temp = tempdir()?;
+        let built = json_state(
+            temp.path(),
+            "notams",
+            "notams-v1",
+            "n1",
+            "records",
+            &[("A", 1)],
+        )?;
+        let publisher = RecordingAckPublisher::default();
+        let mut failed_task = vec![StaticProductTask::state("notams", built.clone())];
+        let failed = run_live_feed_publish_tick(&mut failed_task, &publisher, &FailingBroker);
+        assert!(failed.published.is_empty());
+        assert_eq!(failed.failures.len(), 1);
+        assert_eq!(failed.failures[0].phase, LiveFeedTaskPhase::Announce);
+        assert_eq!(*publisher.acknowledgements.lock().unwrap(), 0);
+        assert_eq!(*publisher.maintenance_runs.lock().unwrap(), 0);
+
+        let mut successful_task = vec![StaticProductTask::state("notams", built)];
+        let successful = run_live_feed_publish_tick(
+            &mut successful_task,
+            &publisher,
+            &RecordingBroker::default(),
+        );
+        assert_eq!(successful.published.len(), 1);
+        assert!(successful.failures.is_empty());
+        assert_eq!(*publisher.acknowledgements.lock().unwrap(), 1);
+        assert_eq!(*publisher.maintenance_runs.lock().unwrap(), 1);
+        Ok(())
+    }
+
+    #[test]
     fn interval_source_and_push_source_emit_due_events() -> anyhow::Result<()> {
         let t0 = Utc.with_ymd_and_hms(2026, 5, 18, 12, 0, 0).unwrap();
         let mut interval = IntervalLiveFeedSource::new("metars", StdDuration::from_secs(60));
@@ -3376,6 +4390,61 @@ mod tests {
     #[derive(Default)]
     struct RecordingBroker {
         events: Mutex<Vec<LiveFeedInvalidation>>,
+    }
+
+    struct FailingBroker;
+
+    impl SseBroker for FailingBroker {
+        fn announce(&self, _event: LiveFeedInvalidation) -> anyhow::Result<()> {
+            bail!("intentional announcement failure")
+        }
+    }
+
+    #[derive(Default)]
+    struct RecordingAckPublisher {
+        acknowledgements: Mutex<usize>,
+        maintenance_runs: Mutex<usize>,
+    }
+
+    impl LiveFeedPublisher for RecordingAckPublisher {
+        fn publish(&self, built: BuiltLiveFeedState) -> anyhow::Result<PublishedLiveFeedUpdate> {
+            Ok(PublishedLiveFeedUpdate {
+                product: built.product,
+                version: built.version,
+                unchanged: false,
+                state_path: PathBuf::from("states/notams/n1.json.xz"),
+                version_manifest_path: PathBuf::from("versions/notams/n1.json"),
+                version_manifest_url: "versions/notams/n1.json".to_string(),
+                state_url: "states/notams/n1.json.xz".to_string(),
+                state_sha256: "n1".to_string(),
+                published_at_utc: None,
+                collected_at_utc: None,
+                history: Vec::new(),
+                delta_path: None,
+                changed_count: 1,
+                removed_count: 0,
+                publication_ack: Some(NotamPublicationAck {
+                    state_root: PathBuf::from("not-used-by-mock"),
+                    journal_seq: 1,
+                    expected_from_state_id: None,
+                    to_state_id: "n1".to_string(),
+                }),
+                notam_compaction: None,
+            })
+        }
+
+        fn acknowledge(&self, _update: &PublishedLiveFeedUpdate) -> anyhow::Result<()> {
+            *self.acknowledgements.lock().unwrap() += 1;
+            Ok(())
+        }
+
+        fn maintain_after_acknowledgement(
+            &self,
+            _update: &PublishedLiveFeedUpdate,
+        ) -> anyhow::Result<()> {
+            *self.maintenance_runs.lock().unwrap() += 1;
+            Ok(())
+        }
     }
 
     impl RecordingBroker {

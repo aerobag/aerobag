@@ -242,11 +242,17 @@ pub fn install_panic_hook() {
 }
 
 #[wasm_bindgen]
-pub fn nav_db_open_controller_create(candidates_json: &str) -> Result<u32, JsValue> {
+pub fn nav_db_open_controller_create(
+    candidates_json: &str,
+    now_epoch_ms: i64,
+) -> Result<u32, JsValue> {
     let candidates: Vec<app_core::NavDbArtifactCandidate> =
         serde_json::from_str(candidates_json).map_err(|err| JsValue::from_str(&err.to_string()))?;
     let handle = NEXT_NAV_DB_OPEN_HANDLE.fetch_add(1, Ordering::Relaxed);
-    lock_nav_db_open_controllers().insert(handle, app_core::NavDbOpenController::new(candidates));
+    lock_nav_db_open_controllers().insert(
+        handle,
+        app_core::NavDbOpenController::new_at_epoch_ms(candidates, now_epoch_ms),
+    );
     Ok(handle)
 }
 
@@ -847,6 +853,33 @@ pub fn attach_nav_kv_store_to_session(
     .map_err(|err| JsValue::from_str(&err.to_string()))
 }
 
+#[wasm_bindgen]
+pub fn advance_nav_kv_store_in_session(
+    nav_kv_handle: u32,
+    session_handle: u32,
+    installed_package_ids_json: &str,
+) -> Result<String, JsValue> {
+    let installed_package_ids: Vec<String> = serde_json::from_str(installed_package_ids_json)
+        .map_err(|err| JsValue::from_str(&err.to_string()))?;
+    let stores = lock_nav_kv_stores();
+    let stored = stores
+        .get(&nav_kv_handle)
+        .ok_or_else(|| JsValue::from_str(&format!("invalid nav kv handle: {nav_kv_handle}")))?;
+    let open_result = stored
+        .open_result
+        .as_ref()
+        .ok_or_else(|| JsValue::from_str("candidate nav kv store has no artifact identity"))?;
+    let outcome = app_core::advance_nav_kv_store_in_session_with_open_result(
+        session_handle,
+        nav_kv_handle,
+        &stored.store,
+        open_result,
+        installed_package_ids,
+    )
+    .map_err(|err| JsValue::from_str(&err.to_string()))?;
+    serde_json::to_string(&outcome).map_err(|err| JsValue::from_str(&err.to_string()))
+}
+
 #[cfg(debug_assertions)]
 #[wasm_bindgen]
 pub fn startup_smoke_test() -> Result<(), JsValue> {
@@ -1230,6 +1263,16 @@ pub fn get_session_snapshot_at_epoch_ms_paged(
 ) -> Result<String, JsValue> {
     get_session_snapshot_at_epoch_ms_paged_json(handle, epoch_ms)
         .map_err(|err| JsValue::from_str(&err))
+}
+
+#[wasm_bindgen]
+pub fn maintain_nav_db_in_session_at_epoch_ms(
+    handle: u32,
+    epoch_ms: i64,
+) -> Result<String, JsValue> {
+    let outcome = app_core::maintain_nav_db_in_session_at_epoch_ms(handle, epoch_ms)
+        .map_err(|err| JsValue::from_str(&err.to_string()))?;
+    serde_json::to_string(&outcome).map_err(|err| JsValue::from_str(&err.to_string()))
 }
 
 #[wasm_bindgen]

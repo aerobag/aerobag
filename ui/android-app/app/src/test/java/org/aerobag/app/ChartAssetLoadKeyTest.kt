@@ -78,16 +78,31 @@ class ChartAssetLoadKeyTest {
         val homePage = sourceFile("src/main/java/org/aerobag/app/HomePage.kt").readText()
 
         assertTrue(
-            "MainActivity must pass package data changes into the chart asset load key.",
+            "MainActivity must use the core-owned NAVDB adoption transaction and invalidate chart assets after it completes.",
             mainActivity.contains("var chartAssetDataRevision by remember") &&
+                mainActivity.contains("fixture.replaceInstalledArtifacts") &&
+                mainActivity.contains("applySessionSnapshot(result.snapshot)") &&
                 mainActivity.contains("chartAssetDataRevision = chartAssetDataRevision + 1") &&
                 mainActivity.contains("chartAssetDataRevision = chartAssetDataRevision,"),
         )
         assertTrue(
-            "Offline package sync completion is the deterministic signal that package-backed chart assets may have changed.",
+            "Runtime adoption must happen after fetch and before GC can delete the active package.",
             homePage.contains("onOfflinePackageArtifactsChanged") &&
-                homePage.contains("event is OfflinePackagesControllerEventWire.SyncFinished") &&
-                homePage.contains("event.summary.fetchedCount > 0 || event.summary.gcCount > 0"),
+                homePage.contains("beforeGc =") &&
+                homePage.contains("requireNotNull(result.libraryCacheJson)"),
+        )
+    }
+
+    @Test
+    fun installedNavDbIsReconciledAtCoreOwnedDeadlineWithoutOpeningOfflinePackages() {
+        val mainActivity = sourceFile("src/main/java/org/aerobag/app/MainActivity.kt").readText()
+
+        assertTrue(
+            "Android must arm NAVDB maintenance from the core snapshot and run the same " +
+                "transactional artifact replacement used after sync.",
+            mainActivity.contains("sessionSnapshot.nextNavDbMaintenanceEpochMs") &&
+                mainActivity.contains("uiSession.maintainNavDb(nowEpochMs)") &&
+                mainActivity.contains("replaceInstalledPackageArtifacts(libraryCacheJson, emptySet())"),
         )
     }
 

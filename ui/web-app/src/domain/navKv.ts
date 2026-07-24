@@ -8,11 +8,12 @@ import { resolveLiveFeedResourceUrl } from "./liveFeedUrls";
 type NavKvWasmModule = {
   default?: (moduleOrPath?: string | URL | Request) => Promise<unknown>;
   attach_nav_kv_store_to_session(handle: number, sessionHandle: number): void;
+  advance_nav_kv_store_in_session(handle: number, sessionHandle: number, installedPackageIdsJson: string): string;
   core_had_operation(handle: number, operationJson: string): string;
   drain_session_resource_effects(sessionHandle: number): Promise<string> | string;
   ingest_resource_in_session(handle: number, resourceId: string, resourceBytes: Uint8Array): Promise<void> | void;
   install_rust_debug_logger(): void;
-  nav_db_open_controller_create(candidatesJson: string): number;
+  nav_db_open_controller_create(candidatesJson: string, nowEpochMs: bigint): number;
   nav_db_open_controller_destroy(handle: number): void;
   nav_db_open_controller_finish(handle: number): Promise<string> | string;
   nav_db_open_controller_ingest_resource(handle: number, resourceId: string, resourceBytes: Uint8Array): Promise<void> | void;
@@ -26,6 +27,7 @@ type NavKvWasmModule = {
 };
 
 export type UiInvalidation =
+  | "nav_data"
   | "session_snapshot"
   | "raster_tiles"
   | "map_overlay"
@@ -66,6 +68,7 @@ export class ResourceIngestCoordinator {
 
 let wasmReady: Promise<NavKvWasmModule> | null = null;
 let sharedNavKvStorePromise: Promise<NavKvStore | null> | null = null;
+let navKvAdvancePromise: Promise<NavDbAdvanceResult> | null = null;
 
 async function ensureWasmReady(): Promise<NavKvWasmModule> {
   if (!wasmReady) {
@@ -87,6 +90,9 @@ export class NavKvStore {
   private readonly pageRequestPriorities = new Map<number, number>();
   private pageInsertPumpActive = false;
   private pageRequestSequence = 0;
+  private activeOperations = 0;
+  private retireRequested = false;
+  private destroyed = false;
 
   private constructor(
     private readonly wasm: NavKvWasmModule,
@@ -112,7 +118,7 @@ export class NavKvStore {
     }
     const byFilename = new Map(candidates.map((candidate) => [candidate.filename, candidate]));
     const controllerHandle = debugTiming("nav_kv.open.controller_create", () =>
-      wasm.nav_db_open_controller_create(JSON.stringify(candidates)), {
+      wasm.nav_db_open_controller_create(JSON.stringify(candidates), BigInt(Date.now())), {
         candidate_count: candidates.length,
       });
     let finished = false;
@@ -193,11 +199,34 @@ export class NavKvStore {
   private readonly navKvPackageRoot: string;
 
   destroy(): void {
+    this.retireRequested = true;
+    this.destroyIfIdle();
+  }
+
+  private destroyIfIdle(): void {
+    if (!this.retireRequested || this.activeOperations !== 0 || this.destroyed) {
+      return;
+    }
+    this.destroyed = true;
     this.wasm.nav_kv_destroy(this.handle);
   }
 
+  private async withActiveOperation<T>(operation: () => Promise<T>): Promise<T> {
+    if (this.destroyed) {
+      throw new Error("nav_kv store is retired");
+    }
+    this.activeOperations += 1;
+    try {
+      return await operation();
+    } finally {
+      this.activeOperations -= 1;
+      this.destroyIfIdle();
+    }
+  }
+
   async runCoreOperation<T>(operation: unknown): Promise<T> {
-    return this.runPagedOperation<T>(() => this.wasm.core_had_operation(this.handle, JSON.stringify(operation)));
+    return this.withActiveOperation(() =>
+      this.runPagedOperation<T>(() => this.wasm.core_had_operation(this.handle, JSON.stringify(operation))));
   }
 
   async runCoreSessionOperation<T>(
@@ -209,23 +238,49 @@ export class NavKvStore {
     operationLabel?: string,
     resumeSnapshot?: () => Promise<string> | string,
   ): Promise<T> {
-    const result = await this.runPagedOperation<T>(
-      () => operation(this.handle),
-      ingestSessionResource,
-      onInvalidations,
-      reportResourceFailure,
-      operationLabel,
-      resumeSnapshot,
-    );
-    if (drainSessionEffects) {
-      this.launchSessionEffectPump(
-        drainSessionEffects,
+    return this.withActiveOperation(async () => {
+      const result = await this.runPagedOperation<T>(
+        () => operation(this.handle),
         ingestSessionResource,
         onInvalidations,
         reportResourceFailure,
+        operationLabel,
+        resumeSnapshot,
       );
-    }
-    return result;
+      if (drainSessionEffects) {
+        this.launchSessionEffectPump(
+          drainSessionEffects,
+          ingestSessionResource,
+          onInvalidations,
+          reportResourceFailure,
+        );
+      }
+      return result;
+    });
+  }
+
+  async advanceSession(
+    sessionHandle: number,
+    ingestSessionResource: (resourceId: string, resourceBytes: Uint8Array) => Promise<void> | void,
+    reportResourceFailure?: ResourceFailureReporter,
+    drainSessionEffects?: () => Promise<string> | string,
+    resumeSnapshot?: () => Promise<string> | string,
+  ): Promise<{ result: NavDbAdvanceResult; invalidations: UiInvalidation[] }> {
+    const invalidations = new Set<UiInvalidation>();
+    const result = await this.runCoreSessionOperation<NavDbAdvanceResult>(
+      (navKvHandle) => this.wasm.advance_nav_kv_store_in_session(
+        navKvHandle,
+        sessionHandle,
+        "[]",
+      ),
+      ingestSessionResource,
+      (next) => next.forEach((invalidation) => invalidations.add(invalidation)),
+      reportResourceFailure,
+      drainSessionEffects,
+      "nav_db.advance",
+      resumeSnapshot,
+    );
+    return { result, invalidations: [...invalidations] };
   }
 
   attachToSession(sessionHandle: number): void {
@@ -344,12 +399,12 @@ export class NavKvStore {
     onInvalidations?: UiInvalidationListener,
     reportResourceFailure?: ResourceFailureReporter,
   ): void {
-    void this.pumpSessionEffects(
+    void this.withActiveOperation(() => this.pumpSessionEffects(
       drainSessionEffects,
       ingestSessionResource,
       onInvalidations,
       reportResourceFailure,
-    ).catch((error: unknown) => {
+    )).catch((error: unknown) => {
       debugLog("core.session_effect.pump.error", {
         error: error instanceof Error ? error.message : String(error),
       });
@@ -602,6 +657,14 @@ type NavDbOpenFinish = {
   open_result: NavDbOpenResult;
 };
 
+export type NavDbAdvanceResult = {
+  disposition: "adopted" | "rejected";
+  snapshot: import("./appCoreAdapter").UiSessionSnapshot;
+  active_artifact_filename?: string | null;
+  retained_artifact_filenames: string[];
+  rejection_reason?: string | null;
+};
+
 async function fetchAndIngestResource(
   resource: CoreResourceRequest,
   ingestResource: (resourceId: string, resourceBytes: Uint8Array) => Promise<void> | void,
@@ -609,7 +672,10 @@ async function fetchAndIngestResource(
   reportResourceFailure?: ResourceFailureReporter,
 ): Promise<void> {
   const url = publicResourceUrl(resource);
-  const response = await debugTiming(timingLabel, () => fetch(withNavKvCacheKey(url)), {
+  const response = await debugTiming(timingLabel, () => fetch(
+    withNavKvCacheKey(url),
+    resource.id === "publication/current_artifacts" ? { cache: "no-cache" } : undefined,
+  ), {
     id: resource.id,
     url,
   });
@@ -760,6 +826,49 @@ export async function attachNavKvStoreToSession(sessionHandle: number): Promise<
     throw new Error("nav_kv root is unavailable");
   }
   store.attachToSession(sessionHandle);
+}
+
+export async function advanceSharedNavKvStore(
+  sessionHandle: number,
+  ingestSessionResource: (resourceId: string, resourceBytes: Uint8Array) => Promise<void> | void,
+  onInvalidations: UiInvalidationListener,
+  reportResourceFailure?: ResourceFailureReporter,
+  drainSessionEffects?: () => Promise<string> | string,
+  resumeSnapshot?: () => Promise<string> | string,
+): Promise<NavDbAdvanceResult> {
+  if (navKvAdvancePromise) {
+    return navKvAdvancePromise;
+  }
+  navKvAdvancePromise = (async () => {
+    const previous = await getNavKvStore(sessionHandle);
+    const candidate = await NavKvStore.open(sessionHandle);
+    if (!candidate) {
+      throw new Error("publication has no readable NAVDB candidate");
+    }
+    try {
+      const advanced = await candidate.advanceSession(
+        sessionHandle,
+        ingestSessionResource,
+        reportResourceFailure,
+        drainSessionEffects,
+        resumeSnapshot,
+      );
+      if (advanced.result.disposition === "adopted") {
+        sharedNavKvStorePromise = Promise.resolve(candidate);
+        previous?.destroy();
+      } else {
+        candidate.destroy();
+      }
+      onInvalidations(advanced.invalidations);
+      return advanced.result;
+    } catch (error) {
+      candidate.destroy();
+      throw error;
+    }
+  })().finally(() => {
+    navKvAdvancePromise = null;
+  });
+  return navKvAdvancePromise;
 }
 
 function coreHadOperationTrace(operation: unknown): Record<string, unknown> {

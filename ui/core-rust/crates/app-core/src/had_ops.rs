@@ -64,6 +64,7 @@ pub enum HadOperationOutcome {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum UiInvalidation {
+    NavData,
     SessionSnapshot,
     RasterTiles,
     MapOverlay,
@@ -249,10 +250,6 @@ pub struct NavDbOpenController {
 }
 
 impl NavDbOpenController {
-    pub fn new(candidates: Vec<NavDbArtifactCandidate>) -> Self {
-        Self::new_at_epoch_ms(candidates, 0)
-    }
-
     pub fn new_at_epoch_ms(candidates: Vec<NavDbArtifactCandidate>, now_epoch_ms: i64) -> Self {
         let len = candidates.len();
         Self {
@@ -338,6 +335,13 @@ impl NavDbOpenController {
             })
             .collect::<Vec<_>>();
         if rejected.is_empty() {
+            if self
+                .statuses
+                .iter()
+                .any(|status| status.as_ref().is_some_and(|status| status.readable))
+            {
+                return "no readable nav-db package is effective at the current time".to_string();
+            }
             "no readable installed nav-db package".to_string()
         } else {
             format!(
@@ -414,18 +418,15 @@ impl NavDbOpenController {
     }
 
     fn selected_candidate_index(&self) -> Option<usize> {
-        self.statuses
-            .iter()
-            .enumerate()
-            .filter(|(_, status)| status.as_ref().is_some_and(|status| status.readable))
-            .map(|(index, _)| index)
-            .max_by(|left, right| {
-                compare_nav_db_candidates(
-                    &self.candidates[*left],
-                    &self.candidates[*right],
-                    self.now_epoch_ms,
-                )
-            })
+        select_preferred_effective_nav_db_candidate_index(
+            &self.candidates,
+            self.statuses
+                .iter()
+                .enumerate()
+                .filter(|(_, status)| status.as_ref().is_some_and(|status| status.readable))
+                .map(|(index, _)| index),
+            self.now_epoch_ms,
+        )
     }
 
     fn open_result(&self, index: usize) -> NavDbOpenResult {
@@ -442,6 +443,42 @@ impl NavDbOpenController {
             statuses: self.statuses.iter().filter_map(Clone::clone).collect(),
         }
     }
+}
+
+pub fn select_preferred_nav_db_candidate<'a>(
+    candidates: &'a [NavDbArtifactCandidate],
+    now_epoch_ms: i64,
+) -> Option<&'a NavDbArtifactCandidate> {
+    select_preferred_effective_nav_db_candidate_index(candidates, 0..candidates.len(), now_epoch_ms)
+        .and_then(|index| candidates.get(index))
+}
+
+fn select_preferred_effective_nav_db_candidate_index(
+    candidates: &[NavDbArtifactCandidate],
+    indexes: impl Iterator<Item = usize>,
+    now_epoch_ms: i64,
+) -> Option<usize> {
+    select_preferred_nav_db_candidate_index(
+        candidates,
+        indexes.filter(|index| {
+            candidates[*index]
+                .effective_date
+                .as_deref()
+                .and_then(parse_nav_db_timestamp)
+                .is_none_or(|effective| effective <= now_epoch_ms)
+        }),
+        now_epoch_ms,
+    )
+}
+
+fn select_preferred_nav_db_candidate_index(
+    candidates: &[NavDbArtifactCandidate],
+    indexes: impl Iterator<Item = usize>,
+    now_epoch_ms: i64,
+) -> Option<usize> {
+    indexes.max_by(|left, right| {
+        compare_nav_db_candidates(&candidates[*left], &candidates[*right], now_epoch_ms)
+    })
 }
 
 fn compare_nav_db_candidates(
@@ -2143,6 +2180,90 @@ pub(crate) fn project_flight_plan_route(
     project_flight_plan_route_with_resolver(&plan, |nav_ref, procedure_airport_id| {
         nav_ref_position(store, nav_ref, procedure_airport_id)
     })
+}
+
+pub(crate) fn rebuild_flight_plan_from_nav_kv(
+    store: &NavKvStore,
+    plan: &FlightPlan,
+) -> Result<FlightPlan, HadReadError> {
+    let plan = crate::build_flight_plan(plan.clone())?;
+    let mut missing_pages = HadReadPageCollector::default();
+    let mut replacements = Vec::new();
+
+    for airport_id in [
+        plan.departure.as_ref(),
+        plan.destination.as_ref(),
+        plan.alternate.as_ref(),
+    ]
+    .into_iter()
+    .flatten()
+    {
+        missing_pages.collect(nav_ref_position(
+            store,
+            &NavRef::Airport(airport_id.0.clone()),
+            None,
+        ))?;
+    }
+
+    for (component_index, component) in plan.route_components.iter().enumerate() {
+        match component {
+            RouteComponent::Waypoint { waypoint } => {
+                missing_pages.collect(nav_ref_position(store, waypoint, None))?;
+            }
+            RouteComponent::Airway { airway } => {
+                let branches = missing_pages.collect(read_required::<Vec<AirwayBranch>>(
+                    store,
+                    NavKvQuery::AirwayBranches {
+                        airway_name: airway.name.clone(),
+                    },
+                    "airway branches",
+                ))?;
+                if let Some(branches) = branches {
+                    let materialized = exact_airway_materialization(
+                        &airway.name,
+                        &branches,
+                        &airway.entry,
+                        &airway.exit,
+                        component_index,
+                    )?;
+                    replacements.push((
+                        component_index,
+                        RouteComponent::Airway {
+                            airway: materialized.airway,
+                        },
+                        materialized.resolved_legs,
+                    ));
+                }
+            }
+            RouteComponent::Procedure { procedure } => {
+                let materialized = missing_pages.collect(materialize_procedure(
+                    store,
+                    &procedure.airport_id.0,
+                    &procedure.procedure_id,
+                    procedure.kind.clone(),
+                    procedure.runway_transition.as_deref(),
+                    procedure.enroute_transition.as_deref(),
+                    component_index,
+                ))?;
+                if let Some(materialized) = materialized {
+                    replacements.push((
+                        component_index,
+                        RouteComponent::Procedure {
+                            procedure: materialized.procedure,
+                        },
+                        materialized.resolved_legs,
+                    ));
+                }
+            }
+        }
+    }
+
+    let pages = missing_pages.into_pages();
+    if !pages.is_empty() {
+        return Err(HadReadError::NeedPages(pages));
+    }
+    crate::planning::rebuild_plan_with_nav_materializations(&plan, replacements)
+        .map_err(HadReadError::from)
 }
 
 fn ensure_route_position_pages_loaded(
@@ -4141,32 +4262,35 @@ mod tests {
     fn nav_db_open_controller_skips_bad_candidate_and_selects_readable_root() {
         let contract = format!(r#"{{"contract_id":"{REQUIRED_NAV_DB_CONTRACT_ID}"}}"#);
         let (root_bytes, pages) = build_root(&[("contract/nav-db", contract.as_bytes())], 256);
-        let mut controller = NavDbOpenController::new(vec![
-            NavDbArtifactCandidate {
-                package_id: "NAV_DB_BAD".to_string(),
-                filename: "nav_db_bad.zip".to_string(),
-                contract_id: None,
-                cycle: None,
-                cycle_version: None,
-                effective_date: None,
-                expiration_date: None,
-                warning_text: None,
-                root_source: None,
-            },
-            NavDbArtifactCandidate {
-                package_id: "NAV_DB_GOOD".to_string(),
-                filename: "nav_db_good.zip".to_string(),
-                contract_id: None,
-                cycle: None,
-                cycle_version: None,
-                effective_date: None,
-                expiration_date: None,
-                warning_text: None,
-                root_source: Some(CoreResourceSource::PublicUrl {
-                    url: "https://example.test/nav_db/root".to_string(),
-                }),
-            },
-        ]);
+        let mut controller = NavDbOpenController::new_at_epoch_ms(
+            vec![
+                NavDbArtifactCandidate {
+                    package_id: "NAV_DB_BAD".to_string(),
+                    filename: "nav_db_bad.zip".to_string(),
+                    contract_id: None,
+                    cycle: None,
+                    cycle_version: None,
+                    effective_date: None,
+                    expiration_date: None,
+                    warning_text: None,
+                    root_source: None,
+                },
+                NavDbArtifactCandidate {
+                    package_id: "NAV_DB_GOOD".to_string(),
+                    filename: "nav_db_good.zip".to_string(),
+                    contract_id: None,
+                    cycle: None,
+                    cycle_version: None,
+                    effective_date: None,
+                    expiration_date: None,
+                    warning_text: None,
+                    root_source: Some(CoreResourceSource::PublicUrl {
+                        url: "https://example.test/nav_db/root".to_string(),
+                    }),
+                },
+            ],
+            0,
+        );
 
         match controller.step().expect("step bad candidate") {
             HadOperationOutcome::NeedResources { resources } => {
@@ -4251,19 +4375,22 @@ mod tests {
             "test fixture should exercise batched prefetch, got {:?}",
             root.prefetch_pages()
         );
-        let mut controller = NavDbOpenController::new(vec![NavDbArtifactCandidate {
-            package_id: "NAV_DB_GOOD".to_string(),
-            filename: "nav_db_good.zip".to_string(),
-            contract_id: None,
-            cycle: None,
-            cycle_version: None,
-            effective_date: None,
-            expiration_date: None,
-            warning_text: None,
-            root_source: Some(CoreResourceSource::PublicUrl {
-                url: "https://example.test/nav_db/root".to_string(),
-            }),
-        }]);
+        let mut controller = NavDbOpenController::new_at_epoch_ms(
+            vec![NavDbArtifactCandidate {
+                package_id: "NAV_DB_GOOD".to_string(),
+                filename: "nav_db_good.zip".to_string(),
+                contract_id: None,
+                cycle: None,
+                cycle_version: None,
+                effective_date: None,
+                expiration_date: None,
+                warning_text: None,
+                root_source: Some(CoreResourceSource::PublicUrl {
+                    url: "https://example.test/nav_db/root".to_string(),
+                }),
+            }],
+            0,
+        );
 
         match controller.step().expect("request root") {
             HadOperationOutcome::NeedResources { resources } => {
@@ -4356,19 +4483,35 @@ mod tests {
     }
 
     #[test]
+    fn nav_db_candidate_selection_rejects_future_only_candidate() {
+        let candidate = nav_db_candidate_for_selection_test(
+            "NAV_DB_2608",
+            "nav_db_2608.zip",
+            "2026-07-16T00:00:00Z",
+            "2026-08-13T00:00:00Z",
+        );
+        let now = parse_nav_db_timestamp("2026-07-15T23:59:59Z").expect("now");
+
+        assert!(select_preferred_nav_db_candidate(&[candidate], now).is_none());
+    }
+
+    #[test]
     fn nav_db_open_controller_rejects_missing_contract_id() {
         let (root_bytes, pages) = build_root(&[("vector/manifest", b"{}")], 256);
-        let mut controller = NavDbOpenController::new(vec![NavDbArtifactCandidate {
-            package_id: "NAV_DB_OLD".to_string(),
-            filename: "nav_db_old.zip".to_string(),
-            contract_id: None,
-            cycle: None,
-            cycle_version: None,
-            effective_date: None,
-            expiration_date: None,
-            warning_text: None,
-            root_source: None,
-        }]);
+        let mut controller = NavDbOpenController::new_at_epoch_ms(
+            vec![NavDbArtifactCandidate {
+                package_id: "NAV_DB_OLD".to_string(),
+                filename: "nav_db_old.zip".to_string(),
+                contract_id: None,
+                cycle: None,
+                cycle_version: None,
+                effective_date: None,
+                expiration_date: None,
+                warning_text: None,
+                root_source: None,
+            }],
+            0,
+        );
         controller
             .ingest_resource("nav_db/artifact/0/root", &root_bytes)
             .expect("ingest root");

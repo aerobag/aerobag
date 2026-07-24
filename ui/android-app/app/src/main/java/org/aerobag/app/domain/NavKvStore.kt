@@ -5,7 +5,9 @@
 package org.aerobag.app.domain
 
 import android.content.Context
-import android.os.SystemClock
+import java.util.concurrent.locks.ReentrantReadWriteLock
+import kotlin.concurrent.read
+import kotlin.concurrent.write
 import kotlinx.serialization.SerialName
 import kotlinx.serialization.KSerializer
 import kotlinx.serialization.Serializable
@@ -116,13 +118,22 @@ private data class WireNavDbOpenResult(
     val selectedFilename: String,
 )
 
+private data class NavKvBackend(
+    val handle: Long,
+    val navDbArtifact: InstalledPackageArtifact,
+    val loadedPages: MutableSet<Int> = mutableSetOf(),
+    val pageLock: Any = Any(),
+)
+
 class NavKvStore private constructor(
     private val bridge: NativeBridge,
     private val json: Json,
-    private val handle: Long,
-    private val navDbArtifact: InstalledPackageArtifact,
+    initialBackend: NavKvBackend,
 ) : AutoCloseable {
-    private val loadedPages = mutableSetOf<Int>()
+    private val backendLock = ReentrantReadWriteLock(true)
+    private var backend = initialBackend
+    private var closed = false
+    private val attachedSessionHandles = linkedSetOf<Long>()
 
     companion object {
         private const val TAG = "NavKvStore"
@@ -160,7 +171,18 @@ class NavKvStore private constructor(
                 encodeDefaults = true
                 ignoreUnknownKeys = true
             },
-        ): NavKvStore {
+        ): NavKvStore = NavKvStore(
+            bridge = bridge,
+            json = json,
+            initialBackend = openBackend(artifacts, libraryCacheJson, bridge, json),
+        )
+
+        private fun openBackend(
+            artifacts: List<InstalledPackageArtifact>,
+            libraryCacheJson: String,
+            bridge: NativeBridge,
+            json: Json,
+        ): NavKvBackend {
             val artifactsByFilename = artifacts.associateBy { it.filename }
             val controllerHandle = bridge.navDbOpenControllerCreateFromInstalledArtifacts(
                 json.encodeToString(artifacts.map { it.toWireInstalledArtifact() }),
@@ -178,9 +200,7 @@ class NavKvStore private constructor(
                             )
                             val selectedArtifact = artifactsByFilename[finish.openResult.selectedFilename]
                                 ?: error("core selected unknown nav_db artifact ${finish.openResult.selectedFilename}")
-                            return NavKvStore(
-                                bridge = bridge,
-                                json = json,
+                            return NavKvBackend(
                                 handle = finish.navKvHandle,
                                 navDbArtifact = selectedArtifact,
                             )
@@ -235,15 +255,103 @@ class NavKvStore private constructor(
             )
     }
 
-    fun runCoreOperationElement(operation: JsonObject): JsonElement {
+    fun replaceInstalledArtifacts(
+        artifacts: List<InstalledPackageArtifact>,
+        libraryCacheJson: String,
+        sessionHandle: Long,
+        plannedGcFilenames: Set<String> = emptySet(),
+    ): PagedSessionOperationResult {
+        val nextBackend = openBackend(artifacts, libraryCacheJson, bridge, json)
+        var previousBackend: NavKvBackend? = null
+        try {
+            val installedPackageIdsJson = json.encodeToString(
+                artifacts
+                    .filterNot { it.filename in plannedGcFilenames }
+                    .map { it.artifactId }
+                    .distinct()
+                    .sorted(),
+            )
+            while (true) {
+                val outcome = backendLock.write {
+                    check(!closed) { "nav_kv store is closed" }
+                    check(attachedSessionHandles == setOf(sessionHandle)) {
+                        "NAVDB advance requires exactly the attached target session"
+                    }
+                    val parsed = json.parseToJsonElement(
+                        bridge.advanceNavKvStoreInSessionJson(
+                            nextBackend.handle,
+                            sessionHandle,
+                            installedPackageIdsJson,
+                        ),
+                    ).jsonObject
+                    if (parsed.getValue("state").jsonPrimitive.content == "complete") {
+                        when (parsed.getValue("result").jsonObject
+                            .getValue("disposition").jsonPrimitive.content) {
+                            "adopted" -> {
+                                previousBackend = backend
+                                backend = nextBackend
+                            }
+                            "rejected" -> Unit
+                            else -> error("unknown NAVDB advance disposition")
+                        }
+                    }
+                    parsed
+                }
+                when (val state = outcome.getValue("state").jsonPrimitive.content) {
+                    "complete" -> {
+                        val result = PagedSessionOperationResult(
+                            result = outcome["result"] ?: JsonNull,
+                            invalidations = outcome["invalidations"]
+                                ?.jsonArray
+                                ?.map { it.jsonPrimitive.content }
+                                ?: emptyList(),
+                        )
+                        if (previousBackend == null) {
+                            bridge.navKvDestroy(nextBackend.handle)
+                        } else {
+                            previousBackend?.let { bridge.navKvDestroy(it.handle) }
+                        }
+                        return result
+                    }
+                    "need_resources" -> {
+                        var loadedAnyResource = false
+                        for (resource in parseCoreResourceRequests(outcome)) {
+                            require(resource.id.startsWith("nav_kv/page/")) {
+                                "NAVDB advance requested non-NAVKV resource ${resource.id}"
+                            }
+                            loadedAnyResource = ensureNavKvResource(nextBackend, resource) || loadedAnyResource
+                        }
+                        check(loadedAnyResource) {
+                            "NAVDB advance requested only already-loaded resources"
+                        }
+                    }
+                    else -> error("unknown NAVDB advance state: $state")
+                }
+            }
+        } catch (error: Throwable) {
+            if (previousBackend == null) {
+                bridge.navKvDestroy(nextBackend.handle)
+            }
+            throw error
+        }
+    }
+
+    fun runCoreOperationElement(operation: JsonObject): JsonElement = backendLock.read {
+        check(!closed) { "nav_kv store is closed" }
+        runCoreOperationElement(backend, operation)
+    }
+
+    private fun runCoreOperationElement(activeBackend: NavKvBackend, operation: JsonObject): JsonElement {
         while (true) {
-            val outcome = json.parseToJsonElement(bridge.coreHadOperation(handle, operation.toString())).jsonObject
+            val outcome = json.parseToJsonElement(
+                bridge.coreHadOperation(activeBackend.handle, operation.toString()),
+            ).jsonObject
             return when (val state = outcome.getValue("state").jsonPrimitive.content) {
                 "complete" -> outcome["result"] ?: JsonNull
                 "need_resources" -> {
                     var loadedAnyResource = false
                     for (resource in parseCoreResourceRequests(outcome)) {
-                        loadedAnyResource = ensureNavKvResource(resource) || loadedAnyResource
+                        loadedAnyResource = ensureNavKvResource(activeBackend, resource) || loadedAnyResource
                     }
                     if (!loadedAnyResource) {
                         error("HAD operation requested only already-loaded resources")
@@ -273,6 +381,25 @@ class NavKvStore private constructor(
         drainSessionResourceEffects: (() -> String)? = null,
         resumeSnapshot: (() -> String)? = null,
         operation: () -> String,
+    ): PagedSessionOperationResult = backendLock.read {
+        check(!closed) { "nav_kv store is closed" }
+        runPagedSessionOperation(
+            activeBackend = backend,
+            fetchSessionResource = fetchSessionResource,
+            ingestSessionResource = ingestSessionResource,
+            drainSessionResourceEffects = drainSessionResourceEffects,
+            resumeSnapshot = resumeSnapshot,
+            operation = operation,
+        )
+    }
+
+    private fun runPagedSessionOperation(
+        activeBackend: NavKvBackend,
+        fetchSessionResource: ((CoreResourceRequest) -> ByteArray)?,
+        ingestSessionResource: ((CoreResourceRequest, ByteArray) -> Unit)?,
+        drainSessionResourceEffects: (() -> String)?,
+        resumeSnapshot: (() -> String)?,
+        operation: () -> String,
     ): PagedSessionOperationResult {
         var activeOperation = operation
         val pendingInvalidations = linkedSetOf<String>()
@@ -283,6 +410,7 @@ class NavKvStore private constructor(
                     val effectInvalidations = drainSessionResourceEffects
                         ?.let {
                             pumpSessionResourceEffects(
+                                activeBackend = activeBackend,
                                 drainSessionResourceEffects = it,
                                 fetchSessionResource = fetchSessionResource,
                                 ingestSessionResource = ingestSessionResource,
@@ -312,7 +440,7 @@ class NavKvStore private constructor(
                     var loadedAnyResource = false
                     for (resource in parseCoreResourceRequests(outcome)) {
                         if (resource.id.startsWith("nav_kv/page/")) {
-                            loadedAnyResource = ensureNavKvResource(resource) || loadedAnyResource
+                            loadedAnyResource = ensureNavKvResource(activeBackend, resource) || loadedAnyResource
                         } else {
                             val fetch = fetchSessionResource
                                 ?: error("session resource requested without fetcher: ${resource.id}")
@@ -348,6 +476,21 @@ class NavKvStore private constructor(
         drainSessionResourceEffects: () -> String,
         fetchSessionResource: ((CoreResourceRequest) -> ByteArray)? = null,
         ingestSessionResource: ((CoreResourceRequest, ByteArray) -> Unit)? = null,
+    ): List<String> = backendLock.read {
+        check(!closed) { "nav_kv store is closed" }
+        pumpSessionResourceEffects(
+            activeBackend = backend,
+            drainSessionResourceEffects = drainSessionResourceEffects,
+            fetchSessionResource = fetchSessionResource,
+            ingestSessionResource = ingestSessionResource,
+        )
+    }
+
+    private fun pumpSessionResourceEffects(
+        activeBackend: NavKvBackend,
+        drainSessionResourceEffects: () -> String,
+        fetchSessionResource: ((CoreResourceRequest) -> ByteArray)?,
+        ingestSessionResource: ((CoreResourceRequest, ByteArray) -> Unit)?,
     ): List<String> {
         val invalidations = linkedSetOf<String>()
         while (true) {
@@ -358,6 +501,7 @@ class NavKvStore private constructor(
             for (effect in effects) {
                 try {
                     ensureSessionEffectResource(
+                        activeBackend = activeBackend,
                         resource = effect.resource,
                         fetchSessionResource = fetchSessionResource,
                         ingestSessionResource = ingestSessionResource,
@@ -385,12 +529,13 @@ class NavKvStore private constructor(
         }
 
     private fun ensureSessionEffectResource(
+        activeBackend: NavKvBackend,
         resource: CoreResourceRequest,
         fetchSessionResource: ((CoreResourceRequest) -> ByteArray)?,
         ingestSessionResource: ((CoreResourceRequest, ByteArray) -> Unit)?,
     ) {
         if (resource.id.startsWith("nav_kv/page/")) {
-            ensureNavKvResource(resource)
+            ensureNavKvResource(activeBackend, resource)
             return
         }
         val fetch = fetchSessionResource
@@ -416,50 +561,65 @@ class NavKvStore private constructor(
         json.decodeFromJsonElement(serializer, runCoreOperationElement(operation))
 
     fun attachToSession(sessionHandle: Long) {
-        bridge.attachNavKvStoreToSession(handle, sessionHandle)
+        backendLock.write {
+            check(!closed) { "nav_kv store is closed" }
+            bridge.attachNavKvStoreToSession(backend.handle, sessionHandle)
+            attachedSessionHandles.add(sessionHandle)
+        }
     }
 
-    private fun ensureNavKvResource(resource: CoreResourceRequest): Boolean {
+    private fun ensureNavKvResource(activeBackend: NavKvBackend, resource: CoreResourceRequest): Boolean {
         val pageIndex = resource.id.removePrefix("nav_kv/page/").toIntOrNull()
             ?: error("unsupported nav_kv resource id: ${resource.id}")
-        return ensurePage(pageIndex, resource)
+        return ensurePage(activeBackend, pageIndex, resource)
     }
 
-    @Synchronized
-    private fun ensurePage(pageIndex: Int, resource: CoreResourceRequest): Boolean {
-        if (loadedPages.contains(pageIndex)) {
-            return false
+    private fun ensurePage(
+        activeBackend: NavKvBackend,
+        pageIndex: Int,
+        resource: CoreResourceRequest,
+    ): Boolean = synchronized(activeBackend.pageLock) {
+        if (activeBackend.loadedPages.contains(pageIndex)) {
+            return@synchronized false
         }
-        val startMs = SystemClock.elapsedRealtime()
+        val startMs = System.nanoTime() / 1_000_000L
         val source = resource.source
         require(source is CoreResourceSource.NavKvMember && source.memberPath.isNotBlank()) {
             "Android nav_kv paging expected nav_kv_member for ${resource.id}, got ${source.kindForLog()}"
         }
         try {
-            val pageBytes = InstalledPackages.readZipEntryBytes(navDbArtifact.file, source.memberPath)
-            bridge.navKvInsertResource(handle, resource.id, pageBytes)
-            loadedPages.add(pageIndex)
+            val pageBytes = InstalledPackages.readZipEntryBytes(activeBackend.navDbArtifact.file, source.memberPath)
+            bridge.navKvInsertResource(activeBackend.handle, resource.id, pageBytes)
+            activeBackend.loadedPages.add(pageIndex)
         } catch (error: Throwable) {
             diagnosticLogInfo(TAG) {
                 "ensurePage($pageIndex) failed resource=${resource.id} source=${source.describeForLog()}: ${error.message}"
             }
             throw error
         }
-        val elapsedMs = SystemClock.elapsedRealtime() - startMs
+        val elapsedMs = (System.nanoTime() / 1_000_000L) - startMs
         if (elapsedMs >= 10) {
             perfLogInfo(TAG) { "ensurePage($pageIndex) took ${elapsedMs}ms" }
         }
-        return true
+        true
     }
 
-    @Synchronized
     fun debugDropAttachedSessionPages() {
-        bridge.debugDropNavKvPagesForAttachedSessions(handle)
-        loadedPages.clear()
+        backendLock.write {
+            check(!closed) { "nav_kv store is closed" }
+            bridge.debugDropNavKvPagesForAttachedSessions(backend.handle)
+            backend.loadedPages.clear()
+        }
     }
 
     override fun close() {
-        bridge.navKvDestroy(handle)
+        val closedBackend = backendLock.write {
+            if (closed) return
+            closed = true
+            attachedSessionHandles.clear()
+            backend
+        }
+        bridge.navKvDestroy(closedBackend.handle)
     }
 }
 

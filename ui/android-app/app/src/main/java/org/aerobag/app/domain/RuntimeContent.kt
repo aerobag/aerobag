@@ -15,11 +15,35 @@ data class RuntimeBootstrap(
     val packageManagementNowEpochMsOverride: Long?,
 )
 
-data class RuntimeContent(
+class RuntimeContent(
     val bootstrap: RuntimeBootstrap,
     val navKvStore: NavKvStore,
-    val installedPackageIds: List<String>,
-)
+    installedPackageIds: List<String>,
+) {
+    var installedPackageIds: List<String> = installedPackageIds
+        private set
+
+    fun replaceInstalledArtifacts(
+        context: Context,
+        libraryCacheJson: String,
+        uiSession: NativeUiSession,
+        plannedGcFilenames: Set<String>,
+    ): NavDbAdvanceUiResult {
+        val installedArtifacts = InstalledPackages.listInstalledArtifacts(context.applicationContext)
+        val result = uiSession.advanceInstalledArtifacts(
+            installedArtifacts,
+            libraryCacheJson,
+            plannedGcFilenames,
+        )
+        installedArtifacts
+            .filterNot { it.filename in plannedGcFilenames && it.filename !in result.retainedArtifactFilenames }
+            .map { it.artifactId }
+            .distinct()
+            .sorted()
+            .also { installedPackageIds = it }
+        return result
+    }
+}
 
 @Serializable
 private data class WireDevBootstrap(

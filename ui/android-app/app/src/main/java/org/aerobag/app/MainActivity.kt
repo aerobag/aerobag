@@ -97,6 +97,7 @@ import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.key
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableLongStateOf
 import androidx.compose.runtime.mutableStateOf
@@ -2145,6 +2146,7 @@ internal fun DisclaimerConsentModal(
 }
 
 internal data class UiInvalidationRevisions(
+    val navData: Int = 0,
     val sessionSnapshot: Int = 0,
     val rasterTiles: Int = 0,
     val mapOverlay: Int = 0,
@@ -2156,6 +2158,7 @@ internal data class UiInvalidationRevisions(
     fun bumped(invalidations: List<String>): UiInvalidationRevisions =
         invalidations.fold(this) { revisions, invalidation ->
             when (invalidation) {
+                "nav_data" -> revisions.copy(navData = revisions.navData + 1)
                 "session_snapshot" -> revisions.copy(sessionSnapshot = revisions.sessionSnapshot + 1)
                 "raster_tiles" -> revisions.copy(rasterTiles = revisions.rasterTiles + 1)
                 "map_overlay" -> revisions.copy(mapOverlay = revisions.mapOverlay + 1)
@@ -2504,6 +2507,58 @@ internal fun AerobagApp(
     }
     var chartViewport by remember { mutableStateOf<org.aerobag.app.domain.ImageViewportState?>(null) }
     var chartAssetDataRevision by remember { mutableIntStateOf(0) }
+    suspend fun replaceInstalledPackageArtifacts(
+        libraryCacheJson: String,
+        plannedGcFilenames: Set<String>,
+    ): Set<String> {
+        val result = fixture.replaceInstalledArtifacts(
+            appContext,
+            libraryCacheJson,
+            uiSession,
+            plannedGcFilenames,
+        )
+        withContext(Dispatchers.Main) {
+            applySessionSnapshot(result.snapshot)
+            chartAssetDataRevision = chartAssetDataRevision + 1
+        }
+        return result.retainedArtifactFilenames
+    }
+    suspend fun maintainNavDb(nowEpochMs: Long) {
+        val maintenance = withContext(Dispatchers.IO) {
+            uiSession.maintainNavDb(nowEpochMs)
+        }
+        withContext(Dispatchers.Main) {
+            applySessionSnapshot(maintenance.snapshot)
+        }
+        if (!maintenance.shouldAttemptAdvance) {
+            return
+        }
+        val libraryCacheJson = readOfflinePackagesLibraryCacheJson(prefs)
+        check(libraryCacheJson.isNotBlank()) {
+            "core requested NAVDB advance without a cached package catalog"
+        }
+        replaceInstalledPackageArtifacts(libraryCacheJson, emptySet())
+    }
+    LaunchedEffect(uiSession, sessionSnapshot.nextNavDbMaintenanceEpochMs) {
+        val nextCheckEpochMs = sessionSnapshot.nextNavDbMaintenanceEpochMs
+            ?: return@LaunchedEffect
+        delay((nextCheckEpochMs - System.currentTimeMillis()).coerceAtLeast(0L))
+        while (true) {
+            try {
+                maintainNavDb(System.currentTimeMillis())
+                val nextDeadline = uiSession.snapshot.nextNavDbMaintenanceEpochMs
+                if (nextDeadline == null || nextDeadline > System.currentTimeMillis()) {
+                    return@LaunchedEffect
+                }
+                delay(60_000)
+            } catch (error: CancellationException) {
+                throw error
+            } catch (error: Throwable) {
+                Log.w("AerobagNavDb", "scheduled NAVDB maintenance failed; retrying", error)
+                delay(60_000)
+            }
+        }
+    }
     var chartFolderOpen by remember { mutableStateOf(false) }
     var pageTilePaintTiming by remember { mutableStateOf<PageTilePaintTiming?>(null) }
     var nextPageTilePaintTimingId by remember { mutableStateOf(1L) }
@@ -2821,7 +2876,8 @@ internal fun AerobagApp(
         Box(modifier = Modifier.fillMaxSize()) {
             when (page) {
                 AppPage.Map -> {
-                    MapExplorerPage(
+                    key(sessionSnapshot.navDataEpoch) {
+                        MapExplorerPage(
                         appCore = appCore,
                         page = page,
                         pageHistory = pageHistory,
@@ -2861,6 +2917,7 @@ internal fun AerobagApp(
                                 debugLayerNavKvFaultsRemaining -= 1
                             }
                         },
+                        onReloadApplication = { requestRuntimeReload(AppPage.Map) },
                         onSelectOwnshipSource = ::selectOwnshipSource,
                         onSituationControlInput = { input ->
                             applySessionCommand("applySituationControlInput") {
@@ -2914,7 +2971,8 @@ internal fun AerobagApp(
                         navElement = navElement,
                         plan = currentPlan,
                         planUiState = sessionPlanUiState,
-                    )
+                        )
+                    }
                 }
                 AppPage.Plan -> {
                     FlightPlanPage(
@@ -2973,8 +3031,12 @@ internal fun AerobagApp(
                         onSelectPage = ::navigateToPage,
                         onOpenPlan = { navigateToPage(AppPage.Plan) },
                         onStatusAction = { actionId ->
-                            applySessionCommand("performStatusAction") {
-                                uiSession.performStatusAction(actionId)
+                            if (actionId == "app:reload") {
+                                requestRuntimeReload(AppPage.Map)
+                            } else {
+                                applySessionCommand("performStatusAction") {
+                                    uiSession.performStatusAction(actionId)
+                                }
                             }
                         },
                         onSelectAirport = { airportId ->
@@ -3048,8 +3110,8 @@ internal fun AerobagApp(
                                 uiSession.loadOfflinePackageLibraryCache(cacheJson)
                             }
                         },
-                        onOfflinePackageArtifactsChanged = {
-                            chartAssetDataRevision = chartAssetDataRevision + 1
+                        onOfflinePackageArtifactsChanged = { libraryCacheJson, plannedGcFilenames ->
+                            replaceInstalledPackageArtifacts(libraryCacheJson, plannedGcFilenames)
                         },
                     )
                 }
@@ -3071,8 +3133,8 @@ internal fun AerobagApp(
                                 uiSession.loadOfflinePackageLibraryCache(cacheJson)
                             }
                         },
-                        onOfflinePackageArtifactsChanged = {
-                            chartAssetDataRevision = chartAssetDataRevision + 1
+                        onOfflinePackageArtifactsChanged = { libraryCacheJson, plannedGcFilenames ->
+                            replaceInstalledPackageArtifacts(libraryCacheJson, plannedGcFilenames)
                         },
                     )
                 }

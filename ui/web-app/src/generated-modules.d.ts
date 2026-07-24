@@ -104,6 +104,8 @@ declare module "@generated/app_wasm.js" {
   export const nav_kv_prefetch_pages: (...args: unknown[]) => string;
   export const nav_kv_destroy: (...args: unknown[]) => void;
   export const attach_nav_kv_store_to_session: (...args: unknown[]) => void;
+  export const advance_nav_kv_store_in_session: (...args: unknown[]) => string;
+  export const maintain_nav_db_in_session_at_epoch_ms: (...args: unknown[]) => string;
   export const core_had_operation: (...args: unknown[]) => string;
   export const resolve_metar_manifest_in_session: (...args: unknown[]) => string;
   export const resolve_nav_db_artifact_candidates_in_session: (...args: unknown[]) => string;

@@ -751,6 +751,15 @@ pub fn get_session_snapshot_at_epoch_ms_paged_json(
     serde_json::to_string(&outcome).map_err(|err| err.to_string())
 }
 
+pub fn maintain_nav_db_in_session_at_epoch_ms_json(
+    handle: u64,
+    epoch_ms: i64,
+) -> Result<String, String> {
+    let outcome = app_core::maintain_nav_db_in_session_at_epoch_ms(handle as u32, epoch_ms)
+        .map_err(|err| err.to_string())?;
+    serde_json::to_string(&outcome).map_err(|err| err.to_string())
+}
+
 pub fn restore_chart_page_state_in_session_json(
     handle: u64,
     recent_airport_ids_json: &str,
@@ -1850,6 +1859,34 @@ pub fn attach_nav_kv_store_to_session_json(
         store.open_result.as_ref(),
     )
     .map_err(|err| err.to_string())
+}
+
+pub fn advance_nav_kv_store_in_session_json(
+    nav_kv_handle: u64,
+    session_handle: u64,
+    installed_package_ids_json: &str,
+) -> Result<String, String> {
+    let installed_package_ids: Vec<String> =
+        serde_json::from_str(installed_package_ids_json).map_err(|err| err.to_string())?;
+    let stores = nav_kv_stores()
+        .lock()
+        .map_err(|_| "nav kv store poisoned".to_string())?;
+    let stored = stores
+        .get(&(nav_kv_handle as u32))
+        .ok_or_else(|| format!("invalid nav kv handle: {nav_kv_handle}"))?;
+    let open_result = stored
+        .open_result
+        .as_ref()
+        .ok_or_else(|| "candidate nav kv store has no artifact identity".to_string())?;
+    let outcome = app_core::advance_nav_kv_store_in_session_with_open_result(
+        session_handle as u32,
+        nav_kv_handle as u32,
+        &stored.store,
+        open_result,
+        installed_package_ids,
+    )
+    .map_err(|err| err.to_string())?;
+    serde_json::to_string(&outcome).map_err(|err| err.to_string())
 }
 
 pub fn nav_kv_destroy_handle(handle: u64) {
@@ -3519,6 +3556,19 @@ pub extern "system" fn Java_org_aerobag_app_domain_NativeBindings_getSessionSnap
 }
 
 #[unsafe(no_mangle)]
+pub extern "system" fn Java_org_aerobag_app_domain_NativeBindings_maintainNavDbInSessionAtEpochMsJson(
+    mut env: JNIEnv,
+    _class: JClass,
+    handle: i64,
+    epoch_ms: i64,
+) -> jstring {
+    return_string(
+        &mut env,
+        maintain_nav_db_in_session_at_epoch_ms_json(handle as u64, epoch_ms),
+    )
+}
+
+#[unsafe(no_mangle)]
 pub extern "system" fn Java_org_aerobag_app_domain_NativeBindings_restoreChartPageStateInSessionJson(
     mut env: JNIEnv,
     _class: JClass,
@@ -4176,6 +4226,25 @@ pub extern "system" fn Java_org_aerobag_app_domain_NativeBindings_attachNavKvSto
     {
         let _ = env.throw_new("java/lang/RuntimeException", message);
     }
+}
+
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_org_aerobag_app_domain_NativeBindings_advanceNavKvStoreInSessionJson(
+    mut env: JNIEnv,
+    _class: JClass,
+    nav_kv_handle: i64,
+    session_handle: i64,
+    installed_package_ids_json: JString,
+) -> jstring {
+    let result = (|| {
+        let installed_package_ids_json = get_java_string(&mut env, installed_package_ids_json)?;
+        advance_nav_kv_store_in_session_json(
+            nav_kv_handle as u64,
+            session_handle as u64,
+            &installed_package_ids_json,
+        )
+    })();
+    return_string(&mut env, result)
 }
 
 #[unsafe(no_mangle)]

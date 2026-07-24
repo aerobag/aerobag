@@ -96,6 +96,13 @@ describe("loadBestAvailableAdapter", () => {
       create_ui_session: async (_planJson: string, _recentAirportIdsJson: string, _selectedAirportIdJson: string, _selectedChartIdJson: string, _nowEpochMs: number) => {
         return JSON.stringify({ handle: 1, snapshot: JSON.parse(snapshotJson) });
       },
+      maintain_nav_db_in_session_at_epoch_ms: async () => JSON.stringify({
+        state: "complete",
+        result: {
+          action: "none",
+          snapshot: JSON.parse(snapshotJson),
+        },
+      }),
       perform_map_selection_action_in_session: async () => JSON.stringify({ state: "complete", result: JSON.parse(snapshotJson) }),
       set_situation_in_session_paged: async () => JSON.stringify({ state: "complete", result: JSON.parse(snapshotJson) }),
       tick_bad_autopilot_in_session_paged: async () => JSON.stringify({ state: "complete", result: JSON.parse(snapshotJson) }),

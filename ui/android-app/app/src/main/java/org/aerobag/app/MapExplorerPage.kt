@@ -601,6 +601,7 @@ internal fun MapExplorerPage(
     onSessionSnapshotChange: (UiSessionSnapshot) -> Unit,
     onSessionCommandFailure: (Throwable) -> Unit,
     onBeforeMapLayerCommand: () -> Unit,
+    onReloadApplication: () -> Unit,
     onSelectOwnshipSource: (String) -> Unit,
     onSituationControlInput: (SituationControlInput) -> Unit,
     onPlaybackSourcePathChange: (String) -> Unit,
@@ -616,6 +617,11 @@ internal fun MapExplorerPage(
     val context = LocalContext.current
     val activity = context as? MainActivity
     val density = LocalDensity.current
+    val navDataEpoch = sessionSnapshot.navDataEpoch
+    val latestNavDataEpoch = rememberUpdatedState(navDataEpoch)
+    LaunchedEffect(navDataEpoch) {
+        decodedTileBitmapCache.clear()
+    }
     val json = remember { Json { ignoreUnknownKeys = true } }
     val sessionWorkRunner = remember(uiSession) { UiSessionWorkRunner(uiSession) }
     DisposableEffect(sessionWorkRunner) {
@@ -648,7 +654,7 @@ internal fun MapExplorerPage(
     var mapSurfaceBounds by remember { mutableStateOf<Rect?>(null) }
     var mapSelectionTrayBounds by remember { mutableStateOf<Rect?>(null) }
     var surfaceSize by remember { mutableStateOf(IntSize.Zero) }
-    var committedMapOverlay by remember(uiSession) {
+    var committedMapOverlay by remember(uiSession, navDataEpoch) {
         mutableStateOf(
             MapOverlayQueryResult(
                 visibleFeatures = emptyList(),
@@ -661,9 +667,9 @@ internal fun MapExplorerPage(
             ),
         )
     }
-    var committedOverlayViewport by remember(uiSession) { mutableStateOf<MapViewportState?>(null) }
-    var committedOverlaySurfaceUnits by remember(uiSession) { mutableStateOf<OverlaySurfaceUnits?>(null) }
-    var mapOverlayError by remember(uiSession) { mutableStateOf<String?>(null) }
+    var committedOverlayViewport by remember(uiSession, navDataEpoch) { mutableStateOf<MapViewportState?>(null) }
+    var committedOverlaySurfaceUnits by remember(uiSession, navDataEpoch) { mutableStateOf<OverlaySurfaceUnits?>(null) }
+    var mapOverlayError by remember(uiSession, navDataEpoch) { mutableStateOf<String?>(null) }
     var nexradFrame by remember(uiSession) { mutableStateOf<NexradOverlayFrame?>(null) }
     var terrainOverlay by remember(uiSession) { mutableStateOf<List<TerrainOverlayImage>>(emptyList()) }
     var terrainOverlayError by remember(uiSession) { mutableStateOf<String?>(null) }
@@ -695,7 +701,7 @@ internal fun MapExplorerPage(
             nexradViewportRefreshRequests.close()
         }
     }
-    var flightPlanRoute by remember(plan.id, plan.version) { mutableStateOf<List<FlightPlanRouteSegment>>(emptyList()) }
+    var flightPlanRoute by remember(plan.id, plan.version, navDataEpoch) { mutableStateOf<List<FlightPlanRouteSegment>>(emptyList()) }
     var mapGestureActive by remember { mutableStateOf(false) }
     val selectedMapId = selectedMap.selectedMapId
     val selectedFamilyId = selectedMap.selectedFamilyId
@@ -1533,7 +1539,7 @@ internal fun MapExplorerPage(
             typeface = android.graphics.Typeface.create(android.graphics.Typeface.DEFAULT_BOLD, android.graphics.Typeface.BOLD)
         }
     }
-    val tileBitmapCache = remember(selectedMapId, debugState.fastTiles) {
+    val tileBitmapCache = remember(selectedMapId, debugState.fastTiles, navDataEpoch) {
         mutableStateMapOf<org.aerobag.app.domain.RenderTileKey, androidx.compose.ui.graphics.ImageBitmap?>()
     }
     val visibleTileKeys = remember(tiles) {
@@ -1541,10 +1547,10 @@ internal fun MapExplorerPage(
     }
     val latestVisibleTileKeysState = rememberUpdatedState(visibleTileKeys)
     val rasterTileBitmapLoaderScope = rememberCoroutineScope()
-    val rasterTileBitmapLoader = remember(context.applicationContext, rasterTileBitmapLoaderScope) {
+    val rasterTileBitmapLoader = remember(context.applicationContext, rasterTileBitmapLoaderScope, navDataEpoch) {
         RasterTileBitmapLoader(context.applicationContext, rasterTileBitmapLoaderScope)
     }
-    val rasterTileLoadRequests = remember { Channel<RasterTileLoadRequest>(Channel.CONFLATED) }
+    val rasterTileLoadRequests = remember(navDataEpoch) { Channel<RasterTileLoadRequest>(Channel.CONFLATED) }
     var nextRasterTileLoadRequestId by remember { mutableLongStateOf(1L) }
     var latestRasterTileLoadRequestId by remember { mutableLongStateOf(0L) }
     val latestRasterTileLoadRequestIdState = rememberUpdatedState(latestRasterTileLoadRequestId)
@@ -1554,14 +1560,14 @@ internal fun MapExplorerPage(
             rasterTileBitmapLoader.close()
         }
     }
-    LaunchedEffect(tiles, selectedMapId, debugState.fastTiles) {
+    LaunchedEffect(tiles, selectedMapId, debugState.fastTiles, navDataEpoch) {
         val staleLocalKeys = tileBitmapCache.keys.filter { key -> key !in visibleTileKeys }
         staleLocalKeys.forEach { key -> tileBitmapCache.remove(key) }
         var decodedCacheHits = 0
         tiles.forEach { tile ->
             val renderKey = renderTileKey(tile)
             if (!tileBitmapCache.containsKey(renderKey)) {
-                val bitmap = decodedTileBitmapCache.get(decodedTileCacheKey(tile))
+                val bitmap = decodedTileBitmapCache.get(decodedTileCacheKey(tile, navDataEpoch))
                 if (bitmap != null) {
                     tileBitmapCache[renderKey] = bitmap
                     decodedCacheHits += 1
@@ -1604,7 +1610,8 @@ internal fun MapExplorerPage(
             Log.w(TileBudgetLogTag, "tile-load-request-drop request=$requestId map=$selectedMapId")
         }
     }
-    LaunchedEffect(rasterTileBitmapLoader, tileBitmapCache, selectedMapId, debugState.fastTiles) {
+    LaunchedEffect(rasterTileBitmapLoader, tileBitmapCache, selectedMapId, debugState.fastTiles, navDataEpoch) {
+        val loadEpoch = navDataEpoch
         for (initialRequest in rasterTileLoadRequests) {
             var request = initialRequest
             while (true) {
@@ -1620,14 +1627,14 @@ internal fun MapExplorerPage(
                         generationId,
                         request.missingTiles,
                     ) { loaded ->
-                        if (request.id != latestRasterTileLoadRequestIdState.value || loaded.result.key !in latestVisibleTileKeysState.value) {
+                        if (loadEpoch != latestNavDataEpoch.value || request.id != latestRasterTileLoadRequestIdState.value || loaded.result.key !in latestVisibleTileKeysState.value) {
                             return@loadVisibleTileBitmaps
                         }
                         tileBitmapCache[loaded.result.key] = loaded.result.bitmap
                         val bitmap = loaded.result.bitmap
                         if (bitmap != null) {
                             loadedThisPassCount += 1
-                            decodedTileBitmapCache.put(decodedTileCacheKey(loaded.tile), bitmap, loaded.result.decodedBytes)
+                            decodedTileBitmapCache.put(decodedTileCacheKey(loaded.tile, loadEpoch), bitmap, loaded.result.decodedBytes)
                         } else {
                             Log.w(
                                 TileBudgetLogTag,
@@ -1791,7 +1798,7 @@ internal fun MapExplorerPage(
         situationTrayOpen = false
         mapSelection = null
     }
-    LaunchedEffect(uiSession, plan.id, plan.version, plan.guidance, plan.resolvedLegs, uiInvalidationRevisions.flightPlanRoute) {
+    LaunchedEffect(uiSession, navDataEpoch, plan.id, plan.version, plan.guidance, plan.resolvedLegs, uiInvalidationRevisions.flightPlanRoute) {
         runCatching {
             uiSession.projectFlightPlanRoute()
         }.onSuccess {
@@ -1848,7 +1855,7 @@ internal fun MapExplorerPage(
             updateViewport(nextViewport, syncFollow = false)
         }
     }
-    LaunchedEffect(uiSession, liveFeedGeneration, uiInvalidationRevisions.mapOverlay, currentViewport, surfaceSize, density.density, mapLayerState.vectors.visible, mapLayerState.metars.visible, mapLayerState.offlineRegions.visible, devServerBaseUrl) {
+    LaunchedEffect(uiSession, navDataEpoch, liveFeedGeneration, uiInvalidationRevisions.mapOverlay, currentViewport, surfaceSize, density.density, mapLayerState.vectors.visible, mapLayerState.metars.visible, mapLayerState.offlineRegions.visible, devServerBaseUrl) {
         if (surfaceSize.width <= 0 || surfaceSize.height <= 0) {
             mapOverlayError = null
             return@LaunchedEffect
@@ -1856,6 +1863,7 @@ internal fun MapExplorerPage(
         val overlayWidthPx = surfaceSize.width.toFloat()
         val overlayHeightPx = surfaceSize.height.toFloat()
         val overlayStartMs = SystemClock.elapsedRealtime()
+        val queryEpoch = navDataEpoch
         sessionWorkRunner.submitOverlay(
             viewport = currentViewport,
             widthPx = overlayWidthPx.toDouble(),
@@ -1865,6 +1873,9 @@ internal fun MapExplorerPage(
                 fetchMapOverlayCoreResource(context, resource, devServerBaseUrl)
             },
             onResult = { outcome ->
+                if (queryEpoch != latestNavDataEpoch.value) {
+                    return@submitOverlay
+                }
                 if (outcome.invalidations.contains("session_snapshot")) {
                     applySessionCommand("refreshSnapshot") { uiSession.refreshSnapshot() }
                 }
@@ -2596,8 +2607,12 @@ internal fun MapExplorerPage(
                 layerTrayOpen = false
             },
             onAction = { actionId ->
-                applySessionCommand("performStatusAction") {
-                    uiSession.performStatusAction(actionId)
+                if (actionId == "app:reload") {
+                    onReloadApplication()
+                } else {
+                    applySessionCommand("performStatusAction") {
+                        uiSession.performStatusAction(actionId)
+                    }
                 }
             },
         )

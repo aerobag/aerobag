@@ -23,7 +23,8 @@ use crate::{
     data_status::{
         parse_status_action_id, project_data_status_state, DataStatusRecord, UiDataStatusPageFact,
         UiDataStatusPageRow, UiDataStatusPageState, UiDataStatusPageTimeDisplay, UiDataStatusState,
-        UiStatusActionCommand, UiStatusSeverity,
+        UiStatusAction, UiStatusActionCommand, UiStatusActionStyle, UiStatusSeverity,
+        RELOAD_APPLICATION_ACTION_ID,
     },
     first_guidance_detail_index_for_leg,
     freshness::{
@@ -61,9 +62,9 @@ use crate::{
     FlightPlanRowActionExecution, FlightPlanRowActionId, FlightPlanUiState, GuidanceState, LatLon,
     LegDisplayElement, MapOverlayConfig, MapOverlayQueryResult, MapSelectionForNavRefResult,
     MapSelectionQueryResult, MapSelectionSessionAction, MapSurfaceMetrics, MapViewport,
-    MetarProductPayload, MetarTilePayload, NavDbOpenResult, NavKvLookup, NavKvPageProbeStats,
-    NavKvQuery, NavKvRoot, NavKvStore, NavRef, OfflinePackagesLibraryCache, PlaybackUiState,
-    PointTilePayload, ProcedureDiscontinuity, ProcedureKind, ProcedureLoadCommand,
+    MetarProductPayload, MetarTilePayload, NavDbArtifactCandidate, NavDbOpenResult, NavKvLookup,
+    NavKvPageProbeStats, NavKvQuery, NavKvRoot, NavKvStore, NavRef, OfflinePackagesLibraryCache,
+    PlaybackUiState, PointTilePayload, ProcedureDiscontinuity, ProcedureKind, ProcedureLoadCommand,
     RasterMapCatalog, RasterResourceMode, RasterTilePlan, ResolvedLeg, ResolvedLegSource,
     RouteComponentViewKind, SequencingMode, SituationControlInput, SituationControlMenuItem,
     TafProductPayload, TerrainOverlayQueryResult, TfrProductPayload, UiSnapshotAppState,
@@ -334,6 +335,9 @@ pub struct UiPlaybackPanelState {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct UiSessionSnapshot {
     pub session_revision: u64,
+    pub nav_data_epoch: u64,
+    pub active_nav_db: Option<UiNavDbIdentity>,
+    pub next_nav_db_maintenance_epoch_ms: Option<i64>,
     pub app_state: UiSnapshotAppState,
     pub app_ui_state: AppUiState,
     pub playback_ui_state: PlaybackUiState,
@@ -368,6 +372,8 @@ pub struct UiSessionCreateTiming {
 #[derive(Clone)]
 struct UiSession {
     session_revision: u64,
+    nav_data_epoch: u64,
+    nav_db_advance_blocked: bool,
     app_state: AppState,
     playback: PlaybackSessionState,
     plan_preview: PlanPreviewState,
@@ -434,6 +440,61 @@ struct AttachedNavDbArtifact {
     expiration_date: Option<String>,
     warning_text: Option<String>,
 }
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct UiNavDbIdentity {
+    pub package_id: String,
+    pub filename: String,
+    pub contract_id: Option<String>,
+    pub cycle: Option<String>,
+    pub cycle_version: Option<String>,
+}
+
+impl From<&AttachedNavDbArtifact> for UiNavDbIdentity {
+    fn from(artifact: &AttachedNavDbArtifact) -> Self {
+        Self {
+            package_id: artifact.package_id.clone(),
+            filename: artifact.filename.clone(),
+            contract_id: artifact.contract_id.clone(),
+            cycle: artifact.cycle.clone(),
+            cycle_version: artifact.cycle_version.clone(),
+        }
+    }
+}
+
+const NAV_DB_ADVANCE_STATUS_ID: &str = "nav_db:advance";
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum NavDbAdvanceDisposition {
+    Adopted,
+    Rejected,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct NavDbAdvanceResult {
+    pub disposition: NavDbAdvanceDisposition,
+    pub snapshot: UiSessionSnapshot,
+    pub active_artifact_filename: Option<String>,
+    pub retained_artifact_filenames: Vec<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub rejection_reason: Option<String>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum NavDbMaintenanceAction {
+    None,
+    AttemptAdvance,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct NavDbMaintenanceResult {
+    pub action: NavDbMaintenanceAction,
+    pub snapshot: UiSessionSnapshot,
+}
+
+const NAV_DB_PUBLICATION_POLL_INTERVAL_MS: i64 = 4 * 60 * 60 * 1000;
 
 impl From<&NavDbOpenResult> for AttachedNavDbArtifact {
     fn from(result: &NavDbOpenResult) -> Self {
@@ -1378,6 +1439,77 @@ fn session_wall_clock_utc(session: &UiSession) -> DateTime<Utc> {
 
 fn advance_session_wall_clock(session: &mut UiSession, epoch_ms: i64) {
     session.wall_clock_epoch_ms = session.wall_clock_epoch_ms.max(epoch_ms);
+}
+
+fn nav_db_candidates_for_session(
+    session: &UiSession,
+) -> Result<Result<Vec<NavDbArtifactCandidate>, Vec<CoreResourceRequest>>, String> {
+    let candidates = match session.publication_resolver.nav_db_artifact_candidates()? {
+        Ok(candidates) => candidates,
+        Err(resources) => return Ok(Err(resources)),
+    };
+    if session.resource_policy == CoreResourcePolicy::PublicUnpacked {
+        return Ok(Ok(candidates));
+    }
+    Ok(Ok(candidates
+        .into_iter()
+        .filter(|candidate| {
+            session
+                .installed_package_ids
+                .contains(&candidate.package_id)
+        })
+        .collect()))
+}
+
+fn nav_db_candidate_effective_epoch_ms(candidate: &NavDbArtifactCandidate) -> Option<i64> {
+    candidate
+        .effective_date
+        .as_deref()
+        .and_then(parse_utc_instant)
+        .map(|instant| instant.timestamp_millis())
+}
+
+fn next_nav_db_maintenance_epoch_ms(session: &UiSession) -> Option<i64> {
+    if session.nav_db_advance_blocked {
+        return None;
+    }
+    let now_epoch_ms = session.wall_clock_epoch_ms;
+    let mut next = if session.resource_policy == CoreResourcePolicy::PublicUnpacked {
+        Some(
+            session
+                .publication_resolver
+                .current_artifacts_checked_epoch_ms()
+                .map(|checked| checked.saturating_add(NAV_DB_PUBLICATION_POLL_INTERVAL_MS))
+                .unwrap_or(now_epoch_ms),
+        )
+    } else {
+        None
+    };
+    let candidates = match nav_db_candidates_for_session(session) {
+        Ok(Ok(candidates)) => candidates,
+        Ok(Err(_)) | Err(_) => {
+            return if session.resource_policy == CoreResourcePolicy::PublicUnpacked {
+                min_optional_epoch_ms(next, Some(now_epoch_ms))
+            } else {
+                None
+            };
+        }
+    };
+    let preferred = crate::had_ops::select_preferred_nav_db_candidate(&candidates, now_epoch_ms);
+    if preferred.is_some_and(|candidate| {
+        session
+            .nav_db_artifact
+            .as_ref()
+            .is_none_or(|active| active.filename != candidate.filename)
+    }) {
+        next = min_optional_epoch_ms(next, Some(now_epoch_ms));
+    }
+    let next_effective = candidates
+        .iter()
+        .filter_map(nav_db_candidate_effective_epoch_ms)
+        .filter(|effective| *effective > now_epoch_ms)
+        .min();
+    min_optional_epoch_ms(next, next_effective)
 }
 
 fn min_epoch_ms(current: Option<i64>, candidate: i64) -> Option<i64> {
@@ -3314,6 +3446,9 @@ fn create_ui_session_inner(
     let home_page_state = project_home_page_state(&platform_capabilities);
     let snapshot = UiSessionSnapshot {
         session_revision: 0,
+        nav_data_epoch: 0,
+        active_nav_db: None,
+        next_nav_db_maintenance_epoch_ms: None,
         app_state: snapshot_app_state,
         app_ui_state,
         playback_ui_state,
@@ -3337,6 +3472,8 @@ fn create_ui_session_inner(
         handle,
         UiSession {
             session_revision: 0,
+            nav_data_epoch: 0,
+            nav_db_advance_blocked: false,
             app_state,
             playback,
             plan_preview: PlanPreviewState::default(),
@@ -5200,6 +5337,16 @@ pub fn perform_status_action_in_session(
             session.hushed_status_ids.remove(&status_id);
             sync_data_status_projection(session);
         }
+        UiStatusActionCommand::ReloadApplication => {
+            if !session
+                .data_status_records
+                .values()
+                .flat_map(|record| &record.actions)
+                .any(|action| action.id == action_id && action.enabled)
+            {
+                return Err(invalid_status_action(&action_id));
+            }
+        }
     }
     changed_session_snapshot_outcome(session)
 }
@@ -5398,6 +5545,286 @@ pub fn attach_nav_kv_store_to_session_with_open_result(
     rebuild_metar_tile_cache(session);
     sync_cycle_product_freshness_status_records(session);
     Ok(())
+}
+
+pub fn advance_nav_kv_store_in_session_with_open_result(
+    handle: u32,
+    store_id: u32,
+    store: &NavKvStore,
+    open_result: &NavDbOpenResult,
+    installed_package_ids: Vec<String>,
+) -> AppResult<HadOperationOutcome> {
+    let mut sessions = lock_sessions();
+    let live = session_mut(&mut sessions, handle)?;
+    if live.nav_db_advance_blocked {
+        let active_artifact_filename = live
+            .nav_db_artifact
+            .as_ref()
+            .map(|artifact| artifact.filename.clone());
+        let result = NavDbAdvanceResult {
+            disposition: NavDbAdvanceDisposition::Rejected,
+            snapshot: try_snapshot_for_session(live).map_err(|error| AppError {
+                kind: AppErrorKind::InvalidFlightPlan,
+                message: format!(
+                    "NAVDB advance is blocked until application reload; retained snapshot failed: {error:?}"
+                ),
+            })?,
+            active_artifact_filename: active_artifact_filename.clone(),
+            retained_artifact_filenames: active_artifact_filename.into_iter().collect(),
+            rejection_reason: Some(
+                "NAVDB advance is blocked until application reload".to_string(),
+            ),
+        };
+        return Ok(HadOperationOutcome::complete(
+            serde_json::to_value(result).map_err(|err| AppError {
+                kind: AppErrorKind::Internal,
+                message: err.to_string(),
+            })?,
+        ));
+    }
+    let previous_filename = live
+        .nav_db_artifact
+        .as_ref()
+        .map(|artifact| artifact.filename.clone());
+    let nav_db_changed = previous_filename.as_deref() != Some(&open_result.selected_filename);
+    let selected_map_id = live
+        .raster_map_catalog
+        .as_ref()
+        .map(|catalog| catalog.selected_map_id.clone());
+    let selected_family_id = live.raster_map_catalog.as_ref().and_then(|catalog| {
+        catalog
+            .family_options
+            .iter()
+            .find(|family| family.active)
+            .map(|family| family.id.clone())
+    });
+
+    let mut candidate = live.clone();
+    candidate.nav_kv_store_id = Some(store_id);
+    candidate.nav_kv_store = Some(store.clone());
+    candidate.nav_db_artifact = Some(AttachedNavDbArtifact::from(open_result));
+    candidate.installed_package_ids = installed_package_ids.into_iter().collect();
+    candidate
+        .installed_package_ids
+        .insert(open_result.selected_package_id.clone());
+    candidate.vector_manifest_loaded = false;
+    candidate.vector_tile_cache.clear();
+    candidate.airspace_feature_cache.clear();
+    candidate.important_metar_station_ids = None;
+    candidate.metar_station_importance_status = None;
+    candidate.terrain_source_tile_cache.clear();
+    rebuild_metar_tile_cache(&mut candidate);
+    mark_cycle_product_freshness_dirty(&mut candidate);
+
+    let rebuild = (|| -> Result<UiSessionSnapshot, HadReadError> {
+        if let Some(plan) = candidate.app_state.active_plan.as_ref() {
+            let rebuilt_plan = crate::had_ops::rebuild_flight_plan_from_nav_kv(store, plan)?;
+            replace_session_flight_plan(&mut candidate, rebuilt_plan)
+                .map_err(HadReadError::from)?;
+        }
+        candidate.raster_map_catalog = Some(crate::had_ops::raster_map_catalog_from_nav_kv(
+            store,
+            selected_map_id.as_deref(),
+            selected_family_id.as_deref(),
+        )?);
+        ensure_vector_manifest_loaded(&mut candidate)?;
+        if !candidate.chart_page_state.selected_chart_id.is_empty() {
+            read_chart_asset_by_id(store, &candidate.chart_page_state.selected_chart_id)?;
+        }
+        for airport_id in [
+            candidate.chart_page_state.selected_airport_id.as_str(),
+            candidate
+                .chart_page_state
+                .plate_target_airport_id
+                .as_deref()
+                .unwrap_or_default(),
+        ] {
+            if !airport_id.is_empty() {
+                let _ = airport_plate_availability(store, airport_id)?;
+            }
+        }
+        sync_guidance_geometry_for_session(&mut candidate, &crate::CoreDebugTimer::start())?;
+        sync_cycle_product_freshness_status_records(&mut candidate);
+        clear_data_status_record(&mut candidate, NAV_DB_ADVANCE_STATUS_ID);
+        if nav_db_changed {
+            candidate.nav_data_epoch = candidate.nav_data_epoch.saturating_add(1);
+        }
+        advance_session_revision(&mut candidate);
+        try_snapshot_for_session(&mut candidate)
+    })();
+
+    match rebuild {
+        Ok(snapshot) => {
+            let active_artifact_filename = Some(open_result.selected_filename.clone());
+            *live = candidate;
+            let result = NavDbAdvanceResult {
+                disposition: NavDbAdvanceDisposition::Adopted,
+                snapshot,
+                active_artifact_filename: active_artifact_filename.clone(),
+                retained_artifact_filenames: active_artifact_filename.into_iter().collect(),
+                rejection_reason: None,
+            };
+            let mut invalidations = vec![
+                UiInvalidation::SessionSnapshot,
+                UiInvalidation::RasterTiles,
+                UiInvalidation::MapOverlay,
+                UiInvalidation::TerrainOverlay,
+                UiInvalidation::FlightPlanRoute,
+            ];
+            if nav_db_changed {
+                invalidations.insert(0, UiInvalidation::NavData);
+            }
+            Ok(HadOperationOutcome::complete_with_invalidations(
+                serde_json::to_value(result).map_err(|err| AppError {
+                    kind: AppErrorKind::Internal,
+                    message: err.to_string(),
+                })?,
+                invalidations,
+            ))
+        }
+        Err(HadReadError::NeedPages(pages)) => Ok(HadOperationOutcome::NeedResources {
+            resources: nav_kv_page_resources(pages),
+        }),
+        Err(HadReadError::Fatal(message)) => {
+            let candidate_label = open_result
+                .selected_cycle
+                .as_deref()
+                .unwrap_or(&open_result.selected_filename);
+            let mut warning = DataStatusRecord::new(
+                NAV_DB_ADVANCE_STATUS_ID,
+                "NAV DB",
+                Some("ADVANCE FAILED".to_string()),
+                UiStatusSeverity::Warning,
+                true,
+                format!(
+                    "Could not advance to new NAVDB {candidate_label}. Reload application when not flying. {message}"
+                ),
+            )
+            .with_action(UiStatusAction {
+                id: RELOAD_APPLICATION_ACTION_ID.to_string(),
+                label: "Reload application".to_string(),
+                enabled: true,
+                style: UiStatusActionStyle::Normal,
+            });
+            warning.hushable = false;
+            live.nav_db_advance_blocked = true;
+            live.installed_package_ids = candidate.installed_package_ids.clone();
+            if let Some(active_artifact) = live.nav_db_artifact.as_ref() {
+                live.installed_package_ids
+                    .insert(active_artifact.package_id.clone());
+            }
+            upsert_data_status_record(live, warning);
+            advance_session_revision(live);
+            let snapshot = try_snapshot_for_session(live).map_err(|error| AppError {
+                kind: AppErrorKind::InvalidFlightPlan,
+                message: match error {
+                    HadReadError::NeedPages(pages) => format!(
+                        "NAVDB advance failed and the retained session needs pages {pages:?}: {message}"
+                    ),
+                    HadReadError::Fatal(snapshot_message) => format!(
+                        "NAVDB advance failed ({message}); retained snapshot failed: {snapshot_message}"
+                    ),
+                },
+            })?;
+            let active_artifact_filename = previous_filename;
+            let result = NavDbAdvanceResult {
+                disposition: NavDbAdvanceDisposition::Rejected,
+                snapshot,
+                active_artifact_filename: active_artifact_filename.clone(),
+                retained_artifact_filenames: active_artifact_filename.into_iter().collect(),
+                rejection_reason: Some(message),
+            };
+            Ok(HadOperationOutcome::complete_with_invalidations(
+                serde_json::to_value(result).map_err(|err| AppError {
+                    kind: AppErrorKind::Internal,
+                    message: err.to_string(),
+                })?,
+                vec![UiInvalidation::SessionSnapshot],
+            ))
+        }
+    }
+}
+
+pub fn maintain_nav_db_in_session_at_epoch_ms(
+    handle: u32,
+    epoch_ms: i64,
+) -> AppResult<HadOperationOutcome> {
+    let mut sessions = lock_sessions();
+    let session = session_mut(&mut sessions, handle)?;
+    advance_session_wall_clock(session, epoch_ms);
+    mark_cycle_product_freshness_dirty_if_deadline_due(session);
+    sync_cycle_product_freshness_status_records_if_needed(session);
+
+    if session.nav_db_advance_blocked {
+        return nav_db_maintenance_outcome(session, NavDbMaintenanceAction::None);
+    }
+
+    if session.resource_policy == CoreResourcePolicy::PublicUnpacked {
+        let refresh_due = session
+            .publication_resolver
+            .current_artifacts_checked_epoch_ms()
+            .is_none_or(|checked| {
+                checked.saturating_add(NAV_DB_PUBLICATION_POLL_INTERVAL_MS)
+                    <= session.wall_clock_epoch_ms
+            });
+        if refresh_due {
+            let resource = session
+                .publication_resolver
+                .current_artifacts_refresh_request()
+                .map_err(|message| AppError {
+                    kind: AppErrorKind::InvalidManifest,
+                    message,
+                })?;
+            return Ok(HadOperationOutcome::NeedResources {
+                resources: vec![resource],
+            });
+        }
+    }
+
+    let candidates = match nav_db_candidates_for_session(session).map_err(|message| AppError {
+        kind: AppErrorKind::InvalidManifest,
+        message,
+    })? {
+        Ok(candidates) => candidates,
+        Err(resources) => {
+            if session.resource_policy == CoreResourcePolicy::PublicUnpacked {
+                return Ok(HadOperationOutcome::NeedResources { resources });
+            }
+            return nav_db_maintenance_outcome(session, NavDbMaintenanceAction::None);
+        }
+    };
+    let preferred =
+        crate::had_ops::select_preferred_nav_db_candidate(&candidates, session.wall_clock_epoch_ms);
+    let action = if preferred.is_some_and(|candidate| {
+        session
+            .nav_db_artifact
+            .as_ref()
+            .is_none_or(|active| active.filename != candidate.filename)
+    }) {
+        NavDbMaintenanceAction::AttemptAdvance
+    } else {
+        NavDbMaintenanceAction::None
+    };
+    nav_db_maintenance_outcome(session, action)
+}
+
+fn nav_db_maintenance_outcome(
+    session: &mut UiSession,
+    action: NavDbMaintenanceAction,
+) -> AppResult<HadOperationOutcome> {
+    let result = NavDbMaintenanceResult {
+        action,
+        snapshot: try_snapshot_for_session(session).map_err(|error| AppError {
+            kind: AppErrorKind::InvalidManifest,
+            message: format!("NAVDB maintenance snapshot failed: {error:?}"),
+        })?,
+    };
+    Ok(HadOperationOutcome::complete(
+        serde_json::to_value(result).map_err(|err| AppError {
+            kind: AppErrorKind::Internal,
+            message: err.to_string(),
+        })?,
+    ))
 }
 
 pub fn insert_nav_kv_page_for_attached_sessions(store_id: u32, page_index: u32, page_bytes: &[u8]) {
@@ -9645,6 +10072,9 @@ fn try_snapshot_for_session(session: &mut UiSession) -> Result<UiSessionSnapshot
     });
     Ok(UiSessionSnapshot {
         session_revision: session.session_revision,
+        nav_data_epoch: session.nav_data_epoch,
+        active_nav_db: session.nav_db_artifact.as_ref().map(UiNavDbIdentity::from),
+        next_nav_db_maintenance_epoch_ms: next_nav_db_maintenance_epoch_ms(session),
         app_state,
         app_ui_state,
         playback_ui_state,
@@ -11756,12 +12186,13 @@ fn normalize_compact_airport_id(airport_id: Option<&str>) -> Option<String> {
 mod tests {
     use super::*;
     use crate::{
-        map_overlay::NotamProductPayload, AirportId, FlightPlan, GuidanceState, LegDisplayElement,
-        LegDisplayPath, LegDisplayPathStyle, MapSelectionAction, MapSelectionCategory,
-        MapSelectionHighlight, MapSelectionItem, NavRef, OwnshipSourceId, OwnshipSourceKind,
-        PathTermination, PointVectorRecord, ProcedureLegProvenance, ProcedureSegmentRole,
-        ResolvedLeg, ResolvedLegSource, RouteComponent, SequencingMode, Situation,
-        SituationPosition, SituationSample,
+        map_overlay::NotamProductPayload, AirportId, FlightPlan, GuidanceState, HadOperation,
+        LegDisplayElement, LegDisplayPath, LegDisplayPathStyle, MapSelectionAction,
+        MapSelectionCategory, MapSelectionHighlight, MapSelectionItem, MaterializedProcedure,
+        NavRef, OwnshipSourceId, OwnshipSourceKind, PathTermination, PointVectorRecord,
+        ProcedureLegProvenance, ProcedureSegmentRole, ResolvedLeg, ResolvedLegSource,
+        RouteComponent, SequencingMode, Situation, SituationPosition, SituationSample,
+        REQUIRED_NAV_DB_CONTRACT_ID,
     };
 
     #[test]
@@ -12628,6 +13059,773 @@ mod tests {
             selected_warning_text: None,
             statuses: Vec::new(),
         }
+    }
+
+    fn nav_db_advance_store_for_test() -> NavKvStore {
+        crate::navkv::nav_kv_store_for_test(
+            &[
+                ("chart/catalog", br#"[]"#),
+                ("vector/manifest", minimal_vector_manifest_json().as_bytes()),
+            ],
+            1024,
+        )
+    }
+
+    fn nav_db_advance_two_airport_plan() -> FlightPlan {
+        crate::build_flight_plan(FlightPlan {
+            id: "nav-db-advance-two-airport-plan".to_string(),
+            name: "KAAA KBBB".to_string(),
+            legs: Vec::new(),
+            route_components: vec![
+                RouteComponent::Waypoint {
+                    waypoint: NavRef::Airport("KAAA".to_string()),
+                },
+                RouteComponent::Waypoint {
+                    waypoint: NavRef::Airport("KBBB".to_string()),
+                },
+            ],
+            route_component_uids: Vec::new(),
+            route_component_uid_counter: 0,
+            resolved_legs: Vec::new(),
+            guidance: None,
+            departure: Some(AirportId("KAAA".to_string())),
+            destination: Some(AirportId("KBBB".to_string())),
+            alternate: None,
+            cruise_altitude_ft: None,
+            notes: None,
+            updated_at_epoch_ms: 0,
+            version: 1,
+        })
+        .expect("build NAVDB advance test plan")
+    }
+
+    fn nav_db_advance_store_with_airports(include_kbbb: bool) -> NavKvStore {
+        let mut entries = vec![
+            ("chart/catalog", br#"[]"#.as_slice()),
+            ("vector/manifest", minimal_vector_manifest_json().as_bytes()),
+            (
+                "navref/position/airport/KAAA",
+                br#"{"lat":47.0,"lon":-122.0}"#.as_slice(),
+            ),
+        ];
+        if include_kbbb {
+            entries.push((
+                "navref/position/airport/KBBB",
+                br#"{"lat":48.0,"lon":-123.0}"#.as_slice(),
+            ));
+        }
+        crate::navkv::nav_kv_store_for_test(&entries, 1024)
+    }
+
+    fn nav_db_advance_result(outcome: HadOperationOutcome) -> NavDbAdvanceResult {
+        let HadOperationOutcome::Complete { result, .. } = outcome else {
+            panic!("NAVDB advance unexpectedly needed resources: {outcome:?}");
+        };
+        serde_json::from_value(result).expect("NAVDB advance result")
+    }
+
+    fn nav_db_maintenance_result(outcome: HadOperationOutcome) -> NavDbMaintenanceResult {
+        let HadOperationOutcome::Complete { result, .. } = outcome else {
+            panic!("NAVDB maintenance unexpectedly needed resources: {outcome:?}");
+        };
+        serde_json::from_value(result).expect("NAVDB maintenance result")
+    }
+
+    fn install_nav_db_maintenance_catalog(
+        handle: u32,
+        fetched_at_epoch_ms: i64,
+        installed_package_ids: &[&str],
+    ) {
+        let bundle_filename = "bundle-cycle-test.json";
+        let discovery =
+            serde_json::from_value::<crate::CurrentArtifactsManifest>(serde_json::json!({
+                "schema_version": 1,
+                "contracts": { "nav-db": crate::REQUIRED_NAV_DB_CONTRACT_ID },
+                "artifact_roots": {
+                    "packaged": "published_packaged",
+                    "unpacked": "published_unpacked"
+                },
+                "as_of_utc": "2026-07-01T00:00:00Z",
+                "bundles": [{
+                    "filename": bundle_filename,
+                    "relative_path": bundle_filename,
+                    "id": "bundle-cycle-test",
+                    "bundle_type": "cycle"
+                }]
+            }))
+            .expect("maintenance discovery");
+        let packages = [
+            (
+                "NAV_DB_2607",
+                "2607",
+                "2026-07-01T00:00:00Z",
+                "2026-07-16T00:00:00Z",
+            ),
+            (
+                "NAV_DB_2608",
+                "2608",
+                "2026-07-16T00:00:00Z",
+                "2026-08-13T00:00:00Z",
+            ),
+        ]
+        .into_iter()
+        .map(|(id, cycle, effective, expiration)| {
+            serde_json::from_value::<crate::BundlePackageArtifact>(serde_json::json!({
+                "id": id,
+                "family_id": "nav-db",
+                "contract_id": crate::REQUIRED_NAV_DB_CONTRACT_ID,
+                "filename": format!("{id}.zip"),
+                "relative_path": format!("{id}.zip"),
+                "cycle": cycle,
+                "cycle_version": "01",
+                "effective_date": effective,
+                "expiration_date": expiration
+            }))
+            .expect("maintenance package")
+        })
+        .collect();
+        load_offline_package_library_cache_in_session(
+            handle,
+            OfflinePackagesLibraryCache {
+                package_source_base_url: "https://example.test/packages".to_string(),
+                fetched_at_epoch_ms,
+                discovery_manifests: vec![discovery],
+                bundle_manifests_by_filename: BTreeMap::from([(
+                    bundle_filename.to_string(),
+                    crate::BundleManifest { packages },
+                )]),
+            },
+        )
+        .expect("load maintenance package catalog");
+        set_installed_package_ids_in_session(
+            handle,
+            installed_package_ids
+                .iter()
+                .map(|id| (*id).to_string())
+                .collect(),
+        )
+        .expect("set installed maintenance packages");
+    }
+
+    #[test]
+    fn nav_db_maintenance_requests_advance_when_installed_next_cycle_becomes_effective() {
+        let before_rollover = utc("2026-07-15T23:59:00Z").timestamp_millis();
+        let rollover = utc("2026-07-16T00:00:00Z").timestamp_millis();
+        let init =
+            create_ui_session_at_epoch_ms(FlightPlan::default(), &[], None, None, before_rollover)
+                .expect("create maintenance session");
+        let old_store = nav_db_advance_store_for_test();
+        let mut old_open = nav_db_open_result_for_test("NAV_DB_2607", Some("2026-07-16T00:00:00Z"));
+        old_open.selected_effective_date = Some("2026-07-01T00:00:00Z".to_string());
+        attach_nav_kv_store_to_session_with_open_result(
+            init.handle,
+            1,
+            &old_store,
+            Some(&old_open),
+        )
+        .expect("attach current NAVDB");
+        install_nav_db_maintenance_catalog(
+            init.handle,
+            before_rollover,
+            &["NAV_DB_2607", "NAV_DB_2608"],
+        );
+
+        let before = nav_db_maintenance_result(
+            maintain_nav_db_in_session_at_epoch_ms(init.handle, before_rollover)
+                .expect("maintenance before rollover"),
+        );
+        assert_eq!(before.action, NavDbMaintenanceAction::None);
+        assert_eq!(
+            before.snapshot.next_nav_db_maintenance_epoch_ms,
+            Some(rollover)
+        );
+
+        let after = nav_db_maintenance_result(
+            maintain_nav_db_in_session_at_epoch_ms(init.handle, rollover)
+                .expect("maintenance at rollover"),
+        );
+        assert_eq!(after.action, NavDbMaintenanceAction::AttemptAdvance);
+        assert_eq!(
+            after
+                .snapshot
+                .active_nav_db
+                .as_ref()
+                .map(|identity| identity.package_id.as_str()),
+            Some("NAV_DB_2607")
+        );
+    }
+
+    #[test]
+    fn web_nav_db_maintenance_periodically_refreshes_current_artifacts() {
+        let checked_at = utc("2026-07-15T12:00:00Z").timestamp_millis();
+        let init =
+            create_ui_session_at_epoch_ms(FlightPlan::default(), &[], None, None, checked_at)
+                .expect("create web maintenance session");
+        set_resource_policy_in_session(init.handle, CoreResourcePolicy::PublicUnpacked)
+            .expect("set web resource policy");
+        let current_artifacts = format!(
+            r#"[{{"schema_version":1,"contracts":{{"nav-db":"{}"}},"as_of_utc":"2026-07-15T12:00:00Z","artifact_roots":{{"packaged":"packaged","unpacked":"unpacked"}},"bundles":[]}}]"#,
+            crate::REQUIRED_NAV_DB_CONTRACT_ID
+        );
+        ingest_resource_in_session_at_epoch_ms(
+            init.handle,
+            "publication/current_artifacts",
+            current_artifacts.as_bytes(),
+            checked_at,
+        )
+        .expect("ingest current artifacts");
+
+        let before = nav_db_maintenance_result(
+            maintain_nav_db_in_session_at_epoch_ms(
+                init.handle,
+                checked_at + NAV_DB_PUBLICATION_POLL_INTERVAL_MS - 1,
+            )
+            .expect("maintenance before poll"),
+        );
+        assert_eq!(before.action, NavDbMaintenanceAction::None);
+
+        let due = maintain_nav_db_in_session_at_epoch_ms(
+            init.handle,
+            checked_at + NAV_DB_PUBLICATION_POLL_INTERVAL_MS,
+        )
+        .expect("maintenance at poll");
+        let HadOperationOutcome::NeedResources { resources } = due else {
+            panic!("web maintenance did not request publication refresh");
+        };
+        assert_eq!(resources.len(), 1);
+        assert_eq!(resources[0].id, "publication/current_artifacts");
+    }
+
+    #[test]
+    fn web_nav_db_maintenance_waits_for_newly_published_candidate_to_become_effective() {
+        let checked_at = utc("2026-07-15T12:00:00Z").timestamp_millis();
+        let poll_at = checked_at + NAV_DB_PUBLICATION_POLL_INTERVAL_MS;
+        let effective_at = utc("2026-07-15T16:01:00Z").timestamp_millis();
+        let init =
+            create_ui_session_at_epoch_ms(FlightPlan::default(), &[], None, None, checked_at)
+                .expect("create web discovery session");
+        set_resource_policy_in_session(init.handle, CoreResourcePolicy::PublicUnpacked)
+            .expect("set web policy");
+        let old_store = nav_db_advance_store_for_test();
+        let old_open = nav_db_open_result_for_test("NAV_DB_2607", None);
+        attach_nav_kv_store_to_session_with_open_result(
+            init.handle,
+            1,
+            &old_store,
+            Some(&old_open),
+        )
+        .expect("attach old NAVDB");
+        let initial = format!(
+            r#"[{{"schema_version":1,"contracts":{{"nav-db":"{}"}},"as_of_utc":"2026-07-15T12:00:00Z","artifact_roots":{{"packaged":"packaged","unpacked":"unpacked"}},"bundles":[]}}]"#,
+            crate::REQUIRED_NAV_DB_CONTRACT_ID
+        );
+        ingest_resource_in_session_at_epoch_ms(
+            init.handle,
+            "publication/current_artifacts",
+            initial.as_bytes(),
+            checked_at,
+        )
+        .expect("ingest initial publication");
+        assert!(matches!(
+            maintain_nav_db_in_session_at_epoch_ms(init.handle, poll_at)
+                .expect("request publication refresh"),
+            HadOperationOutcome::NeedResources { .. }
+        ));
+
+        let refreshed = format!(
+            r#"[{{"schema_version":1,"contracts":{{"nav-db":"{}"}},"as_of_utc":"2026-07-15T16:00:00Z","artifact_roots":{{"packaged":"packaged","unpacked":"unpacked"}},"bundles":[{{"filename":"bundle-2608.json","relative_path":"bundle-2608.json","id":"bundle-2608","bundle_type":"cycle"}}]}}]"#,
+            crate::REQUIRED_NAV_DB_CONTRACT_ID
+        );
+        ingest_resource_in_session_at_epoch_ms(
+            init.handle,
+            "publication/current_artifacts",
+            refreshed.as_bytes(),
+            poll_at,
+        )
+        .expect("ingest refreshed publication");
+        let missing_bundle =
+            maintain_nav_db_in_session_at_epoch_ms(init.handle, poll_at).expect("request bundle");
+        let HadOperationOutcome::NeedResources { resources } = missing_bundle else {
+            panic!("new publication did not request its bundle");
+        };
+        assert_eq!(resources[0].id, "publication/bundle/bundle-2608.json");
+
+        let bundle = serde_json::json!({
+            "packages": [{
+                "id": "NAV_DB_2608",
+                "family_id": "nav-db",
+                "contract_id": crate::REQUIRED_NAV_DB_CONTRACT_ID,
+                "filename": "NAV_DB_2608.zip",
+                "relative_path": "NAV_DB_2608.zip",
+                "cycle": "2608",
+                "cycle_version": "01",
+                "effective_date": "2026-07-15T16:01:00Z",
+                "expiration_date": "2026-08-13T00:00:00Z"
+            }]
+        });
+        ingest_resource_in_session(
+            init.handle,
+            "publication/bundle/bundle-2608.json",
+            &serde_json::to_vec(&bundle).expect("bundle json"),
+        )
+        .expect("ingest new bundle");
+
+        let discovered = nav_db_maintenance_result(
+            maintain_nav_db_in_session_at_epoch_ms(init.handle, poll_at)
+                .expect("discover new candidate"),
+        );
+        assert_eq!(discovered.action, NavDbMaintenanceAction::None);
+        assert_eq!(
+            discovered.snapshot.next_nav_db_maintenance_epoch_ms,
+            Some(effective_at)
+        );
+
+        let effective = nav_db_maintenance_result(
+            maintain_nav_db_in_session_at_epoch_ms(init.handle, effective_at)
+                .expect("candidate becomes effective"),
+        );
+        assert_eq!(effective.action, NavDbMaintenanceAction::AttemptAdvance);
+    }
+
+    #[test]
+    fn nav_db_advance_commits_candidate_atomically_and_advances_epoch_once() {
+        let init = create_current_test_session();
+        let old_store = nav_db_advance_store_for_test();
+        let old_open = nav_db_open_result_for_test("NAV_DB_2607", None);
+        attach_nav_kv_store_to_session_with_open_result(
+            init.handle,
+            1,
+            &old_store,
+            Some(&old_open),
+        )
+        .expect("attach old NAVDB");
+        let next_store = nav_db_advance_store_for_test();
+        let next_open = nav_db_open_result_for_test("NAV_DB_2608", None);
+
+        let outcome = advance_nav_kv_store_in_session_with_open_result(
+            init.handle,
+            2,
+            &next_store,
+            &next_open,
+            vec!["NAV_DB_2608".to_string()],
+        )
+        .expect("advance NAVDB");
+        let invalidations = match &outcome {
+            HadOperationOutcome::Complete { invalidations, .. } => invalidations.clone(),
+            _ => unreachable!(),
+        };
+        let result = nav_db_advance_result(outcome);
+
+        assert_eq!(result.disposition, NavDbAdvanceDisposition::Adopted);
+        assert_eq!(result.snapshot.nav_data_epoch, 1);
+        assert_eq!(result.snapshot.session_revision, 1);
+        assert_eq!(
+            result
+                .snapshot
+                .active_nav_db
+                .as_ref()
+                .map(|identity| identity.filename.as_str()),
+            Some("NAV_DB_2608.zip")
+        );
+        assert_eq!(
+            result.active_artifact_filename.as_deref(),
+            Some("NAV_DB_2608.zip")
+        );
+        assert_eq!(result.retained_artifact_filenames, ["NAV_DB_2608.zip"]);
+        assert!(invalidations.contains(&UiInvalidation::NavData));
+        let sessions = lock_sessions();
+        let session = sessions.get(&init.handle).expect("live session");
+        assert_eq!(session.nav_data_epoch, 1);
+        assert_eq!(session.nav_kv_store_id, Some(2));
+        assert_eq!(
+            session
+                .nav_db_artifact
+                .as_ref()
+                .map(|artifact| artifact.filename.as_str()),
+            Some("NAV_DB_2608.zip")
+        );
+    }
+
+    #[test]
+    fn nav_db_advance_page_fault_does_not_mutate_live_generation() {
+        let init = create_current_test_session();
+        let old_store = nav_db_advance_store_for_test();
+        let old_open = nav_db_open_result_for_test("NAV_DB_2607", None);
+        attach_nav_kv_store_to_session_with_open_result(
+            init.handle,
+            11,
+            &old_store,
+            Some(&old_open),
+        )
+        .expect("attach old NAVDB");
+        let entries = [
+            ("chart/catalog", br#"[]"#.as_slice()),
+            ("vector/manifest", minimal_vector_manifest_json().as_bytes()),
+        ];
+        let (mut next_store, pages) =
+            crate::navkv::nav_kv_store_without_pages_and_pages_for_test(&entries, 1024);
+        let next_open = nav_db_open_result_for_test("NAV_DB_2608", None);
+
+        let first = advance_nav_kv_store_in_session_with_open_result(
+            init.handle,
+            12,
+            &next_store,
+            &next_open,
+            vec!["NAV_DB_2608".to_string()],
+        )
+        .expect("fault candidate pages");
+        assert!(matches!(first, HadOperationOutcome::NeedResources { .. }));
+        {
+            let sessions = lock_sessions();
+            let session = sessions.get(&init.handle).expect("live session");
+            assert_eq!(session.nav_data_epoch, 0);
+            assert_eq!(session.nav_kv_store_id, Some(11));
+            assert_eq!(
+                session
+                    .nav_db_artifact
+                    .as_ref()
+                    .map(|artifact| artifact.filename.as_str()),
+                Some("NAV_DB_2607.zip")
+            );
+        }
+
+        for (page_index, page) in pages.into_iter().enumerate() {
+            next_store.insert_page(page_index as u32, page);
+        }
+        let result = nav_db_advance_result(
+            advance_nav_kv_store_in_session_with_open_result(
+                init.handle,
+                12,
+                &next_store,
+                &next_open,
+                vec!["NAV_DB_2608".to_string()],
+            )
+            .expect("retry NAVDB advance"),
+        );
+        assert_eq!(result.disposition, NavDbAdvanceDisposition::Adopted);
+        assert_eq!(result.snapshot.nav_data_epoch, 1);
+    }
+
+    #[test]
+    fn nav_db_advance_rejects_bad_candidate_and_pins_old_artifact() {
+        let init = create_current_test_session();
+        let old_store = nav_db_advance_store_for_test();
+        let old_open = nav_db_open_result_for_test("NAV_DB_2607", None);
+        attach_nav_kv_store_to_session_with_open_result(
+            init.handle,
+            21,
+            &old_store,
+            Some(&old_open),
+        )
+        .expect("attach old NAVDB");
+        let broken_store = crate::navkv::nav_kv_store_for_test(
+            &[("vector/manifest", minimal_vector_manifest_json().as_bytes())],
+            1024,
+        );
+        let next_open = nav_db_open_result_for_test("NAV_DB_2608", None);
+
+        let result = nav_db_advance_result(
+            advance_nav_kv_store_in_session_with_open_result(
+                init.handle,
+                22,
+                &broken_store,
+                &next_open,
+                vec!["NAV_DB_2608".to_string()],
+            )
+            .expect("reject candidate"),
+        );
+
+        assert_eq!(result.disposition, NavDbAdvanceDisposition::Rejected);
+        assert_eq!(result.snapshot.nav_data_epoch, 0);
+        assert_eq!(result.retained_artifact_filenames, ["NAV_DB_2607.zip"]);
+        assert!(result.rejection_reason.is_some());
+        let warning = data_status_box(&result.snapshot, NAV_DB_ADVANCE_STATUS_ID);
+        assert!(!warning.hushed);
+        assert!(warning
+            .detail
+            .contains("Reload application when not flying"));
+        assert!(warning
+            .actions
+            .iter()
+            .any(|action| action.id == RELOAD_APPLICATION_ACTION_ID));
+        let sessions = lock_sessions();
+        let session = sessions.get(&init.handle).expect("live session");
+        assert_eq!(session.nav_kv_store_id, Some(21));
+        assert!(session.nav_db_advance_blocked);
+        drop(sessions);
+
+        let maintenance = nav_db_maintenance_result(
+            maintain_nav_db_in_session_at_epoch_ms(
+                init.handle,
+                utc("2026-07-16T00:00:00Z").timestamp_millis(),
+            )
+            .expect("blocked maintenance"),
+        );
+        assert_eq!(maintenance.action, NavDbMaintenanceAction::None);
+        assert_eq!(maintenance.snapshot.next_nav_db_maintenance_epoch_ms, None);
+
+        let second = nav_db_advance_result(
+            advance_nav_kv_store_in_session_with_open_result(
+                init.handle,
+                23,
+                &broken_store,
+                &next_open,
+                vec!["NAV_DB_2608".to_string()],
+            )
+            .expect("blocked second advance"),
+        );
+        assert_eq!(second.disposition, NavDbAdvanceDisposition::Rejected);
+        assert_eq!(
+            second.rejection_reason.as_deref(),
+            Some("NAVDB advance is blocked until application reload")
+        );
+    }
+
+    #[test]
+    fn nav_db_advance_rejects_candidate_missing_required_plan_waypoint() {
+        let plan = nav_db_advance_two_airport_plan();
+        let init = create_ui_session(plan.clone(), &[], None, None).expect("create session");
+        let old_store = nav_db_advance_store_with_airports(true);
+        let old_open = nav_db_open_result_for_test("NAV_DB_2607", None);
+        attach_nav_kv_store_to_session_with_open_result(
+            init.handle,
+            31,
+            &old_store,
+            Some(&old_open),
+        )
+        .expect("attach old NAVDB");
+        let missing_waypoint_store = nav_db_advance_store_with_airports(false);
+        let next_open = nav_db_open_result_for_test("NAV_DB_2608", None);
+
+        let result = nav_db_advance_result(
+            advance_nav_kv_store_in_session_with_open_result(
+                init.handle,
+                32,
+                &missing_waypoint_store,
+                &next_open,
+                vec!["NAV_DB_2608".to_string()],
+            )
+            .expect("reject candidate missing flight-plan waypoint"),
+        );
+
+        assert_eq!(result.disposition, NavDbAdvanceDisposition::Rejected);
+        assert_eq!(result.snapshot.nav_data_epoch, 0);
+        assert_eq!(result.snapshot.app_state.active_plan.as_ref(), Some(&plan));
+        assert!(result
+            .rejection_reason
+            .as_deref()
+            .is_some_and(|reason| reason.contains("KBBB")));
+        let sessions = lock_sessions();
+        let session = sessions.get(&init.handle).expect("retained session");
+        assert_eq!(session.nav_kv_store_id, Some(31));
+        assert_eq!(session.app_state.active_plan.as_ref(), Some(&plan));
+    }
+
+    fn load_nav_db_fixture_zip(path: &std::path::Path) -> NavKvStore {
+        let file = std::fs::File::open(path)
+            .unwrap_or_else(|error| panic!("open NAVDB fixture {}: {error}", path.display()));
+        let mut archive = zip::ZipArchive::new(file)
+            .unwrap_or_else(|error| panic!("decode NAVDB fixture {}: {error}", path.display()));
+        let mut root_bytes = Vec::new();
+        archive
+            .by_name("root")
+            .expect("NAVDB root member")
+            .read_to_end(&mut root_bytes)
+            .expect("read NAVDB root");
+        let mut store = NavKvStore::new(NavKvRoot::parse(&root_bytes).expect("parse NAVDB root"));
+        for index in 0..archive.len() {
+            let mut member = archive.by_index(index).expect("NAVDB member");
+            let name = member.name().to_string();
+            let Some(page_index) = name
+                .strip_prefix("page_")
+                .and_then(|value| value.parse::<u32>().ok())
+            else {
+                continue;
+            };
+            let mut bytes = Vec::new();
+            member.read_to_end(&mut bytes).expect("read NAVDB page");
+            let resource_id = format!("nav_kv/page/{page_index:04}");
+            let decoded = crate::decode_nav_db_page_resource_bytes(&resource_id, &bytes)
+                .expect("decode NAVDB page");
+            store.insert_page(page_index, decoded.into_owned());
+        }
+        store
+    }
+
+    fn nav_db_advance_fixture_root() -> Option<std::path::PathBuf> {
+        std::env::var_os("AEROBAG_TEST_ARTIFACTS_ROOT")
+            .or_else(|| std::env::var_os("AEROBAG_TEST_ARTIFACTS"))
+            .map(std::path::PathBuf::from)
+            .or_else(|| {
+                std::env::current_dir().ok().and_then(|directory| {
+                    directory.ancestors().find_map(|ancestor| {
+                        let sibling = ancestor.join("aerobag-test-artifacts");
+                        sibling.is_dir().then_some(sibling)
+                    })
+                })
+            })
+    }
+
+    #[test]
+    fn real_nav_db_2607_to_2608_advance_preserves_rich_session() {
+        let Some(root) = nav_db_advance_fixture_root() else {
+            eprintln!("skipping real NAVDB advance fixture; set AEROBAG_TEST_ARTIFACTS");
+            return;
+        };
+        let fixture = root.join("nav-db/advance-2607-to-2608/source/packaged");
+        let old_path = fixture.join(
+            "nav_db_NAV12_2607_01_bcf5bb62d186a9f214a6fa027dde333441ae2676000116fadd30a21758d1022c.zip",
+        );
+        let next_path = fixture.join(
+            "nav_db_NAV12_2608_01_193319fdd18ba981ebab22c25139e7ba0c3da3c080bdc12b63d20052c7572f5f.zip",
+        );
+        if !old_path.is_file() || !next_path.is_file() {
+            eprintln!("skipping real NAVDB advance fixture; fixture files are absent");
+            return;
+        }
+        let old_store = load_nav_db_fixture_zip(&old_path);
+        let next_store = load_nav_db_fixture_zip(&next_path);
+        let base_plan = FlightPlan {
+            id: "nav-db-advance-rich-plan".to_string(),
+            name: "KRNT SEA KPAE VOR-A ECEPO".to_string(),
+            legs: Vec::new(),
+            route_components: vec![
+                RouteComponent::Waypoint {
+                    waypoint: NavRef::Airport("KRNT".to_string()),
+                },
+                RouteComponent::Waypoint {
+                    waypoint: NavRef::Navaid("SEA".to_string()),
+                },
+                RouteComponent::Waypoint {
+                    waypoint: NavRef::Airport("KPAE".to_string()),
+                },
+            ],
+            route_component_uids: Vec::new(),
+            route_component_uid_counter: 0,
+            resolved_legs: Vec::new(),
+            guidance: None,
+            departure: Some(AirportId("KRNT".to_string())),
+            destination: Some(AirportId("KPAE".to_string())),
+            alternate: None,
+            cruise_altitude_ft: Some(6_000),
+            notes: Some("NAVDB advance regression".to_string()),
+            updated_at_epoch_ms: 0,
+            version: 1,
+        };
+        let materialized = match crate::run_had_operation(
+            &old_store,
+            HadOperation::MaterializeProcedure {
+                airport_id: "KPAE".to_string(),
+                procedure_id: "VOR-A".to_string(),
+                procedure_kind: ProcedureKind::Approach,
+                runway_transition: None,
+                enroute_transition: Some("ECEPO".to_string()),
+                component_index: 2,
+            },
+        )
+        .expect("materialize 2607 procedure")
+        {
+            HadOperationOutcome::Complete { result, .. } => {
+                serde_json::from_value::<MaterializedProcedure>(result)
+                    .expect("decode materialized procedure")
+            }
+            outcome => panic!("fully loaded fixture unexpectedly faulted: {outcome:?}"),
+        };
+        let mutation = crate::insert_procedure_materialized_ui(&base_plan, 1, 2, materialized)
+            .expect("insert KPAE VOR-A ECEPO");
+        let plan = crate::activate_leg(&mutation.mutation.plan, 5)
+            .expect("activate procedure hold inbound leg");
+        let expected_plan = plan.clone();
+        let airport_key = nav_kv_key_for_query(&NavKvQuery::PlateAirport {
+            airport_id: "KPAE".to_string(),
+        })
+        .expect("KPAE plate key");
+        let NavKvLookup::Hit(airport_bytes) = old_store
+            .get_bytes(&airport_key)
+            .expect("read KPAE plate folder")
+        else {
+            panic!("KPAE plate folder missing from 2607 fixture");
+        };
+        let airport: crate::chart_page::PlateAirportRecord =
+            serde_json::from_slice(&airport_bytes).expect("decode KPAE plate folder");
+        let selected_chart_id = airport
+            .chart_ids
+            .iter()
+            .find(|chart_id| {
+                read_chart_asset_by_id(&old_store, chart_id)
+                    .is_ok_and(|chart| chart.label == "VOR-A")
+            })
+            .cloned()
+            .expect("KPAE VOR-A chart");
+        let init = create_ui_session(plan, &[], Some("KPAE"), Some(&selected_chart_id))
+            .expect("create rich session");
+        let mut old_open = nav_db_open_result_for_test("NAV_DB_NAV12_2607_01", None);
+        old_open.selected_filename = old_path
+            .file_name()
+            .expect("2607 filename")
+            .to_string_lossy()
+            .to_string();
+        old_open.selected_cycle = Some("2607".to_string());
+        old_open.selected_contract_id = Some(REQUIRED_NAV_DB_CONTRACT_ID.to_string());
+        attach_nav_kv_store_to_session_with_open_result(
+            init.handle,
+            2607,
+            &old_store,
+            Some(&old_open),
+        )
+        .expect("attach 2607 NAVDB");
+        let catalog_before = snapshot_from_outcome(
+            super::load_raster_map_catalog_in_session(init.handle).expect("load 2607 catalog"),
+        )
+        .raster_map
+        .expect("2607 raster map");
+        sync_guidance_geometry_in_session(init.handle).expect("build 2607 guidance");
+
+        let mut next_open = nav_db_open_result_for_test("NAV_DB_NAV12_2608_01", None);
+        next_open.selected_filename = next_path
+            .file_name()
+            .expect("2608 filename")
+            .to_string_lossy()
+            .to_string();
+        next_open.selected_cycle = Some("2608".to_string());
+        next_open.selected_contract_id = Some(REQUIRED_NAV_DB_CONTRACT_ID.to_string());
+        let result = nav_db_advance_result(
+            advance_nav_kv_store_in_session_with_open_result(
+                init.handle,
+                2608,
+                &next_store,
+                &next_open,
+                vec!["NAV_DB_NAV12_2608_01".to_string()],
+            )
+            .expect("advance rich session to 2608"),
+        );
+
+        assert_eq!(result.disposition, NavDbAdvanceDisposition::Adopted);
+        assert_eq!(result.snapshot.nav_data_epoch, 1);
+        assert_eq!(
+            result
+                .snapshot
+                .raster_map
+                .as_ref()
+                .map(|map| map.selected_family_id.as_str()),
+            Some(catalog_before.selected_family_id.as_str())
+        );
+        let sessions = lock_sessions();
+        let session = sessions.get(&init.handle).expect("committed 2608 session");
+        assert_eq!(session.app_state.active_plan.as_ref(), Some(&expected_plan));
+        assert_eq!(session.nav_kv_store_id, Some(2608));
+        assert!(!session.guidance_leg_geometry.is_empty());
+        let route = crate::had_ops::project_flight_plan_route(
+            session.nav_kv_store.as_ref().expect("committed NAVDB"),
+            session.app_state.active_plan.as_ref().expect("active plan"),
+        )
+        .expect("project committed 2608 route");
+        assert!(route
+            .iter()
+            .any(|segment| matches!(segment.geometry, crate::GuidanceRouteGeometry::Arc { .. })));
+        assert!(route
+            .iter()
+            .any(|segment| { segment.status == crate::FlightPlanRouteSegmentStatus::Active }));
     }
 
     fn attach_nav_db_package_records_for_test(handle: u32, packages: Vec<serde_json::Value>) {
@@ -14110,6 +15308,8 @@ mod tests {
     fn live_metar_layer_survives_vector_manifest_without_weather_layers() {
         let mut session = UiSession {
             session_revision: 0,
+            nav_data_epoch: 0,
+            nav_db_advance_blocked: false,
             app_state: register_default_situation_sources(AppState::default()).expect("app state"),
             playback: PlaybackSessionState::default(),
             plan_preview: PlanPreviewState::default(),
@@ -14300,6 +15500,8 @@ mod tests {
         );
         let mut session = UiSession {
             session_revision: 0,
+            nav_data_epoch: 0,
+            nav_db_advance_blocked: false,
             app_state: register_default_situation_sources(AppState::default()).expect("app state"),
             playback: PlaybackSessionState::default(),
             plan_preview: PlanPreviewState::default(),
@@ -14741,6 +15943,8 @@ mod tests {
     fn malformed_live_tfr_state_records_data_status_without_failing_overlay() {
         let mut session = UiSession {
             session_revision: 0,
+            nav_data_epoch: 0,
+            nav_db_advance_blocked: false,
             app_state: register_default_situation_sources(AppState::default()).expect("app state"),
             playback: PlaybackSessionState::default(),
             plan_preview: PlanPreviewState::default(),

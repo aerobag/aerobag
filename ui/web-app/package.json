@@ -21,6 +21,7 @@
     "inner:build:release": "npm run generate:symbols && npm run generate:wire && npm run prepare:dev-assets && npm run build:wasm:release && tsc --noEmit && vite build",
     "inner:test": "npm run generate:symbols && npm run generate:wire && npm run smoke:wasm-startup && vitest run",
     "inner:e2e:android-chrome-livefeed": "node ${AEROBAG_REPO_ROOT:-../..}/tools/e2e/run-android-chrome-livefeed-e2e.mjs",
+    "inner:e2e:nav-db-rollover": "npm run generate:symbols && npm run generate:wire && npm run build:wasm && node ./scripts/nav-db-rollover-e2e.mjs",
     "perf:startup-network": "node ./scripts/startup-network-perf.mjs",
     "perf:terrain-replay": "node ./scripts/terrain-replay-perf.mjs",
     "perf:terrain-replay:check": "node ./scripts/terrain-replay-perf.mjs --fail=true",
@@ -30,7 +31,8 @@
     "build": "./scripts/run-target-workspace.sh inner:build",
     "build:release": "./scripts/run-target-workspace.sh inner:build:release",
     "test": "./scripts/run-target-workspace.sh inner:test",
-    "e2e:android-chrome-livefeed": "./scripts/run-target-workspace.sh inner:e2e:android-chrome-livefeed"
+    "e2e:android-chrome-livefeed": "./scripts/run-target-workspace.sh inner:e2e:android-chrome-livefeed",
+    "e2e:nav-db-rollover": "./scripts/run-target-workspace.sh inner:e2e:nav-db-rollover"
   },
   "dependencies": {
     "react": "^18.3.1",

@@ -112,6 +112,12 @@ interface NativeBridge {
 
     fun attachNavKvStoreToSession(navKvHandle: Long, sessionHandle: Long)
 
+    fun advanceNavKvStoreInSessionJson(
+        navKvHandle: Long,
+        sessionHandle: Long,
+        installedPackageIdsJson: String,
+    ): String
+
     fun coreHadOperation(handle: Long, operationJson: String): String
 
     fun drainSessionResourceEffectsJson(handle: Long): String
@@ -321,6 +327,8 @@ interface NativeBridge {
     fun getSessionSnapshotPagedJson(handle: Long): String
 
     fun getSessionSnapshotAtEpochMsPagedJson(handle: Long, epochMs: Long): String
+
+    fun maintainNavDbInSessionAtEpochMsJson(handle: Long, epochMs: Long): String
 
     fun performFlightPlanRowActionInSessionJson(
         handle: Long,
@@ -650,6 +658,12 @@ object NativeBindings : NativeBridge {
 
     external override fun attachNavKvStoreToSession(navKvHandle: Long, sessionHandle: Long)
 
+    external override fun advanceNavKvStoreInSessionJson(
+        navKvHandle: Long,
+        sessionHandle: Long,
+        installedPackageIdsJson: String,
+    ): String
+
     external override fun coreHadOperation(handle: Long, operationJson: String): String
 
     external override fun drainSessionResourceEffectsJson(handle: Long): String
@@ -859,6 +873,8 @@ object NativeBindings : NativeBridge {
     external override fun getSessionSnapshotPagedJson(handle: Long): String
 
     external override fun getSessionSnapshotAtEpochMsPagedJson(handle: Long, epochMs: Long): String
+
+    external override fun maintainNavDbInSessionAtEpochMsJson(handle: Long, epochMs: Long): String
 
     external override fun performFlightPlanRowActionInSessionJson(
         handle: Long,

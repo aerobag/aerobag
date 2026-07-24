@@ -694,6 +694,46 @@ class NativeUiSession internal constructor(
         invalidationListener = listener
     }
 
+    fun advanceInstalledArtifacts(
+        artifacts: List<InstalledPackageArtifact>,
+        libraryCacheJson: String,
+        plannedGcFilenames: Set<String>,
+    ): NavDbAdvanceUiResult {
+        val store = requireNotNull(navKvStore) { "NAVDB advance requires a nav kv store" }
+        val outcome = store.replaceInstalledArtifacts(
+            artifacts,
+            libraryCacheJson,
+            handle,
+            plannedGcFilenames,
+        )
+        val result = json.decodeFromJsonElement<WireNavDbAdvanceResult>(outcome.result)
+        snapshot = result.snapshot.toUi()
+        publishInvalidations("navDbAdvance", outcome.invalidations)
+        return NavDbAdvanceUiResult(
+            adopted = result.disposition == "adopted",
+            snapshot = snapshot,
+            retainedArtifactFilenames = result.retained_artifact_filenames.toSet(),
+            rejectionReason = result.rejection_reason,
+        )
+    }
+
+    fun maintainNavDb(nowEpochMs: Long): NavDbMaintenanceUiResult {
+        val outcome = navKvStore?.runPagedSessionOperation(
+            operation = {
+                bridge.maintainNavDbInSessionAtEpochMsJson(handle, nowEpochMs)
+            },
+            drainSessionResourceEffects = { bridge.drainSessionResourceEffectsJson(handle) },
+            resumeSnapshot = { bridge.getSessionSnapshotPagedJson(handle) },
+        ) ?: error("NAVDB maintenance requires a nav kv store")
+        val result = json.decodeFromJsonElement<WireNavDbMaintenanceResult>(outcome.result)
+        snapshot = result.snapshot.toUi()
+        publishInvalidations("navDbMaintenance", outcome.invalidations)
+        return NavDbMaintenanceUiResult(
+            shouldAttemptAdvance = result.action == "attempt_advance",
+            snapshot = snapshot,
+        )
+    }
+
     private fun runPagedSnapshot(commandName: String, operation: () -> String): UiSessionSnapshot {
         val outcome = runNativeSessionCommand(commandName) {
             executePagedSnapshot(commandName, operation)
@@ -2115,6 +2155,9 @@ private data class WireUiPlaybackPanelState(
 @kotlinx.serialization.Serializable
 private data class WireUiSessionSnapshot(
     val session_revision: Long = 0,
+    val nav_data_epoch: Long = 0,
+    val active_nav_db: WireUiNavDbIdentity? = null,
+    val next_nav_db_maintenance_epoch_ms: Long? = null,
     val app_state: WireUiSnapshotAppState,
     val app_ui_state: WireAppUiState = WireAppUiState(),
     val playback_ui_state: WirePlaybackUiState = WirePlaybackUiState(),
@@ -2132,6 +2175,29 @@ private data class WireUiSessionSnapshot(
     val debug_state: WireUiDebugState = WireUiDebugState(),
     val raster_map: WireRasterMapUiState? = null,
     val next_cycle_product_freshness_check_epoch_ms: Long? = null,
+)
+
+@kotlinx.serialization.Serializable
+private data class WireUiNavDbIdentity(
+    val package_id: String,
+    val filename: String,
+    val contract_id: String? = null,
+    val cycle: String? = null,
+    val cycle_version: String? = null,
+)
+
+@kotlinx.serialization.Serializable
+private data class WireNavDbAdvanceResult(
+    val disposition: String,
+    val snapshot: WireUiSessionSnapshot,
+    val retained_artifact_filenames: List<String> = emptyList(),
+    val rejection_reason: String? = null,
+)
+
+@kotlinx.serialization.Serializable
+private data class WireNavDbMaintenanceResult(
+    val action: String,
+    val snapshot: WireUiSessionSnapshot,
 )
 
 @kotlinx.serialization.Serializable
@@ -2280,6 +2346,9 @@ data class DerivedChartPageState(
 
 data class UiSessionSnapshot(
     val sessionRevision: Long,
+    val navDataEpoch: Long,
+    val activeNavDb: UiNavDbIdentity?,
+    val nextNavDbMaintenanceEpochMs: Long?,
     val appState: UiSnapshotAppState,
     val appUiState: AppUiState,
     val playbackUiState: PlaybackUiState,
@@ -2308,6 +2377,26 @@ data class UiHomePageButton(
 
 data class UiHomePageState(
     val buttons: List<UiHomePageButton>,
+)
+
+data class UiNavDbIdentity(
+    val packageId: String,
+    val filename: String,
+    val contractId: String?,
+    val cycle: String?,
+    val cycleVersion: String?,
+)
+
+data class NavDbAdvanceUiResult(
+    val adopted: Boolean,
+    val snapshot: UiSessionSnapshot,
+    val retainedArtifactFilenames: Set<String>,
+    val rejectionReason: String?,
+)
+
+data class NavDbMaintenanceUiResult(
+    val shouldAttemptAdvance: Boolean,
+    val snapshot: UiSessionSnapshot,
 )
 
 data class MapOverlayQueryOutcome(
@@ -2643,6 +2732,17 @@ private fun WireUiPlaybackPanelState.toUi() = UiPlaybackPanelState(
 
 private fun WireUiSessionSnapshot.toUi() = UiSessionSnapshot(
     sessionRevision = session_revision,
+    navDataEpoch = nav_data_epoch,
+    activeNavDb = active_nav_db?.let {
+        UiNavDbIdentity(
+            packageId = it.package_id,
+            filename = it.filename,
+            contractId = it.contract_id,
+            cycle = it.cycle,
+            cycleVersion = it.cycle_version,
+        )
+    },
+    nextNavDbMaintenanceEpochMs = next_nav_db_maintenance_epoch_ms,
     appState = app_state.toUi(),
     appUiState = app_ui_state.toUi(),
     playbackUiState = playback_ui_state.toUi(),

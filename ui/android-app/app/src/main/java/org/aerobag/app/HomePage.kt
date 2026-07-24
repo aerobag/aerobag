@@ -428,7 +428,7 @@ internal fun HomePage(
     offlinePackagesControllerHandle: Long,
     onOfflinePackagesClosed: (() -> Unit)? = null,
     onOfflinePackageLibraryCacheChanged: (String?) -> Unit = {},
-    onOfflinePackageArtifactsChanged: () -> Unit = {},
+    onOfflinePackageArtifactsChanged: suspend (String, Set<String>) -> Set<String> = { _, _ -> emptySet() },
 ) {
     val uiTheme = LocalAerobagUiTheme.current
     val context = LocalContext.current
@@ -536,12 +536,6 @@ internal fun HomePage(
         if (event is OfflinePackagesControllerEventWire.LibraryRefreshSucceeded) {
             onOfflinePackageLibraryCacheChanged(result.libraryCacheJson)
         }
-        if (
-            event is OfflinePackagesControllerEventWire.SyncFinished &&
-            (event.summary.fetchedCount > 0 || event.summary.gcCount > 0)
-        ) {
-            onOfflinePackageArtifactsChanged()
-        }
         when (val command = result.command) {
             is OfflinePackagesControllerCommandWire.RefreshLibrary -> {
                 val refreshResult: Result<OfflinePackagesControllerEventWire.LibraryRefreshSucceeded> = runCatching {
@@ -586,6 +580,14 @@ internal fun HomePage(
                             packagedArtifactRoot = command.packagedArtifactRoot,
                             maxParallelFetches = command.maxParallelFetches,
                             activeConnections = activePackageConnections,
+                            beforeGc = {
+                                onOfflinePackageArtifactsChanged(
+                                    requireNotNull(result.libraryCacheJson) {
+                                        "package sync changed installed artifacts without a package library cache"
+                                    },
+                                    command.plan.gc.toSet(),
+                                )
+                            },
                             onProgress = { message, progress ->
                                 withContext(Dispatchers.Main) {
                                     if (progress != null) {

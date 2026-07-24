@@ -78,6 +78,49 @@ impl PublicationResolver {
             .flat_map(|bundle| bundle.packages.iter())
     }
 
+    pub fn resource_policy(&self) -> CoreResourcePolicy {
+        self.resource_policy
+    }
+
+    pub fn current_artifacts_refresh_request(&self) -> Result<CoreResourceRequest, String> {
+        if self.resource_policy != CoreResourcePolicy::PublicUnpacked {
+            return Err("publication refresh requires public_unpacked resource policy".to_string());
+        }
+        Ok(CoreResourceRequest::public_url(
+            CURRENT_ARTIFACTS_RESOURCE_ID,
+            join_url([self.public_base_url.as_str(), "current_artifacts.json"]),
+            false,
+        ))
+    }
+
+    pub fn nav_db_artifact_candidates(
+        &self,
+    ) -> Result<Result<Vec<NavDbArtifactCandidate>, Vec<CoreResourceRequest>>, String> {
+        if let Some(resources) = self.missing_manifest_resources()? {
+            return Ok(Err(resources));
+        }
+        Ok(Ok(self
+            .bundle_manifests_by_filename
+            .values()
+            .flat_map(|bundle| bundle.packages.iter())
+            .filter(|package| package.family_id == "nav-db")
+            .filter(|package| package_contract_is_supported(package))
+            .map(|package| {
+                Ok(NavDbArtifactCandidate {
+                    package_id: package.id.clone(),
+                    filename: package.filename.clone(),
+                    contract_id: Some(package.contract_id.clone()),
+                    cycle: package.cycle.clone(),
+                    cycle_version: package.cycle_version.clone(),
+                    effective_date: package.effective_date.clone(),
+                    expiration_date: package.expiration_date.clone(),
+                    warning_text: package.warning_text.clone(),
+                    root_source: Some(self.package_member_source(package, "root")?),
+                })
+            })
+            .collect::<Result<Vec<_>, String>>()?))
+    }
+
     pub fn ingest_resource(
         &mut self,
         resource_id: &str,
@@ -125,6 +168,14 @@ impl PublicationResolver {
             )?;
             manifests.sort_by(|left, right| left.as_of_utc.cmp(&right.as_of_utc));
             self.current_artifacts = manifests.pop();
+            let referenced_bundles = self
+                .current_artifacts
+                .iter()
+                .flat_map(|manifest| manifest.bundles.iter())
+                .map(|bundle| bundle.filename.as_str())
+                .collect::<BTreeSet<_>>();
+            self.bundle_manifests_by_filename
+                .retain(|filename, _| referenced_bundles.contains(filename.as_str()));
             self.current_artifacts_checked_epoch_ms =
                 self.current_artifacts.as_ref().and(checked_epoch_ms);
             return Ok(());
@@ -175,29 +226,10 @@ impl PublicationResolver {
     }
 
     pub fn resolve_nav_db_artifact_candidates(&self) -> Result<HadOperationOutcome, String> {
-        if let Some(resources) = self.missing_manifest_resources()? {
-            return Ok(HadOperationOutcome::NeedResources { resources });
-        }
-        let candidates = self
-            .bundle_manifests_by_filename
-            .values()
-            .flat_map(|bundle| bundle.packages.iter())
-            .filter(|package| package.family_id == "nav-db")
-            .filter(|package| package_contract_is_supported(package))
-            .map(|package| {
-                Ok(NavDbArtifactCandidate {
-                    package_id: package.id.clone(),
-                    filename: package.filename.clone(),
-                    contract_id: Some(package.contract_id.clone()),
-                    cycle: package.cycle.clone(),
-                    cycle_version: package.cycle_version.clone(),
-                    effective_date: package.effective_date.clone(),
-                    expiration_date: package.expiration_date.clone(),
-                    warning_text: package.warning_text.clone(),
-                    root_source: Some(self.package_member_source(package, "root")?),
-                })
-            })
-            .collect::<Result<Vec<_>, String>>()?;
+        let candidates = match self.nav_db_artifact_candidates()? {
+            Ok(candidates) => candidates,
+            Err(resources) => return Ok(HadOperationOutcome::NeedResources { resources }),
+        };
         let result = serde_json::to_value(candidates).map_err(|err| err.to_string())?;
         Ok(HadOperationOutcome::complete(result))
     }
@@ -565,6 +597,36 @@ mod tests {
                 url: "/packages/published_packaged/bundles/bundle_cycle.json".to_string(),
             }
         );
+    }
+
+    #[test]
+    fn refreshed_current_artifacts_forgets_withdrawn_bundle_manifests() {
+        let mut resolver = PublicationResolver::new("/packages");
+        resolver
+            .ingest_resource(
+                "publication/current_artifacts",
+                current_artifacts_list_json().as_bytes(),
+            )
+            .unwrap();
+        resolver
+            .ingest_resource(
+                "publication/bundle/bundle_cycle.json",
+                serde_json::to_string(&bundle()).unwrap().as_bytes(),
+            )
+            .unwrap();
+        assert_eq!(resolver.loaded_bundle_manifest_count(), 1);
+
+        let mut refreshed = current_artifacts();
+        refreshed.bundles.clear();
+        resolver
+            .ingest_resource(
+                "publication/current_artifacts",
+                serde_json::to_string(&vec![refreshed]).unwrap().as_bytes(),
+            )
+            .unwrap();
+
+        assert_eq!(resolver.loaded_bundle_manifest_count(), 0);
+        assert!(resolver.loaded_bundle_packages().next().is_none());
     }
 
     #[test]

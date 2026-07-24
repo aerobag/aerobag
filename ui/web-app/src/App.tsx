@@ -155,6 +155,7 @@ declare global {
   interface Window {
     __aerobagE2e?: {
       liveFeeds?: () => unknown;
+      navDb?: () => unknown;
     };
   }
 }
@@ -351,6 +352,7 @@ type UiInvalidationRevisions = Record<UiInvalidation, number>;
 
 function initialUiInvalidationRevisions(): UiInvalidationRevisions {
   return {
+    nav_data: 0,
     session_snapshot: 0,
     raster_tiles: 0,
     map_overlay: 0,
@@ -1874,8 +1876,12 @@ export default function App() {
   const sessionSnapshotRefreshTimerRef = useRef<number | null>(null);
   const appliedSessionRevisionRef = useRef(0);
   const cycleProductFreshnessTimerRef = useRef<number | null>(null);
+  const navDbMaintenanceTimerRef = useRef<number | null>(null);
   const [sessionSnapshot, setSessionSnapshot] = useState<UiSessionSnapshot>({
     session_revision: 0,
+    nav_data_epoch: 0,
+    active_nav_db: null,
+    next_nav_db_maintenance_epoch_ms: null,
     app_state: {
       active_plan: null,
       content_policy: "PreferLocal",
@@ -2316,6 +2322,65 @@ export default function App() {
   }, [requestSessionSnapshotRefresh, sessionSnapshot.next_cycle_product_freshness_check_epoch_ms]);
 
   useEffect(() => {
+    if (navDbMaintenanceTimerRef.current !== null) {
+      window.clearTimeout(navDbMaintenanceTimerRef.current);
+      navDbMaintenanceTimerRef.current = null;
+    }
+    if (!uiSession) {
+      return;
+    }
+    const nextCheckEpochMs = sessionSnapshot.next_nav_db_maintenance_epoch_ms;
+    if (nextCheckEpochMs === null || nextCheckEpochMs === undefined) {
+      return;
+    }
+    let cancelled = false;
+    const runMaintenance = async () => {
+      try {
+        const nextSnapshot = await uiSession.maintainNavDb(Date.now());
+        if (!cancelled) {
+          applySessionSnapshot(nextSnapshot, "nav_db_maintenance");
+          const nextDeadline = nextSnapshot.next_nav_db_maintenance_epoch_ms;
+          if (nextDeadline !== null && nextDeadline <= Date.now()) {
+            navDbMaintenanceTimerRef.current = window.setTimeout(runMaintenance, 60_000);
+          }
+        }
+      } catch (error) {
+        debugLog("nav_db.maintenance.failed", {
+          error: errorMessage(error),
+        });
+        if (!cancelled) {
+          navDbMaintenanceTimerRef.current = window.setTimeout(runMaintenance, 60_000);
+        }
+      }
+    };
+    const schedule = () => {
+      const delayMs = Math.min(
+        Math.max(0, nextCheckEpochMs - Date.now()),
+        2_147_000_000,
+      );
+      navDbMaintenanceTimerRef.current = window.setTimeout(runMaintenance, delayMs);
+    };
+    const handleVisibilityChange = () => {
+      if (document.visibilityState === "visible" && Date.now() >= nextCheckEpochMs) {
+        if (navDbMaintenanceTimerRef.current !== null) {
+          window.clearTimeout(navDbMaintenanceTimerRef.current);
+        }
+        void runMaintenance();
+      }
+    };
+    schedule();
+    document.addEventListener("visibilitychange", handleVisibilityChange);
+    return () => {
+      cancelled = true;
+      document.removeEventListener("visibilitychange", handleVisibilityChange);
+      if (navDbMaintenanceTimerRef.current !== null) {
+        window.clearTimeout(navDbMaintenanceTimerRef.current);
+        navDbMaintenanceTimerRef.current = null;
+      }
+    };
+  }, [applySessionSnapshot, sessionSnapshot.next_nav_db_maintenance_epoch_ms, uiSession]);
+
+  useEffect(() => {
     const handleVisibilityChange = () => {
       if (document.visibilityState !== "visible") {
         return;
@@ -2562,6 +2627,43 @@ export default function App() {
     sessionSnapshot.chart_page_state.suggested_chart_ids,
   ]);
   const planUiState = appUiState.active_plan;
+  useEffect(() => {
+    if (typeof window === "undefined") {
+      return;
+    }
+    const navDb = () => ({
+      active_nav_db: sessionSnapshot.active_nav_db,
+      nav_data_epoch: sessionSnapshot.nav_data_epoch,
+      next_nav_db_maintenance_epoch_ms: sessionSnapshot.next_nav_db_maintenance_epoch_ms,
+      advance_warning:
+        sessionSnapshot.data_status_state.boxes.find((box) => box.id === "nav_db:advance")
+        ?? null,
+      active_plan: currentPlan,
+      plan_ui_state: planUiState
+        ? {
+          components: planUiState.components,
+          resolved_legs: planUiState.resolved_legs,
+          guidance: planUiState.guidance,
+        }
+        : null,
+    });
+    window.__aerobagE2e = {
+      ...(window.__aerobagE2e ?? {}),
+      navDb,
+    };
+    return () => {
+      if (window.__aerobagE2e?.navDb === navDb) {
+        delete window.__aerobagE2e.navDb;
+      }
+    };
+  }, [
+    currentPlan,
+    planUiState,
+    sessionSnapshot.active_nav_db,
+    sessionSnapshot.data_status_state.boxes,
+    sessionSnapshot.nav_data_epoch,
+    sessionSnapshot.next_nav_db_maintenance_epoch_ms,
+  ]);
   const recentAirportIds = derivedChartPageState.recent_airport_ids;
   const selectedAirportId = derivedChartPageState.selected_airport_id;
   const selectedReferenceFamilyId = derivedChartPageState.selected_reference_family_id ?? null;
@@ -3148,7 +3250,9 @@ export default function App() {
     <main className="appShell" style={themeVars}>
       <div className={`pageLayer${page === "map" ? " isActive" : ""}`} aria-hidden={page !== "map"}>
         <MapPage
+          key={sessionSnapshot.nav_data_epoch}
           appCoreAdapter={appCoreAdapter}
+          navDataEpoch={sessionSnapshot.nav_data_epoch}
           page={page}
           uptimeLabel={uptimeLabel}
           debugState={sessionSnapshot.debug_state}
@@ -3200,6 +3304,10 @@ export default function App() {
           flightDataBanner={appUiState.flight_data_banner}
           dataStatusState={sessionSnapshot.data_status_state}
           onStatusAction={(actionId) => {
+            if (actionId === "app:reload") {
+              window.location.reload();
+              return;
+            }
             if (!uiSession) {
               return;
             }
@@ -3509,6 +3617,7 @@ export default function App() {
 
 function MapPage(props: {
   appCoreAdapter: AppCoreAdapter;
+  navDataEpoch: number;
   page: AppPage;
   uptimeLabel: string;
   debugState: UiDebugState;
@@ -3555,6 +3664,7 @@ function MapPage(props: {
 }) {
   const {
     appCoreAdapter,
+    navDataEpoch,
     debugState,
     mapLayerState,
     page,
@@ -3669,6 +3779,7 @@ function MapPage(props: {
     width: number;
     height: number;
     layerKey: string;
+    navDataEpoch: number;
   } | null>(null);
   const mapOverlayQueryRequestIdRef = useRef(0);
   const landedMapOverlayQueryRequestIdRef = useRef(0);
@@ -4130,6 +4241,7 @@ function MapPage(props: {
       current !== null
       && request.id > landedMapOverlayQueryRequestIdRef.current
       && current.session === request.session
+      && current.navDataEpoch === request.navDataEpoch
       && current.width === request.width
       && current.height === request.height
       && current.layerKey === request.layerKey
@@ -4304,6 +4416,7 @@ function MapPage(props: {
     height: number;
     devicePixelRatio: number;
     selectedMapId: string;
+    navDataEpoch: number;
     pageTilePaintTiming: WebPageTilePaintTiming | null;
   } | null>(null);
   const rasterTilePlanRequestIdRef = useRef(0);
@@ -4335,7 +4448,9 @@ function MapPage(props: {
     height: number,
     devicePixelRatio: number,
     selectedMapId: string,
+    navDataEpoch: number,
   ) => [
+    navDataEpoch,
     selectedMapId,
     width,
     height,
@@ -4388,6 +4503,7 @@ function MapPage(props: {
       current !== null
       && request.id > landedRasterTilePlanRequestIdRef.current
       && current.session === request.session
+      && current.navDataEpoch === request.navDataEpoch
       && current.selectedMapId === request.selectedMapId
       && current.width === request.width
       && current.height === request.height
@@ -4649,6 +4765,7 @@ function MapPage(props: {
       surfaceSize.height,
       devicePixelRatio,
       selectedMap.selected_map_id,
+      navDataEpoch,
     );
     if (rasterTilePlanRequestKeyRef.current === key) {
       return;
@@ -4664,11 +4781,12 @@ function MapPage(props: {
       height: surfaceSize.height,
       devicePixelRatio,
       selectedMapId: selectedMap.selected_map_id,
+      navDataEpoch,
       pageTilePaintTiming,
     };
     rasterTilePlanPendingRef.current = true;
     pumpRasterTilePlanQueue();
-  }, [rasterTilePlanKey, selectedMap.selected_map_id, surfaceSize.height, surfaceSize.width, uiSession, viewport]);
+  }, [navDataEpoch, rasterTilePlanKey, selectedMap.selected_map_id, surfaceSize.height, surfaceSize.width, uiSession, viewport]);
   useEffect(() => {
     if (page !== "map" || !pageTilePaintTiming || tiles.length === 0) {
       return;
@@ -4748,7 +4866,7 @@ function MapPage(props: {
       terrainScheduleRequestRef.current = null;
       terrainSchedulePendingRef.current = false;
     };
-  }, []);
+  }, [navDataEpoch]);
 
   const terrainAltitudeBucket = ownship.terrain_altitude_bucket_ft;
 
@@ -4997,6 +5115,7 @@ function MapPage(props: {
     onHighLatencyWarning,
     plan.id,
     plan.version,
+    navDataEpoch,
     uiInvalidationRevisions.flight_plan_route,
     uiSession,
   ]);
@@ -5047,6 +5166,7 @@ function MapPage(props: {
         mapLayerState.offline_regions.visible,
         mapLayerState.vectors.visible,
       ].join("|"),
+      navDataEpoch,
     };
     mapOverlayQueryPendingRef.current = true;
     pumpMapOverlayQueryQueue();
@@ -5060,6 +5180,7 @@ function MapPage(props: {
     surfaceSize.height,
     surfaceSize.width,
     uiInvalidationRevisions.map_overlay,
+    navDataEpoch,
     uiSession,
     viewport,
   ]);
@@ -8346,6 +8467,7 @@ function FlightPlanPage(props: {
                         key={procedure.procedure_id}
                         type="button"
                         className="trayButton airwayChoiceButton procedureChoiceButton"
+                        data-testid={`plan-procedure-${procedure.procedure_id}`}
                         onPointerDown={stopPointer}
                         onPointerUp={stopPointer}
                         onClick={async () => {
@@ -8396,6 +8518,7 @@ function FlightPlanPage(props: {
                         key={`${procedurePicker.selectedProcedureId}:${choice.enroute_transition ?? "none"}:${index}`}
                         type="button"
                         className="trayButton airwayChoiceButton"
+                        data-testid={`plan-procedure-transition-${choice.enroute_transition ?? "none"}`}
                         onPointerDown={stopPointer}
                         onPointerUp={stopPointer}
                         onClick={async () => {
@@ -10907,6 +11030,7 @@ function DataStatusDock(props: {
         ref={launcherRef}
         type="button"
         className={`dataStatusLauncher statusSeverity-${severity}${props.open ? " isOpen" : ""}${hasLauncherCount ? "" : " isQuiet"}`}
+        data-testid="data-status-launcher"
         aria-expanded={props.open}
         aria-label="Status"
         onPointerDown={stopPointer}
@@ -10923,6 +11047,7 @@ function DataStatusDock(props: {
         <section
           ref={panelRef}
           className="dataStatusPanel"
+          data-testid="data-status-panel"
           aria-label="Active data status"
           style={panelPosition ? {
             left: `${panelPosition.left}px`,
@@ -10934,7 +11059,11 @@ function DataStatusDock(props: {
           onPointerUp={stopPointer}
         >
           {props.dataStatusState.boxes.map((box) => (
-            <div key={box.id} className={`dataStatusBox statusSeverity-${box.severity}${box.hushed ? " isHushed" : ""}`}>
+            <div
+              key={box.id}
+              className={`dataStatusBox statusSeverity-${box.severity}${box.hushed ? " isHushed" : ""}`}
+              data-testid={`data-status-box-${box.id}`}
+            >
               <div className="dataStatusBoxHeader">
                 <span className="dataStatusBoxLabel">{box.label}</span>
                 <span className="dataStatusBoxValue">{box.value ?? "—"}</span>
@@ -10947,6 +11076,7 @@ function DataStatusDock(props: {
                       key={action.id}
                       type="button"
                       className={`dataStatusAction dataStatusAction-${action.style}`}
+                      data-testid={`data-status-action-${box.id}-${action.id}`}
                       disabled={!action.enabled}
                       onPointerDown={stopPointer}
                       onPointerUp={stopPointer}

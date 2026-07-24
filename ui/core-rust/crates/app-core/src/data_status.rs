@@ -97,6 +97,7 @@ pub struct DataStatusRecord {
     pub drives_caution: bool,
     pub detail: String,
     pub hushable: bool,
+    pub actions: Vec<UiStatusAction>,
 }
 
 impl DataStatusRecord {
@@ -116,19 +117,30 @@ impl DataStatusRecord {
             drives_caution,
             detail: detail.into(),
             hushable: true,
+            actions: Vec::new(),
         }
+    }
+
+    pub fn with_action(mut self, action: UiStatusAction) -> Self {
+        self.actions.push(action);
+        self
     }
 }
 
 pub enum UiStatusActionCommand {
     Hush(String),
     Unhush(String),
+    ReloadApplication,
 }
 
 const STATUS_HUSH_PREFIX: &str = "status:hush:";
 const STATUS_UNHUSH_PREFIX: &str = "status:unhush:";
+pub const RELOAD_APPLICATION_ACTION_ID: &str = "app:reload";
 
 pub fn parse_status_action_id(action_id: &str) -> Option<UiStatusActionCommand> {
+    if action_id == RELOAD_APPLICATION_ACTION_ID {
+        return Some(UiStatusActionCommand::ReloadApplication);
+    }
     if let Some(status_id) = action_id.strip_prefix(STATUS_HUSH_PREFIX) {
         return Some(UiStatusActionCommand::Hush(status_id.to_string()));
     }
@@ -161,11 +173,12 @@ pub fn project_data_status_state(
                 severity: record.severity,
                 drives_caution: record.drives_caution,
                 detail: record.detail.clone(),
-                actions: if record.hushable {
-                    vec![hush_action(&record.id, hushed)]
-                } else {
-                    Vec::new()
-                },
+                actions: record
+                    .actions
+                    .iter()
+                    .cloned()
+                    .chain(record.hushable.then(|| hush_action(&record.id, hushed)))
+                    .collect(),
                 hushed,
             }
         })

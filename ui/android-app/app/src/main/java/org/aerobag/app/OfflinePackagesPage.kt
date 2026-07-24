@@ -1174,6 +1174,7 @@ internal suspend fun syncOfflinePackages(
     maxParallelFetches: Int,
     activeConnections: ActivePackageConnections,
     onProgress: suspend (String, OfflinePackagesSyncProgressWire?) -> Unit = { _, _ -> },
+    beforeGc: suspend () -> Set<String> = { emptySet() },
 ): OfflinePackagesSyncSummary {
     val syncStartMs = SystemClock.elapsedRealtime()
     val packagedArtifactRootUrl = resolvePackageSourceUrl(
@@ -1327,8 +1328,32 @@ internal suspend fun syncOfflinePackages(
             ),
         )
     }
+    val retainedFilenames = if (plan.fetch.isNotEmpty() || plan.gc.isNotEmpty()) {
+        try {
+            beforeGc()
+        } catch (error: Throwable) {
+            Log.e("OfflinePackages", "runtime adoption failed; GC suppressed", error)
+            warnings += OfflinePackagesWarning(
+                artifactId = "runtime-adoption",
+                familyId = null,
+                regionId = null,
+                message = error.message ?: error::class.simpleName ?: "runtime adoption failed",
+            )
+            return OfflinePackagesSyncSummary(
+                fetchedCount = fetchedCount,
+                gcCount = 0,
+                warnings = warnings,
+            )
+        }
+    } else {
+        emptySet()
+    }
     plan.gc.forEachIndexed { index, filename ->
         currentCoroutineContext().ensureActive()
+        if (filename in retainedFilenames) {
+            diagnosticLogInfo("OfflinePackages") { "gc retained active artifact $filename" }
+            return@forEachIndexed
+        }
         runCatching {
             val gcStartMs = SystemClock.elapsedRealtime()
             reportProgress("Removing package ${index + 1}/${plan.gc.size}: $filename")

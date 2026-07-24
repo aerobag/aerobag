@@ -306,11 +306,11 @@ internal fun formatTileBudgetSummary(
 internal fun formatTileRef(tile: RenderTile): String =
     "package=${tile.sources.firstOrNull()?.packageName ?: tile.mapViewId} storage=${tile.sources.firstOrNull()?.storageKind} z=${tile.zoom} x=${tile.x} y=${tile.yTms} candidates=${tile.sources.size}"
 
-internal fun decodedTileCacheKey(tile: RenderTile): String {
+internal fun decodedTileCacheKey(tile: RenderTile, navDataEpoch: Long): String {
     val candidates = tile.sources
         .distinctBy { "${it.packageName}:${it.storageKind}:${it.path}" }
         .joinToString("|") { source ->
             "${source.packageName}:${source.storageKind}:${source.path}"
         }
-    return "${tile.zoom}:${tile.x}:${tile.yTms}:$candidates"
+    return "$navDataEpoch:${tile.zoom}:${tile.x}:${tile.yTms}:$candidates"
 }

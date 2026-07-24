@@ -36,7 +36,7 @@ import type {
 } from "./types";
 import type { NexradOverlayQueryResult } from "../generated/nexradOverlayWire";
 import { viewportCenterLatLon, type MapViewportState } from "./mapViewport";
-import { attachNavKvStoreToSession, resolveChartAssetUrl, runCoreHadOperation, runCoreHadSessionOperation, type UiInvalidation, type UiInvalidationListener } from "./navKv";
+import { advanceSharedNavKvStore, attachNavKvStoreToSession, resolveChartAssetUrl, runCoreHadOperation, runCoreHadSessionOperation, type UiInvalidation, type UiInvalidationListener } from "./navKv";
 import { debugLog, debugTiming, installRustDebugLogBridge, perfDebugLog } from "./debugLog";
 import { ingestPreparedLiveFeedResource, resetLiveFeedPrep } from "./liveFeedPrep";
 import { liveFeedSourceUrl } from "./liveFeedUrls";
@@ -124,6 +124,15 @@ export type RasterMapUiState = {
 
 export type UiSessionSnapshot = {
   session_revision: number;
+  nav_data_epoch: number;
+  active_nav_db: {
+    package_id: string;
+    filename: string;
+    contract_id: string | null;
+    cycle: string | null;
+    cycle_version: string | null;
+  } | null;
+  next_nav_db_maintenance_epoch_ms: number | null;
   app_state: UiSnapshotAppState;
   app_ui_state: AppUiState;
   playback_ui_state: PlaybackUiState;
@@ -702,6 +711,7 @@ export interface UiSession {
   setInvalidationListener(listener: UiInvalidationListener | null): void;
   initialSnapshot(): UiSessionSnapshot;
   snapshot(): Promise<UiSessionSnapshot>;
+  maintainNavDb(nowEpochMs: number): Promise<UiSessionSnapshot>;
   requestSessionSnapshotRefresh(priority: SessionSnapshotRefreshPriority, reason: string): Promise<SessionSnapshotRefreshDecision>;
   sessionSnapshotViewportGestureActiveChanged(active: boolean): Promise<SessionSnapshotRefreshDecision>;
   sessionSnapshotViewportActivity(): Promise<SessionSnapshotRefreshDecision>;
@@ -862,6 +872,7 @@ type WasmModule = {
   empty_flight_plan_json(): Promise<string> | string;
   create_ui_session(planJson: string, recentAirportIdsJson: string, selectedAirportIdJson: string, selectedChartIdJson: string, nowEpochMs: number): Promise<string> | string;
   create_ui_session_profiled?: (planJson: string, recentAirportIdsJson: string, selectedAirportIdJson: string, selectedChartIdJson: string, nowEpochMs: number) => Promise<string> | string;
+  maintain_nav_db_in_session_at_epoch_ms(handle: number, nowEpochMs: bigint): Promise<string> | string;
   set_resource_policy_in_session(handle: number, policyJson: string): Promise<string> | string;
   configure_platform_capabilities_in_session(handle: number, capabilitiesJson: string): Promise<string> | string;
   should_prepare_live_feed_resource(resourceId: string): boolean;
@@ -947,7 +958,7 @@ type WasmModule = {
   restore_chart_page_state_in_session(handle: number, recentAirportIdsJson: string, plateTargetAirportIdJson: string, selectedAirportIdJson: string, selectedReferenceFamilyIdJson: string, selectedChartIdJson: string, suggestedChartIdsJson: string): Promise<string> | string;
   destroy_session(handle: number): void;
   install_rust_debug_logger(): Promise<void> | void;
-  nav_db_open_controller_create(candidatesJson: string): Promise<number> | number;
+  nav_db_open_controller_create(candidatesJson: string, nowEpochMs: bigint): Promise<number> | number;
   nav_db_open_controller_destroy(handle: number): Promise<void> | void;
   nav_db_open_controller_finish(handle: number): Promise<string> | string;
   nav_db_open_controller_ingest_resource(handle: number, resourceId: string, resourceBytes: Uint8Array): Promise<void> | void;
@@ -1236,6 +1247,41 @@ export class WasmAppCoreAdapter implements AppCoreAdapter {
           runSessionOperation<UiSessionSnapshot>(() =>
             this.module.get_session_snapshot_at_epoch_ms_paged(handle, BigInt(Date.now()))),
         );
+        return snapshot;
+      },
+      maintainNavDb: async (nowEpochMs) => {
+        const maintenance = await withSessionRetry(async () =>
+          runSessionOperation<{
+            action: "none" | "attempt_advance";
+            snapshot: UiSessionSnapshot;
+          }>(
+            () => this.module.maintain_nav_db_in_session_at_epoch_ms(
+              handle,
+              BigInt(Math.trunc(nowEpochMs)),
+            ),
+            (resourceId, resourceBytes) => ingestResourceForHandle(
+              handle,
+              resourceId,
+              resourceBytes,
+            ),
+            "nav_db.maintenance",
+          ));
+        snapshot = maintenance.snapshot;
+        if (maintenance.action === "attempt_advance") {
+          const advanced = await advanceSharedNavKvStore(
+            handle,
+            (resourceId, resourceBytes) => ingestResourceForHandle(
+              handle,
+              resourceId,
+              resourceBytes,
+            ),
+            publishInvalidations,
+            reportSessionResourceFailure,
+            () => this.module.drain_session_resource_effects(handle),
+            () => this.module.get_session_snapshot_paged(handle),
+          );
+          snapshot = advanced.snapshot;
+        }
         return snapshot;
       },
       requestSessionSnapshotRefresh: (priority, reason) =>
@@ -2017,6 +2063,7 @@ async function loadBestAvailableAdapterUncached(
     "situation_ring_candidates_json",
     "empty_flight_plan_json",
     "create_ui_session",
+    "maintain_nav_db_in_session_at_epoch_ms",
     "set_resource_policy_in_session",
     "configure_platform_capabilities_in_session",
     "should_prepare_live_feed_resource",

@@ -346,6 +346,7 @@ function workerBackedSession(client: AppCoreWorkerClient, sessionId: number, ini
     setInvalidationListener: (listener) => client.setSessionInvalidationListener(sessionId, listener),
     initialSnapshot: () => latestSnapshot,
     snapshot: () => updateSnapshot(call("snapshot")),
+    maintainNavDb: (...args) => updateSnapshot(call("maintainNavDb", args)),
     requestSessionSnapshotRefresh: (...args) => call("requestSessionSnapshotRefresh", args),
     sessionSnapshotViewportGestureActiveChanged: (...args) => call("sessionSnapshotViewportGestureActiveChanged", args),
     sessionSnapshotViewportActivity: () => call("sessionSnapshotViewportActivity"),

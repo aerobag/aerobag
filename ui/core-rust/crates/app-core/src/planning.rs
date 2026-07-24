@@ -3353,6 +3353,36 @@ fn rebuild_plan_from_uid_components(
     plan
 }
 
+pub(crate) fn rebuild_plan_with_nav_materializations(
+    plan: &FlightPlan,
+    replacements: Vec<(usize, RouteComponent, Vec<ResolvedLeg>)>,
+) -> AppResult<FlightPlan> {
+    let plan = plan.clone().normalized();
+    let replacements = replacements
+        .into_iter()
+        .map(|(index, component, legs)| (index, (component, legs)))
+        .collect::<BTreeMap<_, _>>();
+    let old_grouped_legs = grouped_component_legs(&plan);
+    let rebuilt_components = (0..plan.route_components.len())
+        .map(|index| {
+            if let Some((component, legs)) = replacements.get(&index) {
+                RebuiltRouteComponent {
+                    uid: plan.route_component_uids.get(index).cloned(),
+                    component: component.clone(),
+                    preserved_legs: Some(legs.clone()),
+                }
+            } else {
+                rebuilt_existing_component(&plan, &old_grouped_legs, index)
+            }
+        })
+        .collect();
+    Ok(rebuild_plan_from_uid_components(
+        &plan,
+        rebuilt_components,
+        GuidanceRebuildPolicy::PreserveByRowUid,
+    ))
+}
+
 fn allocate_route_component_uid(next_counter: &mut u64) -> String {
     let uid = format!("fpc:{next_counter:016x}");
     *next_counter += 1;

@@ -233,6 +233,7 @@ import org.aerobag.app.domain.MapLayerId
 import org.aerobag.app.domain.MapFollowUiState
 import org.aerobag.app.domain.MapOverlayQueryResult
 import org.aerobag.app.domain.MapSelectionAction
+import org.aerobag.app.domain.MapSelectionDetailStatus
 import org.aerobag.app.domain.MapSelectionHighlight
 import org.aerobag.app.domain.MapSelectionItem
 import org.aerobag.app.domain.MapSelectionQueryResult
@@ -558,6 +559,7 @@ internal data class MapSelectionUiState(
 internal data class MapSelectionDetailModalState(
     val title: String,
     val text: String? = null,
+    val status: MapSelectionDetailStatus? = null,
     val weatherDetail: WeatherDetailUiView? = null,
 )
 

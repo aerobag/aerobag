@@ -570,6 +570,7 @@ export type MapSelectionAction = {
   display_only: boolean;
   detail_text?: string | null;
   detail_title?: string | null;
+  detail_status?: MapSelectionDetailStatus | null;
   disabled_reason?: string | null;
   weather_detail?: WeatherDetailUiView | null;
   airspace_limit?: AirspaceLimitGlyph | null;
@@ -579,6 +580,11 @@ export type MapSelectionAction = {
     action_uid: string;
   } | null;
   navigation?: MapSelectionNavigationAction | null;
+};
+
+export type MapSelectionDetailStatus = {
+  text: string;
+  color_key: string;
 };
 
 export type MapSelectionNavigationAction =
@@ -1097,6 +1103,7 @@ export class WasmAppCoreAdapter implements AppCoreAdapter {
             display_policy: null,
             offline_packages: null,
             client_build: __AEROBAG_CLIENT_BUILD_INFO__,
+            local_time_zone: Intl.DateTimeFormat().resolvedOptions().timeZone,
           }),
         ),
       );

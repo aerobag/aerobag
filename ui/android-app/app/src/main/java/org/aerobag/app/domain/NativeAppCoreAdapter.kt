@@ -19,6 +19,7 @@ import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
 import org.aerobag.app.diagnosticLogInfo
 import org.aerobag.app.generated.NexradOverlayQueryResult
+import java.time.ZoneId
 
 data class VectorTileRequest(
     val layer: String,
@@ -300,12 +301,18 @@ data class MapSelectionAction(
     val displayOnly: Boolean,
     val detailText: String?,
     val detailTitle: String?,
+    val detailStatus: MapSelectionDetailStatus?,
     val disabledReason: String?,
     val weatherDetail: WeatherDetailUiView?,
     val airspaceLimit: AirspaceLimitGlyph?,
     val sessionAction: String?,
     val flightPlanRowAction: MapSelectionFlightPlanRowAction?,
     val navigation: MapSelectionNavigationAction?,
+)
+
+data class MapSelectionDetailStatus(
+    val text: String,
+    val colorKey: String,
 )
 
 data class MapSelectionFlightPlanRowAction(
@@ -444,6 +451,7 @@ class NativeAppCoreAdapter(
                         }
                     } ?: JsonNull,
                 )
+                put("local_time_zone", ZoneId.systemDefault().id)
             }.toString(),
             settingsStore = settingsStore ?: NoopCoreSettingsStore,
         )
@@ -3110,12 +3118,18 @@ private fun WireMapSelectionAction.toUi() = MapSelectionAction(
     displayOnly = display_only,
     detailText = detail_text,
     detailTitle = detail_title,
+    detailStatus = detail_status?.toUi(),
     disabledReason = disabled_reason,
     weatherDetail = weather_detail?.toUi(),
     airspaceLimit = airspace_limit?.toUi(),
     sessionAction = session_action,
     flightPlanRowAction = flight_plan_row_action?.toUi(),
     navigation = navigation?.toUi(),
+)
+
+private fun WireMapSelectionDetailStatus.toUi() = MapSelectionDetailStatus(
+    text = text,
+    colorKey = color_key,
 )
 
 private fun WireWeatherDetailUiView.toUi() = WeatherDetailUiView(

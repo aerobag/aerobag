@@ -233,6 +233,7 @@ import org.aerobag.app.domain.MapLayerId
 import org.aerobag.app.domain.MapFollowUiState
 import org.aerobag.app.domain.MapOverlayQueryResult
 import org.aerobag.app.domain.MapSelectionAction
+import org.aerobag.app.domain.MapSelectionDetailStatus
 import org.aerobag.app.domain.MapSelectionHighlight
 import org.aerobag.app.domain.MapSelectionItem
 import org.aerobag.app.domain.MapSelectionNavigationAction
@@ -2754,6 +2755,7 @@ internal fun MapExplorerPage(
                         } ?: MapSelectionDetailModal(
                             title = selection.detailModal.title,
                             text = selection.detailModal.text.orEmpty(),
+                            status = selection.detailModal.status,
                             modifier = Modifier
                                 .align(Alignment.Center)
                                 .zIndex(OverlayPlaneModal),
@@ -2810,6 +2812,7 @@ internal fun MapExplorerPage(
                                         detailModal = MapSelectionDetailModalState(
                                             title = action.detailTitle ?: action.label,
                                             text = detail,
+                                            status = action.detailStatus,
                                         ),
                                     )
                                     return@MapSelectionTray
@@ -3927,6 +3930,7 @@ internal fun MapSelectionInlineDetailText(detail: String) {
 internal fun MapSelectionDetailModal(
     title: String,
     text: String,
+    status: MapSelectionDetailStatus? = null,
     modifier: Modifier = Modifier,
 ) {
     val uiTheme = LocalAerobagUiTheme.current
@@ -3954,6 +3958,16 @@ internal fun MapSelectionDetailModal(
                 maxLines = 1,
                 overflow = TextOverflow.Ellipsis,
             )
+            status?.let { timing ->
+                Text(
+                    text = timing.text,
+                    style = MaterialTheme.typography.labelMedium.copy(
+                        fontWeight = FontWeight.Black,
+                        lineHeight = 18.sp,
+                    ),
+                    color = aviationColor(uiTheme, timing.colorKey),
+                )
+            }
             WeatherDetailSection(
                 label = null,
                 ageLabel = null,

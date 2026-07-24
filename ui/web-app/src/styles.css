@@ -1496,6 +1496,13 @@ button {
   text-transform: uppercase;
 }
 
+.mapSelectionDetailStatus {
+  margin-bottom: calc(var(--thumb-gap) * 0.5);
+  font-size: calc(var(--thumb) * 0.18);
+  font-weight: 900;
+  line-height: 1.15;
+}
+
 .mapSelectionAction {
   width: var(--thumb);
   height: var(--thumb);

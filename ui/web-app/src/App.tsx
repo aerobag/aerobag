@@ -3823,7 +3823,7 @@ function MapPage(props: {
     point: ScreenPoint;
     result: MapSelectionQueryResult;
     selectedItem: MapSelectionItem | null;
-    detailModal: { kind: "text"; title: string; text: string } | { kind: "weather"; detail: WeatherDetailUiView } | null;
+    detailModal: { kind: "text"; title: string; text: string; status?: { text: string; color_key: string } | null } | { kind: "weather"; detail: WeatherDetailUiView } | null;
   } | null>(null);
   const [hoverWeather, setHoverWeather] = useState<{
     stationId: string;
@@ -6174,6 +6174,7 @@ function MapPage(props: {
               <MapSelectionDetailModal
                 title={mapSelection.detailModal.title}
                 text={mapSelection.detailModal.text}
+                status={mapSelection.detailModal.status}
               />
             ) : (
               <MapSelectionTray
@@ -6191,7 +6192,10 @@ function MapPage(props: {
                     detailModal: weatherDetail ? { kind: "weather", detail: weatherDetail } : null,
                   };
                 })}
-                onSelectDetail={(title, text) => setMapSelection((current) => current ? { ...current, detailModal: { kind: "text", title, text } } : current)}
+                onSelectDetail={(title, text, status) => setMapSelection((current) => current ? {
+                  ...current,
+                  detailModal: { kind: "text", title, text, status },
+                } : current)}
                 onSelectWeather={(detail) => setMapSelection((current) => current ? { ...current, detailModal: { kind: "weather", detail } } : current)}
                 onDisabledAction={showDisabledAction}
                 onSelectAction={async (item, action) => {
@@ -9167,7 +9171,11 @@ function MapSelectionTray(props: {
   result: MapSelectionQueryResult;
   selectedItem: MapSelectionItem | null;
   onSelectItem: (item: MapSelectionItem) => void;
-  onSelectDetail: (title: string, text: string) => void;
+  onSelectDetail: (
+    title: string,
+    text: string,
+    status?: { text: string; color_key: string } | null,
+  ) => void;
   onDisabledAction: (message: string) => void;
   onSelectWeather: (detail: WeatherDetailUiView) => void;
   onSelectAction: (item: MapSelectionItem, action: MapSelectionItem["actions"][number]) => void | Promise<void>;
@@ -9289,7 +9297,11 @@ function MapSelectionTray(props: {
                     return;
                   }
                   if (action.detail_text) {
-                    onSelectDetail(action.detail_title ?? action.label, action.detail_text);
+                    onSelectDetail(
+                      action.detail_title ?? action.label,
+                      action.detail_text,
+                      action.detail_status,
+                    );
                     return;
                   }
                   void onSelectAction(selectedItem, action);
@@ -9315,7 +9327,11 @@ function MapSelectionTray(props: {
   );
 }
 
-function MapSelectionDetailModal(props: { title: string; text: string }) {
+function MapSelectionDetailModal(props: {
+  title: string;
+  text: string;
+  status?: { text: string; color_key: string } | null;
+}) {
   return (
     <section
       className="mapSelectionDetailModal weatherDetailModal"
@@ -9329,6 +9345,14 @@ function MapSelectionDetailModal(props: { title: string; text: string }) {
       onDoubleClick={stopDoubleClick}
     >
       <div className="mapSelectionDetailTitle">{props.title}</div>
+      {props.status ? (
+        <div
+          className="mapSelectionDetailStatus"
+          style={{ color: aviationThemeColor(props.status.color_key) }}
+        >
+          {props.status.text}
+        </div>
+      ) : null}
       <div className="weatherDetailSections mapSelectionTextDetailSections">
         <WeatherDetailSection
           label={null}

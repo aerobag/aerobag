@@ -9,6 +9,7 @@ use std::{
 
 use airspace_geometry::{expand_airspace_path, AirspaceSegment};
 use chrono::{DateTime, Utc};
+use chrono_tz::Tz;
 use notam_state::{NotamApplyWork, NotamCheckpoint, NotamDelta, NotamState, NotamStateError};
 use product_contracts::AirportNotamEffect;
 #[cfg(test)]
@@ -971,6 +972,8 @@ pub struct MapSelectionAction {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub detail_title: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub detail_status: Option<MapSelectionDetailStatus>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub weather_detail: Option<WeatherDetailUiView>,
     #[serde(default)]
     pub disabled_reason: Option<String>,
@@ -982,6 +985,12 @@ pub struct MapSelectionAction {
     pub flight_plan_row_action: Option<MapSelectionFlightPlanRowAction>,
     #[serde(default)]
     pub navigation: Option<MapSelectionNavigationAction>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct MapSelectionDetailStatus {
+    pub text: String,
+    pub color_key: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -2659,6 +2668,44 @@ pub fn query_map_selection_for_surface(
     airport_plate_availability: &mut dyn FnMut(&str) -> AirportPlateAvailability,
     weather_age_reference_utc: Option<DateTime<Utc>>,
 ) -> MapSelectionQueryResult {
+    query_map_selection_for_surface_in_time_zone(
+        metrics,
+        config,
+        plan,
+        click,
+        vector_tile_cache,
+        metar_tile_cache,
+        metar_payload,
+        taf_payload,
+        notam_payload,
+        offline_region_records,
+        airspace_feature_cache,
+        tfr_payload,
+        flight_plan_points,
+        airport_plate_availability,
+        weather_age_reference_utc,
+        chrono_tz::UTC,
+    )
+}
+
+pub fn query_map_selection_for_surface_in_time_zone(
+    metrics: &MapSurfaceMetrics,
+    config: &MapOverlayConfig,
+    plan: Option<&FlightPlan>,
+    click: LatLon,
+    vector_tile_cache: &HashMap<String, VectorAggregateTilePayload>,
+    metar_tile_cache: &HashMap<String, MetarTilePayload>,
+    metar_payload: Option<&MetarProductPayload>,
+    taf_payload: Option<&TafProductPayload>,
+    notam_payload: Option<&AirportNotamIndex>,
+    offline_region_records: &[OfflineRegionRecord],
+    airspace_feature_cache: &HashMap<String, AirspaceFeaturePayload>,
+    tfr_payload: Option<&TfrProductPayload>,
+    flight_plan_points: &[FlightPlanSelectionPoint],
+    airport_plate_availability: &mut dyn FnMut(&str) -> AirportPlateAvailability,
+    weather_age_reference_utc: Option<DateTime<Utc>>,
+    local_time_zone: Tz,
+) -> MapSelectionQueryResult {
     let viewport = &metrics.viewport;
     let width_px = metrics.width_px;
     let height_px = metrics.height_px;
@@ -2805,7 +2852,11 @@ pub fn query_map_selection_for_surface(
     if let Some(tfr_payload) = tfr_payload {
         for area in &tfr_payload.areas {
             if tfr_area_contains(area, click) {
-                airspaces.push(selection_item_for_tfr(area, weather_age_reference_utc));
+                airspaces.push(selection_item_for_tfr(
+                    area,
+                    weather_age_reference_utc,
+                    local_time_zone,
+                ));
             }
         }
     }
@@ -3940,6 +3991,7 @@ fn airspace_icon_paths_from_lon_lat_paths(
 fn selection_item_for_tfr(
     area: &TfrAreaPayload,
     reference_utc: Option<DateTime<Utc>>,
+    local_time_zone: Tz,
 ) -> MapSelectionItem {
     let notam = area.notam.as_ref();
     let timing = tfr_timing_state(area, reference_utc);
@@ -3949,13 +4001,15 @@ fn selection_item_for_tfr(
         tfr_limit_label(&area.lower_limit),
         timing.style_key,
     )];
-    actions.push(text_detail_action(
+    let mut text_action = text_detail_action(
         "tfr_text",
         "TFR text",
         Some("TFR"),
         notam.and_then(tfr_notam_detail_text),
         "No TFR text is available for this area.",
-    ));
+    );
+    text_action.detail_status = tfr_timing_detail_status(area, reference_utc, local_time_zone);
+    actions.push(text_action);
     MapSelectionItem {
         id: format!("tfr:{}:{}", area.notam_id.trim(), area.area_index),
         label: "TFR".to_string(),
@@ -4010,6 +4064,71 @@ fn tfr_timing_description(state: TfrTimingState) -> String {
     }
 }
 
+fn tfr_timing_detail_status(
+    area: &TfrAreaPayload,
+    reference_utc: Option<DateTime<Utc>>,
+    local_time_zone: Tz,
+) -> Option<MapSelectionDetailStatus> {
+    let reference_utc = reference_utc.filter(|value| *value > DateTime::<Utc>::UNIX_EPOCH)?;
+    let start_utc = tfr_effective_start_utc(area);
+    let end_utc = tfr_effective_end_utc(area);
+    let timing = tfr_timing_state(area, Some(reference_utc));
+    let text = if let Some(start_utc) = start_utc.filter(|start| *start > reference_utc) {
+        let starts_in_ms = start_utc
+            .signed_duration_since(reference_utc)
+            .num_milliseconds();
+        format!(
+            "Starts in {} ({})",
+            format_tfr_duration(starts_in_ms),
+            format_tfr_local_time(start_utc, local_time_zone),
+        )
+    } else if let Some(end_utc) = end_utc.filter(|end| *end > reference_utc) {
+        let ends_in_ms = end_utc
+            .signed_duration_since(reference_utc)
+            .num_milliseconds();
+        format!(
+            "Active now; ends in {} ({})",
+            format_tfr_duration(ends_in_ms),
+            format_tfr_local_time(end_utc, local_time_zone),
+        )
+    } else if end_utc.is_none() {
+        "Active now; no scheduled end".to_string()
+    } else {
+        "The published effective interval has ended".to_string()
+    };
+    Some(MapSelectionDetailStatus {
+        text,
+        color_key: timing.style_key.to_string(),
+    })
+}
+
+fn format_tfr_duration(duration_ms: i64) -> String {
+    let duration_ms = duration_ms.max(0);
+    if duration_ms < HOUR_MS {
+        return format!("{}m", duration_ms.saturating_add(MINUTE_MS - 1) / MINUTE_MS);
+    }
+    if duration_ms < DAY_MS {
+        return format_compact_time_unit(duration_ms as f64 / HOUR_MS as f64, "h");
+    }
+    format_compact_time_unit(duration_ms as f64 / DAY_MS as f64, "d")
+}
+
+fn format_compact_time_unit(value: f64, suffix: &str) -> String {
+    let rounded = value.round();
+    if (value - rounded).abs() < 0.05 || value >= 10.0 {
+        format!("{rounded:.0}{suffix}")
+    } else {
+        format!("{value:.1}{suffix}")
+    }
+}
+
+fn format_tfr_local_time(instant: DateTime<Utc>, local_time_zone: Tz) -> String {
+    instant
+        .with_timezone(&local_time_zone)
+        .format("%a %b %-d %-I:%M%P %Z")
+        .to_string()
+}
+
 fn tfr_effective_start_utc(area: &TfrAreaPayload) -> Option<DateTime<Utc>> {
     area.notam
         .as_ref()
@@ -4018,6 +4137,19 @@ fn tfr_effective_start_utc(area: &TfrAreaPayload) -> Option<DateTime<Utc>> {
             area.schedule_fragments
                 .iter()
                 .find(|fragment| fragment.kind.eq_ignore_ascii_case("effective"))
+                .map(|fragment| fragment.value_utc.as_str())
+        })
+        .and_then(crate::freshness::parse_utc_instant)
+}
+
+fn tfr_effective_end_utc(area: &TfrAreaPayload) -> Option<DateTime<Utc>> {
+    area.notam
+        .as_ref()
+        .and_then(|notam| notam.effective_end_utc.as_deref())
+        .or_else(|| {
+            area.schedule_fragments
+                .iter()
+                .find(|fragment| fragment.kind.eq_ignore_ascii_case("expires"))
                 .map(|fragment| fragment.value_utc.as_str())
         })
         .and_then(crate::freshness::parse_utc_instant)
@@ -4042,6 +4174,7 @@ fn display_action(id: &str, label: &str) -> MapSelectionAction {
         display_only: true,
         detail_text: None,
         detail_title: None,
+        detail_status: None,
         disabled_reason: None,
         weather_detail: None,
         airspace_limit: None,
@@ -4059,6 +4192,7 @@ fn weather_action(weather_detail: Option<WeatherDetailUiView>) -> MapSelectionAc
         display_only: false,
         detail_text: None,
         detail_title: None,
+        detail_status: None,
         disabled_reason: weather_detail
             .is_none()
             .then(|| "No METAR, TAF, or airport NOTAM is available for this station.".to_string()),
@@ -4085,6 +4219,7 @@ fn text_detail_action(
         display_only: false,
         detail_text,
         detail_title: detail_title.map(str::to_string),
+        detail_status: None,
         disabled_reason: (!enabled).then(|| missing_reason.to_string()),
         weather_detail: None,
         airspace_limit: None,
@@ -4102,6 +4237,7 @@ fn enabled_action(id: &str, label: &str) -> MapSelectionAction {
         display_only: false,
         detail_text: None,
         detail_title: None,
+        detail_status: None,
         disabled_reason: None,
         weather_detail: None,
         airspace_limit: None,
@@ -4125,6 +4261,7 @@ fn plate_target_action(
         display_only: false,
         detail_text: None,
         detail_title: None,
+        detail_status: None,
         disabled_reason: (!available)
             .then(|| format!("No {label} are available for this airport.")),
         weather_detail: None,
@@ -4162,6 +4299,7 @@ fn disabled_action_inner(
         display_only: false,
         detail_text: None,
         detail_title: None,
+        detail_status: None,
         disabled_reason,
         weather_detail: None,
         airspace_limit: None,
@@ -4183,6 +4321,7 @@ fn row_action(
         display_only: false,
         detail_text: None,
         detail_title: None,
+        detail_status: None,
         disabled_reason: None,
         weather_detail: None,
         airspace_limit: None,
@@ -4201,6 +4340,7 @@ fn session_action(id: &str, label: &str, action: MapSelectionSessionAction) -> M
         display_only: false,
         detail_text: None,
         detail_title: None,
+        detail_status: None,
         disabled_reason: None,
         weather_detail: None,
         airspace_limit: None,
@@ -4247,6 +4387,7 @@ fn airspace_limit_action_from_parts(
         display_only: true,
         detail_text: None,
         detail_title: None,
+        detail_status: None,
         disabled_reason: None,
         weather_detail: None,
         airspace_limit: Some(AirspaceLimitGlyph {
@@ -8996,7 +9137,7 @@ mod tests {
                 facility: Some("ZLC".to_string()),
                 issued_utc: None,
                 effective_start_utc: Some("2026-07-11T12:00:00Z".to_string()),
-                effective_end_utc: None,
+                effective_end_utc: Some("2026-07-27T12:30:00Z".to_string()),
                 text: Some("FDC 1/2345 LONG TFR TEXT".to_string()),
                 local_text: None,
                 icao_text: None,
@@ -9006,6 +9147,7 @@ mod tests {
         let item = selection_item_for_tfr(
             &area,
             crate::freshness::parse_utc_instant("2026-07-11T12:30:00Z"),
+            chrono_tz::America::Los_Angeles,
         );
 
         assert_eq!(item.detail_text, None);
@@ -9020,6 +9162,63 @@ mod tests {
         assert_eq!(
             text_action.detail_text.as_deref(),
             Some("FDC 1/2345 LONG TFR TEXT")
+        );
+        assert_eq!(
+            text_action.detail_status.as_ref(),
+            Some(&MapSelectionDetailStatus {
+                text: "Active now; ends in 16d (Mon Jul 27 5:30am PDT)".to_string(),
+                color_key: TFR_ACTIVE_STYLE_KEY.to_string(),
+            })
+        );
+    }
+
+    #[test]
+    fn tfr_modal_timing_uses_same_one_hour_color_threshold_as_map_rendering() {
+        let area = TfrAreaPayload {
+            notam_id: "1/2345".to_string(),
+            area_index: 0,
+            schedule_fragments: Vec::new(),
+            upper_limit: TfrAltitudeLimit {
+                value_text: "12000".to_string(),
+                unit: "FT MSL".to_string(),
+            },
+            lower_limit: TfrAltitudeLimit {
+                value_text: "SFC".to_string(),
+                unit: "FT MSL".to_string(),
+            },
+            polygon: Vec::new(),
+            summary_text: String::new(),
+            notam: Some(TfrNotamMetadata {
+                record_id: "fdc:1/2345".to_string(),
+                source_type: Some("FDC".to_string()),
+                status: Some("PUBLISHED".to_string()),
+                function: None,
+                keyword: Some("AIRSPACE".to_string()),
+                facility: Some("ZLC".to_string()),
+                issued_utc: None,
+                effective_start_utc: Some("2026-07-27T19:00:00Z".to_string()),
+                effective_end_utc: Some("2026-07-28T19:00:00Z".to_string()),
+                text: Some("TFR text".to_string()),
+                local_text: None,
+                icao_text: None,
+            }),
+        };
+        let reference = crate::freshness::parse_utc_instant("2026-07-24T19:00:00Z");
+        assert_eq!(
+            tfr_timing_detail_status(&area, reference, chrono_tz::America::Los_Angeles,),
+            Some(MapSelectionDetailStatus {
+                text: "Starts in 3d (Mon Jul 27 12:00pm PDT)".to_string(),
+                color_key: TFR_UPCOMING_STYLE_KEY.to_string(),
+            })
+        );
+
+        let within_one_hour = crate::freshness::parse_utc_instant("2026-07-27T18:30:00Z");
+        assert_eq!(
+            tfr_timing_detail_status(&area, within_one_hour, chrono_tz::America::Los_Angeles,),
+            Some(MapSelectionDetailStatus {
+                text: "Starts in 30m (Mon Jul 27 12:00pm PDT)".to_string(),
+                color_key: TFR_ACTIVE_STYLE_KEY.to_string(),
+            })
         );
     }
 

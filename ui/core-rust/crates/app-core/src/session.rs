@@ -12,6 +12,7 @@ use std::{
 };
 
 use chrono::{DateTime, SecondsFormat, Utc};
+use chrono_tz::Tz;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
@@ -55,8 +56,8 @@ use crate::{
     playback::PlaybackSessionState,
     project_nav_symbol_feature,
     publication::{PublicationResolvedResource, PublicationResolver},
-    query_map_overlay_for_surface_at, query_map_selection_for_surface, state, AirportNotamIndex,
-    AirportPlateAvailability, AirspaceFeaturePayload, AirspaceLabelTilePayload,
+    query_map_overlay_for_surface_at, query_map_selection_for_surface_in_time_zone, state,
+    AirportNotamIndex, AirportPlateAvailability, AirspaceFeaturePayload, AirspaceLabelTilePayload,
     AirspaceReferenceTilePayload, AirwayPresentationPlan, AppError, AppErrorKind, AppEvent,
     AppResult, AppState, AppUiState, FlightPlan, FlightPlanDisplayRowKind,
     FlightPlanRowActionExecution, FlightPlanRowActionId, FlightPlanUiState, GuidanceState, LatLon,
@@ -214,6 +215,8 @@ pub struct PlatformCapabilities {
     pub offline_packages: Option<PlatformOfflinePackagesCapability>,
     #[serde(default)]
     pub client_build: Option<ClientBuildInfo>,
+    #[serde(default)]
+    pub local_time_zone: Option<String>,
 }
 
 pub trait SettingsStorage: Send + Sync {
@@ -3756,6 +3759,12 @@ pub fn configure_platform_capabilities_in_session(
     capabilities: PlatformCapabilities,
     settings_storage: Option<SettingsStorageHandle>,
 ) -> AppResult<HadOperationOutcome> {
+    if let Some(local_time_zone) = capabilities.local_time_zone.as_deref() {
+        local_time_zone.parse::<Tz>().map_err(|_| AppError {
+            kind: AppErrorKind::InvalidCatalog,
+            message: format!("unsupported platform local time zone {local_time_zone:?}"),
+        })?;
+    }
     let mut sessions = lock_sessions();
     let session = session_mut(&mut sessions, handle)?;
     session.platform_capabilities = capabilities;
@@ -8555,7 +8564,17 @@ fn materialize_map_selection_in_session(
             return had_read_error_to_map_selection_materialization(err);
         }
     };
-    let selection = query_map_selection_for_surface(
+    let local_time_zone = session
+        .platform_capabilities
+        .local_time_zone
+        .as_deref()
+        .unwrap_or("UTC")
+        .parse::<Tz>()
+        .map_err(|_| AppError {
+            kind: AppErrorKind::InvalidCatalog,
+            message: "configured platform local time zone is invalid".to_string(),
+        })?;
+    let selection = query_map_selection_for_surface_in_time_zone(
         metrics,
         &session.map_overlay_config,
         plan,
@@ -8571,6 +8590,7 @@ fn materialize_map_selection_in_session(
         &flight_plan_points,
         &mut availability,
         Some(session_wall_clock_utc(session)),
+        local_time_zone,
     );
     let ownship_position = session.app_state.ownship.render.position;
     let selection = map_selection_with_ownship_distances(selection, ownship_position);
@@ -20632,6 +20652,7 @@ mod tests {
                         display_only: false,
                         detail_text: None,
                         detail_title: None,
+                        detail_status: None,
                         disabled_reason: None,
                         weather_detail: None,
                         airspace_limit: None,

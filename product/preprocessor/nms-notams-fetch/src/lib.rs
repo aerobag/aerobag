@@ -223,8 +223,13 @@ impl NmsClient {
 }
 
 fn parse_notam_update_response(bytes: &[u8]) -> anyhow::Result<Vec<String>> {
-    let response = serde_json::from_slice::<NotamUpdateResponse>(bytes)
-        .context("NMS lastUpdatedDate response was not valid JSON")?;
+    let response = serde_json::from_slice::<NotamUpdateResponse>(bytes).with_context(|| {
+        format!(
+            "NMS lastUpdatedDate response was not valid JSON (bytes={}, sha256={:x})",
+            bytes.len(),
+            Sha256::digest(bytes)
+        )
+    })?;
     if !response.errors.is_empty() {
         let first_error = serde_json::to_string(&response.errors[0])
             .unwrap_or_else(|_| "<unprintable error>".to_string());
@@ -562,12 +567,24 @@ fn curl_quote(value: &str) -> anyhow::Result<String> {
 }
 
 fn run_curl(config: &str, operation: &str) -> anyhow::Result<Vec<u8>> {
-    let config = format!("retry = 4\nretry-all-errors\nretry-delay = 2\n{config}");
+    run_curl_with_retry_delay(config, operation, 2)
+}
+
+fn run_curl_with_retry_delay(
+    config: &str,
+    operation: &str,
+    retry_delay_seconds: u64,
+) -> anyhow::Result<Vec<u8>> {
+    // `fail-with-body` cannot be used here: curl appends each retry's response
+    // to the same stdout pipe, which can concatenate an HTTP error JSON body
+    // with a later successful JSON response.
+    let config =
+        format!("retry = 4\nretry-all-errors\nretry-delay = {retry_delay_seconds}\nfail\n{config}");
     let mut child = Command::new("curl")
         .args(["--config", "-"])
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
-        .stderr(Stdio::null())
+        .stderr(Stdio::piped())
         .spawn()
         .with_context(|| format!("failed to start curl for NMS {operation}"))?;
     child
@@ -580,7 +597,12 @@ fn run_curl(config: &str, operation: &str) -> anyhow::Result<Vec<u8>> {
         .wait_with_output()
         .with_context(|| format!("failed to wait for NMS {operation}"))?;
     if !output.status.success() {
-        bail!("NMS {operation} failed with {}", output.status);
+        let detail = String::from_utf8_lossy(&output.stderr);
+        bail!(
+            "NMS {operation} failed with {}: {}",
+            output.status,
+            detail.trim().chars().take(500).collect::<String>()
+        );
     }
     Ok(output.stdout)
 }
@@ -620,7 +642,9 @@ pub fn load_initial_load_capture(capture_dir: &Path) -> anyhow::Result<LoadedIni
 
 #[cfg(test)]
 mod tests {
-    use std::io::Cursor;
+    use std::io::{Cursor, Read};
+    use std::net::TcpListener;
+    use std::thread;
 
     use flate2::write::GzEncoder;
     use flate2::Compression;
@@ -736,5 +760,48 @@ mod tests {
         )
         .expect_err("FAA error response was accepted");
         assert!(format!("{error:#}").contains("bad query"));
+    }
+
+    #[test]
+    fn curl_retry_discards_failed_http_response_body() -> anyhow::Result<()> {
+        let listener = TcpListener::bind("127.0.0.1:0")?;
+        let address = listener.local_addr()?;
+        let server = thread::spawn(move || -> anyhow::Result<()> {
+            for (status, body) in [
+                ("503 Service Unavailable", r#"{"error":"temporary"}"#),
+                (
+                    "200 OK",
+                    r#"{"errors":[],"data":{"aixm":["successful retry"]}}"#,
+                ),
+            ] {
+                let (mut stream, _) = listener.accept()?;
+                let mut request = [0_u8; 4096];
+                let _ = stream.read(&mut request)?;
+                write!(
+                    stream,
+                    "HTTP/1.1 {status}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                    body.len()
+                )?;
+            }
+            Ok(())
+        });
+        let response = run_curl_with_retry_delay(
+            &format!("silent\nshow-error\nrequest = \"GET\"\nurl = \"http://{address}/updates\"\n"),
+            "retry test",
+            0,
+        )?;
+        server
+            .join()
+            .map_err(|_| anyhow::anyhow!("test HTTP server panicked"))??;
+
+        assert_eq!(
+            response,
+            br#"{"errors":[],"data":{"aixm":["successful retry"]}}"#
+        );
+        assert_eq!(
+            parse_notam_update_response(&response)?,
+            vec!["successful retry"]
+        );
+        Ok(())
     }
 }

@@ -1412,9 +1412,13 @@ impl<C: Clock> FileLiveFeedPublisher<C> {
                     .to_rfc3339_opts(SecondsFormat::Secs, true),
                 products: BTreeMap::new(),
             });
-        let previous_entry = current.products.get(NOTAM_PRODUCT_ID).cloned();
-        snapshot =
+        let mut previous_entry = current.products.get(NOTAM_PRODUCT_ID).cloned();
+        let (reconciled_snapshot, reset_source_epoch) =
             self.reconcile_published_notam_prefix(&store, snapshot, previous_entry.as_ref())?;
+        snapshot = reconciled_snapshot;
+        if reset_source_epoch {
+            previous_entry = None;
+        }
         if requested_version != snapshot.current_state_id {
             bail!(
                 "NOTAM projection advanced from requested state {requested_version} to {} while reconciling its published prefix",
@@ -1625,13 +1629,17 @@ impl<C: Clock> FileLiveFeedPublisher<C> {
         write_json_pretty_file(&version_manifest_path, &version_manifest)?;
 
         let now = self.clock.now_utc();
-        let history = live_feed_current_history_entries(
-            &self.root,
-            NOTAM_PRODUCT_ID,
-            &snapshot.current_state_id,
-            &self.retention,
-            now,
-        )?;
+        let history = if reset_source_epoch {
+            Vec::new()
+        } else {
+            live_feed_current_history_entries(
+                &self.root,
+                NOTAM_PRODUCT_ID,
+                &snapshot.current_state_id,
+                &self.retention,
+                now,
+            )?
+        };
         current.generated_at_utc = now.to_rfc3339_opts(SecondsFormat::Secs, true);
         current.products.insert(
             NOTAM_PRODUCT_ID.to_string(),
@@ -1683,15 +1691,15 @@ impl<C: Clock> FileLiveFeedPublisher<C> {
         store: &NotamPersistentStore,
         snapshot: NotamPublicationSnapshot,
         published_entry: Option<&LiveFeedCurrentEntry>,
-    ) -> anyhow::Result<NotamPublicationSnapshot> {
+    ) -> anyhow::Result<(NotamPublicationSnapshot, bool)> {
         let Some(published_entry) = published_entry else {
-            return Ok(snapshot);
+            return Ok((snapshot, false));
         };
         if published_entry.current == snapshot.current_state_id
             || snapshot.cursor.published_head_state_id.as_deref()
                 == Some(published_entry.current.as_str())
         {
-            return Ok(snapshot);
+            return Ok((snapshot, false));
         }
 
         let (prefix_len, journal_seq) = if snapshot.cursor.published_head_state_id.is_none()
@@ -1702,16 +1710,20 @@ impl<C: Clock> FileLiveFeedPublisher<C> {
         {
             (0, snapshot.cursor.published_through_journal_seq)
         } else {
-            let index = snapshot
+            let Some(index) = snapshot
                 .transitions
                 .iter()
                 .position(|transition| transition.to_state_id == published_entry.current)
-                .with_context(|| {
-                    format!(
-                        "NOTAM SQLite cursor is {:?}, but current.json points at {} outside the pending journal",
-                        snapshot.cursor.published_head_state_id, published_entry.current
-                    )
-                })?;
+            else {
+                if snapshot.cursor.published_head_state_id.is_none() {
+                    return Ok((snapshot, true));
+                }
+                bail!(
+                    "NOTAM SQLite cursor is {:?}, but current.json points at {} outside the pending journal",
+                    snapshot.cursor.published_head_state_id,
+                    published_entry.current
+                );
+            };
             (index + 1, snapshot.transitions[index].journal_seq)
         };
         let published_prefix = &snapshot.transitions[..prefix_len];
@@ -1739,7 +1751,7 @@ impl<C: Clock> FileLiveFeedPublisher<C> {
                 published_entry.current
             );
         }
-        Ok(reconciled)
+        Ok((reconciled, false))
     }
 
     fn write_notam_checkpoint(
@@ -3268,6 +3280,121 @@ mod tests {
         let mut oversized = vec![notam_delta_ref("a", "b", 140)];
         trim_notam_delta_suffix("b", &mut oversized)?;
         assert_eq!(oversized.len(), 1);
+        Ok(())
+    }
+
+    #[test]
+    fn fresh_notam_store_replaces_unrelated_published_source_epoch() -> anyhow::Result<()> {
+        let temp = tempdir()?;
+        let live_root = temp.path().join("live-feeds");
+        let state_root = temp.path().join("notam-state");
+        let publisher = FileLiveFeedPublisher::new(
+            live_root.clone(),
+            FixedClock::new(Utc.with_ymd_and_hms(2026, 7, 24, 15, 32, 0).unwrap()),
+        );
+        let old_state_id = "a".repeat(64);
+        write_live_feeds_current_manifest(
+            &live_root,
+            &LiveFeedsCurrentManifest {
+                schema_version: LIVE_FEEDS_SCHEMA_VERSION,
+                generated_at_utc: "2026-07-24T15:00:00Z".to_string(),
+                products: BTreeMap::from([(
+                    NOTAM_PRODUCT_ID.to_string(),
+                    LiveFeedCurrentEntry {
+                        current: old_state_id.clone(),
+                        version_manifest_url: format!(
+                            "versions/{NOTAM_PRODUCT_ID}/{old_state_id}.json"
+                        ),
+                        state_url: format!("states/{NOTAM_PRODUCT_ID}/{old_state_id}.json.xz"),
+                        state_sha256: old_state_id,
+                        published_at_utc: Some("2026-07-24T15:00:00Z".to_string()),
+                        collected_at_utc: Some("2026-07-24T15:00:00Z".to_string()),
+                        history: vec![LiveFeedCurrentHistoryEntry {
+                            version: "older-source-state".to_string(),
+                            version_manifest_url: "versions/notams/older-source-state.json"
+                                .to_string(),
+                            state_url: None,
+                            state_sha256: None,
+                        }],
+                    },
+                )]),
+            },
+        )?;
+
+        let record = crate::canonicalize_structured_notam_record(serde_json::from_value(
+            serde_json::json!({
+                "id": "placeholder",
+                "nms_id": "1784413572039718",
+                "source_type": "D",
+                "notam_status": "ACTIVE",
+                "location_designator": "AAA",
+                "icao_id": "KAAA",
+                "location": "AAA",
+                "notam_number": "1",
+                "notam_year": "2026",
+                "notam_type": "N",
+                "text": "RWY 01 CLSD."
+            }),
+        )?)?;
+        let store = NotamPersistentStore::new(&state_root);
+        let synchronized = store.synchronize_current_records(&[record], "2026-07-24T15:32:00Z")?;
+        let update = publisher.publish(BuiltLiveFeedState {
+            product: NOTAM_PRODUCT_ID.to_string(),
+            version: synchronized.state_id.clone(),
+            payload: LiveFeedStatePayload::NotamIncremental {
+                state_root: state_root.clone(),
+            },
+            state_sha256: None,
+            state_payload_kind: None,
+            status_timestamps: Default::default(),
+            delta_policy: DeltaPolicy::None,
+            precomputed_delta: None,
+            changed_count_if_no_delta: 0,
+        })?;
+
+        assert_eq!(update.version, synchronized.state_id);
+        assert_eq!(update.changed_count, 1);
+        assert_eq!(update.removed_count, 0);
+        assert!(update.delta_path.is_none());
+        assert!(update.history.is_empty());
+        let manifest: LiveFeedVersionManifest =
+            serde_json::from_slice(&fs::read(&update.version_manifest_path)?)?;
+        assert_eq!(manifest.previous, None);
+        assert!(manifest.delta_from_previous.is_none());
+        assert_eq!(manifest.state.kind.as_deref(), Some("notam_checkpoint_xz"));
+        let current = read_live_feeds_current(&live_root)?.context("missing current manifest")?;
+        assert_eq!(current.products[NOTAM_PRODUCT_ID].current, update.version);
+        assert!(current.products[NOTAM_PRODUCT_ID].history.is_empty());
+
+        publisher.acknowledge(&update)?;
+        let snapshot = store.publication_snapshot()?;
+        assert_eq!(
+            snapshot.cursor.published_head_state_id.as_deref(),
+            Some(update.version.as_str())
+        );
+
+        let unrelated_state_id = "b".repeat(64);
+        let mut divergent = current;
+        divergent
+            .products
+            .get_mut(NOTAM_PRODUCT_ID)
+            .context("missing NOTAM current entry")?
+            .current = unrelated_state_id.clone();
+        write_live_feeds_current_manifest(&live_root, &divergent)?;
+        let error = publisher
+            .publish(BuiltLiveFeedState {
+                product: NOTAM_PRODUCT_ID.to_string(),
+                version: update.version,
+                payload: LiveFeedStatePayload::NotamIncremental { state_root },
+                state_sha256: None,
+                state_payload_kind: None,
+                status_timestamps: Default::default(),
+                delta_policy: DeltaPolicy::None,
+                precomputed_delta: None,
+                changed_count_if_no_delta: 0,
+            })
+            .expect_err("acknowledged publication divergence was silently reset");
+        assert!(format!("{error:#}").contains("outside the pending journal"));
         Ok(())
     }
 

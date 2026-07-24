@@ -90,6 +90,7 @@ export type DerivedChartPageState = {
     | { kind: "separator"; label: string }
     | { kind: "airport"; airport: ChartPageData["airports"][number] }
     | { kind: "reference"; reference: ChartPageData["airports"][number] }
+    | { kind: "external_link"; label: string; url: string }
   >;
   recent_airport_ids: string[];
   selected_airport_id: string;

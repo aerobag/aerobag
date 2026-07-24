@@ -557,6 +557,7 @@ sealed interface ChartAirportMenuEntry {
     data class Separator(val label: String) : ChartAirportMenuEntry
     data class Airport(val airport: ChartAirport) : ChartAirportMenuEntry
     data class Reference(val reference: ChartAirport) : ChartAirportMenuEntry
+    data class ExternalLink(val label: String, val url: String) : ChartAirportMenuEntry
 }
 
 data class ChartPageFixture(

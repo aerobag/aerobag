@@ -6,6 +6,10 @@ use serde::{Deserialize, Serialize};
 
 use crate::planning::{FlightPlan, RouteComponent};
 
+pub const FAA_CHART_USERS_GUIDE_LABEL: &str = "🔗 Chart User's Guide";
+pub const FAA_CHART_USERS_GUIDE_URL: &str =
+    "https://aeronav.faa.gov/user_guide/cug-complete_20260709.pdf";
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct DerivedChartPage {
     pub airports: Vec<DerivedChartAirport>,
@@ -53,6 +57,10 @@ pub enum DerivedChartAirportMenuEntry {
     },
     Reference {
         reference: DerivedChartReferenceFamily,
+    },
+    ExternalLink {
+        label: String,
+        url: String,
     },
 }
 
@@ -220,6 +228,10 @@ pub fn derive_chart_page_state_from_collections(
                 .map(|reference| DerivedChartAirportMenuEntry::Reference { reference }),
         );
     }
+    airport_menu_entries.push(DerivedChartAirportMenuEntry::ExternalLink {
+        label: FAA_CHART_USERS_GUIDE_LABEL.to_string(),
+        url: FAA_CHART_USERS_GUIDE_URL.to_string(),
+    });
     DerivedChartPageState {
         airports,
         reference_families,
@@ -669,6 +681,7 @@ mod tests {
                 DerivedChartAirportMenuEntry::Separator { label } => format!("--{label}"),
                 DerivedChartAirportMenuEntry::Airport { airport } => airport.id.clone(),
                 DerivedChartAirportMenuEntry::Reference { reference } => reference.id.clone(),
+                DerivedChartAirportMenuEntry::ExternalLink { label, .. } => label.clone(),
             })
             .collect::<Vec<_>>();
         assert_eq!(
@@ -689,6 +702,7 @@ mod tests {
                 "KBFI",
                 "KTCM",
                 "KOLM",
+                FAA_CHART_USERS_GUIDE_LABEL,
             ]
         );
     }
@@ -741,5 +755,10 @@ mod tests {
             entry,
             DerivedChartAirportMenuEntry::Reference { reference } if reference.id == "tac"
         )));
+        assert!(matches!(
+            state.airport_menu_entries.last(),
+            Some(DerivedChartAirportMenuEntry::ExternalLink { label, url })
+                if label == FAA_CHART_USERS_GUIDE_LABEL && url == FAA_CHART_USERS_GUIDE_URL
+        ));
     }
 }

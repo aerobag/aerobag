@@ -10146,6 +10146,18 @@ function ChartsPage(props: {
                   },
                 };
               }
+              if (entry.kind === "external_link") {
+                return {
+                  id: `external-link:${entry.url}`,
+                  label: entry.label,
+                  onSelect: () => {
+                    if (typeof window !== "undefined") {
+                      window.open(entry.url, "_blank", "noopener,noreferrer");
+                    }
+                    trayGroup.close("airport");
+                  },
+                };
+              }
               const { reference } = entry;
               return {
                 id: `reference:${reference.id}`,

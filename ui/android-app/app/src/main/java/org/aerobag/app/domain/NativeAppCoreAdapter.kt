@@ -2255,6 +2255,7 @@ private object WireDerivedChartAirportMenuEntrySerializer :
             "separator" -> WireDerivedChartAirportMenuSeparator.serializer()
             "airport" -> WireDerivedChartAirportMenuAirport.serializer()
             "reference" -> WireDerivedChartAirportMenuReference.serializer()
+            "external_link" -> WireDerivedChartAirportMenuExternalLink.serializer()
             else -> error("Unsupported chart airport menu entry variant: $kind")
         }
 }
@@ -2278,6 +2279,14 @@ private data class WireDerivedChartAirportMenuAirport(
 private data class WireDerivedChartAirportMenuReference(
     val kind: String = "reference",
     val reference: WireDerivedChartAirport,
+) : WireDerivedChartAirportMenuEntry
+
+@kotlinx.serialization.Serializable
+@kotlinx.serialization.SerialName("external_link")
+private data class WireDerivedChartAirportMenuExternalLink(
+    val kind: String = "external_link",
+    val label: String,
+    val url: String,
 ) : WireDerivedChartAirportMenuEntry
 
 @kotlinx.serialization.Serializable
@@ -2773,6 +2782,7 @@ private fun WireDerivedChartAirportMenuEntry.toUi(): ChartAirportMenuEntry =
         is WireDerivedChartAirportMenuSeparator -> ChartAirportMenuEntry.Separator(label)
         is WireDerivedChartAirportMenuAirport -> ChartAirportMenuEntry.Airport(airport.toUi())
         is WireDerivedChartAirportMenuReference -> ChartAirportMenuEntry.Reference(reference.toUi())
+        is WireDerivedChartAirportMenuExternalLink -> ChartAirportMenuEntry.ExternalLink(label, url)
     }
 
 internal fun WireDerivedChartAsset.toUi() = ChartAsset(

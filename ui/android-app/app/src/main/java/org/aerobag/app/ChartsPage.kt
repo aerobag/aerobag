@@ -145,6 +145,7 @@ import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.LocalFocusManager
 import androidx.compose.ui.platform.LocalSoftwareKeyboardController
+import androidx.compose.ui.platform.LocalUriHandler
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.semantics.semantics
@@ -1303,6 +1304,7 @@ internal fun ChartViewerSelectors(
     onSelectProcedureLoad: (String) -> Unit,
 ) {
     val context = LocalContext.current
+    val uriHandler = LocalUriHandler.current
     val uiTheme = LocalAerobagUiTheme.current
     val trayOpen = airportTrayOpen || chartTrayOpen || loadTrayOpen
     BoxWithConstraints(modifier = modifier) {
@@ -1351,6 +1353,12 @@ internal fun ChartViewerSelectors(
                                 entry.reference.label,
                                 active = entry.reference.id == selectedCollection?.id,
                             ) { onSelectReference(entry.reference.id) }
+                        is ChartAirportMenuEntry.ExternalLink ->
+                            MenuDockOption(
+                                "external-link:${entry.url}",
+                                entry.label,
+                                dismissTrayOnSelect = true,
+                            ) { uriHandler.openUri(entry.url) }
                     }
                 },
             )

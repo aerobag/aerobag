@@ -19,7 +19,7 @@ jonh iac creates the CT that hosts the deployment, but doesn't push the binary/l
 aerobag dev has scripts (in the aerobag repo) and credentials (NOT checked in -- just .ssh keys) that allow it to push a new version up to the CT
 
 If I have to recreate the CT, I'll need to ask aerobag-dev to push the binary.
-Actually, maybe what the iac should do is push enough of the repo to install itself from master!
+Actually, maybe what the iac should do is push enough of the repo to install itself from main!
 (ever from a branch, actually? 'prod'?)
 Then, when we change prod, we can ssh into aerobag-dev to have it fetch git (read-only perms) & restart the various pieces.
 

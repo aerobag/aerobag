@@ -36,8 +36,8 @@ Example shape:
       "tpp": "TPP1"
     },
     "artifact_roots": {
-      "packaged": "master-8829a91b7550/20260603T173005Z/packaged/",
-      "unpacked": "master-8829a91b7550/20260603T173005Z/unpacked/"
+      "packaged": "main-8829a91b7550/20260603T173005Z/packaged/",
+      "unpacked": "main-8829a91b7550/20260603T173005Z/unpacked/"
     },
     "as_of_date": "2026-06-03",
     "as_of_utc": "2026-06-03T17:30:13Z",

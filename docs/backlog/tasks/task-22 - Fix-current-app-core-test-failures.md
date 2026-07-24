@@ -16,7 +16,7 @@ ordinal: 22000
 ## Description
 
 <!-- SECTION:DESCRIPTION:BEGIN -->
-`cargo test -p app-core` was noted as failing in six tests around HAD previews, generated KPAE VOR-A UI state, replay source selection, row action/direct-to behavior, and injected CDI guidance geometry. Re-run against current master, update the list, and fix remaining failures.
+`cargo test -p app-core` was noted as failing in six tests around HAD previews, generated KPAE VOR-A UI state, replay source selection, row action/direct-to behavior, and injected CDI guidance geometry. Re-run against current main, update the list, and fix remaining failures.
 <!-- SECTION:DESCRIPTION:END -->
 
 ## Acceptance Criteria
@@ -25,4 +25,3 @@ ordinal: 22000
 - [ ] #2 Fix failures without weakening the behavior under test.
 - [ ] #3 `cargo test -p app-core` passes.
 <!-- AC:END -->
-

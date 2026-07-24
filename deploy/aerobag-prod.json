@@ -7,7 +7,7 @@
   "ui_target_root": "/mnt/aerobag-data/ui-target",
   "cargo_target_dir": "/var/cache/aerobag-build/target",
   "web_dist": "/mnt/aerobag-data/ui-target/web/dist",
-  "checkout_ref": "master",
+  "checkout_ref": "main",
   "additional_publication_refs": [
   ],
   "live_feeds_listen": "127.0.0.1:8095",

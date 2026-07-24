@@ -200,7 +200,7 @@ The default timer command uses:
   --profile production \
   --build-root /mnt/aerobag-data/artifacts \
   --target-dir /var/cache/aerobag-build/target \
-  <additional refs...> master
+  <additional refs...> main
 ```
 
 It then runs:

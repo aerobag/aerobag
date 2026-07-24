@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: 2026 Aerobag contributors
+//
+// SPDX-License-Identifier: AGPL-3.0-or-later
+
 use super::*;
 
 const DEFAULT_PRODUCT_BUILD_NOFILE_LIMIT: u64 = 65_536;

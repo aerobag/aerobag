@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: 2026 Aerobag contributors
+//
+// SPDX-License-Identifier: AGPL-3.0-or-later
+
 import { debugLog, debugTiming, installRustDebugLogBridge } from "./debugLog";
 import { resolveLiveFeedResourceUrl } from "./liveFeedUrls";
 

@@ -1,4 +1,9 @@
 #!/usr/bin/env node
+
+// SPDX-FileCopyrightText: 2026 Aerobag contributors
+//
+// SPDX-License-Identifier: AGPL-3.0-or-later
+
 import { spawn } from "node:child_process";
 import fs from "node:fs";
 import { createRequire } from "node:module";

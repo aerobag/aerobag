@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: 2026 Aerobag contributors
+//
+// SPDX-License-Identifier: AGPL-3.0-or-later
+
 use crate::{initial_course_deg, ProcedureLegMaterializationRecord};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

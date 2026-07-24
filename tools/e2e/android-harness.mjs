@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: 2026 Aerobag contributors
+//
+// SPDX-License-Identifier: AGPL-3.0-or-later
+
 import { spawnSync } from "node:child_process";
 
 export const ANDROID_PACKAGE = "org.aerobag.app";

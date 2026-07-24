@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: 2026 Aerobag contributors
+//
+// SPDX-License-Identifier: AGPL-3.0-or-later
+
 use anyhow::{bail, Context};
 use had_key::component as had_key_component;
 use preprocessor_core::nav_kv::NavKvRoot;

@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: 2026 Aerobag contributors
+//
+// SPDX-License-Identifier: AGPL-3.0-or-later
+
 declare const __AEROBAG_LIVE_FEEDS_ORIGIN__: string | null;
 
 export type LiveFeedSourceRuntime = {

@@ -1,4 +1,9 @@
 #!/usr/bin/env python3
+
+# SPDX-FileCopyrightText: 2026 Aerobag contributors
+#
+# SPDX-License-Identifier: AGPL-3.0-or-later
+
 """Static audit for Android UI code that can invoke expensive work.
 
 This is intentionally conservative. If a new expensive call site is legitimate,

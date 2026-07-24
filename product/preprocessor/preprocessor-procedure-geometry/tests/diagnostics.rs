@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: 2026 Aerobag contributors
+//
+// SPDX-License-Identifier: AGPL-3.0-or-later
+
 use app_core::{NavKvLookup, NavKvRoot, NavKvStore};
 use image::{Rgba, RgbaImage};
 use procedure_geometry_types as pgt;

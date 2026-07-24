@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: 2026 Aerobag contributors
+//
+// SPDX-License-Identifier: AGPL-3.0-or-later
+
 use had_key::{component, upper_component};
 pub use had_nav_kv::{NavKvLookup, NavKvPageProbeStats, NavKvRoot, NavKvStore};
 use serde::{Deserialize, Serialize};

@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: 2026 Aerobag contributors
+//
+// SPDX-License-Identifier: AGPL-3.0-or-later
+
 use std::{process::ExitStatus, process::Output};
 
 pub(crate) const TOOL_LOG_TAIL_BYTES: u64 = 4096;

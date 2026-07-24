@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: 2026 Aerobag contributors
+//
+// SPDX-License-Identifier: AGPL-3.0-or-later
+
 pub const FEET_PER_NM: f64 = 6076.12;
 pub const FEET_PER_DEGREE_LAT: f64 = 60.0 * FEET_PER_NM;
 

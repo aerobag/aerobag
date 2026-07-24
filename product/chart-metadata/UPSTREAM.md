@@ -12,7 +12,8 @@ Origin:
 - Upstream project: https://github.com/apps4av/avare
 - Upstream README: https://github.com/apps4av/avare/blob/master/README.md
 - Upstream license: https://github.com/apps4av/avare/blob/master/LICENSE
-- Copyright notice from upstream license: Copyright (c) 2012 Apps4Av Inc.
+- Local license copy: [LicenseRef-Apps4Av](../../LICENSES/LicenseRef-Apps4Av.txt)
+- Upstream attribution: Apps4Av Inc., 2012-2016.
 
 Keep this notice with these files when redistributing the source tree or
 derived source packages.

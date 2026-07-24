@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: 2026 Aerobag contributors
+//
+// SPDX-License-Identifier: AGPL-3.0-or-later
+
 use crate::geometry::LatLon;
 
 const EARTH_RADIUS_NM: f64 = 3440.065;

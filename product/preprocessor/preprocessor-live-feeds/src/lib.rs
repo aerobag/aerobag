@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: 2026 Aerobag contributors
+//
+// SPDX-License-Identifier: AGPL-3.0-or-later
+
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -3005,8 +3009,9 @@ fn write_zip(path: &Path, members: &[(&str, &Path)]) -> anyhow::Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::io::{BufWriter, Write};
     use std::process::Command;
-    use tempfile::TempDir;
+    use tempfile::{NamedTempFile, TempDir};
 
     #[test]
     fn airport_notam_effects_combine_structured_and_text_signals() {
@@ -3055,14 +3060,26 @@ mod tests {
         );
     }
 
-    fn geo_grid_fixture_path() -> PathBuf {
-        Path::new(env!("CARGO_MANIFEST_DIR"))
-            .ancestors()
-            .nth(3)
-            .expect("preprocessor-live-feeds crate should live under product/preprocessor")
-            .join("test_fixtures")
-            .join("geo_grid")
-            .join("geo.csv")
+    fn synthetic_geoid_height_feet(latitude: i32, longitude: i32) -> i32 {
+        latitude * 2 + longitude
+    }
+
+    fn synthetic_geo_grid_fixture() -> anyhow::Result<NamedTempFile> {
+        let mut fixture = NamedTempFile::new().context("failed to create synthetic geo grid")?;
+        {
+            let mut writer = BufWriter::new(fixture.as_file_mut());
+            for latitude in GeoidGrid::MIN_LAT..GeoidGrid::MAX_LAT_EXCLUSIVE {
+                for longitude in GeoidGrid::MIN_LON..GeoidGrid::MAX_LON_EXCLUSIVE {
+                    writeln!(
+                        writer,
+                        "{latitude},{longitude},{},0",
+                        synthetic_geoid_height_feet(latitude, longitude)
+                    )?;
+                }
+            }
+            writer.flush()?;
+        }
+        Ok(fixture)
     }
 
     #[test]
@@ -3712,9 +3729,16 @@ mod tests {
 
     #[test]
     fn geoid_grid_interpolates_geo_fixture() -> anyhow::Result<()> {
-        let grid = GeoidGrid::from_geo_csv(&geo_grid_fixture_path())?;
-        assert_eq!(grid.geoid_height_feet_bilinear(-90.0, -180.0), -30.0);
-        assert_eq!(grid.geoid_height_feet_bilinear(89.0, 179.0), 10.0);
+        let fixture = synthetic_geo_grid_fixture()?;
+        let grid = GeoidGrid::from_geo_csv(fixture.path())?;
+        assert_eq!(
+            grid.geoid_height_feet_bilinear(-90.0, -180.0),
+            f64::from(synthetic_geoid_height_feet(-90, -180))
+        );
+        assert_eq!(
+            grid.geoid_height_feet_bilinear(89.0, 179.0),
+            f64::from(synthetic_geoid_height_feet(89, 179))
+        );
 
         let west = grid.geoid_height_feet_bilinear(40.0, -122.0);
         let east = grid.geoid_height_feet_bilinear(40.0, -121.0);
@@ -3725,10 +3749,12 @@ mod tests {
 
     #[test]
     fn terrain_transform_adds_geoid_height_after_meter_to_feet_conversion() -> anyhow::Result<()> {
-        let grid = GeoidGrid::from_geo_csv(&geo_grid_fixture_path())?;
+        let fixture = synthetic_geo_grid_fixture()?;
+        let grid = GeoidGrid::from_geo_csv(fixture.path())?;
         let transformed =
             terrain_ellipsoid_height_feet_from_navd88_meters(100.0, -90.0, -180.0, &grid);
-        assert!((transformed - 298.0839895).abs() < 0.0001);
+        let expected = 100.0 * 3.280_839_895 + f64::from(synthetic_geoid_height_feet(-90, -180));
+        assert!((transformed - expected).abs() < 0.0001);
         Ok(())
     }
 }

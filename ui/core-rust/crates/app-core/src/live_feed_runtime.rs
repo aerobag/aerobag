@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: 2026 Aerobag contributors
+//
+// SPDX-License-Identifier: AGPL-3.0-or-later
+
 use serde::{Deserialize, Serialize};
 
 pub const LIVE_FEED_SSE_CONNECT_TIMEOUT_MS: i64 = 5_000;

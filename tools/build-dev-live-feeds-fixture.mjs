@@ -1,5 +1,9 @@
 #!/usr/bin/env node
 
+// SPDX-FileCopyrightText: 2026 Aerobag contributors
+//
+// SPDX-License-Identifier: AGPL-3.0-or-later
+
 import crypto from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";

@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: 2026 Aerobag contributors
+//
+// SPDX-License-Identifier: AGPL-3.0-or-later
+
 use sha2::{Digest, Sha256};
 use std::cmp::Ordering;
 use std::collections::{BTreeSet, HashMap};

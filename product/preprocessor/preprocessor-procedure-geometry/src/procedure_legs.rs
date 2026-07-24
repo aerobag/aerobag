@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: 2026 Aerobag contributors
+//
+// SPDX-License-Identifier: AGPL-3.0-or-later
+
 use crate::{PathTermination, ProcedureDiscontinuity, ProcedureLegMaterializationRecord};
 
 pub fn interpret_path_termination(code: &str) -> PathTermination {

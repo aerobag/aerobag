@@ -1,4 +1,9 @@
 #!/usr/bin/env python3
+
+# SPDX-FileCopyrightText: 2026 Aerobag contributors
+#
+# SPDX-License-Identifier: AGPL-3.0-or-later
+
 """Measure compression variants for current Aerobag ABT2 terrain tiles."""
 
 from __future__ import annotations

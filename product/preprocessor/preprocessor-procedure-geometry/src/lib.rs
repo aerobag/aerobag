@@ -1,5 +1,9 @@
 #![cfg_attr(test, allow(dead_code))]
 
+// SPDX-FileCopyrightText: 2026 Aerobag contributors
+//
+// SPDX-License-Identifier: AGPL-3.0-or-later
+
 use std::collections::{BTreeMap, BTreeSet};
 
 use crate::procedure_geometry_constants::{

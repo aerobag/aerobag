@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: 2026 Aerobag contributors
+//
+// SPDX-License-Identifier: AGPL-3.0-or-later
+
 pub(crate) const MIN_GEOMETRY_DISTANCE_NM: f64 = 0.05;
 pub(crate) const MIN_ARC_SWEEP_DEG: f64 = 0.5;
 pub(crate) const POSITION_EPSILON_DEG: f64 = 0.0005;

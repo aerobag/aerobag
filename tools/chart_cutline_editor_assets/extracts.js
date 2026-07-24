@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: 2026 Aerobag contributors
+//
+// SPDX-License-Identifier: AGPL-3.0-or-later
+
 "use strict";
 
 const SVG_NS = "http://www.w3.org/2000/svg";

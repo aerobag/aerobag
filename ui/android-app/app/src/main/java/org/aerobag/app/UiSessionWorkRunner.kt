@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: 2026 Aerobag contributors
+//
+// SPDX-License-Identifier: AGPL-3.0-or-later
+
 @file:OptIn(org.aerobag.app.domain.RawUiSessionWorkApi::class)
 
 package org.aerobag.app

@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: 2026 Aerobag contributors
+//
+// SPDX-License-Identifier: AGPL-3.0-or-later
+
 import { loadWasmAdapterOnThisThread, type AppCoreAdapter, type UiInvalidation, type UiSession } from "./appCoreAdapter";
 import { debugLog, observeDebugLog, setBrowserInstanceId, type DebugLogRecord } from "./debugLog";
 

@@ -1446,15 +1446,74 @@ mod tests {
         let recovered = publisher.publish(recovery_built)?;
         assert!(!recovered.unchanged);
         assert_eq!(recovered.version, second_update.version);
-        publisher.acknowledge(&recovered)?;
         assert_eq!(
             store.publication_cursor()?.published_head_state_id,
-            Some(second_update.version)
+            Some(update.version.clone()),
+            "publishing current.json must not acknowledge before announcement"
+        );
+
+        let mut third = second.clone();
+        third["jmsMessageId"] = serde_json::json!("ID:test-3");
+        third["bodyText"] =
+            serde_json::json!(xml.replace("RWY 01 CLSD.", "RWY 01 CLSD. TWY A AND TWY B CLSD."));
+        store.insert_raw_message_for_test(
+            "message-c",
+            "2026-07-11T02:06:00Z",
+            &third.to_string(),
+        )?;
+        store.apply_pending_raw_messages(10)?;
+        let third_event = UpstreamEvent {
+            source_id: "notams:test-3".to_string(),
+            observed_at_utc: Utc.with_ymd_and_hms(2026, 7, 11, 2, 6, 0).unwrap(),
+            ..second_event.clone()
+        };
+        let second_delta_bytes = fs::read(&delta_path)?;
+        fs::write(&delta_path, b"corrupt unacknowledged published delta")?;
+        let rejected_recovery =
+            builder.build_state(&third_event, &temp.path().join("scratch-rejected-recovery"))?;
+        let error = publisher
+            .publish(rejected_recovery)
+            .expect_err("recovery must reject a corrupt published prefix");
+        assert!(
+            format!("{error:#}").contains("immutable blob identity mismatch"),
+            "{error:#}"
+        );
+        assert_eq!(
+            store.publication_cursor()?.published_head_state_id,
+            Some(update.version.clone()),
+            "unverified published prefix must not move the SQLite cursor"
+        );
+        fs::write(&delta_path, second_delta_bytes)?;
+
+        let third_built = builder.build_state(&third_event, &temp.path().join("scratch-third"))?;
+        let third_update = publisher.publish(third_built)?;
+        assert_eq!(
+            store.publication_cursor()?.published_head_state_id,
+            Some(second_update.version.clone()),
+            "verified published prefix should reconcile before publishing its suffix"
+        );
+        let third_delta: notam_state::NotamDelta = serde_json::from_value(read_json_value(
+            &third_update
+                .delta_path
+                .as_ref()
+                .context("missing third NOTAM delta")?,
+        )?)?;
+        assert_eq!(third_delta.from_state_id, second_update.version);
+        assert_eq!(third_delta.to_state_id, third_update.version);
+        assert_eq!(third_delta.mutations.len(), 1);
+        client
+            .apply_delta(third_delta, &mut client_work)
+            .map_err(anyhow::Error::msg)?;
+        assert_eq!(client.checkpoint(), store.current_checkpoint()?);
+        publisher.acknowledge(&third_update)?;
+        assert_eq!(
+            store.publication_cursor()?.published_head_state_id,
+            Some(third_update.version.clone())
         );
 
         fs::write(&delta_path, b"corrupt retained delta")?;
         let corrupt_built =
-            builder.build_state(&second_event, &temp.path().join("scratch-corrupt"))?;
+            builder.build_state(&third_event, &temp.path().join("scratch-corrupt"))?;
         let error = publisher
             .publish(corrupt_built)
             .expect_err("restart must reject a corrupt retained delta");

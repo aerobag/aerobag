@@ -594,7 +594,7 @@ fn apply_transition_range(
                 },
                 transitions: transitions[cursor..next].to_vec(),
             };
-            let delta = collapse_notam_transitions(&snapshot)?;
+            let delta = collapse_notam_transitions(&snapshot.cursor, &snapshot.transitions)?;
             let path = output_root.join("delta-artifacts").join(format!(
                 "{}__{}.json.xz",
                 delta.from_state_id, delta.to_state_id

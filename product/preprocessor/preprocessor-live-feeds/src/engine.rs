@@ -25,7 +25,10 @@ use serde::{de::DeserializeOwned, Deserialize, Serialize};
 use serde_json::Value;
 use sha2::{Digest, Sha256};
 
-use crate::notam_store::{NotamPersistentStore, NotamPublicationSnapshot};
+use crate::notam_store::{
+    NotamPersistentStore, NotamPublicationCursor, NotamPublicationSnapshot,
+    NotamPublicationTransition,
+};
 
 pub use product_contracts::LIVE_FEEDS_SCHEMA_VERSION;
 pub const LIVE_FEED_CURRENT_HISTORY_MAX_ENTRIES: usize = 12;
@@ -1387,7 +1390,7 @@ impl<C: Clock> FileLiveFeedPublisher<C> {
             bail!("incremental NOTAM payload declares product {product}");
         }
         let store = NotamPersistentStore::new(state_root);
-        let snapshot = store.publication_snapshot()?;
+        let mut snapshot = store.publication_snapshot()?;
         if requested_version != snapshot.current_state_id {
             bail!(
                 "NOTAM build requested state {requested_version}, but projection is {}",
@@ -1406,13 +1409,27 @@ impl<C: Clock> FileLiveFeedPublisher<C> {
                 products: BTreeMap::new(),
             });
         let previous_entry = current.products.get(NOTAM_PRODUCT_ID).cloned();
+        snapshot =
+            self.reconcile_published_notam_prefix(&store, snapshot, previous_entry.as_ref())?;
+        if requested_version != snapshot.current_state_id {
+            bail!(
+                "NOTAM projection advanced from requested state {requested_version} to {} while reconciling its published prefix",
+                snapshot.current_state_id
+            );
+        }
 
         if previous_entry
             .as_ref()
             .is_some_and(|entry| entry.current == snapshot.current_state_id)
         {
             let previous = previous_entry.context("checked NOTAM current entry disappeared")?;
-            let manifest = validate_published_notam_head(&self.root, &previous, &snapshot)?;
+            let manifest = validate_published_notam_head(
+                &self.root,
+                &previous,
+                &snapshot.current_state_id,
+                &snapshot.cursor,
+                &snapshot.transitions,
+            )?;
             let notam_compaction = (notam_mutations_after_state(
                 &manifest.state.state_sha256,
                 &manifest.recent_deltas,
@@ -1499,7 +1516,7 @@ impl<C: Clock> FileLiveFeedPublisher<C> {
                     previous.current
                 );
             }
-            let delta = collapse_notam_transitions(&snapshot)?;
+            let delta = collapse_notam_transitions(&snapshot.cursor, &snapshot.transitions)?;
             let changed_count = delta
                 .mutations
                 .iter()
@@ -1655,6 +1672,70 @@ impl<C: Clock> FileLiveFeedPublisher<C> {
             }),
             notam_compaction,
         })
+    }
+
+    fn reconcile_published_notam_prefix(
+        &self,
+        store: &NotamPersistentStore,
+        snapshot: NotamPublicationSnapshot,
+        published_entry: Option<&LiveFeedCurrentEntry>,
+    ) -> anyhow::Result<NotamPublicationSnapshot> {
+        let Some(published_entry) = published_entry else {
+            return Ok(snapshot);
+        };
+        if published_entry.current == snapshot.current_state_id
+            || snapshot.cursor.published_head_state_id.as_deref()
+                == Some(published_entry.current.as_str())
+        {
+            return Ok(snapshot);
+        }
+
+        let (prefix_len, journal_seq) = if snapshot.cursor.published_head_state_id.is_none()
+            && snapshot
+                .transitions
+                .first()
+                .is_some_and(|transition| transition.from_state_id == published_entry.current)
+        {
+            (0, snapshot.cursor.published_through_journal_seq)
+        } else {
+            let index = snapshot
+                .transitions
+                .iter()
+                .position(|transition| transition.to_state_id == published_entry.current)
+                .with_context(|| {
+                    format!(
+                        "NOTAM SQLite cursor is {:?}, but current.json points at {} outside the pending journal",
+                        snapshot.cursor.published_head_state_id, published_entry.current
+                    )
+                })?;
+            (index + 1, snapshot.transitions[index].journal_seq)
+        };
+        let published_prefix = &snapshot.transitions[..prefix_len];
+        validate_published_notam_head(
+            &self.root,
+            published_entry,
+            &published_entry.current,
+            &snapshot.cursor,
+            published_prefix,
+        )
+        .context("failed to verify unacknowledged published NOTAM journal prefix")?;
+        store.advance_publication_cursor(
+            journal_seq,
+            snapshot.cursor.published_head_state_id.as_deref(),
+            &published_entry.current,
+        )?;
+        self.prune_notam_journal_best_effort(store);
+
+        let reconciled = store.publication_snapshot()?;
+        if reconciled.cursor.published_head_state_id.as_deref()
+            != Some(published_entry.current.as_str())
+        {
+            bail!(
+                "NOTAM publication cursor did not reconcile to verified current.json head {}",
+                published_entry.current
+            );
+        }
+        Ok(reconciled)
     }
 
     fn write_notam_checkpoint(
@@ -2059,24 +2140,25 @@ fn state_object(state: &Value) -> anyhow::Result<&serde_json::Map<String, Value>
         .context("live feed state must be a JSON object")
 }
 
-fn collapse_notam_transitions(snapshot: &NotamPublicationSnapshot) -> anyhow::Result<NotamDelta> {
-    let first = snapshot
-        .transitions
+fn collapse_notam_transitions(
+    cursor: &NotamPublicationCursor,
+    transitions: &[NotamPublicationTransition],
+) -> anyhow::Result<NotamDelta> {
+    let first = transitions
         .first()
         .context("NOTAM publication has no pending transition")?;
-    let last = snapshot
-        .transitions
+    let last = transitions
         .last()
         .context("NOTAM publication has no final transition")?;
-    if snapshot.cursor.published_head_state_id.as_deref() != Some(&first.from_state_id) {
+    if cursor.published_head_state_id.as_deref() != Some(&first.from_state_id) {
         bail!(
             "NOTAM pending chain starts at {}, but publication cursor is {:?}",
             first.from_state_id,
-            snapshot.cursor.published_head_state_id
+            cursor.published_head_state_id
         );
     }
     let mut by_id = BTreeMap::new();
-    for transition in &snapshot.transitions {
+    for transition in transitions {
         for mutation in &transition.mutations {
             by_id.insert(mutation.notam_id().to_string(), mutation.clone());
         }
@@ -2239,13 +2321,15 @@ fn validate_notam_delta_chain(
 fn validate_published_notam_head(
     live_root: &Path,
     entry: &LiveFeedCurrentEntry,
-    snapshot: &NotamPublicationSnapshot,
+    current_state_id: &str,
+    cursor: &NotamPublicationCursor,
+    transitions: &[NotamPublicationTransition],
 ) -> anyhow::Result<LiveFeedVersionManifest> {
-    if entry.state_sha256 != snapshot.current_state_id {
+    if entry.state_sha256 != current_state_id {
         bail!(
             "NOTAM current entry identifies {}, expected {}",
             entry.state_sha256,
-            snapshot.current_state_id
+            current_state_id
         );
     }
     let manifest = read_notam_version_manifest(live_root, entry)?;
@@ -2259,13 +2343,13 @@ fn validate_published_notam_head(
     validate_notam_delta_chain(
         &manifest.state.state_sha256,
         &manifest.recent_deltas,
-        &snapshot.current_state_id,
+        current_state_id,
     )?;
     validate_notam_materialized_chain(live_root, &manifest)?;
 
-    if let Some(cursor_head) = snapshot.cursor.published_head_state_id.as_deref() {
-        if cursor_head != snapshot.current_state_id {
-            let expected = collapse_notam_transitions(snapshot)?;
+    if let Some(cursor_head) = cursor.published_head_state_id.as_deref() {
+        if cursor_head != current_state_id {
+            let expected = collapse_notam_transitions(cursor, transitions)?;
             let delta_ref = manifest.delta_from_previous.as_ref().context(
                 "published NOTAM head is ahead of SQLite cursor but has no latest delta",
             )?;
@@ -2281,12 +2365,11 @@ fn validate_published_notam_head(
             if published_delta != expected {
                 bail!("published NOTAM delta differs from pending SQLite journal");
             }
-        } else if !snapshot.transitions.is_empty() {
+        } else if !transitions.is_empty() {
             bail!("NOTAM cursor is current but pending journal is not empty");
         }
     } else {
-        if manifest.state.state_sha256 != snapshot.current_state_id
-            || manifest.delta_from_previous.is_some()
+        if manifest.state.state_sha256 != current_state_id || manifest.delta_from_previous.is_some()
         {
             bail!("initial published NOTAM head is not a full current checkpoint");
         }

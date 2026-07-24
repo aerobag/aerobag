@@ -1,10 +1,10 @@
 use std::fs::{self, File};
-use std::io::{BufReader, BufWriter, Write};
+use std::io::{BufReader, BufWriter, Read, Write};
 use std::path::Path;
-use std::process::{Command, Stdio};
 use std::time::{Duration, Instant};
 
 use anyhow::{bail, Context};
+use base64::{engine::general_purpose::STANDARD as BASE64_STANDARD, Engine};
 use chrono::{DateTime, Utc};
 use flate2::read::GzDecoder;
 use preprocessor_live_feeds::nms_initial_load::{
@@ -15,6 +15,11 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
 pub mod collector;
+
+const NMS_HTTP_ATTEMPTS: usize = 5;
+const NMS_HTTP_RETRY_DELAY: Duration = Duration::from_secs(2);
+const NMS_JSON_RESPONSE_LIMIT: u64 = 512 * 1024 * 1024;
+const NMS_HTTP_ERROR_PREVIEW_LIMIT: u64 = 4 * 1024;
 
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -77,6 +82,7 @@ pub struct InitialLoadCaptureSource {
 
 pub struct NmsClient {
     config: NmsConfig,
+    http: NmsHttpClient,
     access_token: Option<CachedAccessToken>,
 }
 
@@ -104,6 +110,7 @@ impl NmsClient {
     pub fn new(config: NmsConfig) -> Self {
         Self {
             config,
+            http: NmsHttpClient::new(NMS_HTTP_ATTEMPTS, NMS_HTTP_RETRY_DELAY),
             access_token: None,
         }
     }
@@ -125,15 +132,25 @@ impl NmsClient {
             expires_in: u64,
         }
 
-        let curl_config = format!(
-            "silent\nshow-error\nfail-with-body\nrequest = \"POST\"\nurl = {}\nuser = {}\ndata = \"grant_type=client_credentials\"\n",
-            curl_quote(&self.config.token_url)?,
-            curl_quote(&format!(
+        let authorization = format!(
+            "Basic {}",
+            BASE64_STANDARD.encode(format!(
                 "{}:{}",
                 self.config.client_id, self.config.client_secret
-            ))?,
+            ))
         );
-        let bytes = run_curl(&curl_config, "OAuth token request")?;
+        let bytes =
+            self.http
+                .request_bytes("OAuth token request", NMS_JSON_RESPONSE_LIMIT, |agent| {
+                    agent
+                        .post(self.config.token_url.as_str())
+                        .header("Authorization", authorization.as_str())
+                        .config()
+                        .http_status_as_error(false)
+                        .max_redirects(0)
+                        .build()
+                        .send_form([("grant_type", "client_credentials")])
+                })?;
         let response = serde_json::from_slice::<TokenResponse>(&bytes)
             .context("NMS OAuth token response was not valid JSON")?;
         if response.access_token.trim().is_empty() {
@@ -162,16 +179,26 @@ impl NmsClient {
         }
 
         let endpoint = format!(
-            "{}/notams/il/{}?allowRedirect=false",
+            "{}/notams/il/{}",
             self.config.api_base_url.trim_end_matches('/'),
             classification.api_name()
         );
-        let curl_config = format!(
-            "silent\nshow-error\nfail-with-body\nrequest = \"GET\"\nurl = {}\nheader = {}\n",
-            curl_quote(&endpoint)?,
-            curl_quote(&format!("Authorization: Bearer {token}"))?,
-        );
-        let bytes = run_curl(&curl_config, "Initial Load URL request")?;
+        let authorization = format!("Bearer {token}");
+        let bytes = self.http.request_bytes(
+            "Initial Load URL request",
+            NMS_JSON_RESPONSE_LIMIT,
+            |agent| {
+                agent
+                    .get(endpoint.as_str())
+                    .query("allowRedirect", "false")
+                    .header("Authorization", authorization.as_str())
+                    .config()
+                    .http_status_as_error(false)
+                    .max_redirects(0)
+                    .build()
+                    .call()
+            },
+        )?;
         let response = serde_json::from_slice::<InitialLoadResponse>(&bytes)
             .context("NMS Initial Load URL response was not valid JSON")?;
         resolve_content_url(&self.config.api_base_url, &response.data.url)
@@ -183,21 +210,36 @@ impl NmsClient {
         content: &ResolvedContentUrl,
         output_path: &Path,
     ) -> anyhow::Result<()> {
-        let mut curl_config = format!(
-            "silent\nshow-error\nfail-with-body\nrequest = \"GET\"\nurl = {}\noutput = {}\n",
-            curl_quote(&content.url)?,
-            curl_quote(&output_path.to_string_lossy())?,
-        );
-        if content.send_bearer {
-            curl_config.push_str(&format!(
-                "header = {}\n",
-                curl_quote(&format!("Authorization: Bearer {token}"))?
-            ));
-        } else {
-            curl_config.push_str("location\n");
-        }
-        run_curl(&curl_config, "Initial Load content download")?;
-        Ok(())
+        let authorization = format!("Bearer {token}");
+        self.http.request(
+            "Initial Load content download",
+            |agent| {
+                let request = agent.get(content.url.as_str());
+                let request = if content.send_bearer {
+                    request.header("Authorization", authorization.as_str())
+                } else {
+                    request
+                };
+                let config = request.config().http_status_as_error(false);
+                let config = if content.send_bearer {
+                    config.max_redirects(0)
+                } else {
+                    config
+                };
+                config.build().call()
+            },
+            |response| {
+                let output = File::create(output_path)
+                    .with_context(|| format!("failed to create {}", output_path.display()))?;
+                let mut output = BufWriter::new(output);
+                let mut body = response.body_mut().as_reader();
+                std::io::copy(&mut body, &mut output)
+                    .with_context(|| format!("failed to download {}", output_path.display()))?;
+                output
+                    .flush()
+                    .with_context(|| format!("failed to flush {}", output_path.display()))
+            },
+        )
     }
 
     fn request_updates(
@@ -206,18 +248,26 @@ impl NmsClient {
         classification: NmsNotamClassification,
         last_updated_since: DateTime<Utc>,
     ) -> anyhow::Result<Vec<String>> {
-        let endpoint = format!(
-            "{}/notams?lastUpdatedDate={}&classification={}",
-            self.config.api_base_url.trim_end_matches('/'),
-            last_updated_since.format("%Y-%m-%dT%H:%M:%SZ"),
-            classification.api_name(),
-        );
-        let curl_config = format!(
-            "silent\nshow-error\nfail-with-body\nrequest = \"GET\"\nurl = {}\nheader = {}\nheader = \"nmsResponseFormat: AIXM\"\n",
-            curl_quote(&endpoint)?,
-            curl_quote(&format!("Authorization: Bearer {token}"))?,
-        );
-        let bytes = run_curl(&curl_config, "lastUpdatedDate request")?;
+        let endpoint = format!("{}/notams", self.config.api_base_url.trim_end_matches('/'));
+        let last_updated_since = last_updated_since.format("%Y-%m-%dT%H:%M:%SZ").to_string();
+        let authorization = format!("Bearer {token}");
+        let bytes = self.http.request_bytes(
+            "lastUpdatedDate request",
+            NMS_JSON_RESPONSE_LIMIT,
+            |agent| {
+                agent
+                    .get(endpoint.as_str())
+                    .query("lastUpdatedDate", last_updated_since.as_str())
+                    .query("classification", classification.api_name())
+                    .header("Authorization", authorization.as_str())
+                    .header("nmsResponseFormat", "AIXM")
+                    .config()
+                    .http_status_as_error(false)
+                    .max_redirects(0)
+                    .build()
+                    .call()
+            },
+        )?;
         parse_notam_update_response(&bytes)
     }
 }
@@ -558,53 +608,112 @@ fn validate_no_control(value: &str, label: &str) -> anyhow::Result<()> {
     Ok(())
 }
 
-fn curl_quote(value: &str) -> anyhow::Result<String> {
-    validate_no_control(value, "curl configuration value")?;
-    Ok(format!(
-        "\"{}\"",
-        value.replace('\\', "\\\\").replace('"', "\\\"")
-    ))
+struct NmsHttpClient {
+    agent: ureq::Agent,
+    attempts: usize,
+    retry_delay: Duration,
 }
 
-fn run_curl(config: &str, operation: &str) -> anyhow::Result<Vec<u8>> {
-    run_curl_with_retry_delay(config, operation, 2)
-}
-
-fn run_curl_with_retry_delay(
-    config: &str,
-    operation: &str,
-    retry_delay_seconds: u64,
-) -> anyhow::Result<Vec<u8>> {
-    // `fail-with-body` cannot be used here: curl appends each retry's response
-    // to the same stdout pipe, which can concatenate an HTTP error JSON body
-    // with a later successful JSON response.
-    let config =
-        format!("retry = 4\nretry-all-errors\nretry-delay = {retry_delay_seconds}\nfail\n{config}");
-    let mut child = Command::new("curl")
-        .args(["--config", "-"])
-        .stdin(Stdio::piped())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn()
-        .with_context(|| format!("failed to start curl for NMS {operation}"))?;
-    child
-        .stdin
-        .take()
-        .context("curl stdin was unavailable")?
-        .write_all(config.as_bytes())
-        .with_context(|| format!("failed to configure curl for NMS {operation}"))?;
-    let output = child
-        .wait_with_output()
-        .with_context(|| format!("failed to wait for NMS {operation}"))?;
-    if !output.status.success() {
-        let detail = String::from_utf8_lossy(&output.stderr);
-        bail!(
-            "NMS {operation} failed with {}: {}",
-            output.status,
-            detail.trim().chars().take(500).collect::<String>()
-        );
+impl NmsHttpClient {
+    fn new(attempts: usize, retry_delay: Duration) -> Self {
+        assert!(attempts > 0, "NMS HTTP attempts must be positive");
+        Self {
+            agent: ureq::Agent::new_with_defaults(),
+            attempts,
+            retry_delay,
+        }
     }
-    Ok(output.stdout)
+
+    fn request_bytes(
+        &self,
+        operation: &str,
+        response_limit: u64,
+        send: impl FnMut(&ureq::Agent) -> Result<ureq::http::Response<ureq::Body>, ureq::Error>,
+    ) -> anyhow::Result<Vec<u8>> {
+        self.request(operation, send, |response| {
+            response
+                .body_mut()
+                .with_config()
+                .limit(response_limit)
+                .read_to_vec()
+                .with_context(|| format!("failed to read NMS {operation} response"))
+        })
+    }
+
+    fn request<T>(
+        &self,
+        operation: &str,
+        mut send: impl FnMut(&ureq::Agent) -> Result<ureq::http::Response<ureq::Body>, ureq::Error>,
+        mut consume: impl FnMut(&mut ureq::http::Response<ureq::Body>) -> anyhow::Result<T>,
+    ) -> anyhow::Result<T> {
+        for attempt in 1..=self.attempts {
+            let (error, retryable) = match send(&self.agent) {
+                Ok(mut response) if response.status().is_success() => {
+                    match consume(&mut response) {
+                        Ok(value) => return Ok(value),
+                        Err(error) => (
+                            error.context(format!(
+                                "failed to consume NMS {operation} response on attempt {attempt}"
+                            )),
+                            true,
+                        ),
+                    }
+                }
+                Ok(mut response) => {
+                    let status = response.status();
+                    let retryable = is_retryable_http_status(status.as_u16());
+                    let detail = response_error_preview(&mut response);
+                    (
+                        anyhow::anyhow!(
+                            "NMS {operation} returned HTTP {} on attempt {attempt}: {detail}",
+                            status.as_u16()
+                        ),
+                        retryable,
+                    )
+                }
+                Err(error) => (
+                    anyhow::anyhow!(
+                        "NMS {operation} transport failed on attempt {attempt}: {error}"
+                    ),
+                    true,
+                ),
+            };
+            if !retryable || attempt == self.attempts {
+                return Err(error);
+            }
+            if !self.retry_delay.is_zero() {
+                std::thread::sleep(self.retry_delay);
+            }
+        }
+        unreachable!("positive NMS HTTP attempt count exhausted without a result")
+    }
+}
+
+fn is_retryable_http_status(status: u16) -> bool {
+    status == 408 || status == 429 || status >= 500
+}
+
+fn response_error_preview(response: &mut ureq::http::Response<ureq::Body>) -> String {
+    let mut bytes = Vec::new();
+    match response
+        .body_mut()
+        .as_reader()
+        .take(NMS_HTTP_ERROR_PREVIEW_LIMIT)
+        .read_to_end(&mut bytes)
+    {
+        Ok(_) if bytes.is_empty() => "<empty response body>".to_string(),
+        Ok(_) => String::from_utf8_lossy(&bytes)
+            .chars()
+            .map(|character| {
+                if character.is_control() && !character.is_ascii_whitespace() {
+                    '\u{fffd}'
+                } else {
+                    character
+                }
+            })
+            .collect(),
+        Err(error) => format!("<failed to read response body: {error}>"),
+    }
 }
 
 pub fn load_initial_load_capture(capture_dir: &Path) -> anyhow::Result<LoadedInitialLoadCapture> {
@@ -763,7 +872,7 @@ mod tests {
     }
 
     #[test]
-    fn curl_retry_discards_failed_http_response_body() -> anyhow::Result<()> {
+    fn native_http_retry_discards_failed_http_response_body() -> anyhow::Result<()> {
         let listener = TcpListener::bind("127.0.0.1:0")?;
         let address = listener.local_addr()?;
         let server = thread::spawn(move || -> anyhow::Result<()> {
@@ -785,11 +894,15 @@ mod tests {
             }
             Ok(())
         });
-        let response = run_curl_with_retry_delay(
-            &format!("silent\nshow-error\nrequest = \"GET\"\nurl = \"http://{address}/updates\"\n"),
-            "retry test",
-            0,
-        )?;
+        let client = NmsHttpClient::new(2, Duration::ZERO);
+        let response = client.request_bytes("retry test", NMS_JSON_RESPONSE_LIMIT, |agent| {
+            agent
+                .get(format!("http://{address}/updates"))
+                .config()
+                .http_status_as_error(false)
+                .build()
+                .call()
+        })?;
         server
             .join()
             .map_err(|_| anyhow::anyhow!("test HTTP server panicked"))??;
@@ -802,6 +915,43 @@ mod tests {
             parse_notam_update_response(&response)?,
             vec!["successful retry"]
         );
+        Ok(())
+    }
+
+    #[test]
+    fn native_http_does_not_retry_authentication_failure() -> anyhow::Result<()> {
+        let listener = TcpListener::bind("127.0.0.1:0")?;
+        let address = listener.local_addr()?;
+        let server = thread::spawn(move || -> anyhow::Result<()> {
+            let (mut stream, _) = listener.accept()?;
+            let mut request = [0_u8; 4096];
+            let _ = stream.read(&mut request)?;
+            let body = r#"{"error":"bad token"}"#;
+            write!(
+                stream,
+                "HTTP/1.1 401 Unauthorized\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                body.len()
+            )?;
+            Ok(())
+        });
+        let client = NmsHttpClient::new(5, Duration::ZERO);
+        let error = client
+            .request_bytes("authentication test", NMS_JSON_RESPONSE_LIMIT, |agent| {
+                agent
+                    .get(format!("http://{address}/updates"))
+                    .config()
+                    .http_status_as_error(false)
+                    .build()
+                    .call()
+            })
+            .expect_err("HTTP 401 was accepted");
+        server
+            .join()
+            .map_err(|_| anyhow::anyhow!("test HTTP server panicked"))??;
+
+        let detail = format!("{error:#}");
+        assert!(detail.contains("HTTP 401 on attempt 1"), "{detail}");
+        assert!(detail.contains("bad token"), "{detail}");
         Ok(())
     }
 }

@@ -6009,7 +6009,7 @@ pub fn ingest_prepared_live_feed_resource_in_session(
     let session = session_mut(&mut sessions, handle)?;
     let mut next_live_feeds = session.live_feeds.clone();
     next_live_feeds.ingest_prepared_live_feed(resource_id, &envelope)?;
-    if next_live_feeds.product_loaded_version(&envelope_product) != Some(envelope_version.as_str())
+    if next_live_feeds.product_staged_version(&envelope_product) != Some(envelope_version.as_str())
     {
         return Ok(());
     }
@@ -13436,6 +13436,173 @@ mod tests {
                 .as_ref()
                 .map(AirportNotamIndex::state_id),
             Some(base_id.as_str())
+        );
+    }
+
+    #[test]
+    fn prepared_notam_checkpoint_behind_head_installs_before_delta_replay() {
+        let init =
+            create_ui_session(FlightPlan::default(), &[], None, None).expect("create session");
+        let record = |id: &str, text: &str| notam_state::NotamRecord {
+            id: id.to_string(),
+            airport_id: Some("KSEA".to_string()),
+            airport_effects: [product_contracts::AirportNotamEffect::RoutineAdvisory]
+                .into_iter()
+                .collect(),
+            notam_keyword: Some("AD".to_string()),
+            effective_start_utc: None,
+            effective_end_utc: None,
+            text: Some(text.to_string()),
+            local_text: None,
+            icao_text: None,
+        };
+        let mut producer = notam_state::NotamState::empty();
+        producer
+            .apply_mutation(
+                notam_state::NotamMutation::Upsert {
+                    record: record("A", "checkpoint"),
+                },
+                &mut notam_state::NotamApplyWork::default(),
+            )
+            .unwrap();
+        let checkpoint = producer.checkpoint();
+        let checkpoint_id = checkpoint.state_id.clone();
+        let mutation = notam_state::NotamMutation::Upsert {
+            record: record("B", "delta"),
+        };
+        producer
+            .apply_mutation(
+                mutation.clone(),
+                &mut notam_state::NotamApplyWork::default(),
+            )
+            .unwrap();
+        let head_id = producer.state_id().to_string();
+        let delta = notam_state::NotamDelta::new(
+            checkpoint_id.clone(),
+            head_id.clone(),
+            producer.counters(),
+            vec![mutation],
+        );
+        let checkpoint_bytes =
+            nav_kv_package::xz_frame_uncompressed_bytes(&serde_json::to_vec(&checkpoint).unwrap())
+                .unwrap();
+        let delta_bytes =
+            nav_kv_package::xz_frame_uncompressed_bytes(&serde_json::to_vec(&delta).unwrap())
+                .unwrap();
+        let checkpoint_resource = format!("live_feeds/state/notams/{checkpoint_id}");
+        let delta_resource = format!("live_feeds/delta/notams/{checkpoint_id}/{head_id}");
+        let (_, prepared_checkpoint) =
+            crate::prepare_live_feed_state_resource(&checkpoint_resource, &checkpoint_bytes)
+                .unwrap();
+        let (_, prepared_delta) = crate::prepare_live_feed_delta_resource(
+            &delta_resource,
+            &serde_json::Value::Null,
+            &delta_bytes,
+        )
+        .unwrap();
+        let delta_ref = serde_json::json!({
+            "kind": "notam_ordered_delta_xz",
+            "from_version": checkpoint_id,
+            "from_state_sha256": checkpoint_id,
+            "to_version": head_id,
+            "to_state_sha256": head_id,
+            "url": format!("deltas/notams/{checkpoint_id}__{head_id}.json.xz"),
+            "mutation_count": 1
+        });
+
+        {
+            let mut sessions = lock_sessions();
+            let session = session_mut(&mut sessions, init.handle).unwrap();
+            session
+                .live_feeds
+                .ingest_resource(
+                    "live_feeds/current",
+                    &serde_json::to_vec(&serde_json::json!({
+                        "schema_version": crate::live_feeds::LIVE_FEEDS_SCHEMA_VERSION,
+                        "products": {
+                            "notams": {
+                                "current": head_id,
+                                "version_manifest_url": format!(
+                                    "versions/notams/{head_id}.json"
+                                ),
+                                "state_url": format!(
+                                    "states/notams/{checkpoint_id}.json.xz"
+                                ),
+                                "state_sha256": head_id
+                            }
+                        }
+                    }))
+                    .unwrap(),
+                )
+                .unwrap();
+            session
+                .live_feeds
+                .ingest_resource(
+                    &format!("live_feeds/version/notams/{head_id}"),
+                    &serde_json::to_vec(&serde_json::json!({
+                        "schema_version": crate::live_feeds::LIVE_FEEDS_SCHEMA_VERSION,
+                        "product": "notams",
+                        "version": head_id,
+                        "state": {
+                            "kind": "notam_checkpoint_xz",
+                            "url": format!("states/notams/{checkpoint_id}.json.xz"),
+                            "state_sha256": checkpoint_id
+                        },
+                        "delta_from_previous": delta_ref,
+                        "recent_deltas": [delta_ref]
+                    }))
+                    .unwrap(),
+                )
+                .unwrap();
+        }
+
+        ingest_prepared_live_feed_resource_in_session(
+            init.handle,
+            &checkpoint_resource,
+            &prepared_checkpoint,
+        )
+        .unwrap();
+        {
+            let sessions = lock_sessions();
+            let session = sessions.get(&init.handle).unwrap();
+            assert_eq!(
+                session
+                    .airport_notam_index
+                    .as_ref()
+                    .map(AirportNotamIndex::state_id),
+                Some(checkpoint_id.as_str())
+            );
+            assert_eq!(
+                session.live_feeds.product_staged_version("notams"),
+                Some(checkpoint_id.as_str())
+            );
+            assert_eq!(session.live_feeds.product_loaded_version("notams"), None);
+            let crate::HadOperationOutcome::NeedResources { resources } =
+                session.live_feeds.sync_outcome()
+            else {
+                panic!("checkpoint should be followed by retained delta");
+            };
+            assert_eq!(resources[0].id, delta_resource);
+        }
+
+        ingest_prepared_live_feed_resource_in_session(
+            init.handle,
+            &delta_resource,
+            &prepared_delta,
+        )
+        .unwrap();
+        let sessions = lock_sessions();
+        let session = sessions.get(&init.handle).unwrap();
+        assert_eq!(
+            session
+                .airport_notam_index
+                .as_ref()
+                .map(AirportNotamIndex::state_id),
+            Some(head_id.as_str())
+        );
+        assert_eq!(
+            session.live_feeds.product_loaded_version("notams"),
+            Some(head_id.as_str())
         );
     }
 

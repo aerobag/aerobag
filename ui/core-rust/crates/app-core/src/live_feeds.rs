@@ -910,6 +910,10 @@ impl LiveFeedsState {
         entry.loaded_version.as_deref()
     }
 
+    pub(crate) fn product_staged_version(&self, product: &str) -> Option<&str> {
+        self.products.get(product)?.loaded_version.as_deref()
+    }
+
     pub fn product_published_at_utc(&self, product: &str) -> Option<&str> {
         let entry = self.products.get(product)?;
         if !entry

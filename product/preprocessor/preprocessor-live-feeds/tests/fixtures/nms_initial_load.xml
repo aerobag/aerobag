@@ -1,0 +1,52 @@
+<?xml version="1.0"?>
+<soap:Envelope xmlns:soap="http://schemas.xmlsoap.org/soap/envelope/">
+  <soap:Body>
+    <ns3:FeatureCollection xmlns="http://www.aixm.aero/schema/5.1/message"
+      xmlns:aixm="http://www.aixm.aero/schema/5.1"
+      xmlns:event="http://www.aixm.aero/schema/5.1/event"
+      xmlns:gml="http://www.opengis.net/gml/3.2"
+      xmlns:fnse="http://www.aixm.aero/schema/5.1/extensions/FAA/FNSE"
+      xmlns:ns3="http://www.opengis.net/wfs/2.0"
+      numberReturned="1" timeStamp="2025-09-12T17:24:02.017Z">
+      <aixm:member>
+        <AIXMBasicMessage gml:id="NMS_ID_1757609538792382">
+          <hasMember>
+            <event:Event gml:id="Event_1_1757609538792382">
+              <event:timeSlice>
+                <event:EventTimeSlice gml:id="Event_TS_1_1757609538792382">
+                  <event:scenario>87</event:scenario>
+                  <event:textNOTAM>
+                    <event:NOTAM gml:id="NOTAM_1_1757609538792382">
+                      <event:number>430</event:number>
+                      <event:year>2025</event:year>
+                      <event:type>N</event:type>
+                      <event:issued>2025-08-21T02:34:00.000Z</event:issued>
+                      <event:location>8WC</event:location>
+                      <event:effectiveStart>202508210234</event:effectiveStart>
+                      <event:effectiveEnd>202510012359</event:effectiveEnd>
+                      <event:text>RWY 20 RWY END ID LGT U/S</event:text>
+                      <event:translation>
+                        <event:NOTAMTranslation>
+                          <event:type>LOCAL_FORMAT</event:type>
+                          <event:simpleText>!STL 08/430 8WC RWY 20 RWY END ID LGT U/S 2508210234-2510012359</event:simpleText>
+                        </event:NOTAMTranslation>
+                      </event:translation>
+                    </event:NOTAM>
+                  </event:textNOTAM>
+                  <event:extension>
+                    <fnse:EventExtension>
+                      <fnse:classification>DOM</fnse:classification>
+                      <fnse:accountId>STL</fnse:accountId>
+                      <fnse:airportname>WASHINGTON COUNTY</fnse:airportname>
+                      <fnse:lastUpdated>2025-08-21T02:34:00.000Z</fnse:lastUpdated>
+                    </fnse:EventExtension>
+                  </event:extension>
+                </event:EventTimeSlice>
+              </event:timeSlice>
+            </event:Event>
+          </hasMember>
+        </AIXMBasicMessage>
+      </aixm:member>
+    </ns3:FeatureCollection>
+  </soap:Body>
+</soap:Envelope>

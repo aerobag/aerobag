@@ -45,42 +45,34 @@ The package list is not host config. It lives in
 The deploy script installs only a tiny bootstrap set before the checkout exists:
 `ca-certificates`, `git`, and `rsync`.
 
-## SWIM NOTAM Credentials
+## NMS NOTAM Credentials
 
-SWIM NOTAM subscriptions are stateful queues. Dev and prod must not consume the
-same queue. The operator-owned credential bundle lives outside the repo:
-
-```text
-/root/aerobag-credentials/swim-notams.environments.json
-```
-
-Its `subscriptions.dev` and `subscriptions.prod` entries must point at separate
-SWIM subscriptions. `tools/run_dev_stack.py` extracts only the dev entry to:
+NMS API OAuth credentials are operator-owned and live outside the repository.
+The dev stack uses staging credentials directly from:
 
 ```text
-/root/aerobag-credentials/dev-stack/swim-notams.json
+/root/aerobag-credentials/dev-stack/nms-notams-staging.json
 ```
 
-Production deploys install only the prod entry to:
+Production deploys copy the configured production credential file to:
 
 ```text
-/etc/aerobag/secrets/swim-notams.json
+/etc/aerobag/secrets/nms-notams.json
 ```
 
-Enable prod NOTAM ingestion in `deploy/aerobag-prod.json` only after the prod
-subscription exists:
+Enable production NOTAM ingestion only after production NMS credentials exist:
 
 ```json
 {
-  "swim_notams_enabled": true,
-  "swim_notams_environment": "prod",
-  "swim_notams_credential_bundle": "/root/aerobag-credentials/swim-notams.environments.json",
-  "swim_notams_prod_config": "/etc/aerobag/secrets/swim-notams.json"
+  "nms_notams_enabled": true,
+  "nms_notams_credential_file": "/root/aerobag-credentials/nms-notams-production.json",
+  "nms_notams_prod_config": "/etc/aerobag/secrets/nms-notams.json"
 }
 ```
 
-The live-feeds daemon is also started with `--swim-notams-environment prod` and
-refuses to consume a credential file that declares any other environment.
+The credential JSON declares `sourceEnvironment`; the NMS client rejects
+unknown environments and non-HTTPS API/token URLs. Production deployment also
+refuses a credential file unless it declares `sourceEnvironment: "production"`.
 
 Production APK builds use the Android SDK under `/usr/lib/android-sdk`.
 They require a full JDK, not just a JRE, because Android Gradle transforms use

@@ -8,6 +8,7 @@ use std::{
     io::{ErrorKind, Write},
     os::fd::AsRawFd,
     path::{Path, PathBuf},
+    time::Duration,
 };
 
 use anyhow::{bail, Context};
@@ -17,8 +18,8 @@ use notam_state::{
     NotamCounters, NotamHash, NotamMutation, NotamRecord, NotamState,
     NOTAM_MERKLE_BUCKETS_PER_GROUP, NOTAM_MERKLE_BUCKET_COUNT, NOTAM_MERKLE_GROUP_COUNT,
 };
-use rusqlite::{params, Connection, OptionalExtension, Transaction};
-use serde::{Deserialize, Serialize};
+use rusqlite::{params, Connection, OpenFlags, OptionalExtension, Transaction};
+use serde::Serialize;
 #[cfg(test)]
 use serde_json::Value;
 
@@ -39,13 +40,73 @@ const MULTIPLE_EFFECT_COUNT_METADATA_KEY: &str = "airport_notams_with_multiple_e
 const OTHER_EFFECT_COUNT_METADATA_KEY: &str = "airport_notams_with_other_effect";
 const RAW_INGEST_RETENTION_DAYS: i64 = 7;
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-pub struct SwimNotamSubscriptionIdentity {
-    pub provider_url: String,
-    pub queue: String,
-    pub connection_factory: String,
-    pub username: String,
-    pub vpn: String,
+#[derive(Debug, Clone)]
+pub struct NotamStateReader {
+    root: PathBuf,
+}
+
+impl NotamStateReader {
+    pub fn new(root: impl Into<PathBuf>) -> Self {
+        Self { root: root.into() }
+    }
+
+    pub fn current_records(&self) -> anyhow::Result<Vec<StructuredNotamRecord>> {
+        let connection = self.open_connection()?;
+        let mut statement = connection
+            .prepare("SELECT record_json FROM current_notams ORDER BY id")
+            .context("failed to prepare current NOTAM query")?;
+        let rows = statement
+            .query_map([], |row| row.get::<_, String>(0))
+            .context("failed to query current NOTAM records")?;
+        rows.map(|row| {
+            let record_json = row.context("failed to read current NOTAM record")?;
+            let record = serde_json::from_str::<StructuredNotamRecord>(&record_json)
+                .context("failed to decode current NOTAM record")?;
+            validate_canonical_structured_notam_record(&record)
+                .with_context(|| format!("invalid canonical NOTAM {}", record.id))?;
+            Ok(record)
+        })
+        .collect()
+    }
+
+    fn open_connection(&self) -> anyhow::Result<Connection> {
+        let path = self.root.join("state.sqlite");
+        let connection = Connection::open_with_flags(
+            &path,
+            OpenFlags::SQLITE_OPEN_READ_ONLY | OpenFlags::SQLITE_OPEN_NO_MUTEX,
+        )
+        .with_context(|| format!("failed to open NMS NOTAM state {}", path.display()))?;
+        connection
+            .busy_timeout(Duration::from_secs(5))
+            .context("failed to set NMS NOTAM sqlite busy timeout")?;
+        Ok(connection)
+    }
+
+    #[cfg(test)]
+    pub fn replace_records_for_test(
+        root: &Path,
+        records: &[StructuredNotamRecord],
+    ) -> anyhow::Result<()> {
+        fs::create_dir_all(root).with_context(|| format!("failed to create {}", root.display()))?;
+        let mut connection = Connection::open(root.join("state.sqlite"))?;
+        connection.execute_batch(
+            "CREATE TABLE current_notams (
+                id TEXT PRIMARY KEY,
+                record_json TEXT NOT NULL
+             );
+             DELETE FROM current_notams;",
+        )?;
+        let tx = connection.transaction()?;
+        for record in records {
+            validate_canonical_structured_notam_record(record)?;
+            tx.execute(
+                "INSERT INTO current_notams(id, record_json) VALUES (?1, ?2)",
+                params![record.id, serde_json::to_string(record)?],
+            )?;
+        }
+        tx.commit()?;
+        Ok(())
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -124,6 +185,13 @@ pub struct NotamPublicationSnapshot {
     pub transitions: Vec<NotamPublicationTransition>,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SynchronizedNotamSummary {
+    pub state_id: String,
+    pub changed_count: usize,
+    pub removed_count: usize,
+}
+
 impl NotamPersistentStore {
     pub fn new(root: impl Into<PathBuf>) -> Self {
         Self { root: root.into() }
@@ -133,10 +201,9 @@ impl NotamPersistentStore {
         &self.root
     }
 
-    pub fn initialize(&self, identity: &SwimNotamSubscriptionIdentity) -> anyhow::Result<()> {
+    pub fn initialize(&self) -> anyhow::Result<()> {
         fs::create_dir_all(self.state_root())
             .with_context(|| format!("failed to create {}", self.state_root().display()))?;
-        self.check_or_write_identity(identity)?;
         self.open_connection()?;
         Ok(())
     }
@@ -174,6 +241,104 @@ impl NotamPersistentStore {
         file.sync_all()
             .with_context(|| format!("failed to sync {}", path.display()))?;
         Ok(NotamStoreLock { file, path })
+    }
+
+    pub fn synchronize_current_records(
+        &self,
+        records: &[StructuredNotamRecord],
+        observed_at_utc: &str,
+    ) -> anyhow::Result<SynchronizedNotamSummary> {
+        let mut incoming = BTreeMap::new();
+        for record in records {
+            validate_canonical_structured_notam_record(record)
+                .with_context(|| format!("invalid canonical NOTAM {}", record.id))?;
+            if notam_projection_action(record)? != NotamProjectionAction::Upsert {
+                bail!(
+                    "canonical current-state synchronization contains inactive NOTAM {}",
+                    record.id
+                );
+            }
+            if incoming.insert(record.id.clone(), record).is_some() {
+                bail!(
+                    "canonical current-state synchronization contains duplicate NOTAM {}",
+                    record.id
+                );
+            }
+        }
+
+        let mut connection = self.open_connection()?;
+        let tx = connection
+            .transaction()
+            .context("failed to start canonical NOTAM synchronization")?;
+        let mut touched = {
+            let mut statement = tx
+                .prepare("SELECT id, record_json FROM notam_client_records ORDER BY id")
+                .context("failed to prepare current published NOTAM query")?;
+            let records = statement
+                .query_map([], |row| {
+                    Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+                })
+                .context("failed to query current published NOTAMs")?
+                .map(|row| {
+                    let (id, json) = row.context("failed to read current published NOTAM")?;
+                    let record = serde_json::from_str::<NotamRecord>(&json)
+                        .with_context(|| format!("failed to decode published NOTAM {id}"))?;
+                    Ok((id, Some(record)))
+                })
+                .collect::<anyhow::Result<BTreeMap<_, _>>>()?;
+            records
+        };
+
+        for id in touched.keys().cloned().collect::<Vec<_>>() {
+            if incoming.contains_key(&id) {
+                continue;
+            }
+            tx.execute("DELETE FROM current_notams WHERE id = ?1", [&id])
+                .with_context(|| format!("failed to remove stale canonical NOTAM {id}"))?;
+            tx.execute("DELETE FROM notam_client_records WHERE id = ?1", [&id])
+                .with_context(|| format!("failed to remove stale published NOTAM {id}"))?;
+        }
+        for (id, record) in incoming {
+            if !touched.contains_key(&id) {
+                touched.insert(id.clone(), None);
+            }
+            apply_record_to_projection(&tx, ProjectionTable::Current, record, observed_at_utc)?;
+        }
+
+        let source_sequence = read_metadata(&tx, "canonical_source_sync_sequence")?
+            .map(|value| {
+                value
+                    .parse::<u64>()
+                    .context("failed to parse canonical NOTAM source sequence")
+            })
+            .transpose()?
+            .unwrap_or(0)
+            .checked_add(1)
+            .context("canonical NOTAM source sequence overflow")?;
+        let source_sequence = i64::try_from(source_sequence)
+            .context("canonical NOTAM source sequence exceeds i64")?;
+        let (changed_count, removed_count) = finalize_projection_transition(
+            &tx,
+            source_sequence,
+            source_sequence,
+            observed_at_utc,
+            &touched,
+        )?;
+        tx.execute(
+            "INSERT INTO metadata(key, value) VALUES ('canonical_source_sync_sequence', ?1)
+             ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+            [source_sequence.to_string()],
+        )
+        .context("failed to update canonical NOTAM source sequence")?;
+        let state_id = read_metadata(&tx, STATE_ID_METADATA_KEY)?
+            .context("NOTAM projection is missing its current state ID")?;
+        tx.commit()
+            .context("failed to commit canonical NOTAM synchronization")?;
+        Ok(SynchronizedNotamSummary {
+            state_id,
+            changed_count,
+            removed_count,
+        })
     }
 
     pub fn apply_pending_raw_messages(
@@ -813,13 +978,7 @@ impl NotamPersistentStore {
         starting_records: &[(String, Option<String>, Option<String>, String, String)],
         identity_cursors: &[(String, i64)],
     ) -> anyhow::Result<()> {
-        self.initialize(&SwimNotamSubscriptionIdentity {
-            provider_url: "smfs://fixture.invalid:55443".to_string(),
-            queue: "fixture.queue".to_string(),
-            connection_factory: "fixture.CF".to_string(),
-            username: "fixture.user".to_string(),
-            vpn: "fixture-vpn".to_string(),
-        })?;
+        self.initialize()?;
         let mut connection = self.open_connection()?;
         let tx = connection
             .transaction()
@@ -898,29 +1057,6 @@ impl NotamPersistentStore {
                 ],
             )
             .with_context(|| format!("failed to insert captured raw NOTAM {ingest_seq}"))?;
-        Ok(())
-    }
-
-    fn check_or_write_identity(
-        &self,
-        identity: &SwimNotamSubscriptionIdentity,
-    ) -> anyhow::Result<()> {
-        let path = self.root.join("subscription.json");
-        if path.exists() {
-            let existing = serde_json::from_slice::<SwimNotamSubscriptionIdentity>(
-                &fs::read(&path).with_context(|| format!("failed to read {}", path.display()))?,
-            )
-            .with_context(|| format!("failed to parse {}", path.display()))?;
-            if existing != *identity {
-                bail!(
-                    "NOTAM store identity does not match credentials: state root {} belongs to a different subscription",
-                    self.root.display()
-                );
-            }
-            return Ok(());
-        }
-        write_json_pretty_file(&path, identity)?;
-        sync_dir(&self.root)?;
         Ok(())
     }
 
@@ -2036,46 +2172,72 @@ fn raw_ingest_cursor(connection: &Connection) -> anyhow::Result<i64> {
         .context("failed to parse NOTAM raw ingest cursor")
 }
 
-fn write_json_pretty_file<T: Serialize>(path: &Path, value: &T) -> anyhow::Result<()> {
-    if let Some(parent) = path.parent() {
-        fs::create_dir_all(parent)
-            .with_context(|| format!("failed to create {}", parent.display()))?;
-    }
-    let temp = path.with_extension("tmp");
-    {
-        let mut file =
-            File::create(&temp).with_context(|| format!("failed to create {}", temp.display()))?;
-        serde_json::to_writer_pretty(&mut file, value)
-            .with_context(|| format!("failed to write {}", temp.display()))?;
-        file.write_all(b"\n")
-            .with_context(|| format!("failed to write {}", temp.display()))?;
-        file.sync_all()
-            .with_context(|| format!("failed to sync {}", temp.display()))?;
-    }
-    fs::rename(&temp, path)
-        .with_context(|| format!("failed to promote {} to {}", temp.display(), path.display()))?;
-    if let Some(parent) = path.parent() {
-        sync_dir(parent)?;
-    }
-    Ok(())
-}
-
-fn sync_dir(path: &Path) -> anyhow::Result<()> {
-    let dir = File::open(path).with_context(|| format!("failed to open {}", path.display()))?;
-    dir.sync_all()
-        .with_context(|| format!("failed to sync {}", path.display()))
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
     use tempfile::tempdir;
 
     #[test]
+    fn canonical_state_sync_journals_updates_and_removals() -> anyhow::Result<()> {
+        let temp = tempdir()?;
+        let store = NotamPersistentStore::new(temp.path());
+        let first = structured_notam_record_from_json(&captured_notam_variant(
+            "PUBLISHED",
+            "NOTAMN",
+            Some("RWY"),
+            "1",
+            Some("N"),
+            "RWY 01 CLSD.",
+        ))?
+        .context("missing first canonical NOTAM")?;
+        let second = structured_notam_record_from_json(&captured_notam_variant(
+            "PUBLISHED",
+            "NOTAMN",
+            Some("TWY"),
+            "2",
+            Some("N"),
+            "TWY A CLSD.",
+        ))?
+        .context("missing second canonical NOTAM")?;
+
+        let initial =
+            store.synchronize_current_records(&[first.clone(), second], "2026-07-24T12:00:00Z")?;
+        assert_eq!(initial.changed_count, 2);
+        assert_eq!(initial.removed_count, 0);
+
+        let mut updated = first;
+        updated.text = Some("RWY 01 CLSD. TWY B CLSD.".to_string());
+        updated = canonicalize_structured_notam_record(updated)?;
+        let next = store
+            .synchronize_current_records(std::slice::from_ref(&updated), "2026-07-24T12:03:00Z")?;
+        assert_eq!(next.changed_count, 1);
+        assert_eq!(next.removed_count, 1);
+
+        let snapshot = store.publication_snapshot()?;
+        assert_eq!(snapshot.transitions.len(), 2);
+        let mut replayed = NotamState::empty();
+        let mut work = Default::default();
+        for transition in snapshot.transitions {
+            for mutation in transition.mutations {
+                replayed
+                    .apply_mutation(mutation, &mut work)
+                    .map_err(anyhow::Error::msg)?;
+            }
+        }
+        assert_eq!(replayed.state_id(), next.state_id);
+        assert_eq!(replayed.checkpoint(), store.current_checkpoint()?);
+        assert_eq!(
+            replayed.checkpoint().records,
+            vec![published_notam_record(&updated)]
+        );
+        Ok(())
+    }
+
+    #[test]
     fn lock_prevents_second_notam_consumer_in_same_store() -> anyhow::Result<()> {
         let temp = tempdir()?;
         let store = NotamPersistentStore::new(temp.path());
-        store.initialize(&identity("queue-a"))?;
+        store.initialize()?;
 
         let _lock = store.acquire_lock()?;
         let error = store.acquire_lock().expect_err("second lock must fail");
@@ -2088,27 +2250,10 @@ mod tests {
     }
 
     #[test]
-    fn identity_mismatch_fails_loudly() -> anyhow::Result<()> {
-        let temp = tempdir()?;
-        let store = NotamPersistentStore::new(temp.path());
-        store.initialize(&identity("queue-a"))?;
-
-        let error = store
-            .initialize(&identity("queue-b"))
-            .expect_err("identity mismatch must fail");
-
-        assert!(
-            format!("{error:#}").contains("does not match credentials"),
-            "unexpected error: {error:#}"
-        );
-        Ok(())
-    }
-
-    #[test]
     fn committed_raw_messages_advance_projection_cursor() -> anyhow::Result<()> {
         let temp = tempdir()?;
         let store = NotamPersistentStore::new(temp.path());
-        store.initialize(&identity("queue-a"))?;
+        store.initialize()?;
         store.insert_raw_message_for_test(
             "message-a",
             "2026-07-11T02:03:00Z",
@@ -2136,7 +2281,7 @@ mod tests {
     fn projection_journal_replays_exactly_through_shared_state() -> anyhow::Result<()> {
         let temp = tempdir()?;
         let store = NotamPersistentStore::new(temp.path());
-        store.initialize(&identity("queue-a"))?;
+        store.initialize()?;
         let initial = store.current_checkpoint()?;
 
         store.insert_raw_message_for_test(
@@ -2237,7 +2382,7 @@ mod tests {
     fn rejected_raw_message_does_not_block_later_messages() -> anyhow::Result<()> {
         let temp = tempdir()?;
         let store = NotamPersistentStore::new(temp.path());
-        store.initialize(&identity("queue-a"))?;
+        store.initialize()?;
         store.insert_raw_message_for_test(
             "message-a",
             "2026-07-11T02:03:00Z",
@@ -2314,7 +2459,7 @@ mod tests {
     fn repaired_rejection_does_not_override_later_identity_update() -> anyhow::Result<()> {
         let temp = tempdir()?;
         let store = NotamPersistentStore::new(temp.path());
-        store.initialize(&identity("queue-a"))?;
+        store.initialize()?;
         store.insert_raw_message_for_test(
             "message-a",
             "2026-07-11T02:03:00Z",
@@ -2382,7 +2527,7 @@ mod tests {
     fn repaired_rejection_applies_when_not_superseded() -> anyhow::Result<()> {
         let temp = tempdir()?;
         let store = NotamPersistentStore::new(temp.path());
-        store.initialize(&identity("queue-a"))?;
+        store.initialize()?;
         store.insert_raw_message_for_test(
             "message-a",
             "2026-07-11T02:03:00Z",
@@ -2431,7 +2576,7 @@ mod tests {
     fn raw_retention_preserves_only_unresolved_rejections() -> anyhow::Result<()> {
         let temp = tempdir()?;
         let store = NotamPersistentStore::new(temp.path());
-        store.initialize(&identity("queue-a"))?;
+        store.initialize()?;
         for index in 1..=3 {
             store.insert_raw_message_for_test(
                 &format!("message-{index}"),
@@ -2480,7 +2625,7 @@ mod tests {
     fn committed_cancelled_notam_deletes_current_record() -> anyhow::Result<()> {
         let temp = tempdir()?;
         let store = NotamPersistentStore::new(temp.path());
-        store.initialize(&identity("queue-a"))?;
+        store.initialize()?;
         let published_json = captured_notam_line("PUBLISHED");
         let cancelled_json = captured_notam_line("CANCELLED");
         store.insert_raw_message_for_test("message-a", "2026-07-11T02:03:00Z", &published_json)?;
@@ -2507,10 +2652,10 @@ mod tests {
     }
 
     #[test]
-    fn cancellation_uses_same_identity_across_swim_dialects() -> anyhow::Result<()> {
+    fn cancellation_uses_same_identity_across_transport_dialects() -> anyhow::Result<()> {
         let temp = tempdir()?;
         let store = NotamPersistentStore::new(temp.path());
-        store.initialize(&identity("queue-a"))?;
+        store.initialize()?;
         store.insert_raw_message_for_test(
             "message-a",
             "2026-07-11T02:03:00Z",
@@ -2550,7 +2695,7 @@ mod tests {
     fn replacement_type_cancellation_uses_canonical_new_notam_identity() -> anyhow::Result<()> {
         let temp = tempdir()?;
         let store = NotamPersistentStore::new(temp.path());
-        store.initialize(&identity("queue-a"))?;
+        store.initialize()?;
         store.insert_raw_message_for_test(
             "message-a",
             "2026-07-11T02:03:00Z",
@@ -2618,7 +2763,7 @@ mod tests {
     fn schema_v4_migration_adds_rejection_tracking() -> anyhow::Result<()> {
         let temp = tempdir()?;
         let store = NotamPersistentStore::new(temp.path());
-        store.initialize(&identity("queue-a"))?;
+        store.initialize()?;
         let connection = Connection::open(store.sqlite_path())?;
         connection.execute_batch(
             "DROP TABLE rejected_notam_messages;
@@ -2627,7 +2772,7 @@ mod tests {
         )?;
         drop(connection);
 
-        store.initialize(&identity("queue-a"))?;
+        store.initialize()?;
 
         let connection = Connection::open(store.sqlite_path())?;
         assert_eq!(
@@ -2655,7 +2800,7 @@ mod tests {
     fn schema_v6_journal_migration_preserves_cursor_and_transitions() -> anyhow::Result<()> {
         let temp = tempdir()?;
         let store = NotamPersistentStore::new(temp.path());
-        store.initialize(&identity("queue-a"))?;
+        store.initialize()?;
         store.insert_raw_message_for_test(
             "message-a",
             "2026-07-11T02:03:00Z",
@@ -2676,7 +2821,7 @@ mod tests {
         )?;
         drop(connection);
 
-        store.initialize(&identity("queue-a"))?;
+        store.initialize()?;
 
         assert_eq!(
             store.publication_cursor()?.published_head_state_id,
@@ -2705,7 +2850,7 @@ mod tests {
     fn schema_v2_reprojection_replays_canonical_cancellation() -> anyhow::Result<()> {
         let temp = tempdir()?;
         let store = NotamPersistentStore::new(temp.path());
-        store.initialize(&identity("queue-a"))?;
+        store.initialize()?;
         store.insert_raw_message_for_test(
             "message-a",
             "2026-07-11T02:03:00Z",
@@ -2773,7 +2918,7 @@ mod tests {
     fn schema_v3_reprojection_adds_airport_effects_to_current_records() -> anyhow::Result<()> {
         let temp = tempdir()?;
         let store = NotamPersistentStore::new(temp.path());
-        store.initialize(&identity("queue-a"))?;
+        store.initialize()?;
         let record =
             structured_notam_record_from_json(&captured_notam_line("PUBLISHED"))?.expect("record");
         let mut stale_json = serde_json::to_value(&record)?;
@@ -2818,16 +2963,6 @@ mod tests {
             NOTAM_STORE_SCHEMA_VERSION.to_string()
         );
         Ok(())
-    }
-
-    fn identity(queue: &str) -> SwimNotamSubscriptionIdentity {
-        SwimNotamSubscriptionIdentity {
-            provider_url: "smfs://example.test:55443".to_string(),
-            queue: queue.to_string(),
-            connection_factory: "example.CF".to_string(),
-            username: "example.user".to_string(),
-            vpn: "example-vpn".to_string(),
-        }
     }
 
     fn captured_notam_line(status: &str) -> String {

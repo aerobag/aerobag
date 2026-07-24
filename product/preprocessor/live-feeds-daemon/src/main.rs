@@ -8,7 +8,6 @@ use std::{
     io::{BufRead, BufReader, Write},
     net::{SocketAddr, TcpListener, TcpStream},
     path::{Component, Path, PathBuf},
-    process::{Child, Command, Stdio},
     sync::{
         mpsc::{self, Receiver, RecvTimeoutError, Sender},
         Arc, Mutex,
@@ -19,6 +18,12 @@ use std::{
 
 use anyhow::{bail, Context};
 use chrono::Utc;
+use nms_notams_fetch::{
+    collector::{
+        run_collector_with_observer, CollectorOptions, NmsApiCollectorStore, NmsCollectorEvent,
+    },
+    NmsClient, NmsConfig,
+};
 use preprocessor_fetch::{FetchCacheConfig, FetchCacheMode};
 use preprocessor_live_feeds::{
     engine::{
@@ -30,10 +35,7 @@ use preprocessor_live_feeds::{
         QueuedLiveFeedSource, SseBroker, SystemClock, UpstreamEvent, LIVE_FEEDS_SCHEMA_VERSION,
         LIVE_FEED_FAILED_SCRATCH_RETAIN_COUNT,
     },
-    notam_store::{
-        AppliedRawNotamSummary, NotamPersistentStore, NotamRejectionStatus,
-        SwimNotamSubscriptionIdentity,
-    },
+    notam_store::NotamPersistentStore,
     products::{
         fetch_tfr_detail_backfill_once, LiveFeedFetchConfig, MetarLiveFeedBuilder,
         NexradSourceGridLiveFeedBuilder, NotamLiveFeedBuilder, ObstaclesLiveFeedBuilder,
@@ -45,7 +47,7 @@ use preprocessor_live_feeds::{
     },
     tfr_detail_backfill::TfrDetailBackfillStore,
 };
-use serde::{Deserialize, Serialize};
+use serde::Serialize;
 
 const STATUS_HISTORY_LIMIT: usize = 256;
 const SIMULATION_RETAIN_VERSIONS_PER_PRODUCT: usize = 8;
@@ -69,7 +71,7 @@ fn live_feeds_contract_root(live_root: &Path) -> PathBuf {
 
 fn usage() -> &'static str {
     "usage:
-  aerobag-live-feedsd --live-root <path> --listen <addr> [--scratch-root <path>] [--event-interval-ms <n>] [--swim-notams-config <path> --swim-notams-environment <dev|prod> --swim-notams-collector <path> [--swim-notams-state-root <path>]]
+  aerobag-live-feedsd --live-root <path> --listen <addr> [--scratch-root <path>] [--event-interval-ms <n>] [--nms-notams-config <path> [--nms-notams-state-root <path>]]
   aerobag-live-feedsd --simulation --live-root <path> --listen <addr> [--fixture-root <path>] [--fixture-cache <path>] [--speedup <n>] [--event-interval-ms <n>]
   aerobag-live-feedsd --check-config --live-root <path> --listen <addr> [--simulation --fixture-root <path>]
 
@@ -90,7 +92,7 @@ struct DaemonConfig {
     poll_loop_interval_ms: u64,
     event_interval_ms: u64,
     simulation: Option<SimulationConfig>,
-    swim_notams: Option<SwimNotamsConfig>,
+    nms_notams: Option<NmsNotamsConfig>,
     tfr_detail_backfill_state_root: PathBuf,
     check_config: bool,
     sse_event_limit: Option<usize>,
@@ -104,25 +106,12 @@ struct SimulationConfig {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-struct SwimNotamsConfig {
+struct NmsNotamsConfig {
     config_path: PathBuf,
-    environment: String,
-    collector_path: PathBuf,
     state_root: PathBuf,
     retry_interval_ms: u64,
-}
-
-#[derive(Debug, Clone, Deserialize)]
-struct SwimNotamsCredentialFile {
-    #[serde(rename = "aerobagEnvironment", alias = "aerobag_environment")]
-    aerobag_environment: String,
-    #[serde(rename = "providerUrl")]
-    provider_url: String,
-    queue: String,
-    #[serde(rename = "connectionFactory")]
-    connection_factory: String,
-    username: String,
-    vpn: String,
+    poll_interval_seconds: u64,
+    overlap_seconds: u64,
 }
 
 #[derive(Debug, Clone, Serialize, PartialEq, Eq)]
@@ -252,13 +241,13 @@ struct SourceIngestSample {
     #[serde(skip_serializing_if = "Option::is_none")]
     source_timestamp_utc: Option<String>,
     interval_ms: Option<u64>,
-    message_count: usize,
+    received_count: usize,
+    new_payload_count: usize,
+    duplicate_payload_count: usize,
     changed_count: usize,
     removed_count: usize,
-    rejected_count: usize,
-    new_rejected_count: usize,
-    unresolved_rejected_count: usize,
-    cursor: i64,
+    expired_count: usize,
+    cursor_utc: String,
 }
 
 impl Default for DaemonStatus {
@@ -344,51 +333,18 @@ impl DaemonStatus {
         );
     }
 
-    fn record_source_ingest(
-        &self,
-        product: &str,
-        observed_at_utc: chrono::DateTime<Utc>,
-        source_timestamp_utc: Option<String>,
-        message_count: usize,
-        changed_count: usize,
-        removed_count: usize,
-        rejected_count: usize,
-        new_rejected_count: usize,
-        unresolved_rejected_count: usize,
-        cursor: i64,
-    ) {
+    fn record_source_ingest(&self, product: &str, mut sample: SourceIngestSample) {
         let mut state = self.inner.lock().expect("live-feed status lock");
         let history = state.products.entry(product.to_string()).or_default();
         let interval_ms = history.source_samples.back().and_then(|last| {
-            checked_duration_ms(observed_at_utc.signed_duration_since(last.observed_at_utc))
+            checked_duration_ms(
+                sample
+                    .observed_at_utc
+                    .signed_duration_since(last.observed_at_utc),
+            )
         });
-        push_limited(
-            &mut history.source_samples,
-            SourceIngestSample {
-                observed_at_utc,
-                source_timestamp_utc,
-                interval_ms,
-                message_count,
-                changed_count,
-                removed_count,
-                rejected_count,
-                new_rejected_count,
-                unresolved_rejected_count,
-                cursor,
-            },
-        );
-    }
-
-    fn record_notam_rejection_status(&self, rejection: &NotamRejectionStatus) {
-        let mut state = self.inner.lock().expect("live-feed status lock");
-        let history = state.products.entry("notams".to_string()).or_default();
-        history.quality = Some(serde_json::json!({
-            "rejected_row_count": rejection.unresolved_count,
-            "oldest_rejected_ingest_seq": rejection.oldest_unresolved_ingest_seq,
-            "latest_rejected_ingest_seq": rejection.latest_unresolved_ingest_seq,
-            "last_rejection_error": rejection.last_error,
-            "recent_rejections": rejection.recent_rejections,
-        }));
+        sample.interval_ms = interval_ms;
+        push_limited(&mut history.source_samples, sample);
     }
 
     fn record_source_failure(&self, product: &str, error: impl Into<String>) {
@@ -660,11 +616,11 @@ impl DaemonConfig {
         let mut fixture_root = None;
         let mut fixture_cache = None;
         let mut speedup = 1_u32;
-        let mut swim_notams_config = None;
-        let mut swim_notams_environment = None;
-        let mut swim_notams_collector = None;
-        let mut swim_notams_state_root = None;
-        let mut swim_notams_retry_interval_ms = 60_000_u64;
+        let mut nms_notams_config = None;
+        let mut nms_notams_state_root = None;
+        let mut nms_notams_retry_interval_ms = 60_000_u64;
+        let mut nms_notams_poll_interval_seconds = 180_u64;
+        let mut nms_notams_overlap_seconds = 600_u64;
         let mut tfr_detail_backfill_state_root = None;
         let mut event_interval_ms = 5_000_u64;
         let mut check_config = false;
@@ -722,29 +678,37 @@ impl DaemonConfig {
                         bail!("--speedup must be greater than zero");
                     }
                 }
-                "--swim-notams-config" => {
-                    swim_notams_config = Some(next_path(&mut args, "--swim-notams-config")?)
+                "--nms-notams-config" => {
+                    nms_notams_config = Some(next_path(&mut args, "--nms-notams-config")?)
                 }
-                "--swim-notams-environment" => {
-                    let value = next_value(&mut args, "--swim-notams-environment")?;
-                    match value.as_str() {
-                        "dev" | "prod" => swim_notams_environment = Some(value),
-                        _ => bail!("--swim-notams-environment must be dev or prod"),
+                "--nms-notams-state-root" => {
+                    nms_notams_state_root = Some(next_path(&mut args, "--nms-notams-state-root")?)
+                }
+                "--nms-notams-retry-interval-ms" => {
+                    let value = next_value(&mut args, "--nms-notams-retry-interval-ms")?;
+                    nms_notams_retry_interval_ms = value.parse::<u64>().with_context(|| {
+                        format!("invalid --nms-notams-retry-interval-ms {value}")
+                    })?;
+                    if nms_notams_retry_interval_ms == 0 {
+                        bail!("--nms-notams-retry-interval-ms must be greater than zero");
                     }
                 }
-                "--swim-notams-collector" => {
-                    swim_notams_collector = Some(next_path(&mut args, "--swim-notams-collector")?)
+                "--nms-notams-poll-seconds" => {
+                    let value = next_value(&mut args, "--nms-notams-poll-seconds")?;
+                    nms_notams_poll_interval_seconds = value
+                        .parse::<u64>()
+                        .with_context(|| format!("invalid --nms-notams-poll-seconds {value}"))?;
+                    if nms_notams_poll_interval_seconds == 0 {
+                        bail!("--nms-notams-poll-seconds must be greater than zero");
+                    }
                 }
-                "--swim-notams-state-root" => {
-                    swim_notams_state_root = Some(next_path(&mut args, "--swim-notams-state-root")?)
-                }
-                "--swim-notams-retry-interval-ms" => {
-                    let value = next_value(&mut args, "--swim-notams-retry-interval-ms")?;
-                    swim_notams_retry_interval_ms = value.parse::<u64>().with_context(|| {
-                        format!("invalid --swim-notams-retry-interval-ms {value}")
-                    })?;
-                    if swim_notams_retry_interval_ms == 0 {
-                        bail!("--swim-notams-retry-interval-ms must be greater than zero");
+                "--nms-notams-overlap-seconds" => {
+                    let value = next_value(&mut args, "--nms-notams-overlap-seconds")?;
+                    nms_notams_overlap_seconds = value
+                        .parse::<u64>()
+                        .with_context(|| format!("invalid --nms-notams-overlap-seconds {value}"))?;
+                    if nms_notams_overlap_seconds >= 24 * 60 * 60 {
+                        bail!("--nms-notams-overlap-seconds must be less than 86400");
                     }
                 }
                 "--tfr-detail-backfill-state-root" => {
@@ -783,31 +747,17 @@ impl DaemonConfig {
             }
             None
         };
-        let swim_notams_state_root_supplied = swim_notams_state_root.is_some();
-        let swim_notams_environment_supplied = swim_notams_environment.is_some();
-        let swim_notams = match (
-            swim_notams_config,
-            swim_notams_environment,
-            swim_notams_collector,
-        ) {
-            (Some(config_path), Some(environment), Some(collector_path)) => Some(SwimNotamsConfig {
-                config_path,
-                environment,
-                collector_path,
-                state_root: swim_notams_state_root
-                    .unwrap_or_else(|| live_root.join("../state/swim-notams")),
-                retry_interval_ms: swim_notams_retry_interval_ms,
-            }),
-            (None, None, None) => None,
-            _ => bail!(
-                "--swim-notams-config, --swim-notams-environment, and --swim-notams-collector must be supplied together"
-            ),
-        };
-        if swim_notams.is_none() && swim_notams_state_root_supplied {
-            bail!("--swim-notams-state-root requires --swim-notams-config and --swim-notams-collector");
-        }
-        if swim_notams.is_none() && swim_notams_environment_supplied {
-            bail!("--swim-notams-environment requires --swim-notams-config and --swim-notams-collector");
+        let nms_notams_state_root_supplied = nms_notams_state_root.is_some();
+        let nms_notams = nms_notams_config.map(|config_path| NmsNotamsConfig {
+            config_path,
+            state_root: nms_notams_state_root
+                .unwrap_or_else(|| live_root.join("../state/nms-notams")),
+            retry_interval_ms: nms_notams_retry_interval_ms,
+            poll_interval_seconds: nms_notams_poll_interval_seconds,
+            overlap_seconds: nms_notams_overlap_seconds,
+        });
+        if nms_notams.is_none() && nms_notams_state_root_supplied {
+            bail!("--nms-notams-state-root requires --nms-notams-config");
         }
         let tfr_detail_backfill_state_root = tfr_detail_backfill_state_root
             .unwrap_or_else(|| live_root.join("../state/tfr-detail-backfill"));
@@ -822,7 +772,7 @@ impl DaemonConfig {
             poll_loop_interval_ms,
             event_interval_ms,
             simulation,
-            swim_notams,
+            nms_notams,
             tfr_detail_backfill_state_root,
             check_config,
             sse_event_limit: None,
@@ -877,29 +827,15 @@ fn validate_config(config: &DaemonConfig) -> anyhow::Result<()> {
         );
         let _ = cache.compiled_root(&key);
     }
-    if let Some(swim_notams) = &config.swim_notams {
-        if !swim_notams.config_path.is_file() {
+    if let Some(nms_notams) = &config.nms_notams {
+        if !nms_notams.config_path.is_file() {
             bail!(
-                "--swim-notams-config does not exist: {}",
-                swim_notams.config_path.display()
+                "--nms-notams-config does not exist: {}",
+                nms_notams.config_path.display()
             );
         }
-        let credential = read_swim_notams_credential_file(&swim_notams.config_path)?;
-        if credential.aerobag_environment != swim_notams.environment {
-            bail!(
-                "--swim-notams-config {} declares environment {}, but daemon expected {}",
-                swim_notams.config_path.display(),
-                credential.aerobag_environment,
-                swim_notams.environment
-            );
-        }
-        if !swim_notams.collector_path.is_file() {
-            bail!(
-                "--swim-notams-collector does not exist: {}",
-                swim_notams.collector_path.display()
-            );
-        }
-        ensure_parent(&swim_notams.state_root, "--swim-notams-state-root")?;
+        NmsConfig::from_path(&nms_notams.config_path)?;
+        ensure_parent(&nms_notams.state_root, "--nms-notams-state-root")?;
     }
     ensure_parent(
         &config.tfr_detail_backfill_state_root,
@@ -951,7 +887,7 @@ fn start_live_feed_driver(
     let scratch_root = config.scratch_root.join("live-feed-build");
     let poll_interval = Duration::from_millis(config.poll_loop_interval_ms);
     let fetch = live_feed_fetch_config(config)?;
-    let swim_notams = config.swim_notams.clone();
+    let nms_notams = config.nms_notams.clone();
     let tfr_detail_backfill_state_root = config.tfr_detail_backfill_state_root.clone();
     if let Err(error) =
         prune_live_feed_scratch_root(&scratch_root, LIVE_FEED_FAILED_SCRATCH_RETAIN_COUNT)
@@ -960,9 +896,9 @@ fn start_live_feed_driver(
     }
     thread::spawn(move || {
         let publisher = FileLiveFeedPublisher::new(live_root, SystemClock);
-        let notam_state_root_for_enrichment = swim_notams
+        let notam_state_root_for_enrichment = nms_notams
             .as_ref()
-            .map(|swim_notams| swim_notams.state_root.clone());
+            .map(|nms_notams| nms_notams.state_root.clone());
         let mut tasks = production_tasks(
             fetch.clone(),
             notam_state_root_for_enrichment,
@@ -974,17 +910,20 @@ fn start_live_feed_driver(
             scratch_root.join("tfr-detail-backfill"),
             status.clone(),
         );
-        if let Some(swim_notams) = swim_notams {
+        if let Some(nms_notams) = nms_notams {
             let source = QueuedLiveFeedSource::new("notams");
-            let notam_state_root = swim_notams.state_root.clone();
-            start_swim_notams_supervisor(
-                swim_notams,
-                notam_state_root.clone(),
+            let publication_state_root = nms_notams.state_root.join("publication");
+            start_nms_notams_supervisor(
+                nms_notams,
+                publication_state_root.clone(),
                 source.sender(),
                 status.clone(),
             );
             tasks.push(Box::new(ImmediateQueuedDaemonLiveFeedTask::new(
-                LiveFeedSourceAndBuilder::new(source, NotamLiveFeedBuilder::new(notam_state_root)),
+                LiveFeedSourceAndBuilder::new(
+                    source,
+                    NotamLiveFeedBuilder::new(publication_state_root),
+                ),
                 Duration::from_secs(60),
             )));
         }
@@ -1081,7 +1020,7 @@ fn start_simulation_driver(
                 status.record_tick_result(&result);
                 log_tick_result("simulation", &result);
                 if let Err(error) = prune_simulation_publication(
-                    &publisher.root(),
+                    publisher.root(),
                     SIMULATION_RETAIN_VERSIONS_PER_PRODUCT,
                 ) {
                     eprintln!("live-feed simulation prune failed: {error:#}");
@@ -1522,118 +1461,145 @@ where
     }
 }
 
-fn start_swim_notams_supervisor(
-    config: SwimNotamsConfig,
-    state_root: PathBuf,
+fn start_nms_notams_supervisor(
+    config: NmsNotamsConfig,
+    publication_state_root: PathBuf,
     sender: Sender<UpstreamEvent>,
     status: DaemonStatus,
 ) {
     thread::spawn(move || loop {
         if let Err(error) =
-            run_swim_notams_supervisor_session(&config, &state_root, &sender, &status)
+            run_nms_notams_supervisor_session(&config, &publication_state_root, &sender, &status)
         {
             status.record_source_failure(
                 "notams",
-                format!("NOTAM supervisor session failed: {error:#}"),
+                format!("NMS NOTAM supervisor session failed: {error:#}"),
             );
         }
         thread::sleep(Duration::from_millis(config.retry_interval_ms));
     });
 }
 
-fn run_swim_notams_supervisor_session(
-    config: &SwimNotamsConfig,
-    state_root: &Path,
+fn run_nms_notams_supervisor_session(
+    config: &NmsNotamsConfig,
+    publication_state_root: &Path,
     sender: &Sender<UpstreamEvent>,
     status: &DaemonStatus,
 ) -> anyhow::Result<()> {
-    let identity = read_swim_notams_subscription_identity(&config.config_path)?;
-    let store = NotamPersistentStore::new(state_root);
-    store.initialize(&identity)?;
-    let _lock = store.acquire_lock()?;
-    let retry_resolved_rows = match store.retry_rejected_raw_messages() {
-        Ok(Some(summary)) => {
-            eprintln!(
-                "NOTAM quarantine retry resolved={} retried={} applied={} superseded={} changed={} removed={}",
-                summary.resolved_count,
-                summary.retried_count,
-                summary.applied_count,
-                summary.superseded_count,
-                summary.changed_count,
-                summary.removed_count
-            );
-            summary.resolved_count > 0
-        }
-        Ok(None) => false,
-        Err(error) => {
-            status.record_source_failure(
+    let nms_config = NmsConfig::from_path(&config.config_path)?;
+    let mut client = NmsClient::new(nms_config);
+    let store = NmsApiCollectorStore::new(&config.state_root);
+    let event_store = store.clone();
+    let publication_store = NotamPersistentStore::new(publication_state_root);
+    run_collector_with_observer(
+        &store,
+        &mut client,
+        &CollectorOptions {
+            poll_interval: Duration::from_secs(config.poll_interval_seconds),
+            overlap: Duration::from_secs(config.overlap_seconds),
+            run_duration: None,
+            max_polls: None,
+        },
+        |event| handle_nms_notam_event(&event_store, &publication_store, sender, status, event),
+    )
+}
+
+fn handle_nms_notam_event(
+    store: &NmsApiCollectorStore,
+    publication_store: &NotamPersistentStore,
+    sender: &Sender<UpstreamEvent>,
+    status: &DaemonStatus,
+    event: &NmsCollectorEvent,
+) -> anyhow::Result<()> {
+    match event {
+        NmsCollectorEvent::StateReady {
+            installed_initial_load,
+            current_records,
+            cursor_utc,
+        } => {
+            queue_nms_notam_state_event(store, publication_store, sender, cursor_utc)?;
+            status.record_source_success(
                 "notams",
-                format!("failed to retry rejected NOTAM messages: {error:#}"),
+                Some(cursor_utc.clone()),
+                format!(
+                    "nms_state_ready installed_initial_load={} current_records={}",
+                    installed_initial_load, current_records
+                ),
             );
-            false
         }
-    };
-    match store.rejection_status() {
-        Ok(rejection) => status.record_notam_rejection_status(&rejection),
-        Err(error) => status.record_source_failure(
+        NmsCollectorEvent::PollApplied { summary } => {
+            let observed_at_utc =
+                parse_utc_timestamp(&summary.started_at_utc, "NMS NOTAM poll start")?;
+            let received_count = summary.domestic_received + summary.fdc_received;
+            status.record_source_ingest(
+                "notams",
+                SourceIngestSample {
+                    observed_at_utc,
+                    source_timestamp_utc: Some(summary.started_at_utc.clone()),
+                    interval_ms: None,
+                    received_count,
+                    new_payload_count: summary.new_payloads,
+                    duplicate_payload_count: summary.duplicate_payloads,
+                    changed_count: summary.upserted,
+                    removed_count: summary.removed,
+                    expired_count: summary.expired,
+                    cursor_utc: summary.started_at_utc.clone(),
+                },
+            );
+            status.record_source_success(
+                "notams",
+                Some(summary.started_at_utc.clone()),
+                format!(
+                    "nms_poll received={} new_payloads={} duplicate_payloads={} upserted={} removed={} expired={} current_records={}",
+                    received_count,
+                    summary.new_payloads,
+                    summary.duplicate_payloads,
+                    summary.upserted,
+                    summary.removed,
+                    summary.expired,
+                    summary.current_records
+                ),
+            );
+            queue_nms_notam_state_event(store, publication_store, sender, &summary.started_at_utc)?;
+        }
+        NmsCollectorEvent::PollFailed {
+            failed_at_utc,
+            attempt,
+            error,
+            cursor_utc,
+        } => status.record_source_failure(
             "notams",
-            format!("failed to read rejected NOTAM status: {error:#}"),
+            format!(
+                "NMS NOTAM poll {attempt} failed at {failed_at_utc}; cursor={cursor_utc}: {error}"
+            ),
         ),
     }
-    if let Err(error) = apply_and_queue_swim_notams(&store, &sender, &status) {
-        status.record_source_failure("notams", format!("{error:#}"));
-    }
-    if let Err(error) =
-        queue_persisted_notam_state_event(&store, &sender, &status, retry_resolved_rows)
-    {
-        status.record_source_failure("notams", format!("{error:#}"));
-    }
-    loop {
-        match start_swim_notams_collector_process(config, &store) {
-            Ok(mut child) => {
-                status.record_source_success("notams", None, "source_connected");
-                let mut failure_after_start = false;
-                loop {
-                    if let Err(error) = apply_and_queue_swim_notams(&store, sender, status) {
-                        status.record_source_failure("notams", format!("{error:#}"));
-                    }
-                    match child.try_wait() {
-                        Ok(Some(exit_status)) => {
-                            if exit_status.success() {
-                                status.record_source_success("notams", None, "collector_exited");
-                            } else {
-                                status.record_source_failure(
-                                    "notams",
-                                    format!("SWIM NOTAM collector exited with {exit_status}"),
-                                );
-                                failure_after_start = true;
-                            }
-                            break;
-                        }
-                        Ok(None) => thread::sleep(Duration::from_secs(1)),
-                        Err(error) => {
-                            status.record_source_failure(
-                                "notams",
-                                format!("failed to poll SWIM NOTAM collector: {error:#}"),
-                            );
-                            let _ = child.kill();
-                            failure_after_start = true;
-                            break;
-                        }
-                    }
-                }
-                if failure_after_start {
-                    thread::sleep(Duration::from_millis(config.retry_interval_ms));
-                } else {
-                    thread::sleep(Duration::from_secs(1));
-                }
-            }
-            Err(error) => {
-                status.record_source_failure("notams", format!("{error:#}"));
-                thread::sleep(Duration::from_millis(config.retry_interval_ms));
-            }
-        }
-    }
+    Ok(())
+}
+
+fn queue_nms_notam_state_event(
+    store: &NmsApiCollectorStore,
+    publication_store: &NotamPersistentStore,
+    sender: &Sender<UpstreamEvent>,
+    observed_at_utc: &str,
+) -> anyhow::Result<()> {
+    let records = store.current_records()?;
+    let synchronized = publication_store.synchronize_current_records(&records, observed_at_utc)?;
+    sender
+        .send(UpstreamEvent {
+            product: "notams".to_string(),
+            source_id: format!("notams:nms:{}", synchronized.state_id),
+            previous_source_id: None,
+            observed_at_utc: parse_utc_timestamp(observed_at_utc, "NMS NOTAM cursor")?,
+            payload_path: None,
+        })
+        .context("failed to queue NMS NOTAM state event")
+}
+
+fn parse_utc_timestamp(value: &str, label: &str) -> anyhow::Result<chrono::DateTime<Utc>> {
+    chrono::DateTime::parse_from_rfc3339(value)
+        .with_context(|| format!("{label} is not RFC3339: {value}"))
+        .map(|value| value.with_timezone(&Utc))
 }
 
 fn start_tfr_detail_backfill_supervisor(
@@ -1700,146 +1666,6 @@ fn start_tfr_detail_backfill_supervisor(
             thread::sleep(INTERVAL);
         }
     });
-}
-
-fn queue_persisted_notam_state_event(
-    store: &NotamPersistentStore,
-    sender: &Sender<UpstreamEvent>,
-    status: &DaemonStatus,
-    include_empty: bool,
-) -> anyhow::Result<()> {
-    let (state_id, counters) = store.current_state_summary()?;
-    if !include_empty && counters.notam_count == 0 {
-        return Ok(());
-    }
-    let observed_at_utc = Utc::now();
-    let source_timestamp = observed_at_utc.to_rfc3339_opts(chrono::SecondsFormat::Secs, true);
-    let source_id = format!("notams:persisted:{state_id}");
-    sender
-        .send(UpstreamEvent {
-            product: "notams".to_string(),
-            source_id,
-            previous_source_id: None,
-            observed_at_utc,
-            payload_path: None,
-        })
-        .context("failed to queue persisted NOTAM state event")?;
-    status.record_source_success("notams", Some(source_timestamp), "source_persisted_state");
-    Ok(())
-}
-
-fn apply_and_queue_swim_notams(
-    store: &NotamPersistentStore,
-    sender: &Sender<UpstreamEvent>,
-    status: &DaemonStatus,
-) -> anyhow::Result<()> {
-    while let Some(summary) = store.apply_pending_raw_messages(500)? {
-        let rejection = store.rejection_status()?;
-        status.record_notam_rejection_status(&rejection);
-        queue_notam_raw_ingest_event(sender, status, &summary, &rejection)?;
-        if summary.applied_count < 500 {
-            break;
-        }
-    }
-    Ok(())
-}
-
-fn start_swim_notams_collector_process(
-    config: &SwimNotamsConfig,
-    store: &NotamPersistentStore,
-) -> anyhow::Result<Child> {
-    Command::new(&config.collector_path)
-        .arg("--config")
-        .arg(&config.config_path)
-        .arg("--sqlite")
-        .arg(store.sqlite_path())
-        .arg("--max-messages")
-        .arg("0")
-        .stdout(Stdio::inherit())
-        .stderr(Stdio::inherit())
-        .spawn()
-        .with_context(|| {
-            format!(
-                "failed to start SWIM NOTAM collector {}",
-                config.collector_path.display()
-            )
-        })
-}
-
-fn read_swim_notams_subscription_identity(
-    config_path: &Path,
-) -> anyhow::Result<SwimNotamSubscriptionIdentity> {
-    let config = read_swim_notams_credential_file(config_path)?;
-    Ok(SwimNotamSubscriptionIdentity {
-        provider_url: config.provider_url,
-        queue: config.queue,
-        connection_factory: config.connection_factory,
-        username: config.username,
-        vpn: config.vpn,
-    })
-}
-
-fn read_swim_notams_credential_file(
-    config_path: &Path,
-) -> anyhow::Result<SwimNotamsCredentialFile> {
-    serde_json::from_slice(
-        &fs::read(config_path)
-            .with_context(|| format!("failed to read {}", config_path.display()))?,
-    )
-    .with_context(|| format!("failed to parse {}", config_path.display()))
-}
-
-fn queue_notam_raw_ingest_event(
-    sender: &Sender<UpstreamEvent>,
-    status: &DaemonStatus,
-    summary: &AppliedRawNotamSummary,
-    rejection: &NotamRejectionStatus,
-) -> anyhow::Result<()> {
-    let observed_at_utc = summary
-        .last_received_at_utc
-        .as_deref()
-        .and_then(|value| chrono::DateTime::parse_from_rfc3339(value).ok())
-        .map(|value| value.with_timezone(&Utc))
-        .unwrap_or_else(Utc::now);
-    let source_timestamp = observed_at_utc.to_rfc3339_opts(chrono::SecondsFormat::Secs, true);
-    if summary.changed_count + summary.removed_count > 0 {
-        sender
-            .send(UpstreamEvent {
-                product: "notams".to_string(),
-                source_id: format!("notams:raw:{}", summary.max_ingest_seq),
-                previous_source_id: None,
-                observed_at_utc,
-                payload_path: None,
-            })
-            .context("failed to queue NOTAM raw ingest event")?;
-    }
-    status.record_source_ingest(
-        "notams",
-        observed_at_utc,
-        Some(source_timestamp.clone()),
-        summary.applied_count,
-        summary.changed_count,
-        summary.removed_count,
-        summary.rejected_count,
-        summary.new_rejected_count,
-        rejection.unresolved_count,
-        summary.max_ingest_seq,
-    );
-    status.record_source_success(
-        "notams",
-        Some(source_timestamp),
-        format!(
-            "source_messages applied={} changed={} removed={} rejected={} new_rejected={} unresolved_rejected={} cursor={}",
-            summary.applied_count,
-            summary.changed_count,
-            summary.removed_count,
-            summary.rejected_count,
-            summary.new_rejected_count,
-            rejection.unresolved_count,
-            summary.max_ingest_seq
-        ),
-    );
-    Ok(())
 }
 
 fn failure_retry_delay(nominal_interval: Duration, consecutive_failures: u32) -> Duration {
@@ -2466,15 +2292,16 @@ function renderSourceRatePlot(product, data, generatedAtUtc) {
   const lastBucket = minuteBucketMs(generatedAtUtc);
   const buckets = new Map();
   for (let bucket = firstBucket; bucket <= lastBucket; bucket += 60000) {
-    buckets.set(bucket, { messages: 0, changed: 0, removed: 0, cursor: null });
+    buckets.set(bucket, { received: 0, changed: 0, removed: 0, expired: 0, cursor: null });
   }
   for (const sample of samples) {
     const bucket = minuteBucketMs(sample.observed_at_utc);
-    const value = buckets.get(bucket) || { messages: 0, changed: 0, removed: 0, cursor: null };
-    value.messages += sample.message_count;
+    const value = buckets.get(bucket) || { received: 0, changed: 0, removed: 0, expired: 0, cursor: null };
+    value.received += sample.received_count;
     value.changed += sample.changed_count;
     value.removed += sample.removed_count;
-    value.cursor = value.cursor == null ? sample.cursor : Math.max(value.cursor, sample.cursor);
+    value.expired += sample.expired_count;
+    value.cursor = sample.cursor_utc;
     buckets.set(bucket, value);
   }
   const entries = Array.from(buckets.entries()).sort(([left], [right]) => left - right);
@@ -2482,16 +2309,16 @@ function renderSourceRatePlot(product, data, generatedAtUtc) {
     type: "scatter",
     mode: "lines+markers",
     x: entries.map(([bucket]) => new Date(bucket).toISOString()),
-    y: entries.map(([, value]) => value.messages),
+    y: entries.map(([, value]) => value.received),
     text: entries.map(([, value]) =>
-      `${value.messages} messages/min<br>` +
-      `${value.changed} changed, ${value.removed} removed<br>` +
+      `${value.received} records/min<br>` +
+      `${value.changed} changed, ${value.removed} removed, ${value.expired} expired<br>` +
       `cursor ${value.cursor ?? "-"}`
     ),
     hovertemplate: "%{x}<br>%{text}<extra></extra>",
     line: { color: "#4b7d19", width: 2 },
     marker: { color: "#4b7d19", size: 5 },
-  }], basePlotLayout(`${product} source message rate`, "messages/min"), { responsive: true, displaylogo: false });
+  }], basePlotLayout(`${product} source record rate`, "records/min"), { responsive: true, displaylogo: false });
 }
 async function render() {
   const response = await fetch("/live-feeds/status.json", { cache: "no-store" });
@@ -2984,121 +2811,108 @@ mod tests {
 
         status.record_source_ingest(
             "notams",
-            first,
-            Some("2026-07-12T02:47:00Z".to_string()),
-            3,
-            2,
-            1,
-            0,
-            0,
-            0,
-            42,
+            SourceIngestSample {
+                observed_at_utc: first,
+                source_timestamp_utc: Some("2026-07-12T02:47:00Z".to_string()),
+                interval_ms: None,
+                received_count: 3,
+                new_payload_count: 2,
+                duplicate_payload_count: 1,
+                changed_count: 2,
+                removed_count: 1,
+                expired_count: 0,
+                cursor_utc: "2026-07-12T02:47:00Z".to_string(),
+            },
         );
         status.record_source_ingest(
             "notams",
-            second,
-            Some("2026-07-12T02:48:00Z".to_string()),
-            6,
-            4,
-            0,
-            1,
-            1,
-            1,
-            48,
+            SourceIngestSample {
+                observed_at_utc: second,
+                source_timestamp_utc: Some("2026-07-12T02:48:00Z".to_string()),
+                interval_ms: None,
+                received_count: 6,
+                new_payload_count: 4,
+                duplicate_payload_count: 2,
+                changed_count: 4,
+                removed_count: 1,
+                expired_count: 1,
+                cursor_utc: "2026-07-12T02:48:00Z".to_string(),
+            },
         );
-        status.record_notam_rejection_status(&NotamRejectionStatus {
-            unresolved_count: 1,
-            oldest_unresolved_ingest_seq: Some(47),
-            latest_unresolved_ingest_seq: Some(47),
-            last_error: Some("unsupported NOTAM type X".to_string()),
-            recent_rejections: vec![preprocessor_live_feeds::notam_store::NotamRejectionDetail {
-                ingest_seq: 47,
-                first_rejected_at_utc: "2026-07-12T02:48:00Z".to_string(),
-                last_rejected_at_utc: "2026-07-12T02:48:00Z".to_string(),
-                rejection_count: 1,
-                error: "unsupported NOTAM type X".to_string(),
-            }],
-        });
 
         let snapshot = status.snapshot();
         let notams = snapshot.products.get("notams").expect("NOTAM status");
         assert_eq!(notams.source_samples.len(), 2);
         assert_eq!(notams.source_samples[0].interval_ms, None);
-        assert_eq!(notams.source_samples[0].message_count, 3);
+        assert_eq!(notams.source_samples[0].received_count, 3);
+        assert_eq!(notams.source_samples[0].new_payload_count, 2);
+        assert_eq!(notams.source_samples[0].duplicate_payload_count, 1);
         assert_eq!(notams.source_samples[0].changed_count, 2);
         assert_eq!(notams.source_samples[0].removed_count, 1);
-        assert_eq!(notams.source_samples[0].rejected_count, 0);
-        assert_eq!(notams.source_samples[0].unresolved_rejected_count, 0);
-        assert_eq!(notams.source_samples[0].cursor, 42);
+        assert_eq!(notams.source_samples[0].expired_count, 0);
+        assert_eq!(notams.source_samples[0].cursor_utc, "2026-07-12T02:47:00Z");
         assert_eq!(notams.source_samples[1].interval_ms, Some(60_000));
-        assert_eq!(notams.source_samples[1].message_count, 6);
+        assert_eq!(notams.source_samples[1].received_count, 6);
+        assert_eq!(notams.source_samples[1].new_payload_count, 4);
+        assert_eq!(notams.source_samples[1].duplicate_payload_count, 2);
         assert_eq!(notams.source_samples[1].changed_count, 4);
-        assert_eq!(notams.source_samples[1].removed_count, 0);
-        assert_eq!(notams.source_samples[1].rejected_count, 1);
-        assert_eq!(notams.source_samples[1].new_rejected_count, 1);
-        assert_eq!(notams.source_samples[1].unresolved_rejected_count, 1);
-        assert_eq!(notams.source_samples[1].cursor, 48);
-        assert_eq!(notams.quality.as_ref().unwrap()["rejected_row_count"], 1);
-        assert_eq!(
-            notams.quality.as_ref().unwrap()["last_rejection_error"],
-            "unsupported NOTAM type X"
-        );
-        assert_eq!(
-            notams.quality.as_ref().unwrap()["recent_rejections"][0]["ingest_seq"],
-            47
-        );
+        assert_eq!(notams.source_samples[1].removed_count, 1);
+        assert_eq!(notams.source_samples[1].expired_count, 1);
+        assert_eq!(notams.source_samples[1].cursor_utc, "2026-07-12T02:48:00Z");
     }
 
     #[test]
-    fn repaired_empty_notam_projection_is_queued_for_publication() -> anyhow::Result<()> {
+    fn nms_notam_state_is_queued_for_publication() -> anyhow::Result<()> {
         let temp = tempfile::tempdir()?;
-        let store = NotamPersistentStore::new(temp.path());
-        store.initialize(&SwimNotamSubscriptionIdentity {
-            provider_url: "smfs://example.test:55443".to_string(),
-            queue: "example.queue".to_string(),
-            connection_factory: "example.CF".to_string(),
-            username: "example.user".to_string(),
-            vpn: "example-vpn".to_string(),
-        })?;
+        let store = NmsApiCollectorStore::new(temp.path());
+        store.initialize()?;
+        let publication_store = NotamPersistentStore::new(temp.path().join("publication"));
         let (sender, receiver) = mpsc::channel();
 
-        queue_persisted_notam_state_event(&store, &sender, &DaemonStatus::default(), true)?;
+        queue_nms_notam_state_event(&store, &publication_store, &sender, "2026-07-24T00:00:00Z")?;
 
         let event = receiver.recv_timeout(Duration::from_secs(1))?;
         assert_eq!(event.product, "notams");
-        assert!(event.source_id.starts_with("notams:persisted:"));
+        assert!(event.source_id.starts_with("notams:nms:"));
         Ok(())
     }
 
     #[test]
-    fn zero_mutation_notam_batch_records_health_without_queuing_publication() -> anyhow::Result<()>
-    {
+    fn unchanged_nms_poll_is_queued_to_refresh_collection_time() -> anyhow::Result<()> {
+        let temp = tempfile::tempdir()?;
+        let store = NmsApiCollectorStore::new(temp.path());
+        store.initialize()?;
+        let publication_store = NotamPersistentStore::new(temp.path().join("publication"));
         let (sender, receiver) = mpsc::channel();
-        let rejection = NotamRejectionStatus {
-            unresolved_count: 0,
-            oldest_unresolved_ingest_seq: None,
-            latest_unresolved_ingest_seq: None,
-            last_error: None,
-            recent_rejections: Vec::new(),
-        };
-        let mut summary = AppliedRawNotamSummary {
-            applied_count: 12,
-            changed_count: 0,
-            removed_count: 0,
-            rejected_count: 0,
-            new_rejected_count: 0,
-            max_ingest_seq: 42,
-            last_received_at_utc: Some("2026-07-23T00:00:00Z".to_string()),
-        };
-        queue_notam_raw_ingest_event(&sender, &DaemonStatus::default(), &summary, &rejection)?;
-        assert!(matches!(
-            receiver.try_recv(),
-            Err(std::sync::mpsc::TryRecvError::Empty)
-        ));
+        let status = DaemonStatus::default();
 
-        summary.changed_count = 1;
-        queue_notam_raw_ingest_event(&sender, &DaemonStatus::default(), &summary, &rejection)?;
-        assert_eq!(receiver.try_recv()?.source_id, "notams:raw:42");
+        handle_nms_notam_event(
+            &store,
+            &publication_store,
+            &sender,
+            &status,
+            &NmsCollectorEvent::PollApplied {
+                summary: nms_notams_fetch::collector::NmsApiPollSummary {
+                    started_at_utc: "2026-07-24T00:03:00Z".to_string(),
+                    query_since_utc: "2026-07-23T23:53:00Z".to_string(),
+                    domestic_received: 0,
+                    fdc_received: 0,
+                    new_payloads: 0,
+                    duplicate_payloads: 0,
+                    upserted: 0,
+                    removed: 0,
+                    expired: 0,
+                    current_records: 0,
+                },
+            },
+        )?;
+
+        let event = receiver.recv_timeout(Duration::from_secs(1))?;
+        assert_eq!(
+            event.observed_at_utc,
+            parse_utc_timestamp("2026-07-24T00:03:00Z", "test timestamp")?
+        );
+        assert_eq!(status.snapshot().products["notams"].source_samples.len(), 1);
         Ok(())
     }
 
@@ -3131,27 +2945,23 @@ mod tests {
     }
 
     #[test]
-    fn swim_notams_config_requires_matching_environment() -> anyhow::Result<()> {
+    fn nms_notams_config_is_validated() -> anyhow::Result<()> {
         let temp = tempdir()?;
         fs::create_dir_all(temp.path().join("live"))?;
         fs::create_dir_all(temp.path().join("scratch"))?;
         fs::create_dir_all(temp.path().join("cache"))?;
         fs::create_dir_all(temp.path().join("state"))?;
-        let config_path = temp.path().join("swim-notams.json");
-        let collector_path = temp.path().join("collector");
+        let config_path = temp.path().join("nms-notams.json");
         fs::write(
             &config_path,
             r#"{
-              "aerobagEnvironment": "dev",
-              "providerUrl": "tcps://example.test:55443",
-              "queue": "dev.queue",
-              "connectionFactory": "dev.CF",
-              "username": "dev-user",
-              "password": "dev-pass",
-              "vpn": "dev-vpn"
+              "sourceEnvironment": "staging",
+              "apiBaseUrl": "https://api-staging.example.test/nmsapi/v1",
+              "tokenUrl": "https://api-staging.example.test/auth/token",
+              "clientId": "client-id",
+              "clientSecret": "client-secret"
             }"#,
         )?;
-        fs::write(&collector_path, "#!/bin/sh\n")?;
 
         let config = DaemonConfig::parse(
             [
@@ -3160,32 +2970,20 @@ mod tests {
                 temp.path().join("live").to_str().expect("utf8 temp path"),
                 "--listen",
                 "127.0.0.1:0",
-                "--swim-notams-config",
+                "--nms-notams-config",
                 config_path.to_str().expect("utf8 temp path"),
-                "--swim-notams-environment",
-                "prod",
-                "--swim-notams-collector",
-                collector_path.to_str().expect("utf8 temp path"),
             ]
             .into_iter()
             .map(str::to_string),
         )?;
 
-        let error = validate_config(&config).expect_err("environment mismatch should fail");
-        assert!(
-            format!("{error:#}").contains("declares environment dev, but daemon expected prod"),
-            "{error:#}"
-        );
+        validate_config(&config)?;
         Ok(())
     }
 
     #[test]
-    fn swim_notams_args_must_include_environment() -> anyhow::Result<()> {
+    fn nms_notams_state_root_requires_config() -> anyhow::Result<()> {
         let temp = tempdir()?;
-        let config_path = temp.path().join("swim-notams.json");
-        let collector_path = temp.path().join("collector");
-        fs::write(&config_path, "{}")?;
-        fs::write(&collector_path, "#!/bin/sh\n")?;
 
         let error = DaemonConfig::parse(
             [
@@ -3194,19 +2992,15 @@ mod tests {
                 temp.path().join("live").to_str().expect("utf8 temp path"),
                 "--listen",
                 "127.0.0.1:0",
-                "--swim-notams-config",
-                config_path.to_str().expect("utf8 temp path"),
-                "--swim-notams-collector",
-                collector_path.to_str().expect("utf8 temp path"),
+                "--nms-notams-state-root",
+                temp.path().join("state").to_str().expect("utf8 temp path"),
             ]
             .into_iter()
             .map(str::to_string),
         )
-        .expect_err("missing environment should fail");
+        .expect_err("missing NMS config should fail");
         assert!(
-            format!("{error:#}").contains(
-                "--swim-notams-config, --swim-notams-environment, and --swim-notams-collector must be supplied together"
-            ),
+            format!("{error:#}").contains("--nms-notams-state-root requires --nms-notams-config"),
             "{error:#}"
         );
         Ok(())
@@ -3537,7 +3331,7 @@ mod tests {
             poll_loop_interval_ms: 1,
             event_interval_ms: 1,
             simulation: None,
-            swim_notams: None,
+            nms_notams: None,
             tfr_detail_backfill_state_root: root.join("../state/tfr-detail-backfill"),
             check_config: false,
             sse_event_limit: Some(1),

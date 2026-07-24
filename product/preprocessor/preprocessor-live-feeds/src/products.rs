@@ -27,7 +27,7 @@ use crate::{
         LiveFeedStatePayload, LiveFeedStatusTimestamps, ProductBuilder, UpstreamEvent,
     },
     load_tfr_notam_ids, metar_content_fingerprint,
-    notam_store::NotamPersistentStore,
+    notam_store::{NotamPersistentStore, NotamStateReader},
     sanitize_notam_id, taf_content_fingerprint,
     tfr_detail_backfill::{TfrDetailBackfillStore, TfrDetailFetchTarget},
     tfr_notam_metadata_by_fdc_id, BuildMetarRequest, BuildTafRequest, BuildTfrRequest,
@@ -538,13 +538,13 @@ impl ProductBuilder for TfrLiveFeedBuilder {
             .into_iter()
             .collect::<BTreeSet<_>>();
         let mut notams_by_fdc_id = self.current_tfr_notam_metadata_by_fdc_id(&tfr_notam_ids);
-        let missing_from_swim = tfr_notam_ids
+        let missing_from_notam_state = tfr_notam_ids
             .iter()
             .filter(|tfr_id| !notams_by_fdc_id.contains_key(*tfr_id))
             .cloned()
             .collect::<BTreeSet<_>>();
         if let Some(backfill_metadata) =
-            self.current_tfr_detail_backfill_metadata(&missing_from_swim)
+            self.current_tfr_detail_backfill_metadata(&missing_from_notam_state)
         {
             for (fdc_id, metadata) in backfill_metadata {
                 notams_by_fdc_id.entry(fdc_id).or_insert(metadata);
@@ -586,7 +586,7 @@ impl TfrLiveFeedBuilder {
         let Some(state_root) = &self.notam_state_root else {
             return BTreeMap::new();
         };
-        match NotamPersistentStore::new(state_root).current_records() {
+        match NotamStateReader::new(state_root).current_records() {
             Ok(records) => {
                 let mut metadata = tfr_notam_metadata_by_fdc_id(&records);
                 metadata.retain(|fdc_id, _| tfr_notam_ids.contains(fdc_id));
@@ -1201,6 +1201,7 @@ mod tests {
         canonical_json_sha256, read_live_feeds_current, FileLiveFeedPublisher, FixedClock,
         LiveFeedPublisher, LiveFeedVersionManifest,
     };
+    use crate::StructuredNotamRecord;
     use chrono::TimeZone;
     use serde::Deserialize;
     use tempfile::tempdir;
@@ -1309,57 +1310,38 @@ mod tests {
     fn notam_live_feed_builder_publishes_checkpoint_then_ordered_delta() -> anyhow::Result<()> {
         let temp = tempdir()?;
         let state_root = temp.path().join("notam-state");
-        let xml = r#"<?xml version="1.0" encoding="UTF-8"?>
-<AIXMBasicMessage xmlns:event="http://www.aixm.aero/schema/5.1/event">
-  <hasMember>
-    <event:Event>
-      <event:timeSlice>
-        <event:EventTimeSlice>
-          <event:scenario>95</event:scenario>
-          <event:textNOTAM>
-            <event:NOTAM>
-              <event:number>1</event:number>
-              <event:year>2026</event:year>
-              <event:type>N</event:type>
-              <event:issued>2026-07-11T02:00:00.000Z</event:issued>
-              <event:location>AAA</event:location>
-              <event:effectiveStart>202607110200</event:effectiveStart>
-              <event:effectiveEnd>202607111200</event:effectiveEnd>
-              <event:text>RWY 01 CLSD.</event:text>
-            </event:NOTAM>
-          </event:textNOTAM>
-        </event:EventTimeSlice>
-      </event:timeSlice>
-    </event:Event>
-  </hasMember>
-</AIXMBasicMessage>"#;
-        let line = serde_json::json!({
-            "jmsMessageId": "ID:test",
-            "receivedAtUtc": "2026-07-11T02:03:00Z",
-            "properties": {
-                "us_gov_dot_faa_aim_fns_nds_SourceType": "D",
-                "us_gov_dot_faa_aim_fns_nds_ICAOId": "KAAA",
-                "us_gov_dot_faa_aim_fns_nds_LocationDesignator": "AAA",
-                "us_gov_dot_faa_aim_fns_nds_NOTAMStatus": "ACTIVE",
-                "us_gov_dot_faa_aim_fns_nds_NOTAMFunction": "NOTAMN",
-                "us_gov_dot_faa_aim_fns_nds_NOTAMKeyword": "RWY"
-            },
-            "bodyText": xml
-        });
-        let store = NotamPersistentStore::new(&state_root);
-        store.initialize(&crate::notam_store::SwimNotamSubscriptionIdentity {
-            provider_url: "smfs://example.test:55443".to_string(),
-            queue: "example.queue".to_string(),
-            connection_factory: "example.CF".to_string(),
-            username: "example.user".to_string(),
-            vpn: "example-vpn".to_string(),
+        let mut record = crate::canonicalize_structured_notam_record(StructuredNotamRecord {
+            id: String::new(),
+            nms_id: Some("123".to_string()),
+            source_type: Some("D".to_string()),
+            notam_status: Some("ACTIVE".to_string()),
+            notam_function: Some("NOTAMN".to_string()),
+            notam_keyword: Some("RWY".to_string()),
+            last_updated_utc: Some("2026-07-11T02:03:00Z".to_string()),
+            location_designator: Some("AAA".to_string()),
+            icao_id: Some("KAAA".to_string()),
+            airport_id: None,
+            airport_effects: BTreeSet::new(),
+            airport_name: None,
+            airport_position: None,
+            location: Some("AAA".to_string()),
+            classification: Some("DOM".to_string()),
+            account_id: None,
+            xover_account_id: None,
+            xover_notam_id: None,
+            notam_number: Some("1".to_string()),
+            notam_year: Some("2026".to_string()),
+            notam_type: Some("N".to_string()),
+            issued_utc: Some("2026-07-11T02:00:00Z".to_string()),
+            effective_start_utc: Some("2026-07-11T02:00:00Z".to_string()),
+            effective_end_utc: Some("2026-07-11T12:00:00Z".to_string()),
+            text: Some("RWY 01 CLSD.".to_string()),
+            local_text: None,
+            icao_text: None,
+            scenario: Some("95".to_string()),
         })?;
-        store.insert_raw_message_for_test(
-            "message-a",
-            "2026-07-11T02:03:00Z",
-            &line.to_string(),
-        )?;
-        store.apply_pending_raw_messages(10)?;
+        let store = NotamPersistentStore::new(&state_root);
+        store.synchronize_current_records(std::slice::from_ref(&record), "2026-07-11T02:03:00Z")?;
 
         let observed_at_utc = Utc.with_ymd_and_hms(2026, 7, 11, 2, 3, 0).unwrap();
         let event = UpstreamEvent {
@@ -1411,16 +1393,10 @@ mod tests {
         let mut client_work = notam_state::NotamApplyWork::default();
         let mut client = notam_state::NotamState::from_checkpoint(checkpoint, &mut client_work)
             .map_err(anyhow::Error::msg)?;
-        let mut second = line.clone();
-        second["jmsMessageId"] = serde_json::json!("ID:test-2");
-        second["bodyText"] =
-            serde_json::json!(xml.replace("RWY 01 CLSD.", "RWY 01 CLSD. TWY A CLSD."));
-        store.insert_raw_message_for_test(
-            "message-b",
-            "2026-07-11T02:05:00Z",
-            &second.to_string(),
-        )?;
-        store.apply_pending_raw_messages(10)?;
+        record.text = Some("RWY 01 CLSD. TWY A CLSD.".to_string());
+        record.last_updated_utc = Some("2026-07-11T02:05:00Z".to_string());
+        record = crate::canonicalize_structured_notam_record(record)?;
+        store.synchronize_current_records(std::slice::from_ref(&record), "2026-07-11T02:05:00Z")?;
         let second_event = UpstreamEvent {
             source_id: "notams:test-2".to_string(),
             observed_at_utc: Utc.with_ymd_and_hms(2026, 7, 11, 2, 5, 0).unwrap(),
@@ -1456,16 +1432,10 @@ mod tests {
             "publishing current.json must not acknowledge before announcement"
         );
 
-        let mut third = second.clone();
-        third["jmsMessageId"] = serde_json::json!("ID:test-3");
-        third["bodyText"] =
-            serde_json::json!(xml.replace("RWY 01 CLSD.", "RWY 01 CLSD. TWY A AND TWY B CLSD."));
-        store.insert_raw_message_for_test(
-            "message-c",
-            "2026-07-11T02:06:00Z",
-            &third.to_string(),
-        )?;
-        store.apply_pending_raw_messages(10)?;
+        record.text = Some("RWY 01 CLSD. TWY A AND TWY B CLSD.".to_string());
+        record.last_updated_utc = Some("2026-07-11T02:06:00Z".to_string());
+        record = crate::canonicalize_structured_notam_record(record)?;
+        store.synchronize_current_records(std::slice::from_ref(&record), "2026-07-11T02:06:00Z")?;
         let third_event = UpstreamEvent {
             source_id: "notams:test-3".to_string(),
             observed_at_utc: Utc.with_ymd_and_hms(2026, 7, 11, 2, 6, 0).unwrap(),
@@ -1533,13 +1503,7 @@ mod tests {
         let temp = tempdir()?;
         let state_root = temp.path().join("notam-state");
         let store = NotamPersistentStore::new(&state_root);
-        store.initialize(&crate::notam_store::SwimNotamSubscriptionIdentity {
-            provider_url: "smfs://example.test:55443".to_string(),
-            queue: "example.queue".to_string(),
-            connection_factory: "example.CF".to_string(),
-            username: "example.user".to_string(),
-            vpn: "example-vpn".to_string(),
-        })?;
+        store.initialize()?;
         let initial = incremental_test_notam_line(1, "RWY 01 CLSD.");
         store.insert_raw_message_for_test(
             "message-1",

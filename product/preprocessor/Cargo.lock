@@ -725,6 +725,7 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "chrono",
+ "nms-notams-fetch",
  "preprocessor-fetch",
  "preprocessor-live-feeds",
  "serde",
@@ -790,6 +791,22 @@ dependencies = [
  "lzma-rs",
  "serde_json",
  "zip",
+]
+
+[[package]]
+name = "nms-notams-fetch"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "chrono",
+ "flate2",
+ "libc",
+ "preprocessor-live-feeds",
+ "rusqlite",
+ "serde",
+ "serde_json",
+ "sha2",
+ "tempfile",
 ]
 
 [[package]]

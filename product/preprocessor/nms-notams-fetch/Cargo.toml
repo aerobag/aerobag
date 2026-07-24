@@ -1,21 +1,19 @@
 [package]
-name = "live-feeds-daemon"
+name = "nms-notams-fetch"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
 
-[[bin]]
-name = "aerobag-live-feedsd"
-path = "src/main.rs"
-
 [dependencies]
 anyhow.workspace = true
 chrono.workspace = true
-nms-notams-fetch = { path = "../nms-notams-fetch" }
-preprocessor-fetch = { path = "../preprocessor-fetch" }
+flate2.workspace = true
+libc = "0.2"
 preprocessor-live-feeds = { path = "../preprocessor-live-feeds" }
+rusqlite.workspace = true
 serde.workspace = true
 serde_json.workspace = true
+sha2.workspace = true
 
 [dev-dependencies]
 tempfile.workspace = true

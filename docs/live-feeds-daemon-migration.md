@@ -121,7 +121,7 @@ Publication ordering is part of the contract:
   publisher, and announce through the broker after publication.
 - Done: source adapters now cover periodic polling, queued/push-style upstream
   events for future streaming sources, and fixture timeline replay. Future
-  SWIM/NOTAM-style long-lived upstream clients should push `UpstreamEvent`s
+  NMS/NOTAM-style long-lived upstream clients should push `UpstreamEvent`s
   into `QueuedLiveFeedSource` and reuse the same product builder/publisher path.
 - Done: reusable live-feed product helpers moved out of the CLI layer into
   `preprocessor-live-feeds::products`. The CLI tests that still exercise

@@ -19,7 +19,6 @@ from pathlib import Path
 from typing import Any
 
 from admin_index import admin_index_html
-from swim_notams_credentials import write_environment_credential
 
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
@@ -57,11 +56,10 @@ DEFAULT_ANDROID_SIGNING_BOOTSTRAP_KEYSTORE = Path("/root/.android/debug.keystore
 DEFAULT_ANDROID_SIGNING_PROD_KEYSTORE = (
     "/etc/aerobag/secrets/android/aerobag-app.keystore"
 )
-DEFAULT_SWIM_NOTAMS_CREDENTIAL_BUNDLE = Path(
-    "/root/aerobag-credentials/swim-notams.environments.json"
+DEFAULT_NMS_NOTAMS_CREDENTIAL_FILE = Path(
+    "/root/aerobag-credentials/nms-notams-production.json"
 )
-DEFAULT_SWIM_NOTAMS_PROD_CONFIG = "/etc/aerobag/secrets/swim-notams.json"
-SWIM_NOTAMS_ENVIRONMENTS = {"dev", "prod"}
+DEFAULT_NMS_NOTAMS_PROD_CONFIG = "/etc/aerobag/secrets/nms-notams.json"
 
 
 def parse_args() -> argparse.Namespace:
@@ -222,21 +220,12 @@ def load_config(path: Path) -> dict[str, Any]:
     )
     config.setdefault("android_signing_key_alias", ANDROID_SIGNING_KEY_ALIAS)
     config.setdefault("android_signing_key_password", ANDROID_SIGNING_KEY_PASSWORD)
-    config.setdefault("swim_notams_enabled", False)
-    config.setdefault("swim_notams_environment", "prod")
+    config.setdefault("nms_notams_enabled", False)
     config.setdefault(
-        "swim_notams_credential_bundle",
-        os.fspath(DEFAULT_SWIM_NOTAMS_CREDENTIAL_BUNDLE),
+        "nms_notams_credential_file",
+        os.fspath(DEFAULT_NMS_NOTAMS_CREDENTIAL_FILE),
     )
-    config.setdefault("swim_notams_prod_config", DEFAULT_SWIM_NOTAMS_PROD_CONFIG)
-    if config["swim_notams_enabled"]:
-        if config["swim_notams_environment"] not in SWIM_NOTAMS_ENVIRONMENTS:
-            raise SystemExit(
-                "swim_notams_environment must be one of: "
-                + ", ".join(sorted(SWIM_NOTAMS_ENVIRONMENTS))
-            )
-        if config["swim_notams_environment"] != "prod":
-            raise SystemExit("production deploy requires swim_notams_environment=prod")
+    config.setdefault("nms_notams_prod_config", DEFAULT_NMS_NOTAMS_PROD_CONFIG)
     return config
 
 
@@ -406,12 +395,23 @@ def install_android_signing_key(config: dict[str, Any], *, dry_run: bool) -> Non
     )
 
 
-def install_swim_notams_credential(config: dict[str, Any], *, dry_run: bool) -> None:
-    if not config["swim_notams_enabled"]:
+def install_nms_notams_credential(config: dict[str, Any], *, dry_run: bool) -> None:
+    if not config["nms_notams_enabled"]:
         return
-    target = config["swim_notams_prod_config"]
+    target = config["nms_notams_prod_config"]
     target_dir = os.path.dirname(target)
-    source_bundle = Path(config["swim_notams_credential_bundle"]).expanduser()
+    source = Path(config["nms_notams_credential_file"]).expanduser()
+    if source.is_file():
+        try:
+            credential = json.loads(source.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError) as error:
+            raise SystemExit(f"invalid NMS NOTAM credential file {source}: {error}") from error
+        if credential.get("sourceEnvironment") != "production":
+            raise SystemExit(
+                f"production deploy requires sourceEnvironment=production in {source}"
+            )
+    elif not dry_run:
+        raise SystemExit(f"missing NMS NOTAM credential file: {source}")
     run_ssh(
         config,
         textwrap.dedent(
@@ -422,22 +422,11 @@ def install_swim_notams_credential(config: dict[str, Any], *, dry_run: bool) -> 
         ).strip(),
         dry_run=dry_run,
     )
-    with tempfile.TemporaryDirectory(prefix="aerobag-swim-notams-") as temp_dir:
-        extracted = Path(temp_dir) / "swim-notams.json"
-        extracted_ok = write_environment_credential(
-            bundle_path=source_bundle,
-            environment=config["swim_notams_environment"],
-            output_path=extracted,
-            forbidden_roots=[REPO_ROOT],
-            dry_run=dry_run,
-        )
-        if not extracted_ok:
-            raise SystemExit(f"missing SWIM NOTAM credential bundle: {source_bundle}")
-        run_local(
-            ["rsync", "-az", "--chmod=F600", extracted, f"{ssh_target(config)}:{target}"],
-            cwd=REPO_ROOT,
-            dry_run=dry_run,
-        )
+    run_local(
+        ["rsync", "-az", "--chmod=F600", source, f"{ssh_target(config)}:{target}"],
+        cwd=REPO_ROOT,
+        dry_run=dry_run,
+    )
 
 
 def install_bootstrap_packages(config: dict[str, Any], *, dry_run: bool) -> None:
@@ -624,9 +613,6 @@ rustup target add \
 
 cd "$SOURCE_ROOT/product/preprocessor"
 cargo build --release -p preprocessor-cli -p live-feeds-daemon
-
-cd "$SOURCE_ROOT/product/preprocessor/swim-notams-fetch"
-gradle installDist
 
 WASM_BINDGEN_VERSION="$(python3 - "$SOURCE_ROOT/ui/core-rust/Cargo.lock" <<'PY'
 from pathlib import Path
@@ -1114,13 +1100,11 @@ WantedBy=timers.target
 
 
 def live_feeds_unit(config: dict[str, Any]) -> str:
-    swim_args = ""
-    if config["swim_notams_enabled"]:
-        swim_args = (
-            f" --swim-notams-config {shell_quote(config['swim_notams_prod_config'])}"
-            f" --swim-notams-environment {shell_quote(config['swim_notams_environment'])}"
-            ' --swim-notams-collector "$SOURCE_ROOT/product/preprocessor/swim-notams-fetch/build/install/swim-notams-fetch/bin/swim-notams-fetch"'
-            ' --swim-notams-state-root "$ARTIFACT_ROOT/state/swim-notams"'
+    nms_args = ""
+    if config["nms_notams_enabled"]:
+        nms_args = (
+            f" --nms-notams-config {shell_quote(config['nms_notams_prod_config'])}"
+            ' --nms-notams-state-root "$ARTIFACT_ROOT/state/nms-notams"'
         )
     return f"""[Unit]
 Description=Aerobag live-feeds daemon
@@ -1130,7 +1114,7 @@ Wants=network-online.target
 [Service]
 Type=simple
 EnvironmentFile=/etc/aerobag/env
-ExecStart=/bin/bash -lc 'source /etc/aerobag/env; exec "$CARGO_TARGET_DIR/release/aerobag-live-feedsd" --live-root "$ARTIFACT_ROOT/live-feeds" --scratch-root "$ARTIFACT_ROOT/scratch/live-feeds" --fetch-cache-root "$ARTIFACT_ROOT/cache/fetch" --fetch-cache-mode fill --listen "$AEROBAG_LIVE_FEEDS_LISTEN"{swim_args}'
+ExecStart=/bin/bash -lc 'source /etc/aerobag/env; exec "$CARGO_TARGET_DIR/release/aerobag-live-feedsd" --live-root "$ARTIFACT_ROOT/live-feeds" --scratch-root "$ARTIFACT_ROOT/scratch/live-feeds" --fetch-cache-root "$ARTIFACT_ROOT/cache/fetch" --fetch-cache-mode fill --listen "$AEROBAG_LIVE_FEEDS_LISTEN"{nms_args}'
 Restart=always
 RestartSec=10
 
@@ -1455,7 +1439,7 @@ def deploy(config: dict[str, Any], args: argparse.Namespace) -> None:
     if args.runtime_config_only:
         deployed_rev = remote_deployed_rev(config, dry_run=args.dry_run)
         prepare_remote_paths(config, dry_run=args.dry_run)
-        install_swim_notams_credential(config, dry_run=args.dry_run)
+        install_nms_notams_credential(config, dry_run=args.dry_run)
         write_remote_config(
             config,
             deployed_rev=deployed_rev,
@@ -1488,7 +1472,7 @@ def deploy(config: dict[str, Any], args: argparse.Namespace) -> None:
 
     install_repo_packages(config, dry_run=args.dry_run)
     install_android_signing_key(config, dry_run=args.dry_run)
-    install_swim_notams_credential(config, dry_run=args.dry_run)
+    install_nms_notams_credential(config, dry_run=args.dry_run)
     write_remote_file(
         config,
         DEPLOY_CONFIG_FILE,

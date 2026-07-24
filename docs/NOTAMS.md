@@ -1,223 +1,93 @@
-# NOTAMS Plan
+# NOTAM Ingestion
 
-This is the current architecture plan for bringing FAA NOTAM data into Aerobag.
+Aerobag obtains current Domestic and FDC NOTAMs from the FAA NOTAM Management
+Service (NMS) API. One collector owns both the initial active-state load and all
+subsequent updates, so state keys and update semantics stay within one FAA
+source.
 
 The incremental state-identity, delta-journal, and checkpoint publication design
 in [notam-incremental-publication-plan.md](notam-incremental-publication-plan.md)
-supersedes this document's replace-everything publication target. The SWIM
-collection, durable raw-message handoff, and normalized projection described
-here remain current.
+is the active client-publication path. NMS supplies canonical source state;
+the publication store converts source-state changes into Merkle deltas and
+periodic checkpoints.
 
-This is intentionally a plan doc, not a feed-details doc. Raw SWIM/SCDS connection and payload notes live in [NOTAMS_FEED.md](/root/aerobag-preprocessor/aerobag/docs/NOTAMS_FEED.md).
+## Runtime
 
-## Goals
+`aerobag-live-feedsd` runs the NMS collector in-process when started with:
 
-- ingest FAA NOTAM data from the SWIM/SCDS queue
-- publish a replace-everything current-state live-feed product for clients
-- keep queue and credential complexity out of app/web/core
-- keep XML parsing and FAA-specific semantics out of clients
+```text
+--nms-notams-config /path/to/nms-notams.json
+--nms-notams-state-root /path/to/state/nms-notams
+```
 
-## Key Decision
+The credential file has this operator-owned shape:
 
-The SWIM queue is an event-driven, stateful source. Our client contract should still be a replace-everything snapshot of current state.
+```json
+{
+  "sourceEnvironment": "staging",
+  "apiBaseUrl": "https://api-staging.cgifederal-aim.com/nmsapi/v1",
+  "tokenUrl": "https://api-staging.cgifederal-aim.com/v1/auth/token",
+  "clientId": "...",
+  "clientSecret": "..."
+}
+```
 
-That means we need three distinct layers:
+Use `sourceEnvironment: "production"` and the production URLs with production
+credentials. Credentials must stay outside the repository and publication
+trees.
 
-1. queue ingestion
-2. producer-owned current-state storage
-3. snapshot/export into the normal package pipeline
+On an empty state directory the collector fetches and validates both Initial
+Load classifications, installs them atomically, and sets its poll cursor to the
+capture start. It then queries both classifications by `lastUpdatedDate` every
+three minutes, looking back ten minutes. Payload hashes make that overlap
+idempotent.
 
-## Architecture
+The durable NMS source store is `state.sqlite`. Each successful poll applies all
+updates, cancellations, and expirations in one transaction and only then
+advances the cursor. A failed poll leaves both state and cursor unchanged. A
+process lock prevents two collectors from sharing a state directory.
 
-### 1. Queue Ingestion
+After each successful source transaction, the daemon synchronizes the canonical
+`current_notams` rows into the separate `publication/` store. That store owns
+the Merkle state, publication journal, deltas, checkpoints, and acknowledgement
+cursor. Keeping these stores separate prevents NMS polling concerns from
+leaking into the client publication contract.
 
-Queue access is handled outside the deterministic Rust build DAG.
+Startup always synchronizes and queues the persisted state for publication.
+Every successful poll queues a refresh: changed state produces a new version,
+while unchanged state advances `collected_at` so clients know the source is
+still healthy. Failures affect NOTAM source health but do not stop other
+live-feed products.
 
-Current implementation:
-- Java collector under [product/preprocessor/swim-notams-fetch](/root/aerobag-preprocessor/aerobag/product/preprocessor/swim-notams-fetch)
-- optional live-feed daemon supervisor enabled with `--swim-notams-config <path> --swim-notams-environment <dev|prod> --swim-notams-collector <path>`
+TFR enrichment reads the same current NOTAM state and falls back to the
+independent TFR detail cache for FDC IDs absent from that state.
 
-Role:
-- connect to the FAA SWIM/SCDS Solace JMS queue
-- receive messages
-- durably persist raw messages before acknowledging them
-- apply committed raw messages into daemon-owned current state
-- trigger the normal `notams` live-feed product builder after raw messages are applied
+## Development
 
-Important rule:
-- the collector must not acknowledge a message before it has been durably written to local storage
+The dev stack looks for:
 
-The NOTAM supervisor is isolated from the other live-feed products. A broken SWIM queue connection records `notams` source health failures and retries, but it does not stop METARs, TAFs, NEXRAD, TFRs, obstacles, or winds-aloft from publishing.
+```text
+/root/aerobag-credentials/dev-stack/nms-notams-staging.json
+```
 
-SWIM subscriptions are stateful queues. Dev and prod must use separate
-subscriptions. A daemon must be started with an expected environment and refuses
-to consume a credential file that declares a different environment.
+Override it with `tools/run_dev_stack.py --nms-notams-config PATH`, or disable
+NOTAM collection with `--disable-nms-notams`.
 
-### 2. Producer-Owned State Store
+Production deployment expects an operator-owned production file at
+`/root/aerobag-credentials/nms-notams-production.json` by default and installs
+it as `/etc/aerobag/secrets/nms-notams.json`. Set
+`"nms_notams_enabled": true` only after production credentials are available.
 
-We need a durable producer-side NOTAM state store that is separate from:
-- fetch cache
-- node cache
+## Retired Source
 
-Why:
-- fetch cache is for immutable pulled artifacts by URL/content
-- node cache is for deterministic build-node outputs
-- live queue-fed NOTAM state is neither of those things
+The former FAA SWIM/SCDS collector was retired after NMS Initial Load plus
+`lastUpdatedDate` proved to be coherent, stateless, and sufficiently complete.
+Its final source is preserved at:
 
-Current storage shape:
-- `artifact-root/state/swim-notams/subscription.json`
-  - non-secret subscription identity for the SWIM queue this state belongs to
-- `artifact-root/state/swim-notams/lock`
-  - process lock protecting the queue subscription and local state
-- `artifact-root/state/swim-notams/state/current.sqlite`
-  - committed raw messages, applied raw cursor, and current normalized state
+```text
+branch: archive/swim-notams-retired-20260724
+commit: ec68e4e91ce570bb26d16aea98239b1e44c3c88e
+```
 
-SQLite is the preferred state format because:
-- idempotent upserts are easy
-- airport / keyword / time indexing is easy
-- crash recovery is straightforward
-- snapshot export into a live-feed product is simple
-
-SQLite is the internal communication boundary between ingestion and export: the
-Java collector writes one raw row transactionally before acknowledging each JMS
-message, Rust applies committed raw rows idempotently into current state, and the
-`notams` live-feed builder snapshots SQLite current state.
-
-### 3. Snapshot / Export
-
-The live mutable state store is not itself a node output.
-
-Instead:
-- a DAG step reads a consistent snapshot of the current state
-- exports a content-addressed artifact
-- packages and publishes it through the normal live-feed publisher path
-
-That means the content-addressed identity belongs to the exported snapshot, not the ever-changing SQLite DB.
-
-## Ownership Split
-
-### Outside The DAG
-
-A long-lived ingest process owns the mutable state:
-- consume FAA queue
-- commit raw messages
-- parse / normalize
-- upsert current state
-- maintain checkpoints
-
-This process is conceptually something like:
-- `notam-ingestd`
-
-### Inside The DAG
-
-A build step owns deterministic export:
-- read current NOTAM state at a consistent moment
-- emit `notams.json`
-- emit manifest
-- emit zip/package
-
-This is what later becomes a normal live-feed product.
-
-## Why We Are Not Wiring The Queue Straight Into The Live-Feed Builder
-
-That would be the wrong abstraction.
-
-Problems:
-- queue consumption is stateful
-- queue data is event-driven, not a cheap snapshot feed
-- build nodes are supposed to be deterministic
-- cache semantics become nonsensical if a node both mutates and consumes a live queue
-
-So:
-- queue ingest must remain outside the graph
-- snapshot/export belongs inside the graph
-
-## Raw Message Handoff Between Java And Rust
-
-The Java-to-Rust handoff is the SWIM NOTAM SQLite file.
-
-Current safe shape:
-- Java inserts one `raw_notam_messages` row in a SQLite transaction
-- Java acknowledges the JMS message only after that transaction commits
-- Rust reads committed raw rows above `raw_ingest_cursor`
-- Rust idempotently applies those rows into `current_notams`
-- Rust marks raw rows applied and advances the cursor in the same apply flow
-
-This avoids:
-- acked-but-not-persisted message loss
-- tailing partially-written files
-- split state between collector output and daemon state
-
-Duplicates are acceptable and expected around crashes/restarts.
-The Rust-side normalization/state-upsert logic must therefore be idempotent.
-
-## Current Normalization Status
-
-We now have:
-- Java queue collector
-- first-stage live-feed daemon integration for a `notams` product
-- durable NOTAM store with subscription lock, raw messages, applied cursor, and SQLite current state
-- client/cache registry support for the `notams` record-json live-feed schema
-
-This proves:
-- SWIM connectivity works
-- AIXM XML can be parsed in Rust
-- we can emit a product-shaped `notams.json` artifact
-
-The daemon publishes the normalized current record set as a live-feed product
-from SQLite state. Committed raw rows remain available for a retention window so
-we can diagnose recent ingestion and replay recent applies if the normalizer
-changes.
-
-## Client Contract
-
-Target client contract remains:
-- replace-everything current-state live-feed product
-
-Not:
-- queue deltas in clients
-- XML in clients
-- Java in clients
-
-Likely package contents:
-- `notams.json`
-- manifest
-- zipped live-feed install package where needed
-
-Likely normalized fields:
-- stable NOTAM id
-- airport/location linkage
-- keyword/status/function
-- effective interval
-- plain text / local-format text / ICAO-format text
-- FAA extension fields useful for indexing/debugging
-
-Likely secondary indexes later:
-- airport
-- plate
-- procedure
-
-Plate attachment is desirable for many FDC/procedure NOTAMs, but it should be an index layered on top of the normalized record set, not the only organization of the data.
-
-## Open Questions
-
-1. Recovery / backfill
-- what recovery window does FAA queue retention actually provide?
-- is there a complementary snapshot source, or do we rely entirely on our own durable state?
-
-2. State identity
-- what exact identity key should drive the SQLite upsert?
-- likely a combination of FAA/NMS message identifiers and NOTAM identifiers, but this needs to be pinned down carefully
-
-3. Export cadence
-- how often do we refresh the live-feed `notams` state from producer-owned state?
-
-4. Plate/procedure mapping
-- how aggressively can we attach FDC NOTAMs to plates/procedures without introducing bad matches?
-
-## Next Step
-
-Before productizing:
-- fix the FAA subscription/queue state if it returns `503 Queue Shutdown`
-- add an authoritative initial-state/backfill source so a fresh server can learn complete NOTAM state instead of only messages delivered after subscription startup
-- add indexes for airport/procedure lookup once the normalized record contract is consumed by clients
+That branch is the recovery record; the active tree intentionally contains no
+compatibility path for the retired collector.

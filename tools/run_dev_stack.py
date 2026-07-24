@@ -24,7 +24,6 @@ from pathlib import Path
 from urllib.parse import urlparse
 
 from admin_index import admin_index_html
-from swim_notams_credentials import write_environment_credential
 
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
@@ -37,21 +36,8 @@ DEFAULT_LIVE_FEEDS = "127.0.0.1:18095"
 DEFAULT_BUILD_WATCH = "127.0.0.1:18097"
 DEFAULT_PIPELINE_HEALTH = "127.0.0.1:18098"
 LIVE_FEEDS_CONTRACT_PATH = "v2"
-DEFAULT_SWIM_NOTAMS_CREDENTIAL_BUNDLE = Path(
-    "/root/aerobag-credentials/swim-notams.environments.json"
-)
-DEFAULT_SWIM_NOTAMS_ENVIRONMENT = "dev"
-DEFAULT_SWIM_NOTAMS_CONFIG = Path("/root/aerobag-credentials/dev-stack/swim-notams.json")
-SWIM_NOTAMS_COLLECTOR_DIR = (
-    REPO_ROOT / "product" / "preprocessor" / "swim-notams-fetch"
-)
-DEFAULT_SWIM_NOTAMS_COLLECTOR = (
-    SWIM_NOTAMS_COLLECTOR_DIR
-    / "build"
-    / "install"
-    / "swim-notams-fetch"
-    / "bin"
-    / "swim-notams-fetch"
+DEFAULT_NMS_NOTAMS_CONFIG = Path(
+    "/root/aerobag-credentials/dev-stack/nms-notams-staging.json"
 )
 
 
@@ -158,12 +144,9 @@ class DevStackConfig:
     build_watch_listen: str
     pipeline_health_listen: str
     live_feed_fetch_mode: str
-    swim_notams_enabled: bool
-    swim_notams_environment: str
-    swim_notams_credential_bundle: Path
-    swim_notams_config: Path
-    swim_notams_collector: Path
-    swim_notams_state_root: Path
+    nms_notams_enabled: bool
+    nms_notams_config: Path
+    nms_notams_state_root: Path
     skip_binary_build: bool
     disable_live_feeds: bool
     disable_build_watch: bool
@@ -263,6 +246,7 @@ class DevStack:
             self.config.fetch_cache_root,
             self.config.health_root,
             self.config.target_dir,
+            self.config.nms_notams_state_root.parent,
         ]:
             path.mkdir(parents=True, exist_ok=True)
         self.write_health()
@@ -279,13 +263,6 @@ class DevStack:
         ]
         print(f"+ {' '.join(command)}", flush=True)
         subprocess.run(command, cwd=REPO_ROOT, env=env, check=True)
-        if self.config.swim_notams_enabled:
-            command = ["gradle", "installDist"]
-            print(
-                f"+ (cd {SWIM_NOTAMS_COLLECTOR_DIR}; {' '.join(command)})",
-                flush=True,
-            )
-            subprocess.run(command, cwd=SWIM_NOTAMS_COLLECTOR_DIR, env=env, check=True)
 
     def start_child(self, name: str, command: list[str]) -> None:
         print(f"+ start {name}: {' '.join(command)}", flush=True)
@@ -332,17 +309,13 @@ class DevStack:
             "--listen",
             self.config.live_feeds_listen,
         ]
-        if self.config.swim_notams_enabled:
+        if self.config.nms_notams_enabled:
             command.extend(
                 [
-                    "--swim-notams-config",
-                    str(self.config.swim_notams_config),
-                    "--swim-notams-environment",
-                    self.config.swim_notams_environment,
-                    "--swim-notams-collector",
-                    str(self.config.swim_notams_collector),
-                    "--swim-notams-state-root",
-                    str(self.config.swim_notams_state_root),
+                    "--nms-notams-config",
+                    str(self.config.nms_notams_config),
+                    "--nms-notams-state-root",
+                    str(self.config.nms_notams_state_root),
                 ]
             )
         return command
@@ -663,40 +636,19 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--pipeline-health-listen", default=DEFAULT_PIPELINE_HEALTH)
     parser.add_argument("--live-feed-fetch-mode", default="fill", choices=["fill", "offline"])
     parser.add_argument(
-        "--swim-notams-credential-bundle",
+        "--nms-notams-config",
         type=Path,
-        default=DEFAULT_SWIM_NOTAMS_CREDENTIAL_BUNDLE,
+        default=DEFAULT_NMS_NOTAMS_CONFIG,
         help=(
-            "operator-owned SWIM NOTAM environment bundle; dev-stack extracts "
-            "only --swim-notams-environment from this bundle"
+            "operator-owned NMS API credential file; dev-stack enables NOTAM ingestion "
+            "when this exists unless --disable-nms-notams is set"
         ),
     )
     parser.add_argument(
-        "--swim-notams-environment",
-        default=DEFAULT_SWIM_NOTAMS_ENVIRONMENT,
-        choices=["dev", "prod"],
-        help="expected SWIM NOTAM credential environment for this dev stack",
-    )
-    parser.add_argument(
-        "--swim-notams-config",
-        type=Path,
-        default=DEFAULT_SWIM_NOTAMS_CONFIG,
-        help=(
-            "generated single-environment SWIM NOTAM credential file; dev-stack enables "
-            "NOTAM ingestion when this exists or can be extracted unless --disable-swim-notams is set"
-        ),
-    )
-    parser.add_argument(
-        "--swim-notams-collector",
-        type=Path,
-        default=DEFAULT_SWIM_NOTAMS_COLLECTOR,
-        help="installed swim-notams-fetch collector binary",
-    )
-    parser.add_argument(
-        "--swim-notams-state-root",
+        "--nms-notams-state-root",
         type=Path,
         default=None,
-        help="durable SWIM NOTAM state root (default: stack-root/state/swim-notams)",
+        help="durable NMS NOTAM state root (default: stack-root/state/nms-notams)",
     )
     parser.add_argument(
         "--web-dist",
@@ -706,7 +658,7 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument("--skip-binary-build", action="store_true")
     parser.add_argument("--disable-live-feeds", action="store_true")
-    parser.add_argument("--disable-swim-notams", action="store_true")
+    parser.add_argument("--disable-nms-notams", action="store_true")
     parser.add_argument("--disable-build-watch", action="store_true")
     parser.add_argument("--disable-pipeline-health", action="store_true")
     parser.add_argument("--check-config", action="store_true")
@@ -718,19 +670,11 @@ def config_from_args(args: argparse.Namespace) -> DevStackConfig:
     stack_root = (args.stack_root or artifact_root / "dev-stack").resolve()
     target_dir = (args.target_dir or artifact_root / "target").resolve()
     web_dist = args.web_dist.resolve() if args.web_dist else None
-    swim_notams_config = args.swim_notams_config.resolve()
-    swim_notams_credential_bundle = args.swim_notams_credential_bundle.resolve()
-    if not args.disable_live_feeds and not args.disable_swim_notams:
-        write_environment_credential(
-            bundle_path=swim_notams_credential_bundle,
-            environment=args.swim_notams_environment,
-            output_path=swim_notams_config,
-            forbidden_roots=[REPO_ROOT, artifact_root],
-        )
-    swim_notams_enabled = (
+    nms_notams_config = args.nms_notams_config.resolve()
+    nms_notams_enabled = (
         not args.disable_live_feeds
-        and not args.disable_swim_notams
-        and swim_notams_config.is_file()
+        and not args.disable_nms_notams
+        and nms_notams_config.is_file()
     )
     return DevStackConfig(
         artifact_root=artifact_root,
@@ -749,13 +693,10 @@ def config_from_args(args: argparse.Namespace) -> DevStackConfig:
         build_watch_listen=args.build_watch_listen,
         pipeline_health_listen=args.pipeline_health_listen,
         live_feed_fetch_mode=args.live_feed_fetch_mode,
-        swim_notams_enabled=swim_notams_enabled,
-        swim_notams_environment=args.swim_notams_environment,
-        swim_notams_credential_bundle=swim_notams_credential_bundle,
-        swim_notams_config=swim_notams_config,
-        swim_notams_collector=args.swim_notams_collector.resolve(),
-        swim_notams_state_root=(
-            args.swim_notams_state_root or stack_root / "state" / "swim-notams"
+        nms_notams_enabled=nms_notams_enabled,
+        nms_notams_config=nms_notams_config,
+        nms_notams_state_root=(
+            args.nms_notams_state_root or stack_root / "state" / "nms-notams"
         ).resolve(),
         skip_binary_build=args.skip_binary_build,
         disable_live_feeds=args.disable_live_feeds,
@@ -776,11 +717,9 @@ def print_config(config: DevStackConfig) -> None:
                 "live_contract_root": str(config.live_contract_root),
                 "target_dir": str(config.target_dir),
                 "live_feeds_listen": config.live_feeds_listen,
-                "swim_notams_enabled": config.swim_notams_enabled,
-                "swim_notams_environment": config.swim_notams_environment,
-                "swim_notams_credential_bundle": str(config.swim_notams_credential_bundle),
-                "swim_notams_config": str(config.swim_notams_config),
-                "swim_notams_state_root": str(config.swim_notams_state_root),
+                "nms_notams_enabled": config.nms_notams_enabled,
+                "nms_notams_config": str(config.nms_notams_config),
+                "nms_notams_state_root": str(config.nms_notams_state_root),
                 "build_watch_listen": config.build_watch_listen,
                 "pipeline_health_listen": config.pipeline_health_listen,
                 "web_dist": str(config.web_dist) if config.web_dist else None,

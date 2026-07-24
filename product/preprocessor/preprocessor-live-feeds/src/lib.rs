@@ -10,7 +10,7 @@ use anyhow::{bail, Context};
 use chrono::{DateTime, NaiveDateTime, Utc};
 use notam_state::NotamRecord;
 use preprocessor_zip::{write_deterministic_zip, ZipSource};
-use product_contracts::{AirportNotamEffect, NOTAM_LIVE_FEED_CONTRACT_VERSION};
+use product_contracts::AirportNotamEffect;
 use quick_xml::events::Event;
 use quick_xml::Reader;
 use serde::{Deserialize, Serialize};
@@ -18,6 +18,7 @@ use serde_json::Value;
 use sha2::{Digest, Sha256};
 
 pub mod engine;
+pub mod nms_initial_load;
 pub mod notam_store;
 pub mod products;
 pub mod simulation;
@@ -75,22 +76,6 @@ pub struct BuildTafResult {
     pub structured_json_path: PathBuf,
     pub zip_path: PathBuf,
     pub taf_count: usize,
-}
-
-#[derive(Debug, Clone)]
-pub struct BuildNotamRequest {
-    pub input_jsonl_path: PathBuf,
-    pub output_dir: PathBuf,
-    pub version_label: String,
-    pub generated_at_utc: DateTime<Utc>,
-}
-
-#[derive(Debug, Clone)]
-pub struct BuildNotamResult {
-    pub manifest_path: PathBuf,
-    pub structured_json_path: PathBuf,
-    pub zip_path: PathBuf,
-    pub notam_count: usize,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -158,44 +143,10 @@ struct TafManifestCounts {
     tafs: usize,
 }
 
-#[derive(Debug, Clone, Serialize)]
-struct NotamManifest {
-    schema_version: u32,
-    version_label: String,
-    generated_at_utc: String,
-    files: NotamManifestFiles,
-    counts: NotamManifestCounts,
-}
-
-#[derive(Debug, Clone, Serialize)]
-struct NotamManifestFiles {
-    structured_json: String,
-    zip: String,
-}
-
-#[derive(Debug, Clone, Serialize)]
-struct NotamManifestCounts {
-    notams: usize,
-    airport_notams: usize,
-    airport_notams_with_multiple_effects: usize,
-    airport_notams_with_other_effect: usize,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct StructuredNotamDataset {
-    schema_version: u32,
-    version_label: String,
-    notam_count: usize,
-    notams: Vec<StructuredNotamRecord>,
-    notams_by_id: BTreeMap<String, StructuredNotamRecord>,
-}
-
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct StructuredNotamRecord {
     pub id: String,
-    pub jms_message_id: Option<String>,
     pub nms_id: Option<String>,
-    pub correlation_id: Option<String>,
     pub source_type: Option<String>,
     pub notam_status: Option<String>,
     pub notam_function: Option<String>,
@@ -285,17 +236,38 @@ impl CanonicalNotamIdentity {
             .map(str::trim)
             .filter(|value| !value.is_empty())
             .context("NOTAM number is missing")?;
-        let number = raw_number
-            .rsplit_once('/')
-            .map(|(_, number)| number)
-            .unwrap_or(raw_number);
-        if !number.chars().all(|ch| ch.is_ascii_digit()) {
-            bail!("invalid NOTAM number {number}");
-        }
-        let number = number
-            .parse::<u64>()
-            .with_context(|| format!("invalid NOTAM number {number}"))?
-            .to_string();
+        let number = match raw_number.split_once('/') {
+            Some((series, number)) => {
+                if !series.chars().all(|ch| ch.is_ascii_digit())
+                    || !number.chars().all(|ch| ch.is_ascii_digit())
+                {
+                    bail!("invalid NOTAM number {raw_number}");
+                }
+                let series = series
+                    .parse::<u64>()
+                    .with_context(|| format!("invalid NOTAM series {series}"))?;
+                let number = number
+                    .parse::<u64>()
+                    .with_context(|| format!("invalid NOTAM number {number}"))?;
+                if source_type == "D" {
+                    if !(1..=12).contains(&series) {
+                        bail!("invalid domestic NOTAM month {series}");
+                    }
+                    format!("{series:02}/{number:03}")
+                } else {
+                    format!("{series}/{number:04}")
+                }
+            }
+            None => {
+                if !raw_number.chars().all(|ch| ch.is_ascii_digit()) {
+                    bail!("invalid NOTAM number {raw_number}");
+                }
+                raw_number
+                    .parse::<u64>()
+                    .with_context(|| format!("invalid NOTAM number {raw_number}"))?
+                    .to_string()
+            }
+        };
         Ok(Self {
             source_type,
             location,
@@ -313,18 +285,27 @@ impl CanonicalNotamIdentity {
     }
 }
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Default)]
+struct NotamNormalizationHints {
+    nms_id: Option<String>,
+    source_type: Option<String>,
+    notam_status: Option<String>,
+    notam_function: Option<String>,
+    notam_type: Option<String>,
+    notam_keyword: Option<String>,
+    last_updated_utc: Option<String>,
+    location_designator: Option<String>,
+    icao_id: Option<String>,
+    notam_number: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
 struct CapturedNotamMessage {
     #[serde(default)]
-    #[serde(rename = "jmsMessageId")]
-    jms_message_id: Option<String>,
-    #[serde(default)]
-    properties: serde_json::Map<String, serde_json::Value>,
-    #[serde(default)]
-    #[serde(rename = "bodyText")]
+    properties: serde_json::Map<String, Value>,
+    #[serde(default, rename = "bodyText")]
     body_text: Option<String>,
-    #[serde(default)]
-    #[serde(rename = "bodyUtf8")]
+    #[serde(default, rename = "bodyUtf8")]
     body_utf8: Option<String>,
 }
 
@@ -1500,76 +1481,6 @@ fn choose_metar_cloud_symbol(layers: &[(&'static str, Option<u32>)]) -> Option<&
         .map(|(amount, _)| *amount)
 }
 
-pub fn build_notam_dataset(request: &BuildNotamRequest) -> anyhow::Result<BuildNotamResult> {
-    if request.output_dir.exists() {
-        fs::remove_dir_all(&request.output_dir)
-            .with_context(|| format!("failed to clear {}", request.output_dir.display()))?;
-    }
-    fs::create_dir_all(&request.output_dir)
-        .with_context(|| format!("failed to create {}", request.output_dir.display()))?;
-
-    let notams_by_id = current_structured_notam_records(&request.input_jsonl_path)?;
-    let notams = notams_by_id.values().cloned().collect::<Vec<_>>();
-    let airport_notams = notams
-        .iter()
-        .filter(|record| record.airport_id.is_some())
-        .collect::<Vec<_>>();
-    let structured_json_path = request.output_dir.join("notams.json");
-    let manifest_path = request
-        .output_dir
-        .join(format!("notams_{}.manifest.json", request.version_label));
-    let zip_path = request
-        .output_dir
-        .join(format!("notams_{}.zip", request.version_label));
-
-    write_json_pretty(
-        &structured_json_path,
-        &StructuredNotamDataset {
-            schema_version: NOTAM_LIVE_FEED_CONTRACT_VERSION,
-            version_label: request.version_label.clone(),
-            notam_count: notams.len(),
-            notams: notams.clone(),
-            notams_by_id: notams_by_id.clone(),
-        },
-    )?;
-    write_json_pretty(
-        &manifest_path,
-        &NotamManifest {
-            schema_version: NOTAM_LIVE_FEED_CONTRACT_VERSION,
-            version_label: request.version_label.clone(),
-            generated_at_utc: request.generated_at_utc.to_rfc3339(),
-            files: NotamManifestFiles {
-                structured_json: "notams.json".to_string(),
-                zip: zip_path
-                    .file_name()
-                    .and_then(|name| name.to_str())
-                    .unwrap_or_default()
-                    .to_string(),
-            },
-            counts: NotamManifestCounts {
-                notams: notams.len(),
-                airport_notams: airport_notams.len(),
-                airport_notams_with_multiple_effects: airport_notams
-                    .iter()
-                    .filter(|record| record.airport_effects.len() > 1)
-                    .count(),
-                airport_notams_with_other_effect: airport_notams
-                    .iter()
-                    .filter(|record| record.airport_effects.contains(&AirportNotamEffect::Other))
-                    .count(),
-            },
-        },
-    )?;
-    write_zip(&zip_path, &[("notams.json", &structured_json_path)])?;
-
-    Ok(BuildNotamResult {
-        manifest_path,
-        structured_json_path,
-        zip_path,
-        notam_count: notams.len(),
-    })
-}
-
 pub fn load_tfr_notam_ids(input_dir: &Path) -> anyhow::Result<Vec<String>> {
     Ok(load_tfr_list_entries(input_dir)?
         .into_iter()
@@ -1581,6 +1492,43 @@ fn load_tfr_list_entries(input_dir: &Path) -> anyhow::Result<Vec<TfrListEntry>> 
     let path = input_dir.join("list.json");
     let bytes = fs::read(&path).with_context(|| format!("failed to read {}", path.display()))?;
     serde_json::from_slice(&bytes).with_context(|| format!("failed to parse {}", path.display()))
+}
+
+pub fn structured_notam_record_from_json(
+    message_json: &str,
+) -> anyhow::Result<Option<StructuredNotamRecord>> {
+    let message = serde_json::from_str::<CapturedNotamMessage>(message_json)
+        .context("failed to parse captured NOTAM message JSON")?;
+    let body = message
+        .body_text
+        .or(message.body_utf8)
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty());
+    let Some(body) = body else {
+        return Ok(None);
+    };
+    let property = |name: &str| {
+        message
+            .properties
+            .get(name)
+            .and_then(Value::as_str)
+            .map(str::to_string)
+    };
+    normalize_notam_xml(
+        &body,
+        NotamNormalizationHints {
+            nms_id: property("m_msg_nms_id"),
+            source_type: property("us_gov_dot_faa_aim_fns_nds_SourceType"),
+            notam_status: property("us_gov_dot_faa_aim_fns_nds_NOTAMStatus"),
+            notam_function: property("us_gov_dot_faa_aim_fns_nds_NOTAMFunction"),
+            notam_type: None,
+            notam_keyword: property("us_gov_dot_faa_aim_fns_nds_NOTAMKeyword"),
+            last_updated_utc: property("m_msg_last_updated"),
+            location_designator: property("us_gov_dot_faa_aim_fns_nds_LocationDesignator"),
+            icao_id: property("us_gov_dot_faa_aim_fns_nds_ICAOId"),
+            notam_number: property("us_gov_dot_faa_aim_fns_nds_NOTAMNumber"),
+        },
+    )
 }
 
 fn parse_geo_csv(path: &Path) -> anyhow::Result<Vec<GeoGridPoint>> {
@@ -1607,78 +1555,11 @@ fn parse_geo_csv(path: &Path) -> anyhow::Result<Vec<GeoGridPoint>> {
         .collect()
 }
 
-pub fn structured_notam_records(
-    input_jsonl_path: &Path,
-) -> anyhow::Result<Vec<StructuredNotamRecord>> {
-    let mut records = normalized_notam_events(input_jsonl_path)?;
-    sort_structured_notam_records(&mut records);
-    Ok(records)
-}
-
-fn normalized_notam_events(input_jsonl_path: &Path) -> anyhow::Result<Vec<StructuredNotamRecord>> {
-    load_json_lines::<CapturedNotamMessage>(input_jsonl_path)?
-        .into_iter()
-        .filter_map(|message| normalize_captured_notam(message).transpose())
-        .collect()
-}
-
-fn current_structured_notam_records(
-    input_jsonl_path: &Path,
-) -> anyhow::Result<BTreeMap<String, StructuredNotamRecord>> {
-    let mut current = BTreeMap::new();
-    for record in normalized_notam_events(input_jsonl_path)? {
-        match notam_projection_action(&record)? {
-            NotamProjectionAction::Upsert => {
-                current.insert(record.id.clone(), record);
-            }
-            NotamProjectionAction::Remove => {
-                current.remove(&record.id);
-            }
-        }
-    }
-    Ok(current)
-}
-
-pub fn structured_notam_record_from_json(
-    message_json: &str,
+fn normalize_notam_xml(
+    body: &str,
+    hints: NotamNormalizationHints,
 ) -> anyhow::Result<Option<StructuredNotamRecord>> {
-    let message = serde_json::from_str::<CapturedNotamMessage>(message_json)
-        .context("failed to parse captured NOTAM message JSON")?;
-    normalize_captured_notam(message)
-}
-
-fn sort_structured_notam_records(records: &mut [StructuredNotamRecord]) {
-    records.sort_by(|left, right| {
-        (
-            &left.icao_id,
-            &left.location_designator,
-            &left.notam_year,
-            &left.notam_number,
-            &left.id,
-        )
-            .cmp(&(
-                &right.icao_id,
-                &right.location_designator,
-                &right.notam_year,
-                &right.notam_number,
-                &right.id,
-            ))
-    });
-}
-
-fn normalize_captured_notam(
-    message: CapturedNotamMessage,
-) -> anyhow::Result<Option<StructuredNotamRecord>> {
-    let body = message
-        .body_text
-        .or(message.body_utf8)
-        .map(|value| value.trim().to_string())
-        .filter(|value| !value.is_empty());
-    let Some(body) = body else {
-        return Ok(None);
-    };
-
-    let xml = roxmltree::Document::parse(&body).context("failed to parse NOTAM XML body")?;
+    let xml = roxmltree::Document::parse(body).context("failed to parse NOTAM XML body")?;
     let notam_node = match xml
         .descendants()
         .find(|node| node.tag_name().name() == "NOTAM")
@@ -1693,23 +1574,22 @@ fn normalize_captured_notam(
     let text = child_text(&notam_node, "text");
     let local_text = find_translation_text(&notam_node, "LOCAL_FORMAT");
     let icao_text = find_translation_text(&notam_node, "OTHER:ICAO");
-    let location_designator = normalize_optional_notam_field(property_string(
-        &message.properties,
-        "us_gov_dot_faa_aim_fns_nds_LocationDesignator",
-    ));
-    let icao_id = normalize_optional_notam_field(property_string(
-        &message.properties,
-        "us_gov_dot_faa_aim_fns_nds_ICAOId",
-    ));
-    let source_type = property_string(&message.properties, "us_gov_dot_faa_aim_fns_nds_SourceType");
-    let notam_number_prop = property_string(
-        &message.properties,
-        "us_gov_dot_faa_aim_fns_nds_NOTAMNumber",
-    );
-    let notam_number = child_text(&notam_node, "number").or(notam_number_prop);
-    let notam_year = child_text(&notam_node, "year");
-    let notam_type = child_text(&notam_node, "type");
     let location = child_text(&notam_node, "location");
+    let location_designator =
+        normalize_optional_notam_field(hints.location_designator.or_else(|| location.clone()));
+    let icao_id = normalize_optional_notam_field(
+        hints
+            .icao_id
+            .or_else(|| find_first_text(&xml, "icaoLocation")),
+    );
+    let source_type = hints.source_type.or_else(|| {
+        source_type_for_classification(find_first_text(&xml, "classification").as_deref())
+    });
+    let notam_number = local_format_notam_number(local_text.as_deref())
+        .or(hints.notam_number)
+        .or_else(|| child_text(&notam_node, "number"));
+    let notam_year = child_text(&notam_node, "year");
+    let notam_type = child_text(&notam_node, "type").or(hints.notam_type);
     let identity = CanonicalNotamIdentity::new(
         source_type.as_deref(),
         location
@@ -1720,22 +1600,13 @@ fn normalize_captured_notam(
         notam_type.as_deref(),
         notam_number.as_deref(),
     )?;
-    let notam_status = canonical_notam_status(property_string(
-        &message.properties,
-        "us_gov_dot_faa_aim_fns_nds_NOTAMStatus",
-    ))?;
-    let notam_function = canonical_notam_function(property_string(
-        &message.properties,
-        "us_gov_dot_faa_aim_fns_nds_NOTAMFunction",
-    ))?;
-    let notam_keyword = canonical_notam_keyword(
-        &identity.source_type,
-        property_string(
-            &message.properties,
-            "us_gov_dot_faa_aim_fns_nds_NOTAMKeyword",
-        ),
-        text.as_deref(),
-    );
+    let nms_id = normalize_nms_id(hints.nms_id.or_else(|| nms_id_from_xml(&xml)))?;
+    let record_id = canonical_notam_record_id(nms_id.as_deref(), &identity);
+    let notam_status = canonical_notam_status(hints.notam_status)?;
+    let notam_function =
+        canonical_notam_function(hints.notam_function.or_else(|| notam_type.clone()))?;
+    let notam_keyword =
+        canonical_notam_keyword(&identity.source_type, hints.notam_keyword, text.as_deref());
     let airport_id = airport_id_for_notam(
         notam_keyword.as_deref(),
         icao_id.as_deref(),
@@ -1758,18 +1629,15 @@ fn normalize_captured_notam(
     let airport_position = find_airport_position(&xml)?;
 
     Ok(Some(StructuredNotamRecord {
-        id: identity.id(),
-        jms_message_id: message.jms_message_id,
-        nms_id: property_string(&message.properties, "m_msg_nms_id"),
-        correlation_id: property_string(
-            &message.properties,
-            "us_gov_dot_faa_aim_fns_nds_CorrelationID",
-        ),
+        id: record_id,
+        nms_id,
         source_type: Some(identity.source_type.clone()),
         notam_status: Some(notam_status),
         notam_function,
         notam_keyword,
-        last_updated_utc: property_string(&message.properties, "m_msg_last_updated"),
+        last_updated_utc: hints
+            .last_updated_utc
+            .or_else(|| find_first_text(&xml, "lastUpdated")),
         location_designator,
         icao_id,
         airport_id,
@@ -1801,6 +1669,9 @@ pub(crate) fn canonicalize_structured_notam_record(
 ) -> anyhow::Result<StructuredNotamRecord> {
     record.location_designator = normalize_optional_notam_field(record.location_designator);
     record.icao_id = normalize_optional_notam_field(record.icao_id);
+    record.notam_number = local_format_notam_number(record.local_text.as_deref())
+        .or(record.notam_number)
+        .map(|value| value.trim().to_ascii_uppercase());
     let identity = CanonicalNotamIdentity::new(
         record.source_type.as_deref(),
         record
@@ -1812,7 +1683,8 @@ pub(crate) fn canonicalize_structured_notam_record(
         record.notam_type.as_deref(),
         record.notam_number.as_deref(),
     )?;
-    record.id = identity.id();
+    record.nms_id = normalize_nms_id(record.nms_id)?;
+    record.id = canonical_notam_record_id(record.nms_id.as_deref(), &identity);
     record.source_type = Some(identity.source_type.clone());
     record.location = Some(identity.location);
     record.notam_year = Some(identity.year);
@@ -1886,6 +1758,68 @@ fn normalize_optional_notam_field(value: Option<String>) -> Option<String> {
     value
         .map(|value| value.trim().to_ascii_uppercase())
         .filter(|value| !value.is_empty())
+}
+
+fn local_format_notam_number(local_text: Option<&str>) -> Option<String> {
+    local_text?
+        .split_whitespace()
+        .take(4)
+        .map(|token| {
+            token.trim_matches(|character: char| {
+                !character.is_ascii_alphanumeric() && character != '/'
+            })
+        })
+        .find_map(|token| {
+            let (series, number) = token.split_once('/')?;
+            if (1..=2).contains(&series.len())
+                && (3..=4).contains(&number.len())
+                && series.chars().all(|character| character.is_ascii_digit())
+                && number.chars().all(|character| character.is_ascii_digit())
+            {
+                Some(format!("{series}/{number}"))
+            } else {
+                None
+            }
+        })
+}
+
+fn source_type_for_classification(classification: Option<&str>) -> Option<String> {
+    match classification?.trim().to_ascii_uppercase().as_str() {
+        "DOM" | "DOMESTIC" => Some("D".to_string()),
+        "FDC" => Some("F".to_string()),
+        _ => None,
+    }
+}
+
+fn normalize_nms_id(value: Option<String>) -> anyhow::Result<Option<String>> {
+    let Some(value) = value else {
+        return Ok(None);
+    };
+    let value = value.trim().strip_prefix("NMS_ID_").unwrap_or(value.trim());
+    if value.is_empty() || !value.chars().all(|character| character.is_ascii_digit()) {
+        bail!("invalid NMS ID {value}");
+    }
+    Ok(Some(value.to_string()))
+}
+
+fn canonical_notam_record_id(
+    nms_id: Option<&str>,
+    fallback_identity: &CanonicalNotamIdentity,
+) -> String {
+    nms_id
+        .map(|nms_id| format!("NMS:{nms_id}"))
+        .unwrap_or_else(|| fallback_identity.id())
+}
+
+fn nms_id_from_xml(document: &roxmltree::Document<'_>) -> Option<String> {
+    document
+        .descendants()
+        .find(|node| node.tag_name().name() == "AIXMBasicMessage")
+        .and_then(|node| node.attributes().find(|attribute| attribute.name() == "id"))
+        .map(|attribute| attribute.value().trim())
+        .and_then(|value| value.strip_prefix("NMS_ID_").or(Some(value)))
+        .filter(|value| !value.is_empty())
+        .map(str::to_string)
 }
 
 fn canonical_notam_status(value: Option<String>) -> anyhow::Result<String> {
@@ -2094,46 +2028,6 @@ fn has_notam_token(text: &str, expected: &str) -> bool {
     })
 }
 
-fn load_json_lines<T: for<'de> Deserialize<'de>>(path: &Path) -> anyhow::Result<Vec<T>> {
-    let text =
-        fs::read_to_string(path).with_context(|| format!("failed to read {}", path.display()))?;
-    if let Ok(records) = text
-        .lines()
-        .filter(|line| !line.trim().is_empty())
-        .enumerate()
-        .map(|(index, line)| {
-            serde_json::from_str::<T>(line).with_context(|| {
-                format!("failed to parse line {} of {}", index + 1, path.display())
-            })
-        })
-        .collect::<anyhow::Result<Vec<_>>>()
-    {
-        return Ok(records);
-    }
-    let mut records = Vec::new();
-    let mut stream = serde_json::Deserializer::from_str(&text).into_iter::<T>();
-    while let Some(value) = stream.next() {
-        records.push(
-            value.with_context(|| {
-                format!("failed to parse concatenated JSON in {}", path.display())
-            })?,
-        );
-    }
-    Ok(records)
-}
-
-fn property_string(
-    properties: &serde_json::Map<String, serde_json::Value>,
-    key: &str,
-) -> Option<String> {
-    properties.get(key).and_then(|value| match value {
-        serde_json::Value::String(text) => Some(text.clone()),
-        serde_json::Value::Number(number) => Some(number.to_string()),
-        serde_json::Value::Bool(flag) => Some(flag.to_string()),
-        _ => None,
-    })
-}
-
 fn child_text(node: &roxmltree::Node<'_, '_>, local_name: &str) -> Option<String> {
     node.children()
         .find(|child| child.is_element() && child.tag_name().name() == local_name)
@@ -2190,6 +2084,10 @@ fn find_translation_text(
 }
 
 fn parse_compact_notam_timestamp(value: &str) -> anyhow::Result<String> {
+    let value = value
+        .strip_suffix("EST")
+        .map(str::trim_end)
+        .unwrap_or(value);
     let parsed = NaiveDateTime::parse_from_str(value, "%Y%m%d%H%M")
         .with_context(|| format!("failed to parse NOTAM timestamp {value}"))?;
     Ok(parsed.and_utc().to_rfc3339())
@@ -3014,6 +2912,15 @@ mod tests {
     use tempfile::{NamedTempFile, TempDir};
 
     #[test]
+    fn compact_notam_timestamp_accepts_estimated_suffix() -> anyhow::Result<()> {
+        assert_eq!(
+            parse_compact_notam_timestamp("202607241405EST")?,
+            "2026-07-24T14:05:00+00:00"
+        );
+        Ok(())
+    }
+
+    #[test]
     fn airport_notam_effects_combine_structured_and_text_signals() {
         assert_eq!(
             airport_effects_for_notam(
@@ -3242,9 +3149,7 @@ mod tests {
     ) -> StructuredNotamRecord {
         StructuredNotamRecord {
             id: id.to_string(),
-            jms_message_id: None,
             nms_id: None,
-            correlation_id: None,
             source_type: Some("F".to_string()),
             notam_status: Some("PUBLISHED".to_string()),
             notam_function: Some("N".to_string()),
@@ -3595,136 +3500,15 @@ mod tests {
     }
 
     #[test]
-    fn notam_dataset_normalizes_captured_swim_message() -> anyhow::Result<()> {
-        let output_dir = TempDir::new().context("failed to create temp dir")?;
-        let input_jsonl = output_dir.path().join("messages.jsonl");
-        let xml = r#"<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
-<AIXMBasicMessage xmlns="http://www.aixm.aero/schema/5.1/message"
-  xmlns:aixm="http://www.aixm.aero/schema/5.1"
-  xmlns:event="http://www.aixm.aero/schema/5.1/event"
-  xmlns:fnse="http://www.aixm.aero/schema/5.1/extensions/FAA/FNSE"
-  xmlns:gml="http://www.opengis.net/gml/3.2">
-  <hasMember>
-    <aixm:AirportHeliport>
-      <aixm:timeSlice>
-        <aixm:AirportHeliportTimeSlice>
-          <aixm:name>HELENA RGNL</aixm:name>
-          <aixm:ARP>
-            <aixm:ElevatedPoint>
-              <gml:pos>46.6067222222222 -111.983277777778</gml:pos>
-            </aixm:ElevatedPoint>
-          </aixm:ARP>
-        </aixm:AirportHeliportTimeSlice>
-      </aixm:timeSlice>
-    </aixm:AirportHeliport>
-  </hasMember>
-  <hasMember>
-    <event:Event>
-      <event:timeSlice>
-        <event:EventTimeSlice>
-          <event:scenario>95</event:scenario>
-          <event:textNOTAM>
-            <event:NOTAM>
-              <event:number>198</event:number>
-              <event:year>2026</event:year>
-              <event:type>N</event:type>
-              <event:issued>2026-04-25T04:04:00.000Z</event:issued>
-              <event:location>HLN</event:location>
-              <event:effectiveStart>202604250404</event:effectiveStart>
-              <event:effectiveEnd>202604251400</event:effectiveEnd>
-              <event:text>RWY 35 FICON 5/5/5 100 PCT WET OBS AT 2604250404.</event:text>
-              <event:translation>
-                <event:NOTAMTranslation>
-                  <event:type>LOCAL_FORMAT</event:type>
-                  <event:simpleText>!HLN 04/198 HLN RWY 35 FICON</event:simpleText>
-                </event:NOTAMTranslation>
-              </event:translation>
-              <event:translation>
-                <event:NOTAMTranslation>
-                  <event:type>OTHER:ICAO</event:type>
-                  <event:formattedText>04/198 NOTAMR Q) KZLC/QMRXX</event:formattedText>
-                </event:NOTAMTranslation>
-              </event:translation>
-            </event:NOTAM>
-          </event:textNOTAM>
-          <event:extension>
-            <fnse:EventExtension>
-              <fnse:classification>DOM</fnse:classification>
-              <fnse:accountId>HLN</fnse:accountId>
-              <fnse:xoveraccountID>KHLN</fnse:xoveraccountID>
-              <fnse:xovernotamID>A1833/26</fnse:xovernotamID>
-              <fnse:airportname>HELENA RGNL</fnse:airportname>
-            </fnse:EventExtension>
-          </event:extension>
-        </event:EventTimeSlice>
-      </event:timeSlice>
-    </event:Event>
-  </hasMember>
-</AIXMBasicMessage>"#;
-        let line = serde_json::json!({
-            "jmsMessageId": "ID:test",
-            "properties": {
-                "m_msg_nms_id": "5822620521126030",
-                "us_gov_dot_faa_aim_fns_nds_CorrelationID": "9406860",
-                "us_gov_dot_faa_aim_fns_nds_SourceType": "D",
-                "us_gov_dot_faa_aim_fns_nds_NOTAMStatus": "ACTIVE",
-                "us_gov_dot_faa_aim_fns_nds_NOTAMFunction": "NOTAMN",
-                "us_gov_dot_faa_aim_fns_nds_NOTAMKeyword": "RWY",
-                "m_msg_last_updated": "2026-04-25T04:08:57.749Z",
-                "us_gov_dot_faa_aim_fns_nds_LocationDesignator": "HLN",
-                "us_gov_dot_faa_aim_fns_nds_ICAOId": "KHLN"
-            },
-            "bodyText": xml
-        });
-        fs::write(&input_jsonl, format!("{line}\n"))?;
-
-        let generated_at_utc = DateTime::parse_from_rfc3339("2026-04-25T04:16:43Z")
-            .expect("valid fixture timestamp")
-            .with_timezone(&Utc);
-        let result = build_notam_dataset(&BuildNotamRequest {
-            input_jsonl_path: input_jsonl.clone(),
-            output_dir: output_dir.path().join("out"),
-            version_label: "fixture".to_string(),
-            generated_at_utc,
-        })?;
-
-        let dataset: StructuredNotamDataset =
-            serde_json::from_slice(&fs::read(&result.structured_json_path)?)?;
-        assert_eq!(1, dataset.notam_count);
-        let record = &dataset.notams[0];
-        assert_eq!("D:HLN:2026:N:198", record.id);
-        assert_eq!(Some(record), dataset.notams_by_id.get("D:HLN:2026:N:198"));
-        assert_eq!(Some("KHLN".to_string()), record.icao_id.clone());
-        assert_eq!(Some("RWY".to_string()), record.notam_keyword.clone());
-        assert_eq!(Some("HELENA RGNL".to_string()), record.airport_name.clone());
-        assert_eq!(Some("A1833/26".to_string()), record.xover_notam_id.clone());
+    fn domestic_notam_number_includes_local_series() {
         assert_eq!(
-            Some("2026-04-25T04:04:00+00:00".to_string()),
-            record.effective_start_utc.clone()
+            local_format_notam_number(Some("!STL 08/430 8WC RWY 20 RWY END ID LGT U/S")),
+            Some("08/430".to_string())
         );
-        assert!(result.zip_path.exists());
-
-        let mut cancelled = line.clone();
-        cancelled["properties"]["us_gov_dot_faa_aim_fns_nds_NOTAMStatus"] =
-            serde_json::json!("CANCELLED");
-        cancelled["bodyText"] = serde_json::json!(xml
-            .replace(
-                "<event:number>198</event:number>",
-                "<event:number>0198</event:number>"
-            )
-            .replace("<event:type>N</event:type>", ""));
-        fs::write(&input_jsonl, format!("{line}\n{cancelled}\n"))?;
-        let cancelled_result = build_notam_dataset(&BuildNotamRequest {
-            input_jsonl_path: input_jsonl,
-            output_dir: output_dir.path().join("out-cancelled"),
-            version_label: "cancelled-fixture".to_string(),
-            generated_at_utc,
-        })?;
-        let cancelled_dataset: StructuredNotamDataset =
-            serde_json::from_slice(&fs::read(cancelled_result.structured_json_path)?)?;
-        assert_eq!(0, cancelled_dataset.notam_count);
-        assert!(cancelled_dataset.notams_by_id.is_empty());
-        Ok(())
+        assert_eq!(
+            local_format_notam_number(Some("!FDC 6/6721 MVY IAP MARTHAS VINEYARD")),
+            Some("6/6721".to_string())
+        );
     }
 
     #[test]

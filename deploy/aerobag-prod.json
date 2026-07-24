@@ -11,8 +11,7 @@
   "additional_publication_refs": [
   ],
   "live_feeds_listen": "127.0.0.1:8095",
-  "swim_notams_enabled": true,
-  "swim_notams_environment": "prod",
+  "nms_notams_enabled": false,
   "pipeline_health_listen": "127.0.0.1:8098",
   "pipeline_health_poll_seconds": 60,
   "nginx_server_name": "_"

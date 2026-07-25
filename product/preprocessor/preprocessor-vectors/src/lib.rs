@@ -13,7 +13,6 @@ use chrono::{DateTime, Utc};
 use geo::{BooleanOps, Coord, LineString, MultiPolygon, Polygon};
 use had_key::component as had_key_component;
 use had_nav_kv::{build_nav_kv_strict, nav_kv_canonical_sha256_from_pairs, NavKvPair};
-use preprocessor_zip::{write_deterministic_zip, ZipSource};
 use quick_xml::events::Event;
 use quick_xml::Reader;
 use rusqlite::Connection;
@@ -142,7 +141,6 @@ pub struct BuildObstacleDatasetResult {
     pub stats_path: PathBuf,
     pub had_root_path: PathBuf,
     pub had_page_paths: Vec<PathBuf>,
-    pub zip_path: PathBuf,
     pub state_sha256: String,
     pub had_pairs: Vec<NavKvPair>,
 }
@@ -1386,8 +1384,6 @@ pub fn build_obstacle_dataset(
         .with_context(|| format!("failed to create {}", had_dir.display()))?;
     let stats_path = had_dir.join("stats.json");
     let manifest_path = had_dir.join("manifest.json");
-    let zip_filename = format!("obstacles_{}.zip", request.version_label);
-    let zip_path = had_dir.join(&zip_filename);
 
     let available_zooms = (OBSTACLE_LAYER_MIN_ZOOM..=OBSTACLE_LAYER_MAX_ZOOM).collect::<Vec<_>>();
     let tile_path_template = "obstacle/tile/z{z:02}/x{x:06}/y{y:06}".to_string();
@@ -1439,7 +1435,6 @@ pub fn build_obstacle_dataset(
         "page_{page:04}".to_string(),
     );
     files.insert("stats".to_string(), "stats.json".to_string());
-    files.insert("package_zip".to_string(), zip_filename.clone());
     point_layers.insert(
         "obstacle".to_string(),
         PointLayerManifest {
@@ -1529,22 +1524,11 @@ pub fn build_obstacle_dataset(
         },
     )?;
 
-    let mut zip_members = vec![
-        ("manifest.json".to_string(), manifest_path.clone()),
-        ("stats.json".to_string(), stats_path.clone()),
-        ("root".to_string(), had_root_path.clone()),
-    ];
-    for (index, path) in had_page_paths.iter().enumerate() {
-        zip_members.push((format!("page_{index:04}"), path.clone()));
-    }
-    write_zip(&zip_path, &zip_members)?;
-
     Ok(BuildObstacleDatasetResult {
         manifest_path,
         stats_path,
         had_root_path,
         had_page_paths,
-        zip_path,
         state_sha256,
         had_pairs,
     })
@@ -4736,14 +4720,6 @@ fn write_vector_had_pairs(path: &Path, pairs: &[VectorHadPairLine]) -> anyhow::R
     Ok(())
 }
 
-fn write_zip(path: &Path, members: &[(String, PathBuf)]) -> anyhow::Result<()> {
-    let members = members
-        .iter()
-        .map(|(member_name, source_path)| ZipSource::new(member_name.clone(), source_path.clone()))
-        .collect::<Vec<_>>();
-    write_deterministic_zip(path, &members)
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -4918,7 +4894,15 @@ mod tests {
         );
         assert!(result.had_root_path.is_file());
         assert!(!result.had_page_paths.is_empty());
-        assert!(result.zip_path.is_file());
+        assert!(
+            fs::read_dir(result.had_root_path.parent().unwrap())?.all(|entry| entry.is_ok_and(
+                |entry| entry
+                    .path()
+                    .extension()
+                    .is_none_or(|extension| extension != "zip")
+            )),
+            "obstacle HAD state must not contain a redundant ZIP package"
+        );
         assert!(!output_dir.join("points").exists());
 
         let root = had_nav_kv::NavKvRoot::parse(&fs::read(&result.had_root_path)?)
@@ -4943,22 +4927,7 @@ mod tests {
             manifest["encoding"],
             format!("had-nav-kv-v{}", had_nav_kv::VERSION)
         );
-
-        let zip_file = fs::File::open(&result.zip_path)?;
-        let mut archive = ZipArchive::new(zip_file)?;
-        let names = (0..archive.len())
-            .map(|index| {
-                archive
-                    .by_index(index)
-                    .map(|member| member.name().to_string())
-            })
-            .collect::<Result<Vec<_>, _>>()?;
-        assert!(names.iter().any(|name| name == "manifest.json"));
-        assert!(names.iter().any(|name| name == "root"));
-        assert!(names.iter().any(|name| name == "page_0000"));
-        assert!(!names
-            .iter()
-            .any(|name| name.starts_with("points/obstacle/")));
+        assert!(manifest["files"].get("package_zip").is_none());
         Ok(())
     }
 

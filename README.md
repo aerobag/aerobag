@@ -8,6 +8,9 @@ The platform interfaces share a Rust application core so navigation behavior,
 data contracts, and user-visible policy remain consistent across web and
 Android.
 
+The fixture-independent test tier runs in GitHub Actions. See
+[Continuous Integration](docs/ci.md) for suite boundaries and local commands.
+
 ## Repository Layout
 
 - `crates/` contains shared data formats and geometry libraries.

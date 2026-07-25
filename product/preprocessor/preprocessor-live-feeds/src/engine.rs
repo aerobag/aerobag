@@ -3459,11 +3459,9 @@ mod tests {
     }
 
     #[test]
+    #[ignore = "requires the external three-hour METAR fixture"]
     fn generic_metar_delta_fixture_reconstructs_three_hour_capture() -> anyhow::Result<()> {
-        let Some(states) = metar_delta_fixture_states()? else {
-            eprintln!("skipping large-fixture METAR delta test: set AEROBAG_TEST_ARTIFACTS_ROOT");
-            return Ok(());
-        };
+        let states = metar_delta_fixture_states()?;
 
         println!(
             "{:<17} {:>10} {:>10} {:>10} {:>10} {:>8} {:>8} {:>8} {:>8}",
@@ -4788,21 +4786,13 @@ mod tests {
         })
     }
 
-    fn metar_delta_fixture_states() -> anyhow::Result<Option<Vec<Value>>> {
+    fn metar_delta_fixture_states() -> anyhow::Result<Vec<Value>> {
         let test_artifacts_root = std::env::var_os("AEROBAG_TEST_ARTIFACTS_ROOT")
-            .or_else(|| std::env::var_os("AEROBAG_TEST_ARTIFACTS"))
             .map(PathBuf::from)
-            .unwrap_or_else(|| {
-                PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-                    .join("..")
-                    .join("..")
-                    .join("..")
-                    .join("..")
-                    .join("aerobag-test-artifacts")
-            });
+            .context("set AEROBAG_TEST_ARTIFACTS_ROOT to run external fixture tests")?;
         let fixture_root = test_artifacts_root.join("metars").join("delta-three-hour");
         if !fixture_root.is_dir() {
-            return Ok(None);
+            bail!("missing METAR fixture directory {}", fixture_root.display());
         }
         let mut zip_paths = fs::read_dir(&fixture_root)
             .with_context(|| format!("failed to read {}", fixture_root.display()))?
@@ -4816,12 +4806,10 @@ mod tests {
             zip_paths.len() >= 20,
             "expected about two dozen METAR fixture states"
         );
-        Ok(Some(
-            zip_paths
-                .iter()
-                .map(|path| read_metars_json_from_zip(path))
-                .collect::<anyhow::Result<Vec<_>>>()?,
-        ))
+        zip_paths
+            .iter()
+            .map(|path| read_metars_json_from_zip(path))
+            .collect::<anyhow::Result<Vec<_>>>()
     }
 
     fn read_metars_json_from_zip(path: &Path) -> anyhow::Result<Value> {

@@ -4847,6 +4847,13 @@ mod tests {
         );
         write_source_urls(
             temp.path(),
+            "charts-tac/source_urls.jsonl",
+            &[
+                r#"{"event":"list_crawl","results":["https://aeronav.faa.gov/visual/03-19-2026/tac-files/Seattle_TAC.zip"]}"#,
+            ],
+        );
+        write_source_urls(
+            temp.path(),
             "charts-enr-l/source_urls.jsonl",
             &[
                 r#"{"event":"list_crawl","results":["https://aeronav.faa.gov/enroute/03-19-2026/enr_l01.zip"]}"#,

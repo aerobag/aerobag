@@ -1,8 +1,12 @@
 __pycache__/
 *.swp
 .codex
+.ci/
 node_modules/
 build/
+target/
+test-results/
+vitest-junit.xml
 ui/android-app/.gradle/
 ui/android-app/.kotlin/
 ui/android-app/local.properties

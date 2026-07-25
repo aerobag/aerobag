@@ -38,6 +38,11 @@ mkdir -p "$GRADLE_USER_HOME" "$PROJECT_CACHE_DIR"
 
 python3 "$APP_DIR/scripts/check_slow_ui_calls.py"
 
+GRADLE_TASKS=("$@")
+if [[ ${#GRADLE_TASKS[@]} -eq 0 ]]; then
+  GRADLE_TASKS=(test)
+fi
+
 (
   cd "$ROOT"
   env \
@@ -50,5 +55,5 @@ python3 "$APP_DIR/scripts/check_slow_ui_calls.py"
     AEROBAG_ANDROID_KEYSTORE_PASSWORD="$AEROBAG_ANDROID_KEYSTORE_PASSWORD" \
     AEROBAG_ANDROID_KEY_ALIAS="$AEROBAG_ANDROID_KEY_ALIAS" \
     AEROBAG_ANDROID_KEY_PASSWORD="$AEROBAG_ANDROID_KEY_PASSWORD" \
-    "$APP_DIR/gradlew" --project-cache-dir "$PROJECT_CACHE_DIR" --no-daemon -p "$APP_DIR" test
+    "$APP_DIR/gradlew" --project-cache-dir "$PROJECT_CACHE_DIR" --no-daemon -p "$APP_DIR" "${GRADLE_TASKS[@]}"
 )

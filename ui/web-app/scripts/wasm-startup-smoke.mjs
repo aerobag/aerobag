@@ -13,7 +13,9 @@ const repoRoot = process.env.AEROBAG_REPO_ROOT
   : path.resolve(scriptDir, "../../..");
 const generatedDir = process.env.AEROBAG_WASM_GENERATED_DIR
   ? path.resolve(process.env.AEROBAG_WASM_GENERATED_DIR)
-  : path.resolve(repoRoot, "../ui-target/web/generated");
+  : process.env.AEROBAG_UI_TARGET_ROOT
+    ? path.resolve(process.env.AEROBAG_UI_TARGET_ROOT, "web/generated")
+    : path.resolve(repoRoot, "../ui-target/web/generated");
 
 const modulePath = path.join(generatedDir, "app_wasm.js");
 const wasmPath = path.join(generatedDir, "app_wasm_bg.wasm");

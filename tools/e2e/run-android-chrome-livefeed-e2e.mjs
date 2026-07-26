@@ -674,7 +674,7 @@ async function waitForChromeDevtoolsSocket(serial) {
       const sockets = adbBestEffort(serial, ["shell", "cat", "/proc/net/unix"], { timeout: 5000 });
       return sockets.status === 0 && sockets.stdout.includes("@chrome_devtools_remote");
     },
-    15000,
+    60000,
     "Android Chrome did not create chrome_devtools_remote",
     250,
   );

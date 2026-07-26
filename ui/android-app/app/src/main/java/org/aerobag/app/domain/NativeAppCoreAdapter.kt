@@ -3533,6 +3533,7 @@ private fun WireAirportInfoUiView.toUi() = AirportInfoUiView(
     sunrise = sunrise?.toUi(),
     sunset = sunset?.toUi(),
     communications = communications.map { it.toUi() },
+    runwayDiagramComplex = runway_diagram_complex,
     runways = runways.map { it.toUi() },
 )
 

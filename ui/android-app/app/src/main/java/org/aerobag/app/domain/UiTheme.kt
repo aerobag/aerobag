@@ -66,6 +66,7 @@ data class AviationTheme(
     val airportRunwayTurf: Color,
     val airportRunwayUnpaved: Color,
     val airportRunwayWater: Color,
+    val airportRunwayInactive: Color,
 )
 
 data class FlightPlanRouteTheme(
@@ -136,6 +137,7 @@ private data class WireAviationTheme(
     val airport_runway_turf: String,
     val airport_runway_unpaved: String,
     val airport_runway_water: String,
+    val airport_runway_inactive: String,
 )
 
 @Serializable
@@ -201,6 +203,7 @@ object UiThemeLoader {
                 airportRunwayTurf = wire.aviation.airport_runway_turf.toColor(),
                 airportRunwayUnpaved = wire.aviation.airport_runway_unpaved.toColor(),
                 airportRunwayWater = wire.aviation.airport_runway_water.toColor(),
+                airportRunwayInactive = wire.aviation.airport_runway_inactive.toColor(),
             ),
             flightPlanRoute = FlightPlanRouteTheme(
                 completed = wire.flight_plan_route.completed.toColor(),

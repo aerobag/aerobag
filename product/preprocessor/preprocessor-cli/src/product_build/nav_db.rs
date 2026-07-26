@@ -2945,6 +2945,10 @@ struct AirportRunwayInfoRecord {
     end_b_ident: String,
     end_a_heading_true_deg: Option<f64>,
     end_b_heading_true_deg: Option<f64>,
+    end_a_latitude: Option<f64>,
+    end_a_longitude: Option<f64>,
+    end_b_latitude: Option<f64>,
+    end_b_longitude: Option<f64>,
     end_a_right_pattern: bool,
     end_b_right_pattern: bool,
 }
@@ -3015,11 +3019,15 @@ fn build_nav_kv_airport_info_pairs(
                     "end_a": {
                         "ident": runway.end_a_ident,
                         "heading_true_deg": runway.end_a_heading_true_deg,
+                        "latitude": runway.end_a_latitude,
+                        "longitude": runway.end_a_longitude,
                         "right_pattern": runway.end_a_right_pattern,
                     },
                     "end_b": {
                         "ident": runway.end_b_ident,
                         "heading_true_deg": runway.end_b_heading_true_deg,
+                        "latitude": runway.end_b_latitude,
+                        "longitude": runway.end_b_longitude,
                         "right_pattern": runway.end_b_right_pattern,
                     },
                 })
@@ -3256,6 +3264,8 @@ fn airport_info_runways_by_airport(
             &end_b_ident,
             magnetic_variation_deg,
         );
+        let end_a_position = valid_runway_position(&end_a_lat, &end_a_lon);
+        let end_b_position = valid_runway_position(&end_b_lat, &end_b_lon);
         by_airport
             .entry(airport_id)
             .or_default()
@@ -3267,6 +3277,10 @@ fn airport_info_runways_by_airport(
                 end_b_ident,
                 end_a_heading_true_deg,
                 end_b_heading_true_deg,
+                end_a_latitude: end_a_position.map(|position| position.0),
+                end_a_longitude: end_a_position.map(|position| position.1),
+                end_b_latitude: end_b_position.map(|position| position.0),
+                end_b_longitude: end_b_position.map(|position| position.1),
                 end_a_right_pattern: end_a_pattern.eq_ignore_ascii_case("Y"),
                 end_b_right_pattern: end_b_pattern.eq_ignore_ascii_case("Y"),
             });
@@ -3280,6 +3294,12 @@ fn airport_info_runways_by_airport(
         });
     }
     Ok(by_airport)
+}
+
+fn valid_runway_position(latitude: &str, longitude: &str) -> Option<(f64, f64)> {
+    let latitude = parse_optional_float(latitude)?;
+    let longitude = parse_optional_float(longitude)?;
+    valid_lat_lon(latitude, longitude).then_some((latitude, longitude))
 }
 
 fn airport_frequency_label(kind: &str) -> &'static str {
@@ -6065,8 +6085,10 @@ mod tests {
                 INSERT INTO awos VALUES
                     ('KRNT', 'ASOS', 'Y', '126.95', '', '425-255-6080', '');
                 INSERT INTO airportrunways VALUES
-                    ('KRNT', '3200', '35', 'TURF-F', '08', '26', '084', '264', 'Y', 'N', '', '', '', ''),
-                    ('KRNT', '5382', '200', 'ASPH-CONC-G', '16', '34', '174', '354', 'N', 'Y', '', '', '', ''),
+                    ('KRNT', '3200', '35', 'TURF-F', '08', '26', '084', '264', 'Y', 'N',
+                     '47.4930', '-122.2240', '47.4930', '-122.2080'),
+                    ('KRNT', '5382', '200', 'ASPH-CONC-G', '16', '34', '174', '354', 'N', 'Y',
+                     '47.5000', '-122.2160', '47.4860', '-122.2160'),
                     ('S88', '2050', '100', 'TURF-G', '06', '24', '', '', 'N', 'N', '', '', '', '');
                 "#,
             )
@@ -6083,6 +6105,8 @@ mod tests {
         assert_eq!(value["time_zone"], "America/Los_Angeles");
         assert_eq!(value["traffic_pattern_altitude_msl_ft"], 1218.0);
         assert_eq!(value["runways"][0]["length_ft"], 5382.0);
+        assert_eq!(value["runways"][0]["end_a"]["latitude"], 47.5);
+        assert_eq!(value["runways"][0]["end_b"]["longitude"], -122.216);
         assert_eq!(value["runways"][0]["end_b"]["right_pattern"], true);
         let approach = value["communications"]
             .as_array()

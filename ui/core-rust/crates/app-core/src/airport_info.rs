@@ -13,6 +13,8 @@ use crate::{had_ops::HadReadError, NavKvLookup, NavKvStore};
 // large/turbine recommendation needs aircraft context this airport-only view lacks.
 const DERIVED_TRAFFIC_PATTERN_ALTITUDE_AGL_FT: f64 = 1_000.0;
 const MIN_RUNWAY_DIAGRAM_SCALE_FT: f64 = 5_000.0;
+const FEET_PER_NAUTICAL_MILE: f64 = 6_076.115_49;
+const MAX_RUNWAY_ENDPOINT_DISTANCE_FROM_AIRPORT_FT: f64 = 20.0 * FEET_PER_NAUTICAL_MILE;
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct AirportInfoUiView {
@@ -27,6 +29,7 @@ pub struct AirportInfoUiView {
     pub sunrise: Option<AirportSolarEventUiView>,
     pub sunset: Option<AirportSolarEventUiView>,
     pub communications: Vec<AirportCommunicationUiView>,
+    pub runway_diagram_complex: bool,
     pub runways: Vec<AirportRunwayUiView>,
 }
 
@@ -59,7 +62,7 @@ pub struct AirportRunwayUiView {
     pub diagram_width_ratio: f64,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Clone, Deserialize)]
 struct AirportInfoRecord {
     schema_version: u32,
     airport_id: String,
@@ -77,20 +80,20 @@ struct AirportInfoRecord {
     runways: Vec<AirportRunwayRecord>,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Clone, Deserialize)]
 struct AirportCommunicationRecord {
     label: String,
     #[serde(default)]
     frequency: Option<String>,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Clone, Deserialize)]
 struct AirportContactRecord {
     label: String,
     phone: String,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Clone, Deserialize)]
 struct AirportRunwayRecord {
     length_ft: Option<f64>,
     width_ft: Option<f64>,
@@ -99,12 +102,23 @@ struct AirportRunwayRecord {
     end_b: AirportRunwayEndRecord,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Clone, Deserialize)]
 struct AirportRunwayEndRecord {
     ident: String,
     heading_true_deg: Option<f64>,
+    latitude: Option<f64>,
+    longitude: Option<f64>,
     #[serde(default)]
     right_pattern: bool,
+}
+
+#[derive(Debug, Clone, Copy)]
+struct RunwayDiagramGeometry {
+    end_a_x: f64,
+    end_a_y: f64,
+    end_b_x: f64,
+    end_b_y: f64,
+    width_ratio: f64,
 }
 
 pub(crate) fn airport_info(
@@ -160,11 +174,14 @@ fn project_airport_info(
         time_zone,
         now,
     );
-    let runway_scale_ft = record
+    let standalone_runway_scale_ft = record
         .runways
         .iter()
         .filter_map(|runway| runway.length_ft)
         .fold(MIN_RUNWAY_DIAGRAM_SCALE_FT, f64::max);
+    let complex_runway_geometry =
+        runway_complex_geometry(&record.runways, record.latitude, record.longitude);
+    let runway_diagram_complex = complex_runway_geometry.is_some();
     let communications = record
         .communications
         .into_iter()
@@ -189,7 +206,15 @@ fn project_airport_info(
     let runways = record
         .runways
         .iter()
-        .map(|runway| runway_ui_view(runway, runway_scale_ft))
+        .enumerate()
+        .map(|(index, runway)| {
+            let geometry = complex_runway_geometry
+                .as_ref()
+                .and_then(|geometries| geometries.get(index))
+                .copied()
+                .unwrap_or_else(|| standalone_runway_geometry(runway, standalone_runway_scale_ft));
+            runway_ui_view(runway, geometry)
+        })
         .collect();
 
     Ok(AirportInfoUiView {
@@ -208,6 +233,7 @@ fn project_airport_info(
         sunrise,
         sunset,
         communications,
+        runway_diagram_complex,
         runways,
     })
 }
@@ -305,7 +331,10 @@ fn format_duration_until(duration: Duration) -> String {
     format!("+{}:{:02}", total_minutes / 60, total_minutes % 60)
 }
 
-fn runway_ui_view(runway: &AirportRunwayRecord, scale_ft: f64) -> AirportRunwayUiView {
+fn standalone_runway_geometry(
+    runway: &AirportRunwayRecord,
+    scale_ft: f64,
+) -> RunwayDiagramGeometry {
     let heading = runway
         .end_a
         .heading_true_deg
@@ -315,6 +344,91 @@ fn runway_ui_view(runway: &AirportRunwayRecord, scale_ft: f64) -> AirportRunwayU
     let half_length = runway.length_ft.unwrap_or_default() / scale_ft / 2.0;
     let dx = heading.sin() * half_length;
     let dy = -heading.cos() * half_length;
+    RunwayDiagramGeometry {
+        end_a_x: -dx,
+        end_a_y: -dy,
+        end_b_x: dx,
+        end_b_y: dy,
+        width_ratio: runway.width_ft.unwrap_or_default() / scale_ft,
+    }
+}
+
+fn runway_complex_geometry(
+    runways: &[AirportRunwayRecord],
+    airport_latitude: f64,
+    airport_longitude: f64,
+) -> Option<Vec<RunwayDiagramGeometry>> {
+    if runways.is_empty()
+        || !airport_latitude.is_finite()
+        || !airport_longitude.is_finite()
+        || !(-90.0..=90.0).contains(&airport_latitude)
+        || !(-180.0..=180.0).contains(&airport_longitude)
+    {
+        return None;
+    }
+    let longitude_scale_ft = 60.0 * FEET_PER_NAUTICAL_MILE * airport_latitude.to_radians().cos();
+    let latitude_scale_ft = 60.0 * FEET_PER_NAUTICAL_MILE;
+    let local_point = |end: &AirportRunwayEndRecord| {
+        let latitude = end.latitude?;
+        let longitude = end.longitude?;
+        (latitude.is_finite()
+            && longitude.is_finite()
+            && (-90.0..=90.0).contains(&latitude)
+            && (-180.0..=180.0).contains(&longitude))
+        .then(|| {
+            let longitude_delta = (longitude - airport_longitude + 180.0).rem_euclid(360.0) - 180.0;
+            (
+                longitude_delta * longitude_scale_ft,
+                -(latitude - airport_latitude) * latitude_scale_ft,
+            )
+        })
+        .filter(|(x, y)| x.hypot(*y) <= MAX_RUNWAY_ENDPOINT_DISTANCE_FROM_AIRPORT_FT)
+    };
+    let mut endpoints = Vec::with_capacity(runways.len());
+    for runway in runways {
+        let end_a = local_point(&runway.end_a)?;
+        let end_b = local_point(&runway.end_b)?;
+        let length_ft = (end_b.0 - end_a.0).hypot(end_b.1 - end_a.1);
+        if length_ft < 1.0 {
+            return None;
+        }
+        endpoints.push((end_a, end_b));
+    }
+    let (min_x, max_x, min_y, max_y) = endpoints.iter().flat_map(|(a, b)| [a, b]).fold(
+        (
+            f64::INFINITY,
+            f64::NEG_INFINITY,
+            f64::INFINITY,
+            f64::NEG_INFINITY,
+        ),
+        |(min_x, max_x, min_y, max_y), &(x, y)| {
+            (min_x.min(x), max_x.max(x), min_y.min(y), max_y.max(y))
+        },
+    );
+    let center_x = (min_x + max_x) / 2.0;
+    let center_y = (min_y + max_y) / 2.0;
+    let scale_ft = MIN_RUNWAY_DIAGRAM_SCALE_FT
+        .max(max_x - min_x)
+        .max(max_y - min_y);
+    Some(
+        runways
+            .iter()
+            .zip(endpoints)
+            .map(|(runway, (end_a, end_b))| RunwayDiagramGeometry {
+                end_a_x: (end_a.0 - center_x) / scale_ft,
+                end_a_y: (end_a.1 - center_y) / scale_ft,
+                end_b_x: (end_b.0 - center_x) / scale_ft,
+                end_b_y: (end_b.1 - center_y) / scale_ft,
+                width_ratio: runway.width_ft.unwrap_or_default() / scale_ft,
+            })
+            .collect(),
+    )
+}
+
+fn runway_ui_view(
+    runway: &AirportRunwayRecord,
+    geometry: RunwayDiagramGeometry,
+) -> AirportRunwayUiView {
     let (surface_label, surface_color_key) = runway_surface(&runway.surface);
     AirportRunwayUiView {
         end_a_label: format!(
@@ -344,11 +458,11 @@ fn runway_ui_view(runway: &AirportRunwayRecord, scale_ft: f64) -> AirportRunwayU
         },
         surface_label,
         surface_color_key,
-        diagram_end_a_x: -dx,
-        diagram_end_a_y: -dy,
-        diagram_end_b_x: dx,
-        diagram_end_b_y: dy,
-        diagram_width_ratio: runway.width_ft.unwrap_or_default() / scale_ft,
+        diagram_end_a_x: geometry.end_a_x,
+        diagram_end_a_y: geometry.end_a_y,
+        diagram_end_b_x: geometry.end_b_x,
+        diagram_end_b_y: geometry.end_b_y,
+        diagram_width_ratio: geometry.width_ratio,
     }
 }
 
@@ -436,11 +550,15 @@ mod tests {
                 end_a: AirportRunwayEndRecord {
                     ident: "16".to_string(),
                     heading_true_deg: Some(174.0),
+                    latitude: None,
+                    longitude: None,
                     right_pattern: false,
                 },
                 end_b: AirportRunwayEndRecord {
                     ident: "34".to_string(),
                     heading_true_deg: Some(354.0),
+                    latitude: None,
+                    longitude: None,
                     right_pattern: true,
                 },
             }],
@@ -467,6 +585,7 @@ mod tests {
             "Asphalt / Concrete, good condition"
         );
         assert_eq!(view.runways[0].surface_color_key, "airport_runway_paved");
+        assert!(!view.runway_diagram_complex);
         assert!(
             view.sunrise
                 .iter()
@@ -475,6 +594,38 @@ mod tests {
                 .count()
                 == 1
         );
+    }
+
+    #[test]
+    fn runway_complex_requires_and_preserves_every_runway_position() {
+        let now = Utc.with_ymd_and_hms(2026, 7, 26, 2, 34, 0).unwrap();
+        let mut record = sample_record();
+        record.runways[0].end_a.latitude = Some(47.4638);
+        record.runways[0].end_a.longitude = Some(-122.3110);
+        record.runways[0].end_b.latitude = Some(47.4380);
+        record.runways[0].end_b.longitude = Some(-122.3112);
+        let mut west_runway = record.runways[0].clone();
+        west_runway.end_a.ident = "16R".to_string();
+        west_runway.end_b.ident = "34L".to_string();
+        west_runway.end_a.longitude = Some(-122.3179);
+        west_runway.end_b.longitude = Some(-122.3181);
+        record.runways.push(west_runway);
+
+        let complex = project_airport_info(record.clone(), now).expect("complex view");
+        assert!(complex.runway_diagram_complex);
+        let east_center_x =
+            (complex.runways[0].diagram_end_a_x + complex.runways[0].diagram_end_b_x) / 2.0;
+        let west_center_x =
+            (complex.runways[1].diagram_end_a_x + complex.runways[1].diagram_end_b_x) / 2.0;
+        assert!(east_center_x > west_center_x);
+
+        record.runways[1].end_b.longitude = None;
+        let fallback = project_airport_info(record, now).expect("fallback view");
+        assert!(!fallback.runway_diagram_complex);
+        for runway in fallback.runways {
+            assert!((runway.diagram_end_a_x + runway.diagram_end_b_x).abs() < 1e-12);
+            assert!((runway.diagram_end_a_y + runway.diagram_end_b_y).abs() < 1e-12);
+        }
     }
 
     #[test]

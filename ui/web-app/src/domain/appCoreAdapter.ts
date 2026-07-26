@@ -593,6 +593,7 @@ export type AirportInfoUiView = {
   sunrise?: AirportSolarEventUiView | null;
   sunset?: AirportSolarEventUiView | null;
   communications: AirportCommunicationUiView[];
+  runway_diagram_complex: boolean;
   runways: AirportRunwayUiView[];
 };
 

@@ -1138,6 +1138,7 @@ data class WireAirportInfoUiView(
     val sunrise: WireAirportSolarEventUiView? = null,
     val sunset: WireAirportSolarEventUiView? = null,
     val communications: List<WireAirportCommunicationUiView> = emptyList(),
+    val runway_diagram_complex: Boolean = false,
     val runways: List<WireAirportRunwayUiView> = emptyList(),
 )
 

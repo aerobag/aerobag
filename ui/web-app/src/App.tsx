@@ -884,6 +884,7 @@ type UiThemeJson = {
     airport_runway_turf: string;
     airport_runway_unpaved: string;
     airport_runway_water: string;
+    airport_runway_inactive: string;
   };
   flight_plan_route: {
     completed: string;
@@ -3146,6 +3147,7 @@ export default function App() {
         "--theme-airport-runway-turf": loadedUiTheme.aviation.airport_runway_turf,
         "--theme-airport-runway-unpaved": loadedUiTheme.aviation.airport_runway_unpaved,
         "--theme-airport-runway-water": loadedUiTheme.aviation.airport_runway_water,
+        "--theme-airport-runway-inactive": loadedUiTheme.aviation.airport_runway_inactive,
       }) as CSSProperties,
     [],
   );
@@ -9579,7 +9581,11 @@ function AirportInfoModal(props: { detail: AirportInfoUiView }) {
           <div className="airportRunwayList">
             {detail.runways.map((runway, index) => (
               <article className="airportRunwayRow" key={`${runway.end_a_label}:${runway.end_b_label}:${index}`}>
-                <RunwayDiagram runway={runway} />
+                <RunwayDiagram
+                  runways={detail.runways}
+                  activeRunwayIndex={index}
+                  complex={detail.runway_diagram_complex}
+                />
                 <div className="airportRunwayText">
                   <div>{runway.end_a_label} /</div>
                   <div>{runway.end_b_label}</div>
@@ -9611,8 +9617,7 @@ function AirportInfoFact(props: {
   );
 }
 
-function RunwayDiagram(props: { runway: AirportInfoUiView["runways"][number] }) {
-  const { runway } = props;
+function runwayDiagramPolygon(runway: AirportInfoUiView["runways"][number]): string {
   const dx = runway.diagram_end_b_x - runway.diagram_end_a_x;
   const dy = runway.diagram_end_b_y - runway.diagram_end_a_y;
   const length = Math.hypot(dx, dy);
@@ -9629,15 +9634,40 @@ function RunwayDiagram(props: { runway: AirportInfoUiView["runways"][number] }) 
   const halfWidth = Math.max(runway.diagram_width_ratio, minimumExtent) / 2;
   const px = -directionY * halfWidth;
   const py = directionX * halfWidth;
-  const points = [
+  return [
     [endAX + px, endAY + py],
     [endBX + px, endBY + py],
     [endBX - px, endBY - py],
     [endAX - px, endAY - py],
   ].map(([x, y]) => `${x},${y}`).join(" ");
+}
+
+function RunwayDiagram(props: {
+  runways: AirportInfoUiView["runways"];
+  activeRunwayIndex: number;
+  complex: boolean;
+}) {
+  const { runways, activeRunwayIndex, complex } = props;
+  const activeRunway = runways[activeRunwayIndex];
+  const displayedRunways = complex
+    ? runways
+      .map((runway, index) => ({ runway, index }))
+      .sort((left, right) => Number(left.index === activeRunwayIndex) - Number(right.index === activeRunwayIndex))
+    : [{ runway: activeRunway, index: activeRunwayIndex }];
   return (
     <svg className="airportRunwayDiagram" viewBox="-0.58 -0.58 1.16 1.16" role="img" aria-label="North-up runway diagram">
-      <polygon points={points} fill={aviationThemeColor(runway.surface_color_key)} />
+      {displayedRunways.map(({ runway, index }) => {
+        const isActive = !complex || index === activeRunwayIndex;
+        return (
+          <polygon
+            key={`${runway.end_a_label}:${runway.end_b_label}:${index}`}
+            points={runwayDiagramPolygon(runway)}
+            fill={isActive ? aviationThemeColor(activeRunway.surface_color_key) : "none"}
+            stroke={isActive ? "none" : aviationThemeColor("airport_runway_inactive")}
+            strokeWidth={isActive ? undefined : 0.012}
+          />
+        );
+      })}
     </svg>
   );
 }

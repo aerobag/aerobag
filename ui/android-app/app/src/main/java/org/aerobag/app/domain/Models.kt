@@ -234,6 +234,7 @@ data class AirportInfoUiView(
     val sunrise: AirportSolarEventUiView?,
     val sunset: AirportSolarEventUiView?,
     val communications: List<AirportCommunicationUiView>,
+    val runwayDiagramComplex: Boolean,
     val runways: List<AirportRunwayUiView>,
 )
 

@@ -4182,7 +4182,7 @@ internal fun AirportInfoModal(
             }
             if (detail.runways.isNotEmpty()) {
                 AirportInfoSectionTitle("Runways")
-                detail.runways.forEach { runway ->
+                detail.runways.forEachIndexed { index, runway ->
                     Row(
                         modifier = Modifier
                             .fillMaxWidth()
@@ -4190,7 +4190,11 @@ internal fun AirportInfoModal(
                         horizontalArrangement = Arrangement.spacedBy(ThumbGap * 0.8f),
                         verticalAlignment = Alignment.CenterVertically,
                     ) {
-                        AirportRunwayDiagram(runway)
+                        AirportRunwayDiagram(
+                            runways = detail.runways,
+                            activeRunwayIndex = index,
+                            complex = detail.runwayDiagramComplex,
+                        )
                         Column(
                             modifier = Modifier.weight(1f),
                             verticalArrangement = Arrangement.spacedBy(ThumbGap * 0.18f),
@@ -4271,9 +4275,14 @@ private fun AirportInfoFact(
 }
 
 @Composable
-private fun AirportRunwayDiagram(runway: AirportRunwayUiView) {
+private fun AirportRunwayDiagram(
+    runways: List<AirportRunwayUiView>,
+    activeRunwayIndex: Int,
+    complex: Boolean,
+) {
     val uiTheme = LocalAerobagUiTheme.current
-    val runwayColor = when (runway.surfaceColorKey) {
+    val activeRunway = runways[activeRunwayIndex]
+    val runwayColor = when (activeRunway.surfaceColorKey) {
         "airport_runway_turf" -> uiTheme.aviation.airportRunwayTurf
         "airport_runway_unpaved" -> uiTheme.aviation.airportRunwayUnpaved
         "airport_runway_water" -> uiTheme.aviation.airportRunwayWater
@@ -4293,24 +4302,47 @@ private fun AirportRunwayDiagram(runway: AirportRunwayUiView) {
                 center.y + y.toFloat() * unit,
             )
         }
-        val rawStart = point(runway.diagramEndAX, runway.diagramEndAY)
-        val rawEnd = point(runway.diagramEndBX, runway.diagramEndBY)
-        val rawDelta = rawEnd - rawStart
-        val rawLength = rawDelta.getDistance()
         val minimumExtent = 2.dp.toPx()
-        val direction = if (rawLength > 0f) {
-            rawDelta / rawLength
+        val displayedRunways = if (complex) {
+            runways.withIndex().sortedBy { it.index == activeRunwayIndex }
         } else {
-            Offset(0f, -1f)
+            listOf(IndexedValue(activeRunwayIndex, activeRunway))
         }
-        val displayLength = rawLength.coerceAtLeast(minimumExtent)
-        drawLine(
-            color = runwayColor,
-            start = center - direction * (displayLength / 2f),
-            end = center + direction * (displayLength / 2f),
-            strokeWidth = (runway.diagramWidthRatio.toFloat() * unit).coerceAtLeast(minimumExtent),
-            cap = StrokeCap.Butt,
-        )
+        displayedRunways.forEach { (index, runway) ->
+            val rawStart = point(runway.diagramEndAX, runway.diagramEndAY)
+            val rawEnd = point(runway.diagramEndBX, runway.diagramEndBY)
+            val rawDelta = rawEnd - rawStart
+            val rawLength = rawDelta.getDistance()
+            val direction = if (rawLength > 0f) {
+                rawDelta / rawLength
+            } else {
+                Offset(0f, -1f)
+            }
+            val displayLength = rawLength.coerceAtLeast(minimumExtent)
+            val runwayCenter = (rawStart + rawEnd) / 2f
+            val halfLength = displayLength / 2f
+            val halfWidth =
+                (runway.diagramWidthRatio.toFloat() * unit).coerceAtLeast(minimumExtent) / 2f
+            val perpendicular = Offset(-direction.y, direction.x) * halfWidth
+            val start = runwayCenter - direction * halfLength
+            val end = runwayCenter + direction * halfLength
+            val path = Path().apply {
+                moveTo(start.x + perpendicular.x, start.y + perpendicular.y)
+                lineTo(end.x + perpendicular.x, end.y + perpendicular.y)
+                lineTo(end.x - perpendicular.x, end.y - perpendicular.y)
+                lineTo(start.x - perpendicular.x, start.y - perpendicular.y)
+                close()
+            }
+            if (index == activeRunwayIndex) {
+                drawPath(path = path, color = runwayColor)
+            } else {
+                drawPath(
+                    path = path,
+                    color = uiTheme.aviation.airportRunwayInactive,
+                    style = Stroke(width = 1.25.dp.toPx()),
+                )
+            }
+        }
     }
 }
 

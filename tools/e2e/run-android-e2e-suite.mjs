@@ -54,11 +54,13 @@ const E2E_ARTIFACT_DIR = process.env.AEROBAG_E2E_ARTIFACT_DIR ?? join(tmpdir(), 
 
 function usage() {
   console.log(`Usage:
-  node tools/e2e/run-android-e2e-suite.mjs [--serial emulator-5554] [--route "KRNT KPWT"] [--package-source-port 8083] [--no-sync-offline-packages] [--test TEST_ID] [--json]
+  node tools/e2e/run-android-e2e-suite.mjs [--serial emulator-5554] [--route "KRNT KPWT"] [--package-source-port 8083] [--no-sync-offline-packages] [--sync-all-available-packages] [--test TEST_ID] [--json]
 
 Runs Android end-to-end UI tests against an installed Aerobag app.
 When a clean emulator starts on Offline Packages, the runner syncs the NW
-package set through the app UI before running the route smoke.`);
+package set through the app UI before running the route smoke. Compact
+publications may use --sync-all-available-packages to skip searches for region
+toggles that are not present in that publication.`);
 }
 
 function parseArgs(argv) {
@@ -67,6 +69,7 @@ function parseArgs(argv) {
     route: DEFAULT_ROUTE,
     packageSourcePort: DEFAULT_PACKAGE_SOURCE_PORT,
     syncOfflinePackages: true,
+    syncAllAvailablePackages: false,
     test: "",
     json: false,
   };
@@ -82,6 +85,8 @@ function parseArgs(argv) {
       args.packageSourcePort = argv[++i] ?? "";
     } else if (arg === "--no-sync-offline-packages") {
       args.syncOfflinePackages = false;
+    } else if (arg === "--sync-all-available-packages") {
+      args.syncAllAvailablePackages = true;
     } else if (arg === "--test") {
       args.test = argv[++i] ?? "";
     } else if (arg === "--json") {
@@ -179,7 +184,11 @@ async function tapTagIfPresent(serial, tag, timeoutMs = 3000) {
   }
 }
 
-async function ensureOfflinePackagesReady(serial, result, { packageSourcePort, syncOfflinePackages }) {
+async function ensureOfflinePackagesReady(
+  serial,
+  result,
+  { packageSourcePort, syncOfflinePackages, syncAllAvailablePackages },
+) {
   if (packageSourcePort) {
     adbBestEffort(serial, ["reverse", `tcp:${packageSourcePort}`, `tcp:${packageSourcePort}`]);
   }
@@ -222,13 +231,15 @@ async function ensureOfflinePackagesReady(serial, result, { packageSourcePort, s
 
   xml = dumpAndroid(serial);
   if (findNode(xml, (node) => hasAndroidTag(node, "parity:offline-packages-panel"))) {
-    for (const regionId of OFFLINE_REGION_IDS) {
-      if (regionId === "nw") continue;
-      const tag = `parity:offline-region:${regionId}:toggle`;
-      await scrollUntilTag(serial, tag, 6);
-      if (await tapTagIfPresent(serial, tag, 1200)) {
-        recordStep(result, "offline region deselected", regionId);
-        await delay(150);
+    if (!syncAllAvailablePackages) {
+      for (const regionId of OFFLINE_REGION_IDS) {
+        if (regionId === "nw") continue;
+        const tag = `parity:offline-region:${regionId}:toggle`;
+        await scrollUntilTag(serial, tag, 6);
+        if (await tapTagIfPresent(serial, tag, 1200)) {
+          recordStep(result, "offline region deselected", regionId);
+          await delay(150);
+        }
       }
     }
 
@@ -843,7 +854,8 @@ function captureLayerToggleRegressionScreenshot(serial, result) {
   return screenshotPath;
 }
 
-async function runLayerToggleNavDbRegression({ serial, route, packageSourcePort, syncOfflinePackages }) {
+async function runLayerToggleNavDbRegression(args) {
+  const { serial, route } = args;
   const result = createTestResult("android.layer-toggle-navdb-regression");
   adb(serial, ["logcat", "-c"]);
   await launchFreshAndroidApp(serial, { clearUiPrefs: true, clearCoreSettings: false });
@@ -851,7 +863,7 @@ async function runLayerToggleNavDbRegression({ serial, route, packageSourcePort,
   if (await acceptDisclaimerIfPresent(serial)) {
     recordStep(result, "disclaimer accepted");
   }
-  await ensureOfflinePackagesReady(serial, result, { packageSourcePort, syncOfflinePackages });
+  await ensureOfflinePackagesReady(serial, result, args);
   await waitForRuntime(serial, result);
   await ensurePlanPage(serial, result);
   await appendRoute(serial, result, route);
@@ -893,7 +905,8 @@ async function runLayerToggleNavDbRegression({ serial, route, packageSourcePort,
   return result;
 }
 
-async function runFlightPlanRouteSmoke({ serial, route, packageSourcePort, syncOfflinePackages }) {
+async function runFlightPlanRouteSmoke(args) {
+  const { serial, route } = args;
   const result = createTestResult("android.flight-plan-route-smoke");
   adb(serial, ["logcat", "-c"]);
   await launchFreshAndroidApp(serial, { clearUiPrefs: true, clearCoreSettings: false });
@@ -901,7 +914,7 @@ async function runFlightPlanRouteSmoke({ serial, route, packageSourcePort, syncO
   if (await acceptDisclaimerIfPresent(serial)) {
     recordStep(result, "disclaimer accepted");
   }
-  await ensureOfflinePackagesReady(serial, result, { packageSourcePort, syncOfflinePackages });
+  await ensureOfflinePackagesReady(serial, result, args);
   await waitForRuntime(serial, result);
   await ensurePlanPage(serial, result);
   await appendRoute(serial, result, route);
@@ -913,7 +926,8 @@ async function runFlightPlanRouteSmoke({ serial, route, packageSourcePort, syncO
   return result;
 }
 
-async function runMapFollowCtrGestureSmoke({ serial, route, packageSourcePort, syncOfflinePackages }) {
+async function runMapFollowCtrGestureSmoke(args) {
+  const { serial, route } = args;
   const result = createTestResult("android.map-follow-ctr-gesture-smoke");
   adb(serial, ["logcat", "-c"]);
   await launchFreshAndroidApp(serial, { clearUiPrefs: true, clearCoreSettings: false });
@@ -921,7 +935,7 @@ async function runMapFollowCtrGestureSmoke({ serial, route, packageSourcePort, s
   if (await acceptDisclaimerIfPresent(serial)) {
     recordStep(result, "disclaimer accepted");
   }
-  await ensureOfflinePackagesReady(serial, result, { packageSourcePort, syncOfflinePackages });
+  await ensureOfflinePackagesReady(serial, result, args);
   await waitForRuntime(serial, result);
   await ensurePlanPage(serial, result);
   await appendRoute(serial, result, route);
@@ -940,7 +954,8 @@ async function runMapFollowCtrGestureSmoke({ serial, route, packageSourcePort, s
   return result;
 }
 
-async function runPlateFirstRenderSmoke({ serial, packageSourcePort, syncOfflinePackages }) {
+async function runPlateFirstRenderSmoke(args) {
+  const { serial } = args;
   const result = createTestResult("android.plate-first-render-smoke");
   adb(serial, ["logcat", "-c"]);
   await launchFreshAndroidApp(serial, { clearUiPrefs: true, clearCoreSettings: false });
@@ -948,7 +963,7 @@ async function runPlateFirstRenderSmoke({ serial, packageSourcePort, syncOffline
   if (await acceptDisclaimerIfPresent(serial)) {
     recordStep(result, "disclaimer accepted");
   }
-  await ensureOfflinePackagesReady(serial, result, { packageSourcePort, syncOfflinePackages });
+  await ensureOfflinePackagesReady(serial, result, args);
   await waitForRuntime(serial, result);
   await ensureChartPage(serial, result);
   await openFirstPlateFromAirportInspector(serial, result, "KPLU");

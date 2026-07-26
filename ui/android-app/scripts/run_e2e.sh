@@ -11,16 +11,19 @@ APP_DIR="$ROOT/ui/android-app"
 TARGET_ROOT_FILE="$ROOT/ui/target-root.txt"
 INSTANCE_CONFIG="$ROOT/../INSTANCE_CONFIG"
 SKIP_INSTALL=0
+CLEAR_APP_DATA=0
 SYNC_OFFLINE_PACKAGES=1
+SYNC_ALL_AVAILABLE_PACKAGES=0
 TEST_ID=""
 
 usage() {
   cat <<'EOF'
-usage: run_e2e.sh [--skip-install] [--serial SERIAL] [--route "KRNT KPWT"] [--no-sync-offline-packages] [--test TEST_ID]
+usage: run_e2e.sh [--skip-install] [--clear-app-data] [--serial SERIAL] [--route "KRNT KPWT"] [--no-sync-offline-packages] [--sync-all-available-packages] [--test TEST_ID]
 
 Builds and installs the Android app, then runs Android end-to-end UI tests.
 Installed package data is preserved; the test runner clears only volatile UI
-state before launch. Pass --skip-install to run against an already-installed app.
+state before launch. Pass --clear-app-data for a clean-device package sync, or
+--skip-install to run against an already-installed app.
 If a clean device starts on Offline Packages, the runner syncs the NW package
 set unless --no-sync-offline-packages is supplied.
 EOF
@@ -41,6 +44,9 @@ while [[ "$#" -gt 0 ]]; do
     --skip-install)
       SKIP_INSTALL=1
       ;;
+    --clear-app-data)
+      CLEAR_APP_DATA=1
+      ;;
     --serial)
       ANDROID_SERIAL="${2:-}"
       shift
@@ -51,6 +57,9 @@ while [[ "$#" -gt 0 ]]; do
       ;;
     --no-sync-offline-packages)
       SYNC_OFFLINE_PACKAGES=0
+      ;;
+    --sync-all-available-packages)
+      SYNC_ALL_AVAILABLE_PACKAGES=1
       ;;
     --test)
       TEST_ID="${2:-}"
@@ -155,6 +164,11 @@ else
   echo "[1/2] skip installDebug"
 fi
 
+if [[ "$CLEAR_APP_DATA" -eq 1 ]]; then
+  echo "clear app data for clean E2E state"
+  adb -s "$ANDROID_SERIAL" shell pm clear org.aerobag.app >/dev/null
+fi
+
 echo "[2/2] android e2e"
 E2E_ARGS=(
   --serial "$ANDROID_SERIAL"
@@ -163,6 +177,9 @@ E2E_ARGS=(
 )
 if [[ "$SYNC_OFFLINE_PACKAGES" -eq 0 ]]; then
   E2E_ARGS+=(--no-sync-offline-packages)
+fi
+if [[ "$SYNC_ALL_AVAILABLE_PACKAGES" -eq 1 ]]; then
+  E2E_ARGS+=(--sync-all-available-packages)
 fi
 if [[ -n "$TEST_ID" ]]; then
   E2E_ARGS+=(--test "$TEST_ID")

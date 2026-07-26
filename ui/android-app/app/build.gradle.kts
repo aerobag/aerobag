@@ -18,12 +18,21 @@ plugins {
 }
 
 val ndkVersion = "26.3.11579264"
-val ndkRoot = "/usr/lib/android-sdk/ndk/$ndkVersion"
+val androidSdkRoot = System.getenv("ANDROID_SDK_ROOT")
+    ?: System.getenv("ANDROID_HOME")
+    ?: "/usr/lib/android-sdk"
+val ndkRoot = System.getenv("ANDROID_NDK_ROOT")
+    ?: "$androidSdkRoot/ndk/$ndkVersion"
 val ndkToolchainBin = "$ndkRoot/toolchains/llvm/prebuilt/linux-x86_64/bin"
 val rustArchiver = "$ndkRoot/toolchains/llvm/prebuilt/linux-x86_64/bin/llvm-ar"
-val rustToolchainBin = "/root/.rustup/toolchains/stable-x86_64-unknown-linux-gnu/bin"
-val cargoBinary = "$rustToolchainBin/cargo"
-val rustcBinary = "$rustToolchainBin/rustc"
+val cargoHome = System.getenv("CARGO_HOME")
+    ?: File(System.getProperty("user.home"), ".cargo").absolutePath
+val rustupHome = System.getenv("RUSTUP_HOME")
+    ?: File(System.getProperty("user.home"), ".rustup").absolutePath
+val cargoBinary = System.getenv("CARGO")
+    ?: "cargo"
+val rustcBinary = System.getenv("RUSTC")
+    ?: "rustc"
 
 fun readBooleanBuildConfig(key: String, defaultValue: Boolean): Boolean {
     val rawValue = System.getenv(key)
@@ -219,8 +228,8 @@ val copyRustLibraries = if (androidBuildNativeLibraries) {
         val linker = "$ndkToolchainBin/${target.linkerPrefix}21-clang"
         val buildTask = tasks.register<Exec>("buildRust${target.abi.replace("-", "").replace("_", "")}Android") {
             workingDir = rustProjectDir
-            environment("CARGO_HOME", "/root/.cargo")
-            environment("RUSTUP_HOME", "/root/.rustup")
+            environment("CARGO_HOME", cargoHome)
+            environment("RUSTUP_HOME", rustupHome)
             environment("RUSTC", rustcBinary)
             environment("CARGO_TARGET_DIR", rustTargetDir.absolutePath)
             environment("CARGO_TARGET_${target.envPrefix}_LINKER", linker)

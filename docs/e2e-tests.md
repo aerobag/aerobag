@@ -1,7 +1,7 @@
 # End-to-End Test Status
 
-Status as of 2026-07-04: Android E2E has an initial working framework in the
-tree, but it is not yet a required CI gate.
+Status as of 2026-07-26: native Android, Chrome-on-Android, and headless web
+journeys run in GitHub Actions as independently reported E2E jobs.
 
 ## What Exists
 
@@ -46,8 +46,12 @@ tree, but it is not yet a required CI gate.
   - Drags the map and verifies CTR remains engaged with the aircraft offset
     from center.
   - Zooms the map and verifies CTR remains engaged with that offset preserved.
+- `android.layer-toggle-navdb-regression`
+  - Opens the chart Layers tray against the installed NAVDB.
+  - Disables terrain and enables NEXRAD.
+  - Verifies both commands are accepted and the projected layer state changes.
 - `android.chrome.live-feed-network-recovery`
-  - Starts a strict local live-feed v2 server with a METAR product.
+  - Starts a strict local live-feed v3 server with a METAR product.
   - Starts Vite with `AEROBAG_LIVE_FEEDS_ORIGIN` pointed at that server.
   - Launches Chrome on Android, not the native Android app.
   - Waits for the live-feed connection and METAR version `v1`.
@@ -97,18 +101,23 @@ The emulator stack scripts now support:
 - `EMULATOR_HEADLESS=1` for CI-style runs
 - cleanup of stale emulator, Xvfb, and x11vnc processes for repeatable reruns
 
+## Package Fixture
+
+CI sparse-checks out
+`e2e/android-smoke-publication` from the commit pinned in
+`test-artifacts.lock.json`. The 35 MiB frozen publication contains a full
+production NAV12 package and a contract-valid TPP1 package restricted to KPLU.
+It exercises the ordinary Offline Packages discovery, download, checksum,
+install, and runtime adoption paths without depending on the 19 GiB production
+publication. Because that publication contains only the packages needed by the
+suite, CI syncs every available package and skips searching for absent regional
+toggles; tests against a full publication retain the NW-only selection flow.
+
 ## Known Gaps
 
-- The full `run_e2e_ci.sh` path still needs to be re-run from a clean emulator
-  and treated as the acceptance check for this foundation.
-- The framework is Android-only. Web parity through headless Chrome is still a
-  later step for general UI journeys; the first web-on-Android Chrome journey
-  now exists for live-feed network recovery.
-- The test depends on a current package publication being available to the
-  local package server.
-- Offline package sync is automated enough for the first smoke test, but it may
-  need hardening once more clean-emulator runs are collected.
-- The suite is not wired into GitHub Actions or any required merge gate yet.
+- General web UI parity journeys beyond NAVDB rollover still need to be added.
+- Emulator system image installation dominates cold-run setup time; Gradle and
+  Rust outputs are cached, while the Android state itself starts clean.
 
 ## Next Step
 

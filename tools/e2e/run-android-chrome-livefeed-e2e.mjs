@@ -12,6 +12,11 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { spawn, spawnSync } from "node:child_process";
 import { adb, adbBestEffort, delay, waitFor } from "./android-harness.mjs";
+import {
+  LIVE_FEED_SCHEMA_VERSION,
+  liveFeedPath,
+  metarVersionFromPath,
+} from "./live-feed-contract-paths.mjs";
 
 const REPO_ROOT = process.env.AEROBAG_REPO_ROOT
   ?? path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../..");
@@ -101,7 +106,7 @@ function utcForVersion(version) {
 function makeMetarState(version) {
   const timestamp = utcForVersion(version);
   return {
-    schema_version: 3,
+    schema_version: LIVE_FEED_SCHEMA_VERSION,
     version_label: version,
     generated_at_utc: timestamp,
     observed_at_utc: timestamp,
@@ -154,7 +159,7 @@ class ScriptedLiveFeedServer {
   manifestFor(version) {
     const entry = this.addVersion(version);
     return {
-      schema_version: 3,
+      schema_version: LIVE_FEED_SCHEMA_VERSION,
       product: "metars",
       version,
       state: {
@@ -170,7 +175,7 @@ class ScriptedLiveFeedServer {
   currentManifest() {
     const entry = this.addVersion(this.currentVersion);
     return {
-      schema_version: 3,
+      schema_version: LIVE_FEED_SCHEMA_VERSION,
       products: {
         metars: {
           current: entry.version,
@@ -188,7 +193,7 @@ class ScriptedLiveFeedServer {
     const entry = this.addVersion(version);
     this.currentVersion = version;
     const payload = JSON.stringify({
-      schema_version: 3,
+      schema_version: LIVE_FEED_SCHEMA_VERSION,
       product: "metars",
       version,
       version_manifest_url: `versions/metars/${version}.json`,
@@ -229,12 +234,12 @@ class ScriptedLiveFeedServer {
       sendText(res, 200, "text/html; charset=utf-8", "<!doctype html><title>test live feeds</title>");
       return;
     }
-    if (url.pathname === "/live-feeds/v3/current.json") {
+    if (url.pathname === liveFeedPath("current.json")) {
       this.requestCounts.current += 1;
       sendJson(res, this.currentManifest());
       return;
     }
-    if (url.pathname === "/live-feeds/v3/events") {
+    if (url.pathname === liveFeedPath("events")) {
       this.requestCounts.events += 1;
       if (!this.eventsAvailable) {
         sendText(res, 503, "text/plain; charset=utf-8", "events unavailable in test fixture");
@@ -254,16 +259,16 @@ class ScriptedLiveFeedServer {
       });
       return;
     }
-    const versionMatch = /^\/live-feeds\/v2\/versions\/metars\/([^/]+)\.json$/.exec(url.pathname);
-    if (versionMatch) {
+    const version = metarVersionFromPath(url.pathname, "versions");
+    if (version) {
       this.requestCounts.versions += 1;
-      sendJson(res, this.manifestFor(versionMatch[1]));
+      sendJson(res, this.manifestFor(version));
       return;
     }
-    const stateMatch = /^\/live-feeds\/v2\/states\/metars\/([^/]+)\.json$/.exec(url.pathname);
-    if (stateMatch) {
+    const stateVersion = metarVersionFromPath(url.pathname, "states");
+    if (stateVersion) {
       this.requestCounts.states += 1;
-      const entry = this.addVersion(stateMatch[1]);
+      const entry = this.addVersion(stateVersion);
       sendBuffer(res, 200, "application/json; charset=utf-8", entry.stateBytes);
       return;
     }

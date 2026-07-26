@@ -1,0 +1,257 @@
+# SPDX-FileCopyrightText: 2026 Aerobag contributors
+#
+# SPDX-License-Identifier: AGPL-3.0-or-later
+
+name: Fixture CI
+
+on:
+  push:
+    branches:
+      - main
+  pull_request:
+  schedule:
+    - cron: "23 9 * * 1"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: fixture-ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+  RUST_TOOLCHAIN: 1.94.1
+  RUSTUP_TOOLCHAIN: 1.94.1
+  NEXTEST_VERSION: 0.9.140
+
+jobs:
+  nav-db:
+    name: NAVDB fixture tests
+    runs-on: ubuntu-latest
+    env:
+      AEROBAG_TEST_ARTIFACTS_ROOT: ${{ github.workspace }}/.ci/test-artifacts
+      CARGO_TARGET_DIR: ${{ github.workspace }}/.ci/cargo-target/fixture-nav-db
+    steps:
+      - uses: actions/checkout@v5
+      - name: Install Rust toolchain
+        run: rustup toolchain install "$RUST_TOOLCHAIN" --profile minimal
+      - name: Install cargo-nextest
+        uses: taiki-e/install-action@7572810d7dd469b651bb7793945692cf78da5dd7 # v2
+        with:
+          tool: nextest@${{ env.NEXTEST_VERSION }}
+      - name: Cache Cargo
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            .ci/cargo-target/fixture-nav-db
+          key: fixture-nav-db-${{ runner.os }}-${{ env.RUST_TOOLCHAIN }}-${{ hashFiles('ui/core-rust/Cargo.lock', 'test-artifacts.lock.json') }}
+      - name: Fetch pinned NAVDB fixture
+        run: >-
+          python3 tools/ci/fetch_test_artifacts.py
+          --fixture nav-db-advance
+          --destination "$AEROBAG_TEST_ARTIFACTS_ROOT"
+      - name: Run NAVDB fixture tests
+        id: tests
+        continue-on-error: true
+        working-directory: ui/core-rust
+        run: >-
+          cargo nextest run
+          --profile ci
+          --locked
+          --package app-core
+          --run-ignored ignored-only
+      - name: Report individual tests
+        if: ${{ always() }}
+        run: >-
+          python3 tools/ci/junit_summary.py
+          --title "NAVDB fixture tests"
+          ".ci/cargo-target/fixture-nav-db/nextest/ci/junit.xml"
+      - name: Upload test results
+        if: ${{ always() }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: nav-db-fixture-test-results
+          path: .ci/cargo-target/fixture-nav-db/nextest/ci/junit.xml
+          if-no-files-found: ignore
+          retention-days: 14
+      - name: Enforce test results
+        if: ${{ steps.tests.outcome == 'failure' }}
+        run: exit 1
+
+  metar:
+    name: METAR fixture tests
+    runs-on: ubuntu-latest
+    env:
+      AEROBAG_TEST_ARTIFACTS_ROOT: ${{ github.workspace }}/.ci/test-artifacts
+      CARGO_TARGET_DIR: ${{ github.workspace }}/.ci/cargo-target/fixture-metar
+    steps:
+      - uses: actions/checkout@v5
+      - name: Install Rust toolchain
+        run: rustup toolchain install "$RUST_TOOLCHAIN" --profile minimal
+      - name: Install cargo-nextest
+        uses: taiki-e/install-action@7572810d7dd469b651bb7793945692cf78da5dd7 # v2
+        with:
+          tool: nextest@${{ env.NEXTEST_VERSION }}
+      - name: Cache Cargo
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            .ci/cargo-target/fixture-metar
+          key: fixture-metar-${{ runner.os }}-${{ env.RUST_TOOLCHAIN }}-${{ hashFiles('product/preprocessor/Cargo.lock', 'test-artifacts.lock.json') }}
+      - name: Fetch pinned METAR fixture
+        run: >-
+          python3 tools/ci/fetch_test_artifacts.py
+          --fixture metar-delta
+          --destination "$AEROBAG_TEST_ARTIFACTS_ROOT"
+      - name: Run METAR fixture tests
+        id: tests
+        continue-on-error: true
+        working-directory: product/preprocessor
+        run: >-
+          cargo nextest run
+          --profile ci
+          --locked
+          --package preprocessor-live-feeds
+          --run-ignored ignored-only
+          -E 'test(/generic_metar_delta_fixture_reconstructs_three_hour_capture$/)'
+      - name: Report individual tests
+        if: ${{ always() }}
+        run: >-
+          python3 tools/ci/junit_summary.py
+          --title "METAR fixture tests"
+          ".ci/cargo-target/fixture-metar/nextest/ci/junit.xml"
+      - name: Upload test results
+        if: ${{ always() }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: metar-fixture-test-results
+          path: .ci/cargo-target/fixture-metar/nextest/ci/junit.xml
+          if-no-files-found: ignore
+          retention-days: 14
+      - name: Enforce test results
+        if: ${{ steps.tests.outcome == 'failure' }}
+        run: exit 1
+
+  nms-notams:
+    name: NMS NOTAM full replay
+    if: ${{ github.event_name == 'schedule' || github.event_name == 'workflow_dispatch' }}
+    runs-on: ubuntu-latest
+    env:
+      AEROBAG_TEST_ARTIFACTS_ROOT: ${{ github.workspace }}/.ci/test-artifacts
+      CARGO_TARGET_DIR: ${{ github.workspace }}/.ci/cargo-target/fixture-nms-notams
+    steps:
+      - uses: actions/checkout@v5
+      - name: Install Rust toolchain
+        run: rustup toolchain install "$RUST_TOOLCHAIN" --profile minimal
+      - name: Install cargo-nextest
+        uses: taiki-e/install-action@7572810d7dd469b651bb7793945692cf78da5dd7 # v2
+        with:
+          tool: nextest@${{ env.NEXTEST_VERSION }}
+      - name: Cache Cargo
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            .ci/cargo-target/fixture-nms-notams
+          key: fixture-nms-notams-${{ runner.os }}-${{ env.RUST_TOOLCHAIN }}-${{ hashFiles('product/preprocessor/Cargo.lock', 'test-artifacts.lock.json') }}
+      - name: Fetch pinned NMS NOTAM fixture
+        run: >-
+          python3 tools/ci/fetch_test_artifacts.py
+          --fixture nms-notam-trace
+          --destination "$AEROBAG_TEST_ARTIFACTS_ROOT"
+      - name: Run NMS NOTAM replay
+        id: tests
+        continue-on-error: true
+        working-directory: product/preprocessor
+        run: >-
+          cargo nextest run
+          --release
+          --profile ci
+          --locked
+          --package nms-notams-fetch
+          --run-ignored ignored-only
+      - name: Report individual tests
+        if: ${{ always() }}
+        run: >-
+          python3 tools/ci/junit_summary.py
+          --title "NMS NOTAM full replay"
+          ".ci/cargo-target/fixture-nms-notams/nextest/ci/junit.xml"
+      - name: Upload test results
+        if: ${{ always() }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: nms-notam-fixture-test-results
+          path: .ci/cargo-target/fixture-nms-notams/nextest/ci/junit.xml
+          if-no-files-found: ignore
+          retention-days: 14
+      - name: Enforce test results
+        if: ${{ steps.tests.outcome == 'failure' }}
+        run: exit 1
+
+  nexrad:
+    name: NEXRAD full replay
+    if: ${{ github.event_name == 'schedule' || github.event_name == 'workflow_dispatch' }}
+    runs-on: ubuntu-latest
+    env:
+      AEROBAG_TEST_ARTIFACTS_ROOT: ${{ github.workspace }}/.ci/test-artifacts
+      CARGO_TARGET_DIR: ${{ github.workspace }}/.ci/cargo-target/fixture-nexrad
+    steps:
+      - uses: actions/checkout@v5
+      - name: Install Rust toolchain
+        run: rustup toolchain install "$RUST_TOOLCHAIN" --profile minimal
+      - name: Install NEXRAD system tools
+        run: |
+          sudo apt-get update
+          sudo apt-get install --yes gdal-bin
+      - name: Install cargo-nextest
+        uses: taiki-e/install-action@7572810d7dd469b651bb7793945692cf78da5dd7 # v2
+        with:
+          tool: nextest@${{ env.NEXTEST_VERSION }}
+      - name: Cache Cargo
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            .ci/cargo-target/fixture-nexrad
+          key: fixture-nexrad-${{ runner.os }}-${{ env.RUST_TOOLCHAIN }}-${{ hashFiles('product/preprocessor/Cargo.lock', 'test-artifacts.lock.json') }}
+      - name: Fetch pinned NEXRAD fixture
+        run: >-
+          python3 tools/ci/fetch_test_artifacts.py
+          --fixture nexrad-source-grid
+          --destination "$AEROBAG_TEST_ARTIFACTS_ROOT"
+      - name: Run NEXRAD replay
+        id: tests
+        continue-on-error: true
+        working-directory: product/preprocessor
+        run: >-
+          cargo nextest run
+          --profile ci
+          --locked
+          --package preprocessor-live-feeds
+          --run-ignored ignored-only
+          -E 'test(/nexrad_three_hour_fixture_/)'
+      - name: Report individual tests
+        if: ${{ always() }}
+        run: >-
+          python3 tools/ci/junit_summary.py
+          --title "NEXRAD full replay"
+          ".ci/cargo-target/fixture-nexrad/nextest/ci/junit.xml"
+      - name: Upload test results
+        if: ${{ always() }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: nexrad-fixture-test-results
+          path: .ci/cargo-target/fixture-nexrad/nextest/ci/junit.xml
+          if-no-files-found: ignore
+          retention-days: 14
+      - name: Enforce test results
+        if: ${{ steps.tests.outcome == 'failure' }}
+        run: exit 1

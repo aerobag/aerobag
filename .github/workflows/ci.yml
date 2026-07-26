@@ -25,6 +25,18 @@ env:
   NEXTEST_VERSION: 0.9.140
 
 jobs:
+  workflow-lint:
+    name: GitHub Actions workflows
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.23.6"
+          cache: false
+      - name: Run actionlint
+        run: go run github.com/rhysd/actionlint/cmd/actionlint@v1.7.7
+
   rust-format:
     name: Rust formatting
     runs-on: ubuntu-latest
@@ -77,13 +89,13 @@ jobs:
         run: cargo test --workspace --doc --locked
       - name: Report individual tests
         if: ${{ always() }}
-        run: python3 tools/ci/junit_summary.py --title "Rust shared crates" "crates/target/nextest/ci/junit.xml"
+        run: python3 tools/ci/junit_summary.py --title "Rust shared crates" ".ci/cargo-target/shared/nextest/ci/junit.xml"
       - name: Upload test results
         if: ${{ always() }}
         uses: actions/upload-artifact@v4
         with:
           name: rust-shared-test-results
-          path: crates/target/nextest/ci/junit.xml
+          path: .ci/cargo-target/shared/nextest/ci/junit.xml
           if-no-files-found: ignore
           retention-days: 14
       - name: Enforce test results
@@ -130,13 +142,13 @@ jobs:
         run: cargo test --workspace --doc --locked
       - name: Report individual tests
         if: ${{ always() }}
-        run: python3 tools/ci/junit_summary.py --title "Rust application core" "ui/core-rust/target/nextest/ci/junit.xml"
+        run: python3 tools/ci/junit_summary.py --title "Rust application core" ".ci/cargo-target/core/nextest/ci/junit.xml"
       - name: Upload test results
         if: ${{ always() }}
         uses: actions/upload-artifact@v4
         with:
           name: rust-core-test-results
-          path: ui/core-rust/target/nextest/ci/junit.xml
+          path: .ci/cargo-target/core/nextest/ci/junit.xml
           if-no-files-found: ignore
           retention-days: 14
       - name: Enforce test results
@@ -185,13 +197,13 @@ jobs:
         run: cargo test --workspace --doc --locked
       - name: Report individual tests
         if: ${{ always() }}
-        run: python3 tools/ci/junit_summary.py --title "Rust preprocessors" "product/preprocessor/target/nextest/ci/junit.xml"
+        run: python3 tools/ci/junit_summary.py --title "Rust preprocessors" ".ci/cargo-target/preprocessor/nextest/ci/junit.xml"
       - name: Upload test results
         if: ${{ always() }}
         uses: actions/upload-artifact@v4
         with:
           name: rust-preprocessor-test-results
-          path: product/preprocessor/target/nextest/ci/junit.xml
+          path: .ci/cargo-target/preprocessor/nextest/ci/junit.xml
           if-no-files-found: ignore
           retention-days: 14
       - name: Enforce test results
@@ -242,6 +254,8 @@ jobs:
         run: |
           mkdir -p "$(dirname "$AEROBAG_JUNIT_PATH")"
           npm --prefix ui/web-app run ci
+      - name: Test browser E2E harness contracts
+        run: node --test tools/e2e/*.test.mjs
       - name: Verify generated sources are current
         run: git diff --exit-code -- ui/web-app/src/generated
       - name: Report individual tests
@@ -328,6 +342,8 @@ jobs:
           /usr/bin/python3 -m pytest \
             tools/test_admin_index.py \
             tools/test_chart_cutline_editor.py \
+            tools/ci/test_build_e2e_package_fixture.py \
+            tools/ci/test_fetch_test_artifacts.py \
             tools/ci/test_junit_summary.py \
             product/preprocessor/scripts/test_build_multi_version_publication.py \
             product/preprocessor/scripts/test_pipeline_health.py \

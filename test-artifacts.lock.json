@@ -1,0 +1,60 @@
+{
+  "schema_version": 1,
+  "repository": "https://github.com/aerobag/test-artifacts.git",
+  "commit": "294d41f00812dae4a330e437d0e79cd6570814f8",
+  "fixtures": {
+    "android-smoke-publication": {
+      "path": "e2e/android-smoke-publication",
+      "contract_version": 1,
+      "manifest": {
+        "path": "fixture.json",
+        "version_field": "schema_version"
+      }
+    },
+    "metar-delta": {
+      "path": "metars/delta-three-hour",
+      "contract_version": 1,
+      "required_globs": [
+        "*.zip"
+      ]
+    },
+    "nav-db-advance": {
+      "path": "nav-db/advance-2607-to-2608",
+      "contract_version": 1,
+      "manifest": {
+        "path": "fixture.json",
+        "version_field": "schema_version"
+      }
+    },
+    "nexrad-source-grid": {
+      "path": "nexrad/source-grid-three-hour",
+      "contract_version": 1,
+      "manifest": {
+        "path": "manifest.json",
+        "version_field": "schema_version"
+      }
+    },
+    "nms-notam-trace": {
+      "path": "notams/nms-api-trace",
+      "contract_version": 2,
+      "manifest": {
+        "path": "capture_manifest.json",
+        "version_field": "schema_version"
+      }
+    },
+    "obstacle-delta": {
+      "path": "obstacles/delta-trace",
+      "contract_version": 1,
+      "required_globs": [
+        "**/*.zip"
+      ]
+    },
+    "winds-aloft-cycle": {
+      "path": "winds-aloft/cycle-trace",
+      "contract_version": 1,
+      "required_globs": [
+        "**/*.zip"
+      ]
+    }
+  }
+}

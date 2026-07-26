@@ -3,6 +3,9 @@
 Status as of 2026-07-26: native Android, Chrome-on-Android, and headless web
 journeys run in GitHub Actions as independently reported E2E jobs.
 
+Hosted-runner invariants and failure diagnostics are documented in
+[Hosted CI Invariants](testing/hosted-ci.md).
+
 ## What Exists
 
 - `tools/e2e/android-harness.mjs` provides the shared adb/uiautomator helpers.
@@ -119,7 +122,7 @@ toggles; tests against a full publication retain the NW-only selection flow.
 - Emulator system image installation dominates cold-run setup time; Gradle and
   Rust outputs are cached, while the Android state itself starts clean.
 
-## Next Step
+## Local Reproduction
 
 Run:
 
@@ -127,8 +130,7 @@ Run:
 ./ui/android-app/scripts/run_e2e_ci.sh --with-vnc
 ```
 
-Fix any clean-emulator failures, then make the same command run headless under
-CI before expanding the suite.
+Use `--headless` to reproduce the hosted-runner display mode.
 
 For the Android Chrome live-feed recovery suite:
 

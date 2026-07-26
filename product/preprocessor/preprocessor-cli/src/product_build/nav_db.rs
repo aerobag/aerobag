@@ -4451,6 +4451,8 @@ pub(super) fn load_terminal_navaid_variation_map(
 }
 
 pub(super) fn position_lookup_key(lat: f64, lon: f64) -> (i64, i64) {
+    let lat = round_nav_coordinate(lat);
+    let lon = round_nav_coordinate(lon);
     (
         (lat * 1_000_000.0).round() as i64,
         (lon * 1_000_000.0).round() as i64,
@@ -4483,6 +4485,32 @@ pub(super) fn build_position_lookup(
             .or_insert_with(|| id.clone());
     }
     lookup
+}
+
+pub(super) fn build_canonical_position_lookup(
+    positions: &BTreeMap<String, serde_json::Value>,
+) -> BTreeMap<(i64, i64), BTreeSet<String>> {
+    let mut lookup = BTreeMap::<_, BTreeSet<_>>::new();
+    for (id, position) in positions {
+        let Some(lat) = position.get("lat").and_then(|value| value.as_f64()) else {
+            continue;
+        };
+        let Some(lon) = position.get("lon").and_then(|value| value.as_f64()) else {
+            continue;
+        };
+        lookup
+            .entry(canonical_position_lookup_key(lat, lon))
+            .or_default()
+            .insert(id.clone());
+    }
+    lookup
+}
+
+pub(super) fn canonical_position_lookup_key(lat: f64, lon: f64) -> (i64, i64) {
+    (
+        (lat * NAV_COORDINATE_DECIMAL_SCALE).round() as i64,
+        (lon * NAV_COORDINATE_DECIMAL_SCALE).round() as i64,
+    )
 }
 
 pub(super) fn load_runway_position_map(
@@ -4602,6 +4630,8 @@ pub(super) fn build_nav_kv_airway_pairs(
     connection: &rusqlite::Connection,
 ) -> anyhow::Result<Vec<NavKvPair>> {
     let nav_context = NavLookupContext::load(connection)?;
+    let navaid_ids_by_canonical_position =
+        build_canonical_position_lookup(&nav_context.navaid_positions);
     let mut stmt = connection.prepare(
         "
         SELECT trim(name), trim(branch_key), CAST(sequence_number AS INTEGER),
@@ -4623,10 +4653,21 @@ pub(super) fn build_nav_kv_airway_pairs(
     })?;
     let mut branch_points = BTreeMap::<(String, String), Vec<serde_json::Value>>::new();
     let mut spatial_points = BTreeMap::<(i32, i32), Vec<serde_json::Value>>::new();
+    let mut colocated_navaid_violations = Vec::new();
     for row in rows {
         let (name, branch_key, sequence, point_name, lat, lon) = row?;
         let position = nav_lat_lon_json(lat, lon);
         let nav_ref = nav_context.classify_airway_point_json(&point_name, lat, lon);
+        if let Some(expected_navaids) =
+            navaid_ids_by_canonical_position.get(&canonical_position_lookup_key(lat, lon))
+        {
+            let actual_navaid = nav_ref.get("Navaid").and_then(serde_json::Value::as_str);
+            if actual_navaid.is_none_or(|actual| !expected_navaids.contains(actual)) {
+                colocated_navaid_violations.push(format!(
+                    "{name}/{branch_key}/{sequence} {point_name}: expected one of {expected_navaids:?}, got {nav_ref}"
+                ));
+            }
+        }
         nav_context.assert_airway_point_nav_ref_invariant(
             &name,
             &branch_key,
@@ -4658,6 +4699,12 @@ pub(super) fn build_nav_kv_airway_pairs(
             .or_default()
             .push(spatial_point);
     }
+    anyhow::ensure!(
+        colocated_navaid_violations.is_empty(),
+        "{} airway point(s) colocated with known navaids lost navaid identity:\n{}",
+        colocated_navaid_violations.len(),
+        colocated_navaid_violations.join("\n")
+    );
 
     let mut branches_by_airway = BTreeMap::<String, Vec<serde_json::Value>>::new();
     for ((name, branch_key), points) in branch_points {

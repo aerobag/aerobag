@@ -115,6 +115,9 @@ ensure_avd_hardware_keyboard() {
     return 1
   fi
 
+  ANDROID_AVD_HOME="$(dirname "$avd_path")"
+  export ANDROID_AVD_HOME
+
   local config_file="${avd_path}/config.ini"
   if [[ ! -f "$config_file" ]]; then
     echo "AVD config not found: $config_file" >&2

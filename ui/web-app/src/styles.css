@@ -1654,18 +1654,6 @@ button {
   background: color-mix(in srgb, var(--theme-map-selection-display-bg) 72%, white);
 }
 
-.airportRunwayScaleCircle {
-  fill: none;
-  stroke: color-mix(in srgb, var(--theme-panel-muted) 28%, transparent);
-  stroke-width: 0.008;
-}
-
-.airportRunwayNorth {
-  fill: none;
-  stroke: var(--theme-panel-muted);
-  stroke-width: 0.012;
-}
-
 .airportRunwayText {
   display: grid;
   gap: calc(var(--thumb-gap) * 0.22);

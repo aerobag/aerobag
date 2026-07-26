@@ -4288,23 +4288,22 @@ private fun AirportRunwayDiagram(runway: AirportRunwayUiView) {
                 center.y + y.toFloat() * unit,
             )
         }
-        drawCircle(
-            color = uiTheme.controls.panelMuted.copy(alpha = 0.25f),
-            radius = unit / 2f,
-            center = center,
-            style = Stroke(width = 1.dp.toPx()),
-        )
-        drawLine(
-            color = uiTheme.controls.panelMuted,
-            start = Offset(center.x, center.y - unit * 0.54f),
-            end = Offset(center.x, center.y - unit * 0.46f),
-            strokeWidth = 1.5.dp.toPx(),
-        )
+        val rawStart = point(runway.diagramEndAX, runway.diagramEndAY)
+        val rawEnd = point(runway.diagramEndBX, runway.diagramEndBY)
+        val rawDelta = rawEnd - rawStart
+        val rawLength = rawDelta.getDistance()
+        val minimumExtent = 2.dp.toPx()
+        val direction = if (rawLength > 0f) {
+            rawDelta / rawLength
+        } else {
+            Offset(0f, -1f)
+        }
+        val displayLength = rawLength.coerceAtLeast(minimumExtent)
         drawLine(
             color = runwayColor,
-            start = point(runway.diagramEndAX, runway.diagramEndAY),
-            end = point(runway.diagramEndBX, runway.diagramEndBY),
-            strokeWidth = (runway.diagramWidthRatio.toFloat() * unit).coerceAtLeast(2.dp.toPx()),
+            start = center - direction * (displayLength / 2f),
+            end = center + direction * (displayLength / 2f),
+            strokeWidth = (runway.diagramWidthRatio.toFloat() * unit).coerceAtLeast(minimumExtent),
             cap = StrokeCap.Butt,
         )
     }

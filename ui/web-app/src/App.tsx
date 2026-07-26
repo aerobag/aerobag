@@ -9581,19 +9581,27 @@ function RunwayDiagram(props: { runway: AirportInfoUiView["runways"][number] }) 
   const dx = runway.diagram_end_b_x - runway.diagram_end_a_x;
   const dy = runway.diagram_end_b_y - runway.diagram_end_a_y;
   const length = Math.hypot(dx, dy);
-  const halfWidth = Math.max(runway.diagram_width_ratio / 2, 0.012);
-  const px = length > 0 ? -dy / length * halfWidth : halfWidth;
-  const py = length > 0 ? dx / length * halfWidth : 0;
+  const minimumExtent = 0.024;
+  const displayLength = Math.max(length, minimumExtent);
+  const directionX = length > 0 ? dx / length : 0;
+  const directionY = length > 0 ? dy / length : -1;
+  const centerX = (runway.diagram_end_a_x + runway.diagram_end_b_x) / 2;
+  const centerY = (runway.diagram_end_a_y + runway.diagram_end_b_y) / 2;
+  const endAX = centerX - directionX * displayLength / 2;
+  const endAY = centerY - directionY * displayLength / 2;
+  const endBX = centerX + directionX * displayLength / 2;
+  const endBY = centerY + directionY * displayLength / 2;
+  const halfWidth = Math.max(runway.diagram_width_ratio, minimumExtent) / 2;
+  const px = -directionY * halfWidth;
+  const py = directionX * halfWidth;
   const points = [
-    [runway.diagram_end_a_x + px, runway.diagram_end_a_y + py],
-    [runway.diagram_end_b_x + px, runway.diagram_end_b_y + py],
-    [runway.diagram_end_b_x - px, runway.diagram_end_b_y - py],
-    [runway.diagram_end_a_x - px, runway.diagram_end_a_y - py],
+    [endAX + px, endAY + py],
+    [endBX + px, endBY + py],
+    [endBX - px, endBY - py],
+    [endAX - px, endAY - py],
   ].map(([x, y]) => `${x},${y}`).join(" ");
   return (
     <svg className="airportRunwayDiagram" viewBox="-0.58 -0.58 1.16 1.16" role="img" aria-label="North-up runway diagram">
-      <circle cx="0" cy="0" r="0.5" className="airportRunwayScaleCircle" />
-      <path d="M 0 -0.54 L 0 -0.46 M -0.025 -0.5 L 0 -0.54 L 0.025 -0.5" className="airportRunwayNorth" />
       <polygon points={points} fill={aviationThemeColor(runway.surface_color_key)} />
     </svg>
   );

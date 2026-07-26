@@ -19,6 +19,13 @@ import pipeline_health
 
 
 class PipelineHealthTests(unittest.TestCase):
+    def test_dashboard_disposes_plots_and_serializes_refreshes(self) -> None:
+        html = pipeline_health.dashboard_html()
+
+        self.assertIn("Plotly.purge(plot)", html)
+        self.assertIn("setTimeout(refreshLoop, 30000)", html)
+        self.assertNotIn("setInterval(", html)
+
     def test_live_feed_staleness_uses_monitor_thresholds(self) -> None:
         now = datetime(2026, 6, 19, 12, 10, 0, tzinfo=timezone.utc)
         facts = {

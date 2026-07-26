@@ -1276,9 +1276,16 @@ function renderCurrent(record) {
     ? `<table><thead><tr><th>Severity</th><th>Metric</th><th>Message</th></tr></thead><tbody>${alerts.map((a) => `<tr><td class="${cls(a.severity)}">${esc(a.severity)}</td><td>${esc(a.metric_id)}</td><td>${esc(a.message)}</td></tr>`).join("")}</tbody></table>`
     : `<div class="muted">No alerts.</div>`;
 }
+function purgeMetricPlots(container) {
+  if (!window.Plotly) return;
+  for (const plot of container.querySelectorAll(".js-plotly-plot")) {
+    Plotly.purge(plot);
+  }
+}
 function renderMetricRows(current, series) {
   const metrics = graphableMetrics(current.evaluation?.metrics || [], series);
   const container = document.getElementById("metricRows");
+  purgeMetricPlots(container);
   container.innerHTML = metrics.length
     ? metrics.map((metric, index) => `<section class="metric-row">
         <div>
@@ -1328,12 +1335,16 @@ async function refresh() {
   renderCurrent(current);
   renderMetricRows(current, series);
 }
-refresh().catch((error) => {
-  document.getElementById("sampleAge").textContent = String(error);
-});
-setInterval(() => refresh().catch((error) => {
-  document.getElementById("sampleAge").textContent = String(error);
-}), 30000);
+async function refreshLoop() {
+  try {
+    await refresh();
+  } catch (error) {
+    document.getElementById("sampleAge").textContent = String(error);
+  } finally {
+    setTimeout(refreshLoop, 30000);
+  }
+}
+refreshLoop();
 </script>
 </body>
 </html>

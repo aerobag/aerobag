@@ -90,6 +90,20 @@ interface NativeBridge {
         version: String,
     ): String
 
+    fun liveFeedCachePreparedInstallCandidate(
+        handle: Long,
+        product: String,
+        version: String,
+    ): ByteArray
+
+    fun liveFeedCacheInstallPreparedProductInSessionJson(
+        handle: Long,
+        sessionHandle: Long,
+        product: String,
+        version: String,
+        preparedBytes: ByteArray,
+    ): String
+
     fun liveFeedCacheSyncCatalogInSessionJson(handle: Long, sessionHandle: Long): String
 
     fun destroyLiveFeedCache(handle: Long)
@@ -585,6 +599,20 @@ object NativeBindings : NativeBridge {
         sessionHandle: Long,
         product: String,
         version: String,
+    ): String
+
+    external override fun liveFeedCachePreparedInstallCandidate(
+        handle: Long,
+        product: String,
+        version: String,
+    ): ByteArray
+
+    external override fun liveFeedCacheInstallPreparedProductInSessionJson(
+        handle: Long,
+        sessionHandle: Long,
+        product: String,
+        version: String,
+        preparedBytes: ByteArray,
     ): String
 
     external override fun liveFeedCacheSyncCatalogInSessionJson(handle: Long, sessionHandle: Long): String

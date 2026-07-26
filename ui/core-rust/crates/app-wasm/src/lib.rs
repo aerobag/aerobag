@@ -90,6 +90,8 @@ static SESSION_SNAPSHOT_REFRESH_SCHEDULERS: OnceLock<
 > = OnceLock::new();
 static LIVE_FEED_PREP_STATES: OnceLock<Mutex<HashMap<(String, String), serde_json::Value>>> =
     OnceLock::new();
+static NOTAM_PROJECTION_PREPARER: OnceLock<Mutex<app_core::NotamProjectionPreparer>> =
+    OnceLock::new();
 
 struct StoredNavKvStore {
     store: app_core::NavKvStore,
@@ -122,6 +124,13 @@ fn lock_live_feed_prep_states() -> MutexGuard<'static, HashMap<(String, String),
 {
     LIVE_FEED_PREP_STATES
         .get_or_init(|| Mutex::new(HashMap::new()))
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+}
+
+fn lock_notam_projection_preparer() -> MutexGuard<'static, app_core::NotamProjectionPreparer> {
+    NOTAM_PROJECTION_PREPARER
+        .get_or_init(|| Mutex::new(app_core::NotamProjectionPreparer::default()))
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner())
 }
@@ -1144,23 +1153,34 @@ pub fn prepare_live_feed_resource(
 ) -> Result<Vec<u8>, JsValue> {
     let request = prepared_live_feed_request(resource_id)?;
     let (next_state, prepared) = match &request {
+        PreparedLiveFeedRequest::State { product, .. } if product == "notams" => {
+            app_core::prepare_notam_live_feed_state_resource_with_work(
+                resource_id,
+                resource_bytes,
+                &mut lock_notam_projection_preparer(),
+                &mut app_core::BackgroundNotamWork::default(),
+                &mut app_core::NotamApplyWork::default(),
+            )
+            .map(|prepared| (serde_json::Value::Null, prepared))
+        }
         PreparedLiveFeedRequest::State { .. } => {
             app_core::prepare_live_feed_state_resource(resource_id, resource_bytes)
+        }
+        PreparedLiveFeedRequest::Delta { product, .. } if product == "notams" => {
+            app_core::prepare_notam_live_feed_delta_resource_with_work(
+                resource_id,
+                resource_bytes,
+                &mut lock_notam_projection_preparer(),
+                &mut app_core::BackgroundNotamWork::default(),
+                &mut app_core::NotamApplyWork::default(),
+            )
+            .map(|prepared| (serde_json::Value::Null, prepared))
         }
         PreparedLiveFeedRequest::Delta {
             product,
             from_version,
             ..
         } => {
-            if product == "notams" {
-                return app_core::prepare_live_feed_delta_resource(
-                    resource_id,
-                    &serde_json::Value::Null,
-                    resource_bytes,
-                )
-                .map(|(_, prepared)| prepared)
-                .map_err(|err| JsValue::from_str(&err.to_string()));
-            }
             let states = lock_live_feed_prep_states();
             let state = states
                 .get(&(product.clone(), from_version.clone()))
@@ -1196,6 +1216,7 @@ pub fn should_prepare_live_feed_resource(resource_id: &str) -> bool {
 #[wasm_bindgen]
 pub fn reset_live_feed_preparer() {
     lock_live_feed_prep_states().clear();
+    lock_notam_projection_preparer().reset();
 }
 
 enum PreparedLiveFeedRequest {

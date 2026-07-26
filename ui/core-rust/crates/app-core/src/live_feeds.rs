@@ -4,13 +4,17 @@
 
 use std::collections::HashMap;
 
-use notam_state::{NotamCheckpoint, NotamDelta};
+use notam_state::{NotamApplyWork, NotamCheckpoint, NotamDelta, NotamState};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use sha2::{Digest, Sha256};
 
 use crate::{
-    map_overlay::{MetarProductPayload, TafProductPayload, TfrProductPayload},
+    map_overlay::{
+        airport_notam_projection_checkpoint, airport_notam_projection_delta,
+        AirportNotamProjectionCheckpoint, AirportNotamProjectionDelta, MetarProductPayload,
+        TafProductPayload, TfrProductPayload,
+    },
     AppError, AppErrorKind, AppResult, CoreResourceRequest, HadOperationOutcome, UiInvalidation,
 };
 
@@ -246,8 +250,8 @@ pub enum PreparedLiveFeedPayload {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum PreparedNotamPayload {
-    InstallCheckpoint(NotamCheckpoint),
-    ApplyDelta(NotamDelta),
+    InstallAirportCheckpoint(AirportNotamProjectionCheckpoint),
+    ApplyAirportDelta(AirportNotamProjectionDelta),
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -256,6 +260,56 @@ pub struct BackgroundNotamWork {
     pub json_bytes_decoded: u64,
     pub records_decoded: u64,
     pub postcard_bytes_written: u64,
+}
+
+#[derive(Debug, Default)]
+pub struct NotamProjectionPreparer {
+    state: Option<NotamState>,
+}
+
+impl NotamProjectionPreparer {
+    pub fn install_checkpoint(
+        &mut self,
+        checkpoint: NotamCheckpoint,
+        work: &mut NotamApplyWork,
+    ) -> Result<PreparedNotamPayload, notam_state::NotamStateError> {
+        let state = NotamState::from_checkpoint(checkpoint, work)?;
+        let projection = airport_notam_projection_checkpoint(&state);
+        self.state = Some(state);
+        Ok(PreparedNotamPayload::InstallAirportCheckpoint(projection))
+    }
+
+    pub fn apply_delta(
+        &mut self,
+        delta: NotamDelta,
+        work: &mut NotamApplyWork,
+    ) -> Result<PreparedNotamPayload, notam_state::NotamStateError> {
+        let mut state = self.state.take().ok_or_else(|| {
+            notam_state::NotamStateError::Invariant(
+                "cannot prepare NOTAM delta without canonical worker state".to_string(),
+            )
+        })?;
+        let projection = airport_notam_projection_delta(&state, &delta)?;
+        state.apply_delta(delta, work)?;
+        self.state = Some(state);
+        Ok(PreparedNotamPayload::ApplyAirportDelta(projection))
+    }
+
+    pub fn state_id(&self) -> Option<&str> {
+        self.state.as_ref().map(NotamState::state_id)
+    }
+
+    pub fn projection_checkpoint(&self) -> Option<AirportNotamProjectionCheckpoint> {
+        self.state.as_ref().map(airport_notam_projection_checkpoint)
+    }
+
+    pub fn canonical_checkpoint(&self) -> Option<NotamCheckpoint> {
+        self.state.as_ref().map(NotamState::checkpoint)
+    }
+
+    pub fn reset(&mut self) {
+        self.state = None;
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -288,10 +342,10 @@ impl PreparedLiveFeedPayload {
             Self::Metars(feed) => &feed.payload.version_label,
             Self::Tafs(payload) => &payload.version_label,
             Self::Tfrs(payload) => &payload.version_label,
-            Self::Notams(PreparedNotamPayload::InstallCheckpoint(checkpoint)) => {
+            Self::Notams(PreparedNotamPayload::InstallAirportCheckpoint(checkpoint)) => {
                 &checkpoint.state_id
             }
-            Self::Notams(PreparedNotamPayload::ApplyDelta(delta)) => &delta.to_state_id,
+            Self::Notams(PreparedNotamPayload::ApplyAirportDelta(delta)) => &delta.to_state_id,
         }
     }
 }
@@ -2119,59 +2173,18 @@ pub fn prepare_live_feed_state_resource(
     resource_id: &str,
     bytes: &[u8],
 ) -> AppResult<(Value, Vec<u8>)> {
-    prepare_live_feed_state_resource_with_notam_work(
-        resource_id,
-        bytes,
-        &mut BackgroundNotamWork::default(),
-    )
-}
-
-pub fn prepare_live_feed_state_resource_with_notam_work(
-    resource_id: &str,
-    bytes: &[u8],
-    work: &mut BackgroundNotamWork,
-) -> AppResult<(Value, Vec<u8>)> {
     let Some(rest) = resource_id.strip_prefix("live_feeds/state/") else {
         return Err(invalid_live_feed(format!(
             "not a live-feed state resource: {resource_id}"
         )));
     };
     let (product, version) = split_product_version(resource_id, rest)?;
-    let decoded = nav_kv_package::decode_xz_if_needed(bytes).map_err(invalid_live_feed)?;
     if product == "notams" {
-        work.compressed_bytes_read += bytes.len() as u64;
-        work.json_bytes_decoded += decoded.len() as u64;
-        let checkpoint: NotamCheckpoint =
-            serde_json::from_slice(decoded.as_ref()).map_err(invalid_live_feed_json)?;
-        work.records_decoded += checkpoint.records.len() as u64;
-        checkpoint
-            .validate_contract()
-            .map_err(|err| invalid_live_feed(err.to_string()))?;
-        if checkpoint.state_id != version {
-            return Err(invalid_live_feed(format!(
-                "NOTAM checkpoint {resource_id} contained state {}",
-                checkpoint.state_id
-            )));
-        }
-        let envelope = PreparedLiveFeedEnvelope {
-            schema_version: 1,
-            resource_id: resource_id.to_string(),
-            product,
-            version,
-            state_sha256: checkpoint.state_id.clone(),
-            from_version: None,
-            from_state_sha256: None,
-            delta_blob_sha256: Some(sha256_hex(bytes)),
-            payload: PreparedLiveFeedPayload::Notams(PreparedNotamPayload::InstallCheckpoint(
-                checkpoint,
-            )),
-        };
-        let envelope_bytes = postcard::to_allocvec(&envelope).map_err(|err| {
-            invalid_live_feed(format!("failed to encode prepared NOTAM checkpoint: {err}"))
-        })?;
-        work.postcard_bytes_written += envelope_bytes.len() as u64;
-        return Ok((Value::Null, envelope_bytes));
+        return Err(invalid_live_feed(
+            "NOTAM checkpoints require the stateful canonical NOTAM preparer".to_string(),
+        ));
     }
+    let decoded = nav_kv_package::decode_xz_if_needed(bytes).map_err(invalid_live_feed)?;
     let state: Value = serde_json::from_slice(decoded.as_ref()).map_err(invalid_live_feed_json)?;
     let state_sha256 = canonical_json_sha256(&state)?;
     let payload = prepare_live_feed_payload(&product, state.clone())?;
@@ -2198,24 +2211,118 @@ pub fn prepare_live_feed_state_resource_with_notam_work(
     Ok((state, envelope_bytes))
 }
 
+pub fn prepare_notam_live_feed_state_resource_with_work(
+    resource_id: &str,
+    bytes: &[u8],
+    preparer: &mut NotamProjectionPreparer,
+    background_work: &mut BackgroundNotamWork,
+    apply_work: &mut NotamApplyWork,
+) -> AppResult<Vec<u8>> {
+    let Some(rest) = resource_id.strip_prefix("live_feeds/state/") else {
+        return Err(invalid_live_feed(format!(
+            "not a live-feed state resource: {resource_id}"
+        )));
+    };
+    let (product, version) = split_product_version(resource_id, rest)?;
+    if product != "notams" {
+        return Err(invalid_live_feed(format!(
+            "not a NOTAM state resource: {resource_id}"
+        )));
+    }
+    let decoded = nav_kv_package::decode_xz_if_needed(bytes).map_err(invalid_live_feed)?;
+    background_work.compressed_bytes_read += bytes.len() as u64;
+    background_work.json_bytes_decoded += decoded.len() as u64;
+    let checkpoint: NotamCheckpoint =
+        serde_json::from_slice(decoded.as_ref()).map_err(invalid_live_feed_json)?;
+    background_work.records_decoded += checkpoint.records.len() as u64;
+    if checkpoint.state_id != version {
+        return Err(invalid_live_feed(format!(
+            "NOTAM checkpoint {resource_id} contained state {}",
+            checkpoint.state_id
+        )));
+    }
+    let state_sha256 = checkpoint.state_id.clone();
+    let payload = preparer
+        .install_checkpoint(checkpoint, apply_work)
+        .map_err(|error| invalid_live_feed(error.to_string()))?;
+    let envelope = PreparedLiveFeedEnvelope {
+        schema_version: 1,
+        resource_id: resource_id.to_string(),
+        product,
+        version,
+        state_sha256,
+        from_version: None,
+        from_state_sha256: None,
+        delta_blob_sha256: Some(sha256_hex(bytes)),
+        payload: PreparedLiveFeedPayload::Notams(payload),
+    };
+    encode_prepared_notam_envelope(&envelope, background_work)
+}
+
+pub fn prepare_notam_live_feed_delta_resource_with_work(
+    resource_id: &str,
+    bytes: &[u8],
+    preparer: &mut NotamProjectionPreparer,
+    background_work: &mut BackgroundNotamWork,
+    apply_work: &mut NotamApplyWork,
+) -> AppResult<Vec<u8>> {
+    let Some(rest) = resource_id.strip_prefix("live_feeds/delta/") else {
+        return Err(invalid_live_feed(format!(
+            "not a live-feed delta resource: {resource_id}"
+        )));
+    };
+    let (product, from_version, to_version) = split_product_from_to(resource_id, rest)?;
+    if product != "notams" {
+        return Err(invalid_live_feed(format!(
+            "not a NOTAM delta resource: {resource_id}"
+        )));
+    }
+    let decoded = nav_kv_package::decode_xz_if_needed(bytes).map_err(invalid_live_feed)?;
+    background_work.compressed_bytes_read += bytes.len() as u64;
+    background_work.json_bytes_decoded += decoded.len() as u64;
+    let delta: NotamDelta =
+        serde_json::from_slice(decoded.as_ref()).map_err(invalid_live_feed_json)?;
+    background_work.records_decoded += delta.mutations.len() as u64;
+    if delta.from_state_id != from_version || delta.to_state_id != to_version {
+        return Err(invalid_live_feed(format!(
+            "NOTAM delta {resource_id} contained {} -> {}",
+            delta.from_state_id, delta.to_state_id
+        )));
+    }
+    let from_state_sha256 = delta.from_state_id.clone();
+    let state_sha256 = delta.to_state_id.clone();
+    let payload = preparer
+        .apply_delta(delta, apply_work)
+        .map_err(|error| invalid_live_feed(error.to_string()))?;
+    let envelope = PreparedLiveFeedEnvelope {
+        schema_version: 1,
+        resource_id: resource_id.to_string(),
+        product,
+        version: to_version,
+        state_sha256,
+        from_version: Some(from_version),
+        from_state_sha256: Some(from_state_sha256),
+        delta_blob_sha256: Some(sha256_hex(bytes)),
+        payload: PreparedLiveFeedPayload::Notams(payload),
+    };
+    encode_prepared_notam_envelope(&envelope, background_work)
+}
+
+fn encode_prepared_notam_envelope(
+    envelope: &PreparedLiveFeedEnvelope,
+    work: &mut BackgroundNotamWork,
+) -> AppResult<Vec<u8>> {
+    let envelope_bytes = postcard::to_allocvec(envelope).map_err(|error| {
+        invalid_live_feed(format!("failed to encode prepared NOTAM payload: {error}"))
+    })?;
+    work.postcard_bytes_written += envelope_bytes.len() as u64;
+    Ok(envelope_bytes)
+}
+
 pub fn prepare_live_feed_delta_resource(
     resource_id: &str,
     current_state: &Value,
     bytes: &[u8],
-) -> AppResult<(Value, Vec<u8>)> {
-    prepare_live_feed_delta_resource_with_notam_work(
-        resource_id,
-        current_state,
-        bytes,
-        &mut BackgroundNotamWork::default(),
-    )
-}
-
-pub fn prepare_live_feed_delta_resource_with_notam_work(
-    resource_id: &str,
-    current_state: &Value,
-    bytes: &[u8],
-    work: &mut BackgroundNotamWork,
 ) -> AppResult<(Value, Vec<u8>)> {
     let Some(rest) = resource_id.strip_prefix("live_feeds/delta/") else {
         return Err(invalid_live_feed(format!(
@@ -2228,40 +2335,13 @@ pub fn prepare_live_feed_delta_resource_with_notam_work(
             "cannot prepare live-feed delta from {product}"
         )));
     }
+    if product == "notams" {
+        return Err(invalid_live_feed(
+            "NOTAM deltas require the stateful canonical NOTAM preparer".to_string(),
+        ));
+    }
     let delta_blob_sha256 = sha256_hex(bytes);
     let decoded = nav_kv_package::decode_xz_if_needed(bytes).map_err(invalid_live_feed)?;
-    if product == "notams" {
-        work.compressed_bytes_read += bytes.len() as u64;
-        work.json_bytes_decoded += decoded.len() as u64;
-        let delta: NotamDelta =
-            serde_json::from_slice(decoded.as_ref()).map_err(invalid_live_feed_json)?;
-        work.records_decoded += delta.mutations.len() as u64;
-        delta
-            .validate_contract()
-            .map_err(|err| invalid_live_feed(err.to_string()))?;
-        if delta.from_state_id != from_version || delta.to_state_id != to_version {
-            return Err(invalid_live_feed(format!(
-                "NOTAM delta {resource_id} contained {} -> {}",
-                delta.from_state_id, delta.to_state_id
-            )));
-        }
-        let envelope = PreparedLiveFeedEnvelope {
-            schema_version: 1,
-            resource_id: resource_id.to_string(),
-            product,
-            version: to_version,
-            state_sha256: delta.to_state_id.clone(),
-            from_version: Some(from_version),
-            from_state_sha256: Some(delta.from_state_id.clone()),
-            delta_blob_sha256: Some(delta_blob_sha256),
-            payload: PreparedLiveFeedPayload::Notams(PreparedNotamPayload::ApplyDelta(delta)),
-        };
-        let envelope_bytes = postcard::to_allocvec(&envelope).map_err(|err| {
-            invalid_live_feed(format!("failed to encode prepared NOTAM delta: {err}"))
-        })?;
-        work.postcard_bytes_written += envelope_bytes.len() as u64;
-        return Ok((Value::Null, envelope_bytes));
-    }
     let from_state_sha256 = canonical_json_sha256(current_state)?;
     let delta: LiveFeedRecordDelta =
         serde_json::from_slice(decoded.as_ref()).map_err(invalid_live_feed_json)?;
@@ -2813,11 +2893,14 @@ mod tests {
             resources[0].id,
             format!("live_feeds/state/notams/{checkpoint_id}")
         );
+        let mut notam_preparer = NotamProjectionPreparer::default();
         let mut checkpoint_prepare_work = BackgroundNotamWork::default();
-        let (_, checkpoint_postcard) = prepare_live_feed_state_resource_with_notam_work(
+        let checkpoint_postcard = prepare_notam_live_feed_state_resource_with_work(
             &resources[0].id,
             &checkpoint_bytes,
+            &mut notam_preparer,
             &mut checkpoint_prepare_work,
+            &mut NotamApplyWork::default(),
         )
         .unwrap();
         let checkpoint_envelope = decode_prepared_live_feed(&checkpoint_postcard).unwrap();
@@ -2833,11 +2916,12 @@ mod tests {
             format!("live_feeds/delta/notams/{checkpoint_id}/{head_id}")
         );
         let mut delta_prepare_work = BackgroundNotamWork::default();
-        let (_, delta_postcard) = prepare_live_feed_delta_resource_with_notam_work(
+        let delta_postcard = prepare_notam_live_feed_delta_resource_with_work(
             &resources[0].id,
-            &Value::Null,
             &delta_bytes,
+            &mut notam_preparer,
             &mut delta_prepare_work,
+            &mut NotamApplyWork::default(),
         )
         .unwrap();
         assert!(delta_postcard.len() * 10 < checkpoint_postcard.len());
@@ -2860,34 +2944,23 @@ mod tests {
             Some(head_id.as_str())
         );
 
-        let PreparedLiveFeedPayload::Notams(PreparedNotamPayload::InstallCheckpoint(checkpoint)) =
-            checkpoint_envelope.payload
+        let PreparedLiveFeedPayload::Notams(PreparedNotamPayload::InstallAirportCheckpoint(
+            checkpoint,
+        )) = checkpoint_envelope.payload
         else {
             panic!("expected prepared NOTAM checkpoint");
         };
-        let mut client = notam_state::NotamState::from_checkpoint(
-            checkpoint,
-            &mut notam_state::NotamApplyWork::default(),
-        )
-        .unwrap();
-        let PreparedLiveFeedPayload::Notams(PreparedNotamPayload::ApplyDelta(delta)) =
+        assert_eq!(checkpoint.records.len(), 256);
+        let mut client = crate::AirportNotamIndex::from_projection_checkpoint(checkpoint).unwrap();
+        let PreparedLiveFeedPayload::Notams(PreparedNotamPayload::ApplyAirportDelta(delta)) =
             delta_envelope.payload
         else {
             panic!("expected prepared NOTAM delta");
         };
-        let mut work = notam_state::NotamApplyWork::default();
-        client.apply_delta(delta, &mut work).unwrap();
+        assert_eq!(delta.mutations.len(), 1);
+        client.apply_projection_delta(delta).unwrap();
         assert_eq!(client.state_id(), producer_state.state_id());
-        assert_eq!(
-            client.canonical_records().collect::<Vec<_>>(),
-            producer_state.canonical_records().collect::<Vec<_>>()
-        );
-        assert_eq!(work.mutations_applied, 1);
-        assert_eq!(work.full_record_collection_iterations, 0);
-        assert_eq!(work.full_state_serializations, 0);
-        assert_eq!(work.bucket_hashes_computed, 1);
-        assert_eq!(work.group_hashes_computed, 1);
-        assert_eq!(work.roots_computed, 1);
+        assert_eq!(notam_preparer.state_id(), Some(producer_state.state_id()));
     }
 
     #[test]

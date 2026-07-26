@@ -90,13 +90,13 @@ pub use live_feed_runtime::{
 pub use live_feeds::{
     decode_prepared_live_feed, live_feed_events_url, live_feed_status_url,
     normalize_live_feed_source_root_url, prepare_live_feed_delta_resource,
-    prepare_live_feed_delta_resource_with_notam_work, prepare_live_feed_state_resource,
-    prepare_live_feed_state_resource_with_notam_work, should_prepare_live_feed_resource,
+    prepare_live_feed_state_resource, prepare_notam_live_feed_delta_resource_with_work,
+    prepare_notam_live_feed_state_resource_with_work, should_prepare_live_feed_resource,
     supports_prepared_live_feed, BackgroundNotamWork, LiveFeedCacheRequest,
     LiveFeedCacheRequestKind, LiveFeedDeltaRef, LiveFeedDurableInstalledProduct,
     LiveFeedPayloadRef, LiveFeedSseEvent, LiveFeedsSnapshot, LiveFeedsState,
-    PreparedLiveFeedEnvelope, PreparedLiveFeedPayload, PreparedMetarLiveFeed, PreparedMetarTile,
-    PreparedNotamPayload,
+    NotamProjectionPreparer, PreparedLiveFeedEnvelope, PreparedLiveFeedPayload,
+    PreparedMetarLiveFeed, PreparedMetarTile, PreparedNotamPayload,
 };
 pub use map_follow::MapFollowUiState;
 pub(crate) use map_overlay::query_map_overlay_for_surface_at;
@@ -109,11 +109,13 @@ pub use map_overlay::{
     query_map_selection_for_surface, query_map_selection_for_surface_in_time_zone,
     query_map_selection_with_point_display_scale, selected_map_selection_item_id_for_nav_ref,
     tile_key, visible_point_tile_window, visible_point_tile_window_with_display_scale,
-    AirportNotamIndex, AirportNotamUiView, AirportPlateAvailability, AirspaceDisplayLabel,
-    AirspaceDisplayPath, AirspaceDisplayStroke, AirspaceDisplayStyle, AirspaceDisplaySubpath,
-    AirspaceFeaturePath, AirspaceFeaturePayload, AirspaceFeatureRequest, AirspaceLabelRecord,
-    AirspaceLabelTilePayload, AirspaceReferenceTilePayload, AirspaceScreenPoint, MapOverlayConfig,
-    MapOverlayQueryResult, MapSelectionAction, MapSelectionCategory, MapSelectionDetailStatus,
+    AirportNotamIndex, AirportNotamProjectionCheckpoint, AirportNotamProjectionDelta,
+    AirportNotamProjectionMutation, AirportNotamProjectionRecord, AirportNotamUiView,
+    AirportPlateAvailability, AirspaceDisplayLabel, AirspaceDisplayPath, AirspaceDisplayStroke,
+    AirspaceDisplayStyle, AirspaceDisplaySubpath, AirspaceFeaturePath, AirspaceFeaturePayload,
+    AirspaceFeatureRequest, AirspaceLabelRecord, AirspaceLabelTilePayload,
+    AirspaceReferenceTilePayload, AirspaceScreenPoint, MapOverlayConfig, MapOverlayQueryResult,
+    MapSelectionAction, MapSelectionCategory, MapSelectionDetailStatus,
     MapSelectionForNavRefResult, MapSelectionHighlight, MapSelectionItem, MapSelectionQueryResult,
     MapSelectionSessionAction, MapSurfaceMetrics, MetarProductPayload, MetarRecord,
     MetarTilePayload, NavSymbolFeature, NotamRecord, ObstacleOverlayContext, OfflineRegionCatalog,
@@ -135,6 +137,7 @@ pub use navkv::{
     nav_kv_key_for_query, NavKvLookup, NavKvPageProbeStats, NavKvQuery, NavKvRoot, NavKvStore,
     NAV_DB_CONTRACT_KEY, REQUIRED_NAV_DB_CONTRACT_ID,
 };
+pub use notam_state::NotamApplyWork;
 pub use ownship::{
     push_sample, register_source, set_policy, situation_ring_candidates, update_source_status,
     OwnshipBannerSeverity, OwnshipControlModel, OwnshipLauncherTextTone, OwnshipMode,
@@ -233,7 +236,8 @@ pub use session::{
     ingest_point_tiles_in_session, ingest_prepared_live_feed_resource_in_session,
     ingest_resource_in_session, ingest_resource_in_session_at_epoch_ms, ingest_tafs_in_session,
     ingest_tfrs_in_session, insert_nav_kv_page_for_attached_sessions,
-    install_live_feed_installed_state_in_session, live_feed_runtime_decision_in_session,
+    install_live_feed_installed_state_in_session,
+    install_prepared_live_feed_cache_product_in_session, live_feed_runtime_decision_in_session,
     load_offline_package_library_cache_in_session, load_playback_trace_in_session,
     load_raster_map_catalog_in_session, maintain_nav_db_in_session_at_epoch_ms,
     nexrad_tile_bytes_in_session, pause_playback_in_session,

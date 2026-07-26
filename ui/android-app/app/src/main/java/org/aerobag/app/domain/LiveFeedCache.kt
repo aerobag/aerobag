@@ -250,6 +250,27 @@ class LiveFeedCache(
         bridge.liveFeedCacheInstallProductInSessionJson(handle, sessionHandle, product, version)
     }
 
+    fun preparedInstallCandidate(product: String, version: String): ByteArray? =
+        withOpenHandle { handle ->
+            bridge.liveFeedCachePreparedInstallCandidate(handle, product, version)
+                .takeIf(ByteArray::isNotEmpty)
+        }
+
+    fun installPreparedProductInSessionJson(
+        sessionHandle: Long,
+        product: String,
+        version: String,
+        preparedBytes: ByteArray,
+    ): String = withOpenHandle { handle ->
+        bridge.liveFeedCacheInstallPreparedProductInSessionJson(
+            handle,
+            sessionHandle,
+            product,
+            version,
+            preparedBytes,
+        )
+    }
+
     fun syncCatalogInSessionJson(sessionHandle: Long): String = withOpenHandle { handle ->
         bridge.liveFeedCacheSyncCatalogInSessionJson(handle, sessionHandle)
     }
@@ -440,13 +461,17 @@ class AndroidLiveFeedClient(
         for (request in requests) {
             try {
                 val bytes = withContext(Dispatchers.IO) { fetchBytes(request.url) }
-                val summary = cache.installFetchedBytes(request, bytes)
+                val summary = withContext(Dispatchers.IO) {
+                    cache.installFetchedBytes(request, bytes)
+                }
                 if (summary == null) {
                     onChanged()
                     madeProgress = true
                     continue
                 }
-                val resourceManifest = cache.resourceManifest(summary.product)
+                val resourceManifest = withContext(Dispatchers.IO) {
+                    cache.resourceManifest(summary.product)
+                }
                 if (resourceManifest != null) {
                     withContext(Dispatchers.IO) {
                         LiveFeedCacheStore.stageResources(context, resourceManifest) { resource ->
@@ -729,12 +754,16 @@ object LiveFeedCacheStore {
         ignoreUnknownKeys = true
     }
 
-    fun open(
-        context: Context,
+    fun create(
         sourceRootUrl: String,
         bridge: NativeBridge = NativeBindings,
-    ): LiveFeedCache {
-        val cache = LiveFeedCache(sourceRootUrl = sourceRootUrl, bridge = bridge, json = json)
+    ): LiveFeedCache =
+        LiveFeedCache(sourceRootUrl = sourceRootUrl, bridge = bridge, json = json)
+
+    fun restore(
+        context: Context,
+        cache: LiveFeedCache,
+    ) {
         for (stored in listInstalledResourceManifests(context)) {
             runCatching {
                 cache.restoreInstalledResources(stored.manifest) { resource ->
@@ -755,7 +784,6 @@ object LiveFeedCacheStore {
                 entry.payloadFile.parentFile?.deleteRecursively()
             }
         }
-        return cache
     }
 
     fun stageResources(

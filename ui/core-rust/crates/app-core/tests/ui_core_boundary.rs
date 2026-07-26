@@ -150,6 +150,42 @@ fn platform_live_feed_adapters_do_not_own_nexrad_policy() {
 }
 
 #[test]
+fn bulk_notam_state_cannot_cross_into_the_ui_session() {
+    let session_text = read_repo_file("ui/core-rust/crates/app-core/src/session.rs");
+    let session = strip_rust_tests(&session_text);
+    let overlay = read_repo_file("ui/core-rust/crates/app-core/src/map_overlay.rs");
+    let airport_index = balanced_block_after_marker(&overlay, "pub struct AirportNotamIndex");
+    let android_main =
+        read_repo_file("ui/android-app/app/src/main/java/org/aerobag/app/MainActivity.kt");
+    let promote = balanced_block_after_marker(&android_main, "suspend fun promoteLiveFeed");
+    let restore = balanced_block_after_marker(
+        &android_main,
+        "LaunchedEffect(uiSession, liveFeedCache, context, prefs)",
+    );
+
+    assert!(
+        !session.contains("NotamState::from_checkpoint")
+            && !session.contains("install_notam_resource_chain"),
+        "UiSession must consume only prepared airport-NOTAM projections"
+    );
+    assert!(
+        !airport_index.contains("NotamState") && !airport_index.contains("NotamCheckpoint"),
+        "the UI-facing airport NOTAM index must not retain canonical bulk NOTAM state"
+    );
+    assert!(
+        promote.contains("withContext(Dispatchers.IO)")
+            && promote.contains("preparedInstallCandidate")
+            && promote.contains("installPreparedLiveFeedCacheProduct"),
+        "Android must prepare durable NOTAM state off main before installing its projection"
+    );
+    assert!(
+        restore.contains("withContext(Dispatchers.IO)")
+            && restore.contains("LiveFeedCacheStore.restore"),
+        "Android must rebuild durable NOTAM state off main during startup"
+    );
+}
+
+#[test]
 fn paged_flight_plan_mutations_commit_only_after_guidance_projection() {
     let source_text = read_repo_file("ui/core-rust/crates/app-core/src/session.rs");
     let source = strip_rust_tests(&source_text);

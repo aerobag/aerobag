@@ -12,9 +12,9 @@ use std::{
 
 use anyhow::{bail, Context};
 use app_core::{
-    decode_prepared_live_feed, prepare_live_feed_delta_resource_with_notam_work,
-    prepare_live_feed_state_resource_with_notam_work, AirportNotamIndex, BackgroundNotamWork,
-    PreparedLiveFeedPayload, PreparedNotamPayload,
+    decode_prepared_live_feed, prepare_notam_live_feed_delta_resource_with_work,
+    prepare_notam_live_feed_state_resource_with_work, AirportNotamIndex, BackgroundNotamWork,
+    NotamProjectionPreparer, PreparedLiveFeedPayload, PreparedNotamPayload,
 };
 use chrono::{DateTime, Utc};
 use flate2::read::GzDecoder;
@@ -32,6 +32,11 @@ use tempfile::tempdir;
 
 use crate::collector::NmsApiCollectorStore;
 use crate::fixture::{load_nms_fixture, LoadedNmsFixture};
+
+struct PreparedNotamClient {
+    preparer: NotamProjectionPreparer,
+    index: AirportNotamIndex,
+}
 
 #[derive(Debug, Deserialize)]
 struct TraceExpectations {
@@ -470,39 +475,45 @@ fn install_checkpoint_artifact(
     boundary: usize,
     boundaries: &[Boundary],
     artifacts: &HashMap<usize, Arc<Vec<u8>>>,
-) -> anyhow::Result<AirportNotamIndex> {
+) -> anyhow::Result<PreparedNotamClient> {
     let expected = &boundaries[boundary];
     let bytes = artifacts
         .get(&boundary)
         .with_context(|| format!("missing checkpoint artifact at boundary {boundary}"))?;
     let resource_id = format!("live_feeds/state/notams/{}", expected.state_id);
     let mut background_work = BackgroundNotamWork::default();
-    let (_, postcard) = prepare_live_feed_state_resource_with_notam_work(
+    let mut preparer = NotamProjectionPreparer::default();
+    let postcard = prepare_notam_live_feed_state_resource_with_work(
         &resource_id,
         bytes,
+        &mut preparer,
         &mut background_work,
+        &mut NotamApplyWork::default(),
     )?;
     let envelope = decode_prepared_live_feed(&postcard)?;
-    let PreparedLiveFeedPayload::Notams(PreparedNotamPayload::InstallCheckpoint(checkpoint)) =
+    let PreparedLiveFeedPayload::Notams(PreparedNotamPayload::InstallAirportCheckpoint(checkpoint)) =
         envelope.payload
     else {
         bail!("prepared NOTAM checkpoint used the wrong payload kind");
     };
-    if background_work.records_decoded != checkpoint.records.len() as u64 {
+    if background_work.records_decoded != expected.counters.notam_count {
         bail!("background checkpoint work did not count exact decoded records");
     }
-    let mut main_work = NotamApplyWork::default();
-    let index = AirportNotamIndex::from_checkpoint(checkpoint, &mut main_work)
-        .map_err(anyhow::Error::msg)?;
-    if index.state_id() != expected.state_id || index.counters() != expected.counters {
+    let index =
+        AirportNotamIndex::from_projection_checkpoint(checkpoint).map_err(anyhow::Error::msg)?;
+    if index.state_id() != expected.state_id
+        || preparer
+            .canonical_checkpoint()
+            .is_none_or(|checkpoint| checkpoint.counters != expected.counters)
+    {
         bail!("client checkpoint install diverged at boundary {boundary}");
     }
-    Ok(index)
+    Ok(PreparedNotamClient { preparer, index })
 }
 
 #[allow(clippy::too_many_arguments)]
 fn apply_transition_range(
-    client: &mut AirportNotamIndex,
+    client: &mut PreparedNotamClient,
     transitions: &[NotamPublicationTransition],
     boundaries: &[Boundary],
     start: usize,
@@ -545,34 +556,31 @@ fn apply_transition_range(
             boundaries[cursor].state_id, boundaries[next].state_id
         );
         let mut background_work = BackgroundNotamWork::default();
-        let (_, postcard) = prepare_live_feed_delta_resource_with_notam_work(
+        let postcard = prepare_notam_live_feed_delta_resource_with_work(
             &resource_id,
-            &serde_json::Value::Null,
             &bytes,
+            &mut client.preparer,
             &mut background_work,
+            &mut NotamApplyWork::default(),
         )?;
         let envelope = decode_prepared_live_feed(&postcard)?;
-        let PreparedLiveFeedPayload::Notams(PreparedNotamPayload::ApplyDelta(delta)) =
+        let PreparedLiveFeedPayload::Notams(PreparedNotamPayload::ApplyAirportDelta(delta)) =
             envelope.payload
         else {
             bail!("prepared NOTAM delta used the wrong payload kind");
         };
-        if background_work.records_decoded != delta.mutations.len() as u64 {
-            bail!("background delta work did not count exact mutations");
+        if background_work.records_decoded < delta.mutations.len() as u64 {
+            bail!("projected delta contains more mutations than the canonical delta");
         }
-        let expected_mutations = delta.mutations.len() as u64;
-        let mut main_work = NotamApplyWork::default();
         client
-            .apply_delta(delta, &mut main_work)
+            .index
+            .apply_projection_delta(delta)
             .map_err(anyhow::Error::msg)?;
-        if main_work.mutations_applied != expected_mutations
-            || main_work.full_record_collection_iterations != 0
-            || main_work.full_state_serializations != 0
-        {
-            bail!("ordinary client delta application performed non-incremental work");
-        }
-        if client.state_id() != boundaries[next].state_id
-            || client.counters() != boundaries[next].counters
+        if client.index.state_id() != boundaries[next].state_id
+            || client
+                .preparer
+                .canonical_checkpoint()
+                .is_none_or(|checkpoint| checkpoint.counters != boundaries[next].counters)
         {
             bail!("client diverged after catch-up span {cursor}..{next}");
         }
@@ -581,10 +589,12 @@ fn apply_transition_range(
     Ok(())
 }
 
-fn assert_exact_final_state(client: &AirportNotamIndex, expected: &NotamCheckpoint) {
-    assert_eq!(client.state_id(), expected.state_id);
-    assert_eq!(client.counters(), expected.counters);
-    assert_eq!(client.checkpoint(), *expected);
+fn assert_exact_final_state(client: &PreparedNotamClient, expected: &NotamCheckpoint) {
+    assert_eq!(client.index.state_id(), expected.state_id);
+    assert_eq!(
+        client.preparer.canonical_checkpoint().as_ref(),
+        Some(expected)
+    );
 }
 
 fn next_seed(seed: u64) -> u64 {

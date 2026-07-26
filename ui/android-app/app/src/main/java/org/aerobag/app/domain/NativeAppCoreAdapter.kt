@@ -731,6 +731,22 @@ class NativeUiSession internal constructor(
         }
     }
 
+    fun installPreparedLiveFeedCacheProduct(
+        cache: LiveFeedCache,
+        product: String,
+        version: String,
+        preparedBytes: ByteArray,
+    ): UiSessionSnapshot {
+        return runPagedSnapshot("installPreparedLiveFeedCacheProduct") {
+            cache.installPreparedProductInSessionJson(
+                handle,
+                product,
+                version,
+                preparedBytes,
+            )
+        }
+    }
+
     fun syncLiveFeedCacheCatalog(cache: LiveFeedCache): UiSessionSnapshot {
         return runPagedSnapshot("syncLiveFeedCacheCatalog") {
             cache.syncCatalogInSessionJson(handle)

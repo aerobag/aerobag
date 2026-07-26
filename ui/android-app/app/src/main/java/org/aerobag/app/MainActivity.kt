@@ -2440,22 +2440,36 @@ internal fun AerobagApp(
         )
     }
     val liveFeedCache = remember(uiSession, context, liveFeedSourceRootUrl) {
-        LiveFeedCacheStore.open(context.applicationContext, liveFeedSourceRootUrl)
+        LiveFeedCacheStore.create(liveFeedSourceRootUrl)
     }
     DisposableEffect(liveFeedCache) {
         onDispose { liveFeedCache.close() }
     }
     var liveFeedGeneration by remember(uiSession) { mutableIntStateOf(0) }
-    fun promoteLiveFeed(summary: LiveFeedInstalledSummary): Boolean {
-        val promoted = applyBackgroundSessionCommand(
-            "installLiveFeedCacheProduct",
-            "AndroidLiveFeeds",
-        ) {
-            uiSession.installLiveFeedCacheProduct(
-                liveFeedCache,
-                summary.product,
-                summary.version,
-            )
+    suspend fun promoteLiveFeed(summary: LiveFeedInstalledSummary): Boolean {
+        val preparedBytes = withContext(Dispatchers.IO) {
+            liveFeedCache.preparedInstallCandidate(summary.product, summary.version)
+        }
+        val promoted = withContext(Dispatchers.Main.immediate) {
+            applyBackgroundSessionCommand(
+                "installLiveFeedCacheProduct",
+                "AndroidLiveFeeds",
+            ) {
+                if (preparedBytes != null) {
+                    uiSession.installPreparedLiveFeedCacheProduct(
+                        liveFeedCache,
+                        summary.product,
+                        summary.version,
+                        preparedBytes,
+                    )
+                } else {
+                    uiSession.installLiveFeedCacheProduct(
+                        liveFeedCache,
+                        summary.product,
+                        summary.version,
+                    )
+                }
+            }
         }
         if (promoted) {
             liveFeedGeneration += 1
@@ -2477,9 +2491,11 @@ internal fun AerobagApp(
     }
     LaunchedEffect(uiSession, liveFeedCache, context, prefs) {
         val appContext = context.applicationContext
-        withContext(Dispatchers.IO) {
+        val installed = withContext(Dispatchers.IO) {
+            LiveFeedCacheStore.restore(appContext, liveFeedCache)
             LiveFeedCacheStore.listInstalledSummaries(appContext)
-        }.forEach {
+        }
+        installed.forEach {
             promoteLiveFeed(it)
         }
         AndroidLiveFeedClient(
@@ -2488,10 +2504,8 @@ internal fun AerobagApp(
             sourceRootUrl = liveFeedSourceRootUrl,
         ).bootstrapAndRun(
             promote = { summary ->
-                withContext(Dispatchers.Main) {
-                    check(promoteLiveFeed(summary)) {
-                        "failed to promote ${summary.product}/${summary.version}"
-                    }
+                check(promoteLiveFeed(summary)) {
+                    "failed to promote ${summary.product}/${summary.version}"
                 }
             },
             onChanged = {

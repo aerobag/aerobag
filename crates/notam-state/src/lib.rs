@@ -330,10 +330,46 @@ impl NotamState {
     ) -> Result<Self, NotamStateError> {
         checkpoint.validate_contract()?;
         validate_record_order(&checkpoint.records)?;
-        let mut state = Self::empty();
+        let mut merkle = NotamMerkleIndex::empty();
+        let mut counters = NotamCounters::default();
+        let mut records = BTreeMap::new();
+        let mut by_airport = BTreeMap::<String, Vec<String>>::new();
         for record in checkpoint.records {
-            state.apply_mutation(NotamMutation::Upsert { record }, work)?;
+            let canonical = canonical_record_bytes(&record)?;
+            let notam_id = record.id.clone();
+            let bucket = bucket_for_id(&notam_id);
+            merkle.bucket_members[bucket]
+                .insert(notam_id.clone(), leaf_hash(&notam_id, &canonical));
+            work.leaf_hashes_computed += 1;
+            add_record_counters(&mut counters, &record);
+            if let Some(airport_id) = record.airport_id.as_deref() {
+                let airport_id = normalize_airport_id(airport_id);
+                if !airport_id.is_empty() {
+                    by_airport
+                        .entry(airport_id)
+                        .or_default()
+                        .push(notam_id.clone());
+                    work.secondary_index_insertions += 1;
+                }
+            }
+            records.insert(notam_id, record);
         }
+        work.mutations_applied += records.len() as u64;
+        work.canonical_record_lookups += records.len() as u64;
+        work.bucket_records_hashed += records.len() as u64;
+        merkle.recompute_all();
+        work.bucket_hashes_computed += NOTAM_MERKLE_BUCKET_COUNT as u64;
+        work.group_hashes_computed += NOTAM_MERKLE_GROUP_COUNT as u64;
+        work.roots_computed += 1;
+        let state_hash = state_hash(&merkle.group_hashes, counters);
+        let state = Self {
+            state_id: hash_hex(&state_hash),
+            state_hash,
+            counters,
+            records,
+            by_airport,
+            merkle,
+        };
         state.require_target(&checkpoint.state_id, checkpoint.counters)?;
         Ok(state)
     }
@@ -1145,6 +1181,36 @@ mod tests {
         assert_eq!(work.roots_computed, 1);
         assert_eq!(work.full_record_collection_iterations, 0);
         assert_eq!(work.full_state_serializations, 0);
+    }
+
+    #[test]
+    fn checkpoint_materialization_rebuilds_merkle_tree_once() {
+        let mut source = NotamState::empty();
+        for index in 0..256 {
+            source
+                .apply_mutation(
+                    NotamMutation::Upsert {
+                        record: record(
+                            &format!("N{index:04}"),
+                            Some(if index % 2 == 0 { "KSEA" } else { "KPAE" }),
+                            "checkpoint",
+                        ),
+                    },
+                    &mut NotamApplyWork::default(),
+                )
+                .unwrap();
+        }
+        let mut work = NotamApplyWork::default();
+        let restored = NotamState::from_checkpoint(source.checkpoint(), &mut work).unwrap();
+        assert_eq!(restored.state_id(), source.state_id());
+        assert_eq!(work.mutations_applied, 256);
+        assert_eq!(work.leaf_hashes_computed, 256);
+        assert_eq!(
+            work.bucket_hashes_computed,
+            NOTAM_MERKLE_BUCKET_COUNT as u64
+        );
+        assert_eq!(work.group_hashes_computed, NOTAM_MERKLE_GROUP_COUNT as u64);
+        assert_eq!(work.roots_computed, 1);
     }
 
     #[test]

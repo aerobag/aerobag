@@ -1470,6 +1470,66 @@ pub fn live_feed_cache_install_product_in_session_json(
     serde_json::to_string(&snapshot).map_err(|err| err.to_string())
 }
 
+pub fn live_feed_cache_prepared_install_candidate(
+    handle: u64,
+    product: &str,
+    version: &str,
+) -> Result<Vec<u8>, String> {
+    let caches = live_feed_caches()
+        .lock()
+        .map_err(|_| "live feed cache store poisoned".to_string())?;
+    caches
+        .get(&(handle as u32))
+        .ok_or_else(|| format!("invalid live feed cache handle: {handle}"))?
+        .prepared_install_candidate(product, version)
+        .map(|candidate| candidate.unwrap_or_default())
+        .map_err(|err| err.to_string())
+}
+
+pub fn live_feed_cache_install_prepared_product_in_session_json(
+    handle: u64,
+    session_handle: u64,
+    product: &str,
+    version: &str,
+    prepared_bytes: &[u8],
+) -> Result<String, String> {
+    let installed = {
+        let caches = live_feed_caches()
+            .lock()
+            .map_err(|_| "live feed cache store poisoned".to_string())?;
+        caches
+            .get(&(handle as u32))
+            .ok_or_else(|| format!("invalid live feed cache handle: {handle}"))?
+            .install_candidate_state(product, version)
+            .map_err(|err| err.to_string())?
+    };
+    let snapshot = match app_core::install_prepared_live_feed_cache_product_in_session(
+        session_handle as u32,
+        &installed,
+        prepared_bytes,
+    ) {
+        Ok(snapshot) => {
+            live_feed_caches()
+                .lock()
+                .map_err(|_| "live feed cache store poisoned".to_string())?
+                .get_mut(&(handle as u32))
+                .ok_or_else(|| format!("invalid live feed cache handle: {handle}"))?
+                .acknowledge_install_candidate(product, &installed.version)
+                .map_err(|err| err.to_string())?;
+            snapshot
+        }
+        Err(error) => {
+            if let Ok(mut caches) = live_feed_caches().lock() {
+                if let Some(cache) = caches.get_mut(&(handle as u32)) {
+                    cache.reject_install_candidate(product);
+                }
+            }
+            return Err(error.to_string());
+        }
+    };
+    serde_json::to_string(&snapshot).map_err(|err| err.to_string())
+}
+
 pub fn live_feed_cache_sync_catalog_in_session_json(
     handle: u64,
     session_handle: u64,
@@ -2593,6 +2653,47 @@ pub extern "system" fn Java_org_aerobag_app_domain_NativeBindings_liveFeedCacheI
             )
         })
     });
+    return_string(&mut env, result)
+}
+
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_org_aerobag_app_domain_NativeBindings_liveFeedCachePreparedInstallCandidate(
+    mut env: JNIEnv,
+    _class: JClass,
+    handle: i64,
+    product: JString,
+    version: JString,
+) -> jbyteArray {
+    let result = get_java_string(&mut env, product).and_then(|product| {
+        get_java_string(&mut env, version).and_then(|version| {
+            live_feed_cache_prepared_install_candidate(handle as u64, &product, &version)
+        })
+    });
+    return_byte_array(&mut env, result)
+}
+
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_org_aerobag_app_domain_NativeBindings_liveFeedCacheInstallPreparedProductInSessionJson(
+    mut env: JNIEnv,
+    _class: JClass,
+    handle: i64,
+    session_handle: i64,
+    product: JString,
+    version: JString,
+    prepared_bytes: JByteArray,
+) -> jstring {
+    let result = (|| {
+        let product = get_java_string(&mut env, product)?;
+        let version = get_java_string(&mut env, version)?;
+        let prepared_bytes = get_java_byte_array(&mut env, prepared_bytes)?;
+        live_feed_cache_install_prepared_product_in_session_json(
+            handle as u64,
+            session_handle as u64,
+            &product,
+            &version,
+            &prepared_bytes,
+        )
+    })();
     return_string(&mut env, result)
 }
 

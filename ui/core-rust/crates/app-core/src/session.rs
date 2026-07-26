@@ -6699,12 +6699,12 @@ pub fn ingest_prepared_live_feed_resource_in_session(
     let envelope_version = envelope.version.clone();
     let envelope_product = envelope.product.clone();
     let notam_mutation_count = match &envelope.payload {
-        crate::PreparedLiveFeedPayload::Notams(crate::PreparedNotamPayload::InstallCheckpoint(
-            checkpoint,
-        )) => Some(checkpoint.records.len()),
-        crate::PreparedLiveFeedPayload::Notams(crate::PreparedNotamPayload::ApplyDelta(delta)) => {
-            Some(delta.mutations.len())
-        }
+        crate::PreparedLiveFeedPayload::Notams(
+            crate::PreparedNotamPayload::InstallAirportCheckpoint(checkpoint),
+        ) => Some(checkpoint.records.len()),
+        crate::PreparedLiveFeedPayload::Notams(crate::PreparedNotamPayload::ApplyAirportDelta(
+            delta,
+        )) => Some(delta.mutations.len()),
         _ => None,
     };
     let mut sessions = lock_sessions();
@@ -6772,6 +6772,43 @@ pub fn install_live_feed_installed_state_in_session(
     changed_session_snapshot_outcome(session)
 }
 
+pub fn install_prepared_live_feed_cache_product_in_session(
+    handle: u32,
+    installed: &crate::LiveFeedInstalledState,
+    prepared_bytes: &[u8],
+) -> AppResult<HadOperationOutcome> {
+    let envelope = crate::decode_prepared_live_feed(prepared_bytes)?;
+    if envelope.product != installed.product
+        || envelope.version != installed.version
+        || envelope.state_sha256 != installed.state_sha256
+    {
+        return Err(AppError {
+            kind: AppErrorKind::InvalidManifest,
+            message: format!(
+                "prepared live-feed projection {}/{}/{} does not match installed {}/{}/{}",
+                envelope.product,
+                envelope.version,
+                envelope.state_sha256,
+                installed.product,
+                installed.version,
+                installed.state_sha256
+            ),
+        });
+    }
+    let mut sessions = lock_sessions();
+    let session = session_mut(&mut sessions, handle)?;
+    install_prepared_live_feed(session, envelope.payload)?;
+    session.live_feeds.mark_durable_product_loaded(
+        installed.product.clone(),
+        installed.version.clone(),
+        installed.state_sha256.clone(),
+        installed.collected_at_utc.clone(),
+        installed_live_feed_state_manifest(installed),
+    );
+    sync_live_feed_overlay_status_records(session);
+    changed_session_snapshot_outcome(session)
+}
+
 fn install_live_feed_installed_state(
     session: &mut UiSession,
     installed: &crate::LiveFeedInstalledState,
@@ -6807,10 +6844,12 @@ fn install_live_feed_installed_state(
             session.tfr_payload = Some(payload);
             clear_data_status_record(session, LIVE_FEED_TFRS_STATUS_ID);
         }
-        ("notams", crate::LiveFeedInstalledPayload::NotamResources { checkpoint, deltas }) => {
-            install_notam_resource_chain(session, installed, checkpoint, deltas)?;
-            let status_id = live_feed_unavailable_status_record("notams", String::new()).id;
-            clear_data_status_record(session, &status_id);
+        ("notams", crate::LiveFeedInstalledPayload::NotamResources { .. }) => {
+            return Err(AppError {
+                kind: AppErrorKind::InvalidManifest,
+                message: "NOTAM resources must be prepared off-thread before session install"
+                    .to_string(),
+            });
         }
         (
             "obstacles",
@@ -6934,101 +6973,6 @@ fn installed_live_feed_state_manifest(
     }
 }
 
-fn install_notam_resource_chain(
-    session: &mut UiSession,
-    installed: &crate::LiveFeedInstalledState,
-    checkpoint_bytes: &[u8],
-    delta_bytes: &[std::sync::Arc<Vec<u8>>],
-) -> AppResult<()> {
-    let deltas = delta_bytes
-        .iter()
-        .map(|bytes| {
-            let decoded =
-                nav_kv_package::decode_xz_if_needed(bytes).map_err(|message| AppError {
-                    kind: AppErrorKind::InvalidManifest,
-                    message,
-                })?;
-            serde_json::from_slice::<notam_state::NotamDelta>(decoded.as_ref()).map_err(|error| {
-                AppError {
-                    kind: AppErrorKind::InvalidManifest,
-                    message: format!("failed to decode installed NOTAM delta: {error}"),
-                }
-            })
-        })
-        .collect::<AppResult<Vec<_>>>()?;
-    let start = session.airport_notam_index.as_ref().and_then(|index| {
-        deltas
-            .iter()
-            .position(|delta| delta.from_state_id == index.state_id())
-    });
-    let mut work = notam_state::NotamApplyWork::default();
-    if let Some(start) = start {
-        let index = session
-            .airport_notam_index
-            .as_mut()
-            .ok_or_else(|| AppError {
-                kind: AppErrorKind::Internal,
-                message: "NOTAM index disappeared during installed delta replay".to_string(),
-            })?;
-        for delta in deltas.into_iter().skip(start) {
-            if let Err(error) = index.apply_delta(delta, &mut work) {
-                session.airport_notam_index = None;
-                return Err(AppError {
-                    kind: AppErrorKind::InvalidManifest,
-                    message: format!("failed to replay installed NOTAM delta: {error}"),
-                });
-            }
-        }
-    } else {
-        let decoded =
-            nav_kv_package::decode_xz_if_needed(checkpoint_bytes).map_err(|message| AppError {
-                kind: AppErrorKind::InvalidManifest,
-                message,
-            })?;
-        let checkpoint: notam_state::NotamCheckpoint = serde_json::from_slice(decoded.as_ref())
-            .map_err(|error| AppError {
-                kind: AppErrorKind::InvalidManifest,
-                message: format!("failed to decode installed NOTAM checkpoint: {error}"),
-            })?;
-        let mut index =
-            AirportNotamIndex::from_checkpoint(checkpoint, &mut work).map_err(|error| {
-                AppError {
-                    kind: AppErrorKind::InvalidManifest,
-                    message: format!("failed to install NOTAM checkpoint: {error}"),
-                }
-            })?;
-        for delta in deltas {
-            index
-                .apply_delta(delta, &mut work)
-                .map_err(|error| AppError {
-                    kind: AppErrorKind::InvalidManifest,
-                    message: format!("failed to replay installed NOTAM delta: {error}"),
-                })?;
-        }
-        session.airport_notam_index = Some(index);
-    }
-    let actual = session
-        .airport_notam_index
-        .as_ref()
-        .map(AirportNotamIndex::state_id)
-        .ok_or_else(|| AppError {
-            kind: AppErrorKind::Internal,
-            message: "NOTAM resource replay produced no state".to_string(),
-        })?
-        .to_string();
-    if actual != installed.state_sha256 || actual != installed.version {
-        session.airport_notam_index = None;
-        return Err(AppError {
-            kind: AppErrorKind::InvalidManifest,
-            message: format!(
-                "installed NOTAM resources end at {actual}, expected {}/{}",
-                installed.version, installed.state_sha256
-            ),
-        });
-    }
-    Ok(())
-}
-
 fn install_prepared_live_feed(
     session: &mut UiSession,
     payload: crate::PreparedLiveFeedPayload,
@@ -7056,18 +7000,17 @@ fn install_prepared_live_feed(
             clear_data_status_record(session, LIVE_FEED_TFRS_STATUS_ID);
         }
         crate::PreparedLiveFeedPayload::Notams(message) => {
-            let mut work = notam_state::NotamApplyWork::default();
             match message {
-                crate::PreparedNotamPayload::InstallCheckpoint(checkpoint) => {
-                    let index = AirportNotamIndex::from_checkpoint(checkpoint, &mut work).map_err(
+                crate::PreparedNotamPayload::InstallAirportCheckpoint(checkpoint) => {
+                    let index = AirportNotamIndex::from_projection_checkpoint(checkpoint).map_err(
                         |error| AppError {
                             kind: AppErrorKind::InvalidManifest,
-                            message: format!("failed to install NOTAM checkpoint: {error}"),
+                            message: format!("failed to install airport NOTAM projection: {error}"),
                         },
                     )?;
                     session.airport_notam_index = Some(index);
                 }
-                crate::PreparedNotamPayload::ApplyDelta(delta) => {
+                crate::PreparedNotamPayload::ApplyAirportDelta(delta) => {
                     let index = session
                         .airport_notam_index
                         .as_mut()
@@ -7075,7 +7018,7 @@ fn install_prepared_live_feed(
                             kind: AppErrorKind::InvalidManifest,
                             message: "cannot apply NOTAM delta without installed state".to_string(),
                         })?;
-                    if let Err(error) = index.apply_delta(delta, &mut work) {
+                    if let Err(error) = index.apply_projection_delta(delta) {
                         let preserve = matches!(
                             error,
                             notam_state::NotamStateError::Contract(_)
@@ -15004,7 +14947,7 @@ mod tests {
     }
 
     #[test]
-    fn notam_postcondition_failure_discards_state_but_stale_base_preserves_it() {
+    fn invalid_notam_projection_discards_state_but_stale_base_preserves_it() {
         let init =
             create_ui_session(FlightPlan::default(), &[], None, None).expect("create session");
         let record = |id: &str, text: &str| notam_state::NotamRecord {
@@ -15029,58 +14972,29 @@ mod tests {
                 &mut notam_state::NotamApplyWork::default(),
             )
             .unwrap();
-        let checkpoint = source.checkpoint();
         let base_id = source.state_id().to_string();
-        let mutation = notam_state::NotamMutation::Upsert {
-            record: record("B", "changed"),
-        };
-        source
-            .apply_mutation(
-                mutation.clone(),
-                &mut notam_state::NotamApplyWork::default(),
-            )
-            .unwrap();
+        let checkpoint = crate::map_overlay::airport_notam_projection_checkpoint(&source);
 
         let mut sessions = lock_sessions();
         let session = session_mut(&mut sessions, init.handle).expect("session");
         install_prepared_live_feed(
             session,
-            crate::PreparedLiveFeedPayload::Notams(crate::PreparedNotamPayload::InstallCheckpoint(
-                checkpoint.clone(),
-            )),
+            crate::PreparedLiveFeedPayload::Notams(
+                crate::PreparedNotamPayload::InstallAirportCheckpoint(checkpoint.clone()),
+            ),
         )
         .unwrap();
-        let bad_target = notam_state::NotamDelta::new(
-            base_id.clone(),
-            "f".repeat(64),
-            source.counters(),
-            vec![mutation],
-        );
+        let stale = crate::AirportNotamProjectionDelta {
+            schema_version: crate::map_overlay::AIRPORT_NOTAM_PROJECTION_SCHEMA_VERSION,
+            from_state_id: "e".repeat(64),
+            to_state_id: "d".repeat(64),
+            mutations: Vec::new(),
+        };
         assert!(install_prepared_live_feed(
             session,
-            crate::PreparedLiveFeedPayload::Notams(crate::PreparedNotamPayload::ApplyDelta(
-                bad_target
-            )),
-        )
-        .is_err());
-        assert!(session.airport_notam_index.is_none());
-
-        install_prepared_live_feed(
-            session,
-            crate::PreparedLiveFeedPayload::Notams(crate::PreparedNotamPayload::InstallCheckpoint(
-                checkpoint,
-            )),
-        )
-        .unwrap();
-        let stale = notam_state::NotamDelta::new(
-            "e".repeat(64),
-            "d".repeat(64),
-            notam_state::NotamCounters::default(),
-            Vec::new(),
-        );
-        assert!(install_prepared_live_feed(
-            session,
-            crate::PreparedLiveFeedPayload::Notams(crate::PreparedNotamPayload::ApplyDelta(stale)),
+            crate::PreparedLiveFeedPayload::Notams(crate::PreparedNotamPayload::ApplyAirportDelta(
+                stale
+            ),),
         )
         .is_err());
         assert_eq!(
@@ -15090,6 +15004,36 @@ mod tests {
                 .map(AirportNotamIndex::state_id),
             Some(base_id.as_str())
         );
+
+        install_prepared_live_feed(
+            session,
+            crate::PreparedLiveFeedPayload::Notams(
+                crate::PreparedNotamPayload::InstallAirportCheckpoint(checkpoint),
+            ),
+        )
+        .unwrap();
+        let invalid = crate::AirportNotamProjectionDelta {
+            schema_version: crate::map_overlay::AIRPORT_NOTAM_PROJECTION_SCHEMA_VERSION,
+            from_state_id: base_id,
+            to_state_id: "f".repeat(64),
+            mutations: vec![crate::AirportNotamProjectionMutation::Upsert(
+                crate::AirportNotamProjectionRecord {
+                    id: "B".to_string(),
+                    airport_id: "ksea".to_string(),
+                    label: "AD".to_string(),
+                    text: "invalid lowercase airport".to_string(),
+                    priority: 0,
+                },
+            )],
+        };
+        assert!(install_prepared_live_feed(
+            session,
+            crate::PreparedLiveFeedPayload::Notams(crate::PreparedNotamPayload::ApplyAirportDelta(
+                invalid
+            ),),
+        )
+        .is_err());
+        assert!(session.airport_notam_index.is_none());
     }
 
     #[test]
@@ -15144,13 +15088,21 @@ mod tests {
                 .unwrap();
         let checkpoint_resource = format!("live_feeds/state/notams/{checkpoint_id}");
         let delta_resource = format!("live_feeds/delta/notams/{checkpoint_id}/{head_id}");
-        let (_, prepared_checkpoint) =
-            crate::prepare_live_feed_state_resource(&checkpoint_resource, &checkpoint_bytes)
-                .unwrap();
-        let (_, prepared_delta) = crate::prepare_live_feed_delta_resource(
+        let mut preparer = crate::NotamProjectionPreparer::default();
+        let prepared_checkpoint = crate::prepare_notam_live_feed_state_resource_with_work(
+            &checkpoint_resource,
+            &checkpoint_bytes,
+            &mut preparer,
+            &mut crate::BackgroundNotamWork::default(),
+            &mut notam_state::NotamApplyWork::default(),
+        )
+        .unwrap();
+        let prepared_delta = crate::prepare_notam_live_feed_delta_resource_with_work(
             &delta_resource,
-            &serde_json::Value::Null,
             &delta_bytes,
+            &mut preparer,
+            &mut crate::BackgroundNotamWork::default(),
+            &mut notam_state::NotamApplyWork::default(),
         )
         .unwrap();
         let delta_ref = serde_json::json!({
@@ -15327,9 +15279,14 @@ mod tests {
         )
         .expect("checkpoint XZ");
         let resource_id = format!("live_feeds/state/notams/{state_id}");
-        let (_, prepared_bytes) =
-            crate::prepare_live_feed_state_resource(&resource_id, &checkpoint_bytes)
-                .expect("prepare NOTAM checkpoint");
+        let prepared_bytes = crate::prepare_notam_live_feed_state_resource_with_work(
+            &resource_id,
+            &checkpoint_bytes,
+            &mut crate::NotamProjectionPreparer::default(),
+            &mut crate::BackgroundNotamWork::default(),
+            &mut crate::NotamApplyWork::default(),
+        )
+        .expect("prepare NOTAM checkpoint");
         {
             let mut sessions = lock_sessions();
             let session = sessions.get_mut(&init.handle).expect("session");

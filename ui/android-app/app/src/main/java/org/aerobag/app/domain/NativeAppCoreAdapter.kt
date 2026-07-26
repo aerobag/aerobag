@@ -1278,11 +1278,16 @@ class NativeUiSession internal constructor(
         heightPx: Double,
         click: LatLonPoint,
         pointDisplayScale: Double,
+        fetchResource: (CoreResourceRequest) -> ByteArray,
     ): MapSelectionQueryResult {
         val viewportJson = json.encodeToString(viewport.toWire())
         val clickJson = json.encodeToString(click.toWire())
         val store = navKvStore ?: error("session missing nav_db for map selection")
         val result = store.runPagedSessionOperation(
+            fetchSessionResource = fetchResource,
+            ingestSessionResource = { resource, bytes ->
+                bridge.ingestResourceInSession(handle, resource.id, bytes)
+            },
             drainSessionResourceEffects = { bridge.drainSessionResourceEffectsJson(handle) },
         ) {
                 bridge.getMapSelectionInSessionWithPointDisplayScaleJson(
@@ -1305,11 +1310,16 @@ class NativeUiSession internal constructor(
         heightPx: Double,
         navRef: NavRef,
         pointDisplayScale: Double,
+        fetchResource: (CoreResourceRequest) -> ByteArray,
     ): MapSelectionForNavRefResult {
         val viewportJson = json.encodeToString(viewport.toWire())
         val navRefJson = json.encodeToString(navRef.toWire())
         val store = navKvStore ?: error("session missing nav_db for map selection")
         val result = store.runPagedSessionOperation(
+            fetchSessionResource = fetchResource,
+            ingestSessionResource = { resource, bytes ->
+                bridge.ingestResourceInSession(handle, resource.id, bytes)
+            },
             drainSessionResourceEffects = { bridge.drainSessionResourceEffectsJson(handle) },
         ) {
                 bridge.getMapSelectionForNavRefInSessionWithPointDisplayScaleJson(

@@ -1149,6 +1149,9 @@ internal fun MapExplorerPage(
                     heightPx = surfaceHeightPx.toDouble(),
                     click = LatLonPoint(lat = lat, lon = lon),
                     pointDisplayScale = density.density.toDouble(),
+                    fetchResource = { resource ->
+                        fetchMapOverlayCoreResource(context, resource, devServerBaseUrl)
+                    },
                 )
                 val elapsedMs = SystemClock.elapsedRealtime() - clickStartedMs
                 val itemCount = result.categories.sumOf { it.items.size }
@@ -1430,6 +1433,9 @@ internal fun MapExplorerPage(
             heightPx = surfaceHeightPx.toDouble(),
             navRef = navRef,
             pointDisplayScale = density.density.toDouble(),
+            fetchResource = { resource ->
+                fetchMapOverlayCoreResource(context, resource, devServerBaseUrl)
+            },
             onResult = { inspection ->
                 val center = latLonToWorld(inspection.position.lat, inspection.position.lon)
                 val nextViewport = currentViewport.copy(
@@ -2294,6 +2300,9 @@ internal fun MapExplorerPage(
             heightPx = surfaceHeightPx.toDouble(),
             click = LatLonPoint(lat = lat, lon = lon),
             pointDisplayScale = density.density.toDouble(),
+            fetchResource = { resource ->
+                fetchMapOverlayCoreResource(context, resource, devServerBaseUrl)
+            },
             onResult = { result ->
                 mapSelection = MapSelectionUiState(
                     point = point,

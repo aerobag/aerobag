@@ -89,6 +89,36 @@ class NativeUiSessionBoundaryTest {
     }
 
     @Test
+    fun mapSelectionQueriesServiceCoreResourceRequests() {
+        val sessionSource =
+            sourceFile("src/main/java/org/aerobag/app/domain/NativeAppCoreAdapter.kt").readText()
+        val runnerSource =
+            sourceFile("src/main/java/org/aerobag/app/UiSessionWorkRunner.kt").readText()
+        val mapSource =
+            sourceFile("src/main/java/org/aerobag/app/MapExplorerPage.kt").readText()
+
+        for (marker in listOf("fun queryMapSelection(", "fun queryMapSelectionForNavRef(")) {
+            val body = balancedBlockAfterMarker(sessionSource, marker)
+            assertTrue(
+                "$marker must fetch non-NAVKV resources requested by core.",
+                body.contains("fetchSessionResource = fetchResource"),
+            )
+            assertTrue(
+                "$marker must ingest fetched resources into the active core session.",
+                body.contains("bridge.ingestResourceInSession(handle, resource.id, bytes)"),
+            )
+        }
+        assertTrue(
+            "The background selection runner must carry the resource fetcher into both payload types.",
+            runnerSource.split("fetchResource = fetchResource").size - 1 >= 4,
+        )
+        assertTrue(
+            "Raw clicks, search inspection, and the selection perf path must use the normalized fetcher.",
+            mapSource.split("fetchMapOverlayCoreResource(context, resource, devServerBaseUrl)").size - 1 == 4,
+        )
+    }
+
+    @Test
     fun mapPageUsesCoreInvalidationAndProjectionRevisions() {
         val mainActivity = sourceFile("src/main/java/org/aerobag/app/MainActivity.kt").readText()
         val mapPage = sourceFile("src/main/java/org/aerobag/app/MapExplorerPage.kt").readText()

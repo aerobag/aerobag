@@ -14,11 +14,45 @@ import kotlinx.serialization.json.jsonArray
 import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
 import kotlinx.serialization.json.put
+import org.junit.Assert.assertArrayEquals
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
 class NavKvStoreReplacementTest {
+    @Test
+    fun failedOptionalSessionResourceResumesWithEmptyPayload() {
+        val directory = Files.createTempDirectory("nav-kv-optional-resource-test").toFile()
+        val artifact = createArtifact(directory, "nav.zip", "page")
+        val bridge = FakeNavKvBridge()
+        val store = NavKvStore.openInstalledArtifacts(listOf(artifact), "", bridge.nativeBridge)
+        var operationCalls = 0
+        var ingestedBytes: ByteArray? = null
+
+        try {
+            val outcome = store.runPagedSessionOperation(
+                fetchSessionResource = { error("terrain tile is unavailable") },
+                ingestSessionResource = { _, bytes -> ingestedBytes = bytes },
+                operation = {
+                    operationCalls += 1
+                    if (operationCalls == 1) {
+                        """{"state":"need_resources","resources":[{"id":"terrain/source/missing","source":{"kind":"unavailable","message":"missing"},"optional":true}]}"""
+                    } else {
+                        """{"state":"complete","result":"inspector"}"""
+                    }
+                },
+            )
+
+            assertEquals("inspector", outcome.result.jsonPrimitive.content)
+            assertEquals(2, operationCalls)
+            assertArrayEquals(ByteArray(0), ingestedBytes)
+        } finally {
+            store.close()
+            PackageZipStore.invalidate(artifact.file)
+            directory.deleteRecursively()
+        }
+    }
+
     @Test
     fun replacingInstalledArtifactsCommitsCoreTransactionBeforeRetiringOldNavDb() {
         val directory = Files.createTempDirectory("nav-kv-replacement-test").toFile()

@@ -466,6 +466,7 @@ class NavKvStore private constructor(
                                         "optional resource ${resource.id} unavailable: ${error.message}"
                                     }
                                     ingest(resource, ByteArray(0))
+                                    loadedAnyResource = true
                                     continue
                                 }
                                 throw error

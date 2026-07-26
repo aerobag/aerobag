@@ -6596,13 +6596,18 @@ pub fn ingest_resource_in_session_at_epoch_ms(
         return Ok(());
     }
     if let Some(rest) = resource_id.strip_prefix("terrain/source/") {
-        let abt2_bytes =
+        let abt2_bytes = if bytes.is_empty() {
+            // Optional point-elevation enrichment records an unavailable tile
+            // with empty bytes so the resumed selection can render "Elev --".
+            Vec::new()
+        } else {
             crate::terrain::terrain_source_payload_to_abt2_bytes(bytes).map_err(|message| {
                 AppError {
                     kind: AppErrorKind::InvalidManifest,
                     message,
                 }
-            })?;
+            })?
+        };
         let mut sessions = lock_sessions();
         let session = session_mut(&mut sessions, handle)?;
         session
@@ -8907,7 +8912,7 @@ fn materialize_map_selection_in_session(
         terrain_requests
             .iter_mut()
             .flat_map(|request| request.source_tiles.iter_mut()),
-        true,
+        TerrainSourceFetchPolicy::OptionalPayload,
     ) {
         TerrainSourceResolution::NeedResources(resources) => {
             return Ok(MapSelectionMaterialization::NeedResources(resources));
@@ -9195,6 +9200,12 @@ enum TerrainSourceResolution {
     Unavailable { reason: String },
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum TerrainSourceFetchPolicy {
+    PlanOnly,
+    OptionalPayload,
+}
+
 fn resolve_terrain_overlay_source_resources(
     session: &UiSession,
     query: &mut TerrainOverlayQueryResult,
@@ -9210,14 +9221,14 @@ fn resolve_terrain_overlay_source_resources(
             .tile_requests
             .iter_mut()
             .flat_map(|request| request.source_tiles.iter_mut()),
-        false,
+        TerrainSourceFetchPolicy::PlanOnly,
     )
 }
 
 fn resolve_terrain_source_resources<'a>(
     session: &UiSession,
     source_tiles: impl IntoIterator<Item = &'a mut crate::TerrainOverlaySourceTile>,
-    fetch_source_payloads: bool,
+    fetch_policy: TerrainSourceFetchPolicy,
 ) -> TerrainSourceResolution {
     let mut pending_resources = Vec::new();
     for source_tile in source_tiles {
@@ -9227,7 +9238,7 @@ fn resolve_terrain_source_resources<'a>(
             &target_resource_id,
             &source_tile.product_id,
             &source_tile.path,
-            false,
+            fetch_policy == TerrainSourceFetchPolicy::OptionalPayload,
         ) {
             Ok(requested) => requested,
             Err(message) => {
@@ -9245,7 +9256,9 @@ fn resolve_terrain_source_resources<'a>(
                         reason: format!("{}: {message}", resource.id),
                     };
                 }
-                if fetch_source_payloads && !session.terrain_source_tile_cache.contains_key(&key) {
+                if fetch_policy == TerrainSourceFetchPolicy::OptionalPayload
+                    && !session.terrain_source_tile_cache.contains_key(&key)
+                {
                     pending_resources.push(resource.clone());
                 }
                 source_tile.resource = Some(resource);
@@ -21601,6 +21614,26 @@ mod tests {
                 .as_deref(),
             Some("12.3456, -65.4321")
         );
+    }
+
+    #[test]
+    fn optional_terrain_failure_is_cached_as_unavailable_elevation() {
+        let init = create_current_test_session();
+        let cache_key = "terrain-nw/tiles/9/82/332.terrain";
+        let resource_id = format!("terrain/source/{cache_key}");
+
+        ingest_resource_in_session(init.handle, &resource_id, &[])
+            .expect("ingest unavailable optional terrain marker");
+
+        {
+            let sessions = lock_sessions();
+            let session = session_ref(&sessions, init.handle).expect("session");
+            assert!(session
+                .terrain_source_tile_cache
+                .get(cache_key)
+                .is_some_and(Vec::is_empty));
+        }
+        destroy_session(init.handle);
     }
 
     #[test]

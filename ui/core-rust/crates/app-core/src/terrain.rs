@@ -898,6 +898,27 @@ mod tests {
     }
 
     #[test]
+    fn point_elevation_skips_missing_and_out_of_region_packages() {
+        let seattle = crate::LatLon {
+            lat: 47.6062,
+            lon: -122.3321,
+        };
+        assert!(
+            terrain_elevation_request_with_available_packages(seattle, &BTreeSet::new()).is_none()
+        );
+
+        let orlando = crate::LatLon {
+            lat: 28.5383,
+            lon: -81.3792,
+        };
+        assert!(terrain_elevation_request_with_available_packages(
+            orlando,
+            &package_id_set(&["terrain-nw"]),
+        )
+        .is_none());
+    }
+
+    #[test]
     fn point_elevation_samples_highest_valid_overlapping_source() {
         let position = crate::LatLon {
             lat: 47.6062,

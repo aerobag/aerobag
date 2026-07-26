@@ -110,6 +110,7 @@ class UiSessionWorkRunner(
         heightPx: Double,
         click: LatLonPoint,
         pointDisplayScale: Double,
+        fetchResource: (CoreResourceRequest) -> ByteArray,
         onResult: (MapSelectionQueryResult) -> Unit,
         onError: (Throwable) -> Unit,
         onDropped: (String) -> Unit = {},
@@ -121,6 +122,7 @@ class UiSessionWorkRunner(
                 heightPx = heightPx,
                 click = click,
                 pointDisplayScale = pointDisplayScale,
+                fetchResource = fetchResource,
                 onResult = onResult,
                 onError = onError,
                 onDropped = onDropped,
@@ -134,6 +136,7 @@ class UiSessionWorkRunner(
         heightPx: Double,
         click: LatLonPoint,
         pointDisplayScale: Double,
+        fetchResource: (CoreResourceRequest) -> ByteArray,
     ): MapSelectionQueryResult {
         val deferred = CompletableDeferred<MapSelectionQueryResult>()
         withContext(Dispatchers.Main.immediate) {
@@ -143,6 +146,7 @@ class UiSessionWorkRunner(
                 heightPx = heightPx,
                 click = click,
                 pointDisplayScale = pointDisplayScale,
+                fetchResource = fetchResource,
                 onResult = { deferred.complete(it) },
                 onError = { deferred.completeExceptionally(it) },
                 onDropped = { reason ->
@@ -159,6 +163,7 @@ class UiSessionWorkRunner(
         heightPx: Double,
         navRef: NavRef,
         pointDisplayScale: Double,
+        fetchResource: (CoreResourceRequest) -> ByteArray,
         onResult: (MapSelectionForNavRefResult) -> Unit,
         onError: (Throwable) -> Unit,
         onDropped: (String) -> Unit = {},
@@ -170,6 +175,7 @@ class UiSessionWorkRunner(
                 heightPx = heightPx,
                 navRef = navRef,
                 pointDisplayScale = pointDisplayScale,
+                fetchResource = fetchResource,
                 onResult = onResult,
                 onError = onError,
                 onDropped = onDropped,
@@ -320,6 +326,7 @@ private class MapSelectionPayload(
     private val heightPx: Double,
     private val click: LatLonPoint,
     private val pointDisplayScale: Double,
+    private val fetchResource: (CoreResourceRequest) -> ByteArray,
     private val onResult: (MapSelectionQueryResult) -> Unit,
     private val onError: (Throwable) -> Unit,
     private val onDropped: (String) -> Unit,
@@ -332,6 +339,7 @@ private class MapSelectionPayload(
                 heightPx = heightPx,
                 click = click,
                 pointDisplayScale = pointDisplayScale,
+                fetchResource = fetchResource,
             ),
         )
     }
@@ -356,6 +364,7 @@ private class MapSelectionForNavRefPayload(
     private val heightPx: Double,
     private val navRef: NavRef,
     private val pointDisplayScale: Double,
+    private val fetchResource: (CoreResourceRequest) -> ByteArray,
     private val onResult: (MapSelectionForNavRefResult) -> Unit,
     private val onError: (Throwable) -> Unit,
     private val onDropped: (String) -> Unit,
@@ -368,6 +377,7 @@ private class MapSelectionForNavRefPayload(
                 heightPx = heightPx,
                 navRef = navRef,
                 pointDisplayScale = pointDisplayScale,
+                fetchResource = fetchResource,
             ),
         )
     }

@@ -12648,6 +12648,30 @@ mod tests {
     };
     use std::io::Read;
 
+    // Page delivery broadcasts by store ID, so unrelated test databases need distinct identities.
+    static NEXT_TEST_NAV_KV_STORE_ID: AtomicU32 = AtomicU32::new(1_000_000);
+
+    fn next_test_nav_kv_store_id() -> u32 {
+        NEXT_TEST_NAV_KV_STORE_ID.fetch_add(1, Ordering::Relaxed)
+    }
+
+    fn attach_isolated_test_nav_kv_store(handle: u32, store: &NavKvStore) -> u32 {
+        let store_id = next_test_nav_kv_store_id();
+        attach_nav_kv_store_to_session(handle, store_id, store).expect("attach test nav kv");
+        store_id
+    }
+
+    fn attach_isolated_test_nav_kv_store_with_open_result(
+        handle: u32,
+        store: &NavKvStore,
+        open_result: &NavDbOpenResult,
+    ) -> u32 {
+        let store_id = next_test_nav_kv_store_id();
+        attach_nav_kv_store_to_session_with_open_result(handle, store_id, store, Some(open_result))
+            .expect("attach test nav kv");
+        store_id
+    }
+
     #[test]
     fn restoring_chart_page_state_preserves_chart_reference_selection() {
         let init = create_ui_session(
@@ -13679,13 +13703,7 @@ mod tests {
         let old_store = nav_db_advance_store_for_test();
         let mut old_open = nav_db_open_result_for_test("NAV_DB_2607", Some("2026-07-16T00:00:00Z"));
         old_open.selected_effective_date = Some("2026-07-01T00:00:00Z".to_string());
-        attach_nav_kv_store_to_session_with_open_result(
-            init.handle,
-            1,
-            &old_store,
-            Some(&old_open),
-        )
-        .expect("attach current NAVDB");
+        attach_isolated_test_nav_kv_store_with_open_result(init.handle, &old_store, &old_open);
         install_nav_db_maintenance_catalog(
             init.handle,
             before_rollover,
@@ -13770,13 +13788,7 @@ mod tests {
             .expect("set web policy");
         let old_store = nav_db_advance_store_for_test();
         let old_open = nav_db_open_result_for_test("NAV_DB_2607", None);
-        attach_nav_kv_store_to_session_with_open_result(
-            init.handle,
-            1,
-            &old_store,
-            Some(&old_open),
-        )
-        .expect("attach old NAVDB");
+        attach_isolated_test_nav_kv_store_with_open_result(init.handle, &old_store, &old_open);
         let initial = format!(
             r#"[{{"schema_version":1,"contracts":{{"nav-db":"{}"}},"as_of_utc":"2026-07-15T12:00:00Z","artifact_roots":{{"packaged":"packaged","unpacked":"unpacked"}},"bundles":[]}}]"#,
             crate::REQUIRED_NAV_DB_CONTRACT_ID
@@ -13854,13 +13866,7 @@ mod tests {
         let init = create_current_test_session();
         let old_store = nav_db_advance_store_for_test();
         let old_open = nav_db_open_result_for_test("NAV_DB_2607", None);
-        attach_nav_kv_store_to_session_with_open_result(
-            init.handle,
-            1,
-            &old_store,
-            Some(&old_open),
-        )
-        .expect("attach old NAVDB");
+        attach_isolated_test_nav_kv_store_with_open_result(init.handle, &old_store, &old_open);
         let next_store = nav_db_advance_store_for_test();
         let next_open = nav_db_open_result_for_test("NAV_DB_2608", None);
 
@@ -14292,7 +14298,7 @@ mod tests {
             .map(|(key, bytes)| (key.as_str(), bytes.as_slice()))
             .collect::<Vec<_>>();
         let store = crate::navkv::nav_kv_store_for_test(&entry_refs, 2048);
-        attach_nav_kv_store_to_session(handle, 1, &store).expect("attach nav kv store");
+        attach_isolated_test_nav_kv_store(handle, &store);
     }
 
     fn ingest_bundle_packages_for_test(handle: u32, packages: Vec<serde_json::Value>) {
@@ -16080,7 +16086,7 @@ mod tests {
             )],
             256,
         );
-        attach_nav_kv_store_to_session(init.handle, 1, &store).expect("attach nav kv");
+        attach_isolated_test_nav_kv_store(init.handle, &store);
         {
             let mut sessions = lock_sessions();
             let session = session_mut(&mut sessions, init.handle).expect("session");
@@ -16216,7 +16222,7 @@ mod tests {
             &[("vector/manifest", minimal_vector_manifest_json().as_bytes())],
             1024,
         );
-        attach_nav_kv_store_to_session(init.handle, 1, &store).expect("attach nav kv");
+        let store_id = attach_isolated_test_nav_kv_store(init.handle, &store);
 
         let outcome = get_map_overlay_in_session(
             init.handle,
@@ -16252,7 +16258,11 @@ mod tests {
         for resource in resources {
             let page_index = crate::nav_kv_page_index_from_resource_id(&resource.id)
                 .expect("nav kv page resource id");
-            insert_nav_kv_page_for_attached_sessions(1, page_index, &pages[page_index as usize]);
+            insert_nav_kv_page_for_attached_sessions(
+                store_id,
+                page_index,
+                &pages[page_index as usize],
+            );
         }
 
         let retry_outcome = get_map_overlay_in_session(
@@ -16284,7 +16294,7 @@ mod tests {
             )],
             256,
         );
-        attach_nav_kv_store_to_session(init.handle, 1, &store).expect("attach nav kv");
+        let store_id = attach_isolated_test_nav_kv_store(init.handle, &store);
         {
             let mut sessions = lock_sessions();
             let session = session_mut(&mut sessions, init.handle).expect("session");
@@ -16392,7 +16402,7 @@ mod tests {
                 let page_index = crate::nav_kv_page_index_from_resource_id(&effect.resource.id)
                     .expect("nav kv page resource id");
                 insert_nav_kv_page_for_attached_sessions(
-                    1,
+                    store_id,
                     page_index,
                     &pages[page_index as usize],
                 );
@@ -17058,8 +17068,7 @@ mod tests {
             ],
             256,
         );
-        let store_id = 91_001;
-        attach_nav_kv_store_to_session(init.handle, store_id, &store).expect("attach nav kv");
+        let store_id = attach_isolated_test_nav_kv_store(init.handle, &store);
         let revision_before = {
             let sessions = lock_sessions();
             let session = session_ref(&sessions, init.handle).expect("session");
@@ -17103,8 +17112,7 @@ mod tests {
             ],
             256,
         );
-        let store_id = 91_002;
-        attach_nav_kv_store_to_session(init.handle, store_id, &store).expect("attach nav kv");
+        let store_id = attach_isolated_test_nav_kv_store(init.handle, &store);
         let position = LatLon {
             lat: 48.54,
             lon: -109.76,
@@ -17991,7 +17999,7 @@ mod tests {
             &[("vector/manifest", minimal_vector_manifest_json().as_bytes())],
             1024,
         );
-        attach_nav_kv_store_to_session(init.handle, 1, &store).expect("attach nav kv");
+        attach_isolated_test_nav_kv_store(init.handle, &store);
 
         let outcome = get_map_overlay_in_session(
             init.handle,
@@ -19165,8 +19173,7 @@ mod tests {
         let init = create_current_test_session();
         let store = crate::navkv::nav_kv_store_for_test(&[], 256);
         let open_result = nav_db_open_result_for_test("NAV_DB_TEST", Some("2026-06-18T00:00:00Z"));
-        attach_nav_kv_store_to_session_with_open_result(init.handle, 1, &store, Some(&open_result))
-            .expect("attach nav kv");
+        attach_isolated_test_nav_kv_store_with_open_result(init.handle, &store, &open_result);
 
         let snapshot = get_session_snapshot(init.handle).expect("snapshot");
         let row = snapshot
@@ -19190,8 +19197,7 @@ mod tests {
         let mut open_result =
             nav_db_open_result_for_test("NAV_DB_2606", Some("2026-06-11T00:00:00Z"));
         open_result.selected_effective_date = Some("2026-05-14T00:00:00Z".to_string());
-        attach_nav_kv_store_to_session_with_open_result(init.handle, 1, &store, Some(&open_result))
-            .expect("attach nav kv");
+        attach_isolated_test_nav_kv_store_with_open_result(init.handle, &store, &open_result);
         ingest_bundle_packages_for_test(
             init.handle,
             vec![
@@ -19237,8 +19243,7 @@ mod tests {
         let init = create_current_test_session();
         let store = crate::navkv::nav_kv_store_for_test(&[], 256);
         let open_result = nav_db_open_result_for_test("NAV_DB_TEST", Some("2020-01-01"));
-        attach_nav_kv_store_to_session_with_open_result(init.handle, 1, &store, Some(&open_result))
-            .expect("attach nav kv");
+        attach_isolated_test_nav_kv_store_with_open_result(init.handle, &store, &open_result);
 
         let snapshot = get_session_snapshot(init.handle).expect("snapshot");
         let nav_db = data_status_box(&snapshot, CYCLE_NAV_DB_STATUS_ID);
@@ -19270,7 +19275,7 @@ mod tests {
             )],
             1024,
         );
-        attach_nav_kv_store_to_session(init.handle, 1, &store).expect("attach nav kv");
+        attach_isolated_test_nav_kv_store(init.handle, &store);
 
         let snapshot = get_session_snapshot(init.handle).expect("snapshot");
         let warning = data_status_box(&snapshot, "package_ui_warning:family:sec");
@@ -19303,7 +19308,7 @@ mod tests {
             )],
             1024,
         );
-        attach_nav_kv_store_to_session(init.handle, 1, &store).expect("attach nav kv");
+        attach_isolated_test_nav_kv_store(init.handle, &store);
 
         let snapshot = get_session_snapshot(init.handle).expect("snapshot");
         let warning = data_status_box(&snapshot, "package_ui_warning:family:enr-h");
@@ -19359,7 +19364,7 @@ mod tests {
             .map(|(key, bytes)| (key.as_str(), bytes.as_slice()))
             .collect::<Vec<_>>();
         let store = crate::navkv::nav_kv_store_for_test(&entry_refs, 2048);
-        attach_nav_kv_store_to_session(init.handle, 1, &store).expect("attach nav kv");
+        attach_isolated_test_nav_kv_store(init.handle, &store);
 
         let snapshot = get_session_snapshot(init.handle).expect("snapshot");
         let warnings = snapshot
@@ -19377,8 +19382,7 @@ mod tests {
         let store = crate::navkv::nav_kv_store_for_test(&[], 256);
         let mut open_result = nav_db_open_result_for_test("NAV_DB_SAMPLE", Some("2026-06-11"));
         open_result.selected_warning_text = Some("This NAV-DB is getting moldy.".to_string());
-        attach_nav_kv_store_to_session_with_open_result(init.handle, 1, &store, Some(&open_result))
-            .expect("attach nav kv");
+        attach_isolated_test_nav_kv_store_with_open_result(init.handle, &store, &open_result);
 
         let snapshot = get_session_snapshot(init.handle).expect("snapshot");
         let warning = data_status_box(&snapshot, "package_ui_warning:NAV_DB_SAMPLE");
@@ -19398,8 +19402,7 @@ mod tests {
         let init = create_current_test_session();
         let store = crate::navkv::nav_kv_store_for_test(&[], 256);
         let open_result = nav_db_open_result_for_test("NAV_DB_TEST", Some("2020-01-01"));
-        attach_nav_kv_store_to_session_with_open_result(init.handle, 1, &store, Some(&open_result))
-            .expect("attach nav kv");
+        attach_isolated_test_nav_kv_store_with_open_result(init.handle, &store, &open_result);
         {
             let mut sessions = lock_sessions();
             let session = session_mut(&mut sessions, init.handle).expect("session");
@@ -19421,8 +19424,7 @@ mod tests {
         let store = crate::navkv::nav_kv_store_for_test(&[], 256);
         let expiration = utc("2026-05-21T00:00:00Z");
         let open_result = nav_db_open_result_for_test("NAV_DB_TEST", Some("2026-05-21T00:00:00Z"));
-        attach_nav_kv_store_to_session_with_open_result(init.handle, 1, &store, Some(&open_result))
-            .expect("attach nav kv");
+        attach_isolated_test_nav_kv_store_with_open_result(init.handle, &store, &open_result);
         let snapshot = get_session_snapshot(init.handle).expect("fresh snapshot");
         assert!(!has_data_status_box(&snapshot, CYCLE_NAV_DB_STATUS_ID));
         assert_eq!(
@@ -19991,7 +19993,7 @@ mod tests {
         let store = modda_zgood_normy_nav_kv_store();
         let init =
             create_ui_session(modda_zgood_normy_plan(), &[], None, None).expect("create session");
-        attach_nav_kv_store_to_session(init.handle, 1, &store).expect("attach nav kv");
+        attach_isolated_test_nav_kv_store(init.handle, &store);
         let sync = sync_guidance_geometry_in_session(init.handle).expect("sync guidance geometry");
         assert!(
             matches!(sync, HadOperationOutcome::Complete { .. }),
@@ -20151,7 +20153,7 @@ mod tests {
         let store = twf_v4_ykm_chins_kpae_nav_kv_store();
         let init = create_ui_session(twf_v4_ykm_chins_kpae_plan(pdt_nav_ref), &[], None, None)
             .expect("create session");
-        attach_nav_kv_store_to_session(init.handle, 1, &store).expect("attach nav kv");
+        attach_isolated_test_nav_kv_store(init.handle, &store);
         let sync = sync_guidance_geometry_in_session(init.handle).expect("sync guidance geometry");
         assert!(
             matches!(sync, HadOperationOutcome::Complete { .. }),
@@ -20284,7 +20286,7 @@ mod tests {
     fn create_synced_self_contained_session(plan: FlightPlan) -> UiSessionInitResult {
         let init = create_ui_session(plan, &[], None, None).expect("create session");
         let store = crate::navkv::nav_kv_store_for_test(&[], 256);
-        attach_nav_kv_store_to_session(init.handle, 1, &store).expect("attach nav kv");
+        attach_isolated_test_nav_kv_store(init.handle, &store);
         let sync = sync_guidance_geometry_in_session(init.handle).expect("sync guidance geometry");
         assert!(
             matches!(sync, HadOperationOutcome::Complete { .. }),
@@ -20586,7 +20588,7 @@ mod tests {
         let noon_utc = utc("2026-06-14T12:00:00Z").timestamp_millis();
         let init = create_ui_session_at_epoch_ms(lat_lon_preview_plan(), &[], None, None, noon_utc)
             .expect("create session");
-        attach_nav_kv_store_to_session(init.handle, 1, &store).expect("attach nav kv");
+        attach_isolated_test_nav_kv_store(init.handle, &store);
 
         let snapshot = push_situation_sample_in_session(
             init.handle,
@@ -20676,7 +20678,7 @@ mod tests {
             256,
         );
         let init = create_ui_session(empty_test_plan(), &[], None, None).expect("create session");
-        attach_nav_kv_store_to_session(init.handle, 1, &store).expect("attach nav kv");
+        attach_isolated_test_nav_kv_store(init.handle, &store);
 
         let snapshot = push_situation_sample_in_session(
             init.handle,
@@ -20744,7 +20746,7 @@ mod tests {
     fn ownship_render_omits_magnetic_variation_when_had_keys_are_missing() {
         let store = crate::navkv::nav_kv_store_for_test(&[], 256);
         let init = create_ui_session(empty_test_plan(), &[], None, None).expect("create session");
-        attach_nav_kv_store_to_session(init.handle, 1, &store).expect("attach nav kv");
+        attach_isolated_test_nav_kv_store(init.handle, &store);
 
         let snapshot = push_situation_sample_in_session(
             init.handle,
@@ -21179,7 +21181,7 @@ mod tests {
     fn empty_plan_direct_to_projects_route_through_session_api() {
         let init = create_ui_session(FlightPlan::empty(), &[], None, None).expect("create session");
         let store = crate::navkv::nav_kv_store_for_test(&[], 256);
-        attach_nav_kv_store_to_session(init.handle, 1, &store).expect("attach nav kv");
+        attach_isolated_test_nav_kv_store(init.handle, &store);
         let start = LatLon {
             lat: 47.600,
             lon: -122.300,
@@ -21275,7 +21277,7 @@ mod tests {
         let init = create_ui_session(short_lat_lon_preview_plan(), &[], None, None)
             .expect("create session");
         let store = crate::navkv::nav_kv_store_for_test(&[], 256);
-        attach_nav_kv_store_to_session(init.handle, 1, &store).expect("attach nav kv");
+        attach_isolated_test_nav_kv_store(init.handle, &store);
 
         let initial_route =
             project_flight_plan_route_in_session(init.handle).expect("project initial route");
@@ -22123,7 +22125,7 @@ mod tests {
         let store = short_procedure_nav_kv_store();
         let init = create_ui_session(short_procedure_display_path_plan(), &[], None, None)
             .expect("create session");
-        attach_nav_kv_store_to_session(init.handle, 1, &store).expect("attach nav kv");
+        attach_isolated_test_nav_kv_store(init.handle, &store);
         let outcome =
             sync_guidance_geometry_in_session(init.handle).expect("sync guidance geometry");
         assert!(
@@ -22744,7 +22746,7 @@ mod tests {
             noon_utc,
         )
         .expect("create session");
-        attach_nav_kv_store_to_session(init.handle, 1, &store).expect("attach nav kv");
+        attach_isolated_test_nav_kv_store(init.handle, &store);
         let outcome =
             sync_guidance_geometry_in_session(init.handle).expect("sync guidance geometry");
         assert!(

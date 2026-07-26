@@ -166,6 +166,7 @@ pub(super) fn vectors_code_fingerprint() -> anyhow::Result<String> {
     let workspace_root = preprocessor_workspace_root();
     let repo_root = repo_root_from_preprocessor_workspace();
     let inputs = serde_json::json!({
+        "preprocessor_core": hash_tree(&workspace_root.join("preprocessor-core"))?,
         "preprocessor_vectors": hash_tree(&workspace_root.join("preprocessor-vectors"))?,
         "airspace_geometry": hash_tree(&repo_root.join("crates/airspace-geometry"))?,
     });

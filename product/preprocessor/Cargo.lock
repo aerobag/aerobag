@@ -1180,6 +1180,7 @@ dependencies = [
  "geo",
  "had-key",
  "had-nav-kv",
+ "preprocessor-core",
  "quick-xml",
  "rusqlite",
  "serde",

@@ -386,14 +386,56 @@ fn runway_complex_geometry(
     };
     let mut endpoints = Vec::with_capacity(runways.len());
     for runway in runways {
-        let end_a = local_point(&runway.end_a)?;
-        let end_b = local_point(&runway.end_b)?;
-        let length_ft = (end_b.0 - end_a.0).hypot(end_b.1 - end_a.1);
-        if length_ft < 1.0 {
+        endpoints.push(positioned_runway_endpoints(
+            runway,
+            local_point(&runway.end_a),
+            local_point(&runway.end_b),
+        ));
+    }
+    let missing = endpoints
+        .iter()
+        .enumerate()
+        .filter_map(|(index, endpoints)| endpoints.is_none().then_some(index))
+        .collect::<Vec<_>>();
+    if let [missing_index] = missing.as_slice() {
+        let missing_runway = &runways[*missing_index];
+        if runway_is_heliport(missing_runway) || !runway_dimensions_are_positive(missing_runway) {
             return None;
         }
-        endpoints.push((end_a, end_b));
+        let (half_dx, half_dy) = runway_half_vector(missing_runway)?;
+        let missing_length_ft = missing_runway.length_ft?;
+        let mut moment_x = 0.0;
+        let mut moment_y = 0.0;
+        let mut positioned_runway_count = 0;
+        for (index, (runway, runway_endpoints)) in runways.iter().zip(endpoints.iter()).enumerate()
+        {
+            if index == *missing_index || runway_is_heliport(runway) {
+                continue;
+            }
+            let length_ft = runway
+                .length_ft
+                .filter(|length| length.is_finite() && *length > 0.0)?;
+            let (end_a, end_b) = runway_endpoints.as_ref()?;
+            moment_x += length_ft * (end_a.0 + end_b.0) / 2.0;
+            moment_y += length_ft * (end_a.1 + end_b.1) / 2.0;
+            positioned_runway_count += 1;
+        }
+        if positioned_runway_count == 0 {
+            return None;
+        }
+        let center = (-moment_x / missing_length_ft, -moment_y / missing_length_ft);
+        let inferred = (
+            (center.0 - half_dx, center.1 - half_dy),
+            (center.0 + half_dx, center.1 + half_dy),
+        );
+        if !runway_endpoints_are_plausible(inferred.0, inferred.1) {
+            return None;
+        }
+        endpoints[*missing_index] = Some(inferred);
+    } else if !missing.is_empty() {
+        return None;
     }
+    let endpoints = endpoints.into_iter().collect::<Option<Vec<_>>>()?;
     let (min_x, max_x, min_y, max_y) = endpoints.iter().flat_map(|(a, b)| [a, b]).fold(
         (
             f64::INFINITY,
@@ -423,6 +465,87 @@ fn runway_complex_geometry(
             })
             .collect(),
     )
+}
+
+fn positioned_runway_endpoints(
+    runway: &AirportRunwayRecord,
+    end_a: Option<(f64, f64)>,
+    end_b: Option<(f64, f64)>,
+) -> Option<((f64, f64), (f64, f64))> {
+    let endpoints = match (end_a, end_b) {
+        (Some(end_a), Some(end_b)) => (end_a, end_b),
+        (Some(center), None) if single_position_heliport(runway) => {
+            let half_length_ft = runway.length_ft? / 2.0;
+            (
+                (center.0, center.1 - half_length_ft),
+                (center.0, center.1 + half_length_ft),
+            )
+        }
+        (Some(end_a), None)
+            if !runway_is_heliport(runway) && runway_dimensions_are_positive(runway) =>
+        {
+            let (half_dx, half_dy) = runway_half_vector(runway)?;
+            (end_a, (end_a.0 + 2.0 * half_dx, end_a.1 + 2.0 * half_dy))
+        }
+        (None, Some(end_b))
+            if !runway_is_heliport(runway) && runway_dimensions_are_positive(runway) =>
+        {
+            let (half_dx, half_dy) = runway_half_vector(runway)?;
+            ((end_b.0 - 2.0 * half_dx, end_b.1 - 2.0 * half_dy), end_b)
+        }
+        _ => return None,
+    };
+    runway_endpoints_are_plausible(endpoints.0, endpoints.1).then_some(endpoints)
+}
+
+fn runway_half_vector(runway: &AirportRunwayRecord) -> Option<(f64, f64)> {
+    let length_ft = runway
+        .length_ft
+        .filter(|length| length.is_finite() && *length > 0.0)?;
+    let heading = runway
+        .end_a
+        .heading_true_deg
+        .or_else(|| runway.end_b.heading_true_deg.map(|value| value + 180.0))
+        .filter(|heading| heading.is_finite())?
+        .to_radians();
+    Some((
+        heading.sin() * length_ft / 2.0,
+        -heading.cos() * length_ft / 2.0,
+    ))
+}
+
+fn runway_endpoints_are_plausible(end_a: (f64, f64), end_b: (f64, f64)) -> bool {
+    end_a.0.hypot(end_a.1) <= MAX_RUNWAY_ENDPOINT_DISTANCE_FROM_AIRPORT_FT
+        && end_b.0.hypot(end_b.1) <= MAX_RUNWAY_ENDPOINT_DISTANCE_FROM_AIRPORT_FT
+        && (end_b.0 - end_a.0).hypot(end_b.1 - end_a.1) >= 1.0
+}
+
+fn runway_dimensions_are_positive(runway: &AirportRunwayRecord) -> bool {
+    runway
+        .length_ft
+        .is_some_and(|length| length.is_finite() && length > 0.0)
+        && runway
+            .width_ft
+            .is_some_and(|width| width.is_finite() && width > 0.0)
+}
+
+fn runway_is_heliport(runway: &AirportRunwayRecord) -> bool {
+    runway
+        .end_a
+        .ident
+        .trim()
+        .to_ascii_uppercase()
+        .starts_with('H')
+        && runway.end_b.ident.trim().is_empty()
+}
+
+fn single_position_heliport(runway: &AirportRunwayRecord) -> bool {
+    runway_is_heliport(runway)
+        && runway.end_a.latitude.is_some()
+        && runway.end_a.longitude.is_some()
+        && runway.end_b.latitude.is_none()
+        && runway.end_b.longitude.is_none()
+        && runway_dimensions_are_positive(runway)
 }
 
 fn runway_ui_view(
@@ -597,9 +720,11 @@ mod tests {
     }
 
     #[test]
-    fn runway_complex_requires_and_preserves_every_runway_position() {
+    fn runway_complex_completes_one_missing_runway_but_not_two() {
         let now = Utc.with_ymd_and_hms(2026, 7, 26, 2, 34, 0).unwrap();
         let mut record = sample_record();
+        record.latitude = 47.4509;
+        record.longitude = -122.31455;
         record.runways[0].end_a.latitude = Some(47.4638);
         record.runways[0].end_a.longitude = Some(-122.3110);
         record.runways[0].end_b.latitude = Some(47.4380);
@@ -610,9 +735,32 @@ mod tests {
         west_runway.end_a.longitude = Some(-122.3179);
         west_runway.end_b.longitude = Some(-122.3181);
         record.runways.push(west_runway);
+        record.runways.push(AirportRunwayRecord {
+            length_ft: Some(50.0),
+            width_ft: Some(50.0),
+            surface: "CONC-G".to_string(),
+            end_a: AirportRunwayEndRecord {
+                ident: "H1".to_string(),
+                heading_true_deg: None,
+                latitude: Some(47.4500),
+                longitude: Some(-122.3200),
+                right_pattern: false,
+            },
+            end_b: AirportRunwayEndRecord {
+                ident: String::new(),
+                heading_true_deg: None,
+                latitude: None,
+                longitude: None,
+                right_pattern: false,
+            },
+        });
 
         let complex = project_airport_info(record.clone(), now).expect("complex view");
         assert!(complex.runway_diagram_complex);
+        assert_eq!(complex.runways.len(), 3);
+        assert!(
+            (complex.runways[2].diagram_end_b_y - complex.runways[2].diagram_end_a_y).abs() > 0.0
+        );
         let east_center_x =
             (complex.runways[0].diagram_end_a_x + complex.runways[0].diagram_end_b_x) / 2.0;
         let west_center_x =
@@ -620,6 +768,28 @@ mod tests {
         assert!(east_center_x > west_center_x);
 
         record.runways[1].end_b.longitude = None;
+        let one_end_completed =
+            project_airport_info(record.clone(), now).expect("one-end-completed view");
+        assert!(one_end_completed.runway_diagram_complex);
+
+        record.runways[1].end_a.latitude = None;
+        record.runways[1].end_a.longitude = None;
+        record.runways[1].end_b.latitude = None;
+        record.runways[1].end_b.longitude = None;
+        let arp_inferred = project_airport_info(record.clone(), now).expect("ARP-inferred view");
+        assert!(arp_inferred.runway_diagram_complex);
+        let inferred_east_center_x = (arp_inferred.runways[0].diagram_end_a_x
+            + arp_inferred.runways[0].diagram_end_b_x)
+            / 2.0;
+        let inferred_west_center_x = (arp_inferred.runways[1].diagram_end_a_x
+            + arp_inferred.runways[1].diagram_end_b_x)
+            / 2.0;
+        assert!(inferred_east_center_x > inferred_west_center_x);
+
+        record.runways[0].end_a.latitude = None;
+        record.runways[0].end_a.longitude = None;
+        record.runways[0].end_b.latitude = None;
+        record.runways[0].end_b.longitude = None;
         let fallback = project_airport_info(record, now).expect("fallback view");
         assert!(!fallback.runway_diagram_complex);
         for runway in fallback.runways {

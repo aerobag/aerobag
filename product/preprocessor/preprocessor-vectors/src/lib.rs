@@ -13,6 +13,10 @@ use chrono::{DateTime, Utc};
 use geo::{BooleanOps, Coord, LineString, MultiPolygon, Polygon};
 use had_key::component as had_key_component;
 use had_nav_kv::{build_nav_kv_strict, nav_kv_canonical_sha256_from_pairs, NavKvPair};
+use preprocessor_core::runway::{
+    parse_airport_magnetic_variation, parse_optional_number, parse_optional_position,
+    resolve_true_heading, RunwayHeadingInput,
+};
 use quick_xml::events::Event;
 use quick_xml::Reader;
 use rusqlite::Connection;
@@ -1754,35 +1758,40 @@ fn load_obstacle_points(input_dir: &Path) -> anyhow::Result<Vec<ObstaclePointRec
     .into_owned();
     let mut points = Vec::new();
     let mut seen = BTreeSet::new();
-    for raw in text.lines() {
+    for (line_index, raw) in text.lines().enumerate() {
         if raw.len() < 95 {
             continue;
         }
         if !raw.as_bytes()[0].is_ascii_alphanumeric() || raw.as_bytes().get(2) != Some(&b'-') {
             continue;
         }
-        let lat_deg = parse_float(field(raw, 35, 2));
-        let lat_min = parse_float(field(raw, 38, 2)) / 60.0;
-        let lat_sec = parse_float(field(raw, 41, 5)) / 3600.0;
+        let line_number = line_index + 1;
+        let lat_deg = parse_required_float(field(raw, 35, 2), "latitude degrees", line_number)?;
+        let lat_min =
+            parse_required_float(field(raw, 38, 2), "latitude minutes", line_number)? / 60.0;
+        let lat_sec =
+            parse_required_float(field(raw, 41, 5), "latitude seconds", line_number)? / 3600.0;
         let lat_hemi = field(raw, 46, 1).trim();
-        let lat = if lat_hemi == "N" {
-            lat_deg + lat_min + lat_sec
-        } else {
-            -(lat_deg + lat_min + lat_sec)
+        let lat = match lat_hemi {
+            "N" => lat_deg + lat_min + lat_sec,
+            "S" => -(lat_deg + lat_min + lat_sec),
+            _ => bail!("DOF.DAT line {line_number} has invalid latitude hemisphere {lat_hemi:?}"),
         };
-        let lon_deg = parse_float(field(raw, 48, 3));
-        let lon_min = parse_float(field(raw, 52, 2)) / 60.0;
-        let lon_sec = parse_float(field(raw, 55, 5)) / 3600.0;
+        let lon_deg = parse_required_float(field(raw, 48, 3), "longitude degrees", line_number)?;
+        let lon_min =
+            parse_required_float(field(raw, 52, 2), "longitude minutes", line_number)? / 60.0;
+        let lon_sec =
+            parse_required_float(field(raw, 55, 5), "longitude seconds", line_number)? / 3600.0;
         let lon_hemi = field(raw, 60, 1).trim();
-        let lon = if lon_hemi == "W" {
-            -(lon_deg + lon_min + lon_sec)
-        } else {
-            lon_deg + lon_min + lon_sec
+        let lon = match lon_hemi {
+            "E" => lon_deg + lon_min + lon_sec,
+            "W" => -(lon_deg + lon_min + lon_sec),
+            _ => bail!("DOF.DAT line {line_number} has invalid longitude hemisphere {lon_hemi:?}"),
         };
         let lat = round_coord(lat);
         let lon = round_coord(lon);
-        let height_msl = parse_float(field(raw, 90, 5));
-        let height_agl = parse_float(field(raw, 84, 5));
+        let height_msl = parse_required_float(field(raw, 90, 5), "height MSL", line_number)?;
+        let height_agl = parse_required_float(field(raw, 84, 5), "height AGL", line_number)?;
         if height_agl < MIN_OBSTACLE_AGL_FT as f64 || !valid_lat_lon(lat, lon) {
             continue;
         }
@@ -2603,19 +2612,24 @@ fn read_dbf_records(path: &Path) -> anyhow::Result<Vec<BTreeMap<String, String>>
 }
 
 #[derive(Debug, Clone, Copy)]
-struct LongestRunwayInfo {
-    length_ft: f64,
-    heading_true_deg: f64,
-    has_paved_runway: bool,
-    has_water_runway: bool,
+pub struct LongestRunwayInfo {
+    pub length_ft: f64,
+    pub heading_true_deg: f64,
+    pub has_paved_runway: bool,
+    pub has_water_runway: bool,
 }
 
-fn load_airport_runway_info(
+pub fn load_airport_runway_info(
     conn: &Connection,
 ) -> anyhow::Result<BTreeMap<String, LongestRunwayInfo>> {
     let mut stmt = conn.prepare(
-        "SELECT LocationID, Length, Surface, LEHeadingT, LELatitude, LELongitude, HELatitude, HELongitude
-         FROM airportrunways",
+        "
+        SELECT r.LocationID, r.Length, r.Surface, r.LEHeadingT,
+               r.LELatitude, r.LELongitude, r.HELatitude, r.HELongitude,
+               r.LEIdent, r.HEHeading, r.HEIdent, a.MagneticVariation
+        FROM airportrunways r
+        LEFT JOIN airports a ON upper(trim(a.LocationID)) = upper(trim(r.LocationID))
+        ",
     )?;
     let rows = stmt.query_map([], |row| {
         Ok((
@@ -2627,6 +2641,10 @@ fn load_airport_runway_info(
             row.get::<_, String>(5)?,
             row.get::<_, String>(6)?,
             row.get::<_, String>(7)?,
+            row.get::<_, String>(8)?,
+            row.get::<_, String>(9)?,
+            row.get::<_, String>(10)?,
+            row.get::<_, Option<String>>(11)?.unwrap_or_default(),
         ))
     })?;
 
@@ -2641,37 +2659,50 @@ fn load_airport_runway_info(
             le_lon_text,
             he_lat_text,
             he_lon_text,
+            le_ident,
+            he_heading_text,
+            he_ident,
+            magnetic_variation_text,
         ) = row?;
-        let length = parse_float(&length_text);
+        let length = parse_optional_number(&length_text).unwrap_or_default();
         if length <= 0.0 {
             continue;
         }
         let surface = surface_text.trim().to_ascii_uppercase();
         let has_paved_runway = surface_is_paved(&surface);
         let has_water_runway = surface.contains("WATER");
-        let heading = parse_float(&le_heading_text);
-        let heading = if heading > 0.0 {
-            normalize_heading(heading)
-        } else {
-            let le_lat = parse_float(&le_lat_text);
-            let le_lon = parse_float(&le_lon_text);
-            let he_lat = parse_float(&he_lat_text);
-            let he_lon = parse_float(&he_lon_text);
-            if !valid_lat_lon(le_lat, le_lon) || !valid_lat_lon(he_lat, he_lon) {
-                continue;
-            }
-            bearing_true_deg(le_lat, le_lon, he_lat, he_lon)
+        let le_position = parse_optional_position(&le_lat_text, &le_lon_text);
+        let he_position = parse_optional_position(&he_lat_text, &he_lon_text);
+        let magnetic_variation_deg = parse_airport_magnetic_variation(&magnetic_variation_text);
+        let Some(heading) = resolve_true_heading(RunwayHeadingInput {
+            published_heading_deg: parse_optional_number(&le_heading_text),
+            start: le_position,
+            end: he_position,
+            runway_ident: &le_ident,
+            magnetic_variation_deg,
+        })
+        .or_else(|| {
+            resolve_true_heading(RunwayHeadingInput {
+                published_heading_deg: parse_optional_number(&he_heading_text),
+                start: he_position,
+                end: le_position,
+                runway_ident: &he_ident,
+                magnetic_variation_deg,
+            })
+        }) else {
+            continue;
         };
-        match by_airport.get(&location_id) {
+        let key = location_id.trim().to_ascii_uppercase();
+        match by_airport.get(&key) {
             Some(best) if best.length_ft >= length => {
-                if let Some(existing) = by_airport.get_mut(&location_id) {
+                if let Some(existing) = by_airport.get_mut(&key) {
                     existing.has_paved_runway |= has_paved_runway;
                     existing.has_water_runway |= has_water_runway;
                 }
             }
             _ => {
                 by_airport.insert(
-                    location_id,
+                    key,
                     LongestRunwayInfo {
                         length_ft: length,
                         heading_true_deg: heading,
@@ -2692,21 +2723,6 @@ fn surface_is_paved(surface: &str) -> bool {
         .any(|part| matches!(part.trim(), "ASPH" | "CONC" | "BIT" | "PEM"))
 }
 
-fn bearing_true_deg(start_lat: f64, start_lon: f64, end_lat: f64, end_lon: f64) -> f64 {
-    let start_lat_rad = start_lat.to_radians();
-    let end_lat_rad = end_lat.to_radians();
-    let delta_lon_rad = (end_lon - start_lon).to_radians();
-    let y = delta_lon_rad.sin() * end_lat_rad.cos();
-    let x = start_lat_rad.cos() * end_lat_rad.sin()
-        - start_lat_rad.sin() * end_lat_rad.cos() * delta_lon_rad.cos();
-    normalize_heading(y.atan2(x).to_degrees())
-}
-
-fn normalize_heading(heading: f64) -> f64 {
-    let normalized = heading.rem_euclid(360.0);
-    (normalized * 10.0).round() / 10.0
-}
-
 fn field(line: &str, start: usize, len: usize) -> &str {
     let bytes = line.as_bytes();
     if start >= bytes.len() {
@@ -2716,8 +2732,18 @@ fn field(line: &str, start: usize, len: usize) -> &str {
     std::str::from_utf8(&bytes[start..end]).unwrap_or("")
 }
 
-fn parse_float(value: &str) -> f64 {
-    value.trim().parse::<f64>().unwrap_or(0.0)
+fn parse_required_float(value: &str, field_name: &str, line_number: usize) -> anyhow::Result<f64> {
+    let value = value.trim();
+    if value.is_empty() {
+        bail!("DOF.DAT line {line_number} has blank required field {field_name}");
+    }
+    let parsed = value.parse::<f64>().with_context(|| {
+        format!("DOF.DAT line {line_number} has invalid {field_name} value {value:?}")
+    })?;
+    if !parsed.is_finite() {
+        bail!("DOF.DAT line {line_number} has non-finite {field_name} value {value:?}");
+    }
+    Ok(parsed)
 }
 
 fn round_coord(value: f64) -> f64 {
@@ -4932,6 +4958,21 @@ mod tests {
     }
 
     #[test]
+    fn required_dof_numbers_never_default_to_zero() {
+        let blank = parse_required_float("  ", "latitude degrees", 42)
+            .expect_err("blank required values must fail");
+        assert!(blank
+            .to_string()
+            .contains("line 42 has blank required field latitude degrees"));
+
+        let malformed = parse_required_float("wat", "height AGL", 7)
+            .expect_err("malformed required values must fail");
+        assert!(malformed
+            .to_string()
+            .contains("line 7 has invalid height AGL value"));
+    }
+
+    #[test]
     fn airspace_paths_serialize_as_arc_segments_without_dense_points() {
         let center = [-120.0, 46.0];
         let feet_per_degree_lat = 60.0 * 6076.12;
@@ -5008,7 +5049,8 @@ mod tests {
                 ATCT TEXT,
                 FuelTypes TEXT,
                 Use TEXT,
-                ARPElevation TEXT
+                ARPElevation TEXT,
+                MagneticVariation TEXT
             );
             CREATE TABLE nav (
                 LocationID TEXT,
@@ -5055,9 +5097,10 @@ mod tests {
                 LELongitude TEXT,
                 HELatitude TEXT,
                 HELongitude TEXT,
-                LEHeadingT TEXT
+                LEHeadingT TEXT,
+                HEHeading TEXT
             );
-            INSERT INTO airports VALUES ('KRNT', 47.4931388888889, -122.21575, 'RENTON MUNI', 'AIRPORT', 'Y', '100LL', 'PU', '32.0');
+            INSERT INTO airports VALUES ('KRNT', 47.4931388888889, -122.21575, 'RENTON MUNI', 'AIRPORT', 'Y', '100LL', 'PU', '32.0', '15E');
             ",
         )
         .unwrap();

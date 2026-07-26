@@ -3,6 +3,10 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
 use super::*;
+use preprocessor_core::runway::{
+    parse_airport_magnetic_variation, parse_optional_position, resolve_true_heading,
+    RunwayHeadingInput,
+};
 
 pub(super) fn nav_db_warning_text() -> Option<String> {
     None
@@ -3245,6 +3249,11 @@ fn airport_info_runways_by_airport(
             end_b_lat,
             end_b_lon,
         ) = row?;
+        let length_ft = parse_optional_float(&length);
+        let width_ft = parse_optional_float(&width);
+        if closed_zero_size_runway_placeholder(&end_a_ident, &end_b_ident, length_ft, width_ft) {
+            continue;
+        }
         let magnetic_variation_deg = airport_variations.get(&airport_id).copied().flatten();
         let end_a_heading_true_deg = resolve_runway_true_heading(
             &end_a_heading,
@@ -3264,14 +3273,14 @@ fn airport_info_runways_by_airport(
             &end_b_ident,
             magnetic_variation_deg,
         );
-        let end_a_position = valid_runway_position(&end_a_lat, &end_a_lon);
-        let end_b_position = valid_runway_position(&end_b_lat, &end_b_lon);
+        let end_a_position = parse_optional_position(&end_a_lat, &end_a_lon);
+        let end_b_position = parse_optional_position(&end_b_lat, &end_b_lon);
         by_airport
             .entry(airport_id)
             .or_default()
             .push(AirportRunwayInfoRecord {
-                length_ft: parse_optional_float(&length),
-                width_ft: parse_optional_float(&width),
+                length_ft,
+                width_ft,
                 surface,
                 end_a_ident,
                 end_b_ident,
@@ -3296,10 +3305,17 @@ fn airport_info_runways_by_airport(
     Ok(by_airport)
 }
 
-fn valid_runway_position(latitude: &str, longitude: &str) -> Option<(f64, f64)> {
-    let latitude = parse_optional_float(latitude)?;
-    let longitude = parse_optional_float(longitude)?;
-    valid_lat_lon(latitude, longitude).then_some((latitude, longitude))
+fn closed_zero_size_runway_placeholder(
+    end_a_ident: &str,
+    end_b_ident: &str,
+    length_ft: Option<f64>,
+    width_ft: Option<f64>,
+) -> bool {
+    length_ft.unwrap_or_default() <= 0.0
+        && width_ft.unwrap_or_default() <= 0.0
+        && [end_a_ident, end_b_ident]
+            .into_iter()
+            .any(|ident| ident.trim().to_ascii_uppercase().ends_with('X'))
 }
 
 fn airport_frequency_label(kind: &str) -> &'static str {
@@ -5218,16 +5234,7 @@ pub(super) fn parse_nav_kv_cifp_altitude_ft(raw: &str) -> Option<f64> {
 }
 
 pub(super) fn parse_nav_kv_airport_magnetic_variation(raw: &str) -> Option<f64> {
-    let trimmed = raw.trim();
-    if trimmed.is_empty() {
-        return None;
-    }
-    let (magnitude_text, suffix) = trimmed.split_at(trimmed.len().saturating_sub(1));
-    match suffix {
-        "E" => magnitude_text.parse::<f64>().ok(),
-        "W" => magnitude_text.parse::<f64>().ok().map(|degrees| -degrees),
-        _ => trimmed.parse::<f64>().ok(),
-    }
+    parse_airport_magnetic_variation(raw)
 }
 
 pub(super) fn non_empty_json_string(value: String) -> serde_json::Value {
@@ -5399,7 +5406,7 @@ pub(super) fn airport_runway_symbol_info_by_airport(
             he_heading,
             he_ident,
         ) = row?;
-        let length = parse_float(&length);
+        let length = parse_optional_float(&length).unwrap_or_default();
         if length <= 0.0 {
             continue;
         }
@@ -5460,43 +5467,13 @@ fn resolve_runway_true_heading(
     runway_ident: &str,
     magnetic_variation_deg: Option<f64>,
 ) -> Option<f64> {
-    if let Some(heading) = parse_optional_float(published_heading) {
-        return Some(normalize_heading(heading));
-    }
-
-    let endpoints = || {
-        Some((
-            parse_optional_float(start_lat)?,
-            parse_optional_float(start_lon)?,
-            parse_optional_float(end_lat)?,
-            parse_optional_float(end_lon)?,
-        ))
-    };
-    if let Some((start_lat, start_lon, end_lat, end_lon)) = endpoints() {
-        let distinct = (start_lat - end_lat).abs() > f64::EPSILON
-            || (start_lon - end_lon).abs() > f64::EPSILON;
-        if distinct && valid_lat_lon(start_lat, start_lon) && valid_lat_lon(end_lat, end_lon) {
-            return Some(bearing_true_deg(start_lat, start_lon, end_lat, end_lon));
-        }
-    }
-
-    // Sparse FAA rows can omit both headings and endpoints; runway numbers are magnetic.
-    let magnetic_heading = runway_ident_magnetic_heading_deg(runway_ident)?;
-    Some(normalize_heading(
-        magnetic_heading + magnetic_variation_deg.unwrap_or_default(),
-    ))
-}
-
-fn runway_ident_magnetic_heading_deg(runway_ident: &str) -> Option<f64> {
-    let normalized = runway_ident.trim().to_ascii_uppercase();
-    let number = normalized
-        .strip_suffix(['L', 'C', 'R'])
-        .unwrap_or(&normalized)
-        .parse::<u8>()
-        .ok()?;
-    (1..=36)
-        .contains(&number)
-        .then_some(f64::from(number) * 10.0)
+    resolve_true_heading(RunwayHeadingInput {
+        published_heading_deg: parse_optional_float(published_heading),
+        start: parse_optional_position(start_lat, start_lon),
+        end: parse_optional_position(end_lat, end_lon),
+        runway_ident,
+        magnetic_variation_deg,
+    })
 }
 
 pub(super) fn json_pair(
@@ -5649,10 +5626,6 @@ pub(super) fn surface_is_paved(surface: &str) -> bool {
         .any(|part| matches!(part.trim(), "ASPH" | "CONC" | "BIT" | "PEM"))
 }
 
-pub(super) fn parse_float(value: &str) -> f64 {
-    value.trim().parse::<f64>().unwrap_or(0.0)
-}
-
 pub(super) fn parse_optional_float(value: &str) -> Option<f64> {
     let trimmed = value.trim();
     if trimmed.is_empty() {
@@ -5662,29 +5635,6 @@ pub(super) fn parse_optional_float(value: &str) -> Option<f64> {
         .parse::<f64>()
         .ok()
         .filter(|value| value.is_finite())
-}
-
-pub(super) fn valid_lat_lon(lat: f64, lon: f64) -> bool {
-    lat.is_finite() && lon.is_finite() && lat.abs() <= 90.0 && lon.abs() <= 180.0
-}
-
-pub(super) fn bearing_true_deg(start_lat: f64, start_lon: f64, end_lat: f64, end_lon: f64) -> f64 {
-    let start_lat_rad = start_lat.to_radians();
-    let end_lat_rad = end_lat.to_radians();
-    let delta_lon_rad = (end_lon - start_lon).to_radians();
-    let y = delta_lon_rad.sin() * end_lat_rad.cos();
-    let x = start_lat_rad.cos() * end_lat_rad.sin()
-        - start_lat_rad.sin() * end_lat_rad.cos() * delta_lon_rad.cos();
-    normalize_heading(y.atan2(x).to_degrees())
-}
-
-pub(super) fn normalize_heading(heading: f64) -> f64 {
-    let normalized = heading.rem_euclid(360.0);
-    if normalized == 0.0 {
-        360.0
-    } else {
-        normalized
-    }
 }
 
 pub(super) fn folder_category_for_document_type(document_type: &str) -> &'static str {
@@ -6075,7 +6025,8 @@ mod tests {
                 );
                 INSERT INTO airports VALUES
                     ('KRNT', 'Renton Municipal', 47.493, -122.216, '32', '1218', '122.95', '124.7', '15E'),
-                    ('S88', 'Skykomish State', 47.711, -121.339, '1002', '', '', '122.9', '20E');
+                    ('S88', 'Skykomish State', 47.711, -121.339, '1002', '', '', '122.9', '20E'),
+                    ('KUOS', 'Franklin County', 35.2051458, -85.8981472, '1953.3', '', '122.8', '122.8', '01W');
                 INSERT INTO airportfreq VALUES
                     ('KRNT', 'ATIS', '126.95'),
                     ('KRNT', 'GND/P', '121.6'),
@@ -6089,7 +6040,10 @@ mod tests {
                      '47.4930', '-122.2240', '47.4930', '-122.2080'),
                     ('KRNT', '5382', '200', 'ASPH-CONC-G', '16', '34', '174', '354', 'N', 'Y',
                      '47.5000', '-122.2160', '47.4860', '-122.2160'),
-                    ('S88', '2050', '100', 'TURF-G', '06', '24', '', '', 'N', 'N', '', '', '', '');
+                    ('KRNT', '0', '0', '', '10X', '', '', '', 'N', 'N', '', '', '', ''),
+                    ('S88', '2050', '100', 'TURF-G', '06', '24', '', '', 'N', 'N', '', '', '', ''),
+                    ('KUOS', '3700', '50', 'ASPH-G', '07', '25', '', '', 'N', 'N',
+                     '', '', '35.2071111', '-85.8931722');
                 "#,
             )
             .expect("schema");
@@ -6108,6 +6062,7 @@ mod tests {
         assert_eq!(value["runways"][0]["end_a"]["latitude"], 47.5);
         assert_eq!(value["runways"][0]["end_b"]["longitude"], -122.216);
         assert_eq!(value["runways"][0]["end_b"]["right_pattern"], true);
+        assert_eq!(value["runways"].as_array().expect("runways").len(), 2);
         let approach = value["communications"]
             .as_array()
             .expect("communications")
@@ -6139,6 +6094,28 @@ mod tests {
                 .heading_true_deg,
             80.0
         );
+
+        let kuos = pairs
+            .iter()
+            .find(|pair| pair.key == "airport/info/KUOS")
+            .expect("KUOS airport info");
+        let kuos: serde_json::Value =
+            serde_json::from_slice(&kuos.value).expect("KUOS airport info json");
+        let airport_info_heading = kuos["runways"][0]["end_a"]["heading_true_deg"]
+            .as_f64()
+            .expect("KUOS airport-info heading");
+        let nav_symbol_heading = symbols
+            .get("KUOS")
+            .expect("KUOS NAV symbol")
+            .heading_true_deg;
+        let vector_symbol_heading = preprocessor_vectors::load_airport_runway_info(&connection)
+            .expect("vector runway symbols")
+            .get("KUOS")
+            .expect("KUOS vector symbol")
+            .heading_true_deg;
+        assert_eq!(airport_info_heading, 69.0);
+        assert_eq!(nav_symbol_heading, airport_info_heading);
+        assert_eq!(vector_symbol_heading, airport_info_heading);
     }
 
     #[test]

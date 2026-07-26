@@ -58,6 +58,7 @@ fn nav_kv_builder_source_paths() -> Vec<PathBuf> {
     vec![
         crate_root.join("src/product_build/nav_db.rs"),
         workspace_root.join("preprocessor-core/src/lib.rs"),
+        workspace_root.join("preprocessor-core/src/runway.rs"),
         workspace_root.join("preprocessor-procedure-geometry/src/lib.rs"),
         workspace_root.join("preprocessor-procedure-geometry/src/arinc_ambiguity_resolutions.rs"),
         workspace_root.join("preprocessor-procedure-geometry/src/procedure_geometry.rs"),

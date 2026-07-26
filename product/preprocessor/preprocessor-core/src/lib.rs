@@ -16,6 +16,7 @@ pub const PACKAGE_ASSET_MANIFEST_NAME: &str = "package-assets.json";
 pub const CHART_REFERENCE_MANIFEST_DIR: &str = "chart-references";
 
 pub use had_nav_kv as nav_kv;
+pub mod runway;
 
 static XZ_TEMP_COUNTER: AtomicU64 = AtomicU64::new(0);
 

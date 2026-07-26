@@ -264,9 +264,9 @@ fn run_build_obstacles_command(args: &[String]) -> anyhow::Result<(PathBuf, Path
     let had_dir = output_dir.join("had");
     let manifest_path = had_dir.join("manifest.json");
     let stats_path = had_dir.join("stats.json");
-    let zip_path = had_dir.join(format!("obstacles_{snapshot_label}.zip"));
-    if manifest_path.is_file() && stats_path.is_file() && zip_path.is_file() {
-        return Ok((manifest_path, stats_path, zip_path));
+    let had_root_path = had_dir.join("root");
+    if manifest_path.is_file() && stats_path.is_file() && had_root_path.is_file() {
+        return Ok((manifest_path, stats_path, had_root_path));
     }
 
     let fetch_cache_root = env::var("FETCH_CACHE_ROOT")
@@ -312,7 +312,11 @@ fn run_build_obstacles_command(args: &[String]) -> anyhow::Result<(PathBuf, Path
         version_label: snapshot_label,
         generated_at_utc: None,
     })?;
-    Ok((result.manifest_path, result.stats_path, result.zip_path))
+    Ok((
+        result.manifest_path,
+        result.stats_path,
+        result.had_root_path,
+    ))
 }
 
 fn run_build_obstacles_from_input_command(
@@ -369,7 +373,11 @@ fn run_build_obstacles_from_input_command(
         version_label: version_label.ok_or_else(|| anyhow::anyhow!("{}", usage()))?,
         generated_at_utc,
     })?;
-    Ok((result.manifest_path, result.stats_path, result.zip_path))
+    Ok((
+        result.manifest_path,
+        result.stats_path,
+        result.had_root_path,
+    ))
 }
 
 fn run_analyze_obstacle_thresholds_command(args: &[String]) -> anyhow::Result<()> {
@@ -2597,17 +2605,18 @@ fn main() -> anyhow::Result<()> {
             }
         }
         Some("build-obstacles") => {
-            let (manifest_path, stats_path, zip_path) = run_build_obstacles_command(&args[2..])?;
+            let (manifest_path, stats_path, had_root_path) =
+                run_build_obstacles_command(&args[2..])?;
             println!("manifest {}", manifest_path.display());
             println!("stats {}", stats_path.display());
-            println!("zip {}", zip_path.display());
+            println!("root {}", had_root_path.display());
         }
         Some("build-obstacles-from-input") => {
-            let (manifest_path, stats_path, zip_path) =
+            let (manifest_path, stats_path, had_root_path) =
                 run_build_obstacles_from_input_command(&args[2..])?;
             println!("manifest {}", manifest_path.display());
             println!("stats {}", stats_path.display());
-            println!("zip {}", zip_path.display());
+            println!("root {}", had_root_path.display());
         }
         Some("analyze-obstacle-thresholds") => {
             run_analyze_obstacle_thresholds_command(&args[2..])?;

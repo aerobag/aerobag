@@ -41,6 +41,8 @@ pub struct LiveFeedInstalledState {
     pub product: String,
     pub version: String,
     pub state_sha256: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub collected_at_utc: Option<String>,
     pub payload: LiveFeedInstalledPayload,
 }
 
@@ -49,6 +51,8 @@ pub struct LiveFeedInstalledSummary {
     pub product: String,
     pub version: String,
     pub state_sha256: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub collected_at_utc: Option<String>,
     pub payload_kind: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub blob_sha256: Option<String>,
@@ -387,14 +391,13 @@ impl LiveFeedCache {
         if installed_checkpoint != candidate_checkpoint
             || !candidate_deltas.starts_with(installed_deltas)
         {
-            return Err(cache_error(
-                "pending NOTAM resources do not extend the acknowledged chain".to_string(),
-            ));
+            return Ok(candidate.clone());
         }
         Ok(LiveFeedInstalledState {
             product: candidate.product.clone(),
             version: candidate.version.clone(),
             state_sha256: candidate.state_sha256.clone(),
+            collected_at_utc: candidate.collected_at_utc.clone(),
             payload: LiveFeedInstalledPayload::NotamResources {
                 checkpoint: Arc::new(Vec::new()),
                 deltas: candidate_deltas[installed_deltas.len()..].to_vec(),
@@ -540,7 +543,11 @@ impl LiveFeedCache {
                 let full_ref = self
                     .live_feeds
                     .durable_full_payload_ref_for_request(product, version)?;
-                let installed = driver.install_full(product, version, full_ref, payload)?;
+                let mut installed = driver.install_full(product, version, full_ref, payload)?;
+                installed.collected_at_utc = self
+                    .live_feeds
+                    .product_collected_at_utc_for_version(product, version)
+                    .map(str::to_string);
                 self.stage_fetched_installed_state(installed.clone());
                 Ok(Some(installed))
             }
@@ -570,7 +577,11 @@ impl LiveFeedCache {
                     ))
                 })?;
                 let driver = registry.required_driver(product)?;
-                let installed = driver.apply_delta(current, delta, &bytes)?;
+                let mut installed = driver.apply_delta(current, delta, &bytes)?;
+                installed.collected_at_utc = self
+                    .live_feeds
+                    .product_collected_at_utc_for_version(product, to_version)
+                    .map(str::to_string);
                 self.stage_fetched_installed_state(installed.clone());
                 Ok(Some(installed))
             }
@@ -582,6 +593,7 @@ impl LiveFeedCache {
             installed.product.clone(),
             installed.version.clone(),
             installed.state_sha256.clone(),
+            installed.collected_at_utc.clone(),
             state_manifest_for_installed(&installed),
         );
         let product = installed.product.clone();
@@ -664,6 +676,7 @@ impl LiveFeedInstalledState {
             product: self.product.clone(),
             version: self.version.clone(),
             state_sha256: self.state_sha256.clone(),
+            collected_at_utc: self.collected_at_utc.clone(),
             payload_kind: self.payload.kind_name().to_string(),
             blob_sha256: match &self.payload {
                 LiveFeedInstalledPayload::NexradPackage {
@@ -921,6 +934,7 @@ impl LiveFeedProductDriver {
                     product: product.clone(),
                     version: version.to_string(),
                     state_sha256: actual_state_sha256,
+                    collected_at_utc: None,
                     payload: LiveFeedInstalledPayload::Json {
                         bytes: decoded_bytes.into_owned(),
                     },
@@ -977,6 +991,7 @@ impl LiveFeedProductDriver {
                     product: product.clone(),
                     version: version.to_string(),
                     state_sha256: version.to_string(),
+                    collected_at_utc: None,
                     payload: LiveFeedInstalledPayload::NotamResources {
                         checkpoint: Arc::new(bytes),
                         deltas: Vec::new(),
@@ -1016,6 +1031,7 @@ impl LiveFeedProductDriver {
                     product: product.clone(),
                     version: version.to_string(),
                     state_sha256: actual_state_sha256,
+                    collected_at_utc: None,
                     payload: LiveFeedInstalledPayload::NexradPackage {
                         manifest,
                         package_blob_sha256: sha256_hex(&bytes),
@@ -1050,6 +1066,7 @@ impl LiveFeedProductDriver {
                     product: product.clone(),
                     version: summary.version.clone(),
                     state_sha256: actual_state_sha256,
+                    collected_at_utc: summary.collected_at_utc.clone(),
                     payload: LiveFeedInstalledPayload::Json {
                         bytes: bytes.to_vec(),
                     },
@@ -1069,14 +1086,16 @@ impl LiveFeedProductDriver {
                     blob_sha256: Some(sha256_hex(bytes)),
                     state_sha256: summary.state_sha256.clone(),
                 };
-                verify_nav_kv_state(
+                let mut installed = verify_nav_kv_state(
                     product,
                     &summary.version,
                     &payload_ref,
                     manifest,
                     root,
                     pages,
-                )
+                )?;
+                installed.collected_at_utc = summary.collected_at_utc.clone();
+                Ok(installed)
             }
             Self::NexradPackage { product } => {
                 if summary.product != *product || summary.payload_kind != "nexrad_package" {
@@ -1105,6 +1124,7 @@ impl LiveFeedProductDriver {
                     product: product.clone(),
                     version: summary.version.clone(),
                     state_sha256: actual_state_sha256,
+                    collected_at_utc: summary.collected_at_utc.clone(),
                     payload: LiveFeedInstalledPayload::NexradPackage {
                         manifest,
                         package_blob_sha256: expected_blob_sha256.to_string(),
@@ -1169,6 +1189,7 @@ impl LiveFeedProductDriver {
             product: product.clone(),
             version: state_id.clone(),
             state_sha256: state_id,
+            collected_at_utc: summary.collected_at_utc.clone(),
             payload: LiveFeedInstalledPayload::NotamResources {
                 checkpoint: Arc::new(checkpoint.clone()),
                 deltas: deltas.iter().cloned().map(Arc::new).collect(),
@@ -1226,6 +1247,7 @@ impl LiveFeedProductDriver {
                     product: product.clone(),
                     version: delta_ref.to_version.clone(),
                     state_sha256: next_sha256,
+                    collected_at_utc: None,
                     payload: LiveFeedInstalledPayload::Json {
                         bytes: serde_json::to_vec(&next).map_err(cache_json_error)?,
                     },
@@ -1305,6 +1327,7 @@ impl LiveFeedProductDriver {
                     product: product.clone(),
                     version: delta_ref.to_version.clone(),
                     state_sha256: next_sha256,
+                    collected_at_utc: None,
                     payload: LiveFeedInstalledPayload::NavKv {
                         manifest,
                         root: built.root_bytes,
@@ -1345,6 +1368,7 @@ impl LiveFeedProductDriver {
                     product: product.clone(),
                     version: delta.to_state_id.clone(),
                     state_sha256: delta.to_state_id,
+                    collected_at_utc: None,
                     payload: LiveFeedInstalledPayload::NotamResources {
                         checkpoint: checkpoint.clone(),
                         deltas: next_deltas,
@@ -1474,6 +1498,7 @@ fn verify_nav_kv_state(
         product: product.to_string(),
         version: version.to_string(),
         state_sha256: actual,
+        collected_at_utc: None,
         payload: LiveFeedInstalledPayload::NavKv {
             manifest,
             root,
@@ -1688,6 +1713,15 @@ mod tests {
     }
 
     fn current_manifest(product: &str, version: &str, state_sha256: &str) -> Vec<u8> {
+        current_manifest_at(product, version, state_sha256, None)
+    }
+
+    fn current_manifest_at(
+        product: &str,
+        version: &str,
+        state_sha256: &str,
+        collected_at_utc: Option<&str>,
+    ) -> Vec<u8> {
         serde_json::to_vec(&serde_json::json!({
             "schema_version": crate::live_feeds::LIVE_FEEDS_SCHEMA_VERSION,
             "products": {
@@ -1695,7 +1729,8 @@ mod tests {
                     "current": version,
                     "version_manifest_url": format!("versions/{product}/{version}.json"),
                     "state_url": format!("states/{product}/{version}.json.xz"),
-                    "state_sha256": state_sha256
+                    "state_sha256": state_sha256,
+                    "collected_at_utc": collected_at_utc
                 }
             }
         }))
@@ -1787,6 +1822,43 @@ mod tests {
             local_text: None,
             icao_text: None,
         }
+    }
+
+    fn installed_notam_checkpoint(
+        driver: &LiveFeedProductDriver,
+        record_id: &str,
+        text: &str,
+    ) -> (LiveFeedInstalledState, Vec<u8>) {
+        let mut source = NotamState::empty();
+        source
+            .apply_mutation(
+                notam_state::NotamMutation::Upsert {
+                    record: notam_record(record_id, text),
+                },
+                &mut NotamApplyWork::default(),
+            )
+            .unwrap();
+        let checkpoint = source.checkpoint();
+        let checkpoint_id = checkpoint.state_id.clone();
+        let checkpoint_bytes =
+            nav_kv_package::xz_frame_uncompressed_bytes(&serde_json::to_vec(&checkpoint).unwrap())
+                .unwrap();
+        let checkpoint_ref = LiveFeedPayloadRef {
+            kind: Some("notam_checkpoint_xz".to_string()),
+            url: format!("states/notams/{checkpoint_id}.json.xz"),
+            bytes: Some(checkpoint_bytes.len() as u64),
+            blob_sha256: Some(sha256_hex(&checkpoint_bytes)),
+            state_sha256: checkpoint_id.clone(),
+        };
+        let installed = driver
+            .install_full(
+                "notams",
+                &checkpoint_id,
+                &checkpoint_ref,
+                LiveFeedFetchedPayload::Bytes(checkpoint_bytes.clone()),
+            )
+            .unwrap();
+        (installed, checkpoint_bytes)
     }
 
     #[test]
@@ -1943,6 +2015,34 @@ mod tests {
         let restored = restored_cache.install_candidate("notams").unwrap();
         assert_eq!(restored.version, head_id);
         assert_eq!(restored.state_sha256, source.state_id());
+    }
+
+    #[test]
+    fn notam_cache_can_replace_an_acknowledged_chain_with_a_new_checkpoint() {
+        let registry = live_feed_product_registry();
+        let driver = registry.required_driver("notams").unwrap();
+        let mut cache = live_feed_cache();
+
+        let (old_installed, _) = installed_notam_checkpoint(driver, "OLD", "old checkpoint");
+        let old_id = old_installed.version.clone();
+        cache.stage_or_remember_installed_state(old_installed);
+        cache
+            .acknowledge_install_candidate("notams", &old_id)
+            .unwrap();
+
+        let (new_installed, new_bytes) =
+            installed_notam_checkpoint(driver, "NEW", "replacement checkpoint");
+        let new_id = new_installed.version.clone();
+        cache.stage_or_remember_installed_state(new_installed);
+
+        let replacement = cache.install_candidate_for_main("notams", &new_id).unwrap();
+        assert_eq!(replacement.version, new_id);
+        let LiveFeedInstalledPayload::NotamResources { checkpoint, deltas } = replacement.payload
+        else {
+            panic!("replacement NOTAM candidate should be a resource chain");
+        };
+        assert_eq!(checkpoint.as_ref(), &new_bytes);
+        assert!(deltas.is_empty());
     }
 
     fn json_version_manifest(
@@ -2246,6 +2346,53 @@ mod tests {
             .unwrap();
         assert_eq!(installed.version, "v2");
         assert_eq!(installed.state_sha256, v2_sha);
+    }
+
+    #[test]
+    fn cached_product_restore_preserves_source_collection_time() {
+        const COLLECTED_AT_UTC: &str = "2026-07-26T16:15:00Z";
+
+        let registry = live_feed_product_registry();
+        let state = metar_state("v1", &[("KSEA", "test")]);
+        let (manifest, state_bytes, state_sha256) =
+            json_version_manifest("metars", "v1", &state, None);
+        let mut cache = live_feed_cache();
+        cache
+            .ingest_current(&current_manifest_at(
+                "metars",
+                "v1",
+                &state_sha256,
+                Some(COLLECTED_AT_UTC),
+            ))
+            .unwrap();
+        cache
+            .ingest_version_manifest("metars", "v1", &manifest)
+            .unwrap();
+        let request = cache.missing_requests().remove(0);
+        cache
+            .install_fetched_payload(
+                &registry,
+                &request,
+                LiveFeedFetchedPayload::Bytes(state_bytes),
+            )
+            .unwrap();
+
+        let summary_json = serde_json::to_vec(&cache.installed_summary("metars").unwrap()).unwrap();
+        let summary: LiveFeedInstalledSummary = serde_json::from_slice(&summary_json).unwrap();
+        let payload = cache
+            .installed_payload_bytes("metars", &summary.version)
+            .unwrap();
+        let mut restored = live_feed_cache();
+        restored
+            .ingest_installed_payload_bytes(&registry, &summary, &payload)
+            .unwrap();
+
+        assert_eq!(
+            restored
+                .live_feeds_state()
+                .product_collected_at_utc("metars"),
+            Some(COLLECTED_AT_UTC)
+        );
     }
 
     #[test]

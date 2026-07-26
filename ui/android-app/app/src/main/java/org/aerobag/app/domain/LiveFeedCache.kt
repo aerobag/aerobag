@@ -61,6 +61,8 @@ data class LiveFeedInstalledSummary(
     val version: String,
     @SerialName("state_sha256")
     val stateSha256: String,
+    @SerialName("collected_at_utc")
+    val collectedAtUtc: String? = null,
     @SerialName("payload_kind")
     val payloadKind: String,
     @SerialName("blob_sha256")

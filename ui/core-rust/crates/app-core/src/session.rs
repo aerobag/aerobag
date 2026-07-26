@@ -6858,6 +6858,7 @@ fn install_live_feed_installed_state(
         installed.product.clone(),
         installed.version.clone(),
         installed.state_sha256.clone(),
+        installed.collected_at_utc.clone(),
         installed_live_feed_state_manifest(installed),
     );
     sync_live_feed_overlay_status_records(session);
@@ -15506,6 +15507,7 @@ mod tests {
                 product: "tafs".to_string(),
                 version: "v1".to_string(),
                 state_sha256,
+                collected_at_utc: None,
                 payload: crate::LiveFeedInstalledPayload::Json { bytes: state_bytes },
             },
         )
@@ -15580,6 +15582,7 @@ mod tests {
                 product: "tafs".to_string(),
                 version: "taf-v1".to_string(),
                 state_sha256: taf_sha256.clone(),
+                collected_at_utc: None,
                 payload: crate::LiveFeedInstalledPayload::Json { bytes: taf_bytes },
             },
         )
@@ -15590,6 +15593,7 @@ mod tests {
                 product: "tfrs".to_string(),
                 version: "tfr-v1".to_string(),
                 state_sha256: tfr_sha256.clone(),
+                collected_at_utc: None,
                 payload: crate::LiveFeedInstalledPayload::Json { bytes: tfr_bytes },
             },
         )
@@ -16891,6 +16895,7 @@ mod tests {
                 product: "obstacles".to_string(),
                 version: "installed-v1".to_string(),
                 state_sha256: state_sha256.clone(),
+                collected_at_utc: None,
                 payload: crate::LiveFeedInstalledPayload::NavKv {
                     manifest: serde_json::to_vec(&obstacle_manifest).expect("manifest json"),
                     root: built.root_bytes,
@@ -17144,6 +17149,7 @@ mod tests {
                 product: "nexrad".to_string(),
                 version: "nexrad-installed-v1".to_string(),
                 state_sha256,
+                collected_at_utc: None,
                 payload: crate::LiveFeedInstalledPayload::NexradPackage {
                     manifest: serde_json::to_vec(&manifest).expect("manifest bytes"),
                     package_blob_sha256: package_blob_sha256.clone(),
@@ -17223,6 +17229,7 @@ mod tests {
                     product: "nexrad".to_string(),
                     version: version.to_string(),
                     state_sha256: canonical_json_sha256_value(&manifest).expect("manifest hash"),
+                    collected_at_utc: None,
                     payload: crate::LiveFeedInstalledPayload::NexradPackage {
                         manifest: serde_json::to_vec(&manifest).expect("manifest bytes"),
                         package_blob_sha256: format!("blob-{version}"),

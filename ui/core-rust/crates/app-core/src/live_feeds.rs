@@ -945,6 +945,22 @@ impl LiveFeedsState {
         entry.collected_at_utc.as_deref()
     }
 
+    pub(crate) fn product_collected_at_utc_for_version(
+        &self,
+        product: &str,
+        version: &str,
+    ) -> Option<&str> {
+        let entry = self.products.get(product)?;
+        if entry.current_version.as_deref() == Some(version) {
+            return entry.collected_at_utc.as_deref();
+        }
+        entry
+            .history
+            .iter()
+            .find(|history| history.version == version)
+            .and_then(|history| history.collected_at_utc.as_deref())
+    }
+
     pub fn product_state_url(&self, product: &str) -> Option<&str> {
         let entry = self.products.get(product)?;
         if !entry
@@ -1085,6 +1101,7 @@ impl LiveFeedsState {
         product: String,
         version: String,
         state_sha256: String,
+        collected_at_utc: Option<String>,
         state_manifest: Option<Value>,
     ) {
         let entry = self.products.entry(product).or_default();
@@ -1105,6 +1122,9 @@ impl LiveFeedsState {
         entry.loaded_version = Some(version);
         if entry.expected_state_sha256.is_none() {
             entry.expected_state_sha256 = Some(state_sha256);
+        }
+        if collected_at_utc.is_some() {
+            entry.collected_at_utc = collected_at_utc;
         }
         if state_manifest.is_some() {
             entry.state_manifest = state_manifest;
@@ -3394,6 +3414,7 @@ mod tests {
             "tafs".to_string(),
             "v1".to_string(),
             "wrong".to_string(),
+            None,
             Some(serde_json::json!({"version_label": "v1"})),
         );
 

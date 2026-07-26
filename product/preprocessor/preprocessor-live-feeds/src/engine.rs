@@ -2521,7 +2521,7 @@ fn live_feed_current_history_entries(
         return Ok(Vec::new());
     }
     let recent_tail = policy.recent_tail_for(product);
-    let mut entries = Vec::new();
+    let mut entries_by_version = BTreeMap::new();
     for version_entry in fs::read_dir(&product_versions_root)
         .with_context(|| format!("failed to read {}", product_versions_root.display()))?
     {
@@ -2555,17 +2555,34 @@ fn live_feed_current_history_entries(
         if !state_path.exists() {
             continue;
         }
-        entries.push((
-            modified_time(&version_path),
-            manifest.version.clone(),
+        let modified = modified_time(&version_path);
+        let is_checkpoint = version_path
+            .file_name()
+            .and_then(|name| name.to_str())
+            .is_some_and(|name| name.ends_with(".checkpoint.json"));
+        let version = manifest.version.clone();
+        let candidate = (
+            modified,
+            is_checkpoint,
             LiveFeedCurrentHistoryEntry {
                 version: manifest.version,
                 version_manifest_url: live_feeds_relative_url(live_root, &version_path)?,
                 state_url: Some(manifest.state.url),
                 state_sha256: Some(manifest.state.state_sha256),
             },
-        ));
+        );
+        match entries_by_version.get(&version) {
+            Some((existing_modified, existing_is_checkpoint, _))
+                if (*existing_modified, *existing_is_checkpoint) >= (candidate.0, candidate.1) => {}
+            _ => {
+                entries_by_version.insert(version, candidate);
+            }
+        }
     }
+    let mut entries = entries_by_version
+        .into_iter()
+        .map(|(version, (modified, _, entry))| (modified, version, entry))
+        .collect::<Vec<_>>();
     entries.sort_by(|left, right| left.0.cmp(&right.0).then_with(|| left.1.cmp(&right.1)));
     if entries.len() > LIVE_FEED_CURRENT_HISTORY_MAX_ENTRIES {
         entries.drain(0..entries.len() - LIVE_FEED_CURRENT_HISTORY_MAX_ENTRIES);
@@ -4104,6 +4121,49 @@ mod tests {
                 .join(entry.state_url.as_deref().expect("history state url"))
                 .is_file());
         }
+        Ok(())
+    }
+
+    #[test]
+    fn current_manifest_history_deduplicates_semantic_versions() -> anyhow::Result<()> {
+        let temp = tempdir()?;
+        let root = temp.path().join("live-feeds");
+        let publisher = FileLiveFeedPublisher::new(root.clone(), FixedClock::new(Utc::now()));
+
+        publisher.publish(json_state(
+            temp.path(),
+            "metars",
+            "metars-v1",
+            "v1",
+            "records",
+            &[("KSEA", 1)],
+        )?)?;
+        fs::copy(
+            root.join("versions/metars/v1.json"),
+            root.join("versions/metars/v1.checkpoint.json"),
+        )?;
+        publisher.publish(json_state(
+            temp.path(),
+            "metars",
+            "metars-v2",
+            "v2",
+            "records",
+            &[("KSEA", 2)],
+        )?)?;
+
+        let current = read_live_feeds_current(&root)?.expect("current");
+        let history = &current.products["metars"].history;
+        assert_eq!(
+            history.iter().filter(|entry| entry.version == "v1").count(),
+            1,
+            "history must identify each semantic version at most once"
+        );
+        assert!(
+            history[0]
+                .version_manifest_url
+                .ends_with("v1.checkpoint.json"),
+            "checkpoint should win when duplicate representations have equal timestamps"
+        );
         Ok(())
     }
 

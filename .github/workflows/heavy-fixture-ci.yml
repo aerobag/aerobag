@@ -2,20 +2,36 @@
 #
 # SPDX-License-Identifier: AGPL-3.0-or-later
 
-name: Fixture CI
+name: Heavy Fixture CI
 
 on:
   push:
     branches:
       - main
+    paths:
+      - "product/preprocessor/**"
+      - "crates/**"
+      - "test-artifacts.lock.json"
+      - "tools/ci/fetch_test_artifacts.py"
+      - "tools/ci/junit_summary.py"
+      - ".github/workflows/heavy-fixture-ci.yml"
   pull_request:
+    paths:
+      - "product/preprocessor/**"
+      - "crates/**"
+      - "test-artifacts.lock.json"
+      - "tools/ci/fetch_test_artifacts.py"
+      - "tools/ci/junit_summary.py"
+      - ".github/workflows/heavy-fixture-ci.yml"
+  schedule:
+    - cron: "23 9 * * 1"
   workflow_dispatch:
 
 permissions:
   contents: read
 
 concurrency:
-  group: fixture-ci-${{ github.workflow }}-${{ github.ref }}
+  group: heavy-fixture-ci-${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
 
 env:
@@ -25,12 +41,12 @@ env:
   NEXTEST_VERSION: 0.9.140
 
 jobs:
-  nav-db:
-    name: NAVDB fixture tests
+  nms-notams:
+    name: NMS NOTAM full replay
     runs-on: ubuntu-latest
     env:
       AEROBAG_TEST_ARTIFACTS_ROOT: ${{ github.workspace }}/.ci/test-artifacts
-      CARGO_TARGET_DIR: ${{ github.workspace }}/.ci/cargo-target/fixture-nav-db
+      CARGO_TARGET_DIR: ${{ github.workspace }}/.ci/cargo-target/fixture-nms-notams
     steps:
       - uses: actions/checkout@v5
       - name: Install Rust toolchain
@@ -45,52 +61,57 @@ jobs:
           path: |
             ~/.cargo/registry
             ~/.cargo/git
-            .ci/cargo-target/fixture-nav-db
-          key: fixture-nav-db-${{ runner.os }}-${{ env.RUST_TOOLCHAIN }}-${{ hashFiles('ui/core-rust/Cargo.lock', 'test-artifacts.lock.json') }}
-      - name: Fetch pinned NAVDB fixture
+            .ci/cargo-target/fixture-nms-notams
+          key: fixture-nms-notams-${{ runner.os }}-${{ env.RUST_TOOLCHAIN }}-${{ hashFiles('product/preprocessor/Cargo.lock', 'test-artifacts.lock.json') }}
+      - name: Fetch pinned NMS NOTAM fixture
         run: >-
           python3 tools/ci/fetch_test_artifacts.py
-          --fixture nav-db-advance
+          --fixture nms-notam-trace
           --destination "$AEROBAG_TEST_ARTIFACTS_ROOT"
-      - name: Run NAVDB fixture tests
+      - name: Run NMS NOTAM replay
         id: tests
         continue-on-error: true
-        working-directory: ui/core-rust
+        working-directory: product/preprocessor
         run: >-
           cargo nextest run
+          --release
           --profile ci
           --locked
-          --package app-core
+          --package nms-notams-fetch
           --run-ignored ignored-only
-          -E 'test(/real_nav_db_2607_to_2608_advance_preserves_rich_session$/)'
+          -E 'test(/captured_nms_trace_converges_across_checkpoint_and_catchup_schedules$/)'
       - name: Report individual tests
         if: ${{ always() }}
         run: >-
           python3 tools/ci/junit_summary.py
-          --title "NAVDB fixture tests"
-          "ui/core-rust/target/nextest/ci/junit.xml"
+          --title "NMS NOTAM full replay"
+          "product/preprocessor/target/nextest/ci/junit.xml"
       - name: Upload test results
         if: ${{ always() }}
         uses: actions/upload-artifact@v4
         with:
-          name: nav-db-fixture-test-results
-          path: ui/core-rust/target/nextest/ci/junit.xml
+          name: nms-notam-fixture-test-results
+          path: product/preprocessor/target/nextest/ci/junit.xml
           if-no-files-found: ignore
           retention-days: 14
       - name: Enforce test results
         if: ${{ steps.tests.outcome == 'failure' }}
         run: exit 1
 
-  metar:
-    name: METAR fixture tests
+  nexrad:
+    name: NEXRAD full replay
     runs-on: ubuntu-latest
     env:
       AEROBAG_TEST_ARTIFACTS_ROOT: ${{ github.workspace }}/.ci/test-artifacts
-      CARGO_TARGET_DIR: ${{ github.workspace }}/.ci/cargo-target/fixture-metar
+      CARGO_TARGET_DIR: ${{ github.workspace }}/.ci/cargo-target/fixture-nexrad
     steps:
       - uses: actions/checkout@v5
       - name: Install Rust toolchain
         run: rustup toolchain install "$RUST_TOOLCHAIN" --profile minimal
+      - name: Install NEXRAD system tools
+        run: |
+          sudo apt-get update
+          sudo apt-get install --yes gdal-bin
       - name: Install cargo-nextest
         uses: taiki-e/install-action@7572810d7dd469b651bb7793945692cf78da5dd7 # v2
         with:
@@ -101,14 +122,14 @@ jobs:
           path: |
             ~/.cargo/registry
             ~/.cargo/git
-            .ci/cargo-target/fixture-metar
-          key: fixture-metar-${{ runner.os }}-${{ env.RUST_TOOLCHAIN }}-${{ hashFiles('product/preprocessor/Cargo.lock', 'test-artifacts.lock.json') }}
-      - name: Fetch pinned METAR fixture
+            .ci/cargo-target/fixture-nexrad
+          key: fixture-nexrad-${{ runner.os }}-${{ env.RUST_TOOLCHAIN }}-${{ hashFiles('product/preprocessor/Cargo.lock', 'test-artifacts.lock.json') }}
+      - name: Fetch pinned NEXRAD fixture
         run: >-
           python3 tools/ci/fetch_test_artifacts.py
-          --fixture metar-delta
+          --fixture nexrad-source-grid
           --destination "$AEROBAG_TEST_ARTIFACTS_ROOT"
-      - name: Run METAR fixture tests
+      - name: Run NEXRAD replay
         id: tests
         continue-on-error: true
         working-directory: product/preprocessor
@@ -118,18 +139,18 @@ jobs:
           --locked
           --package preprocessor-live-feeds
           --run-ignored ignored-only
-          -E 'test(/generic_metar_delta_fixture_reconstructs_three_hour_capture$/)'
+          -E 'test(/nexrad_three_hour_fixture_/)'
       - name: Report individual tests
         if: ${{ always() }}
         run: >-
           python3 tools/ci/junit_summary.py
-          --title "METAR fixture tests"
+          --title "NEXRAD full replay"
           "product/preprocessor/target/nextest/ci/junit.xml"
       - name: Upload test results
         if: ${{ always() }}
         uses: actions/upload-artifact@v4
         with:
-          name: metar-fixture-test-results
+          name: nexrad-fixture-test-results
           path: product/preprocessor/target/nextest/ci/junit.xml
           if-no-files-found: ignore
           retention-days: 14

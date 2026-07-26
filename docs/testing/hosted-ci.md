@@ -10,7 +10,8 @@ readiness conditions are explicit.
 | Workflow | Scope | When it runs |
 | --- | --- | --- |
 | `.github/workflows/ci.yml` | Fixture-free Rust, web, Android JVM/static, formatting, and workflow checks | Every push and pull request |
-| `.github/workflows/fixture-ci.yml` | Tests against the pinned `aerobag/test-artifacts` repository | Compact fixtures on every push and pull request; large replays on schedule or manual dispatch |
+| `.github/workflows/fixture-ci.yml` | Compact tests against the pinned `aerobag/test-artifacts` repository | Every push and pull request |
+| `.github/workflows/heavy-fixture-ci.yml` | Full NMS NOTAM and NEXRAD fixture replays | Relevant pushes and pull requests; weekly schedule; manual dispatch |
 | `.github/workflows/e2e-ci.yml` | Native Android, Chrome-on-Android, and headless web journeys | Every push and pull request |
 | `.github/workflows/reuse.yml` | REUSE licensing compliance | Every push and pull request |
 
@@ -56,6 +57,12 @@ python3 tools/ci/fetch_test_artifacts.py \
 The helper performs a sparse fetch of only the selected fixture subtree. Do not
 replace the compact Android publication with the approximately 19 GiB
 production publication.
+
+Heavy fixture replays run for changes under `product/preprocessor/**`,
+`crates/**`, or `test-artifacts.lock.json`, as well as changes to their workflow
+and fixture-fetch/report helpers. They also run every Monday at 09:23 UTC and
+through manual dispatch. Keep this path-filtered workflow non-required; GitHub
+leaves a required workflow pending when path filters skip it.
 
 A narrowly scoped fixture job must select its exact test or test family.
 `--run-ignored ignored-only` is not sufficient: it selects every ignored test

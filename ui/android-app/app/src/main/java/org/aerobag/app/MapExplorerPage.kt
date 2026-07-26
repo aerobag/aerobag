@@ -3850,10 +3850,11 @@ internal fun MapSelectionTray(
 @Composable
 internal fun MapSelectionHeader(selectedItem: MapSelectionItem?) {
     val uiTheme = LocalAerobagUiTheme.current
+    val headerHeight = with(LocalDensity.current) { 34.sp.toDp() }
     Column(
         modifier = Modifier
             .fillMaxWidth()
-            .height(ThumbSize * 0.52f),
+            .height(headerHeight),
         verticalArrangement = Arrangement.Center,
     ) {
         Text(

@@ -179,6 +179,20 @@ class BuildE2ePackageFixtureTest(unittest.TestCase):
         ):
             build_e2e_package_fixture.build_fixture(self.source, output, "2607")
 
+    def test_rejects_package_contract_not_advertised_by_publication(self) -> None:
+        current_path = self.source / "current_artifacts.json"
+        current = json.loads(current_path.read_text())
+        current[0]["contracts"]["nav-db"] = "NAV13"
+        self.write_json(current_path, current)
+
+        with self.assertRaisesRegex(
+            build_e2e_package_fixture.BuildError,
+            "nav-db package provides NAV12; current publication advertises NAV13",
+        ):
+            build_e2e_package_fixture.build_fixture(
+                self.source, self.root / "fixture", "2607"
+            )
+
 
 if __name__ == "__main__":
     unittest.main()

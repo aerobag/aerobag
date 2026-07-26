@@ -403,13 +403,13 @@ async function ensureChartPage(serial, result) {
       return;
     }
     assertRuntimeIsAvailable(serial);
-    if (findNode(xml, (node) => hasAndroidTag(node, "parity:nav-cdi"))) {
-      await tapTag(serial, "parity:nav-cdi", 10000);
+    if (findNode(xml, (node) => hasAndroidTag(node, "parity:button:CHART"))) {
+      await tapTag(serial, "parity:button:CHART", 10000);
       await delay(600);
       continue;
     }
-    if (findNode(xml, (node) => hasAndroidTag(node, "parity:button:CHART"))) {
-      await tapTag(serial, "parity:button:CHART", 10000);
+    if (findNode(xml, (node) => hasAndroidTag(node, "parity:nav-cdi"))) {
+      await tapTag(serial, "parity:nav-cdi", 10000);
       await delay(600);
       continue;
     }

@@ -115,13 +115,14 @@ The emulator stack scripts now support:
 
 CI sparse-checks out
 `e2e/android-smoke-publication` from the commit pinned in
-`test-artifacts.lock.json`. The 35 MiB frozen publication contains a full
-production NAV12 package and a contract-valid TPP1 package restricted to KPLU.
-It exercises the ordinary Offline Packages discovery, download, checksum,
-install, and runtime adoption paths without depending on the 19 GiB production
-publication. Because that publication contains only the packages needed by the
-suite, CI syncs every available package and skips searching for absent regional
-toggles; tests against a full publication retain the NW-only selection flow.
+`test-artifacts.lock.json`. The compact frozen publication contains a full
+production NAVDB package matching the current client contract and a
+contract-valid TPP1 package restricted to KPLU. It exercises the ordinary
+Offline Packages discovery, download, checksum, install, and runtime adoption
+paths without depending on the 19 GiB production publication. Because that
+publication contains only the packages needed by the suite, CI syncs every
+available package and skips searching for absent regional toggles; tests
+against a full publication retain the NW-only selection flow.
 
 ## Known Gaps
 

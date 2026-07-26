@@ -123,6 +123,20 @@ fn generate_lab_publication(args: &Args) -> anyhow::Result<()> {
         .context("fixture.json cycles must be an array")?;
     let cycle_2607 = fixture_cycle(cycles, "2607")?;
     let cycle_2608 = fixture_cycle(cycles, "2608")?;
+    let nav_db_contract = required_str(cycle_2607, "contract_id")?;
+    let candidate_contract = required_str(cycle_2608, "contract_id")?;
+    if candidate_contract != nav_db_contract {
+        bail!(
+            "NAVDB rollover fixture contracts differ: cycle 2607 is {nav_db_contract}, \
+             cycle 2608 is {candidate_contract}"
+        );
+    }
+    if nav_db_contract != product_contracts::NAV_DB_CONTRACT_ID {
+        bail!(
+            "NAVDB rollover fixture provides {nav_db_contract}; client requires {}",
+            product_contracts::NAV_DB_CONTRACT_ID
+        );
+    }
     verify_fixture_artifact(&args.fixture_root, cycle_2607, "bundle")?;
     verify_fixture_artifact(&args.fixture_root, cycle_2607, "nav_db")?;
     verify_fixture_artifact(&args.fixture_root, cycle_2608, "bundle")?;
@@ -155,7 +169,7 @@ fn generate_lab_publication(args: &Args) -> anyhow::Result<()> {
     let as_of = Utc::now();
     let current_artifacts = json!([{
         "schema_version": 1,
-        "contracts": {"nav-db": "NAV12"},
+        "contracts": {"nav-db": nav_db_contract},
         "artifact_roots": {
             "packaged": "packaged",
             "unpacked": "unpacked"

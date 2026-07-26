@@ -14076,17 +14076,66 @@ mod tests {
             .expect("set AEROBAG_TEST_ARTIFACTS_ROOT to run external fixture tests")
     }
 
+    fn nav_db_advance_fixture_artifact(
+        root: &std::path::Path,
+        cycle: &str,
+    ) -> (std::path::PathBuf, String) {
+        let fixture_path = root.join("nav-db/advance-2607-to-2608/fixture.json");
+        let fixture: serde_json::Value = serde_json::from_slice(
+            &std::fs::read(&fixture_path)
+                .unwrap_or_else(|error| panic!("read {}: {error}", fixture_path.display())),
+        )
+        .unwrap_or_else(|error| panic!("decode {}: {error}", fixture_path.display()));
+        let cycle_record = fixture["cycles"]
+            .as_array()
+            .expect("fixture cycle list")
+            .iter()
+            .find(|record| record["cycle"].as_str() == Some(cycle))
+            .unwrap_or_else(|| panic!("fixture has no cycle {cycle}"));
+        assert_eq!(
+            cycle_record["contract_id"].as_str(),
+            Some(REQUIRED_NAV_DB_CONTRACT_ID),
+            "fixture cycle {cycle} contract must exactly match the client"
+        );
+        let relative_path = cycle_record["nav_db"]["filename"]
+            .as_str()
+            .expect("fixture NAVDB filename");
+        let nav_path = root.join("nav-db/advance-2607-to-2608").join(relative_path);
+        let bundle_relative_path = cycle_record["bundle"]["filename"]
+            .as_str()
+            .expect("fixture bundle filename");
+        let bundle_path = root
+            .join("nav-db/advance-2607-to-2608")
+            .join(bundle_relative_path);
+        let bundle: serde_json::Value = serde_json::from_slice(
+            &std::fs::read(&bundle_path)
+                .unwrap_or_else(|error| panic!("read {}: {error}", bundle_path.display())),
+        )
+        .unwrap_or_else(|error| panic!("decode {}: {error}", bundle_path.display()));
+        let nav_package = bundle["packages"]
+            .as_array()
+            .expect("bundle package list")
+            .iter()
+            .find(|package| package["family_id"].as_str() == Some("nav-db"))
+            .expect("bundle NAVDB package");
+        assert_eq!(
+            nav_package["contract_id"].as_str(),
+            Some(REQUIRED_NAV_DB_CONTRACT_ID),
+            "fixture bundle cycle {cycle} contract must exactly match the client"
+        );
+        let package_id = nav_package["id"]
+            .as_str()
+            .expect("fixture NAVDB package ID")
+            .to_string();
+        (nav_path, package_id)
+    }
+
     #[test]
     #[ignore = "requires the external NAVDB transition fixture"]
     fn real_nav_db_2607_to_2608_advance_preserves_rich_session() {
         let root = nav_db_advance_fixture_root();
-        let fixture = root.join("nav-db/advance-2607-to-2608/source/packaged");
-        let old_path = fixture.join(
-            "nav_db_NAV12_2607_01_bcf5bb62d186a9f214a6fa027dde333441ae2676000116fadd30a21758d1022c.zip",
-        );
-        let next_path = fixture.join(
-            "nav_db_NAV12_2608_01_193319fdd18ba981ebab22c25139e7ba0c3da3c080bdc12b63d20052c7572f5f.zip",
-        );
+        let (old_path, old_package_id) = nav_db_advance_fixture_artifact(&root, "2607");
+        let (next_path, next_package_id) = nav_db_advance_fixture_artifact(&root, "2608");
         assert!(old_path.is_file(), "missing {}", old_path.display());
         assert!(next_path.is_file(), "missing {}", next_path.display());
         let old_store = load_nav_db_fixture_zip(&old_path);
@@ -14154,7 +14203,7 @@ mod tests {
             .expect("KPAE VOR-A chart");
         let init = create_ui_session(plan, &[], Some("KPAE"), Some(&selected_chart_id))
             .expect("create rich session");
-        let mut old_open = nav_db_open_result_for_test("NAV_DB_NAV12_2607_01", None);
+        let mut old_open = nav_db_open_result_for_test(&old_package_id, None);
         old_open.selected_filename = old_path
             .file_name()
             .expect("2607 filename")
@@ -14176,7 +14225,7 @@ mod tests {
         .expect("2607 raster map");
         sync_guidance_geometry_in_session(init.handle).expect("build 2607 guidance");
 
-        let mut next_open = nav_db_open_result_for_test("NAV_DB_NAV12_2608_01", None);
+        let mut next_open = nav_db_open_result_for_test(&next_package_id, None);
         next_open.selected_filename = next_path
             .file_name()
             .expect("2608 filename")
@@ -14190,7 +14239,7 @@ mod tests {
                 2608,
                 &next_store,
                 &next_open,
-                vec!["NAV_DB_NAV12_2608_01".to_string()],
+                vec![next_package_id],
             )
             .expect("advance rich session to 2608"),
         );

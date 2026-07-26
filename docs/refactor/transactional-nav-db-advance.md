@@ -256,10 +256,11 @@ projects a snapshot, and commits only on success, is the architectural model.
 
 ## Test Artifacts
 
-The immutable production NAV12 artifacts are captured in test-artifacts commit
-`29eac58`. The regression opens those exact ZIP bytes through the production
-NAVKV reader and pages them to completion; it does not depend on a publication
-server or wall clock.
+The immutable production artifacts are captured in the test-artifacts commit
+pinned by `test-artifacts.lock.json`. Their NAVDB contract must match the
+client's single supported contract. The regression opens those exact ZIP bytes
+through the production NAVKV reader and pages them to completion; it does not
+depend on a publication server or wall clock.
 
 ```text
 nav-db/advance-2607-to-2608/
@@ -268,25 +269,13 @@ nav-db/advance-2607-to-2608/
   source/current_artifacts.json
   source/packaged/bundle_cycle_2607_01_....json
   source/packaged/bundle_cycle_2608_01_....json
-  source/packaged/nav_db_NAV12_2607_01_....zip
-  source/packaged/nav_db_NAV12_2608_01_....zip
+  source/packaged/nav_db_<contract>_2607_01_....zip
+  source/packaged/nav_db_<contract>_2608_01_....zip
 ```
 
-The source artifacts were snapshotted from this publication build:
-
-```text
-/root/aerobag-artifacts/published/master-ec68e4e91ce5/20260718T234628Z/
-```
-
-The NAVDB artifacts are:
-
-```text
-nav_db_NAV12_2607_01_bcf5bb62d186a9f214a6fa027dde333441ae2676000116fadd30a21758d1022c.zip
-nav_db_NAV12_2608_01_193319fdd18ba981ebab22c25139e7ba0c3da3c080bdc12b63d20052c7572f5f.zip
-```
-
-They are approximately 15 MB each. The real-artifact regression qualifies both
-NAVDBs through production HAD APIs and verifies:
+`fixture.json` records the exact source publication identity, filenames,
+hashes, byte sizes, cycles, and contracts. The real-artifact regression
+qualifies both NAVDBs through production HAD APIs and verifies:
 
 - a rich route and approach procedure present in both cycles
 - stable airports, navaids, fixes, airways, charts, and airport-document

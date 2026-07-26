@@ -46,6 +46,14 @@ jobs:
       VNC_PORT: 5900
     steps:
       - uses: actions/checkout@v5
+      - name: Fetch and verify compact package publication
+        run: |
+          python3 tools/ci/fetch_test_artifacts.py \
+            --fixture android-smoke-publication \
+            --destination "$AEROBAG_TEST_ARTIFACTS_ROOT"
+          python3 tools/ci/verify_nav_db_fixture_contracts.py \
+            --fixture-root "$AEROBAG_TEST_ARTIFACTS_ROOT" \
+            --fixture android-smoke-publication
       - uses: actions/setup-java@v4
         with:
           distribution: temurin
@@ -85,11 +93,6 @@ jobs:
             -keypass "$AEROBAG_ANDROID_KEY_PASSWORD" \
             -keyalg RSA -keysize 2048 -validity 10000 \
             -dname "CN=Aerobag CI,OU=CI,O=Aerobag,C=US"
-      - name: Fetch pinned compact package publication
-        run: >-
-          python3 tools/ci/fetch_test_artifacts.py
-          --fixture android-smoke-publication
-          --destination "$AEROBAG_TEST_ARTIFACTS_ROOT"
       - name: Cache Android and Rust builds
         uses: actions/cache@v4
         with:
@@ -135,6 +138,14 @@ jobs:
       VNC_PORT: 5900
     steps:
       - uses: actions/checkout@v5
+      - name: Fetch and verify compact package publication
+        run: |
+          python3 tools/ci/fetch_test_artifacts.py \
+            --fixture android-smoke-publication \
+            --destination "$AEROBAG_TEST_ARTIFACTS_ROOT"
+          python3 tools/ci/verify_nav_db_fixture_contracts.py \
+            --fixture-root "$AEROBAG_TEST_ARTIFACTS_ROOT" \
+            --fixture android-smoke-publication
       - uses: actions/setup-node@v4
         with:
           node-version: 20
@@ -177,11 +188,6 @@ jobs:
             "system-images;android-34;google_apis;x86_64"
       - name: Enable KVM
         run: sudo chmod 666 /dev/kvm
-      - name: Fetch pinned compact package publication
-        run: >-
-          python3 tools/ci/fetch_test_artifacts.py
-          --fixture android-smoke-publication
-          --destination "$AEROBAG_TEST_ARTIFACTS_ROOT"
       - name: Run Chrome-on-Android recovery journey
         env:
           CI: "1"
@@ -207,6 +213,14 @@ jobs:
       AEROBAG_UI_TARGET_ROOT: ${{ github.workspace }}/.ci/ui-target
     steps:
       - uses: actions/checkout@v5
+      - name: Fetch and verify NAVDB transition fixture
+        run: |
+          python3 tools/ci/fetch_test_artifacts.py \
+            --fixture nav-db-advance \
+            --destination "$AEROBAG_TEST_ARTIFACTS_ROOT"
+          python3 tools/ci/verify_nav_db_fixture_contracts.py \
+            --fixture-root "$AEROBAG_TEST_ARTIFACTS_ROOT" \
+            --fixture nav-db-advance
       - uses: actions/setup-node@v4
         with:
           node-version: 20
@@ -238,11 +252,6 @@ jobs:
           if [[ "$current" != "$version" ]]; then
             cargo install wasm-bindgen-cli --version "$version" --locked --force
           fi
-      - name: Fetch pinned NAVDB transition fixture
-        run: >-
-          python3 tools/ci/fetch_test_artifacts.py
-          --fixture nav-db-advance
-          --destination "$AEROBAG_TEST_ARTIFACTS_ROOT"
       - name: Run headless NAVDB rollover journeys
         run: >-
           npm --prefix ui/web-app run e2e:nav-db-rollover --

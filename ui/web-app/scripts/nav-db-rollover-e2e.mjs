@@ -110,7 +110,7 @@ async function runScenario(scenario) {
     const before = await navDbProbe(page);
     assert(before.active_nav_db?.cycle === "2607", `expected 2607 before transition, got ${before.active_nav_db?.cycle}`);
     assertRichPlan(before);
-    const planFingerprint = stablePlanFingerprint(before.active_plan);
+    const planFingerprint = stablePlanFingerprint(before);
 
     await installStatusOverlay(page, scenario, transitionEpochMs);
     await capturePng(page, path.join(scenarioRoot, "before.png"));
@@ -211,7 +211,10 @@ async function buildRichFlightPlan(page) {
   })()`);
   await waitForProbe(
     page,
-    (probe) => probe.active_plan?.route_components?.length >= 3,
+    (probe) => {
+      const labels = probe.plan_ui_state?.display_rows?.map((row) => row.label) ?? [];
+      return ["KRNT", "SEA", "KPAE"].every((label) => labels.includes(label));
+    },
     30_000,
     "three-component route",
   );
@@ -233,9 +236,7 @@ async function buildRichFlightPlan(page) {
   await clickButtonByText(page, ".pageLayer.isActive .airwayChoiceButton", "ECEPO");
   await waitForProbe(
     page,
-    (probe) => probe.plan_ui_state?.components?.some(
-      (component) => component.procedure_id?.includes("VOR-A"),
-    ),
+    (probe) => probe.plan_ui_state?.display_rows?.some((row) => row.procedure_id?.includes("VOR-A")),
     30_000,
     "KPAE VOR-A ECEPO insertion",
   );
@@ -243,7 +244,7 @@ async function buildRichFlightPlan(page) {
 
 function assertScenario(scenario, before, after, expectedPlanFingerprint, warningUi) {
   assert(
-    stablePlanFingerprint(after.active_plan) === expectedPlanFingerprint,
+    stablePlanFingerprint(after) === expectedPlanFingerprint,
     "flight plan changed across NAVDB adoption attempt",
   );
   assertRichPlan(after);
@@ -322,26 +323,24 @@ async function revealRejectedWarning(page) {
 }
 
 function assertRichPlan(probe) {
-  const serialized = JSON.stringify(probe.active_plan);
-  assert(serialized.includes('"Navaid":"SEA"'), "flight plan does not contain SEA navaid");
-  assert(serialized.includes("VOR-A"), "flight plan does not contain VOR-A procedure");
-  assert(serialized.includes("ECEPO"), "flight plan does not contain ECEPO transition");
+  const rows = probe.plan_ui_state?.display_rows ?? [];
+  assert(rows.some((row) => row.label === "SEA"), "flight plan does not contain SEA navaid");
+  assert(
+    rows.some((row) => row.procedure_id?.includes("VOR-A")),
+    "flight plan does not contain VOR-A procedure",
+  );
+  assert(rows.some((row) => row.label === "ECEPO"), "flight plan does not contain ECEPO transition");
 }
 
-function stablePlanFingerprint(plan) {
-  if (!plan) {
+function stablePlanFingerprint(probe) {
+  if (!probe.active_plan || !probe.plan_ui_state) {
     return "null";
   }
   return JSON.stringify({
-    route_components: plan.route_components,
-    route_component_uids: plan.route_component_uids,
-    route_component_uid_counter: plan.route_component_uid_counter,
-    guidance: plan.guidance,
-    departure: plan.departure,
-    destination: plan.destination,
-    alternate: plan.alternate,
-    cruise_altitude_ft: plan.cruise_altitude_ft,
-    notes: plan.notes,
+    plan_id: probe.active_plan.plan_id,
+    plan_version: probe.active_plan.plan_version,
+    display_rows: probe.plan_ui_state.display_rows,
+    guidance: probe.plan_ui_state.guidance,
   });
 }
 

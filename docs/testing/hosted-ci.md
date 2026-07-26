@@ -77,6 +77,28 @@ unrelated ignored tests until it added:
 When a fixture's structure changes, update its contract version and the lock
 manifest. Do not weaken the consumer with field-level fallbacks.
 
+When the production NAVDB contract changes, regenerate both compact NAVDB
+fixtures from one publication and publish them together:
+
+```sh
+python3 tools/ci/build_e2e_package_fixture.py \
+  --source-publication /path/to/published \
+  --output /path/to/test-artifacts/e2e/android-smoke-publication \
+  --cycle 2607
+python3 tools/ci/build_nav_db_advance_fixture.py \
+  --source-publication /path/to/published \
+  --output /path/to/test-artifacts/nav-db/advance-2607-to-2608 \
+  --cycle 2607 --cycle 2608
+python3 tools/ci/verify_nav_db_fixture_contracts.py \
+  --fixture-root /path/to/test-artifacts \
+  --fixture android-smoke-publication \
+  --fixture nav-db-advance
+```
+
+Commit and push the artifact repository first, then update its commit in
+`test-artifacts.lock.json`. Fixture-backed jobs run the same contract check
+immediately after sparse checkout, before expensive setup.
+
 ## Nextest Results
 
 `CARGO_TARGET_DIR` controls compiled outputs, but nextest's configured JUnit

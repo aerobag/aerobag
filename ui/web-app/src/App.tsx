@@ -2623,6 +2623,14 @@ export default function App() {
         : null,
       plan_ui_state: planUiState
         ? {
+          display_rows: planUiState.display_rows.map((row) => ({
+            uid: row.uid,
+            label: row.label,
+            row_kind: row.row_kind,
+            component_kind: row.component_kind,
+            component_uid: row.component_uid,
+            procedure_id: row.procedure_id,
+          })),
           guidance: planUiState.guidance,
         }
         : null,

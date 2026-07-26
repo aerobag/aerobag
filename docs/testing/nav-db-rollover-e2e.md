@@ -3,10 +3,11 @@
 `ui/web-app/scripts/nav-db-rollover-e2e.mjs` proves that a running web client
 handles an effective-cycle transition without replacing the user session.
 
-The test uses the immutable production NAV12 fixtures in
-`aerobag-test-artifacts.git` under
+The test uses immutable production NAVDB fixtures matching the current client
+contract from `aerobag-test-artifacts.git` under
 `nav-db/advance-2607-to-2608`. It does not mock NAVDB reads or invoke session
-mutation APIs directly.
+mutation APIs directly. CI verifies the fixture contract before installing
+toolchains or starting a browser.
 
 ## Scenarios
 
@@ -49,5 +50,5 @@ artifacts explain failures but do not determine pass/fail.
 
 The web-only `window.__aerobagE2e.navDb()` probe is read-only. It exposes the
 active NAVDB identity, nav-data epoch, next maintenance deadline, advance
-warning, active flight plan, and the core-projected plan UI state. It is not a
-second control path.
+warning, active plan identity, and stable fields from core-projected flight-plan
+rows. It is not a second control path.

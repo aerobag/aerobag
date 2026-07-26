@@ -33,6 +33,14 @@ jobs:
       CARGO_TARGET_DIR: ${{ github.workspace }}/.ci/cargo-target/fixture-nav-db
     steps:
       - uses: actions/checkout@v5
+      - name: Fetch and verify NAVDB fixture
+        run: |
+          python3 tools/ci/fetch_test_artifacts.py \
+            --fixture nav-db-advance \
+            --destination "$AEROBAG_TEST_ARTIFACTS_ROOT"
+          python3 tools/ci/verify_nav_db_fixture_contracts.py \
+            --fixture-root "$AEROBAG_TEST_ARTIFACTS_ROOT" \
+            --fixture nav-db-advance
       - name: Install Rust toolchain
         run: rustup toolchain install "$RUST_TOOLCHAIN" --profile minimal
       - name: Install cargo-nextest
@@ -47,11 +55,6 @@ jobs:
             ~/.cargo/git
             .ci/cargo-target/fixture-nav-db
           key: fixture-nav-db-${{ runner.os }}-${{ env.RUST_TOOLCHAIN }}-${{ hashFiles('ui/core-rust/Cargo.lock', 'test-artifacts.lock.json') }}
-      - name: Fetch pinned NAVDB fixture
-        run: >-
-          python3 tools/ci/fetch_test_artifacts.py
-          --fixture nav-db-advance
-          --destination "$AEROBAG_TEST_ARTIFACTS_ROOT"
       - name: Run NAVDB fixture tests
         id: tests
         continue-on-error: true

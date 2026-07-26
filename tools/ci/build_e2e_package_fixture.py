@@ -207,6 +207,18 @@ def build_fixture(source_publication: Path, output_root: Path, cycle: str) -> No
     )
     if nav_package is None or tpp_package is None:
         raise BuildError("source bundle must contain NAVDB and NW TPP packages")
+    source_contracts = current.get("contracts")
+    if not isinstance(source_contracts, dict):
+        raise BuildError("source current artifacts has no contracts")
+    for package in (nav_package, tpp_package):
+        family = package["family_id"]
+        package_contract = package.get("contract_id")
+        advertised_contract = source_contracts.get(family)
+        if package_contract != advertised_contract:
+            raise BuildError(
+                f"{family} package provides {package_contract}; "
+                f"current publication advertises {advertised_contract}"
+            )
 
     output_root.parent.mkdir(parents=True, exist_ok=True)
     temporary = Path(
@@ -323,12 +335,12 @@ def build_fixture(source_publication: Path, output_root: Path, cycle: str) -> No
         }
         write_json(temporary / "fixture.json", fixture_manifest)
         (temporary / "README.md").write_text(
-            """# Android Smoke Package Publication
+            f"""# Android Smoke Package Publication
 
 This frozen publication drives the clean-emulator Android E2E suite through
 the production Offline Packages discovery, download, verification, install,
-and adoption paths. It contains the production NAV12 package for cycle 2607
-and a contract-valid TPP1 package restricted to KPLU plates.
+and adoption paths. It contains the production {nav_updated["contract_id"]} package
+for cycle {cycle} and a contract-valid TPP1 package restricted to KPLU plates.
 
 The publication is test-only. Its package validity dates are widened so CI is
 independent of wall-clock FAA cycles.

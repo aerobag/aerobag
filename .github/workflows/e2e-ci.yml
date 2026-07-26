@@ -194,13 +194,16 @@ jobs:
           KEEP_EMULATOR: "0"
           EMULATOR_HEADLESS: "1"
           AEROBAG_ARTIFACT_READ_PATH: ${{ env.AEROBAG_TEST_ARTIFACTS_ROOT }}/e2e/android-smoke-publication/published
+          AEROBAG_E2E_ARTIFACT_DIR: ${{ github.workspace }}/test-results/android.chrome.live-feed-network-recovery
         run: ./ui/web-app/scripts/run_android_chrome_livefeed_e2e.sh --headless --json
       - name: Upload emulator diagnostics
         if: ${{ always() }}
         uses: actions/upload-artifact@v4
         with:
           name: android-chrome-live-feed-results
-          path: .ci/ui-target/android/emulator-stack-5900
+          path: |
+            test-results/android.chrome.live-feed-network-recovery
+            .ci/ui-target/android/emulator-stack-5900
           if-no-files-found: ignore
           include-hidden-files: true
           retention-days: 14

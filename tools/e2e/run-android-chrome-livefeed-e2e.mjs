@@ -11,7 +11,14 @@ import net from "node:net";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { spawn, spawnSync } from "node:child_process";
-import { adb, adbBestEffort, delay, waitFor } from "./android-harness.mjs";
+import {
+  adb,
+  adbBestEffort,
+  captureAndroidFailureDiagnostics,
+  delay,
+  waitFor,
+  wakeAndUnlock,
+} from "./android-harness.mjs";
 import {
   LIVE_FEED_SCHEMA_VERSION,
   liveFeedPath,
@@ -684,6 +691,7 @@ async function launchAndroidChrome(serial, url, cdpPort) {
   progress("locating Android Chrome package");
   const packageName = findChromePackage(serial);
   progress(`launching ${packageName}`);
+  wakeAndUnlock(serial);
   adbBestEffort(serial, ["shell", "am", "force-stop", packageName]);
   adbBestEffort(serial, ["forward", "--remove", `tcp:${cdpPort}`]);
   adbBestEffort(serial, ["shell", "rm", "-f", "/data/local/tmp/chrome-command-line"]);
@@ -868,6 +876,14 @@ async function run(args) {
     }
     return result;
   } catch (error) {
+    const artifactDir = process.env.AEROBAG_E2E_ARTIFACT_DIR;
+    if (artifactDir) {
+      captureAndroidFailureDiagnostics(
+        args.serial,
+        artifactDir,
+        "android.chrome.live-feed-network-recovery",
+      );
+    }
     const counts = JSON.stringify(liveFeed.requestCounts);
     if (error instanceof Error) {
       error.message = `${error.message}; live feed request counts: ${counts}`;

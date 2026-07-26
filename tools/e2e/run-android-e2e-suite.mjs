@@ -16,6 +16,7 @@ import {
   androidNodeLabel,
   androidTag,
   assertRuntimeIsAvailable,
+  captureAndroidFailureDiagnostics,
   clearFocusedText,
   delay,
   dumpAndroid,
@@ -96,36 +97,6 @@ function parseArgs(argv) {
     }
   }
   return args;
-}
-
-function captureFailureDiagnostics(serial, testId) {
-  mkdirSync(E2E_ARTIFACT_DIR, { recursive: true });
-  const captures = [
-    ["screenshot.png", () => screencapPng(serial)],
-    ["ui.xml", () => dumpAndroid(serial)],
-    ["logcat.txt", () => adb(serial, ["logcat", "-d", "-v", "threadtime"], {
-      maxBuffer: 16 * 1024 * 1024,
-    })],
-    ["activity.txt", () => adb(serial, ["shell", "dumpsys", "activity", "activities"])],
-    ["window.txt", () => adb(serial, ["shell", "dumpsys", "window", "windows"])],
-  ];
-  const artifacts = [];
-  const failures = [];
-  for (const [name, capture] of captures) {
-    const path = join(E2E_ARTIFACT_DIR, name);
-    try {
-      writeFileSync(path, capture());
-      artifacts.push(path);
-    } catch (error) {
-      failures.push(`${name}: ${error.message}`);
-    }
-  }
-  if (failures.length > 0) {
-    const path = join(E2E_ARTIFACT_DIR, "diagnostic-errors.txt");
-    writeFileSync(path, `${testId}\n${failures.join("\n")}\n`);
-    artifacts.push(path);
-  }
-  return artifacts;
 }
 
 function createTestResult(id) {
@@ -1128,7 +1099,7 @@ async function main() {
       failed.status = "fail";
       failed.finished_at = new Date().toISOString();
       failed.error = error.message;
-      failed.artifacts = captureFailureDiagnostics(args.serial, test.id);
+      failed.artifacts = captureAndroidFailureDiagnostics(args.serial, E2E_ARTIFACT_DIR, test.id);
       suite.results.push(failed);
       if (args.json) {
         console.log(JSON.stringify(suite, null, 2));

@@ -3,6 +3,8 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
 import { spawnSync } from "node:child_process";
+import { mkdirSync, writeFileSync } from "node:fs";
+import { join } from "node:path";
 
 export const ANDROID_PACKAGE = "org.aerobag.app";
 export const ANDROID_ACTIVITY = `${ANDROID_PACKAGE}/.MainActivity`;
@@ -57,6 +59,36 @@ export function screencapPng(serial) {
 export function dumpAndroid(serial, dumpPath = "/sdcard/aerobag-e2e.xml") {
   adb(serial, ["shell", "uiautomator", "dump", dumpPath]);
   return adb(serial, ["exec-out", "cat", dumpPath]);
+}
+
+export function captureAndroidFailureDiagnostics(serial, artifactDir, label) {
+  mkdirSync(artifactDir, { recursive: true });
+  const captures = [
+    ["screenshot.png", () => screencapPng(serial)],
+    ["ui.xml", () => dumpAndroid(serial)],
+    ["logcat.txt", () => adb(serial, ["logcat", "-d", "-v", "threadtime"], {
+      maxBuffer: 16 * 1024 * 1024,
+    })],
+    ["activity.txt", () => adb(serial, ["shell", "dumpsys", "activity", "activities"])],
+    ["window.txt", () => adb(serial, ["shell", "dumpsys", "window", "windows"])],
+  ];
+  const artifacts = [];
+  const failures = [];
+  for (const [name, capture] of captures) {
+    const path = join(artifactDir, name);
+    try {
+      writeFileSync(path, capture());
+      artifacts.push(path);
+    } catch (error) {
+      failures.push(`${name}: ${error.message}`);
+    }
+  }
+  if (failures.length > 0) {
+    const path = join(artifactDir, "diagnostic-errors.txt");
+    writeFileSync(path, `${label}\n${failures.join("\n")}\n`);
+    artifacts.push(path);
+  }
+  return artifacts;
 }
 
 export function decodeXml(text) {

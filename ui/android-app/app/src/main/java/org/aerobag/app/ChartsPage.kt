@@ -749,7 +749,6 @@ internal fun ChartsPage(
 
         ChartViewerSelectors(
             modifier = Modifier.align(Alignment.TopStart),
-            currentPage = page,
             airportMenuEntries = airportMenuEntries,
             selectedCollection = selectedCollection,
             selectedChart = selectedChart,
@@ -758,14 +757,6 @@ internal fun ChartsPage(
             chartTrayOpen = chartTrayOpen,
             loadTrayOpen = loadTrayOpen,
             plateProcedureLoads = plateProcedureLoads,
-            onSelectPage = {
-                onSelectPage(it)
-                airportTrayOpen = false
-                chartTrayOpen = false
-                loadTrayOpen = false
-                dataStatusTrayOpen = false
-                situationTrayOpen = false
-            },
             onToggleAirportTray = {
                 airportTrayOpen = !airportTrayOpen
                 chartTrayOpen = false
@@ -841,9 +832,13 @@ internal fun ChartsPage(
             }
         }
 
-        NavElementDock(
+        PrimaryNavigationDock(
+            currentPage = page,
             navElement = navElement,
-            onClick = onOpenPlan,
+            onHomeClick = { onSelectPage(AppPage.Home) },
+            onOpenPlan = onOpenPlan,
+            onSelectPage = onSelectPage,
+            onOpenChartOrPlate = { onSelectPage(AppPage.Map) },
             modifier = Modifier
                 .align(Alignment.BottomCenter)
                 .padding(bottom = ThumbGap),
@@ -1010,6 +1005,45 @@ internal fun HomeReturnDock(
 }
 
 @Composable
+internal fun PrimaryNavigationDock(
+    currentPage: AppPage,
+    navElement: NavElementUiView?,
+    chartPlateTargetPage: AppPage = AppPage.Map,
+    onHomeClick: () -> Unit,
+    onOpenPlan: (() -> Unit)?,
+    onSelectPage: (AppPage) -> Unit,
+    onOpenChartOrPlate: () -> Unit,
+    modifier: Modifier = Modifier,
+) {
+    val chartOrPlatePage = currentPage == AppPage.Map || currentPage == AppPage.Charts
+    Row(
+        modifier = modifier.testTag("parity:primary-navigation"),
+        horizontalArrangement = Arrangement.spacedBy(ThumbGap),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        HomePageButton(
+            currentPage = currentPage,
+            onClick = onHomeClick,
+        )
+        NavElementDock(
+            navElement = navElement,
+            onClick = if (currentPage == AppPage.Plan) null else onOpenPlan,
+        )
+        if (chartOrPlatePage) {
+            ChartPlateToggleButton(
+                currentPage = currentPage,
+                onSelectPage = onSelectPage,
+            )
+        } else {
+            ChartPlateReturnButton(
+                targetPage = chartPlateTargetPage,
+                onClick = onOpenChartOrPlate,
+            )
+        }
+    }
+}
+
+@Composable
 internal fun PageToggleIndicator(
     chartSelected: Boolean,
     modifier: Modifier = Modifier,
@@ -1041,8 +1075,6 @@ internal fun PageToggleIndicator(
 @Composable
 internal fun MapTopLeftControls(
     modifier: Modifier = Modifier,
-    currentPage: AppPage,
-    onSelectPage: (AppPage) -> Unit,
     selectedLabel: String,
     chartReferenceFamilyId: String?,
     onOpenChartReference: () -> Unit,
@@ -1061,20 +1093,17 @@ internal fun MapTopLeftControls(
     onChartSearchFocus: () -> Unit,
     onChartSearchSubmit: () -> Unit,
     onChartSearchSuggestionClick: (WaypointIdentifierSuggestion) -> Unit,
+    centerHereEnabled: Boolean,
+    centerHereSelected: Boolean,
+    centerHereDisabledReason: String?,
+    onCenterHere: () -> Unit,
 ) {
+    val context = LocalContext.current
     Row(
         modifier = modifier.padding(ThumbGap),
         horizontalArrangement = Arrangement.spacedBy(ThumbGap),
         verticalAlignment = Alignment.Top,
     ) {
-        HomePageButton(
-            currentPage = currentPage,
-            onClick = { onSelectPage(AppPage.Home) },
-        )
-        ChartPlateToggleButton(
-            currentPage = currentPage,
-            onSelectPage = onSelectPage,
-        )
         MenuDock(
             launcherLabel = selectedLabel,
             launcherIconResId = trayOptions.firstOrNull { it.launcherLabel == selectedLabel }?.iconResId,
@@ -1124,6 +1153,17 @@ internal fun MapTopLeftControls(
             onFocus = onChartSearchFocus,
             onSubmit = onChartSearchSubmit,
             onSuggestionClick = onChartSearchSuggestionClick,
+        )
+        CompactSquareButton(
+            label = "CTR",
+            modifier = Modifier.size(ThumbSize),
+            enabled = centerHereEnabled,
+            selected = centerHereSelected,
+            selectedColor = Color(0xFF0D6F67),
+            onDisabledClick = centerHereDisabledReason?.let { reason ->
+                { showDisabledActionToast(context, reason) }
+            },
+            onClick = onCenterHere,
         )
     }
 }
@@ -1277,7 +1317,6 @@ internal fun AndroidChartSearchBox(
 @Composable
 internal fun ChartViewerSelectors(
     modifier: Modifier = Modifier,
-    currentPage: AppPage,
     airportMenuEntries: List<ChartAirportMenuEntry>,
     selectedCollection: ChartAirport?,
     selectedChart: ChartAsset?,
@@ -1286,7 +1325,6 @@ internal fun ChartViewerSelectors(
     chartTrayOpen: Boolean,
     loadTrayOpen: Boolean,
     plateProcedureLoads: List<ProcedureLoadOption>,
-    onSelectPage: (AppPage) -> Unit,
     onToggleAirportTray: () -> Unit,
     onToggleChartTray: () -> Unit,
     onToggleLoadTray: () -> Unit,
@@ -1302,8 +1340,8 @@ internal fun ChartViewerSelectors(
     val trayOpen = airportTrayOpen || chartTrayOpen || loadTrayOpen
     BoxWithConstraints(modifier = modifier) {
         val rowHorizontalPadding = ThumbGap * 2f
-        val rowGaps = ThumbGap * 5f
-        val fixedButtonsWidth = ThumbSize * 5f
+        val rowGaps = ThumbGap * 3f
+        val fixedButtonsWidth = ThumbSize * 3f
         val chartButtonWidth = (maxWidth - rowHorizontalPadding - rowGaps - fixedButtonsWidth)
             .coerceIn(ThumbSize, MenuDockStyle.PlateWide.buttonWidth)
         Row(
@@ -1311,16 +1349,6 @@ internal fun ChartViewerSelectors(
             horizontalArrangement = Arrangement.spacedBy(ThumbGap),
             verticalAlignment = Alignment.Top,
         ) {
-            HomePageButton(
-                currentPage = currentPage,
-                onClick = { onSelectPage(AppPage.Home) },
-            )
-
-            ChartPlateToggleButton(
-                currentPage = currentPage,
-                onSelectPage = onSelectPage,
-            )
-
             MenuDock(
                 launcherLabel = selectedCollection?.let { collection ->
                     if (collection.charts.firstOrNull()?.airportId == null) collection.id.uppercase() else collection.id
@@ -1806,7 +1834,7 @@ internal fun NavElementDock(
         modifier =
             modifier
                 .width(ThumbSize * 3f)
-                .height(ThumbSize * 0.67f)
+                .height(ThumbSize)
                 .testTag("parity:nav-cdi")
                 .then(
                     if (onClick != null) {

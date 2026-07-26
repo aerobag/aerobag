@@ -2466,7 +2466,7 @@ button {
   bottom: calc(var(--thumb-gap) + var(--safe-bottom));
   z-index: 7;
   width: calc(var(--thumb) * 3);
-  height: calc(var(--thumb) * 0.67);
+  height: var(--thumb);
   margin-left: calc(var(--thumb) * -1.5);
   padding: calc(var(--thumb) * 0.08) calc(var(--thumb) * 0.14) 0;
   border: 1px solid var(--theme-panel-border);
@@ -2485,11 +2485,35 @@ button {
   color: rgba(255, 255, 255, 0.72);
 }
 
-.navElementStatic {
+.primaryNavigationDock {
+  position: absolute;
+  left: 50%;
+  bottom: calc(var(--thumb-gap) + var(--safe-bottom));
+  z-index: 7;
+  display: flex;
+  align-items: center;
+  gap: var(--thumb-gap);
+  width: max-content;
+  transform: translateX(-50%);
+  pointer-events: none;
+}
+
+.primaryNavigationDock > * {
+  pointer-events: auto;
+}
+
+.primaryNavigationCdi {
   position: static;
   left: auto;
   bottom: auto;
   margin-left: 0;
+}
+
+.primaryNavigationDockStatic {
+  position: static;
+  left: auto;
+  bottom: auto;
+  transform: none;
 }
 
 .navElementTop {
@@ -2707,7 +2731,7 @@ button {
 .playbackWidget.isLeftDocked {
   left: var(--thumb-gap);
   right: auto;
-  bottom: calc(var(--safe-bottom) + (var(--thumb-gap) * 2) + (var(--thumb) * 0.83));
+  bottom: calc(var(--safe-bottom) + (var(--thumb-gap) * 2) + var(--thumb));
 }
 
 .playbackWidgetTop,
@@ -2983,7 +3007,7 @@ button {
 .planPage {
   display: flex;
   flex-direction: column;
-  padding: calc(var(--thumb) * 1.25) var(--thumb-gap) calc(var(--thumb) * 0.9);
+  padding: var(--thumb-gap) var(--thumb-gap) calc(var(--thumb) + (var(--thumb-gap) * 2) + var(--safe-bottom));
   background: var(--theme-chart-surface-bg);
 }
 
@@ -3653,9 +3677,6 @@ button {
   left: 50%;
   bottom: calc(var(--thumb-gap) + var(--safe-bottom));
   transform: translateX(-50%);
-  color: var(--muted);
-  font-size: calc(var(--thumb) * 0.22);
-  font-weight: 700;
 }
 
 @media (max-width: 720px) and (orientation: portrait) {

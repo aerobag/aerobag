@@ -2662,14 +2662,6 @@ internal fun MapExplorerPage(
 
         MapTopLeftControls(
             modifier = Modifier.align(Alignment.TopStart),
-            currentPage = page,
-            onSelectPage = {
-                onSelectPage(it)
-                chartTrayOpen = false
-                layerTrayOpen = false
-                dataStatusTrayOpen = false
-                situationTrayOpen = false
-            },
             selectedLabel = selectedLauncher.launcherLabel,
             chartReferenceFamilyId = chartReferenceAction?.family_id,
             onOpenChartReference = {
@@ -2705,12 +2697,26 @@ internal fun MapExplorerPage(
             onChartSearchFocus = { chartSearchOpen = true },
             onChartSearchSubmit = { submitChartSearch() },
             onChartSearchSuggestionClick = { suggestion -> inspectNavRef(suggestion.navRef) },
+            centerHereEnabled = mapFollowUiState.canCenterHere || mapFollowUiState.following,
+            centerHereSelected = mapFollowUiState.following,
+            centerHereDisabledReason = mapFollowUiState.disabledReason,
+            onCenterHere = {
+                followTargetGate.clear()
+                applySessionCommand(if (mapFollowUiState.following) "disengageMapFollow" else "engageMapFollow") {
+                    if (mapFollowUiState.following) {
+                        uiSession.disengageMapFollow(viewportState.value)
+                    } else {
+                        uiSession.engageMapFollow(viewportState.value)
+                    }
+                }
+            },
         )
 
-        val playbackLeftRoomUnits = surfaceWidthDp / 2f - (ThumbSize.value * 1.5f) - (ThumbGap.value * 2f)
+        val primaryNavigationWidth = (ThumbSize * 5f) + (ThumbGap * 2f)
+        val playbackLeftRoomUnits = surfaceWidthDp / 2f - (primaryNavigationWidth.value / 2f) - (ThumbGap.value * 2f)
         val playbackBottomPadding =
             if (playbackLeftRoomUnits < ThumbSize.value * 2.8f) {
-                ThumbGap + (ThumbSize * 0.67f) + ThumbGap
+                ThumbGap + ThumbSize + ThumbGap
             } else {
                 ThumbGap
             }
@@ -2727,30 +2733,6 @@ internal fun MapExplorerPage(
                     .padding(start = ThumbGap, bottom = playbackBottomPadding),
             )
         }
-
-        CompactSquareButton(
-            label = "CTR",
-            modifier = Modifier
-                .align(Alignment.BottomEnd)
-                .padding(end = ThumbGap, bottom = ThumbGap)
-                .size(ThumbSize),
-            enabled = mapFollowUiState.canCenterHere || mapFollowUiState.following,
-            selected = mapFollowUiState.following,
-            selectedColor = Color(0xFF0D6F67),
-            onDisabledClick = mapFollowUiState.disabledReason?.let { reason ->
-                { showDisabledActionToast(context, reason) }
-            },
-            onClick = {
-                followTargetGate.clear()
-                applySessionCommand(if (mapFollowUiState.following) "disengageMapFollow" else "engageMapFollow") {
-                    if (mapFollowUiState.following) {
-                        uiSession.disengageMapFollow(viewportState.value)
-                    } else {
-                        uiSession.engageMapFollow(viewportState.value)
-                    }
-                }
-            },
-        )
 
         if (menuTrayOpen) {
             Scrim {
@@ -2928,9 +2910,13 @@ internal fun MapExplorerPage(
             }
         }
 
-        NavElementDock(
+        PrimaryNavigationDock(
+            currentPage = page,
             navElement = navElement,
-            onClick = onOpenPlan,
+            onHomeClick = { onSelectPage(AppPage.Home) },
+            onOpenPlan = onOpenPlan,
+            onSelectPage = onSelectPage,
+            onOpenChartOrPlate = { onSelectPage(AppPage.Charts) },
             modifier = Modifier
                 .align(Alignment.BottomCenter)
                 .padding(bottom = ThumbGap),

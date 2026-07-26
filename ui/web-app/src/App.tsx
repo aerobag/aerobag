@@ -6859,8 +6859,6 @@ function MapPage(props: {
         />
 
         <div className="chartDock">
-          <HomeNavButton active={page === "home"} onClick={() => onSelectPage("home")} />
-          <ChartPlateToggleButton page={page} onSelectPage={onSelectPage} />
           <TrayDock
             launcherLabel={selectedFamily?.launcher_label ?? "---"}
             launcherImageSrc={chartFamilyIconSrc(selectedFamily?.id)}
@@ -6918,14 +6916,41 @@ function MapPage(props: {
                 });
             }}
           />
+          <button
+            type="button"
+            className={`centerHereButton${mapFollowUiState.following ? " isActive" : ""}${centerHereDisabled ? " isDisabled" : ""}`}
+            disabled={centerHereDisabled && !centerHereDisabledReason}
+            aria-disabled={centerHereDisabled ? "true" : undefined}
+            title={centerHereDisabledReason ?? undefined}
+            onPointerDown={stopPointer}
+            onPointerUp={stopPointer}
+            onDoubleClick={stopDoubleClick}
+            onClick={() => {
+              if (centerHereDisabled) {
+                if (centerHereDisabledReason) {
+                  showDisabledAction(centerHereDisabledReason);
+                }
+                return;
+              }
+              if (!uiSession) {
+                return;
+              }
+              followTargetGateRef.current.clear();
+              const nextSnapshot = mapFollowUiState.following
+                ? uiSession.disengageMapFollow(viewportRef.current)
+                : uiSession.engageMapFollow(viewportRef.current);
+              void nextSnapshot.then(props.onPlaybackSnapshotChange).catch(() => {});
+            }}
+          >
+            CTR
+          </button>
         </div>
 
-        <NavElementButton
+        <PrimaryNavigationDock
+          page={page}
           navElement={planUiState?.guidance?.nav_element}
-          onPointerDown={stopPointer}
-          onPointerUp={stopPointer}
-          onDoubleClick={stopDoubleClick}
-          onClick={onOpenPlan}
+          onSelectPage={onSelectPage}
+          onOpenPlan={onOpenPlan}
         />
 
         {props.playbackPanelState.visible ? (
@@ -6962,34 +6987,6 @@ function MapPage(props: {
               />
             </DebugDock>
           </div>
-          <button
-            type="button"
-            className={`centerHereButton${mapFollowUiState.following ? " isActive" : ""}${centerHereDisabled ? " isDisabled" : ""}`}
-            disabled={centerHereDisabled && !centerHereDisabledReason}
-            aria-disabled={centerHereDisabled ? "true" : undefined}
-            title={centerHereDisabledReason ?? undefined}
-            onPointerDown={stopPointer}
-            onPointerUp={stopPointer}
-            onDoubleClick={stopDoubleClick}
-            onClick={() => {
-              if (centerHereDisabled) {
-                if (centerHereDisabledReason) {
-                  showDisabledAction(centerHereDisabledReason);
-                }
-                return;
-              }
-              if (!uiSession) {
-                return;
-              }
-              followTargetGateRef.current.clear();
-              const nextSnapshot = mapFollowUiState.following
-                ? uiSession.disengageMapFollow(viewportRef.current)
-                : uiSession.engageMapFollow(viewportRef.current);
-              void nextSnapshot.then(props.onPlaybackSnapshotChange).catch(() => {});
-            }}
-          >
-            CTR
-          </button>
         </div>
         </div>
       </Profiler>
@@ -7153,7 +7150,7 @@ function playbackWidgetMaxWidthPx(surfaceWidth: number) {
   }
   const thumb = thumbPixels(1);
   const gap = thumbPixels(0.1);
-  const navWidth = thumb * 3;
+  const navWidth = thumb * 5 + gap * 2;
   const navRightEdge = surfaceWidth / 2 + navWidth / 2;
   return Math.max(thumb * 2.8, surfaceWidth - navRightEdge - gap * 2);
 }
@@ -8137,14 +8134,6 @@ function FlightPlanPage(props: {
 
   return (
     <section className="appPage planPage" ref={pageRef}>
-      <div className="chartDock">
-        <HomeNavButton active={props.page === "home"} onClick={() => props.onSelectPage("home")} />
-        <ChartPlateReturnButton
-          targetPage={props.mostRecentChartOrPlatePage}
-          onClick={props.onOpenRecentChartOrPlate}
-        />
-      </div>
-
       <div className="planScrollViewport" ref={planScrollViewportRef}>
         <div className="planScrollContent" ref={planScrollContentRef}>
           {structuredArrow ? (
@@ -8379,10 +8368,13 @@ function FlightPlanPage(props: {
       </div>
 
       <div className="planFooter" ref={planFooterRef}>
-        <NavElementButton
+        <PrimaryNavigationDock
+          page={props.page}
           navElement={planUiState.guidance?.nav_element}
-          className="navElement navElementStatic"
-          onClick={props.onOpenRecentChartOrPlate}
+          chartPlateTargetPage={props.mostRecentChartOrPlatePage}
+          className="primaryNavigationDockStatic"
+          onSelectPage={props.onSelectPage}
+          onOpenChartOrPlate={props.onOpenRecentChartOrPlate}
         />
       </div>
 
@@ -8912,6 +8904,45 @@ function HomeNavButton(props: {
       {option?.iconSrc ? <img className="chartButtonIcon" src={option.iconSrc} alt="" aria-hidden="true" /> : null}
       <span className="chartButtonLabel">{option?.launcherLabel ?? "HOME"}</span>
     </button>
+  );
+}
+
+function PrimaryNavigationDock(props: {
+  page: AppPage;
+  navElement: NavElementUiView | null | undefined;
+  chartPlateTargetPage?: AppPage;
+  className?: string;
+  onSelectPage: (page: AppPage) => void;
+  onOpenPlan?: () => void;
+  onOpenChartOrPlate?: () => void;
+}) {
+  const chartOrPlatePage = props.page === "map" || props.page === "charts";
+  return (
+    <nav
+      className={`primaryNavigationDock${props.className ? ` ${props.className}` : ""}`}
+      aria-label="Primary navigation"
+    >
+      <HomeNavButton
+        active={props.page === "home"}
+        onClick={() => props.onSelectPage("home")}
+      />
+      <NavElementButton
+        navElement={props.navElement}
+        className="navElement primaryNavigationCdi"
+        onPointerDown={stopPointer}
+        onPointerUp={stopPointer}
+        onDoubleClick={stopDoubleClick}
+        onClick={props.page === "plan" ? undefined : props.onOpenPlan}
+      />
+      {chartOrPlatePage ? (
+        <ChartPlateToggleButton page={props.page} onSelectPage={props.onSelectPage} />
+      ) : (
+        <ChartPlateReturnButton
+          targetPage={props.chartPlateTargetPage ?? "map"}
+          onClick={props.onOpenChartOrPlate ?? (() => props.onSelectPage("map"))}
+        />
+      )}
+    </nav>
   );
 }
 
@@ -10312,8 +10343,6 @@ function ChartsPage(props: {
         ) : null}
 
         <div className="chartDock chartDockDouble plateDock">
-          <HomeNavButton active={page === "home"} onClick={() => onSelectPage("home")} />
-          <ChartPlateToggleButton page={page} onSelectPage={onSelectPage} />
           <TrayDock
             launcherLabel={selectedCollection
               ? selectedCollection.charts[0]?.airport_id == null
@@ -10427,12 +10456,11 @@ function ChartsPage(props: {
           </button>
         </div>
 
-        <NavElementButton
+        <PrimaryNavigationDock
+          page={page}
           navElement={planUiState?.guidance?.nav_element}
-          onPointerDown={stopPointer}
-          onPointerUp={stopPointer}
-          onDoubleClick={stopDoubleClick}
-          onClick={onOpenPlan}
+          onSelectPage={onSelectPage}
+          onOpenPlan={onOpenPlan}
         />
 
         {props.playbackPanelState.visible ? (
@@ -10475,14 +10503,6 @@ function HomePage(props: {
       className="appPage homePage"
       style={{ "--home-page-backdrop": `url(${HOME_PAGE_BACKDROP_SRC})` } as CSSProperties}
     >
-      <div className="chartDock">
-        <HomeNavButton active={true} onClick={() => {}} />
-        <ChartPlateReturnButton
-          targetPage={props.mostRecentChartOrPlatePage}
-          onClick={props.onOpenRecentChartOrPlate}
-        />
-      </div>
-
       <div
         className="homeGrid"
         aria-label="Home navigation"
@@ -10524,12 +10544,13 @@ function HomePage(props: {
         })}
       </div>
 
-      <NavElementButton
+      <PrimaryNavigationDock
+        page={page}
         navElement={planUiState?.guidance?.nav_element}
-        onPointerDown={stopPointer}
-        onPointerUp={stopPointer}
-        onDoubleClick={stopDoubleClick}
-        onClick={onOpenPlan}
+        chartPlateTargetPage={props.mostRecentChartOrPlatePage}
+        onSelectPage={onSelectPage}
+        onOpenPlan={onOpenPlan}
+        onOpenChartOrPlate={props.onOpenRecentChartOrPlate}
       />
       {disabledActionToast ? (
         <div className="mapSelectionToast" role="status" aria-live="polite">

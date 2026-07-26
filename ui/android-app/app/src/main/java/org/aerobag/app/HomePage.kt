@@ -639,15 +639,17 @@ internal fun HomePage(
             (HomeGridTileSize * homeGridRowCount.toFloat()) +
                 (ThumbGap * (homeGridRowCount - 1).toFloat())
 
-        HomeReturnDock(
-            modifier = Modifier
-                .align(Alignment.TopStart)
-                .zIndex(2f),
-            currentPage = page,
-            chartPlateTargetPage = mostRecentChartOrPlatePage,
-            onHomeClick = { onSelectPage(AppPage.Home) },
-            onOpenChartOrPlate = onOpenRecentChartOrPlate,
-        )
+        if (offlinePackagesRouted) {
+            HomeReturnDock(
+                modifier = Modifier
+                    .align(Alignment.TopStart)
+                    .zIndex(2f),
+                currentPage = page,
+                chartPlateTargetPage = mostRecentChartOrPlatePage,
+                onHomeClick = { onSelectPage(AppPage.Home) },
+                onOpenChartOrPlate = onOpenRecentChartOrPlate,
+            )
+        }
 
         if (!offlinePackagesRouted) {
             LazyVerticalGrid(
@@ -687,9 +689,14 @@ internal fun HomePage(
                 }
             }
 
-            NavElementDock(
+            PrimaryNavigationDock(
+                currentPage = page,
                 navElement = navElement,
-                onClick = onOpenPlan,
+                chartPlateTargetPage = mostRecentChartOrPlatePage,
+                onHomeClick = { onSelectPage(AppPage.Home) },
+                onOpenPlan = onOpenPlan,
+                onSelectPage = onSelectPage,
+                onOpenChartOrPlate = onOpenRecentChartOrPlate,
                 modifier = Modifier
                     .align(Alignment.BottomCenter)
                     .padding(bottom = ThumbGap),

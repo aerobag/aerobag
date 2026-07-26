@@ -735,26 +735,15 @@ internal fun FlightPlanPage(
             .fillMaxSize()
             .background(uiTheme.controls.chartSurfaceBg),
     ) {
-        HomeReturnDock(
-            modifier = Modifier.align(Alignment.TopStart),
-            currentPage = page,
-            chartPlateTargetPage = mostRecentChartOrPlatePage,
-            onHomeClick = {
-                performRouteEntryNavigation {
-                    onSelectPage(AppPage.Home)
-                }
-            },
-            onOpenChartOrPlate = {
-                performRouteEntryNavigation {
-                    onOpenRecentChartOrPlate()
-                }
-            },
-        )
-
         Column(
             modifier = Modifier
                 .fillMaxSize()
-                .padding(top = ThumbSize + ThumbGap * 2, start = ThumbGap, end = ThumbGap, bottom = ThumbSize * 2.15f),
+                .padding(
+                    top = ThumbGap,
+                    start = ThumbGap,
+                    end = ThumbGap,
+                    bottom = ThumbSize * 2f + ThumbGap * 2f,
+                ),
             verticalArrangement = Arrangement.spacedBy(PlanGridGap),
         ) {
             Box(
@@ -913,7 +902,7 @@ internal fun FlightPlanPage(
             modifier = Modifier
                 .align(Alignment.BottomCenter)
                 .fillMaxWidth()
-                .height(ThumbSize * 2.05f)
+                .height(ThumbSize * 2f + ThumbGap * 2f)
                 .padding(start = ThumbGap, end = ThumbGap, bottom = ThumbGap),
         ) {
             Row(
@@ -934,9 +923,18 @@ internal fun FlightPlanPage(
                     )
                 }
             }
-            NavElementDock(
+            PrimaryNavigationDock(
+                currentPage = page,
                 navElement = navElement,
-                onClick = {
+                chartPlateTargetPage = mostRecentChartOrPlatePage,
+                onHomeClick = {
+                    performRouteEntryNavigation {
+                        onSelectPage(AppPage.Home)
+                    }
+                },
+                onOpenPlan = null,
+                onSelectPage = onSelectPage,
+                onOpenChartOrPlate = {
                     performRouteEntryNavigation {
                         onOpenRecentChartOrPlate()
                     }

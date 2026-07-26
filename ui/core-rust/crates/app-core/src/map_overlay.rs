@@ -1041,6 +1041,8 @@ pub struct MapSelectionAction {
     pub detail_status: Option<MapSelectionDetailStatus>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub weather_detail: Option<WeatherDetailUiView>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub airport_info_airport_id: Option<String>,
     #[serde(default)]
     pub disabled_reason: Option<String>,
     #[serde(default)]
@@ -3243,11 +3245,7 @@ fn selection_item_for_point(
                 airport_plate_availability.csup,
             ),
             weather_action(weather_detail.clone()),
-            disabled_action_with_reason(
-                "runways",
-                "Runways",
-                "Runway details are not available yet.",
-            ),
+            airport_info_action(airport_id),
         ]
     } else {
         vec![
@@ -3401,11 +3399,7 @@ fn selection_item_for_flight_plan_point(
             ),
             plate_target_action("csup", "Chart Supp", airport_id, "CSup", availability.csup),
             weather_action(weather_detail.clone()),
-            disabled_action_with_reason(
-                "runways",
-                "Runways",
-                "Runway details are not available yet.",
-            ),
+            airport_info_action(airport_id),
         ]
     } else {
         vec![
@@ -4347,6 +4341,7 @@ fn display_action(id: &str, label: &str) -> MapSelectionAction {
         detail_status: None,
         disabled_reason: None,
         weather_detail: None,
+        airport_info_airport_id: None,
         airspace_limit: None,
         session_action: None,
         flight_plan_row_action: None,
@@ -4367,6 +4362,26 @@ fn weather_action(weather_detail: Option<WeatherDetailUiView>) -> MapSelectionAc
             .is_none()
             .then(|| "No METAR, TAF, or airport NOTAM is available for this station.".to_string()),
         weather_detail,
+        airport_info_airport_id: None,
+        airspace_limit: None,
+        session_action: None,
+        flight_plan_row_action: None,
+        navigation: None,
+    }
+}
+
+fn airport_info_action(airport_id: &str) -> MapSelectionAction {
+    MapSelectionAction {
+        id: "airport_info".to_string(),
+        label: "Info".to_string(),
+        enabled: true,
+        display_only: false,
+        detail_text: None,
+        detail_title: None,
+        detail_status: None,
+        disabled_reason: None,
+        weather_detail: None,
+        airport_info_airport_id: Some(airport_id.to_string()),
         airspace_limit: None,
         session_action: None,
         flight_plan_row_action: None,
@@ -4392,6 +4407,7 @@ fn text_detail_action(
         detail_status: None,
         disabled_reason: (!enabled).then(|| missing_reason.to_string()),
         weather_detail: None,
+        airport_info_airport_id: None,
         airspace_limit: None,
         session_action: None,
         flight_plan_row_action: None,
@@ -4410,6 +4426,7 @@ fn enabled_action(id: &str, label: &str) -> MapSelectionAction {
         detail_status: None,
         disabled_reason: None,
         weather_detail: None,
+        airport_info_airport_id: None,
         airspace_limit: None,
         session_action: None,
         flight_plan_row_action: None,
@@ -4435,6 +4452,7 @@ fn plate_target_action(
         disabled_reason: (!available)
             .then(|| format!("No {label} are available for this airport.")),
         weather_detail: None,
+        airport_info_airport_id: None,
         airspace_limit: None,
         session_action: None,
         flight_plan_row_action: None,
@@ -4472,6 +4490,7 @@ fn disabled_action_inner(
         detail_status: None,
         disabled_reason,
         weather_detail: None,
+        airport_info_airport_id: None,
         airspace_limit: None,
         session_action: None,
         flight_plan_row_action: None,
@@ -4494,6 +4513,7 @@ fn row_action(
         detail_status: None,
         disabled_reason: None,
         weather_detail: None,
+        airport_info_airport_id: None,
         airspace_limit: None,
         session_action: None,
         flight_plan_row_action,
@@ -4513,6 +4533,7 @@ fn session_action(id: &str, label: &str, action: MapSelectionSessionAction) -> M
         detail_status: None,
         disabled_reason: None,
         weather_detail: None,
+        airport_info_airport_id: None,
         airspace_limit: None,
         session_action,
         flight_plan_row_action: None,
@@ -4560,6 +4581,7 @@ fn airspace_limit_action_from_parts(
         detail_status: None,
         disabled_reason: None,
         weather_detail: None,
+        airport_info_airport_id: None,
         airspace_limit: Some(AirspaceLimitGlyph {
             upper,
             lower,
@@ -9975,6 +9997,16 @@ mod tests {
             .actions
             .iter()
             .any(|action| action.id == "elevation"));
+        let airport_info = result.categories[0].items[0]
+            .actions
+            .iter()
+            .find(|action| action.id == "airport_info")
+            .expect("airport info action");
+        assert!(airport_info.enabled);
+        assert_eq!(
+            airport_info.airport_info_airport_id.as_deref(),
+            Some("KSEA")
+        );
         assert_eq!(result.categories[1].id, "navaid");
         let spot = result.categories[1]
             .items

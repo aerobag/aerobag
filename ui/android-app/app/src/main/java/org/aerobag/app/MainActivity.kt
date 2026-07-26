@@ -207,6 +207,7 @@ import org.aerobag.app.domain.ChartAirportMenuEntry
 import org.aerobag.app.domain.ChartAsset
 import org.aerobag.app.domain.AirwayPresentationPlan
 import org.aerobag.app.domain.AirwaySuggestion
+import org.aerobag.app.domain.AirportInfoUiView
 import org.aerobag.app.domain.WaypointIdentifierSuggestion
 import org.aerobag.app.domain.CoreMapViewport
 import org.aerobag.app.domain.DerivedChartPageState
@@ -554,6 +555,7 @@ internal data class MapSelectionDetailModalState(
     val text: String? = null,
     val status: MapSelectionDetailStatus? = null,
     val weatherDetail: WeatherDetailUiView? = null,
+    val airportInfo: AirportInfoUiView? = null,
 )
 
 internal data class FlightPlanDisplayRow(

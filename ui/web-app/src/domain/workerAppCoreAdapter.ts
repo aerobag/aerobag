@@ -349,6 +349,7 @@ function workerBackedSession(client: AppCoreWorkerClient, sessionId: number, ini
     sessionSnapshotRefreshCompleted: () => call("sessionSnapshotRefreshCompleted"),
     pollSessionSnapshotRefresh: () => call("pollSessionSnapshotRefresh"),
     deriveChartPageState: () => call("deriveChartPageState"),
+    airportInfo: (...args) => call("airportInfo", args),
     insertWaypointAtFlightPlanRow: (...args) => updateSnapshot(call("insertWaypointAtFlightPlanRow", args)),
     suggestWaypointIdentifiersAtFlightPlanRow: (...args) => call("suggestWaypointIdentifiersAtFlightPlanRow", args),
     previewFlightPlanEntry: (...args) => call("previewFlightPlanEntry", args),

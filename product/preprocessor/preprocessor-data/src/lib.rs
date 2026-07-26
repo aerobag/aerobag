@@ -27,6 +27,7 @@ pub const INTERMEDIATE_SQLITE_BASENAME: &str = "intermediate-sqlite.db";
 
 const TABLES: &[&str] = &[
     "airports",
+    "airportcontacts",
     "airportfreq",
     "airportrunways",
     "nav",
@@ -242,6 +243,7 @@ fn setup_schema(conn: &Connection) -> anyhow::Result<()> {
     let base = "
 CREATE TABLE airports(LocationID Text,ARPLatitude float,ARPLongitude float,Type Text,FacilityName Text,Use Text,FSSPhone Text,Manager Text,ManagerPhone Text,ARPElevation Text,MagneticVariation Text,TrafficPatternAltitude Text,FuelTypes Text,Customs Text,Beacon Text,LightSchedule Text,SegCircle Text,ATCT Text,UNICOMFrequencies Text,CTAFFrequency Text,NonCommercialLandingFee Text,State Text, City Text, UNIQUE(LocationID));
 CREATE TABLE airport_aliases(alias_id Text, airport_id Text, UNIQUE(alias_id));
+CREATE TABLE airportcontacts(LocationID Text,Type Text, Phone Text);
 CREATE TABLE airportfreq(LocationID Text,Type Text, Freq Text);
 CREATE TABLE airportrunways(LocationID Text,Length Text,Width Text,Surface Text,LEIdent Text,HEIdent Text,LELatitude Text,HELatitude Text,LELongitude Text,HELongitude Text,LEElevation Text,HEElevation Text,LEHeadingT Text,HEHeading Text,LEDT Text,HEDT Text,LELights Text,HELights Text,LEILS Text,HEILS Text,LEVGSI Text,HEVGSI Text,LEPattern Text, HEPattern Text);
 CREATE TABLE nav(LocationID Text,ARPLatitude float,ARPLongitude float,Type Text,FacilityName Text,Variation TinyInt,Class Text,Hiwas Text,Elevation Text);
@@ -375,16 +377,23 @@ fn insert_airport_aliases(conn: &Connection, input_dir: &Path) -> anyhow::Result
     Ok(count)
 }
 
-fn insert_airport_freq_with_ids(
+#[derive(Debug, Default)]
+struct AirportCommunicationCounts {
+    frequencies: usize,
+    contacts: usize,
+}
+
+fn insert_airport_communications_with_ids(
     conn: &Connection,
     input_dir: &Path,
     airport_ids: &BTreeMap<String, String>,
-) -> anyhow::Result<usize> {
+) -> anyhow::Result<AirportCommunicationCounts> {
     let path = input_dir.join("TWR.txt");
     let text = read_text_lossy(&path)?;
-    let mut stmt = conn.prepare("INSERT INTO airportfreq VALUES (?1, ?2, ?3)")?;
+    let mut frequency_stmt = conn.prepare("INSERT INTO airportfreq VALUES (?1, ?2, ?3)")?;
+    let mut contact_stmt = conn.prepare("INSERT INTO airportcontacts VALUES (?1, ?2, ?3)")?;
     let mut id = String::new();
-    let mut count = 0;
+    let mut counts = AirportCommunicationCounts::default();
     for raw in text.lines() {
         if raw.starts_with("TWR1") {
             id = canonicalize_airport_id(field(raw, 4, 4), airport_ids);
@@ -398,17 +407,34 @@ fn insert_airport_freq_with_ids(
                     .iter()
                     .any(|needle| kind.contains(needle))
                 {
-                    stmt.execute(params![id, kind, freq])?;
-                    count += 1;
+                    frequency_stmt.execute(params![id, kind, freq])?;
+                    counts.frequencies += 1;
                 }
+            }
+        } else if raw.starts_with("TWR7") {
+            let satellite_id = canonicalize_airport_id(field(raw, 113, 4), airport_ids);
+            let freq = trim(field(raw, 8, 44)).replace(',', ";");
+            let kind = trim(field(raw, 52, 50)).replace(',', ";");
+            if !satellite_id.is_empty()
+                && !freq.is_empty()
+                && (kind.contains("APCH") || kind.contains("DEP"))
+            {
+                frequency_stmt.execute(params![satellite_id, kind, freq])?;
+                counts.frequencies += 1;
+            }
+        } else if raw.starts_with("TWR9") {
+            let phone = trim(field(raw, 312, 18)).replace(',', " ");
+            if !id.is_empty() && !phone.is_empty() {
+                contact_stmt.execute(params![id, "ATIS", phone])?;
+                counts.contacts += 1;
             }
         } else if raw.starts_with("TWR6") {
             let remark = trim(field(raw, 13, raw.len().saturating_sub(13))).replace(',', " ");
-            stmt.execute(params![id, "Remark", remark])?;
-            count += 1;
+            frequency_stmt.execute(params![id, "Remark", remark])?;
+            counts.frequencies += 1;
         }
     }
-    Ok(count)
+    Ok(counts)
 }
 
 fn insert_runways(conn: &Connection, input_dir: &Path) -> anyhow::Result<usize> {
@@ -1391,9 +1417,15 @@ pub fn build_data_package(request: &DataBuildRequest) -> anyhow::Result<DataBuil
         "airport_aliases".to_string(),
         insert_airport_aliases(&tx, &request.input_dir)?,
     );
+    let airport_communications =
+        insert_airport_communications_with_ids(&tx, &request.input_dir, &airport_ids)?;
     row_counts.insert(
         "airportfreq".to_string(),
-        insert_airport_freq_with_ids(&tx, &request.input_dir, &airport_ids)?,
+        airport_communications.frequencies,
+    );
+    row_counts.insert(
+        "airportcontacts".to_string(),
+        airport_communications.contacts,
     );
     row_counts.insert(
         "airportrunways".to_string(),
@@ -1547,6 +1579,22 @@ mod tests {
         let mut line = vec![b' '; 64];
         put_field(&mut line, 0, 4, "TWR6");
         put_field(&mut line, 13, remark.len(), remark);
+        String::from_utf8(line).unwrap()
+    }
+
+    fn build_twr7_line(faa: &str, freq: &str, kind: &str) -> String {
+        let mut line = vec![b' '; 530];
+        put_field(&mut line, 0, 4, "TWR7");
+        put_field(&mut line, 8, 44, freq);
+        put_field(&mut line, 52, 50, kind);
+        put_field(&mut line, 113, 4, faa);
+        String::from_utf8(line).unwrap()
+    }
+
+    fn build_twr9_line(phone: &str) -> String {
+        let mut line = vec![b' '; 340];
+        put_field(&mut line, 0, 4, "TWR9");
+        put_field(&mut line, 312, 18, phone);
         String::from_utf8(line).unwrap()
     }
 
@@ -1718,9 +1766,11 @@ mod tests {
         fs::write(
             input_dir.join("TWR.txt"),
             format!(
-                "{}\n{}\n{}\n",
+                "{}\n{}\n{}\n{}\n{}\n",
                 build_twr1_line("SEA", "26395.*A"),
                 build_twr3_line("118.00", "LCL/P"),
+                build_twr7_line("SEA", "119.20", "APCH/P DEP/P"),
+                build_twr9_line("206-555-1212"),
                 build_twr6_line("tower remark")
             ),
         )
@@ -1781,6 +1831,22 @@ mod tests {
             )
             .unwrap();
         assert_eq!(freq_id, "KSEA");
+        let approach_frequency: String = conn
+            .query_row(
+                "SELECT Freq FROM airportfreq WHERE Type LIKE '%APCH%'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(approach_frequency, "119.20");
+        let atis_phone: String = conn
+            .query_row(
+                "SELECT Phone FROM airportcontacts WHERE Type = 'ATIS'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(atis_phone, "206-555-1212");
 
         let runway_id: String = conn
             .query_row("SELECT LocationID FROM airportrunways LIMIT 1", [], |row| {

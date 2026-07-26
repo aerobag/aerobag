@@ -38,7 +38,11 @@
     "obstacle_danger": "#d83a2e",
     "obstacle_caution": "#ffd34d",
     "obstacle_muted": "#ffd34db8",
-    "obstacle_under": "#081218d1"
+    "obstacle_under": "#081218d1",
+    "airport_runway_paved": "#111111",
+    "airport_runway_turf": "#2f7d32",
+    "airport_runway_unpaved": "#875c34",
+    "airport_runway_water": "#2574b8"
   },
   "flight_plan_route": {
     "completed": "#8c9dad",

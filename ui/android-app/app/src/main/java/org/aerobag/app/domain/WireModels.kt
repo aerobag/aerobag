@@ -727,6 +727,7 @@ data class WireMapSelectionAction(
     val detail_status: WireMapSelectionDetailStatus? = null,
     val disabled_reason: String? = null,
     val weather_detail: WireWeatherDetailUiView? = null,
+    val airport_info_airport_id: String? = null,
     val airspace_limit: WireAirspaceLimitGlyph? = null,
     val session_action: String? = null,
     val flight_plan_row_action: WireMapSelectionFlightPlanRowAction? = null,
@@ -1121,6 +1122,51 @@ data class WireFlightPlanRowActionUiView(
     val dismiss_tray_on_success: Boolean = true,
     val navigation: WireFlightPlanRowNavigationAction? = null,
     val weather_detail: WireWeatherDetailUiView? = null,
+    val airport_info_airport_id: String? = null,
+)
+
+@Serializable
+data class WireAirportInfoUiView(
+    val airport_id: String,
+    val name: String,
+    val elevation_label: String,
+    val traffic_pattern_altitude_label: String,
+    val traffic_pattern_altitude_source: String,
+    val local_time_label: String,
+    val utc_time_label: String,
+    val time_zone_label: String,
+    val sunrise: WireAirportSolarEventUiView? = null,
+    val sunset: WireAirportSolarEventUiView? = null,
+    val communications: List<WireAirportCommunicationUiView> = emptyList(),
+    val runways: List<WireAirportRunwayUiView> = emptyList(),
+)
+
+@Serializable
+data class WireAirportSolarEventUiView(
+    val local_time_label: String,
+    val utc_time_label: String,
+    val next_in_label: String? = null,
+)
+
+@Serializable
+data class WireAirportCommunicationUiView(
+    val label: String,
+    val value: String,
+    val kind: String,
+)
+
+@Serializable
+data class WireAirportRunwayUiView(
+    val end_a_label: String,
+    val end_b_label: String,
+    val dimensions_label: String,
+    val surface_label: String,
+    val surface_color_key: String,
+    val diagram_end_a_x: Double,
+    val diagram_end_a_y: Double,
+    val diagram_end_b_x: Double,
+    val diagram_end_b_y: Double,
+    val diagram_width_ratio: Double,
 )
 
 @Serializable

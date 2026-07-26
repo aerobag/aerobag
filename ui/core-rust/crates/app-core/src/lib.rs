@@ -4,6 +4,7 @@
 
 use serde::{Deserialize, Serialize};
 
+pub mod airport_info;
 pub mod chart_page;
 pub mod content;
 pub mod data_status;
@@ -35,6 +36,9 @@ pub mod state;
 pub mod terrain;
 pub mod ui_work_scheduler;
 
+pub use airport_info::{
+    AirportCommunicationUiView, AirportInfoUiView, AirportRunwayUiView, AirportSolarEventUiView,
+};
 pub use chart_page::{
     airport_ids_from_plan, chart_page_airport_ids_from_plan, derive_chart_page_state_from_airports,
     derive_chart_page_state_from_collections, route_airport_ids_from_plan, ChartAssetRecord,

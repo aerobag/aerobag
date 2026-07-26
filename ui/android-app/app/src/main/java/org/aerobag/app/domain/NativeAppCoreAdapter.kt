@@ -306,6 +306,7 @@ data class MapSelectionAction(
     val detailStatus: MapSelectionDetailStatus?,
     val disabledReason: String?,
     val weatherDetail: WeatherDetailUiView?,
+    val airportInfoAirportId: String?,
     val airspaceLimit: AirspaceLimitGlyph?,
     val sessionAction: String?,
     val flightPlanRowAction: MapSelectionFlightPlanRowAction?,
@@ -778,6 +779,17 @@ class NativeUiSession internal constructor(
             buildJsonObject { put("kind", "chart_page_state") },
         )
         return json.decodeFromJsonElement<WireDerivedChartPageState>(result).toUi()
+    }
+
+    fun airportInfo(airportId: String, nowEpochMs: Long = System.currentTimeMillis()): AirportInfoUiView {
+        val result = queryFlightPlan(
+            buildJsonObject {
+                put("kind", "airport_info")
+                put("airport_id", airportId)
+                put("now_epoch_ms", nowEpochMs)
+            },
+        )
+        return json.decodeFromJsonElement<WireAirportInfoUiView>(result).toUi()
     }
 
     fun loadPlateProcedure(loadId: String): UiSessionSnapshot {
@@ -3001,6 +3013,7 @@ private fun WireMapSelectionAction.toUi() = MapSelectionAction(
     detailStatus = detail_status?.toUi(),
     disabledReason = disabled_reason,
     weatherDetail = weather_detail?.toUi(),
+    airportInfoAirportId = airport_info_airport_id,
     airspaceLimit = airspace_limit?.toUi(),
     sessionAction = session_action,
     flightPlanRowAction = flight_plan_row_action?.toUi(),
@@ -3466,6 +3479,7 @@ private fun WireFlightPlanRowActionUiView.toUi() = FlightPlanRowActionUiView(
     dismissTrayOnSuccess = dismiss_tray_on_success,
     navigation = navigation?.toUi(),
     weatherDetail = weather_detail?.toUi(),
+    airportInfoAirportId = airport_info_airport_id,
 )
 
 private fun FlightPlanRowActionUiView.toWire() = WireFlightPlanRowActionUiView(
@@ -3478,6 +3492,47 @@ private fun FlightPlanRowActionUiView.toWire() = WireFlightPlanRowActionUiView(
     dismiss_tray_on_success = dismissTrayOnSuccess,
     navigation = navigation?.toWire(),
     weather_detail = weatherDetail?.toWire(),
+    airport_info_airport_id = airportInfoAirportId,
+)
+
+private fun WireAirportInfoUiView.toUi() = AirportInfoUiView(
+    airportId = airport_id,
+    name = name,
+    elevationLabel = elevation_label,
+    trafficPatternAltitudeLabel = traffic_pattern_altitude_label,
+    trafficPatternAltitudeSource = traffic_pattern_altitude_source,
+    localTimeLabel = local_time_label,
+    utcTimeLabel = utc_time_label,
+    timeZoneLabel = time_zone_label,
+    sunrise = sunrise?.toUi(),
+    sunset = sunset?.toUi(),
+    communications = communications.map { it.toUi() },
+    runways = runways.map { it.toUi() },
+)
+
+private fun WireAirportSolarEventUiView.toUi() = AirportSolarEventUiView(
+    localTimeLabel = local_time_label,
+    utcTimeLabel = utc_time_label,
+    nextInLabel = next_in_label,
+)
+
+private fun WireAirportCommunicationUiView.toUi() = AirportCommunicationUiView(
+    label = label,
+    value = value,
+    kind = kind,
+)
+
+private fun WireAirportRunwayUiView.toUi() = AirportRunwayUiView(
+    endALabel = end_a_label,
+    endBLabel = end_b_label,
+    dimensionsLabel = dimensions_label,
+    surfaceLabel = surface_label,
+    surfaceColorKey = surface_color_key,
+    diagramEndAX = diagram_end_a_x,
+    diagramEndAY = diagram_end_a_y,
+    diagramEndBX = diagram_end_b_x,
+    diagramEndBY = diagram_end_b_y,
+    diagramWidthRatio = diagram_width_ratio,
 )
 
 private fun WireFlightPlanRowNavigationAction.toUi(): FlightPlanRowNavigationAction? =

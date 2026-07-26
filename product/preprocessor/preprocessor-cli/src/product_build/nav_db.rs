@@ -2723,6 +2723,7 @@ pub(super) fn build_nav_kv_navref_pairs(main_db_path: &Path) -> anyhow::Result<V
         .with_context(|| format!("failed to open {}", main_db_path.display()))?;
     let mut pairs = Vec::new();
     pairs.extend(build_nav_kv_airport_navref_pairs(&connection)?);
+    pairs.extend(build_nav_kv_airport_info_pairs(&connection)?);
     pairs.extend(build_nav_kv_navaid_navref_pairs(&connection)?);
     pairs.extend(build_nav_kv_arinc_navaid_navref_pairs(&connection)?);
     pairs.extend(build_nav_kv_fix_navref_pairs(&connection)?);
@@ -2933,6 +2934,431 @@ pub(super) fn build_nav_kv_airport_navref_pairs(
         &airport_ids,
     )?);
     Ok(pairs)
+}
+
+#[derive(Debug)]
+struct AirportRunwayInfoRecord {
+    length_ft: Option<f64>,
+    width_ft: Option<f64>,
+    surface: String,
+    end_a_ident: String,
+    end_b_ident: String,
+    end_a_heading_true_deg: Option<f64>,
+    end_b_heading_true_deg: Option<f64>,
+    end_a_right_pattern: bool,
+    end_b_right_pattern: bool,
+}
+
+fn build_nav_kv_airport_info_pairs(
+    connection: &rusqlite::Connection,
+) -> anyhow::Result<Vec<NavKvPair>> {
+    let frequencies = airport_frequencies_by_airport(connection)?;
+    let contacts = airport_contacts_by_airport(connection)?;
+    let weather = airport_weather_communications_by_airport(connection)?;
+    let runways = airport_info_runways_by_airport(connection)?;
+    let timezone_finder = tzf_rs::DefaultFinder::new();
+    let mut stmt = connection.prepare(
+        "
+        SELECT trim(LocationID), trim(FacilityName),
+               CAST(ARPLatitude AS REAL), CAST(ARPLongitude AS REAL),
+               trim(ARPElevation), trim(TrafficPatternAltitude),
+               trim(UNICOMFrequencies), trim(CTAFFrequency)
+        FROM airports
+        WHERE trim(LocationID) <> ''
+        ",
+    )?;
+    let rows = stmt.query_map([], |row| {
+        Ok((
+            row.get::<_, String>(0)?,
+            row.get::<_, String>(1)?,
+            row.get::<_, f64>(2)?,
+            row.get::<_, f64>(3)?,
+            row.get::<_, String>(4)?,
+            row.get::<_, String>(5)?,
+            row.get::<_, String>(6)?,
+            row.get::<_, String>(7)?,
+        ))
+    })?;
+    let mut pairs = Vec::new();
+    for row in rows {
+        let (id, name, lat, lon, elevation, pattern_altitude, unicom, ctaf) = row?;
+        let airport_key = id.trim().to_ascii_uppercase();
+        let mut communications = Vec::new();
+        let ctaf = normalize_airport_frequency(&ctaf);
+        if !ctaf.is_empty() {
+            communications.push(serde_json::json!({"label": "CTAF", "frequency": ctaf}));
+        }
+        let unicom = normalize_airport_frequency(&unicom);
+        if !unicom.is_empty() {
+            communications.push(serde_json::json!({"label": "Unicom", "frequency": unicom}));
+        }
+        communications.extend(frequencies.get(&airport_key).into_iter().flatten().cloned());
+        communications.extend(
+            weather
+                .get(&airport_key)
+                .into_iter()
+                .flatten()
+                .filter(|entry| entry.get("frequency").is_some())
+                .cloned(),
+        );
+        dedupe_airport_communications(&mut communications);
+
+        let airport_runways = runways
+            .get(&airport_key)
+            .into_iter()
+            .flatten()
+            .map(|runway| {
+                serde_json::json!({
+                    "length_ft": runway.length_ft,
+                    "width_ft": runway.width_ft,
+                    "surface": runway.surface,
+                    "end_a": {
+                        "ident": runway.end_a_ident,
+                        "heading_true_deg": runway.end_a_heading_true_deg,
+                        "right_pattern": runway.end_a_right_pattern,
+                    },
+                    "end_b": {
+                        "ident": runway.end_b_ident,
+                        "heading_true_deg": runway.end_b_heading_true_deg,
+                        "right_pattern": runway.end_b_right_pattern,
+                    },
+                })
+            })
+            .collect::<Vec<_>>();
+        let mut airport_contacts = contacts.get(&airport_key).cloned().unwrap_or_default();
+        airport_contacts.extend(
+            weather
+                .get(&airport_key)
+                .into_iter()
+                .flatten()
+                .filter_map(|entry| {
+                    entry.get("phone").and_then(|phone| {
+                        phone.as_str().map(|phone| {
+                            serde_json::json!({
+                                "label": entry.get("label").and_then(|value| value.as_str()).unwrap_or("Weather"),
+                                "phone": phone,
+                            })
+                        })
+                    })
+                }),
+        );
+        dedupe_airport_contacts(&mut airport_contacts);
+        let time_zone = timezone_finder.get_tz_name(lon, lat);
+        pairs.push(json_pair(
+            format!("airport/info/{}", had_upper_key_component(&id)),
+            &serde_json::json!({
+                "schema_version": 1,
+                "airport_id": airport_key,
+                "name": name,
+                "latitude": lat,
+                "longitude": lon,
+                "time_zone": time_zone,
+                "elevation_msl_ft": parse_optional_float(&elevation),
+                "traffic_pattern_altitude_msl_ft": parse_optional_float(&pattern_altitude),
+                "communications": communications,
+                "contacts": airport_contacts,
+                "runways": airport_runways,
+            }),
+            "airport info",
+        )?);
+    }
+    Ok(pairs)
+}
+
+fn airport_frequencies_by_airport(
+    connection: &rusqlite::Connection,
+) -> anyhow::Result<BTreeMap<String, Vec<serde_json::Value>>> {
+    let mut stmt = connection.prepare(
+        "
+        SELECT upper(trim(LocationID)), trim(Type), trim(Freq)
+        FROM airportfreq
+        WHERE trim(Type) <> 'Remark' AND trim(Freq) <> ''
+        ",
+    )?;
+    let rows = stmt.query_map([], |row| {
+        Ok((
+            row.get::<_, String>(0)?,
+            row.get::<_, String>(1)?,
+            row.get::<_, String>(2)?,
+        ))
+    })?;
+    let mut by_airport = BTreeMap::<String, Vec<serde_json::Value>>::new();
+    for row in rows {
+        let (airport_id, kind, frequency) = row?;
+        let frequency = normalize_airport_frequency(&frequency);
+        if frequency.is_empty() {
+            continue;
+        }
+        let label = airport_frequency_label(&kind);
+        by_airport
+            .entry(airport_id)
+            .or_default()
+            .push(serde_json::json!({
+                "label": label,
+                "frequency": frequency,
+            }));
+    }
+    for values in by_airport.values_mut() {
+        values.sort_by_key(|value| {
+            airport_communication_rank(
+                value
+                    .get("label")
+                    .and_then(|label| label.as_str())
+                    .unwrap_or_default(),
+            )
+        });
+    }
+    Ok(by_airport)
+}
+
+fn airport_contacts_by_airport(
+    connection: &rusqlite::Connection,
+) -> anyhow::Result<BTreeMap<String, Vec<serde_json::Value>>> {
+    let mut stmt = connection.prepare(
+        "
+        SELECT upper(trim(LocationID)), trim(Type), trim(Phone)
+        FROM airportcontacts
+        WHERE trim(Phone) <> ''
+        ",
+    )?;
+    let rows = stmt.query_map([], |row| {
+        Ok((
+            row.get::<_, String>(0)?,
+            row.get::<_, String>(1)?,
+            row.get::<_, String>(2)?,
+        ))
+    })?;
+    let mut by_airport = BTreeMap::<String, Vec<serde_json::Value>>::new();
+    for row in rows {
+        let (airport_id, label, phone) = row?;
+        by_airport
+            .entry(airport_id)
+            .or_default()
+            .push(serde_json::json!({"label": label, "phone": phone}));
+    }
+    Ok(by_airport)
+}
+
+fn airport_weather_communications_by_airport(
+    connection: &rusqlite::Connection,
+) -> anyhow::Result<BTreeMap<String, Vec<serde_json::Value>>> {
+    let mut stmt = connection.prepare(
+        "
+        SELECT upper(trim(LocationID)), trim(Type),
+               trim(Frequency1), trim(Frequency2),
+               trim(Telephone1), trim(Telephone2)
+        FROM awos
+        WHERE upper(trim(Status)) = 'Y'
+        ",
+    )?;
+    let rows = stmt.query_map([], |row| {
+        Ok((
+            row.get::<_, String>(0)?,
+            row.get::<_, String>(1)?,
+            row.get::<_, String>(2)?,
+            row.get::<_, String>(3)?,
+            row.get::<_, String>(4)?,
+            row.get::<_, String>(5)?,
+        ))
+    })?;
+    let mut by_airport = BTreeMap::<String, Vec<serde_json::Value>>::new();
+    for row in rows {
+        let (airport_id, kind, frequency1, frequency2, phone1, phone2) = row?;
+        for frequency in [frequency1, frequency2]
+            .into_iter()
+            .map(|value| normalize_airport_frequency(&value))
+            .filter(|value| !value.is_empty())
+        {
+            by_airport
+                .entry(airport_id.clone())
+                .or_default()
+                .push(serde_json::json!({"label": kind, "frequency": frequency}));
+        }
+        for phone in [phone1, phone2]
+            .into_iter()
+            .filter(|value| !value.is_empty())
+        {
+            by_airport
+                .entry(airport_id.clone())
+                .or_default()
+                .push(serde_json::json!({"label": kind, "phone": phone}));
+        }
+    }
+    Ok(by_airport)
+}
+
+fn airport_info_runways_by_airport(
+    connection: &rusqlite::Connection,
+) -> anyhow::Result<BTreeMap<String, Vec<AirportRunwayInfoRecord>>> {
+    let mut stmt = connection.prepare(
+        "
+        SELECT upper(trim(LocationID)), trim(Length), trim(Width), trim(Surface),
+               trim(LEIdent), trim(HEIdent), trim(LEHeadingT), trim(HEHeading),
+               trim(LEPattern), trim(HEPattern)
+        FROM airportrunways
+        WHERE trim(LEIdent) <> '' OR trim(HEIdent) <> ''
+        ",
+    )?;
+    let rows = stmt.query_map([], |row| {
+        Ok((
+            row.get::<_, String>(0)?,
+            row.get::<_, String>(1)?,
+            row.get::<_, String>(2)?,
+            row.get::<_, String>(3)?,
+            row.get::<_, String>(4)?,
+            row.get::<_, String>(5)?,
+            row.get::<_, String>(6)?,
+            row.get::<_, String>(7)?,
+            row.get::<_, String>(8)?,
+            row.get::<_, String>(9)?,
+        ))
+    })?;
+    let mut by_airport = BTreeMap::<String, Vec<AirportRunwayInfoRecord>>::new();
+    for row in rows {
+        let (
+            airport_id,
+            length,
+            width,
+            surface,
+            end_a_ident,
+            end_b_ident,
+            end_a_heading,
+            end_b_heading,
+            end_a_pattern,
+            end_b_pattern,
+        ) = row?;
+        by_airport
+            .entry(airport_id)
+            .or_default()
+            .push(AirportRunwayInfoRecord {
+                length_ft: parse_optional_float(&length),
+                width_ft: parse_optional_float(&width),
+                surface,
+                end_a_ident,
+                end_b_ident,
+                end_a_heading_true_deg: parse_optional_float(&end_a_heading),
+                end_b_heading_true_deg: parse_optional_float(&end_b_heading),
+                end_a_right_pattern: end_a_pattern.eq_ignore_ascii_case("Y"),
+                end_b_right_pattern: end_b_pattern.eq_ignore_ascii_case("Y"),
+            });
+    }
+    for values in by_airport.values_mut() {
+        values.sort_by(|left, right| {
+            right
+                .length_ft
+                .unwrap_or_default()
+                .total_cmp(&left.length_ft.unwrap_or_default())
+        });
+    }
+    Ok(by_airport)
+}
+
+fn airport_frequency_label(kind: &str) -> &'static str {
+    let kind = kind.to_ascii_uppercase();
+    if kind.contains("ATIS") {
+        "ATIS"
+    } else if kind.contains("GND") {
+        "Ground"
+    } else if kind.contains("LCL") {
+        "Tower"
+    } else if kind.contains("CD") {
+        "Clearance"
+    } else if kind.contains("APCH") && kind.contains("DEP") {
+        "Approach/Departure"
+    } else if kind.contains("APCH") {
+        "Approach"
+    } else if kind.contains("DEP") {
+        "Departure"
+    } else {
+        "Other"
+    }
+}
+
+fn airport_communication_rank(label: &str) -> usize {
+    match label {
+        "ATIS" => 0,
+        "Tower" => 1,
+        "Ground" => 2,
+        "Unicom" => 3,
+        "CTAF" => 4,
+        "Clearance" => 5,
+        "Approach" | "Approach/Departure" => 6,
+        "Departure" => 7,
+        _ => 8,
+    }
+}
+
+fn normalize_airport_frequency(value: &str) -> String {
+    let mut frequencies = Vec::new();
+    for token in value.split(|character: char| !character.is_ascii_digit() && character != '.') {
+        let Ok(frequency) = token.parse::<f64>() else {
+            continue;
+        };
+        if !((118.0..=137.0).contains(&frequency) || (225.0..=400.0).contains(&frequency)) {
+            continue;
+        }
+        let mut formatted = format!("{frequency:.3}");
+        while formatted.ends_with('0') && !formatted.ends_with(".0") {
+            formatted.pop();
+        }
+        if !frequencies.contains(&formatted) {
+            frequencies.push(formatted);
+        }
+    }
+    frequencies.join(" / ")
+}
+
+fn dedupe_airport_communications(values: &mut Vec<serde_json::Value>) {
+    let mut grouped = BTreeMap::<String, (String, Vec<String>)>::new();
+    for value in values.drain(..) {
+        let label = value
+            .get("label")
+            .and_then(|label| label.as_str())
+            .unwrap_or("Other")
+            .to_string();
+        let entry = grouped
+            .entry(label.to_ascii_uppercase())
+            .or_insert_with(|| (label, Vec::new()));
+        for frequency in value
+            .get("frequency")
+            .and_then(|frequency| frequency.as_str())
+            .unwrap_or_default()
+            .split(" / ")
+        {
+            let frequency = frequency.trim();
+            if !frequency.is_empty() && !entry.1.iter().any(|known| known == frequency) {
+                entry.1.push(frequency.to_string());
+            }
+        }
+    }
+    values.extend(grouped.into_values().filter_map(|(label, frequencies)| {
+        (!frequencies.is_empty()).then(|| {
+            serde_json::json!({
+                "label": label,
+                "frequency": frequencies.join(" / "),
+            })
+        })
+    }));
+    values.sort_by_key(|value| {
+        airport_communication_rank(
+            value
+                .get("label")
+                .and_then(|label| label.as_str())
+                .unwrap_or_default(),
+        )
+    });
+}
+
+fn dedupe_airport_contacts(values: &mut Vec<serde_json::Value>) {
+    let mut seen = BTreeSet::new();
+    values.retain(|value| {
+        let key = value
+            .get("phone")
+            .and_then(|phone| phone.as_str())
+            .unwrap_or_default()
+            .to_string();
+        !key.is_empty() && seen.insert(key)
+    });
 }
 
 pub(super) fn metar_important_stations_pair(
@@ -5473,6 +5899,88 @@ mod tests {
                 },
             })
         );
+    }
+
+    #[test]
+    fn airport_info_pairs_are_self_contained_and_timezone_aware() {
+        let connection = rusqlite::Connection::open_in_memory().expect("sqlite");
+        connection
+            .execute_batch(
+                r#"
+                CREATE TABLE airports (
+                    LocationID TEXT,
+                    FacilityName TEXT,
+                    ARPLatitude REAL,
+                    ARPLongitude REAL,
+                    ARPElevation TEXT,
+                    TrafficPatternAltitude TEXT,
+                    UNICOMFrequencies TEXT,
+                    CTAFFrequency TEXT
+                );
+                CREATE TABLE airportfreq (LocationID TEXT, Type TEXT, Freq TEXT);
+                CREATE TABLE airportcontacts (LocationID TEXT, Type TEXT, Phone TEXT);
+                CREATE TABLE awos (
+                    LocationID TEXT,
+                    Type TEXT,
+                    Status TEXT,
+                    Frequency1 TEXT,
+                    Frequency2 TEXT,
+                    Telephone1 TEXT,
+                    Telephone2 TEXT
+                );
+                CREATE TABLE airportrunways (
+                    LocationID TEXT,
+                    Length TEXT,
+                    Width TEXT,
+                    Surface TEXT,
+                    LEIdent TEXT,
+                    HEIdent TEXT,
+                    LEHeadingT TEXT,
+                    HEHeading TEXT,
+                    LEPattern TEXT,
+                    HEPattern TEXT
+                );
+                INSERT INTO airports VALUES
+                    ('KRNT', 'Renton Municipal', 47.493, -122.216, '32', '1218', '122.95', '124.7');
+                INSERT INTO airportfreq VALUES
+                    ('KRNT', 'ATIS', '126.95'),
+                    ('KRNT', 'GND/P', '121.6'),
+                    ('KRNT', 'APCH/P DEP/P', '119.2 ;017-079 SEA RWY 34'),
+                    ('KRNT', 'APCH/P DEP/P', '119.2 ;028-160 SEA RWY 16');
+                INSERT INTO airportcontacts VALUES ('KRNT', 'ATIS', '425-555-1212');
+                INSERT INTO awos VALUES
+                    ('KRNT', 'ASOS', 'Y', '126.95', '', '425-255-6080', '');
+                INSERT INTO airportrunways VALUES
+                    ('KRNT', '3200', '35', 'TURF-F', '08', '26', '084', '264', 'Y', 'N'),
+                    ('KRNT', '5382', '200', 'ASPH-CONC-G', '16', '34', '174', '354', 'N', 'Y');
+                "#,
+            )
+            .expect("schema");
+
+        let pairs = build_nav_kv_airport_info_pairs(&connection).expect("airport info pairs");
+        let pair = pairs
+            .iter()
+            .find(|pair| pair.key == "airport/info/KRNT")
+            .expect("KRNT airport info");
+        let value: serde_json::Value =
+            serde_json::from_slice(&pair.value).expect("airport info json");
+
+        assert_eq!(value["time_zone"], "America/Los_Angeles");
+        assert_eq!(value["traffic_pattern_altitude_msl_ft"], 1218.0);
+        assert_eq!(value["runways"][0]["length_ft"], 5382.0);
+        assert_eq!(value["runways"][0]["end_b"]["right_pattern"], true);
+        let approach = value["communications"]
+            .as_array()
+            .expect("communications")
+            .iter()
+            .find(|entry| entry["label"] == "Approach/Departure")
+            .expect("approach communications");
+        assert_eq!(approach["frequency"], "119.2");
+        assert!(value["contacts"]
+            .as_array()
+            .expect("contacts")
+            .iter()
+            .any(|entry| entry["phone"] == "425-555-1212"));
     }
 
     #[test]

@@ -4754,6 +4754,10 @@ pub enum FlightPlanSessionCommand {
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum FlightPlanSessionQuery {
     ChartPageState,
+    AirportInfo {
+        airport_id: String,
+        now_epoch_ms: i64,
+    },
     SuggestWaypointIdentifiersAtRow {
         row_uid: String,
         before: bool,
@@ -4826,6 +4830,10 @@ pub fn query_flight_plan_in_session(
 ) -> AppResult<HadOperationOutcome> {
     match query {
         FlightPlanSessionQuery::ChartPageState => chart_page_state_in_session(handle),
+        FlightPlanSessionQuery::AirportInfo {
+            airport_id,
+            now_epoch_ms,
+        } => airport_info_in_session(handle, airport_id, now_epoch_ms),
         FlightPlanSessionQuery::SuggestWaypointIdentifiersAtRow {
             row_uid,
             before,
@@ -4847,6 +4855,36 @@ pub fn query_flight_plan_in_session(
             describe_plate_procedure_loads_in_session(handle, plate_id)
         }
     }
+}
+
+fn airport_info_in_session(
+    handle: u32,
+    airport_id: String,
+    now_epoch_ms: i64,
+) -> AppResult<HadOperationOutcome> {
+    let sessions = lock_sessions();
+    let session = session_ref(&sessions, handle)?;
+    let view = match crate::airport_info::airport_info(
+        session_nav_kv_store(session)?,
+        &airport_id,
+        utc_from_epoch_ms(now_epoch_ms),
+    ) {
+        Ok(view) => view,
+        Err(HadReadError::NeedPages(pages)) => {
+            return Ok(HadOperationOutcome::NeedResources {
+                resources: nav_kv_page_resources(pages),
+            })
+        }
+        Err(HadReadError::Fatal(message)) => {
+            return Err(AppError {
+                kind: AppErrorKind::InvalidCatalog,
+                message,
+            })
+        }
+    };
+    Ok(HadOperationOutcome::complete(
+        serde_json::to_value(view).map_err(internal_json_error)?,
+    ))
 }
 
 fn chart_page_state_in_session(handle: u32) -> AppResult<HadOperationOutcome> {
@@ -8792,6 +8830,13 @@ fn materialize_map_selection_in_session(
     if let Err(err) = ensure_weather_station_airport_aliases_loaded(session) {
         return had_read_error_to_map_selection_materialization(err);
     }
+    let weather_station_airport_aliases = session
+        .weather_station_airport_aliases
+        .as_ref()
+        .ok_or_else(|| AppError {
+            kind: AppErrorKind::Internal,
+            message: "weather station airport aliases did not load".to_string(),
+        })?;
     let plan = session.app_state.active_plan.as_ref();
     let store = session_nav_kv_store(session)?;
     let mut missing_pages = Vec::new();
@@ -8843,10 +8888,7 @@ fn materialize_map_selection_in_session(
         session.metar_payload.as_ref(),
         session.taf_payload.as_ref(),
         session.airport_notam_index.as_ref(),
-        session
-            .weather_station_airport_aliases
-            .as_ref()
-            .expect("weather station airport aliases loaded"),
+        weather_station_airport_aliases,
         &offline_region_records,
         &session.airspace_feature_cache,
         session.tfr_payload.as_ref(),
@@ -10984,6 +11026,12 @@ fn enrich_flight_plan_weather_actions(session: &UiSession, active_plan: &mut Fli
             if action.id == FlightPlanRowActionId::Weather {
                 action.enabled = weather_detail.is_some();
                 action.weather_detail = weather_detail.clone();
+            } else if action.id == FlightPlanRowActionId::WaypointInfo {
+                action.enabled = airport_id.is_some();
+                action.disabled_reason = airport_id
+                    .is_none()
+                    .then(|| "Airport info is available for airport waypoints only.".to_string());
+                action.airport_info_airport_id = airport_id.clone();
             }
         }
     }
@@ -15457,6 +15505,15 @@ mod tests {
         assert!(!detail.taf_age_warning);
         assert_eq!(detail.notams.len(), 1);
         assert_eq!(detail.notams[0].text, "RWY 18 CLSD");
+        let airport_info = crate::planning::flight_plan_row_actions(row)
+            .find(|action| action.id == FlightPlanRowActionId::WaypointInfo)
+            .expect("airport info action");
+        assert!(airport_info.enabled);
+        assert_eq!(airport_info.label, "Airport Info");
+        assert_eq!(
+            airport_info.airport_info_airport_id.as_deref(),
+            Some("KAAA")
+        );
     }
 
     #[test]
@@ -21422,6 +21479,7 @@ mod tests {
                         detail_status: None,
                         disabled_reason: None,
                         weather_detail: None,
+                        airport_info_airport_id: None,
                         airspace_limit: None,
                         session_action: Some("direct-to-action".to_string()),
                         flight_plan_row_action: None,

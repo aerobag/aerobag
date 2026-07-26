@@ -1563,6 +1563,135 @@ button {
   max-height: min(calc(var(--thumb) * 11.5), calc(var(--app-height) - var(--safe-top) - var(--safe-bottom) - calc(var(--thumb) * 0.5)));
 }
 
+.airportInfoModal {
+  width: min(calc(var(--thumb) * 10.5), calc(100vw - var(--safe-left) - var(--safe-right) - calc(var(--thumb) * 0.5)));
+  max-height: min(calc(var(--thumb) * 11.5), calc(var(--app-height) - var(--safe-top) - var(--safe-bottom) - calc(var(--thumb) * 0.5)));
+}
+
+.airportInfoHeader {
+  margin-bottom: calc(var(--thumb-gap) * 0.9);
+}
+
+.airportInfoName {
+  color: var(--theme-panel-muted);
+  font-size: calc(var(--thumb) * 0.16);
+  font-weight: 800;
+}
+
+.airportInfoSection {
+  padding: calc(var(--thumb) * 0.14);
+  border-top: 1px solid color-mix(in srgb, var(--theme-panel-border) 75%, transparent);
+}
+
+.airportInfoSection:first-of-type {
+  border-top: 0;
+}
+
+.airportInfoSection h2 {
+  margin: 0 0 calc(var(--thumb-gap) * 0.65);
+  color: var(--theme-panel-muted);
+  font-size: calc(var(--thumb) * 0.16);
+  font-weight: 900;
+  letter-spacing: 0;
+  text-transform: uppercase;
+}
+
+.airportInfoFacts {
+  display: grid;
+  gap: calc(var(--thumb-gap) * 0.38);
+}
+
+.airportInfoFact {
+  display: grid;
+  grid-template-columns: minmax(calc(var(--thumb) * 2.7), 0.8fr) minmax(0, 1.2fr);
+  gap: calc(var(--thumb-gap) * 0.7);
+  align-items: baseline;
+  min-width: 0;
+}
+
+.airportInfoFactLabel {
+  color: var(--theme-panel-muted);
+  font-size: calc(var(--thumb) * 0.16);
+  font-weight: 800;
+}
+
+.airportInfoFactValue {
+  min-width: 0;
+  color: var(--theme-panel-fg);
+  font-size: calc(var(--thumb) * 0.18);
+  font-weight: 900;
+  overflow-wrap: anywhere;
+}
+
+.airportInfoFactValue a {
+  color: var(--theme-class-b-d-blue);
+}
+
+.airportInfoNextEvent {
+  display: inline-block;
+  margin-left: calc(var(--thumb-gap) * 0.65);
+  color: var(--theme-class-b-d-blue);
+  white-space: nowrap;
+}
+
+.airportRunwayList {
+  display: grid;
+  gap: calc(var(--thumb-gap) * 0.8);
+}
+
+.airportRunwayRow {
+  display: grid;
+  grid-template-columns: calc(var(--thumb) * 2.3) minmax(0, 1fr);
+  gap: calc(var(--thumb-gap) * 0.8);
+  align-items: center;
+  min-height: calc(var(--thumb) * 2.3);
+}
+
+.airportRunwayDiagram {
+  width: calc(var(--thumb) * 2.3);
+  height: calc(var(--thumb) * 2.3);
+  border: 1px solid var(--theme-panel-border);
+  background: color-mix(in srgb, var(--theme-map-selection-display-bg) 72%, white);
+}
+
+.airportRunwayScaleCircle {
+  fill: none;
+  stroke: color-mix(in srgb, var(--theme-panel-muted) 28%, transparent);
+  stroke-width: 0.008;
+}
+
+.airportRunwayNorth {
+  fill: none;
+  stroke: var(--theme-panel-muted);
+  stroke-width: 0.012;
+}
+
+.airportRunwayText {
+  display: grid;
+  gap: calc(var(--thumb-gap) * 0.22);
+  min-width: 0;
+  color: var(--theme-panel-fg);
+  font-size: calc(var(--thumb) * 0.18);
+  font-weight: 800;
+  line-height: 1.18;
+}
+
+@media (max-width: 620px) {
+  .airportInfoFact {
+    grid-template-columns: 1fr;
+    gap: 0;
+  }
+
+  .airportRunwayRow {
+    grid-template-columns: calc(var(--thumb) * 2) minmax(0, 1fr);
+  }
+
+  .airportRunwayDiagram {
+    width: calc(var(--thumb) * 2);
+    height: calc(var(--thumb) * 2);
+  }
+}
+
 .hoverWeatherDetailModal {
   left: auto;
   top: auto;

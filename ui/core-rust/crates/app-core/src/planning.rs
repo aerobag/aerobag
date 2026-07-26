@@ -1015,6 +1015,8 @@ pub struct FlightPlanRowActionUiView {
     pub navigation: Option<FlightPlanRowNavigationAction>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub weather_detail: Option<WeatherDetailUiView>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub airport_info_airport_id: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -2949,6 +2951,7 @@ fn action(id: FlightPlanRowActionId, enabled: bool) -> FlightPlanRowActionUiView
         dismiss_tray_on_success: true,
         navigation: None,
         weather_detail: None,
+        airport_info_airport_id: None,
     }
 }
 
@@ -2964,6 +2967,7 @@ fn core_session_action(id: FlightPlanRowActionId, enabled: bool) -> FlightPlanRo
         dismiss_tray_on_success: true,
         navigation: None,
         weather_detail: None,
+        airport_info_airport_id: None,
     }
 }
 
@@ -2991,6 +2995,7 @@ fn move_action(id: FlightPlanRowActionId, enabled: bool) -> FlightPlanRowActionU
         dismiss_tray_on_success: false,
         navigation: None,
         weather_detail: None,
+        airport_info_airport_id: None,
     }
 }
 
@@ -3005,7 +3010,9 @@ fn row_action_disabled_reason(id: &FlightPlanRowActionId, enabled: bool) -> Opti
             FlightPlanRowActionId::InsertAfter => "Choose a top-level route row to insert after.",
             FlightPlanRowActionId::MoveUp => "This route element is already at the top.",
             FlightPlanRowActionId::MoveDown => "This route element is already at the bottom.",
-            FlightPlanRowActionId::WaypointInfo => "Waypoint info is not available yet.",
+            FlightPlanRowActionId::WaypointInfo => {
+                "Airport info is available for airport waypoints only."
+            }
             FlightPlanRowActionId::Weather => {
                 "No METAR, TAF, or airport NOTAM is available for this station."
             }
@@ -3161,7 +3168,7 @@ fn action_label(id: &FlightPlanRowActionId) -> &'static str {
         FlightPlanRowActionId::InsertAfter => "Insert After",
         FlightPlanRowActionId::MoveUp => "Move Up",
         FlightPlanRowActionId::MoveDown => "Move Down",
-        FlightPlanRowActionId::WaypointInfo => "Waypoint Info",
+        FlightPlanRowActionId::WaypointInfo => "Airport Info",
         FlightPlanRowActionId::Weather => "WX",
         FlightPlanRowActionId::AddAirway => "Add Airway",
         FlightPlanRowActionId::SelectProcedure => "Select Procedure",

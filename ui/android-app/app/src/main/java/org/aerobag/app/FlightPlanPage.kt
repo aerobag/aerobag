@@ -258,6 +258,7 @@ import org.aerobag.app.domain.VisibleMapFeature
 import org.aerobag.app.domain.VisibleMetarFeature
 import org.aerobag.app.domain.VisiblePirepFeature
 import org.aerobag.app.domain.WeatherDetailUiView
+import org.aerobag.app.domain.AirportInfoUiView
 import org.aerobag.app.domain.applyPinchGesture
 import org.aerobag.app.domain.clampZoom
 import org.aerobag.app.domain.createInitialImageViewport
@@ -327,6 +328,11 @@ import kotlin.math.min
 import kotlin.math.pow
 import kotlin.math.sin
 
+private data class AirportInfoModalState(
+    val airportId: String,
+    val detail: AirportInfoUiView? = null,
+    val error: String? = null,
+)
 
 @Composable
 internal fun FlightPlanPage(
@@ -357,6 +363,8 @@ internal fun FlightPlanPage(
     var procedurePicker by remember { mutableStateOf<AndroidProcedurePickerState?>(null) }
     var airportInsert by remember { mutableStateOf<AndroidAirportInsertState?>(null) }
     var weatherModal by remember { mutableStateOf<WeatherDetailUiView?>(null) }
+    var airportInfoModal by remember { mutableStateOf<AirportInfoModalState?>(null) }
+    val airportInfoScope = rememberCoroutineScope()
     var routeEntryText by remember { mutableStateOf("") }
     var routeEntryPreview by remember { mutableStateOf(emptyFlightPlanEntryPreview()) }
     var routeEntryLoading by remember { mutableStateOf(false) }
@@ -1227,6 +1235,32 @@ internal fun FlightPlanPage(
                                             closePanels()
                                             return@MenuPanelRow
                                         }
+                                        action.airportInfoAirportId?.let { airportId ->
+                                            airportInfoModal = AirportInfoModalState(airportId)
+                                            closePanels()
+                                            airportInfoScope.launch {
+                                                runCatching {
+                                                    withContext(Dispatchers.IO) {
+                                                        uiSession.airportInfo(airportId)
+                                                    }
+                                                }.onSuccess { detail ->
+                                                    if (airportInfoModal?.airportId == airportId) {
+                                                        airportInfoModal = AirportInfoModalState(
+                                                            airportId = airportId,
+                                                            detail = detail,
+                                                        )
+                                                    }
+                                                }.onFailure { error ->
+                                                    if (airportInfoModal?.airportId == airportId) {
+                                                        airportInfoModal = AirportInfoModalState(
+                                                            airportId = airportId,
+                                                            error = error.message ?: error.toString(),
+                                                        )
+                                                    }
+                                                }
+                                            }
+                                            return@MenuPanelRow
+                                        }
                                         if (action.execution == "core_session") {
                                             val snapshot = applySessionCommand("performFlightPlanRowAction") {
                                                 uiSession.performFlightPlanRowAction(selectedRow.id, action.uid)
@@ -1328,6 +1362,33 @@ internal fun FlightPlanPage(
                             .align(Alignment.Center)
                             .zIndex(OverlayPlaneModal),
                     )
+                }
+            }
+        }
+        airportInfoModal?.let { state ->
+            Popup(
+                onDismissRequest = { airportInfoModal = null },
+                properties = PopupProperties(focusable = true, clippingEnabled = false),
+            ) {
+                Box(modifier = Modifier.fillMaxSize()) {
+                    Scrim { airportInfoModal = null }
+                    if (state.detail != null) {
+                        AirportInfoModal(
+                            detail = state.detail,
+                            modifier = Modifier
+                                .align(Alignment.Center)
+                                .zIndex(OverlayPlaneModal),
+                        )
+                    } else {
+                        MapSelectionDetailModal(
+                            title = state.airportId,
+                            text = state.error?.let { "Airport info unavailable: $it" }
+                                ?: "Loading airport info...",
+                            modifier = Modifier
+                                .align(Alignment.Center)
+                                .zIndex(OverlayPlaneModal),
+                        )
+                    }
                 }
             }
         }

@@ -62,6 +62,10 @@ data class AviationTheme(
     val obstacleCaution: Color,
     val obstacleMuted: Color,
     val obstacleUnder: Color,
+    val airportRunwayPaved: Color,
+    val airportRunwayTurf: Color,
+    val airportRunwayUnpaved: Color,
+    val airportRunwayWater: Color,
 )
 
 data class FlightPlanRouteTheme(
@@ -128,6 +132,10 @@ private data class WireAviationTheme(
     val obstacle_caution: String,
     val obstacle_muted: String,
     val obstacle_under: String,
+    val airport_runway_paved: String,
+    val airport_runway_turf: String,
+    val airport_runway_unpaved: String,
+    val airport_runway_water: String,
 )
 
 @Serializable
@@ -189,6 +197,10 @@ object UiThemeLoader {
                 obstacleCaution = wire.aviation.obstacle_caution.toColor(),
                 obstacleMuted = wire.aviation.obstacle_muted.toColor(),
                 obstacleUnder = wire.aviation.obstacle_under.toColor(),
+                airportRunwayPaved = wire.aviation.airport_runway_paved.toColor(),
+                airportRunwayTurf = wire.aviation.airport_runway_turf.toColor(),
+                airportRunwayUnpaved = wire.aviation.airport_runway_unpaved.toColor(),
+                airportRunwayWater = wire.aviation.airport_runway_water.toColor(),
             ),
             flightPlanRoute = FlightPlanRouteTheme(
                 completed = wire.flight_plan_route.completed.toColor(),

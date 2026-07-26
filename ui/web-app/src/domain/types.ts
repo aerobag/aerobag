@@ -256,6 +256,7 @@ export type FlightPlanRowActionUiView = {
   dismiss_tray_on_success?: boolean;
   navigation?: FlightPlanRowNavigationAction | null;
   weather_detail?: WeatherDetailUiView | null;
+  airport_info_airport_id?: string | null;
 };
 
 export type FlightPlanRowNavigationAction =

@@ -15,6 +15,7 @@ import android.graphics.Paint
 import android.graphics.Path as AndroidPath
 import android.graphics.RectF
 import android.graphics.Typeface
+import android.net.Uri
 import android.os.Build
 import android.os.Bundle
 import android.os.SystemClock
@@ -282,6 +283,8 @@ import org.aerobag.app.domain.VisibleMetarFeature
 import org.aerobag.app.domain.VisiblePirepFeature
 import org.aerobag.app.domain.WeatherDetailUiView
 import org.aerobag.app.domain.AirportNotamUiView
+import org.aerobag.app.domain.AirportInfoUiView
+import org.aerobag.app.domain.AirportRunwayUiView
 import org.aerobag.app.domain.applyPinchGesture
 import org.aerobag.app.domain.clampZoom
 import org.aerobag.app.domain.createInitialImageViewport
@@ -1557,6 +1560,7 @@ internal fun MapExplorerPage(
     }
     val latestVisibleTileKeysState = rememberUpdatedState(visibleTileKeys)
     val rasterTileBitmapLoaderScope = rememberCoroutineScope()
+    val airportInfoScope = rememberCoroutineScope()
     val rasterTileBitmapLoader = remember(context.applicationContext, rasterTileBitmapLoaderScope, navDataEpoch) {
         RasterTileBitmapLoader(context.applicationContext, rasterTileBitmapLoaderScope)
     }
@@ -2756,7 +2760,14 @@ internal fun MapExplorerPage(
                 Box(modifier = Modifier.fillMaxSize()) {
                     Scrim { mapSelection = null }
                     if (selection.detailModal != null) {
-                        selection.detailModal.weatherDetail?.let { weatherDetail ->
+                        selection.detailModal.airportInfo?.let { airportInfo ->
+                            AirportInfoModal(
+                                detail = airportInfo,
+                                modifier = Modifier
+                                    .align(Alignment.Center)
+                                    .zIndex(OverlayPlaneModal),
+                            )
+                        } ?: selection.detailModal.weatherDetail?.let { weatherDetail ->
                             WeatherDetailModal(
                                 detail = weatherDetail,
                                 modifier = Modifier
@@ -2815,6 +2826,57 @@ internal fun MapExplorerPage(
                                             weatherDetail = detail,
                                         ),
                                     )
+                                    return@MapSelectionTray
+                                }
+                                action.airportInfoAirportId?.let { airportId ->
+                                    mapSelection = selection.copy(
+                                        selectedItem = item,
+                                        detailModal = MapSelectionDetailModalState(
+                                            title = airportId,
+                                            text = "Loading airport info...",
+                                        ),
+                                    )
+                                    airportInfoScope.launch {
+                                        runCatching {
+                                            withContext(Dispatchers.IO) {
+                                                uiSession.airportInfo(airportId)
+                                            }
+                                        }.onSuccess { detail ->
+                                            mapSelection = mapSelection
+                                                ?.let { current ->
+                                                    if (
+                                                        current.detailModal?.title == airportId &&
+                                                        current.detailModal.text == "Loading airport info..."
+                                                    ) {
+                                                        current.copy(
+                                                            detailModal = MapSelectionDetailModalState(
+                                                                title = airportId,
+                                                                airportInfo = detail,
+                                                            ),
+                                                        )
+                                                    } else {
+                                                        current
+                                                    }
+                                                }
+                                        }.onFailure { error ->
+                                            mapSelection = mapSelection
+                                                ?.let { current ->
+                                                    if (
+                                                        current.detailModal?.title == airportId &&
+                                                        current.detailModal.text == "Loading airport info..."
+                                                    ) {
+                                                        current.copy(
+                                                            detailModal = MapSelectionDetailModalState(
+                                                                title = airportId,
+                                                                text = "Airport info unavailable: ${error.message ?: error}",
+                                                            ),
+                                                        )
+                                                    } else {
+                                                        current
+                                                    }
+                                                }
+                                        }
+                                    }
                                     return@MapSelectionTray
                                 }
                                 action.detailText?.let { detail ->
@@ -4035,6 +4097,216 @@ internal fun WeatherDetailModal(
             )
             AirportNotamSection(notams = detail.notams)
         }
+    }
+}
+
+@Composable
+internal fun AirportInfoModal(
+    detail: AirportInfoUiView,
+    modifier: Modifier = Modifier,
+) {
+    val context = LocalContext.current
+    val uiTheme = LocalAerobagUiTheme.current
+    Surface(
+        modifier = modifier
+            .widthIn(max = ThumbSize * 10.5f)
+            .heightIn(max = ThumbSize * 11.5f),
+        shape = RoundedCornerShape(ThumbRadius + 4.dp),
+        color = uiTheme.controls.panelBg.copy(alpha = 0.98f),
+        contentColor = uiTheme.controls.panelFg,
+        shadowElevation = 8.dp,
+        border = BorderStroke(1.dp, uiTheme.controls.panelBorder.copy(alpha = 0.85f)),
+    ) {
+        Column(
+            modifier = Modifier
+                .verticalScroll(rememberScrollState())
+                .padding(ThumbSize * 0.18f),
+            verticalArrangement = Arrangement.spacedBy(ThumbGap * 0.65f),
+        ) {
+            Text(
+                text = detail.airportId.uppercase(),
+                style = MaterialTheme.typography.labelMedium.copy(fontWeight = FontWeight.Black),
+                color = uiTheme.controls.panelFg,
+            )
+            Text(
+                text = detail.name,
+                style = MaterialTheme.typography.labelSmall.copy(fontWeight = FontWeight.Bold),
+                color = uiTheme.controls.panelMuted,
+            )
+            AirportInfoFact("Airport elevation", detail.elevationLabel)
+            AirportInfoFact(
+                "Traffic pattern altitude",
+                "${detail.trafficPatternAltitudeLabel} ${detail.trafficPatternAltitudeSource}",
+            )
+            AirportInfoFact("Time at airport", "${detail.localTimeLabel}  ${detail.utcTimeLabel}")
+            AirportInfoFact("Time zone", detail.timeZoneLabel)
+            detail.sunrise?.let { event ->
+                AirportInfoFact(
+                    "Sunrise",
+                    "${event.localTimeLabel}  ${event.utcTimeLabel}",
+                    event.nextInLabel,
+                )
+            }
+            detail.sunset?.let { event ->
+                AirportInfoFact(
+                    "Sunset",
+                    "${event.localTimeLabel}  ${event.utcTimeLabel}",
+                    event.nextInLabel,
+                )
+            }
+            if (detail.communications.isNotEmpty()) {
+                AirportInfoSectionTitle("Communications")
+                detail.communications.forEach { communication ->
+                    AirportInfoFact(
+                        label = communication.label,
+                        value = communication.value,
+                        onClick = if (communication.kind == "phone") {
+                            {
+                                context.startActivity(
+                                    Intent(
+                                        Intent.ACTION_DIAL,
+                                        Uri.parse("tel:${communication.value}"),
+                                    ),
+                                )
+                            }
+                        } else {
+                            null
+                        },
+                    )
+                }
+            }
+            if (detail.runways.isNotEmpty()) {
+                AirportInfoSectionTitle("Runways")
+                detail.runways.forEach { runway ->
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .heightIn(min = ThumbSize * 2.25f),
+                        horizontalArrangement = Arrangement.spacedBy(ThumbGap * 0.8f),
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        AirportRunwayDiagram(runway)
+                        Column(
+                            modifier = Modifier.weight(1f),
+                            verticalArrangement = Arrangement.spacedBy(ThumbGap * 0.18f),
+                        ) {
+                            Text("${runway.endALabel} /", fontWeight = FontWeight.Bold)
+                            Text(runway.endBLabel, fontWeight = FontWeight.Bold)
+                            Text(runway.dimensionsLabel, fontWeight = FontWeight.Bold)
+                            Text(runway.surfaceLabel, fontWeight = FontWeight.Bold)
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun AirportInfoSectionTitle(label: String) {
+    val uiTheme = LocalAerobagUiTheme.current
+    Text(
+        text = label.uppercase(),
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(top = ThumbGap * 0.55f),
+        style = MaterialTheme.typography.labelSmall.copy(fontWeight = FontWeight.Black),
+        color = uiTheme.controls.panelMuted,
+    )
+}
+
+@Composable
+private fun AirportInfoFact(
+    label: String,
+    value: String,
+    nextInLabel: String? = null,
+    onClick: (() -> Unit)? = null,
+) {
+    val uiTheme = LocalAerobagUiTheme.current
+    Row(
+        modifier = Modifier.fillMaxWidth(),
+        horizontalArrangement = Arrangement.spacedBy(ThumbGap * 0.7f),
+        verticalAlignment = Alignment.Top,
+    ) {
+        Text(
+            text = label,
+            modifier = Modifier.weight(0.8f),
+            style = MaterialTheme.typography.labelSmall.copy(fontWeight = FontWeight.Bold),
+            color = uiTheme.controls.panelMuted,
+        )
+        Row(
+            modifier = Modifier.weight(1.2f),
+            horizontalArrangement = Arrangement.spacedBy(ThumbGap * 0.45f),
+        ) {
+            Text(
+                text = value,
+                modifier = if (onClick == null) {
+                    Modifier.weight(1f)
+                } else {
+                    Modifier
+                        .weight(1f)
+                        .clickable(onClick = onClick)
+                },
+                style = MaterialTheme.typography.bodyMedium.copy(fontWeight = FontWeight.Bold),
+                color = if (onClick == null) {
+                    uiTheme.controls.panelFg
+                } else {
+                    uiTheme.aviation.classBDBlue
+                },
+            )
+            nextInLabel?.let {
+                Text(
+                    text = "◷ $it",
+                    style = MaterialTheme.typography.bodyMedium.copy(fontWeight = FontWeight.Black),
+                    color = uiTheme.aviation.classBDBlue,
+                )
+            }
+        }
+    }
+}
+
+@Composable
+private fun AirportRunwayDiagram(runway: AirportRunwayUiView) {
+    val uiTheme = LocalAerobagUiTheme.current
+    val runwayColor = when (runway.surfaceColorKey) {
+        "airport_runway_turf" -> uiTheme.aviation.airportRunwayTurf
+        "airport_runway_unpaved" -> uiTheme.aviation.airportRunwayUnpaved
+        "airport_runway_water" -> uiTheme.aviation.airportRunwayWater
+        else -> uiTheme.aviation.airportRunwayPaved
+    }
+    Canvas(
+        modifier = Modifier
+            .size(ThumbSize * 2.25f)
+            .border(1.dp, uiTheme.controls.panelBorder)
+            .background(uiTheme.controls.mapSelectionDisplayBg.copy(alpha = 0.72f)),
+    ) {
+        val center = Offset(size.width / 2f, size.height / 2f)
+        val unit = size.minDimension * 0.84f
+        val point = { x: Double, y: Double ->
+            Offset(
+                center.x + x.toFloat() * unit,
+                center.y + y.toFloat() * unit,
+            )
+        }
+        drawCircle(
+            color = uiTheme.controls.panelMuted.copy(alpha = 0.25f),
+            radius = unit / 2f,
+            center = center,
+            style = Stroke(width = 1.dp.toPx()),
+        )
+        drawLine(
+            color = uiTheme.controls.panelMuted,
+            start = Offset(center.x, center.y - unit * 0.54f),
+            end = Offset(center.x, center.y - unit * 0.46f),
+            strokeWidth = 1.5.dp.toPx(),
+        )
+        drawLine(
+            color = runwayColor,
+            start = point(runway.diagramEndAX, runway.diagramEndAY),
+            end = point(runway.diagramEndBX, runway.diagramEndBY),
+            strokeWidth = (runway.diagramWidthRatio.toFloat() * unit).coerceAtLeast(2.dp.toPx()),
+            cap = StrokeCap.Butt,
+        )
     }
 }
 

@@ -72,6 +72,7 @@ import {
   resolveLiveFeedResourceUrl,
   type AdapterBackendKind,
   type AppCoreAdapter,
+  type AirportInfoUiView,
   type DerivedChartPageState,
   type DebugFlagId,
   type MapLayerId,
@@ -878,6 +879,10 @@ type UiThemeJson = {
     obstacle_caution: string;
     obstacle_muted: string;
     obstacle_under: string;
+    airport_runway_paved: string;
+    airport_runway_turf: string;
+    airport_runway_unpaved: string;
+    airport_runway_water: string;
   };
   flight_plan_route: {
     completed: string;
@@ -3135,6 +3140,10 @@ export default function App() {
         "--theme-obstacle-caution": loadedUiTheme.aviation.obstacle_caution,
         "--theme-obstacle-muted": loadedUiTheme.aviation.obstacle_muted,
         "--theme-obstacle-under": loadedUiTheme.aviation.obstacle_under,
+        "--theme-airport-runway-paved": loadedUiTheme.aviation.airport_runway_paved,
+        "--theme-airport-runway-turf": loadedUiTheme.aviation.airport_runway_turf,
+        "--theme-airport-runway-unpaved": loadedUiTheme.aviation.airport_runway_unpaved,
+        "--theme-airport-runway-water": loadedUiTheme.aviation.airport_runway_water,
       }) as CSSProperties,
     [],
   );
@@ -3782,7 +3791,7 @@ function MapPage(props: {
     point: ScreenPoint;
     result: MapSelectionQueryResult;
     selectedItem: MapSelectionItem | null;
-    detailModal: { kind: "text"; title: string; text: string; status?: { text: string; color_key: string } | null } | { kind: "weather"; detail: WeatherDetailUiView } | null;
+    detailModal: { kind: "text"; title: string; text: string; status?: { text: string; color_key: string } | null } | { kind: "weather"; detail: WeatherDetailUiView } | { kind: "airport"; detail: AirportInfoUiView } | null;
   } | null>(null);
   const [hoverWeather, setHoverWeather] = useState<{
     stationId: string;
@@ -3790,6 +3799,7 @@ function MapPage(props: {
     detail: WeatherDetailUiView;
   } | null>(null);
   const hoverWeatherRequestSerialRef = useRef(0);
+  const airportInfoRequestSerialRef = useRef(0);
   const { toast: disabledActionToast, show: showDisabledAction } = useDisabledActionToast();
   const firstVisualReadyRef = useRef(false);
   const statusControlDockLowered = shouldLowerStatusControlDock(surfaceSize.width, dataStatusState.boxes.length > 0);
@@ -6133,6 +6143,8 @@ function MapPage(props: {
             <TrayScrim ariaLabel="Close map selection" onClose={() => setMapSelection(null)} />
             {mapSelection.detailModal?.kind === "weather" ? (
               <WeatherDetailModal detail={mapSelection.detailModal.detail} />
+            ) : mapSelection.detailModal?.kind === "airport" ? (
+              <AirportInfoModal detail={mapSelection.detailModal.detail} />
             ) : mapSelection.detailModal ? (
               <MapSelectionDetailModal
                 title={mapSelection.detailModal.title}
@@ -6163,6 +6175,48 @@ function MapPage(props: {
                 onDisabledAction={showDisabledAction}
                 onSelectAction={async (item, action) => {
                   if (!appCoreAdapter) {
+                    return;
+                  }
+                  if (action.airport_info_airport_id) {
+                    if (!uiSession) {
+                      return;
+                    }
+                    const airportId = action.airport_info_airport_id;
+                    const requestSerial = ++airportInfoRequestSerialRef.current;
+                    setMapSelection((current) => current ? {
+                      ...current,
+                      detailModal: {
+                        kind: "text",
+                        title: airportId,
+                        text: "Loading airport info...",
+                      },
+                    } : current);
+                    try {
+                      const detail = await uiSession.airportInfo(airportId);
+                      setMapSelection((current) =>
+                        airportInfoRequestSerialRef.current === requestSerial
+                          && current?.detailModal?.kind === "text"
+                          && current.detailModal.title === airportId
+                          ? {
+                              ...current,
+                              detailModal: { kind: "airport", detail },
+                            }
+                          : current);
+                    } catch (error) {
+                      setMapSelection((current) =>
+                        airportInfoRequestSerialRef.current === requestSerial
+                          && current?.detailModal?.kind === "text"
+                          && current.detailModal.title === airportId
+                          ? {
+                              ...current,
+                              detailModal: {
+                                kind: "text",
+                                title: airportId,
+                                text: `Airport info unavailable: ${errorMessage(error)}`,
+                              },
+                            }
+                          : current);
+                    }
                     return;
                   }
                   if (action.navigation?.kind === "open_plate_target") {
@@ -7494,6 +7548,11 @@ function FlightPlanPage(props: {
   const [selectedWaypointUid, setSelectedWaypointUid] = useState<string | null>(null);
   const [selectedWaypointAnchor, setSelectedWaypointAnchor] = useState<{ top: number; height: number } | null>(null);
   const [flightPlanWeatherModal, setFlightPlanWeatherModal] = useState<WeatherDetailUiView | null>(null);
+  const [flightPlanAirportInfoModal, setFlightPlanAirportInfoModal] = useState<{
+    airportId: string;
+    detail: AirportInfoUiView | null;
+    error: string | null;
+  } | null>(null);
   const [airwayPicker, setAirwayPicker] = useState<{
     loading: boolean;
     error: string | null;
@@ -7699,7 +7758,7 @@ function FlightPlanPage(props: {
       setAirportInsert(null);
     };
 
-    const actionForUi = (action: { id: string; uid: string; label: string; enabled: boolean; disabled_reason?: string | null; execution?: string; dismiss_tray_on_success?: boolean; navigation?: FlightPlanRowNavigationAction | null; weather_detail?: WeatherDetailUiView | null }) => {
+    const actionForUi = (action: { id: string; uid: string; label: string; enabled: boolean; disabled_reason?: string | null; execution?: string; dismiss_tray_on_success?: boolean; navigation?: FlightPlanRowNavigationAction | null; weather_detail?: WeatherDetailUiView | null; airport_info_airport_id?: string | null }) => {
       return {
         id: action.id,
         uid: action.uid,
@@ -7716,6 +7775,21 @@ function FlightPlanPage(props: {
           if (action.weather_detail) {
             setFlightPlanWeatherModal(action.weather_detail);
             closeTray();
+            return;
+          }
+          if (action.airport_info_airport_id) {
+            const airportId = action.airport_info_airport_id;
+            closeTray();
+            setFlightPlanAirportInfoModal({ airportId, detail: null, error: null });
+            void props.uiSession?.airportInfo(airportId).then((detail) => {
+              setFlightPlanAirportInfoModal((current) =>
+                current?.airportId === airportId ? { ...current, detail } : current);
+            }).catch((error) => {
+              setFlightPlanAirportInfoModal((current) =>
+                current?.airportId === airportId
+                  ? { ...current, error: errorMessage(error) }
+                  : current);
+            });
             return;
           }
           if (action.execution === "core_session") {
@@ -7823,7 +7897,7 @@ function FlightPlanPage(props: {
         },
       };
     };
-    return (selectedRow.actionMatrix as Array<Array<{ id: string; uid: string; label: string; enabled: boolean; disabled_reason?: string | null; execution?: string; dismiss_tray_on_success?: boolean; navigation?: FlightPlanRowNavigationAction | null; weather_detail?: WeatherDetailUiView | null }>>).map((row) => row.map(actionForUi));
+    return (selectedRow.actionMatrix as Array<Array<{ id: string; uid: string; label: string; enabled: boolean; disabled_reason?: string | null; execution?: string; dismiss_tray_on_success?: boolean; navigation?: FlightPlanRowNavigationAction | null; weather_detail?: WeatherDetailUiView | null; airport_info_airport_id?: string | null }>>).map((row) => row.map(actionForUi));
   }, [props, selectedRow]);
   const rowActions = useMemo(() => rowActionRows.flat(), [rowActionRows]);
 
@@ -8734,6 +8808,21 @@ function FlightPlanPage(props: {
           <WeatherDetailModal detail={flightPlanWeatherModal} />
         </>
       ) : null}
+      {flightPlanAirportInfoModal ? (
+        <>
+          <TrayScrim ariaLabel="Close airport info" onClose={() => setFlightPlanAirportInfoModal(null)} />
+          {flightPlanAirportInfoModal.detail ? (
+            <AirportInfoModal detail={flightPlanAirportInfoModal.detail} />
+          ) : (
+            <MapSelectionDetailModal
+              title={flightPlanAirportInfoModal.airportId}
+              text={flightPlanAirportInfoModal.error
+                ? `Airport info unavailable: ${flightPlanAirportInfoModal.error}`
+                : "Loading airport info..."}
+            />
+          )}
+        </>
+      ) : null}
     </section>
   );
 }
@@ -9387,6 +9476,126 @@ function WeatherDetailModal(props: { detail: WeatherDetailUiView; className?: st
         <AirportNotamSection notams={detail.notams ?? []} />
       </div>
     </section>
+  );
+}
+
+function AirportInfoModal(props: { detail: AirportInfoUiView }) {
+  const { detail } = props;
+  return (
+    <section
+      className="mapSelectionDetailModal airportInfoModal"
+      aria-label={`Airport info ${detail.airport_id}`}
+      onPointerDown={stopPointer}
+      onPointerMove={stopPointer}
+      onPointerUp={stopPointer}
+      onPointerCancel={stopPointer}
+      onWheel={stopWheel}
+      onClick={stopClick}
+      onDoubleClick={stopDoubleClick}
+    >
+      <header className="airportInfoHeader">
+        <div className="mapSelectionDetailTitle">{detail.airport_id}</div>
+        <div className="airportInfoName">{detail.name}</div>
+      </header>
+      <section className="airportInfoSection">
+        <div className="airportInfoFacts">
+          <AirportInfoFact label="Airport elevation" value={detail.elevation_label} />
+          <AirportInfoFact
+            label="Traffic pattern altitude"
+            value={`${detail.traffic_pattern_altitude_label} ${detail.traffic_pattern_altitude_source}`}
+          />
+          <AirportInfoFact label="Time at airport" value={`${detail.local_time_label}  ${detail.utc_time_label}`} />
+          <AirportInfoFact label="Time zone" value={detail.time_zone_label} />
+          {detail.sunrise ? (
+            <AirportInfoFact
+              label="Sunrise"
+              value={`${detail.sunrise.local_time_label}  ${detail.sunrise.utc_time_label}`}
+              nextIn={detail.sunrise.next_in_label}
+            />
+          ) : null}
+          {detail.sunset ? (
+            <AirportInfoFact
+              label="Sunset"
+              value={`${detail.sunset.local_time_label}  ${detail.sunset.utc_time_label}`}
+              nextIn={detail.sunset.next_in_label}
+            />
+          ) : null}
+        </div>
+      </section>
+      {detail.communications.length > 0 ? (
+        <section className="airportInfoSection">
+          <h2>Communications</h2>
+          <div className="airportInfoFacts">
+            {detail.communications.map((communication, index) => (
+              <AirportInfoFact
+                key={`${communication.kind}:${communication.label}:${communication.value}:${index}`}
+                label={communication.label}
+                value={communication.kind === "phone"
+                  ? <a href={`tel:${communication.value}`}>{communication.value}</a>
+                  : communication.value}
+              />
+            ))}
+          </div>
+        </section>
+      ) : null}
+      {detail.runways.length > 0 ? (
+        <section className="airportInfoSection">
+          <h2>Runways</h2>
+          <div className="airportRunwayList">
+            {detail.runways.map((runway, index) => (
+              <article className="airportRunwayRow" key={`${runway.end_a_label}:${runway.end_b_label}:${index}`}>
+                <RunwayDiagram runway={runway} />
+                <div className="airportRunwayText">
+                  <div>{runway.end_a_label} /</div>
+                  <div>{runway.end_b_label}</div>
+                  <div>{runway.dimensions_label}</div>
+                  <div>{runway.surface_label}</div>
+                </div>
+              </article>
+            ))}
+          </div>
+        </section>
+      ) : null}
+    </section>
+  );
+}
+
+function AirportInfoFact(props: {
+  label: string;
+  value: ReactNode;
+  nextIn?: string | null;
+}) {
+  return (
+    <div className="airportInfoFact">
+      <div className="airportInfoFactLabel">{props.label}</div>
+      <div className="airportInfoFactValue">
+        {props.value}
+        {props.nextIn ? <span className="airportInfoNextEvent">◷ {props.nextIn}</span> : null}
+      </div>
+    </div>
+  );
+}
+
+function RunwayDiagram(props: { runway: AirportInfoUiView["runways"][number] }) {
+  const { runway } = props;
+  const dx = runway.diagram_end_b_x - runway.diagram_end_a_x;
+  const dy = runway.diagram_end_b_y - runway.diagram_end_a_y;
+  const length = Math.hypot(dx, dy);
+  const halfWidth = Math.max(runway.diagram_width_ratio / 2, 0.012);
+  const px = length > 0 ? -dy / length * halfWidth : halfWidth;
+  const py = length > 0 ? dx / length * halfWidth : 0;
+  const points = [
+    [runway.diagram_end_a_x + px, runway.diagram_end_a_y + py],
+    [runway.diagram_end_b_x + px, runway.diagram_end_b_y + py],
+    [runway.diagram_end_b_x - px, runway.diagram_end_b_y - py],
+    [runway.diagram_end_a_x - px, runway.diagram_end_a_y - py],
+  ].map(([x, y]) => `${x},${y}`).join(" ");
+  return (
+    <svg className="airportRunwayDiagram" viewBox="-0.58 -0.58 1.16 1.16" role="img" aria-label="North-up runway diagram">
+      <circle cx="0" cy="0" r="0.5" className="airportRunwayScaleCircle" />
+      <path d="M 0 -0.54 L 0 -0.46 M -0.025 -0.5 L 0 -0.54 L 0.025 -0.5" className="airportRunwayNorth" />
+      <polygon points={points} fill={aviationThemeColor(runway.surface_color_key)} />
+    </svg>
   );
 }
 

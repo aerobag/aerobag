@@ -571,6 +571,7 @@ export type MapSelectionAction = {
   detail_status?: MapSelectionDetailStatus | null;
   disabled_reason?: string | null;
   weather_detail?: WeatherDetailUiView | null;
+  airport_info_airport_id?: string | null;
   airspace_limit?: AirspaceLimitGlyph | null;
   session_action?: string | null;
   flight_plan_row_action?: {
@@ -578,6 +579,46 @@ export type MapSelectionAction = {
     action_uid: string;
   } | null;
   navigation?: MapSelectionNavigationAction | null;
+};
+
+export type AirportInfoUiView = {
+  airport_id: string;
+  name: string;
+  elevation_label: string;
+  traffic_pattern_altitude_label: string;
+  traffic_pattern_altitude_source: "published" | "derived";
+  local_time_label: string;
+  utc_time_label: string;
+  time_zone_label: string;
+  sunrise?: AirportSolarEventUiView | null;
+  sunset?: AirportSolarEventUiView | null;
+  communications: AirportCommunicationUiView[];
+  runways: AirportRunwayUiView[];
+};
+
+export type AirportSolarEventUiView = {
+  local_time_label: string;
+  utc_time_label: string;
+  next_in_label?: string | null;
+};
+
+export type AirportCommunicationUiView = {
+  label: string;
+  value: string;
+  kind: "frequency" | "phone";
+};
+
+export type AirportRunwayUiView = {
+  end_a_label: string;
+  end_b_label: string;
+  dimensions_label: string;
+  surface_label: string;
+  surface_color_key: string;
+  diagram_end_a_x: number;
+  diagram_end_a_y: number;
+  diagram_end_b_x: number;
+  diagram_end_b_y: number;
+  diagram_width_ratio: number;
 };
 
 export type MapSelectionDetailStatus = {
@@ -730,6 +771,7 @@ export interface UiSession {
   sessionSnapshotRefreshCompleted(): Promise<SessionSnapshotRefreshDecision>;
   pollSessionSnapshotRefresh(): Promise<SessionSnapshotRefreshDecision>;
   deriveChartPageState(): Promise<DerivedChartPageState>;
+  airportInfo(airportId: string, nowEpochMs?: number): Promise<AirportInfoUiView>;
   insertWaypointAtFlightPlanRow(rowUid: string, before: boolean, waypoint: NavRef): Promise<UiSessionSnapshot>;
   suggestWaypointIdentifiersAtFlightPlanRow(rowUid: string, before: boolean, query: string, limit?: number): Promise<WaypointIdentifierSuggestion[]>;
   previewFlightPlanEntry(input: string): Promise<FlightPlanEntryPreview>;
@@ -1259,6 +1301,13 @@ export class WasmAppCoreAdapter implements AppCoreAdapter {
         ),
       deriveChartPageState: async () => {
         return queryFlightPlan<DerivedChartPageState>({ kind: "chart_page_state" });
+      },
+      airportInfo: async (airportId, nowEpochMs = Date.now()) => {
+        return queryFlightPlan<AirportInfoUiView>({
+          kind: "airport_info",
+          airport_id: airportId,
+          now_epoch_ms: Math.trunc(nowEpochMs),
+        });
       },
       performMapSelectionAction: async (action) => {
         return runFlightPlanMutation(

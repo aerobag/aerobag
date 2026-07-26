@@ -219,6 +219,47 @@ data class FlightPlanRowActionUiView(
     val dismissTrayOnSuccess: Boolean = true,
     val navigation: FlightPlanRowNavigationAction? = null,
     val weatherDetail: WeatherDetailUiView? = null,
+    val airportInfoAirportId: String? = null,
+)
+
+data class AirportInfoUiView(
+    val airportId: String,
+    val name: String,
+    val elevationLabel: String,
+    val trafficPatternAltitudeLabel: String,
+    val trafficPatternAltitudeSource: String,
+    val localTimeLabel: String,
+    val utcTimeLabel: String,
+    val timeZoneLabel: String,
+    val sunrise: AirportSolarEventUiView?,
+    val sunset: AirportSolarEventUiView?,
+    val communications: List<AirportCommunicationUiView>,
+    val runways: List<AirportRunwayUiView>,
+)
+
+data class AirportSolarEventUiView(
+    val localTimeLabel: String,
+    val utcTimeLabel: String,
+    val nextInLabel: String?,
+)
+
+data class AirportCommunicationUiView(
+    val label: String,
+    val value: String,
+    val kind: String,
+)
+
+data class AirportRunwayUiView(
+    val endALabel: String,
+    val endBLabel: String,
+    val dimensionsLabel: String,
+    val surfaceLabel: String,
+    val surfaceColorKey: String,
+    val diagramEndAX: Double,
+    val diagramEndAY: Double,
+    val diagramEndBX: Double,
+    val diagramEndBY: Double,
+    val diagramWidthRatio: Double,
 )
 
 data class WeatherDetailUiView(

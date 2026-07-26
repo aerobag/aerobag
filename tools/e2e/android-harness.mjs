@@ -290,7 +290,6 @@ export async function launchFreshAndroidApp(serial, { clearUiPrefs = true, clear
     adbBestEffort(serial, ["shell", "run-as", ANDROID_PACKAGE, "rm", "files/core-settings-v1.json"]);
   }
   adb(serial, ["shell", "am", "start", "-W", "-n", ANDROID_ACTIVITY]);
-  wakeAndUnlock(serial);
   await waitForNode(serial, (node) => node.package === ANDROID_PACKAGE, 90000, "Aerobag app visible");
 }
 

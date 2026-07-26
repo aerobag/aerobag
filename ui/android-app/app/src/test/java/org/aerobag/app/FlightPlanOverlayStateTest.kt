@@ -35,6 +35,7 @@ class FlightPlanOverlayStateTest {
             sunrise = null,
             sunset = null,
             communications = emptyList(),
+            runwayDiagramComplex = false,
             runways = emptyList(),
         )
 

@@ -827,7 +827,7 @@ internal fun FlightPlanPage(
                                 error = routeEntryError,
                                 submitting = routeEntrySubmitting,
                                 onTextChange = { value ->
-                                    routeEntryText = value.uppercase()
+                                    routeEntryText = value
                                     routeEntryError = null
                                 },
                                 onFocusChange = { focused -> routeEntryFocused = focused },

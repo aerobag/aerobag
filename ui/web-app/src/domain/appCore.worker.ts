@@ -3,6 +3,7 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
 import { loadWasmAdapterOnThisThread, type AppCoreAdapter, type UiInvalidation, type UiSession } from "./appCoreAdapter";
+import type { WorkerCreateUiSessionRequest } from "./appCoreWorkerProtocol";
 import { debugLog, observeDebugLog, setBrowserInstanceId, type DebugLogRecord } from "./debugLog";
 
 type WorkerCallTarget =
@@ -167,9 +168,13 @@ async function callAdapterMethod(method: string, args: unknown[]): Promise<unkno
   const adapter = await ensureAdapter();
   debugLog("app_core.worker.adapter_ready", { method });
   if (method === "createUiSession") {
-    const sessionArgs = args.slice(0, 4);
-    setWorkerCoreSettingsJson(typeof args[4] === "string" ? args[4] : null);
-    const session = await callMethod<UiSession>(adapter, method, sessionArgs);
+    const request = args[0] as WorkerCreateUiSessionRequest;
+    setWorkerCoreSettingsJson(request.settingsJson);
+    const session = await adapter.createUiSession(
+      request.recentAirportIds,
+      request.selectedAirportId,
+      request.selectedChartId,
+    );
     const sessionId = nextSessionId++;
     sessions.set(sessionId, session);
     session.setInvalidationListener((invalidations) => {

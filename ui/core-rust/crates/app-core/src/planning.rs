@@ -4959,8 +4959,12 @@ fn nav_ref_label(nav_ref: &NavRef) -> String {
             identifier.clone()
         }
         NavRef::LatLon(position) => format!("{:.4},{:.4}", position.lat, position.lon),
-        NavRef::Spot(position) => format!("SPOT\n{:.2},{:.2}", position.lat, position.lon),
+        NavRef::Spot(position) => format!("SPOT\n{}", format_spot_coordinates(*position)),
     }
+}
+
+pub(crate) fn format_spot_coordinates(position: LatLon) -> String {
+    format!("{:.4},{:.4}", position.lat, position.lon)
 }
 
 fn rewrite_grouped_legs_source(legs: &[ResolvedLeg], component_index: usize) -> Vec<ResolvedLeg> {
@@ -5284,13 +5288,13 @@ mod tests {
     }
 
     #[test]
-    fn spot_flight_plan_label_uses_two_lines_and_coarse_coordinates() {
+    fn spot_flight_plan_label_uses_two_lines_and_precise_coordinates() {
         assert_eq!(
             nav_ref_label(&NavRef::Spot(LatLon {
                 lat: 47.626,
                 lon: -122.194,
             })),
-            "SPOT\n47.63,-122.19"
+            "SPOT\n47.6260,-122.1940"
         );
     }
 

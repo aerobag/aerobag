@@ -2118,6 +2118,18 @@ fn suggest_waypoint_identifier_candidates(
     if limit == 0 {
         return Ok(Vec::new());
     }
+    if let Some(position) = parse_spot_coordinates(query) {
+        let distance_from_anchor_nm = flight_leg_distance_nm(anchor_position, position);
+        return Ok(vec![WaypointIdentifierSuggestion {
+            identifier: "SPOT".to_string(),
+            nav_ref: NavRef::Spot(position),
+            kind: "spot".to_string(),
+            display_name: crate::planning::format_spot_coordinates(position),
+            distance_text: format!("{:.0}nm", distance_from_anchor_nm),
+            distance_from_anchor_nm,
+            symbol_feature: None,
+        }]);
+    }
     let mut terms = had_key::search_terms(query);
     terms.sort();
     terms.dedup();
@@ -2305,6 +2317,9 @@ fn resolve_waypoint_identifier_for_ui(
     store: &NavKvStore,
     identifier: &str,
 ) -> Result<Option<NavRef>, HadReadError> {
+    if let Some(position) = parse_spot_coordinates(identifier) {
+        return Ok(Some(NavRef::Spot(position)));
+    }
     let normalized_identifier = identifier.trim().to_ascii_uppercase();
     let nav_ref = read_optional::<NavRef>(
         store,
@@ -2322,6 +2337,23 @@ fn resolve_waypoint_identifier_for_ui(
         return Ok(None);
     }
     Ok(Some(nav_ref))
+}
+
+fn parse_spot_coordinates(value: &str) -> Option<LatLon> {
+    let (lat, lon) = value.trim().split_once(',')?;
+    if lon.contains(',') {
+        return None;
+    }
+    let lat = lat.trim().parse::<f64>().ok()?;
+    let lon = lon.trim().parse::<f64>().ok()?;
+    if !lat.is_finite()
+        || !lon.is_finite()
+        || !(-90.0..=90.0).contains(&lat)
+        || !(-180.0..=180.0).contains(&lon)
+    {
+        return None;
+    }
+    Some(LatLon { lat, lon })
 }
 
 fn waypoint_identifier_nav_ref_is_acceptable_for_ui(
@@ -6412,6 +6444,82 @@ mod tests {
             suggest_waypoint_identifier_candidates(&store, "K", 5, LatLon { lat: 0.0, lon: 0.0 })
                 .expect("missing search term should not be fatal");
         assert!(suggestions.is_empty());
+    }
+
+    #[test]
+    fn decimal_coordinates_resolve_and_suggest_spot_without_navdb() {
+        let store = test_nav_kv_store(&[]);
+        let expected = LatLon {
+            lat: 47.3,
+            lon: -122.9,
+        };
+
+        assert_eq!(
+            resolve_waypoint_identifier_for_ui(&store, " 47.3, -122.9 ")
+                .expect("resolve decimal coordinates"),
+            Some(NavRef::Spot(expected))
+        );
+
+        let suggestions = suggest_waypoint_identifier_candidates(
+            &store,
+            "47.3,-122.9",
+            8,
+            LatLon {
+                lat: 47.0,
+                lon: -123.0,
+            },
+        )
+        .expect("suggest decimal coordinates");
+        assert_eq!(suggestions.len(), 1);
+        assert_eq!(suggestions[0].identifier, "SPOT");
+        assert_eq!(suggestions[0].nav_ref, NavRef::Spot(expected));
+        assert_eq!(suggestions[0].kind, "spot");
+        assert_eq!(suggestions[0].display_name, "47.3000,-122.9000");
+        assert!(suggestions[0].symbol_feature.is_none());
+    }
+
+    #[test]
+    fn decimal_coordinate_parser_rejects_invalid_or_out_of_range_values() {
+        for value in [
+            "",
+            "47.3",
+            "47.3,-122.9,1",
+            "north,west",
+            "90.1,0",
+            "-90.1,0",
+            "0,180.1",
+            "0,-180.1",
+            "NaN,0",
+            "0,inf",
+        ] {
+            assert_eq!(parse_spot_coordinates(value), None, "{value}");
+        }
+    }
+
+    #[test]
+    fn append_route_entry_accepts_decimal_coordinate_spot() {
+        let store = test_nav_kv_store(&[]);
+        let plan = FlightPlan::empty();
+        let input = "47.3,-122.9";
+
+        let preview = preview_flight_plan_entry(&store, &plan, input).expect("preview SPOT");
+        assert!(preview.can_commit);
+        assert_eq!(preview.tokens.len(), 1);
+        assert_eq!(
+            preview.tokens[0].state,
+            FlightPlanEntryTokenState::Recognized
+        );
+
+        let mutation = append_flight_plan_entry(&store, &plan, input).expect("append SPOT");
+        assert_eq!(
+            mutation.route_components,
+            vec![RouteComponent::Waypoint {
+                waypoint: NavRef::Spot(LatLon {
+                    lat: 47.3,
+                    lon: -122.9,
+                }),
+            }]
+        );
     }
 
     #[test]

@@ -486,6 +486,9 @@ internal fun FlightPlanDataRow(
             )
         }
     val procedureGroupCell = row.rowKind == "group" && row.componentKind == RouteComponentViewKind.Procedure
+    val hasWaypointSymbol = row.symbolFeature != null
+    val fullWidthLabel =
+        flightPlanWaypointUsesFullWidthLabel(procedureGroupCell, hasWaypointSymbol)
     Row(modifier = modifier.then(rowBoundsModifier), horizontalArrangement = Arrangement.spacedBy(PlanGridGap)) {
         Box(modifier = Modifier.width(ThumbSize * 2.5f).height(cellHeight)) {
             if (row.rowKind == "summary") {
@@ -519,14 +522,14 @@ internal fun FlightPlanDataRow(
                     },
                     maxLines = if (procedureGroupCell) 3 else 2,
                     textModifier =
-                        if (procedureGroupCell) {
+                        if (fullWidthLabel) {
                             Modifier.fillMaxWidth()
                         } else {
                             Modifier.padding(end = ThumbSize * 0.78f)
                         },
                     onClick = onWaypointClick,
                 )
-                if (!procedureGroupCell) {
+                if (!procedureGroupCell && hasWaypointSymbol) {
                     PlanWaypointSymbol(
                         feature = row.symbolFeature,
                         modifier = Modifier
@@ -547,6 +550,11 @@ internal fun FlightPlanDataRow(
         }
     }
 }
+
+internal fun flightPlanWaypointUsesFullWidthLabel(
+    procedureGroupCell: Boolean,
+    hasWaypointSymbol: Boolean,
+): Boolean = procedureGroupCell || !hasWaypointSymbol
 
 @Composable
 internal fun FlightPlanGroupBlock(

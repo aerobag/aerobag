@@ -96,6 +96,7 @@ import {
   type UiHomePageState,
   type UiInvalidation,
 } from "./domain/appCoreAdapter";
+import { flightPlanWaypointUsesFullWidthLabel } from "./domain/flightPlanLayout";
 import {
   applyPinchGesture,
   createPinchSnapshot,
@@ -1725,17 +1726,21 @@ function WaypointButtonContent(props: {
   fullWidthLabel?: boolean;
 }) {
   const details = (props.details ?? []).filter((detail): detail is string => Boolean(detail?.trim()));
+  const fullWidthLabel = flightPlanWaypointUsesFullWidthLabel(
+    Boolean(props.fullWidthLabel),
+    Boolean(props.symbolFeature),
+  );
   return (
     <>
       <span
-        className={`planStructuredLabel${props.indented ? " isIndented" : ""}${details.length > 0 ? " hasDetails" : ""}${props.fullWidthLabel ? " isFullWidth" : ""}`}
+        className={`planStructuredLabel${props.indented ? " isIndented" : ""}${details.length > 0 ? " hasDetails" : ""}${fullWidthLabel ? " isFullWidth" : ""}`}
       >
         <span className="waypointButtonTitle">{props.label}</span>
         {details.map((detail, index) => (
           <span key={`${index}:${detail}`} className="waypointButtonDetail">{detail}</span>
         ))}
       </span>
-      {props.fullWidthLabel ? null : <PlanWaypointSymbol feature={props.symbolFeature ?? null} />}
+      {fullWidthLabel ? null : <PlanWaypointSymbol feature={props.symbolFeature ?? null} />}
     </>
   );
 }
@@ -4359,8 +4364,8 @@ function MapPage(props: {
     [chartSearchAnchorWorldX, chartSearchAnchorWorldY],
   );
   useEffect(() => {
-    const query = chartSearch.query.trim().toUpperCase();
-    if (!chartSearch.open || query.length === 0) {
+    const query = chartSearch.query;
+    if (!chartSearch.open || query.trim().length === 0) {
       setChartSearch((current) => ({ ...current, loading: false, error: null, suggestions: [] }));
       return;
     }
@@ -5966,8 +5971,8 @@ function MapPage(props: {
   }
 
   function submitChartSearch() {
-    const query = chartSearch.query.trim().toUpperCase();
-    if (!query) {
+    const query = chartSearch.query;
+    if (!query.trim()) {
       return;
     }
     setChartSearch((current) => ({ ...current, loading: true, error: null }));
@@ -8323,7 +8328,7 @@ function FlightPlanPage(props: {
                     autoCapitalize="characters"
                     autoCorrect="off"
                     onChange={(event) => {
-                      setRouteEntryText(event.target.value.toUpperCase());
+                      setRouteEntryText(event.target.value);
                       setRouteEntryError(null);
                     }}
                     onKeyDown={(event) => {

@@ -96,6 +96,7 @@ import {
   type UiHomePageState,
   type UiInvalidation,
 } from "./domain/appCoreAdapter";
+import { flightPlanWaypointUsesFullWidthLabel } from "./domain/flightPlanLayout";
 import {
   applyPinchGesture,
   createPinchSnapshot,
@@ -8246,7 +8247,10 @@ function FlightPlanPage(props: {
                             label={row.label}
                             symbolFeature={row.symbolFeature}
                             indented={row.depth > 0}
-                            fullWidthLabel={procedureGroupCell}
+                            fullWidthLabel={flightPlanWaypointUsesFullWidthLabel(
+                              procedureGroupCell,
+                              Boolean(row.symbolFeature),
+                            )}
                           />
                         </button>
                       )}

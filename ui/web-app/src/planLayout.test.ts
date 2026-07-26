@@ -4,6 +4,7 @@
 
 import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
+import { flightPlanWaypointUsesFullWidthLabel } from "./domain/flightPlanLayout";
 
 const styles = readFileSync(new URL("./styles.css", import.meta.url), "utf8");
 const appSource = readFileSync(new URL("./App.tsx", import.meta.url), "utf8");
@@ -33,5 +34,11 @@ describe("flight plan layout CSS", () => {
     expect(inputBlocks).toContain("height: var(--thumb)");
     expect(inputBlocks).toContain("resize: none");
     expect(inputBlocks).toContain("overflow: hidden");
+  });
+
+  it("gives symbol-free flight-plan labels the full waypoint cell", () => {
+    expect(flightPlanWaypointUsesFullWidthLabel(false, false)).toBe(true);
+    expect(flightPlanWaypointUsesFullWidthLabel(true, true)).toBe(true);
+    expect(flightPlanWaypointUsesFullWidthLabel(false, true)).toBe(false);
   });
 });

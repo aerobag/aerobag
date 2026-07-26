@@ -103,7 +103,9 @@ function captureFailureDiagnostics(serial, testId) {
   const captures = [
     ["screenshot.png", () => screencapPng(serial)],
     ["ui.xml", () => dumpAndroid(serial)],
-    ["logcat.txt", () => adb(serial, ["logcat", "-d", "-v", "threadtime"])],
+    ["logcat.txt", () => adb(serial, ["logcat", "-d", "-v", "threadtime"], {
+      maxBuffer: 16 * 1024 * 1024,
+    })],
     ["activity.txt", () => adb(serial, ["shell", "dumpsys", "activity", "activities"])],
     ["window.txt", () => adb(serial, ["shell", "dumpsys", "window", "windows"])],
   ];
@@ -856,26 +858,47 @@ async function zoomMapWhileFollowing(serial, result) {
     5000,
     "map-follow offset before zoom",
   );
+
   pressKey(serial, "KEYCODE_PLUS");
-  await delay(250);
-  pressKey(serial, "KEYCODE_PLUS");
-  const zoomed = await waitForMapFollowProbe(
+  const firstZoomed = await waitForMapFollowProbe(
     serial,
     (probe) => probe.following && probe.zoomCenti > before.zoomCenti,
     8000,
-    "map zoom changed while CTR was engaged",
+    "first map zoom changed while CTR was engaged",
+  );
+  await delay(1200);
+  const firstSettled = await waitForMapFollowProbe(
+    serial,
+    (probe) => probe.following && probe.zoomCenti >= firstZoomed.zoomCenti,
+    3000,
+    "map-follow probe after first zoom settled",
+  );
+  const firstSettledOffset = mapFollowOffsetPx(firstSettled);
+  recordCheck(
+    result,
+    "chart.ctrFirstZoomKeepsOwnshipOffset",
+    firstSettledOffset >= 80,
+    `offset=${firstSettledOffset.toFixed(0)}px tag=${firstSettled.tag}`,
+  );
+
+  pressKey(serial, "KEYCODE_PLUS");
+  const secondZoomed = await waitForMapFollowProbe(
+    serial,
+    (probe) => probe.following && probe.zoomCenti > firstSettled.zoomCenti,
+    8000,
+    "second map zoom changed while CTR was engaged",
   );
   await delay(1200);
   const settled = await waitForMapFollowProbe(
     serial,
-    (probe) => probe.following,
+    (probe) => probe.following && probe.zoomCenti >= secondZoomed.zoomCenti,
     3000,
-    "map-follow probe after zoom settle",
+    "map-follow probe after second zoom settled",
   );
   const settledOffset = mapFollowOffsetPx(settled);
   recordCheck(result, "chart.ctrZoomKeepsFollowing", settled.following, settled.tag);
   recordCheck(result, "chart.ctrZoomKeepsOwnshipOffset", settledOffset >= 80, `offset=${settledOffset.toFixed(0)}px tag=${settled.tag}`);
-  recordStep(result, "map zoom preserved CTR offset", `${before.zoomCenti} -> ${zoomed.zoomCenti}`);
+  recordStep(result, "map zoom preserved CTR offset", `${before.zoomCenti} -> ${settled.zoomCenti}`);
 }
 
 function layerToggleNode(xml, layerId) {

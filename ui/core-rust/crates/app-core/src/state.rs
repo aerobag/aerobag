@@ -128,13 +128,12 @@ pub fn project_ui_snapshot_app_state(state: &AppState) -> UiSnapshotAppState {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{AirportId, AppErrorKind, NavRef, PlanLeg, RouteComponent};
+    use crate::{AirportId, AirwaySegment, AppErrorKind, NavRef, RouteComponent};
 
     fn sample_plan() -> FlightPlan {
         FlightPlan {
             id: "plan-1".to_string(),
             name: "KBOS to KJFK".to_string(),
-            legs: Vec::new(),
             route_components: vec![
                 RouteComponent::Waypoint {
                     waypoint: NavRef::Airport("KBOS".to_string()),
@@ -237,12 +236,19 @@ mod tests {
             AppEvent::ReplaceFlightPlan(FlightPlan {
                 id: "bad".to_string(),
                 name: "bad".to_string(),
-                legs: vec![PlanLeg {
-                    from: NavRef::Airport("KRNT".to_string()),
-                    to: NavRef::Airport("KPAE".to_string()),
-                    airway: None,
-                }],
-                route_components: Vec::new(),
+                route_components: vec![
+                    RouteComponent::Waypoint {
+                        waypoint: NavRef::Airport("KRNT".to_string()),
+                    },
+                    RouteComponent::Airway {
+                        airway: AirwaySegment {
+                            name: "V2".to_string(),
+                            branch_key: None,
+                            entry: NavRef::Navaid("SEA".to_string()),
+                            exit: NavRef::Fix("ELN".to_string()),
+                        },
+                    },
+                ],
                 route_component_uids: Vec::new(),
                 route_component_uid_counter: 0,
                 resolved_legs: Vec::new(),

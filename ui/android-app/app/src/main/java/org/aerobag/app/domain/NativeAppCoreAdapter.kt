@@ -838,8 +838,11 @@ class NativeUiSession internal constructor(
         }
     }
 
-    fun projectFlightPlanRoute(): List<FlightPlanRouteSegment> {
-        val store = navKvStore ?: return emptyList()
+    fun projectFlightPlanRoute(): FlightPlanRouteProjection {
+        val store = navKvStore ?: return FlightPlanRouteProjection(
+            flightPlanRouteRevision = snapshot.flightPlanRouteRevision,
+            segments = emptyList(),
+        )
         val outcome = store.runPagedSessionOperation(
             drainSessionResourceEffects = { bridge.drainSessionResourceEffectsJson(handle) },
         ) {
@@ -848,7 +851,7 @@ class NativeUiSession internal constructor(
         publishInvalidations("projectFlightPlanRoute", outcome.invalidations)
         val effectInvalidations = outcome.effectInvalidations
         publishInvalidations("session_effect", effectInvalidations)
-        return json.decodeFromJsonElement<List<WireFlightPlanRouteSegment>>(outcome.result).map { it.toUi() }
+        return json.decodeFromJsonElement<WireFlightPlanRouteProjection>(outcome.result).toUi()
     }
 
     fun performMapSelectionAction(action: String): UiSessionSnapshot {
@@ -1171,38 +1174,33 @@ class NativeUiSession internal constructor(
     }
 
     fun activateNextLeg(): UiSessionSnapshot {
-        runPagedSnapshot("activateNextLeg") {
+        return runPagedSnapshot("activateNextLeg") {
             bridge.activateNextLegInSessionJson(handle)
         }
-        return syncGuidanceGeometry("activateNextLeg.syncGuidanceGeometry")
     }
 
     fun stopNavigation(): UiSessionSnapshot {
-        runPagedSnapshot("stopNavigation") {
+        return runPagedSnapshot("stopNavigation") {
             bridge.stopNavigationInSessionJson(handle)
         }
-        return syncGuidanceGeometry("stopNavigation.syncGuidanceGeometry")
     }
 
     fun suspendSequencing(): UiSessionSnapshot {
-        runPagedSnapshot("suspendSequencing") {
+        return runPagedSnapshot("suspendSequencing") {
             bridge.suspendSequencingInSessionJson(handle)
         }
-        return syncGuidanceGeometry("suspendSequencing.syncGuidanceGeometry")
     }
 
     fun unsuspendSequencing(): UiSessionSnapshot {
-        runPagedSnapshot("unsuspendSequencing") {
+        return runPagedSnapshot("unsuspendSequencing") {
             bridge.unsuspendSequencingInSessionJson(handle)
         }
-        return syncGuidanceGeometry("unsuspendSequencing.syncGuidanceGeometry")
     }
 
     fun sequenceActiveLeg(): UiSessionSnapshot {
-        runPagedSnapshot("sequenceActiveLeg") {
+        return runPagedSnapshot("sequenceActiveLeg") {
             bridge.sequenceActiveLegInSessionJson(handle)
         }
-        return syncGuidanceGeometry("sequenceActiveLeg.syncGuidanceGeometry")
     }
 
     fun restoreChartPageState(
@@ -1553,7 +1551,6 @@ private fun MapViewportState.toWire(): WireMapViewport {
 private fun FlightPlan.toWire() = WireFlightPlan(
     id = id,
     name = name,
-    legs = legs.map { it.toWire() },
     route_components = routeComponents.map { it.toWire() },
     route_component_uids = routeComponentUids,
     route_component_uid_counter = routeComponentUidCounter,
@@ -1566,12 +1563,6 @@ private fun FlightPlan.toWire() = WireFlightPlan(
     notes = notes,
     updated_at_epoch_ms = updatedAtEpochMs,
     version = version,
-)
-
-private fun FlightPlanLeg.toWire() = WirePlanLeg(
-    from = from.toWire(),
-    to = to.toWire(),
-    airway = airway,
 )
 
 private fun PlanLeg.toWire() = WirePlanLeg(
@@ -1933,7 +1924,6 @@ private fun SourceConnectionState.toWireName(): String = when (this) {
 internal fun WireFlightPlan.toUiFlightPlan() = FlightPlan(
     id = id,
     name = name,
-    legs = legs.map { it.toUi() },
     routeComponents = route_components.map { it.toUi() },
     routeComponentUids = route_component_uids,
     routeComponentUidCounter = route_component_uid_counter,
@@ -2163,6 +2153,7 @@ private data class WireUiPlaybackPanelState(
 @kotlinx.serialization.Serializable
 private data class WireUiSessionSnapshot(
     val session_revision: Long = 0,
+    val flight_plan_route_revision: Long = 0,
     val nav_data_epoch: Long = 0,
     val active_nav_db: WireUiNavDbIdentity? = null,
     val next_nav_db_maintenance_epoch_ms: Long? = null,
@@ -2363,6 +2354,7 @@ data class DerivedChartPageState(
 
 data class UiSessionSnapshot(
     val sessionRevision: Long,
+    val flightPlanRouteRevision: Long,
     val navDataEpoch: Long,
     val activeNavDb: UiNavDbIdentity?,
     val nextNavDbMaintenanceEpochMs: Long?,
@@ -2749,6 +2741,7 @@ private fun WireUiPlaybackPanelState.toUi() = UiPlaybackPanelState(
 
 private fun WireUiSessionSnapshot.toUi() = UiSessionSnapshot(
     sessionRevision = session_revision,
+    flightPlanRouteRevision = flight_plan_route_revision,
     navDataEpoch = nav_data_epoch,
     activeNavDb = active_nav_db?.let {
         UiNavDbIdentity(
@@ -3504,17 +3497,31 @@ private fun WireGuidanceState.toUi() = GuidanceState(
 private fun DirectToState.toWire() = WireDirectToState(
     start = start.toWire(),
     target = target.toWire(),
-    target_component_uid = targetComponentUid,
-    target_leg_id = targetLegId,
-    resume_leg_id = resumeLegId,
+    target_row = targetRow.toWire(),
+    resume_row_id = resumeRowId,
 )
 
 private fun WireDirectToState.toUi() = DirectToState(
     start = start.toUi(),
     target = target.toUi(),
-    targetComponentUid = target_component_uid,
-    targetLegId = target_leg_id,
-    resumeLegId = resume_leg_id,
+    targetRow = target_row.toUi(),
+    resumeRowId = resume_row_id,
+)
+
+private fun DirectToTargetRow.toWire() = WireDirectToTargetRow(
+    kind = when (kind) {
+        DirectToTargetRowKind.Planned -> WireDirectToTargetRowKind.Planned
+        DirectToTargetRowKind.Temporary -> WireDirectToTargetRowKind.Temporary
+    },
+    row_id = rowId,
+)
+
+private fun WireDirectToTargetRow.toUi() = DirectToTargetRow(
+    kind = when (kind) {
+        WireDirectToTargetRowKind.Planned -> DirectToTargetRowKind.Planned
+        WireDirectToTargetRowKind.Temporary -> DirectToTargetRowKind.Temporary
+    },
+    rowId = row_id,
 )
 
 private fun WirePlanLeg.toUiPlanLeg() = PlanLeg(
@@ -3630,18 +3637,14 @@ private fun ResolvedLegUiView.toWire() = WireResolvedLegUiView(
 private fun WireDirectToUiView.toUi() = DirectToUiView(
     start = start.toUi(),
     target = target.toUi(),
-    targetComponentUid = target_component_uid,
-    targetLegId = target_leg_id,
-    resumeLegId = resume_leg_id,
+    targetRowId = target_row_id,
     onPlanTarget = on_plan_target,
 )
 
 private fun DirectToUiView.toWire() = WireDirectToUiView(
     start = start.toWire(),
     target = target.toWire(),
-    target_component_uid = targetComponentUid,
-    target_leg_id = targetLegId,
-    resume_leg_id = resumeLegId,
+    target_row_id = targetRowId,
     on_plan_target = onPlanTarget,
 )
 
@@ -3680,7 +3683,6 @@ private fun FlightPlanControlUiView.toWire() = WireFlightPlanControlUiView(
 private fun WireGuidanceUiView.toUi() = GuidanceUiView(
     sequencingMode = sequencing_mode.toUi(),
     activeLegIndex = active_leg_index,
-    displaySplitLegIndex = display_split_leg_index,
     activeFromRowUid = active_from_row_uid,
     activeToRowUid = active_to_row_uid,
     activeComponentIndex = active_component_index,
@@ -3693,7 +3695,6 @@ private fun WireGuidanceUiView.toUi() = GuidanceUiView(
 private fun GuidanceUiView.toWire() = WireGuidanceUiView(
     sequencing_mode = sequencingMode.toWire(),
     active_leg_index = activeLegIndex,
-    display_split_leg_index = displaySplitLegIndex,
     active_from_row_uid = activeFromRowUid,
     active_to_row_uid = activeToRowUid,
     active_component_index = activeComponentIndex,
@@ -3760,6 +3761,11 @@ private fun WireFlightPlanRouteSegment.toUi() = FlightPlanRouteSegment(
     distanceNm = distance_nm,
     courseDeg = course_deg,
     status = status.toUi(),
+)
+
+private fun WireFlightPlanRouteProjection.toUi() = FlightPlanRouteProjection(
+    flightPlanRouteRevision = flight_plan_route_revision,
+    segments = segments.map { it.toUi() },
 )
 
 private fun WireRouteSegmentStatus.toUi() = when (this) {
@@ -3990,12 +3996,6 @@ private fun WireMaterializedProcedure.toUi() = MaterializedProcedure(
     procedure = procedure.toUi(),
     concretizedItems = concretized_items.map { it.toUi() },
     resolvedLegs = resolved_legs.map { it.toUi() },
-)
-
-private fun WirePlanLeg.toUi() = FlightPlanLeg(
-    from = from.toUi(),
-    to = to.toUi(),
-    airway = airway,
 )
 
 private fun WireNavRef.toUi(): NavRef = when (this) {

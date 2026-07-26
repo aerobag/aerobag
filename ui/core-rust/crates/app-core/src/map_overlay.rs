@@ -9633,7 +9633,6 @@ mod tests {
         let plan = FlightPlan {
             id: "plan".to_string(),
             name: "Plan".to_string(),
-            legs: Vec::new(),
             route_components: Vec::new(),
             route_component_uids: Vec::new(),
             route_component_uid_counter: 0,
@@ -9744,9 +9743,10 @@ mod tests {
                         lat: viewport.center.lat + 0.1,
                         lon: viewport.center.lon,
                     }),
-                    target_component_uid: None,
-                    target_leg_id: None,
-                    resume_leg_id: None,
+                    target_row: crate::DirectToTargetRow::Temporary {
+                        row_id: crate::FlightPlanRowId("flight-plan-row:test-spot".to_string()),
+                    },
+                    resume_row_id: None,
                 }),
                 suspend_reason: None,
             }),
@@ -9792,7 +9792,6 @@ mod tests {
         let plan = FlightPlan {
             id: "plan".to_string(),
             name: "Plan".to_string(),
-            legs: Vec::new(),
             route_components: vec![RouteComponent::Waypoint {
                 waypoint: NavRef::Airport("KSEA".to_string()),
             }],
@@ -9961,7 +9960,6 @@ mod tests {
         let plan = FlightPlan {
             id: "plan".to_string(),
             name: "Plan".to_string(),
-            legs: Vec::new(),
             route_components: Vec::new(),
             route_component_uids: Vec::new(),
             route_component_uid_counter: 0,

@@ -78,7 +78,7 @@ class NativeUiSessionBoundaryTest {
     }
 
     @Test
-    fun mapPageSubscribesToCoreInvalidationsForOverlayAndRouteRefresh() {
+    fun mapPageUsesCoreInvalidationAndProjectionRevisions() {
         val mainActivity = sourceFile("src/main/java/org/aerobag/app/MainActivity.kt").readText()
         val mapPage = sourceFile("src/main/java/org/aerobag/app/MapExplorerPage.kt").readText()
 
@@ -95,8 +95,14 @@ class NativeUiSessionBoundaryTest {
             mapPage.contains("uiInvalidationRevisions.mapOverlay"),
         )
         assertTrue(
-            "Flight-plan route projection should rerun when core emits flight_plan_route.",
-            mapPage.contains("uiInvalidationRevisions.flightPlanRoute"),
+            "Flight-plan route projection should rerun from the core-owned route revision.",
+            mapPage.contains("sessionSnapshot.flightPlanRouteRevision"),
+        )
+        assertTrue(
+            "A route from another core flight-plan revision must not be rendered.",
+            mapPage.contains(
+                "flightPlanRouteProjection.flightPlanRouteRevision == sessionSnapshot.flightPlanRouteRevision",
+            ),
         )
     }
 

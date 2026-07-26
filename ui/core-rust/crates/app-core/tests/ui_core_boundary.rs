@@ -145,6 +145,25 @@ fn paged_flight_plan_mutations_commit_only_after_guidance_projection() {
             ));
         }
     }
+    let mutation_helper = function_body(source, "mutate_session_flight_plan");
+    if !mutation_helper.contains("commit_session_flight_plan_with_invalidations_outcome") {
+        violations
+            .push("mutate_session_flight_plan: missing staged paged commit helper".to_string());
+    }
+    for function in [
+        "activate_next_leg_in_session",
+        "stop_navigation_in_session",
+        "suspend_sequencing_in_session",
+        "unsuspend_sequencing_in_session",
+        "sequence_active_leg_in_session",
+    ] {
+        let body = function_body(source, function);
+        if !body.contains("mutate_session_flight_plan") {
+            violations.push(format!(
+                "{function}: bypasses the common flight-plan mutation boundary"
+            ));
+        }
+    }
     assert!(
         violations.is_empty(),
         "paged flight-plan mutations must be side-effect-free on NeedResources and return invalidations instead of snapshots:\n{}",
@@ -168,6 +187,11 @@ fn platform_flight_plan_mutations_do_not_resync_guidance_after_core_mutation() {
         "selectProcedureAtFlightPlanRow",
         "loadPlateProcedure",
         "performFlightPlanRowAction",
+        "activateNextLeg",
+        "stopNavigation",
+        "suspendSequencing",
+        "unsuspendSequencing",
+        "sequenceActiveLeg",
     ] {
         let body = balanced_block_after_marker(&web, &format!("{method}: async"));
         if body.contains("syncGuidanceGeometry") {
@@ -185,6 +209,11 @@ fn platform_flight_plan_mutations_do_not_resync_guidance_after_core_mutation() {
         "selectProcedureAtFlightPlanRow",
         "loadPlateProcedure",
         "performFlightPlanRowAction",
+        "activateNextLeg",
+        "stopNavigation",
+        "suspendSequencing",
+        "unsuspendSequencing",
+        "sequenceActiveLeg",
     ] {
         let body = balanced_block_after_marker(&android, &format!("fun {method}"));
         if body.contains("syncGuidanceGeometry") {

@@ -28,8 +28,6 @@ pub struct FlightPlan {
     pub id: String,
     pub name: String,
     #[serde(default)]
-    pub legs: Vec<PlanLeg>,
-    #[serde(default)]
     pub route_components: Vec<RouteComponent>,
     pub route_component_uids: Vec<String>,
     pub route_component_uid_counter: u64,
@@ -862,6 +860,16 @@ pub struct GuidanceState {
     pub suspend_reason: Option<SuspendReason>,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+#[serde(transparent)]
+pub struct FlightPlanRowId(pub String);
+
+impl FlightPlanRowId {
+    pub fn as_str(&self) -> &str {
+        self.0.as_str()
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum SequencingMode {
@@ -879,13 +887,31 @@ pub enum SuspendReason {
     DirectToComplete,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum DirectToTargetRow {
+    Planned { row_id: FlightPlanRowId },
+    Temporary { row_id: FlightPlanRowId },
+}
+
+impl DirectToTargetRow {
+    pub fn row_id(&self) -> &FlightPlanRowId {
+        match self {
+            Self::Planned { row_id } | Self::Temporary { row_id } => row_id,
+        }
+    }
+
+    pub fn is_planned(&self) -> bool {
+        matches!(self, Self::Planned { .. })
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct DirectToState {
     pub start: NavRef,
     pub target: NavRef,
-    pub target_component_uid: Option<String>,
-    pub target_leg_id: Option<String>,
-    pub resume_leg_id: Option<String>,
+    pub target_row: DirectToTargetRow,
+    pub resume_row_id: Option<FlightPlanRowId>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -1083,7 +1109,6 @@ pub struct ResolvedLegUiView {
 pub struct GuidanceUiView {
     pub sequencing_mode: SequencingMode,
     pub active_leg_index: Option<usize>,
-    pub display_split_leg_index: Option<usize>,
     pub active_from_row_uid: Option<String>,
     pub active_to_row_uid: Option<String>,
     pub active_component_index: Option<usize>,
@@ -1105,9 +1130,7 @@ pub struct NavElementUiView {
 pub struct DirectToUiView {
     pub start: NavRef,
     pub target: NavRef,
-    pub target_component_uid: Option<String>,
-    pub target_leg_id: Option<String>,
-    pub resume_leg_id: Option<String>,
+    pub target_row_id: FlightPlanRowId,
     pub on_plan_target: bool,
 }
 
@@ -1166,7 +1189,6 @@ impl Default for FlightPlan {
         Self {
             id: "plan-empty".to_string(),
             name: "Flight Plan".to_string(),
-            legs: Vec::new(),
             route_components: Vec::new(),
             route_component_uids: Vec::new(),
             route_component_uid_counter: 0,
@@ -1218,6 +1240,117 @@ fn component_uid(plan: &FlightPlan, component_index: usize) -> String {
         .expect("normalized flight plan missing route component uid")
 }
 
+#[derive(Debug, Clone)]
+struct PlannedDirectToTarget {
+    row_id: FlightPlanRowId,
+    target_leg_index: Option<usize>,
+    resume_row_id: Option<FlightPlanRowId>,
+}
+
+fn planned_row_id_for_leg_index(plan: &FlightPlan, leg_index: usize) -> AppResult<FlightPlanRowId> {
+    let mut matches = project_identity_rows(plan).into_iter().filter(|row| {
+        row.row_kind == FlightPlanDisplayRowKind::Waypoint && row.leg_index == Some(leg_index)
+    });
+    let row = matches.next().ok_or_else(|| AppError {
+        kind: AppErrorKind::InvalidFlightPlan,
+        message: format!("resolved leg {leg_index} has no projected waypoint row"),
+    })?;
+    if matches.next().is_some() {
+        return Err(AppError {
+            kind: AppErrorKind::InvalidFlightPlan,
+            message: format!("resolved leg {leg_index} projects to multiple waypoint rows"),
+        });
+    }
+    Ok(FlightPlanRowId(row.uid))
+}
+
+fn planned_direct_to_targets_for_nav_ref(
+    plan: &FlightPlan,
+    target: &NavRef,
+) -> AppResult<Vec<PlannedDirectToTarget>> {
+    let rows = project_identity_rows(plan);
+    rows.into_iter()
+        .filter(|row| {
+            row.row_kind == FlightPlanDisplayRowKind::Waypoint
+                && row.nav_ref.as_ref() == Some(target)
+        })
+        .map(|row| {
+            let target_leg_index = row.leg_index;
+            let resume_leg_index = if let Some(target_leg_index) = target_leg_index {
+                resume_leg_index_after_leg(plan, target_leg_index)
+            } else {
+                row.component_index.and_then(|component_index| {
+                    plan.resolved_legs.iter().position(|leg| {
+                        leg_starts_at_route_component(leg, component_index) && &leg.from == target
+                    })
+                })
+            };
+            Ok(PlannedDirectToTarget {
+                row_id: FlightPlanRowId(row.uid),
+                target_leg_index,
+                resume_row_id: resume_leg_index
+                    .map(|leg_index| planned_row_id_for_leg_index(plan, leg_index))
+                    .transpose()?,
+            })
+        })
+        .collect()
+}
+
+fn allocate_temporary_direct_to_row_id(plan: &mut FlightPlan) -> FlightPlanRowId {
+    let row_id = FlightPlanRowId(format!(
+        "flight-plan-row:{:016x}",
+        plan.route_component_uid_counter
+    ));
+    plan.route_component_uid_counter += 1;
+    row_id
+}
+
+fn planned_direct_to_target_for_row_id(
+    plan: &FlightPlan,
+    row_id: &FlightPlanRowId,
+) -> AppResult<(NavRef, PlannedDirectToTarget)> {
+    let row = project_identity_rows(plan)
+        .into_iter()
+        .find(|row| row.uid == row_id.as_str())
+        .ok_or_else(|| AppError {
+            kind: AppErrorKind::InvalidFlightPlan,
+            message: format!("direct-to target row does not exist: {}", row_id.as_str()),
+        })?;
+    if row.row_kind != FlightPlanDisplayRowKind::Waypoint {
+        return Err(AppError {
+            kind: AppErrorKind::UnsupportedOperation,
+            message: format!(
+                "direct-to target row is not a waypoint: {}",
+                row_id.as_str()
+            ),
+        });
+    }
+    let target = row.nav_ref.ok_or_else(|| AppError {
+        kind: AppErrorKind::InvalidFlightPlan,
+        message: format!("direct-to target row has no location: {}", row_id.as_str()),
+    })?;
+    let target_leg_index = row.leg_index;
+    let resume_leg_index = if let Some(target_leg_index) = target_leg_index {
+        resume_leg_index_after_leg(plan, target_leg_index)
+    } else {
+        row.component_index.and_then(|component_index| {
+            plan.resolved_legs.iter().position(|leg| {
+                leg_starts_at_route_component(leg, component_index) && leg.from == target
+            })
+        })
+    };
+    Ok((
+        target,
+        PlannedDirectToTarget {
+            row_id: row_id.clone(),
+            target_leg_index,
+            resume_row_id: resume_leg_index
+                .map(|leg_index| planned_row_id_for_leg_index(plan, leg_index))
+                .transpose()?,
+        },
+    ))
+}
+
 impl RouteComponent {
     fn is_waypoint(&self) -> bool {
         matches!(self, RouteComponent::Waypoint { .. })
@@ -1229,17 +1362,25 @@ pub fn activate_direct_to(
     from_position: LatLon,
     target: NavRef,
 ) -> AppResult<FlightPlan> {
-    let plan = plan.clone().normalized();
-
-    let target_leg_index = plan.resolved_legs.iter().position(|leg| leg.to == target);
-    let target_on_plan = target_leg_index.is_some() || flight_plan_contains_nav_ref(&plan, &target);
-    let resume_leg_index = plan.resolved_legs.iter().position(|leg| leg.from == target);
-    let target_leg_id = if target_on_plan {
-        target_leg_index.map(|index| plan.resolved_legs[index].id.clone())
-    } else {
-        None
+    let mut plan = plan.clone().normalized();
+    let planned_targets = planned_direct_to_targets_for_nav_ref(&plan, &target)?;
+    let planned_target = match planned_targets.as_slice() {
+        [target] => Some(target.clone()),
+        _ => None,
     };
-    let resume_leg_id = resume_leg_index.map(|index| plan.resolved_legs[index].id.clone());
+    let target_leg_index = planned_target
+        .as_ref()
+        .and_then(|target| target.target_leg_index);
+    let resume_row_id = planned_target
+        .as_ref()
+        .and_then(|target| target.resume_row_id.clone());
+    let target_row = planned_target
+        .map(|target| DirectToTargetRow::Planned {
+            row_id: target.row_id,
+        })
+        .unwrap_or_else(|| DirectToTargetRow::Temporary {
+            row_id: allocate_temporary_direct_to_row_id(&mut plan),
+        });
     let active_leg_index = target_leg_index
         .or_else(|| {
             plan.guidance
@@ -1260,9 +1401,8 @@ pub fn activate_direct_to(
             direct_to: Some(DirectToState {
                 start: NavRef::LatLon(from_position),
                 target,
-                target_component_uid: None,
-                target_leg_id,
-                resume_leg_id,
+                target_row,
+                resume_row_id,
             }),
             suspend_reason: None,
         }),
@@ -1270,51 +1410,39 @@ pub fn activate_direct_to(
     })
 }
 
-pub fn activate_direct_to_component(
+pub fn activate_direct_to_row(
     plan: &FlightPlan,
     from_position: LatLon,
-    target_component_index: usize,
+    target_row_id: &FlightPlanRowId,
 ) -> AppResult<FlightPlan> {
     let plan = plan.clone().normalized();
-    let target = match plan.route_components.get(target_component_index) {
-        Some(RouteComponent::Waypoint { waypoint }) => waypoint.clone(),
-        _ => {
-            return Err(AppError {
-                kind: AppErrorKind::InvalidFlightPlan,
-                message: format!("direct-to component is not a waypoint: {target_component_index}"),
-            });
-        }
-    };
-    let target_leg_index = target_component_index
-        .checked_sub(1)
-        .and_then(|index| plan.resolved_legs.get(index).map(|_| index))
-        .filter(|index| plan.resolved_legs[*index].to == target);
-    let resume_leg_index = plan.resolved_legs.iter().position(|leg| {
-        leg.from == target && leg_starts_at_route_component(leg, target_component_index)
-    });
-    let active_leg_index = target_leg_index
+    let (target, planned_target) = planned_direct_to_target_for_row_id(&plan, target_row_id)?;
+    let active_leg_index = planned_target
+        .target_leg_index
         .or_else(|| {
             plan.guidance
                 .as_ref()
                 .map(|guidance| guidance.active_leg_index)
         })
         .unwrap_or(0);
-
     Ok(FlightPlan {
         guidance: Some(GuidanceState {
             active_leg_index,
-            active_detail_index: target_leg_index
+            active_detail_index: planned_target
+                .target_leg_index
                 .and_then(|index| first_guidance_detail_index_for_leg(&plan, index)),
-            display_split_leg_id: target_leg_index
+            display_split_leg_id: planned_target
+                .target_leg_index
                 .and_then(|index| plan.resolved_legs.get(index))
                 .map(|leg| leg.id.clone()),
             sequencing_mode: SequencingMode::DirectTo,
             direct_to: Some(DirectToState {
                 start: NavRef::LatLon(from_position),
                 target,
-                target_component_uid: Some(component_uid(&plan, target_component_index)),
-                target_leg_id: target_leg_index.map(|index| plan.resolved_legs[index].id.clone()),
-                resume_leg_id: resume_leg_index.map(|index| plan.resolved_legs[index].id.clone()),
+                target_row: DirectToTargetRow::Planned {
+                    row_id: planned_target.row_id,
+                },
+                resume_row_id: planned_target.resume_row_id,
             }),
             suspend_reason: None,
         }),
@@ -1358,42 +1486,6 @@ pub fn restore_direct_to(plan: &FlightPlan) -> AppResult<FlightPlan> {
             } else {
                 Some(SuspendReason::RouteEnd)
             },
-        }),
-        ..plan
-    })
-}
-
-pub fn activate_direct_to_leg(
-    plan: &FlightPlan,
-    from_position: LatLon,
-    target_leg_id: &str,
-) -> AppResult<FlightPlan> {
-    let plan = plan.clone().normalized();
-    let target_leg_index = plan
-        .resolved_legs
-        .iter()
-        .position(|leg| leg.id == target_leg_id)
-        .ok_or_else(|| AppError {
-            kind: AppErrorKind::UnsupportedOperation,
-            message: format!("direct-to target leg not found: {target_leg_id}"),
-        })?;
-    let target_leg = &plan.resolved_legs[target_leg_index];
-    let resume_leg_id = resume_leg_id_after_leg(&plan, target_leg_index);
-
-    Ok(FlightPlan {
-        guidance: Some(GuidanceState {
-            active_leg_index: target_leg_index,
-            active_detail_index: first_guidance_detail_index_for_leg(&plan, target_leg_index),
-            display_split_leg_id: Some(target_leg.id.clone()),
-            sequencing_mode: SequencingMode::DirectTo,
-            direct_to: Some(DirectToState {
-                start: NavRef::LatLon(from_position),
-                target: target_leg.to.clone(),
-                target_component_uid: None,
-                target_leg_id: Some(target_leg.id.clone()),
-                resume_leg_id,
-            }),
-            suspend_reason: None,
         }),
         ..plan
     })
@@ -1586,12 +1678,8 @@ pub fn sequence_active_leg(plan: &FlightPlan) -> AppResult<FlightPlan> {
                 message: "direct-to sequencing mode requires direct-to state".to_string(),
             })?;
 
-            match direct_to
-                .resume_leg_id
-                .as_deref()
-                .and_then(|resume_leg_id| leg_index_by_id(&plan.resolved_legs, resume_leg_id))
+            match direct_to_resume_leg_index(&plan, &direct_to)
                 .filter(|index| plan.resolved_legs[*index].from == direct_to.target)
-                .or_else(|| direct_to_resume_leg_index(&plan, &direct_to))
             {
                 Some(resume_leg_index) => GuidanceState {
                     active_leg_index: resume_leg_index,
@@ -1608,24 +1696,14 @@ pub fn sequence_active_leg(plan: &FlightPlan) -> AppResult<FlightPlan> {
                     suspend_reason: None,
                 },
                 None => GuidanceState {
-                    active_leg_index: direct_to
-                        .target_leg_id
-                        .as_deref()
-                        .and_then(|target_leg_id| {
-                            leg_index_by_id(&plan.resolved_legs, target_leg_id)
-                        })
+                    active_leg_index: direct_to_target_leg_index(&plan, &direct_to)
                         .unwrap_or(guidance.active_leg_index),
-                    active_detail_index: direct_to
-                        .target_leg_id
-                        .as_deref()
-                        .and_then(|target_leg_id| {
-                            leg_index_by_id(&plan.resolved_legs, target_leg_id)
-                        })
+                    active_detail_index: direct_to_target_leg_index(&plan, &direct_to)
                         .and_then(|index| first_guidance_detail_index_for_leg(&plan, index))
                         .or(guidance.active_detail_index),
-                    display_split_leg_id: direct_to
-                        .target_leg_id
-                        .clone()
+                    display_split_leg_id: direct_to_target_leg_index(&plan, &direct_to)
+                        .and_then(|index| plan.resolved_legs.get(index))
+                        .map(|leg| leg.id.clone())
                         .or_else(|| guidance.display_split_leg_id.clone()),
                     sequencing_mode: SequencingMode::Suspended,
                     direct_to: None,
@@ -1894,7 +1972,7 @@ fn project_flight_plan_controls(plan: &FlightPlan) -> Vec<FlightPlanControlUiVie
                 && guidance
                     .direct_to
                     .as_ref()
-                    .is_some_and(|direct_to| !direct_to_on_plan(plan, direct_to));
+                    .is_some_and(|direct_to| !direct_to.target_row.is_planned());
             let can_sequence_active_leg = match guidance.sequencing_mode {
                 SequencingMode::DirectTo => guidance.direct_to.is_some(),
                 SequencingMode::FollowPlan => !plan.resolved_legs.is_empty(),
@@ -1969,18 +2047,14 @@ fn project_flight_plan_controls(plan: &FlightPlan) -> Vec<FlightPlanControlUiVie
     ]
 }
 
-pub fn project_ui_state(plan: &FlightPlan) -> FlightPlanUiState {
-    let plan = plan.clone().normalized();
+fn project_component_ui_views(
+    plan: &FlightPlan,
+    active_component_index: Option<usize>,
+) -> Vec<RouteComponentUiView> {
     let grouped_legs = grouped_component_legs(&plan);
     let projected_items =
         dedupe_component_items_for_projection(&plan.route_components, &grouped_legs);
-    let active_component_index = plan
-        .guidance
-        .as_ref()
-        .and_then(|guidance| active_component_index_for_guidance(&plan, guidance));
-
-    let components: Vec<RouteComponentUiView> = plan
-        .route_components
+    plan.route_components
         .iter()
         .enumerate()
         .map(|(component_index, component)| {
@@ -2031,7 +2105,21 @@ pub fn project_ui_state(plan: &FlightPlan) -> FlightPlanUiState {
                 following_waypoint,
             }
         })
-        .collect();
+        .collect()
+}
+
+pub(crate) fn project_identity_rows(plan: &FlightPlan) -> Vec<FlightPlanDisplayRowUiView> {
+    let components = project_component_ui_views(plan, None);
+    project_display_rows(plan, &components, &[])
+}
+
+pub fn project_ui_state(plan: &FlightPlan) -> FlightPlanUiState {
+    let plan = plan.clone().normalized();
+    let active_component_index = plan
+        .guidance
+        .as_ref()
+        .and_then(|guidance| active_component_index_for_guidance(&plan, guidance));
+    let components = project_component_ui_views(&plan, active_component_index);
 
     let resolved_legs: Vec<ResolvedLegUiView> = plan
         .resolved_legs
@@ -2069,17 +2157,6 @@ pub fn project_ui_state(plan: &FlightPlan) -> FlightPlanUiState {
         } else {
             Some(guidance.active_leg_index)
         },
-        display_split_leg_index: if plan.resolved_legs.is_empty() {
-            None
-        } else if active_guidance_leg(&plan).is_some() {
-            Some(guidance.active_leg_index)
-        } else {
-            guidance
-                .display_split_leg_id
-                .as_deref()
-                .and_then(|leg_id| leg_index_by_id(&plan.resolved_legs, leg_id))
-                .or(Some(0))
-        },
         active_from_row_uid,
         active_to_row_uid,
         active_component_index,
@@ -2088,10 +2165,8 @@ pub fn project_ui_state(plan: &FlightPlan) -> FlightPlanUiState {
         direct_to: guidance.direct_to.as_ref().map(|direct_to| DirectToUiView {
             start: direct_to.start.clone(),
             target: direct_to.target.clone(),
-            target_component_uid: direct_to.target_component_uid.clone(),
-            target_leg_id: direct_to.target_leg_id.clone(),
-            resume_leg_id: direct_to.resume_leg_id.clone(),
-            on_plan_target: direct_to_on_plan(&plan, direct_to),
+            target_row_id: direct_to.target_row.row_id().clone(),
+            on_plan_target: direct_to.target_row.is_planned(),
         }),
         suspend_boundary_after_active_leg: should_suspend_after_active_leg(
             &plan,
@@ -2467,7 +2542,7 @@ fn project_display_rows(
 
     if let Some(direct_to) = direct_to.filter(|_| direct_to_overlay) {
         let chart_airport_id = airport_id_from_nav_ref(&direct_to.target);
-        let uid = format!("direct-to:{}", nav_ref_key(&direct_to.target));
+        let uid = direct_to.target_row.row_id().0.clone();
         rows.push(FlightPlanDisplayRowUiView {
             uid: uid.clone(),
             label: nav_ref_label(&direct_to.target),
@@ -2602,33 +2677,10 @@ fn active_guidance_row_uids(
     }
 
     let to_index = match guidance.sequencing_mode {
-        SequencingMode::DirectTo => {
-            let direct_to = guidance.direct_to.as_ref();
-            direct_to
-                .and_then(|state| state.target_component_uid.as_deref())
-                .and_then(|component_uid| {
-                    rows.iter().position(|row| {
-                        row.row_kind == FlightPlanDisplayRowKind::Waypoint
-                            && row.component_uid.as_deref() == Some(component_uid)
-                            && row.nav_ref.as_ref() == Some(&active_leg.to)
-                    })
-                })
-                .or_else(|| {
-                    direct_to
-                        .and_then(|state| state.target_leg_id.as_deref())
-                        .and_then(|target_leg_id| {
-                            leg_index_by_id(&plan.resolved_legs, target_leg_id)
-                        })
-                        .and_then(|leg_index| {
-                            rows.iter().position(|row| {
-                                row.row_kind == FlightPlanDisplayRowKind::Waypoint
-                                    && row.leg_index == Some(leg_index)
-                                    && row.nav_ref.as_ref() == Some(&active_leg.to)
-                            })
-                        })
-                })
-                .or_else(|| waypoint_row_index_by_nav_ref(rows, &active_leg.to))
-        }
+        SequencingMode::DirectTo => guidance.direct_to.as_ref().and_then(|direct_to| {
+            rows.iter()
+                .position(|row| row.uid == direct_to.target_row.row_id().as_str())
+        }),
         SequencingMode::FollowPlan | SequencingMode::Suspended => rows.iter().position(|row| {
             row.row_kind == FlightPlanDisplayRowKind::Waypoint
                 && row.leg_index == Some(guidance.active_leg_index)
@@ -2691,15 +2743,6 @@ pub fn terminal_hold_start_detail_index_for_leg(
         .into_iter()
         .find(|detail| detail.leg_index == leg_index && detail.element_index == hold_start_element)
         .map(|detail| detail.detail_index)
-}
-
-fn waypoint_row_index_by_nav_ref(
-    rows: &[FlightPlanDisplayRowUiView],
-    nav_ref: &NavRef,
-) -> Option<usize> {
-    rows.iter().position(|row| {
-        row.row_kind == FlightPlanDisplayRowKind::Waypoint && row.nav_ref.as_ref() == Some(nav_ref)
-    })
 }
 
 fn replaceable_procedure_component_before(
@@ -2867,13 +2910,7 @@ fn top_level_waypoint_row_leg_index(plan: &FlightPlan, component_index: usize) -
                 && match leg.source {
                     ResolvedLegSource::RouteComponent {
                         component_index: source_component_index,
-                    } => {
-                        source_component_index + 1 == component_index
-                            && matches!(
-                                plan.route_components.get(source_component_index),
-                                Some(RouteComponent::Waypoint { .. })
-                            )
-                    }
+                    } => source_component_index + 1 == component_index,
                     ResolvedLegSource::SyntheticBridge {
                         to_component_index, ..
                     } => to_component_index == component_index,
@@ -3322,7 +3359,7 @@ fn rebuild_plan_from_uid_components(
     old_plan: &FlightPlan,
     rebuilt_components: Vec<RebuiltRouteComponent>,
     guidance_policy: GuidanceRebuildPolicy,
-) -> FlightPlan {
+) -> AppResult<FlightPlan> {
     let old_plan = old_plan.clone().normalized();
     let old_guidance = old_plan.guidance.clone();
     let active_anchor = (guidance_policy == GuidanceRebuildPolicy::PreserveByRowUid)
@@ -3333,7 +3370,6 @@ fn rebuild_plan_from_uid_components(
     let resolved_legs =
         rebuild_resolved_legs_with_grouped_components(&route_components, &grouped_legs);
     let mut plan = FlightPlan {
-        legs: Vec::new(),
         route_components,
         route_component_uids,
         route_component_uid_counter,
@@ -3344,13 +3380,12 @@ fn rebuild_plan_from_uid_components(
     .normalized();
     plan.guidance = match guidance_policy {
         GuidanceRebuildPolicy::PreserveByRowUid => match active_anchor {
-            Some(anchor) => restore_guidance_from_row_uid_anchor(&plan, &anchor),
-            // Direct-to and other states without row anchors keep the old bounded-index behavior.
-            None => revalidate_guidance_after_plan_edit(old_guidance, &plan),
+            Some(anchor) => restore_guidance_from_row_uid_anchor(&plan, &anchor)?,
+            None => revalidate_guidance_after_plan_edit(old_guidance, &plan)?,
         },
         GuidanceRebuildPolicy::Clear => None,
     };
-    plan
+    Ok(plan)
 }
 
 pub(crate) fn rebuild_plan_with_nav_materializations(
@@ -3376,11 +3411,11 @@ pub(crate) fn rebuild_plan_with_nav_materializations(
             }
         })
         .collect();
-    Ok(rebuild_plan_from_uid_components(
+    rebuild_plan_from_uid_components(
         &plan,
         rebuilt_components,
         GuidanceRebuildPolicy::PreserveByRowUid,
-    ))
+    )
 }
 
 fn allocate_route_component_uid(next_counter: &mut u64) -> String {
@@ -3448,9 +3483,9 @@ fn capture_active_guidance_anchor(plan: &FlightPlan) -> Option<ActiveGuidanceAnc
 fn restore_guidance_from_row_uid_anchor(
     plan: &FlightPlan,
     anchor: &ActiveGuidanceAnchor,
-) -> Option<GuidanceState> {
+) -> AppResult<Option<GuidanceState>> {
     if anchor.to_row_uid.is_none() {
-        return None;
+        return Ok(None);
     }
 
     for leg_index in 0..plan.resolved_legs.len() {
@@ -3472,7 +3507,7 @@ fn restore_guidance_from_row_uid_anchor(
         }
     }
 
-    None
+    Ok(None)
 }
 
 fn active_detail_index_for_restored_leg(
@@ -3565,11 +3600,11 @@ pub fn delete_component(plan: &FlightPlan, component_index: usize) -> AppResult<
         ));
     }
 
-    Ok(rebuild_plan_from_uid_components(
+    rebuild_plan_from_uid_components(
         &plan,
         rebuilt_components,
         GuidanceRebuildPolicy::PreserveByRowUid,
-    ))
+    )
 }
 
 fn airway_points_and_legs(
@@ -3651,11 +3686,11 @@ fn rebuild_with_airway_replacement(
         ));
     }
 
-    Ok(rebuild_plan_from_uid_components(
+    rebuild_plan_from_uid_components(
         &plan,
         rebuilt_components,
         GuidanceRebuildPolicy::PreserveByRowUid,
-    ))
+    )
 }
 
 fn airway_replacement_from_remaining_points(
@@ -3790,11 +3825,11 @@ pub fn remove_all_above(plan: &FlightPlan, component_index: usize) -> AppResult<
         .map(|old_index| rebuilt_existing_component(&plan, &old_grouped_legs, old_index))
         .collect::<Vec<_>>();
 
-    Ok(rebuild_plan_from_uid_components(
+    rebuild_plan_from_uid_components(
         &plan,
         rebuilt_components,
         GuidanceRebuildPolicy::PreserveByRowUid,
-    ))
+    )
 }
 
 pub fn delete_waypoint_component(
@@ -3851,26 +3886,7 @@ pub fn flight_plan_has_direct_to_overlay(plan: &FlightPlan) -> bool {
             .then_some(guidance.direct_to.as_ref())
             .flatten()
     });
-    direct_to
-        .as_ref()
-        .is_some_and(|state| !direct_to_on_plan(plan, state))
-}
-
-fn direct_to_on_plan(plan: &FlightPlan, direct_to: &DirectToState) -> bool {
-    direct_to
-        .target_component_uid
-        .as_ref()
-        .is_some_and(|target_uid| {
-            plan.route_component_uids
-                .iter()
-                .zip(&plan.route_components)
-                .any(|(uid, component)| {
-                    uid == target_uid
-                        && matches!(component, RouteComponent::Waypoint { waypoint } if waypoint == &direct_to.target)
-                })
-        })
-        || direct_to.target_leg_id.is_some()
-        || flight_plan_contains_nav_ref(plan, &direct_to.target)
+    direct_to.is_some_and(|state| !state.target_row.is_planned())
 }
 
 pub fn top_level_waypoint_component_index(plan: &FlightPlan, nav_ref: &NavRef) -> Option<usize> {
@@ -3917,11 +3933,11 @@ pub fn insert_waypoint(
         }
     }
 
-    Ok(rebuild_plan_from_uid_components(
+    rebuild_plan_from_uid_components(
         &plan,
         rebuilt_components,
         GuidanceRebuildPolicy::PreserveByRowUid,
-    ))
+    )
 }
 
 pub fn move_component(
@@ -3958,11 +3974,11 @@ pub fn move_component(
         .map(|old_index| rebuilt_existing_component(&plan, &old_grouped_legs, old_index))
         .collect::<Vec<_>>();
 
-    Ok(rebuild_plan_from_uid_components(
+    rebuild_plan_from_uid_components(
         &plan,
         rebuilt_components,
         GuidanceRebuildPolicy::PreserveByRowUid,
-    ))
+    )
 }
 
 pub fn flatten_component_to_waypoints(
@@ -4014,11 +4030,11 @@ pub fn flatten_component_to_waypoints(
         ));
     }
 
-    Ok(rebuild_plan_from_uid_components(
+    rebuild_plan_from_uid_components(
         &plan,
         rebuilt_components,
         GuidanceRebuildPolicy::PreserveByRowUid,
-    ))
+    )
 }
 
 pub fn insert_airway_between_waypoints(
@@ -4130,7 +4146,7 @@ pub fn insert_airway_between_waypoints(
         &plan,
         rebuilt_components,
         GuidanceRebuildPolicy::PreserveByRowUid,
-    );
+    )?;
     if rebuilt.resolved_legs.is_empty() {
         return Err(AppError {
             kind: AppErrorKind::InvalidFlightPlan,
@@ -4203,7 +4219,7 @@ pub fn insert_airway_after_waypoint(
         &plan,
         rebuilt_components,
         GuidanceRebuildPolicy::PreserveByRowUid,
-    );
+    )?;
     if rebuilt.resolved_legs.is_empty() {
         return Err(AppError {
             kind: AppErrorKind::InvalidFlightPlan,
@@ -4274,7 +4290,7 @@ pub fn insert_airway_after_airway(
         &plan,
         rebuilt_components,
         GuidanceRebuildPolicy::PreserveByRowUid,
-    );
+    )?;
     if rebuilt.resolved_legs.is_empty() {
         return Err(AppError {
             kind: AppErrorKind::InvalidFlightPlan,
@@ -4375,7 +4391,7 @@ pub fn insert_procedure_between_waypoints(
         &plan,
         rebuilt_components,
         GuidanceRebuildPolicy::PreserveByRowUid,
-    );
+    )?;
     if rebuilt.resolved_legs.is_empty() {
         return Err(AppError {
             kind: AppErrorKind::InvalidFlightPlan,
@@ -4443,7 +4459,7 @@ pub fn insert_initial_procedure_before_airport(
         &plan,
         rebuilt_components,
         GuidanceRebuildPolicy::PreserveByRowUid,
-    );
+    )?;
     if rebuilt.resolved_legs.is_empty() {
         return Err(AppError {
             kind: AppErrorKind::InvalidFlightPlan,
@@ -4528,7 +4544,7 @@ pub fn replace_airway_component(
         &plan,
         rebuilt_components,
         GuidanceRebuildPolicy::PreserveByRowUid,
-    );
+    )?;
     if rebuilt.resolved_legs.is_empty() {
         return Err(AppError {
             kind: AppErrorKind::InvalidFlightPlan,
@@ -4587,7 +4603,7 @@ pub fn replace_procedure_component(
         .collect::<Vec<_>>();
 
     let rebuilt =
-        rebuild_plan_from_uid_components(&plan, rebuilt_components, GuidanceRebuildPolicy::Clear);
+        rebuild_plan_from_uid_components(&plan, rebuilt_components, GuidanceRebuildPolicy::Clear)?;
     if rebuilt.resolved_legs.is_empty() {
         return Err(AppError {
             kind: AppErrorKind::InvalidFlightPlan,
@@ -4975,14 +4991,8 @@ fn active_component_index_for_guidance(
         SequencingMode::DirectTo => guidance
             .direct_to
             .as_ref()
-            .and_then(|direct_to| direct_to.target_leg_id.as_deref())
-            .and_then(|leg_id| leg_index_by_id(&plan.resolved_legs, leg_id))
-            .and_then(
-                |leg_index| match plan.resolved_legs.get(leg_index)?.source {
-                    ResolvedLegSource::RouteComponent { component_index } => Some(component_index),
-                    ResolvedLegSource::SyntheticBridge { .. } => None,
-                },
-            ),
+            .and_then(|direct_to| direct_to_target_row(plan, direct_to))
+            .and_then(|row| row.component_index),
         SequencingMode::FollowPlan | SequencingMode::Suspended => {
             match plan.resolved_legs.get(guidance.active_leg_index)?.source {
                 ResolvedLegSource::RouteComponent { component_index } => Some(component_index),
@@ -5113,58 +5123,45 @@ fn leg_starts_at_route_component(leg: &ResolvedLeg, component_index: usize) -> b
     }
 }
 
-fn direct_to_resume_leg_index(plan: &FlightPlan, direct_to: &DirectToState) -> Option<usize> {
-    if let Some(resume_leg_index) = direct_to
-        .resume_leg_id
-        .as_deref()
-        .and_then(|resume_leg_id| leg_index_by_id(&plan.resolved_legs, resume_leg_id))
-        .filter(|index| plan.resolved_legs[*index].from == direct_to.target)
-    {
-        return Some(resume_leg_index);
-    }
-
-    if let Some(target_component_uid) = direct_to.target_component_uid.as_deref() {
-        let target_component_index = plan
-            .route_component_uids
-            .iter()
-            .position(|uid| uid == target_component_uid)?;
-        let Some(RouteComponent::Waypoint { waypoint }) =
-            plan.route_components.get(target_component_index)
-        else {
-            return None;
-        };
-        if waypoint != &direct_to.target {
-            return None;
-        }
-        return plan.resolved_legs.iter().position(|leg| {
-            leg.from == direct_to.target
-                && leg_starts_at_route_component(leg, target_component_index)
-        });
-    }
-
-    if direct_to.target_leg_id.is_none() {
-        return plan
-            .resolved_legs
-            .iter()
-            .position(|leg| leg.from == direct_to.target);
-    }
-
-    None
+fn direct_to_target_row(
+    plan: &FlightPlan,
+    direct_to: &DirectToState,
+) -> Option<FlightPlanDisplayRowUiView> {
+    let DirectToTargetRow::Planned { row_id } = &direct_to.target_row else {
+        return None;
+    };
+    project_identity_rows(plan)
+        .into_iter()
+        .find(|row| row.uid == row_id.as_str())
 }
 
-// Plan edits should reach this only through rebuild_plan_from_uid_components().
-// For active guidance legs, that helper first restores by stable display-row UID;
-// this bounded-index fallback is only for states that cannot be row-anchored.
+fn direct_to_target_leg_index(plan: &FlightPlan, direct_to: &DirectToState) -> Option<usize> {
+    direct_to_target_row(plan, direct_to).and_then(|row| row.leg_index)
+}
+
+pub(crate) fn direct_to_resume_leg_index(
+    plan: &FlightPlan,
+    direct_to: &DirectToState,
+) -> Option<usize> {
+    let resume_row_id = direct_to.resume_row_id.as_ref()?;
+    project_identity_rows(plan)
+        .into_iter()
+        .find(|row| row.uid == resume_row_id.as_str())
+        .and_then(|row| row.leg_index)
+}
+
 fn revalidate_guidance_after_plan_edit(
     guidance: Option<GuidanceState>,
     plan: &FlightPlan,
-) -> Option<GuidanceState> {
+) -> AppResult<Option<GuidanceState>> {
     let resolved_legs = &plan.resolved_legs;
     if resolved_legs.is_empty() {
-        return None;
+        return Ok(None);
     }
 
-    let mut guidance = guidance?;
+    let Some(mut guidance) = guidance else {
+        return Ok(None);
+    };
 
     if guidance.active_leg_index >= resolved_legs.len() {
         guidance.active_leg_index = resolved_legs.len().saturating_sub(1);
@@ -5203,23 +5200,38 @@ fn revalidate_guidance_after_plan_edit(
     }
 
     if let Some(direct_to) = guidance.direct_to.as_mut() {
-        let target_leg_index = direct_to
-            .target_leg_id
-            .as_deref()
-            .and_then(|target_leg_id| leg_index_by_id(resolved_legs, target_leg_id))
-            .filter(|index| resolved_legs[*index].to == direct_to.target);
-        let resume_leg_index = direct_to_resume_leg_index(plan, direct_to);
-
-        if let Some(target_leg_index) = target_leg_index {
+        let target_row = direct_to_target_row(plan, direct_to);
+        if let Some(target_leg_index) = target_row.as_ref().and_then(|row| row.leg_index) {
             guidance.active_leg_index = target_leg_index;
-        } else {
-            direct_to.target_leg_id = None;
         }
-
-        direct_to.resume_leg_id = resume_leg_index.map(|index| resolved_legs[index].id.clone());
+        if target_row.is_none() && direct_to.target_row.is_planned() {
+            direct_to.target_row = DirectToTargetRow::Temporary {
+                row_id: direct_to.target_row.row_id().clone(),
+            };
+            direct_to.resume_row_id = None;
+        } else {
+            direct_to.resume_row_id = target_row
+                .map(|row| {
+                    let resume_leg_index = if let Some(target_leg_index) = row.leg_index {
+                        resume_leg_index_after_leg(plan, target_leg_index)
+                    } else {
+                        row.component_index.and_then(|component_index| {
+                            resolved_legs.iter().position(|leg| {
+                                leg_starts_at_route_component(leg, component_index)
+                                    && leg.from == direct_to.target
+                            })
+                        })
+                    };
+                    resume_leg_index
+                        .map(|leg_index| planned_row_id_for_leg_index(plan, leg_index))
+                        .transpose()
+                })
+                .transpose()?
+                .flatten();
+        }
     }
 
-    Some(guidance)
+    Ok(Some(guidance))
 }
 
 fn should_suspend_after_active_leg(plan: &FlightPlan, active_leg_index: usize) -> bool {
@@ -5252,19 +5264,57 @@ fn should_suspend_after_active_leg(plan: &FlightPlan, active_leg_index: usize) -
     last_leg_for_component == Some(active_leg_index)
 }
 
-fn resume_leg_id_after_leg(plan: &FlightPlan, leg_index: usize) -> Option<String> {
+fn resume_leg_index_after_leg(plan: &FlightPlan, leg_index: usize) -> Option<usize> {
     if should_suspend_after_active_leg(plan, leg_index) {
         return None;
     }
 
-    plan.resolved_legs
-        .get(leg_index + 1)
-        .map(|leg| leg.id.clone())
+    plan.resolved_legs.get(leg_index + 1).map(|_| leg_index + 1)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn activate_direct_to_test_leg(
+        plan: &FlightPlan,
+        from_position: LatLon,
+        fixture_leg_id: &str,
+    ) -> AppResult<FlightPlan> {
+        let plan = plan.clone().normalized();
+        let leg_index = plan
+            .resolved_legs
+            .iter()
+            .position(|leg| leg.id == fixture_leg_id)
+            .ok_or_else(|| AppError {
+                kind: AppErrorKind::InvalidFlightPlan,
+                message: format!("test fixture leg does not exist: {fixture_leg_id}"),
+            })?;
+        let row_id = planned_row_id_for_leg_index(&plan, leg_index)?;
+        activate_direct_to_row(&plan, from_position, &row_id)
+    }
+
+    fn activate_direct_to_test_component(
+        plan: &FlightPlan,
+        from_position: LatLon,
+        component_index: usize,
+    ) -> AppResult<FlightPlan> {
+        let plan = plan.clone().normalized();
+        let row = project_identity_rows(&plan)
+            .into_iter()
+            .find(|row| {
+                row.row_kind == FlightPlanDisplayRowKind::Waypoint
+                    && row.depth == 0
+                    && row.component_index == Some(component_index)
+            })
+            .ok_or_else(|| AppError {
+                kind: AppErrorKind::InvalidFlightPlan,
+                message: format!(
+                    "test component does not project to a top-level waypoint row: {component_index}"
+                ),
+            })?;
+        activate_direct_to_row(&plan, from_position, &FlightPlanRowId(row.uid))
+    }
 
     #[test]
     fn empty_flight_plan_is_valid_startup_state() {
@@ -5289,7 +5339,6 @@ mod tests {
         FlightPlan {
             id: "plan-1".to_string(),
             name: "Airway".to_string(),
-            legs: Vec::new(),
             route_components: vec![
                 RouteComponent::Waypoint {
                     waypoint: NavRef::Airport("KBOS".to_string()),
@@ -5388,7 +5437,6 @@ mod tests {
         FlightPlan {
             id: "plan-seeded".to_string(),
             name: "Seeded".to_string(),
-            legs: Vec::new(),
             route_components,
             route_component_uids: Vec::new(),
             route_component_uid_counter: 0,
@@ -5453,7 +5501,6 @@ mod tests {
         FlightPlan {
             id: "plan-2".to_string(),
             name: "Waypoint only".to_string(),
-            legs: Vec::new(),
             route_components: vec![
                 RouteComponent::Waypoint {
                     waypoint: NavRef::Airport("KRNT".to_string()),
@@ -5498,7 +5545,6 @@ mod tests {
         FlightPlan {
             id: "plan-3".to_string(),
             name: "Guided".to_string(),
-            legs: Vec::new(),
             route_components: vec![
                 RouteComponent::Waypoint {
                     waypoint: NavRef::Airport("KRNT".to_string()),
@@ -5588,7 +5634,6 @@ mod tests {
         FlightPlan {
             id: "plan-dup".to_string(),
             name: "Duplicate waypoint".to_string(),
-            legs: Vec::new(),
             route_components: vec![
                 RouteComponent::Waypoint {
                     waypoint: NavRef::Airport("KAAA".to_string()),
@@ -5820,7 +5865,6 @@ mod tests {
         FlightPlan {
             id: "task-6".to_string(),
             name: "KRNT SEA V2 ELN KYKM".to_string(),
-            legs: Vec::new(),
             route_components,
             route_component_uids: Vec::new(),
             route_component_uid_counter: 0,
@@ -5976,7 +6020,6 @@ mod tests {
         FlightPlan {
             id: "plan-v165".to_string(),
             name: "V165 explicit endpoints".to_string(),
-            legs: Vec::new(),
             route_components: vec![
                 RouteComponent::Waypoint {
                     waypoint: NavRef::Airport("KOLM".to_string()),
@@ -6030,7 +6073,6 @@ mod tests {
         FlightPlan {
             id: "plan-2pt".to_string(),
             name: "Two waypoint".to_string(),
-            legs: Vec::new(),
             route_components: vec![
                 RouteComponent::Waypoint {
                     waypoint: NavRef::Airport("KRNT".to_string()),
@@ -6063,7 +6105,6 @@ mod tests {
         FlightPlan {
             id: "plan-4pt".to_string(),
             name: "Four waypoint".to_string(),
-            legs: Vec::new(),
             route_components: vec![
                 RouteComponent::Waypoint {
                     waypoint: NavRef::Airport("KRNT".to_string()),
@@ -6118,7 +6159,6 @@ mod tests {
         FlightPlan {
             id: "plan-1pt".to_string(),
             name: "Single waypoint".to_string(),
-            legs: Vec::new(),
             route_components: vec![RouteComponent::Waypoint {
                 waypoint: NavRef::Airport("KRNT".to_string()),
             }],
@@ -6614,7 +6654,6 @@ mod tests {
         let plan = FlightPlan {
             id: "plan-star".to_string(),
             name: "STAR".to_string(),
-            legs: Vec::new(),
             route_components: vec![
                 RouteComponent::Waypoint {
                     waypoint: NavRef::Fix("ARD".to_string()),
@@ -6733,8 +6772,9 @@ mod tests {
             })
         );
         assert_eq!(direct_to.target, NavRef::Fix("OLM".to_string()));
-        assert_eq!(direct_to.target_leg_id.as_deref(), Some("component-1-2"));
-        assert_eq!(direct_to.resume_leg_id.as_deref(), Some("component-2-3"));
+        assert!(direct_to.target_row.is_planned());
+        assert_eq!(direct_to_target_leg_index(&activated, direct_to), Some(1));
+        assert_eq!(direct_to_resume_leg_index(&activated, direct_to), Some(2));
 
         let active_leg = active_guidance_leg(&activated).unwrap();
         assert_eq!(
@@ -6774,6 +6814,17 @@ mod tests {
     #[test]
     fn direct_to_canonical_navaid_resumes_underlying_plan() {
         let plan = FlightPlan {
+            route_components: vec![
+                RouteComponent::Waypoint {
+                    waypoint: NavRef::Fix("SPUUD".to_string()),
+                },
+                RouteComponent::Waypoint {
+                    waypoint: NavRef::Navaid("PDT".to_string()),
+                },
+                RouteComponent::Waypoint {
+                    waypoint: NavRef::Fix("CORDO".to_string()),
+                },
+            ],
             resolved_legs: vec![
                 ResolvedLeg {
                     id: "v4-spuud-pdt".to_string(),
@@ -6786,7 +6837,7 @@ mod tests {
                     id: "v4-pdt-cordo".to_string(),
                     from: NavRef::Navaid("PDT".to_string()),
                     to: NavRef::Fix("CORDO".to_string()),
-                    source: ResolvedLegSource::RouteComponent { component_index: 0 },
+                    source: ResolvedLegSource::RouteComponent { component_index: 1 },
                     procedure_provenance: None,
                 },
             ],
@@ -6816,8 +6867,9 @@ mod tests {
             .as_ref()
             .and_then(|guidance| guidance.direct_to.as_ref())
             .expect("direct-to state");
-        assert_eq!(direct_to.target_leg_id.as_deref(), Some("v4-spuud-pdt"));
-        assert_eq!(direct_to.resume_leg_id.as_deref(), Some("v4-pdt-cordo"));
+        assert!(direct_to.target_row.is_planned());
+        assert_eq!(direct_to_target_leg_index(&activated, direct_to), Some(0));
+        assert_eq!(direct_to_resume_leg_index(&activated, direct_to), Some(1));
 
         let sequenced = sequence_active_leg(&activated).expect("sequence direct-to");
         let guidance = sequenced.guidance.as_ref().expect("sequenced guidance");
@@ -6860,8 +6912,8 @@ mod tests {
 
         let guidance = activated.guidance.as_ref().unwrap();
         assert_eq!(guidance.sequencing_mode, SequencingMode::DirectTo);
-        assert_eq!(guidance.direct_to.as_ref().unwrap().target_leg_id, None);
-        assert_eq!(guidance.direct_to.as_ref().unwrap().resume_leg_id, None);
+        assert!(!guidance.direct_to.as_ref().unwrap().target_row.is_planned());
+        assert_eq!(guidance.direct_to.as_ref().unwrap().resume_row_id, None);
 
         let sequenced = sequence_active_leg(&activated).unwrap();
         let guidance = sequenced.guidance.as_ref().unwrap();
@@ -7000,7 +7052,6 @@ mod tests {
         let plan = FlightPlan {
             id: "khvr-hold-active".to_string(),
             name: "KHVR hold active".to_string(),
-            legs: Vec::new(),
             route_components: vec![RouteComponent::Procedure {
                 procedure: ProcedureSegment {
                     airport_id: AirportId("KHVR".to_string()),
@@ -7063,7 +7114,6 @@ mod tests {
         let plan = FlightPlan {
             id: "plan-proc-seq".to_string(),
             name: "Procedure sequencing".to_string(),
-            legs: Vec::new(),
             route_components: vec![
                 RouteComponent::Waypoint {
                     waypoint: NavRef::Airport("KAAA".to_string()),
@@ -7267,8 +7317,8 @@ mod tests {
     }
 
     #[test]
-    fn activate_direct_to_leg_can_target_specific_duplicate_waypoint_occurrence() {
-        let activated = activate_direct_to_leg(
+    fn activate_direct_to_row_can_target_specific_duplicate_waypoint_occurrence() {
+        let activated = activate_direct_to_test_leg(
             &sample_duplicate_waypoint_plan(),
             LatLon {
                 lat: 42.0,
@@ -7282,13 +7332,14 @@ mod tests {
         let direct_to = guidance.direct_to.as_ref().unwrap();
         assert_eq!(guidance.active_leg_index, 2);
         assert_eq!(direct_to.target, NavRef::Fix("IAF".to_string()));
-        assert_eq!(direct_to.target_leg_id.as_deref(), Some("component-2-3"));
-        assert_eq!(direct_to.resume_leg_id.as_deref(), Some("component-3-4"));
+        assert!(direct_to.target_row.is_planned());
+        assert_eq!(direct_to_target_leg_index(&activated, direct_to), Some(2));
+        assert_eq!(direct_to_resume_leg_index(&activated, direct_to), Some(3));
     }
 
     #[test]
     fn plan_edit_that_removes_targeted_occurrence_degrades_direct_to_to_off_plan() {
-        let activated = activate_direct_to_leg(
+        let activated = activate_direct_to_test_leg(
             &sample_duplicate_waypoint_plan(),
             LatLon {
                 lat: 42.0,
@@ -7298,14 +7349,14 @@ mod tests {
         )
         .unwrap();
 
-        let edited = delete_waypoint_component(&activated, 2).unwrap();
+        let edited = delete_waypoint_component(&activated, 3).unwrap();
 
         let guidance = edited.guidance.as_ref().unwrap();
         let direct_to = guidance.direct_to.as_ref().unwrap();
         assert_eq!(guidance.sequencing_mode, SequencingMode::DirectTo);
         assert_eq!(direct_to.target, NavRef::Fix("IAF".to_string()));
-        assert!(direct_to.target_leg_id.is_none());
-        assert!(direct_to.resume_leg_id.is_none());
+        assert!(!direct_to.target_row.is_planned());
+        assert!(direct_to.resume_row_id.is_none());
     }
 
     #[test]
@@ -8336,7 +8387,7 @@ mod tests {
 
     #[test]
     fn project_ui_state_exposes_direct_to_without_ui_recomputing_on_plan_status() {
-        let activated = activate_direct_to_leg(
+        let activated = activate_direct_to_test_leg(
             &sample_duplicate_waypoint_plan(),
             LatLon {
                 lat: 42.0,
@@ -8350,11 +8401,14 @@ mod tests {
 
         let guidance = ui.guidance.as_ref().unwrap();
         assert_eq!(guidance.sequencing_mode, SequencingMode::DirectTo);
-        assert_eq!(guidance.active_component_index, Some(2));
+        assert_eq!(guidance.active_component_index, Some(3));
         let direct_to = guidance.direct_to.as_ref().unwrap();
         assert!(direct_to.on_plan_target);
         assert_eq!(direct_to.target, NavRef::Fix("IAF".to_string()));
-        assert_eq!(direct_to.target_leg_id.as_deref(), Some("component-2-3"));
+        assert_eq!(
+            guidance.active_to_row_uid.as_deref(),
+            Some(direct_to.target_row_id.as_str())
+        );
     }
 
     #[test]
@@ -8544,10 +8598,12 @@ mod tests {
         .unwrap();
         let revalidated =
             revalidate_guidance_after_plan_edit(activated.guidance.clone(), &activated)
+                .expect("revalidation succeeds")
                 .expect("revalidated guidance");
         let direct_to = revalidated.direct_to.as_ref().expect("direct-to state");
-        assert_eq!(direct_to.target_leg_id, None);
-        assert_eq!(direct_to.resume_leg_id.as_deref(), Some("component-0-1"));
+        assert!(direct_to.target_row.is_planned());
+        assert_eq!(direct_to_target_leg_index(&activated, direct_to), None);
+        assert_eq!(direct_to_resume_leg_index(&activated, direct_to), Some(0));
 
         let sequenced = sequence_active_detail(&FlightPlan {
             guidance: Some(revalidated),
@@ -8572,7 +8628,7 @@ mod tests {
 
     #[test]
     fn direct_to_route_origin_component_survives_guidance_revalidation_and_resumes_route() {
-        let activated = activate_direct_to_component(
+        let activated = activate_direct_to_test_component(
             &sample_guided_waypoint_plan(),
             LatLon {
                 lat: 47.5,
@@ -8583,14 +8639,12 @@ mod tests {
         .unwrap();
         let revalidated =
             revalidate_guidance_after_plan_edit(activated.guidance.clone(), &activated)
+                .expect("revalidation succeeds")
                 .expect("revalidated guidance");
         let direct_to = revalidated.direct_to.as_ref().expect("direct-to state");
-        assert_eq!(
-            direct_to.target_component_uid.as_deref(),
-            Some("fpc:0000000000000000")
-        );
-        assert_eq!(direct_to.target_leg_id, None);
-        assert_eq!(direct_to.resume_leg_id.as_deref(), Some("component-0-1"));
+        assert!(direct_to.target_row.is_planned());
+        assert_eq!(direct_to_target_leg_index(&activated, direct_to), None);
+        assert_eq!(direct_to_resume_leg_index(&activated, direct_to), Some(0));
 
         let sequenced = sequence_active_detail(&FlightPlan {
             guidance: Some(revalidated),
@@ -8615,7 +8669,7 @@ mod tests {
 
     #[test]
     fn direct_to_real_waypoint_route_origin_component_recovers_missing_resume_leg() {
-        let mut activated = activate_direct_to_component(
+        let mut activated = activate_direct_to_test_component(
             &modda_zgood_normy_waypoint_plan(),
             LatLon {
                 lat: 40.0,
@@ -8631,20 +8685,22 @@ mod tests {
                 .and_then(|guidance| guidance.direct_to.as_mut())
                 .expect("direct-to state");
             assert_eq!(direct_to.target, NavRef::Fix("MODDA".to_string()));
-            assert_eq!(direct_to.target_leg_id, None);
-            assert_eq!(direct_to.resume_leg_id.as_deref(), Some("component-0-1"));
-            direct_to.resume_leg_id = None;
+            assert!(direct_to.target_row.is_planned());
+            assert!(direct_to.resume_row_id.is_some());
+            direct_to.resume_row_id = None;
         }
 
         let revalidated =
             revalidate_guidance_after_plan_edit(activated.guidance.clone(), &activated)
+                .expect("revalidation succeeds")
                 .expect("revalidated guidance");
+        let expected_resume_row = planned_row_id_for_leg_index(&activated, 0).expect("resume row");
         assert_eq!(
             revalidated
                 .direct_to
                 .as_ref()
-                .and_then(|direct_to| direct_to.resume_leg_id.as_deref()),
-            Some("component-0-1")
+                .and_then(|direct_to| direct_to.resume_row_id.as_ref()),
+            Some(&expected_resume_row)
         );
         let sequenced = sequence_active_detail(&FlightPlan {
             guidance: Some(revalidated),
@@ -8668,7 +8724,7 @@ mod tests {
 
     #[test]
     fn direct_to_duplicate_first_component_does_not_target_later_duplicate() {
-        let activated = activate_direct_to_component(
+        let activated = activate_direct_to_test_component(
             &sample_duplicate_waypoint_plan(),
             LatLon {
                 lat: 47.5,
@@ -8684,10 +8740,11 @@ mod tests {
             .expect("direct-to state");
 
         assert_eq!(direct_to.target, NavRef::Fix("IAF".to_string()));
-        assert_eq!(direct_to.target_leg_id.as_deref(), Some("component-0-1"));
-        assert_eq!(direct_to.resume_leg_id.as_deref(), Some("component-1-2"));
+        assert!(direct_to.target_row.is_planned());
+        assert_eq!(direct_to_target_leg_index(&activated, direct_to), Some(0));
+        assert_eq!(direct_to_resume_leg_index(&activated, direct_to), Some(1));
 
-        let activated = activate_direct_to_component(
+        let activated = activate_direct_to_test_component(
             &sample_duplicate_waypoint_plan(),
             LatLon {
                 lat: 47.5,
@@ -8703,13 +8760,14 @@ mod tests {
             .expect("direct-to state");
 
         assert_eq!(direct_to.target, NavRef::Fix("IAF".to_string()));
-        assert_eq!(direct_to.target_leg_id.as_deref(), Some("component-2-3"));
-        assert_eq!(direct_to.resume_leg_id.as_deref(), Some("component-3-4"));
+        assert!(direct_to.target_row.is_planned());
+        assert_eq!(direct_to_target_leg_index(&activated, direct_to), Some(2));
+        assert_eq!(direct_to_resume_leg_index(&activated, direct_to), Some(3));
     }
 
     #[test]
     fn direct_to_duplicate_component_projects_clicked_row_uid() {
-        let activated = activate_direct_to_component(
+        let activated = activate_direct_to_test_component(
             &sample_duplicate_waypoint_plan(),
             LatLon {
                 lat: 47.5,
@@ -8806,7 +8864,7 @@ mod tests {
         };
         plan.resolved_legs[3].to = NavRef::Airport("KAAA".to_string());
 
-        let activated = activate_direct_to_component(
+        let activated = activate_direct_to_test_component(
             &plan,
             LatLon {
                 lat: 47.5,
@@ -8822,8 +8880,9 @@ mod tests {
             .expect("direct-to state");
 
         assert_eq!(direct_to.target, NavRef::Airport("KAAA".to_string()));
-        assert_eq!(direct_to.target_leg_id, None);
-        assert_eq!(direct_to.resume_leg_id.as_deref(), Some("component-0-1"));
+        assert!(direct_to.target_row.is_planned());
+        assert_eq!(direct_to_target_leg_index(&activated, direct_to), None);
+        assert_eq!(direct_to_resume_leg_index(&activated, direct_to), Some(0));
     }
 
     #[test]
@@ -9106,7 +9165,7 @@ mod tests {
         )
         .unwrap();
 
-        let activated = activate_direct_to_leg(
+        let activated = activate_direct_to_test_leg(
             &inserted,
             LatLon {
                 lat: 42.0,
@@ -9118,8 +9177,9 @@ mod tests {
 
         let guidance = activated.guidance.as_ref().unwrap();
         let direct_to = guidance.direct_to.as_ref().unwrap();
-        assert_eq!(direct_to.target_leg_id.as_deref(), Some("proc-autto1-2"));
-        assert!(direct_to.resume_leg_id.is_none());
+        assert!(direct_to.target_row.is_planned());
+        assert_eq!(direct_to_target_leg_index(&activated, direct_to), Some(3));
+        assert!(direct_to.resume_row_id.is_none());
 
         let sequenced = sequence_active_leg(&activated).unwrap();
         let guidance = sequenced.guidance.as_ref().unwrap();
@@ -9138,7 +9198,7 @@ mod tests {
         )
         .unwrap();
 
-        let activated = activate_direct_to_leg(
+        let activated = activate_direct_to_test_leg(
             &inserted,
             LatLon {
                 lat: 42.0,
@@ -9150,8 +9210,9 @@ mod tests {
 
         let guidance = activated.guidance.as_ref().unwrap();
         let direct_to = guidance.direct_to.as_ref().unwrap();
-        assert_eq!(direct_to.target_leg_id.as_deref(), Some("proc-autto1-1"));
-        assert_eq!(direct_to.resume_leg_id.as_deref(), Some("proc-autto1-2"));
+        assert!(direct_to.target_row.is_planned());
+        assert_eq!(direct_to_target_leg_index(&activated, direct_to), Some(2));
+        assert_eq!(direct_to_resume_leg_index(&activated, direct_to), Some(3));
 
         let sequenced = sequence_active_leg(&activated).unwrap();
         let guidance = sequenced.guidance.as_ref().unwrap();

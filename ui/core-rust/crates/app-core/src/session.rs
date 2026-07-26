@@ -34,10 +34,10 @@ use crate::{
     },
     guidance_detail_id_for_leg_element,
     had_ops::{
-        flight_plan_ui_state, insert_waypoint_best_position,
-        materialize_airway_presentation_selection, materialize_procedure, nav_kv_page_resources,
-        nav_ref_position, nav_symbol_feature, suggest_waypoint_identifiers, CoreResourceRequest,
-        CoreResourceSource, HadOperationOutcome, HadReadError, UiInvalidation,
+        insert_waypoint_best_position, materialize_airway_presentation_selection,
+        materialize_procedure, nav_kv_page_resources, nav_ref_position, nav_symbol_feature,
+        suggest_waypoint_identifiers, CoreResourceRequest, CoreResourceSource, HadOperationOutcome,
+        HadReadError, UiInvalidation,
     },
     live_feed_runtime::{
         LiveFeedConnectionEvent, LiveFeedConnectionEventKind, LiveFeedNetworkStatus,
@@ -338,6 +338,7 @@ pub struct UiPlaybackPanelState {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct UiSessionSnapshot {
     pub session_revision: u64,
+    pub flight_plan_route_revision: u64,
     pub nav_data_epoch: u64,
     pub active_nav_db: Option<UiNavDbIdentity>,
     pub next_nav_db_maintenance_epoch_ms: Option<i64>,
@@ -375,6 +376,7 @@ pub struct UiSessionCreateTiming {
 #[derive(Clone)]
 struct UiSession {
     session_revision: u64,
+    flight_plan_route_revision: u64,
     nav_data_epoch: u64,
     nav_db_advance_blocked: bool,
     app_state: AppState,
@@ -3449,6 +3451,7 @@ fn create_ui_session_inner(
     let home_page_state = project_home_page_state(&platform_capabilities);
     let snapshot = UiSessionSnapshot {
         session_revision: 0,
+        flight_plan_route_revision: 0,
         nav_data_epoch: 0,
         active_nav_db: None,
         next_nav_db_maintenance_epoch_ms: None,
@@ -3475,6 +3478,7 @@ fn create_ui_session_inner(
         handle,
         UiSession {
             session_revision: 0,
+            flight_plan_route_revision: 0,
             nav_data_epoch: 0,
             nav_db_advance_blocked: false,
             app_state,
@@ -4302,17 +4306,23 @@ pub fn project_flight_plan_route_in_session(handle: u32) -> AppResult<HadOperati
     let session = session_ref(&sessions, handle)?;
     let Some(plan) = session.app_state.active_plan.clone() else {
         return Ok(HadOperationOutcome::complete(
-            serde_json::to_value(Vec::<crate::FlightPlanRouteSegment>::new()).map_err(|err| {
-                AppError {
-                    kind: AppErrorKind::Internal,
-                    message: err.to_string(),
-                }
+            serde_json::to_value(crate::FlightPlanRouteProjection {
+                flight_plan_route_revision: session.flight_plan_route_revision,
+                segments: Vec::new(),
+            })
+            .map_err(|err| AppError {
+                kind: AppErrorKind::Internal,
+                message: err.to_string(),
             })?,
         ));
     };
     match crate::had_ops::project_flight_plan_route(session_nav_kv_store(session)?, &plan) {
-        Ok(route) => Ok(HadOperationOutcome::complete(
-            serde_json::to_value(route).map_err(|err| AppError {
+        Ok(segments) => Ok(HadOperationOutcome::complete(
+            serde_json::to_value(crate::FlightPlanRouteProjection {
+                flight_plan_route_revision: session.flight_plan_route_revision,
+                segments,
+            })
+            .map_err(|err| AppError {
                 kind: AppErrorKind::Internal,
                 message: err.to_string(),
             })?,
@@ -4670,14 +4680,6 @@ pub fn tick_bad_autopilot_in_session(
     changed_session_snapshot_outcome_for_ownship_motion(session, motion)
 }
 
-#[allow(dead_code)]
-fn replace_flight_plan_in_session(handle: u32, plan: FlightPlan) -> AppResult<HadOperationOutcome> {
-    let mut sessions = lock_sessions();
-    let session = session_mut(&mut sessions, handle)?;
-    replace_session_flight_plan(session, plan)?;
-    changed_session_snapshot_outcome(session)
-}
-
 pub fn activate_next_leg_in_session(handle: u32) -> AppResult<HadOperationOutcome> {
     mutate_session_flight_plan(handle, crate::activate_next_leg)
 }
@@ -4687,11 +4689,11 @@ pub fn stop_navigation_in_session(handle: u32) -> AppResult<HadOperationOutcome>
 }
 
 pub fn suspend_sequencing_in_session(handle: u32) -> AppResult<HadOperationOutcome> {
-    mutate_session_guidance(handle, crate::suspend_sequencing)
+    mutate_session_flight_plan(handle, crate::suspend_sequencing)
 }
 
 pub fn unsuspend_sequencing_in_session(handle: u32) -> AppResult<HadOperationOutcome> {
-    mutate_session_guidance(handle, crate::unsuspend_sequencing)
+    mutate_session_flight_plan(handle, crate::unsuspend_sequencing)
 }
 
 pub fn sequence_active_leg_in_session(handle: u32) -> AppResult<HadOperationOutcome> {
@@ -4706,20 +4708,7 @@ fn mutate_session_flight_plan(
     let session = session_mut(&mut sessions, handle)?;
     let plan = session_plan(session)?;
     let next_plan = mutation(&plan)?;
-    replace_session_flight_plan(session, next_plan)?;
-    changed_session_snapshot_outcome(session)
-}
-
-fn mutate_session_guidance(
-    handle: u32,
-    mutation: impl FnOnce(&FlightPlan) -> AppResult<FlightPlan>,
-) -> AppResult<HadOperationOutcome> {
-    let mut sessions = lock_sessions();
-    let session = session_mut(&mut sessions, handle)?;
-    let plan = session_plan(session)?;
-    let next_plan = mutation(&plan)?;
-    session.app_state = state::reduce(&session.app_state, AppEvent::ReplaceFlightPlan(next_plan))?;
-    changed_session_snapshot_outcome(session)
+    commit_session_flight_plan_with_invalidations_outcome(session, next_plan)
 }
 
 pub fn perform_map_selection_action_in_session(
@@ -5294,35 +5283,6 @@ fn activate_direct_to_nav_ref_in_session_outcome(
     commit_session_flight_plan_with_invalidations_outcome(session, next_plan)
 }
 
-pub fn activate_direct_to_leg_in_session(
-    handle: u32,
-    target_leg_index: usize,
-) -> AppResult<HadOperationOutcome> {
-    let mut sessions = lock_sessions();
-    let session = session_mut(&mut sessions, handle)?;
-    let plan = session_plan(session)?;
-    let target_leg_id = plan
-        .resolved_legs
-        .get(target_leg_index)
-        .map(|leg| leg.id.clone())
-        .ok_or_else(|| AppError {
-            kind: AppErrorKind::InvalidFlightPlan,
-            message: format!("invalid direct-to leg index: {target_leg_index}"),
-        })?;
-    let from_position = session
-        .app_state
-        .ownship
-        .render
-        .position
-        .ok_or_else(|| AppError {
-            kind: AppErrorKind::UnsupportedOperation,
-            message: "cannot activate direct-to without ownship position".to_string(),
-        })?;
-    let next_plan = crate::activate_direct_to_leg(&plan, from_position, &target_leg_id)?;
-    replace_session_flight_plan(session, next_plan)?;
-    changed_session_snapshot_outcome(session)
-}
-
 pub fn perform_status_action_in_session(
     handle: u32,
     action_id: String,
@@ -5460,27 +5420,11 @@ pub fn perform_flight_plan_row_action_in_session(
                         kind: AppErrorKind::UnsupportedOperation,
                         message: "cannot activate direct-to without ownship position".to_string(),
                     })?;
-            if row.component_kind == Some(RouteComponentViewKind::Waypoint)
-                && row.component_uid.is_some()
-            {
-                crate::activate_direct_to_component(&plan, from_position, row_component_index()?)?
-            } else if let Some(target_leg_index) = row.leg_index {
-                let target_leg_id = plan
-                    .resolved_legs
-                    .get(target_leg_index)
-                    .map(|leg| leg.id.clone())
-                    .ok_or_else(|| AppError {
-                        kind: AppErrorKind::InvalidFlightPlan,
-                        message: format!("invalid direct-to leg index: {target_leg_index}"),
-                    })?;
-                crate::activate_direct_to_leg(&plan, from_position, &target_leg_id)?
-            } else {
-                let target = row.nav_ref.clone().ok_or_else(|| AppError {
-                    kind: AppErrorKind::InvalidFlightPlan,
-                    message: "direct-to row has no nav reference".to_string(),
-                })?;
-                crate::activate_direct_to(&plan, from_position, target)?
-            }
+            crate::activate_direct_to_row(
+                &plan,
+                from_position,
+                &crate::FlightPlanRowId(row.uid.clone()),
+            )?
         }
         FlightPlanRowActionId::Remove
         | FlightPlanRowActionId::RemoveAirway
@@ -9866,10 +9810,7 @@ fn airport_plate_availability(
 }
 
 fn replace_session_flight_plan(session: &mut UiSession, plan: FlightPlan) -> AppResult<()> {
-    session.app_state = state::reduce(
-        &session.app_state,
-        AppEvent::ReplaceFlightPlan(plan.clone()),
-    )?;
+    store_session_flight_plan(session, plan)?;
     let normalized_plan = session
         .app_state
         .active_plan
@@ -9893,6 +9834,12 @@ fn replace_session_flight_plan(session: &mut UiSession, plan: FlightPlan) -> App
         &session.chart_page_state.suggested_chart_ids,
     );
     sync_procedure_geometry_status_records(session, &normalized_plan);
+    Ok(())
+}
+
+fn store_session_flight_plan(session: &mut UiSession, plan: FlightPlan) -> AppResult<()> {
+    session.app_state = state::reduce(&session.app_state, AppEvent::ReplaceFlightPlan(plan))?;
+    session.flight_plan_route_revision = session.flight_plan_route_revision.saturating_add(1);
     Ok(())
 }
 
@@ -10092,6 +10039,7 @@ fn try_snapshot_for_session(session: &mut UiSession) -> Result<UiSessionSnapshot
     });
     Ok(UiSessionSnapshot {
         session_revision: session.session_revision,
+        flight_plan_route_revision: session.flight_plan_route_revision,
         nav_data_epoch: session.nav_data_epoch,
         active_nav_db: session.nav_db_artifact.as_ref().map(UiNavDbIdentity::from),
         next_nav_db_maintenance_epoch_ms: next_nav_db_maintenance_epoch_ms(session),
@@ -10474,6 +10422,7 @@ fn empty_map_overlay_query() -> MapOverlayQueryResult {
 
 fn project_session_app_ui_state(session: &UiSession) -> Result<AppUiState, HadReadError> {
     let mut app_ui_state = state::project_app_ui_state(&session.app_state);
+    let mut materialized_plan = None;
     project_bad_autopilot_availability(session, &mut app_ui_state);
     if let (Some(store), Some(position)) = (
         session.nav_kv_store.as_ref(),
@@ -10483,18 +10432,12 @@ fn project_session_app_ui_state(session: &UiSession) -> Result<AppUiState, HadRe
             crate::had_ops::magnetic_variation_degrees_optional(store, position)?;
     }
     app_ui_state.ownship.controls.situation_controls = project_situation_controls(session);
-    if let Some(active_plan) = app_ui_state.active_plan.as_mut() {
-        if let Some(guidance) = active_plan.guidance.as_mut() {
-            guidance.nav_element =
-                project_active_leg_nav_element(session, session.nav_kv_store.as_ref())?;
-        }
-    }
     if let (Some(store), Some(plan), Some(active_plan)) = (
         session.nav_kv_store.as_ref(),
         session.app_state.active_plan.clone(),
         app_ui_state.active_plan.as_ref(),
     ) {
-        app_ui_state.active_plan = Some(flight_plan_ui_state(
+        let projection = crate::had_ops::flight_plan_ui_projection(
             store,
             plan,
             active_plan.clone(),
@@ -10506,12 +10449,36 @@ fn project_session_app_ui_state(session: &UiSession) -> Result<AppUiState, HadRe
                 ownship_position: app_ui_state.ownship.render.position,
                 now_epoch_ms: Some(session.wall_clock_epoch_ms),
             },
-        )?);
+        )?;
+        app_ui_state.active_plan = Some(projection.ui_state);
+        materialized_plan = Some(projection.materialized);
+    } else if let Some(plan) = session.app_state.active_plan.as_ref() {
+        materialized_plan = Some(
+            crate::flight_plan_materialization::MaterializedFlightPlan::build(
+                plan,
+                &session.guidance_leg_geometry,
+                app_ui_state.ownship.render.position,
+            )
+            .map_err(|err| HadReadError::Fatal(err.message))?,
+        );
+    }
+    if let (Some(active_plan), Some(materialized)) = (
+        app_ui_state.active_plan.as_mut(),
+        materialized_plan.as_ref(),
+    ) {
+        if let Some(guidance) = active_plan.guidance.as_mut() {
+            guidance.nav_element = project_materialized_nav_element(
+                materialized,
+                app_ui_state.ownship.render.position,
+                session.nav_kv_store.as_ref(),
+            )?;
+        }
     }
     if let Some(active_plan) = app_ui_state.active_plan.as_mut() {
         enrich_flight_plan_weather_actions(session, active_plan);
     }
-    app_ui_state.flight_data_banner = project_flight_data_banner(session, &app_ui_state)?;
+    app_ui_state.flight_data_banner =
+        project_flight_data_banner(session, &app_ui_state, materialized_plan.as_ref())?;
     Ok(app_ui_state)
 }
 
@@ -10548,6 +10515,7 @@ fn enrich_flight_plan_weather_actions(session: &UiSession, active_plan: &mut Fli
 fn project_flight_data_banner(
     session: &UiSession,
     app_ui_state: &AppUiState,
+    materialized_plan: Option<&crate::flight_plan_materialization::MaterializedFlightPlan>,
 ) -> Result<crate::FlightDataBannerModel, HadReadError> {
     let ownship = &app_ui_state.ownship.render;
     let position = ownship.position;
@@ -10567,29 +10535,12 @@ fn project_flight_data_banner(
     let mut waypoint_distance_nm = None;
     let mut final_distance_nm = None;
 
-    if let Some(plan) = session.app_state.active_plan.as_ref() {
-        if let Some(geometry) = active_guidance_projection(plan, &session.guidance_leg_geometry)
-            .and_then(|projection| projection.geometry)
-        {
-            desired_track_magnetic_deg = active_display_course_deg(&geometry, position, store)?;
-            waypoint_distance_nm =
-                position.map(|position| crate::great_circle_distance_nm(position, geometry.to));
-        }
-
-        if let (Some(position), Some(guidance)) = (position, plan.guidance.as_ref()) {
-            let records = plan_preview_legs(plan, &session.guidance_leg_geometry);
-            let active_index = guidance
-                .active_leg_index
-                .min(records.len().saturating_sub(1));
-            if let Some(record) = records.get(active_index) {
-                let active_remaining_nm =
-                    crate::great_circle_distance_nm(position, record.geometry.to);
-                let later_nm: f64 = records
-                    .iter()
-                    .skip(active_index + 1)
-                    .map(|record| record.distance_nm)
-                    .sum();
-                final_distance_nm = Some(active_remaining_nm + later_nm);
+    if let Some(materialized) = materialized_plan {
+        if let Some(active) = materialized.active.as_ref() {
+            waypoint_distance_nm = active.distance_remaining_nm;
+            final_distance_nm = materialized.total_distance_remaining_nm;
+            if let Some(geometry) = active.geometry.as_ref() {
+                desired_track_magnetic_deg = active_display_course_deg(&geometry, position, store)?;
             }
         }
     }
@@ -10840,6 +10791,7 @@ fn situation_source_handler_for_ownship(
     }
 }
 
+#[cfg(test)]
 fn project_active_leg_nav_element(
     session: &UiSession,
     store: Option<&NavKvStore>,
@@ -10847,10 +10799,32 @@ fn project_active_leg_nav_element(
     let Some(plan) = session.app_state.active_plan.as_ref() else {
         return Ok(NavElementUiView::default());
     };
-    let Some(projection) = active_guidance_projection(plan, &session.guidance_leg_geometry) else {
+    let materialized = crate::flight_plan_materialization::MaterializedFlightPlan::build(
+        plan,
+        &session.guidance_leg_geometry,
+        session.app_state.ownship.render.position,
+    )
+    .map_err(|err| HadReadError::Fatal(err.message))?;
+    project_materialized_nav_element(
+        &materialized,
+        session.app_state.ownship.render.position,
+        store,
+    )
+}
+
+fn project_materialized_nav_element(
+    materialized: &crate::flight_plan_materialization::MaterializedFlightPlan,
+    position: Option<LatLon>,
+    store: Option<&NavKvStore>,
+) -> Result<NavElementUiView, HadReadError> {
+    let Some(active) = materialized.active.as_ref() else {
         return Ok(NavElementUiView::default());
     };
-    projection.nav_element(session.app_state.ownship.render.position, store)
+    ActiveGuidanceProjection {
+        summary: active.summary.clone(),
+        geometry: active.geometry.clone(),
+    }
+    .nav_element(position, store)
 }
 
 #[derive(Debug, Clone)]
@@ -10894,44 +10868,16 @@ impl ActiveGuidanceProjection {
     }
 }
 
-fn active_guidance_projection(
-    plan: &FlightPlan,
-    geometry_by_leg_id: &HashMap<String, GuidanceLegGeometry>,
-) -> Option<ActiveGuidanceProjection> {
-    let leg = crate::active_guidance_leg(plan)?;
-    let geometry = active_guidance_projection_geometry(plan, geometry_by_leg_id);
-    let summary = if active_guidance_detail_is_terminal_hold(plan) {
-        "HOLD".to_string()
-    } else {
-        format!("{} -> {}", nav_ref_label(&leg.from), nav_ref_label(&leg.to))
-    };
-    Some(ActiveGuidanceProjection { summary, geometry })
-}
-
-fn active_guidance_detail_is_terminal_hold(plan: &FlightPlan) -> bool {
-    plan.guidance.as_ref().is_some_and(|guidance| {
-        guidance.active_detail_index.is_some_and(|detail_index| {
-            terminal_hold_detail_range(plan, guidance.active_leg_index).is_some_and(
-                |(hold_start, hold_end)| detail_index >= hold_start && detail_index <= hold_end,
-            )
-        })
-    })
-}
-
 fn active_guidance_projection_geometry(
     plan: &FlightPlan,
     geometry_by_leg_id: &HashMap<String, GuidanceLegGeometry>,
 ) -> Option<GuidanceLegGeometry> {
     let guidance = plan.guidance.as_ref()?;
-    if guidance.sequencing_mode == SequencingMode::DirectTo {
-        return geometry_by_leg_id.get("direct-to").cloned();
-    }
-    guidance
-        .active_detail_index
-        .and_then(|detail_index| {
-            active_guidance_detail_geometry_for_index(plan, detail_index, geometry_by_leg_id)
-        })
-        .map(|(_, geometry)| geometry)
+    crate::flight_plan_materialization::active_geometry_for_guidance(
+        plan,
+        guidance,
+        geometry_by_leg_id,
+    )
 }
 
 #[derive(Debug, Clone)]
@@ -11139,7 +11085,7 @@ fn tick_bad_autopilot(
         session.bad_autopilot.last_tick_epoch_ms = Some(now_epoch_ms);
         return Ok(None);
     };
-    let distance_nm = geometry_distance_nm(&geometry);
+    let distance_nm = crate::flight_plan_materialization::geometry_distance_nm(&geometry);
     if distance_nm <= f64::EPSILON {
         session.bad_autopilot.last_tick_epoch_ms = Some(now_epoch_ms);
         return Ok(None);
@@ -11203,7 +11149,7 @@ fn active_guidance_detail_geometry(session: &UiSession) -> Option<(String, Guida
     let plan = session.app_state.active_plan.as_ref()?;
     let guidance = plan.guidance.as_ref()?;
     if guidance.sequencing_mode == SequencingMode::DirectTo {
-        let geometry = active_guidance_projection(plan, &session.guidance_leg_geometry)?.geometry?;
+        let geometry = active_guidance_projection_geometry(plan, &session.guidance_leg_geometry)?;
         return Some((geometry.leg_id.clone(), geometry));
     }
     let active_detail_index = active_guidance_detail_index_for_motion(plan, guidance)?;
@@ -11275,8 +11221,12 @@ fn plan_preview_legs(
         .filter_map(|(leg_index, leg)| {
             let pointer_key =
                 pointer_key_for_preview_leg(plan, leg_index, leg, &component_leg_counts)?;
-            let geometry = geometry_for_resolved_leg(leg_index, leg, geometry_by_leg_id)?;
-            let distance_nm = geometry_distance_nm(&geometry);
+            let geometry = crate::flight_plan_materialization::geometry_for_resolved_leg(
+                plan,
+                leg_index,
+                geometry_by_leg_id,
+            )?;
+            let distance_nm = crate::flight_plan_materialization::geometry_distance_nm(&geometry);
             Some(PlanPreviewLeg {
                 resolved_leg_index: leg_index,
                 pointer_key,
@@ -11325,64 +11275,8 @@ fn preview_component_pointer_scope(plan: &FlightPlan, component_index: usize) ->
         .unwrap_or_else(|| format!("component-index:{component_index}"))
 }
 
-fn geometry_for_resolved_leg(
-    leg_index: usize,
-    leg: &ResolvedLeg,
-    geometry_by_leg_id: &HashMap<String, GuidanceLegGeometry>,
-) -> Option<GuidanceLegGeometry> {
-    let detail_count = crate::guidance_detail_count_for_leg(leg);
-    if detail_count > 1 {
-        let mut detail_geometries = Vec::with_capacity(detail_count);
-        for element_index in 0..detail_count {
-            detail_geometries.push(geometry_by_leg_id.get(&guidance_detail_id_for_leg_element(
-                leg_index,
-                leg,
-                element_index,
-            ))?);
-        }
-        let from = detail_geometries.first()?.from;
-        let to = detail_geometries.last()?.to;
-        let mut path = Vec::new();
-        for geometry in detail_geometries {
-            for point in geometry_points(geometry) {
-                if path.last().copied() != Some(point) {
-                    path.push(point);
-                }
-            }
-        }
-        return Some(GuidanceLegGeometry {
-            leg_id: leg.id.clone(),
-            from,
-            to,
-            path,
-        });
-    }
-
-    if let Some(geometry) =
-        geometry_by_leg_id.get(&guidance_detail_id_for_leg_element(leg_index, leg, 0))
-    {
-        return Some(geometry.clone());
-    }
-    None
-}
-
-fn geometry_points(geometry: &GuidanceLegGeometry) -> Vec<LatLon> {
-    if geometry.path.len() >= 2 {
-        geometry.path.clone()
-    } else {
-        vec![geometry.from, geometry.to]
-    }
-}
-
-fn geometry_distance_nm(geometry: &GuidanceLegGeometry) -> f64 {
-    geometry_points(geometry)
-        .windows(2)
-        .map(|segment| crate::great_circle_distance_nm(segment[0], segment[1]))
-        .sum()
-}
-
 fn position_along_geometry(geometry: &GuidanceLegGeometry, offset_nm: f64) -> LatLon {
-    let points = geometry_points(geometry);
+    let points = crate::flight_plan_materialization::geometry_points(geometry);
     let mut remaining_nm = offset_nm.max(0.0);
     for segment in points.windows(2) {
         let from = segment[0];
@@ -11400,7 +11294,7 @@ fn position_along_geometry(geometry: &GuidanceLegGeometry, offset_nm: f64) -> La
 }
 
 fn position_along_geometry_with_overrun(geometry: &GuidanceLegGeometry, offset_nm: f64) -> LatLon {
-    let distance_nm = geometry_distance_nm(geometry);
+    let distance_nm = crate::flight_plan_materialization::geometry_distance_nm(geometry);
     if offset_nm <= distance_nm {
         return position_along_geometry(geometry, offset_nm);
     }
@@ -11411,7 +11305,7 @@ fn position_along_geometry_with_overrun(geometry: &GuidanceLegGeometry, offset_n
 }
 
 fn heading_along_geometry(geometry: &GuidanceLegGeometry, offset_nm: f64) -> Option<f64> {
-    let points = geometry_points(geometry);
+    let points = crate::flight_plan_materialization::geometry_points(geometry);
     let mut remaining_nm = offset_nm.max(0.0);
     for segment in points.windows(2) {
         let from = segment[0];
@@ -11552,6 +11446,7 @@ fn project_nm_from(origin: LatLon, bearing_deg: f64, distance_nm: f64) -> LatLon
     }
 }
 
+#[cfg(test)]
 fn nav_ref_label(nav_ref: &NavRef) -> String {
     match nav_ref {
         NavRef::Airport(code) | NavRef::Navaid(code) | NavRef::Fix(code) => code.clone(),
@@ -11800,8 +11695,7 @@ fn sequence_guidance_by_ownship_position(session: &mut UiSession) -> AppResult<b
         } else {
             crate::sequence_active_detail(plan)?
         };
-        session.app_state =
-            state::reduce(&session.app_state, AppEvent::ReplaceFlightPlan(next_plan))?;
+        store_session_flight_plan(session, next_plan)?;
         sequenced = true;
     }
     Ok(sequenced)
@@ -11820,12 +11714,7 @@ fn direct_to_finish_criterion(
     let next_course = guidance
         .direct_to
         .as_ref()
-        .and_then(|direct_to| direct_to.resume_leg_id.as_deref())
-        .and_then(|resume_leg_id| {
-            plan.resolved_legs
-                .iter()
-                .position(|leg| leg.id == resume_leg_id)
-        })
+        .and_then(|direct_to| crate::planning::direct_to_resume_leg_index(plan, direct_to))
         .and_then(|resume_leg_index| first_guidance_detail_index_for_leg(plan, resume_leg_index))
         .and_then(|detail_index| {
             active_guidance_detail_geometry_for_index(plan, detail_index, geometry_by_leg_id)
@@ -11974,14 +11863,14 @@ fn next_terminal_hold_detail_index(plan: &FlightPlan, active_detail_index: usize
 }
 
 fn initial_course_for_guidance_geometry(geometry: &GuidanceLegGeometry) -> Option<f64> {
-    geometry_points(geometry)
+    crate::flight_plan_materialization::geometry_points(geometry)
         .windows(2)
         .find(|segment| crate::great_circle_distance_nm(segment[0], segment[1]) > f64::EPSILON)
         .map(|segment| bearing_degrees(segment[0], segment[1]))
 }
 
 fn terminal_course_for_guidance_geometry(geometry: &GuidanceLegGeometry) -> Option<f64> {
-    geometry_points(geometry)
+    crate::flight_plan_materialization::geometry_points(geometry)
         .windows(2)
         .rev()
         .find(|segment| crate::great_circle_distance_nm(segment[0], segment[1]) > f64::EPSILON)
@@ -12203,6 +12092,13 @@ fn normalize_compact_airport_id(airport_id: Option<&str>) -> Option<String> {
 }
 
 #[cfg(test)]
+fn replace_flight_plan_in_session(handle: u32, plan: FlightPlan) -> AppResult<HadOperationOutcome> {
+    let mut sessions = lock_sessions();
+    let session = session_mut(&mut sessions, handle)?;
+    commit_session_flight_plan_with_invalidations_outcome(session, plan)
+}
+
+#[cfg(test)]
 mod tests {
     use super::*;
     use crate::{
@@ -12407,10 +12303,6 @@ mod tests {
     snapshot_wrapper!(replace_flight_plan_in_session(
         handle: u32,
         plan: FlightPlan,
-    ));
-    snapshot_wrapper!(activate_direct_to_leg_in_session(
-        handle: u32,
-        target_leg_index: usize,
     ));
     snapshot_wrapper!(perform_status_action_in_session(
         handle: u32,
@@ -13095,7 +12987,6 @@ mod tests {
         crate::build_flight_plan(FlightPlan {
             id: "nav-db-advance-two-airport-plan".to_string(),
             name: "KAAA KBBB".to_string(),
-            legs: Vec::new(),
             route_components: vec![
                 RouteComponent::Waypoint {
                     waypoint: NavRef::Airport("KAAA".to_string()),
@@ -13708,7 +13599,6 @@ mod tests {
         let base_plan = FlightPlan {
             id: "nav-db-advance-rich-plan".to_string(),
             name: "KRNT SEA KPAE VOR-A ECEPO".to_string(),
-            legs: Vec::new(),
             route_components: vec![
                 RouteComponent::Waypoint {
                     waypoint: NavRef::Airport("KRNT".to_string()),
@@ -13988,7 +13878,6 @@ mod tests {
         let plan = FlightPlan {
             id: "khvr-only".to_string(),
             name: "KHVR".to_string(),
-            legs: Vec::new(),
             route_components: vec![RouteComponent::Waypoint {
                 waypoint: NavRef::Airport("KHVR".to_string()),
             }],
@@ -15328,6 +15217,7 @@ mod tests {
     fn live_metar_layer_survives_vector_manifest_without_weather_layers() {
         let mut session = UiSession {
             session_revision: 0,
+            flight_plan_route_revision: 0,
             nav_data_epoch: 0,
             nav_db_advance_blocked: false,
             app_state: register_default_situation_sources(AppState::default()).expect("app state"),
@@ -15520,6 +15410,7 @@ mod tests {
         );
         let mut session = UiSession {
             session_revision: 0,
+            flight_plan_route_revision: 0,
             nav_data_epoch: 0,
             nav_db_advance_blocked: false,
             app_state: register_default_situation_sources(AppState::default()).expect("app state"),
@@ -15963,6 +15854,7 @@ mod tests {
     fn malformed_live_tfr_state_records_data_status_without_failing_overlay() {
         let mut session = UiSession {
             session_revision: 0,
+            flight_plan_route_revision: 0,
             nav_data_epoch: 0,
             nav_db_advance_blocked: false,
             app_state: register_default_situation_sources(AppState::default()).expect("app state"),
@@ -18981,7 +18873,6 @@ mod tests {
         let mut plan = FlightPlan {
             id: "procedure-quality".to_string(),
             name: "Procedure quality".to_string(),
-            legs: Vec::new(),
             route_components: vec![RouteComponent::Procedure {
                 procedure: crate::ProcedureSegment {
                     airport_id: AirportId("KAAA".to_string()),
@@ -19051,7 +18942,6 @@ mod tests {
         FlightPlan {
             id: "plan-1".to_string(),
             name: "KPAO VPDUB KVCB".to_string(),
-            legs: Vec::new(),
             route_components: vec![
                 RouteComponent::Waypoint {
                     waypoint: NavRef::Airport("KPAO".to_string()),
@@ -19103,7 +18993,6 @@ mod tests {
         FlightPlan {
             id: "plan-dup".to_string(),
             name: "KRNT SEA KPAE KRNT".to_string(),
-            legs: Vec::new(),
             route_components: vec![
                 RouteComponent::Waypoint {
                     waypoint: NavRef::Airport("KRNT".to_string()),
@@ -19177,7 +19066,6 @@ mod tests {
         FlightPlan {
             id: "plan-preview".to_string(),
             name: "A B C".to_string(),
-            legs: Vec::new(),
             route_components: vec![
                 RouteComponent::Waypoint {
                     waypoint: NavRef::LatLon(a),
@@ -19245,7 +19133,6 @@ mod tests {
         FlightPlan {
             id: "short-plan-preview".to_string(),
             name: "A B C".to_string(),
-            legs: Vec::new(),
             route_components: vec![
                 RouteComponent::Waypoint {
                     waypoint: NavRef::LatLon(a),
@@ -19301,7 +19188,6 @@ mod tests {
         FlightPlan {
             id: "modda-zgood-normy".to_string(),
             name: "MODDA ZGOOD NORMY".to_string(),
-            legs: Vec::new(),
             route_components: vec![
                 RouteComponent::Waypoint {
                     waypoint: NavRef::Fix("MODDA".to_string()),
@@ -19390,7 +19276,6 @@ mod tests {
         FlightPlan {
             id: "twf-v4-ykm-chins-kpae".to_string(),
             name: "TWF ALKAL V4 YKM CHINS KPAE".to_string(),
-            legs: Vec::new(),
             route_components: vec![
                 RouteComponent::Waypoint {
                     waypoint: NavRef::Navaid("TWF".to_string()),
@@ -19574,7 +19459,9 @@ mod tests {
         let HadOperationOutcome::Complete { result, .. } = route else {
             panic!("route unexpectedly needed resources");
         };
-        serde_json::from_value(result).expect("route segments")
+        serde_json::from_value::<crate::FlightPlanRouteProjection>(result)
+            .expect("route projection")
+            .segments
     }
 
     fn session_route_statuses(handle: u32) -> Vec<crate::FlightPlanRouteSegmentStatus> {
@@ -19626,6 +19513,50 @@ mod tests {
         );
     }
 
+    fn flight_data_value<'a>(snapshot: &'a UiSessionSnapshot, id: &str) -> Option<&'a str> {
+        snapshot
+            .app_ui_state
+            .flight_data_banner
+            .cells
+            .iter()
+            .find(|cell| cell.id == id)
+            .and_then(|cell| cell.value.as_deref())
+    }
+
+    fn flight_plan_row_data_value<'a>(
+        snapshot: &'a UiSessionSnapshot,
+        row_matches: impl Fn(&crate::planning::FlightPlanDisplayRowUiView) -> bool,
+        cell_id: &str,
+    ) -> Option<&'a str> {
+        snapshot
+            .app_ui_state
+            .active_plan
+            .as_ref()
+            .expect("active flight plan UI")
+            .display_rows
+            .iter()
+            .find(|row| row_matches(row))
+            .unwrap_or_else(|| panic!("missing flight plan row for {cell_id}"))
+            .data_cells
+            .iter()
+            .find(|cell| cell.id == cell_id)
+            .unwrap_or_else(|| panic!("missing {cell_id} flight plan cell"))
+            .value
+            .as_deref()
+    }
+
+    fn create_synced_self_contained_session(plan: FlightPlan) -> UiSessionInitResult {
+        let init = create_ui_session(plan, &[], None, None).expect("create session");
+        let store = crate::navkv::nav_kv_store_for_test(&[], 256);
+        attach_nav_kv_store_to_session(init.handle, 1, &store).expect("attach nav kv");
+        let sync = sync_guidance_geometry_in_session(init.handle).expect("sync guidance geometry");
+        assert!(
+            matches!(sync, HadOperationOutcome::Complete { .. }),
+            "self-contained guidance geometry should not need nav-db pages"
+        );
+        init
+    }
+
     fn short_procedure_display_path_plan() -> FlightPlan {
         let a = LatLon {
             lat: 40.0,
@@ -19642,7 +19573,6 @@ mod tests {
         FlightPlan {
             id: "short-procedure-display-path".to_string(),
             name: "Synthetic Procedure".to_string(),
-            legs: Vec::new(),
             route_components: vec![RouteComponent::Procedure {
                 procedure: crate::ProcedureSegment {
                     airport_id: crate::AirportId("KAAA".to_string()),
@@ -19975,7 +19905,6 @@ mod tests {
         FlightPlan {
             id: "empty-test-plan".to_string(),
             name: "Empty".to_string(),
-            legs: Vec::new(),
             route_components: Vec::new(),
             route_component_uids: Vec::new(),
             route_component_uid_counter: 0,
@@ -20543,8 +20472,9 @@ mod tests {
         let HadOperationOutcome::Complete { result, .. } = route else {
             panic!("empty-plan direct-to route unexpectedly needed resources");
         };
-        let segments: Vec<crate::FlightPlanRouteSegment> =
-            serde_json::from_value(result).expect("route segments");
+        let projection: crate::FlightPlanRouteProjection =
+            serde_json::from_value(result).expect("route projection");
+        let segments = projection.segments;
 
         assert_eq!(segments.len(), 1);
         assert_eq!(segments[0].id, "direct-to");
@@ -20594,6 +20524,99 @@ mod tests {
                 .sequencing_mode,
             SequencingMode::FollowPlan
         );
+    }
+
+    #[test]
+    fn sequencing_atomically_advances_snapshot_and_route_projection() {
+        let init = create_ui_session(short_lat_lon_preview_plan(), &[], None, None)
+            .expect("create session");
+        let store = crate::navkv::nav_kv_store_for_test(&[], 256);
+        attach_nav_kv_store_to_session(init.handle, 1, &store).expect("attach nav kv");
+
+        let initial_route =
+            project_flight_plan_route_in_session(init.handle).expect("project initial route");
+        let HadOperationOutcome::Complete { result, .. } = initial_route else {
+            panic!("initial route unexpectedly needed resources");
+        };
+        let initial_projection: crate::FlightPlanRouteProjection =
+            serde_json::from_value(result).expect("initial route projection");
+        assert_eq!(initial_projection.flight_plan_route_revision, 0);
+        assert_eq!(
+            initial_projection
+                .segments
+                .iter()
+                .map(|segment| segment.status.clone())
+                .collect::<Vec<_>>(),
+            vec![
+                crate::FlightPlanRouteSegmentStatus::Active,
+                crate::FlightPlanRouteSegmentStatus::Remaining,
+            ]
+        );
+
+        let outcome = super::sequence_active_leg_in_session(init.handle)
+            .expect("sequence active flight-plan leg");
+        let HadOperationOutcome::Complete {
+            result,
+            invalidations,
+        } = outcome
+        else {
+            panic!("sequencing unexpectedly needed resources");
+        };
+        let snapshot: UiSessionSnapshot =
+            serde_json::from_value(result).expect("sequenced snapshot");
+        assert!(invalidations.contains(&UiInvalidation::SessionSnapshot));
+        assert!(invalidations.contains(&UiInvalidation::FlightPlanRoute));
+        assert!(invalidations.contains(&UiInvalidation::MapOverlay));
+        assert_eq!(snapshot.flight_plan_route_revision, 1);
+
+        let route =
+            project_flight_plan_route_in_session(init.handle).expect("project sequenced route");
+        let HadOperationOutcome::Complete { result, .. } = route else {
+            panic!("sequenced route unexpectedly needed resources");
+        };
+        let projection: crate::FlightPlanRouteProjection =
+            serde_json::from_value(result).expect("sequenced route projection");
+        assert_eq!(
+            projection.flight_plan_route_revision,
+            snapshot.flight_plan_route_revision
+        );
+        assert_ne!(
+            projection.flight_plan_route_revision,
+            initial_projection.flight_plan_route_revision
+        );
+        assert_eq!(
+            projection
+                .segments
+                .iter()
+                .map(|segment| segment.status.clone())
+                .collect::<Vec<_>>(),
+            vec![
+                crate::FlightPlanRouteSegmentStatus::Completed,
+                crate::FlightPlanRouteSegmentStatus::Active,
+            ]
+        );
+
+        let active_leg_index = snapshot
+            .app_ui_state
+            .active_plan
+            .as_ref()
+            .and_then(|plan| plan.guidance.as_ref())
+            .and_then(|guidance| guidance.active_leg_index)
+            .expect("active FP row");
+        let expected_active_leg_id = &snapshot
+            .app_state
+            .active_plan
+            .as_ref()
+            .expect("active plan")
+            .resolved_legs[active_leg_index]
+            .id;
+        let active_segments = projection
+            .segments
+            .iter()
+            .filter(|segment| segment.status == crate::FlightPlanRouteSegmentStatus::Active)
+            .collect::<Vec<_>>();
+        assert_eq!(active_segments.len(), 1);
+        assert_eq!(&active_segments[0].leg_id, expected_active_leg_id);
     }
 
     #[test]
@@ -21067,6 +21090,139 @@ mod tests {
     }
 
     #[test]
+    fn on_plan_direct_to_distance_remaining_is_consistent_across_flight_plan_and_banner() {
+        let a = LatLon {
+            lat: 40.0,
+            lon: -120.0,
+        };
+        let b = LatLon {
+            lat: 40.0,
+            lon: -119.0,
+        };
+        let c = LatLon {
+            lat: 41.0,
+            lon: -119.0,
+        };
+        let direct_to_origin = LatLon {
+            lat: 39.50,
+            lon: -120.75,
+        };
+        let current_ownship = LatLon {
+            lat: 39.75,
+            lon: -120.50,
+        };
+        let plan =
+            crate::activate_direct_to(&lat_lon_preview_plan(), direct_to_origin, NavRef::LatLon(a))
+                .expect("activate on-plan direct-to");
+        let init = create_synced_self_contained_session(plan);
+        let snapshot = push_test_ownship_position(init.handle, current_ownship, 1_000);
+
+        let active_remaining_nm = crate::great_circle_distance_nm(current_ownship, a);
+        let final_remaining_nm = active_remaining_nm
+            + crate::great_circle_distance_nm(a, b)
+            + crate::great_circle_distance_nm(b, c);
+        let frozen_origin_remaining_nm = crate::great_circle_distance_nm(direct_to_origin, a);
+        let active_expected = crate::flight_data::format_nm(active_remaining_nm);
+        let final_expected = crate::flight_data::format_nm(final_remaining_nm);
+        assert_ne!(
+            active_expected,
+            crate::flight_data::format_nm(frozen_origin_remaining_nm),
+            "fixture must distinguish current-position distance from the frozen direct-to leg"
+        );
+
+        assert_eq!(
+            flight_plan_row_data_value(
+                &snapshot,
+                |row| row.nav_ref == Some(NavRef::LatLon(a)),
+                "waypoint_distance",
+            ),
+            Some(active_expected.as_str()),
+            "the active FP row must measure from current ownship to the direct-to target"
+        );
+        assert_eq!(
+            flight_data_value(&snapshot, "waypoint_distance"),
+            Some(active_expected.as_str()),
+            "the data-grid WPT distance must be the active FP row distance"
+        );
+        assert_eq!(
+            flight_plan_row_data_value(
+                &snapshot,
+                |row| row.row_kind == crate::FlightPlanDisplayRowKind::Summary,
+                "waypoint_distance",
+            ),
+            Some(final_expected.as_str()),
+            "the FP total must add only the direct-to remainder and reachable downstream legs"
+        );
+        assert_eq!(
+            flight_data_value(&snapshot, "final_distance"),
+            Some(final_expected.as_str()),
+            "the data-grid FINAL distance must be the FP total"
+        );
+    }
+
+    #[test]
+    fn temporary_direct_to_distance_remaining_is_consistent_across_flight_plan_and_banner() {
+        let direct_to_origin = LatLon {
+            lat: 40.25,
+            lon: -118.75,
+        };
+        let current_ownship = LatLon {
+            lat: 40.50,
+            lon: -118.50,
+        };
+        let target = LatLon {
+            lat: 39.00,
+            lon: -117.00,
+        };
+        let plan = crate::activate_direct_to(
+            &lat_lon_preview_plan(),
+            direct_to_origin,
+            NavRef::Spot(target),
+        )
+        .expect("activate temporary direct-to");
+        let init = create_synced_self_contained_session(plan);
+        let snapshot = push_test_ownship_position(init.handle, current_ownship, 1_000);
+
+        let remaining_nm = crate::great_circle_distance_nm(current_ownship, target);
+        let frozen_origin_remaining_nm = crate::great_circle_distance_nm(direct_to_origin, target);
+        let expected = crate::flight_data::format_nm(remaining_nm);
+        assert_ne!(
+            expected,
+            crate::flight_data::format_nm(frozen_origin_remaining_nm),
+            "fixture must distinguish current-position distance from the frozen direct-to leg"
+        );
+
+        assert_eq!(
+            flight_plan_row_data_value(
+                &snapshot,
+                |row| row.synthetic_direct_to,
+                "waypoint_distance",
+            ),
+            Some(expected.as_str()),
+            "the temporary Direct-To FP row must measure from current ownship"
+        );
+        assert_eq!(
+            flight_data_value(&snapshot, "waypoint_distance"),
+            Some(expected.as_str()),
+            "the data-grid WPT distance must be the temporary Direct-To row distance"
+        );
+        assert_eq!(
+            flight_plan_row_data_value(
+                &snapshot,
+                |row| row.row_kind == crate::FlightPlanDisplayRowKind::Summary,
+                "waypoint_distance",
+            ),
+            Some(expected.as_str()),
+            "the FP total must be the temporary Direct-To distance while the basic plan is suspended"
+        );
+        assert_eq!(
+            flight_data_value(&snapshot, "final_distance"),
+            Some(expected.as_str()),
+            "the data-grid FINAL distance must be the FP total"
+        );
+    }
+
+    #[test]
     fn synced_guidance_geometry_supports_replay_sequencing() {
         let store = short_procedure_nav_kv_store();
         let init = create_ui_session(short_procedure_display_path_plan(), &[], None, None)
@@ -21494,16 +21650,19 @@ mod tests {
                 .expect("map direct-to MODDA");
         assert_session_snapshot_invalidated(direct_to);
         let after_direct_to = get_session_snapshot(init.handle).expect("snapshot after direct-to");
-        let direct_to_state = after_direct_to
+        let direct_to_plan = after_direct_to
             .app_state
             .active_plan
             .as_ref()
-            .and_then(|plan| plan.guidance.as_ref())
+            .expect("direct-to plan");
+        let direct_to_state = direct_to_plan
+            .guidance
+            .as_ref()
             .and_then(|guidance| guidance.direct_to.as_ref())
             .expect("direct-to state");
         assert_eq!(
-            direct_to_state.resume_leg_id.as_deref(),
-            Some("leg-modda-zgood"),
+            crate::planning::direct_to_resume_leg_index(direct_to_plan, direct_to_state),
+            Some(0),
             "direct-to route origin must resume the first route leg"
         );
 
@@ -21545,16 +21704,19 @@ mod tests {
         .expect("map direct-to PDT");
         assert_session_snapshot_invalidated(direct_to);
         let after_direct_to = get_session_snapshot(init.handle).expect("snapshot after direct-to");
-        let direct_to_state = after_direct_to
+        let direct_to_plan = after_direct_to
             .app_state
             .active_plan
             .as_ref()
-            .and_then(|plan| plan.guidance.as_ref())
+            .expect("direct-to plan");
+        let direct_to_state = direct_to_plan
+            .guidance
+            .as_ref()
             .and_then(|guidance| guidance.direct_to.as_ref())
             .expect("direct-to state");
         assert_eq!(
-            direct_to_state.resume_leg_id.as_deref(),
-            Some("v4-pdt-cordo"),
+            crate::planning::direct_to_resume_leg_index(direct_to_plan, direct_to_state),
+            Some(3),
             "direct-to an airway midpoint must remember the downstream airway leg"
         );
 
@@ -21597,16 +21759,19 @@ mod tests {
         .expect("map direct-to PDT");
         assert_session_snapshot_invalidated(direct_to);
         let after_direct_to = get_session_snapshot(init.handle).expect("snapshot after direct-to");
-        let direct_to_state = after_direct_to
+        let direct_to_plan = after_direct_to
             .app_state
             .active_plan
             .as_ref()
-            .and_then(|plan| plan.guidance.as_ref())
+            .expect("direct-to plan");
+        let direct_to_state = direct_to_plan
+            .guidance
+            .as_ref()
             .and_then(|guidance| guidance.direct_to.as_ref())
             .expect("direct-to state");
         assert_eq!(
-            direct_to_state.resume_leg_id.as_deref(),
-            Some("v4-pdt-cordo"),
+            crate::planning::direct_to_resume_leg_index(direct_to_plan, direct_to_state),
+            Some(3),
             "direct-to should resume through the downstream airway leg"
         );
         assert_eq!(
@@ -21789,8 +21954,8 @@ mod tests {
             guidance
                 .direct_to
                 .as_ref()
-                .and_then(|direct_to| direct_to.target_component_uid.as_ref()),
-            clicked_row.component_uid.as_ref()
+                .map(|direct_to| direct_to.target_row_id.as_str()),
+            Some(clicked_row.uid.as_str())
         );
     }
 
@@ -21897,7 +22062,6 @@ mod tests {
         let plan = FlightPlan {
             id: "preview-unpreviewable-prefix".to_string(),
             name: "unpreviewable prefix".to_string(),
-            legs: Vec::new(),
             route_components: vec![
                 RouteComponent::Waypoint {
                     waypoint: NavRef::Fix("NO_GEOM_A".to_string()),
@@ -22197,7 +22361,6 @@ mod tests {
         let plan = FlightPlan {
             id: "multi-leg-procedure-preview".to_string(),
             name: "multi-leg procedure preview".to_string(),
-            legs: Vec::new(),
             route_components: vec![
                 RouteComponent::Waypoint {
                     waypoint: NavRef::LatLon(LatLon {
@@ -22304,7 +22467,6 @@ mod tests {
         let plan = FlightPlan {
             id: "duplicate-airway-leg-id-preview".to_string(),
             name: "duplicate airway ids".to_string(),
-            legs: Vec::new(),
             route_components: vec![
                 RouteComponent::Airway {
                     airway: crate::AirwaySegment {
@@ -22438,7 +22600,6 @@ mod tests {
         let plan = FlightPlan {
             id: "multi-element-procedure-preview".to_string(),
             name: "multi-element procedure preview".to_string(),
-            legs: Vec::new(),
             route_components: vec![RouteComponent::Procedure {
                 procedure: crate::ProcedureSegment {
                     airport_id: AirportId("KAAA".to_string()),
@@ -22555,7 +22716,6 @@ mod tests {
         let plan = FlightPlan {
             id: "multi-element-procedure-preview-live".to_string(),
             name: "multi-element procedure preview live".to_string(),
-            legs: Vec::new(),
             route_components: vec![RouteComponent::Procedure {
                 procedure: crate::ProcedureSegment {
                     airport_id: AirportId("KAAA".to_string()),
@@ -22655,6 +22815,17 @@ mod tests {
                 to: NavRef::LatLon(c),
                 source: ResolvedLegSource::RouteComponent { component_index: 1 },
                 procedure_provenance: None,
+            },
+        ];
+        plan.route_components = vec![
+            RouteComponent::Waypoint {
+                waypoint: NavRef::LatLon(a),
+            },
+            RouteComponent::Waypoint {
+                waypoint: NavRef::LatLon(b),
+            },
+            RouteComponent::Waypoint {
+                waypoint: NavRef::LatLon(c),
             },
         ];
         plan.guidance = Some(GuidanceState {
@@ -22773,7 +22944,6 @@ mod tests {
         let plan = FlightPlan {
             id: "large-hold-entry-arc".to_string(),
             name: "large hold entry arc".to_string(),
-            legs: Vec::new(),
             route_components: vec![RouteComponent::Procedure {
                 procedure: crate::ProcedureSegment {
                     airport_id: AirportId("KAAA".to_string()),
@@ -22927,7 +23097,6 @@ mod tests {
         let plan = FlightPlan {
             id: "bad-ap-terminal-hold".to_string(),
             name: "bad ap terminal hold".to_string(),
-            legs: Vec::new(),
             route_components: vec![
                 RouteComponent::Procedure {
                     procedure: crate::ProcedureSegment {
@@ -22942,11 +23111,18 @@ mod tests {
                     },
                 },
                 RouteComponent::Waypoint {
+                    waypoint: NavRef::LatLon(b),
+                },
+                RouteComponent::Waypoint {
                     waypoint: NavRef::LatLon(f),
                 },
             ],
-            route_component_uids: vec!["row-proc".to_string(), "row-exit".to_string()],
-            route_component_uid_counter: 2,
+            route_component_uids: vec![
+                "row-proc".to_string(),
+                "row-hold".to_string(),
+                "row-exit".to_string(),
+            ],
+            route_component_uid_counter: 3,
             resolved_legs: vec![hold_leg.clone(), exit_leg.clone()],
             guidance: Some(GuidanceState {
                 active_leg_index: 0,

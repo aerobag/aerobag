@@ -12,6 +12,7 @@ import type {
   FlightPlan,
   FlightPlanControlId,
   FlightPlanEntryPreview,
+  FlightPlanRouteProjection,
   FlightPlanRowNavigationAction,
   FlightPlanRouteSegment,
   FlightPlanUiState,
@@ -1879,6 +1880,7 @@ export default function App() {
   const navDbMaintenanceTimerRef = useRef<number | null>(null);
   const [sessionSnapshot, setSessionSnapshot] = useState<UiSessionSnapshot>({
     session_revision: 0,
+    flight_plan_route_revision: 0,
     nav_data_epoch: 0,
     active_nav_db: null,
     next_nav_db_maintenance_epoch_ms: null,
@@ -3253,6 +3255,7 @@ export default function App() {
           key={sessionSnapshot.nav_data_epoch}
           appCoreAdapter={appCoreAdapter}
           navDataEpoch={sessionSnapshot.nav_data_epoch}
+          flightPlanRouteRevision={sessionSnapshot.flight_plan_route_revision}
           page={page}
           uptimeLabel={uptimeLabel}
           debugState={sessionSnapshot.debug_state}
@@ -3618,6 +3621,7 @@ export default function App() {
 function MapPage(props: {
   appCoreAdapter: AppCoreAdapter;
   navDataEpoch: number;
+  flightPlanRouteRevision: number;
   page: AppPage;
   uptimeLabel: string;
   debugState: UiDebugState;
@@ -3665,6 +3669,7 @@ function MapPage(props: {
   const {
     appCoreAdapter,
     navDataEpoch,
+    flightPlanRouteRevision,
     debugState,
     mapLayerState,
     page,
@@ -3768,7 +3773,14 @@ function MapPage(props: {
   const terrainPendingFrameRef = useRef<TerrainPendingFrame | null>(null);
   const terrainFrameStartRef = useRef<Map<string, number>>(new Map());
   const lastTerrainRenderPlanKeyRef = useRef("");
-  const [flightPlanRoute, setFlightPlanRoute] = useState<FlightPlanRouteSegment[]>([]);
+  const [flightPlanRouteProjection, setFlightPlanRouteProjection] = useState<FlightPlanRouteProjection>({
+    flight_plan_route_revision: -1,
+    segments: [],
+  });
+  const flightPlanRoute =
+    flightPlanRouteProjection.flight_plan_route_revision === flightPlanRouteRevision
+      ? flightPlanRouteProjection.segments
+      : [];
   const [mapOverlayFrame, setMapOverlayFrame] = useState<MapDisplayFrame | null>(null);
   const mapOverlayQueryRequestRef = useRef<{
     id: number;
@@ -5070,7 +5082,10 @@ function MapPage(props: {
 
   useEffect(() => {
     if (!uiSession) {
-      setFlightPlanRoute([]);
+      setFlightPlanRouteProjection({
+        flight_plan_route_revision: -1,
+        segments: [],
+      });
       return;
     }
     const session = uiSession;
@@ -5078,7 +5093,8 @@ function MapPage(props: {
 
     async function resolveFlightPlanRoute() {
       const startedAt = performance.now();
-      const segments = await session.projectFlightPlanRoute();
+      const projection = await session.projectFlightPlanRoute();
+      const segments = projection.segments;
       const elapsedMs = Math.round(performance.now() - startedAt);
       perfDebugLog("map.route.segments", () => ({
         count: segments.length,
@@ -5097,14 +5113,17 @@ function MapPage(props: {
         });
       }
       if (!cancelled) {
-        setFlightPlanRoute(segments);
+        setFlightPlanRouteProjection(projection);
       }
     }
 
     resolveFlightPlanRoute().catch((error: unknown) => {
       console.error("failed to resolve flight plan route", error);
       if (!cancelled) {
-        setFlightPlanRoute([]);
+        setFlightPlanRouteProjection({
+          flight_plan_route_revision: flightPlanRouteRevision,
+          segments: [],
+        });
       }
     });
 
@@ -5113,10 +5132,7 @@ function MapPage(props: {
     };
   }, [
     onHighLatencyWarning,
-    plan.id,
-    plan.version,
-    navDataEpoch,
-    uiInvalidationRevisions.flight_plan_route,
+    flightPlanRouteRevision,
     uiSession,
   ]);
 

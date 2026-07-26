@@ -217,6 +217,7 @@ import org.aerobag.app.domain.FlightPlanDisplayRowKind
 import org.aerobag.app.domain.FlightPlanDisplayRowUiView
 import org.aerobag.app.domain.FlightPlanRowActionUiView
 import org.aerobag.app.domain.FlightPlanRouteSegment
+import org.aerobag.app.domain.FlightPlanRouteProjection
 import org.aerobag.app.domain.FlightPlanUiState
 import org.aerobag.app.domain.GuidanceState
 import org.aerobag.app.domain.CoreResourceRequest
@@ -702,7 +703,20 @@ internal fun MapExplorerPage(
             nexradViewportRefreshRequests.close()
         }
     }
-    var flightPlanRoute by remember(plan.id, plan.version, navDataEpoch) { mutableStateOf<List<FlightPlanRouteSegment>>(emptyList()) }
+    var flightPlanRouteProjection by remember(uiSession) {
+        mutableStateOf(
+            FlightPlanRouteProjection(
+                flightPlanRouteRevision = -1,
+                segments = emptyList(),
+            ),
+        )
+    }
+    val flightPlanRoute =
+        if (flightPlanRouteProjection.flightPlanRouteRevision == sessionSnapshot.flightPlanRouteRevision) {
+            flightPlanRouteProjection.segments
+        } else {
+            emptyList()
+        }
     var mapGestureActive by remember { mutableStateOf(false) }
     val selectedMapId = selectedMap.selectedMapId
     val selectedFamilyId = selectedMap.selectedFamilyId
@@ -1799,11 +1813,11 @@ internal fun MapExplorerPage(
         situationTrayOpen = false
         mapSelection = null
     }
-    LaunchedEffect(uiSession, navDataEpoch, plan.id, plan.version, plan.guidance, plan.resolvedLegs, uiInvalidationRevisions.flightPlanRoute) {
+    LaunchedEffect(uiSession, sessionSnapshot.flightPlanRouteRevision) {
         runCatching {
             uiSession.projectFlightPlanRoute()
-        }.onSuccess {
-            flightPlanRoute = it
+        }.onSuccess { projection ->
+            flightPlanRouteProjection = projection
             val guidance = sessionSnapshot.appUiState.activePlan?.guidance
             val directTo = guidance?.directTo
             Log.i(
@@ -1814,13 +1828,14 @@ internal fun MapExplorerPage(
                     "activeSummary=${guidance?.navElement?.activeLegSummary} " +
                     "cdi=${guidance?.navElement?.cdiIndicatorDots} " +
                     "directTarget=${directTo?.target} " +
-                    "directTargetLeg=${directTo?.targetLegId} " +
-                    "directResume=${directTo?.resumeLegId} " +
-                    "directTargetComponent=${directTo?.targetComponentUid} " +
-                    "statuses=${it.joinToString(",") { segment -> "${segment.id}:${segment.status}" }}",
+                    "directTargetRow=${directTo?.targetRowId} " +
+                    "statuses=${projection.segments.joinToString(",") { segment -> "${segment.id}:${segment.status}" }}",
             )
         }.onFailure {
-            flightPlanRoute = emptyList()
+            flightPlanRouteProjection = FlightPlanRouteProjection(
+                flightPlanRouteRevision = sessionSnapshot.flightPlanRouteRevision,
+                segments = emptyList(),
+            )
             Log.e("AerobagGuidance", "failed to project flight plan route", it)
         }
     }

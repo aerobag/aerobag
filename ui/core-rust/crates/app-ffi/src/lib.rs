@@ -122,20 +122,6 @@ pub fn empty_flight_plan_json() -> Result<String, String> {
     serde_json::to_string(&app_core::FlightPlan::empty()).map_err(|err| err.to_string())
 }
 
-pub fn activate_direct_to_leg_ui_json(
-    plan_json: &str,
-    lat: f64,
-    lon: f64,
-    target_leg_id: &str,
-) -> Result<String, String> {
-    let plan: app_core::FlightPlan =
-        serde_json::from_str(plan_json).map_err(|err| err.to_string())?;
-    let mutation =
-        app_core::activate_direct_to_leg_ui(&plan, app_core::LatLon { lat, lon }, target_leg_id)
-            .map_err(|err| err.to_string())?;
-    serde_json::to_string(&mutation).map_err(|err| err.to_string())
-}
-
 pub fn prepare_airway_presentation_json(
     airway_name: &str,
     branches_json: &str,

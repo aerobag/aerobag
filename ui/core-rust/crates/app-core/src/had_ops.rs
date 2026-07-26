@@ -6,7 +6,6 @@ use std::{
     borrow::Cow,
     cmp::Ordering,
     collections::{HashMap, HashSet},
-    ops::Range,
 };
 
 use chrono::{DateTime, Utc};
@@ -1443,6 +1442,21 @@ pub(crate) fn flight_plan_ui_state(
     computer: crate::FlightDataComputer,
     live_data: FlightPlanLiveData,
 ) -> Result<FlightPlanUiState, HadReadError> {
+    Ok(flight_plan_ui_projection(store, plan, current_ui_state, computer, live_data)?.ui_state)
+}
+
+pub(crate) struct FlightPlanUiProjection {
+    pub ui_state: FlightPlanUiState,
+    pub materialized: crate::flight_plan_materialization::MaterializedFlightPlan,
+}
+
+pub(crate) fn flight_plan_ui_projection(
+    store: &NavKvStore,
+    plan: FlightPlan,
+    current_ui_state: FlightPlanUiState,
+    computer: crate::FlightDataComputer,
+    live_data: FlightPlanLiveData,
+) -> Result<FlightPlanUiProjection, HadReadError> {
     let plan = crate::build_flight_plan(plan)?;
     let mut ui_state = current_ui_state;
     ui_state
@@ -1452,83 +1466,45 @@ pub(crate) fn flight_plan_ui_state(
     let route = missing_pages
         .collect(project_flight_plan_route(store, &plan))?
         .unwrap_or_default();
-    let route_segment_ranges = route_segment_ranges_by_leg_index(&plan, route.len());
-    let active_row_index = ui_state
-        .guidance
-        .as_ref()
-        .and_then(|guidance| guidance.active_to_row_uid.as_ref())
-        .and_then(|active_uid| {
-            ui_state
-                .display_rows
-                .iter()
-                .position(|row| &row.uid == active_uid)
-        });
-    let use_live_distances = live_data.ownship_position.is_some() && active_row_index.is_some();
-    let mut total_remaining_distance_nm = 0.0;
-    let mut has_remaining_distance = false;
-    for (row_index, row) in ui_state.display_rows.iter_mut().enumerate() {
-        let mut distance_nm = None;
+    let geometry_by_id = crate::flight_plan_materialization::geometry_map_from_route(&route);
+    let materialized = crate::flight_plan_materialization::MaterializedFlightPlan::build(
+        &plan,
+        &geometry_by_id,
+        live_data.ownship_position,
+    )
+    .map_err(|err| HadReadError::Fatal(err.message))?;
+    let use_live_eta = live_data.ownship_position.is_some() && materialized.active.is_some();
+    for row in ui_state.display_rows.iter_mut() {
         let mut course_deg = None;
-        let distance_projection =
-            flight_plan_distance_projection(row_index, active_row_index, use_live_distances);
+        let materialized_row = materialized
+            .rows
+            .get(&crate::FlightPlanRowId(row.uid.clone()));
         row.symbol_feature = match &row.nav_ref {
             Some(nav_ref) => missing_pages
                 .collect(nav_symbol_feature(store, nav_ref))?
                 .flatten(),
             None => None,
         };
-        if let Some(leg_index) = row.leg_index {
-            // Airway materialization can produce duplicate resolved-leg ids across components.
-            // The route projection preserves resolved-leg order, so row enrichment must use
-            // the row's leg index instead of grouping by the non-unique string id.
-            let mut leg_segments = route_segment_ranges
-                .get(leg_index)
-                .and_then(|range| range.clone())
-                .map(|range| route[range].iter())
-                .into_iter()
-                .flatten();
-            if let Some(first_segment) = leg_segments.next() {
-                distance_nm = Some(
-                    first_segment.distance_nm
-                        + leg_segments.map(|segment| segment.distance_nm).sum::<f64>(),
-                );
+        if let Some(geometry) = materialized_row.and_then(|row| row.geometry.as_ref()) {
+            let points = crate::flight_plan_materialization::geometry_points(geometry);
+            if let Some(segment) = points.windows(2).next() {
                 course_deg = missing_pages
                     .collect(true_to_magnetic_course_deg_optional(
                         store,
-                        first_segment.course_deg,
-                        crate::great_circle_intermediate(first_segment.from, first_segment.to, 0.5),
+                        crate::initial_course_deg(segment[0], segment[1]),
+                        crate::great_circle_intermediate(segment[0], segment[1], 0.5),
                     ))?
                     .flatten();
             }
         }
         let row_has_data = row.row_kind != crate::FlightPlanDisplayRowKind::Group;
-        if use_live_distances && Some(row_index) == active_row_index {
-            if let Some(ownship_position) = live_data.ownship_position {
-                let destination_ref = row
-                    .leg_index
-                    .and_then(|leg_index| plan.resolved_legs.get(leg_index).map(|leg| &leg.to))
-                    .or(row.destination_anchor.as_ref());
-                if let Some(destination_ref) = destination_ref {
-                    let destination_position =
-                        missing_pages.collect(nav_ref_position(store, destination_ref, None))?;
-                    distance_nm = destination_position.map(|position| {
-                        crate::great_circle_distance_nm(ownship_position, position)
-                    });
-                }
-            }
-        }
-        let cumulative_distance_nm = if row_has_data && distance_projection.contributes_to_total {
-            if let Some(distance_nm) = distance_nm {
-                total_remaining_distance_nm += distance_nm;
-                has_remaining_distance = true;
-                Some(total_remaining_distance_nm)
-            } else {
-                None
-            }
-        } else {
-            None
-        };
-        let eta = if use_live_distances {
+        let distance_nm = materialized_row.and_then(|row| row.distance_remaining_nm);
+        let cumulative_distance_nm =
+            materialized_row.and_then(|row| row.cumulative_distance_remaining_nm);
+        let tone = materialized_row
+            .map(|row| row.tone)
+            .unwrap_or(crate::FlightDataCellTone::Planned);
+        let eta = if use_live_eta {
             cumulative_distance_nm.and_then(|distance_nm| {
                 live_data
                     .now_epoch_ms
@@ -1543,7 +1519,7 @@ pub(crate) fn flight_plan_ui_state(
             cumulative_distance_nm,
             eta,
             course_deg,
-            distance_projection.tone,
+            tone,
         );
         if crate::planning::flight_plan_row_actions(row)
             .any(|action| action.id == FlightPlanRowActionId::ShowPlate)
@@ -1570,8 +1546,8 @@ pub(crate) fn flight_plan_ui_state(
             crate::planning::refresh_flight_plan_row_action_navigation(row);
         }
     }
-    if has_remaining_distance {
-        let summary_tone = if use_live_distances {
+    if let Some(total_remaining_distance_nm) = materialized.total_distance_remaining_nm {
+        let summary_tone = if materialized.active.is_some() {
             crate::FlightDataCellTone::Active
         } else {
             crate::FlightDataCellTone::Planned
@@ -1587,71 +1563,10 @@ pub(crate) fn flight_plan_ui_state(
     if !pages.is_empty() {
         return Err(HadReadError::NeedPages(pages));
     }
-    Ok(ui_state)
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-struct FlightPlanDistanceProjection {
-    tone: crate::FlightDataCellTone,
-    contributes_to_total: bool,
-}
-
-fn flight_plan_distance_projection(
-    row_index: usize,
-    active_row_index: Option<usize>,
-    use_live_distances: bool,
-) -> FlightPlanDistanceProjection {
-    if !use_live_distances {
-        return FlightPlanDistanceProjection {
-            tone: crate::FlightDataCellTone::Planned,
-            contributes_to_total: true,
-        };
-    }
-
-    match active_row_index {
-        Some(active_index) if row_index < active_index => FlightPlanDistanceProjection {
-            tone: crate::FlightDataCellTone::Passed,
-            contributes_to_total: false,
-        },
-        Some(active_index) if row_index == active_index => FlightPlanDistanceProjection {
-            tone: crate::FlightDataCellTone::Active,
-            contributes_to_total: true,
-        },
-        _ => FlightPlanDistanceProjection {
-            tone: crate::FlightDataCellTone::Planned,
-            contributes_to_total: true,
-        },
-    }
-}
-
-fn route_segment_ranges_by_leg_index(
-    plan: &FlightPlan,
-    route_segment_count: usize,
-) -> Vec<Option<Range<usize>>> {
-    let mut offset = 0usize;
-    plan.resolved_legs
-        .iter()
-        .map(|leg| {
-            let segment_count = projected_route_segment_count_for_leg(leg);
-            let end = offset.saturating_add(segment_count);
-            if end <= route_segment_count {
-                let range = offset..end;
-                offset = end;
-                Some(range)
-            } else {
-                offset = route_segment_count;
-                None
-            }
-        })
-        .collect()
-}
-
-fn projected_route_segment_count_for_leg(leg: &ResolvedLeg) -> usize {
-    leg.procedure_provenance
-        .as_ref()
-        .and_then(|provenance| provenance.display_path.as_ref())
-        .map(|path| path.elements.len())
-        .unwrap_or(1)
+    Ok(FlightPlanUiProjection {
+        ui_state,
+        materialized,
+    })
 }
 
 fn flight_plan_summary_row(
@@ -4928,7 +4843,6 @@ mod tests {
         crate::build_flight_plan(FlightPlan {
             id: "plan-three-airports".to_string(),
             name: "KAAA KBBB KCCC".to_string(),
-            legs: Vec::new(),
             route_components: vec![
                 RouteComponent::Waypoint {
                     waypoint: NavRef::Airport("KAAA".to_string()),
@@ -5220,7 +5134,6 @@ mod tests {
         let plan = crate::build_flight_plan(FlightPlan {
             id: "plan-magvar".to_string(),
             name: "KAAA KBBB".to_string(),
-            legs: Vec::new(),
             route_components: vec![
                 RouteComponent::Waypoint {
                     waypoint: NavRef::Airport("KAAA".to_string()),
@@ -5298,7 +5211,6 @@ mod tests {
         let plan = crate::build_flight_plan(FlightPlan {
             id: "plan-live-distance".to_string(),
             name: "KAAA KBBB KCCC KDDD".to_string(),
-            legs: Vec::new(),
             route_components: vec![
                 RouteComponent::Waypoint {
                     waypoint: NavRef::Airport("KAAA".to_string()),
@@ -5449,8 +5361,6 @@ mod tests {
             .find(|row| row.row_kind == crate::FlightPlanDisplayRowKind::Summary)
             .expect("summary row");
         let static_bbb_ccc_nm = crate::great_circle_distance_nm(bbb, ccc);
-        let static_total_nm = crate::great_circle_distance_nm(aaa, bbb) + static_bbb_ccc_nm;
-
         assert_eq!(
             row_cell(aaa_row, "waypoint_distance").value.as_deref(),
             None,
@@ -5458,8 +5368,8 @@ mod tests {
         );
         assert_eq!(
             row_cell(bbb_row, "waypoint_distance").tone,
-            crate::FlightDataCellTone::Planned,
-            "active guidance without ownship must not grey out earlier plan rows"
+            crate::FlightDataCellTone::Passed,
+            "navigation progress remains known when live position is unavailable"
         );
         assert_eq!(
             row_cell(ccc_row, "waypoint_distance").value.as_deref(),
@@ -5468,12 +5378,12 @@ mod tests {
         );
         assert_eq!(
             row_cell(summary_row, "waypoint_distance").value.as_deref(),
-            Some(crate::flight_data::format_nm(static_total_nm).as_str()),
-            "active guidance without ownship must not switch the total to live remaining distance"
+            Some(crate::flight_data::format_nm(static_bbb_ccc_nm).as_str()),
+            "the active row falls back to its fixed geometry without restoring passed legs"
         );
         assert_eq!(
             row_cell(summary_row, "waypoint_distance").tone,
-            crate::FlightDataCellTone::Planned
+            crate::FlightDataCellTone::Active
         );
     }
 
@@ -5621,7 +5531,6 @@ mod tests {
         let plan = crate::build_flight_plan(FlightPlan {
             id: "plan-static-total".to_string(),
             name: "KAAA KBBB KCCC".to_string(),
-            legs: Vec::new(),
             route_components: vec![
                 RouteComponent::Waypoint {
                     waypoint: NavRef::Airport("KAAA".to_string()),
@@ -5712,7 +5621,6 @@ mod tests {
         let plan = crate::build_flight_plan(FlightPlan {
             id: "plan-batched-page-faults".to_string(),
             name: "KAAA KBBB".to_string(),
-            legs: Vec::new(),
             route_components: vec![
                 RouteComponent::Waypoint {
                     waypoint: NavRef::Airport("KAAA".to_string()),
@@ -5789,7 +5697,6 @@ mod tests {
         let plan = crate::build_flight_plan(FlightPlan {
             id: "plan-route-page-faults".to_string(),
             name: "KAAA KBBB KCCC".to_string(),
-            legs: Vec::new(),
             route_components: vec![
                 RouteComponent::Waypoint {
                     waypoint: NavRef::Airport("KAAA".to_string()),
@@ -5836,7 +5743,6 @@ mod tests {
         let plan = FlightPlan {
             id: "krnt-sea-pae".to_string(),
             name: "KRNT SEA PAE".to_string(),
-            legs: Vec::new(),
             route_components: vec![
                 RouteComponent::Waypoint {
                     waypoint: NavRef::Airport("KRNT".to_string()),
@@ -6186,7 +6092,6 @@ mod tests {
         let plan = FlightPlan {
             id: "kpao-vpdub-vcb-wlw".to_string(),
             name: "KPAO VPDUB KVCB KWLW".to_string(),
-            legs: Vec::new(),
             route_components: vec![
                 RouteComponent::Waypoint {
                     waypoint: NavRef::Airport("KPAO".to_string()),
@@ -6301,7 +6206,6 @@ mod tests {
         let plan = FlightPlan {
             id: "krnt-sea-pae".to_string(),
             name: "KRNT SEA KPAE".to_string(),
-            legs: Vec::new(),
             route_components: vec![
                 RouteComponent::Waypoint {
                     waypoint: NavRef::Airport("KRNT".to_string()),
@@ -6549,7 +6453,6 @@ mod tests {
         let plan = FlightPlan {
             id: "procedure-quality-current-navdb".to_string(),
             name: "KGRK".to_string(),
-            legs: Vec::new(),
             route_components: vec![RouteComponent::Waypoint {
                 waypoint: NavRef::Airport(airport_id.to_string()),
             }],
@@ -7047,7 +6950,6 @@ mod tests {
         let plan = FlightPlan {
             id: "krnt".to_string(),
             name: "KRNT".to_string(),
-            legs: Vec::new(),
             route_components: vec![RouteComponent::Waypoint {
                 waypoint: NavRef::Airport("KRNT".to_string()),
             }],
@@ -7110,7 +7012,6 @@ mod tests {
         let plan = FlightPlan {
             id: "krnt".to_string(),
             name: "KRNT".to_string(),
-            legs: Vec::new(),
             route_components: vec![RouteComponent::Waypoint {
                 waypoint: NavRef::Airport("KRNT".to_string()),
             }],
@@ -7241,7 +7142,6 @@ mod tests {
         let plan = FlightPlan {
             id: "route".to_string(),
             name: "Route".to_string(),
-            legs: Vec::new(),
             route_components: Vec::new(),
             route_component_uids: Vec::new(),
             route_component_uid_counter: 0,
@@ -7269,7 +7169,6 @@ mod tests {
         let plan = FlightPlan {
             id: "route".to_string(),
             name: "Route".to_string(),
-            legs: Vec::new(),
             route_components: Vec::new(),
             route_component_uids: Vec::new(),
             route_component_uid_counter: 0,
@@ -7325,7 +7224,6 @@ mod tests {
         let plan = FlightPlan {
             id: "route".to_string(),
             name: "Route".to_string(),
-            legs: Vec::new(),
             route_components: Vec::new(),
             route_component_uids: Vec::new(),
             route_component_uid_counter: 0,
@@ -7416,7 +7314,6 @@ mod tests {
         let plan = FlightPlan {
             id: "route".to_string(),
             name: "Route".to_string(),
-            legs: Vec::new(),
             route_components: Vec::new(),
             route_component_uids: Vec::new(),
             route_component_uid_counter: 0,
@@ -7553,7 +7450,6 @@ mod tests {
         let plan = FlightPlan {
             id: "route".to_string(),
             name: "Route".to_string(),
-            legs: Vec::new(),
             route_components: Vec::new(),
             route_component_uids: Vec::new(),
             route_component_uid_counter: 0,
@@ -7577,7 +7473,6 @@ mod tests {
         let plan = FlightPlan {
             id: "empty".to_string(),
             name: "Empty".to_string(),
-            legs: Vec::new(),
             route_components: Vec::new(),
             route_component_uids: Vec::new(),
             route_component_uid_counter: 0,
@@ -7663,7 +7558,6 @@ mod tests {
         let plan = FlightPlan {
             id: "west-coast".to_string(),
             name: "West Coast".to_string(),
-            legs: Vec::new(),
             route_components: vec![
                 RouteComponent::Waypoint {
                     waypoint: NavRef::Airport("KPAE".to_string()),
@@ -7706,7 +7600,6 @@ mod tests {
         let plan = FlightPlan {
             id: "spot".to_string(),
             name: "Spot".to_string(),
-            legs: Vec::new(),
             route_components: Vec::new(),
             route_component_uids: Vec::new(),
             route_component_uid_counter: 0,
@@ -7736,7 +7629,6 @@ mod tests {
         let plan = FlightPlan {
             id: "duplicate".to_string(),
             name: "Duplicate".to_string(),
-            legs: Vec::new(),
             route_components: vec![RouteComponent::Waypoint {
                 waypoint: NavRef::Navaid("SEA".to_string()),
             }],

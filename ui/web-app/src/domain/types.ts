@@ -26,11 +26,6 @@ export type TileStorageKind = "asset_tree" | "sectional_package" | "static_produ
 export type FlightPlan = {
   id: string;
   name: string;
-  legs: Array<{
-    from: { Airport: string } | { Navaid: string } | { Fix: string };
-    to: { Airport: string } | { Navaid: string } | { Fix: string };
-    airway: string | null;
-  }>;
   route_components: RouteComponent[];
   route_component_uids: string[];
   route_component_uid_counter: number;
@@ -309,14 +304,23 @@ export type FlightPlanRouteSegment = {
   finish_lines?: { start: LatLon; end: LatLon }[];
 };
 
+export type FlightPlanRouteProjection = {
+  flight_plan_route_revision: number;
+  segments: FlightPlanRouteSegment[];
+};
+
 export type SequencingMode = "follow_plan" | "suspended" | "direct_to";
+
+export type DirectToTargetRow = {
+  kind: "planned" | "temporary";
+  row_id: string;
+};
 
 export type DirectToState = {
   start: NavRef;
   target: NavRef;
-  target_component_uid: string | null;
-  target_leg_id: string | null;
-  resume_leg_id: string | null;
+  target_row: DirectToTargetRow;
+  resume_row_id: string | null;
 };
 
 export type GuidanceState = {
@@ -368,16 +372,13 @@ export type ResolvedLegUiView = {
 export type DirectToUiView = {
   start: NavRef;
   target: NavRef;
-  target_component_uid: string | null;
-  target_leg_id: string | null;
-  resume_leg_id: string | null;
+  target_row_id: string;
   on_plan_target: boolean;
 };
 
 export type GuidanceUiView = {
   sequencing_mode: SequencingMode;
   active_leg_index: number | null;
-  display_split_leg_index: number | null;
   active_from_row_uid: string | null;
   active_to_row_uid: string | null;
   active_component_index: number | null;

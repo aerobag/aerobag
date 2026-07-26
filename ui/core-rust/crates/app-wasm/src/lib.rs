@@ -952,17 +952,6 @@ pub fn classify_procedure_identifier(
 }
 
 #[wasm_bindgen]
-pub fn activate_direct_to_leg_ui(
-    plan_json: &str,
-    lat: f64,
-    lon: f64,
-    target_leg_id: &str,
-) -> Result<String, JsValue> {
-    activate_direct_to_leg_ui_json(plan_json, lat, lon, target_leg_id)
-        .map_err(|err| JsValue::from_str(&err))
-}
-
-#[wasm_bindgen]
 pub fn create_ui_session(
     plan_json: &str,
     recent_airport_ids_json: &str,
@@ -1747,20 +1736,6 @@ fn build_flight_plan_json(plan_json: &str) -> Result<String, String> {
         serde_json::from_str(plan_json).map_err(|err| err.to_string())?;
     let plan = app_core::build_flight_plan(plan).map_err(|err| err.to_string())?;
     serde_json::to_string(&plan).map_err(|err| err.to_string())
-}
-
-fn activate_direct_to_leg_ui_json(
-    plan_json: &str,
-    lat: f64,
-    lon: f64,
-    target_leg_id: &str,
-) -> Result<String, String> {
-    let plan: app_core::FlightPlan =
-        serde_json::from_str(plan_json).map_err(|err| err.to_string())?;
-    let mutation =
-        app_core::activate_direct_to_leg_ui(&plan, app_core::LatLon { lat, lon }, target_leg_id)
-            .map_err(|err| err.to_string())?;
-    serde_json::to_string(&mutation).map_err(|err| err.to_string())
 }
 
 fn classify_procedure_identifier_json(

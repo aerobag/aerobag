@@ -92,7 +92,7 @@ describe("loadBestAvailableAdapter", () => {
   it("uses the wasm adapter when the generated module exports the expected API", async () => {
     const loaded = await loadBestAvailableAdapter(async () => ({
       situation_ring_candidates_json: () => "[]",
-      empty_flight_plan_json: () => JSON.stringify({ id: "plan-empty", name: "Flight Plan", legs: [], route_components: [], route_component_uids: [], route_component_uid_counter: 0, resolved_legs: [], guidance: null, departure: null, destination: null, alternate: null, cruise_altitude_ft: null, notes: null, updated_at_epoch_ms: 0, version: 1 }),
+      empty_flight_plan_json: () => JSON.stringify({ id: "plan-empty", name: "Flight Plan", route_components: [], route_component_uids: [], route_component_uid_counter: 0, resolved_legs: [], guidance: null, departure: null, destination: null, alternate: null, cruise_altitude_ft: null, notes: null, updated_at_epoch_ms: 0, version: 1 }),
       create_ui_session: async (_planJson: string, _recentAirportIdsJson: string, _selectedAirportIdJson: string, _selectedChartIdJson: string, _nowEpochMs: number) => {
         return JSON.stringify({ handle: 1, snapshot: JSON.parse(snapshotJson) });
       },
@@ -136,7 +136,10 @@ describe("loadBestAvailableAdapter", () => {
       perform_flight_plan_row_action_in_session: async () => JSON.stringify({ state: "complete", result: JSON.parse(snapshotJson) }),
       perform_status_action_in_session: async () => snapshotJson,
       sync_guidance_geometry_in_session: async () => JSON.stringify({ state: "complete", result: JSON.parse(snapshotJson) }),
-      project_flight_plan_route_in_session: async () => JSON.stringify({ state: "complete", result: [] }),
+      project_flight_plan_route_in_session: async () => JSON.stringify({
+        state: "complete",
+        result: { flight_plan_route_revision: 0, segments: [] },
+      }),
       select_airport_in_session: async () => snapshotJson,
       select_chart_in_session: async () => snapshotJson,
       select_chart_reference_in_session: async () => snapshotJson,

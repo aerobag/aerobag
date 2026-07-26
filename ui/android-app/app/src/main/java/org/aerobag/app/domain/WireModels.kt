@@ -202,7 +202,6 @@ data class WireOwnshipSourceStatus(
 data class WireFlightPlan(
     val id: String,
     val name: String,
-    val legs: List<WirePlanLeg>,
     val route_components: List<WireRouteComponent> = emptyList(),
     val route_component_uids: List<String> = emptyList(),
     val route_component_uid_counter: Long = 0,
@@ -1179,6 +1178,12 @@ data class WireFlightPlanRouteSegment(
 )
 
 @Serializable
+data class WireFlightPlanRouteProjection(
+    val flight_plan_route_revision: Long,
+    val segments: List<WireFlightPlanRouteSegment>,
+)
+
+@Serializable
 enum class WireSequencingMode {
     @SerialName("follow_plan")
     FollowPlan,
@@ -1191,12 +1196,26 @@ enum class WireSequencingMode {
 }
 
 @Serializable
+enum class WireDirectToTargetRowKind {
+    @SerialName("planned")
+    Planned,
+
+    @SerialName("temporary")
+    Temporary,
+}
+
+@Serializable
+data class WireDirectToTargetRow(
+    val kind: WireDirectToTargetRowKind,
+    val row_id: String,
+)
+
+@Serializable
 data class WireDirectToState(
     val start: WireNavRef,
     val target: WireNavRef,
-    val target_component_uid: String? = null,
-    val target_leg_id: String? = null,
-    val resume_leg_id: String? = null,
+    val target_row: WireDirectToTargetRow,
+    val resume_row_id: String? = null,
 )
 
 @Serializable
@@ -1372,9 +1391,7 @@ data class WireResolvedLegUiView(
 data class WireDirectToUiView(
     val start: WireNavRef,
     val target: WireNavRef,
-    val target_component_uid: String? = null,
-    val target_leg_id: String? = null,
-    val resume_leg_id: String? = null,
+    val target_row_id: String,
     val on_plan_target: Boolean,
 )
 
@@ -1382,7 +1399,6 @@ data class WireDirectToUiView(
 data class WireGuidanceUiView(
     val sequencing_mode: WireSequencingMode,
     val active_leg_index: Int? = null,
-    val display_split_leg_index: Int? = null,
     val active_from_row_uid: String? = null,
     val active_to_row_uid: String? = null,
     val active_component_index: Int? = null,

@@ -10,6 +10,7 @@ pub mod data_status;
 pub mod debug_log;
 pub mod errors;
 pub mod flight_data;
+mod flight_plan_materialization;
 pub mod freshness;
 pub mod geodesy;
 pub mod geometry;
@@ -158,13 +159,12 @@ pub use package_management::{
     OfflinePackagesUiState, OfflinePackagesWarning, PackageManagementInput, PackageManagementPlan,
 };
 pub use planning::{
-    activate_direct_to, activate_direct_to_component, activate_direct_to_leg, activate_leg,
-    activate_leg_at_detail_index, activate_next_leg, active_guidance_leg, at_fix_requirement,
-    basic_terminal_state, change_airway_entry, change_airway_exit,
-    change_procedure_enroute_transition, change_procedure_runway_transition,
-    common_resume_candidate_decision, delete_component, delete_waypoint_component,
-    direct_to_fix_with_course_continuation_requirement, enter_hold_requirement,
-    established_on_course_requirement, first_guidance_detail_index_for_leg,
+    activate_direct_to, activate_direct_to_row, activate_leg, activate_leg_at_detail_index,
+    activate_next_leg, active_guidance_leg, at_fix_requirement, basic_terminal_state,
+    change_airway_entry, change_airway_exit, change_procedure_enroute_transition,
+    change_procedure_runway_transition, common_resume_candidate_decision, delete_component,
+    delete_waypoint_component, direct_to_fix_with_course_continuation_requirement,
+    enter_hold_requirement, established_on_course_requirement, first_guidance_detail_index_for_leg,
     flatten_component_to_waypoints, flight_plan_contains_nav_ref,
     flight_plan_has_direct_to_overlay, insert_airport_waypoint, insert_airway_after_airway,
     insert_airway_after_waypoint, insert_airway_between_waypoints,
@@ -178,14 +178,15 @@ pub use planning::{
     terminal_hold_start_element_index_for_leg, terminal_state_with_leg_characteristics,
     top_level_waypoint_component_count, top_level_waypoint_component_index, unsuspend_sequencing,
     yieldable_course_to_fix_requirement, AirwaySegment, CodedFixSatisfaction,
-    CommonSegmentTerminalState, ConcretizedNavItem, DirectToState, DirectToUiView, FlightPlan,
-    FlightPlanControlId, FlightPlanControlUiView, FlightPlanDisplayRowKind,
-    FlightPlanRowActionExecution, FlightPlanRowActionId, FlightPlanUiState, GuidanceState,
-    GuidanceUiView, HandoffDecision, HoldTerminalState, LegDisplayElement, LegDisplayPath,
-    LegDisplayPathStyle, NavRef, PathTermination, PlanLeg, ProcedureDiscontinuity, ProcedureKind,
-    ProcedureLegProvenance, ProcedureSegment, ProcedureSegmentRole, ProcedureTurnTerminalState,
-    ResolvedLeg, ResolvedLegSource, ResolvedLegUiView, RouteComponent, RouteComponentUiView,
-    RouteComponentViewKind, SequencingMode, StartRequirement, TerminalState,
+    CommonSegmentTerminalState, ConcretizedNavItem, DirectToState, DirectToTargetRow,
+    DirectToUiView, FlightPlan, FlightPlanControlId, FlightPlanControlUiView,
+    FlightPlanDisplayRowKind, FlightPlanRowActionExecution, FlightPlanRowActionId, FlightPlanRowId,
+    FlightPlanUiState, GuidanceState, GuidanceUiView, HandoffDecision, HoldTerminalState,
+    LegDisplayElement, LegDisplayPath, LegDisplayPathStyle, NavRef, PathTermination, PlanLeg,
+    ProcedureDiscontinuity, ProcedureKind, ProcedureLegProvenance, ProcedureSegment,
+    ProcedureSegmentRole, ProcedureTurnTerminalState, ResolvedLeg, ResolvedLegSource,
+    ResolvedLegUiView, RouteComponent, RouteComponentUiView, RouteComponentViewKind,
+    SequencingMode, StartRequirement, TerminalState,
 };
 pub use playback::{PlaybackGapSpan, PlaybackStatus, PlaybackUiState};
 pub use publication::{
@@ -389,6 +390,12 @@ pub struct FlightPlanRouteSegment {
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct FlightPlanRouteProjection {
+    pub flight_plan_route_revision: u64,
+    pub segments: Vec<FlightPlanRouteSegment>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct FlightPlanRouteFinishLine {
     pub start: LatLon,
     pub end: LatLon,
@@ -425,99 +432,6 @@ pub(crate) fn guidance_detail_id_for_leg_element(
     element_index: usize,
 ) -> String {
     format!("leg:{leg_index}:{}#{element_index}", leg.id)
-}
-
-fn guidance_detail_index_for_leg_element(
-    plan: &FlightPlan,
-    leg_index: usize,
-    element_index: usize,
-) -> Option<usize> {
-    let leg = plan.resolved_legs.get(leg_index)?;
-    if element_index >= guidance_detail_count_for_leg(leg) {
-        return None;
-    }
-    Some(
-        plan.resolved_legs[..leg_index]
-            .iter()
-            .map(guidance_detail_count_for_leg)
-            .sum::<usize>()
-            + element_index,
-    )
-}
-
-fn flight_plan_leg_index_by_id(plan: &FlightPlan, leg_id: &str) -> Option<usize> {
-    plan.resolved_legs.iter().position(|leg| leg.id == leg_id)
-}
-
-fn direct_to_route_status_for_leg(
-    plan: &FlightPlan,
-    guidance: &GuidanceState,
-    leg_index: usize,
-) -> FlightPlanRouteSegmentStatus {
-    let Some(resume_leg_index) = guidance
-        .direct_to
-        .as_ref()
-        .and_then(|direct_to| direct_to.resume_leg_id.as_deref())
-        .and_then(|resume_leg_id| flight_plan_leg_index_by_id(plan, resume_leg_id))
-    else {
-        return FlightPlanRouteSegmentStatus::Completed;
-    };
-    if leg_index >= resume_leg_index {
-        FlightPlanRouteSegmentStatus::Remaining
-    } else {
-        FlightPlanRouteSegmentStatus::Completed
-    }
-}
-
-fn route_status_for_detail(
-    plan: &FlightPlan,
-    leg_index: usize,
-    element_index: usize,
-) -> FlightPlanRouteSegmentStatus {
-    let Some(guidance) = plan.guidance.as_ref() else {
-        return FlightPlanRouteSegmentStatus::Remaining;
-    };
-    if guidance.sequencing_mode == SequencingMode::DirectTo {
-        return direct_to_route_status_for_leg(plan, guidance, leg_index);
-    }
-    let Some(detail_index) = guidance_detail_index_for_leg_element(plan, leg_index, element_index)
-    else {
-        return FlightPlanRouteSegmentStatus::Remaining;
-    };
-    let active_detail_index = guidance
-        .active_detail_index
-        .or_else(|| guidance_detail_index_for_leg_element(plan, guidance.active_leg_index, 0));
-    let Some(active_detail_index) = active_detail_index else {
-        return FlightPlanRouteSegmentStatus::Remaining;
-    };
-    if !planning::guidance_projects_active_leg(plan, guidance) {
-        return if detail_index <= active_detail_index {
-            FlightPlanRouteSegmentStatus::Completed
-        } else {
-            FlightPlanRouteSegmentStatus::Remaining
-        };
-    }
-    let active_element_index = planning::guidance_detail_ref_by_index(plan, active_detail_index)
-        .filter(|detail| detail.leg_index == guidance.active_leg_index)
-        .map(|detail| detail.element_index);
-    let terminal_hold_start_element =
-        planning::terminal_hold_start_element_index_for_leg(plan, guidance.active_leg_index);
-    if leg_index < guidance.active_leg_index {
-        FlightPlanRouteSegmentStatus::Completed
-    } else if leg_index > guidance.active_leg_index {
-        FlightPlanRouteSegmentStatus::Remaining
-    } else if detail_index < active_detail_index {
-        FlightPlanRouteSegmentStatus::Completed
-    } else if detail_index == active_detail_index {
-        FlightPlanRouteSegmentStatus::Active
-    } else if terminal_hold_start_element.is_some_and(|hold_start| {
-        active_element_index.is_some_and(|active_element| active_element < hold_start)
-            && element_index >= hold_start
-    }) {
-        FlightPlanRouteSegmentStatus::Remaining
-    } else {
-        FlightPlanRouteSegmentStatus::ActiveLegRemaining
-    }
 }
 
 fn guidance_route_geometry_from_display_element(
@@ -741,11 +655,12 @@ where
     F: FnMut(&NavRef, Option<&str>) -> Result<LatLon, E>,
 {
     let mut route = Vec::new();
+    let route_statuses = flight_plan_materialization::route_statuses_for_plan(plan);
     for (leg_index, leg) in plan.resolved_legs.iter().enumerate() {
-        route.extend(project_flight_plan_leg_route_with_resolver(
-            plan,
+        route.extend(project_flight_plan_leg_route_with_statuses(
             leg_index,
             leg,
+            &route_statuses[leg_index],
             &mut resolve_position,
         )?);
     }
@@ -764,9 +679,16 @@ where
         .and_then(|guidance| guidance.direct_to.as_ref())
     {
         let resume_geometry = direct_to
-            .resume_leg_id
-            .as_deref()
-            .and_then(|resume_leg_id| route.iter().find(|segment| segment.leg_id == resume_leg_id))
+            .resume_row_id
+            .as_ref()
+            .and_then(|_| planning::direct_to_resume_leg_index(plan, direct_to))
+            .and_then(|resume_leg_index| {
+                let segment_index = plan.resolved_legs[..resume_leg_index]
+                    .iter()
+                    .map(guidance_detail_count_for_leg)
+                    .sum::<usize>();
+                route.get(segment_index)
+            })
             .map(|segment| segment.geometry.clone());
         let from = resolve_position(&direct_to.start, None)?;
         let to = resolve_position(&direct_to.target, None)?;
@@ -800,6 +722,24 @@ pub(crate) fn project_flight_plan_leg_route_with_resolver<E, F>(
 where
     F: FnMut(&NavRef, Option<&str>) -> Result<LatLon, E>,
 {
+    let route_statuses = flight_plan_materialization::route_statuses_for_plan(plan);
+    project_flight_plan_leg_route_with_statuses(
+        leg_index,
+        leg,
+        &route_statuses[leg_index],
+        resolve_position,
+    )
+}
+
+fn project_flight_plan_leg_route_with_statuses<E, F>(
+    leg_index: usize,
+    leg: &ResolvedLeg,
+    statuses: &[FlightPlanRouteSegmentStatus],
+    resolve_position: &mut F,
+) -> Result<Vec<FlightPlanRouteSegment>, E>
+where
+    F: FnMut(&NavRef, Option<&str>) -> Result<LatLon, E>,
+{
     let procedure_airport_id = leg.procedure_provenance.as_ref().and_then(|provenance| {
         (!provenance.airport_id.is_empty()).then_some(provenance.airport_id.as_str())
     });
@@ -822,7 +762,7 @@ where
                 geometry: geometry.clone(),
                 distance_nm: guidance_route_distance_nm(&geometry),
                 course_deg: guidance_route_course_deg(&geometry),
-                status: route_status_for_detail(plan, leg_index, element_index),
+                status: statuses[element_index].clone(),
                 finish_lines: Vec::new(),
             });
         }
@@ -843,7 +783,7 @@ where
             geometry: geometry.clone(),
             distance_nm: guidance_route_distance_nm(&geometry),
             course_deg: guidance_route_course_deg(&geometry),
-            status: route_status_for_detail(plan, leg_index, 0),
+            status: statuses[0].clone(),
             finish_lines: Vec::new(),
         });
     }
@@ -858,13 +798,6 @@ pub fn load_geometry(geometry_json: &str) -> AppResult<GeometryBundle> {
 }
 
 pub fn build_flight_plan(plan: FlightPlan) -> AppResult<FlightPlan> {
-    if plan.route_components.is_empty() && !plan.legs.is_empty() {
-        return Err(AppError {
-            kind: AppErrorKind::InvalidFlightPlan,
-            message: "flight plan must contain structured route data".to_string(),
-        });
-    }
-
     let plan = plan.normalized();
 
     if plan.resolved_legs.is_empty() && plan.route_components.len() > 1 {
@@ -1444,15 +1377,6 @@ pub fn activate_direct_to_ui(
     target: NavRef,
 ) -> AppResult<FlightPlanUiMutation> {
     let plan = activate_direct_to(plan, from_position, target)?;
-    Ok(project_plan_mutation(plan))
-}
-
-pub fn activate_direct_to_leg_ui(
-    plan: &FlightPlan,
-    from_position: LatLon,
-    target_leg_id: &str,
-) -> AppResult<FlightPlanUiMutation> {
-    let plan = activate_direct_to_leg(plan, from_position, target_leg_id)?;
     Ok(project_plan_mutation(plan))
 }
 

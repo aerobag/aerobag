@@ -4,12 +4,6 @@
 
 package org.aerobag.app.domain
 
-data class FlightPlanLeg(
-    val from: NavRef,
-    val to: NavRef,
-    val airway: String? = null,
-)
-
 sealed interface RouteComponent {
     data class Waypoint(val waypoint: NavRef) : RouteComponent
     data class Airway(val airway: AirwaySegment) : RouteComponent
@@ -40,7 +34,6 @@ sealed interface NavRef {
 data class FlightPlan(
     val id: String,
     val name: String,
-    val legs: List<FlightPlanLeg>,
     val routeComponents: List<RouteComponent> = emptyList(),
     val routeComponentUids: List<String> = emptyList(),
     val routeComponentUidCounter: Long = 0,
@@ -254,6 +247,11 @@ data class FlightPlanRouteSegment(
     val status: RouteSegmentStatus,
 )
 
+data class FlightPlanRouteProjection(
+    val flightPlanRouteRevision: Long,
+    val segments: List<FlightPlanRouteSegment>,
+)
+
 enum class SequencingMode {
     FollowPlan,
     Suspended,
@@ -267,12 +265,21 @@ enum class SuspendReason {
     DirectToComplete,
 }
 
+enum class DirectToTargetRowKind {
+    Planned,
+    Temporary,
+}
+
+data class DirectToTargetRow(
+    val kind: DirectToTargetRowKind,
+    val rowId: String,
+)
+
 data class DirectToState(
     val start: NavRef,
     val target: NavRef,
-    val targetComponentUid: String? = null,
-    val targetLegId: String?,
-    val resumeLegId: String?,
+    val targetRow: DirectToTargetRow,
+    val resumeRowId: String?,
 )
 
 data class GuidanceState(
@@ -328,16 +335,13 @@ data class ResolvedLegUiView(
 data class DirectToUiView(
     val start: NavRef,
     val target: NavRef,
-    val targetComponentUid: String? = null,
-    val targetLegId: String?,
-    val resumeLegId: String?,
+    val targetRowId: String,
     val onPlanTarget: Boolean,
 )
 
 data class GuidanceUiView(
     val sequencingMode: SequencingMode,
     val activeLegIndex: Int?,
-    val displaySplitLegIndex: Int?,
     val activeFromRowUid: String? = null,
     val activeToRowUid: String? = null,
     val activeComponentIndex: Int?,

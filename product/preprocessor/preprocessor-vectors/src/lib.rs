@@ -2622,13 +2622,33 @@ pub struct LongestRunwayInfo {
 pub fn load_airport_runway_info(
     conn: &Connection,
 ) -> anyhow::Result<BTreeMap<String, LongestRunwayInfo>> {
+    let noncanonical_id_count: usize = conn.query_row(
+        "
+        SELECT
+            (SELECT count(*) FROM airports
+             WHERE LocationID IS NULL
+                OR trim(LocationID) = ''
+                OR LocationID != upper(trim(LocationID)))
+          + (SELECT count(*) FROM airportrunways
+             WHERE LocationID IS NULL
+                OR trim(LocationID) = ''
+                OR LocationID != upper(trim(LocationID)))
+        ",
+        [],
+        |row| row.get(0),
+    )?;
+    if noncanonical_id_count != 0 {
+        bail!(
+            "vector runway input contains {noncanonical_id_count} noncanonical airport identifiers"
+        );
+    }
     let mut stmt = conn.prepare(
         "
         SELECT r.LocationID, r.Length, r.Surface, r.LEHeadingT,
                r.LELatitude, r.LELongitude, r.HELatitude, r.HELongitude,
                r.LEIdent, r.HEHeading, r.HEIdent, a.MagneticVariation
         FROM airportrunways r
-        LEFT JOIN airports a ON upper(trim(a.LocationID)) = upper(trim(r.LocationID))
+        LEFT JOIN airports a ON a.LocationID = r.LocationID
         ",
     )?;
     let rows = stmt.query_map([], |row| {
@@ -5113,6 +5133,28 @@ mod tests {
         assert_eq!(krnt.elevation_msl_ft, Some(32.0));
         let value = serde_json::to_value(krnt).unwrap();
         assert_eq!(value["elevation_msl_ft"], serde_json::json!(32.0));
+    }
+
+    #[test]
+    fn runway_info_rejects_noncanonical_airport_identifiers() {
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch(
+            "
+            CREATE TABLE airports (LocationID TEXT);
+            CREATE TABLE airportrunways (LocationID TEXT);
+            INSERT INTO airports VALUES ('KRNT');
+            INSERT INTO airportrunways VALUES (' krnt ');
+            ",
+        )
+        .unwrap();
+
+        let error = load_airport_runway_info(&conn).unwrap_err();
+        assert!(
+            error
+                .to_string()
+                .contains("1 noncanonical airport identifiers"),
+            "unexpected error: {error:#}"
+        );
     }
 
     #[test]

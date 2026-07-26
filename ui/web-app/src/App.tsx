@@ -637,6 +637,7 @@ function DisclaimerModal(props: {
         <button
           type="button"
           className="disclaimerAcceptButton"
+          data-testid="parity:disclaimer-accept-button"
           disabled={props.acceptingDisabled}
           onClick={props.onAccept}
         >
@@ -1838,6 +1839,7 @@ export default function App() {
   const initialPage = useMemo(() => appPageForCurrentPath() ?? persistedUiState.page ?? "map", [persistedUiState.page]);
   const [page, setPage] = useState<AppPage>(initialPage);
   const [pageHistory, setPageHistory] = useState<AppViewSnapshot[]>([]);
+  const [flightPlanWeatherModal, setFlightPlanWeatherModal] = useState<WeatherDetailUiView | null>(null);
   const [appCoreAdapter, setAppCoreAdapter] = useState<AppCoreAdapter | null>(null);
   const [adapterBackend, setAdapterBackend] = useState<AdapterBackendKind>("wasm");
   const [sessionInitError, setSessionInitError] = useState<string | null>(null);
@@ -3310,6 +3312,7 @@ export default function App() {
           mostRecentChartOrPlatePage={mostRecentChartOrPlatePage}
           onOpenRecentChartOrPlate={navigateToMostRecentChartOrPlate}
           onSelectPage={navigateToPage}
+          onOpenWeatherDetail={setFlightPlanWeatherModal}
           onOpenCharts={(airportId, chartId) => {
             if (!airportId) {
               return;
@@ -3565,6 +3568,12 @@ export default function App() {
           }}
         />
       </div>
+      {flightPlanWeatherModal ? (
+        <>
+          <TrayScrim ariaLabel="Close weather" onClose={() => setFlightPlanWeatherModal(null)} />
+          <WeatherDetailModal detail={flightPlanWeatherModal} />
+        </>
+      ) : null}
       {sessionSnapshot.disclaimer_state.required ? (
         <DisclaimerModal
           state={sessionSnapshot.disclaimer_state}
@@ -7530,6 +7539,7 @@ function FlightPlanPage(props: {
   mostRecentChartOrPlatePage: AppPage;
   onOpenRecentChartOrPlate: () => void;
   onSelectPage: (page: AppPage) => void;
+  onOpenWeatherDetail: (detail: WeatherDetailUiView) => void;
   onOpenCharts: (airportId: string | null, chartId?: string | null) => void;
   onInsertAirportWaypointAtRow: (rowUid: string, before: boolean, airportId: string) => void | Promise<void>;
   onPreviewFlightPlanEntry: (input: string) => Promise<FlightPlanEntryPreview>;
@@ -7547,7 +7557,6 @@ function FlightPlanPage(props: {
 }) {
   const [selectedWaypointUid, setSelectedWaypointUid] = useState<string | null>(null);
   const [selectedWaypointAnchor, setSelectedWaypointAnchor] = useState<{ top: number; height: number } | null>(null);
-  const [flightPlanWeatherModal, setFlightPlanWeatherModal] = useState<WeatherDetailUiView | null>(null);
   const [flightPlanAirportInfoModal, setFlightPlanAirportInfoModal] = useState<{
     airportId: string;
     detail: AirportInfoUiView | null;
@@ -7773,7 +7782,7 @@ function FlightPlanPage(props: {
             return;
           }
           if (action.weather_detail) {
-            setFlightPlanWeatherModal(action.weather_detail);
+            props.onOpenWeatherDetail(action.weather_detail);
             closeTray();
             return;
           }
@@ -8802,12 +8811,6 @@ function FlightPlanPage(props: {
           {disabledActionToast.message}
         </div>
       ) : null}
-      {flightPlanWeatherModal ? (
-        <>
-          <TrayScrim ariaLabel="Close weather" onClose={() => setFlightPlanWeatherModal(null)} />
-          <WeatherDetailModal detail={flightPlanWeatherModal} />
-        </>
-      ) : null}
       {flightPlanAirportInfoModal ? (
         <>
           <TrayScrim ariaLabel="Close airport info" onClose={() => setFlightPlanAirportInfoModal(null)} />
@@ -9449,6 +9452,7 @@ function WeatherDetailModal(props: { detail: WeatherDetailUiView; className?: st
   return (
     <section
       className={`mapSelectionDetailModal weatherDetailModal${props.className ? ` ${props.className}` : ""}`}
+      data-testid="weather-detail-modal"
       style={props.style}
       aria-label={`Weather ${detail.station_id}`}
       onPointerDown={stopPointer}

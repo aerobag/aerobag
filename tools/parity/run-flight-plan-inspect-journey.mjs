@@ -23,6 +23,9 @@ const CORE_ROW_ACTION_IDS = ["activate_leg", "direct_to", "insert_before", "inse
 const JOURNEY_ROUTE = "KRNT SEA KPAE";
 const JOURNEY_ROUTE_TOKENS = JOURNEY_ROUTE.split(" ");
 const JOURNEY_ROUTE_DEST = "KPAE";
+const WEATHER_MODAL_WEB_TEST_ID = "weather-detail-modal";
+const WEATHER_MODAL_ANDROID_TAG = "parity:weather-detail-modal";
+const WEATHER_MODAL_TIMEOUT_MS = 10000;
 const PLATE_CONTROL_IDS = ["airport-button", "chart-button", "load-button", "folder-button"];
 const PLATE_CONTROL_WEB_PREFIX = "plate-";
 const PLATE_CONTROL_ANDROID_PREFIX = "parity:plate-";
@@ -43,13 +46,19 @@ function usage() {
   node tools/parity/run-flight-plan-inspect-journey.mjs web [--url http://127.0.0.1:8082/]
   node tools/parity/run-flight-plan-inspect-journey.mjs android [--serial emulator-5554]
   node tools/parity/run-flight-plan-inspect-journey.mjs both [--url http://127.0.0.1:8082/] [--serial emulator-5554]
+  node tools/parity/run-flight-plan-inspect-journey.mjs both --focus plan-weather [--url URL] [--serial SERIAL]
 
 The web runner launches a temporary headless Chrome through CDP. Set CHROME_BIN if Chrome is not on PATH.
 The Android runner expects the app to be installed and uses adb + uiautomator XML dumps.`);
 }
 
 function parseArgs(argv) {
-  const args = { platform: argv[2], url: DEFAULT_WEB_URL, serial: process.env.ANDROID_SERIAL ?? "" };
+  const args = {
+    platform: argv[2],
+    url: DEFAULT_WEB_URL,
+    serial: process.env.ANDROID_SERIAL ?? "",
+    focus: null,
+  };
   if (argv.includes("-h") || argv.includes("--help")) {
     args.help = true;
     return args;
@@ -60,9 +69,14 @@ function parseArgs(argv) {
       args.url = argv[++i];
     } else if (arg === "--serial") {
       args.serial = argv[++i];
+    } else if (arg === "--focus") {
+      args.focus = argv[++i];
     } else {
       throw new Error(`unknown argument: ${arg}`);
     }
+  }
+  if (args.focus !== null && args.focus !== "plan-weather") {
+    throw new Error(`unknown focus: ${args.focus}`);
   }
   return args;
 }
@@ -332,7 +346,7 @@ async function launchChrome() {
   return { proc, port, profile };
 }
 
-async function webJourney(url) {
+async function webJourney(url, focus = null) {
   const out = result("web");
   const chrome = await launchChrome();
   let cdp;
@@ -350,20 +364,44 @@ async function webJourney(url) {
     await cdp.send("Emulation.setDeviceMetricsOverride", WEB_PARITY_VIEWPORT);
     await cdp.send("Page.navigate", { url });
     await waitForWeb(cdp, "document.querySelector('[data-testid=\"map-surface\"]') !== null", "map surface");
+    if (await webExists(cdp, "[data-testid=\"parity:disclaimer-accept-button\"]")) {
+      await waitForWeb(
+        cdp,
+        "document.querySelector('[data-testid=\"parity:disclaimer-accept-button\"]:not(:disabled)') !== null",
+        "enabled disclaimer acceptance",
+      );
+      await webClick(cdp, "[data-testid=\"parity:disclaimer-accept-button\"]");
+      await waitForWeb(
+        cdp,
+        "document.querySelector('[data-testid=\"parity:disclaimer-accept-button\"]') === null",
+        "disclaimer dismissal",
+      );
+      recordStep(out, "accepted disclaimer for clean parity session");
+    }
     recordStep(out, "app started");
 
-    await webClick(cdp, "[data-testid=\"nav-cdi\"]");
-    await waitForWeb(cdp, "document.querySelector('[data-testid=\"plan-append-route-input\"]') !== null", "plan append input");
+    await webClick(cdp, ".pageLayer.isActive [data-testid=\"nav-cdi\"]");
+    await waitForWeb(cdp, "document.querySelector('.pageLayer.isActive [data-testid=\"plan-append-route-input\"]') !== null", "plan append input");
     recordStep(out, "opened plan page");
     recordCheck(out, "openedPlanFromCdi", true);
 
-    await webClick(cdp, "[data-testid=\"nav-cdi\"]");
+    if (focus === "plan-weather") {
+      recordCheck(out, "appendRoutePresent", true);
+      await webAssertStartupPlanEmpty(cdp, out);
+      await webAppendJourneyRoute(cdp, out);
+      await webCheckFlightPlanWeatherFirstTap(cdp, out);
+      out.finished_at = new Date().toISOString();
+      out.status = out.gaps.length === 0 ? "pass" : "gaps";
+      return out;
+    }
+
+    await webClick(cdp, ".pageLayer.isActive [data-testid=\"nav-cdi\"]");
     await waitForWeb(cdp, "document.querySelector('[data-testid=\"map-surface\"]') !== null", "chart after plan CDI");
     recordStep(out, "plan CDI returned to chart");
     recordCheck(out, "planCdiReturnsToChart", true);
 
-    await webClick(cdp, "[data-testid=\"nav-cdi\"]");
-    await waitForWeb(cdp, "document.querySelector('[data-testid=\"plan-append-route-input\"]') !== null", "plan after chart CDI");
+    await webClick(cdp, ".pageLayer.isActive [data-testid=\"nav-cdi\"]");
+    await waitForWeb(cdp, "document.querySelector('.pageLayer.isActive [data-testid=\"plan-append-route-input\"]') !== null", "plan after chart CDI");
     recordStep(out, "chart CDI returned to plan");
     recordCheck(out, "chartCdiReturnsToPlan", true);
     recordCheck(out, "appendRoutePresent", true);
@@ -371,8 +409,9 @@ async function webJourney(url) {
 
     await webAppendJourneyRoute(cdp, out);
     await webCheckPlanActionClasses(cdp, out);
+    await webCheckFlightPlanWeatherFirstTap(cdp, out);
 
-    await webSetInput(cdp, "[data-testid=\"plan-append-route-input\"]", "KRNT V2 ZZZZZ ");
+    await webSetInput(cdp, ".pageLayer.isActive [data-testid=\"plan-append-route-input\"]", "KRNT V2 ZZZZZ ");
     await waitForWeb(
       cdp,
       "document.querySelector('[data-testid=\"plan-append-route-feedback\"]')?.innerText.trim().length > 0",
@@ -381,7 +420,7 @@ async function webJourney(url) {
     recordStep(out, "append route feedback visible");
     recordCheck(out, "appendRouteFeedbackVisible", true);
 
-    await webClick(cdp, "[data-testid=\"nav-cdi\"]");
+    await webClick(cdp, ".pageLayer.isActive [data-testid=\"nav-cdi\"]");
     await waitForWeb(cdp, "document.querySelector('[data-testid=\"map-surface\"]') !== null", "returned chart");
     recordStep(out, "returned to chart");
     await webCheckChartActionClasses(cdp, out);
@@ -423,7 +462,7 @@ async function webJourney(url) {
       await webClick(cdp, "[data-testid=\"map-selection-action-insert\"]");
       recordStep(out, "inserted inspected airport into flight plan");
 
-      await webClick(cdp, "[data-testid=\"nav-cdi\"]");
+      await webClick(cdp, ".pageLayer.isActive [data-testid=\"nav-cdi\"]");
       await waitForWeb(cdp, `document.body.innerText.includes(${JSON.stringify(selectedInspectLabel)})`, "inspected airport visible in plan");
       recordStep(out, "verified inspected airport in flight plan");
       recordCheck(out, "inspectInsertAddsSelectedItem", true);
@@ -606,7 +645,8 @@ async function webSetInput(cdp, selector, value) {
       (() => {
         const el = document.querySelector(${JSON.stringify(selector)});
         if (!el) throw new Error('missing input ${selector}');
-        const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value').set;
+        const setter = Object.getOwnPropertyDescriptor(Object.getPrototypeOf(el), 'value')?.set;
+        if (!setter) throw new Error('missing value setter for ${selector}');
         setter.call(el, ${JSON.stringify(value)});
         el.dispatchEvent(new Event('input', { bubbles: true }));
         el.focus();
@@ -752,7 +792,7 @@ async function webReturnToChart(cdp) {
     const state = await webEval(cdp, visibleState);
     if (state.chart) return;
     if (state.plan) {
-      await webClick(cdp, "[data-testid=\"nav-cdi\"]");
+      await webClick(cdp, ".pageLayer.isActive [data-testid=\"nav-cdi\"]");
       await delay(300);
       continue;
     }
@@ -791,7 +831,7 @@ async function webExercisePlateProcedureLoad(cdp, out) {
     const loadOption = await webSelectTrayOptionByLabel(cdp, "[data-testid=\"plate-load-button\"]", "", "plate procedure load option");
     recordStep(out, "selected plate procedure load option", "ok", loadOption.label || loadOption.id);
     await delay(800);
-    await webClick(cdp, "[data-testid=\"nav-cdi\"]");
+    await webClick(cdp, ".pageLayer.isActive [data-testid=\"nav-cdi\"]");
     await waitForWeb(
       cdp,
       "document.body.innerText.includes('ECEPO') || /\\b(ILS|RNAV|VOR)\\b/.test(document.body.innerText)",
@@ -807,7 +847,7 @@ async function webExercisePlateProcedureLoad(cdp, out) {
 }
 
 async function webAssertStartupPlanEmpty(cdp, out) {
-  const rowCount = await webEval(cdp, `document.querySelectorAll('[data-testid^="plan-row-"]').length`);
+  const rowCount = await webEval(cdp, `document.querySelectorAll('.pageLayer.isActive [data-testid^="plan-row-"]').length`);
   if (rowCount === 0) {
     recordStep(out, "startup flight plan empty");
     recordCheck(out, "startupFlightPlanEmpty", true);
@@ -818,14 +858,27 @@ async function webAssertStartupPlanEmpty(cdp, out) {
 }
 
 async function webAppendJourneyRoute(cdp, out) {
-  await webSetInput(cdp, "[data-testid=\"plan-append-route-input\"]", JOURNEY_ROUTE);
-  await waitForWeb(cdp, "document.querySelector('.planEntryInputShell.isReady') !== null", "append route ready");
-  await waitForWeb(cdp, "document.querySelector('[data-testid=\"plan-append-route-input\"]')?.closest('form') !== null", "plan append form");
+  await webSetInput(cdp, ".pageLayer.isActive [data-testid=\"plan-append-route-input\"]", JOURNEY_ROUTE);
+  await waitForWeb(cdp, "document.querySelector('.pageLayer.isActive .planEntryInputShell.isReady') !== null", "append route ready");
+  await waitForWeb(cdp, "document.querySelector('.pageLayer.isActive [data-testid=\"plan-append-route-input\"]')?.closest('form') !== null", "plan append form");
   await cdp.send("Runtime.evaluate", {
-    expression: "document.querySelector('[data-testid=\"plan-append-route-input\"]').closest('form').requestSubmit()",
+    expression: `
+      document.querySelector('.pageLayer.isActive [data-testid="plan-append-route-input"]')
+        .closest('form')
+        .dispatchEvent(new SubmitEvent('submit', { bubbles: true, cancelable: true }))
+    `,
     awaitPromise: true,
   });
-  await waitForWeb(cdp, `document.body.innerText.includes('${JOURNEY_ROUTE_DEST}')`, `appended ${JOURNEY_ROUTE}`);
+  await delay(1000);
+  if (!await webExists(cdp, ".pageLayer.isActive [data-testid=\"plan-append-route-input\"]")) {
+    await webClick(cdp, ".pageLayer.isActive [data-testid=\"nav-cdi\"]");
+    await waitForWeb(cdp, "document.querySelector('.pageLayer.isActive [data-testid=\"plan-append-route-input\"]') !== null", "plan after append route");
+  }
+  await waitForWeb(
+    cdp,
+    `[...document.querySelectorAll('.pageLayer.isActive [data-testid^="plan-row-"]')].some((row) => (row.textContent ?? "").includes('${JOURNEY_ROUTE_DEST}'))`,
+    `appended ${JOURNEY_ROUTE}`,
+  );
   await delay(1000);
   recordStep(out, `appended ${JOURNEY_ROUTE} to flight plan`);
   recordCheck(out, "appendRouteCommitsJourneyRoute", true);
@@ -931,6 +984,65 @@ async function webCheckPlanActionClasses(cdp, out) {
     awaitPromise: true,
   });
   await webRecordPlanRowInventory(cdp, out, "plan.row.last.actions", -1);
+}
+
+async function webCheckFlightPlanWeatherFirstTap(cdp, out) {
+  const rowSelector = await webEval(cdp, `
+    (() => {
+      const row = [...document.querySelectorAll('.pageLayer.isActive [data-testid^="plan-row-"]')]
+        .find((candidate) => (candidate.textContent ?? "").includes(${JSON.stringify(JOURNEY_ROUTE_DEST)}));
+      return row ? \`[data-testid="\${row.getAttribute("data-testid")}"]\` : null;
+    })()
+  `);
+  if (!rowSelector) {
+    recordCheck(out, "planWeatherOpensOnFirstTap", false);
+    recordGap(out, "flight-plan weather opens on first tap", `${JOURNEY_ROUTE_DEST} row was not visible`);
+    return;
+  }
+
+  await webScrollIntoView(cdp, rowSelector);
+  await webClick(cdp, rowSelector);
+  try {
+    await waitForWeb(
+      cdp,
+      "document.querySelector('.pageLayer.isActive [data-testid=\"plan-row-action-weather\"]:not(:disabled)') !== null",
+      `enabled ${JOURNEY_ROUTE_DEST} weather action`,
+    );
+  } catch (error) {
+    recordCheck(out, "planWeatherOpensOnFirstTap", false);
+    recordGap(out, "flight-plan weather opens on first tap", error.message);
+    return;
+  }
+
+  await delay(250);
+  await cdp.send("Runtime.evaluate", {
+    expression: `
+      document.querySelector('.pageLayer.isActive [data-testid="plan-row-action-weather"]:not(:disabled)').click()
+    `,
+    awaitPromise: true,
+  });
+  let opened = false;
+  try {
+    await waitFor(
+      () => webExists(cdp, `[data-testid="${WEATHER_MODAL_WEB_TEST_ID}"]`),
+      WEATHER_MODAL_TIMEOUT_MS,
+      "flight-plan weather modal after one WX tap",
+    );
+    opened = true;
+  } catch (_error) {
+    // Deliberately do not send another input before recording the result. The
+    // Android regression only rendered after a later row click.
+  }
+  recordCheck(out, "planWeatherOpensOnFirstTap", opened);
+  if (opened) {
+    recordStep(out, "flight-plan weather opened on first tap");
+    await cdp.send("Runtime.evaluate", {
+      expression: `document.querySelector('[aria-label="Close weather"]')?.click()`,
+      awaitPromise: true,
+    });
+  } else {
+    recordGap(out, "flight-plan weather opens on first tap", "weather modal absent after one enabled WX action tap");
+  }
 }
 
 async function waitFor(fn, timeoutMs, message) {
@@ -1768,7 +1880,58 @@ async function androidCheckPlanActionClasses(serial, out) {
   }
 }
 
-async function androidJourney(serial, packageSourceHostPort = "8092") {
+async function androidCheckFlightPlanWeatherFirstTap(serial, out) {
+  await androidScrollUntilText(serial, JOURNEY_ROUTE_DEST, 4);
+  const rowXml = dumpAndroid(serial);
+  const row = findNodes(rowXml, (node) => androidTag(node).startsWith("parity:plan-row:"))
+    .find((candidate) => androidNodeLabel(rowXml, candidate).includes(JOURNEY_ROUTE_DEST));
+  if (!row) {
+    recordCheck(out, "planWeatherOpensOnFirstTap", false);
+    recordGap(out, "flight-plan weather opens on first tap", `${JOURNEY_ROUTE_DEST} row was not visible`);
+    return;
+  }
+
+  androidTapResolvedNode(serial, out, `opened ${JOURNEY_ROUTE_DEST} row weather action tray`, row);
+  let weatherAction;
+  try {
+    weatherAction = await androidWaitForNode(
+      serial,
+      (node) => hasAndroidTag(node, "parity:plan-row-action:weather") && node.enabled === "true",
+      5000,
+      `enabled ${JOURNEY_ROUTE_DEST} weather action`,
+    );
+  } catch (error) {
+    recordCheck(out, "planWeatherOpensOnFirstTap", false);
+    recordGap(out, "flight-plan weather opens on first tap", error.message);
+    return;
+  }
+
+  await delay(250);
+  androidTapResolvedNode(serial, out, `tapped ${JOURNEY_ROUTE_DEST} WX once`, weatherAction);
+  let opened = false;
+  try {
+    await androidWaitForNode(
+      serial,
+      (node) => hasAndroidTag(node, WEATHER_MODAL_ANDROID_TAG),
+      WEATHER_MODAL_TIMEOUT_MS,
+      "flight-plan weather modal after one WX tap",
+    );
+    opened = true;
+  } catch (_error) {
+    // Do not trigger another Compose event before recording this check. That
+    // extra event was what made the stale page-local modal appear.
+  }
+  recordCheck(out, "planWeatherOpensOnFirstTap", opened);
+  if (opened) {
+    recordStep(out, "flight-plan weather opened on first tap");
+    adb(serial, ["shell", "input", "keyevent", "KEYCODE_BACK"]);
+    await delay(300);
+  } else {
+    recordGap(out, "flight-plan weather opens on first tap", "weather modal absent after one enabled WX action tap");
+  }
+}
+
+async function androidJourney(serial, packageSourceHostPort = "8092", focus = null) {
   const out = result("android");
   adb(serial, ["wait-for-device"]);
   adb(serial, ["shell", "am", "force-stop", ANDROID_PACKAGE]);
@@ -1787,7 +1950,42 @@ async function androidJourney(serial, packageSourceHostPort = "8092") {
     return out;
   }
   recordStep(out, "app visible");
+  if (androidTagExists(serial, "parity:disclaimer-accept-button")) {
+    await androidTapTag(
+      serial,
+      out,
+      "accepted disclaimer for clean parity session",
+      "parity:disclaimer-accept-button",
+      5000,
+    );
+    await waitFor(
+      () => !androidTagExists(serial, "parity:disclaimer-accept-button"),
+      5000,
+      "disclaimer dismissal",
+    );
+  }
   await androidEnsureOfflinePackagesReady(serial, out, packageSourceHostPort);
+
+  if (focus === "plan-weather") {
+    const planReady = await androidEnsurePlanPage(serial, out, "opened plan page");
+    recordCheck(out, "openedPlanFromCdi", planReady);
+    if (planReady && androidTagExists(serial, "parity:plan-append-route-input")) {
+      recordCheck(out, "appendRoutePresent", true);
+      androidAssertStartupPlanEmpty(serial, out);
+      if (await androidTapTag(serial, out, "focused free-form append route", "parity:plan-append-route-input")) {
+        await androidWaitForFocusedTag(serial, out, "free-form append route focused", "parity:plan-append-route-input");
+        if (await androidAppendJourneyRoute(serial, out) && await androidEnsurePlanPage(serial, out, "returned to plan after append")) {
+          await androidCheckFlightPlanWeatherFirstTap(serial, out);
+        }
+      }
+    } else {
+      recordCheck(out, "appendRoutePresent", false);
+      recordGap(out, "free-form append route present", "Android has no parity-tagged flight-plan entry field");
+    }
+    out.finished_at = new Date().toISOString();
+    out.status = out.gaps.length === 0 ? "pass" : "gaps";
+    return out;
+  }
 
   const postBootstrapXml = dumpAndroid(serial);
   if (hasAndroidText(postBootstrapXml, "Waypoint")) {
@@ -1841,6 +2039,7 @@ async function androidJourney(serial, packageSourceHostPort = "8092") {
       if (await androidAppendJourneyRoute(serial, out)) {
         if (await androidEnsurePlanPage(serial, out, "returned to plan after append")) {
           await androidCheckPlanActionClasses(serial, out);
+          await androidCheckFlightPlanWeatherFirstTap(serial, out);
         }
       }
     }
@@ -1976,6 +2175,7 @@ function comparePlatformOutputs(outputs) {
     "appendRoutePresent",
     "appendRouteFeedbackVisible",
     "appendRouteCommitsKAWO",
+    "planWeatherOpensOnFirstTap",
     "inspectTrayAppears",
     "inspectItemSelected",
     "inspectInsertActionPresent",
@@ -2040,10 +2240,10 @@ async function main() {
   }
   const outputs = [];
   if (args.platform === "web" || args.platform === "both") {
-    outputs.push(await webJourney(args.url));
+    outputs.push(await webJourney(args.url, args.focus));
   }
   if (args.platform === "android" || args.platform === "both") {
-    outputs.push(await androidJourney(args.serial, portFromUrl(args.url, "8092")));
+    outputs.push(await androidJourney(args.serial, portFromUrl(args.url, "8092"), args.focus));
   }
   const comparison = args.platform === "both" ? comparePlatformOutputs(outputs) : null;
   const payload = outputs.length === 1 ? outputs[0] : { journeys: outputs, comparison };

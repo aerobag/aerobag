@@ -10,6 +10,15 @@ Current runner:
 node tools/parity/run-flight-plan-inspect-journey.mjs both --url http://127.0.0.1:8082/ --serial emulator-5554
 ```
 
+The flight-plan WX modal regression has a focused red/green path:
+
+```sh
+node tools/parity/run-flight-plan-inspect-journey.mjs both \
+  --focus plan-weather \
+  --url http://127.0.0.1:8082/ \
+  --serial emulator-5554
+```
+
 The runner now records structured inventories in addition to boolean checks.
 Inventories compare stable action IDs plus enabled/disabled, selected, active,
 and toggle state. Labels are captured for diagnostics and compared when both
@@ -32,6 +41,8 @@ Covered action classes:
 - Flight plan global controls: Next Leg, Sequence, Suspend, Unsuspend.
 - Flight plan row actions: row action tray plus core row actions such as
   Activate Leg, Direct-To, Insert Before/After, Move Up, and Move Down.
+- Flight plan weather: one tap on an enabled airport-row WX action must replace
+  the row tray with the weather detail modal, without a second input event.
 
 Current inventories:
 

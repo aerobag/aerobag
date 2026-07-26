@@ -171,8 +171,6 @@ import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.zIndex
-import androidx.compose.ui.window.Popup
-import androidx.compose.ui.window.PopupProperties
 import androidx.core.content.ContextCompat
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineScope
@@ -346,6 +344,8 @@ internal fun FlightPlanPage(
     planUiState: FlightPlanUiState?,
     planListState: LazyListState,
     uiTheme: UiTheme,
+    overlayState: FlightPlanOverlayState,
+    onOverlayAction: (FlightPlanOverlayAction) -> Unit,
     onSelectPage: (AppPage) -> Unit,
     onOpenRecentChartOrPlate: () -> Unit,
     onOpenCharts: (String, String?) -> Unit,
@@ -356,13 +356,11 @@ internal fun FlightPlanPage(
     val density = LocalDensity.current
     val focusManager = LocalFocusManager.current
     val keyboardController = LocalSoftwareKeyboardController.current
-    var selectedWaypointUid by remember { mutableStateOf<String?>(null) }
     var selectedWaypointTrayAnchor by remember { mutableStateOf<Dp?>(null) }
     var reorderOpen by remember { mutableStateOf(false) }
     var airwayPicker by remember { mutableStateOf<AndroidAirwayPickerState?>(null) }
     var procedurePicker by remember { mutableStateOf<AndroidProcedurePickerState?>(null) }
     var airportInsert by remember { mutableStateOf<AndroidAirportInsertState?>(null) }
-    var weatherModal by remember { mutableStateOf<WeatherDetailUiView?>(null) }
     var airportInfoModal by remember { mutableStateOf<AirportInfoModalState?>(null) }
     val airportInfoScope = rememberCoroutineScope()
     var routeEntryText by remember { mutableStateOf("") }
@@ -441,6 +439,8 @@ internal fun FlightPlanPage(
         }
     var structuredSurfaceBounds by remember { mutableStateOf<Rect?>(null) }
     val structuredRowBounds = remember { mutableStateMapOf<String, Rect>() }
+    val overlayPresentation = overlayState.present()
+    val selectedWaypointUid = overlayPresentation.selectedRowUid
     val selectedRow = selectedWaypointUid?.let { uid -> rows.find { row -> row.id == uid } }
     val selectedRowBounds = selectedRow?.let { structuredRowBounds[it.id] }
     val waypointTrayStart = planWaypointTrayStart
@@ -615,7 +615,7 @@ internal fun FlightPlanPage(
         }
 
     fun closePanels() {
-        selectedWaypointUid = null
+        onOverlayAction(FlightPlanOverlayAction.Dismiss)
         selectedWaypointTrayAnchor = null
         airwayPicker = null
         procedurePicker = null
@@ -717,7 +717,7 @@ internal fun FlightPlanPage(
 
     LaunchedEffect(rows, selectedWaypointUid) {
         if (selectedWaypointUid != null && selectedRow == null) {
-            selectedWaypointUid = null
+            closePanels()
         }
     }
 
@@ -793,7 +793,7 @@ internal fun FlightPlanPage(
                                                         with(density) { (top - surface.top).toDp() } + (ThumbSize + ThumbGap * 1.25f)
                                                     }
                                                 }
-                                            selectedWaypointUid = block.row.id
+                                            onOverlayAction(FlightPlanOverlayAction.SelectRow(block.row.id))
                                             airwayPicker = null
                                             procedurePicker = null
                                             airportInsert = null
@@ -814,7 +814,7 @@ internal fun FlightPlanPage(
                                                         with(density) { (top - surface.top).toDp() } + (ThumbSize + ThumbGap * 1.25f)
                                                     }
                                                 }
-                                            selectedWaypointUid = block.header.id
+                                            onOverlayAction(FlightPlanOverlayAction.SelectRow(block.header.id))
                                             airwayPicker = null
                                             procedurePicker = null
                                             airportInsert = null
@@ -829,7 +829,7 @@ internal fun FlightPlanPage(
                                                             with(density) { (top - surface.top).toDp() } + (ThumbSize + ThumbGap * 1.25f)
                                                     }
                                                 }
-                                            selectedWaypointUid = childRow.id
+                                            onOverlayAction(FlightPlanOverlayAction.SelectRow(childRow.id))
                                             airwayPicker = null
                                             procedurePicker = null
                                             airportInsert = null
@@ -1231,8 +1231,11 @@ internal fun FlightPlanPage(
                                             return@MenuPanelRow
                                         }
                                         action.weatherDetail?.let { detail ->
-                                            weatherModal = detail
-                                            closePanels()
+                                            selectedWaypointTrayAnchor = null
+                                            airwayPicker = null
+                                            procedurePicker = null
+                                            airportInsert = null
+                                            onOverlayAction(FlightPlanOverlayAction.ShowWeather(detail))
                                             return@MenuPanelRow
                                         }
                                         action.airportInfoAirportId?.let { airportId ->
@@ -1348,22 +1351,6 @@ internal fun FlightPlanPage(
                         }
                     }
                 }
-        }
-        weatherModal?.let { detail ->
-            Popup(
-                onDismissRequest = { weatherModal = null },
-                properties = PopupProperties(focusable = true, clippingEnabled = false),
-            ) {
-                Box(modifier = Modifier.fillMaxSize()) {
-                    Scrim { weatherModal = null }
-                    WeatherDetailModal(
-                        detail = detail,
-                        modifier = Modifier
-                            .align(Alignment.Center)
-                            .zIndex(OverlayPlaneModal),
-                    )
-                }
-            }
         }
         airportInfoModal?.let { state ->
             Popup(

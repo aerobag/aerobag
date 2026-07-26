@@ -2164,6 +2164,27 @@ internal data class UiInvalidationRevisions(
 }
 
 @Composable
+private fun FlightPlanWeatherOverlayHost(controller: FlightPlanOverlayController) {
+    controller.state.present().weatherDetail?.let { detail ->
+        Box(
+            modifier = Modifier
+                .fillMaxSize()
+                .zIndex(OverlayPlaneModalScrim),
+        ) {
+            Scrim {
+                controller.dispatch(FlightPlanOverlayAction.Dismiss)
+            }
+            WeatherDetailModal(
+                detail = detail,
+                modifier = Modifier
+                    .align(Alignment.Center)
+                    .zIndex(OverlayPlaneModal),
+            )
+        }
+    }
+}
+
+@Composable
 internal fun AerobagApp(
     retainedModel: AerobagRetainedModel,
     perfScenario: AndroidPerfScenario? = null,
@@ -2290,6 +2311,7 @@ internal fun AerobagApp(
     var rasterMapState by remember(uiSession) { mutableStateOf(initialRasterMapState) }
     var selectedMapId by remember(uiSession) { mutableStateOf(initialRasterMapState.selectedMapId) }
     var sessionSnapshot by remember(uiSession) { mutableStateOf(uiSession.snapshot) }
+    val flightPlanOverlayController = remember(uiSession) { FlightPlanOverlayController() }
     var nextSessionCommandNoticeId by remember(uiSession) { mutableLongStateOf(1L) }
     var sessionCommandNotice by remember(uiSession) { mutableStateOf<SessionCommandNotice?>(null) }
     fun applySessionSnapshot(nextSnapshot: UiSessionSnapshot): Boolean {
@@ -2587,6 +2609,11 @@ internal fun AerobagApp(
     var debugLayerNavKvFaultsRemaining by remember { mutableIntStateOf(0) }
     val decodedTileBitmapCache = retainedCoreSession.decodedTileBitmapCache
     var playbackSourcePath by remember { mutableStateOf(DefaultPlaybackTracePath) }
+    LaunchedEffect(page) {
+        if (page != AppPage.Plan) {
+            flightPlanOverlayController.dispatch(FlightPlanOverlayAction.Dismiss)
+        }
+    }
     val planListState = rememberLazyListState()
     val chartAirportById = remember(derivedChartPageState.airports) { derivedChartPageState.airports.associateBy { it.id } }
     val orderedChartAirports = remember(derivedChartPageState.airports) { derivedChartPageState.airports }
@@ -2995,6 +3022,8 @@ internal fun AerobagApp(
                         planUiState = sessionPlanUiState,
                         planListState = planListState,
                         uiTheme = uiTheme,
+                        overlayState = flightPlanOverlayController.state,
+                        onOverlayAction = flightPlanOverlayController::dispatch,
                         onSelectPage = ::navigateToPage,
                         onOpenRecentChartOrPlate = ::navigateToMostRecentChartOrPlate,
                         onOpenCharts = { airportId, chartId -> openChartsForAirport(airportId, chartId) },
@@ -3187,6 +3216,7 @@ internal fun AerobagApp(
                     onArmLayerNavKvFault = { debugLayerNavKvFaultsRemaining = 2 },
                 )
             }
+            FlightPlanWeatherOverlayHost(flightPlanOverlayController)
             if (sessionSnapshot.disclaimerState.required) {
                 DisclaimerConsentModal(
                     state = sessionSnapshot.disclaimerState,

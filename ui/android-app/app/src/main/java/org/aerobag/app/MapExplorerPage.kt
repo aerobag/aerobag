@@ -4054,6 +4054,7 @@ internal fun MapSelectionDetailModal(
 }
 
 @Composable
+@OptIn(ExperimentalComposeUiApi::class)
 internal fun WeatherDetailModal(
     detail: WeatherDetailUiView,
     modifier: Modifier = Modifier,
@@ -4061,6 +4062,8 @@ internal fun WeatherDetailModal(
     val uiTheme = LocalAerobagUiTheme.current
     Surface(
         modifier = modifier
+            .testTag("parity:weather-detail-modal")
+            .semantics { testTagsAsResourceId = true }
             .widthIn(max = ThumbSize * 9.5f)
             .heightIn(max = ThumbSize * 8.5f),
         shape = RoundedCornerShape(ThumbRadius + 4.dp),

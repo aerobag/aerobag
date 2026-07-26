@@ -111,7 +111,7 @@ jobs:
       - name: Install NEXRAD system tools
         run: |
           sudo apt-get update
-          sudo apt-get install --yes gdal-bin
+          sudo apt-get install --yes gdal-bin python3-pil
       - name: Install cargo-nextest
         uses: taiki-e/install-action@7572810d7dd469b651bb7793945692cf78da5dd7 # v2
         with:

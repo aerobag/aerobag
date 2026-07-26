@@ -41,7 +41,8 @@ symlink back into the source tree and can silently consume a developer's
 
 System packages are dependencies too. Declare them in the narrowest job that
 uses them. For example, only the plate screenshot journey installs
-`python3-pil`.
+`python3-pil` in ordinary E2E; the heavy NEXRAD replay also declares it because
+the source-grid tiler imports Pillow.
 
 ## Fixture Ownership
 

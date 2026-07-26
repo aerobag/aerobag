@@ -25,8 +25,23 @@ enum Scenario {
 struct Args {
     fixture_root: PathBuf,
     output_root: PathBuf,
-    transition: DateTime<Utc>,
+    transition: Transition,
     scenario: Scenario,
+}
+
+#[derive(Debug, Clone, Copy)]
+enum Transition {
+    At(DateTime<Utc>),
+    After(Duration),
+}
+
+impl Transition {
+    fn resolve(self) -> DateTime<Utc> {
+        match self {
+            Self::At(value) => value,
+            Self::After(delay) => Utc::now() + delay,
+        }
+    }
 }
 
 fn main() -> anyhow::Result<()> {
@@ -37,7 +52,8 @@ fn main() -> anyhow::Result<()> {
 fn parse_args() -> anyhow::Result<Args> {
     let mut fixture_root = None;
     let mut output_root = None;
-    let mut transition = None;
+    let mut transition_at = None;
+    let mut transition_delay = None;
     let mut scenario = None;
     let mut args = env::args().skip(1);
     while let Some(arg) = args.next() {
@@ -48,11 +64,20 @@ fn parse_args() -> anyhow::Result<Args> {
             "--fixture-root" => fixture_root = Some(PathBuf::from(value)),
             "--output-root" => output_root = Some(PathBuf::from(value)),
             "--transition-at" => {
-                transition = Some(
+                transition_at = Some(
                     DateTime::parse_from_rfc3339(&value)
                         .with_context(|| format!("invalid --transition-at {value}"))?
                         .with_timezone(&Utc),
                 );
+            }
+            "--transition-delay-seconds" => {
+                let seconds = value
+                    .parse::<i64>()
+                    .with_context(|| format!("invalid --transition-delay-seconds {value}"))?;
+                if seconds <= 0 {
+                    bail!("--transition-delay-seconds must be positive");
+                }
+                transition_delay = Some(Duration::seconds(seconds));
             }
             "--scenario" => {
                 scenario = Some(match value.as_str() {
@@ -64,10 +89,20 @@ fn parse_args() -> anyhow::Result<Args> {
             _ => bail!("unknown argument {arg}"),
         }
     }
+    let transition = match (transition_at, transition_delay) {
+        (Some(value), None) => Transition::At(value),
+        (None, Some(delay)) => Transition::After(delay),
+        (Some(_), Some(_)) => {
+            bail!("use either --transition-at or --transition-delay-seconds, not both")
+        }
+        (None, None) => {
+            bail!("missing --transition-at or --transition-delay-seconds")
+        }
+    };
     Ok(Args {
         fixture_root: fixture_root.context("missing --fixture-root")?,
         output_root: output_root.context("missing --output-root")?,
-        transition: transition.context("missing --transition-at")?,
+        transition,
         scenario: scenario.context("missing --scenario")?,
     })
 }
@@ -93,26 +128,28 @@ fn generate_lab_publication(args: &Args) -> anyhow::Result<()> {
     verify_fixture_artifact(&args.fixture_root, cycle_2608, "bundle")?;
     verify_fixture_artifact(&args.fixture_root, cycle_2608, "nav_db")?;
 
-    let effective_2607 = args.transition - Duration::days(28);
-    let effective_2608 = args.transition;
-    let expiration_2608 = args.transition + Duration::days(28);
-    let prepared_2607 = prepare_cycle(
-        args,
-        cycle_2607,
-        effective_2607,
-        effective_2608,
-        false,
-        &packaged_root,
-        &unpacked_root,
-    )?;
-    let prepared_2608 = prepare_cycle(
+    let materialized_2607 = materialize_cycle(args, cycle_2607, false, &unpacked_root)?;
+    let materialized_2608 = materialize_cycle(
         args,
         cycle_2608,
-        effective_2608,
-        expiration_2608,
         args.scenario == Scenario::Reject,
-        &packaged_root,
         &unpacked_root,
+    )?;
+
+    let transition = args.transition.resolve();
+    let effective_2607 = transition - Duration::days(28);
+    let expiration_2608 = transition + Duration::days(28);
+    let prepared_2607 = prepare_cycle(
+        &materialized_2607,
+        effective_2607,
+        transition,
+        &packaged_root,
+    )?;
+    let prepared_2608 = prepare_cycle(
+        &materialized_2608,
+        transition,
+        expiration_2608,
+        &packaged_root,
     )?;
 
     let as_of = Utc::now();
@@ -142,7 +179,7 @@ fn generate_lab_publication(args: &Args) -> anyhow::Result<()> {
                 Scenario::Success => "success",
                 Scenario::Reject => "reject",
             },
-            "transition_at": rfc3339(args.transition),
+            "transition_at": rfc3339(transition),
             "initial": prepared_2607.summary,
             "candidate": prepared_2608.summary,
             "removed_nav_key": (args.scenario == Scenario::Reject).then_some(REJECTED_NAV_KEY),
@@ -157,16 +194,19 @@ struct PreparedCycle {
     summary: Value,
 }
 
-#[allow(clippy::too_many_arguments)]
-fn prepare_cycle(
+struct MaterializedCycle {
+    cycle: String,
+    package: Value,
+    package_id: String,
+    filename: String,
+}
+
+fn materialize_cycle(
     args: &Args,
     fixture_cycle: &Value,
-    effective: DateTime<Utc>,
-    expiration: DateTime<Utc>,
     remove_required_nav_key: bool,
-    packaged_root: &Path,
     unpacked_root: &Path,
-) -> anyhow::Result<PreparedCycle> {
+) -> anyhow::Result<MaterializedCycle> {
     let cycle = required_str(fixture_cycle, "cycle")?;
     let source_bundle = fixture_artifact_path(&args.fixture_root, fixture_cycle, "bundle")?;
     let source_nav_db = fixture_artifact_path(&args.fixture_root, fixture_cycle, "nav_db")?;
@@ -198,8 +238,6 @@ fn prepare_cycle(
     package["id"] = json!(package_id);
     package["filename"] = json!(filename);
     package["relative_path"] = json!(filename);
-    package["effective_date"] = json!(rfc3339(effective));
-    package["expiration_date"] = json!(rfc3339(expiration));
     package["checksum_sha256"] = Value::Null;
     if remove_required_nav_key {
         package["size_bytes"] = Value::Null;
@@ -214,6 +252,25 @@ fn prepare_cycle(
     } else {
         extract_nav_db_package(&source_nav_db, &package_dir)?;
     }
+
+    Ok(MaterializedCycle {
+        cycle: cycle.to_string(),
+        package,
+        package_id,
+        filename,
+    })
+}
+
+fn prepare_cycle(
+    materialized: &MaterializedCycle,
+    effective: DateTime<Utc>,
+    expiration: DateTime<Utc>,
+    packaged_root: &Path,
+) -> anyhow::Result<PreparedCycle> {
+    let cycle = &materialized.cycle;
+    let mut package = materialized.package.clone();
+    package["effective_date"] = json!(rfc3339(effective));
+    package["expiration_date"] = json!(rfc3339(expiration));
 
     let bundle_filename = format!("bundle_cycle_{cycle}_nav_db_rollover_lab.json");
     let bundle = json!({"packages": [package]});
@@ -237,8 +294,8 @@ fn prepare_cycle(
         }),
         summary: json!({
             "cycle": cycle,
-            "package_id": package_id,
-            "filename": filename,
+            "package_id": materialized.package_id,
+            "filename": materialized.filename,
             "effective_at": effective_text,
             "expiration_at": expiration_text,
         }),

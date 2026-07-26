@@ -75,6 +75,7 @@ XVFB_LOG="${STATE_DIR}/xvfb.log"
 X11VNC_LOG="${STATE_DIR}/x11vnc.log"
 EMULATOR_LOG="${STATE_DIR}/emulator.log"
 DISPLAY_READY_TIMEOUT="${DISPLAY_READY_TIMEOUT:-15}"
+ADB_DEVICE_READY_TIMEOUT="${ADB_DEVICE_READY_TIMEOUT:-120}"
 
 mkdir -p "$STATE_DIR"
 
@@ -228,7 +229,24 @@ else
 fi
 
 echo "waiting for adb device"
-adb -s "$ANDROID_SERIAL" wait-for-device >/dev/null
+device_ready=0
+for _ in $(seq 1 "$ADB_DEVICE_READY_TIMEOUT"); do
+  if [[ "$(adb -s "$ANDROID_SERIAL" get-state 2>/dev/null || true)" == "device" ]]; then
+    device_ready=1
+    break
+  fi
+  if ! is_running "$EMULATOR_PID_FILE"; then
+    echo "emulator exited before appearing in adb; see $EMULATOR_LOG" >&2
+    tail -120 "$EMULATOR_LOG" >&2 || true
+    exit 1
+  fi
+  sleep 1
+done
+if [[ "$device_ready" != "1" ]]; then
+  echo "emulator did not appear in adb within ${ADB_DEVICE_READY_TIMEOUT}s; see $EMULATOR_LOG" >&2
+  tail -120 "$EMULATOR_LOG" >&2 || true
+  exit 1
+fi
 
 for _ in $(seq 1 180); do
   boot_completed="$(adb -s "$ANDROID_SERIAL" shell getprop sys.boot_completed 2>/dev/null | tr -d '\r')"

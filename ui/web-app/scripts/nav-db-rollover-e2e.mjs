@@ -56,8 +56,10 @@ async function runScenario(scenario) {
   const scenarioRoot = path.join(artifactRoot, scenario);
   const frameRoot = path.join(scenarioRoot, "frames");
   fs.mkdirSync(frameRoot, { recursive: true });
-  const transitionEpochMs = Date.now() + transitionDelaySeconds * 1000;
-  generatePublication(scenario, transitionEpochMs);
+  generatePublication(scenario, null);
+  const lab = JSON.parse(fs.readFileSync(path.join(publicationRoot, "lab.json"), "utf8"));
+  const transitionEpochMs = Date.parse(lab.transition_at);
+  assert(Number.isFinite(transitionEpochMs), `invalid generated transition_at ${lab.transition_at}`);
 
   const userDataDir = fs.mkdtempSync(path.join(workRoot, `chrome-${scenario}-`));
   const browserLogPath = path.join(scenarioRoot, "browser.log");
@@ -436,6 +438,9 @@ async function clickButtonByText(page, selector, text) {
 }
 
 function generatePublication(scenario, transitionEpochMs) {
+  const timingArgs = transitionEpochMs === null
+    ? ["--transition-delay-seconds", String(transitionDelaySeconds)]
+    : ["--transition-at", new Date(transitionEpochMs).toISOString()];
   runChecked(
     "cargo",
     [
@@ -452,8 +457,7 @@ function generatePublication(scenario, transitionEpochMs) {
       fixtureRoot,
       "--output-root",
       publicationRoot,
-      "--transition-at",
-      new Date(transitionEpochMs).toISOString(),
+      ...timingArgs,
       "--scenario",
       scenario,
     ],

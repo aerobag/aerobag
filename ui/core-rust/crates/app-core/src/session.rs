@@ -48,10 +48,10 @@ use crate::{
     },
     map_follow::{MapFollowSessionState, MapFollowUiState},
     map_overlay::{
-        nearest_available_layer_zoom, obstacle_layer_config_from_live_manifest_value,
-        vector_overlay_input_requests, visible_obstacle_tile_window, FlightPlanSelectionPoint,
-        MetarTileRecord, PointTileLayerConfig, VectorOverlayInputRequests,
-        WeatherStationAirportAliases, MAP_SELECTION_NAV_REF_MIN_FOCUS_ZOOM,
+        obstacle_layer_config_from_live_manifest_value, vector_overlay_input_requests,
+        visible_obstacle_tile_window, FlightPlanSelectionPoint, MetarTileRecord,
+        PointTileLayerConfig, VectorOverlayInputRequests, WeatherStationAirportAliases,
+        MAP_SELECTION_NAV_REF_MIN_FOCUS_ZOOM,
     },
     map_overlay_config_from_vector_manifest_json, nav_kv_key_for_query,
     planning::NavElementUiView,
@@ -7784,19 +7784,15 @@ fn ensure_weather_station_airport_aliases_loaded(
     Ok(())
 }
 
-fn metar_importance_required_for_viewport(session: &UiSession, viewport: &MapViewport) -> bool {
+fn metar_importance_required_for_surface(session: &UiSession, metrics: &MapSurfaceMetrics) -> bool {
     if !session.map_layer_state.metars.visible || session.metar_payload.is_none() {
         return false;
     }
     let Some(layer) = session.map_overlay_config.metar_layer.as_ref() else {
         return false;
     };
-    let desired_zoom = if viewport.zoom.is_finite() && viewport.zoom > 0.0 {
-        viewport.zoom.floor() as u32
-    } else {
-        0
-    };
-    nearest_available_layer_zoom(layer, desired_zoom) == layer.min_zoom
+    crate::overlay_surface_decision(*metrics, &session.map_overlay_config).metar_tile_zoom
+        == Some(layer.min_zoom)
 }
 
 fn metar_station_importance_status_record(
@@ -8468,7 +8464,7 @@ pub fn get_map_overlay_in_session_with_point_display_scale_at_epoch_ms(
     }
     let obstacle_inputs_ms = elapsed_ms(obstacle_inputs_started_at);
     let metar_importance_started_at = crate::core_clock_ms();
-    if metar_importance_required_for_viewport(session, &viewport) {
+    if metar_importance_required_for_surface(session, &metrics) {
         if let Some(record) = try_ensure_metar_station_importance_loaded(session) {
             supplemental_status_records.push(record);
         }
@@ -8771,7 +8767,10 @@ pub fn get_map_selection_for_nav_ref_in_session_with_point_display_scale_at_epoc
         Ok(position) => position,
         Err(err) => return had_read_error_to_overlay_outcome(err),
     };
-    let target_zoom = viewport.zoom.max(MAP_SELECTION_NAV_REF_MIN_FOCUS_ZOOM);
+    let surface_metrics =
+        MapSurfaceMetrics::new(viewport, width_px, height_px, point_display_scale);
+    let target_zoom =
+        surface_metrics.raw_zoom_at_least_display_zoom(MAP_SELECTION_NAV_REF_MIN_FOCUS_ZOOM);
     let selection_viewport = MapViewport {
         center: position,
         zoom: target_zoom,
@@ -16262,7 +16261,7 @@ mod tests {
     }
 
     #[test]
-    fn low_zoom_metars_disappear_while_station_importance_is_unresolved() {
+    fn density_normalized_low_zoom_metars_wait_for_station_importance() {
         let init =
             create_ui_session(FlightPlan::default(), &[], None, None).expect("create session");
         let (store, pages) = crate::navkv::nav_kv_store_without_pages_and_pages_for_test(
@@ -16324,18 +16323,23 @@ mod tests {
             rebuild_metar_tile_cache(session);
         }
 
-        let outcome = get_map_overlay_in_session(
-            init.handle,
-            MapViewport {
-                center: LatLon { lat: 0.0, lon: 0.0 },
-                zoom: 5.0,
-                rotation_deg: 0.0,
-                pitch_deg: 0.0,
-            },
-            240.0,
-            240.0,
-        )
-        .expect("overlay outcome");
+        let display_scale = 1.75_f64;
+        let viewport = MapViewport {
+            center: LatLon { lat: 0.0, lon: 0.0 },
+            zoom: 5.0 + display_scale.log2(),
+            rotation_deg: 0.0,
+            pitch_deg: 0.0,
+        };
+        let request_overlay = || {
+            get_map_overlay_in_session_with_point_display_scale(
+                init.handle,
+                viewport,
+                420.0,
+                420.0,
+                display_scale,
+            )
+        };
+        let outcome = request_overlay().expect("overlay outcome");
 
         let HadOperationOutcome::Complete {
             result,
@@ -16381,18 +16385,7 @@ mod tests {
                 );
             }
 
-            let retry_outcome = get_map_overlay_in_session(
-                init.handle,
-                MapViewport {
-                    center: LatLon { lat: 0.0, lon: 0.0 },
-                    zoom: 5.0,
-                    rotation_deg: 0.0,
-                    pitch_deg: 0.0,
-                },
-                240.0,
-                240.0,
-            )
-            .expect("retry overlay outcome");
+            let retry_outcome = request_overlay().expect("retry overlay outcome");
             let HadOperationOutcome::Complete {
                 result,
                 invalidations,

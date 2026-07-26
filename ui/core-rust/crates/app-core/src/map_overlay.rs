@@ -138,13 +138,19 @@ impl MapSurfaceMetrics {
         }
     }
 
-    fn effective_display_zoom(self) -> f64 {
+    pub(crate) fn effective_display_zoom(self) -> f64 {
         let effective_zoom = self.viewport.zoom - self.display_scale.log2();
         if effective_zoom.is_finite() {
             effective_zoom
         } else {
             self.viewport.zoom
         }
+    }
+
+    pub(crate) fn raw_zoom_at_least_display_zoom(self, minimum_display_zoom: f64) -> f64 {
+        self.viewport
+            .zoom
+            .max(minimum_display_zoom + self.display_scale.log2())
     }
 
     fn point_tile_zoom(self) -> u32 {
@@ -170,6 +176,7 @@ pub struct OverlaySurfaceDecision {
     pub display_scale: f64,
     pub effective_display_zoom: f64,
     pub point_tile_zoom: u32,
+    pub metar_tile_zoom: Option<u32>,
     pub airspace_ref_zoom: Option<u32>,
     pub airspace_label_zoom: Option<u32>,
 }
@@ -186,6 +193,12 @@ pub fn overlay_surface_decision(
         display_scale: metrics.display_scale,
         effective_display_zoom,
         point_tile_zoom: metrics.point_tile_zoom(),
+        metar_tile_zoom: config.metar_layer.as_ref().map(|layer| {
+            nearest_available_layer_zoom(
+                layer,
+                effective_display_zoom.floor().clamp(0.0, u32::MAX as f64) as u32,
+            )
+        }),
         airspace_ref_zoom: (effective_display_zoom >= AIRSPACE_MIN_DISPLAY_ZOOM)
             .then(|| airspace_reference_zoom(effective_display_zoom, config)),
         airspace_label_zoom: (effective_display_zoom >= AIRSPACE_MIN_DISPLAY_ZOOM)
@@ -2045,7 +2058,7 @@ pub(crate) fn query_map_overlay_for_surface_at(
             viewport,
             width_px,
             height_px,
-            config,
+            decision.metar_tile_zoom,
             center_world,
             scale,
             metar_tile_cache,
@@ -2122,6 +2135,7 @@ pub(crate) fn query_map_overlay_for_surface_at(
             "point_display_scale": decision.display_scale,
             "point_effective_zoom": decision.effective_display_zoom,
             "point_tile_zoom": decision.point_tile_zoom,
+            "metar_tile_zoom": decision.metar_tile_zoom,
             "point_tile_count": point_tile_count,
             "airspace_ref_zoom": decision.airspace_ref_zoom,
             "airspace_label_zoom": decision.airspace_label_zoom,
@@ -2401,13 +2415,13 @@ fn query_metar_overlay(
     viewport: &MapViewport,
     width_px: f64,
     height_px: f64,
-    config: &MapOverlayConfig,
+    metar_tile_zoom: Option<u32>,
     center_world: WorldPoint,
     scale: f64,
     metar_tile_cache: &HashMap<String, MetarTilePayload>,
     metar_payload: Option<&MetarProductPayload>,
 ) -> MetarOverlayProjection {
-    let Some(metar_layer) = config.metar_layer.as_ref() else {
+    let Some(metar_zoom) = metar_tile_zoom else {
         return MetarOverlayProjection {
             needed_tiles: Vec::new(),
             needed_metars: false,
@@ -2421,7 +2435,6 @@ fn query_metar_overlay(
     let mut visible_metars = Vec::new();
     let mut visible_pireps = Vec::new();
     let mut limit_hit = false;
-    let metar_zoom = nearest_available_layer_zoom(metar_layer, viewport.zoom.floor() as u32);
     let mut needed_seen = BTreeSet::new();
     for tile in
         visible_layer_display_tile_window("metars", metar_zoom, viewport, width_px, height_px)
@@ -2780,6 +2793,7 @@ pub fn query_map_selection_for_surface_in_time_zone(
     let width_px = metrics.width_px;
     let height_px = metrics.height_px;
     let point_display_scale = metrics.display_scale;
+    let metar_tile_zoom = overlay_surface_decision(*metrics, config).metar_tile_zoom;
     let hit_radius_px = metrics.inspector_hit_radius_px();
     let center_world = lat_lon_to_world(viewport.center);
     let scale = 2.0_f64.powf(viewport.zoom);
@@ -2942,7 +2956,7 @@ pub fn query_map_selection_for_surface_in_time_zone(
             viewport,
             width_px,
             height_px,
-            config,
+            metar_tile_zoom,
             center_world,
             scale,
             click_screen,
@@ -2958,7 +2972,7 @@ pub fn query_map_selection_for_surface_in_time_zone(
             viewport,
             width_px,
             height_px,
-            config,
+            metar_tile_zoom,
             center_world,
             scale,
             click_screen,
@@ -3040,7 +3054,7 @@ fn query_metar_selection_matches(
     viewport: &MapViewport,
     width_px: f64,
     height_px: f64,
-    config: &MapOverlayConfig,
+    metar_tile_zoom: Option<u32>,
     center_world: WorldPoint,
     scale: f64,
     click_screen: WorldPoint,
@@ -3052,11 +3066,10 @@ fn query_metar_selection_matches(
     weather_station_airport_aliases: &WeatherStationAirportAliases,
     weather_age_reference_utc: Option<DateTime<Utc>>,
 ) -> Vec<MapSelectionPointMatch> {
-    let Some(metar_layer) = config.metar_layer.as_ref() else {
+    let Some(metar_zoom) = metar_tile_zoom else {
         return Vec::new();
     };
     let mut matches = Vec::new();
-    let metar_zoom = nearest_available_layer_zoom(metar_layer, viewport.zoom.floor() as u32);
     for tile in
         visible_layer_display_tile_window("metars", metar_zoom, viewport, width_px, height_px)
     {
@@ -3110,7 +3123,7 @@ fn query_pirep_selection_matches(
     viewport: &MapViewport,
     width_px: f64,
     height_px: f64,
-    config: &MapOverlayConfig,
+    metar_tile_zoom: Option<u32>,
     center_world: WorldPoint,
     scale: f64,
     click_screen: WorldPoint,
@@ -3118,11 +3131,10 @@ fn query_pirep_selection_matches(
     metar_tile_cache: &HashMap<String, MetarTilePayload>,
     metar_payload: &MetarProductPayload,
 ) -> Vec<MapSelectionPointMatch> {
-    let Some(metar_layer) = config.metar_layer.as_ref() else {
+    let Some(metar_zoom) = metar_tile_zoom else {
         return Vec::new();
     };
     let mut matches = Vec::new();
-    let metar_zoom = nearest_available_layer_zoom(metar_layer, viewport.zoom.floor() as u32);
     for tile in
         visible_layer_display_tile_window("metars", metar_zoom, viewport, width_px, height_px)
     {
@@ -5056,7 +5068,10 @@ fn query_tfr_overlay(
     protected_point_features: &[VisibleMapFeature],
     reference_utc: Option<DateTime<Utc>>,
 ) -> TfrOverlayProjection {
-    if width_px <= 0.0 || height_px <= 0.0 || viewport.zoom < AIRSPACE_MIN_DISPLAY_ZOOM {
+    if width_px <= 0.0
+        || height_px <= 0.0
+        || effective_point_display_zoom(viewport, display_scale) < AIRSPACE_MIN_DISPLAY_ZOOM
+    {
         return TfrOverlayProjection {
             needed_tfrs: false,
             paths: Vec::new(),
@@ -6770,6 +6785,69 @@ mod tests {
         }
     }
 
+    fn captured_samsung_surface_metrics() -> (MapSurfaceMetrics, MapSurfaceMetrics) {
+        let display_scale = 1.75_f64;
+        let android = MapSurfaceMetrics::new(
+            MapViewport {
+                center: LatLon {
+                    lat: 39.824_266_345_443_58,
+                    lon: -92.966_592_939_012_33,
+                },
+                zoom: 6.332_551_672_530_909,
+                rotation_deg: 0.0,
+                pitch_deg: 0.0,
+            },
+            1440.0,
+            2167.0,
+            display_scale,
+        );
+        let web = MapSurfaceMetrics::new(
+            MapViewport {
+                zoom: android.effective_display_zoom(),
+                ..android.viewport
+            },
+            android.width_px / display_scale,
+            android.height_px / display_scale,
+            1.0,
+        );
+        (web, android)
+    }
+
+    fn metar_tile_for_position(zoom: u32, position: LatLon, station_id: &str) -> MetarTilePayload {
+        let world = lat_lon_to_world(position);
+        let tiles_at_zoom = 2_u32.pow(zoom);
+        let tile_world_size = WORLD_SIZE / f64::from(tiles_at_zoom);
+        let x = (world.x / tile_world_size)
+            .floor()
+            .clamp(0.0, f64::from(tiles_at_zoom - 1)) as u32;
+        let y = (world.y / tile_world_size)
+            .floor()
+            .clamp(0.0, f64::from(tiles_at_zoom - 1)) as u32;
+        MetarTilePayload {
+            schema_version: 1,
+            layer: "metars".to_string(),
+            z: zoom,
+            x,
+            y,
+            records: vec![MetarTileRecord {
+                kind: "metar".to_string(),
+                id: station_id.to_string(),
+            }],
+        }
+    }
+
+    fn test_metar_record(station_id: &str, position: LatLon) -> MetarRecord {
+        MetarRecord {
+            raw_text: format!("METAR {station_id} 010000Z 00000KT 10SM SCT020 10/08 A3000"),
+            observed_at_utc: Some("2026-07-26T16:44:00Z".to_string()),
+            station_id: station_id.to_string(),
+            flight_category: Some("VFR".to_string()),
+            clouds: None,
+            longitude: position.lon,
+            latitude: position.lat,
+        }
+    }
+
     fn query_map_overlay(
         viewport: &MapViewport,
         width_px: f64,
@@ -7089,8 +7167,183 @@ mod tests {
 
         assert!((web.effective_display_zoom - android.effective_display_zoom).abs() < 1e-9);
         assert_eq!(web.point_tile_zoom, android.point_tile_zoom);
+        assert_eq!(web.metar_tile_zoom, android.metar_tile_zoom);
         assert_eq!(web.airspace_ref_zoom, android.airspace_ref_zoom);
         assert_eq!(web.airspace_label_zoom, android.airspace_label_zoom);
+    }
+
+    #[test]
+    fn minimum_display_zoom_is_converted_to_surface_zoom() {
+        let display_scale = 1.75_f64;
+        let viewport = MapViewport {
+            center: LatLon { lat: 0.0, lon: 0.0 },
+            zoom: 6.0,
+            rotation_deg: 0.0,
+            pitch_deg: 0.0,
+        };
+        let web = MapSurfaceMetrics::new(viewport, 800.0, 600.0, 1.0);
+        let android = MapSurfaceMetrics::new(viewport, 1400.0, 1050.0, display_scale);
+
+        assert_eq!(web.raw_zoom_at_least_display_zoom(10.0), 10.0);
+        let android_target = android.raw_zoom_at_least_display_zoom(10.0);
+        assert!((android_target - (10.0 + display_scale.log2())).abs() < 1e-9);
+        assert!(
+            (MapSurfaceMetrics::new(
+                MapViewport {
+                    zoom: android_target,
+                    ..viewport
+                },
+                android.width_px,
+                android.height_px,
+                display_scale,
+            )
+            .effective_display_zoom()
+                - 10.0)
+                .abs()
+                < 1e-9
+        );
+    }
+
+    #[test]
+    fn captured_samsung_metars_match_equivalent_web_overlay_and_selection() {
+        let (web_metrics, android_metrics) = captured_samsung_surface_metrics();
+        let position = web_metrics.viewport.center;
+        let important_station = "KIMPORTANT";
+        let dense_station = "KDENSE";
+        let important_tile = metar_tile_for_position(5, position, important_station);
+        let dense_tile = metar_tile_for_position(6, position, dense_station);
+        let metar_tile_cache = HashMap::from([
+            (
+                tile_key(
+                    &important_tile.layer,
+                    important_tile.z,
+                    important_tile.x,
+                    important_tile.y,
+                ),
+                important_tile,
+            ),
+            (
+                tile_key(&dense_tile.layer, dense_tile.z, dense_tile.x, dense_tile.y),
+                dense_tile,
+            ),
+        ]);
+        let metar_payload = MetarProductPayload {
+            schema_version: 3,
+            version_label: "capture".to_string(),
+            generated_at_utc: None,
+            observed_at_utc: None,
+            metar_count: Some(2),
+            metars_by_station: HashMap::from([
+                (
+                    important_station.to_string(),
+                    test_metar_record(important_station, position),
+                ),
+                (
+                    dense_station.to_string(),
+                    test_metar_record(dense_station, position),
+                ),
+            ]),
+            pireps: Vec::new(),
+        };
+        let config = test_map_overlay_config();
+        let overlay_for = |metrics: &MapSurfaceMetrics| {
+            query_map_overlay_for_surface(
+                metrics,
+                &config,
+                false,
+                true,
+                &[],
+                None,
+                &HashMap::new(),
+                &HashMap::new(),
+                &metar_tile_cache,
+                Some(&metar_payload),
+                &HashMap::new(),
+                None,
+                &[],
+            )
+        };
+
+        let web_overlay = overlay_for(&web_metrics);
+        let android_overlay = overlay_for(&android_metrics);
+        let web_stations = web_overlay
+            .visible_metars
+            .iter()
+            .map(|metar| metar.station_id.as_str())
+            .collect::<Vec<_>>();
+        let android_stations = android_overlay
+            .visible_metars
+            .iter()
+            .map(|metar| metar.station_id.as_str())
+            .collect::<Vec<_>>();
+        assert_eq!(web_stations, vec![important_station]);
+        assert_eq!(android_stations, web_stations);
+
+        let selection_for = |metrics: &MapSurfaceMetrics| {
+            let mut plate_availability = |_airport_id: &str| AirportPlateAvailability::default();
+            query_map_selection_for_surface(
+                metrics,
+                &config,
+                None,
+                position,
+                &HashMap::new(),
+                &metar_tile_cache,
+                Some(&metar_payload),
+                None,
+                None,
+                &[],
+                &HashMap::new(),
+                None,
+                &[],
+                &mut plate_availability,
+                None,
+            )
+        };
+        let selected_stations = |selection: &MapSelectionQueryResult| {
+            selection
+                .categories
+                .iter()
+                .find(|category| category.id == "weather")
+                .into_iter()
+                .flat_map(|category| &category.items)
+                .filter_map(|item| item.metar_feature.as_ref())
+                .map(|metar| metar.station_id.clone())
+                .collect::<Vec<_>>()
+        };
+        let web_selection = selection_for(&web_metrics);
+        let android_selection = selection_for(&android_metrics);
+        assert_eq!(
+            selected_stations(&web_selection),
+            vec![important_station.to_string()]
+        );
+        assert_eq!(
+            selected_stations(&android_selection),
+            selected_stations(&web_selection)
+        );
+    }
+
+    #[test]
+    fn tfr_visibility_uses_density_normalized_zoom() {
+        let (web_metrics, android_metrics) = captured_samsung_surface_metrics();
+        let projection_for = |metrics: MapSurfaceMetrics| {
+            query_tfr_overlay(
+                &metrics.viewport,
+                metrics.width_px,
+                metrics.height_px,
+                lat_lon_to_world(metrics.viewport.center),
+                2.0_f64.powf(metrics.viewport.zoom),
+                None,
+                metrics.display_scale,
+                &[],
+                &[],
+                None,
+            )
+        };
+
+        let web = projection_for(web_metrics);
+        let android = projection_for(android_metrics);
+        assert!(!web.needed_tfrs);
+        assert_eq!(android.needed_tfrs, web.needed_tfrs);
     }
 
     #[test]

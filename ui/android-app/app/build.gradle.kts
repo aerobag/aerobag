@@ -161,6 +161,7 @@ val androidSigningKeystorePassword = readRequiredBuildConfig("AEROBAG_ANDROID_KE
 val androidSigningKeyAlias = readRequiredBuildConfig("AEROBAG_ANDROID_KEY_ALIAS")
 val androidSigningKeyPassword = readRequiredBuildConfig("AEROBAG_ANDROID_KEY_PASSWORD")
 val androidBuildRustRelease = readBooleanBuildConfig("ANDROID_BUILD_RUST_RELEASE", false)
+val androidBuildNativeLibraries = readBooleanBuildConfig("ANDROID_BUILD_NATIVE_LIBRARIES", true)
 val androidRustProfileArgs = if (androidBuildRustRelease) listOf("--release") else emptyList()
 val androidRustProfileDir = if (androidBuildRustRelease) "release" else "debug"
 val androidRust16KbPageSizeRustFlags = listOf(
@@ -213,30 +214,34 @@ fun linkOrCopy(source: File, target: File) {
     }
 }
 
-val copyRustLibraries = enabledRustAndroidTargets.map { target ->
-    val linker = "$ndkToolchainBin/${target.linkerPrefix}21-clang"
-    val buildTask = tasks.register<Exec>("buildRust${target.abi.replace("-", "").replace("_", "")}Android") {
-        workingDir = rustProjectDir
-        environment("CARGO_HOME", "/root/.cargo")
-        environment("RUSTUP_HOME", "/root/.rustup")
-        environment("RUSTC", rustcBinary)
-        environment("CARGO_TARGET_DIR", rustTargetDir.absolutePath)
-        environment("CARGO_TARGET_${target.envPrefix}_LINKER", linker)
-        environment("CC_${target.rustTriple.replace("-", "_")}", linker)
-        environment("CC_${target.rustTriple}", linker)
-        environment("CXX_${target.rustTriple.replace("-", "_")}", linker.replace("clang", "clang++"))
-        environment("AR_${target.rustTriple.replace("-", "_")}", rustArchiver)
-        environment("CARGO_TARGET_${target.envPrefix}_RUSTFLAGS", rustFlagsForAndroidTarget(target))
-        environment("ANDROID_NDK_ROOT", ndkRoot)
-        environment("NDK_HOME", ndkRoot)
-        commandLine(listOf(cargoBinary, "build", "-p", "app-ffi", "--target", target.rustTriple) + androidRustProfileArgs)
+val copyRustLibraries = if (androidBuildNativeLibraries) {
+    enabledRustAndroidTargets.map { target ->
+        val linker = "$ndkToolchainBin/${target.linkerPrefix}21-clang"
+        val buildTask = tasks.register<Exec>("buildRust${target.abi.replace("-", "").replace("_", "")}Android") {
+            workingDir = rustProjectDir
+            environment("CARGO_HOME", "/root/.cargo")
+            environment("RUSTUP_HOME", "/root/.rustup")
+            environment("RUSTC", rustcBinary)
+            environment("CARGO_TARGET_DIR", rustTargetDir.absolutePath)
+            environment("CARGO_TARGET_${target.envPrefix}_LINKER", linker)
+            environment("CC_${target.rustTriple.replace("-", "_")}", linker)
+            environment("CC_${target.rustTriple}", linker)
+            environment("CXX_${target.rustTriple.replace("-", "_")}", linker.replace("clang", "clang++"))
+            environment("AR_${target.rustTriple.replace("-", "_")}", rustArchiver)
+            environment("CARGO_TARGET_${target.envPrefix}_RUSTFLAGS", rustFlagsForAndroidTarget(target))
+            environment("ANDROID_NDK_ROOT", ndkRoot)
+            environment("NDK_HOME", ndkRoot)
+            commandLine(listOf(cargoBinary, "build", "-p", "app-ffi", "--target", target.rustTriple) + androidRustProfileArgs)
+        }
+        tasks.register<Copy>("copyRust${target.abi.replace("-", "").replace("_", "")}Library") {
+            dependsOn(buildTask)
+            from(File(rustTargetDir, "${target.rustTriple}/$androidRustProfileDir/libapp_ffi.so"))
+            into(rustJniLibsDir.map { it.dir(target.abi) })
+            rename { "libapp_ffi.so" }
+        }
     }
-    tasks.register<Copy>("copyRust${target.abi.replace("-", "").replace("_", "")}Library") {
-        dependsOn(buildTask)
-        from(File(rustTargetDir, "${target.rustTriple}/$androidRustProfileDir/libapp_ffi.so"))
-        into(rustJniLibsDir.map { it.dir(target.abi) })
-        rename { "libapp_ffi.so" }
-    }
+} else {
+    emptyList()
 }
 
 val stageCanonicalAndroidAssets by tasks.registering {

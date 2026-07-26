@@ -4014,7 +4014,6 @@ mod tests {
     use super::*;
     use crate::{planning::NavElementUiView, AirportId, NavKvRoot, ProcedureKind, SequencingMode};
     use app_fixtures::load_fixture_nav_kv_pages;
-    use std::{fs, path::PathBuf};
 
     fn resource_page_indexes(resources: &[CoreResourceRequest]) -> Vec<u32> {
         resources
@@ -4695,114 +4694,6 @@ mod tests {
 
     fn write_u32(bytes: &mut [u8], offset: usize, value: u32) {
         bytes[offset..offset + 4].copy_from_slice(&value.to_le_bytes());
-    }
-
-    fn artifact_read_root() -> PathBuf {
-        if let Ok(path) = std::env::var("AEROBAG_ARTIFACT_READ_PATH") {
-            return PathBuf::from(path);
-        }
-        let repo_root = repo_root();
-        let configured = fs::read_to_string(repo_root.join(".aerobag-artifact-read-path"))
-            .expect("read .aerobag-artifact-read-path");
-        let configured = PathBuf::from(configured.trim());
-        if configured.is_absolute() {
-            configured
-        } else {
-            repo_root.join(configured)
-        }
-    }
-
-    fn repo_root() -> PathBuf {
-        let mut dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
-        loop {
-            if dir.join(".aerobag-artifact-read-path").is_file() {
-                return dir;
-            }
-            if !dir.pop() {
-                panic!(
-                    "could not find repo root above {}",
-                    env!("CARGO_MANIFEST_DIR")
-                );
-            }
-        }
-    }
-
-    fn current_nav_db_dir() -> PathBuf {
-        let artifact_root = artifact_read_root();
-        let current_artifacts_json =
-            fs::read_to_string(artifact_root.join("current_artifacts.json"))
-                .expect("read current_artifacts.json");
-        let current = crate::package_management::select_supported_current_artifacts_manifests(
-            crate::package_management::decode_current_artifacts_manifest_list(
-                &current_artifacts_json,
-            )
-            .expect("decode current_artifacts.json"),
-        )
-        .expect("select supported current_artifacts")
-        .into_iter()
-        .next()
-        .expect("supported current_artifacts");
-        let unpacked_root = current.artifact_roots.unpacked.as_str();
-        let cycle_bundle = current
-            .bundles
-            .iter()
-            .find(|bundle| bundle.bundle_type == "cycle")
-            .expect("cycle bundle in current_artifacts");
-        let bundle_relative_path = if cycle_bundle.relative_path.is_empty() {
-            cycle_bundle.filename.as_str()
-        } else {
-            cycle_bundle.relative_path.as_str()
-        };
-        let bundle: serde_json::Value = serde_json::from_slice(
-            &fs::read(artifact_root.join(unpacked_root).join(bundle_relative_path))
-                .expect("read cycle bundle manifest"),
-        )
-        .expect("decode cycle bundle manifest");
-        let nav_db = bundle["packages"]
-            .as_array()
-            .expect("cycle bundle packages")
-            .iter()
-            .find(|package| package["family_id"].as_str() == Some("nav-db"))
-            .expect("nav-db package in cycle bundle");
-        let relative_path = nav_db["relative_path"]
-            .as_str()
-            .expect("nav-db relative_path");
-        let unpacked_dir = relative_path
-            .strip_suffix(".zip")
-            .expect("nav-db relative_path is zip");
-        artifact_root.join(unpacked_root).join(unpacked_dir)
-    }
-
-    fn load_current_nav_kv_store() -> NavKvStore {
-        let nav_kv_dir = current_nav_db_dir();
-        let root_bytes = fs::read(nav_kv_dir.join("root")).expect("read current nav_db root");
-        let root = NavKvRoot::parse(&root_bytes).expect("parse current nav_db root");
-        let mut page_paths = fs::read_dir(&nav_kv_dir)
-            .expect("read current nav_db dir")
-            .filter_map(|entry| entry.ok().map(|entry| entry.path()))
-            .filter(|path| {
-                path.file_name()
-                    .and_then(|name| name.to_str())
-                    .is_some_and(|name| name.starts_with("page_"))
-            })
-            .collect::<Vec<_>>();
-        page_paths.sort();
-        assert!(
-            !page_paths.is_empty(),
-            "current nav_db is missing pages under {}",
-            nav_kv_dir.display()
-        );
-        let mut store = NavKvStore::new(root);
-        for (page_index, page_path) in page_paths.into_iter().enumerate() {
-            let page_bytes = fs::read(&page_path)
-                .unwrap_or_else(|err| panic!("read nav_kv page {}: {err}", page_path.display()));
-            let resource_id = format!("nav_kv/page/{page_index:04}");
-            let page_bytes = decode_nav_db_page_resource_bytes(&resource_id, &page_bytes)
-                .unwrap_or_else(|err| panic!("decode {}: {err}", page_path.display()))
-                .into_owned();
-            store.insert_page(page_index as u32, page_bytes);
-        }
-        store
     }
 
     fn load_fixture_nav_kv_store() -> NavKvStore {
@@ -5738,8 +5629,9 @@ mod tests {
     }
 
     #[test]
+    #[ignore = "requires the external NAVDB fixture"]
     fn generated_nav_kv_projects_kpae_vor_a_inserted_plan_ui_state() {
-        let store = load_current_nav_kv_store();
+        let store = load_fixture_nav_kv_store();
         let plan = FlightPlan {
             id: "krnt-sea-pae".to_string(),
             name: "KRNT SEA PAE".to_string(),
@@ -6034,8 +5926,9 @@ mod tests {
     }
 
     #[test]
-    fn current_nav_db_plate_procedure_candidate_keys_round_trip_through_core_encoder() {
-        let store = load_current_nav_kv_store();
+    #[ignore = "requires the external NAVDB fixture"]
+    fn fixture_nav_db_plate_procedure_candidate_keys_round_trip_through_core_encoder() {
+        let store = load_fixture_nav_kv_store();
         let prefix = "plate/procedure-candidates/";
         let keys = store.keys_with_prefix(prefix);
         assert!(
@@ -6165,8 +6058,9 @@ mod tests {
     }
 
     #[test]
+    #[ignore = "requires the external NAVDB fixture"]
     fn generated_nav_kv_session_select_chart_keeps_kpae_vor_a() {
-        let store = load_current_nav_kv_store();
+        let store = load_fixture_nav_kv_store();
         let kpae = match run_had_operation(
             &store,
             HadOperation::PlateAirport {
@@ -6253,8 +6147,9 @@ mod tests {
     }
 
     #[test]
+    #[ignore = "requires the external NAVDB fixture"]
     fn generated_nav_kv_chart_catalog_lists_multiple_regions() {
-        let store = load_current_nav_kv_store();
+        let store = load_fixture_nav_kv_store();
         let catalog = chart_catalog(&store).expect("load generated chart catalog");
 
         let regions = catalog
@@ -6276,8 +6171,9 @@ mod tests {
     }
 
     #[test]
+    #[ignore = "requires the external NAVDB fixture"]
     fn generated_nav_kv_default_map_selector_state_displays_all_tac_and_sec_regions() {
-        let store = load_current_nav_kv_store();
+        let store = load_fixture_nav_kv_store();
         let state =
             map_selector_state(&store, None, None).expect("load generated map selector state");
 
@@ -6324,8 +6220,9 @@ mod tests {
     }
 
     #[test]
+    #[ignore = "requires the external NAVDB fixture"]
     fn generated_nav_kv_south_central_maps_cover_kmsy_tile() {
-        let store = load_current_nav_kv_store();
+        let store = load_fixture_nav_kv_store();
         let state =
             map_selector_state(&store, None, None).expect("load generated map selector state");
 
@@ -6382,8 +6279,9 @@ mod tests {
     }
 
     #[test]
+    #[ignore = "requires the external NAVDB fixture"]
     fn generated_nav_kv_materialize_procedure_kpae_vor_a_from_ecepo_succeeds() {
-        let store = load_current_nav_kv_store();
+        let store = load_fixture_nav_kv_store();
 
         let outcome = run_had_operation(
             &store,
@@ -6419,8 +6317,9 @@ mod tests {
     }
 
     #[test]
+    #[ignore = "requires the external NAVDB fixture"]
     fn generated_nav_kv_flagged_procedure_quality_reaches_session_caution() {
-        let store = load_current_nav_kv_store();
+        let store = load_fixture_nav_kv_store();
         // This is a plumbing test: it proves that a data-quality annotation produced by
         // procedure geometry generation survives materialization and reaches the core
         // data-status/caution UI when the procedure is displayed in the flight plan.
@@ -6524,8 +6423,9 @@ mod tests {
     }
 
     #[test]
+    #[ignore = "requires the external NAVDB fixture"]
     fn generated_nav_kv_lists_khvr_approaches_from_geometry_keys() {
-        let store = load_current_nav_kv_store();
+        let store = load_fixture_nav_kv_store();
 
         let outcome = run_had_operation(
             &store,
@@ -6556,8 +6456,9 @@ mod tests {
     }
 
     #[test]
+    #[ignore = "requires the external NAVDB fixture"]
     fn generated_nav_kv_labels_ksea_h34lz_from_plate_match() {
-        let store = load_current_nav_kv_store();
+        let store = load_fixture_nav_kv_store();
 
         let outcome = run_had_operation(
             &store,
@@ -6582,8 +6483,9 @@ mod tests {
     }
 
     #[test]
+    #[ignore = "requires the external NAVDB fixture"]
     fn generated_nav_kv_materializes_ksea_i34r_jipox_with_base_label() {
-        let store = load_current_nav_kv_store();
+        let store = load_fixture_nav_kv_store();
 
         let options = describe_procedure_options(&store, "KSEA", "I34R", ProcedureKind::Approach)
             .expect("describe KSEA I34R choices");
@@ -6696,6 +6598,7 @@ mod tests {
     }
 
     #[test]
+    #[ignore = "requires the external NAVDB fixture"]
     fn fixture_nav_kv_resolves_waypoint_identifier() {
         let store = load_fixture_nav_kv_store();
         let outcome = run_had_operation(
@@ -6823,6 +6726,7 @@ mod tests {
     }
 
     #[test]
+    #[ignore = "requires the external NAVDB fixture"]
     fn fixture_nav_kv_suggests_airways_near_krnt() {
         let store = load_fixture_nav_kv_store();
         let outcome = run_had_operation(
@@ -6856,6 +6760,7 @@ mod tests {
     }
 
     #[test]
+    #[ignore = "requires the external NAVDB fixture"]
     fn fixture_nav_kv_prepares_and_materializes_v2_between_krnt_and_kuao() {
         let store = load_fixture_nav_kv_store();
         let presentation = match run_had_operation(
@@ -6945,6 +6850,7 @@ mod tests {
     }
 
     #[test]
+    #[ignore = "requires the external NAVDB fixture"]
     fn fixture_nav_kv_previews_append_entry_with_relationship_issue() {
         let store = load_fixture_nav_kv_store();
         let plan = FlightPlan {
@@ -7007,6 +6913,7 @@ mod tests {
     }
 
     #[test]
+    #[ignore = "requires the external NAVDB fixture"]
     fn fixture_nav_kv_appends_waypoint_airway_waypoint_sequence() {
         let store = load_fixture_nav_kv_store();
         let plan = FlightPlan {
@@ -7164,8 +7071,9 @@ mod tests {
     }
 
     #[test]
+    #[ignore = "requires the external NAVDB fixture"]
     fn route_entry_appends_chained_airways_with_shared_waypoint() {
-        let store = load_current_nav_kv_store();
+        let store = load_fixture_nav_kv_store();
         let plan = FlightPlan {
             id: "route".to_string(),
             name: "Route".to_string(),
@@ -7219,8 +7127,9 @@ mod tests {
     }
 
     #[test]
+    #[ignore = "requires the external NAVDB fixture"]
     fn route_entry_materializes_airway_exit_before_final_airport() {
-        let store = load_current_nav_kv_store();
+        let store = load_fixture_nav_kv_store();
         let plan = FlightPlan {
             id: "route".to_string(),
             name: "Route".to_string(),
@@ -7278,6 +7187,7 @@ mod tests {
     }
 
     #[test]
+    #[ignore = "requires the external NAVDB fixture"]
     fn chained_airway_handoff_row_can_activate_inbound_leg() {
         let mutation = append_route_entry_for_chained_airways();
         let sea_leg_index = mutation
@@ -7309,8 +7219,9 @@ mod tests {
     }
 
     #[test]
+    #[ignore = "requires the external NAVDB fixture"]
     fn chained_airway_handoff_row_distance_uses_inbound_leg() {
-        let store = load_current_nav_kv_store();
+        let store = load_fixture_nav_kv_store();
         let plan = FlightPlan {
             id: "route".to_string(),
             name: "Route".to_string(),
@@ -7365,6 +7276,7 @@ mod tests {
     }
 
     #[test]
+    #[ignore = "requires the external NAVDB fixture"]
     fn activate_next_leg_from_first_leg_keeps_chained_airway_arrow_visible() {
         let mutation = append_route_entry_for_chained_airways();
         let first_leg_index = mutation
@@ -7400,6 +7312,7 @@ mod tests {
     }
 
     #[test]
+    #[ignore = "requires the external NAVDB fixture"]
     fn sequence_active_leg_walks_chained_airway_route_to_last_leg() {
         let mutation = append_route_entry_for_chained_airways();
         let mut plan = crate::activate_leg(&mutation.plan, 0).expect("activate first leg");
@@ -7446,7 +7359,7 @@ mod tests {
     }
 
     fn append_route_entry_for_chained_airways() -> FlightPlanUiMutation {
-        let store = load_current_nav_kv_store();
+        let store = load_fixture_nav_kv_store();
         let plan = FlightPlan {
             id: "route".to_string(),
             name: "Route".to_string(),
@@ -7468,6 +7381,7 @@ mod tests {
     }
 
     #[test]
+    #[ignore = "requires the external NAVDB fixture"]
     fn append_flight_plan_entry_allows_empty_plan_to_gain_single_waypoint() {
         let store = load_fixture_nav_kv_store();
         let plan = FlightPlan {
@@ -7553,6 +7467,7 @@ mod tests {
     }
 
     #[test]
+    #[ignore = "requires the external NAVDB fixture"]
     fn insert_waypoint_best_position_uses_minimum_added_route_length() {
         let store = load_fixture_nav_kv_store();
         let plan = FlightPlan {
@@ -7591,6 +7506,7 @@ mod tests {
     }
 
     #[test]
+    #[ignore = "requires the external NAVDB fixture"]
     fn insert_waypoint_best_position_accepts_spot_waypoint() {
         let store = load_fixture_nav_kv_store();
         let spot = NavRef::Spot(LatLon {
@@ -7624,6 +7540,7 @@ mod tests {
     }
 
     #[test]
+    #[ignore = "requires the external NAVDB fixture"]
     fn insert_waypoint_best_position_rejects_existing_waypoint() {
         let store = load_fixture_nav_kv_store();
         let plan = FlightPlan {

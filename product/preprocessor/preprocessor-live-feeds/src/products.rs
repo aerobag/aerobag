@@ -43,6 +43,7 @@ const TFR_GRAPHICS_URL: &str = concat!(
     "maxFeatures=300&outputFormat=application/json&srsname=EPSG:4326"
 );
 const OBSTACLE_DOF_URL: &str = "https://aeronav.faa.gov/Obst_Data/DAILY_DOF_DAT.ZIP";
+const OBSTACLE_STATE_LAYOUT_VERSION: u32 = 2;
 const NEXRAD_INDEX_URL: &str = "https://mrms.ncep.noaa.gov/data/RIDGEII/L2/CONUS/CREF_QCD/";
 
 pub const WINDS_ALOFT_FORECAST_HOURS: &[u32] = &[0, 3, 6, 9, 12];
@@ -811,7 +812,9 @@ impl ProductBuilder for ObstaclesLiveFeedBuilder {
             "obstacles",
         )?;
         let fingerprint = hash_tree(&input_dir)?;
-        let version = content_version_label(&fingerprint);
+        let version = content_version_label(&hash_text(&format!(
+            "obstacles-state-v{OBSTACLE_STATE_LAYOUT_VERSION}:{fingerprint}"
+        )));
         let result = build_obstacle_dataset(&BuildObstacleDatasetRequest {
             input_dir,
             output_dir,
@@ -1672,27 +1675,10 @@ mod tests {
         sha256: String,
     }
 
-    fn nexrad_three_hour_fixture_root() -> anyhow::Result<Option<PathBuf>> {
-        let root = if let Some(root) = std::env::var_os("AEROBAG_TEST_ARTIFACTS_ROOT")
-            .or_else(|| std::env::var_os("AEROBAG_TEST_ARTIFACTS"))
-        {
-            PathBuf::from(root)
-        } else {
-            let default_root = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-                .join("..")
-                .join("..")
-                .join("..")
-                .join("..")
-                .join("aerobag-test-artifacts");
-            if !default_root.exists() {
-                eprintln!(
-                    "skipping large-fixture NEXRAD test: AEROBAG_TEST_ARTIFACTS_ROOT is not set and {} is absent",
-                    default_root.display()
-                );
-                return Ok(None);
-            }
-            default_root
-        };
+    fn nexrad_three_hour_fixture_root() -> anyhow::Result<PathBuf> {
+        let root = std::env::var_os("AEROBAG_TEST_ARTIFACTS_ROOT")
+            .map(PathBuf::from)
+            .context("set AEROBAG_TEST_ARTIFACTS_ROOT to run external fixture tests")?;
         let fixture_root = root.join("nexrad").join("source-grid-three-hour");
         if !fixture_root.join("manifest.json").is_file() {
             bail!(
@@ -1700,7 +1686,7 @@ mod tests {
                 root.display()
             );
         }
-        Ok(Some(fixture_root))
+        Ok(fixture_root)
     }
 
     fn read_nexrad_fixture_manifest(fixture_root: &Path) -> anyhow::Result<NexradFixtureManifest> {
@@ -1767,10 +1753,9 @@ mod tests {
     }
 
     #[test]
+    #[ignore = "requires the external three-hour NEXRAD fixture"]
     fn nexrad_three_hour_fixture_manifest_validates_real_upstream_frames() -> anyhow::Result<()> {
-        let Some(fixture_root) = nexrad_three_hour_fixture_root()? else {
-            return Ok(());
-        };
+        let fixture_root = nexrad_three_hour_fixture_root()?;
         let manifest = read_nexrad_fixture_manifest(&fixture_root)?;
 
         assert_eq!(manifest.product, "nexrad");
@@ -1809,10 +1794,9 @@ mod tests {
     }
 
     #[test]
+    #[ignore = "requires the external three-hour NEXRAD fixture"]
     fn nexrad_three_hour_fixture_builds_and_publishes_source_grid_states() -> anyhow::Result<()> {
-        let Some(fixture_root) = nexrad_three_hour_fixture_root()? else {
-            return Ok(());
-        };
+        let fixture_root = nexrad_three_hour_fixture_root()?;
         let manifest = read_nexrad_fixture_manifest(&fixture_root)?;
         let temp = tempdir()?;
         let live_root = temp.path().join("live-feeds");

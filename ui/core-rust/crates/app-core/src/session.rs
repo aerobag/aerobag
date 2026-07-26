@@ -13563,26 +13563,16 @@ mod tests {
         store
     }
 
-    fn nav_db_advance_fixture_root() -> Option<std::path::PathBuf> {
+    fn nav_db_advance_fixture_root() -> std::path::PathBuf {
         std::env::var_os("AEROBAG_TEST_ARTIFACTS_ROOT")
-            .or_else(|| std::env::var_os("AEROBAG_TEST_ARTIFACTS"))
             .map(std::path::PathBuf::from)
-            .or_else(|| {
-                std::env::current_dir().ok().and_then(|directory| {
-                    directory.ancestors().find_map(|ancestor| {
-                        let sibling = ancestor.join("aerobag-test-artifacts");
-                        sibling.is_dir().then_some(sibling)
-                    })
-                })
-            })
+            .expect("set AEROBAG_TEST_ARTIFACTS_ROOT to run external fixture tests")
     }
 
     #[test]
+    #[ignore = "requires the external NAVDB transition fixture"]
     fn real_nav_db_2607_to_2608_advance_preserves_rich_session() {
-        let Some(root) = nav_db_advance_fixture_root() else {
-            eprintln!("skipping real NAVDB advance fixture; set AEROBAG_TEST_ARTIFACTS");
-            return;
-        };
+        let root = nav_db_advance_fixture_root();
         let fixture = root.join("nav-db/advance-2607-to-2608/source/packaged");
         let old_path = fixture.join(
             "nav_db_NAV12_2607_01_bcf5bb62d186a9f214a6fa027dde333441ae2676000116fadd30a21758d1022c.zip",
@@ -13590,10 +13580,8 @@ mod tests {
         let next_path = fixture.join(
             "nav_db_NAV12_2608_01_193319fdd18ba981ebab22c25139e7ba0c3da3c080bdc12b63d20052c7572f5f.zip",
         );
-        if !old_path.is_file() || !next_path.is_file() {
-            eprintln!("skipping real NAVDB advance fixture; fixture files are absent");
-            return;
-        }
+        assert!(old_path.is_file(), "missing {}", old_path.display());
+        assert!(next_path.is_file(), "missing {}", next_path.display());
         let old_store = load_nav_db_fixture_zip(&old_path);
         let next_store = load_nav_db_fixture_zip(&next_path);
         let base_plan = FlightPlan {

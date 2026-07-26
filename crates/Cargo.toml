@@ -1,0 +1,15 @@
+# SPDX-FileCopyrightText: 2026 Aerobag contributors
+#
+# SPDX-License-Identifier: AGPL-3.0-or-later
+
+[workspace]
+members = [
+    "airspace-geometry",
+    "had-key",
+    "had-nav-kv",
+    "nav-kv-package",
+    "notam-state",
+    "procedure-geometry-types",
+    "product-contracts",
+]
+resolver = "2"

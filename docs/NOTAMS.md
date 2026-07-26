@@ -62,6 +62,26 @@ live-feed products.
 TFR enrichment reads the same current NOTAM state and falls back to the
 independent TFR detail cache for FDC IDs absent from that state.
 
+## External Test Fixture
+
+The external `aerobag-test-artifacts` repository contains a bounded raw NMS
+Initial Load and API poll trace at `notams/nms-api-trace/`. Generate a
+replacement from an immutable copy of collector state with:
+
+```sh
+(cd product/preprocessor && cargo run -p nms-notams-fetch -- \
+  capture-fixture \
+  --initial-load /path/to/nms-initial-load-capture \
+  --state-root /path/to/nms-collector-state \
+  --output /path/to/aerobag-test-artifacts/notams/nms-api-trace \
+  --captured-by-commit "$(git rev-parse HEAD)")
+```
+
+The capture excludes credentials, API URLs, local source paths, and redundant
+normalized output. The ignored artifact-backed test reparses the raw source,
+replays collector transitions at their captured completion times, and verifies
+checkpoint/delta convergence in app core.
+
 ## Development
 
 The dev stack looks for:

@@ -2156,7 +2156,7 @@ fn state_object(state: &Value) -> anyhow::Result<&serde_json::Map<String, Value>
         .context("live feed state must be a JSON object")
 }
 
-fn collapse_notam_transitions(
+pub fn collapse_notam_transitions(
     cursor: &NotamPublicationCursor,
     transitions: &[NotamPublicationTransition],
 ) -> anyhow::Result<NotamDelta> {
@@ -2846,7 +2846,7 @@ pub fn write_xz_json_pretty_file(path: &Path, value: &impl Serialize) -> anyhow:
     atomic_write_bytes(path, &encoded)
 }
 
-fn write_immutable_xz_json_pretty_file(
+pub fn write_immutable_xz_json_pretty_file(
     path: &Path,
     value: &impl Serialize,
 ) -> anyhow::Result<Vec<u8>> {
@@ -3221,9 +3221,6 @@ mod tests {
     use zip::{
         write::SimpleFileOptions, CompressionMethod, DateTime as ZipDateTime, ZipArchive, ZipWriter,
     };
-
-    #[path = "notam_incremental_fixture_test.rs"]
-    mod notam_incremental_fixture;
 
     fn notam_delta_ref(from: &str, to: &str, mutation_count: u64) -> LiveDeltaRef {
         LiveDeltaRef {

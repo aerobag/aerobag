@@ -20,14 +20,11 @@ use notam_state::{
 };
 use rusqlite::{params, Connection, OpenFlags, OptionalExtension, Transaction};
 use serde::Serialize;
-#[cfg(test)]
-use serde_json::Value;
 
-use crate::NotamProjectionAction;
 use crate::{
     canonicalize_structured_notam_record, engine::sha256_hex, notam_projection_action,
     published_notam_record, structured_notam_record_from_json,
-    validate_canonical_structured_notam_record, StructuredNotamRecord,
+    validate_canonical_structured_notam_record, NotamProjectionAction, StructuredNotamRecord,
 };
 
 const NOTAM_STORE_SCHEMA_VERSION: u32 = 7;
@@ -968,95 +965,6 @@ impl NotamPersistentStore {
                 ],
             )
             .context("failed to insert raw NOTAM test message")?;
-        Ok(())
-    }
-
-    #[cfg(test)]
-    pub(crate) fn bootstrap_incremental_trace_for_test(
-        &self,
-        start_ingest_seq: i64,
-        starting_records: &[(String, Option<String>, Option<String>, String, String)],
-        identity_cursors: &[(String, i64)],
-    ) -> anyhow::Result<()> {
-        self.initialize()?;
-        let mut connection = self.open_connection()?;
-        let tx = connection
-            .transaction()
-            .context("failed to start NOTAM trace bootstrap")?;
-        tx.execute_batch(
-            "DELETE FROM raw_notam_messages;
-             DELETE FROM rejected_notam_messages;
-             DELETE FROM notam_identity_cursors;
-             DELETE FROM current_notams;
-             DELETE FROM notam_client_records;
-             DELETE FROM notam_merkle_buckets;
-             DELETE FROM notam_merkle_groups;
-             DELETE FROM notam_publication_operations;
-             DELETE FROM notam_publication_journal;
-             DELETE FROM notam_publication_cursor;",
-        )
-        .context("failed to clear NOTAM trace bootstrap targets")?;
-        for (id, status, last_updated_utc, record_json, updated_at_utc) in starting_records {
-            tx.execute(
-                "INSERT INTO current_notams(
-                    id, status, last_updated_utc, record_json, updated_at_utc
-                 ) VALUES (?1, ?2, ?3, ?4, ?5)",
-                params![id, status, last_updated_utc, record_json, updated_at_utc],
-            )
-            .with_context(|| format!("failed to bootstrap NOTAM {id}"))?;
-        }
-        for (id, ingest_seq) in identity_cursors {
-            tx.execute(
-                "INSERT INTO notam_identity_cursors(id, ingest_seq) VALUES (?1, ?2)",
-                params![id, ingest_seq],
-            )
-            .with_context(|| format!("failed to bootstrap NOTAM identity cursor {id}"))?;
-        }
-        tx.execute(
-            "INSERT INTO metadata(key, value) VALUES ('raw_ingest_cursor', ?1)
-             ON CONFLICT(key) DO UPDATE SET value = excluded.value",
-            [start_ingest_seq.to_string()],
-        )
-        .context("failed to bootstrap NOTAM raw ingest cursor")?;
-        tx.commit()
-            .context("failed to commit NOTAM trace bootstrap source rows")?;
-        self.migrate_incremental_schema(&mut connection)
-            .context("failed to build incremental state for NOTAM trace bootstrap")
-    }
-
-    #[cfg(test)]
-    pub(crate) fn insert_captured_raw_message_for_test(
-        &self,
-        ingest_seq: i64,
-        dedupe_key: &str,
-        received_at_utc: &str,
-        message_json: &str,
-    ) -> anyhow::Result<()> {
-        let connection = self.open_connection()?;
-        let jms_message_id = serde_json::from_str::<Value>(message_json)
-            .ok()
-            .and_then(|value| {
-                value
-                    .get("jmsMessageId")
-                    .and_then(Value::as_str)
-                    .map(str::to_string)
-            });
-        connection
-            .execute(
-                "INSERT INTO raw_notam_messages(
-                    ingest_seq, dedupe_key, jms_message_id, received_at_utc,
-                    message_json, message_sha256, committed_at_utc, applied_at_utc
-                 ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?4, NULL)",
-                params![
-                    ingest_seq,
-                    dedupe_key,
-                    jms_message_id,
-                    received_at_utc,
-                    message_json,
-                    sha256_hex(message_json.as_bytes())
-                ],
-            )
-            .with_context(|| format!("failed to insert captured raw NOTAM {ingest_seq}"))?;
         Ok(())
     }
 

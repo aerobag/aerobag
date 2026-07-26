@@ -2,83 +2,48 @@
 //
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
-use super::*;
-
 use std::{
     collections::{BTreeMap, BTreeSet, HashMap},
+    fs::{self, File},
+    io::BufReader,
     path::{Path, PathBuf},
     sync::Arc,
 };
 
+use anyhow::{bail, Context};
 use app_core::{
     decode_prepared_live_feed, prepare_live_feed_delta_resource_with_notam_work,
     prepare_live_feed_state_resource_with_notam_work, AirportNotamIndex, BackgroundNotamWork,
     PreparedLiveFeedPayload, PreparedNotamPayload,
 };
-use notam_state::{NotamApplyWork, NotamCheckpoint, NotamDelta, NotamState};
-use rusqlite::{Connection, OpenFlags};
-use serde::Deserialize;
-
-use crate::notam_store::{
+use chrono::{DateTime, Utc};
+use flate2::read::GzDecoder;
+use notam_state::{NotamApplyWork, NotamCheckpoint, NotamDelta, NotamMutation, NotamState};
+use preprocessor_live_feeds::engine::{
+    collapse_notam_transitions, write_immutable_xz_json_pretty_file,
+};
+use preprocessor_live_feeds::nms_initial_load::{parse_nms_initial_load, NmsNotamClassification};
+use preprocessor_live_feeds::notam_store::{
     NotamPersistentStore, NotamPublicationCursor, NotamPublicationSnapshot,
     NotamPublicationTransition,
 };
+use serde::Deserialize;
+use tempfile::tempdir;
 
-#[derive(Debug, Deserialize)]
-struct TraceManifest {
-    schema_version: u32,
-    start_ingest_seq: i64,
-    end_ingest_seq: i64,
-    starting_snapshot: TraceFile,
-    segments: Vec<TraceSegment>,
-}
-
-#[derive(Debug, Deserialize)]
-struct TraceFile {
-    file: String,
-    bytes: u64,
-    sha256: String,
-}
-
-#[derive(Debug, Deserialize)]
-struct TraceSegment {
-    file: String,
-    cursor_first: i64,
-    cursor_last: i64,
-    applied_message_count: u64,
-    uncompressed_bytes: u64,
-    bytes: u64,
-    sha256: String,
-}
+use crate::collector::NmsApiCollectorStore;
+use crate::fixture::{load_nms_fixture, LoadedNmsFixture};
 
 #[derive(Debug, Deserialize)]
 struct TraceExpectations {
     schema_version: u32,
-    start_ingest_seq: i64,
-    end_ingest_seq: i64,
-    message_count: usize,
+    baseline_record_count: usize,
+    poll_count: usize,
+    update_count: usize,
     transition_count: usize,
     mutation_count: usize,
     removal_count: usize,
     repeated_mutation_id_count: usize,
     final_state_id: String,
-}
-
-#[derive(Debug, Deserialize)]
-struct CapturedRawMessage {
-    ingest_seq: i64,
-    dedupe_key: String,
-    received_at_utc: String,
-    message_json: String,
-}
-
-struct LoadedTrace {
-    start_ingest_seq: i64,
-    end_ingest_seq: i64,
-    starting_records: Vec<(String, Option<String>, Option<String>, String, String)>,
-    identity_cursors: Vec<(String, i64)>,
-    messages: Vec<CapturedRawMessage>,
-    expected: TraceExpectations,
 }
 
 #[derive(Clone)]
@@ -88,34 +53,90 @@ struct Boundary {
 }
 
 #[test]
-#[ignore = "requires the external incremental NOTAM trace"]
-fn captured_notam_trace_converges_across_checkpoint_and_catchup_schedules() -> anyhow::Result<()> {
-    let trace = load_trace_fixture()?;
+#[ignore = "requires the external NMS NOTAM trace"]
+fn captured_nms_trace_converges_across_checkpoint_and_catchup_schedules() -> anyhow::Result<()> {
+    let fixture = load_trace_fixture()?;
     let temp = tempdir()?;
+    let collector = NmsApiCollectorStore::new(temp.path().join("collector"));
+    collector.initialize()?;
+    let mut baseline_records = Vec::new();
+    for initial in &fixture.manifest.initial_load {
+        let path = fixture.root.join(&initial.file.path);
+        let reader = BufReader::new(GzDecoder::new(
+            File::open(&path).with_context(|| format!("failed to open {}", path.display()))?,
+        ));
+        let parsed = parse_nms_initial_load(reader, initial.classification)
+            .with_context(|| format!("failed to parse {}", path.display()))?;
+        parsed.validate_complete()?;
+        assert_eq!(
+            parsed.feature_collection_timestamp,
+            initial.feature_collection_timestamp
+        );
+        assert_eq!(parsed.declared_record_count, initial.declared_record_count);
+        assert_eq!(parsed.parsed_message_count, initial.parsed_message_count);
+        assert_eq!(parsed.records.len(), initial.canonical_record_count);
+        baseline_records.extend(parsed.records);
+    }
+    let initial_load_captured_at = parse_timestamp(
+        &fixture.manifest.initial_load_captured_at_utc,
+        "fixture Initial Load capture",
+    )?;
+    collector.install_baseline(
+        &fixture.manifest.source_environment,
+        None,
+        initial_load_captured_at,
+        Path::new("nms-fixture-initial-load"),
+        &baseline_records,
+    )?;
+
     let store = NotamPersistentStore::new(temp.path().join("notam-store"));
-    store.bootstrap_incremental_trace_for_test(
-        trace.start_ingest_seq,
-        &trace.starting_records,
-        &trace.identity_cursors,
+    store.initialize()?;
+    store.synchronize_current_records(
+        &collector.current_records()?,
+        &fixture.manifest.initial_load_captured_at_utc,
+    )?;
+    let baseline_snapshot = store.publication_snapshot()?;
+    if baseline_snapshot.transitions.len() != 1 {
+        bail!(
+            "NMS fixture baseline produced {} publication transitions; expected one",
+            baseline_snapshot.transitions.len()
+        );
+    }
+    let baseline_transition = &baseline_snapshot.transitions[0];
+    store.advance_publication_cursor(
+        baseline_transition.journal_seq,
+        None,
+        &baseline_transition.to_state_id,
     )?;
     let initial_checkpoint = store.current_checkpoint()?;
 
-    for message in &trace.messages {
-        store.insert_captured_raw_message_for_test(
-            message.ingest_seq,
-            &message.dedupe_key,
-            &message.received_at_utc,
-            &message.message_json,
+    for poll in &fixture.polls {
+        let mut domestic = Vec::new();
+        let mut fdc = Vec::new();
+        for update in &poll.updates {
+            match update.classification {
+                NmsNotamClassification::Domestic => domestic.push(update.raw_aixm.clone()),
+                NmsNotamClassification::Fdc => fdc.push(update.raw_aixm.clone()),
+            }
+        }
+        if domestic.len() > poll.source_domestic_received || fdc.len() > poll.source_fdc_received {
+            bail!("NMS fixture poll has more unique updates than source messages");
+        }
+        let summary = collector.apply_poll_at(
+            parse_timestamp(&poll.started_at_utc, "fixture poll start")?,
+            parse_timestamp(&poll.query_since_utc, "fixture poll query cursor")?,
+            parse_timestamp(&poll.completed_at_utc, "fixture poll completion")?,
+            domestic,
+            fdc,
         )?;
-        let applied = store
-            .apply_pending_raw_messages(1)?
-            .with_context(|| format!("captured message {} was not applied", message.ingest_seq))?;
-        if applied.max_ingest_seq != message.ingest_seq {
-            bail!(
-                "captured message {} advanced raw cursor to {}",
-                message.ingest_seq,
-                applied.max_ingest_seq
-            );
+        if summary.new_payloads != poll.updates.len() || summary.duplicate_payloads != 0 {
+            bail!("NMS fixture poll did not preserve unique payload identity");
+        }
+        if summary.upserted + summary.removed + summary.expired > 0 {
+            store.synchronize_current_records(
+                &collector.current_records()?,
+                &poll.completed_at_utc,
+            )?;
         }
     }
 
@@ -133,16 +154,39 @@ fn captured_notam_trace_converges_across_checkpoint_and_catchup_schedules() -> a
         .filter(|mutation| matches!(mutation, NotamMutation::Remove { .. }))
         .count();
     let repeated_id_count = repeated_mutation_id_count(&transitions);
-    assert_eq!(trace.start_ingest_seq, trace.expected.start_ingest_seq);
-    assert_eq!(trace.end_ingest_seq, trace.expected.end_ingest_seq);
-    assert_eq!(trace.messages.len(), trace.expected.message_count);
-    assert_eq!(transitions.len(), trace.expected.transition_count);
-    assert_eq!(mutation_count, trace.expected.mutation_count);
-    assert_eq!(removal_count, trace.expected.removal_count);
-    assert_eq!(repeated_id_count, trace.expected.repeated_mutation_id_count);
-    assert_eq!(final_checkpoint.state_id, trace.expected.final_state_id);
+    eprintln!(
+        "NMS NOTAM fixture: baseline_records={} polls={} updates={} transitions={} mutations={} removals={} repeated_ids={} final_state={}",
+        baseline_records.len(),
+        fixture.polls.len(),
+        fixture
+            .polls
+            .iter()
+            .map(|poll| poll.updates.len())
+            .sum::<usize>(),
+        transitions.len(),
+        mutation_count,
+        removal_count,
+        repeated_id_count,
+        final_checkpoint.state_id
+    );
+    let expected = load_trace_expectations(&fixture.root)?;
+    assert_eq!(baseline_records.len(), expected.baseline_record_count);
+    assert_eq!(fixture.polls.len(), expected.poll_count);
+    assert_eq!(
+        fixture
+            .polls
+            .iter()
+            .map(|poll| poll.updates.len())
+            .sum::<usize>(),
+        expected.update_count
+    );
+    assert_eq!(transitions.len(), expected.transition_count);
+    assert_eq!(mutation_count, expected.mutation_count);
+    assert_eq!(removal_count, expected.removal_count);
+    assert_eq!(repeated_id_count, expected.repeated_mutation_id_count);
+    assert_eq!(final_checkpoint.state_id, expected.final_state_id);
     assert!(
-        transitions.len() >= 100,
+        transitions.len() >= 10,
         "fixture has only {} logical transitions",
         transitions.len()
     );
@@ -250,10 +294,7 @@ fn captured_notam_trace_converges_across_checkpoint_and_catchup_schedules() -> a
     }
 
     eprintln!(
-        "NOTAM fixture {}..{}: messages={} transitions={} mutations={} removals={} repeated_ids={} checkpoints={} delta_spans={} client_paths={} final_state={}",
-        trace.start_ingest_seq,
-        trace.end_ingest_seq,
-        trace.messages.len(),
+        "NMS NOTAM recovery: transitions={} mutations={} removals={} repeated_ids={} checkpoints={} delta_spans={} client_paths={} final_state={}",
         transitions.len(),
         mutation_count,
         removal_count,
@@ -266,7 +307,7 @@ fn captured_notam_trace_converges_across_checkpoint_and_catchup_schedules() -> a
     Ok(())
 }
 
-fn load_trace_fixture() -> anyhow::Result<LoadedTrace> {
+fn load_trace_fixture() -> anyhow::Result<LoadedNmsFixture> {
     let test_artifacts_root = std::env::var_os("AEROBAG_TEST_ARTIFACTS_ROOT")
         .or_else(|| std::env::var_os("AEROBAG_TEST_ARTIFACTS"))
         .map(PathBuf::from)
@@ -278,25 +319,18 @@ fn load_trace_fixture() -> anyhow::Result<LoadedTrace> {
                 .join("..")
                 .join("aerobag-test-artifacts")
         });
-    let fixture_root = test_artifacts_root.join("notams").join("incremental-trace");
+    let fixture_root = test_artifacts_root.join("notams").join("nms-api-trace");
     let manifest_path = fixture_root.join("capture_manifest.json");
     if !manifest_path.is_file() {
         bail!(
-            "incremental NOTAM fixture is missing {}; set AEROBAG_TEST_ARTIFACTS_ROOT",
+            "NMS NOTAM fixture is missing {}; set AEROBAG_TEST_ARTIFACTS_ROOT",
             manifest_path.display()
         );
     }
-    let manifest: TraceManifest = serde_json::from_slice(
-        &fs::read(&manifest_path)
-            .with_context(|| format!("failed to read {}", manifest_path.display()))?,
-    )
-    .with_context(|| format!("failed to parse {}", manifest_path.display()))?;
-    if manifest.schema_version != 2 {
-        bail!(
-            "unsupported NOTAM trace schema {}; expected 2",
-            manifest.schema_version
-        );
-    }
+    load_nms_fixture(&fixture_root)
+}
+
+fn load_trace_expectations(fixture_root: &Path) -> anyhow::Result<TraceExpectations> {
     let expected_path = fixture_root.join("expected.json");
     let expected: TraceExpectations = serde_json::from_slice(
         &fs::read(&expected_path)
@@ -309,115 +343,13 @@ fn load_trace_fixture() -> anyhow::Result<LoadedTrace> {
             expected.schema_version
         );
     }
-    let start_path = fixture_root.join(&manifest.starting_snapshot.file);
-    verify_trace_file(&start_path, &manifest.starting_snapshot)?;
-
-    let connection = Connection::open_with_flags(
-        &start_path,
-        OpenFlags::SQLITE_OPEN_READ_ONLY | OpenFlags::SQLITE_OPEN_NO_MUTEX,
-    )
-    .with_context(|| format!("failed to open {}", start_path.display()))?;
-    let starting_records = {
-        let mut statement = connection.prepare(
-            "SELECT id, status, last_updated_utc, record_json, updated_at_utc
-             FROM starting_notams ORDER BY id",
-        )?;
-        let rows = statement
-            .query_map([], |row| {
-                Ok((
-                    row.get(0)?,
-                    row.get(1)?,
-                    row.get(2)?,
-                    row.get(3)?,
-                    row.get(4)?,
-                ))
-            })?
-            .collect::<Result<Vec<_>, _>>()?;
-        rows
-    };
-    let identity_cursors = {
-        let mut statement = connection
-            .prepare("SELECT id, ingest_seq FROM starting_identity_cursors ORDER BY id")?;
-        let rows = statement
-            .query_map([], |row| Ok((row.get(0)?, row.get(1)?)))?
-            .collect::<Result<Vec<_>, _>>()?;
-        rows
-    };
-
-    let mut messages = Vec::new();
-    let mut expected_next = manifest.start_ingest_seq + 1;
-    for segment in &manifest.segments {
-        let segment_path = fixture_root.join(&segment.file);
-        let compressed = fs::read(&segment_path)
-            .with_context(|| format!("failed to read {}", segment_path.display()))?;
-        verify_trace_bytes(&segment_path, &compressed, segment.bytes, &segment.sha256)?;
-        let decoded = nav_kv_package::decode_xz_if_needed(&compressed)
-            .map_err(anyhow::Error::msg)
-            .with_context(|| format!("failed to decode {}", segment_path.display()))?;
-        if decoded.len() as u64 != segment.uncompressed_bytes {
-            bail!(
-                "{} decoded to {} bytes; expected {}",
-                segment_path.display(),
-                decoded.len(),
-                segment.uncompressed_bytes
-            );
-        }
-        let mut segment_messages = decoded
-            .split(|byte| *byte == b'\n')
-            .filter(|line| !line.is_empty())
-            .map(|line| serde_json::from_slice::<CapturedRawMessage>(line))
-            .collect::<Result<Vec<_>, _>>()
-            .with_context(|| format!("failed to parse {}", segment_path.display()))?;
-        if segment.cursor_first != expected_next
-            || segment.cursor_last < segment.cursor_first
-            || segment_messages.len() as u64 != segment.applied_message_count
-        {
-            bail!("invalid NOTAM trace segment metadata for {}", segment.file);
-        }
-        expected_next = segment.cursor_last + 1;
-        messages.append(&mut segment_messages);
-    }
-    if expected_next != manifest.end_ingest_seq + 1 {
-        bail!(
-            "NOTAM trace ended at {}, expected {}",
-            expected_next - 1,
-            manifest.end_ingest_seq
-        );
-    }
-    if messages
-        .windows(2)
-        .any(|pair| pair[0].ingest_seq >= pair[1].ingest_seq)
-    {
-        bail!("NOTAM trace messages are not strictly ordered");
-    }
-    Ok(LoadedTrace {
-        start_ingest_seq: manifest.start_ingest_seq,
-        end_ingest_seq: manifest.end_ingest_seq,
-        starting_records,
-        identity_cursors,
-        messages,
-        expected,
-    })
+    Ok(expected)
 }
 
-fn verify_trace_file(path: &Path, expected: &TraceFile) -> anyhow::Result<()> {
-    let bytes = fs::read(path).with_context(|| format!("failed to read {}", path.display()))?;
-    verify_trace_bytes(path, &bytes, expected.bytes, &expected.sha256)
-}
-
-fn verify_trace_bytes(
-    path: &Path,
-    bytes: &[u8],
-    expected_bytes: u64,
-    expected_sha256: &str,
-) -> anyhow::Result<()> {
-    if bytes.len() as u64 != expected_bytes || sha256_hex(bytes) != expected_sha256 {
-        bail!(
-            "NOTAM trace fixture identity mismatch for {}",
-            path.display()
-        );
-    }
-    Ok(())
+fn parse_timestamp(value: &str, label: &str) -> anyhow::Result<DateTime<Utc>> {
+    DateTime::parse_from_rfc3339(value)
+        .with_context(|| format!("{label} is not RFC3339: {value}"))
+        .map(|value| value.with_timezone(&Utc))
 }
 
 fn validate_trace_chain(

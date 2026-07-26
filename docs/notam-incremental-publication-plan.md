@@ -606,57 +606,40 @@ logic outside shared Rust.
 
 ## Captured Large Fixture
 
-Use a real SWIM trace for schedule-invariance and work-accounting tests. Keep it
-in the separate `aerobag-test-artifacts` repository under
-`notams/incremental-trace/`; do not add it to the source repository.
+Use a real NMS Initial Load plus poll trace for schedule-invariance and
+work-accounting tests. Keep it in the separate `aerobag-test-artifacts`
+repository under `notams/nms-api-trace/`; do not add it to the source
+repository.
 
-An initial consistent snapshot was captured from the running dev stack on
-2026-07-22 at ingest cursor `97623`. It contains 20,189 current records,
-22,298,651 bytes of record JSON, identity cursors, and rejection state. The
-staged 30 MiB SQLite file is:
+The fixture starts with the raw compressed DOMESTIC and FDC Initial Load
+responses captured on 2026-07-24. It then records 498 poll boundaries and the
+580 unique raw AIXM updates first observed during those polls through
+2026-07-25. Empty polls and their completion times are retained because expiry
+behavior depends on time. Source receive counts are diagnostic metadata; the
+trace intentionally omits repeated overlap payloads already represented by
+their content hash.
 
-```text
-/root/aerobag-preprocessor/notam-capture/20260722/start.sqlite
-```
+The fixture contains no API URL, OAuth credential, access token, local source
+path, or retired SWIM data. A manifest records source environment, timestamps,
+record counts, byte counts, and SHA-256 hashes. The test parses the raw NMS
+Initial Load, replays every update through the production NMS collector,
+synchronizes source-state changes through the publication store, and builds
+every client checkpoint and delta using production code.
 
-The live source is:
-
-```text
-/root/aerobag-artifacts/dev-stack/state/swim-notams/state/current.sqlite
-```
-
-The source retained applied raw messages for seven days. The finalizer selected
-only fully applied raw messages with `ingest_seq > 97623`, in ascending ingest
-order, and recorded an end cursor from the same SQLite read transaction. The
-frozen fixture includes inserts, updates, removals, repeated changes to the same
-NOTAM ID, multiple airports, and multiple Merkle buckets.
-
-The fixture stores the compact starting projection, ordered raw messages, and a
-small manifest containing source schema version, source commit, start/end
-cursors and timestamps, row counts, and SHA-256 hashes. It contains no
-credentials or SWIM subscription identity. The test derives normalized
-mutations and every transport artifact using current production code; the
-fixture is source evidence, not a second hand-authored contract.
-
-The Rust capture/finalization command uses consistent SQLite read transactions
-and writes the fixture directly. The repeatable capture mechanism does not rely
-on ad hoc SQL.
-
-The repeatable capture command used to build it is:
+The repeatable capture command is:
 
 ```bash
-(cd product/preprocessor && cargo build -p preprocessor-cli)
-/root/aerobag-artifacts/target/debug/preprocessor-cli \
-  capture-notam-incremental-trace \
-  --start-sqlite /root/aerobag-preprocessor/notam-capture/20260722/start.sqlite \
-  --source-sqlite /root/aerobag-artifacts/dev-stack/state/swim-notams/state/current.sqlite \
-  --output-dir /root/aerobag-preprocessor/notam-capture/20260722 \
-  --source-commit "$(git rev-parse HEAD)"
+(cd product/preprocessor && cargo run -p nms-notams-fetch -- \
+  capture-fixture \
+  --initial-load /path/to/nms-initial-load-capture \
+  --state-root /path/to/nms-collector-state \
+  --output /path/to/aerobag-test-artifacts/notams/nms-api-trace \
+  --captured-by-commit "$(git rev-parse HEAD)")
 ```
 
-Each segment records its own source schema and commit, so a future replacement
-capture may span producer deployments and SQLite migrations without conflating
-provenance.
+Capture reads the collector SQLite state read-only, validates every retained
+payload hash, writes into a temporary directory, and publishes only by atomic
+rename to a previously nonexistent output path.
 
 ## Tests
 

@@ -18,4 +18,6 @@ sha2.workspace = true
 ureq.workspace = true
 
 [dev-dependencies]
+app-core = { path = "../../../ui/core-rust/crates/app-core" }
+notam-state = { path = "../../../crates/notam-state" }
 tempfile.workspace = true

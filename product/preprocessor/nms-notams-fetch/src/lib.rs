@@ -15,6 +15,10 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
 pub mod collector;
+pub mod fixture;
+
+#[cfg(test)]
+mod fixture_test;
 
 const NMS_HTTP_ATTEMPTS: usize = 5;
 const NMS_HTTP_RETRY_DELAY: Duration = Duration::from_secs(2);

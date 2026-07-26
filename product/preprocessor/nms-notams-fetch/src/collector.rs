@@ -202,6 +202,17 @@ impl NmsApiCollectorStore {
         domestic_xml: Vec<String>,
         fdc_xml: Vec<String>,
     ) -> anyhow::Result<NmsApiPollSummary> {
+        self.apply_poll_at(started_at, query_since, Utc::now(), domestic_xml, fdc_xml)
+    }
+
+    pub(crate) fn apply_poll_at(
+        &self,
+        started_at: DateTime<Utc>,
+        query_since: DateTime<Utc>,
+        completed_at: DateTime<Utc>,
+        domestic_xml: Vec<String>,
+        fdc_xml: Vec<String>,
+    ) -> anyhow::Result<NmsApiPollSummary> {
         let domestic_received = domestic_xml.len();
         let fdc_received = fdc_xml.len();
         let mut parsed = Vec::with_capacity(domestic_received + fdc_received);
@@ -238,7 +249,6 @@ impl NmsApiCollectorStore {
                 .then_with(|| left.payload_sha256.cmp(&right.payload_sha256))
         });
 
-        let completed_at = Utc::now();
         let mut connection = self.open_connection()?;
         let tx = connection
             .transaction()

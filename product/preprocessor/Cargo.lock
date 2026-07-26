@@ -848,10 +848,12 @@ name = "nms-notams-fetch"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "app-core",
  "base64",
  "chrono",
  "flate2",
  "libc",
+ "notam-state",
  "preprocessor-live-feeds",
  "rusqlite",
  "serde",

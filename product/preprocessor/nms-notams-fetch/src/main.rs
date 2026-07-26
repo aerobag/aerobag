@@ -5,6 +5,7 @@ use std::time::Duration;
 
 use anyhow::{bail, Context};
 use nms_notams_fetch::collector::{run_collector, CollectorOptions, NmsApiCollectorStore};
+use nms_notams_fetch::fixture::capture_nms_fixture;
 use nms_notams_fetch::{capture_initial_load, NmsClient, NmsConfig};
 use preprocessor_live_feeds::nms_initial_load::parse_nms_initial_load;
 use preprocessor_live_feeds::nms_initial_load::NmsNotamClassification;
@@ -52,6 +53,15 @@ fn main() -> anyhow::Result<()> {
                 }))?
             );
         }
+        Command::CaptureFixture(arguments) => {
+            let manifest = capture_nms_fixture(
+                &arguments.initial_load_dir,
+                &arguments.state_root,
+                &arguments.output_dir,
+                &arguments.captured_by_commit,
+            )?;
+            println!("{}", manifest.display());
+        }
     }
     Ok(())
 }
@@ -60,6 +70,7 @@ enum Command {
     Fetch(FetchArguments),
     Collect(CollectArguments),
     Inspect(InspectArguments),
+    CaptureFixture(CaptureFixtureArguments),
 }
 
 impl Command {
@@ -68,6 +79,9 @@ impl Command {
             Some("fetch") => Ok(Self::Fetch(FetchArguments::parse(arguments)?)),
             Some("collect") => Ok(Self::Collect(CollectArguments::parse(arguments)?)),
             Some("inspect") => Ok(Self::Inspect(InspectArguments::parse(arguments)?)),
+            Some("capture-fixture") => Ok(Self::CaptureFixture(CaptureFixtureArguments::parse(
+                arguments,
+            )?)),
             Some("--help" | "-h") => {
                 print_usage();
                 std::process::exit(0);
@@ -75,6 +89,56 @@ impl Command {
             Some(command) => bail!("unknown command {command}"),
             None => bail!("a command is required; use --help for usage"),
         }
+    }
+}
+
+struct CaptureFixtureArguments {
+    initial_load_dir: PathBuf,
+    state_root: PathBuf,
+    output_dir: PathBuf,
+    captured_by_commit: String,
+}
+
+impl CaptureFixtureArguments {
+    fn parse(arguments: impl Iterator<Item = String>) -> anyhow::Result<Self> {
+        let mut initial_load_dir = None;
+        let mut state_root = None;
+        let mut output_dir = None;
+        let mut captured_by_commit = None;
+        let mut arguments = arguments.peekable();
+        while let Some(argument) = arguments.next() {
+            match argument.as_str() {
+                "--initial-load" => {
+                    initial_load_dir = Some(PathBuf::from(
+                        arguments.next().context("--initial-load requires a path")?,
+                    ));
+                }
+                "--state-root" => {
+                    state_root = Some(PathBuf::from(
+                        arguments.next().context("--state-root requires a path")?,
+                    ));
+                }
+                "--output" => {
+                    output_dir = Some(PathBuf::from(
+                        arguments.next().context("--output requires a path")?,
+                    ));
+                }
+                "--captured-by-commit" => {
+                    captured_by_commit = Some(
+                        arguments
+                            .next()
+                            .context("--captured-by-commit requires an object ID")?,
+                    );
+                }
+                _ => bail!("unknown argument {argument}"),
+            }
+        }
+        Ok(Self {
+            initial_load_dir: initial_load_dir.context("--initial-load is required")?,
+            state_root: state_root.context("--state-root is required")?,
+            output_dir: output_dir.context("--output is required")?,
+            captured_by_commit: captured_by_commit.context("--captured-by-commit is required")?,
+        })
     }
 }
 
@@ -241,7 +305,7 @@ impl FetchArguments {
 
 fn print_usage() {
     println!(
-        "Usage:\n  nms-notams-fetch fetch --config PATH --output DIR [--classification DOMESTIC|FDC]...\n  nms-notams-fetch collect --config PATH --state-root DIR [--poll-seconds N] [--overlap-seconds N] [--duration-seconds N] [--max-polls N]\n  nms-notams-fetch inspect --input XML --classification DOMESTIC|FDC"
+        "Usage:\n  nms-notams-fetch fetch --config PATH --output DIR [--classification DOMESTIC|FDC]...\n  nms-notams-fetch collect --config PATH --state-root DIR [--poll-seconds N] [--overlap-seconds N] [--duration-seconds N] [--max-polls N]\n  nms-notams-fetch inspect --input XML --classification DOMESTIC|FDC\n  nms-notams-fetch capture-fixture --initial-load DIR --state-root DIR --output DIR --captured-by-commit HASH"
     );
 }
 

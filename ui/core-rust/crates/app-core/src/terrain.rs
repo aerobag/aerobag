@@ -157,6 +157,111 @@ pub struct TerrainOverlaySourceTile {
     pub resource: Option<crate::CoreResourceRequest>,
 }
 
+#[derive(Debug, Clone, PartialEq)]
+pub(crate) struct TerrainElevationRequest {
+    pub z: u32,
+    pub x: u32,
+    pub y_tms: u32,
+    pub path: String,
+    pub source_tiles: Vec<TerrainOverlaySourceTile>,
+}
+
+impl TerrainElevationRequest {
+    pub(crate) fn key(&self) -> String {
+        format!("{}/{}/{}", self.z, self.x, self.y_tms)
+    }
+}
+
+pub(crate) fn terrain_elevation_request(
+    position: crate::LatLon,
+) -> Option<TerrainElevationRequest> {
+    terrain_elevation_request_with_available_packages(position, &all_terrain_package_ids())
+}
+
+pub(crate) fn terrain_elevation_request_with_available_packages(
+    position: crate::LatLon,
+    available_package_ids: &BTreeSet<String>,
+) -> Option<TerrainElevationRequest> {
+    if !position.lat.is_finite() || !position.lon.is_finite() {
+        return None;
+    }
+    for z in (MIN_TERRAIN_ZOOM..=MAX_TERRAIN_ZOOM).rev() {
+        let (x, y_tms, _, _) = terrain_tile_position(position, z);
+        let product_ids = terrain_product_ids_for_tile_with_available_packages(
+            z,
+            x,
+            y_tms,
+            available_package_ids,
+        );
+        if product_ids.is_empty() {
+            continue;
+        }
+        let path = format!("tiles/{z}/{x}/{y_tms}.terrain");
+        return Some(TerrainElevationRequest {
+            z,
+            x,
+            y_tms,
+            path: path.clone(),
+            source_tiles: product_ids
+                .into_iter()
+                .map(|product_id| TerrainOverlaySourceTile {
+                    product_id,
+                    path: path.clone(),
+                    resource: None,
+                })
+                .collect(),
+        });
+    }
+    None
+}
+
+pub(crate) fn sample_terrain_elevation_ft(
+    request: &TerrainElevationRequest,
+    position: crate::LatLon,
+    tile_bytes_list: &[&[u8]],
+) -> Result<Option<f64>, String> {
+    let (x, y_tms, fraction_x, fraction_y) = terrain_tile_position(position, request.z);
+    if x != request.x || y_tms != request.y_tms {
+        return Ok(None);
+    }
+    let mut highest_elevation_ft: Option<f64> = None;
+    for tile_bytes in tile_bytes_list {
+        let (info, samples) = parse_abt2_tile(tile_bytes)?;
+        if info.width == 0 || info.height == 0 {
+            continue;
+        }
+        let sample_x = (fraction_x * f64::from(info.width))
+            .floor()
+            .clamp(0.0, f64::from(info.width - 1)) as usize;
+        let sample_y = (fraction_y * f64::from(info.height))
+            .floor()
+            .clamp(0.0, f64::from(info.height - 1)) as usize;
+        let sample = samples[sample_y * info.width as usize + sample_x];
+        if sample == info.nodata {
+            continue;
+        }
+        let elevation_ft = sample as f64 * info.scale as f64 + info.offset as f64;
+        highest_elevation_ft = Some(
+            highest_elevation_ft
+                .map(|current| current.max(elevation_ft))
+                .unwrap_or(elevation_ft),
+        );
+    }
+    Ok(highest_elevation_ft)
+}
+
+fn terrain_tile_position(position: crate::LatLon, z: u32) -> (u32, u32, f64, f64) {
+    let tiles_at_zoom = 2_u32.pow(z);
+    let (world_x, world_y) = lat_lon_to_world(position.lat, position.lon);
+    let max_tile_coordinate = tiles_at_zoom as f64 - 1e-9;
+    let tile_x = (world_x / WORLD_SIZE * tiles_at_zoom as f64).clamp(0.0, max_tile_coordinate);
+    let tile_y_xyz = (world_y / WORLD_SIZE * tiles_at_zoom as f64).clamp(0.0, max_tile_coordinate);
+    let x = tile_x.floor() as u32;
+    let y_xyz = tile_y_xyz.floor() as u32;
+    let y_tms = tiles_at_zoom - 1 - y_xyz;
+    (x, y_tms, tile_x.fract(), tile_y_xyz.fract())
+}
+
 pub fn query_terrain_overlay(
     viewport: &crate::MapViewport,
     width_px: f64,
@@ -484,14 +589,16 @@ pub fn parse_abt2_tile(tile_bytes: &[u8]) -> Result<(TerrainTileInfo, Vec<i16>),
 }
 
 pub(crate) fn terrain_source_payload_to_abt2_bytes(payload: &[u8]) -> Result<Vec<u8>, String> {
-    if !payload.starts_with(GZIP_MAGIC) {
-        return Err("terrain source payload is not gzip-compressed ABT2".to_string());
-    }
-    let mut decoder = flate2::read::GzDecoder::new(payload);
-    let mut abt2_bytes = Vec::new();
-    decoder
-        .read_to_end(&mut abt2_bytes)
-        .map_err(|err| format!("failed to gzip-decode terrain tile payload: {err}"))?;
+    let abt2_bytes = if payload.starts_with(GZIP_MAGIC) {
+        let mut decoder = flate2::read::GzDecoder::new(payload);
+        let mut decoded = Vec::new();
+        decoder
+            .read_to_end(&mut decoded)
+            .map_err(|err| format!("failed to gzip-decode terrain tile payload: {err}"))?;
+        decoded
+    } else {
+        payload.to_vec()
+    };
     parse_abt2_tile(&abt2_bytes)?;
     Ok(abt2_bytes)
 }
@@ -766,6 +873,67 @@ mod tests {
     }
 
     #[test]
+    fn point_elevation_uses_finest_available_terrain_package() {
+        let position = crate::LatLon {
+            lat: 47.6062,
+            lon: -122.3321,
+        };
+        let regional = terrain_elevation_request(position).expect("regional terrain request");
+        assert_eq!(regional.z, MAX_TERRAIN_ZOOM);
+        assert!(regional
+            .source_tiles
+            .iter()
+            .all(|source| source.product_id == terrain_package_id("terrain-nw")));
+
+        let wide = terrain_elevation_request_with_available_packages(
+            position,
+            &package_id_set(&["terrain-wide"]),
+        )
+        .expect("wide terrain request");
+        assert_eq!(wide.z, TERRAIN_FULL_COVERAGE_ZOOM);
+        assert_eq!(
+            wide.source_tiles[0].product_id,
+            terrain_package_id("terrain-wide")
+        );
+    }
+
+    #[test]
+    fn point_elevation_samples_highest_valid_overlapping_source() {
+        let position = crate::LatLon {
+            lat: 47.6062,
+            lon: -122.3321,
+        };
+        let request = terrain_elevation_request(position).expect("terrain request");
+        let lower = terrain_tile_bytes(2, 2, &[20, 20, 20, 20]);
+        let higher = terrain_tile_bytes(2, 2, &[35, 35, 35, 35]);
+        let nodata = terrain_tile_bytes(
+            2,
+            2,
+            &[
+                TERRAIN_NODATA,
+                TERRAIN_NODATA,
+                TERRAIN_NODATA,
+                TERRAIN_NODATA,
+            ],
+        );
+
+        assert_eq!(
+            sample_terrain_elevation_ft(
+                &request,
+                position,
+                &[lower.as_slice(), higher.as_slice(), nodata.as_slice()],
+            )
+            .expect("sample terrain"),
+            Some(35.0 * f64::from(product_contracts::TERRAIN_TER2_HEIGHT_QUANTIZATION_FT),),
+        );
+        assert_eq!(
+            sample_terrain_elevation_ft(&request, position, &[nodata.as_slice()])
+                .expect("sample nodata"),
+            None,
+        );
+    }
+
+    #[test]
     fn classifies_abt2_tile_against_aircraft_altitude() {
         let bytes = terrain_tile_bytes(2, 2, &[16, 25, 41, TERRAIN_NODATA]);
 
@@ -777,7 +945,7 @@ mod tests {
     }
 
     #[test]
-    fn decodes_gzip_terrain_source_payload_to_abt2() {
+    fn normalizes_raw_and_gzip_terrain_source_payloads_to_abt2() {
         use std::io::Write;
 
         let bytes = terrain_tile_bytes(1, 1, &[40]);
@@ -790,7 +958,11 @@ mod tests {
             terrain_source_payload_to_abt2_bytes(&gzip_bytes).expect("decode terrain payload"),
             bytes
         );
-        assert!(terrain_source_payload_to_abt2_bytes(&bytes).is_err());
+        assert_eq!(
+            terrain_source_payload_to_abt2_bytes(&bytes).expect("accept raw terrain payload"),
+            bytes
+        );
+        assert!(terrain_source_payload_to_abt2_bytes(b"not terrain").is_err());
     }
 
     #[test]

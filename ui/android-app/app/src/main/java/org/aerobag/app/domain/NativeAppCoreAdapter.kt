@@ -254,6 +254,7 @@ data class MapOverlayQueryResult(
 data class MapSelectionQueryResult(
     val clickLat: Double,
     val clickLon: Double,
+    val initialSelectedItemId: String?,
     val categories: List<MapSelectionCategory>,
 )
 
@@ -3059,6 +3060,7 @@ private fun WireAirspaceLimitGlyph.toUi() = AirspaceLimitGlyph(
 private fun WireMapSelectionQueryResult.toUi() = MapSelectionQueryResult(
     clickLat = click_lat,
     clickLon = click_lon,
+    initialSelectedItemId = initial_selected_item_id,
     categories = categories.map { it.toUi() },
 )
 

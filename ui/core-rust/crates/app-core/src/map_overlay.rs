@@ -899,6 +899,8 @@ pub struct MapOverlayQueryResult {
 pub struct MapSelectionQueryResult {
     pub click_lat: f64,
     pub click_lon: f64,
+    #[serde(default)]
+    pub initial_selected_item_id: Option<String>,
     pub categories: Vec<MapSelectionCategory>,
 }
 
@@ -935,6 +937,8 @@ pub struct MapSelectionItem {
     pub secondary_description: Option<String>,
     #[serde(skip)]
     pub position: Option<LatLon>,
+    #[serde(skip)]
+    pub elevation_msl_ft: Option<f64>,
     #[serde(default)]
     pub detail_text: Option<String>,
     pub highlight: MapSelectionHighlight,
@@ -2727,6 +2731,7 @@ pub fn query_map_selection_for_surface_in_time_zone(
     let mut offline_regions = BTreeMap::<String, Vec<&OfflineRegionRecord>>::new();
     let mut airspaces = Vec::new();
     let mut matched_nav_refs = BTreeSet::new();
+    let mut vector_layer_airport_ids = BTreeSet::new();
 
     for tile in visible_point_display_tile_window(
         config,
@@ -2767,6 +2772,9 @@ pub fn query_map_selection_for_surface_in_time_zone(
                 continue;
             };
             if is_airport {
+                if should_display_record(record) {
+                    vector_layer_airport_ids.insert(record.id.clone());
+                }
                 let availability = selection_nav_ref(record, true)
                     .and_then(|nav_ref| match nav_ref {
                         NavRef::Airport(airport_id) => {
@@ -2900,7 +2908,12 @@ pub fn query_map_selection_for_surface_in_time_zone(
         }
     }
 
-    airports.sort_by(compare_map_selection_point_matches);
+    airports.sort_by(|left, right| {
+        vector_layer_airport_ids
+            .contains(&right.item.id)
+            .cmp(&vector_layer_airport_ids.contains(&left.item.id))
+            .then_with(|| compare_map_selection_point_matches(left, right))
+    });
     navaids.sort_by(compare_map_selection_point_matches);
     weather.sort_by(compare_map_selection_point_matches);
     let offline_region_items = offline_regions
@@ -2912,14 +2925,18 @@ pub fn query_map_selection_for_surface_in_time_zone(
             .cmp(&right.label)
             .then_with(|| left.id.cmp(&right.id))
     });
+    let nearest_airport_id = airports.first().map(|matched| matched.item.id.clone());
+    let spot = spot_selection_item(click, plan);
+    let initial_selected_item_id = nearest_airport_id.or_else(|| Some(spot.id.clone()));
     navaids.push(MapSelectionPointMatch {
-        item: spot_selection_item(click, plan),
+        item: spot,
         distance_px: f64::INFINITY,
     });
 
     MapSelectionQueryResult {
         click_lat: click.lat,
         click_lon: click.lon,
+        initial_selected_item_id,
         categories: vec![
             MapSelectionCategory {
                 id: "airport".to_string(),
@@ -3179,6 +3196,12 @@ fn selection_item_for_point(
             lat: record.lat,
             lon: record.lon,
         }),
+        elevation_msl_ft: record.elevation_msl_ft.or_else(|| {
+            record
+                .obstacle
+                .as_ref()
+                .map(|obstacle| obstacle.elevation_msl_ft)
+        }),
         detail_text: None,
         highlight: MapSelectionHighlight::FeatureRef {
             id: record.id.clone(),
@@ -3324,6 +3347,7 @@ fn selection_item_for_flight_plan_point(
         description: None,
         secondary_description: None,
         position: Some(point.position),
+        elevation_msl_ft: None,
         detail_text: None,
         highlight: MapSelectionHighlight::FeatureRef {
             id: format!("flight-plan:{}", nav_ref_overlay_key(nav_ref)),
@@ -3394,6 +3418,7 @@ fn spot_selection_item(click: LatLon, plan: Option<&FlightPlan>) -> MapSelection
         description: None,
         secondary_description: Some(coordinates),
         position: Some(click),
+        elevation_msl_ft: None,
         detail_text: None,
         highlight: MapSelectionHighlight::Spot {
             lat: click.lat,
@@ -3405,7 +3430,6 @@ fn spot_selection_item(click: LatLon, plan: Option<&FlightPlan>) -> MapSelection
         pirep_feature: None,
         airspace_icon: None,
         actions: vec![
-            display_action("terrain", "Terrain --"),
             direct_to_action(None, Some(&nav_ref), None),
             insert_best_position_action(plan, &nav_ref),
         ],
@@ -3437,6 +3461,7 @@ fn selection_item_for_metar(
             lat: record.latitude,
             lon: record.longitude,
         }),
+        elevation_msl_ft: None,
         detail_text: None,
         highlight: MapSelectionHighlight::Metar {
             station_id: record.station_id.clone(),
@@ -3471,6 +3496,7 @@ fn selection_item_for_pirep(
             lat: record.latitude,
             lon: record.longitude,
         }),
+        elevation_msl_ft: None,
         detail_text: Some(record.raw_text.clone()),
         highlight: MapSelectionHighlight::Pirep {
             id: record.id.clone(),
@@ -3705,6 +3731,7 @@ fn selection_item_for_airspace(feature: &AirspaceFeaturePayload) -> MapSelection
         description: None,
         secondary_description: None,
         position: None,
+        elevation_msl_ft: None,
         detail_text: None,
         highlight: MapSelectionHighlight::FeatureRef {
             id: feature.id.clone(),
@@ -3765,6 +3792,7 @@ fn selection_item_for_offline_region_group(regions: &[&OfflineRegionRecord]) -> 
         description: Some(description),
         secondary_description: None,
         position: None,
+        elevation_msl_ft: None,
         detail_text: Some(offline_region_group_detail_text(regions)),
         highlight: MapSelectionHighlight::OfflineRegion {
             id: first.id.clone(),
@@ -4017,6 +4045,7 @@ fn selection_item_for_tfr(
         description: Some(tfr_timing_description(timing)),
         secondary_description: None,
         position: None,
+        elevation_msl_ft: None,
         detail_text: None,
         highlight: MapSelectionHighlight::FeatureRef {
             id: format!("tfr:{}:{}", area.notam_id.trim(), area.area_index),
@@ -4447,15 +4476,9 @@ fn airport_icao_label(record: &PointVectorRecord) -> Option<String> {
         .map(|id| id.to_ascii_uppercase())
 }
 
-fn airport_selection_description(elevation_msl_ft: Option<f64>) -> Option<String> {
-    elevation_msl_ft
-        .filter(|value| value.is_finite())
-        .map(|value| format!("Elev {}", value.round() as i64))
-}
-
 fn selection_item_description(record: &PointVectorRecord, is_airport: bool) -> Option<String> {
     if is_airport {
-        return airport_selection_description(record.elevation_msl_ft);
+        return None;
     }
     if is_vor_family_kind(&record.kind) {
         return vor_frequency_description(&record.label);
@@ -6479,6 +6502,7 @@ mod tests {
             description: None,
             secondary_description: None,
             position: None,
+            elevation_msl_ft: None,
             detail_text: None,
             highlight: MapSelectionHighlight::Spot { lat: 0.0, lon: 0.0 },
             nav_ref,
@@ -6495,6 +6519,7 @@ mod tests {
         let result = MapSelectionQueryResult {
             click_lat: 0.0,
             click_lon: 0.0,
+            initial_selected_item_id: None,
             categories: vec![MapSelectionCategory {
                 id: "airport".to_string(),
                 label: "Airport".to_string(),
@@ -7978,6 +8003,10 @@ mod tests {
             .find(|category| category.id == "weather")
             .expect("weather category");
         let item = weather.items.first().expect("METAR selection item");
+        assert!(result
+            .initial_selected_item_id
+            .as_deref()
+            .is_some_and(|id| id.starts_with("spot:")));
 
         assert_eq!(item.label, "KAAA");
         assert_eq!(item.detail_text.as_deref(), None);
@@ -9595,6 +9624,29 @@ mod tests {
                 .into_iter()
                 .find(|tile| tile.layer == "airport")
                 .expect("expected airport tile");
+        let nearest_airport = PointVectorRecord {
+            id: "airports:KSEA".to_string(),
+            kind: "airport".to_string(),
+            lat: 47.36,
+            lon: -121.98,
+            label: "SEATTLE".to_string(),
+            style_class: "airport".to_string(),
+            towered: Some(true),
+            fuel_available: Some(true),
+            public_use: Some(true),
+            private_use: Some(false),
+            has_paved_runway: Some(true),
+            heliport: Some(false),
+            has_water_runway: Some(false),
+            longest_runway_length_ft: Some(10000.0),
+            longest_runway_heading_true_deg: Some(160.0),
+            elevation_msl_ft: Some(433.0),
+            obstacle: None,
+        };
+        let mut farther_airport = nearest_airport.clone();
+        farther_airport.id = "airports:KBFI".to_string();
+        farther_airport.label = "BOEING FIELD".to_string();
+        farther_airport.lon += 0.01;
         let mut cache = HashMap::new();
         cache.insert(
             tile_key(
@@ -9609,25 +9661,7 @@ mod tests {
                 z: airport_tile.z,
                 x: airport_tile.x,
                 y: airport_tile.y,
-                records: vec![PointVectorRecord {
-                    id: "airports:KSEA".to_string(),
-                    kind: "airport".to_string(),
-                    lat: 47.36,
-                    lon: -121.98,
-                    label: "SEATTLE".to_string(),
-                    style_class: "airport".to_string(),
-                    towered: Some(true),
-                    fuel_available: Some(true),
-                    public_use: Some(true),
-                    private_use: Some(false),
-                    has_paved_runway: Some(true),
-                    heliport: Some(false),
-                    has_water_runway: Some(false),
-                    longest_runway_length_ft: Some(10000.0),
-                    longest_runway_heading_true_deg: Some(160.0),
-                    elevation_msl_ft: Some(433.0),
-                    obstacle: None,
-                }],
+                records: vec![farther_airport, nearest_airport],
             },
         );
         let plan = FlightPlan {
@@ -9672,9 +9706,11 @@ mod tests {
 
         assert_eq!(result.categories[0].id, "airport");
         assert_eq!(result.categories[0].items[0].label, "KSEA");
+        assert_eq!(result.categories[0].items[0].description, None);
+        assert_eq!(result.categories[0].items[0].elevation_msl_ft, Some(433.0));
         assert_eq!(
-            result.categories[0].items[0].description.as_deref(),
-            Some("Elev 433")
+            result.initial_selected_item_id.as_deref(),
+            Some(result.categories[0].items[0].id.as_str())
         );
         assert!(!result.categories[0].items[0]
             .actions
@@ -10293,8 +10329,8 @@ mod tests {
                     PointVectorRecord {
                         id: "airports:KSEA".to_string(),
                         kind: "airport".to_string(),
-                        lat: 47.36,
-                        lon: -121.98,
+                        lat: 47.361,
+                        lon: -121.981,
                         label: "SEATTLE".to_string(),
                         style_class: "airport".to_string(),
                         towered: Some(true),
@@ -10331,8 +10367,8 @@ mod tests {
                     PointVectorRecord {
                         id: "airports:W57".to_string(),
                         kind: "airport".to_string(),
-                        lat: 47.361,
-                        lon: -121.981,
+                        lat: 47.36,
+                        lon: -121.98,
                         label: "WATER".to_string(),
                         style_class: "airport".to_string(),
                         towered: Some(false),
@@ -10410,10 +10446,15 @@ mod tests {
             airport_ids,
             vec![
                 "airports:KSEA",
-                "airports:WN50",
                 "airports:W57",
+                "airports:WN50",
                 "airports:H1"
             ]
+        );
+        assert_eq!(
+            selection.initial_selected_item_id.as_deref(),
+            Some("airports:KSEA"),
+            "a rendered airport must outrank a closer airport hidden by vector display policy",
         );
         let private_airport = selection.categories[0]
             .items

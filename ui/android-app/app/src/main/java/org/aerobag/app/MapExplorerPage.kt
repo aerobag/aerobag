@@ -570,6 +570,19 @@ private data class RasterTileLoadRequest(
     val pageTilePaintTiming: PageTilePaintTiming?,
 )
 
+private fun mapSelectionItemById(
+    result: MapSelectionQueryResult,
+    itemId: String?,
+): MapSelectionItem? {
+    if (itemId == null) {
+        return null
+    }
+    return result.categories
+        .asSequence()
+        .flatMap { it.items.asSequence() }
+        .firstOrNull { it.id == itemId }
+}
+
 @OptIn(ExperimentalComposeUiApi::class)
 @Composable
 internal fun MapExplorerPage(
@@ -1154,7 +1167,7 @@ internal fun MapExplorerPage(
                 mapSelection = MapSelectionUiState(
                     point = Offset(surfaceWidthPx / 2f, surfaceHeightPx / 2f),
                     result = result,
-                    selectedItem = null,
+                    selectedItem = mapSelectionItemById(result, result.initialSelectedItemId),
                 )
             }
 
@@ -1409,16 +1422,6 @@ internal fun MapExplorerPage(
             chartSearchLoading = false
             chartSearchError = "Search failed: ${error.message ?: error.toString()}"
         }
-    }
-
-    fun mapSelectionItemById(result: MapSelectionQueryResult, itemId: String?): MapSelectionItem? {
-        if (itemId == null) {
-            return null
-        }
-        return result.categories
-            .asSequence()
-            .flatMap { it.items.asSequence() }
-            .firstOrNull { it.id == itemId }
     }
 
     fun inspectNavRef(navRef: NavRef) {
@@ -2299,7 +2302,11 @@ internal fun MapExplorerPage(
             click = LatLonPoint(lat = lat, lon = lon),
             pointDisplayScale = density.density.toDouble(),
             onResult = { result ->
-                mapSelection = MapSelectionUiState(point = point, result = result, selectedItem = null)
+                mapSelection = MapSelectionUiState(
+                    point = point,
+                    result = result,
+                    selectedItem = mapSelectionItemById(result, result.initialSelectedItemId),
+                )
                 chartTrayOpen = false
                 layerTrayOpen = false
                 dataStatusTrayOpen = false

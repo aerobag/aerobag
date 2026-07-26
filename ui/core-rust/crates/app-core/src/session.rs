@@ -8518,7 +8518,7 @@ fn materialize_map_selection_in_session(
             kind: AppErrorKind::InvalidCatalog,
             message: "configured platform local time zone is invalid".to_string(),
         })?;
-    let selection = query_map_selection_for_surface_in_time_zone(
+    let mut selection = query_map_selection_for_surface_in_time_zone(
         metrics,
         &session.map_overlay_config,
         plan,
@@ -8536,16 +8536,127 @@ fn materialize_map_selection_in_session(
         Some(session_wall_clock_utc(session)),
         local_time_zone,
     );
-    let ownship_position = session.app_state.ownship.render.position;
-    let selection = map_selection_with_ownship_distances(selection, ownship_position);
-    let selection =
-        map_selection_with_session_action_availability(selection, ownship_position.is_some());
     if !missing_pages.is_empty() {
         return Ok(MapSelectionMaterialization::NeedResources(
             nav_kv_page_resources(missing_pages),
         ));
     }
+    let mut terrain_requests = terrain_elevation_requests_for_selection(session, &selection);
+    match resolve_terrain_source_resources(
+        session,
+        terrain_requests
+            .iter_mut()
+            .flat_map(|request| request.source_tiles.iter_mut()),
+        true,
+    ) {
+        TerrainSourceResolution::NeedResources(resources) => {
+            return Ok(MapSelectionMaterialization::NeedResources(resources));
+        }
+        TerrainSourceResolution::Unavailable { .. } | TerrainSourceResolution::Resolved => {}
+    }
+    selection = map_selection_with_point_details(selection, |position| {
+        terrain_elevation_from_cache(session, position)
+    });
+    let ownship_position = session.app_state.ownship.render.position;
+    let selection = map_selection_with_ownship_distances(selection, ownship_position);
+    let selection =
+        map_selection_with_session_action_availability(selection, ownship_position.is_some());
     Ok(MapSelectionMaterialization::Complete(selection))
+}
+
+fn terrain_elevation_request_for_session(
+    session: &UiSession,
+    position: LatLon,
+) -> Option<crate::terrain::TerrainElevationRequest> {
+    match session.resource_policy {
+        CoreResourcePolicy::InstalledPackage => {
+            crate::terrain::terrain_elevation_request_with_available_packages(
+                position,
+                &session.installed_package_ids,
+            )
+        }
+        CoreResourcePolicy::PublicUnpacked => crate::terrain::terrain_elevation_request(position),
+    }
+}
+
+fn terrain_elevation_requests_for_selection(
+    session: &UiSession,
+    selection: &MapSelectionQueryResult,
+) -> Vec<crate::terrain::TerrainElevationRequest> {
+    let mut requests = BTreeMap::new();
+    for item in selection
+        .categories
+        .iter()
+        .flat_map(|category| category.items.iter())
+    {
+        if item.elevation_msl_ft.is_some_and(f64::is_finite) {
+            continue;
+        }
+        let Some(position) = item.position else {
+            continue;
+        };
+        let Some(request) = terrain_elevation_request_for_session(session, position) else {
+            continue;
+        };
+        requests.entry(request.key()).or_insert(request);
+    }
+    requests.into_values().collect()
+}
+
+fn terrain_elevation_from_cache(session: &UiSession, position: LatLon) -> Option<f64> {
+    let request = terrain_elevation_request_for_session(session, position)?;
+    let tile_bytes = request
+        .source_tiles
+        .iter()
+        .filter_map(|source_tile| {
+            session
+                .terrain_source_tile_cache
+                .get(&terrain_source_tile_cache_key(
+                    &source_tile.product_id,
+                    &source_tile.path,
+                ))
+        })
+        .map(Vec::as_slice)
+        .collect::<Vec<_>>();
+    crate::terrain::sample_terrain_elevation_ft(&request, position, &tile_bytes)
+        .ok()
+        .flatten()
+}
+
+fn map_selection_with_point_details(
+    mut selection: MapSelectionQueryResult,
+    mut terrain_elevation: impl FnMut(LatLon) -> Option<f64>,
+) -> MapSelectionQueryResult {
+    for item in selection
+        .categories
+        .iter_mut()
+        .flat_map(|category| category.items.iter_mut())
+    {
+        let Some(position) = item.position else {
+            continue;
+        };
+        item.secondary_description = Some(format!("{:.4}, {:.4}", position.lat, position.lon));
+        let elevation_msl_ft = item
+            .elevation_msl_ft
+            .filter(|value| value.is_finite())
+            .or_else(|| terrain_elevation(position).filter(|value| value.is_finite()));
+        let elevation = elevation_msl_ft
+            .map(|value| format!("Elev {}", value.round() as i64))
+            .unwrap_or_else(|| "Elev --".to_string());
+        append_map_selection_description(&mut item.description, elevation);
+    }
+    selection
+}
+
+fn append_map_selection_description(description: &mut Option<String>, detail: String) {
+    *description = Some(
+        description
+            .take()
+            .map(|value| value.trim().to_string())
+            .filter(|value| !value.is_empty())
+            .map(|value| format!("{value} · {detail}"))
+            .unwrap_or(detail),
+    );
 }
 
 fn map_selection_with_ownship_distances(
@@ -8569,14 +8680,7 @@ fn map_selection_with_ownship_distances(
             continue;
         }
         let distance = format!("{}nm", crate::flight_data::format_nm(distance_nm));
-        item.description = Some(
-            item.description
-                .take()
-                .map(|description| description.trim().to_string())
-                .filter(|description| !description.is_empty())
-                .map(|description| format!("{description} · {distance}"))
-                .unwrap_or(distance),
-        );
+        append_map_selection_description(&mut item.description, distance);
     }
 
     selection
@@ -8735,52 +8839,70 @@ fn resolve_terrain_overlay_source_resources(
     session: &UiSession,
     query: &mut TerrainOverlayQueryResult,
 ) -> TerrainSourceResolution {
-    let mut metadata_resources = Vec::new();
     for request in &mut query.tile_requests {
         if request.source_tiles.is_empty() {
             request.source_tiles = terrain_source_tiles(request);
         }
-        for source_tile in &mut request.source_tiles {
-            let key = terrain_source_tile_cache_key(&source_tile.product_id, &source_tile.path);
-            let target_resource_id = format!("terrain/source/{key}");
-            let requested = match session.publication_resolver.package_resource_requests(
-                &target_resource_id,
-                &source_tile.product_id,
-                &source_tile.path,
-                false,
-            ) {
-                Ok(requested) => requested,
-                Err(message) => {
-                    return TerrainSourceResolution::Unavailable {
-                        reason: format!("{target_resource_id}: {message}"),
-                    };
-                }
-            };
-            let mut resolved_source = false;
-            let mut requested_metadata = false;
-            for resource in requested {
-                if resource.id == target_resource_id {
-                    if let CoreResourceSource::Unavailable { message } = &resource.source {
-                        return TerrainSourceResolution::Unavailable {
-                            reason: format!("{}: {message}", resource.id),
-                        };
-                    }
-                    source_tile.resource = Some(resource);
-                    resolved_source = true;
-                } else {
-                    requested_metadata = true;
-                    metadata_resources.push(resource);
-                }
-            }
-            if !resolved_source && !requested_metadata {
+    }
+    resolve_terrain_source_resources(
+        session,
+        query
+            .tile_requests
+            .iter_mut()
+            .flat_map(|request| request.source_tiles.iter_mut()),
+        false,
+    )
+}
+
+fn resolve_terrain_source_resources<'a>(
+    session: &UiSession,
+    source_tiles: impl IntoIterator<Item = &'a mut crate::TerrainOverlaySourceTile>,
+    fetch_source_payloads: bool,
+) -> TerrainSourceResolution {
+    let mut pending_resources = Vec::new();
+    for source_tile in source_tiles {
+        let key = terrain_source_tile_cache_key(&source_tile.product_id, &source_tile.path);
+        let target_resource_id = format!("terrain/source/{key}");
+        let requested = match session.publication_resolver.package_resource_requests(
+            &target_resource_id,
+            &source_tile.product_id,
+            &source_tile.path,
+            false,
+        ) {
+            Ok(requested) => requested,
+            Err(message) => {
                 return TerrainSourceResolution::Unavailable {
-                    reason: format!("{target_resource_id}: package resolver returned no source"),
+                    reason: format!("{target_resource_id}: {message}"),
                 };
             }
+        };
+        let mut resolved_source = false;
+        let mut requested_metadata = false;
+        for resource in requested {
+            if resource.id == target_resource_id {
+                if let CoreResourceSource::Unavailable { message } = &resource.source {
+                    return TerrainSourceResolution::Unavailable {
+                        reason: format!("{}: {message}", resource.id),
+                    };
+                }
+                if fetch_source_payloads && !session.terrain_source_tile_cache.contains_key(&key) {
+                    pending_resources.push(resource.clone());
+                }
+                source_tile.resource = Some(resource);
+                resolved_source = true;
+            } else {
+                requested_metadata = true;
+                pending_resources.push(resource);
+            }
+        }
+        if !resolved_source && !requested_metadata {
+            return TerrainSourceResolution::Unavailable {
+                reason: format!("{target_resource_id}: package resolver returned no source"),
+            };
         }
     }
-    if !metadata_resources.is_empty() {
-        TerrainSourceResolution::NeedResources(dedupe_resource_requests(metadata_resources))
+    if !pending_resources.is_empty() {
+        TerrainSourceResolution::NeedResources(dedupe_resource_requests(pending_resources))
     } else {
         TerrainSourceResolution::Resolved
     }
@@ -18857,6 +18979,40 @@ mod tests {
     }
 
     #[test]
+    fn terrain_source_resource_ingest_accepts_raw_abt2_returned_by_browser_fetch() {
+        let init =
+            create_ui_session(FlightPlan::default(), &[], None, None).expect("create session");
+        let mut raw_abt2 = Vec::new();
+        raw_abt2.extend_from_slice(b"ABT2");
+        raw_abt2.extend_from_slice(&1_u16.to_le_bytes());
+        raw_abt2.extend_from_slice(&1_u16.to_le_bytes());
+        raw_abt2.extend_from_slice(&(-32768_i16).to_le_bytes());
+        raw_abt2.extend_from_slice(&0_i16.to_le_bytes());
+        raw_abt2.extend_from_slice(
+            &(product_contracts::TERRAIN_TER2_HEIGHT_QUANTIZATION_FT as f32).to_le_bytes(),
+        );
+        raw_abt2.extend_from_slice(&0.0_f32.to_le_bytes());
+        raw_abt2.extend_from_slice(&40_i16.to_le_bytes());
+
+        ingest_resource_in_session(
+            init.handle,
+            "terrain/source/terrain-sw/tiles/9/1/2.terrain",
+            &raw_abt2,
+        )
+        .expect("ingest raw terrain bytes returned by fetch");
+        let raw_rgba = render_terrain_overlay_tile_by_key_in_session(
+            init.handle,
+            "terrain/tiles/9/1/2.terrain",
+            Some(2000.0),
+        )
+        .expect("render fetched terrain tile by key");
+
+        assert_eq!(u16::from_le_bytes([raw_rgba[0], raw_rgba[1]]), 1);
+        assert_eq!(u16::from_le_bytes([raw_rgba[2], raw_rgba[3]]), 1);
+        assert_eq!(&raw_rgba[4..8], &[185, 0, 45, 190]);
+    }
+
+    #[test]
     fn procedure_data_quality_in_flight_plan_drives_caution() {
         let mut plan = FlightPlan {
             id: "procedure-quality".to_string(),
@@ -20697,6 +20853,7 @@ mod tests {
         let selection = MapSelectionQueryResult {
             click_lat: 47.49,
             click_lon: -122.76,
+            initial_selected_item_id: Some("airport:KPWT".to_string()),
             categories: vec![MapSelectionCategory {
                 id: "points".to_string(),
                 label: "Points".to_string(),
@@ -20707,6 +20864,7 @@ mod tests {
                     description: None,
                     secondary_description: None,
                     position: None,
+                    elevation_msl_ft: None,
                     detail_text: None,
                     highlight: MapSelectionHighlight::Spot {
                         lat: 47.49,
@@ -20766,6 +20924,7 @@ mod tests {
             description: description.map(str::to_string),
             secondary_description: None,
             position,
+            elevation_msl_ft: None,
             detail_text: None,
             highlight: MapSelectionHighlight::Spot { lat: 0.0, lon: 0.0 },
             nav_ref: None,
@@ -20781,12 +20940,79 @@ mod tests {
         MapSelectionQueryResult {
             click_lat: 0.0,
             click_lon: 0.0,
+            initial_selected_item_id: None,
             categories: vec![MapSelectionCategory {
                 id: "test".to_string(),
                 label: "Test".to_string(),
                 items,
             }],
         }
+    }
+
+    #[test]
+    fn map_selection_point_details_include_elevation_coordinates_and_distance() {
+        let ownship = LatLon { lat: 0.0, lon: 0.0 };
+        let point = LatLon { lat: 0.0, lon: 0.3 };
+        let mut airport = test_map_selection_item("KAPC", None, Some(point));
+        airport.elevation_msl_ft = Some(36.0);
+        let selection = test_map_selection_with_items(vec![airport]);
+
+        let selection = map_selection_with_point_details(selection, |_| {
+            panic!("known source elevation should not query terrain")
+        });
+        let selection = map_selection_with_ownship_distances(selection, Some(ownship));
+        let expected_distance =
+            crate::flight_data::format_nm(crate::great_circle_distance_nm(ownship, point));
+        assert_eq!(
+            selection.categories[0].items[0].description,
+            Some(format!("Elev 36 · {expected_distance}nm"))
+        );
+        assert_eq!(
+            selection.categories[0].items[0]
+                .secondary_description
+                .as_deref(),
+            Some("0.0000, 0.3000")
+        );
+    }
+
+    #[test]
+    fn map_selection_point_details_use_terrain_and_report_unavailable_elevation() {
+        let terrain_point = LatLon {
+            lat: 47.7823,
+            lon: -122.6415,
+        };
+        let unavailable_point = LatLon {
+            lat: 12.3456,
+            lon: -65.4321,
+        };
+        let selection = test_map_selection_with_items(vec![
+            test_map_selection_item("SPOT", None, Some(terrain_point)),
+            test_map_selection_item("NOWHERE", None, Some(unavailable_point)),
+        ]);
+
+        let selection = map_selection_with_point_details(selection, |position| {
+            (position == terrain_point).then_some(487.4)
+        });
+        assert_eq!(
+            selection.categories[0].items[0].description.as_deref(),
+            Some("Elev 487")
+        );
+        assert_eq!(
+            selection.categories[0].items[0]
+                .secondary_description
+                .as_deref(),
+            Some("47.7823, -122.6415")
+        );
+        assert_eq!(
+            selection.categories[0].items[1].description.as_deref(),
+            Some("Elev --")
+        );
+        assert_eq!(
+            selection.categories[0].items[1]
+                .secondary_description
+                .as_deref(),
+            Some("12.3456, -65.4321")
+        );
     }
 
     #[test]

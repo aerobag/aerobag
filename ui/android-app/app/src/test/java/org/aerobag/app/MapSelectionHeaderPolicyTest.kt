@@ -30,6 +30,23 @@ class MapSelectionHeaderPolicyTest {
         )
     }
 
+    @Test
+    fun rawMapClickUsesCoresInitialPointSelection() {
+        val source = sourceFile("src/main/java/org/aerobag/app/MapExplorerPage.kt").readText()
+        val requestBody = balancedBlockAfterMarker(source, "fun requestMapSelection")
+
+        assertTrue(
+            "Android must honor core's airport-or-SPOT initial selection.",
+            requestBody.contains(
+                "selectedItem = mapSelectionItemById(result, result.initialSelectedItemId)",
+            ),
+        )
+        assertFalse(
+            "Raw map clicks must not open with an empty detail pane.",
+            requestBody.contains("selectedItem = null"),
+        )
+    }
+
     private fun sourceFile(path: String): File {
         val start = File(".").canonicalFile
         return generateSequence(start) { it.parentFile }

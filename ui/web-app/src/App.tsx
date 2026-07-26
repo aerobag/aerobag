@@ -5778,7 +5778,7 @@ function MapPage(props: {
           setMapSelection({
             point: clickCandidate.latest,
             result,
-            selectedItem: null,
+            selectedItem: mapSelectionItemById(result, result.initial_selected_item_id ?? null),
             detailModal: null,
           });
         })

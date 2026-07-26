@@ -525,6 +525,7 @@ export type MapOverlayQueryResult = {
 export type MapSelectionQueryResult = {
   click_lat: number;
   click_lon: number;
+  initial_selected_item_id?: string | null;
   categories: MapSelectionCategory[];
 };
 

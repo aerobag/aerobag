@@ -651,6 +651,7 @@ data class WireOfflineRegionDisplay(
 data class WireMapSelectionQueryResult(
     val click_lat: Double,
     val click_lon: Double,
+    val initial_selected_item_id: String? = null,
     val categories: List<WireMapSelectionCategory> = emptyList(),
 )
 

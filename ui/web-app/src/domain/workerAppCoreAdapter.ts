@@ -10,6 +10,7 @@ import type {
   UiInvalidationListener,
   UiSession,
 } from "./appCoreAdapter";
+import type { WorkerCreateUiSessionRequest } from "./appCoreWorkerProtocol";
 import { debugLog, getBrowserInstanceId, isDebugLogEnabled, type DebugLogRecord } from "./debugLog";
 import type { SituationRingCandidate } from "./types";
 
@@ -314,11 +315,14 @@ function workerBackedAdapter(client: AppCoreWorkerClient): AppCoreAdapter {
     prewarm: () => client.callAdapter("prewarm"),
     situationRingCandidates: () => cachedSituationRingCandidates,
     loadSituationRingCandidates,
-    createUiSession: async (...args) => {
-      const marker = await client.callAdapter<WorkerSessionMarker>("createUiSession", [
-        ...args,
-        readPersistedCoreSettingsJson(),
-      ]);
+    createUiSession: async (recentAirportIds, selectedAirportId, selectedChartId) => {
+      const request: WorkerCreateUiSessionRequest = {
+        recentAirportIds,
+        selectedAirportId,
+        selectedChartId,
+        settingsJson: readPersistedCoreSettingsJson(),
+      };
+      const marker = await client.callAdapter<WorkerSessionMarker>("createUiSession", [request]);
       return workerBackedSession(client, marker.__aerobagWorkerSessionId, marker.initialSnapshot);
     },
     resolveWaypointIdentifier: (...args) => client.callAdapter("resolveWaypointIdentifier", args),

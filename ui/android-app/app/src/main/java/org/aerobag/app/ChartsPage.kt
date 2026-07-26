@@ -195,7 +195,6 @@ import kotlinx.coroutines.withContext
 import org.aerobag.app.domain.ChartAirport
 import org.aerobag.app.domain.ChartAirportMenuEntry
 import org.aerobag.app.domain.ChartAsset
-import org.aerobag.app.domain.AppState
 import org.aerobag.app.domain.AirwayPresentationPlan
 import org.aerobag.app.domain.AirwaySuggestion
 import org.aerobag.app.domain.WaypointIdentifierSuggestion
@@ -203,15 +202,12 @@ import org.aerobag.app.domain.CoreMapViewport
 import org.aerobag.app.domain.CoreResourceRequest
 import org.aerobag.app.domain.DerivedChartPageState
 import org.aerobag.app.domain.FlightDataBannerModel
-import org.aerobag.app.domain.FlightPlan
 import org.aerobag.app.domain.FlightPlanEntryPreview
-import org.aerobag.app.domain.FlightPlanUiMutation
 import org.aerobag.app.domain.FlightPlanDisplayRowKind
 import org.aerobag.app.domain.FlightPlanDisplayRowUiView
 import org.aerobag.app.domain.FlightPlanRowActionUiView
 import org.aerobag.app.domain.FlightPlanRouteSegment
 import org.aerobag.app.domain.FlightPlanUiState
-import org.aerobag.app.domain.GuidanceState
 import org.aerobag.app.domain.InstalledPackages
 import org.aerobag.app.domain.AirspaceDisplayDecoration
 import org.aerobag.app.domain.AirspaceDisplayLabel
@@ -249,12 +245,9 @@ import org.aerobag.app.domain.ProcedureKind
 import org.aerobag.app.domain.ProcedureLoadOption
 import org.aerobag.app.domain.ProcedureOptions
 import org.aerobag.app.domain.ProcedureSummary
-import org.aerobag.app.domain.ResolvedLeg
-import org.aerobag.app.domain.ResolvedLegSource
 import org.aerobag.app.domain.RenderTile
 import org.aerobag.app.domain.RouteSegmentStatus
 import org.aerobag.app.domain.RouteComponentViewKind
-import org.aerobag.app.domain.RouteComponent
 import org.aerobag.app.domain.ScreenPoint
 import org.aerobag.app.domain.SectionalPackages
 import org.aerobag.app.domain.SequencingMode
@@ -365,7 +358,7 @@ internal fun ChartsPage(
     selectedChart: ChartAsset?,
     suggestedChartIds: List<String>,
     chartAssetDataRevision: Int,
-    plan: FlightPlan,
+    flightPlanVersion: Long,
     uiTheme: UiTheme,
     ownship: OwnshipRenderState,
     ownshipControls: OwnshipControlModel,
@@ -462,13 +455,13 @@ internal fun ChartsPage(
     val imageWidthPx = bitmap?.width?.toFloat() ?: 0f
     val imageHeightPx = bitmap?.height?.toFloat() ?: 0f
     val trayOpen = airportTrayOpen || chartTrayOpen || loadTrayOpen || dataStatusTrayOpen || situationTrayOpen
-    val plateProcedureLoads by produceState<List<ProcedureLoadOption>>(initialValue = emptyList(), plan.version, selectedChart?.id) {
+    val plateProcedureLoads by produceState<List<ProcedureLoadOption>>(initialValue = emptyList(), flightPlanVersion, selectedChart?.id) {
         val chart = selectedChart
         value = if (chart == null || chart.kind != "plate") {
             emptyList()
         } else {
             withContext(Dispatchers.IO) {
-                runCatching { uiSession.describePlateProcedureLoads(plan, chart.id) }
+                runCatching { uiSession.describePlateProcedureLoads(chart.id) }
                     .onFailure { Log.w("AerobagCharts", "plate procedure loads unavailable chart=${chart.id}", it) }
                     .getOrDefault(emptyList())
             }

@@ -31,13 +31,6 @@ pub struct AppUiState {
     pub last_content_report: Option<ContentReport>,
 }
 
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub struct UiSnapshotAppState {
-    pub active_plan: Option<FlightPlan>,
-    pub content_policy: ContentPolicy,
-    pub last_content_report: Option<ContentReport>,
-}
-
 impl Default for AppState {
     fn default() -> Self {
         Self {
@@ -117,24 +110,15 @@ pub fn project_app_ui_state(state: &AppState) -> AppUiState {
     }
 }
 
-pub fn project_ui_snapshot_app_state(state: &AppState) -> UiSnapshotAppState {
-    UiSnapshotAppState {
-        active_plan: state.active_plan.clone(),
-        content_policy: state.content_policy,
-        last_content_report: state.last_content_report.clone(),
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{AirportId, AppErrorKind, NavRef, PlanLeg, RouteComponent};
+    use crate::{AirportId, AirwaySegment, AppErrorKind, NavRef, RouteComponent};
 
     fn sample_plan() -> FlightPlan {
         FlightPlan {
             id: "plan-1".to_string(),
             name: "KBOS to KJFK".to_string(),
-            legs: Vec::new(),
             route_components: vec![
                 RouteComponent::Waypoint {
                     waypoint: NavRef::Airport("KBOS".to_string()),
@@ -237,12 +221,19 @@ mod tests {
             AppEvent::ReplaceFlightPlan(FlightPlan {
                 id: "bad".to_string(),
                 name: "bad".to_string(),
-                legs: vec![PlanLeg {
-                    from: NavRef::Airport("KRNT".to_string()),
-                    to: NavRef::Airport("KPAE".to_string()),
-                    airway: None,
-                }],
-                route_components: Vec::new(),
+                route_components: vec![
+                    RouteComponent::Waypoint {
+                        waypoint: NavRef::Airport("KRNT".to_string()),
+                    },
+                    RouteComponent::Airway {
+                        airway: AirwaySegment {
+                            name: "V2".to_string(),
+                            branch_key: None,
+                            entry: NavRef::Navaid("SEA".to_string()),
+                            exit: NavRef::Fix("ELN".to_string()),
+                        },
+                    },
+                ],
                 route_component_uids: Vec::new(),
                 route_component_uid_counter: 0,
                 resolved_legs: Vec::new(),
@@ -274,7 +265,13 @@ mod tests {
         assert_eq!(ui.ownship.render.mode, crate::OwnshipMode::None);
         assert_eq!(ui.content_policy, with_plan.content_policy);
         assert_eq!(
-            ui.active_plan.as_ref().unwrap().components.len(),
+            ui.active_plan
+                .as_ref()
+                .unwrap()
+                .display_rows
+                .iter()
+                .filter(|row| row.depth == 0)
+                .count(),
             with_plan
                 .active_plan
                 .as_ref()

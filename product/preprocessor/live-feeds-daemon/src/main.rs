@@ -357,15 +357,13 @@ impl DaemonStatus {
 
     fn record_product_success(&self, update: &PublishedLiveFeedUpdate) {
         let observed_at_utc = Utc::now();
-        let delta_bytes = update
-            .delta_path
-            .as_ref()
-            .and_then(|path| fs::metadata(path).ok())
-            .map(|metadata| metadata.len());
+        let delta_bytes = delta_bytes_for_status(update);
         let state_bytes = state_bytes_for_status(&update.state_path).ok();
         let quality = quality_facts_for_status(update).ok().flatten();
         let mut state = self.inner.lock().expect("live-feed status lock");
         let history = state.products.entry(update.product.clone()).or_default();
+        let content_version_changed =
+            history.current_version.as_deref() != Some(update.version.as_str());
         history.last_attempt_at_utc = Some(observed_at_utc);
         history.last_success_at_utc = Some(observed_at_utc);
         history.last_published_at_utc = update.published_at_utc.clone();
@@ -390,7 +388,7 @@ impl DaemonStatus {
                 error: None,
             },
         );
-        if update.unchanged {
+        if !content_version_changed {
             return;
         }
         let update_interval_ms = history
@@ -554,6 +552,20 @@ fn state_bytes_for_status(state_path: &Path) -> anyhow::Result<u64> {
         })
         .unwrap_or(0);
     Ok(bytes.saturating_add(referenced_bytes))
+}
+
+fn delta_bytes_for_status(update: &PublishedLiveFeedUpdate) -> Option<u64> {
+    fs::read(&update.version_manifest_path)
+        .ok()
+        .and_then(|bytes| serde_json::from_slice::<LiveFeedVersionManifest>(&bytes).ok())
+        .and_then(|manifest| manifest.delta_from_previous.map(|delta| delta.bytes))
+        .or_else(|| {
+            update
+                .delta_path
+                .as_ref()
+                .and_then(|path| fs::metadata(path).ok())
+                .map(|metadata| metadata.len())
+        })
 }
 
 fn quality_facts_for_status(
@@ -2763,40 +2775,85 @@ mod tests {
     }
 
     #[test]
-    fn status_includes_unchanged_published_products() {
+    fn status_recovers_obstacle_delta_and_ignores_metadata_only_repeat() -> anyhow::Result<()> {
+        let temp = tempdir()?;
+        let state_path = temp.path().join("states/obstacles/v1/manifest.json");
+        let version_manifest_path = temp.path().join("versions/obstacles/v1.json");
+        let state_dir = state_path.parent().unwrap();
+        fs::create_dir_all(state_dir)?;
+        fs::write(&state_path, b"manifest")?;
+        fs::write(state_dir.join("page_0000"), b"pg")?;
+        write_json_pretty_file(
+            &version_manifest_path,
+            &serde_json::json!({
+                "schema_version": LIVE_FEEDS_SCHEMA_VERSION,
+                "product": "obstacles",
+                "version": "v1",
+                "previous": "v0",
+                "state": {
+                    "kind": "nav_kv",
+                    "url": "states/obstacles/v1/manifest.json",
+                    "bytes": 10,
+                    "blob_sha256": "state-blob",
+                    "state_sha256": "state"
+                },
+                "delta_from_previous": {
+                    "kind": "nav_kv_delta_xz",
+                    "from_version": "v0",
+                    "from_state_sha256": "old-state",
+                    "to_version": "v1",
+                    "to_state_sha256": "state",
+                    "url": "deltas/obstacles/v0__v1.nav-kv-delta.json.xz",
+                    "bytes": 321,
+                    "blob_sha256": "delta-blob"
+                }
+            }),
+        )?;
         let status = DaemonStatus::default();
+        let update = PublishedLiveFeedUpdate {
+            product: "obstacles".to_string(),
+            version: "v1".to_string(),
+            unchanged: true,
+            state_path,
+            version_manifest_path,
+            version_manifest_url: "versions/obstacles/v1.json".to_string(),
+            state_url: "states/obstacles/v1/manifest.json".to_string(),
+            state_sha256: "state".to_string(),
+            published_at_utc: None,
+            collected_at_utc: Some("2026-07-25T17:00:00Z".to_string()),
+            history: Vec::new(),
+            delta_path: None,
+            changed_count: 0,
+            removed_count: 0,
+            publication_ack: None,
+            notam_compaction: None,
+        };
         status.record_tick_result(&LiveFeedTickResult {
-            published: vec![PublishedLiveFeedUpdate {
-                product: "metars".to_string(),
-                version: "v1".to_string(),
-                unchanged: true,
-                state_path: PathBuf::from("states/metars/v1.json"),
-                version_manifest_path: PathBuf::from("versions/metars/v1.json"),
-                version_manifest_url: "versions/metars/v1.json".to_string(),
-                state_url: "states/metars/v1.json".to_string(),
-                state_sha256: "sha".to_string(),
-                published_at_utc: None,
-                collected_at_utc: None,
-                history: Vec::new(),
-                delta_path: None,
-                changed_count: 0,
-                removed_count: 0,
-                publication_ack: None,
-                notam_compaction: None,
-            }],
+            published: vec![update.clone()],
+            failures: Vec::new(),
+        });
+        let mut metadata_update = update;
+        metadata_update.unchanged = false;
+        metadata_update.collected_at_utc = Some("2026-07-25T17:03:00Z".to_string());
+        status.record_tick_result(&LiveFeedTickResult {
+            published: vec![metadata_update],
             failures: Vec::new(),
         });
 
         let snapshot = status.snapshot();
-        let metars = snapshot.products.get("metars").expect("METAR status");
-        assert_eq!(metars.current_version.as_deref(), Some("v1"));
-        assert!(metars.last_attempt_at_utc.is_some());
-        assert!(metars.last_success_at_utc.is_some());
-        assert_eq!(metars.consecutive_failure_count, 0);
-        assert_eq!(metars.attempts.len(), 1);
-        assert_eq!(metars.attempts[0].result, "success");
-        assert_eq!(metars.attempts[0].unchanged, Some(true));
-        assert!(metars.samples.is_empty());
+        let obstacles = snapshot.products.get("obstacles").expect("obstacle status");
+        assert_eq!(obstacles.current_version.as_deref(), Some("v1"));
+        assert!(obstacles.last_attempt_at_utc.is_some());
+        assert!(obstacles.last_success_at_utc.is_some());
+        assert_eq!(obstacles.consecutive_failure_count, 0);
+        assert_eq!(obstacles.attempts.len(), 2);
+        assert_eq!(obstacles.attempts[0].result, "success");
+        assert_eq!(obstacles.attempts[0].unchanged, Some(true));
+        assert_eq!(obstacles.samples.len(), 1);
+        assert_eq!(obstacles.samples[0].version, "v1");
+        assert_eq!(obstacles.samples[0].state_bytes, Some(10));
+        assert_eq!(obstacles.samples[0].delta_bytes, Some(321));
+        Ok(())
     }
 
     #[test]

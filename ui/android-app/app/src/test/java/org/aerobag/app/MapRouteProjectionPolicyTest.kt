@@ -26,6 +26,12 @@ class MapRouteProjectionPolicyTest {
             "MapExplorerPage must not infer route availability from resolved legs; core owns route projection policy.",
             source.contains("resolvedLegs.isNotEmpty()"),
         )
+        assertTrue(
+            "MapExplorerPage must reject a route projection from another core flight-plan revision.",
+            source.contains(
+                "flightPlanRouteProjection.flightPlanRouteRevision == sessionSnapshot.flightPlanRouteRevision",
+            ),
+        )
     }
 
     private fun sourceFile(path: String): File {

@@ -5,15 +5,20 @@
 use std::{
     borrow::Cow,
     cmp::Ordering,
-    collections::{HashMap, HashSet},
-    ops::Range,
+    collections::{BTreeMap, HashMap, HashSet},
 };
 
 use chrono::{DateTime, Utc};
 use procedure_geometry_types as pgt;
+#[cfg(test)]
+use product_contracts::WaypointSearchMatchKind;
+use product_contracts::WaypointSearchRecord;
 use serde::{de::DeserializeOwned, Deserialize, Serialize};
 use serde_json::Value;
 
+use crate::navdb_types::{
+    AirwayBranch, AirwayEntryCandidate, AirwayExitCandidate, AirwaySpatialPoint,
+};
 use crate::planning::FlightPlanRowActionId;
 use crate::{
     chart_page::{
@@ -24,16 +29,15 @@ use crate::{
     flight_leg_distance_nm, flight_plan_contains_nav_ref, flight_plan_has_direct_to_overlay,
     insert_airway_after_airway, insert_airway_after_waypoint, insert_waypoint,
     prepare_airway_presentation, project_flight_plan_route_with_resolver, AirportId,
-    AirwayAutoSelection, AirwayBranch, AirwayEntryCandidate, AirwayExitCandidate,
-    AirwayPresentationPlan, AirwaySegment, AirwaySpatialPoint, AirwaySuggestion, AppError,
-    AppErrorKind, AppResult, CifpTppMatchRow, ConcretizedNavItem, FlightPlan,
-    FlightPlanRouteSegment, FlightPlanUiMutation, FlightPlanUiState, LatLon, LegDisplayElement,
-    LegDisplayPath, LegDisplayPathStyle, MaterializedProcedure, NavKvLookup, NavKvQuery, NavKvRoot,
-    NavKvStore, NavRef, NavSymbolFeature, PathTermination, PlateProcedureLoadCandidateInput,
-    PolygonRecord, ProcedureDiscontinuity, ProcedureKind, ProcedureLegProvenance,
-    ProcedureLoadOption, ProcedureOptions, ProcedureSegment, ProcedureSegmentRole,
-    ProcedureSummary, ResolvedLeg, ResolvedLegSource, RouteComponent, SequencingMode,
-    WaypointIdentifierRecord, WaypointIdentifierSuggestion, REQUIRED_NAV_DB_CONTRACT_ID,
+    AirwayPresentationPlan, AirwayPresentationSelection, AirwaySegment, AirwaySuggestion, AppError,
+    AppErrorKind, AppResult, CifpTppMatchRow, FlightPlan, FlightPlanRouteSegment,
+    FlightPlanUiState, LatLon, LegDisplayElement, LegDisplayPath, LegDisplayPathStyle,
+    MaterializedProcedure, NavKvLookup, NavKvQuery, NavKvRoot, NavKvStore, NavRef,
+    NavSymbolFeature, PathTermination, PlateProcedureLoadCandidateInput, PolygonRecord,
+    ProcedureDiscontinuity, ProcedureKind, ProcedureLegProvenance, ProcedureLoadOption,
+    ProcedureOptions, ProcedureSegment, ProcedureSegmentRole, ProcedureSummary, ResolvedLeg,
+    ResolvedLegSource, RouteComponent, SequencingMode, WaypointIdentifierSuggestion,
+    REQUIRED_NAV_DB_CONTRACT_ID,
 };
 
 #[derive(Debug, Clone, Copy, Default)]
@@ -112,6 +116,12 @@ pub enum CoreResourceSource {
         filename: String,
         member_path: String,
     },
+    LiveFeedPackageMember {
+        product: String,
+        version: String,
+        blob_sha256: String,
+        member_path: String,
+    },
     InstalledArtifactMember {
         filename: String,
         member_path: String,
@@ -161,6 +171,26 @@ impl CoreResourceRequest {
             id: id.into(),
             source: CoreResourceSource::InstalledArtifactMember {
                 filename: filename.into(),
+                member_path: member_path.into(),
+            },
+            optional,
+        }
+    }
+
+    pub fn live_feed_package_member(
+        id: impl Into<String>,
+        product: impl Into<String>,
+        version: impl Into<String>,
+        blob_sha256: impl Into<String>,
+        member_path: impl Into<String>,
+        optional: bool,
+    ) -> Self {
+        Self {
+            id: id.into(),
+            source: CoreResourceSource::LiveFeedPackageMember {
+                product: product.into(),
+                version: version.into(),
+                blob_sha256: blob_sha256.into(),
                 member_path: member_path.into(),
             },
             optional,
@@ -599,6 +629,9 @@ fn nav_db_artifact_page_source(
         Some(CoreResourceSource::NavKvMember { .. }) => CoreResourceSource::Unavailable {
             message: "nav_db artifact root cannot be a nav_kv member".to_string(),
         },
+        Some(CoreResourceSource::LiveFeedPackageMember { .. }) => CoreResourceSource::Unavailable {
+            message: "nav_db artifact root cannot be a live-feed package member".to_string(),
+        },
         Some(CoreResourceSource::Unavailable { message }) => CoreResourceSource::Unavailable {
             message: message.clone(),
         },
@@ -672,41 +705,11 @@ fn validate_nav_db_contract(store: &NavKvStore) -> Result<NavDbContractValidatio
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum HadOperation {
     VectorManifest,
-    ChartPageState {
-        plan: FlightPlan,
-        recent_airport_ids: Vec<String>,
-        #[serde(default)]
-        plate_target_airport_id: Option<String>,
-        selected_airport_id: Option<String>,
-        #[serde(default)]
-        selected_reference_family_id: Option<String>,
-        selected_chart_id: Option<String>,
-        #[serde(default)]
-        suggested_chart_ids: Vec<String>,
-    },
     PlateAirport {
         airport_id: String,
     },
     PlateById {
         plate_id: String,
-    },
-    FlightPlanUiState {
-        plan: FlightPlan,
-        current_ui_state: FlightPlanUiState,
-    },
-    FlightPlanUiMutation {
-        mutation: FlightPlanUiMutation,
-    },
-    PreviewFlightPlanEntry {
-        plan: FlightPlan,
-        input: String,
-    },
-    AppendFlightPlanEntry {
-        plan: FlightPlan,
-        input: String,
-    },
-    ProjectFlightPlanRoute {
-        plan: FlightPlan,
     },
     ResolveWaypointIdentifier {
         identifier: String,
@@ -717,44 +720,14 @@ pub enum HadOperation {
     ResolveNavSymbolFeature {
         nav_ref: NavRef,
     },
-    SuggestWaypointIdentifiers {
-        plan: FlightPlan,
-        component_index: usize,
-        before: bool,
-        prefix: String,
-        limit: usize,
-    },
     SuggestWaypointIdentifiersNear {
         anchor: LatLon,
-        prefix: String,
+        query: String,
         limit: usize,
     },
     SuggestAirwaysNearAnchor {
         anchor: NavRef,
         limit: usize,
-    },
-    AirwayBranches {
-        airway_name: String,
-    },
-    PrepareAirwayPresentationForAnchors {
-        airway_name: String,
-        origin_anchor: NavRef,
-        destination_anchor: Option<NavRef>,
-    },
-    MaterializeAirwaySelection {
-        start_component_index: usize,
-        entry: AirwayEntryCandidate,
-        exit: AirwayExitCandidate,
-        origin_anchor: NavRef,
-        destination_anchor: Option<NavRef>,
-    },
-    MaterializeAirwayPresentationSelection {
-        start_component_index: usize,
-        presentation: AirwayPresentationPlan,
-        entry_index: usize,
-        exit_index: usize,
-        origin_anchor: NavRef,
-        destination_anchor: Option<NavRef>,
     },
     ListProcedures {
         airport_id: String,
@@ -765,21 +738,9 @@ pub enum HadOperation {
         procedure_id: String,
         procedure_kind: ProcedureKind,
     },
-    MaterializeProcedure {
-        airport_id: String,
-        procedure_id: String,
-        procedure_kind: ProcedureKind,
-        runway_transition: Option<String>,
-        enroute_transition: Option<String>,
-        component_index: usize,
-    },
     FindProcedurePlateMatch {
         airport_id: String,
         cifp_id: String,
-    },
-    DescribePlateProcedureLoads {
-        plan: FlightPlan,
-        plate_id: String,
     },
 }
 
@@ -876,25 +837,6 @@ fn had_operation_trace(op: &HadOperation) -> serde_json::Value {
             "procedure_id": procedure_id,
             "procedure_kind": procedure_kind,
         }),
-        HadOperation::MaterializeProcedure {
-            airport_id,
-            procedure_id,
-            procedure_kind,
-            runway_transition,
-            enroute_transition,
-            component_index,
-        } => serde_json::json!({
-            "kind": "materialize_procedure",
-            "airport_id": airport_id,
-            "procedure_id": procedure_id,
-            "procedure_kind": procedure_kind,
-            "runway_transition": runway_transition,
-            "enroute_transition": enroute_transition,
-            "component_index": component_index,
-        }),
-        HadOperation::ProjectFlightPlanRoute { .. } => serde_json::json!({
-            "kind": "project_flight_plan_route",
-        }),
         _ => serde_json::json!({
             "kind": "other",
         }),
@@ -951,24 +893,6 @@ fn run_had_operation_value(store: &NavKvStore, op: HadOperation) -> Result<Value
         HadOperation::VectorManifest => {
             read_required::<Value>(store, NavKvQuery::VectorManifest, "vector manifest")?
         }
-        HadOperation::ChartPageState {
-            plan,
-            recent_airport_ids,
-            plate_target_airport_id,
-            selected_airport_id,
-            selected_reference_family_id,
-            selected_chart_id,
-            suggested_chart_ids,
-        } => serde_json::to_value(chart_page_state(
-            store,
-            &plan,
-            &recent_airport_ids,
-            plate_target_airport_id.as_deref(),
-            selected_airport_id.as_deref(),
-            selected_reference_family_id.as_deref(),
-            selected_chart_id.as_deref(),
-            &suggested_chart_ids,
-        )?)?,
         HadOperation::PlateAirport { airport_id } => {
             serde_json::to_value(resolve_plate_airport(store, &airport_id)?)?
         }
@@ -976,37 +900,6 @@ fn run_had_operation_value(store: &NavKvStore, op: HadOperation) -> Result<Value
             store,
             NavKvQuery::PlateById { plate_id },
         )?)?,
-        HadOperation::FlightPlanUiState {
-            plan,
-            current_ui_state,
-        } => serde_json::to_value(flight_plan_ui_state(
-            store,
-            plan,
-            current_ui_state,
-            crate::FlightDataComputer::default(),
-            FlightPlanLiveData::default(),
-        )?)?,
-        HadOperation::FlightPlanUiMutation { mutation } => {
-            serde_json::to_value(FlightPlanUiMutation {
-                ui_state: flight_plan_ui_state(
-                    store,
-                    mutation.plan.clone(),
-                    mutation.ui_state,
-                    crate::FlightDataComputer::default(),
-                    FlightPlanLiveData::default(),
-                )?,
-                ..mutation
-            })?
-        }
-        HadOperation::PreviewFlightPlanEntry { plan, input } => {
-            serde_json::to_value(preview_flight_plan_entry(store, &plan, &input)?)?
-        }
-        HadOperation::AppendFlightPlanEntry { plan, input } => {
-            serde_json::to_value(append_flight_plan_entry(store, &plan, &input)?)?
-        }
-        HadOperation::ProjectFlightPlanRoute { plan } => {
-            serde_json::to_value(project_flight_plan_route(store, &plan)?)?
-        }
         HadOperation::ResolveWaypointIdentifier { identifier } => {
             serde_json::to_value(resolve_waypoint_identifier_for_ui(store, &identifier)?)?
         }
@@ -1016,77 +909,16 @@ fn run_had_operation_value(store: &NavKvStore, op: HadOperation) -> Result<Value
         HadOperation::ResolveNavSymbolFeature { nav_ref } => {
             serde_json::to_value(nav_symbol_feature(store, &nav_ref)?)?
         }
-        HadOperation::SuggestWaypointIdentifiers {
-            plan,
-            component_index,
-            before,
-            prefix,
-            limit,
-        } => serde_json::to_value(suggest_waypoint_identifiers(
-            store,
-            &plan,
-            component_index,
-            before,
-            &prefix,
-            limit,
-        )?)?,
         HadOperation::SuggestWaypointIdentifiersNear {
             anchor,
-            prefix,
+            query,
             limit,
         } => serde_json::to_value(suggest_waypoint_identifiers_near(
-            store, anchor, &prefix, limit,
+            store, anchor, &query, limit,
         )?)?,
         HadOperation::SuggestAirwaysNearAnchor { anchor, limit } => {
             serde_json::to_value(suggest_airways_near_anchor(store, &anchor, limit)?)?
         }
-        HadOperation::AirwayBranches { airway_name } => {
-            serde_json::to_value(read_required::<Vec<AirwayBranch>>(
-                store,
-                NavKvQuery::AirwayBranches { airway_name },
-                "airway branches",
-            )?)?
-        }
-        HadOperation::PrepareAirwayPresentationForAnchors {
-            airway_name,
-            origin_anchor,
-            destination_anchor,
-        } => serde_json::to_value(prepare_airway_presentation_for_anchors(
-            store,
-            &airway_name,
-            &origin_anchor,
-            destination_anchor.as_ref(),
-        )?)?,
-        HadOperation::MaterializeAirwaySelection {
-            start_component_index,
-            entry,
-            exit,
-            origin_anchor,
-            destination_anchor,
-        } => serde_json::to_value(materialize_airway_selection(
-            store,
-            start_component_index,
-            entry,
-            exit,
-            &origin_anchor,
-            destination_anchor.as_ref(),
-        )?)?,
-        HadOperation::MaterializeAirwayPresentationSelection {
-            start_component_index,
-            presentation,
-            entry_index,
-            exit_index,
-            origin_anchor,
-            destination_anchor,
-        } => serde_json::to_value(materialize_airway_presentation_selection(
-            store,
-            start_component_index,
-            presentation,
-            entry_index,
-            exit_index,
-            &origin_anchor,
-            destination_anchor.as_ref(),
-        )?)?,
         HadOperation::ListProcedures {
             airport_id,
             procedure_kind,
@@ -1105,22 +937,6 @@ fn run_had_operation_value(store: &NavKvStore, op: HadOperation) -> Result<Value
             &procedure_id,
             procedure_kind,
         )?)?,
-        HadOperation::MaterializeProcedure {
-            airport_id,
-            procedure_id,
-            procedure_kind,
-            runway_transition,
-            enroute_transition,
-            component_index,
-        } => serde_json::to_value(materialize_procedure(
-            store,
-            &airport_id,
-            &procedure_id,
-            procedure_kind,
-            runway_transition.as_deref(),
-            enroute_transition.as_deref(),
-            component_index,
-        )?)?,
         HadOperation::FindProcedurePlateMatch {
             airport_id,
             cifp_id,
@@ -1133,9 +949,6 @@ fn run_had_operation_value(store: &NavKvStore, op: HadOperation) -> Result<Value
                 },
             )?;
             serde_json::to_value(rows.and_then(describe_show_plate_for_procedure))?
-        }
-        HadOperation::DescribePlateProcedureLoads { plan, plate_id } => {
-            serde_json::to_value(describe_plate_loads(store, &plan, &plate_id)?)?
         }
     };
     Ok(value)
@@ -1436,13 +1249,18 @@ pub(crate) fn nav_symbol_feature(
     )
 }
 
-pub(crate) fn flight_plan_ui_state(
+pub(crate) struct FlightPlanUiProjection {
+    pub ui_state: FlightPlanUiState,
+    pub materialized: crate::flight_plan_materialization::MaterializedFlightPlan,
+}
+
+pub(crate) fn flight_plan_ui_projection(
     store: &NavKvStore,
     plan: FlightPlan,
     current_ui_state: FlightPlanUiState,
     computer: crate::FlightDataComputer,
     live_data: FlightPlanLiveData,
-) -> Result<FlightPlanUiState, HadReadError> {
+) -> Result<FlightPlanUiProjection, HadReadError> {
     let plan = crate::build_flight_plan(plan)?;
     let mut ui_state = current_ui_state;
     ui_state
@@ -1452,83 +1270,45 @@ pub(crate) fn flight_plan_ui_state(
     let route = missing_pages
         .collect(project_flight_plan_route(store, &plan))?
         .unwrap_or_default();
-    let route_segment_ranges = route_segment_ranges_by_leg_index(&plan, route.len());
-    let active_row_index = ui_state
-        .guidance
-        .as_ref()
-        .and_then(|guidance| guidance.active_to_row_uid.as_ref())
-        .and_then(|active_uid| {
-            ui_state
-                .display_rows
-                .iter()
-                .position(|row| &row.uid == active_uid)
-        });
-    let use_live_distances = live_data.ownship_position.is_some() && active_row_index.is_some();
-    let mut total_remaining_distance_nm = 0.0;
-    let mut has_remaining_distance = false;
-    for (row_index, row) in ui_state.display_rows.iter_mut().enumerate() {
-        let mut distance_nm = None;
+    let geometry_by_id = crate::flight_plan_materialization::geometry_map_from_route(&route);
+    let materialized = crate::flight_plan_materialization::MaterializedFlightPlan::build(
+        &plan,
+        &geometry_by_id,
+        live_data.ownship_position,
+    )
+    .map_err(|err| HadReadError::Fatal(err.message))?;
+    let use_live_eta = live_data.ownship_position.is_some() && materialized.active.is_some();
+    for row in ui_state.display_rows.iter_mut() {
         let mut course_deg = None;
-        let distance_projection =
-            flight_plan_distance_projection(row_index, active_row_index, use_live_distances);
+        let materialized_row = materialized
+            .rows
+            .get(&crate::FlightPlanRowId(row.uid.clone()));
         row.symbol_feature = match &row.nav_ref {
             Some(nav_ref) => missing_pages
                 .collect(nav_symbol_feature(store, nav_ref))?
                 .flatten(),
             None => None,
         };
-        if let Some(leg_index) = row.leg_index {
-            // Airway materialization can produce duplicate resolved-leg ids across components.
-            // The route projection preserves resolved-leg order, so row enrichment must use
-            // the row's leg index instead of grouping by the non-unique string id.
-            let mut leg_segments = route_segment_ranges
-                .get(leg_index)
-                .and_then(|range| range.clone())
-                .map(|range| route[range].iter())
-                .into_iter()
-                .flatten();
-            if let Some(first_segment) = leg_segments.next() {
-                distance_nm = Some(
-                    first_segment.distance_nm
-                        + leg_segments.map(|segment| segment.distance_nm).sum::<f64>(),
-                );
+        if let Some(geometry) = materialized_row.and_then(|row| row.geometry.as_ref()) {
+            let points = crate::flight_plan_materialization::geometry_points(geometry);
+            if let Some(segment) = points.windows(2).next() {
                 course_deg = missing_pages
                     .collect(true_to_magnetic_course_deg_optional(
                         store,
-                        first_segment.course_deg,
-                        crate::great_circle_intermediate(first_segment.from, first_segment.to, 0.5),
+                        crate::initial_course_deg(segment[0], segment[1]),
+                        crate::great_circle_intermediate(segment[0], segment[1], 0.5),
                     ))?
                     .flatten();
             }
         }
         let row_has_data = row.row_kind != crate::FlightPlanDisplayRowKind::Group;
-        if use_live_distances && Some(row_index) == active_row_index {
-            if let Some(ownship_position) = live_data.ownship_position {
-                let destination_ref = row
-                    .leg_index
-                    .and_then(|leg_index| plan.resolved_legs.get(leg_index).map(|leg| &leg.to))
-                    .or(row.destination_anchor.as_ref());
-                if let Some(destination_ref) = destination_ref {
-                    let destination_position =
-                        missing_pages.collect(nav_ref_position(store, destination_ref, None))?;
-                    distance_nm = destination_position.map(|position| {
-                        crate::great_circle_distance_nm(ownship_position, position)
-                    });
-                }
-            }
-        }
-        let cumulative_distance_nm = if row_has_data && distance_projection.contributes_to_total {
-            if let Some(distance_nm) = distance_nm {
-                total_remaining_distance_nm += distance_nm;
-                has_remaining_distance = true;
-                Some(total_remaining_distance_nm)
-            } else {
-                None
-            }
-        } else {
-            None
-        };
-        let eta = if use_live_distances {
+        let distance_nm = materialized_row.and_then(|row| row.distance_remaining_nm);
+        let cumulative_distance_nm =
+            materialized_row.and_then(|row| row.cumulative_distance_remaining_nm);
+        let tone = materialized_row
+            .map(|row| row.tone)
+            .unwrap_or(crate::FlightDataCellTone::Planned);
+        let eta = if use_live_eta {
             cumulative_distance_nm.and_then(|distance_nm| {
                 live_data
                     .now_epoch_ms
@@ -1543,7 +1323,7 @@ pub(crate) fn flight_plan_ui_state(
             cumulative_distance_nm,
             eta,
             course_deg,
-            distance_projection.tone,
+            tone,
         );
         if crate::planning::flight_plan_row_actions(row)
             .any(|action| action.id == FlightPlanRowActionId::ShowPlate)
@@ -1570,8 +1350,8 @@ pub(crate) fn flight_plan_ui_state(
             crate::planning::refresh_flight_plan_row_action_navigation(row);
         }
     }
-    if has_remaining_distance {
-        let summary_tone = if use_live_distances {
+    if let Some(total_remaining_distance_nm) = materialized.total_distance_remaining_nm {
+        let summary_tone = if materialized.active.is_some() {
             crate::FlightDataCellTone::Active
         } else {
             crate::FlightDataCellTone::Planned
@@ -1587,71 +1367,10 @@ pub(crate) fn flight_plan_ui_state(
     if !pages.is_empty() {
         return Err(HadReadError::NeedPages(pages));
     }
-    Ok(ui_state)
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-struct FlightPlanDistanceProjection {
-    tone: crate::FlightDataCellTone,
-    contributes_to_total: bool,
-}
-
-fn flight_plan_distance_projection(
-    row_index: usize,
-    active_row_index: Option<usize>,
-    use_live_distances: bool,
-) -> FlightPlanDistanceProjection {
-    if !use_live_distances {
-        return FlightPlanDistanceProjection {
-            tone: crate::FlightDataCellTone::Planned,
-            contributes_to_total: true,
-        };
-    }
-
-    match active_row_index {
-        Some(active_index) if row_index < active_index => FlightPlanDistanceProjection {
-            tone: crate::FlightDataCellTone::Passed,
-            contributes_to_total: false,
-        },
-        Some(active_index) if row_index == active_index => FlightPlanDistanceProjection {
-            tone: crate::FlightDataCellTone::Active,
-            contributes_to_total: true,
-        },
-        _ => FlightPlanDistanceProjection {
-            tone: crate::FlightDataCellTone::Planned,
-            contributes_to_total: true,
-        },
-    }
-}
-
-fn route_segment_ranges_by_leg_index(
-    plan: &FlightPlan,
-    route_segment_count: usize,
-) -> Vec<Option<Range<usize>>> {
-    let mut offset = 0usize;
-    plan.resolved_legs
-        .iter()
-        .map(|leg| {
-            let segment_count = projected_route_segment_count_for_leg(leg);
-            let end = offset.saturating_add(segment_count);
-            if end <= route_segment_count {
-                let range = offset..end;
-                offset = end;
-                Some(range)
-            } else {
-                offset = route_segment_count;
-                None
-            }
-        })
-        .collect()
-}
-
-fn projected_route_segment_count_for_leg(leg: &ResolvedLeg) -> usize {
-    leg.procedure_provenance
-        .as_ref()
-        .and_then(|provenance| provenance.display_path.as_ref())
-        .map(|path| path.elements.len())
-        .unwrap_or(1)
+    Ok(FlightPlanUiProjection {
+        ui_state,
+        materialized,
+    })
 }
 
 fn flight_plan_summary_row(
@@ -1685,9 +1404,6 @@ fn flight_plan_summary_row(
         can_reorder_component: false,
         can_reorder_up: false,
         can_reorder_down: false,
-        replace_procedure_component_index: None,
-        start_component_index: None,
-        end_component_index: None,
         origin_anchor: None,
         destination_anchor: None,
         preceding_waypoint: None,
@@ -1696,7 +1412,7 @@ fn flight_plan_summary_row(
     }
 }
 
-fn chart_page_state(
+pub(crate) fn chart_page_state(
     store: &NavKvStore,
     plan: &FlightPlan,
     stored_recent_airport_ids: &[String],
@@ -2376,67 +2092,150 @@ pub(crate) fn suggest_waypoint_identifiers(
     plan: &FlightPlan,
     component_index: usize,
     before: bool,
-    prefix: &str,
+    query: &str,
     limit: usize,
 ) -> Result<Vec<WaypointIdentifierSuggestion>, HadReadError> {
     let anchor = component_insert_anchor(plan, component_index, before)?;
     let anchor_position = nav_ref_position(store, &anchor, None)?;
-    suggest_waypoint_identifier_candidates(store, &prefix, limit, anchor_position)
+    suggest_waypoint_identifier_candidates(store, query, limit, anchor_position)
 }
 
 fn suggest_waypoint_identifiers_near(
     store: &NavKvStore,
     anchor: LatLon,
-    prefix: &str,
+    query: &str,
     limit: usize,
 ) -> Result<Vec<WaypointIdentifierSuggestion>, HadReadError> {
-    suggest_waypoint_identifier_candidates(store, prefix, limit, anchor)
+    suggest_waypoint_identifier_candidates(store, query, limit, anchor)
 }
 
 fn suggest_waypoint_identifier_candidates(
     store: &NavKvStore,
-    prefix: &str,
+    query: &str,
     limit: usize,
     anchor_position: LatLon,
 ) -> Result<Vec<WaypointIdentifierSuggestion>, HadReadError> {
     if limit == 0 {
         return Ok(Vec::new());
     }
-    let prefix = prefix.trim().to_ascii_uppercase();
-    if prefix.is_empty() {
+    let mut terms = had_key::search_terms(query);
+    terms.sort();
+    terms.dedup();
+    if terms.is_empty() {
         return Ok(Vec::new());
     }
-    let prefix_chars = prefix.chars().collect::<Vec<_>>();
-    let mut candidates = None;
-    for length in (1..=prefix_chars.len()).rev() {
-        let lookup_prefix = prefix_chars.iter().take(length).collect::<String>();
-        if let Some(records) = read_optional::<Vec<WaypointIdentifierRecord>>(
-            store,
-            NavKvQuery::WaypointPrefix {
-                prefix: lookup_prefix,
-            },
-        )? {
-            candidates = Some(records);
-            break;
-        }
+
+    let lookup_prefixes = terms
+        .iter()
+        .map(|term| {
+            let chars = term.chars().collect::<Vec<_>>();
+            (1..=chars.len())
+                .rev()
+                .map(|length| chars.iter().take(length).collect::<String>())
+                .collect::<Vec<_>>()
+        })
+        .collect::<Vec<_>>();
+    let lookup_keys = lookup_prefixes
+        .iter()
+        .flatten()
+        .filter_map(|prefix| {
+            crate::nav_kv_key_for_query(&NavKvQuery::WaypointSearchPrefix {
+                prefix: prefix.clone(),
+            })
+        })
+        .collect::<Vec<_>>();
+    let missing_pages = store
+        .missing_pages_for_keys(&lookup_keys)
+        .map_err(HadReadError::Fatal)?;
+    if !missing_pages.is_empty() {
+        return Err(HadReadError::NeedPages(missing_pages));
     }
-    let Some(candidates) = candidates else {
+
+    let mut matches_by_term = Vec::<BTreeMap<(String, String), WaypointSearchRecord>>::new();
+    for (term, prefixes) in terms.iter().zip(&lookup_prefixes) {
+        let mut bucket = None;
+        for prefix in prefixes {
+            if let Some(records) = read_optional::<Vec<WaypointSearchRecord>>(
+                store,
+                NavKvQuery::WaypointSearchPrefix {
+                    prefix: prefix.clone(),
+                },
+            )? {
+                bucket = Some(records);
+                break;
+            }
+        }
+        let Some(bucket) = bucket else {
+            // No shard means the term is deliberately too broad. Other terms
+            // can still constrain the query.
+            continue;
+        };
+        let mut term_matches = BTreeMap::new();
+        for candidate in bucket
+            .into_iter()
+            .filter(|candidate| candidate.matched_term.starts_with(term))
+        {
+            let key = (candidate.kind.clone(), candidate.identifier.clone());
+            term_matches
+                .entry(key)
+                .and_modify(|current: &mut WaypointSearchRecord| {
+                    if candidate.match_kind < current.match_kind {
+                        *current = candidate.clone();
+                    }
+                })
+                .or_insert(candidate);
+        }
+        if term_matches.is_empty() {
+            return Ok(Vec::new());
+        }
+        matches_by_term.push(term_matches);
+    }
+    let Some(first_term_matches) = matches_by_term.first() else {
         return Ok(Vec::new());
     };
-    let mut suggestions = candidates
+    let candidate_keys = first_term_matches
+        .keys()
+        .filter(|key| {
+            matches_by_term
+                .iter()
+                .skip(1)
+                .all(|term_matches| term_matches.contains_key(*key))
+        })
+        .cloned()
+        .collect::<Vec<_>>();
+
+    let ranked_candidates = candidate_keys
         .into_iter()
-        .filter_map(|candidate| {
-            waypoint_identifier_record_nav_ref(&candidate).map(|nav_ref| (candidate, nav_ref))
+        .filter_map(|key| {
+            matches_by_term
+                .iter()
+                .filter_map(|term_matches| term_matches.get(&key))
+                .min_by_key(|candidate| candidate.match_kind)
+                .cloned()
+                .and_then(|candidate| {
+                    waypoint_search_record_nav_ref(&candidate)
+                        .map(|nav_ref| (candidate.match_kind, candidate, nav_ref))
+                })
         })
-        .filter(|(candidate, _)| {
-            candidate
-                .identifier
-                .trim()
-                .to_ascii_uppercase()
-                .starts_with(&prefix)
+        .collect::<Vec<_>>();
+    let symbol_keys = ranked_candidates
+        .iter()
+        .filter_map(|(_, _, nav_ref)| {
+            crate::nav_kv_key_for_query(&NavKvQuery::NavRefSymbol {
+                nav_ref: nav_ref.clone(),
+            })
         })
-        .filter_map(|candidate| {
-            let (candidate, nav_ref) = candidate;
+        .collect::<Vec<_>>();
+    let missing_pages = store
+        .missing_pages_for_keys(&symbol_keys)
+        .map_err(HadReadError::Fatal)?;
+    if !missing_pages.is_empty() {
+        return Err(HadReadError::NeedPages(missing_pages));
+    }
+
+    let mut suggestions = ranked_candidates
+        .into_iter()
+        .filter_map(|(match_kind, candidate, nav_ref)| {
             let symbol_feature = match nav_symbol_feature(store, &nav_ref) {
                 Ok(symbol_feature) => symbol_feature,
                 Err(err) => return Some(Err(err)),
@@ -2455,38 +2254,51 @@ fn suggest_waypoint_identifier_candidates(
                     lon: candidate.lon,
                 },
             );
-            Some(Ok(WaypointIdentifierSuggestion {
-                identifier: candidate.identifier,
-                nav_ref,
-                kind: candidate.kind,
-                display_name: candidate.display_name,
-                distance_text: format!("{:.0}nm", distance_from_anchor_nm),
-                distance_from_anchor_nm,
-                symbol_feature,
-            }))
+            Some(Ok((
+                match_kind,
+                WaypointIdentifierSuggestion {
+                    identifier: candidate.identifier,
+                    nav_ref,
+                    kind: candidate.kind,
+                    display_name: candidate.display_name,
+                    distance_text: format!("{:.0}nm", distance_from_anchor_nm),
+                    distance_from_anchor_nm,
+                    symbol_feature,
+                },
+            )))
         })
         .collect::<Result<Vec<_>, HadReadError>>()?;
-    suggestions.sort_by(|left, right| {
-        left.distance_from_anchor_nm
-            .partial_cmp(&right.distance_from_anchor_nm)
-            .unwrap_or(std::cmp::Ordering::Equal)
+    suggestions.sort_by(|(left_match, left), (right_match, right)| {
+        left_match
+            .cmp(right_match)
+            .then_with(|| {
+                left.distance_from_anchor_nm
+                    .partial_cmp(&right.distance_from_anchor_nm)
+                    .unwrap_or(std::cmp::Ordering::Equal)
+            })
             .then_with(|| left.identifier.cmp(&right.identifier))
             .then_with(|| {
                 nav_ref_kind_order(&left.nav_ref).cmp(&nav_ref_kind_order(&right.nav_ref))
             })
     });
-    let mut seen = Vec::<(String, NavRef)>::new();
-    suggestions.retain(|suggestion| {
-        let key = (suggestion.identifier.clone(), suggestion.nav_ref.clone());
-        if seen.contains(&key) {
-            false
-        } else {
-            seen.push(key);
-            true
-        }
-    });
     suggestions.truncate(limit);
-    Ok(suggestions)
+    Ok(suggestions
+        .into_iter()
+        .map(|(_, suggestion)| suggestion)
+        .collect())
+}
+
+fn waypoint_search_record_nav_ref(record: &WaypointSearchRecord) -> Option<NavRef> {
+    let identifier = record.identifier.trim().to_ascii_uppercase();
+    if identifier.is_empty() {
+        return None;
+    }
+    match record.kind.trim() {
+        "airport" => Some(NavRef::Airport(identifier)),
+        "navaid" => Some(NavRef::Navaid(identifier)),
+        "fix" => Some(NavRef::Fix(identifier)),
+        _ => None,
+    }
 }
 
 fn resolve_waypoint_identifier_for_ui(
@@ -2533,19 +2345,6 @@ fn waypoint_identifier_is_canonical_for_ui(identifier: &str, nav_ref: &NavRef) -
         | NavRef::Fix(_)
         | NavRef::LatLon(_)
         | NavRef::Spot(_) => true,
-    }
-}
-
-fn waypoint_identifier_record_nav_ref(record: &WaypointIdentifierRecord) -> Option<NavRef> {
-    let identifier = record.identifier.trim().to_ascii_uppercase();
-    if identifier.is_empty() {
-        return None;
-    }
-    match record.kind.trim() {
-        "airport" => Some(NavRef::Airport(identifier)),
-        "navaid" => Some(NavRef::Navaid(identifier)),
-        "fix" => Some(NavRef::Fix(identifier)),
-        _ => None,
     }
 }
 
@@ -2637,7 +2436,7 @@ fn suggestions_from_airway_points(
     suggestions
 }
 
-fn prepare_airway_presentation_for_anchors(
+pub(crate) fn prepare_airway_presentation_for_anchors(
     store: &NavKvStore,
     airway_name: &str,
     origin_anchor: &NavRef,
@@ -2658,11 +2457,9 @@ fn prepare_airway_presentation_for_anchors(
         .map_err(Into::into)
 }
 
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq)]
 pub(crate) struct MaterializedAirwayResponse {
-    pub(crate) selection: AirwayAutoSelection,
     pub(crate) airway: AirwaySegment,
-    #[serde(rename = "resolvedLegs")]
     pub(crate) resolved_legs: Vec<ResolvedLeg>,
 }
 
@@ -2725,137 +2522,84 @@ struct ExactAirwayMaterialization {
     resolved_legs: Vec<ResolvedLeg>,
 }
 
-fn materialize_airway_selection(
-    store: &NavKvStore,
-    start_component_index: usize,
-    entry: AirwayEntryCandidate,
-    exit: AirwayExitCandidate,
-    origin_anchor: &NavRef,
-    destination_anchor: Option<&NavRef>,
-) -> Result<MaterializedAirwayResponse, HadReadError> {
-    let branches = read_required::<Vec<AirwayBranch>>(
-        store,
-        NavKvQuery::AirwayBranches {
-            airway_name: entry.airway_name.clone(),
-        },
-        "airway branches",
-    )?;
-    let origin_position = nav_ref_position(store, origin_anchor, None)?;
-    let destination_position = destination_anchor
-        .map(|anchor| nav_ref_position(store, anchor, None))
-        .transpose()?;
-    let (airway, resolved_legs) =
-        materialize_airway_from_branches(start_component_index, &entry, &exit, &branches)?;
-    let entry_position = branches
-        .iter()
-        .find(|branch| branch.branch_key == entry.branch_key)
-        .and_then(|branch| branch.points.get(entry.branch_point_index))
-        .map(|point| point.position)
-        .ok_or_else(|| {
-            HadReadError::Fatal("selected airway entry point is not on branch".to_string())
-        })?;
-    let exit_position = branches
-        .iter()
-        .find(|branch| branch.branch_key == exit.branch_key)
-        .and_then(|branch| branch.points.get(exit.branch_point_index))
-        .map(|point| point.position)
-        .ok_or_else(|| {
-            HadReadError::Fatal("selected airway exit point is not on branch".to_string())
-        })?;
-    let origin_distance_nm = flight_leg_distance_nm(origin_position, entry_position);
-    let destination_distance_nm = destination_position
-        .map(|position| flight_leg_distance_nm(position, exit_position))
-        .unwrap_or(0.0);
-    Ok(MaterializedAirwayResponse {
-        selection: AirwayAutoSelection {
-            airway_name: entry.airway_name.clone(),
-            branch_key: entry.branch_key.clone(),
-            entry,
-            exit,
-            origin_distance_nm,
-            destination_distance_nm,
-            total_anchor_distance_nm: origin_distance_nm + destination_distance_nm,
-        },
-        airway,
-        resolved_legs,
-    })
-}
-
 pub(crate) fn materialize_airway_presentation_selection(
     store: &NavKvStore,
     start_component_index: usize,
-    presentation: AirwayPresentationPlan,
-    entry_index: usize,
-    exit_index: usize,
-    origin_anchor: &NavRef,
-    destination_anchor: Option<&NavRef>,
+    selection: AirwayPresentationSelection,
 ) -> Result<MaterializedAirwayResponse, HadReadError> {
-    if entry_index >= presentation.points.len() {
-        return Err(HadReadError::Fatal(format!(
-            "airway presentation entry index {entry_index} is out of bounds"
-        )));
-    }
-    if exit_index >= presentation.points.len() {
-        return Err(HadReadError::Fatal(format!(
-            "airway presentation exit index {exit_index} is out of bounds"
-        )));
-    }
-    if entry_index == exit_index {
+    if selection.entry_point_uid == selection.exit_point_uid {
         return Err(HadReadError::Fatal(
             "airway presentation exit cannot be the entry point".to_string(),
         ));
     }
-    let entry = airway_entry_candidate_from_presentation(&presentation, entry_index);
-    let exit = airway_exit_candidate_from_presentation(&presentation, entry_index, exit_index);
-    materialize_airway_selection(
+    let branches = read_required::<Vec<AirwayBranch>>(
         store,
-        start_component_index,
-        entry,
-        exit,
-        origin_anchor,
-        destination_anchor,
-    )
-}
-
-fn airway_entry_candidate_from_presentation(
-    presentation: &AirwayPresentationPlan,
-    point_index: usize,
-) -> AirwayEntryCandidate {
-    let point = &presentation.points[point_index];
-    AirwayEntryCandidate {
-        airway_name: presentation.airway_name.clone(),
-        branch_key: presentation.branch_key.clone(),
-        branch_point_index: point.branch_point_index,
-        sequence: point.sequence,
-        nav_ref: point.nav_ref.clone(),
-        distance_from_anchor_nm: 0.0,
-        previous_nav_ref: point_index
-            .checked_sub(1)
-            .and_then(|index| presentation.points.get(index))
-            .map(|point| point.nav_ref.clone()),
-        next_nav_ref: presentation
+        NavKvQuery::AirwayBranches {
+            airway_name: selection.airway_name.clone(),
+        },
+        "airway branches",
+    )?;
+    let branch = branches
+        .iter()
+        .find(|branch| {
+            branch.branch_key == selection.branch_key
+                && branch.display_name == selection.airway_name
+        })
+        .ok_or_else(|| HadReadError::Fatal("selected airway presentation is stale".to_string()))?;
+    let point_index_for_uid = |uid: &str| {
+        branch
             .points
-            .get(point_index + 1)
-            .map(|point| point.nav_ref.clone()),
-    }
-}
-
-fn airway_exit_candidate_from_presentation(
-    presentation: &AirwayPresentationPlan,
-    entry_index: usize,
-    point_index: usize,
-) -> AirwayExitCandidate {
-    let point = &presentation.points[point_index];
-    AirwayExitCandidate {
-        airway_name: presentation.airway_name.clone(),
-        branch_key: presentation.branch_key.clone(),
-        branch_point_index: point.branch_point_index,
-        sequence: point.sequence,
-        nav_ref: point.nav_ref.clone(),
-        leg_offset_from_entry: point_index as isize - entry_index as isize,
-        is_entry: point_index == entry_index,
+            .iter()
+            .enumerate()
+            .find(|(index, point)| {
+                crate::airway_presentation_point_uid(&branch.branch_key, *index, point.sequence)
+                    == uid
+            })
+            .map(|(index, _)| index)
+    };
+    let entry_index = point_index_for_uid(&selection.entry_point_uid)
+        .ok_or_else(|| HadReadError::Fatal("selected airway entry choice is stale".to_string()))?;
+    let exit_index = point_index_for_uid(&selection.exit_point_uid)
+        .ok_or_else(|| HadReadError::Fatal("selected airway exit choice is stale".to_string()))?;
+    let direction = if exit_index > entry_index {
+        1_isize
+    } else {
+        -1
+    };
+    let entry_point = &branch.points[entry_index];
+    let exit_point = &branch.points[exit_index];
+    let adjacent_nav_ref = |index: usize, offset: isize| {
+        index
+            .checked_add_signed(offset)
+            .and_then(|index| branch.points.get(index))
+            .map(|point| point.nav_ref.clone())
+    };
+    let entry = AirwayEntryCandidate {
+        airway_name: selection.airway_name.clone(),
+        branch_key: selection.branch_key.clone(),
+        branch_point_index: entry_index,
+        sequence: entry_point.sequence,
+        nav_ref: entry_point.nav_ref.clone(),
+        distance_from_anchor_nm: 0.0,
+        previous_nav_ref: adjacent_nav_ref(entry_index, -direction),
+        next_nav_ref: adjacent_nav_ref(entry_index, direction),
+    };
+    let exit = AirwayExitCandidate {
+        airway_name: selection.airway_name,
+        branch_key: selection.branch_key,
+        branch_point_index: exit_index,
+        sequence: exit_point.sequence,
+        nav_ref: exit_point.nav_ref.clone(),
+        leg_offset_from_entry: exit_index as isize - entry_index as isize,
+        is_entry: false,
         distance_from_target_nm: None,
-    }
+    };
+    let (airway, resolved_legs) =
+        materialize_airway_from_branches(start_component_index, &entry, &exit, &branches)?;
+    Ok(MaterializedAirwayResponse {
+        airway,
+        resolved_legs,
+    })
 }
 
 fn materialize_airway_from_branches(
@@ -3194,7 +2938,6 @@ fn materialized_procedure_from_geometry_record(
         .terminal_discontinuity
         .clone()
         .map(procedure_discontinuity_from_geometry);
-    let concretized_items = concretized_items_from_geometry_record(&record);
     let resolved_legs = record
         .leg_bundles
         .iter()
@@ -3220,43 +2963,8 @@ fn materialized_procedure_from_geometry_record(
             terminal_discontinuity,
             data_quality: data_quality.clone(),
         },
-        concretized_items,
         resolved_legs,
-        data_quality,
     })
-}
-
-fn concretized_items_from_geometry_record(
-    record: &pgt::ProcedureGeometryRecord,
-) -> Vec<ConcretizedNavItem> {
-    let mut items = Vec::new();
-    for bundle in &record.leg_bundles {
-        for waypoint in &bundle.waypoints {
-            let item = ConcretizedNavItem::Waypoint {
-                nav_ref: nav_ref_from_geometry(waypoint.nav_ref.clone()),
-            };
-            if !matches!(
-                (items.last(), &item),
-                (
-                    Some(ConcretizedNavItem::Waypoint { nav_ref: left }),
-                    ConcretizedNavItem::Waypoint { nav_ref: right }
-                ) if left == right
-            ) {
-                items.push(item);
-            }
-        }
-    }
-    if let Some(discontinuity) = record
-        .terminal_discontinuity
-        .clone()
-        .map(procedure_discontinuity_from_geometry)
-    {
-        items.push(ConcretizedNavItem::Discontinuity {
-            label: discontinuity.display_label().to_string(),
-            discontinuity,
-        });
-    }
-    items
 }
 
 fn resolved_leg_from_geometry_bundle(
@@ -3463,7 +3171,7 @@ pub(crate) fn append_flight_plan_entry(
     store: &NavKvStore,
     plan: &FlightPlan,
     input: &str,
-) -> Result<FlightPlanUiMutation, HadReadError> {
+) -> Result<FlightPlan, HadReadError> {
     let tokens = tokenize_flight_plan_entry(input);
     let evaluated = evaluate_flight_plan_entry_tokens(store, &tokens)?;
     let issues = validate_flight_plan_entry(plan, &evaluated)?;
@@ -3475,40 +3183,20 @@ pub(crate) fn append_flight_plan_entry(
                 .unwrap_or_else(|| "invalid route entry".to_string()),
         ));
     }
-    let appended = append_flight_plan_tokens(plan, &evaluated)?;
-    Ok(FlightPlanUiMutation {
-        ui_state: flight_plan_ui_state(
-            store,
-            appended.clone(),
-            crate::project_ui_state(&appended),
-            crate::FlightDataComputer::default(),
-            FlightPlanLiveData::default(),
-        )?,
-        plan: appended,
-    })
+    append_flight_plan_tokens(plan, &evaluated)
 }
 
 pub(crate) fn insert_waypoint_best_position(
     store: &NavKvStore,
     plan: &FlightPlan,
     waypoint: NavRef,
-) -> Result<FlightPlanUiMutation, HadReadError> {
+) -> Result<FlightPlan, HadReadError> {
     if let Some(message) = insert_waypoint_best_position_rejection(plan, &waypoint) {
         return Err(HadReadError::Fatal(message));
     }
 
     let insertion_index = best_top_level_insertion_index(store, plan, &waypoint)?;
-    let inserted = insert_waypoint_at_top_level(plan, insertion_index, waypoint)?;
-    Ok(FlightPlanUiMutation {
-        ui_state: flight_plan_ui_state(
-            store,
-            inserted.clone(),
-            crate::project_ui_state(&inserted),
-            crate::FlightDataComputer::default(),
-            FlightPlanLiveData::default(),
-        )?,
-        plan: inserted,
-    })
+    insert_waypoint_at_top_level(plan, insertion_index, waypoint).map_err(Into::into)
 }
 
 pub(crate) fn insert_waypoint_best_position_rejection(
@@ -4043,7 +3731,7 @@ fn nav_ref_display_label(nav_ref: &NavRef) -> String {
     }
 }
 
-fn describe_plate_loads(
+pub(crate) fn describe_plate_loads(
     store: &NavKvStore,
     plan: &FlightPlan,
     plate_id: &str,
@@ -4099,6 +3787,30 @@ mod tests {
     use super::*;
     use crate::{planning::NavElementUiView, AirportId, NavKvRoot, ProcedureKind, SequencingMode};
     use app_fixtures::load_fixture_nav_kv_pages;
+
+    fn flight_plan_ui_state(
+        store: &NavKvStore,
+        plan: FlightPlan,
+        current_ui_state: FlightPlanUiState,
+        computer: crate::FlightDataComputer,
+        live_data: FlightPlanLiveData,
+    ) -> Result<FlightPlanUiState, HadReadError> {
+        Ok(flight_plan_ui_projection(store, plan, current_ui_state, computer, live_data)?.ui_state)
+    }
+
+    fn default_flight_plan_ui_state_for_test(
+        store: &NavKvStore,
+        plan: &FlightPlan,
+    ) -> FlightPlanUiState {
+        flight_plan_ui_state(
+            store,
+            plan.clone(),
+            crate::project_ui_state(plan),
+            crate::FlightDataComputer::default(),
+            FlightPlanLiveData::default(),
+        )
+        .expect("project flight plan UI state")
+    }
 
     fn resource_page_indexes(resources: &[CoreResourceRequest]) -> Vec<u32> {
         resources
@@ -4819,7 +4531,6 @@ mod tests {
         crate::build_flight_plan(FlightPlan {
             id: "plan-three-airports".to_string(),
             name: "KAAA KBBB KCCC".to_string(),
-            legs: Vec::new(),
             route_components: vec![
                 RouteComponent::Waypoint {
                     waypoint: NavRef::Airport("KAAA".to_string()),
@@ -5008,16 +4719,6 @@ mod tests {
             materialized.procedure.data_quality,
             vec!["Procedure encoding is suspicious; read plate.".to_string()]
         );
-        assert_eq!(
-            materialized.data_quality,
-            vec!["Procedure encoding is suspicious; read plate.".to_string()]
-        );
-        assert_eq!(
-            materialized.concretized_items,
-            vec![ConcretizedNavItem::Waypoint {
-                nav_ref: NavRef::Fix("FIXA".to_string())
-            }]
-        );
         assert_eq!(materialized.resolved_legs.len(), 1);
         assert_eq!(
             materialized.resolved_legs[0].id,
@@ -5084,12 +4785,6 @@ mod tests {
             materialized.resolved_legs[0].id,
             "procedure-KAAA-APPROACH-RNAV-A-_-TRANS-0"
         );
-        assert_eq!(
-            materialized.concretized_items,
-            vec![ConcretizedNavItem::Waypoint {
-                nav_ref: NavRef::Fix("FIXA".to_string())
-            }]
-        );
     }
 
     #[test]
@@ -5111,7 +4806,6 @@ mod tests {
         let plan = crate::build_flight_plan(FlightPlan {
             id: "plan-magvar".to_string(),
             name: "KAAA KBBB".to_string(),
-            legs: Vec::new(),
             route_components: vec![
                 RouteComponent::Waypoint {
                     waypoint: NavRef::Airport("KAAA".to_string()),
@@ -5189,7 +4883,6 @@ mod tests {
         let plan = crate::build_flight_plan(FlightPlan {
             id: "plan-live-distance".to_string(),
             name: "KAAA KBBB KCCC KDDD".to_string(),
-            legs: Vec::new(),
             route_components: vec![
                 RouteComponent::Waypoint {
                     waypoint: NavRef::Airport("KAAA".to_string()),
@@ -5340,8 +5033,6 @@ mod tests {
             .find(|row| row.row_kind == crate::FlightPlanDisplayRowKind::Summary)
             .expect("summary row");
         let static_bbb_ccc_nm = crate::great_circle_distance_nm(bbb, ccc);
-        let static_total_nm = crate::great_circle_distance_nm(aaa, bbb) + static_bbb_ccc_nm;
-
         assert_eq!(
             row_cell(aaa_row, "waypoint_distance").value.as_deref(),
             None,
@@ -5349,8 +5040,8 @@ mod tests {
         );
         assert_eq!(
             row_cell(bbb_row, "waypoint_distance").tone,
-            crate::FlightDataCellTone::Planned,
-            "active guidance without ownship must not grey out earlier plan rows"
+            crate::FlightDataCellTone::Passed,
+            "navigation progress remains known when live position is unavailable"
         );
         assert_eq!(
             row_cell(ccc_row, "waypoint_distance").value.as_deref(),
@@ -5359,12 +5050,12 @@ mod tests {
         );
         assert_eq!(
             row_cell(summary_row, "waypoint_distance").value.as_deref(),
-            Some(crate::flight_data::format_nm(static_total_nm).as_str()),
-            "active guidance without ownship must not switch the total to live remaining distance"
+            Some(crate::flight_data::format_nm(static_bbb_ccc_nm).as_str()),
+            "the active row falls back to its fixed geometry without restoring passed legs"
         );
         assert_eq!(
             row_cell(summary_row, "waypoint_distance").tone,
-            crate::FlightDataCellTone::Planned
+            crate::FlightDataCellTone::Active
         );
     }
 
@@ -5512,7 +5203,6 @@ mod tests {
         let plan = crate::build_flight_plan(FlightPlan {
             id: "plan-static-total".to_string(),
             name: "KAAA KBBB KCCC".to_string(),
-            legs: Vec::new(),
             route_components: vec![
                 RouteComponent::Waypoint {
                     waypoint: NavRef::Airport("KAAA".to_string()),
@@ -5603,7 +5293,6 @@ mod tests {
         let plan = crate::build_flight_plan(FlightPlan {
             id: "plan-batched-page-faults".to_string(),
             name: "KAAA KBBB".to_string(),
-            legs: Vec::new(),
             route_components: vec![
                 RouteComponent::Waypoint {
                     waypoint: NavRef::Airport("KAAA".to_string()),
@@ -5680,7 +5369,6 @@ mod tests {
         let plan = crate::build_flight_plan(FlightPlan {
             id: "plan-route-page-faults".to_string(),
             name: "KAAA KBBB KCCC".to_string(),
-            legs: Vec::new(),
             route_components: vec![
                 RouteComponent::Waypoint {
                     waypoint: NavRef::Airport("KAAA".to_string()),
@@ -5728,7 +5416,6 @@ mod tests {
         let plan = FlightPlan {
             id: "krnt-sea-pae".to_string(),
             name: "KRNT SEA PAE".to_string(),
-            legs: Vec::new(),
             route_components: vec![
                 RouteComponent::Waypoint {
                     waypoint: NavRef::Airport("KRNT".to_string()),
@@ -5759,34 +5446,19 @@ mod tests {
             updated_at_epoch_ms: 0,
             version: 1,
         };
-        let built = match run_had_operation(
+        let built = materialize_procedure(
             &store,
-            HadOperation::MaterializeProcedure {
-                airport_id: "KPAE".to_string(),
-                procedure_id: "VOR-A".to_string(),
-                procedure_kind: ProcedureKind::Approach,
-                runway_transition: None,
-                enroute_transition: Some("ECEPO".to_string()),
-                component_index: 2,
-            },
+            "KPAE",
+            "VOR-A",
+            ProcedureKind::Approach,
+            None,
+            Some("ECEPO"),
+            2,
         )
-        .expect("materialize KPAE VOR-A ECEPO through generated nav_kv")
-        {
-            HadOperationOutcome::Complete { result, .. } => {
-                serde_json::from_value::<MaterializedProcedure>(result)
-                    .expect("decode materialized procedure")
-            }
-            HadOperationOutcome::NeedResources { resources } => {
-                panic!("expected complete outcome, got missing resources: {resources:?}");
-            }
-            HadOperationOutcome::NeedSnapshotResources { .. } => {
-                panic!("generic HAD operation requested a session snapshot continuation")
-            }
-        };
-        let mutation = crate::insert_procedure_materialized_ui(&plan, 1, 2, built)
+        .expect("materialize KPAE VOR-A ECEPO through generated nav_kv");
+        let mutation = crate::insert_procedure_materialized(&plan, 1, 2, built)
             .expect("insert KPAE VOR-A ECEPO");
-        let route =
-            project_flight_plan_route(&store, &mutation.mutation.plan).expect("project route");
+        let route = project_flight_plan_route(&store, &mutation).expect("project route");
         assert!(
             route.iter().any(|segment| matches!(
                 segment.geometry,
@@ -5795,228 +5467,208 @@ mod tests {
             "procedure route should preserve fine-grained arc geometry"
         );
         assert!(
-            route.len() > mutation.mutation.plan.resolved_legs.len(),
+            route.len() > mutation.resolved_legs.len(),
             "procedure route should split coarse legs into drawable fine-grained segments"
         );
 
-        let outcome = run_had_operation(
+        let ui_state = flight_plan_ui_projection(
             &store,
-            HadOperation::FlightPlanUiState {
-                plan: mutation.mutation.plan.clone(),
-                current_ui_state: mutation.ui_state.clone(),
-            },
+            mutation.clone(),
+            crate::project_ui_state(&mutation),
+            crate::FlightDataComputer::default(),
+            FlightPlanLiveData::default(),
         )
-        .expect("project flight plan ui state");
-
-        match outcome {
-            HadOperationOutcome::Complete { result, .. } => {
-                let ui_state: FlightPlanUiState =
-                    serde_json::from_value(result).expect("decode ui state");
-                assert!(
-                    ui_state
-                        .components
-                        .iter()
-                        .any(|component| component.procedure_id.as_deref() == Some("VOR-A")),
-                    "expected inserted procedure component in ui state"
-                );
-                for (label, expected_leg_index) in [
-                    ("ECEPO", 1),
-                    ("YAVUR", 2),
-                    ("ZELIG", 3),
-                    ("XUKRE", 4),
-                    ("ECEPO", 5),
-                ] {
-                    let row = ui_state
-                        .display_rows
-                        .iter()
-                        .filter(|row| row.depth == 1 && row.label == label)
-                        .find(|row| row.leg_index == Some(expected_leg_index))
-                        .unwrap_or_else(|| panic!("expected procedure row for {label}"));
-                    assert_eq!(
-                        row.leg_index,
-                        Some(expected_leg_index),
-                        "procedure waypoint row {label} should activate the guidance leg ending there"
-                    );
-                    assert!(
-                        crate::planning::flight_plan_row_actions(row).any(|action| {
-                            action.id == crate::FlightPlanRowActionId::ActivateLeg && action.enabled
-                        }),
-                        "procedure waypoint row {label} should expose enabled Activate Leg"
-                    );
-                    assert!(
+        .expect("project flight plan ui state")
+        .ui_state;
+        assert!(
+            mutation.route_components.iter().any(|component| {
+                matches!(
+                    component,
+                    RouteComponent::Procedure { procedure }
+                        if procedure.procedure_id == "VOR-A"
+                )
+            }),
+            "expected inserted procedure component in authoritative plan"
+        );
+        for (label, expected_leg_index) in [
+            ("ECEPO", 1),
+            ("YAVUR", 2),
+            ("ZELIG", 3),
+            ("XUKRE", 4),
+            ("ECEPO", 5),
+        ] {
+            let row = ui_state
+                .display_rows
+                .iter()
+                .filter(|row| row.depth == 1 && row.label == label)
+                .find(|row| row.leg_index == Some(expected_leg_index))
+                .unwrap_or_else(|| panic!("expected procedure row for {label}"));
+            assert_eq!(
+                row.leg_index,
+                Some(expected_leg_index),
+                "procedure waypoint row {label} should activate the guidance leg ending there"
+            );
+            assert!(
+                crate::planning::flight_plan_row_actions(row).any(|action| {
+                    action.id == crate::FlightPlanRowActionId::ActivateLeg && action.enabled
+                }),
+                "procedure waypoint row {label} should expose enabled Activate Leg"
+            );
+            assert!(
                         crate::planning::flight_plan_row_actions(row).all(|action| {
                             action.id != crate::FlightPlanRowActionId::WaypointInfo
                                 && action.id != crate::FlightPlanRowActionId::Plates
                         }),
                         "procedure waypoint row {label} should not expose generic waypoint info or plates actions"
                     );
-                }
-                let hold_row = ui_state
-                    .display_rows
-                    .iter()
-                    .find(|row| row.depth == 1 && row.label == "HOLD")
-                    .expect("expected procedure hold row");
-                assert_eq!(
-                    hold_row.leg_index,
-                    Some(5),
-                    "hold row should activate the guidance leg carrying the hold geometry"
-                );
-                assert!(
-                    crate::planning::flight_plan_row_actions(hold_row).any(|action| {
-                        action.id == crate::FlightPlanRowActionId::ActivateLeg && action.enabled
-                    }),
-                    "hold row should expose enabled Activate Leg"
-                );
+        }
+        let hold_row = ui_state
+            .display_rows
+            .iter()
+            .find(|row| row.depth == 1 && row.label == "HOLD")
+            .expect("expected procedure hold row");
+        assert_eq!(
+            hold_row.leg_index,
+            Some(5),
+            "hold row should activate the guidance leg carrying the hold geometry"
+        );
+        assert!(
+            crate::planning::flight_plan_row_actions(hold_row).any(|action| {
+                action.id == crate::FlightPlanRowActionId::ActivateLeg && action.enabled
+            }),
+            "hold row should expose enabled Activate Leg"
+        );
 
-                let activated = crate::activate_leg(&mutation.mutation.plan, 5)
-                    .expect("activate XUKRE -> ECEPO guidance leg");
-                let activated_ui = crate::project_ui_state(&activated);
-                let active_ecepo_row = activated_ui
-                    .display_rows
-                    .iter()
-                    .filter(|row| row.depth == 1 && row.label == "ECEPO")
-                    .find(|row| row.leg_index == Some(5))
-                    .expect("active ECEPO row");
-                assert!(
-                    crate::planning::flight_plan_row_actions(active_ecepo_row).any(|action| {
-                        action.id == crate::FlightPlanRowActionId::ActivateLeg && !action.enabled
-                    }),
-                    "already-active guidance leg row should disable Activate Leg"
-                );
-                let active_hold_row = activated_ui
-                    .display_rows
-                    .iter()
-                    .find(|row| row.depth == 1 && row.label == "HOLD")
-                    .expect("active plan hold row");
-                assert!(
-                    crate::planning::flight_plan_row_actions(active_hold_row).any(|action| {
-                        action.id == crate::FlightPlanRowActionId::ActivateLeg && action.enabled
-                    }),
-                    "hold row should still activate the hold detail when the inbound leg is active"
-                );
-                let airport_row = activated_ui
-                    .display_rows
-                    .iter()
-                    .find(|row| row.depth == 0 && row.label == "KPAE")
-                    .expect("destination airport row");
-                assert_eq!(
+        let activated =
+            crate::activate_leg(&mutation, 5).expect("activate XUKRE -> ECEPO guidance leg");
+        let activated_ui = crate::project_ui_state(&activated);
+        let active_ecepo_row = activated_ui
+            .display_rows
+            .iter()
+            .filter(|row| row.depth == 1 && row.label == "ECEPO")
+            .find(|row| row.leg_index == Some(5))
+            .expect("active ECEPO row");
+        assert!(
+            crate::planning::flight_plan_row_actions(active_ecepo_row).any(|action| {
+                action.id == crate::FlightPlanRowActionId::ActivateLeg && !action.enabled
+            }),
+            "already-active guidance leg row should disable Activate Leg"
+        );
+        let active_hold_row = activated_ui
+            .display_rows
+            .iter()
+            .find(|row| row.depth == 1 && row.label == "HOLD")
+            .expect("active plan hold row");
+        assert!(
+            crate::planning::flight_plan_row_actions(active_hold_row).any(|action| {
+                action.id == crate::FlightPlanRowActionId::ActivateLeg && action.enabled
+            }),
+            "hold row should still activate the hold detail when the inbound leg is active"
+        );
+        let airport_row = activated_ui
+            .display_rows
+            .iter()
+            .find(|row| row.depth == 0 && row.label == "KPAE")
+            .expect("destination airport row");
+        assert_eq!(
                     airport_row.leg_index, None,
                     "destination airport after a terminal-hold procedure should not bridge to the procedure's last guidance leg"
                 );
 
-                let activated_route =
-                    project_flight_plan_route(&store, &activated).expect("project active route");
-                let active_segment_index = activated_route
-                    .iter()
-                    .position(|segment| {
-                        segment.status == crate::FlightPlanRouteSegmentStatus::Active
-                    })
-                    .expect("active guidance leg should have a CDI-active path element");
-                let active_leg_id = activated_route[active_segment_index].leg_id.clone();
-                let active_leg_segments = activated_route
-                    .iter()
-                    .filter(|segment| segment.leg_id == active_leg_id)
-                    .collect::<Vec<_>>();
-                assert!(
-                    active_leg_segments
-                        .iter()
-                        .filter(|segment| {
-                            segment.status == crate::FlightPlanRouteSegmentStatus::Active
-                        })
-                        .count()
-                        == 1,
-                    "XUKRE -> ECEPO should have exactly one CDI-active path element"
-                );
-                let first_hold_segment_index = active_leg_segments
-                    .iter()
-                    .position(|segment| {
-                        segment.status == crate::FlightPlanRouteSegmentStatus::Remaining
-                    })
-                    .expect("XUKRE -> ECEPO should include inactive hold path elements");
-                assert!(
-                    active_leg_segments
-                        .iter()
-                        .take(first_hold_segment_index)
-                        .filter(|segment| {
-                            segment.status
-                                == crate::FlightPlanRouteSegmentStatus::ActiveLegRemaining
-                        })
-                        .count()
-                        > 0,
-                    "XUKRE -> ECEPO should light remaining non-hold path elements"
-                );
-                assert!(
-                    active_leg_segments
-                        .iter()
-                        .skip(first_hold_segment_index)
-                        .all(|segment| {
-                            segment.status == crate::FlightPlanRouteSegmentStatus::Remaining
-                        }),
-                    "hold path elements should not light up until the hold row is activated"
-                );
+        let activated_route =
+            project_flight_plan_route(&store, &activated).expect("project active route");
+        let active_segment_index = activated_route
+            .iter()
+            .position(|segment| segment.status == crate::FlightPlanRouteSegmentStatus::Active)
+            .expect("active guidance leg should have a CDI-active path element");
+        let active_leg_id = activated_route[active_segment_index].leg_id.clone();
+        let active_leg_segments = activated_route
+            .iter()
+            .filter(|segment| segment.leg_id == active_leg_id)
+            .collect::<Vec<_>>();
+        assert!(
+            active_leg_segments
+                .iter()
+                .filter(|segment| { segment.status == crate::FlightPlanRouteSegmentStatus::Active })
+                .count()
+                == 1,
+            "XUKRE -> ECEPO should have exactly one CDI-active path element"
+        );
+        let first_hold_segment_index = active_leg_segments
+            .iter()
+            .position(|segment| segment.status == crate::FlightPlanRouteSegmentStatus::Remaining)
+            .expect("XUKRE -> ECEPO should include inactive hold path elements");
+        assert!(
+            active_leg_segments
+                .iter()
+                .take(first_hold_segment_index)
+                .filter(|segment| {
+                    segment.status == crate::FlightPlanRouteSegmentStatus::ActiveLegRemaining
+                })
+                .count()
+                > 0,
+            "XUKRE -> ECEPO should light remaining non-hold path elements"
+        );
+        assert!(
+            active_leg_segments
+                .iter()
+                .skip(first_hold_segment_index)
+                .all(|segment| {
+                    segment.status == crate::FlightPlanRouteSegmentStatus::Remaining
+                }),
+            "hold path elements should not light up until the hold row is activated"
+        );
 
-                let hold_detail = crate::terminal_hold_start_detail_index_for_leg(&activated, 5)
-                    .expect("hold detail start");
-                let hold_activated =
-                    crate::activate_leg_at_detail_index(&activated, 5, hold_detail)
-                        .expect("activate hold detail");
-                let hold_activated_ui = crate::project_ui_state(&hold_activated);
-                let guidance = hold_activated_ui.guidance.as_ref().expect("guidance");
-                let active_from_row = hold_activated_ui
-                    .display_rows
-                    .iter()
-                    .find(|row| guidance.active_from_row_uid.as_ref() == Some(&row.uid))
-                    .expect("hold active from row");
-                let active_to_row = hold_activated_ui
-                    .display_rows
-                    .iter()
-                    .find(|row| guidance.active_to_row_uid.as_ref() == Some(&row.uid))
-                    .expect("hold active to row");
-                assert_eq!(active_from_row.label, "ECEPO");
-                assert_eq!(active_to_row.label, "HOLD");
+        let hold_detail = crate::terminal_hold_start_detail_index_for_leg(&activated, 5)
+            .expect("hold detail start");
+        let hold_activated = crate::activate_leg_at_detail_index(&activated, 5, hold_detail)
+            .expect("activate hold detail");
+        let hold_activated_ui = crate::project_ui_state(&hold_activated);
+        let guidance = hold_activated_ui.guidance.as_ref().expect("guidance");
+        let active_from_row = hold_activated_ui
+            .display_rows
+            .iter()
+            .find(|row| guidance.active_from_row_uid.as_ref() == Some(&row.uid))
+            .expect("hold active from row");
+        let active_to_row = hold_activated_ui
+            .display_rows
+            .iter()
+            .find(|row| guidance.active_to_row_uid.as_ref() == Some(&row.uid))
+            .expect("hold active to row");
+        assert_eq!(active_from_row.label, "ECEPO");
+        assert_eq!(active_to_row.label, "HOLD");
 
-                let hold_activated_route =
-                    project_flight_plan_route(&store, &hold_activated).expect("project hold route");
-                let hold_segments = hold_activated_route
-                    .iter()
-                    .filter(|segment| segment.leg_id == active_leg_id)
-                    .collect::<Vec<_>>();
-                let first_hold_active_index = hold_segments
-                    .iter()
-                    .position(|segment| {
-                        segment.status == crate::FlightPlanRouteSegmentStatus::Active
-                    })
-                    .expect("activating HOLD should light the racetrack");
-                assert!(
-                    hold_segments
-                        .iter()
-                        .take(first_hold_active_index)
-                        .all(|segment| segment.status
-                            == crate::FlightPlanRouteSegmentStatus::Completed),
-                    "activating HOLD should mark the inbound elements complete"
-                );
+        let hold_activated_route =
+            project_flight_plan_route(&store, &hold_activated).expect("project hold route");
+        let hold_segments = hold_activated_route
+            .iter()
+            .filter(|segment| segment.leg_id == active_leg_id)
+            .collect::<Vec<_>>();
+        let first_hold_active_index = hold_segments
+            .iter()
+            .position(|segment| segment.status == crate::FlightPlanRouteSegmentStatus::Active)
+            .expect("activating HOLD should light the racetrack");
+        assert!(
+            hold_segments
+                .iter()
+                .take(first_hold_active_index)
+                .all(|segment| segment.status == crate::FlightPlanRouteSegmentStatus::Completed),
+            "activating HOLD should mark the inbound elements complete"
+        );
 
-                let zelig_activated = crate::activate_leg(&mutation.mutation.plan, 4)
-                    .expect("activate ZELIG -> XUKRE guidance leg");
-                let zelig_route = project_flight_plan_route(&store, &zelig_activated)
-                    .expect("project ZELIG route");
-                let zelig_segments = zelig_route
-                    .iter()
-                    .filter(|segment| segment.status == crate::FlightPlanRouteSegmentStatus::Active)
-                    .collect::<Vec<_>>();
-                assert_eq!(
-                    zelig_segments.len(),
-                    1,
-                    "ZELIG -> XUKRE should have one active path element"
-                );
-            }
-            HadOperationOutcome::NeedResources { resources } => {
-                panic!("expected complete outcome, got missing resources: {resources:?}");
-            }
-            HadOperationOutcome::NeedSnapshotResources { .. } => {
-                panic!("generic HAD operation requested a session snapshot continuation")
-            }
-        }
+        let zelig_activated =
+            crate::activate_leg(&mutation, 4).expect("activate ZELIG -> XUKRE guidance leg");
+        let zelig_route =
+            project_flight_plan_route(&store, &zelig_activated).expect("project ZELIG route");
+        let zelig_segments = zelig_route
+            .iter()
+            .filter(|segment| segment.status == crate::FlightPlanRouteSegmentStatus::Active)
+            .collect::<Vec<_>>();
+        assert_eq!(
+            zelig_segments.len(),
+            1,
+            "ZELIG -> XUKRE should have one active path element"
+        );
     }
 
     #[test]
@@ -6079,7 +5731,6 @@ mod tests {
         let plan = FlightPlan {
             id: "kpao-vpdub-vcb-wlw".to_string(),
             name: "KPAO VPDUB KVCB KWLW".to_string(),
-            legs: Vec::new(),
             route_components: vec![
                 RouteComponent::Waypoint {
                     waypoint: NavRef::Airport("KPAO".to_string()),
@@ -6125,31 +5776,19 @@ mod tests {
             cdi_offscale_readout: Some("R".to_string()),
         };
 
-        let outcome = run_had_operation(
+        let ui_state = flight_plan_ui_state(
             &store,
-            HadOperation::FlightPlanUiState {
-                plan,
-                current_ui_state,
-            },
+            plan,
+            current_ui_state,
+            crate::FlightDataComputer::default(),
+            FlightPlanLiveData::default(),
         )
         .expect("project enriched flight plan ui state");
 
-        match outcome {
-            HadOperationOutcome::Complete { result, .. } => {
-                let ui_state: FlightPlanUiState =
-                    serde_json::from_value(result).expect("decode ui state");
-                let nav_element = &ui_state.guidance.as_ref().expect("guidance").nav_element;
-                assert_eq!(nav_element.active_leg_summary, "LIVE");
-                assert_eq!(nav_element.cdi_indicator_dots, Some(2.5));
-                assert_eq!(nav_element.cdi_offscale_readout.as_deref(), Some("R"));
-            }
-            HadOperationOutcome::NeedResources { resources } => {
-                panic!("expected complete outcome, got missing resources: {resources:?}");
-            }
-            HadOperationOutcome::NeedSnapshotResources { .. } => {
-                panic!("generic HAD operation requested a session snapshot continuation")
-            }
-        }
+        let nav_element = &ui_state.guidance.as_ref().expect("guidance").nav_element;
+        assert_eq!(nav_element.active_leg_summary, "LIVE");
+        assert_eq!(nav_element.cdi_indicator_dots, Some(2.5));
+        assert_eq!(nav_element.cdi_offscale_readout.as_deref(), Some("R"));
     }
 
     #[test]
@@ -6195,7 +5834,6 @@ mod tests {
         let plan = FlightPlan {
             id: "krnt-sea-pae".to_string(),
             name: "KRNT SEA KPAE".to_string(),
-            legs: Vec::new(),
             route_components: vec![
                 RouteComponent::Waypoint {
                     waypoint: NavRef::Airport("KRNT".to_string()),
@@ -6379,37 +6017,23 @@ mod tests {
     fn generated_nav_kv_materialize_procedure_kpae_vor_a_from_ecepo_succeeds() {
         let store = load_fixture_nav_kv_store();
 
-        let outcome = run_had_operation(
+        let materialized = materialize_procedure(
             &store,
-            HadOperation::MaterializeProcedure {
-                airport_id: "KPAE".to_string(),
-                procedure_id: "VOR-A".to_string(),
-                procedure_kind: ProcedureKind::Approach,
-                runway_transition: None,
-                enroute_transition: Some("ECEPO".to_string()),
-                component_index: 2,
-            },
+            "KPAE",
+            "VOR-A",
+            ProcedureKind::Approach,
+            None,
+            Some("ECEPO"),
+            2,
         )
         .expect("materialize KPAE VOR-A ECEPO through generated nav_kv");
 
-        match outcome {
-            HadOperationOutcome::Complete { result, .. } => {
-                let materialized = serde_json::from_value::<MaterializedProcedure>(result)
-                    .expect("decode materialized procedure");
-                assert_eq!(materialized.procedure.procedure_id, "VOR-A");
-                assert_eq!(
-                    materialized.procedure.enroute_transition.as_deref(),
-                    Some("ECEPO")
-                );
-                assert!(!materialized.resolved_legs.is_empty());
-            }
-            HadOperationOutcome::NeedResources { resources } => {
-                panic!("expected complete outcome, got missing resources: {resources:?}");
-            }
-            HadOperationOutcome::NeedSnapshotResources { .. } => {
-                panic!("generic HAD operation requested a session snapshot continuation")
-            }
-        }
+        assert_eq!(materialized.procedure.procedure_id, "VOR-A");
+        assert_eq!(
+            materialized.procedure.enroute_transition.as_deref(),
+            Some("ECEPO")
+        );
+        assert!(!materialized.resolved_legs.is_empty());
     }
 
     #[test]
@@ -6439,6 +6063,7 @@ mod tests {
         .expect("materialize currently flagged procedure");
         assert!(
             materialized
+                .procedure
                 .data_quality
                 .iter()
                 .any(|message| message == expected_message),
@@ -6448,7 +6073,6 @@ mod tests {
         let plan = FlightPlan {
             id: "procedure-quality-current-navdb".to_string(),
             name: "KGRK".to_string(),
-            legs: Vec::new(),
             route_components: vec![RouteComponent::Waypoint {
                 waypoint: NavRef::Airport(airport_id.to_string()),
             }],
@@ -6481,7 +6105,7 @@ mod tests {
             .uid
             .clone();
 
-        let outcome = crate::select_procedure_at_flight_plan_row_in_session(
+        let outcome = crate::session::select_procedure_at_flight_plan_row_in_session(
             init.handle,
             row_uid,
             airport_id.to_string(),
@@ -6723,24 +6347,28 @@ mod tests {
     #[test]
     fn fixture_nav_kv_suggests_waypoint_identifiers_near_view_center() {
         let kr_bucket = vec![
-            WaypointIdentifierRecord {
+            WaypointSearchRecord {
                 identifier: "KRNT".to_string(),
                 kind: "airport".to_string(),
                 display_name: "Renton Municipal\nRenton, WA".to_string(),
                 lat: 47.493,
                 lon: -122.216,
+                matched_term: "KRNT".to_string(),
+                match_kind: WaypointSearchMatchKind::Identifier,
             },
-            WaypointIdentifierRecord {
+            WaypointSearchRecord {
                 identifier: "KRDD".to_string(),
                 kind: "airport".to_string(),
                 display_name: "Redding Regional\nRedding, CA".to_string(),
                 lat: 40.509,
                 lon: -122.293,
+                matched_term: "KRDD".to_string(),
+                match_kind: WaypointSearchMatchKind::Identifier,
             },
         ];
         let store = test_nav_kv_store(&[(
-            "waypoint/prefix/KR",
-            serde_json::to_value(kr_bucket).expect("encode waypoint prefix fixture"),
+            "waypoint/search-prefix/KR",
+            serde_json::to_value(kr_bucket).expect("encode waypoint search fixture"),
         )]);
         let outcome = run_had_operation(
             &store,
@@ -6749,7 +6377,7 @@ mod tests {
                     lat: 47.493,
                     lon: -122.216,
                 },
-                prefix: "KR".to_string(),
+                query: "KR".to_string(),
                 limit: 5,
             },
         )
@@ -6778,35 +6406,39 @@ mod tests {
     }
 
     #[test]
-    fn missing_waypoint_prefix_suggestions_are_empty() {
+    fn missing_waypoint_search_suggestions_are_empty() {
         let store = test_nav_kv_store(&[]);
         let suggestions =
             suggest_waypoint_identifier_candidates(&store, "K", 5, LatLon { lat: 0.0, lon: 0.0 })
-                .expect("missing prefix should not be fatal");
+                .expect("missing search term should not be fatal");
         assert!(suggestions.is_empty());
     }
 
     #[test]
-    fn waypoint_prefix_suggestions_fall_back_to_shortest_emitted_bucket() {
+    fn waypoint_search_suggestions_fall_back_to_shortest_emitted_bucket() {
         let kr_bucket = vec![
-            WaypointIdentifierRecord {
+            WaypointSearchRecord {
                 identifier: "KRNT".to_string(),
                 kind: "airport".to_string(),
                 display_name: "Renton Municipal\nRenton, WA".to_string(),
                 lat: 47.493,
                 lon: -122.216,
+                matched_term: "KRNT".to_string(),
+                match_kind: WaypointSearchMatchKind::Identifier,
             },
-            WaypointIdentifierRecord {
+            WaypointSearchRecord {
                 identifier: "KRDD".to_string(),
                 kind: "airport".to_string(),
                 display_name: "Redding Regional\nRedding, CA".to_string(),
                 lat: 40.509,
                 lon: -122.293,
+                matched_term: "KRDD".to_string(),
+                match_kind: WaypointSearchMatchKind::Identifier,
             },
         ];
         let store = test_nav_kv_store(&[(
-            "waypoint/prefix/KR",
-            serde_json::to_value(kr_bucket).expect("encode waypoint bucket"),
+            "waypoint/search-prefix/KR",
+            serde_json::to_value(kr_bucket).expect("encode waypoint search bucket"),
         )]);
         let suggestions = suggest_waypoint_identifier_candidates(
             &store,
@@ -6820,6 +6452,135 @@ mod tests {
         .expect("suggest from ancestor prefix bucket");
         assert_eq!(suggestions.len(), 1);
         assert_eq!(suggestions[0].identifier, "KRNT");
+    }
+
+    #[test]
+    fn waypoint_search_ignores_broad_terms_and_uses_discriminating_terms() {
+        let die_bucket = vec![WaypointSearchRecord {
+            identifier: "KSAN".to_string(),
+            kind: "airport".to_string(),
+            display_name: "San Diego Intl\nSan Diego, CA".to_string(),
+            lat: 32.7336,
+            lon: -117.1897,
+            matched_term: "DIEGO".to_string(),
+            match_kind: WaypointSearchMatchKind::AirportName,
+        }];
+        let store = test_nav_kv_store(&[(
+            "waypoint/search-prefix/DIE",
+            serde_json::to_value(die_bucket).expect("encode DIE search bucket"),
+        )]);
+
+        let suggestions = suggest_waypoint_identifier_candidates(
+            &store,
+            "SAN DIEG",
+            5,
+            LatLon {
+                lat: 32.7336,
+                lon: -117.1897,
+            },
+        )
+        .expect("search by broad and discriminating terms");
+
+        assert_eq!(suggestions.len(), 1);
+        assert_eq!(suggestions[0].identifier, "KSAN");
+    }
+
+    #[test]
+    fn waypoint_search_intersects_name_terms() {
+        let kpae_paine = WaypointSearchRecord {
+            identifier: "KPAE".to_string(),
+            kind: "airport".to_string(),
+            display_name: "Seattle Paine Fld Intl\nEverett, WA".to_string(),
+            lat: 47.904,
+            lon: -122.281,
+            matched_term: "PAINE".to_string(),
+            match_kind: WaypointSearchMatchKind::AirportName,
+        };
+        let other_paine = WaypointSearchRecord {
+            identifier: "PAIN".to_string(),
+            kind: "fix".to_string(),
+            display_name: "PAIN".to_string(),
+            lat: 40.0,
+            lon: -120.0,
+            matched_term: "PAIN".to_string(),
+            match_kind: WaypointSearchMatchKind::Identifier,
+        };
+        let kpae_everett = WaypointSearchRecord {
+            matched_term: "EVERETT".to_string(),
+            ..kpae_paine.clone()
+        };
+        let store = test_nav_kv_store(&[
+            (
+                "waypoint/search-prefix/PAI",
+                serde_json::to_value(vec![kpae_paine, other_paine])
+                    .expect("encode PAI search bucket"),
+            ),
+            (
+                "waypoint/search-prefix/EVE",
+                serde_json::to_value(vec![kpae_everett]).expect("encode EVE search bucket"),
+            ),
+        ]);
+
+        let suggestions = suggest_waypoint_identifier_candidates(
+            &store,
+            "PAINE EVERETT",
+            5,
+            LatLon {
+                lat: 47.904,
+                lon: -122.281,
+            },
+        )
+        .expect("intersect airport name terms");
+
+        assert_eq!(suggestions.len(), 1);
+        assert_eq!(suggestions[0].identifier, "KPAE");
+    }
+
+    #[test]
+    fn waypoint_search_ranks_identifier_matches_before_name_matches() {
+        let bucket = vec![
+            WaypointSearchRecord {
+                identifier: "KPAE".to_string(),
+                kind: "airport".to_string(),
+                display_name: "Seattle Paine Fld Intl\nEverett, WA".to_string(),
+                lat: 47.904,
+                lon: -122.281,
+                matched_term: "PAINE".to_string(),
+                match_kind: WaypointSearchMatchKind::AirportName,
+            },
+            WaypointSearchRecord {
+                identifier: "PAICE".to_string(),
+                kind: "fix".to_string(),
+                display_name: "PAICE".to_string(),
+                lat: 31.1485,
+                lon: -94.7165,
+                matched_term: "PAICE".to_string(),
+                match_kind: WaypointSearchMatchKind::Identifier,
+            },
+        ];
+        let store = test_nav_kv_store(&[(
+            "waypoint/search-prefix/PAI",
+            serde_json::to_value(bucket).expect("encode PAI search bucket"),
+        )]);
+
+        let suggestions = suggest_waypoint_identifier_candidates(
+            &store,
+            "PAI",
+            5,
+            LatLon {
+                lat: 47.904,
+                lon: -122.281,
+            },
+        )
+        .expect("rank mixed search matches");
+
+        assert_eq!(
+            suggestions
+                .iter()
+                .map(|suggestion| suggestion.identifier.as_str())
+                .collect::<Vec<_>>(),
+            vec!["PAICE", "KPAE"]
+        );
     }
 
     #[test]
@@ -6860,81 +6621,44 @@ mod tests {
     #[ignore = "requires the external NAVDB fixture"]
     fn fixture_nav_kv_prepares_and_materializes_v2_between_krnt_and_kuao() {
         let store = load_fixture_nav_kv_store();
-        let presentation = match run_had_operation(
+        let presentation = prepare_airway_presentation_for_anchors(
             &store,
-            HadOperation::PrepareAirwayPresentationForAnchors {
-                airway_name: "V2".to_string(),
-                origin_anchor: NavRef::Airport("KRNT".to_string()),
-                destination_anchor: Some(NavRef::Airport("KUAO".to_string())),
-            },
+            "V2",
+            &NavRef::Airport("KRNT".to_string()),
+            Some(&NavRef::Airport("KUAO".to_string())),
         )
-        .expect("prepare airway presentation through fixture nav_kv")
-        {
-            HadOperationOutcome::Complete { result, .. } => {
-                serde_json::from_value::<AirwayPresentationPlan>(result)
-                    .expect("decode airway presentation")
-            }
-            HadOperationOutcome::NeedResources { resources } => {
-                panic!("expected complete outcome, got missing resources: {resources:?}");
-            }
-            HadOperationOutcome::NeedSnapshotResources { .. } => {
-                panic!("generic HAD operation requested a session snapshot continuation")
-            }
-        };
+        .expect("prepare airway presentation through fixture nav_kv");
 
-        let entry_index = presentation
+        let entry_point_uid = presentation
             .points
             .iter()
-            .position(|point| point.nav_ref == NavRef::Navaid("SEA".to_string()))
-            .expect("presentation should include SEA");
-        let exit_index = presentation
+            .find(|point| point.nav_ref == NavRef::Navaid("SEA".to_string()))
+            .expect("presentation should include SEA")
+            .uid
+            .clone();
+        let exit_point_uid = presentation
             .points
             .iter()
-            .position(|point| point.nav_ref == NavRef::Fix("VAMPS".to_string()))
-            .expect("presentation should include VAMPS");
+            .find(|point| point.nav_ref == NavRef::Fix("VAMPS".to_string()))
+            .expect("presentation should include VAMPS")
+            .uid
+            .clone();
 
-        let materialized = match run_had_operation(
+        let materialized = materialize_airway_presentation_selection(
             &store,
-            HadOperation::MaterializeAirwayPresentationSelection {
-                start_component_index: 0,
-                presentation,
-                entry_index,
-                exit_index,
-                origin_anchor: NavRef::Airport("KRNT".to_string()),
-                destination_anchor: Some(NavRef::Airport("KUAO".to_string())),
+            0,
+            AirwayPresentationSelection {
+                airway_name: presentation.airway_name,
+                branch_key: presentation.branch_key,
+                entry_point_uid,
+                exit_point_uid,
             },
         )
-        .expect("materialize airway presentation selection through fixture nav_kv")
-        {
-            HadOperationOutcome::Complete { result, .. } => {
-                serde_json::from_value::<MaterializedAirwayResponse>(result)
-                    .expect("decode materialized airway response")
-            }
-            HadOperationOutcome::NeedResources { resources } => {
-                panic!("expected complete outcome, got missing resources: {resources:?}");
-            }
-            HadOperationOutcome::NeedSnapshotResources { .. } => {
-                panic!("generic HAD operation requested a session snapshot continuation")
-            }
-        };
+        .expect("materialize airway presentation selection through fixture nav_kv");
 
         assert_eq!(materialized.airway.name, "V2");
-        assert_eq!(
-            materialized.selection.entry.nav_ref,
-            NavRef::Navaid("SEA".to_string())
-        );
-        assert_eq!(
-            materialized.selection.exit.nav_ref,
-            NavRef::Fix("VAMPS".to_string())
-        );
-        assert_eq!(
-            materialized.airway.entry,
-            materialized.selection.entry.nav_ref
-        );
-        assert_eq!(
-            materialized.airway.exit,
-            materialized.selection.exit.nav_ref
-        );
+        assert_eq!(materialized.airway.entry, NavRef::Navaid("SEA".to_string()));
+        assert_eq!(materialized.airway.exit, NavRef::Fix("VAMPS".to_string()));
         assert!(!materialized.resolved_legs.is_empty());
         assert_eq!(
             materialized.resolved_legs.first().unwrap().from,
@@ -6953,7 +6677,6 @@ mod tests {
         let plan = FlightPlan {
             id: "krnt".to_string(),
             name: "KRNT".to_string(),
-            legs: Vec::new(),
             route_components: vec![RouteComponent::Waypoint {
                 waypoint: NavRef::Airport("KRNT".to_string()),
             }],
@@ -6970,25 +6693,8 @@ mod tests {
             version: 1,
         };
 
-        let preview = match run_had_operation(
-            &store,
-            HadOperation::PreviewFlightPlanEntry {
-                plan,
-                input: "BTG V112 VAMPS".to_string(),
-            },
-        )
-        .expect("preview route entry")
-        {
-            HadOperationOutcome::Complete { result, .. } => {
-                serde_json::from_value::<FlightPlanEntryPreview>(result).expect("decode preview")
-            }
-            HadOperationOutcome::NeedResources { resources } => {
-                panic!("expected complete preview, got missing resources: {resources:?}");
-            }
-            HadOperationOutcome::NeedSnapshotResources { .. } => {
-                panic!("generic HAD operation requested a session snapshot continuation")
-            }
-        };
+        let preview = preview_flight_plan_entry(&store, &plan, "BTG V112 VAMPS")
+            .expect("preview route entry");
 
         assert!(!preview.can_commit);
         assert_eq!(preview.tokens.len(), 3);
@@ -7017,7 +6723,6 @@ mod tests {
         let plan = FlightPlan {
             id: "krnt".to_string(),
             name: "KRNT".to_string(),
-            legs: Vec::new(),
             route_components: vec![RouteComponent::Waypoint {
                 waypoint: NavRef::Airport("KRNT".to_string()),
             }],
@@ -7034,41 +6739,23 @@ mod tests {
             version: 1,
         };
 
-        let mutation = match run_had_operation(
-            &store,
-            HadOperation::AppendFlightPlanEntry {
-                plan,
-                input: "SEA V2 VAMPS KUAO".to_string(),
-            },
-        )
-        .expect("append route entry")
-        {
-            HadOperationOutcome::Complete { result, .. } => {
-                serde_json::from_value::<FlightPlanUiMutation>(result)
-                    .expect("decode append mutation")
-            }
-            HadOperationOutcome::NeedResources { resources } => {
-                panic!("expected complete append, got missing resources: {resources:?}");
-            }
-            HadOperationOutcome::NeedSnapshotResources { .. } => {
-                panic!("generic HAD operation requested a session snapshot continuation")
-            }
-        };
+        let mutation = append_flight_plan_entry(&store, &plan, "SEA V2 VAMPS KUAO")
+            .expect("append route entry");
 
-        assert_eq!(mutation.plan.route_components.len(), 3);
+        assert_eq!(mutation.route_components.len(), 3);
         assert!(matches!(
-            mutation.plan.route_components[0],
+            mutation.route_components[0],
             RouteComponent::Waypoint { .. }
         ));
         assert!(matches!(
-            mutation.plan.route_components[1],
+            mutation.route_components[1],
             RouteComponent::Airway { ref airway } if airway.name == "V2"
         ));
         assert!(matches!(
-            mutation.plan.route_components[2],
+            mutation.route_components[2],
             RouteComponent::Waypoint { waypoint: NavRef::Airport(ref id) } if id == "KUAO"
         ));
-        assert!(!mutation.plan.route_components.iter().any(|component| {
+        assert!(!mutation.route_components.iter().any(|component| {
             matches!(component, RouteComponent::Waypoint { waypoint: NavRef::Fix(id) } if id == "VAMPS")
         }));
     }
@@ -7079,13 +6766,13 @@ mod tests {
             display_name: "V495".to_string(),
             branch_key: String::new(),
             points: vec![
-                crate::AirwayFixPoint {
+                crate::navdb_types::AirwayFixPoint {
                     airway_name: "V495".to_string(),
                     sequence: 10,
                     position: LatLon { lat: 0.0, lon: 0.0 },
                     nav_ref: NavRef::Navaid("SEA".to_string()),
                 },
-                crate::AirwayFixPoint {
+                crate::navdb_types::AirwayFixPoint {
                     airway_name: "V495".to_string(),
                     sequence: 20,
                     position: LatLon { lat: 1.0, lon: 1.0 },
@@ -7134,7 +6821,7 @@ mod tests {
                     branches: vec![AirwayBranch {
                         display_name: "V495".to_string(),
                         branch_key: String::new(),
-                        points: vec![crate::AirwayFixPoint {
+                        points: vec![crate::navdb_types::AirwayFixPoint {
                             airway_name: "V495".to_string(),
                             sequence: 10,
                             position: LatLon { lat: 0.0, lon: 0.0 },
@@ -7148,7 +6835,6 @@ mod tests {
         let plan = FlightPlan {
             id: "route".to_string(),
             name: "Route".to_string(),
-            legs: Vec::new(),
             route_components: Vec::new(),
             route_component_uids: Vec::new(),
             route_component_uid_counter: 0,
@@ -7177,7 +6863,6 @@ mod tests {
         let plan = FlightPlan {
             id: "route".to_string(),
             name: "Route".to_string(),
-            legs: Vec::new(),
             route_components: Vec::new(),
             route_component_uids: Vec::new(),
             route_component_uid_counter: 0,
@@ -7196,20 +6881,20 @@ mod tests {
         assert!(preview.can_commit, "{preview:#?}");
         let mutation = append_flight_plan_entry(&store, &plan, input).expect("append route");
 
-        assert!(mutation.plan.route_components.iter().any(|component| {
+        assert!(mutation.route_components.iter().any(|component| {
             matches!(component, RouteComponent::Airway { airway } if airway.name == "V23")
         }));
-        assert!(mutation.plan.route_components.iter().any(|component| {
+        assert!(mutation.route_components.iter().any(|component| {
             matches!(component, RouteComponent::Airway { airway } if airway.name == "V495")
         }));
-        assert!(!mutation.plan.route_components.iter().any(|component| {
+        assert!(!mutation.route_components.iter().any(|component| {
             matches!(component, RouteComponent::Waypoint { waypoint: NavRef::Navaid(id) } if id == "SEA")
         }));
-        assert!(!mutation.plan.route_components.iter().any(|component| {
+        assert!(!mutation.route_components.iter().any(|component| {
             matches!(component, RouteComponent::Waypoint { waypoint: NavRef::Fix(id) } if id == "VAUGN")
         }));
-        let airway_child_labels = mutation
-            .ui_state
+        let ui_state = default_flight_plan_ui_state_for_test(&store, &mutation);
+        let airway_child_labels = ui_state
             .display_rows
             .iter()
             .filter(|row| {
@@ -7234,7 +6919,6 @@ mod tests {
         let plan = FlightPlan {
             id: "route".to_string(),
             name: "Route".to_string(),
-            legs: Vec::new(),
             route_components: Vec::new(),
             route_component_uids: Vec::new(),
             route_component_uid_counter: 0,
@@ -7253,7 +6937,7 @@ mod tests {
         assert!(preview.can_commit, "{preview:#?}");
         let mutation = append_flight_plan_entry(&store, &plan, input).expect("append route");
 
-        let route = &mutation.plan.route_components;
+        let route = &mutation.route_components;
         assert!(route.windows(2).any(|window| {
             matches!(
                 (&window[0], &window[1]),
@@ -7271,8 +6955,8 @@ mod tests {
             matches!(component, RouteComponent::Waypoint { waypoint: NavRef::Fix(id) } if id == "VAUGN")
         }));
 
-        let keug_row = mutation
-            .ui_state
+        let ui_state = default_flight_plan_ui_state_for_test(&store, &mutation);
+        let keug_row = ui_state
             .display_rows
             .iter()
             .find(|row| row.depth == 0 && row.label == "KEUG")
@@ -7291,9 +6975,9 @@ mod tests {
     #[test]
     #[ignore = "requires the external NAVDB fixture"]
     fn chained_airway_handoff_row_can_activate_inbound_leg() {
+        let store = load_fixture_nav_kv_store();
         let mutation = append_route_entry_for_chained_airways();
         let sea_leg_index = mutation
-            .plan
             .resolved_legs
             .iter()
             .position(|leg| {
@@ -7301,8 +6985,8 @@ mod tests {
                     && leg.to == NavRef::Navaid("SEA".to_string())
             })
             .expect("PAE to SEA leg");
-        let sea_row = mutation
-            .ui_state
+        let ui_state = default_flight_plan_ui_state_for_test(&store, &mutation);
+        let sea_row = ui_state
             .display_rows
             .iter()
             .find(|row| {
@@ -7327,7 +7011,6 @@ mod tests {
         let plan = FlightPlan {
             id: "route".to_string(),
             name: "Route".to_string(),
-            legs: Vec::new(),
             route_components: Vec::new(),
             route_component_uids: Vec::new(),
             route_component_uid_counter: 0,
@@ -7344,7 +7027,6 @@ mod tests {
         let mutation = append_flight_plan_entry(&store, &plan, "KPAE PAE V23 SEA V2 ELN KYKM")
             .expect("append chained airway route");
         let sea_leg = mutation
-            .plan
             .resolved_legs
             .iter()
             .find(|leg| {
@@ -7352,8 +7034,8 @@ mod tests {
                     && leg.to == NavRef::Navaid("SEA".to_string())
             })
             .expect("PAE to SEA leg");
-        let sea_row = mutation
-            .ui_state
+        let ui_state = default_flight_plan_ui_state_for_test(&store, &mutation);
+        let sea_row = ui_state
             .display_rows
             .iter()
             .find(|row| {
@@ -7383,7 +7065,6 @@ mod tests {
     fn activate_next_leg_from_first_leg_keeps_chained_airway_arrow_visible() {
         let mutation = append_route_entry_for_chained_airways();
         let first_leg_index = mutation
-            .plan
             .resolved_legs
             .iter()
             .position(|leg| {
@@ -7391,7 +7072,7 @@ mod tests {
                     && leg.to == NavRef::Navaid("PAE".to_string())
             })
             .expect("KPAE to PAE leg");
-        let activated = crate::activate_leg(&mutation.plan, first_leg_index).expect("activate leg");
+        let activated = crate::activate_leg(&mutation, first_leg_index).expect("activate leg");
         let next = crate::activate_next_leg(&activated).expect("activate next leg");
         let ui = crate::project_ui_state(&next);
         let guidance = ui.guidance.as_ref().expect("guidance");
@@ -7418,9 +7099,8 @@ mod tests {
     #[ignore = "requires the external NAVDB fixture"]
     fn sequence_active_leg_walks_chained_airway_route_to_last_leg() {
         let mutation = append_route_entry_for_chained_airways();
-        let mut plan = crate::activate_leg(&mutation.plan, 0).expect("activate first leg");
+        let mut plan = crate::activate_leg(&mutation, 0).expect("activate first leg");
         let expected = mutation
-            .plan
             .resolved_legs
             .iter()
             .map(|leg| (leg.from.clone(), leg.to.clone()))
@@ -7461,12 +7141,11 @@ mod tests {
         );
     }
 
-    fn append_route_entry_for_chained_airways() -> FlightPlanUiMutation {
+    fn append_route_entry_for_chained_airways() -> FlightPlan {
         let store = load_fixture_nav_kv_store();
         let plan = FlightPlan {
             id: "route".to_string(),
             name: "Route".to_string(),
-            legs: Vec::new(),
             route_components: Vec::new(),
             route_component_uids: Vec::new(),
             route_component_uid_counter: 0,
@@ -7491,7 +7170,6 @@ mod tests {
         let plan = FlightPlan {
             id: "empty".to_string(),
             name: "Empty".to_string(),
-            legs: Vec::new(),
             route_components: Vec::new(),
             route_component_uids: Vec::new(),
             route_component_uid_counter: 0,
@@ -7506,31 +7184,13 @@ mod tests {
             version: 1,
         };
 
-        let mutation = match run_had_operation(
-            &store,
-            HadOperation::AppendFlightPlanEntry {
-                plan,
-                input: "KPAE".to_string(),
-            },
-        )
-        .expect("append route entry to empty plan")
-        {
-            HadOperationOutcome::Complete { result, .. } => {
-                serde_json::from_value::<FlightPlanUiMutation>(result)
-                    .expect("decode append mutation")
-            }
-            HadOperationOutcome::NeedResources { resources } => {
-                panic!("expected complete append, got missing resources: {resources:?}");
-            }
-            HadOperationOutcome::NeedSnapshotResources { .. } => {
-                panic!("generic HAD operation requested a session snapshot continuation")
-            }
-        };
+        let mutation = append_flight_plan_entry(&store, &plan, "KPAE")
+            .expect("append route entry to empty plan");
 
-        assert_eq!(mutation.plan.route_components.len(), 1);
-        assert!(mutation.plan.resolved_legs.is_empty());
+        assert_eq!(mutation.route_components.len(), 1);
+        assert!(mutation.resolved_legs.is_empty());
         assert!(matches!(
-            mutation.plan.route_components[0],
+            mutation.route_components[0],
             RouteComponent::Waypoint { waypoint: NavRef::Airport(ref id) } if id == "KPAE"
         ));
     }
@@ -7578,7 +7238,6 @@ mod tests {
         let plan = FlightPlan {
             id: "west-coast".to_string(),
             name: "West Coast".to_string(),
-            legs: Vec::new(),
             route_components: vec![
                 RouteComponent::Waypoint {
                     waypoint: NavRef::Airport("KPAE".to_string()),
@@ -7604,9 +7263,9 @@ mod tests {
             insert_waypoint_best_position(&store, &plan, NavRef::Navaid("SEA".to_string()))
                 .expect("insert waypoint");
 
-        assert_eq!(mutation.plan.route_components.len(), 3);
+        assert_eq!(mutation.route_components.len(), 3);
         assert!(matches!(
-            mutation.plan.route_components[1],
+            mutation.route_components[1],
             RouteComponent::Waypoint { waypoint: NavRef::Navaid(ref id) } if id == "SEA"
         ));
     }
@@ -7622,7 +7281,6 @@ mod tests {
         let plan = FlightPlan {
             id: "spot".to_string(),
             name: "Spot".to_string(),
-            legs: Vec::new(),
             route_components: Vec::new(),
             route_component_uids: Vec::new(),
             route_component_uid_counter: 0,
@@ -7641,7 +7299,7 @@ mod tests {
             insert_waypoint_best_position(&store, &plan, spot.clone()).expect("insert spot");
 
         assert_eq!(
-            mutation.plan.route_components,
+            mutation.route_components,
             vec![RouteComponent::Waypoint { waypoint: spot }]
         );
     }
@@ -7653,7 +7311,6 @@ mod tests {
         let plan = FlightPlan {
             id: "duplicate".to_string(),
             name: "Duplicate".to_string(),
-            legs: Vec::new(),
             route_components: vec![RouteComponent::Waypoint {
                 waypoint: NavRef::Navaid("SEA".to_string()),
             }],

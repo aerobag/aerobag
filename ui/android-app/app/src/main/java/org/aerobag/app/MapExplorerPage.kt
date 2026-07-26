@@ -203,22 +203,19 @@ import kotlinx.coroutines.withContext
 import kotlinx.coroutines.yield
 import org.aerobag.app.domain.ChartAirport
 import org.aerobag.app.domain.ChartAsset
-import org.aerobag.app.domain.AppState
 import org.aerobag.app.domain.AirwayPresentationPlan
 import org.aerobag.app.domain.AirwaySuggestion
 import org.aerobag.app.domain.WaypointIdentifierSuggestion
 import org.aerobag.app.domain.CoreMapViewport
 import org.aerobag.app.domain.DerivedChartPageState
 import org.aerobag.app.domain.FlightDataBannerModel
-import org.aerobag.app.domain.FlightPlan
 import org.aerobag.app.domain.FlightPlanEntryPreview
-import org.aerobag.app.domain.FlightPlanUiMutation
 import org.aerobag.app.domain.FlightPlanDisplayRowKind
 import org.aerobag.app.domain.FlightPlanDisplayRowUiView
 import org.aerobag.app.domain.FlightPlanRowActionUiView
 import org.aerobag.app.domain.FlightPlanRouteSegment
+import org.aerobag.app.domain.FlightPlanRouteProjection
 import org.aerobag.app.domain.FlightPlanUiState
-import org.aerobag.app.domain.GuidanceState
 import org.aerobag.app.domain.CoreResourceRequest
 import org.aerobag.app.domain.AirspaceDisplayDecoration
 import org.aerobag.app.domain.AirspaceDisplayLabel
@@ -260,13 +257,10 @@ import org.aerobag.app.domain.ProcedureKind
 import org.aerobag.app.domain.ProcedureLoadOption
 import org.aerobag.app.domain.ProcedureOptions
 import org.aerobag.app.domain.ProcedureSummary
-import org.aerobag.app.domain.ResolvedLeg
-import org.aerobag.app.domain.ResolvedLegSource
 import org.aerobag.app.domain.RenderTile
 import org.aerobag.app.domain.RenderTileSource
 import org.aerobag.app.domain.RouteSegmentStatus
 import org.aerobag.app.domain.RouteComponentViewKind
-import org.aerobag.app.domain.RouteComponent
 import org.aerobag.app.domain.RasterMapUiState
 import org.aerobag.app.domain.ScreenPoint
 import org.aerobag.app.domain.SequencingMode
@@ -569,6 +563,19 @@ private data class RasterTileLoadRequest(
     val pageTilePaintTiming: PageTilePaintTiming?,
 )
 
+private fun mapSelectionItemById(
+    result: MapSelectionQueryResult,
+    itemId: String?,
+): MapSelectionItem? {
+    if (itemId == null) {
+        return null
+    }
+    return result.categories
+        .asSequence()
+        .flatMap { it.items.asSequence() }
+        .firstOrNull { it.id == itemId }
+}
+
 @OptIn(ExperimentalComposeUiApi::class)
 @Composable
 internal fun MapExplorerPage(
@@ -612,7 +619,6 @@ internal fun MapExplorerPage(
     onOpenPlateTarget: (airportId: String, target: String, chartId: String) -> Unit,
     onOpenPlan: () -> Unit,
     navElement: NavElementUiView?,
-    plan: org.aerobag.app.domain.FlightPlan,
     planUiState: FlightPlanUiState?,
 ) {
     val context = LocalContext.current
@@ -702,7 +708,20 @@ internal fun MapExplorerPage(
             nexradViewportRefreshRequests.close()
         }
     }
-    var flightPlanRoute by remember(plan.id, plan.version, navDataEpoch) { mutableStateOf<List<FlightPlanRouteSegment>>(emptyList()) }
+    var flightPlanRouteProjection by remember(uiSession) {
+        mutableStateOf(
+            FlightPlanRouteProjection(
+                flightPlanRouteRevision = -1,
+                segments = emptyList(),
+            ),
+        )
+    }
+    val flightPlanRoute =
+        if (flightPlanRouteProjection.flightPlanRouteRevision == sessionSnapshot.flightPlanRouteRevision) {
+            flightPlanRouteProjection.segments
+        } else {
+            emptyList()
+        }
     var mapGestureActive by remember { mutableStateOf(false) }
     val selectedMapId = selectedMap.selectedMapId
     val selectedFamilyId = selectedMap.selectedFamilyId
@@ -1140,7 +1159,7 @@ internal fun MapExplorerPage(
                 mapSelection = MapSelectionUiState(
                     point = Offset(surfaceWidthPx / 2f, surfaceHeightPx / 2f),
                     result = result,
-                    selectedItem = null,
+                    selectedItem = mapSelectionItemById(result, result.initialSelectedItemId),
                 )
             }
 
@@ -1397,16 +1416,6 @@ internal fun MapExplorerPage(
         }
     }
 
-    fun mapSelectionItemById(result: MapSelectionQueryResult, itemId: String?): MapSelectionItem? {
-        if (itemId == null) {
-            return null
-        }
-        return result.categories
-            .asSequence()
-            .flatMap { it.items.asSequence() }
-            .firstOrNull { it.id == itemId }
-    }
-
     fun inspectNavRef(navRef: NavRef) {
         if (surfaceWidthPx <= 0f || surfaceHeightPx <= 0f) {
             recenterOnNavRef(navRef)
@@ -1473,8 +1482,8 @@ internal fun MapExplorerPage(
     }
 
     LaunchedEffect(chartSearchText, currentViewport.centerWorldX, currentViewport.centerWorldY) {
-        val prefix = chartSearchText.trim().uppercase()
-        if (prefix.isBlank()) {
+        val query = chartSearchText.trim().uppercase()
+        if (query.isBlank()) {
             chartSearchLoading = false
             chartSearchError = null
             chartSearchSuggestions = emptyList()
@@ -1487,7 +1496,7 @@ internal fun MapExplorerPage(
             withContext(Dispatchers.IO) {
                 appCore.suggestWaypointIdentifiersNear(
                     anchor = LatLonPoint(centerLat, centerLon),
-                    prefix = prefix,
+                    query = query,
                     limit = 8,
                 )
             }
@@ -1799,28 +1808,29 @@ internal fun MapExplorerPage(
         situationTrayOpen = false
         mapSelection = null
     }
-    LaunchedEffect(uiSession, navDataEpoch, plan.id, plan.version, plan.guidance, plan.resolvedLegs, uiInvalidationRevisions.flightPlanRoute) {
+    LaunchedEffect(uiSession, sessionSnapshot.flightPlanRouteRevision) {
         runCatching {
             uiSession.projectFlightPlanRoute()
-        }.onSuccess {
-            flightPlanRoute = it
+        }.onSuccess { projection ->
+            flightPlanRouteProjection = projection
             val guidance = sessionSnapshot.appUiState.activePlan?.guidance
             val directTo = guidance?.directTo
             Log.i(
                 "AerobagGuidance",
                 "route projection revision=${sessionSnapshot.sessionRevision} " +
                     "mode=${guidance?.sequencingMode} " +
-                    "activeLeg=${guidance?.activeLegIndex} " +
+                    "activeRow=${guidance?.activeToRowUid} " +
                     "activeSummary=${guidance?.navElement?.activeLegSummary} " +
                     "cdi=${guidance?.navElement?.cdiIndicatorDots} " +
                     "directTarget=${directTo?.target} " +
-                    "directTargetLeg=${directTo?.targetLegId} " +
-                    "directResume=${directTo?.resumeLegId} " +
-                    "directTargetComponent=${directTo?.targetComponentUid} " +
-                    "statuses=${it.joinToString(",") { segment -> "${segment.id}:${segment.status}" }}",
+                    "directTargetRow=${directTo?.targetRowId} " +
+                    "statuses=${projection.segments.joinToString(",") { segment -> "${segment.id}:${segment.status}" }}",
             )
         }.onFailure {
-            flightPlanRoute = emptyList()
+            flightPlanRouteProjection = FlightPlanRouteProjection(
+                flightPlanRouteRevision = sessionSnapshot.flightPlanRouteRevision,
+                segments = emptyList(),
+            )
             Log.e("AerobagGuidance", "failed to project flight plan route", it)
         }
     }
@@ -1877,9 +1887,6 @@ internal fun MapExplorerPage(
                 if (queryEpoch != latestNavDataEpoch.value) {
                     return@submitOverlay
                 }
-                if (outcome.invalidations.contains("session_snapshot")) {
-                    applySessionCommand("refreshSnapshot") { uiSession.refreshSnapshot() }
-                }
                 val overlay = outcome.overlay
                 perfLogInfo(MapLayerLogTag) {
                     val (centerLat, centerLon) = viewportCenterLatLon(currentViewport)
@@ -1898,14 +1905,14 @@ internal fun MapExplorerPage(
     }
     LaunchedEffect(uiSession, nexradRenderRequests) {
         var nexradAnimationJob: Job? = null
-        fun scheduleNexradAnimation(delayMs: Int?) {
+        fun scheduleNexradAnimation(deadlineEpochMs: Long?) {
             nexradAnimationJob?.cancel()
             nexradAnimationJob = null
-            if (delayMs == null) {
+            if (deadlineEpochMs == null) {
                 return
             }
             nexradAnimationJob = launch {
-                delay(delayMs.coerceAtLeast(0).toLong())
+                delay((deadlineEpochMs - System.currentTimeMillis()).coerceAtLeast(0))
                 nexradRenderRequests.trySend(Unit)
             }
         }
@@ -1943,7 +1950,7 @@ internal fun MapExplorerPage(
                     }
                 }
                 if (overlay.tiles.isEmpty()) {
-                    scheduleNexradAnimation(overlay.animation.nextUpdateDelayMs)
+                    scheduleNexradAnimation(overlay.animation.nextUpdateEpochMs)
                     nexradFrame = null
                     perfLogInfo(MapLayerLogTag) {
                         "nexrad empty status=${overlay.status.state} animation=${overlay.animation.phase} nextMs=${overlay.animation.nextUpdateDelayMs} elapsedMs=${SystemClock.elapsedRealtime() - effectStartMs}"
@@ -1984,7 +1991,7 @@ internal fun MapExplorerPage(
                 perfLogInfo(MapLayerLogTag) {
                     "nexrad frame-ready pieces=${images.size} decodedImages=${decodedImagesBySrc.size} res=${overlay.stats.res} animation=${overlay.animation.phase} frame=${overlay.animation.selectedFrameIndex}/${overlay.animation.frameCount} nextMs=${overlay.animation.nextUpdateDelayMs} imageBytes=$imageBytes decodedBytes=$decodedImageBytes fetchMs=$fetchMs decodeMs=$decodeMs elapsedMs=${SystemClock.elapsedRealtime() - effectStartMs}"
                 }
-                scheduleNexradAnimation(overlay.animation.nextUpdateDelayMs)
+                scheduleNexradAnimation(overlay.animation.nextUpdateEpochMs)
             } catch (error: CancellationException) {
                 throw error
             } catch (error: Throwable) {
@@ -2284,7 +2291,11 @@ internal fun MapExplorerPage(
             click = LatLonPoint(lat = lat, lon = lon),
             pointDisplayScale = density.density.toDouble(),
             onResult = { result ->
-                mapSelection = MapSelectionUiState(point = point, result = result, selectedItem = null)
+                mapSelection = MapSelectionUiState(
+                    point = point,
+                    result = result,
+                    selectedItem = mapSelectionItemById(result, result.initialSelectedItemId),
+                )
                 chartTrayOpen = false
                 layerTrayOpen = false
                 dataStatusTrayOpen = false
@@ -3835,10 +3846,11 @@ internal fun MapSelectionTray(
 @Composable
 internal fun MapSelectionHeader(selectedItem: MapSelectionItem?) {
     val uiTheme = LocalAerobagUiTheme.current
+    val headerHeight = with(LocalDensity.current) { 34.sp.toDp() }
     Column(
         modifier = Modifier
             .fillMaxWidth()
-            .height(ThumbSize * 0.52f),
+            .height(headerHeight),
         verticalArrangement = Arrangement.Center,
     ) {
         Text(

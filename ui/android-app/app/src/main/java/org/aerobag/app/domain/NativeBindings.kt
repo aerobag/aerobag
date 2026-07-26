@@ -52,13 +52,21 @@ interface NativeBridge {
 
     fun liveFeedCacheInstalledSummaryJson(handle: Long, product: String): String
 
+    fun liveFeedCacheRetainedSummariesJson(handle: Long, product: String): String
+
+    fun liveFeedCacheReleasePersistedPayloadBytes(
+        handle: Long,
+        product: String,
+        version: String,
+    )
+
     fun liveFeedCacheIngestInstalledPayloadBytes(
         handle: Long,
         summaryJson: String,
         payloadBytes: ByteArray,
     )
 
-    fun liveFeedCacheInstalledPayloadBytes(handle: Long, product: String): ByteArray
+    fun liveFeedCacheInstalledPayloadBytes(handle: Long, product: String, version: String): ByteArray
 
     fun liveFeedCacheResourceManifestJson(handle: Long, product: String): String
 
@@ -75,7 +83,12 @@ interface NativeBridge {
 
     fun liveFeedCacheFinishRestoringResources(handle: Long, product: String)
 
-    fun liveFeedCacheInstallProductInSessionJson(handle: Long, sessionHandle: Long, product: String): String
+    fun liveFeedCacheInstallProductInSessionJson(
+        handle: Long,
+        sessionHandle: Long,
+        product: String,
+        version: String,
+    ): String
 
     fun liveFeedCacheSyncCatalogInSessionJson(handle: Long, sessionHandle: Long): String
 
@@ -124,17 +137,7 @@ interface NativeBridge {
 
     fun situationRingCandidatesJson(): String
 
-    fun emptyFlightPlanJson(): String
-
-    fun prepareAirwayPresentationJson(
-        airwayName: String,
-        branchesJson: String,
-        originPositionJson: String,
-        destinationPositionJson: String,
-    ): String
-
     fun createUiSessionJson(
-        planJson: String,
         recentAirportIdsJson: String,
         selectedAirportIdJson: String,
         selectedChartIdJson: String,
@@ -161,47 +164,14 @@ interface NativeBridge {
         actionJson: String,
     ): String
 
-    fun insertWaypointAtFlightPlanRowInSessionJson(
+    fun performFlightPlanCommandInSessionJson(
         handle: Long,
-        rowUid: String,
-        before: Boolean,
-        waypointJson: String,
+        commandJson: String,
     ): String
 
-    fun suggestWaypointIdentifiersAtFlightPlanRowInSessionJson(
+    fun queryFlightPlanInSessionJson(
         handle: Long,
-        rowUid: String,
-        before: Boolean,
-        prefix: String,
-        limit: Int,
-    ): String
-
-    fun previewFlightPlanEntryInSessionJson(
-        handle: Long,
-        input: String,
-    ): String
-
-    fun appendFlightPlanEntryInSessionJson(
-        handle: Long,
-        input: String,
-    ): String
-
-    fun insertAirwayAtFlightPlanRowInSessionJson(
-        handle: Long,
-        rowUid: String,
-        presentationJson: String,
-        entryIndex: Int,
-        exitIndex: Int,
-    ): String
-
-    fun selectProcedureAtFlightPlanRowInSessionJson(
-        handle: Long,
-        rowUid: String,
-        airportId: String,
-        procedureId: String,
-        kindJson: String,
-        runwayTransitionJson: String,
-        enrouteTransitionJson: String,
+        queryJson: String,
     ): String
 
     fun registerOwnshipSourceInSessionPagedJson(
@@ -330,12 +300,6 @@ interface NativeBridge {
 
     fun maintainNavDbInSessionAtEpochMsJson(handle: Long, epochMs: Long): String
 
-    fun performFlightPlanRowActionInSessionJson(
-        handle: Long,
-        rowUid: String,
-        actionUid: String,
-    ): String
-
     fun performStatusActionInSessionJson(
         handle: Long,
         actionId: String,
@@ -350,23 +314,6 @@ interface NativeBridge {
         handle: Long,
         agreementId: String,
     ): String
-
-    fun loadPlateProcedureInSessionJson(
-        handle: Long,
-        loadId: String,
-    ): String
-
-    fun restoreDirectToInSessionJson(handle: Long): String
-
-    fun activateNextLegInSessionJson(handle: Long): String
-
-    fun stopNavigationInSessionJson(handle: Long): String
-
-    fun suspendSequencingInSessionJson(handle: Long): String
-
-    fun unsuspendSequencingInSessionJson(handle: Long): String
-
-    fun sequenceActiveLegInSessionJson(handle: Long): String
 
     fun syncGuidanceGeometryInSessionJson(handle: Long): String
 
@@ -594,13 +541,25 @@ object NativeBindings : NativeBridge {
 
     external override fun liveFeedCacheInstalledSummaryJson(handle: Long, product: String): String
 
+    external override fun liveFeedCacheRetainedSummariesJson(handle: Long, product: String): String
+
+    external override fun liveFeedCacheReleasePersistedPayloadBytes(
+        handle: Long,
+        product: String,
+        version: String,
+    )
+
     external override fun liveFeedCacheIngestInstalledPayloadBytes(
         handle: Long,
         summaryJson: String,
         payloadBytes: ByteArray,
     )
 
-    external override fun liveFeedCacheInstalledPayloadBytes(handle: Long, product: String): ByteArray
+    external override fun liveFeedCacheInstalledPayloadBytes(
+        handle: Long,
+        product: String,
+        version: String,
+    ): ByteArray
 
     external override fun liveFeedCacheResourceManifestJson(handle: Long, product: String): String
 
@@ -621,7 +580,12 @@ object NativeBindings : NativeBridge {
 
     external override fun liveFeedCacheFinishRestoringResources(handle: Long, product: String)
 
-    external override fun liveFeedCacheInstallProductInSessionJson(handle: Long, sessionHandle: Long, product: String): String
+    external override fun liveFeedCacheInstallProductInSessionJson(
+        handle: Long,
+        sessionHandle: Long,
+        product: String,
+        version: String,
+    ): String
 
     external override fun liveFeedCacheSyncCatalogInSessionJson(handle: Long, sessionHandle: Long): String
 
@@ -670,17 +634,7 @@ object NativeBindings : NativeBridge {
 
     external override fun situationRingCandidatesJson(): String
 
-    external override fun prepareAirwayPresentationJson(
-        airwayName: String,
-        branchesJson: String,
-        originPositionJson: String,
-        destinationPositionJson: String,
-    ): String
-
-    external override fun emptyFlightPlanJson(): String
-
     external override fun createUiSessionJson(
-        planJson: String,
         recentAirportIdsJson: String,
         selectedAirportIdJson: String,
         selectedChartIdJson: String,
@@ -707,47 +661,14 @@ object NativeBindings : NativeBridge {
         actionJson: String,
     ): String
 
-    external override fun insertWaypointAtFlightPlanRowInSessionJson(
+    external override fun performFlightPlanCommandInSessionJson(
         handle: Long,
-        rowUid: String,
-        before: Boolean,
-        waypointJson: String,
+        commandJson: String,
     ): String
 
-    external override fun suggestWaypointIdentifiersAtFlightPlanRowInSessionJson(
+    external override fun queryFlightPlanInSessionJson(
         handle: Long,
-        rowUid: String,
-        before: Boolean,
-        prefix: String,
-        limit: Int,
-    ): String
-
-    external override fun previewFlightPlanEntryInSessionJson(
-        handle: Long,
-        input: String,
-    ): String
-
-    external override fun appendFlightPlanEntryInSessionJson(
-        handle: Long,
-        input: String,
-    ): String
-
-    external override fun insertAirwayAtFlightPlanRowInSessionJson(
-        handle: Long,
-        rowUid: String,
-        presentationJson: String,
-        entryIndex: Int,
-        exitIndex: Int,
-    ): String
-
-    external override fun selectProcedureAtFlightPlanRowInSessionJson(
-        handle: Long,
-        rowUid: String,
-        airportId: String,
-        procedureId: String,
-        kindJson: String,
-        runwayTransitionJson: String,
-        enrouteTransitionJson: String,
+        queryJson: String,
     ): String
 
     external override fun registerOwnshipSourceInSessionPagedJson(
@@ -876,12 +797,6 @@ object NativeBindings : NativeBridge {
 
     external override fun maintainNavDbInSessionAtEpochMsJson(handle: Long, epochMs: Long): String
 
-    external override fun performFlightPlanRowActionInSessionJson(
-        handle: Long,
-        rowUid: String,
-        actionUid: String,
-    ): String
-
     external override fun performStatusActionInSessionJson(
         handle: Long,
         actionId: String,
@@ -896,23 +811,6 @@ object NativeBindings : NativeBridge {
         handle: Long,
         agreementId: String,
     ): String
-
-    external override fun loadPlateProcedureInSessionJson(
-        handle: Long,
-        loadId: String,
-    ): String
-
-    external override fun restoreDirectToInSessionJson(handle: Long): String
-
-    external override fun activateNextLegInSessionJson(handle: Long): String
-
-    external override fun stopNavigationInSessionJson(handle: Long): String
-
-    external override fun suspendSequencingInSessionJson(handle: Long): String
-
-    external override fun unsuspendSequencingInSessionJson(handle: Long): String
-
-    external override fun sequenceActiveLegInSessionJson(handle: Long): String
 
     external override fun syncGuidanceGeometryInSessionJson(handle: Long): String
 

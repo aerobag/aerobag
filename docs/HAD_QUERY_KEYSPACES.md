@@ -219,19 +219,22 @@ Current old source: exact lookup across `airports`, `nav`, and `fix`.
 Value: the resolved `NavRef` for that identifier using core's established
 priority order, or no key if the identifier is unknown.
 
-`waypoint/prefix/{prefix_shard}`
+`waypoint/search-prefix/{prefix_shard}`
 
-Current consumer: completion suggestions.
+Current consumer: identifier, airport-name, and airport-city search.
 
-Current old source: prefix SQL across `airports`, `nav`, and `fix`.
+Source: normalized identifier terms across `airports`, `nav`, and `fix`, plus
+normalized city and facility-name terms for airports.
 
-Value: sorted waypoint records for that prefix shard. Core filters the requested
-prefix, computes distance from the insertion anchor, and truncates.
+Value: sorted waypoint search records carrying the matched term and whether it
+is an identifier or airport-name match. Shards with more than 100 distinct
+waypoints are omitted. Core tokenizes the query, ignores omitted broad terms
+when another term is usable, intersects usable term matches, ranks identifier
+matches before name matches, computes distance from the insertion anchor, and
+truncates.
 
-This can be a trie-like shard layout later. The important contract is that the
-UI fetches the shard and passes the candidate records to core. Core filters the
-requested prefix, computes distance from the insertion anchor, and does the
-ranking.
+The UI does not interpret this keyspace. It submits the query and renders the
+core-produced suggestions.
 
 `navref/position/{kind}/{identifier}`
 

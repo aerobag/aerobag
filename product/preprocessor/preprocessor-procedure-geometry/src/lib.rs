@@ -28,7 +28,6 @@ use app_core::{
 use app_core::{
     nav_kv_key_for_query, start_requirement_from_leg_characteristics,
     terminal_state_with_leg_characteristics, NavKvLookup, NavKvQuery, NavKvStore,
-    WaypointIdentifierRecord,
 };
 use procedure_geometry_types as pgt;
 use serde::{Deserialize, Serialize};
@@ -453,9 +452,7 @@ pub fn materialize_procedure_from_records(
                 terminal_discontinuity,
                 data_quality: data_quality.clone(),
             },
-            concretized_items,
             resolved_legs,
-            data_quality,
         });
     }
 
@@ -546,9 +543,7 @@ pub fn materialize_procedure_from_records(
             terminal_discontinuity,
             data_quality: data_quality.clone(),
         },
-        concretized_items,
         resolved_legs,
-        data_quality,
     })
 }
 
@@ -652,24 +647,15 @@ pub(crate) fn nav_ref_position_from_store(
 #[cfg(test)]
 fn bare_navaid_position_lookup_is_unique(store: &NavKvStore, identifier: &str) -> Option<bool> {
     let identifier = identifier.trim().to_uppercase();
-    let key = nav_kv_key_for_query(&NavKvQuery::WaypointPrefix {
-        prefix: identifier.clone(),
-    })?;
+    let key = nav_kv_key_for_query(&NavKvQuery::WaypointIdentifier { identifier })?;
     let bytes = match store.get_bytes(&key).ok()? {
         NavKvLookup::Hit(bytes) => bytes,
         NavKvLookup::MissingKey => return Some(false),
         NavKvLookup::MissingPages(_) => return None,
     };
-    let records = serde_json::from_slice::<Vec<WaypointIdentifierRecord>>(&bytes).ok()?;
-    let count = records
-        .iter()
-        .filter(|record| {
-            record.identifier.trim().eq_ignore_ascii_case(&identifier)
-                && record.kind.trim().eq_ignore_ascii_case("navaid")
-        })
-        .take(2)
-        .count();
-    Some(count == 1)
+    serde_json::from_slice::<NavRef>(&bytes)
+        .ok()
+        .map(|nav_ref| matches!(nav_ref, NavRef::Navaid(_)))
 }
 
 #[cfg(test)]
@@ -4943,6 +4929,7 @@ fn procedure_geometry_record_from_materialized(
         components: Vec::new(),
         leg_bundles,
         data_quality: built
+            .procedure
             .data_quality
             .into_iter()
             .map(|message| pgt::ProcedureDataQualityAnnotation { message })

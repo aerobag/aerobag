@@ -102,8 +102,8 @@ current consumer-derived key inventory.
 Future `nav_kv` keys should cover map-shaped and spatial lookup needs:
 
 ```text
-waypoint/ident/KRDD
-waypoint/prefix/KR
+waypoint/identifier/KRDD
+waypoint/search-prefix/KR
 plate/airport/KRDD
 plate/by-id/plate%3AKRDD%3AIAP-CA-ILS%20OR%20LOC%20RWY%2034.png
 plate/cifp/KRDD/I34
@@ -547,11 +547,11 @@ contract instead of parallel formats. This should improve WAN and durable-cache
 size without putting decompression on the normal query path.
 
 Status: implemented in the shared `nav-kv-package` crate. Cycle nav-db is now
-contract `NAV12`, cycle/live nav-kv packages use Stored zip members with xz
+contract `NAV13`, cycle/live nav-kv packages use Stored zip members with xz
 `page_####` payloads, live-feed schema is now `2`, and large live-feed JSON
 full/delta payloads are xz-compressed at publication time. Core decodes xz pages
 before inserting them into HAD stores and durable obstacle delta rebuilds persist
-back into the same Stored-zip/xz-page package shape. NAV12 also requires
+back into the same Stored-zip/xz-page package shape. NAV13 also requires
 `navref/symbol/*` records to carry explicit `symbol_kind` values.
 
 Target nav-kv package/page contract:

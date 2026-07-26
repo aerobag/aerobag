@@ -205,22 +205,18 @@ import kotlinx.coroutines.withContext
 import org.aerobag.app.domain.ChartAirport
 import org.aerobag.app.domain.ChartAirportMenuEntry
 import org.aerobag.app.domain.ChartAsset
-import org.aerobag.app.domain.AppState
 import org.aerobag.app.domain.AirwayPresentationPlan
 import org.aerobag.app.domain.AirwaySuggestion
 import org.aerobag.app.domain.WaypointIdentifierSuggestion
 import org.aerobag.app.domain.CoreMapViewport
 import org.aerobag.app.domain.DerivedChartPageState
-import org.aerobag.app.domain.FlightPlan
 import org.aerobag.app.domain.FlightPlanEntryPreview
-import org.aerobag.app.domain.FlightPlanUiMutation
 import org.aerobag.app.domain.FlightDataCell
 import org.aerobag.app.domain.FlightPlanDisplayRowKind
 import org.aerobag.app.domain.FlightPlanDisplayRowUiView
 import org.aerobag.app.domain.FlightPlanRowActionUiView
 import org.aerobag.app.domain.FlightPlanRouteSegment
 import org.aerobag.app.domain.FlightPlanUiState
-import org.aerobag.app.domain.GuidanceState
 import org.aerobag.app.domain.InstalledPackages
 import org.aerobag.app.domain.AirspaceDisplayDecoration
 import org.aerobag.app.domain.AirspaceDisplayDecorationSegment
@@ -261,12 +257,9 @@ import org.aerobag.app.domain.ProcedureKind
 import org.aerobag.app.domain.ProcedureLoadOption
 import org.aerobag.app.domain.ProcedureOptions
 import org.aerobag.app.domain.ProcedureSummary
-import org.aerobag.app.domain.ResolvedLeg
-import org.aerobag.app.domain.ResolvedLegSource
 import org.aerobag.app.domain.RenderTile
 import org.aerobag.app.domain.RouteSegmentStatus
 import org.aerobag.app.domain.RouteComponentViewKind
-import org.aerobag.app.domain.RouteComponent
 import org.aerobag.app.domain.RuntimeContent
 import org.aerobag.app.domain.ScreenPoint
 import org.aerobag.app.domain.SectionalPackages
@@ -565,15 +558,12 @@ internal data class MapSelectionDetailModalState(
 
 internal data class FlightPlanDisplayRow(
     val id: String,
-    val selectionKey: String,
     val label: String,
     val rowKind: String,
     val componentKind: RouteComponentViewKind? = null,
     val componentUid: String? = null,
-    val componentIndex: Int? = null,
     val procedureId: String? = null,
     val procedureKind: org.aerobag.app.domain.ProcedureKind? = null,
-    val legIndex: Int? = null,
     val dataCells: List<FlightDataCell> = emptyList(),
     val showPlateTargetId: String? = null,
     val chartAirportId: String? = null,
@@ -591,8 +581,6 @@ internal data class FlightPlanDisplayRow(
     val canReorderUp: Boolean = false,
     val canReorderDown: Boolean = false,
     val actionMatrix: List<List<FlightPlanRowActionUiView>> = emptyList(),
-    val startComponentIndex: Int? = null,
-    val endComponentIndex: Int? = null,
     val originAnchor: NavRef? = null,
     val destinationAnchor: NavRef? = null,
 )
@@ -651,7 +639,7 @@ internal data class AndroidAirwayPickerState(
     val suggestions: List<AirwaySuggestion>,
     val selectedAirwayName: String?,
     val presentation: AirwayPresentationPlan?,
-    val selectedEntryIndex: Int?,
+    val selectedEntryUid: String?,
 )
 
 internal data class AndroidProcedurePickerState(
@@ -2279,7 +2267,6 @@ internal fun AerobagApp(
     )
     val appCore = retainedCoreSession.appCore
     val situationRingCandidates = retainedCoreSession.situationRingCandidates
-    val initialPlan = retainedCoreSession.initialPlan
     val uiSession = retainedCoreSession.uiSession
     var page by remember {
         mutableStateOf(
@@ -2351,10 +2338,11 @@ internal fun AerobagApp(
         commandName: String,
         logTag: String,
         operation: () -> UiSessionSnapshot,
-    ): UiSessionSnapshot? {
+    ): Boolean {
         return try {
             val snapshot = operation()
-            snapshot.takeIf { applySessionSnapshot(it) }
+            applySessionSnapshot(snapshot)
+            true
         } catch (error: Throwable) {
             if (error is NativeSessionCommandRejectedException) {
                 recoverSessionCommandFailure(error, notifyUser = false)
@@ -2363,7 +2351,7 @@ internal fun AerobagApp(
             } else {
                 Log.w(logTag, "background session command failed command=$commandName", error)
             }
-            null
+            false
         }
     }
     var uiInvalidationRevisions by remember(uiSession) { mutableStateOf(UiInvalidationRevisions()) }
@@ -2375,6 +2363,21 @@ internal fun AerobagApp(
         uiSession.setInvalidationListener(::publishUiInvalidations)
         onDispose {
             uiSession.setInvalidationListener(null)
+        }
+    }
+    LaunchedEffect(uiSession, uiInvalidationRevisions.sessionSnapshot) {
+        if (uiInvalidationRevisions.sessionSnapshot == 0) {
+            return@LaunchedEffect
+        }
+        try {
+            val refreshedSnapshot = withContext(Dispatchers.IO) {
+                uiSession.refreshSnapshot()
+            }
+            applySessionSnapshot(refreshedSnapshot)
+        } catch (error: CancellationException) {
+            throw error
+        } catch (error: Throwable) {
+            Log.w("AerobagInvalidation", "session snapshot refresh failed", error)
         }
     }
     LaunchedEffect(context, sessionSnapshot.displayPolicy) {
@@ -2419,15 +2422,24 @@ internal fun AerobagApp(
         onDispose { liveFeedCache.close() }
     }
     var liveFeedGeneration by remember(uiSession) { mutableIntStateOf(0) }
-    fun promoteLiveFeed(summary: LiveFeedInstalledSummary) {
-        applyBackgroundSessionCommand("installLiveFeedCacheProduct", "AndroidLiveFeeds") {
-            uiSession.installLiveFeedCacheProduct(liveFeedCache, summary.product)
-        }?.let {
+    fun promoteLiveFeed(summary: LiveFeedInstalledSummary): Boolean {
+        val promoted = applyBackgroundSessionCommand(
+            "installLiveFeedCacheProduct",
+            "AndroidLiveFeeds",
+        ) {
+            uiSession.installLiveFeedCacheProduct(
+                liveFeedCache,
+                summary.product,
+                summary.version,
+            )
+        }
+        if (promoted) {
             liveFeedGeneration += 1
             diagnosticLogInfo("AndroidLiveFeeds") {
                 "promoted product=${summary.product} version=${summary.version} generation=$liveFeedGeneration"
             }
         }
+        return promoted
     }
     fun reportLiveFeedConnection(event: LiveFeedConnectionEvent) {
         applyBackgroundSessionCommand("reportLiveFeedConnectionEvent", "AndroidLiveFeeds") {
@@ -2443,7 +2455,9 @@ internal fun AerobagApp(
         val appContext = context.applicationContext
         withContext(Dispatchers.IO) {
             LiveFeedCacheStore.listInstalledSummaries(appContext)
-        }.forEach { promoteLiveFeed(it) }
+        }.forEach {
+            promoteLiveFeed(it)
+        }
         AndroidLiveFeedClient(
             context = appContext,
             cache = liveFeedCache,
@@ -2451,7 +2465,9 @@ internal fun AerobagApp(
         ).bootstrapAndRun(
             promote = { summary ->
                 withContext(Dispatchers.Main) {
-                    promoteLiveFeed(summary)
+                    check(promoteLiveFeed(summary)) {
+                        "failed to promote ${summary.product}/${summary.version}"
+                    }
                 }
             },
             onChanged = {
@@ -2479,9 +2495,10 @@ internal fun AerobagApp(
             }
         }
     }
-    val appState = sessionSnapshot.appState
     val appUiState = sessionSnapshot.appUiState
-    val currentPlan = appState.activePlan ?: initialPlan
+    val sessionPlanUiState = requireNotNull(appUiState.activePlan) {
+        "UiSessionSnapshot must provide active flight-plan UI state"
+    }
     var derivedChartPageState by remember(uiSession) {
         mutableStateOf(
             DerivedChartPageState(
@@ -2597,8 +2614,9 @@ internal fun AerobagApp(
         retainedModel.mapViewport = mapViewport
     }
     LaunchedEffect(
-        appCore,
-        currentPlan,
+        uiSession,
+        sessionPlanUiState.planId,
+        sessionPlanUiState.planVersion,
         sessionSnapshot.chartPageState.recentAirportIds,
         sessionSnapshot.chartPageState.plateTargetAirportId,
         sessionSnapshot.chartPageState.selectedAirportId,
@@ -2606,16 +2624,7 @@ internal fun AerobagApp(
         sessionSnapshot.chartPageState.selectedChartId,
         sessionSnapshot.chartPageState.suggestedChartIds,
     ) {
-        derivedChartPageState =
-            appCore.deriveChartPageState(
-                currentPlan,
-                sessionSnapshot.chartPageState.recentAirportIds,
-                sessionSnapshot.chartPageState.plateTargetAirportId,
-                sessionSnapshot.chartPageState.selectedAirportId.ifBlank { null },
-                sessionSnapshot.chartPageState.selectedReferenceFamilyId,
-                sessionSnapshot.chartPageState.selectedChartId.ifBlank { null },
-                sessionSnapshot.chartPageState.suggestedChartIds,
-            )
+        derivedChartPageState = uiSession.deriveChartPageState()
     }
     LaunchedEffect(uiSession) {
         if (readStoredGpsCaptureDebugFlag(prefs)) {
@@ -2677,9 +2686,6 @@ internal fun AerobagApp(
             }
             delay(250)
         }
-    }
-    val sessionPlanUiState = requireNotNull(sessionSnapshot.appUiState.activePlan) {
-        "UiSessionSnapshot must provide active flight-plan UI state"
     }
     val navElement = sessionPlanUiState.guidance?.navElement
 
@@ -2971,7 +2977,6 @@ internal fun AerobagApp(
                         onOpenPlateTarget = ::openPlateTarget,
                         onOpenPlan = { navigateToPage(AppPage.Plan) },
                         navElement = navElement,
-                        plan = currentPlan,
                         planUiState = sessionPlanUiState,
                         )
                     }
@@ -2987,7 +2992,6 @@ internal fun AerobagApp(
                         navElement = navElement,
                         planUiState = sessionPlanUiState,
                         planListState = planListState,
-                        plan = currentPlan,
                         uiTheme = uiTheme,
                         onSelectPage = ::navigateToPage,
                         onOpenRecentChartOrPlate = ::navigateToMostRecentChartOrPlate,
@@ -3008,7 +3012,7 @@ internal fun AerobagApp(
                         selectedChart = selectedChart,
                         suggestedChartIds = derivedChartPageState.suggestedChartIds,
                         chartAssetDataRevision = chartAssetDataRevision,
-                        plan = currentPlan,
+                        flightPlanVersion = sessionPlanUiState.planVersion,
                         uiTheme = uiTheme,
                         ownship = appUiState.ownship.render,
                         ownshipControls = appUiState.ownship.controls,

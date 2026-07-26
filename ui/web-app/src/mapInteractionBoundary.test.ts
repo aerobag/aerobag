@@ -50,10 +50,25 @@ describe("map interaction boundaries", () => {
     }
   });
 
+  it("allows map-selection detail text to be selected inside the non-selectable map surface", () => {
+    const detailModalBlocks = [...styles.matchAll(/\.mapSelectionDetailModal\s*\{([^}]*)\}/g)]
+      .map((match) => match[1] ?? "")
+      .join("\n");
+    expect(detailModalBlocks).toContain("user-select: text");
+  });
+
   it("treats an open map-selection inspector as a hard map gesture boundary", () => {
     expect(functionSource("handlePointerRelease")).toContain("trayGroup.scrimOpen || mapSelection");
     expect(functionSource("handleWheel")).toContain("trayGroup.scrimOpen || mapSelection");
     expect(functionSource("handleDoubleClick")).toContain("trayGroup.scrimOpen || mapSelection");
+  });
+
+  it("opens a raw map click with core's preferred point already selected", () => {
+    const releaseSource = functionSource("handlePointerRelease");
+    expect(releaseSource).toContain(
+      "mapSelectionItemById(result, result.initial_selected_item_id ?? null)",
+    );
+    expect(releaseSource).not.toContain("selectedItem: null");
   });
 
   it("uses lightweight hover weather for METAR symbols without opening the map inspector", () => {

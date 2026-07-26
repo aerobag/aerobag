@@ -43,6 +43,7 @@ const TFR_GRAPHICS_URL: &str = concat!(
     "maxFeatures=300&outputFormat=application/json&srsname=EPSG:4326"
 );
 const OBSTACLE_DOF_URL: &str = "https://aeronav.faa.gov/Obst_Data/DAILY_DOF_DAT.ZIP";
+const OBSTACLE_STATE_LAYOUT_VERSION: u32 = 2;
 const NEXRAD_INDEX_URL: &str = "https://mrms.ncep.noaa.gov/data/RIDGEII/L2/CONUS/CREF_QCD/";
 
 pub const WINDS_ALOFT_FORECAST_HOURS: &[u32] = &[0, 3, 6, 9, 12];
@@ -811,7 +812,9 @@ impl ProductBuilder for ObstaclesLiveFeedBuilder {
             "obstacles",
         )?;
         let fingerprint = hash_tree(&input_dir)?;
-        let version = content_version_label(&fingerprint);
+        let version = content_version_label(&hash_text(&format!(
+            "obstacles-state-v{OBSTACLE_STATE_LAYOUT_VERSION}:{fingerprint}"
+        )));
         let result = build_obstacle_dataset(&BuildObstacleDatasetRequest {
             input_dir,
             output_dir,

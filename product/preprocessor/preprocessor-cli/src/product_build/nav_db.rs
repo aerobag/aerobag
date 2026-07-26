@@ -2890,10 +2890,12 @@ pub(super) fn build_nav_kv_airport_navref_pairs(
     let runway_info = airport_runway_symbol_info_by_airport(connection)?;
     let mut pairs = Vec::new();
     let mut important_metar_station_ids = BTreeSet::new();
+    let mut airport_ids = BTreeSet::new();
     for row in rows {
         let (id, lat, lon, facility_name, kind, atct, fuel_types, elevation) = row?;
         let key_id = had_upper_key_component(&id);
         let station_id = id.trim().to_ascii_uppercase();
+        airport_ids.insert(station_id.clone());
         if atct.trim().eq_ignore_ascii_case("Y") {
             important_metar_station_ids.insert(station_id);
         }
@@ -2926,6 +2928,10 @@ pub(super) fn build_nav_kv_airport_navref_pairs(
         let _ = facility_name;
     }
     pairs.push(metar_important_stations_pair(&important_metar_station_ids)?);
+    pairs.push(weather_station_airport_aliases_pair(
+        connection,
+        &airport_ids,
+    )?);
     Ok(pairs)
 }
 
@@ -2939,6 +2945,112 @@ pub(super) fn metar_important_stations_pair(
             "station_ids": station_ids.iter().collect::<Vec<_>>(),
         }),
         "METAR important station ids",
+    )
+}
+
+fn weather_station_airport_aliases_pair(
+    connection: &rusqlite::Connection,
+    airport_ids: &BTreeSet<String>,
+) -> anyhow::Result<NavKvPair> {
+    let mut stmt = connection.prepare(
+        "
+        SELECT DISTINCT upper(trim(airports.LocationID)), upper(trim(airports.State)),
+                        CAST(airports.ARPLatitude AS REAL),
+                        CAST(airports.ARPLongitude AS REAL)
+        FROM airports
+        JOIN awos
+          ON upper(trim(awos.LocationID)) = upper(trim(airports.LocationID))
+        WHERE upper(trim(awos.Status)) = 'Y'
+          AND length(trim(airports.LocationID)) = 3
+        ",
+    )?;
+    let rows = stmt.query_map([], |row| {
+        Ok((
+            row.get::<_, String>(0)?,
+            row.get::<_, String>(1)?,
+            row.get::<_, f64>(2)?,
+            row.get::<_, f64>(3)?,
+        ))
+    })?;
+    let mut aliases = BTreeMap::new();
+    for row in rows {
+        let (airport_id, state, lat, lon) = row?;
+        if !is_contiguous_us_state(&state) {
+            continue;
+        }
+        let station_id = format!("K{airport_id}");
+        if airport_ids.contains(&station_id) {
+            continue;
+        }
+        aliases.insert(
+            station_id,
+            serde_json::json!({
+                "airport_id": airport_id,
+                "position": nav_lat_lon_json(lat, lon),
+            }),
+        );
+    }
+    json_pair(
+        "weather/station-airport-aliases".to_string(),
+        &serde_json::json!({
+            "schema_version": 1,
+            "aliases": aliases,
+        }),
+        "weather station airport aliases",
+    )
+}
+
+fn is_contiguous_us_state(state: &str) -> bool {
+    matches!(
+        state.trim().to_ascii_uppercase().as_str(),
+        "AL" | "AZ"
+            | "AR"
+            | "CA"
+            | "CO"
+            | "CT"
+            | "DE"
+            | "FL"
+            | "GA"
+            | "ID"
+            | "IL"
+            | "IN"
+            | "IA"
+            | "KS"
+            | "KY"
+            | "LA"
+            | "ME"
+            | "MD"
+            | "MA"
+            | "MI"
+            | "MN"
+            | "MS"
+            | "MO"
+            | "MT"
+            | "NE"
+            | "NV"
+            | "NH"
+            | "NJ"
+            | "NM"
+            | "NY"
+            | "NC"
+            | "ND"
+            | "OH"
+            | "OK"
+            | "OR"
+            | "PA"
+            | "RI"
+            | "SC"
+            | "SD"
+            | "TN"
+            | "TX"
+            | "UT"
+            | "VT"
+            | "VA"
+            | "WA"
+            | "WV"
+            | "WI"
+            | "WY"
+            | "DC"
     )
 }
 
@@ -3138,7 +3250,7 @@ pub(super) fn build_nav_kv_runway_position_pairs(
 pub(super) fn build_nav_kv_waypoint_lookup_pairs(
     connection: &rusqlite::Connection,
 ) -> anyhow::Result<Vec<NavKvPair>> {
-    let mut candidates = Vec::<serde_json::Value>::new();
+    let mut candidates = Vec::<WaypointSearchCandidate>::new();
     let mut kind_by_identifier = BTreeMap::<String, String>::new();
     collect_waypoint_candidates(
         connection,
@@ -3183,43 +3295,47 @@ pub(super) fn build_nav_kv_waypoint_lookup_pairs(
         )?);
     }
 
-    candidates.sort_by(|left, right| {
-        let left_identifier = left
-            .get("identifier")
-            .and_then(|value| value.as_str())
-            .unwrap_or_default();
-        let right_identifier = right
-            .get("identifier")
-            .and_then(|value| value.as_str())
-            .unwrap_or_default();
-        let left_kind = left
-            .get("kind")
-            .and_then(|value| value.as_str())
-            .unwrap_or_default();
-        let right_kind = right
-            .get("kind")
-            .and_then(|value| value.as_str())
-            .unwrap_or_default();
-        left_identifier
-            .len()
-            .cmp(&right_identifier.len())
-            .then_with(|| left_identifier.cmp(right_identifier))
-            .then_with(|| waypoint_kind_rank(left_kind).cmp(&waypoint_kind_rank(right_kind)))
+    let mut search_candidates = Vec::new();
+    for candidate in &candidates {
+        for (matched_term, match_kind) in &candidate.search_terms {
+            search_candidates.push(WaypointSearchRecord {
+                identifier: candidate.identifier.clone(),
+                kind: candidate.kind.clone(),
+                display_name: candidate.display_name.clone(),
+                lat: candidate.lat,
+                lon: candidate.lon,
+                matched_term: matched_term.clone(),
+                match_kind: *match_kind,
+            });
+        }
+    }
+    search_candidates.sort_by(|left, right| {
+        left.matched_term
+            .cmp(&right.matched_term)
+            .then_with(|| left.identifier.cmp(&right.identifier))
+            .then_with(|| left.match_kind.cmp(&right.match_kind))
     });
+    pairs.extend(build_sparse_waypoint_search_prefix_pairs(
+        &search_candidates,
+    )?);
 
-    let mut by_prefix = BTreeMap::<String, Vec<serde_json::Value>>::new();
+    Ok(pairs)
+}
+
+fn build_sparse_waypoint_search_prefix_pairs(
+    candidates: &[WaypointSearchRecord],
+) -> anyhow::Result<Vec<NavKvPair>> {
+    let mut by_prefix = BTreeMap::<String, Vec<WaypointSearchRecord>>::new();
     for candidate in candidates {
-        let Some(identifier) = candidate.get("identifier").and_then(|value| value.as_str()) else {
-            continue;
-        };
-        let chars = identifier.chars().collect::<Vec<_>>();
+        let chars = candidate.matched_term.chars().collect::<Vec<_>>();
         for length in 1..=chars.len() {
             let prefix = chars.iter().take(length).collect::<String>();
             by_prefix.entry(prefix).or_default().push(candidate.clone());
         }
     }
+    let mut pairs = Vec::new();
     for (prefix, candidates) in &by_prefix {
-        if candidates.len() > WAYPOINT_PREFIX_MAX_RESULTS {
+        if distinct_waypoint_search_candidates(candidates) > WAYPOINT_SEARCH_MAX_RESULTS {
             continue;
         }
         let parent_too_large = prefix
@@ -3230,29 +3346,46 @@ pub(super) fn build_nav_kv_waypoint_lookup_pairs(
                 if parent_len == 0 {
                     return true;
                 }
-                by_prefix
-                    .get(&prefix[..parent_len])
-                    .is_none_or(|parent| parent.len() > WAYPOINT_PREFIX_MAX_RESULTS)
+                by_prefix.get(&prefix[..parent_len]).is_none_or(|parent| {
+                    distinct_waypoint_search_candidates(parent) > WAYPOINT_SEARCH_MAX_RESULTS
+                })
             })
             .unwrap_or(true);
         if !parent_too_large {
             continue;
         }
         pairs.push(json_pair(
-            format!("waypoint/prefix/{}", had_upper_key_component(&prefix)),
-            &serde_json::Value::Array(candidates.clone()),
-            "waypoint prefix",
+            format!("waypoint/search-prefix/{}", had_upper_key_component(prefix)),
+            &serde_json::to_value(candidates).context("failed to encode waypoint search shard")?,
+            "waypoint search prefix",
         )?);
     }
-
     Ok(pairs)
+}
+
+fn distinct_waypoint_search_candidates(candidates: &[WaypointSearchRecord]) -> usize {
+    candidates
+        .iter()
+        .map(|candidate| (candidate.kind.as_str(), candidate.identifier.as_str()))
+        .collect::<BTreeSet<_>>()
+        .len()
+}
+
+#[derive(Debug, Clone)]
+pub(super) struct WaypointSearchCandidate {
+    identifier: String,
+    kind: String,
+    display_name: String,
+    lat: f64,
+    lon: f64,
+    search_terms: BTreeMap<String, WaypointSearchMatchKind>,
 }
 
 pub(super) fn collect_waypoint_candidates(
     connection: &rusqlite::Connection,
     table: &str,
     kind: &str,
-    candidates: &mut Vec<serde_json::Value>,
+    candidates: &mut Vec<WaypointSearchCandidate>,
     kind_by_identifier: &mut BTreeMap<String, String>,
 ) -> anyhow::Result<()> {
     let sql = if kind == "airport" {
@@ -3305,13 +3438,26 @@ pub(super) fn collect_waypoint_candidates(
             continue;
         }
         record_waypoint_identifier_kind(kind_by_identifier, &identifier, kind)?;
-        candidates.push(serde_json::json!({
-            "identifier": identifier,
-            "kind": kind,
-            "display_name": waypoint_identifier_display_name(kind, &city, &state, &facility_name),
-            "lat": round_nav_coordinate(lat),
-            "lon": round_nav_coordinate(lon),
-        }));
+        let mut search_terms =
+            BTreeMap::from([(identifier.clone(), WaypointSearchMatchKind::Identifier)]);
+        if kind == "airport" {
+            for term in had_key::search_terms(&city)
+                .into_iter()
+                .chain(had_key::search_terms(&facility_name))
+            {
+                search_terms
+                    .entry(term)
+                    .or_insert(WaypointSearchMatchKind::AirportName);
+            }
+        }
+        candidates.push(WaypointSearchCandidate {
+            identifier,
+            kind: kind.to_string(),
+            display_name: waypoint_identifier_display_name(kind, &city, &state, &facility_name),
+            lat: round_nav_coordinate(lat),
+            lon: round_nav_coordinate(lon),
+            search_terms,
+        });
     }
     Ok(())
 }
@@ -3323,7 +3469,7 @@ pub(super) fn record_waypoint_identifier_kind(
 ) -> anyhow::Result<()> {
     if let Some(existing) = kind_by_identifier.insert(identifier.to_string(), kind.to_string()) {
         bail!(
-            "waypoint identifier {identifier} is emitted as both {existing} and {kind}; prefix lookup requires one kind per identifier"
+            "waypoint identifier {identifier} is emitted as both {existing} and {kind}; search lookup requires one kind per identifier"
         );
     }
     Ok(())
@@ -3357,15 +3503,6 @@ pub(super) fn navaid_is_waypoint_symbol_eligible(kind: &str) -> bool {
         kind.trim().to_ascii_uppercase().as_str(),
         "VOR" | "VOR/DME" | "VORTAC"
     )
-}
-
-pub(super) fn waypoint_kind_rank(kind: &str) -> usize {
-    match kind {
-        "navaid" => 0,
-        "airport" => 1,
-        "fix" => 2,
-        _ => 3,
-    }
 }
 
 #[derive(Debug, Default, Clone)]
@@ -4451,6 +4588,8 @@ pub(super) fn load_terminal_navaid_variation_map(
 }
 
 pub(super) fn position_lookup_key(lat: f64, lon: f64) -> (i64, i64) {
+    let lat = round_nav_coordinate(lat);
+    let lon = round_nav_coordinate(lon);
     (
         (lat * 1_000_000.0).round() as i64,
         (lon * 1_000_000.0).round() as i64,
@@ -4483,6 +4622,32 @@ pub(super) fn build_position_lookup(
             .or_insert_with(|| id.clone());
     }
     lookup
+}
+
+pub(super) fn build_canonical_position_lookup(
+    positions: &BTreeMap<String, serde_json::Value>,
+) -> BTreeMap<(i64, i64), BTreeSet<String>> {
+    let mut lookup = BTreeMap::<_, BTreeSet<_>>::new();
+    for (id, position) in positions {
+        let Some(lat) = position.get("lat").and_then(|value| value.as_f64()) else {
+            continue;
+        };
+        let Some(lon) = position.get("lon").and_then(|value| value.as_f64()) else {
+            continue;
+        };
+        lookup
+            .entry(canonical_position_lookup_key(lat, lon))
+            .or_default()
+            .insert(id.clone());
+    }
+    lookup
+}
+
+pub(super) fn canonical_position_lookup_key(lat: f64, lon: f64) -> (i64, i64) {
+    (
+        (lat * NAV_COORDINATE_DECIMAL_SCALE).round() as i64,
+        (lon * NAV_COORDINATE_DECIMAL_SCALE).round() as i64,
+    )
 }
 
 pub(super) fn load_runway_position_map(
@@ -4602,6 +4767,8 @@ pub(super) fn build_nav_kv_airway_pairs(
     connection: &rusqlite::Connection,
 ) -> anyhow::Result<Vec<NavKvPair>> {
     let nav_context = NavLookupContext::load(connection)?;
+    let navaid_ids_by_canonical_position =
+        build_canonical_position_lookup(&nav_context.navaid_positions);
     let mut stmt = connection.prepare(
         "
         SELECT trim(name), trim(branch_key), CAST(sequence_number AS INTEGER),
@@ -4623,10 +4790,21 @@ pub(super) fn build_nav_kv_airway_pairs(
     })?;
     let mut branch_points = BTreeMap::<(String, String), Vec<serde_json::Value>>::new();
     let mut spatial_points = BTreeMap::<(i32, i32), Vec<serde_json::Value>>::new();
+    let mut colocated_navaid_violations = Vec::new();
     for row in rows {
         let (name, branch_key, sequence, point_name, lat, lon) = row?;
         let position = nav_lat_lon_json(lat, lon);
         let nav_ref = nav_context.classify_airway_point_json(&point_name, lat, lon);
+        if let Some(expected_navaids) =
+            navaid_ids_by_canonical_position.get(&canonical_position_lookup_key(lat, lon))
+        {
+            let actual_navaid = nav_ref.get("Navaid").and_then(serde_json::Value::as_str);
+            if actual_navaid.is_none_or(|actual| !expected_navaids.contains(actual)) {
+                colocated_navaid_violations.push(format!(
+                    "{name}/{branch_key}/{sequence} {point_name}: expected one of {expected_navaids:?}, got {nav_ref}"
+                ));
+            }
+        }
         nav_context.assert_airway_point_nav_ref_invariant(
             &name,
             &branch_key,
@@ -4658,6 +4836,12 @@ pub(super) fn build_nav_kv_airway_pairs(
             .or_default()
             .push(spatial_point);
     }
+    anyhow::ensure!(
+        colocated_navaid_violations.is_empty(),
+        "{} airway point(s) colocated with known navaids lost navaid identity:\n{}",
+        colocated_navaid_violations.len(),
+        colocated_navaid_violations.join("\n")
+    );
 
     let mut branches_by_airway = BTreeMap::<String, Vec<serde_json::Value>>::new();
     for ((name, branch_key), points) in branch_points {
@@ -4871,12 +5055,7 @@ pub(super) fn terminal_navaid_had_key(
 }
 
 pub(super) fn airport_display_label(id: &str) -> String {
-    let trimmed = id.trim();
-    if trimmed.len() == 4 && trimmed.starts_with('K') {
-        trimmed[1..].to_ascii_uppercase()
-    } else {
-        trimmed.to_ascii_uppercase()
-    }
+    id.trim().to_ascii_uppercase()
 }
 
 pub(super) fn navaid_display_label(id: &str, facility_name: &str) -> String {
@@ -5041,6 +5220,111 @@ mod tests {
     }
 
     #[test]
+    fn waypoint_search_index_emits_identifier_city_and_airport_name_terms() {
+        let connection = rusqlite::Connection::open_in_memory().expect("sqlite");
+        connection
+            .execute_batch(
+                r#"
+                CREATE TABLE airports (
+                    LocationID TEXT,
+                    City TEXT,
+                    State TEXT,
+                    FacilityName TEXT,
+                    ARPLatitude REAL,
+                    ARPLongitude REAL
+                );
+                CREATE TABLE nav (
+                    LocationID TEXT,
+                    FacilityName TEXT,
+                    ARPLatitude REAL,
+                    ARPLongitude REAL,
+                    Type TEXT
+                );
+                CREATE TABLE fix (
+                    LocationID TEXT,
+                    FacilityName TEXT,
+                    ARPLatitude REAL,
+                    ARPLongitude REAL
+                );
+                INSERT INTO airports VALUES
+                    ('KPAE', 'EVERETT', 'WA', 'SEATTLE PAINE FLD INTL', 47.9063, -122.2816),
+                    ('KSAN', 'SAN DIEGO', 'CA', 'SAN DIEGO INTL', 32.7336, -117.1897),
+                    ('KORD', 'CHICAGO', 'IL', 'CHICAGO O''HARE INTL', 41.9786, -87.9048);
+                "#,
+            )
+            .expect("schema");
+
+        let pairs = build_nav_kv_waypoint_lookup_pairs(&connection).expect("waypoint pairs");
+        let search_records = pairs
+            .iter()
+            .filter(|pair| pair.key.starts_with("waypoint/search-prefix/"))
+            .flat_map(|pair| {
+                serde_json::from_slice::<Vec<WaypointSearchRecord>>(&pair.value)
+                    .expect("search prefix records")
+            })
+            .collect::<Vec<_>>();
+        let contains =
+            |identifier: &str, matched_term: &str, match_kind: WaypointSearchMatchKind| {
+                search_records.iter().any(|record| {
+                    record.identifier == identifier
+                        && record.matched_term == matched_term
+                        && record.match_kind == match_kind
+                })
+            };
+
+        assert!(contains(
+            "KPAE",
+            "KPAE",
+            WaypointSearchMatchKind::Identifier
+        ));
+        assert!(contains(
+            "KPAE",
+            "EVERETT",
+            WaypointSearchMatchKind::AirportName
+        ));
+        assert!(contains(
+            "KPAE",
+            "PAINE",
+            WaypointSearchMatchKind::AirportName
+        ));
+        assert!(contains(
+            "KPAE",
+            "SEATTLE",
+            WaypointSearchMatchKind::AirportName
+        ));
+        assert!(contains(
+            "KSAN",
+            "DIEGO",
+            WaypointSearchMatchKind::AirportName
+        ));
+        assert!(contains(
+            "KORD",
+            "OHARE",
+            WaypointSearchMatchKind::AirportName
+        ));
+    }
+
+    #[test]
+    fn waypoint_search_index_omits_terms_over_the_candidate_limit() {
+        let candidates = (0..=WAYPOINT_SEARCH_MAX_RESULTS)
+            .map(|index| WaypointSearchRecord {
+                identifier: format!("K{index:04}"),
+                kind: "airport".to_string(),
+                display_name: "San".to_string(),
+                lat: 0.0,
+                lon: 0.0,
+                matched_term: "SAN".to_string(),
+                match_kind: WaypointSearchMatchKind::AirportName,
+            })
+            .collect::<Vec<_>>();
+
+        let pairs =
+            build_sparse_waypoint_search_prefix_pairs(&candidates).expect("search prefix pairs");
+
+        assert!(pairs.is_empty());
+    }
+
+    #[test]
     fn plate_and_csup_asset_records_omit_duplicate_and_empty_fields() {
         let plate = preprocessor_resource_index::PlateRecord {
             id: "plate-id".to_string(),
@@ -5120,7 +5404,8 @@ mod tests {
                     Type TEXT,
                     ATCT TEXT,
                     FuelTypes TEXT,
-                    ARPElevation TEXT
+                    ARPElevation TEXT,
+                    State TEXT
                 );
                 CREATE TABLE airportrunways (
                     LocationID TEXT,
@@ -5132,10 +5417,22 @@ mod tests {
                     HELatitude TEXT,
                     HELongitude TEXT
                 );
+                CREATE TABLE awos (
+                    LocationID TEXT,
+                    Status TEXT
+                );
                 INSERT INTO airports VALUES
-                    ('kaaa', 1.0, 2.0, 'A Airport', 'AIRPORT', 'Y', '', '100'),
-                    ('KBBB', 3.0, 4.0, 'B Airport', 'AIRPORT', 'N', '', '200'),
-                    (' kccc ', 5.0, 6.0, 'C Airport', 'AIRPORT', ' y ', '', '300');
+                    ('kaaa', 1.0, 2.0, 'A Airport', 'AIRPORT', 'Y', '', '100', 'WA'),
+                    ('KBBB', 3.0, 4.0, 'B Airport', 'AIRPORT', 'N', '', '200', 'WA'),
+                    (' kccc ', 5.0, 6.0, 'C Airport', 'AIRPORT', ' y ', '', '300', 'WA'),
+                    ('1S5', 7.0, 8.0, 'Sunnyside', 'AIRPORT', 'N', '', '400', 'WA'),
+                    ('XYZ', 9.0, 10.0, 'Alias Candidate', 'AIRPORT', 'N', '', '500', 'WA'),
+                    ('KXYZ', 11.0, 12.0, 'Real ICAO', 'AIRPORT', 'N', '', '600', 'WA'),
+                    ('H01', 13.0, 14.0, 'Hawaii Candidate', 'AIRPORT', 'N', '', '700', 'HI');
+                INSERT INTO awos VALUES
+                    ('1S5', 'Y'),
+                    ('XYZ', 'Y'),
+                    ('H01', 'Y');
                 "#,
             )
             .expect("schema");
@@ -5155,6 +5452,27 @@ mod tests {
                 "station_ids": ["KAAA", "KCCC"],
             })
         );
+        let aliases_pair = pairs
+            .iter()
+            .find(|pair| pair.key == "weather/station-airport-aliases")
+            .expect("weather station airport aliases pair");
+        let aliases: serde_json::Value =
+            serde_json::from_slice(&aliases_pair.value).expect("aliases json");
+        assert_eq!(
+            aliases,
+            serde_json::json!({
+                "schema_version": 1,
+                "aliases": {
+                    "K1S5": {
+                        "airport_id": "1S5",
+                        "position": {
+                            "lat": 7.0,
+                            "lon": 8.0,
+                        },
+                    },
+                },
+            })
+        );
     }
 
     #[test]
@@ -5171,7 +5489,8 @@ mod tests {
                     Type TEXT,
                     ATCT TEXT,
                     FuelTypes TEXT,
-                    ARPElevation TEXT
+                    ARPElevation TEXT,
+                    State TEXT
                 );
                 CREATE TABLE airportrunways (
                     LocationID TEXT,
@@ -5182,6 +5501,10 @@ mod tests {
                     LELongitude TEXT,
                     HELatitude TEXT,
                     HELongitude TEXT
+                );
+                CREATE TABLE awos (
+                    LocationID TEXT,
+                    Status TEXT
                 );
                 CREATE TABLE nav (
                     LocationID TEXT,
@@ -5198,7 +5521,7 @@ mod tests {
                     Type TEXT
                 );
                 INSERT INTO airports VALUES
-                    ('KRNT', 47.493, -122.216, 'Renton Municipal', 'AIRPORT', 'Y', '100LL', '32');
+                    ('KRNT', 47.493, -122.216, 'Renton Municipal', 'AIRPORT', 'Y', '100LL', '32', 'WA');
                 INSERT INTO nav VALUES
                     ('SEA', 47.435, -122.310, 'Seattle', 'VORTAC');
                 INSERT INTO fix VALUES
@@ -5232,5 +5555,12 @@ mod tests {
             assert!(value.get("label").is_some(), "{key}");
             assert!(value.get("style_class").is_some(), "{key}");
         }
+        let airport_symbol = pairs
+            .iter()
+            .find(|pair| pair.key == "navref/symbol/airport/KRNT")
+            .expect("airport symbol");
+        let airport_symbol: serde_json::Value =
+            serde_json::from_slice(&airport_symbol.value).expect("airport symbol json");
+        assert_eq!(airport_symbol["label"], "KRNT");
     }
 }

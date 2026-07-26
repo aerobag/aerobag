@@ -66,6 +66,7 @@ fn nav_kv_builder_source_paths() -> Vec<PathBuf> {
         repo_root.join("crates/procedure-geometry-types/src/lib.rs"),
         repo_root.join("crates/had-key/src/lib.rs"),
         repo_root.join("crates/had-nav-kv/src/lib.rs"),
+        repo_root.join("crates/product-contracts/src/lib.rs"),
     ]
 }
 
@@ -73,7 +74,7 @@ pub(super) fn nav_kv_builder_fingerprint() -> anyhow::Result<String> {
     let source_hash = hash_sources("nav-kv-builder-v2", &nav_kv_builder_source_paths())?;
     let constants = serde_json::json!({
         "nav_db_contract_id": super::NAV_DB_CONTRACT_ID,
-        "waypoint_prefix_max_results": super::WAYPOINT_PREFIX_MAX_RESULTS,
+        "waypoint_search_max_results": super::WAYPOINT_SEARCH_MAX_RESULTS,
         "offline_chart_region_simplify_tolerance_degrees": super::OFFLINE_CHART_REGION_SIMPLIFY_TOLERANCE_DEGREES,
         "offline_chart_region_union_snap_grid_degrees": super::OFFLINE_CHART_REGION_UNION_SNAP_GRID_DEGREES,
         "offline_chart_region_union_expand_degrees": super::OFFLINE_CHART_REGION_UNION_EXPAND_DEGREES,

@@ -635,145 +635,26 @@ pub fn perform_map_selection_action_in_session(
 }
 
 #[wasm_bindgen]
-pub fn insert_waypoint_at_flight_plan_row_in_session(
+pub fn perform_flight_plan_command_in_session(
     session_handle: u32,
-    row_uid: &str,
-    before: bool,
-    waypoint_json: &str,
+    command_json: &str,
 ) -> Result<String, JsValue> {
-    let waypoint: app_core::NavRef =
-        serde_json::from_str(waypoint_json).map_err(|err| JsValue::from_str(&err.to_string()))?;
-    let outcome = app_core::session::insert_waypoint_at_flight_plan_row_in_session(
-        session_handle,
-        row_uid.to_string(),
-        before,
-        waypoint,
-    )
-    .map_err(|err| JsValue::from_str(&err.to_string()))?;
-    serde_json::to_string(&outcome).map_err(|err| JsValue::from_str(&err.to_string()))
-}
-
-#[wasm_bindgen]
-pub fn suggest_waypoint_identifiers_at_flight_plan_row_in_session(
-    session_handle: u32,
-    row_uid: &str,
-    before: bool,
-    prefix: &str,
-    limit: usize,
-) -> Result<String, JsValue> {
-    let outcome = app_core::session::suggest_waypoint_identifiers_at_flight_plan_row_in_session(
-        session_handle,
-        row_uid.to_string(),
-        before,
-        prefix.to_string(),
-        limit,
-    )
-    .map_err(|err| JsValue::from_str(&err.to_string()))?;
-    serde_json::to_string(&outcome).map_err(|err| JsValue::from_str(&err.to_string()))
-}
-
-#[wasm_bindgen]
-pub fn preview_flight_plan_entry_in_session(
-    session_handle: u32,
-    input: &str,
-) -> Result<String, JsValue> {
-    let outcome =
-        app_core::session::preview_flight_plan_entry_in_session(session_handle, input.to_string())
-            .map_err(|err| JsValue::from_str(&err.to_string()))?;
-    serde_json::to_string(&outcome).map_err(|err| JsValue::from_str(&err.to_string()))
-}
-
-#[wasm_bindgen]
-pub fn append_flight_plan_entry_in_session(
-    session_handle: u32,
-    input: &str,
-) -> Result<String, JsValue> {
-    let outcome =
-        app_core::session::append_flight_plan_entry_in_session(session_handle, input.to_string())
-            .map_err(|err| JsValue::from_str(&err.to_string()))?;
-    serde_json::to_string(&outcome).map_err(|err| JsValue::from_str(&err.to_string()))
-}
-
-#[wasm_bindgen]
-pub fn insert_airway_at_flight_plan_row_in_session(
-    session_handle: u32,
-    row_uid: &str,
-    presentation_json: &str,
-    entry_index: usize,
-    exit_index: usize,
-) -> Result<String, JsValue> {
-    let presentation: app_core::AirwayPresentationPlan = serde_json::from_str(presentation_json)
-        .map_err(|err| JsValue::from_str(&err.to_string()))?;
-    let outcome = app_core::session::insert_airway_at_flight_plan_row_in_session(
-        session_handle,
-        row_uid.to_string(),
-        presentation,
-        entry_index,
-        exit_index,
-    )
-    .map_err(|err| JsValue::from_str(&err.to_string()))?;
-    serde_json::to_string(&outcome).map_err(|err| JsValue::from_str(&err.to_string()))
-}
-
-#[wasm_bindgen]
-pub fn select_procedure_at_flight_plan_row_in_session(
-    session_handle: u32,
-    row_uid: &str,
-    airport_id: &str,
-    procedure_id: &str,
-    procedure_kind_json: &str,
-    runway_transition_json: &str,
-    enroute_transition_json: &str,
-) -> Result<String, JsValue> {
-    let procedure_kind: app_core::ProcedureKind = serde_json::from_str(procedure_kind_json)
-        .map_err(|err| JsValue::from_str(&err.to_string()))?;
-    let runway_transition: Option<String> = serde_json::from_str(runway_transition_json)
-        .map_err(|err| JsValue::from_str(&err.to_string()))?;
-    let enroute_transition: Option<String> = serde_json::from_str(enroute_transition_json)
-        .map_err(|err| JsValue::from_str(&err.to_string()))?;
-    let outcome = app_core::session::select_procedure_at_flight_plan_row_in_session(
-        session_handle,
-        row_uid.to_string(),
-        airport_id.to_string(),
-        procedure_id.to_string(),
-        procedure_kind,
-        runway_transition,
-        enroute_transition,
-    )
-    .map_err(|err| JsValue::from_str(&err.to_string()))?;
-    serde_json::to_string(&outcome).map_err(|err| JsValue::from_str(&err.to_string()))
-}
-
-#[wasm_bindgen]
-pub fn load_plate_procedure_in_session(
-    session_handle: u32,
-    load_id: &str,
-) -> Result<String, JsValue> {
-    let outcome =
-        app_core::session::load_plate_procedure_in_session(session_handle, load_id.to_string())
-            .map_err(|err| JsValue::from_str(&err.to_string()))?;
-    serde_json::to_string(&outcome).map_err(|err| JsValue::from_str(&err.to_string()))
-}
-
-#[wasm_bindgen]
-pub fn restore_direct_to_in_session(session_handle: u32) -> Result<String, JsValue> {
-    let outcome = app_core::session::restore_direct_to_in_session(session_handle)
+    let command: app_core::FlightPlanSessionCommand =
+        serde_json::from_str(command_json).map_err(|err| JsValue::from_str(&err.to_string()))?;
+    let outcome = app_core::perform_flight_plan_command_in_session(session_handle, command)
         .map_err(|err| JsValue::from_str(&err.to_string()))?;
     serde_json::to_string(&outcome).map_err(|err| JsValue::from_str(&err.to_string()))
 }
 
 #[wasm_bindgen]
-pub fn perform_flight_plan_row_action_in_session(
+pub fn query_flight_plan_in_session(
     session_handle: u32,
-    row_uid: &str,
-    action_uid: &str,
+    query_json: &str,
 ) -> Result<String, JsValue> {
-    let outcome = app_core::session::perform_flight_plan_row_action_in_session(
-        session_handle,
-        row_uid.to_string(),
-        action_uid.to_string(),
-    )
-    .map_err(|err| JsValue::from_str(&err.to_string()))?;
+    let query: app_core::FlightPlanSessionQuery =
+        serde_json::from_str(query_json).map_err(|err| JsValue::from_str(&err.to_string()))?;
+    let outcome = app_core::query_flight_plan_in_session(session_handle, query)
+        .map_err(|err| JsValue::from_str(&err.to_string()))?;
     serde_json::to_string(&outcome).map_err(|err| JsValue::from_str(&err.to_string()))
 }
 
@@ -796,41 +677,6 @@ pub fn perform_settings_action_in_session(
     let action: app_core::UiSettingsAction =
         serde_json::from_str(action_json).map_err(|err| JsValue::from_str(&err.to_string()))?;
     let snapshot = app_core::perform_settings_action_in_session(session_handle, action)
-        .map_err(|err| JsValue::from_str(&err.to_string()))?;
-    serde_json::to_string(&snapshot).map_err(|err| JsValue::from_str(&err.to_string()))
-}
-
-#[wasm_bindgen]
-pub fn activate_next_leg_in_session(session_handle: u32) -> Result<String, JsValue> {
-    let snapshot = app_core::activate_next_leg_in_session(session_handle)
-        .map_err(|err| JsValue::from_str(&err.to_string()))?;
-    serde_json::to_string(&snapshot).map_err(|err| JsValue::from_str(&err.to_string()))
-}
-
-#[wasm_bindgen]
-pub fn stop_navigation_in_session(session_handle: u32) -> Result<String, JsValue> {
-    let snapshot = app_core::stop_navigation_in_session(session_handle)
-        .map_err(|err| JsValue::from_str(&err.to_string()))?;
-    serde_json::to_string(&snapshot).map_err(|err| JsValue::from_str(&err.to_string()))
-}
-
-#[wasm_bindgen]
-pub fn suspend_sequencing_in_session(session_handle: u32) -> Result<String, JsValue> {
-    let snapshot = app_core::suspend_sequencing_in_session(session_handle)
-        .map_err(|err| JsValue::from_str(&err.to_string()))?;
-    serde_json::to_string(&snapshot).map_err(|err| JsValue::from_str(&err.to_string()))
-}
-
-#[wasm_bindgen]
-pub fn unsuspend_sequencing_in_session(session_handle: u32) -> Result<String, JsValue> {
-    let snapshot = app_core::unsuspend_sequencing_in_session(session_handle)
-        .map_err(|err| JsValue::from_str(&err.to_string()))?;
-    serde_json::to_string(&snapshot).map_err(|err| JsValue::from_str(&err.to_string()))
-}
-
-#[wasm_bindgen]
-pub fn sequence_active_leg_in_session(session_handle: u32) -> Result<String, JsValue> {
-    let snapshot = app_core::sequence_active_leg_in_session(session_handle)
         .map_err(|err| JsValue::from_str(&err.to_string()))?;
     serde_json::to_string(&snapshot).map_err(|err| JsValue::from_str(&err.to_string()))
 }
@@ -925,53 +771,13 @@ pub fn situation_ring_candidates_json() -> Result<String, JsValue> {
 }
 
 #[wasm_bindgen]
-pub fn build_flight_plan(plan_json: &str) -> Result<String, JsValue> {
-    build_flight_plan_json(plan_json).map_err(|err| JsValue::from_str(&err))
-}
-
-#[wasm_bindgen]
-pub fn empty_flight_plan_json() -> Result<String, JsValue> {
-    serde_json::to_string(&app_core::FlightPlan::empty())
-        .map_err(|err| JsValue::from_str(&err.to_string()))
-}
-
-#[wasm_bindgen]
-pub fn classify_procedure_identifier(
-    identifier: &str,
-    exists_as_airport: bool,
-    exists_as_navaid: bool,
-    exists_as_fix: bool,
-) -> Result<String, JsValue> {
-    classify_procedure_identifier_json(
-        identifier,
-        exists_as_airport,
-        exists_as_navaid,
-        exists_as_fix,
-    )
-    .map_err(|err| JsValue::from_str(&err))
-}
-
-#[wasm_bindgen]
-pub fn activate_direct_to_leg_ui(
-    plan_json: &str,
-    lat: f64,
-    lon: f64,
-    target_leg_id: &str,
-) -> Result<String, JsValue> {
-    activate_direct_to_leg_ui_json(plan_json, lat, lon, target_leg_id)
-        .map_err(|err| JsValue::from_str(&err))
-}
-
-#[wasm_bindgen]
 pub fn create_ui_session(
-    plan_json: &str,
     recent_airport_ids_json: &str,
     selected_airport_id_json: &str,
     selected_chart_id_json: &str,
     now_epoch_ms: f64,
 ) -> Result<String, JsValue> {
     create_ui_session_json(
-        plan_json,
         recent_airport_ids_json,
         selected_airport_id_json,
         selected_chart_id_json,
@@ -982,14 +788,12 @@ pub fn create_ui_session(
 
 #[wasm_bindgen]
 pub fn create_ui_session_profiled(
-    plan_json: &str,
     recent_airport_ids_json: &str,
     selected_airport_id_json: &str,
     selected_chart_id_json: &str,
     now_epoch_ms: f64,
 ) -> Result<String, JsValue> {
     create_ui_session_profiled_json(
-        plan_json,
         recent_airport_ids_json,
         selected_airport_id_json,
         selected_chart_id_json,
@@ -1742,51 +1546,12 @@ fn unpack_packed_terrain_tile_bytes(
     Ok(tiles)
 }
 
-fn build_flight_plan_json(plan_json: &str) -> Result<String, String> {
-    let plan: app_core::FlightPlan =
-        serde_json::from_str(plan_json).map_err(|err| err.to_string())?;
-    let plan = app_core::build_flight_plan(plan).map_err(|err| err.to_string())?;
-    serde_json::to_string(&plan).map_err(|err| err.to_string())
-}
-
-fn activate_direct_to_leg_ui_json(
-    plan_json: &str,
-    lat: f64,
-    lon: f64,
-    target_leg_id: &str,
-) -> Result<String, String> {
-    let plan: app_core::FlightPlan =
-        serde_json::from_str(plan_json).map_err(|err| err.to_string())?;
-    let mutation =
-        app_core::activate_direct_to_leg_ui(&plan, app_core::LatLon { lat, lon }, target_leg_id)
-            .map_err(|err| err.to_string())?;
-    serde_json::to_string(&mutation).map_err(|err| err.to_string())
-}
-
-fn classify_procedure_identifier_json(
-    identifier: &str,
-    exists_as_airport: bool,
-    exists_as_navaid: bool,
-    exists_as_fix: bool,
-) -> Result<String, String> {
-    let nav_ref = app_core::classify_procedure_identifier(
-        identifier,
-        exists_as_airport,
-        exists_as_navaid,
-        exists_as_fix,
-    );
-    serde_json::to_string(&nav_ref).map_err(|err| err.to_string())
-}
-
 fn create_ui_session_json(
-    plan_json: &str,
     recent_airport_ids_json: &str,
     selected_airport_id_json: &str,
     selected_chart_id_json: &str,
     now_epoch_ms: f64,
 ) -> Result<String, String> {
-    let plan: app_core::FlightPlan =
-        serde_json::from_str(plan_json).map_err(|err| err.to_string())?;
     let recent_airport_ids: Vec<String> =
         serde_json::from_str(recent_airport_ids_json).map_err(|err| err.to_string())?;
     let selected_airport_id: Option<String> =
@@ -1794,7 +1559,7 @@ fn create_ui_session_json(
     let selected_chart_id: Option<String> =
         serde_json::from_str(selected_chart_id_json).map_err(|err| err.to_string())?;
     let result = app_core::create_ui_session_at_epoch_ms(
-        plan,
+        app_core::FlightPlan::empty(),
         &recent_airport_ids,
         selected_airport_id.as_deref(),
         selected_chart_id.as_deref(),
@@ -1805,16 +1570,12 @@ fn create_ui_session_json(
 }
 
 fn create_ui_session_profiled_json(
-    plan_json: &str,
     recent_airport_ids_json: &str,
     selected_airport_id_json: &str,
     selected_chart_id_json: &str,
     now_epoch_ms: f64,
 ) -> Result<String, String> {
     let mut profiler = Profiler::new();
-    let plan: app_core::FlightPlan =
-        serde_json::from_str(plan_json).map_err(|err| err.to_string())?;
-    profiler.mark("parse_plan_json");
     let recent_airport_ids: Vec<String> =
         serde_json::from_str(recent_airport_ids_json).map_err(|err| err.to_string())?;
     profiler.mark("parse_recent_airports_json");
@@ -1824,7 +1585,7 @@ fn create_ui_session_profiled_json(
         serde_json::from_str(selected_chart_id_json).map_err(|err| err.to_string())?;
     profiler.mark("parse_selected_ids_json");
     let result = app_core::create_ui_session_profiled_at_epoch_ms(
-        plan,
+        app_core::FlightPlan::empty(),
         &recent_airport_ids,
         selected_airport_id.as_deref(),
         selected_chart_id.as_deref(),

@@ -10,6 +10,24 @@ pub fn upper_component(value: &str) -> String {
     component(&value.to_ascii_uppercase())
 }
 
+pub fn search_terms(value: &str) -> Vec<String> {
+    let mut normalized = String::with_capacity(value.len());
+    for ch in value.chars() {
+        if ch.is_ascii_alphanumeric() {
+            normalized.push(ch.to_ascii_uppercase());
+        } else if matches!(ch, '\'' | '\u{2019}') {
+            // Users type O'HARE and OHARE interchangeably.
+        } else {
+            normalized.push(' ');
+        }
+    }
+    normalized
+        .split_whitespace()
+        .filter(|term| term.len() >= 2)
+        .map(str::to_string)
+        .collect()
+}
+
 fn percent_encode_component(bytes: &[u8]) -> String {
     let mut out = String::new();
     for byte in bytes {
@@ -55,5 +73,18 @@ mod tests {
     #[test]
     fn upper_component_trims_and_uppercases_before_escaping() {
         assert_eq!(upper_component(" kgrk/vor-a "), "KGRK%2FVOR-A");
+    }
+
+    #[test]
+    fn search_terms_normalize_airport_names_and_cities() {
+        assert_eq!(
+            search_terms("Chicago O'Hare Intl"),
+            vec!["CHICAGO", "OHARE", "INTL"]
+        );
+        assert_eq!(
+            search_terms("Seattle-Tacoma / Paine Fld"),
+            vec!["SEATTLE", "TACOMA", "PAINE", "FLD"]
+        );
+        assert_eq!(search_terms("St. Mary's"), vec!["ST", "MARYS"]);
     }
 }

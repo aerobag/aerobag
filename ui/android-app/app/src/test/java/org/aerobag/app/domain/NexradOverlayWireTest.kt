@@ -34,6 +34,25 @@ class NexradOverlayWireTest {
     }
 
     @Test
+    fun decodesAbsoluteAnimationDeadlineAsLong() {
+        val deadline = 4_102_444_800_123L
+        val result = json.decodeFromString<NexradOverlayQueryResult>(
+            """
+            {
+              "status": { "state": "ready", "count": 1 },
+              "tiles": [],
+              "stats": {},
+              "animation": {
+                "next_update_epoch_ms": $deadline
+              }
+            }
+            """.trimIndent(),
+        )
+
+        assertEquals(deadline, result.animation.nextUpdateEpochMs)
+    }
+
+    @Test
     fun decodesUnavailableStatusFromCoreStateTaggedObject() {
         val result = json.decodeFromString<NexradOverlayQueryResult>(
             """

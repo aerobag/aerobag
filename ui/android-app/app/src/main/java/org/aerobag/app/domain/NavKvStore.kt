@@ -37,6 +37,12 @@ sealed class CoreResourceSource {
         val filename: String,
         val memberPath: String,
     ) : CoreResourceSource()
+    data class LiveFeedPackageMember(
+        val product: String,
+        val version: String,
+        val blobSha256: String,
+        val memberPath: String,
+    ) : CoreResourceSource()
     data class InstalledArtifactMember(
         val filename: String,
         val memberPath: String,
@@ -76,6 +82,12 @@ fun parseCoreResourceSource(source: JsonObject): CoreResourceSource =
         "package_member" -> CoreResourceSource.PackageMember(
             packageId = source.getValue("package_id").jsonPrimitive.content,
             filename = source.getValue("filename").jsonPrimitive.content,
+            memberPath = source.getValue("member_path").jsonPrimitive.content,
+        )
+        "live_feed_package_member" -> CoreResourceSource.LiveFeedPackageMember(
+            product = source.getValue("product").jsonPrimitive.content,
+            version = source.getValue("version").jsonPrimitive.content,
+            blobSha256 = source.getValue("blob_sha256").jsonPrimitive.content,
             memberPath = source.getValue("member_path").jsonPrimitive.content,
         )
         "installed_artifact_member" -> CoreResourceSource.InstalledArtifactMember(
@@ -627,6 +639,7 @@ fun CoreResourceSource.kindForLog(): String =
     when (this) {
         is CoreResourceSource.PublicUrl -> "public_url"
         is CoreResourceSource.PackageMember -> "package_member"
+        is CoreResourceSource.LiveFeedPackageMember -> "live_feed_package_member"
         is CoreResourceSource.InstalledArtifactMember -> "installed_artifact_member"
         is CoreResourceSource.NavKvMember -> "nav_kv_member"
         is CoreResourceSource.Unavailable -> "unavailable"
@@ -637,6 +650,8 @@ fun CoreResourceSource.describeForLog(): String =
         is CoreResourceSource.PublicUrl -> "public_url url=$url"
         is CoreResourceSource.PackageMember ->
             "package_member packageId=$packageId filename=$filename memberPath=$memberPath"
+        is CoreResourceSource.LiveFeedPackageMember ->
+            "live_feed_package_member product=$product version=$version memberPath=$memberPath"
         is CoreResourceSource.InstalledArtifactMember ->
             "installed_artifact_member filename=$filename memberPath=$memberPath"
         is CoreResourceSource.NavKvMember -> "nav_kv_member memberPath=$memberPath"

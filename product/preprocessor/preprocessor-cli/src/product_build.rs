@@ -69,8 +69,9 @@ use preprocessor_vectors::{
 use preprocessor_zip::{write_deterministic_zip, ZipSource};
 use procedure_geometry_types as pgt;
 use product_contracts::{
-    NAV_DB_CONTRACT_ID, SHADED_RELIEF_CONTRACT_ID, TERRAIN_CONTRACT_ID,
-    TERRAIN_TER2_HEIGHT_QUANTIZATION_FT, TERRAIN_TER2_MAX_ZOOM, WORLD_BASEMAP_CONTRACT_ID,
+    WaypointSearchMatchKind, WaypointSearchRecord, NAV_DB_CONTRACT_ID, SHADED_RELIEF_CONTRACT_ID,
+    TERRAIN_CONTRACT_ID, TERRAIN_TER2_HEIGHT_QUANTIZATION_FT, TERRAIN_TER2_MAX_ZOOM,
+    WAYPOINT_SEARCH_MAX_RESULTS, WORLD_BASEMAP_CONTRACT_ID,
 };
 use serde::{ser::SerializeStruct, Deserialize, Serialize};
 use sha2::{Digest, Sha256};
@@ -86,7 +87,6 @@ const PACKAGE_CYCLE_VERSION: &str = "01";
 const CYCLE_PUBLICATION_LEAD_DAYS: i64 = 20;
 const NAV_DB_STARTUP_PREFETCH_MEMBERS_METADATA_KEY: &str = "startup_prefetch_members";
 const NAV_DB_UNPACKED_PAGE_ENCODING_MARKER: &str = "nav-db-page-xz-v1";
-const WAYPOINT_PREFIX_MAX_RESULTS: usize = 100;
 // Offline chart region polygons are only visual guides in the package picker.
 // Grow chart cutlines coarsely before unioning to collapse tiny source-boundary
 // mismatches, then simplify hard. This does not affect runtime chart coverage.
@@ -3774,7 +3774,7 @@ mod tests {
     }
 
     #[test]
-    fn nav_kv_waypoint_prefix_pairs_omit_overlarge_suggestion_lists() {
+    fn nav_kv_waypoint_search_pairs_omit_overlarge_suggestion_lists() {
         let connection = rusqlite::Connection::open_in_memory().unwrap();
         connection
             .execute_batch(
@@ -3821,21 +3821,31 @@ mod tests {
         }
 
         let pairs = build_nav_kv_waypoint_lookup_pairs(&connection).unwrap();
-        assert!(pairs.iter().all(|pair| pair.key != "waypoint/prefix/K"));
+        assert!(pairs
+            .iter()
+            .all(|pair| !pair.key.starts_with("waypoint/prefix/")));
+        assert!(pairs
+            .iter()
+            .all(|pair| pair.key != "waypoint/search-prefix/K"));
         let kr = pairs
             .iter()
-            .find(|pair| pair.key == "waypoint/prefix/KR")
+            .find(|pair| pair.key == "waypoint/search-prefix/KR")
             .expect("KR prefix should remain below threshold");
-        let suggestions = serde_json::from_slice::<Vec<serde_json::Value>>(&kr.value).unwrap();
+        let suggestions = serde_json::from_slice::<Vec<WaypointSearchRecord>>(&kr.value).unwrap();
         assert_eq!(suggestions.len(), 2);
+        assert!(suggestions
+            .iter()
+            .all(|suggestion| suggestion.match_kind == WaypointSearchMatchKind::Identifier));
         assert!(
-            pairs.iter().all(|pair| pair.key != "waypoint/prefix/KRNT"),
+            pairs
+                .iter()
+                .all(|pair| pair.key != "waypoint/search-prefix/KRNT"),
             "longer prefixes are redundant when a shorter emitted bucket can be filtered"
         );
     }
 
     #[test]
-    fn nav_kv_waypoint_prefix_values_are_slim_and_exclude_vot_navaids() {
+    fn nav_kv_waypoint_search_values_are_slim_and_exclude_vot_navaids() {
         let connection = rusqlite::Connection::open_in_memory().unwrap();
         connection
             .execute_batch(
@@ -3883,19 +3893,21 @@ mod tests {
 
         let prefix_s = pairs
             .iter()
-            .find(|pair| pair.key == "waypoint/prefix/S")
+            .find(|pair| pair.key == "waypoint/search-prefix/S")
             .expect("S prefix");
-        let suggestions =
-            serde_json::from_slice::<Vec<serde_json::Value>>(&prefix_s.value).unwrap();
+        let suggestions = serde_json::from_slice::<Vec<WaypointSearchRecord>>(&prefix_s.value)
+            .expect("search records");
         assert_eq!(
             suggestions,
-            vec![serde_json::json!({
-                "identifier": "SEA",
-                "kind": "navaid",
-                "display_name": "Seattle 116.80",
-                "lat": 47.4353889,
-                "lon": -122.3096111,
-            })]
+            vec![WaypointSearchRecord {
+                identifier: "SEA".to_string(),
+                kind: "navaid".to_string(),
+                display_name: "Seattle 116.80".to_string(),
+                lat: 47.4353889,
+                lon: -122.3096111,
+                matched_term: "SEA".to_string(),
+                match_kind: WaypointSearchMatchKind::Identifier,
+            }]
         );
     }
 
@@ -3961,12 +3973,15 @@ mod tests {
                 INSERT INTO nav VALUES ('PDT', 45.0, -118.0, '14.0');
                 INSERT INTO nav VALUES ('ILA', 39.0711736111111, -122.027269722222, '14.0');
                 INSERT INTO nav VALUES ('OAK', 37.7259255555556, -122.223591944444, '14.0');
+                -- BYI's longitude exposed inconsistent keys when only stored positions were rounded.
+                INSERT INTO nav VALUES ('BYI', 42.58023944444444453, -113.86585749999998995, '14.0');
                 INSERT INTO airways_branch VALUES ('V23', '', 690, '690', 'RAWER', 45.235644444444446, -122.79431666666666);
                 INSERT INTO airways_branch VALUES ('V23', '', 700, '700', 'CANBY', 45.31056944444444, -122.76489166666667);
                 INSERT INTO airways_branch VALUES ('V23', '', 710, '710', 'NAMEDBUTMISSING', 45.4, -122.7);
                 INSERT INTO airways_branch VALUES ('V23', '', 720, '720', '', 45.5, -122.6);
                 INSERT INTO airways_branch VALUES ('V4', '', 10, '10', 'PENDLETON', 45.0, -118.0);
                 INSERT INTO airways_branch VALUES ('V4', '', 20, '20', 'CORDO', 45.1, -117.9);
+                INSERT INTO airways_branch VALUES ('V4', '', 30, '30', 'BURLEY', 42.58023944444444453, -113.86585749999998995);
                 INSERT INTO airways_branch VALUES ('Q801', 'A', 10, '10', 'HARPR', 42.480555555555554, -122.88376111111111);
                 INSERT INTO airways_branch VALUES ('V195', 'RAGGS-JINGO', 220, '220', 'OAKLAND', 37.7259255555556, -122.223591944444);
                 INSERT INTO airways_branch VALUES ('V195', 'RAGGS-JINGO', 300, '300', 'WILLIAMS', 39.0711736111111, -122.027269722222);
@@ -3975,6 +3990,71 @@ mod tests {
             .unwrap();
 
         let pairs = build_nav_kv_airway_pairs(&connection).unwrap();
+        let mut expected_colocated_navaids = BTreeMap::new();
+        {
+            let mut stmt = connection
+                .prepare(
+                    "
+                    SELECT trim(a.name), trim(a.branch_key),
+                           CAST(a.sequence_number AS INTEGER), trim(n.LocationID)
+                    FROM airways_branch a
+                    JOIN nav n
+                      ON CAST(a.Latitude AS REAL) = CAST(n.ARPLatitude AS REAL)
+                     AND CAST(a.Longitude AS REAL) = CAST(n.ARPLongitude AS REAL)
+                    ",
+                )
+                .unwrap();
+            let rows = stmt
+                .query_map([], |row| {
+                    Ok((
+                        row.get::<_, String>(0)?,
+                        row.get::<_, String>(1)?,
+                        row.get::<_, i32>(2)?,
+                        row.get::<_, String>(3)?,
+                    ))
+                })
+                .unwrap();
+            for row in rows {
+                let (airway, branch, sequence, navaid) = row.unwrap();
+                expected_colocated_navaids.insert((airway, branch, sequence), navaid);
+            }
+        }
+
+        let mut misclassified_colocated_navaids = Vec::new();
+        for pair in &pairs {
+            let Some(airway_name) = pair.key.strip_prefix("airway/") else {
+                continue;
+            };
+            if airway_name.contains('/') {
+                continue;
+            }
+            let branches: serde_json::Value = serde_json::from_slice(&pair.value).unwrap();
+            for branch in branches.as_array().unwrap() {
+                let branch_key = branch["branch_key"].as_str().unwrap();
+                for point in branch["points"].as_array().unwrap() {
+                    let sequence = point["sequence"].as_i64().unwrap() as i32;
+                    let Some(expected_navaid) = expected_colocated_navaids.get(&(
+                        airway_name.to_string(),
+                        branch_key.to_string(),
+                        sequence,
+                    )) else {
+                        continue;
+                    };
+                    if point["nav_ref"] != serde_json::json!({ "Navaid": expected_navaid }) {
+                        misclassified_colocated_navaids.push(format!(
+                            "{airway_name}/{branch_key}/{sequence}: expected Navaid({expected_navaid}), got {}",
+                            point["nav_ref"]
+                        ));
+                    }
+                }
+            }
+        }
+        assert_eq!(
+            misclassified_colocated_navaids,
+            Vec::<String>::new(),
+            "airway points colocated with known navaids must retain navaid identity"
+        );
+
         let pair_value = |key: &str| -> serde_json::Value {
             let pair = pairs
                 .iter()

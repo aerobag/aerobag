@@ -117,8 +117,8 @@ pub use map_overlay::{
     PointTilePayload, PointVectorRecord, TafProductPayload, TafRecord, TfrAltitudeLimit,
     TfrAreaPayload, TfrLatLonPoint, TfrNotamMetadata, TfrProductPayload, TfrScheduleFragment,
     VectorAggregateTilePayload, VectorIdentLabelStyle, VectorTileRequest, VisibleMapFeature,
-    VisibleMetarFeature, VisiblePirepFeature, WeatherDetailUiView, AIRSPACE_DISPLAY_FEATURE_LIMIT,
-    VECTOR_DISPLAY_FEATURE_LIMIT,
+    VisibleMetarFeature, VisiblePirepFeature, WeatherDetailUiView, WeatherStationAirportAliases,
+    AIRSPACE_DISPLAY_FEATURE_LIMIT, VECTOR_DISPLAY_FEATURE_LIMIT,
 };
 pub use navdb_types::{
     AirwayPresentationPlan, AirwayPresentationPoint, AirwayPresentationSelection, AirwaySuggestion,

@@ -18,6 +18,7 @@ pub enum NavKvQuery {
     ChartCatalog,
     OfflineRegionCatalog,
     MetarImportantStations,
+    WeatherStationAirportAliases,
     PackageById {
         package_id: String,
     },
@@ -92,6 +93,9 @@ pub fn nav_kv_key_for_query(query: &NavKvQuery) -> Option<String> {
         NavKvQuery::ChartCatalog => Some("chart/catalog".to_string()),
         NavKvQuery::OfflineRegionCatalog => Some("offline-region/catalog".to_string()),
         NavKvQuery::MetarImportantStations => Some("weather/metar-important-stations".to_string()),
+        NavKvQuery::WeatherStationAirportAliases => {
+            Some("weather/station-airport-aliases".to_string())
+        }
         NavKvQuery::PackageById { package_id } => {
             Some(format!("package/by-id/{}", component(package_id)))
         }
@@ -337,6 +341,10 @@ mod tests {
         assert_eq!(
             nav_kv_key_for_query(&NavKvQuery::MetarImportantStations),
             Some("weather/metar-important-stations".to_string())
+        );
+        assert_eq!(
+            nav_kv_key_for_query(&NavKvQuery::WeatherStationAirportAliases),
+            Some("weather/station-airport-aliases".to_string())
         );
         assert_eq!(
             nav_kv_key_for_query(&NavKvQuery::PackageById {

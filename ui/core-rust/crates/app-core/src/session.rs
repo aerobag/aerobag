@@ -51,7 +51,7 @@ use crate::{
         nearest_available_layer_zoom, obstacle_layer_config_from_live_manifest_value,
         vector_overlay_input_requests, visible_obstacle_tile_window, FlightPlanSelectionPoint,
         MetarTileRecord, PointTileLayerConfig, VectorOverlayInputRequests,
-        MAP_SELECTION_NAV_REF_MIN_FOCUS_ZOOM,
+        WeatherStationAirportAliases, MAP_SELECTION_NAV_REF_MIN_FOCUS_ZOOM,
     },
     map_overlay_config_from_vector_manifest_json, nav_kv_key_for_query,
     planning::NavElementUiView,
@@ -431,6 +431,7 @@ struct UiSession {
     prepared_metar_tiles: Option<Vec<crate::PreparedMetarTile>>,
     important_metar_station_ids: Option<HashSet<String>>,
     metar_station_importance_status: Option<DataStatusRecord>,
+    weather_station_airport_aliases: Option<WeatherStationAirportAliases>,
     obstacle_had: Option<LiveObstacleHadState>,
     obstacle_tile_cache: HashMap<String, PointTilePayload>,
     taf_payload: Option<TafProductPayload>,
@@ -794,6 +795,18 @@ const LIVE_OBSTACLE_HAD_RESOURCE_PREFIX: &str = "live_obstacle_had/";
 struct MetarImportantStationsPayload {
     schema_version: u32,
     station_ids: Vec<String>,
+}
+
+#[derive(Debug, Deserialize)]
+struct WeatherStationAirportAliasesPayload {
+    schema_version: u32,
+    aliases: BTreeMap<String, WeatherStationAirportAliasPayload>,
+}
+
+#[derive(Debug, Deserialize)]
+struct WeatherStationAirportAliasPayload {
+    airport_id: String,
+    position: LatLon,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -3538,6 +3551,7 @@ fn create_ui_session_inner(
             prepared_metar_tiles: None,
             important_metar_station_ids: None,
             metar_station_importance_status: None,
+            weather_station_airport_aliases: None,
             obstacle_had: None,
             obstacle_tile_cache: HashMap::new(),
             nexrad_installed: BTreeMap::new(),
@@ -5754,6 +5768,7 @@ pub fn attach_nav_kv_store_to_session_with_open_result(
     session.nav_db_artifact = open_result.map(AttachedNavDbArtifact::from);
     session.important_metar_station_ids = None;
     session.metar_station_importance_status = None;
+    session.weather_station_airport_aliases = None;
     rebuild_metar_tile_cache(session);
     sync_cycle_product_freshness_status_records(session);
     Ok(())
@@ -5824,6 +5839,7 @@ pub fn advance_nav_kv_store_in_session_with_open_result(
     candidate.airspace_feature_cache.clear();
     candidate.important_metar_station_ids = None;
     candidate.metar_station_importance_status = None;
+    candidate.weather_station_airport_aliases = None;
     candidate.terrain_source_tile_cache.clear();
     rebuild_metar_tile_cache(&mut candidate);
     mark_cycle_product_freshness_dirty(&mut candidate);
@@ -7695,6 +7711,40 @@ fn ensure_metar_station_importance_loaded(session: &mut UiSession) -> Result<(),
     Ok(())
 }
 
+fn ensure_weather_station_airport_aliases_loaded(
+    session: &mut UiSession,
+) -> Result<(), HadReadError> {
+    if session.weather_station_airport_aliases.is_some() {
+        return Ok(());
+    }
+    let Some(store) = session.nav_kv_store.as_ref() else {
+        session.weather_station_airport_aliases = Some(WeatherStationAirportAliases::default());
+        return Ok(());
+    };
+    let Some(payload) = read_attached_json_optional::<WeatherStationAirportAliasesPayload>(
+        store,
+        NavKvQuery::WeatherStationAirportAliases,
+    )?
+    else {
+        session.weather_station_airport_aliases = Some(WeatherStationAirportAliases::default());
+        return Ok(());
+    };
+    if payload.schema_version != 1 {
+        return Err(HadReadError::Fatal(format!(
+            "unsupported weather station airport alias schema version {}",
+            payload.schema_version
+        )));
+    }
+    session.weather_station_airport_aliases =
+        Some(WeatherStationAirportAliases::from_station_to_airport(
+            payload
+                .aliases
+                .into_iter()
+                .map(|(station_id, alias)| (station_id, alias.airport_id, alias.position)),
+        ));
+    Ok(())
+}
+
 fn metar_importance_required_for_viewport(session: &UiSession, viewport: &MapViewport) -> bool {
     if !session.map_layer_state.metars.visible || session.metar_payload.is_none() {
         return false;
@@ -8738,6 +8788,9 @@ fn materialize_map_selection_in_session(
     if let Err(err) = ensure_vector_inputs_loaded(session, &metrics) {
         return had_read_error_to_map_selection_materialization(err);
     }
+    if let Err(err) = ensure_weather_station_airport_aliases_loaded(session) {
+        return had_read_error_to_map_selection_materialization(err);
+    }
     let plan = session.app_state.active_plan.as_ref();
     let store = session_nav_kv_store(session)?;
     let mut missing_pages = Vec::new();
@@ -8789,6 +8842,10 @@ fn materialize_map_selection_in_session(
         session.metar_payload.as_ref(),
         session.taf_payload.as_ref(),
         session.airport_notam_index.as_ref(),
+        session
+            .weather_station_airport_aliases
+            .as_ref()
+            .expect("weather station airport aliases loaded"),
         &offline_region_records,
         &session.airspace_feature_cache,
         session.tfr_payload.as_ref(),
@@ -10393,6 +10450,9 @@ fn session_snapshot_outcome_with_invalidations(
 
 fn try_snapshot_for_session(session: &mut UiSession) -> Result<UiSessionSnapshot, HadReadError> {
     let total_started_at = crate::core_clock_ms();
+    if session.metar_payload.is_some() || session.taf_payload.is_some() {
+        ensure_weather_station_airport_aliases_loaded(session)?;
+    }
     let app_ui_started_at = crate::core_clock_ms();
     let mut app_ui_state = project_session_app_ui_state(session)?;
     let app_ui_ms = elapsed_ms(app_ui_started_at);
@@ -10895,20 +10955,24 @@ fn project_session_app_ui_state(session: &UiSession) -> Result<AppUiState, HadRe
 }
 
 fn enrich_flight_plan_weather_actions(session: &UiSession, active_plan: &mut FlightPlanUiState) {
+    let empty_aliases = WeatherStationAirportAliases::default();
+    let aliases = session
+        .weather_station_airport_aliases
+        .as_ref()
+        .unwrap_or(&empty_aliases);
     for row in &mut active_plan.display_rows {
-        let station_id = row
+        let airport_id = row
             .chart_airport_id
             .as_deref()
-            .map(crate::map_overlay::weather_station_id_for_airport_id)
+            .map(str::to_string)
             .or_else(|| match row.nav_ref.as_ref() {
-                Some(NavRef::Airport(airport_id)) => Some(
-                    crate::map_overlay::weather_station_id_for_airport_id(airport_id),
-                ),
+                Some(NavRef::Airport(airport_id)) => Some(airport_id.clone()),
                 _ => None,
             });
-        let weather_detail = station_id.as_deref().and_then(|station_id| {
-            crate::map_overlay::weather_detail_for_station(
-                station_id,
+        let weather_detail = airport_id.as_deref().and_then(|airport_id| {
+            crate::map_overlay::weather_detail_for_airport(
+                airport_id,
+                aliases,
                 session.metar_payload.as_ref(),
                 session.taf_payload.as_ref(),
                 session.airport_notam_index.as_ref(),
@@ -15251,6 +15315,7 @@ mod tests {
             assert_eq!(index.version_label, state_id);
             let detail = crate::map_overlay::weather_detail_for_station(
                 "KAAA",
+                &WeatherStationAirportAliases::default(),
                 None,
                 None,
                 Some(index),
@@ -15676,6 +15741,7 @@ mod tests {
             prepared_metar_tiles: None,
             important_metar_station_ids: None,
             metar_station_importance_status: None,
+            weather_station_airport_aliases: None,
             obstacle_had: None,
             obstacle_tile_cache: HashMap::new(),
             nexrad_installed: BTreeMap::new(),
@@ -15811,12 +15877,18 @@ mod tests {
     }
 
     #[test]
-    fn metar_station_importance_comes_from_dense_nav_db_record() {
+    fn weather_station_metadata_comes_from_dense_nav_db_records() {
         let store = crate::navkv::nav_kv_store_for_test(
-            &[(
-                "weather/metar-important-stations",
-                br#"{"schema_version":1,"station_ids":["kaaa","KBBB",""]}"#,
-            )],
+            &[
+                (
+                    "weather/metar-important-stations",
+                    br#"{"schema_version":1,"station_ids":["kaaa","KBBB",""]}"#,
+                ),
+                (
+                    "weather/station-airport-aliases",
+                    br#"{"schema_version":1,"aliases":{"K1S5":{"airport_id":"1S5","position":{"lat":46.327,"lon":-119.970}}}}"#,
+                ),
+            ],
             1024,
         );
         let mut session = UiSession {
@@ -15869,6 +15941,7 @@ mod tests {
             prepared_metar_tiles: None,
             important_metar_station_ids: None,
             metar_station_importance_status: None,
+            weather_station_airport_aliases: None,
             obstacle_had: None,
             obstacle_tile_cache: HashMap::new(),
             nexrad_installed: BTreeMap::new(),
@@ -15884,11 +15957,43 @@ mod tests {
         };
 
         ensure_metar_station_importance_loaded(&mut session).expect("important station ids");
+        ensure_weather_station_airport_aliases_loaded(&mut session).expect("airport aliases");
 
         assert_eq!(
             session.important_metar_station_ids,
             Some(HashSet::from(["KAAA".to_string(), "KBBB".to_string()]))
         );
+        let metar = crate::MetarRecord {
+            raw_text: "METAR K1S5 260415Z 00000KT 10SM CLR 20/10 A3000".to_string(),
+            observed_at_utc: None,
+            station_id: "K1S5".to_string(),
+            flight_category: Some("VFR".to_string()),
+            clouds: None,
+            longitude: -119.970,
+            latitude: 46.327,
+        };
+        let payload = MetarProductPayload {
+            schema_version: 1,
+            version_label: "test".to_string(),
+            generated_at_utc: None,
+            observed_at_utc: None,
+            metar_count: Some(1),
+            metars_by_station: HashMap::from([("K1S5".to_string(), metar)]),
+            pireps: Vec::new(),
+        };
+        let detail = crate::map_overlay::weather_detail_for_airport(
+            "1S5",
+            session
+                .weather_station_airport_aliases
+                .as_ref()
+                .expect("loaded aliases"),
+            Some(&payload),
+            None,
+            None,
+            None,
+        )
+        .expect("1S5 weather detail");
+        assert_eq!(detail.station_id, "1S5");
     }
 
     #[test]
@@ -16313,6 +16418,7 @@ mod tests {
             prepared_metar_tiles: None,
             important_metar_station_ids: None,
             metar_station_importance_status: None,
+            weather_station_airport_aliases: None,
             obstacle_had: None,
             obstacle_tile_cache: HashMap::new(),
             nexrad_installed: BTreeMap::new(),

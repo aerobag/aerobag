@@ -53,6 +53,7 @@ const UI_THUMB_SIZE_LOGICAL_PX: f64 = 56.0;
 const INSPECTOR_HIT_RADIUS_THUMBS: f64 = 0.5;
 const TFR_ACTIVE_STYLE_KEY: &str = "tfr_active";
 const TFR_UPCOMING_STYLE_KEY: &str = "tfr_upcoming";
+const WEATHER_STATION_AIRPORT_ALIAS_MAX_DISTANCE_NM: f64 = 5.0;
 
 #[derive(Debug, Default)]
 struct VectorDisplayBudgetAudit {
@@ -491,6 +492,67 @@ pub struct WeatherDetailUiView {
     pub taf_age_warning: bool,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub notams: Vec<AirportNotamUiView>,
+}
+
+#[derive(Debug, Clone, Default)]
+pub struct WeatherStationAirportAliases {
+    station_to_airport: HashMap<String, WeatherStationAirportAlias>,
+    airport_to_station: HashMap<String, String>,
+}
+
+#[derive(Debug, Clone)]
+struct WeatherStationAirportAlias {
+    airport_id: String,
+    airport_position: LatLon,
+}
+
+impl WeatherStationAirportAliases {
+    pub(crate) fn from_station_to_airport(
+        aliases: impl IntoIterator<Item = (String, String, LatLon)>,
+    ) -> Self {
+        let mut station_to_airport = HashMap::new();
+        let mut airport_to_station = HashMap::new();
+        for (station_id, airport_id, airport_position) in aliases {
+            let station_id = station_id.trim().to_ascii_uppercase();
+            let airport_id = airport_id.trim().to_ascii_uppercase();
+            if station_id.is_empty()
+                || airport_id.is_empty()
+                || station_id == airport_id
+                || !airport_position.lat.is_finite()
+                || !airport_position.lon.is_finite()
+            {
+                continue;
+            }
+            station_to_airport.insert(
+                station_id.clone(),
+                WeatherStationAirportAlias {
+                    airport_id: airport_id.clone(),
+                    airport_position,
+                },
+            );
+            airport_to_station.insert(airport_id, station_id);
+        }
+        Self {
+            station_to_airport,
+            airport_to_station,
+        }
+    }
+
+    fn airport_id_for_station(&self, station_id: &str, station_position: LatLon) -> Option<&str> {
+        self.station_to_airport
+            .get(&station_id.trim().to_ascii_uppercase())
+            .filter(|alias| {
+                great_circle_distance_nm(alias.airport_position, station_position)
+                    <= WEATHER_STATION_AIRPORT_ALIAS_MAX_DISTANCE_NM
+            })
+            .map(|alias| alias.airport_id.as_str())
+    }
+
+    fn station_id_for_airport(&self, airport_id: &str) -> Option<&str> {
+        self.airport_to_station
+            .get(&airport_id.trim().to_ascii_uppercase())
+            .map(String::as_str)
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -2682,6 +2744,7 @@ pub fn query_map_selection_for_surface(
         metar_payload,
         taf_payload,
         notam_payload,
+        &WeatherStationAirportAliases::default(),
         offline_region_records,
         airspace_feature_cache,
         tfr_payload,
@@ -2702,6 +2765,7 @@ pub fn query_map_selection_for_surface_in_time_zone(
     metar_payload: Option<&MetarProductPayload>,
     taf_payload: Option<&TafProductPayload>,
     notam_payload: Option<&AirportNotamIndex>,
+    weather_station_airport_aliases: &WeatherStationAirportAliases,
     offline_region_records: &[OfflineRegionRecord],
     airspace_feature_cache: &HashMap<String, AirspaceFeaturePayload>,
     tfr_payload: Option<&TfrProductPayload>,
@@ -2789,8 +2853,9 @@ pub fn query_map_selection_for_surface_in_time_zone(
                         _ => None,
                     });
                 let weather_detail = airport_id.as_deref().and_then(|airport_id| {
-                    weather_detail_for_station(
+                    weather_detail_for_airport(
                         airport_id,
+                        weather_station_airport_aliases,
                         metar_payload,
                         taf_payload,
                         notam_payload,
@@ -2832,6 +2897,7 @@ pub fn query_map_selection_for_surface_in_time_zone(
         metar_payload,
         taf_payload,
         notam_payload,
+        weather_station_airport_aliases,
         airport_plate_availability,
         weather_age_reference_utc,
     ) {
@@ -2883,6 +2949,7 @@ pub fn query_map_selection_for_surface_in_time_zone(
             metar_payload,
             taf_payload,
             notam_payload,
+            weather_station_airport_aliases,
             weather_age_reference_utc,
         ));
         weather.extend(query_pirep_selection_matches(
@@ -2980,6 +3047,7 @@ fn query_metar_selection_matches(
     metar_payload: &MetarProductPayload,
     taf_payload: Option<&TafProductPayload>,
     notam_payload: Option<&AirportNotamIndex>,
+    weather_station_airport_aliases: &WeatherStationAirportAliases,
     weather_age_reference_utc: Option<DateTime<Utc>>,
 ) -> Vec<MapSelectionPointMatch> {
     let Some(metar_layer) = config.metar_layer.as_ref() else {
@@ -3025,6 +3093,7 @@ fn query_metar_selection_matches(
                         }),
                         feature,
                         notam_payload,
+                        weather_station_airport_aliases,
                         weather_age_reference_utc,
                     ),
                     distance_px,
@@ -3107,7 +3176,7 @@ fn selection_item_for_point(
         || record.kind.eq_ignore_ascii_case("airport")
         || record.id.starts_with("airports:");
     let label = if is_airport {
-        airport_icao_label(record).unwrap_or_else(|| display_label(record))
+        airport_ident_label(record).unwrap_or_else(|| display_label(record))
     } else if symbol.label.trim().is_empty() {
         display_label(record)
     } else {
@@ -3231,6 +3300,7 @@ fn query_flight_plan_selection_matches(
     metar_payload: Option<&MetarProductPayload>,
     taf_payload: Option<&TafProductPayload>,
     notam_payload: Option<&AirportNotamIndex>,
+    weather_station_airport_aliases: &WeatherStationAirportAliases,
     airport_plate_availability: &mut dyn FnMut(&str) -> AirportPlateAvailability,
     weather_age_reference_utc: Option<DateTime<Utc>>,
 ) -> Vec<MapSelectionPointMatch> {
@@ -3257,6 +3327,7 @@ fn query_flight_plan_selection_matches(
                 metar_payload,
                 taf_payload,
                 notam_payload,
+                weather_station_airport_aliases,
                 airport_plate_availability,
                 weather_age_reference_utc,
             ),
@@ -3272,6 +3343,7 @@ fn selection_item_for_flight_plan_point(
     metar_payload: Option<&MetarProductPayload>,
     taf_payload: Option<&TafProductPayload>,
     notam_payload: Option<&AirportNotamIndex>,
+    weather_station_airport_aliases: &WeatherStationAirportAliases,
     airport_plate_availability: &mut dyn FnMut(&str) -> AirportPlateAvailability,
     weather_age_reference_utc: Option<DateTime<Utc>>,
 ) -> MapSelectionItem {
@@ -3305,8 +3377,9 @@ fn selection_item_for_flight_plan_point(
         )
     };
     let weather_detail = match nav_ref {
-        NavRef::Airport(airport_id) => weather_detail_for_station(
+        NavRef::Airport(airport_id) => weather_detail_for_airport(
             airport_id,
+            weather_station_airport_aliases,
             metar_payload,
             taf_payload,
             notam_payload,
@@ -3441,11 +3514,21 @@ fn selection_item_for_metar(
     taf: Option<&TafRecord>,
     feature: VisibleMetarFeature,
     notam_payload: Option<&AirportNotamIndex>,
+    weather_station_airport_aliases: &WeatherStationAirportAliases,
     weather_age_reference_utc: Option<DateTime<Utc>>,
 ) -> MapSelectionItem {
-    let notams = airport_notam_views(record.station_id.trim(), notam_payload);
+    let source_station_id = record.station_id.trim().to_ascii_uppercase();
+    let airport_id = weather_station_airport_aliases.airport_id_for_station(
+        &source_station_id,
+        LatLon {
+            lat: record.latitude,
+            lon: record.longitude,
+        },
+    );
+    let display_id = airport_id.unwrap_or(&source_station_id);
+    let notams = airport_notam_views(display_id, notam_payload);
     let weather_detail = weather_detail_from_records(
-        record.station_id.trim(),
+        display_id,
         Some(record),
         taf,
         notams,
@@ -3453,7 +3536,7 @@ fn selection_item_for_metar(
     );
     MapSelectionItem {
         id: format!("metar:{}", record.station_id.trim()),
-        label: record.station_id.trim().to_ascii_uppercase(),
+        label: display_id.to_string(),
         sublabel: normalized_metar_flight_category(record).to_ascii_uppercase(),
         description: record.observed_at_utc.clone(),
         secondary_description: None,
@@ -3466,7 +3549,7 @@ fn selection_item_for_metar(
         highlight: MapSelectionHighlight::Metar {
             station_id: record.station_id.clone(),
         },
-        nav_ref: None,
+        nav_ref: airport_id.map(|airport_id| NavRef::Airport(airport_id.to_string())),
         symbol_feature: None,
         metar_feature: Some(feature),
         pirep_feature: None,
@@ -3523,12 +3606,10 @@ fn pirep_hazard_label(record: &PirepRecord) -> String {
     }
 }
 
-pub(crate) fn weather_station_id_for_airport_id(airport_id: &str) -> String {
-    airport_id.trim().to_ascii_uppercase()
-}
-
+#[cfg(test)]
 pub(crate) fn weather_detail_for_station(
     station_id: &str,
+    aliases: &WeatherStationAirportAliases,
     metar_payload: Option<&MetarProductPayload>,
     taf_payload: Option<&TafProductPayload>,
     notam_index: Option<&AirportNotamIndex>,
@@ -3540,8 +3621,68 @@ pub(crate) fn weather_detail_for_station(
     }
     let metar = metar_payload.and_then(|payload| payload.metars_by_station.get(&station_id));
     let taf = taf_payload.and_then(|payload| payload.tafs_by_station.get(&station_id));
-    let notams = airport_notam_views(&station_id, notam_index);
-    weather_detail_from_records(&station_id, metar, taf, notams, age_reference_utc)
+    let station_position = metar
+        .map(|record| LatLon {
+            lat: record.latitude,
+            lon: record.longitude,
+        })
+        .or_else(|| {
+            taf.map(|record| LatLon {
+                lat: record.latitude,
+                lon: record.longitude,
+            })
+        });
+    let airport_id = station_position
+        .and_then(|position| aliases.airport_id_for_station(&station_id, position))
+        .unwrap_or(&station_id);
+    let notams = airport_notam_views(airport_id, notam_index);
+    weather_detail_from_records(airport_id, metar, taf, notams, age_reference_utc)
+}
+
+pub(crate) fn weather_detail_for_airport(
+    airport_id: &str,
+    aliases: &WeatherStationAirportAliases,
+    metar_payload: Option<&MetarProductPayload>,
+    taf_payload: Option<&TafProductPayload>,
+    notam_index: Option<&AirportNotamIndex>,
+    age_reference_utc: Option<DateTime<Utc>>,
+) -> Option<WeatherDetailUiView> {
+    let airport_id = airport_id.trim().to_ascii_uppercase();
+    if airport_id.is_empty() {
+        return None;
+    }
+    let aliased_station_id = aliases.station_id_for_airport(&airport_id);
+    let station_id = aliased_station_id
+        .filter(|station_id| {
+            let metar_matches = metar_payload
+                .and_then(|payload| payload.metars_by_station.get(*station_id))
+                .is_some_and(|record| {
+                    aliases.airport_id_for_station(
+                        station_id,
+                        LatLon {
+                            lat: record.latitude,
+                            lon: record.longitude,
+                        },
+                    ) == Some(airport_id.as_str())
+                });
+            let taf_matches = taf_payload
+                .and_then(|payload| payload.tafs_by_station.get(*station_id))
+                .is_some_and(|record| {
+                    aliases.airport_id_for_station(
+                        station_id,
+                        LatLon {
+                            lat: record.latitude,
+                            lon: record.longitude,
+                        },
+                    ) == Some(airport_id.as_str())
+                });
+            metar_matches || taf_matches
+        })
+        .unwrap_or(&airport_id);
+    let metar = metar_payload.and_then(|payload| payload.metars_by_station.get(station_id));
+    let taf = taf_payload.and_then(|payload| payload.tafs_by_station.get(station_id));
+    let notams = airport_notam_views(&airport_id, notam_index);
+    weather_detail_from_records(&airport_id, metar, taf, notams, age_reference_utc)
 }
 
 fn weather_detail_from_records(
@@ -4467,7 +4608,7 @@ fn selection_record_is_airport(record: &PointVectorRecord) -> bool {
         || record.id.starts_with("airports:")
 }
 
-fn airport_icao_label(record: &PointVectorRecord) -> Option<String> {
+fn airport_ident_label(record: &PointVectorRecord) -> Option<String> {
     record
         .id
         .strip_prefix("airports:")
@@ -6317,12 +6458,7 @@ fn chart_ident_label(
 ) -> String {
     if style_class == "airport" || kind.eq_ignore_ascii_case("airport") {
         if let Some(ident) = airport_ident {
-            let trimmed = if ident.len() == 4 && ident.starts_with('K') {
-                &ident[1..]
-            } else {
-                ident
-            };
-            return trimmed.to_uppercase();
+            return ident.trim().to_uppercase();
         }
     }
     if style_class == "nav" && is_vor_family_kind(kind) {
@@ -8076,6 +8212,115 @@ mod tests {
     }
 
     #[test]
+    fn weather_station_airport_aliases_preserve_source_and_canonicalize_airport_ui() {
+        let aliases = WeatherStationAirportAliases::from_station_to_airport([(
+            "K1S5".to_string(),
+            "1S5".to_string(),
+            LatLon {
+                lat: 46.327,
+                lon: -119.970,
+            },
+        )]);
+        let metar = MetarRecord {
+            raw_text: "METAR K1S5 260415Z 00000KT 10SM CLR 20/10 A3000".to_string(),
+            observed_at_utc: Some("2026-07-26T04:15:00Z".to_string()),
+            station_id: "K1S5".to_string(),
+            flight_category: Some("VFR".to_string()),
+            clouds: None,
+            longitude: -119.970,
+            latitude: 46.327,
+        };
+        let payload = MetarProductPayload {
+            schema_version: 1,
+            version_label: "test".to_string(),
+            generated_at_utc: None,
+            observed_at_utc: None,
+            metar_count: Some(1),
+            metars_by_station: HashMap::from([("K1S5".to_string(), metar.clone())]),
+            pireps: Vec::new(),
+        };
+
+        let detail = weather_detail_for_airport("1S5", &aliases, Some(&payload), None, None, None)
+            .expect("1S5 should find its K1S5 weather station");
+        assert_eq!(detail.station_id, "1S5");
+        assert_eq!(detail.metar_text.as_deref(), Some(metar.raw_text.as_str()));
+
+        let item = selection_item_for_metar(
+            &metar,
+            None,
+            VisibleMetarFeature {
+                station_id: "K1S5".to_string(),
+                screen_x: 10.0,
+                screen_y: 20.0,
+                flight_category: "vfr".to_string(),
+                ceiling_amount: "unlimited".to_string(),
+            },
+            None,
+            &aliases,
+            None,
+        );
+        assert_eq!(item.label, "1S5");
+        assert_eq!(item.nav_ref, Some(NavRef::Airport("1S5".to_string())));
+        assert_eq!(
+            item.metar_feature
+                .as_ref()
+                .map(|feature| feature.station_id.as_str()),
+            Some("K1S5")
+        );
+
+        let mut distant_metar = metar.clone();
+        distant_metar.latitude = 40.0;
+        distant_metar.longitude = -100.0;
+        let distant_item = selection_item_for_metar(
+            &distant_metar,
+            None,
+            item.metar_feature.expect("METAR feature"),
+            None,
+            &aliases,
+            None,
+        );
+        assert_eq!(distant_item.label, "K1S5");
+        assert_eq!(distant_item.nav_ref, None);
+    }
+
+    #[test]
+    fn unassociated_weather_station_keeps_its_source_identifier() {
+        let metar = MetarRecord {
+            raw_text: "METAR KSMP 260415Z 00000KT 10SM CLR 10/05 A3000".to_string(),
+            observed_at_utc: Some("2026-07-26T04:15:00Z".to_string()),
+            station_id: "KSMP".to_string(),
+            flight_category: Some("VFR".to_string()),
+            clouds: None,
+            longitude: -121.338,
+            latitude: 47.286,
+        };
+        let item = selection_item_for_metar(
+            &metar,
+            None,
+            VisibleMetarFeature {
+                station_id: "KSMP".to_string(),
+                screen_x: 10.0,
+                screen_y: 20.0,
+                flight_category: "vfr".to_string(),
+                ceiling_amount: "unlimited".to_string(),
+            },
+            None,
+            &WeatherStationAirportAliases::default(),
+            None,
+        );
+
+        assert_eq!(item.label, "KSMP");
+        assert_eq!(item.nav_ref, None);
+        assert_eq!(
+            item.actions[0]
+                .weather_detail
+                .as_ref()
+                .map(|detail| detail.station_id.as_str()),
+            Some("KSMP")
+        );
+    }
+
+    #[test]
     fn weather_detail_includes_only_matching_airport_notams() {
         let payload = NotamProductPayload {
             schema_version: NOTAM_LIVE_FEED_CONTRACT_VERSION,
@@ -8128,8 +8373,15 @@ mod tests {
         };
 
         let index = AirportNotamIndex::from_payload(payload).expect("supported NOTAM fixture");
-        let detail = weather_detail_for_station("KAAA", None, None, Some(&index), None)
-            .expect("airport NOTAM should enable detail");
+        let detail = weather_detail_for_station(
+            "KAAA",
+            &WeatherStationAirportAliases::default(),
+            None,
+            None,
+            Some(&index),
+            None,
+        )
+        .expect("airport NOTAM should enable detail");
 
         assert_eq!(detail.notams.len(), 1);
         assert_eq!(detail.notams[0].label, "RWY");
@@ -8192,8 +8444,15 @@ mod tests {
         })
         .expect("supported NOTAM fixture");
 
-        let detail = weather_detail_for_station("KAAA", None, None, Some(&index), None)
-            .expect("airport NOTAMs should enable detail");
+        let detail = weather_detail_for_station(
+            "KAAA",
+            &WeatherStationAirportAliases::default(),
+            None,
+            None,
+            Some(&index),
+            None,
+        )
+        .expect("airport NOTAMs should enable detail");
         assert_eq!(
             detail
                 .notams
@@ -10185,6 +10444,36 @@ mod tests {
         assert_eq!(
             chart_ident_label_for_nav_ref_symbol(&NavRef::Navaid("SEA".to_string()), &symbol),
             "SEA"
+        );
+
+        let airport_symbol = NavSymbolFeature {
+            kind: "airport".to_string(),
+            label: "wrong".to_string(),
+            symbol_kind: "airport".to_string(),
+            style_class: "airport".to_string(),
+            obstacle_variant: None,
+            obstacle_tone: None,
+            towered: false,
+            fuel_available: false,
+            has_paved_runway: None,
+            heliport: None,
+            has_water_runway: None,
+            runway_length_ratio: 0.0,
+            longest_runway_heading_true_deg: None,
+        };
+        assert_eq!(
+            chart_ident_label_for_nav_ref_symbol(
+                &NavRef::Airport("KPAE".to_string()),
+                &airport_symbol
+            ),
+            "KPAE"
+        );
+        assert_eq!(
+            chart_ident_label_for_nav_ref_symbol(
+                &NavRef::Airport("1S5".to_string()),
+                &airport_symbol
+            ),
+            "1S5"
         );
     }
 

@@ -2890,10 +2890,12 @@ pub(super) fn build_nav_kv_airport_navref_pairs(
     let runway_info = airport_runway_symbol_info_by_airport(connection)?;
     let mut pairs = Vec::new();
     let mut important_metar_station_ids = BTreeSet::new();
+    let mut airport_ids = BTreeSet::new();
     for row in rows {
         let (id, lat, lon, facility_name, kind, atct, fuel_types, elevation) = row?;
         let key_id = had_upper_key_component(&id);
         let station_id = id.trim().to_ascii_uppercase();
+        airport_ids.insert(station_id.clone());
         if atct.trim().eq_ignore_ascii_case("Y") {
             important_metar_station_ids.insert(station_id);
         }
@@ -2926,6 +2928,10 @@ pub(super) fn build_nav_kv_airport_navref_pairs(
         let _ = facility_name;
     }
     pairs.push(metar_important_stations_pair(&important_metar_station_ids)?);
+    pairs.push(weather_station_airport_aliases_pair(
+        connection,
+        &airport_ids,
+    )?);
     Ok(pairs)
 }
 
@@ -2939,6 +2945,112 @@ pub(super) fn metar_important_stations_pair(
             "station_ids": station_ids.iter().collect::<Vec<_>>(),
         }),
         "METAR important station ids",
+    )
+}
+
+fn weather_station_airport_aliases_pair(
+    connection: &rusqlite::Connection,
+    airport_ids: &BTreeSet<String>,
+) -> anyhow::Result<NavKvPair> {
+    let mut stmt = connection.prepare(
+        "
+        SELECT DISTINCT upper(trim(airports.LocationID)), upper(trim(airports.State)),
+                        CAST(airports.ARPLatitude AS REAL),
+                        CAST(airports.ARPLongitude AS REAL)
+        FROM airports
+        JOIN awos
+          ON upper(trim(awos.LocationID)) = upper(trim(airports.LocationID))
+        WHERE upper(trim(awos.Status)) = 'Y'
+          AND length(trim(airports.LocationID)) = 3
+        ",
+    )?;
+    let rows = stmt.query_map([], |row| {
+        Ok((
+            row.get::<_, String>(0)?,
+            row.get::<_, String>(1)?,
+            row.get::<_, f64>(2)?,
+            row.get::<_, f64>(3)?,
+        ))
+    })?;
+    let mut aliases = BTreeMap::new();
+    for row in rows {
+        let (airport_id, state, lat, lon) = row?;
+        if !is_contiguous_us_state(&state) {
+            continue;
+        }
+        let station_id = format!("K{airport_id}");
+        if airport_ids.contains(&station_id) {
+            continue;
+        }
+        aliases.insert(
+            station_id,
+            serde_json::json!({
+                "airport_id": airport_id,
+                "position": nav_lat_lon_json(lat, lon),
+            }),
+        );
+    }
+    json_pair(
+        "weather/station-airport-aliases".to_string(),
+        &serde_json::json!({
+            "schema_version": 1,
+            "aliases": aliases,
+        }),
+        "weather station airport aliases",
+    )
+}
+
+fn is_contiguous_us_state(state: &str) -> bool {
+    matches!(
+        state.trim().to_ascii_uppercase().as_str(),
+        "AL" | "AZ"
+            | "AR"
+            | "CA"
+            | "CO"
+            | "CT"
+            | "DE"
+            | "FL"
+            | "GA"
+            | "ID"
+            | "IL"
+            | "IN"
+            | "IA"
+            | "KS"
+            | "KY"
+            | "LA"
+            | "ME"
+            | "MD"
+            | "MA"
+            | "MI"
+            | "MN"
+            | "MS"
+            | "MO"
+            | "MT"
+            | "NE"
+            | "NV"
+            | "NH"
+            | "NJ"
+            | "NM"
+            | "NY"
+            | "NC"
+            | "ND"
+            | "OH"
+            | "OK"
+            | "OR"
+            | "PA"
+            | "RI"
+            | "SC"
+            | "SD"
+            | "TN"
+            | "TX"
+            | "UT"
+            | "VT"
+            | "VA"
+            | "WA"
+            | "WV"
+            | "WI"
+            | "WY"
+            | "DC"
     )
 }
 
@@ -4943,12 +5055,7 @@ pub(super) fn terminal_navaid_had_key(
 }
 
 pub(super) fn airport_display_label(id: &str) -> String {
-    let trimmed = id.trim();
-    if trimmed.len() == 4 && trimmed.starts_with('K') {
-        trimmed[1..].to_ascii_uppercase()
-    } else {
-        trimmed.to_ascii_uppercase()
-    }
+    id.trim().to_ascii_uppercase()
 }
 
 pub(super) fn navaid_display_label(id: &str, facility_name: &str) -> String {
@@ -5297,7 +5404,8 @@ mod tests {
                     Type TEXT,
                     ATCT TEXT,
                     FuelTypes TEXT,
-                    ARPElevation TEXT
+                    ARPElevation TEXT,
+                    State TEXT
                 );
                 CREATE TABLE airportrunways (
                     LocationID TEXT,
@@ -5309,10 +5417,22 @@ mod tests {
                     HELatitude TEXT,
                     HELongitude TEXT
                 );
+                CREATE TABLE awos (
+                    LocationID TEXT,
+                    Status TEXT
+                );
                 INSERT INTO airports VALUES
-                    ('kaaa', 1.0, 2.0, 'A Airport', 'AIRPORT', 'Y', '', '100'),
-                    ('KBBB', 3.0, 4.0, 'B Airport', 'AIRPORT', 'N', '', '200'),
-                    (' kccc ', 5.0, 6.0, 'C Airport', 'AIRPORT', ' y ', '', '300');
+                    ('kaaa', 1.0, 2.0, 'A Airport', 'AIRPORT', 'Y', '', '100', 'WA'),
+                    ('KBBB', 3.0, 4.0, 'B Airport', 'AIRPORT', 'N', '', '200', 'WA'),
+                    (' kccc ', 5.0, 6.0, 'C Airport', 'AIRPORT', ' y ', '', '300', 'WA'),
+                    ('1S5', 7.0, 8.0, 'Sunnyside', 'AIRPORT', 'N', '', '400', 'WA'),
+                    ('XYZ', 9.0, 10.0, 'Alias Candidate', 'AIRPORT', 'N', '', '500', 'WA'),
+                    ('KXYZ', 11.0, 12.0, 'Real ICAO', 'AIRPORT', 'N', '', '600', 'WA'),
+                    ('H01', 13.0, 14.0, 'Hawaii Candidate', 'AIRPORT', 'N', '', '700', 'HI');
+                INSERT INTO awos VALUES
+                    ('1S5', 'Y'),
+                    ('XYZ', 'Y'),
+                    ('H01', 'Y');
                 "#,
             )
             .expect("schema");
@@ -5332,6 +5452,27 @@ mod tests {
                 "station_ids": ["KAAA", "KCCC"],
             })
         );
+        let aliases_pair = pairs
+            .iter()
+            .find(|pair| pair.key == "weather/station-airport-aliases")
+            .expect("weather station airport aliases pair");
+        let aliases: serde_json::Value =
+            serde_json::from_slice(&aliases_pair.value).expect("aliases json");
+        assert_eq!(
+            aliases,
+            serde_json::json!({
+                "schema_version": 1,
+                "aliases": {
+                    "K1S5": {
+                        "airport_id": "1S5",
+                        "position": {
+                            "lat": 7.0,
+                            "lon": 8.0,
+                        },
+                    },
+                },
+            })
+        );
     }
 
     #[test]
@@ -5348,7 +5489,8 @@ mod tests {
                     Type TEXT,
                     ATCT TEXT,
                     FuelTypes TEXT,
-                    ARPElevation TEXT
+                    ARPElevation TEXT,
+                    State TEXT
                 );
                 CREATE TABLE airportrunways (
                     LocationID TEXT,
@@ -5359,6 +5501,10 @@ mod tests {
                     LELongitude TEXT,
                     HELatitude TEXT,
                     HELongitude TEXT
+                );
+                CREATE TABLE awos (
+                    LocationID TEXT,
+                    Status TEXT
                 );
                 CREATE TABLE nav (
                     LocationID TEXT,
@@ -5375,7 +5521,7 @@ mod tests {
                     Type TEXT
                 );
                 INSERT INTO airports VALUES
-                    ('KRNT', 47.493, -122.216, 'Renton Municipal', 'AIRPORT', 'Y', '100LL', '32');
+                    ('KRNT', 47.493, -122.216, 'Renton Municipal', 'AIRPORT', 'Y', '100LL', '32', 'WA');
                 INSERT INTO nav VALUES
                     ('SEA', 47.435, -122.310, 'Seattle', 'VORTAC');
                 INSERT INTO fix VALUES
@@ -5409,5 +5555,12 @@ mod tests {
             assert!(value.get("label").is_some(), "{key}");
             assert!(value.get("style_class").is_some(), "{key}");
         }
+        let airport_symbol = pairs
+            .iter()
+            .find(|pair| pair.key == "navref/symbol/airport/KRNT")
+            .expect("airport symbol");
+        let airport_symbol: serde_json::Value =
+            serde_json::from_slice(&airport_symbol.value).expect("airport symbol json");
+        assert_eq!(airport_symbol["label"], "KRNT");
     }
 }

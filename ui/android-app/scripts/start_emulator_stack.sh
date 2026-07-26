@@ -94,8 +94,27 @@ ensure_avd_instance() {
 }
 
 ensure_avd_hardware_keyboard() {
-  local avd_home="${ANDROID_AVD_HOME:-$HOME/.android/avd}"
-  local config_file="${avd_home}/${AVD_INSTANCE_NAME}.avd/config.ini"
+  local avd_path
+  avd_path="$(
+    "$AVDMANAGER_BIN" list avd | awk -v wanted="$AVD_INSTANCE_NAME" '
+      /^[[:space:]]*Name:[[:space:]]*/ {
+        name = $0
+        sub(/^[[:space:]]*Name:[[:space:]]*/, "", name)
+      }
+      /^[[:space:]]*Path:[[:space:]]*/ && name == wanted {
+        path = $0
+        sub(/^[[:space:]]*Path:[[:space:]]*/, "", path)
+        print path
+        exit
+      }
+    '
+  )"
+  if [[ -z "$avd_path" ]]; then
+    echo "AVD path not reported by avdmanager: $AVD_INSTANCE_NAME" >&2
+    return 1
+  fi
+
+  local config_file="${avd_path}/config.ini"
   if [[ ! -f "$config_file" ]]; then
     echo "AVD config not found: $config_file" >&2
     return 1

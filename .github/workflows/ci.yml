@@ -89,13 +89,13 @@ jobs:
         run: cargo test --workspace --doc --locked
       - name: Report individual tests
         if: ${{ always() }}
-        run: python3 tools/ci/junit_summary.py --title "Rust shared crates" ".ci/cargo-target/shared/nextest/ci/junit.xml"
+        run: python3 tools/ci/junit_summary.py --title "Rust shared crates" "crates/target/nextest/ci/junit.xml"
       - name: Upload test results
         if: ${{ always() }}
         uses: actions/upload-artifact@v4
         with:
           name: rust-shared-test-results
-          path: .ci/cargo-target/shared/nextest/ci/junit.xml
+          path: crates/target/nextest/ci/junit.xml
           if-no-files-found: ignore
           retention-days: 14
       - name: Enforce test results
@@ -142,13 +142,13 @@ jobs:
         run: cargo test --workspace --doc --locked
       - name: Report individual tests
         if: ${{ always() }}
-        run: python3 tools/ci/junit_summary.py --title "Rust application core" ".ci/cargo-target/core/nextest/ci/junit.xml"
+        run: python3 tools/ci/junit_summary.py --title "Rust application core" "ui/core-rust/target/nextest/ci/junit.xml"
       - name: Upload test results
         if: ${{ always() }}
         uses: actions/upload-artifact@v4
         with:
           name: rust-core-test-results
-          path: .ci/cargo-target/core/nextest/ci/junit.xml
+          path: ui/core-rust/target/nextest/ci/junit.xml
           if-no-files-found: ignore
           retention-days: 14
       - name: Enforce test results
@@ -197,13 +197,13 @@ jobs:
         run: cargo test --workspace --doc --locked
       - name: Report individual tests
         if: ${{ always() }}
-        run: python3 tools/ci/junit_summary.py --title "Rust preprocessors" ".ci/cargo-target/preprocessor/nextest/ci/junit.xml"
+        run: python3 tools/ci/junit_summary.py --title "Rust preprocessors" "product/preprocessor/target/nextest/ci/junit.xml"
       - name: Upload test results
         if: ${{ always() }}
         uses: actions/upload-artifact@v4
         with:
           name: rust-preprocessor-test-results
-          path: .ci/cargo-target/preprocessor/nextest/ci/junit.xml
+          path: product/preprocessor/target/nextest/ci/junit.xml
           if-no-files-found: ignore
           retention-days: 14
       - name: Enforce test results

@@ -3190,11 +3190,13 @@ fn airport_weather_communications_by_airport(
 fn airport_info_runways_by_airport(
     connection: &rusqlite::Connection,
 ) -> anyhow::Result<BTreeMap<String, Vec<AirportRunwayInfoRecord>>> {
+    let airport_variations = load_variation_map(connection, "airports", "MagneticVariation", true)?;
     let mut stmt = connection.prepare(
         "
         SELECT upper(trim(LocationID)), trim(Length), trim(Width), trim(Surface),
                trim(LEIdent), trim(HEIdent), trim(LEHeadingT), trim(HEHeading),
-               trim(LEPattern), trim(HEPattern)
+               trim(LEPattern), trim(HEPattern),
+               trim(LELatitude), trim(LELongitude), trim(HELatitude), trim(HELongitude)
         FROM airportrunways
         WHERE trim(LEIdent) <> '' OR trim(HEIdent) <> ''
         ",
@@ -3211,6 +3213,10 @@ fn airport_info_runways_by_airport(
             row.get::<_, String>(7)?,
             row.get::<_, String>(8)?,
             row.get::<_, String>(9)?,
+            row.get::<_, String>(10)?,
+            row.get::<_, String>(11)?,
+            row.get::<_, String>(12)?,
+            row.get::<_, String>(13)?,
         ))
     })?;
     let mut by_airport = BTreeMap::<String, Vec<AirportRunwayInfoRecord>>::new();
@@ -3226,7 +3232,30 @@ fn airport_info_runways_by_airport(
             end_b_heading,
             end_a_pattern,
             end_b_pattern,
+            end_a_lat,
+            end_a_lon,
+            end_b_lat,
+            end_b_lon,
         ) = row?;
+        let magnetic_variation_deg = airport_variations.get(&airport_id).copied().flatten();
+        let end_a_heading_true_deg = resolve_runway_true_heading(
+            &end_a_heading,
+            &end_a_lat,
+            &end_a_lon,
+            &end_b_lat,
+            &end_b_lon,
+            &end_a_ident,
+            magnetic_variation_deg,
+        );
+        let end_b_heading_true_deg = resolve_runway_true_heading(
+            &end_b_heading,
+            &end_b_lat,
+            &end_b_lon,
+            &end_a_lat,
+            &end_a_lon,
+            &end_b_ident,
+            magnetic_variation_deg,
+        );
         by_airport
             .entry(airport_id)
             .or_default()
@@ -3236,8 +3265,8 @@ fn airport_info_runways_by_airport(
                 surface,
                 end_a_ident,
                 end_b_ident,
-                end_a_heading_true_deg: parse_optional_float(&end_a_heading),
-                end_b_heading_true_deg: parse_optional_float(&end_b_heading),
+                end_a_heading_true_deg,
+                end_b_heading_true_deg,
                 end_a_right_pattern: end_a_pattern.eq_ignore_ascii_case("Y"),
                 end_b_right_pattern: end_b_pattern.eq_ignore_ascii_case("Y"),
             });
@@ -5310,10 +5339,12 @@ pub(super) struct AirportRunwaySymbolInfo {
 pub(super) fn airport_runway_symbol_info_by_airport(
     connection: &rusqlite::Connection,
 ) -> anyhow::Result<BTreeMap<String, AirportRunwaySymbolInfo>> {
+    let airport_variations = load_variation_map(connection, "airports", "MagneticVariation", true)?;
     let mut stmt = connection.prepare(
         "
         SELECT trim(LocationID), trim(Length), trim(Surface), trim(LEHeadingT),
-               trim(LELatitude), trim(LELongitude), trim(HELatitude), trim(HELongitude)
+               trim(LELatitude), trim(LELongitude), trim(HELatitude), trim(HELongitude),
+               trim(LEIdent), trim(HEHeading), trim(HEIdent)
         FROM airportrunways
         WHERE trim(LocationID) <> ''
         ",
@@ -5328,11 +5359,26 @@ pub(super) fn airport_runway_symbol_info_by_airport(
             row.get::<_, String>(5)?,
             row.get::<_, String>(6)?,
             row.get::<_, String>(7)?,
+            row.get::<_, String>(8)?,
+            row.get::<_, String>(9)?,
+            row.get::<_, String>(10)?,
         ))
     })?;
     let mut by_airport = BTreeMap::<String, AirportRunwaySymbolInfo>::new();
     for row in rows {
-        let (airport_id, length, surface, heading, le_lat, le_lon, he_lat, he_lon) = row?;
+        let (
+            airport_id,
+            length,
+            surface,
+            le_heading,
+            le_lat,
+            le_lon,
+            he_lat,
+            he_lon,
+            le_ident,
+            he_heading,
+            he_ident,
+        ) = row?;
         let length = parse_float(&length);
         if length <= 0.0 {
             continue;
@@ -5340,20 +5386,30 @@ pub(super) fn airport_runway_symbol_info_by_airport(
         let surface = surface.trim().to_ascii_uppercase();
         let has_paved_runway = surface_is_paved(&surface);
         let has_water_runway = surface.contains("WATER");
-        let heading = parse_float(&heading);
-        let heading = if heading > 0.0 {
-            normalize_heading(heading)
-        } else {
-            let le_lat = parse_float(&le_lat);
-            let le_lon = parse_float(&le_lon);
-            let he_lat = parse_float(&he_lat);
-            let he_lon = parse_float(&he_lon);
-            if !valid_lat_lon(le_lat, le_lon) || !valid_lat_lon(he_lat, he_lon) {
-                continue;
-            }
-            bearing_true_deg(le_lat, le_lon, he_lat, he_lon)
-        };
         let key = airport_id.trim().to_ascii_uppercase();
+        let magnetic_variation_deg = airport_variations.get(&key).copied().flatten();
+        let Some(heading) = resolve_runway_true_heading(
+            &le_heading,
+            &le_lat,
+            &le_lon,
+            &he_lat,
+            &he_lon,
+            &le_ident,
+            magnetic_variation_deg,
+        )
+        .or_else(|| {
+            resolve_runway_true_heading(
+                &he_heading,
+                &he_lat,
+                &he_lon,
+                &le_lat,
+                &le_lon,
+                &he_ident,
+                magnetic_variation_deg,
+            )
+        }) else {
+            continue;
+        };
         match by_airport.get_mut(&key) {
             Some(existing) if existing.length_ft >= length => {
                 existing.has_paved_runway |= has_paved_runway;
@@ -5373,6 +5429,54 @@ pub(super) fn airport_runway_symbol_info_by_airport(
         }
     }
     Ok(by_airport)
+}
+
+fn resolve_runway_true_heading(
+    published_heading: &str,
+    start_lat: &str,
+    start_lon: &str,
+    end_lat: &str,
+    end_lon: &str,
+    runway_ident: &str,
+    magnetic_variation_deg: Option<f64>,
+) -> Option<f64> {
+    if let Some(heading) = parse_optional_float(published_heading) {
+        return Some(normalize_heading(heading));
+    }
+
+    let endpoints = || {
+        Some((
+            parse_optional_float(start_lat)?,
+            parse_optional_float(start_lon)?,
+            parse_optional_float(end_lat)?,
+            parse_optional_float(end_lon)?,
+        ))
+    };
+    if let Some((start_lat, start_lon, end_lat, end_lon)) = endpoints() {
+        let distinct = (start_lat - end_lat).abs() > f64::EPSILON
+            || (start_lon - end_lon).abs() > f64::EPSILON;
+        if distinct && valid_lat_lon(start_lat, start_lon) && valid_lat_lon(end_lat, end_lon) {
+            return Some(bearing_true_deg(start_lat, start_lon, end_lat, end_lon));
+        }
+    }
+
+    // Sparse FAA rows can omit both headings and endpoints; runway numbers are magnetic.
+    let magnetic_heading = runway_ident_magnetic_heading_deg(runway_ident)?;
+    Some(normalize_heading(
+        magnetic_heading + magnetic_variation_deg.unwrap_or_default(),
+    ))
+}
+
+fn runway_ident_magnetic_heading_deg(runway_ident: &str) -> Option<f64> {
+    let normalized = runway_ident.trim().to_ascii_uppercase();
+    let number = normalized
+        .strip_suffix(['L', 'C', 'R'])
+        .unwrap_or(&normalized)
+        .parse::<u8>()
+        .ok()?;
+    (1..=36)
+        .contains(&number)
+        .then_some(f64::from(number) * 10.0)
 }
 
 pub(super) fn json_pair(
@@ -5831,7 +5935,8 @@ mod tests {
                     ATCT TEXT,
                     FuelTypes TEXT,
                     ARPElevation TEXT,
-                    State TEXT
+                    State TEXT,
+                    MagneticVariation TEXT
                 );
                 CREATE TABLE airportrunways (
                     LocationID TEXT,
@@ -5841,20 +5946,23 @@ mod tests {
                     LELatitude TEXT,
                     LELongitude TEXT,
                     HELatitude TEXT,
-                    HELongitude TEXT
+                    HELongitude TEXT,
+                    LEIdent TEXT,
+                    HEHeading TEXT,
+                    HEIdent TEXT
                 );
                 CREATE TABLE awos (
                     LocationID TEXT,
                     Status TEXT
                 );
                 INSERT INTO airports VALUES
-                    ('kaaa', 1.0, 2.0, 'A Airport', 'AIRPORT', 'Y', '', '100', 'WA'),
-                    ('KBBB', 3.0, 4.0, 'B Airport', 'AIRPORT', 'N', '', '200', 'WA'),
-                    (' kccc ', 5.0, 6.0, 'C Airport', 'AIRPORT', ' y ', '', '300', 'WA'),
-                    ('1S5', 7.0, 8.0, 'Sunnyside', 'AIRPORT', 'N', '', '400', 'WA'),
-                    ('XYZ', 9.0, 10.0, 'Alias Candidate', 'AIRPORT', 'N', '', '500', 'WA'),
-                    ('KXYZ', 11.0, 12.0, 'Real ICAO', 'AIRPORT', 'N', '', '600', 'WA'),
-                    ('H01', 13.0, 14.0, 'Hawaii Candidate', 'AIRPORT', 'N', '', '700', 'HI');
+                    ('kaaa', 1.0, 2.0, 'A Airport', 'AIRPORT', 'Y', '', '100', 'WA', ''),
+                    ('KBBB', 3.0, 4.0, 'B Airport', 'AIRPORT', 'N', '', '200', 'WA', ''),
+                    (' kccc ', 5.0, 6.0, 'C Airport', 'AIRPORT', ' y ', '', '300', 'WA', ''),
+                    ('1S5', 7.0, 8.0, 'Sunnyside', 'AIRPORT', 'N', '', '400', 'WA', ''),
+                    ('XYZ', 9.0, 10.0, 'Alias Candidate', 'AIRPORT', 'N', '', '500', 'WA', ''),
+                    ('KXYZ', 11.0, 12.0, 'Real ICAO', 'AIRPORT', 'N', '', '600', 'WA', ''),
+                    ('H01', 13.0, 14.0, 'Hawaii Candidate', 'AIRPORT', 'N', '', '700', 'HI', '');
                 INSERT INTO awos VALUES
                     ('1S5', 'Y'),
                     ('XYZ', 'Y'),
@@ -5915,7 +6023,8 @@ mod tests {
                     ARPElevation TEXT,
                     TrafficPatternAltitude TEXT,
                     UNICOMFrequencies TEXT,
-                    CTAFFrequency TEXT
+                    CTAFFrequency TEXT,
+                    MagneticVariation TEXT
                 );
                 CREATE TABLE airportfreq (LocationID TEXT, Type TEXT, Freq TEXT);
                 CREATE TABLE airportcontacts (LocationID TEXT, Type TEXT, Phone TEXT);
@@ -5938,10 +6047,15 @@ mod tests {
                     LEHeadingT TEXT,
                     HEHeading TEXT,
                     LEPattern TEXT,
-                    HEPattern TEXT
+                    HEPattern TEXT,
+                    LELatitude TEXT,
+                    LELongitude TEXT,
+                    HELatitude TEXT,
+                    HELongitude TEXT
                 );
                 INSERT INTO airports VALUES
-                    ('KRNT', 'Renton Municipal', 47.493, -122.216, '32', '1218', '122.95', '124.7');
+                    ('KRNT', 'Renton Municipal', 47.493, -122.216, '32', '1218', '122.95', '124.7', '15E'),
+                    ('S88', 'Skykomish State', 47.711, -121.339, '1002', '', '', '122.9', '20E');
                 INSERT INTO airportfreq VALUES
                     ('KRNT', 'ATIS', '126.95'),
                     ('KRNT', 'GND/P', '121.6'),
@@ -5951,8 +6065,9 @@ mod tests {
                 INSERT INTO awos VALUES
                     ('KRNT', 'ASOS', 'Y', '126.95', '', '425-255-6080', '');
                 INSERT INTO airportrunways VALUES
-                    ('KRNT', '3200', '35', 'TURF-F', '08', '26', '084', '264', 'Y', 'N'),
-                    ('KRNT', '5382', '200', 'ASPH-CONC-G', '16', '34', '174', '354', 'N', 'Y');
+                    ('KRNT', '3200', '35', 'TURF-F', '08', '26', '084', '264', 'Y', 'N', '', '', '', ''),
+                    ('KRNT', '5382', '200', 'ASPH-CONC-G', '16', '34', '174', '354', 'N', 'Y', '', '', '', ''),
+                    ('S88', '2050', '100', 'TURF-G', '06', '24', '', '', 'N', 'N', '', '', '', '');
                 "#,
             )
             .expect("schema");
@@ -5981,6 +6096,25 @@ mod tests {
             .expect("contacts")
             .iter()
             .any(|entry| entry["phone"] == "425-555-1212"));
+
+        let s88 = pairs
+            .iter()
+            .find(|pair| pair.key == "airport/info/S88")
+            .expect("S88 airport info");
+        let s88: serde_json::Value =
+            serde_json::from_slice(&s88.value).expect("S88 airport info json");
+        assert_eq!(s88["runways"][0]["end_a"]["heading_true_deg"], 80.0);
+        assert_eq!(s88["runways"][0]["end_b"]["heading_true_deg"], 260.0);
+
+        let symbols =
+            airport_runway_symbol_info_by_airport(&connection).expect("airport runway symbols");
+        assert_eq!(
+            symbols
+                .get("S88")
+                .expect("S88 runway symbol")
+                .heading_true_deg,
+            80.0
+        );
     }
 
     #[test]
@@ -5998,7 +6132,8 @@ mod tests {
                     ATCT TEXT,
                     FuelTypes TEXT,
                     ARPElevation TEXT,
-                    State TEXT
+                    State TEXT,
+                    MagneticVariation TEXT
                 );
                 CREATE TABLE airportrunways (
                     LocationID TEXT,
@@ -6008,7 +6143,10 @@ mod tests {
                     LELatitude TEXT,
                     LELongitude TEXT,
                     HELatitude TEXT,
-                    HELongitude TEXT
+                    HELongitude TEXT,
+                    LEIdent TEXT,
+                    HEHeading TEXT,
+                    HEIdent TEXT
                 );
                 CREATE TABLE awos (
                     LocationID TEXT,
@@ -6029,7 +6167,7 @@ mod tests {
                     Type TEXT
                 );
                 INSERT INTO airports VALUES
-                    ('KRNT', 47.493, -122.216, 'Renton Municipal', 'AIRPORT', 'Y', '100LL', '32', 'WA');
+                    ('KRNT', 47.493, -122.216, 'Renton Municipal', 'AIRPORT', 'Y', '100LL', '32', 'WA', '15E');
                 INSERT INTO nav VALUES
                     ('SEA', 47.435, -122.310, 'Seattle', 'VORTAC');
                 INSERT INTO fix VALUES

@@ -41,6 +41,13 @@ Hosted-runner invariants and failure diagnostics are documented in
   - Selects the first plate in the folder.
   - Captures the screen and verifies the plate canvas is visibly painted on the
     first open.
+- `android.raw-map-inspector-terrain-smoke`
+  - Centers the chart on KPLU, dismisses the search-opened airport inspector,
+    and physically taps an unoccupied point southeast of the airport.
+  - Verifies that the raw-click inspector selects `SPOT` and displays a terrain
+    elevation, exercising Android session-resource paging. This test requires
+    the ordinary NW terrain package and runs in the local full-publication
+    suite rather than the compact fixture CI matrix.
 - `android.map-follow-ctr-gesture-smoke`
   - Performs the same route setup.
   - Enables the Bad Autopilot debug ownship source.

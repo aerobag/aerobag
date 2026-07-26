@@ -3901,13 +3901,16 @@ internal fun MapSelectionTray(
 }
 
 @Composable
+@OptIn(ExperimentalComposeUiApi::class)
 internal fun MapSelectionHeader(selectedItem: MapSelectionItem?) {
     val uiTheme = LocalAerobagUiTheme.current
     val headerHeight = with(LocalDensity.current) { 34.sp.toDp() }
     Column(
         modifier = Modifier
             .fillMaxWidth()
-            .height(headerHeight),
+            .height(headerHeight)
+            .testTag("parity:map-selection-selected:${selectedItem?.label ?: "none"}")
+            .semantics { testTagsAsResourceId = true },
         verticalArrangement = Arrangement.Center,
     ) {
         Text(

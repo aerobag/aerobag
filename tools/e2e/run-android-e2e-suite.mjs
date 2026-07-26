@@ -495,6 +495,36 @@ async function inspectAirportFromChartSearch(serial, result, airportId) {
   throwWithUi(serial, `chart search did not show ${airportId} suggestion; last observed=${JSON.stringify(lastObserved)}`);
 }
 
+async function dismissMapSelection(serial) {
+  pressKey(serial, "KEYCODE_BACK");
+  await waitFor(() => {
+    const xml = dumpAndroid(serial);
+    return findNode(xml, (node) => hasAndroidTag(node, "parity:map-selection-tray")) === null;
+  }, 5000, "map inspector dismissed");
+}
+
+async function inspectRawTerrainSpot(serial, result) {
+  const surface = await waitForNode(
+    serial,
+    (node) => hasAndroidTag(node, "parity:map-surface"),
+    10000,
+    "map surface for raw inspection",
+  );
+  const rect = rectOfBounds(surface.bounds);
+  const x = Math.round(rect.left + rect.width * 0.72);
+  const y = Math.round(rect.top + rect.height * 0.72);
+  adb(serial, ["shell", "input", "tap", String(x), String(y)]);
+
+  await waitFor(() => {
+    const xml = dumpAndroid(serial);
+    return findNode(xml, (node) => hasAndroidTag(node, "parity:map-selection-tray")) !== null &&
+      findNode(xml, (node) => hasAndroidTag(node, "parity:map-selection-selected:SPOT")) !== null &&
+      findNode(xml, (node) => /(?:^| · )Elev -?\d+(?:$| · )/.test(node.text ?? "")) !== null;
+  }, 15000, "raw SPOT inspector with terrain elevation");
+  recordStep(result, "raw map SPOT inspector opened", `screen=${x},${y}`);
+  recordCheck(result, "inspector.rawSpotTerrainElevation", true, "numeric terrain elevation");
+}
+
 function parseRouteOverlayTag(tag) {
   const match = /^parity:flight-plan-route-overlay:segments:(\d+):visible:(\d+)$/.exec(tag);
   if (!match) return null;
@@ -973,6 +1003,26 @@ async function runPlateFirstRenderSmoke(args) {
   return result;
 }
 
+async function runRawMapInspectorTerrainSmoke(args) {
+  const { serial } = args;
+  const result = createTestResult("android.raw-map-inspector-terrain-smoke");
+  adb(serial, ["logcat", "-c"]);
+  await launchFreshAndroidApp(serial, { clearUiPrefs: true, clearCoreSettings: false });
+  recordStep(result, "app launched", serial || "default adb device");
+  if (await acceptDisclaimerIfPresent(serial)) {
+    recordStep(result, "disclaimer accepted");
+  }
+  await ensureOfflinePackagesReady(serial, result, args);
+  await waitForRuntime(serial, result);
+  await ensureChartPage(serial, result);
+  await inspectAirportFromChartSearch(serial, result, "KPLU");
+  await dismissMapSelection(serial);
+  await inspectRawTerrainSpot(serial, result);
+  result.status = "pass";
+  result.finished_at = new Date().toISOString();
+  return result;
+}
+
 const tests = [
   {
     id: "android.flight-plan-route-smoke",
@@ -981,6 +1031,10 @@ const tests = [
   {
     id: "android.plate-first-render-smoke",
     run: runPlateFirstRenderSmoke,
+  },
+  {
+    id: "android.raw-map-inspector-terrain-smoke",
+    run: runRawMapInspectorTerrainSmoke,
   },
   {
     id: "android.map-follow-ctr-gesture-smoke",

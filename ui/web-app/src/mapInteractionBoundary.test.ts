@@ -57,6 +57,25 @@ describe("map interaction boundaries", () => {
     expect(detailModalBlocks).toContain("user-select: text");
   });
 
+  it("uses the weather modal as the only weather-detail scroll viewport", () => {
+    const modalBlocks = [...styles.matchAll(/\.mapSelectionDetailModal\s*\{([^}]*)\}/g)]
+      .map((match) => match[1] ?? "")
+      .join("\n");
+    expect(modalBlocks).toContain("overflow-y: auto");
+
+    const textOverrideBlocks = [...styles.matchAll(
+      /\.weatherDetailModal:not\(\.hoverWeatherDetailModal\) \.weatherDetailText\s*\{([^}]*)\}/g,
+    )].map((match) => match[1] ?? "").join("\n");
+    expect(textOverrideBlocks).toContain("max-height: none");
+    expect(textOverrideBlocks).toContain("overflow: visible");
+
+    const notamListOverrideBlocks = [...styles.matchAll(
+      /\.weatherDetailModal:not\(\.hoverWeatherDetailModal\) \.airportNotamList\s*\{([^}]*)\}/g,
+    )].map((match) => match[1] ?? "").join("\n");
+    expect(notamListOverrideBlocks).toContain("max-height: none");
+    expect(notamListOverrideBlocks).toContain("overflow: visible");
+  });
+
   it("treats an open map-selection inspector as a hard map gesture boundary", () => {
     expect(functionSource("handlePointerRelease")).toContain("trayGroup.scrimOpen || mapSelection");
     expect(functionSource("handleWheel")).toContain("trayGroup.scrimOpen || mapSelection");

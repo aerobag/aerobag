@@ -1751,6 +1751,11 @@ button {
   white-space: pre-wrap;
 }
 
+.weatherDetailModal:not(.hoverWeatherDetailModal) .weatherDetailText {
+  max-height: none;
+  overflow: visible;
+}
+
 .weatherDetailText.isMissing {
   color: #68777d;
   font-family: inherit;
@@ -1766,6 +1771,15 @@ button {
   gap: calc(var(--thumb-gap) * 0.65);
   max-height: calc(var(--thumb) * 4.1);
   overflow-y: auto;
+}
+
+.weatherDetailModal:not(.hoverWeatherDetailModal) .airportNotamSection {
+  overflow: visible;
+}
+
+.weatherDetailModal:not(.hoverWeatherDetailModal) .airportNotamList {
+  max-height: none;
+  overflow: visible;
 }
 
 .airportNotamCell {

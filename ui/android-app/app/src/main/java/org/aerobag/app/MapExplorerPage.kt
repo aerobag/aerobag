@@ -4064,8 +4064,8 @@ internal fun WeatherDetailModal(
         modifier = modifier
             .testTag("parity:weather-detail-modal")
             .semantics { testTagsAsResourceId = true }
-            .widthIn(max = ThumbSize * 9.5f)
-            .heightIn(max = ThumbSize * 8.5f),
+            .widthIn(max = ThumbSize * 10.5f)
+            .heightIn(max = ThumbSize * 11.5f),
         shape = RoundedCornerShape(ThumbRadius + 4.dp),
         color = uiTheme.controls.panelBg.copy(alpha = 0.98f),
         contentColor = uiTheme.controls.panelFg,
@@ -4073,7 +4073,9 @@ internal fun WeatherDetailModal(
         border = BorderStroke(1.dp, uiTheme.controls.panelBorder.copy(alpha = 0.85f)),
     ) {
         Column(
-            modifier = Modifier.padding(ThumbSize * 0.18f),
+            modifier = Modifier
+                .verticalScroll(rememberScrollState())
+                .padding(ThumbSize * 0.18f),
             verticalArrangement = Arrangement.spacedBy(ThumbGap * 0.85f),
         ) {
             Text(
@@ -4091,12 +4093,14 @@ internal fun WeatherDetailModal(
                 ageLabel = detail.metarAgeLabel,
                 ageWarning = detail.metarAgeWarning,
                 text = detail.metarText,
+                constrainHeight = false,
             )
             WeatherDetailSection(
                 label = "TAF",
                 ageLabel = detail.tafAgeLabel,
                 ageWarning = detail.tafAgeWarning,
                 text = detail.tafText,
+                constrainHeight = false,
             )
             AirportNotamSection(notams = detail.notams)
         }
@@ -4318,7 +4322,6 @@ private fun AirportNotamSection(notams: List<AirportNotamUiView>) {
     Column(
         modifier = Modifier
             .fillMaxWidth()
-            .heightIn(min = ThumbSize * 1.8f, max = ThumbSize * 4.1f)
             .background(
                 uiTheme.controls.mapSelectionDisplayBg.copy(alpha = 0.72f),
                 RoundedCornerShape(ThumbRadius),
@@ -4357,11 +4360,10 @@ private fun AirportNotamSection(notams: List<AirportNotamUiView>) {
                 color = uiTheme.controls.panelFg.copy(alpha = 0.65f),
             )
         } else {
-            LazyColumn(
-                modifier = Modifier.fillMaxWidth(),
+            Column(
                 verticalArrangement = Arrangement.spacedBy(ThumbGap * 0.65f),
             ) {
-                lazyColumnItems(notams, key = { it.id }) { notam ->
+                notams.forEach { notam ->
                     Column(
                         modifier = Modifier
                             .fillMaxWidth()
@@ -4409,14 +4411,20 @@ private fun WeatherDetailSection(
     ageWarning: Boolean,
     text: String?,
     expanded: Boolean = false,
+    constrainHeight: Boolean = true,
 ) {
     val uiTheme = LocalAerobagUiTheme.current
     val minHeight = if (expanded) ThumbSize * 6.4f else ThumbSize * 1.2f
     val maxHeight = if (expanded) ThumbSize * 6.8f else ThumbSize * 3.3f
+    val heightModifier = if (constrainHeight) {
+        Modifier.heightIn(min = minHeight, max = maxHeight)
+    } else {
+        Modifier
+    }
     Column(
         modifier = Modifier
             .fillMaxWidth()
-            .heightIn(min = minHeight, max = maxHeight)
+            .then(heightModifier)
             .background(uiTheme.controls.mapSelectionDisplayBg.copy(alpha = 0.72f), RoundedCornerShape(ThumbRadius))
             .border(1.dp, uiTheme.controls.panelBorder.copy(alpha = 0.4f), RoundedCornerShape(ThumbRadius))
             .padding(ThumbSize * 0.13f),
@@ -4456,7 +4464,13 @@ private fun WeatherDetailSection(
             text = text ?: "No ${label ?: "text"} available.",
             modifier = Modifier
                 .fillMaxWidth()
-                .verticalScroll(rememberScrollState()),
+                .then(
+                    if (constrainHeight) {
+                        Modifier.verticalScroll(rememberScrollState())
+                    } else {
+                        Modifier
+                    },
+                ),
             style = MaterialTheme.typography.bodyMedium.copy(
                 fontSize = 16.sp,
                 lineHeight = 20.sp,

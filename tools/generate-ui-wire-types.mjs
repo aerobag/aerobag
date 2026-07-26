@@ -118,7 +118,7 @@ function ktType(fieldSchema) {
       type = `List<${ktType(schemaBase.items)}>`;
       break;
     case "integer":
-      type = "Int";
+      type = schemaBase.format === "int64" ? "Long" : "Int";
       break;
     case "number":
       type = "Double";

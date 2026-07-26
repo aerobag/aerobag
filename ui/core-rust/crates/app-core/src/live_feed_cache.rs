@@ -2,7 +2,7 @@
 //
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
-use std::{collections::BTreeMap, sync::Arc};
+use std::{collections::BTreeMap, io::Read, sync::Arc};
 
 use had_nav_kv::{
     apply_nav_kv_delta, build_nav_kv_strict, nav_kv_canonical_sha256_from_pairs, NavKvDelta,
@@ -20,6 +20,7 @@ use crate::{
 
 pub use crate::live_feeds::{
     LiveFeedCacheRequest, LiveFeedCacheRequestKind, LiveFeedDeltaRef, LiveFeedPayloadRef,
+    NEXRAD_FRAME_WINDOW_SIZE,
 };
 
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
@@ -28,7 +29,7 @@ pub struct LiveFeedCache {
     live_feeds: LiveFeedsState,
     #[serde(skip)]
     runtime: LiveFeedRuntimeState,
-    installed: BTreeMap<String, LiveFeedInstalledState>,
+    installed: BTreeMap<String, BTreeMap<String, LiveFeedInstalledState>>,
     #[serde(skip)]
     pending_installed: BTreeMap<String, LiveFeedInstalledState>,
     #[serde(skip)]
@@ -49,6 +50,8 @@ pub struct LiveFeedInstalledSummary {
     pub version: String,
     pub state_sha256: String,
     pub payload_kind: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub blob_sha256: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -81,8 +84,10 @@ pub enum LiveFeedInstalledPayload {
         root: Vec<u8>,
         pages: Vec<Vec<u8>>,
     },
-    Opaque {
-        bytes: Vec<u8>,
+    NexradPackage {
+        manifest: Vec<u8>,
+        package_blob_sha256: String,
+        package_bytes: Option<Arc<Vec<u8>>>,
     },
     NotamResources {
         checkpoint: Arc<Vec<u8>>,
@@ -118,7 +123,7 @@ pub enum LiveFeedProductDriver {
     FullJson {
         product: String,
     },
-    OpaqueFull {
+    NexradPackage {
         product: String,
     },
     Notam {
@@ -186,11 +191,23 @@ impl LiveFeedCache {
     }
 
     pub fn installed(&self, product: &str) -> Option<&LiveFeedInstalledState> {
-        self.installed.get(product)
+        let states = self.installed.get(product)?;
+        if product == "nexrad" {
+            self.live_feeds
+                .current_product_version(product)
+                .and_then(|version| states.get(version))
+                .or_else(|| {
+                    states
+                        .values()
+                        .max_by_key(|state| installed_retention_key(state))
+                })
+        } else {
+            states.last_key_value().map(|(_, state)| state)
+        }
     }
 
     pub fn installed_states(&self) -> impl Iterator<Item = &LiveFeedInstalledState> {
-        self.installed.values()
+        self.installed.values().flat_map(BTreeMap::values)
     }
 
     pub fn live_feeds_state(&self) -> &LiveFeedsState {
@@ -198,17 +215,43 @@ impl LiveFeedCache {
     }
 
     pub fn installed_summary(&self, product: &str) -> Option<LiveFeedInstalledSummary> {
-        self.installed
-            .get(product)
-            .map(LiveFeedInstalledState::summary)
+        self.installed(product).map(LiveFeedInstalledState::summary)
     }
 
-    pub fn installed_payload_bytes(&self, product: &str) -> AppResult<Vec<u8>> {
+    pub fn retained_summaries(&self, product: &str) -> Vec<LiveFeedInstalledSummary> {
+        self.installed
+            .get(product)
+            .into_iter()
+            .flat_map(BTreeMap::values)
+            .map(LiveFeedInstalledState::summary)
+            .collect()
+    }
+
+    pub fn release_persisted_payload_bytes(
+        &mut self,
+        product: &str,
+        version: &str,
+    ) -> AppResult<()> {
+        let installed = self
+            .installed
+            .get_mut(product)
+            .and_then(|states| states.get_mut(version))
+            .ok_or_else(|| cache_error(format!("{product}/{version} is not installed")))?;
+        if let LiveFeedInstalledPayload::NexradPackage { package_bytes, .. } =
+            &mut installed.payload
+        {
+            *package_bytes = None;
+        }
+        Ok(())
+    }
+
+    pub fn installed_payload_bytes(&self, product: &str, version: &str) -> AppResult<Vec<u8>> {
         let installed = self
             .pending_installed
             .get(product)
-            .or_else(|| self.installed.get(product))
-            .ok_or_else(|| cache_error(format!("{product} is not installed")))?;
+            .filter(|installed| installed.version == version)
+            .or_else(|| self.installed.get(product)?.get(version))
+            .ok_or_else(|| cache_error(format!("{product}/{version} is not installed")))?;
         installed.payload_bytes()
     }
 
@@ -306,17 +349,24 @@ impl LiveFeedCache {
     pub fn install_candidate(&self, product: &str) -> Option<&LiveFeedInstalledState> {
         self.pending_installed
             .get(product)
-            .or_else(|| self.installed.get(product))
+            .or_else(|| self.installed(product))
     }
 
-    pub fn install_candidate_for_main(&self, product: &str) -> AppResult<LiveFeedInstalledState> {
+    pub fn install_candidate_for_main(
+        &self,
+        product: &str,
+        version: &str,
+    ) -> AppResult<LiveFeedInstalledState> {
         let candidate = self
-            .install_candidate(product)
+            .pending_installed
+            .get(product)
+            .filter(|candidate| candidate.version == version)
+            .or_else(|| self.installed.get(product)?.get(version))
             .ok_or_else(|| cache_error(format!("{product} is not installed")))?;
         if product != "notams" {
             return Ok(candidate.clone());
         }
-        let Some(installed) = self.installed.get(product) else {
+        let Some(installed) = self.installed(product) else {
             return Ok(candidate.clone());
         };
         let (
@@ -357,7 +407,7 @@ impl LiveFeedCache {
             return self
                 .installed
                 .get(product)
-                .filter(|installed| installed.version == version)
+                .and_then(|states| states.get(version))
                 .map(|_| ())
                 .ok_or_else(|| {
                     cache_error(format!(
@@ -397,14 +447,19 @@ impl LiveFeedCache {
     }
 
     pub fn ingest_current(&mut self, bytes: &[u8]) -> AppResult<()> {
-        self.live_feeds.ingest_resource("live_feeds/current", bytes)
+        self.live_feeds
+            .ingest_resource("live_feeds/current", bytes)?;
+        self.prune_nexrad_to_catalog();
+        Ok(())
     }
 
     pub fn ingest_sse_event(&mut self, event: &crate::LiveFeedSseEvent) -> AppResult<bool> {
-        Ok(!self
+        let changed = !self
             .live_feeds
             .ingest_sse_events(std::iter::once(event.clone()))?
-            .is_empty())
+            .is_empty();
+        self.prune_nexrad_to_catalog();
+        Ok(changed)
     }
 
     pub fn ingest_version_manifest(
@@ -419,7 +474,7 @@ impl LiveFeedCache {
 
     pub fn missing_requests(&self) -> Vec<LiveFeedCacheRequest> {
         self.live_feeds
-            .durable_missing_requests(self.installed.values().map(|installed| {
+            .durable_missing_requests(self.installed_states().map(|installed| {
                 LiveFeedDurableInstalledProduct {
                     product: installed.product.clone(),
                     version: installed.version.clone(),
@@ -430,8 +485,7 @@ impl LiveFeedCache {
 
     pub fn missing_requests_at_epoch_ms(&self, epoch_ms: i64) -> Vec<LiveFeedCacheRequest> {
         self.live_feeds.durable_missing_requests_at_epoch_ms(
-            self.installed
-                .values()
+            self.installed_states()
                 .map(|installed| LiveFeedDurableInstalledProduct {
                     product: installed.product.clone(),
                     version: installed.version.clone(),
@@ -487,7 +541,7 @@ impl LiveFeedCache {
                     .live_feeds
                     .durable_full_payload_ref_for_request(product, version)?;
                 let installed = driver.install_full(product, version, full_ref, payload)?;
-                self.stage_or_remember_installed_state(installed.clone());
+                self.stage_fetched_installed_state(installed.clone());
                 Ok(Some(installed))
             }
             LiveFeedCacheRequestKind::Delta {
@@ -510,14 +564,14 @@ impl LiveFeedCache {
                     ))
                 })?;
                 verify_blob_sha256("delta", &bytes, expected_blob_sha256)?;
-                let current = self.installed.get(product).ok_or_else(|| {
+                let current = self.installed(product).ok_or_else(|| {
                     cache_error(format!(
                         "cannot apply {product} delta without installed state"
                     ))
                 })?;
                 let driver = registry.required_driver(product)?;
                 let installed = driver.apply_delta(current, delta, &bytes)?;
-                self.stage_or_remember_installed_state(installed.clone());
+                self.stage_fetched_installed_state(installed.clone());
                 Ok(Some(installed))
             }
         }
@@ -530,7 +584,20 @@ impl LiveFeedCache {
             installed.state_sha256.clone(),
             state_manifest_for_installed(&installed),
         );
-        self.installed.insert(installed.product.clone(), installed);
+        let product = installed.product.clone();
+        let states = self.installed.entry(product.clone()).or_default();
+        states.insert(installed.version.clone(), installed);
+        while states.len() > durable_retention_count(&product) {
+            let Some(oldest) = states
+                .values()
+                .min_by_key(|state| installed_retention_key(state))
+                .map(|state| state.version.clone())
+            else {
+                break;
+            };
+            states.remove(&oldest);
+        }
+        self.prune_nexrad_to_catalog();
     }
 
     fn stage_or_remember_installed_state(&mut self, installed: LiveFeedInstalledState) {
@@ -541,6 +608,54 @@ impl LiveFeedCache {
             self.remember_installed_state(installed);
         }
     }
+
+    fn stage_fetched_installed_state(&mut self, installed: LiveFeedInstalledState) {
+        if installed.product == "nexrad" || installed.product == "notams" {
+            self.pending_installed
+                .insert(installed.product.clone(), installed);
+        } else {
+            self.remember_installed_state(installed);
+        }
+    }
+
+    fn prune_nexrad_to_catalog(&mut self) {
+        if !self.live_feeds.current_loaded() {
+            return;
+        }
+        let retained = self
+            .live_feeds
+            .durable_retained_versions("nexrad")
+            .into_iter()
+            .collect::<std::collections::BTreeSet<_>>();
+        if let Some(states) = self.installed.get_mut("nexrad") {
+            states.retain(|version, _| retained.contains(version));
+        }
+    }
+}
+
+fn installed_retention_key(installed: &LiveFeedInstalledState) -> (Option<String>, String) {
+    let observed_at_utc = match &installed.payload {
+        LiveFeedInstalledPayload::NexradPackage { manifest, .. } => {
+            serde_json::from_slice::<Value>(manifest)
+                .ok()
+                .and_then(|manifest| {
+                    manifest
+                        .get("observed_at_utc")
+                        .and_then(Value::as_str)
+                        .map(str::to_string)
+                })
+        }
+        _ => None,
+    };
+    (observed_at_utc, installed.version.clone())
+}
+
+fn durable_retention_count(product: &str) -> usize {
+    if product == "nexrad" {
+        NEXRAD_FRAME_WINDOW_SIZE
+    } else {
+        1
+    }
 }
 
 impl LiveFeedInstalledState {
@@ -550,13 +665,29 @@ impl LiveFeedInstalledState {
             version: self.version.clone(),
             state_sha256: self.state_sha256.clone(),
             payload_kind: self.payload.kind_name().to_string(),
+            blob_sha256: match &self.payload {
+                LiveFeedInstalledPayload::NexradPackage {
+                    package_blob_sha256,
+                    ..
+                } => Some(package_blob_sha256.clone()),
+                _ => None,
+            },
         }
     }
 
     pub fn payload_bytes(&self) -> AppResult<Vec<u8>> {
         match &self.payload {
-            LiveFeedInstalledPayload::Json { bytes }
-            | LiveFeedInstalledPayload::Opaque { bytes } => Ok(bytes.clone()),
+            LiveFeedInstalledPayload::Json { bytes } => Ok(bytes.clone()),
+            LiveFeedInstalledPayload::NexradPackage {
+                package_bytes: Some(bytes),
+                ..
+            } => Ok(bytes.as_ref().clone()),
+            LiveFeedInstalledPayload::NexradPackage {
+                package_bytes: None,
+                ..
+            } => Err(cache_error(
+                "NEXRAD package bytes have been released after persistence".to_string(),
+            )),
             LiveFeedInstalledPayload::NavKv {
                 manifest,
                 root,
@@ -649,7 +780,9 @@ fn state_manifest_for_installed(installed: &LiveFeedInstalledState) -> Option<Va
     match &installed.payload {
         LiveFeedInstalledPayload::Json { bytes } => serde_json::from_slice(bytes).ok(),
         LiveFeedInstalledPayload::NavKv { manifest, .. } => serde_json::from_slice(manifest).ok(),
-        LiveFeedInstalledPayload::Opaque { .. } => None,
+        LiveFeedInstalledPayload::NexradPackage { manifest, .. } => {
+            serde_json::from_slice(manifest).ok()
+        }
         LiveFeedInstalledPayload::NotamResources { .. } => None,
     }
 }
@@ -659,7 +792,7 @@ impl LiveFeedInstalledPayload {
         match self {
             Self::Json { .. } => "json",
             Self::NavKv { .. } => "nav_kv_package",
-            Self::Opaque { .. } => "opaque",
+            Self::NexradPackage { .. } => "nexrad_package",
             Self::NotamResources { .. } => "notam_resources",
         }
     }
@@ -720,7 +853,7 @@ pub fn live_feed_product_registry() -> LiveFeedProductRegistry {
         LiveFeedProductDriver::NavKv {
             product: "obstacles".to_string(),
         },
-        LiveFeedProductDriver::OpaqueFull {
+        LiveFeedProductDriver::NexradPackage {
             product: "nexrad".to_string(),
         },
     ])
@@ -732,7 +865,7 @@ impl LiveFeedProductDriver {
             Self::RecordJson { product, .. }
             | Self::NavKv { product }
             | Self::FullJson { product }
-            | Self::OpaqueFull { product }
+            | Self::NexradPackage { product }
             | Self::Notam { product } => product,
         }
     }
@@ -746,7 +879,7 @@ impl LiveFeedProductDriver {
             } => Some((records_key, count_key.as_deref())),
             Self::NavKv { .. }
             | Self::FullJson { .. }
-            | Self::OpaqueFull { .. }
+            | Self::NexradPackage { .. }
             | Self::Notam { .. } => None,
         }
     }
@@ -850,7 +983,7 @@ impl LiveFeedProductDriver {
                     },
                 })
             }
-            Self::OpaqueFull { product } => {
+            Self::NexradPackage { product } => {
                 if product != product_id {
                     return Err(cache_error(format!(
                         "live-feed driver {product} cannot install {product_id}"
@@ -864,11 +997,30 @@ impl LiveFeedProductDriver {
                     &bytes,
                     required_blob_sha256("full state", product, payload_ref)?,
                 )?;
+                let manifest = read_nexrad_package_manifest(&bytes)?;
+                let manifest_value: Value =
+                    serde_json::from_slice(&manifest).map_err(cache_json_error)?;
+                if manifest_value.get("state_id").and_then(Value::as_str) != Some(version) {
+                    return Err(cache_error(format!(
+                        "NEXRAD package manifest state_id does not match {version}"
+                    )));
+                }
+                let actual_state_sha256 = canonical_json_sha256(&manifest_value)?;
+                if actual_state_sha256 != payload_ref.state_sha256 {
+                    return Err(cache_error(format!(
+                        "NEXRAD manifest hash mismatch: expected {}, got {actual_state_sha256}",
+                        payload_ref.state_sha256
+                    )));
+                }
                 Ok(LiveFeedInstalledState {
                     product: product.clone(),
                     version: version.to_string(),
-                    state_sha256: payload_ref.state_sha256.clone(),
-                    payload: LiveFeedInstalledPayload::Opaque { bytes },
+                    state_sha256: actual_state_sha256,
+                    payload: LiveFeedInstalledPayload::NexradPackage {
+                        manifest,
+                        package_blob_sha256: sha256_hex(&bytes),
+                        package_bytes: Some(Arc::new(bytes)),
+                    },
                 })
             }
         }
@@ -926,18 +1078,37 @@ impl LiveFeedProductDriver {
                     pages,
                 )
             }
-            Self::OpaqueFull { product } => {
-                if summary.product != *product || summary.payload_kind != "opaque" {
+            Self::NexradPackage { product } => {
+                if summary.product != *product || summary.payload_kind != "nexrad_package" {
                     return Err(cache_error(format!(
-                        "{product} persisted payload metadata is not opaque"
+                        "{product} persisted payload metadata is not a NEXRAD package"
+                    )));
+                }
+                let expected_blob_sha256 = summary.blob_sha256.as_deref().ok_or_else(|| {
+                    cache_error("persisted NEXRAD package metadata has no blob hash".to_string())
+                })?;
+                verify_blob_sha256("persisted NEXRAD package", bytes, expected_blob_sha256)?;
+                let manifest = read_nexrad_package_manifest(bytes)?;
+                let manifest_value: Value =
+                    serde_json::from_slice(&manifest).map_err(cache_json_error)?;
+                let actual_state_sha256 = canonical_json_sha256(&manifest_value)?;
+                if manifest_value.get("state_id").and_then(Value::as_str)
+                    != Some(summary.version.as_str())
+                    || actual_state_sha256 != summary.state_sha256
+                {
+                    return Err(cache_error(format!(
+                        "persisted NEXRAD package does not match {}/{}",
+                        summary.version, summary.state_sha256
                     )));
                 }
                 Ok(LiveFeedInstalledState {
                     product: product.clone(),
                     version: summary.version.clone(),
-                    state_sha256: summary.state_sha256.clone(),
-                    payload: LiveFeedInstalledPayload::Opaque {
-                        bytes: bytes.to_vec(),
+                    state_sha256: actual_state_sha256,
+                    payload: LiveFeedInstalledPayload::NexradPackage {
+                        manifest,
+                        package_blob_sha256: expected_blob_sha256.to_string(),
+                        package_bytes: Some(Arc::new(bytes.to_vec())),
                     },
                 })
             }
@@ -1180,11 +1351,24 @@ impl LiveFeedProductDriver {
                     },
                 })
             }
-            Self::FullJson { product } | Self::OpaqueFull { product } => {
+            Self::FullJson { product } | Self::NexradPackage { product } => {
                 Err(cache_error(format!("{product} does not support deltas")))
             }
         }
     }
+}
+
+fn read_nexrad_package_manifest(bytes: &[u8]) -> AppResult<Vec<u8>> {
+    let mut archive = zip::ZipArchive::new(std::io::Cursor::new(bytes))
+        .map_err(|error| cache_error(format!("failed to open NEXRAD package: {error}")))?;
+    let mut member = archive
+        .by_name("manifest.json")
+        .map_err(|error| cache_error(format!("NEXRAD package has no manifest.json: {error}")))?;
+    let mut manifest = Vec::new();
+    member
+        .read_to_end(&mut manifest)
+        .map_err(|error| cache_error(format!("failed to read NEXRAD manifest: {error}")))?;
+    Ok(manifest)
 }
 
 fn decode_notam_checkpoint(payload_kind: Option<&str>, bytes: &[u8]) -> AppResult<NotamCheckpoint> {
@@ -1475,7 +1659,7 @@ fn cache_error(message: String) -> AppError {
 mod tests {
     use super::*;
     use had_nav_kv::NavKvPair;
-    use std::io::{Cursor, Read};
+    use std::io::{Cursor, Read, Write};
     use zip::CompressionMethod;
 
     const TEST_LIVE_FEED_ROOT: &str = "http://live.test";
@@ -1516,6 +1700,73 @@ mod tests {
             }
         }))
         .unwrap()
+    }
+
+    fn nexrad_current_manifest(current: &str, history: &[&str]) -> Vec<u8> {
+        serde_json::to_vec(&serde_json::json!({
+            "schema_version": crate::live_feeds::LIVE_FEEDS_SCHEMA_VERSION,
+            "products": {
+                "nexrad": {
+                    "current": current,
+                    "version_manifest_url": format!("versions/nexrad/{current}.json"),
+                    "state_sha256": nexrad_state_sha256(current),
+                    "history": history.iter().map(|version| serde_json::json!({
+                        "version": version,
+                        "version_manifest_url": format!("versions/nexrad/{version}.json"),
+                        "state_sha256": nexrad_state_sha256(version)
+                    })).collect::<Vec<_>>()
+                }
+            }
+        }))
+        .unwrap()
+    }
+
+    fn nexrad_state_manifest(version: &str) -> Value {
+        serde_json::json!({
+            "state_id": version,
+            "observed_at_utc": "2026-07-26T00:00:00Z",
+            "source_grid": {
+                "geo_transform": [-123.0, 0.01, 0.0, 48.0, 0.0, -0.01]
+            },
+            "levels": [],
+            "tile_size": 256,
+            "tile_path_template": "tiles/res{res}/{x}/{y}.png"
+        })
+    }
+
+    fn nexrad_state_sha256(version: &str) -> String {
+        canonical_json_sha256(&nexrad_state_manifest(version)).unwrap()
+    }
+
+    fn nexrad_version_manifest(version: &str) -> (Vec<u8>, Vec<u8>) {
+        let state_manifest = nexrad_state_manifest(version);
+        let state_manifest_bytes = serde_json::to_vec(&state_manifest).unwrap();
+        let mut writer = zip::ZipWriter::new(Cursor::new(Vec::new()));
+        let options = zip::write::SimpleFileOptions::default()
+            .compression_method(CompressionMethod::Stored)
+            .last_modified_time(zip::DateTime::default());
+        writer.start_file("manifest.json", options).unwrap();
+        writer.write_all(&state_manifest_bytes).unwrap();
+        let package = writer.finish().unwrap().into_inner();
+        let state_sha256 = canonical_json_sha256(&state_manifest).unwrap();
+        let manifest = serde_json::json!({
+            "schema_version": crate::live_feeds::LIVE_FEEDS_SCHEMA_VERSION,
+            "product": "nexrad",
+            "version": version,
+            "state": {
+                "kind": "json",
+                "url": format!("states/nexrad/{version}/manifest.json"),
+                "state_sha256": state_sha256
+            },
+            "install_state": {
+                "kind": "opaque",
+                "url": format!("install/nexrad/{version}.zip"),
+                "bytes": package.len(),
+                "blob_sha256": sha256_hex(&package),
+                "state_sha256": state_sha256
+            }
+        });
+        (serde_json::to_vec(&manifest).unwrap(), package)
     }
 
     fn xz_json_bytes(value: &Value) -> Vec<u8> {
@@ -1582,7 +1833,9 @@ mod tests {
                 .map(|state| state.version.as_str()),
             Some(checkpoint_id.as_str())
         );
-        let initial_for_main = cache.install_candidate_for_main("notams").unwrap();
+        let initial_for_main = cache
+            .install_candidate_for_main("notams", &checkpoint_id)
+            .unwrap();
         let LiveFeedInstalledPayload::NotamResources {
             checkpoint: initial_checkpoint,
             deltas: initial_deltas,
@@ -1648,7 +1901,9 @@ mod tests {
                 .map(|state| state.version.as_str()),
             Some(checkpoint_id.as_str())
         );
-        let delta_for_main = cache.install_candidate_for_main("notams").unwrap();
+        let delta_for_main = cache
+            .install_candidate_for_main("notams", &head_id)
+            .unwrap();
         let LiveFeedInstalledPayload::NotamResources {
             checkpoint: delta_checkpoint,
             deltas: delta_suffix,
@@ -1666,7 +1921,7 @@ mod tests {
             .resource_bytes("notams", &manifest.resources[1].blob_sha256)
             .unwrap();
         assert_eq!(persisted_delta.as_slice(), delta_suffix[0].as_slice());
-        assert!(cache.installed_payload_bytes("notams").is_err());
+        assert!(cache.installed_payload_bytes("notams", &head_id).is_err());
         cache
             .acknowledge_install_candidate("notams", &head_id)
             .unwrap();
@@ -1753,6 +2008,126 @@ mod tests {
 
         assert_eq!(requests.len(), 1);
         assert_eq!(requests[0].id, "live_feeds/current");
+    }
+
+    #[test]
+    fn durable_nexrad_retains_the_complete_animation_window() {
+        let registry = live_feed_product_registry();
+        let mut cache = live_feed_cache();
+        let published_versions = ["v1", "v2", "v3", "v4", "v5", "v6", "v7", "v8", "v9"];
+        let retained_versions = ["v3", "v4", "v5", "v6", "v7", "v8", "v9"];
+        cache
+            .ingest_current(&nexrad_current_manifest("v9", &published_versions[..8]))
+            .unwrap();
+
+        let version_requests = cache.missing_requests();
+        assert_eq!(version_requests.len(), NEXRAD_FRAME_WINDOW_SIZE);
+        for request in version_requests {
+            let LiveFeedCacheRequestKind::Version { version, .. } = &request.kind else {
+                panic!("expected NEXRAD version manifest request");
+            };
+            let (manifest, _) = nexrad_version_manifest(version);
+            assert!(cache
+                .install_fetched_payload(
+                    &registry,
+                    &request,
+                    LiveFeedFetchedPayload::Bytes(manifest),
+                )
+                .unwrap()
+                .is_none());
+        }
+
+        let package_requests = cache.missing_requests();
+        assert_eq!(package_requests.len(), NEXRAD_FRAME_WINDOW_SIZE);
+        for request in package_requests {
+            let LiveFeedCacheRequestKind::Full { version, .. } = &request.kind else {
+                panic!("expected complete NEXRAD package request");
+            };
+            let (_, package) = nexrad_version_manifest(version);
+            let installed = cache
+                .install_fetched_payload(
+                    &registry,
+                    &request,
+                    LiveFeedFetchedPayload::Bytes(package),
+                )
+                .unwrap()
+                .expect("installed NEXRAD package");
+            cache
+                .acknowledge_install_candidate("nexrad", &installed.version)
+                .unwrap();
+        }
+        assert!(cache.missing_requests().is_empty());
+        assert_eq!(
+            cache
+                .retained_summaries("nexrad")
+                .into_iter()
+                .map(|summary| summary.version)
+                .collect::<Vec<_>>(),
+            retained_versions
+        );
+
+        cache
+            .ingest_current(&nexrad_current_manifest(
+                "v10",
+                &["v4", "v5", "v6", "v7", "v8", "v9"],
+            ))
+            .unwrap();
+        let request = cache
+            .missing_requests()
+            .into_iter()
+            .find(|request| {
+                matches!(
+                    &request.kind,
+                    LiveFeedCacheRequestKind::Version { version, .. } if version == "v10"
+                )
+            })
+            .expect("v10 version request");
+        let (manifest, _) = nexrad_version_manifest("v10");
+        cache
+            .install_fetched_payload(&registry, &request, LiveFeedFetchedPayload::Bytes(manifest))
+            .unwrap();
+        let request = cache
+            .missing_requests()
+            .into_iter()
+            .find(|request| {
+                matches!(
+                    &request.kind,
+                    LiveFeedCacheRequestKind::Full { version, .. } if version == "v10"
+                )
+            })
+            .expect("v10 package request");
+        let (_, package) = nexrad_version_manifest("v10");
+        let installed = cache
+            .install_fetched_payload(&registry, &request, LiveFeedFetchedPayload::Bytes(package))
+            .unwrap()
+            .expect("installed v10 package");
+        cache
+            .acknowledge_install_candidate("nexrad", &installed.version)
+            .unwrap();
+
+        assert_eq!(
+            cache
+                .retained_summaries("nexrad")
+                .into_iter()
+                .map(|summary| summary.version)
+                .collect::<Vec<_>>(),
+            ["v10", "v4", "v5", "v6", "v7", "v8", "v9"]
+        );
+        cache
+            .release_persisted_payload_bytes("nexrad", "v10")
+            .expect("release persisted NEXRAD package bytes");
+        assert!(cache.installed_payload_bytes("nexrad", "v10").is_err());
+        assert!(cache
+            .retained_summaries("nexrad")
+            .iter()
+            .any(|summary| summary.version == "v10"));
+        assert_eq!(
+            cache
+                .installed_summary("nexrad")
+                .expect("latest NEXRAD summary")
+                .version,
+            "v10"
+        );
     }
 
     #[test]

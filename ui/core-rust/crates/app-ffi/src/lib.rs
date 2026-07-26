@@ -1489,6 +1489,35 @@ pub fn live_feed_cache_installed_summary_json(
     serde_json::to_string(&cache.installed_summary(product)).map_err(|err| err.to_string())
 }
 
+pub fn live_feed_cache_retained_summaries_json(
+    handle: u64,
+    product: &str,
+) -> Result<String, String> {
+    let caches = live_feed_caches()
+        .lock()
+        .map_err(|_| "live feed cache store poisoned".to_string())?;
+    let cache = caches
+        .get(&(handle as u32))
+        .ok_or_else(|| format!("invalid live feed cache handle: {handle}"))?;
+    serde_json::to_string(&cache.retained_summaries(product)).map_err(|err| err.to_string())
+}
+
+pub fn live_feed_cache_release_persisted_payload_bytes(
+    handle: u64,
+    product: &str,
+    version: &str,
+) -> Result<(), String> {
+    let mut caches = live_feed_caches()
+        .lock()
+        .map_err(|_| "live feed cache store poisoned".to_string())?;
+    let cache = caches
+        .get_mut(&(handle as u32))
+        .ok_or_else(|| format!("invalid live feed cache handle: {handle}"))?;
+    cache
+        .release_persisted_payload_bytes(product, version)
+        .map_err(|err| err.to_string())
+}
+
 pub fn live_feed_cache_ingest_installed_payload_bytes(
     handle: u64,
     summary_json: &str,
@@ -1510,6 +1539,7 @@ pub fn live_feed_cache_ingest_installed_payload_bytes(
 pub fn live_feed_cache_installed_payload_bytes(
     handle: u64,
     product: &str,
+    version: &str,
 ) -> Result<Vec<u8>, String> {
     let caches = live_feed_caches()
         .lock()
@@ -1518,7 +1548,7 @@ pub fn live_feed_cache_installed_payload_bytes(
         .get(&(handle as u32))
         .ok_or_else(|| format!("invalid live feed cache handle: {handle}"))?;
     cache
-        .installed_payload_bytes(product)
+        .installed_payload_bytes(product, version)
         .map_err(|err| err.to_string())
 }
 
@@ -1609,6 +1639,7 @@ pub fn live_feed_cache_install_product_in_session_json(
     handle: u64,
     session_handle: u64,
     product: &str,
+    version: &str,
 ) -> Result<String, String> {
     let installed = {
         let caches = live_feed_caches()
@@ -1617,7 +1648,7 @@ pub fn live_feed_cache_install_product_in_session_json(
         caches
             .get(&(handle as u32))
             .ok_or_else(|| format!("invalid live feed cache handle: {handle}"))?
-            .install_candidate_for_main(product)
+            .install_candidate_for_main(product, version)
             .map_err(|err| err.to_string())?
     };
     let snapshot = match app_core::install_live_feed_installed_state_in_session(
@@ -2610,6 +2641,36 @@ pub extern "system" fn Java_org_aerobag_app_domain_NativeBindings_liveFeedCacheI
 }
 
 #[unsafe(no_mangle)]
+pub extern "system" fn Java_org_aerobag_app_domain_NativeBindings_liveFeedCacheRetainedSummariesJson(
+    mut env: JNIEnv,
+    _class: JClass,
+    handle: i64,
+    product: JString,
+) -> jstring {
+    let result = get_java_string(&mut env, product)
+        .and_then(|product| live_feed_cache_retained_summaries_json(handle as u64, &product));
+    return_string(&mut env, result)
+}
+
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_org_aerobag_app_domain_NativeBindings_liveFeedCacheReleasePersistedPayloadBytes(
+    mut env: JNIEnv,
+    _class: JClass,
+    handle: i64,
+    product: JString,
+    version: JString,
+) {
+    let result = (|| {
+        let product = get_java_string(&mut env, product)?;
+        let version = get_java_string(&mut env, version)?;
+        live_feed_cache_release_persisted_payload_bytes(handle as u64, &product, &version)
+    })();
+    if let Err(message) = result {
+        let _ = env.throw_new("java/lang/RuntimeException", message);
+    }
+}
+
+#[unsafe(no_mangle)]
 pub extern "system" fn Java_org_aerobag_app_domain_NativeBindings_liveFeedCacheIngestInstalledPayloadBytes(
     mut env: JNIEnv,
     _class: JClass,
@@ -2633,9 +2694,13 @@ pub extern "system" fn Java_org_aerobag_app_domain_NativeBindings_liveFeedCacheI
     _class: JClass,
     handle: i64,
     product: JString,
+    version: JString,
 ) -> jbyteArray {
-    let result = get_java_string(&mut env, product)
-        .and_then(|product| live_feed_cache_installed_payload_bytes(handle as u64, &product));
+    let result = get_java_string(&mut env, product).and_then(|product| {
+        get_java_string(&mut env, version).and_then(|version| {
+            live_feed_cache_installed_payload_bytes(handle as u64, &product, &version)
+        })
+    });
     return_byte_array(&mut env, result)
 }
 
@@ -2723,13 +2788,17 @@ pub extern "system" fn Java_org_aerobag_app_domain_NativeBindings_liveFeedCacheI
     handle: i64,
     session_handle: i64,
     product: JString,
+    version: JString,
 ) -> jstring {
     let result = get_java_string(&mut env, product).and_then(|product| {
-        live_feed_cache_install_product_in_session_json(
-            handle as u64,
-            session_handle as u64,
-            &product,
-        )
+        get_java_string(&mut env, version).and_then(|version| {
+            live_feed_cache_install_product_in_session_json(
+                handle as u64,
+                session_handle as u64,
+                &product,
+                &version,
+            )
+        })
     });
     return_string(&mut env, result)
 }

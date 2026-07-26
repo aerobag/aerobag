@@ -622,6 +622,13 @@ type CoreSessionResourceEffect = {
 type CoreResourceSource =
   | { kind: "public_url"; url: string }
   | { kind: "package_member"; package_id: string; filename: string; member_path: string }
+  | {
+      kind: "live_feed_package_member";
+      product: string;
+      version: string;
+      blob_sha256: string;
+      member_path: string;
+    }
   | { kind: "installed_artifact_member"; filename: string; member_path: string }
   | { kind: "nav_kv_member"; member_path: string }
   | { kind: "unavailable"; message: string };

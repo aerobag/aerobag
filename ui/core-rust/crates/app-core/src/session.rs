@@ -4,7 +4,6 @@
 
 use std::{
     collections::{BTreeMap, BTreeSet, HashMap, HashSet},
-    io::Read,
     sync::{
         atomic::{AtomicU32, Ordering},
         Arc, Mutex, MutexGuard, OnceLock,
@@ -43,7 +42,9 @@ use crate::{
         LiveFeedConnectionEvent, LiveFeedConnectionEventKind, LiveFeedNetworkStatus,
         LiveFeedRuntimeDecision, LiveFeedRuntimeInput, LiveFeedRuntimeState,
     },
-    live_feeds::{LiveFeedSseEvent, LiveFeedsState, LIVE_FEEDS_BASE_PATH},
+    live_feeds::{
+        LiveFeedSseEvent, LiveFeedsState, LIVE_FEEDS_BASE_PATH, NEXRAD_FRAME_WINDOW_SIZE,
+    },
     map_follow::{MapFollowSessionState, MapFollowUiState},
     map_overlay::{
         nearest_available_layer_zoom, obstacle_layer_config_from_live_manifest_value,
@@ -195,6 +196,18 @@ pub struct PlatformDisplayPolicyCapability {}
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
 pub struct PlatformOfflinePackagesCapability {}
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum LiveFeedAcquisitionPolicy {
+    JitPublicResources,
+    DurableCompleteStates,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PlatformLiveFeedsCapability {
+    pub acquisition_policy: LiveFeedAcquisitionPolicy,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ClientBuildInfo {
     pub platform: String,
@@ -213,6 +226,8 @@ pub struct PlatformCapabilities {
     pub display_policy: Option<PlatformDisplayPolicyCapability>,
     #[serde(default)]
     pub offline_packages: Option<PlatformOfflinePackagesCapability>,
+    #[serde(default)]
+    pub live_feeds: Option<PlatformLiveFeedsCapability>,
     #[serde(default)]
     pub client_build: Option<ClientBuildInfo>,
     #[serde(default)]
@@ -418,7 +433,7 @@ struct UiSession {
     airport_notam_index: Option<AirportNotamIndex>,
     airspace_feature_cache: HashMap<String, AirspaceFeaturePayload>,
     tfr_payload: Option<TfrProductPayload>,
-    nexrad_installed: Option<LiveNexradInstalledState>,
+    nexrad_installed: BTreeMap<String, LiveNexradInstalledState>,
     nexrad_tile_cache: HashMap<String, Vec<u8>>,
     terrain_source_tile_cache: HashMap<String, Vec<u8>>,
     pending_resource_effects: Vec<UiSessionResourceEffect>,
@@ -556,8 +571,8 @@ struct CycleProductFreshnessState {
 #[derive(Clone)]
 struct LiveNexradInstalledState {
     version: String,
+    package_blob_sha256: String,
     manifest: serde_json::Value,
-    members: HashMap<String, Vec<u8>>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -758,7 +773,6 @@ const PROCEDURE_GEOMETRY_STATUS_PREFIX: &str = "procedure_geometry:";
 const LIVE_FEED_METARS_STATUS_ID: &str = "live_feed:metars_unavailable";
 const LIVE_FEED_TAFS_STATUS_ID: &str = "live_feed:tafs_unavailable";
 const LIVE_FEED_NEXRAD_STATUS_ID: &str = "live_feed:nexrad_unavailable";
-const NEXRAD_ANIMATION_MAX_FRAMES: usize = 7;
 const NEXRAD_ANIMATION_PRECEDING_FRAME_DWELL_MS: i64 = 1_000;
 const NEXRAD_ANIMATION_CURRENT_FRAME_DWELL_MS: i64 = 2_500;
 const NEXRAD_ANIMATION_BLANK_DWELL_MS: i64 = 500;
@@ -3147,11 +3161,17 @@ fn live_feed_product_status_page_row(
 }
 
 fn nexrad_status_manifest(session: &UiSession) -> Option<&serde_json::Value> {
-    session
-        .nexrad_installed
-        .as_ref()
+    latest_installed_nexrad(session)
         .map(|installed| &installed.manifest)
         .or_else(|| session.live_feeds.product_state_manifest("nexrad"))
+}
+
+fn latest_installed_nexrad(session: &UiSession) -> Option<&LiveNexradInstalledState> {
+    session.nexrad_installed.values().max_by(|left, right| {
+        json_observed_at_utc(&left.manifest)
+            .cmp(&json_observed_at_utc(&right.manifest))
+            .then_with(|| left.version.cmp(&right.version))
+    })
 }
 
 fn nexrad_live_feed_status_page_row(session: &UiSession) -> UiDataStatusPageRow {
@@ -3163,9 +3183,7 @@ fn nexrad_live_feed_status_page_row(session: &UiSession) -> UiDataStatusPageRow 
         live_feed_status_timestamp(session, "nexrad")
             .or_else(|| nexrad_status_manifest(session).and_then(json_observed_at_utc)),
         DATA_FRESHNESS_POLICIES.live_feeds.nexrad,
-        session
-            .nexrad_installed
-            .as_ref()
+        latest_installed_nexrad(session)
             .map(|installed| installed.version.clone())
             .or_else(|| {
                 session
@@ -3522,7 +3540,7 @@ fn create_ui_session_inner(
             metar_station_importance_status: None,
             obstacle_had: None,
             obstacle_tile_cache: HashMap::new(),
-            nexrad_installed: None,
+            nexrad_installed: BTreeMap::new(),
             nexrad_tile_cache: HashMap::new(),
             taf_payload: None,
             airport_notam_index: None,
@@ -6525,12 +6543,47 @@ fn install_live_feed_installed_state(
                 Some(store),
             )?;
         }
-        ("nexrad", crate::LiveFeedInstalledPayload::Opaque { bytes }) => {
-            session.nexrad_installed = Some(read_installed_nexrad_package(
+        (
+            "nexrad",
+            crate::LiveFeedInstalledPayload::NexradPackage {
+                manifest,
+                package_blob_sha256,
+                ..
+            },
+        ) => {
+            let installed = installed_nexrad_descriptor(
                 &installed.version,
                 &installed.state_sha256,
-                bytes,
-            )?);
+                manifest,
+                package_blob_sha256,
+            )?;
+            session
+                .nexrad_installed
+                .insert(installed.version.clone(), installed);
+            while session.nexrad_installed.len() > NEXRAD_FRAME_WINDOW_SIZE {
+                let Some(oldest) = session
+                    .nexrad_installed
+                    .values()
+                    .min_by(|left, right| {
+                        json_observed_at_utc(&left.manifest)
+                            .cmp(&json_observed_at_utc(&right.manifest))
+                            .then_with(|| left.version.cmp(&right.version))
+                    })
+                    .map(|installed| installed.version.clone())
+                else {
+                    break;
+                };
+                session.nexrad_installed.remove(&oldest);
+            }
+            let retained_versions = session
+                .nexrad_installed
+                .keys()
+                .cloned()
+                .collect::<HashSet<_>>();
+            session.nexrad_tile_cache.retain(|src, _| {
+                nexrad_installed_member(src)
+                    .is_some_and(|(version, _)| retained_versions.contains(&version))
+            });
             clear_data_status_record(session, LIVE_FEED_NEXRAD_STATUS_ID);
         }
         ("winds-aloft", crate::LiveFeedInstalledPayload::Json { .. }) => {}
@@ -6573,7 +6626,9 @@ fn installed_live_feed_state_manifest(
         crate::LiveFeedInstalledPayload::NavKv { manifest, .. } => {
             serde_json::from_slice(manifest).ok()
         }
-        crate::LiveFeedInstalledPayload::Opaque { .. } => None,
+        crate::LiveFeedInstalledPayload::NexradPackage { manifest, .. } => {
+            serde_json::from_slice(manifest).ok()
+        }
         crate::LiveFeedInstalledPayload::NotamResources { .. } => None,
     }
 }
@@ -6743,47 +6798,12 @@ fn install_prepared_live_feed(
     Ok(())
 }
 
-fn read_installed_nexrad_package(
+fn installed_nexrad_descriptor(
     version: &str,
     state_sha256: &str,
-    bytes: &[u8],
+    manifest_bytes: &[u8],
+    package_blob_sha256: &str,
 ) -> AppResult<LiveNexradInstalledState> {
-    let cursor = std::io::Cursor::new(bytes);
-    let mut archive = zip::ZipArchive::new(cursor).map_err(|err| AppError {
-        kind: AppErrorKind::InvalidManifest,
-        message: format!("failed to read installed NEXRAD package: {err}"),
-    })?;
-    let mut members = HashMap::new();
-    for index in 0..archive.len() {
-        let mut member = archive.by_index(index).map_err(|err| AppError {
-            kind: AppErrorKind::InvalidManifest,
-            message: format!("failed to read installed NEXRAD package member {index}: {err}"),
-        })?;
-        if member.is_dir() {
-            continue;
-        }
-        let Some(name) = member
-            .enclosed_name()
-            .map(|path| path.to_string_lossy().to_string())
-        else {
-            return Err(AppError {
-                kind: AppErrorKind::InvalidManifest,
-                message: "installed NEXRAD package contains unsafe member path".to_string(),
-            });
-        };
-        let mut member_bytes = Vec::new();
-        member
-            .read_to_end(&mut member_bytes)
-            .map_err(|err| AppError {
-                kind: AppErrorKind::InvalidManifest,
-                message: format!("failed to read installed NEXRAD package member {name}: {err}"),
-            })?;
-        members.insert(name, member_bytes);
-    }
-    let manifest_bytes = members.get("manifest.json").ok_or_else(|| AppError {
-        kind: AppErrorKind::InvalidManifest,
-        message: "installed NEXRAD package is missing manifest.json".to_string(),
-    })?;
     let manifest: serde_json::Value =
         serde_json::from_slice(manifest_bytes).map_err(|err| AppError {
             kind: AppErrorKind::InvalidManifest,
@@ -6812,8 +6832,8 @@ fn read_installed_nexrad_package(
     }
     Ok(LiveNexradInstalledState {
         version: version.to_string(),
+        package_blob_sha256: package_blob_sha256.to_string(),
         manifest,
-        members,
     })
 }
 
@@ -8944,29 +8964,43 @@ pub fn get_nexrad_overlay_in_session_at_epoch_ms(
             freshness_invalidations,
         );
     }
-    if session.nexrad_installed.is_none() {
-        if let HadOperationOutcome::NeedResources { resources } = session
-            .live_feeds
-            .sync_product_outcome_at_epoch_ms("nexrad", session.wall_clock_epoch_ms)
-        {
-            return Ok(HadOperationOutcome::NeedResources { resources });
+    match session
+        .platform_capabilities
+        .live_feeds
+        .as_ref()
+        .map(|capability| capability.acquisition_policy)
+    {
+        Some(LiveFeedAcquisitionPolicy::JitPublicResources) => {
+            if let HadOperationOutcome::NeedResources { resources } = session
+                .live_feeds
+                .sync_product_outcome_at_epoch_ms("nexrad", session.wall_clock_epoch_ms)
+            {
+                return Ok(HadOperationOutcome::NeedResources { resources });
+            }
+            let history_resources = session
+                .live_feeds
+                .missing_history_resources_for_product_at_epoch_ms(
+                    "nexrad",
+                    session.wall_clock_epoch_ms,
+                );
+            for resource in history_resources {
+                enqueue_session_resource_effect(
+                    session,
+                    resource,
+                    [
+                        UiInvalidation::NexradOverlay,
+                        UiInvalidation::SessionSnapshot,
+                        UiInvalidation::DebugPanel,
+                    ],
+                );
+            }
         }
-        let history_resources = session
-            .live_feeds
-            .missing_history_resources_for_product_at_epoch_ms(
-                "nexrad",
-                session.wall_clock_epoch_ms,
-            );
-        for resource in history_resources {
-            enqueue_session_resource_effect(
-                session,
-                resource,
-                [
-                    UiInvalidation::NexradOverlay,
-                    UiInvalidation::SessionSnapshot,
-                    UiInvalidation::DebugPanel,
-                ],
-            );
+        Some(LiveFeedAcquisitionPolicy::DurableCompleteStates) => {}
+        None => {
+            return Err(AppError {
+                kind: AppErrorKind::Internal,
+                message: "platform did not declare a live-feed acquisition policy".to_string(),
+            });
         }
     }
     let frames = nexrad_frame_candidates(session);
@@ -9027,22 +9061,25 @@ struct NexradFrameCandidate {
 fn nexrad_frame_candidates(session: &UiSession) -> Vec<NexradFrameCandidate> {
     let mut frames = Vec::new();
     let mut identities = HashSet::new();
-    if let Some(installed) = &session.nexrad_installed {
+    for installed in session.nexrad_installed.values() {
+        let identity = nexrad_manifest_identity(&installed.version, &installed.manifest);
+        if !identities.insert(identity) {
+            continue;
+        }
         frames.push(NexradFrameCandidate {
             version: installed.version.clone(),
             observed_at_utc: json_observed_at_utc(&installed.manifest),
             manifest: installed.manifest.clone(),
         });
-    } else {
-        for loaded in session.live_feeds.product_loaded_state_manifests("nexrad") {
-            let identity = nexrad_manifest_identity(loaded.version, loaded.manifest);
-            if identities.insert(identity) {
-                frames.push(NexradFrameCandidate {
-                    version: loaded.version.to_string(),
-                    observed_at_utc: json_observed_at_utc(loaded.manifest),
-                    manifest: loaded.manifest.clone(),
-                });
-            }
+    }
+    for loaded in session.live_feeds.product_loaded_state_manifests("nexrad") {
+        let identity = nexrad_manifest_identity(loaded.version, loaded.manifest);
+        if identities.insert(identity) {
+            frames.push(NexradFrameCandidate {
+                version: loaded.version.to_string(),
+                observed_at_utc: json_observed_at_utc(loaded.manifest),
+                manifest: loaded.manifest.clone(),
+            });
         }
     }
     frames.sort_by(|left, right| {
@@ -9050,8 +9087,8 @@ fn nexrad_frame_candidates(session: &UiSession) -> Vec<NexradFrameCandidate> {
             .cmp(&right.observed_at_utc)
             .then_with(|| left.version.cmp(&right.version))
     });
-    if frames.len() > NEXRAD_ANIMATION_MAX_FRAMES {
-        frames.drain(0..frames.len() - NEXRAD_ANIMATION_MAX_FRAMES);
+    if frames.len() > NEXRAD_FRAME_WINDOW_SIZE {
+        frames.drain(0..frames.len() - NEXRAD_FRAME_WINDOW_SIZE);
     }
     frames
 }
@@ -9163,18 +9200,6 @@ fn nexrad_frame_age_values(frames: &[NexradFrameCandidate], epoch_ms: i64) -> Ve
 pub fn nexrad_tile_bytes_in_session(handle: u32, src: &str) -> AppResult<Vec<u8>> {
     let sessions = lock_sessions();
     let session = session_ref(&sessions, handle)?;
-    if let Some(installed) = &session.nexrad_installed {
-        let member_path = nexrad_installed_member_path(src).ok_or_else(|| AppError {
-            kind: AppErrorKind::InvalidManifest,
-            message: format!(
-                "NEXRAD tile URL {src} is not inside installed package {}",
-                installed.version
-            ),
-        })?;
-        if let Some(bytes) = installed.members.get(&member_path) {
-            return Ok(bytes.clone());
-        }
-    }
     session
         .nexrad_tile_cache
         .get(src)
@@ -9185,49 +9210,77 @@ pub fn nexrad_tile_bytes_in_session(handle: u32, src: &str) -> AppResult<Vec<u8>
         })
 }
 
-fn nexrad_installed_member_path(src: &str) -> Option<String> {
+fn nexrad_installed_member(src: &str) -> Option<(String, String)> {
     let src = src.trim_start_matches('/');
-    let (_, rest) = src.split_once("/tiles/")?;
-    // The installed package is rooted at the state directory, while web URLs include
-    // live-feeds/v3/states/nexrad/<state-id>/.
-    Some(format!("tiles/{rest}"))
+    let prefix = format!(
+        "{}/states/nexrad/",
+        LIVE_FEEDS_BASE_PATH.trim_start_matches('/')
+    );
+    let rest = src.strip_prefix(&prefix)?;
+    let (version, tile_path) = rest.split_once("/tiles/")?;
+    if version.is_empty() || tile_path.is_empty() {
+        return None;
+    }
+    Some((version.to_string(), format!("tiles/{tile_path}")))
 }
 
 const NEXRAD_TILE_RESOURCE_PREFIX: &str = "live_feeds/nexrad_tile/";
 
 pub fn prepare_nexrad_tile_in_session(handle: u32, src: &str) -> AppResult<HadOperationOutcome> {
-    {
+    let resource = {
         let sessions = lock_sessions();
         let session = session_ref(&sessions, handle)?;
         if nexrad_tile_bytes_loaded(session, src)? {
             return Ok(HadOperationOutcome::complete(serde_json::Value::Null));
         }
-    }
-    let resource = nexrad_tile_resource_request(src)?;
+        nexrad_tile_resource_request(session, src)?
+    };
     Ok(HadOperationOutcome::NeedResources {
         resources: vec![resource],
     })
 }
 
 fn nexrad_tile_bytes_loaded(session: &UiSession, src: &str) -> AppResult<bool> {
-    if let Some(installed) = &session.nexrad_installed {
-        let member_path = nexrad_installed_member_path(src).ok_or_else(|| AppError {
-            kind: AppErrorKind::InvalidManifest,
-            message: format!(
-                "NEXRAD tile URL {src} is not inside installed package {}",
-                installed.version
-            ),
-        })?;
-        if installed.members.contains_key(&member_path) {
-            return Ok(true);
-        }
-    }
     Ok(session.nexrad_tile_cache.contains_key(src))
 }
 
-fn nexrad_tile_resource_request(src: &str) -> AppResult<CoreResourceRequest> {
+fn nexrad_tile_resource_request(session: &UiSession, src: &str) -> AppResult<CoreResourceRequest> {
     let resource_id = nexrad_tile_resource_id(src)?;
-    Ok(CoreResourceRequest::public_url(resource_id, src, false))
+    match session
+        .platform_capabilities
+        .live_feeds
+        .as_ref()
+        .map(|capability| capability.acquisition_policy)
+    {
+        Some(LiveFeedAcquisitionPolicy::JitPublicResources) => {
+            Ok(CoreResourceRequest::public_url(resource_id, src, false))
+        }
+        Some(LiveFeedAcquisitionPolicy::DurableCompleteStates) => {
+            let (version, member_path) = nexrad_installed_member(src).ok_or_else(|| AppError {
+                kind: AppErrorKind::InvalidManifest,
+                message: format!("NEXRAD tile URL {src} does not identify a package member"),
+            })?;
+            let installed = session
+                .nexrad_installed
+                .get(&version)
+                .ok_or_else(|| AppError {
+                    kind: AppErrorKind::InvalidManifest,
+                    message: format!("NEXRAD frame {version} is not installed"),
+                })?;
+            Ok(CoreResourceRequest::live_feed_package_member(
+                resource_id,
+                "nexrad",
+                version,
+                installed.package_blob_sha256.clone(),
+                member_path,
+                false,
+            ))
+        }
+        None => Err(AppError {
+            kind: AppErrorKind::Internal,
+            message: "platform did not declare a live-feed acquisition policy".to_string(),
+        }),
+    }
 }
 
 fn nexrad_tile_resource_id(src: &str) -> AppResult<String> {
@@ -12232,6 +12285,7 @@ mod tests {
         RouteComponent, SequencingMode, Situation, SituationPosition, SituationSample,
         REQUIRED_NAV_DB_CONTRACT_ID,
     };
+    use std::io::Read;
 
     #[test]
     fn restoring_chart_page_state_preserves_chart_reference_selection() {
@@ -12314,6 +12368,20 @@ mod tests {
             panic!("session operation unexpectedly needed resources: {outcome:?}");
         };
         serde_json::from_value(result).expect("session snapshot")
+    }
+
+    fn configure_test_live_feed_policy(handle: u32, policy: LiveFeedAcquisitionPolicy) {
+        configure_platform_capabilities_in_session(
+            handle,
+            PlatformCapabilities {
+                live_feeds: Some(PlatformLiveFeedsCapability {
+                    acquisition_policy: policy,
+                }),
+                ..PlatformCapabilities::default()
+            },
+            None,
+        )
+        .expect("configure test live-feed policy");
     }
 
     macro_rules! snapshot_wrapper {
@@ -15377,7 +15445,7 @@ mod tests {
             metar_station_importance_status: None,
             obstacle_had: None,
             obstacle_tile_cache: HashMap::new(),
-            nexrad_installed: None,
+            nexrad_installed: BTreeMap::new(),
             nexrad_tile_cache: HashMap::new(),
             taf_payload: None,
             airport_notam_index: None,
@@ -15570,7 +15638,7 @@ mod tests {
             metar_station_importance_status: None,
             obstacle_had: None,
             obstacle_tile_cache: HashMap::new(),
-            nexrad_installed: None,
+            nexrad_installed: BTreeMap::new(),
             nexrad_tile_cache: HashMap::new(),
             taf_payload: None,
             airport_notam_index: None,
@@ -16014,7 +16082,7 @@ mod tests {
             metar_station_importance_status: None,
             obstacle_had: None,
             obstacle_tile_cache: HashMap::new(),
-            nexrad_installed: None,
+            nexrad_installed: BTreeMap::new(),
             nexrad_tile_cache: HashMap::new(),
             taf_payload: None,
             airport_notam_index: None,
@@ -16533,6 +16601,10 @@ mod tests {
     fn failed_live_feed_current_records_nexrad_caution_when_nexrad_layer_visible() {
         let init =
             create_ui_session(FlightPlan::default(), &[], None, None).expect("create session");
+        configure_test_live_feed_policy(
+            init.handle,
+            LiveFeedAcquisitionPolicy::DurableCompleteStates,
+        );
         set_map_layer_visibility_in_session(init.handle, "nexrad", true).expect("show nexrad");
 
         let snapshot = report_session_resource_failure_in_session(
@@ -16678,6 +16750,10 @@ mod tests {
     fn hiding_nexrad_layer_clears_nexrad_caution() {
         let init =
             create_ui_session(FlightPlan::default(), &[], None, None).expect("create session");
+        configure_test_live_feed_policy(
+            init.handle,
+            LiveFeedAcquisitionPolicy::DurableCompleteStates,
+        );
         set_map_layer_visibility_in_session(init.handle, "nexrad", true).expect("show nexrad");
         report_session_resource_failure_in_session(init.handle, "live_feeds/current", "404")
             .expect("report failure");
@@ -16715,8 +16791,13 @@ mod tests {
             &serde_json::to_vec(&manifest).expect("manifest json"),
             &[("tiles/res0/0/0.png", b"tile-png".as_slice())],
         );
+        let package_blob_sha256 = format!("{:x}", Sha256::digest(&package));
         let init =
             create_ui_session(FlightPlan::default(), &[], None, None).expect("create session");
+        configure_test_live_feed_policy(
+            init.handle,
+            LiveFeedAcquisitionPolicy::DurableCompleteStates,
+        );
         set_map_layer_visibility_in_session(init.handle, "nexrad", true).expect("show nexrad");
         install_live_feed_installed_state_in_session(
             init.handle,
@@ -16724,7 +16805,11 @@ mod tests {
                 product: "nexrad".to_string(),
                 version: "nexrad-installed-v1".to_string(),
                 state_sha256,
-                payload: crate::LiveFeedInstalledPayload::Opaque { bytes: package },
+                payload: crate::LiveFeedInstalledPayload::NexradPackage {
+                    manifest: serde_json::to_vec(&manifest).expect("manifest bytes"),
+                    package_blob_sha256: package_blob_sha256.clone(),
+                    package_bytes: Some(Arc::new(package)),
+                },
             },
         )
         .expect("install nexrad");
@@ -16758,9 +16843,93 @@ mod tests {
             query.stats.observed_at_utc,
             Some(utc("2026-05-21T12:00:00Z"))
         );
+        let outcome =
+            prepare_nexrad_tile_in_session(init.handle, &query.tiles[0].src).expect("prepare tile");
+        let HadOperationOutcome::NeedResources { resources } = outcome else {
+            panic!("expected durable package member request");
+        };
+        assert_eq!(
+            resources[0].source,
+            CoreResourceSource::LiveFeedPackageMember {
+                product: "nexrad".to_string(),
+                version: "nexrad-installed-v1".to_string(),
+                blob_sha256: package_blob_sha256,
+                member_path: "tiles/res0/0/0.png".to_string(),
+            }
+        );
+        ingest_resource_in_session(init.handle, &resources[0].id, b"tile-png")
+            .expect("ingest tile");
         let bytes =
             nexrad_tile_bytes_in_session(init.handle, &query.tiles[0].src).expect("tile bytes");
         assert_eq!(bytes, b"tile-png");
+    }
+
+    #[test]
+    fn durable_nexrad_packages_use_the_shared_animation_timeline() {
+        let init =
+            create_ui_session(FlightPlan::default(), &[], None, None).expect("create session");
+        configure_test_live_feed_policy(
+            init.handle,
+            LiveFeedAcquisitionPolicy::DurableCompleteStates,
+        );
+        set_map_layer_visibility_in_session(init.handle, "nexrad", true).expect("show nexrad");
+        for (version, observed_at_utc) in [
+            ("nexrad-installed-v1", "2026-05-20T12:00:00Z"),
+            ("nexrad-installed-v2", "2026-05-20T12:05:00Z"),
+        ] {
+            let manifest = nexrad_live_test_manifest(version, observed_at_utc);
+            install_live_feed_installed_state_in_session(
+                init.handle,
+                &crate::LiveFeedInstalledState {
+                    product: "nexrad".to_string(),
+                    version: version.to_string(),
+                    state_sha256: canonical_json_sha256_value(&manifest).expect("manifest hash"),
+                    payload: crate::LiveFeedInstalledPayload::NexradPackage {
+                        manifest: serde_json::to_vec(&manifest).expect("manifest bytes"),
+                        package_blob_sha256: format!("blob-{version}"),
+                        package_bytes: None,
+                    },
+                },
+            )
+            .expect("install durable NEXRAD frame");
+        }
+
+        let nominal_now = utc("2026-05-20T12:05:00Z").timestamp_millis();
+        let cycle_ms = nexrad_animation_cycle_ms(2);
+        let now = nominal_now + (cycle_ms - nominal_now.rem_euclid(cycle_ms)).rem_euclid(cycle_ms);
+        let outcome = get_nexrad_overlay_in_session_at_epoch_ms(
+            init.handle,
+            MapViewport {
+                center: LatLon {
+                    lat: 47.0,
+                    lon: -122.0,
+                },
+                zoom: 8.0,
+                rotation_deg: 0.0,
+                pitch_deg: 0.0,
+            },
+            512.0,
+            512.0,
+            now,
+        )
+        .expect("query durable animation");
+        let HadOperationOutcome::Complete { result, .. } = outcome else {
+            panic!("durable frames must not trigger JIT manifest requests");
+        };
+        let query: NexradOverlayQueryResult =
+            serde_json::from_value(result).expect("nexrad result");
+
+        assert_eq!(query.animation.phase, NexradOverlayAnimationPhase::Frame);
+        assert_eq!(query.animation.selected_frame_index, Some(0));
+        assert_eq!(query.animation.frame_count, 2);
+        assert_eq!(
+            query.animation.next_update_epoch_ms,
+            Some(now + NEXRAD_ANIMATION_PRECEDING_FRAME_DWELL_MS)
+        );
+        assert!(query
+            .tiles
+            .iter()
+            .any(|tile| tile.src.contains("/states/nexrad/nexrad-installed-v1/")));
     }
 
     #[test]
@@ -16831,6 +17000,7 @@ mod tests {
     fn live_nexrad_history_drives_animation_and_frame_age_status() {
         let init =
             create_ui_session(FlightPlan::default(), &[], None, None).expect("create session");
+        configure_test_live_feed_policy(init.handle, LiveFeedAcquisitionPolicy::JitPublicResources);
         let snapshot = get_session_snapshot(init.handle).expect("initial snapshot");
         let nexrad_age_cell = snapshot
             .app_ui_state
@@ -17129,6 +17299,7 @@ mod tests {
     fn live_nexrad_warning_uses_freshest_animation_frame_age() {
         let init =
             create_ui_session(FlightPlan::default(), &[], None, None).expect("create session");
+        configure_test_live_feed_policy(init.handle, LiveFeedAcquisitionPolicy::JitPublicResources);
         set_map_layer_visibility_in_session(init.handle, "nexrad", true).expect("show nexrad");
 
         let frame_ages_min = [43_i64, 38, 33, 28, 23, 18, 13];
@@ -17243,6 +17414,7 @@ mod tests {
     fn nexrad_tile_prepare_faults_and_caches_live_feed_tile_resource() {
         let init =
             create_ui_session(FlightPlan::default(), &[], None, None).expect("create session");
+        configure_test_live_feed_policy(init.handle, LiveFeedAcquisitionPolicy::JitPublicResources);
         let src = "/live-feeds/v3/states/nexrad/state-v1/tiles/res3/0/0.png";
 
         let outcome = prepare_nexrad_tile_in_session(init.handle, src).expect("prepare tile");
@@ -17276,6 +17448,7 @@ mod tests {
     fn visible_nexrad_without_product_state_records_caution() {
         let init =
             create_ui_session(FlightPlan::default(), &[], None, None).expect("create session");
+        configure_test_live_feed_policy(init.handle, LiveFeedAcquisitionPolicy::JitPublicResources);
         set_map_layer_visibility_in_session(init.handle, "nexrad", true).expect("show nexrad");
         ingest_resource_in_session(
             init.handle,
@@ -17730,6 +17903,7 @@ mod tests {
     #[test]
     fn loaded_nexrad_feed_older_than_policy_records_warning() {
         let init = create_current_test_session();
+        configure_test_live_feed_policy(init.handle, LiveFeedAcquisitionPolicy::JitPublicResources);
         set_map_layer_visibility_in_session(init.handle, "nexrad", true).expect("show nexrad");
         let version = "nexrad-old";
         let manifest = nexrad_live_test_manifest(version, "2020-01-01T00:00:00Z");
@@ -18864,6 +19038,7 @@ mod tests {
     fn terrain_overlay_without_altitude_records_caution() {
         let init =
             create_ui_session(FlightPlan::default(), &[], None, None).expect("create session");
+        configure_test_live_feed_policy(init.handle, LiveFeedAcquisitionPolicy::JitPublicResources);
 
         let outcome = get_terrain_overlay_in_session(
             init.handle,

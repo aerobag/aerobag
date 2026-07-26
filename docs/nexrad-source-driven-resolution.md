@@ -148,9 +148,9 @@ Core owns:
 Platform renderers receive image resources plus core-provided geometry. They do
 not reinterpret the NEXRAD projection.
 
-## Fetch Policy Direction
+## Fetch Policies
 
-The intended client policy is:
+Web uses a just-in-time resource policy:
 
 - Fetch a coarse CONUS overview from a reduced level such as `res3`.
 - Fetch full source quality (`res0`) around ownship.
@@ -159,6 +159,17 @@ The intended client policy is:
 
 This gives local full-resolution quality where it matters without repeatedly
 delivering the whole CONUS source frame.
+
+Android intentionally does not use this policy. Connectivity may be brief in
+flight, so Android eagerly downloads complete immutable packages for the recent
+frame tail and renders package members after connectivity disappears. Future
+deltas may reduce the bytes needed to assemble each complete state, but do not
+change the complete-state cache contract.
+
+Core owns both acquisition policies and feeds their results into one frame
+catalog, animation selector, and geometry path. Platform code provides generic
+HTTP, persistence, and package-member effects only. See
+`docs/refactor/nexrad-acquisition-and-animation.md`.
 
 ## Large Fixture Tests
 

@@ -2351,10 +2351,11 @@ internal fun AerobagApp(
         commandName: String,
         logTag: String,
         operation: () -> UiSessionSnapshot,
-    ): UiSessionSnapshot? {
+    ): Boolean {
         return try {
             val snapshot = operation()
-            snapshot.takeIf { applySessionSnapshot(it) }
+            applySessionSnapshot(snapshot)
+            true
         } catch (error: Throwable) {
             if (error is NativeSessionCommandRejectedException) {
                 recoverSessionCommandFailure(error, notifyUser = false)
@@ -2363,7 +2364,7 @@ internal fun AerobagApp(
             } else {
                 Log.w(logTag, "background session command failed command=$commandName", error)
             }
-            null
+            false
         }
     }
     var uiInvalidationRevisions by remember(uiSession) { mutableStateOf(UiInvalidationRevisions()) }
@@ -2375,6 +2376,21 @@ internal fun AerobagApp(
         uiSession.setInvalidationListener(::publishUiInvalidations)
         onDispose {
             uiSession.setInvalidationListener(null)
+        }
+    }
+    LaunchedEffect(uiSession, uiInvalidationRevisions.sessionSnapshot) {
+        if (uiInvalidationRevisions.sessionSnapshot == 0) {
+            return@LaunchedEffect
+        }
+        try {
+            val refreshedSnapshot = withContext(Dispatchers.IO) {
+                uiSession.refreshSnapshot()
+            }
+            applySessionSnapshot(refreshedSnapshot)
+        } catch (error: CancellationException) {
+            throw error
+        } catch (error: Throwable) {
+            Log.w("AerobagInvalidation", "session snapshot refresh failed", error)
         }
     }
     LaunchedEffect(context, sessionSnapshot.displayPolicy) {
@@ -2419,15 +2435,24 @@ internal fun AerobagApp(
         onDispose { liveFeedCache.close() }
     }
     var liveFeedGeneration by remember(uiSession) { mutableIntStateOf(0) }
-    fun promoteLiveFeed(summary: LiveFeedInstalledSummary) {
-        applyBackgroundSessionCommand("installLiveFeedCacheProduct", "AndroidLiveFeeds") {
-            uiSession.installLiveFeedCacheProduct(liveFeedCache, summary.product)
-        }?.let {
+    fun promoteLiveFeed(summary: LiveFeedInstalledSummary): Boolean {
+        val promoted = applyBackgroundSessionCommand(
+            "installLiveFeedCacheProduct",
+            "AndroidLiveFeeds",
+        ) {
+            uiSession.installLiveFeedCacheProduct(
+                liveFeedCache,
+                summary.product,
+                summary.version,
+            )
+        }
+        if (promoted) {
             liveFeedGeneration += 1
             diagnosticLogInfo("AndroidLiveFeeds") {
                 "promoted product=${summary.product} version=${summary.version} generation=$liveFeedGeneration"
             }
         }
+        return promoted
     }
     fun reportLiveFeedConnection(event: LiveFeedConnectionEvent) {
         applyBackgroundSessionCommand("reportLiveFeedConnectionEvent", "AndroidLiveFeeds") {
@@ -2443,7 +2468,9 @@ internal fun AerobagApp(
         val appContext = context.applicationContext
         withContext(Dispatchers.IO) {
             LiveFeedCacheStore.listInstalledSummaries(appContext)
-        }.forEach { promoteLiveFeed(it) }
+        }.forEach {
+            promoteLiveFeed(it)
+        }
         AndroidLiveFeedClient(
             context = appContext,
             cache = liveFeedCache,
@@ -2451,7 +2478,9 @@ internal fun AerobagApp(
         ).bootstrapAndRun(
             promote = { summary ->
                 withContext(Dispatchers.Main) {
-                    promoteLiveFeed(summary)
+                    check(promoteLiveFeed(summary)) {
+                        "failed to promote ${summary.product}/${summary.version}"
+                    }
                 }
             },
             onChanged = {

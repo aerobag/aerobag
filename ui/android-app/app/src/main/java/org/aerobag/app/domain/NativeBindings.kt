@@ -52,13 +52,21 @@ interface NativeBridge {
 
     fun liveFeedCacheInstalledSummaryJson(handle: Long, product: String): String
 
+    fun liveFeedCacheRetainedSummariesJson(handle: Long, product: String): String
+
+    fun liveFeedCacheReleasePersistedPayloadBytes(
+        handle: Long,
+        product: String,
+        version: String,
+    )
+
     fun liveFeedCacheIngestInstalledPayloadBytes(
         handle: Long,
         summaryJson: String,
         payloadBytes: ByteArray,
     )
 
-    fun liveFeedCacheInstalledPayloadBytes(handle: Long, product: String): ByteArray
+    fun liveFeedCacheInstalledPayloadBytes(handle: Long, product: String, version: String): ByteArray
 
     fun liveFeedCacheResourceManifestJson(handle: Long, product: String): String
 
@@ -75,7 +83,12 @@ interface NativeBridge {
 
     fun liveFeedCacheFinishRestoringResources(handle: Long, product: String)
 
-    fun liveFeedCacheInstallProductInSessionJson(handle: Long, sessionHandle: Long, product: String): String
+    fun liveFeedCacheInstallProductInSessionJson(
+        handle: Long,
+        sessionHandle: Long,
+        product: String,
+        version: String,
+    ): String
 
     fun liveFeedCacheSyncCatalogInSessionJson(handle: Long, sessionHandle: Long): String
 
@@ -594,13 +607,25 @@ object NativeBindings : NativeBridge {
 
     external override fun liveFeedCacheInstalledSummaryJson(handle: Long, product: String): String
 
+    external override fun liveFeedCacheRetainedSummariesJson(handle: Long, product: String): String
+
+    external override fun liveFeedCacheReleasePersistedPayloadBytes(
+        handle: Long,
+        product: String,
+        version: String,
+    )
+
     external override fun liveFeedCacheIngestInstalledPayloadBytes(
         handle: Long,
         summaryJson: String,
         payloadBytes: ByteArray,
     )
 
-    external override fun liveFeedCacheInstalledPayloadBytes(handle: Long, product: String): ByteArray
+    external override fun liveFeedCacheInstalledPayloadBytes(
+        handle: Long,
+        product: String,
+        version: String,
+    ): ByteArray
 
     external override fun liveFeedCacheResourceManifestJson(handle: Long, product: String): String
 
@@ -621,7 +646,12 @@ object NativeBindings : NativeBridge {
 
     external override fun liveFeedCacheFinishRestoringResources(handle: Long, product: String)
 
-    external override fun liveFeedCacheInstallProductInSessionJson(handle: Long, sessionHandle: Long, product: String): String
+    external override fun liveFeedCacheInstallProductInSessionJson(
+        handle: Long,
+        sessionHandle: Long,
+        product: String,
+        version: String,
+    ): String
 
     external override fun liveFeedCacheSyncCatalogInSessionJson(handle: Long, sessionHandle: Long): String
 

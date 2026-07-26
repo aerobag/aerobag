@@ -122,6 +122,34 @@ fn platform_session_adapters_have_no_plain_snapshot_escape_hatch() {
 }
 
 #[test]
+fn platform_live_feed_adapters_do_not_own_nexrad_policy() {
+    let android_cache =
+        read_repo_file("ui/android-app/app/src/main/java/org/aerobag/app/domain/LiveFeedCache.kt");
+    let android_fetch =
+        read_repo_file("ui/android-app/app/src/main/java/org/aerobag/app/RuntimeFetch.kt");
+    let android_session = read_repo_file(
+        "ui/android-app/app/src/main/java/org/aerobag/app/domain/NativeAppCoreAdapter.kt",
+    );
+    let web_session = read_repo_file("ui/web-app/src/domain/appCoreAdapter.ts");
+
+    assert!(
+        !android_cache.to_ascii_lowercase().contains("nexrad")
+            && !android_fetch.to_ascii_lowercase().contains("nexrad"),
+        "Android live-feed persistence and resource effects must stay product-generic"
+    );
+    assert!(
+        android_session.contains("\"durable_complete_states\"")
+            && !android_session.contains("\"jit_public_resources\""),
+        "Android must only declare the durable complete-state policy owned by core"
+    );
+    assert!(
+        web_session.contains("acquisition_policy: \"jit_public_resources\"")
+            && !web_session.contains("\"durable_complete_states\""),
+        "web must only declare the JIT public-resource policy owned by core"
+    );
+}
+
+#[test]
 fn paged_flight_plan_mutations_commit_only_after_guidance_projection() {
     let source_text = read_repo_file("ui/core-rust/crates/app-core/src/session.rs");
     let source = strip_rust_tests(&source_text);

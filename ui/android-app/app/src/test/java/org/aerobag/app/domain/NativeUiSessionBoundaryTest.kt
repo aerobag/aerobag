@@ -33,7 +33,18 @@ class NativeUiSessionBoundaryTest {
         )
         assertTrue(
             "Paged session mutations must publish core invalidations instead of dropping them.",
-            sessionBody.contains("publishInvalidations(commandName, outcome.invalidations)"),
+            sessionBody.contains("publishPagedInvalidations(commandName, outcome)"),
+        )
+        assertTrue(
+            "Paged operations must publish both direct and resource-effect invalidations through one path.",
+            sessionBody.contains(
+                "val invalidations = (outcome.invalidations + outcome.effectInvalidations).distinct()",
+            ),
+        )
+        assertTrue(
+            "NEXRAD queries must publish core's frame-change invalidation.",
+            Regex("""fun queryNexradOverlay\([\s\S]*?publishPagedInvalidations\("queryNexradOverlay", result\)""")
+                .containsMatchIn(sessionBody),
         )
         assertTrue(
             "The native command helper must not absorb Kotlin-side programming/configuration failures.",
@@ -91,6 +102,18 @@ class NativeUiSessionBoundaryTest {
             mainActivity.contains("\"map_overlay\"") && mainActivity.contains("\"flight_plan_route\""),
         )
         assertTrue(
+            "Android app shell should refresh the shared snapshot when core invalidates it.",
+            mainActivity.contains(
+                "LaunchedEffect(uiSession, uiInvalidationRevisions.sessionSnapshot)",
+            ) &&
+                mainActivity.contains("withContext(Dispatchers.IO)") &&
+                mainActivity.contains("uiSession.refreshSnapshot()"),
+        )
+        assertFalse(
+            "Map overlay must not own a second one-off session snapshot refresh path.",
+            mapPage.contains("""outcome.invalidations.contains("session_snapshot")"""),
+        )
+        assertTrue(
             "Map overlay query should rerun when core emits map_overlay.",
             mapPage.contains("uiInvalidationRevisions.mapOverlay"),
         )
@@ -126,7 +149,9 @@ class NativeUiSessionBoundaryTest {
         assertTrue(
             "NativeUiSession must wire the session-effect pump to core invalidation listeners.",
             nativeSession.contains("bridge.drainSessionResourceEffectsJson(handle)") &&
-                nativeSession.contains("publishInvalidations(\"session_effect\", effectInvalidations)"),
+                nativeSession.contains(
+                    "val invalidations = (outcome.invalidations + outcome.effectInvalidations).distinct()",
+                ),
         )
     }
 

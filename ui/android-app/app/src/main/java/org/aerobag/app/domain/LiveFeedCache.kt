@@ -63,6 +63,8 @@ data class LiveFeedInstalledSummary(
     val stateSha256: String,
     @SerialName("payload_kind")
     val payloadKind: String,
+    @SerialName("blob_sha256")
+    val blobSha256: String? = null,
 )
 
 @Serializable
@@ -194,6 +196,14 @@ class LiveFeedCache(
         json.decodeFromString(bridge.liveFeedCacheInstalledSummaryJson(handle, product))
     }
 
+    fun retainedSummaries(product: String): List<LiveFeedInstalledSummary> = withOpenHandle { handle ->
+        json.decodeFromString(bridge.liveFeedCacheRetainedSummariesJson(handle, product))
+    }
+
+    fun releasePersistedPayloadBytes(product: String, version: String) = withOpenHandle { handle ->
+        bridge.liveFeedCacheReleasePersistedPayloadBytes(handle, product, version)
+    }
+
     fun ingestInstalledPayload(summary: LiveFeedInstalledSummary, payloadBytes: ByteArray) = withOpenHandle { handle ->
         bridge.liveFeedCacheIngestInstalledPayloadBytes(
             handle,
@@ -202,8 +212,8 @@ class LiveFeedCache(
         )
     }
 
-    fun installedPayloadBytes(product: String): ByteArray = withOpenHandle { handle ->
-        bridge.liveFeedCacheInstalledPayloadBytes(handle, product)
+    fun installedPayloadBytes(product: String, version: String): ByteArray = withOpenHandle { handle ->
+        bridge.liveFeedCacheInstalledPayloadBytes(handle, product, version)
     }
 
     fun resourceManifest(product: String): LiveFeedResourceManifest? = withOpenHandle { handle ->
@@ -230,8 +240,12 @@ class LiveFeedCache(
         bridge.liveFeedCacheFinishRestoringResources(handle, manifest.summary.product)
     }
 
-    fun installProductInSessionJson(sessionHandle: Long, product: String): String = withOpenHandle { handle ->
-        bridge.liveFeedCacheInstallProductInSessionJson(handle, sessionHandle, product)
+    fun installProductInSessionJson(
+        sessionHandle: Long,
+        product: String,
+        version: String,
+    ): String = withOpenHandle { handle ->
+        bridge.liveFeedCacheInstallProductInSessionJson(handle, sessionHandle, product, version)
     }
 
     fun syncCatalogInSessionJson(sessionHandle: Long): String = withOpenHandle { handle ->
@@ -250,7 +264,7 @@ class LiveFeedCache(
         var installs = 0
         for (request in missingRequests()) {
             val summary = installFetchedBytes(request, fetch(request)) ?: continue
-            persist(summary, installedPayloadBytes(summary.product))
+            persist(summary, installedPayloadBytes(summary.product, summary.version))
             promote?.invoke(summary)
             installs += 1
         }
@@ -438,11 +452,6 @@ class AndroidLiveFeedClient(
                         }
                     }
                 }
-                promote(summary)
-                val acknowledged = cache.installedSummary(summary.product)
-                check(acknowledged == summary) {
-                    "main core did not acknowledge ${summary.product}/${summary.version}"
-                }
                 withContext(Dispatchers.IO) {
                     if (resourceManifest != null) {
                         LiveFeedCacheStore.commitResourceManifest(context, resourceManifest)
@@ -450,9 +459,18 @@ class AndroidLiveFeedClient(
                         LiveFeedCacheStore.persist(
                             context,
                             summary,
-                            cache.installedPayloadBytes(summary.product),
+                            cache.installedPayloadBytes(summary.product, summary.version),
                         )
                     }
+                }
+                promote(summary)
+                withContext(Dispatchers.IO) {
+                    LiveFeedCacheStore.retainVersions(
+                        context,
+                        summary.product,
+                        cache.retainedSummaries(summary.product).mapTo(mutableSetOf()) { it.version },
+                    )
+                    cache.releasePersistedPayloadBytes(summary.product, summary.version)
                 }
                 onChanged()
                 installs += 1
@@ -727,6 +745,10 @@ object LiveFeedCacheStore {
         for (entry in listInstalled(context)) {
             runCatching {
                 cache.ingestInstalledPayload(entry.summary, entry.payloadFile.readBytes())
+                cache.releasePersistedPayloadBytes(
+                    entry.summary.product,
+                    entry.summary.version,
+                )
             }.onFailure {
                 entry.payloadFile.parentFile?.deleteRecursively()
             }
@@ -823,6 +845,41 @@ object LiveFeedCacheStore {
             listInstalledResourceManifests(context).map { it.manifest.summary })
             .sortedBy { "${it.product}/${it.version}" }
 
+    fun readPackageMember(
+        context: Context,
+        product: String,
+        version: String,
+        blobSha256: String,
+        memberPath: String,
+    ): ByteArray {
+        require(!memberPath.startsWith('/') && memberPath.split('/').none { it == ".." }) {
+            "unsafe live-feed package member path: $memberPath"
+        }
+        val versionDir = File(
+            File(rootDir(context), safePathComponent(product)),
+            safePathComponent(version),
+        )
+        val metadataFile = File(versionDir, "metadata.json")
+        val payloadFile = File(versionDir, "payload.bin")
+        val summary = runCatching {
+            json.decodeFromString<LiveFeedInstalledSummary>(metadataFile.readText())
+        }.getOrElse {
+            error("live-feed package $product/$version metadata is unavailable")
+        }
+        require(
+            summary.product == product &&
+                summary.version == version &&
+                summary.blobSha256 == blobSha256,
+        ) {
+            "live-feed package $product/$version does not match blob $blobSha256"
+        }
+        require(payloadFile.isFile) {
+            "live-feed package $product/$version payload is unavailable"
+        }
+        return PackageZipStore.readEntryBytes(payloadFile, memberPath)
+            ?: error("live-feed package $product/$version has no member $memberPath")
+    }
+
     fun persist(
         context: Context,
         summary: LiveFeedInstalledSummary,
@@ -844,9 +901,23 @@ object LiveFeedCacheStore {
             tempDir.copyRecursively(targetDir, overwrite = true)
             tempDir.deleteRecursively()
         }
+    }
+
+    fun retainVersions(
+        context: Context,
+        product: String,
+        versions: Set<String>,
+    ) {
+        val productDir = File(rootDir(context), safePathComponent(product))
+        val retainedNames = versions.mapTo(mutableSetOf(), ::safePathComponent)
         productDir
             .listFiles()
-            ?.filter { it.isDirectory && it.name != targetDir.name && !it.name.startsWith(".") }
+            ?.filter {
+                it.isDirectory &&
+                    it.name != "resources" &&
+                    !it.name.startsWith(".") &&
+                    it.name !in retainedNames
+            }
             ?.forEach { it.deleteRecursively() }
     }
 

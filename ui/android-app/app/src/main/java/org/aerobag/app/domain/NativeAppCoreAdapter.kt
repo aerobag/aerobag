@@ -441,6 +441,12 @@ class NativeAppCoreAdapter(
                 )
                 put("offline_packages", buildJsonObject {})
                 put(
+                    "live_feeds",
+                    buildJsonObject {
+                        put("acquisition_policy", "durable_complete_states")
+                    },
+                )
+                put(
                     "client_build",
                     clientBuildInfo?.let { buildInfo ->
                         buildJsonObject {
@@ -772,10 +778,17 @@ class NativeUiSession internal constructor(
                 }
             }
         snapshot = json.decodeFromJsonElement<WireUiSessionSnapshot>(outcome.result).toUi()
-        publishInvalidations(commandName, outcome.invalidations)
-        val effectInvalidations = outcome.effectInvalidations
-        publishInvalidations("session_effect", effectInvalidations)
+        publishPagedInvalidations(commandName, outcome)
         return snapshot
+    }
+
+    private fun publishPagedInvalidations(
+        commandName: String,
+        outcome: PagedSessionOperationResult,
+    ): List<String> {
+        val invalidations = (outcome.invalidations + outcome.effectInvalidations).distinct()
+        publishInvalidations(commandName, invalidations)
+        return invalidations
     }
 
     private fun publishInvalidations(commandName: String, invalidations: List<String>) {
@@ -820,9 +833,13 @@ class NativeUiSession internal constructor(
         }
     }
 
-    fun installLiveFeedCacheProduct(cache: LiveFeedCache, product: String): UiSessionSnapshot {
+    fun installLiveFeedCacheProduct(
+        cache: LiveFeedCache,
+        product: String,
+        version: String,
+    ): UiSessionSnapshot {
         return runPagedSnapshot("installLiveFeedCacheProduct") {
-            cache.installProductInSessionJson(handle, product)
+            cache.installProductInSessionJson(handle, product, version)
         }
     }
 
@@ -849,9 +866,7 @@ class NativeUiSession internal constructor(
         ) {
             bridge.projectFlightPlanRouteInSessionJson(handle)
         }
-        publishInvalidations("projectFlightPlanRoute", outcome.invalidations)
-        val effectInvalidations = outcome.effectInvalidations
-        publishInvalidations("session_effect", effectInvalidations)
+        publishPagedInvalidations("projectFlightPlanRoute", outcome)
         return json.decodeFromJsonElement<WireFlightPlanRouteProjection>(outcome.result).toUi()
     }
 
@@ -1251,10 +1266,7 @@ class NativeUiSession internal constructor(
             },
             drainSessionResourceEffects = { bridge.drainSessionResourceEffectsJson(handle) },
         )
-        publishInvalidations("syncLiveFeeds", outcome.invalidations)
-        val effectInvalidations = outcome.effectInvalidations
-        publishInvalidations("session_effect", effectInvalidations)
-        return outcome.invalidations + outcome.effectInvalidations
+        return publishPagedInvalidations("syncLiveFeeds", outcome)
     }
 
     fun ingestLiveFeedSseEvents(
@@ -1272,10 +1284,7 @@ class NativeUiSession internal constructor(
             },
             drainSessionResourceEffects = { bridge.drainSessionResourceEffectsJson(handle) },
         )
-        publishInvalidations("ingestLiveFeedSseEvents", outcome.invalidations)
-        val effectInvalidations = outcome.effectInvalidations
-        publishInvalidations("session_effect", effectInvalidations)
-        return outcome.invalidations + outcome.effectInvalidations
+        return publishPagedInvalidations("ingestLiveFeedSseEvents", outcome)
     }
 
     fun reportLiveFeedConnectionEvent(event: LiveFeedConnectionEvent): UiSessionSnapshot {
@@ -1310,11 +1319,10 @@ class NativeUiSession internal constructor(
             },
             drainSessionResourceEffects = { bridge.drainSessionResourceEffectsJson(handle) },
         )
-        val effectInvalidations = outcome.effectInvalidations
-        publishInvalidations("session_effect", effectInvalidations)
+        val invalidations = publishPagedInvalidations("queryMapOverlay", outcome)
         return MapOverlayQueryOutcome(
             overlay = json.decodeFromJsonElement<WireMapOverlayQueryResult>(outcome.result).toUi(),
-            invalidations = outcome.invalidations + outcome.effectInvalidations,
+            invalidations = invalidations,
         )
     }
 
@@ -1341,8 +1349,7 @@ class NativeUiSession internal constructor(
                     pointDisplayScale,
                 )
         }
-        val effectInvalidations = result.effectInvalidations
-        publishInvalidations("session_effect", effectInvalidations)
+        publishPagedInvalidations("queryMapSelection", result)
         return json.decodeFromJsonElement<WireMapSelectionQueryResult>(result.result).toUi()
     }
 
@@ -1369,8 +1376,7 @@ class NativeUiSession internal constructor(
                     pointDisplayScale,
                 )
         }
-        val effectInvalidations = result.effectInvalidations
-        publishInvalidations("session_effect", effectInvalidations)
+        publishPagedInvalidations("queryMapSelectionForNavRef", result)
         return json.decodeFromJsonElement<WireMapSelectionForNavRefResult>(result.result).toUi()
     }
 
@@ -1403,8 +1409,7 @@ class NativeUiSession internal constructor(
             },
             drainSessionResourceEffects = { bridge.drainSessionResourceEffectsJson(handle) },
         )
-        val effectInvalidations = result.effectInvalidations
-        publishInvalidations("session_effect", effectInvalidations)
+        publishPagedInvalidations("queryTerrainOverlay", result)
         return json.decodeFromJsonElement<WireTerrainOverlayQueryResult>(result.result).toUi()
     }
 
@@ -1425,8 +1430,7 @@ class NativeUiSession internal constructor(
             },
             drainSessionResourceEffects = { bridge.drainSessionResourceEffectsJson(handle) },
         ) ?: error("session missing nav_db for NEXRAD overlay")
-        val effectInvalidations = result.effectInvalidations
-        publishInvalidations("session_effect", effectInvalidations)
+        publishPagedInvalidations("queryNexradOverlay", result)
         return json.decodeFromJsonElement(
             result.result,
         )
@@ -1450,8 +1454,7 @@ class NativeUiSession internal constructor(
         ) {
             bridge.resolveChartAssetResourceInSessionJson(handle, chartId, assetKind)
         }
-        val effectInvalidations = result.effectInvalidations
-        publishInvalidations("session_effect", effectInvalidations)
+        publishPagedInvalidations("chartAssetBytes", result)
         val resultJson = result.result.jsonObject
         val source = parseCoreResourceSource(resultJson.getValue("source").jsonObject)
         val resource = CoreResourceRequest("chart_asset/$assetKind/$chartId", source, false)
@@ -1485,8 +1488,7 @@ class NativeUiSession internal constructor(
         ) {
             bridge.prepareNexradTileInSessionJson(handle, src)
         }
-        val effectInvalidations = result.effectInvalidations
-        publishInvalidations("session_effect", effectInvalidations)
+        publishPagedInvalidations("nexradTileBytes", result)
         return bridge.nexradTileBytesInSession(handle, src)
     }
 

@@ -23,6 +23,7 @@ const LIVE_FEEDS_PREFIX: &str = "/live-feeds/v3/";
 const LIVE_FEEDS_STATUS_PATH: &str = "/live-feeds/status.html";
 const FAILED_RESOURCE_RETRY_DELAY_MS: i64 = 5 * 60 * 1000;
 pub const LIVE_FEED_HISTORY_MAX_ENTRIES: usize = 12;
+pub const NEXRAD_FRAME_WINDOW_SIZE: usize = 7;
 
 #[derive(Debug, Clone, PartialEq, Default)]
 pub struct LiveFeedsState {
@@ -61,6 +62,7 @@ struct LiveFeedProductHistoryState {
     collected_at_utc: Option<String>,
     state_kind: Option<String>,
     state_ref: Option<LiveFeedPayloadRef>,
+    install_state_ref: Option<LiveFeedPayloadRef>,
     version_manifest: Option<Value>,
     state_manifest: Option<Value>,
 }
@@ -560,6 +562,7 @@ impl LiveFeedsState {
                 history.expected_state_sha256 = Some(manifest.state.state_sha256.clone());
                 history.state_kind = manifest.state.kind.clone();
                 history.state_ref = Some(manifest.state);
+                history.install_state_ref = manifest.install_state;
                 history.version_manifest =
                     Some(serde_json::from_slice(bytes).map_err(invalid_live_feed_json)?);
                 self.resource_failure_retry_after_epoch_ms
@@ -969,6 +972,25 @@ impl LiveFeedsState {
         self.current_loaded
     }
 
+    pub fn durable_retained_versions(&self, product: &str) -> Vec<String> {
+        let Some(entry) = self.products.get(product) else {
+            return Vec::new();
+        };
+        let Some(current) = entry.current_version.as_ref() else {
+            return Vec::new();
+        };
+        if product != "nexrad" {
+            return vec![current.clone()];
+        }
+        let retained_history_count = NEXRAD_FRAME_WINDOW_SIZE.saturating_sub(1);
+        let retained_history_start = entry.history.len().saturating_sub(retained_history_count);
+        entry.history[retained_history_start..]
+            .iter()
+            .map(|history| history.version.clone())
+            .chain(std::iter::once(current.clone()))
+            .collect()
+    }
+
     pub fn product_loaded_state_manifests(
         &self,
         product: &str,
@@ -1128,9 +1150,20 @@ impl LiveFeedsState {
             return vec![self.durable_current_request()];
         }
 
+        let installed = installed.into_iter().collect::<Vec<_>>();
         let installed_by_product = installed
-            .into_iter()
+            .iter()
+            .cloned()
             .map(|installed| (installed.product.clone(), installed))
+            .collect::<HashMap<_, _>>();
+        let installed_by_product_version = installed
+            .into_iter()
+            .map(|installed| {
+                (
+                    (installed.product.clone(), installed.version.clone()),
+                    installed,
+                )
+            })
             .collect::<HashMap<_, _>>();
         let mut requests = Vec::new();
         let mut products = self.products.keys().map(String::as_str).collect::<Vec<_>>();
@@ -1143,6 +1176,42 @@ impl LiveFeedsState {
             let Some(version) = &entry.current_version else {
                 continue;
             };
+            if product == "nexrad" {
+                append_durable_nexrad_request(
+                    self,
+                    &mut requests,
+                    product,
+                    version,
+                    entry.version_manifest.as_ref(),
+                    entry.version_manifest_url.as_deref(),
+                    entry
+                        .install_state_ref
+                        .as_ref()
+                        .or(entry.state_ref.as_ref()),
+                    entry.expected_state_sha256.as_deref(),
+                    &installed_by_product_version,
+                );
+                let retained_history_count = NEXRAD_FRAME_WINDOW_SIZE.saturating_sub(1);
+                let retained_history_start =
+                    entry.history.len().saturating_sub(retained_history_count);
+                for history in &entry.history[retained_history_start..] {
+                    append_durable_nexrad_request(
+                        self,
+                        &mut requests,
+                        product,
+                        &history.version,
+                        history.version_manifest.as_ref(),
+                        history.version_manifest_url.as_deref(),
+                        history
+                            .install_state_ref
+                            .as_ref()
+                            .or(history.state_ref.as_ref()),
+                        history.expected_state_sha256.as_deref(),
+                        &installed_by_product_version,
+                    );
+                }
+                continue;
+            }
             if installed_by_product
                 .get(product)
                 .is_some_and(|installed| entry.installed_product_is_current(installed))
@@ -1311,6 +1380,23 @@ impl LiveFeedsState {
                 .ok_or_else(|| {
                     invalid_live_feed(format!(
                         "NOTAM checkpoint {version} does not match version manifest"
+                    ))
+                });
+        }
+        if entry.current_version.as_deref() != Some(version) && product == "nexrad" {
+            return entry
+                .history
+                .iter()
+                .find(|history| history.version == version)
+                .and_then(|history| {
+                    history
+                        .install_state_ref
+                        .as_ref()
+                        .or(history.state_ref.as_ref())
+                })
+                .ok_or_else(|| {
+                    invalid_live_feed(format!(
+                        "{product}/{version} does not advertise an installable durable payload"
                     ))
                 });
         }
@@ -1619,6 +1705,7 @@ impl LiveFeedProductState {
                 if state_sha256_changed || version_manifest_url_changed {
                     state.state_kind = None;
                     state.state_ref = None;
+                    state.install_state_ref = None;
                     state.version_manifest = None;
                     state.state_manifest = None;
                 }
@@ -1689,6 +1776,51 @@ impl LiveFeedProductState {
         } else {
             self.install_state_ref.as_ref().or(self.state_ref.as_ref())
         }
+    }
+}
+
+fn append_durable_nexrad_request(
+    state: &LiveFeedsState,
+    requests: &mut Vec<LiveFeedCacheRequest>,
+    product: &str,
+    version: &str,
+    version_manifest: Option<&Value>,
+    version_manifest_url: Option<&str>,
+    full_ref: Option<&LiveFeedPayloadRef>,
+    expected_state_sha256: Option<&str>,
+    installed: &HashMap<(String, String), LiveFeedDurableInstalledProduct>,
+) {
+    if installed
+        .get(&(product.to_string(), version.to_string()))
+        .is_some_and(|installed| {
+            expected_state_sha256.is_none_or(|expected| installed.state_sha256 == expected)
+        })
+    {
+        return;
+    }
+    if version_manifest.is_none() {
+        if let Some(url) = version_manifest_url {
+            requests.push(LiveFeedCacheRequest {
+                id: format!("live_feeds/version/{product}/{version}"),
+                url: state.required_live_feed_url(url),
+                kind: LiveFeedCacheRequestKind::Version {
+                    product: product.to_string(),
+                    version: version.to_string(),
+                },
+            });
+        }
+        return;
+    }
+    if let Some(full_ref) = full_ref {
+        requests.push(LiveFeedCacheRequest {
+            id: format!("live_feeds/full/{product}/{version}"),
+            url: state.required_live_feed_url(&full_ref.url),
+            kind: LiveFeedCacheRequestKind::Full {
+                product: product.to_string(),
+                version: version.to_string(),
+                payload_kind: full_ref.kind.clone(),
+            },
+        });
     }
 }
 

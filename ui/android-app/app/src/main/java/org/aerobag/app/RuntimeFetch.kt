@@ -212,6 +212,7 @@ import org.aerobag.app.domain.GuidanceState
 import org.aerobag.app.domain.CoreResourceRequest
 import org.aerobag.app.domain.CoreResourceSource
 import org.aerobag.app.domain.InstalledPackages
+import org.aerobag.app.domain.LiveFeedCacheStore
 import org.aerobag.app.domain.kindForLog
 import org.aerobag.app.domain.AirspaceDisplayDecoration
 import org.aerobag.app.domain.AirspaceDisplayLabel
@@ -424,6 +425,14 @@ internal fun fetchCoreResource(
     return when (val source = resource.source) {
         is CoreResourceSource.PackageMember ->
             InstalledPackages.readZipEntryBytes(context, source.packageId, source.memberPath)
+        is CoreResourceSource.LiveFeedPackageMember ->
+            LiveFeedCacheStore.readPackageMember(
+                context = context,
+                product = source.product,
+                version = source.version,
+                blobSha256 = source.blobSha256,
+                memberPath = source.memberPath,
+            )
         is CoreResourceSource.PublicUrl -> {
             requireAndroidPublicUrlAllowed(resource.id)
             val url = if (source.url.startsWith("/packages/")) {

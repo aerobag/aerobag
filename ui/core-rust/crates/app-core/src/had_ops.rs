@@ -111,6 +111,12 @@ pub enum CoreResourceSource {
         filename: String,
         member_path: String,
     },
+    LiveFeedPackageMember {
+        product: String,
+        version: String,
+        blob_sha256: String,
+        member_path: String,
+    },
     InstalledArtifactMember {
         filename: String,
         member_path: String,
@@ -160,6 +166,26 @@ impl CoreResourceRequest {
             id: id.into(),
             source: CoreResourceSource::InstalledArtifactMember {
                 filename: filename.into(),
+                member_path: member_path.into(),
+            },
+            optional,
+        }
+    }
+
+    pub fn live_feed_package_member(
+        id: impl Into<String>,
+        product: impl Into<String>,
+        version: impl Into<String>,
+        blob_sha256: impl Into<String>,
+        member_path: impl Into<String>,
+        optional: bool,
+    ) -> Self {
+        Self {
+            id: id.into(),
+            source: CoreResourceSource::LiveFeedPackageMember {
+                product: product.into(),
+                version: version.into(),
+                blob_sha256: blob_sha256.into(),
                 member_path: member_path.into(),
             },
             optional,
@@ -597,6 +623,9 @@ fn nav_db_artifact_page_source(
         }
         Some(CoreResourceSource::NavKvMember { .. }) => CoreResourceSource::Unavailable {
             message: "nav_db artifact root cannot be a nav_kv member".to_string(),
+        },
+        Some(CoreResourceSource::LiveFeedPackageMember { .. }) => CoreResourceSource::Unavailable {
+            message: "nav_db artifact root cannot be a live-feed package member".to_string(),
         },
         Some(CoreResourceSource::Unavailable { message }) => CoreResourceSource::Unavailable {
             message: message.clone(),

@@ -3138,7 +3138,7 @@ pub(super) fn build_nav_kv_runway_position_pairs(
 pub(super) fn build_nav_kv_waypoint_lookup_pairs(
     connection: &rusqlite::Connection,
 ) -> anyhow::Result<Vec<NavKvPair>> {
-    let mut candidates = Vec::<serde_json::Value>::new();
+    let mut candidates = Vec::<WaypointSearchCandidate>::new();
     let mut kind_by_identifier = BTreeMap::<String, String>::new();
     collect_waypoint_candidates(
         connection,
@@ -3183,43 +3183,47 @@ pub(super) fn build_nav_kv_waypoint_lookup_pairs(
         )?);
     }
 
-    candidates.sort_by(|left, right| {
-        let left_identifier = left
-            .get("identifier")
-            .and_then(|value| value.as_str())
-            .unwrap_or_default();
-        let right_identifier = right
-            .get("identifier")
-            .and_then(|value| value.as_str())
-            .unwrap_or_default();
-        let left_kind = left
-            .get("kind")
-            .and_then(|value| value.as_str())
-            .unwrap_or_default();
-        let right_kind = right
-            .get("kind")
-            .and_then(|value| value.as_str())
-            .unwrap_or_default();
-        left_identifier
-            .len()
-            .cmp(&right_identifier.len())
-            .then_with(|| left_identifier.cmp(right_identifier))
-            .then_with(|| waypoint_kind_rank(left_kind).cmp(&waypoint_kind_rank(right_kind)))
+    let mut search_candidates = Vec::new();
+    for candidate in &candidates {
+        for (matched_term, match_kind) in &candidate.search_terms {
+            search_candidates.push(WaypointSearchRecord {
+                identifier: candidate.identifier.clone(),
+                kind: candidate.kind.clone(),
+                display_name: candidate.display_name.clone(),
+                lat: candidate.lat,
+                lon: candidate.lon,
+                matched_term: matched_term.clone(),
+                match_kind: *match_kind,
+            });
+        }
+    }
+    search_candidates.sort_by(|left, right| {
+        left.matched_term
+            .cmp(&right.matched_term)
+            .then_with(|| left.identifier.cmp(&right.identifier))
+            .then_with(|| left.match_kind.cmp(&right.match_kind))
     });
+    pairs.extend(build_sparse_waypoint_search_prefix_pairs(
+        &search_candidates,
+    )?);
 
-    let mut by_prefix = BTreeMap::<String, Vec<serde_json::Value>>::new();
+    Ok(pairs)
+}
+
+fn build_sparse_waypoint_search_prefix_pairs(
+    candidates: &[WaypointSearchRecord],
+) -> anyhow::Result<Vec<NavKvPair>> {
+    let mut by_prefix = BTreeMap::<String, Vec<WaypointSearchRecord>>::new();
     for candidate in candidates {
-        let Some(identifier) = candidate.get("identifier").and_then(|value| value.as_str()) else {
-            continue;
-        };
-        let chars = identifier.chars().collect::<Vec<_>>();
+        let chars = candidate.matched_term.chars().collect::<Vec<_>>();
         for length in 1..=chars.len() {
             let prefix = chars.iter().take(length).collect::<String>();
             by_prefix.entry(prefix).or_default().push(candidate.clone());
         }
     }
+    let mut pairs = Vec::new();
     for (prefix, candidates) in &by_prefix {
-        if candidates.len() > WAYPOINT_PREFIX_MAX_RESULTS {
+        if distinct_waypoint_search_candidates(candidates) > WAYPOINT_SEARCH_MAX_RESULTS {
             continue;
         }
         let parent_too_large = prefix
@@ -3230,29 +3234,46 @@ pub(super) fn build_nav_kv_waypoint_lookup_pairs(
                 if parent_len == 0 {
                     return true;
                 }
-                by_prefix
-                    .get(&prefix[..parent_len])
-                    .is_none_or(|parent| parent.len() > WAYPOINT_PREFIX_MAX_RESULTS)
+                by_prefix.get(&prefix[..parent_len]).is_none_or(|parent| {
+                    distinct_waypoint_search_candidates(parent) > WAYPOINT_SEARCH_MAX_RESULTS
+                })
             })
             .unwrap_or(true);
         if !parent_too_large {
             continue;
         }
         pairs.push(json_pair(
-            format!("waypoint/prefix/{}", had_upper_key_component(&prefix)),
-            &serde_json::Value::Array(candidates.clone()),
-            "waypoint prefix",
+            format!("waypoint/search-prefix/{}", had_upper_key_component(prefix)),
+            &serde_json::to_value(candidates).context("failed to encode waypoint search shard")?,
+            "waypoint search prefix",
         )?);
     }
-
     Ok(pairs)
+}
+
+fn distinct_waypoint_search_candidates(candidates: &[WaypointSearchRecord]) -> usize {
+    candidates
+        .iter()
+        .map(|candidate| (candidate.kind.as_str(), candidate.identifier.as_str()))
+        .collect::<BTreeSet<_>>()
+        .len()
+}
+
+#[derive(Debug, Clone)]
+pub(super) struct WaypointSearchCandidate {
+    identifier: String,
+    kind: String,
+    display_name: String,
+    lat: f64,
+    lon: f64,
+    search_terms: BTreeMap<String, WaypointSearchMatchKind>,
 }
 
 pub(super) fn collect_waypoint_candidates(
     connection: &rusqlite::Connection,
     table: &str,
     kind: &str,
-    candidates: &mut Vec<serde_json::Value>,
+    candidates: &mut Vec<WaypointSearchCandidate>,
     kind_by_identifier: &mut BTreeMap<String, String>,
 ) -> anyhow::Result<()> {
     let sql = if kind == "airport" {
@@ -3305,13 +3326,26 @@ pub(super) fn collect_waypoint_candidates(
             continue;
         }
         record_waypoint_identifier_kind(kind_by_identifier, &identifier, kind)?;
-        candidates.push(serde_json::json!({
-            "identifier": identifier,
-            "kind": kind,
-            "display_name": waypoint_identifier_display_name(kind, &city, &state, &facility_name),
-            "lat": round_nav_coordinate(lat),
-            "lon": round_nav_coordinate(lon),
-        }));
+        let mut search_terms =
+            BTreeMap::from([(identifier.clone(), WaypointSearchMatchKind::Identifier)]);
+        if kind == "airport" {
+            for term in had_key::search_terms(&city)
+                .into_iter()
+                .chain(had_key::search_terms(&facility_name))
+            {
+                search_terms
+                    .entry(term)
+                    .or_insert(WaypointSearchMatchKind::AirportName);
+            }
+        }
+        candidates.push(WaypointSearchCandidate {
+            identifier,
+            kind: kind.to_string(),
+            display_name: waypoint_identifier_display_name(kind, &city, &state, &facility_name),
+            lat: round_nav_coordinate(lat),
+            lon: round_nav_coordinate(lon),
+            search_terms,
+        });
     }
     Ok(())
 }
@@ -3323,7 +3357,7 @@ pub(super) fn record_waypoint_identifier_kind(
 ) -> anyhow::Result<()> {
     if let Some(existing) = kind_by_identifier.insert(identifier.to_string(), kind.to_string()) {
         bail!(
-            "waypoint identifier {identifier} is emitted as both {existing} and {kind}; prefix lookup requires one kind per identifier"
+            "waypoint identifier {identifier} is emitted as both {existing} and {kind}; search lookup requires one kind per identifier"
         );
     }
     Ok(())
@@ -3357,15 +3391,6 @@ pub(super) fn navaid_is_waypoint_symbol_eligible(kind: &str) -> bool {
         kind.trim().to_ascii_uppercase().as_str(),
         "VOR" | "VOR/DME" | "VORTAC"
     )
-}
-
-pub(super) fn waypoint_kind_rank(kind: &str) -> usize {
-    match kind {
-        "navaid" => 0,
-        "airport" => 1,
-        "fix" => 2,
-        _ => 3,
-    }
 }
 
 #[derive(Debug, Default, Clone)]
@@ -5085,6 +5110,111 @@ mod tests {
                 "lon": -122.2157501,
             })
         );
+    }
+
+    #[test]
+    fn waypoint_search_index_emits_identifier_city_and_airport_name_terms() {
+        let connection = rusqlite::Connection::open_in_memory().expect("sqlite");
+        connection
+            .execute_batch(
+                r#"
+                CREATE TABLE airports (
+                    LocationID TEXT,
+                    City TEXT,
+                    State TEXT,
+                    FacilityName TEXT,
+                    ARPLatitude REAL,
+                    ARPLongitude REAL
+                );
+                CREATE TABLE nav (
+                    LocationID TEXT,
+                    FacilityName TEXT,
+                    ARPLatitude REAL,
+                    ARPLongitude REAL,
+                    Type TEXT
+                );
+                CREATE TABLE fix (
+                    LocationID TEXT,
+                    FacilityName TEXT,
+                    ARPLatitude REAL,
+                    ARPLongitude REAL
+                );
+                INSERT INTO airports VALUES
+                    ('KPAE', 'EVERETT', 'WA', 'SEATTLE PAINE FLD INTL', 47.9063, -122.2816),
+                    ('KSAN', 'SAN DIEGO', 'CA', 'SAN DIEGO INTL', 32.7336, -117.1897),
+                    ('KORD', 'CHICAGO', 'IL', 'CHICAGO O''HARE INTL', 41.9786, -87.9048);
+                "#,
+            )
+            .expect("schema");
+
+        let pairs = build_nav_kv_waypoint_lookup_pairs(&connection).expect("waypoint pairs");
+        let search_records = pairs
+            .iter()
+            .filter(|pair| pair.key.starts_with("waypoint/search-prefix/"))
+            .flat_map(|pair| {
+                serde_json::from_slice::<Vec<WaypointSearchRecord>>(&pair.value)
+                    .expect("search prefix records")
+            })
+            .collect::<Vec<_>>();
+        let contains =
+            |identifier: &str, matched_term: &str, match_kind: WaypointSearchMatchKind| {
+                search_records.iter().any(|record| {
+                    record.identifier == identifier
+                        && record.matched_term == matched_term
+                        && record.match_kind == match_kind
+                })
+            };
+
+        assert!(contains(
+            "KPAE",
+            "KPAE",
+            WaypointSearchMatchKind::Identifier
+        ));
+        assert!(contains(
+            "KPAE",
+            "EVERETT",
+            WaypointSearchMatchKind::AirportName
+        ));
+        assert!(contains(
+            "KPAE",
+            "PAINE",
+            WaypointSearchMatchKind::AirportName
+        ));
+        assert!(contains(
+            "KPAE",
+            "SEATTLE",
+            WaypointSearchMatchKind::AirportName
+        ));
+        assert!(contains(
+            "KSAN",
+            "DIEGO",
+            WaypointSearchMatchKind::AirportName
+        ));
+        assert!(contains(
+            "KORD",
+            "OHARE",
+            WaypointSearchMatchKind::AirportName
+        ));
+    }
+
+    #[test]
+    fn waypoint_search_index_omits_terms_over_the_candidate_limit() {
+        let candidates = (0..=WAYPOINT_SEARCH_MAX_RESULTS)
+            .map(|index| WaypointSearchRecord {
+                identifier: format!("K{index:04}"),
+                kind: "airport".to_string(),
+                display_name: "San".to_string(),
+                lat: 0.0,
+                lon: 0.0,
+                matched_term: "SAN".to_string(),
+                match_kind: WaypointSearchMatchKind::AirportName,
+            })
+            .collect::<Vec<_>>();
+
+        let pairs =
+            build_sparse_waypoint_search_prefix_pairs(&candidates).expect("search prefix pairs");
+
+        assert!(pairs.is_empty());
     }
 
     #[test]

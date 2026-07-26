@@ -4743,7 +4743,7 @@ pub enum FlightPlanSessionQuery {
     SuggestWaypointIdentifiersAtRow {
         row_uid: String,
         before: bool,
-        prefix: String,
+        query: String,
         limit: usize,
     },
     PreviewEntry {
@@ -4815,10 +4815,10 @@ pub fn query_flight_plan_in_session(
         FlightPlanSessionQuery::SuggestWaypointIdentifiersAtRow {
             row_uid,
             before,
-            prefix,
+            query,
             limit,
         } => suggest_waypoint_identifiers_at_flight_plan_row_in_session(
-            handle, row_uid, before, prefix, limit,
+            handle, row_uid, before, query, limit,
         ),
         FlightPlanSessionQuery::PreviewEntry { input } => {
             preview_flight_plan_entry_in_session(handle, input)
@@ -4984,7 +4984,7 @@ pub(crate) fn suggest_waypoint_identifiers_at_flight_plan_row_in_session(
     handle: u32,
     row_uid: String,
     before: bool,
-    prefix: String,
+    query: String,
     limit: usize,
 ) -> AppResult<HadOperationOutcome> {
     let mut sessions = lock_sessions();
@@ -5013,7 +5013,7 @@ pub(crate) fn suggest_waypoint_identifiers_at_flight_plan_row_in_session(
         })?;
     let store = session_nav_kv_store(session)?;
     let suggestions =
-        match suggest_waypoint_identifiers(store, &plan, component_index, before, &prefix, limit) {
+        match suggest_waypoint_identifiers(store, &plan, component_index, before, &query, limit) {
             Ok(suggestions) => suggestions,
             Err(HadReadError::NeedPages(pages)) => {
                 return Ok(HadOperationOutcome::NeedResources {

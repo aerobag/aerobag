@@ -4330,15 +4330,15 @@ function MapPage(props: {
     [chartSearchAnchorWorldX, chartSearchAnchorWorldY],
   );
   useEffect(() => {
-    const prefix = chartSearch.query.trim().toUpperCase();
-    if (!chartSearch.open || prefix.length === 0) {
+    const query = chartSearch.query.trim().toUpperCase();
+    if (!chartSearch.open || query.length === 0) {
       setChartSearch((current) => ({ ...current, loading: false, error: null, suggestions: [] }));
       return;
     }
     let cancelled = false;
     setChartSearch((current) => ({ ...current, loading: true, error: null }));
     props.appCoreAdapter
-      .suggestWaypointIdentifiersNear(chartSearchAnchor, prefix, 8)
+      .suggestWaypointIdentifiersNear(chartSearchAnchor, query, 8)
       .then((suggestions) => {
         if (!cancelled) {
           setChartSearch((current) => ({ ...current, loading: false, error: null, suggestions }));
@@ -7577,15 +7577,15 @@ function FlightPlanPage(props: {
       } : current);
       return;
     }
-    const prefix = editor.airportId.trim().toUpperCase();
-    if (!prefix) {
+    const query = editor.airportId.trim().toUpperCase();
+    if (!query) {
       setAirportInsert((current) => current ? { ...current, loading: false, suggestions: [] } : current);
       return;
     }
     let cancelled = false;
     setAirportInsert((current) => current ? { ...current, loading: true } : current);
     props.uiSession
-      .suggestWaypointIdentifiersAtFlightPlanRow(editor.rowUid, editor.before, prefix, 8)
+      .suggestWaypointIdentifiersAtFlightPlanRow(editor.rowUid, editor.before, query, 8)
       .then((suggestions) => {
         if (!cancelled) {
           setAirportInsert((current) => current ? { ...current, loading: false, suggestions } : current);

@@ -690,15 +690,15 @@ internal fun FlightPlanPage(
 
     LaunchedEffect(airportInsert?.rowUid, airportInsert?.before, airportInsert?.airportId) {
         val editor = airportInsert ?: return@LaunchedEffect
-        val prefix = editor.airportId.trim().uppercase()
-        if (prefix.isEmpty()) {
+        val query = editor.airportId.trim().uppercase()
+        if (query.isEmpty()) {
             airportInsert = editor.copy(loading = false, suggestions = emptyList())
             return@LaunchedEffect
         }
         airportInsert = editor.copy(loading = true)
         runCatching {
             withContext(Dispatchers.IO) {
-                uiSession.suggestWaypointIdentifiersAtFlightPlanRow(editor.rowUid, editor.before, prefix, 8)
+                uiSession.suggestWaypointIdentifiersAtFlightPlanRow(editor.rowUid, editor.before, query, 8)
             }
         }.onSuccess { suggestions ->
             airportInsert = airportInsert?.copy(loading = false, suggestions = suggestions)

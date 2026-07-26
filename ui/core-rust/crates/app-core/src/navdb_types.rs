@@ -53,15 +53,6 @@ pub struct WaypointIdentifierSuggestion {
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub struct WaypointIdentifierRecord {
-    pub identifier: String,
-    pub kind: String,
-    pub display_name: String,
-    pub lat: f64,
-    pub lon: f64,
-}
-
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub(crate) struct AirwayEntryCandidate {
     pub(crate) airway_name: String,
     pub(crate) branch_key: String,

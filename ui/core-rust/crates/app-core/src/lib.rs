@@ -123,7 +123,7 @@ pub use map_overlay::{
 pub use navdb_types::{
     AirwayPresentationPlan, AirwayPresentationPoint, AirwayPresentationSelection, AirwaySuggestion,
     CifpTppMatch, CifpTppMatchRow, MaterializedProcedure, ProcedureOptions, ProcedureSpecChoice,
-    ProcedureSummary, WaypointIdentifierRecord, WaypointIdentifierSuggestion,
+    ProcedureSummary, WaypointIdentifierSuggestion,
 };
 #[cfg(debug_assertions)]
 pub use navkv::nav_kv_store_for_smoke_test;

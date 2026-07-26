@@ -67,7 +67,7 @@ pub enum NavKvQuery {
     WaypointIdentifier {
         identifier: String,
     },
-    WaypointPrefix {
+    WaypointSearchPrefix {
         prefix: String,
     },
     VectorManifest,
@@ -145,9 +145,9 @@ pub fn nav_kv_key_for_query(query: &NavKvQuery) -> Option<String> {
             "waypoint/identifier/{}",
             upper_component(identifier)
         )),
-        NavKvQuery::WaypointPrefix { prefix } => {
+        NavKvQuery::WaypointSearchPrefix { prefix } => {
             let normalized = prefix.trim().to_uppercase();
-            Some(format!("waypoint/prefix/{}", component(&normalized)))
+            Some(format!("waypoint/search-prefix/{}", component(&normalized)))
         }
         NavKvQuery::VectorManifest => Some("vector/manifest".to_string()),
         NavKvQuery::VectorTile { z, x, y } => Some(format!("vector/tile/z{z:02}/x{x:06}/y{y:06}")),
@@ -374,6 +374,12 @@ mod tests {
         assert_eq!(
             nav_kv_key_for_query(&NavKvQuery::MagneticVariation { lat: 48, lon: -110 }),
             Some("magvar/48/-110".to_string())
+        );
+        assert_eq!(
+            nav_kv_key_for_query(&NavKvQuery::WaypointSearchPrefix {
+                prefix: " die ".to_string(),
+            }),
+            Some("waypoint/search-prefix/DIE".to_string())
         );
         assert_eq!(
             nav_kv_key_for_query(&NavKvQuery::ProcedureGeometry {

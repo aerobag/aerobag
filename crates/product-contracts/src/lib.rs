@@ -10,6 +10,26 @@ pub struct ProductContract {
     pub contract_id: &'static str,
 }
 
+pub const WAYPOINT_SEARCH_MAX_RESULTS: usize = 100;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum WaypointSearchMatchKind {
+    Identifier,
+    AirportName,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct WaypointSearchRecord {
+    pub identifier: String,
+    pub kind: String,
+    pub display_name: String,
+    pub lat: f64,
+    pub lon: f64,
+    pub matched_term: String,
+    pub match_kind: WaypointSearchMatchKind,
+}
+
 /// Semantic effects extracted from airport-associated NOTAMs at ingestion time.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -29,7 +49,7 @@ pub enum AirportNotamEffect {
     Other,
 }
 
-pub const NAV_DB_CONTRACT_ID: &str = "NAV12";
+pub const NAV_DB_CONTRACT_ID: &str = "NAV13";
 pub const SEC_CONTRACT_ID: &str = "SEC1";
 pub const TAC_CONTRACT_ID: &str = "TAC1";
 pub const ENR_L_CONTRACT_ID: &str = "ENL1";

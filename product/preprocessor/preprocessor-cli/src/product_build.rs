@@ -69,8 +69,9 @@ use preprocessor_vectors::{
 use preprocessor_zip::{write_deterministic_zip, ZipSource};
 use procedure_geometry_types as pgt;
 use product_contracts::{
-    NAV_DB_CONTRACT_ID, SHADED_RELIEF_CONTRACT_ID, TERRAIN_CONTRACT_ID,
-    TERRAIN_TER2_HEIGHT_QUANTIZATION_FT, TERRAIN_TER2_MAX_ZOOM, WORLD_BASEMAP_CONTRACT_ID,
+    WaypointSearchMatchKind, WaypointSearchRecord, NAV_DB_CONTRACT_ID, SHADED_RELIEF_CONTRACT_ID,
+    TERRAIN_CONTRACT_ID, TERRAIN_TER2_HEIGHT_QUANTIZATION_FT, TERRAIN_TER2_MAX_ZOOM,
+    WAYPOINT_SEARCH_MAX_RESULTS, WORLD_BASEMAP_CONTRACT_ID,
 };
 use serde::{ser::SerializeStruct, Deserialize, Serialize};
 use sha2::{Digest, Sha256};
@@ -86,7 +87,6 @@ const PACKAGE_CYCLE_VERSION: &str = "01";
 const CYCLE_PUBLICATION_LEAD_DAYS: i64 = 20;
 const NAV_DB_STARTUP_PREFETCH_MEMBERS_METADATA_KEY: &str = "startup_prefetch_members";
 const NAV_DB_UNPACKED_PAGE_ENCODING_MARKER: &str = "nav-db-page-xz-v1";
-const WAYPOINT_PREFIX_MAX_RESULTS: usize = 100;
 // Offline chart region polygons are only visual guides in the package picker.
 // Grow chart cutlines coarsely before unioning to collapse tiny source-boundary
 // mismatches, then simplify hard. This does not affect runtime chart coverage.
@@ -3774,7 +3774,7 @@ mod tests {
     }
 
     #[test]
-    fn nav_kv_waypoint_prefix_pairs_omit_overlarge_suggestion_lists() {
+    fn nav_kv_waypoint_search_pairs_omit_overlarge_suggestion_lists() {
         let connection = rusqlite::Connection::open_in_memory().unwrap();
         connection
             .execute_batch(
@@ -3821,21 +3821,31 @@ mod tests {
         }
 
         let pairs = build_nav_kv_waypoint_lookup_pairs(&connection).unwrap();
-        assert!(pairs.iter().all(|pair| pair.key != "waypoint/prefix/K"));
+        assert!(pairs
+            .iter()
+            .all(|pair| !pair.key.starts_with("waypoint/prefix/")));
+        assert!(pairs
+            .iter()
+            .all(|pair| pair.key != "waypoint/search-prefix/K"));
         let kr = pairs
             .iter()
-            .find(|pair| pair.key == "waypoint/prefix/KR")
+            .find(|pair| pair.key == "waypoint/search-prefix/KR")
             .expect("KR prefix should remain below threshold");
-        let suggestions = serde_json::from_slice::<Vec<serde_json::Value>>(&kr.value).unwrap();
+        let suggestions = serde_json::from_slice::<Vec<WaypointSearchRecord>>(&kr.value).unwrap();
         assert_eq!(suggestions.len(), 2);
+        assert!(suggestions
+            .iter()
+            .all(|suggestion| suggestion.match_kind == WaypointSearchMatchKind::Identifier));
         assert!(
-            pairs.iter().all(|pair| pair.key != "waypoint/prefix/KRNT"),
+            pairs
+                .iter()
+                .all(|pair| pair.key != "waypoint/search-prefix/KRNT"),
             "longer prefixes are redundant when a shorter emitted bucket can be filtered"
         );
     }
 
     #[test]
-    fn nav_kv_waypoint_prefix_values_are_slim_and_exclude_vot_navaids() {
+    fn nav_kv_waypoint_search_values_are_slim_and_exclude_vot_navaids() {
         let connection = rusqlite::Connection::open_in_memory().unwrap();
         connection
             .execute_batch(
@@ -3883,19 +3893,21 @@ mod tests {
 
         let prefix_s = pairs
             .iter()
-            .find(|pair| pair.key == "waypoint/prefix/S")
+            .find(|pair| pair.key == "waypoint/search-prefix/S")
             .expect("S prefix");
-        let suggestions =
-            serde_json::from_slice::<Vec<serde_json::Value>>(&prefix_s.value).unwrap();
+        let suggestions = serde_json::from_slice::<Vec<WaypointSearchRecord>>(&prefix_s.value)
+            .expect("search records");
         assert_eq!(
             suggestions,
-            vec![serde_json::json!({
-                "identifier": "SEA",
-                "kind": "navaid",
-                "display_name": "Seattle 116.80",
-                "lat": 47.4353889,
-                "lon": -122.3096111,
-            })]
+            vec![WaypointSearchRecord {
+                identifier: "SEA".to_string(),
+                kind: "navaid".to_string(),
+                display_name: "Seattle 116.80".to_string(),
+                lat: 47.4353889,
+                lon: -122.3096111,
+                matched_term: "SEA".to_string(),
+                match_kind: WaypointSearchMatchKind::Identifier,
+            }]
         );
     }
 

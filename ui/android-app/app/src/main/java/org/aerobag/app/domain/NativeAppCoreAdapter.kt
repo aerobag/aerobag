@@ -508,14 +508,14 @@ class NativeAppCoreAdapter(
 
     fun suggestWaypointIdentifiersNear(
         anchor: LatLonPoint,
-        prefix: String,
+        query: String,
         limit: Int = 8,
     ): List<WaypointIdentifierSuggestion> {
         val result = runHadOperationElement(
             buildJsonObject {
                 put("kind", "suggest_waypoint_identifiers_near")
                 put("anchor", json.encodeToJsonElement(WireLatLon.serializer(), anchor.toWire()))
-                put("prefix", prefix)
+                put("query", query)
                 put("limit", limit)
             },
         )
@@ -826,7 +826,7 @@ class NativeUiSession internal constructor(
     fun suggestWaypointIdentifiersAtFlightPlanRow(
         rowUid: String,
         before: Boolean,
-        prefix: String,
+        query: String,
         limit: Int = 8,
     ): List<WaypointIdentifierSuggestion> {
         val result = queryFlightPlan(
@@ -834,7 +834,7 @@ class NativeUiSession internal constructor(
                 put("kind", "suggest_waypoint_identifiers_at_row")
                 put("row_uid", rowUid)
                 put("before", before)
-                put("prefix", prefix)
+                put("query", query)
                 put("limit", limit)
             },
         )

@@ -5,11 +5,14 @@
 use std::{
     borrow::Cow,
     cmp::Ordering,
-    collections::{HashMap, HashSet},
+    collections::{BTreeMap, HashMap, HashSet},
 };
 
 use chrono::{DateTime, Utc};
 use procedure_geometry_types as pgt;
+#[cfg(test)]
+use product_contracts::WaypointSearchMatchKind;
+use product_contracts::WaypointSearchRecord;
 use serde::{de::DeserializeOwned, Deserialize, Serialize};
 use serde_json::Value;
 
@@ -33,8 +36,8 @@ use crate::{
     NavSymbolFeature, PathTermination, PlateProcedureLoadCandidateInput, PolygonRecord,
     ProcedureDiscontinuity, ProcedureKind, ProcedureLegProvenance, ProcedureLoadOption,
     ProcedureOptions, ProcedureSegment, ProcedureSegmentRole, ProcedureSummary, ResolvedLeg,
-    ResolvedLegSource, RouteComponent, SequencingMode, WaypointIdentifierRecord,
-    WaypointIdentifierSuggestion, REQUIRED_NAV_DB_CONTRACT_ID,
+    ResolvedLegSource, RouteComponent, SequencingMode, WaypointIdentifierSuggestion,
+    REQUIRED_NAV_DB_CONTRACT_ID,
 };
 
 #[derive(Debug, Clone, Copy, Default)]
@@ -719,7 +722,7 @@ pub enum HadOperation {
     },
     SuggestWaypointIdentifiersNear {
         anchor: LatLon,
-        prefix: String,
+        query: String,
         limit: usize,
     },
     SuggestAirwaysNearAnchor {
@@ -908,10 +911,10 @@ fn run_had_operation_value(store: &NavKvStore, op: HadOperation) -> Result<Value
         }
         HadOperation::SuggestWaypointIdentifiersNear {
             anchor,
-            prefix,
+            query,
             limit,
         } => serde_json::to_value(suggest_waypoint_identifiers_near(
-            store, anchor, &prefix, limit,
+            store, anchor, &query, limit,
         )?)?,
         HadOperation::SuggestAirwaysNearAnchor { anchor, limit } => {
             serde_json::to_value(suggest_airways_near_anchor(store, &anchor, limit)?)?
@@ -2089,67 +2092,150 @@ pub(crate) fn suggest_waypoint_identifiers(
     plan: &FlightPlan,
     component_index: usize,
     before: bool,
-    prefix: &str,
+    query: &str,
     limit: usize,
 ) -> Result<Vec<WaypointIdentifierSuggestion>, HadReadError> {
     let anchor = component_insert_anchor(plan, component_index, before)?;
     let anchor_position = nav_ref_position(store, &anchor, None)?;
-    suggest_waypoint_identifier_candidates(store, &prefix, limit, anchor_position)
+    suggest_waypoint_identifier_candidates(store, query, limit, anchor_position)
 }
 
 fn suggest_waypoint_identifiers_near(
     store: &NavKvStore,
     anchor: LatLon,
-    prefix: &str,
+    query: &str,
     limit: usize,
 ) -> Result<Vec<WaypointIdentifierSuggestion>, HadReadError> {
-    suggest_waypoint_identifier_candidates(store, prefix, limit, anchor)
+    suggest_waypoint_identifier_candidates(store, query, limit, anchor)
 }
 
 fn suggest_waypoint_identifier_candidates(
     store: &NavKvStore,
-    prefix: &str,
+    query: &str,
     limit: usize,
     anchor_position: LatLon,
 ) -> Result<Vec<WaypointIdentifierSuggestion>, HadReadError> {
     if limit == 0 {
         return Ok(Vec::new());
     }
-    let prefix = prefix.trim().to_ascii_uppercase();
-    if prefix.is_empty() {
+    let mut terms = had_key::search_terms(query);
+    terms.sort();
+    terms.dedup();
+    if terms.is_empty() {
         return Ok(Vec::new());
     }
-    let prefix_chars = prefix.chars().collect::<Vec<_>>();
-    let mut candidates = None;
-    for length in (1..=prefix_chars.len()).rev() {
-        let lookup_prefix = prefix_chars.iter().take(length).collect::<String>();
-        if let Some(records) = read_optional::<Vec<WaypointIdentifierRecord>>(
-            store,
-            NavKvQuery::WaypointPrefix {
-                prefix: lookup_prefix,
-            },
-        )? {
-            candidates = Some(records);
-            break;
-        }
+
+    let lookup_prefixes = terms
+        .iter()
+        .map(|term| {
+            let chars = term.chars().collect::<Vec<_>>();
+            (1..=chars.len())
+                .rev()
+                .map(|length| chars.iter().take(length).collect::<String>())
+                .collect::<Vec<_>>()
+        })
+        .collect::<Vec<_>>();
+    let lookup_keys = lookup_prefixes
+        .iter()
+        .flatten()
+        .filter_map(|prefix| {
+            crate::nav_kv_key_for_query(&NavKvQuery::WaypointSearchPrefix {
+                prefix: prefix.clone(),
+            })
+        })
+        .collect::<Vec<_>>();
+    let missing_pages = store
+        .missing_pages_for_keys(&lookup_keys)
+        .map_err(HadReadError::Fatal)?;
+    if !missing_pages.is_empty() {
+        return Err(HadReadError::NeedPages(missing_pages));
     }
-    let Some(candidates) = candidates else {
+
+    let mut matches_by_term = Vec::<BTreeMap<(String, String), WaypointSearchRecord>>::new();
+    for (term, prefixes) in terms.iter().zip(&lookup_prefixes) {
+        let mut bucket = None;
+        for prefix in prefixes {
+            if let Some(records) = read_optional::<Vec<WaypointSearchRecord>>(
+                store,
+                NavKvQuery::WaypointSearchPrefix {
+                    prefix: prefix.clone(),
+                },
+            )? {
+                bucket = Some(records);
+                break;
+            }
+        }
+        let Some(bucket) = bucket else {
+            // No shard means the term is deliberately too broad. Other terms
+            // can still constrain the query.
+            continue;
+        };
+        let mut term_matches = BTreeMap::new();
+        for candidate in bucket
+            .into_iter()
+            .filter(|candidate| candidate.matched_term.starts_with(term))
+        {
+            let key = (candidate.kind.clone(), candidate.identifier.clone());
+            term_matches
+                .entry(key)
+                .and_modify(|current: &mut WaypointSearchRecord| {
+                    if candidate.match_kind < current.match_kind {
+                        *current = candidate.clone();
+                    }
+                })
+                .or_insert(candidate);
+        }
+        if term_matches.is_empty() {
+            return Ok(Vec::new());
+        }
+        matches_by_term.push(term_matches);
+    }
+    let Some(first_term_matches) = matches_by_term.first() else {
         return Ok(Vec::new());
     };
-    let mut suggestions = candidates
+    let candidate_keys = first_term_matches
+        .keys()
+        .filter(|key| {
+            matches_by_term
+                .iter()
+                .skip(1)
+                .all(|term_matches| term_matches.contains_key(*key))
+        })
+        .cloned()
+        .collect::<Vec<_>>();
+
+    let ranked_candidates = candidate_keys
         .into_iter()
-        .filter_map(|candidate| {
-            waypoint_identifier_record_nav_ref(&candidate).map(|nav_ref| (candidate, nav_ref))
+        .filter_map(|key| {
+            matches_by_term
+                .iter()
+                .filter_map(|term_matches| term_matches.get(&key))
+                .min_by_key(|candidate| candidate.match_kind)
+                .cloned()
+                .and_then(|candidate| {
+                    waypoint_search_record_nav_ref(&candidate)
+                        .map(|nav_ref| (candidate.match_kind, candidate, nav_ref))
+                })
         })
-        .filter(|(candidate, _)| {
-            candidate
-                .identifier
-                .trim()
-                .to_ascii_uppercase()
-                .starts_with(&prefix)
+        .collect::<Vec<_>>();
+    let symbol_keys = ranked_candidates
+        .iter()
+        .filter_map(|(_, _, nav_ref)| {
+            crate::nav_kv_key_for_query(&NavKvQuery::NavRefSymbol {
+                nav_ref: nav_ref.clone(),
+            })
         })
-        .filter_map(|candidate| {
-            let (candidate, nav_ref) = candidate;
+        .collect::<Vec<_>>();
+    let missing_pages = store
+        .missing_pages_for_keys(&symbol_keys)
+        .map_err(HadReadError::Fatal)?;
+    if !missing_pages.is_empty() {
+        return Err(HadReadError::NeedPages(missing_pages));
+    }
+
+    let mut suggestions = ranked_candidates
+        .into_iter()
+        .filter_map(|(match_kind, candidate, nav_ref)| {
             let symbol_feature = match nav_symbol_feature(store, &nav_ref) {
                 Ok(symbol_feature) => symbol_feature,
                 Err(err) => return Some(Err(err)),
@@ -2168,38 +2254,51 @@ fn suggest_waypoint_identifier_candidates(
                     lon: candidate.lon,
                 },
             );
-            Some(Ok(WaypointIdentifierSuggestion {
-                identifier: candidate.identifier,
-                nav_ref,
-                kind: candidate.kind,
-                display_name: candidate.display_name,
-                distance_text: format!("{:.0}nm", distance_from_anchor_nm),
-                distance_from_anchor_nm,
-                symbol_feature,
-            }))
+            Some(Ok((
+                match_kind,
+                WaypointIdentifierSuggestion {
+                    identifier: candidate.identifier,
+                    nav_ref,
+                    kind: candidate.kind,
+                    display_name: candidate.display_name,
+                    distance_text: format!("{:.0}nm", distance_from_anchor_nm),
+                    distance_from_anchor_nm,
+                    symbol_feature,
+                },
+            )))
         })
         .collect::<Result<Vec<_>, HadReadError>>()?;
-    suggestions.sort_by(|left, right| {
-        left.distance_from_anchor_nm
-            .partial_cmp(&right.distance_from_anchor_nm)
-            .unwrap_or(std::cmp::Ordering::Equal)
+    suggestions.sort_by(|(left_match, left), (right_match, right)| {
+        left_match
+            .cmp(right_match)
+            .then_with(|| {
+                left.distance_from_anchor_nm
+                    .partial_cmp(&right.distance_from_anchor_nm)
+                    .unwrap_or(std::cmp::Ordering::Equal)
+            })
             .then_with(|| left.identifier.cmp(&right.identifier))
             .then_with(|| {
                 nav_ref_kind_order(&left.nav_ref).cmp(&nav_ref_kind_order(&right.nav_ref))
             })
     });
-    let mut seen = Vec::<(String, NavRef)>::new();
-    suggestions.retain(|suggestion| {
-        let key = (suggestion.identifier.clone(), suggestion.nav_ref.clone());
-        if seen.contains(&key) {
-            false
-        } else {
-            seen.push(key);
-            true
-        }
-    });
     suggestions.truncate(limit);
-    Ok(suggestions)
+    Ok(suggestions
+        .into_iter()
+        .map(|(_, suggestion)| suggestion)
+        .collect())
+}
+
+fn waypoint_search_record_nav_ref(record: &WaypointSearchRecord) -> Option<NavRef> {
+    let identifier = record.identifier.trim().to_ascii_uppercase();
+    if identifier.is_empty() {
+        return None;
+    }
+    match record.kind.trim() {
+        "airport" => Some(NavRef::Airport(identifier)),
+        "navaid" => Some(NavRef::Navaid(identifier)),
+        "fix" => Some(NavRef::Fix(identifier)),
+        _ => None,
+    }
 }
 
 fn resolve_waypoint_identifier_for_ui(
@@ -2246,19 +2345,6 @@ fn waypoint_identifier_is_canonical_for_ui(identifier: &str, nav_ref: &NavRef) -
         | NavRef::Fix(_)
         | NavRef::LatLon(_)
         | NavRef::Spot(_) => true,
-    }
-}
-
-fn waypoint_identifier_record_nav_ref(record: &WaypointIdentifierRecord) -> Option<NavRef> {
-    let identifier = record.identifier.trim().to_ascii_uppercase();
-    if identifier.is_empty() {
-        return None;
-    }
-    match record.kind.trim() {
-        "airport" => Some(NavRef::Airport(identifier)),
-        "navaid" => Some(NavRef::Navaid(identifier)),
-        "fix" => Some(NavRef::Fix(identifier)),
-        _ => None,
     }
 }
 
@@ -6261,24 +6347,28 @@ mod tests {
     #[test]
     fn fixture_nav_kv_suggests_waypoint_identifiers_near_view_center() {
         let kr_bucket = vec![
-            WaypointIdentifierRecord {
+            WaypointSearchRecord {
                 identifier: "KRNT".to_string(),
                 kind: "airport".to_string(),
                 display_name: "Renton Municipal\nRenton, WA".to_string(),
                 lat: 47.493,
                 lon: -122.216,
+                matched_term: "KRNT".to_string(),
+                match_kind: WaypointSearchMatchKind::Identifier,
             },
-            WaypointIdentifierRecord {
+            WaypointSearchRecord {
                 identifier: "KRDD".to_string(),
                 kind: "airport".to_string(),
                 display_name: "Redding Regional\nRedding, CA".to_string(),
                 lat: 40.509,
                 lon: -122.293,
+                matched_term: "KRDD".to_string(),
+                match_kind: WaypointSearchMatchKind::Identifier,
             },
         ];
         let store = test_nav_kv_store(&[(
-            "waypoint/prefix/KR",
-            serde_json::to_value(kr_bucket).expect("encode waypoint prefix fixture"),
+            "waypoint/search-prefix/KR",
+            serde_json::to_value(kr_bucket).expect("encode waypoint search fixture"),
         )]);
         let outcome = run_had_operation(
             &store,
@@ -6287,7 +6377,7 @@ mod tests {
                     lat: 47.493,
                     lon: -122.216,
                 },
-                prefix: "KR".to_string(),
+                query: "KR".to_string(),
                 limit: 5,
             },
         )
@@ -6316,35 +6406,39 @@ mod tests {
     }
 
     #[test]
-    fn missing_waypoint_prefix_suggestions_are_empty() {
+    fn missing_waypoint_search_suggestions_are_empty() {
         let store = test_nav_kv_store(&[]);
         let suggestions =
             suggest_waypoint_identifier_candidates(&store, "K", 5, LatLon { lat: 0.0, lon: 0.0 })
-                .expect("missing prefix should not be fatal");
+                .expect("missing search term should not be fatal");
         assert!(suggestions.is_empty());
     }
 
     #[test]
-    fn waypoint_prefix_suggestions_fall_back_to_shortest_emitted_bucket() {
+    fn waypoint_search_suggestions_fall_back_to_shortest_emitted_bucket() {
         let kr_bucket = vec![
-            WaypointIdentifierRecord {
+            WaypointSearchRecord {
                 identifier: "KRNT".to_string(),
                 kind: "airport".to_string(),
                 display_name: "Renton Municipal\nRenton, WA".to_string(),
                 lat: 47.493,
                 lon: -122.216,
+                matched_term: "KRNT".to_string(),
+                match_kind: WaypointSearchMatchKind::Identifier,
             },
-            WaypointIdentifierRecord {
+            WaypointSearchRecord {
                 identifier: "KRDD".to_string(),
                 kind: "airport".to_string(),
                 display_name: "Redding Regional\nRedding, CA".to_string(),
                 lat: 40.509,
                 lon: -122.293,
+                matched_term: "KRDD".to_string(),
+                match_kind: WaypointSearchMatchKind::Identifier,
             },
         ];
         let store = test_nav_kv_store(&[(
-            "waypoint/prefix/KR",
-            serde_json::to_value(kr_bucket).expect("encode waypoint bucket"),
+            "waypoint/search-prefix/KR",
+            serde_json::to_value(kr_bucket).expect("encode waypoint search bucket"),
         )]);
         let suggestions = suggest_waypoint_identifier_candidates(
             &store,
@@ -6358,6 +6452,135 @@ mod tests {
         .expect("suggest from ancestor prefix bucket");
         assert_eq!(suggestions.len(), 1);
         assert_eq!(suggestions[0].identifier, "KRNT");
+    }
+
+    #[test]
+    fn waypoint_search_ignores_broad_terms_and_uses_discriminating_terms() {
+        let die_bucket = vec![WaypointSearchRecord {
+            identifier: "KSAN".to_string(),
+            kind: "airport".to_string(),
+            display_name: "San Diego Intl\nSan Diego, CA".to_string(),
+            lat: 32.7336,
+            lon: -117.1897,
+            matched_term: "DIEGO".to_string(),
+            match_kind: WaypointSearchMatchKind::AirportName,
+        }];
+        let store = test_nav_kv_store(&[(
+            "waypoint/search-prefix/DIE",
+            serde_json::to_value(die_bucket).expect("encode DIE search bucket"),
+        )]);
+
+        let suggestions = suggest_waypoint_identifier_candidates(
+            &store,
+            "SAN DIEG",
+            5,
+            LatLon {
+                lat: 32.7336,
+                lon: -117.1897,
+            },
+        )
+        .expect("search by broad and discriminating terms");
+
+        assert_eq!(suggestions.len(), 1);
+        assert_eq!(suggestions[0].identifier, "KSAN");
+    }
+
+    #[test]
+    fn waypoint_search_intersects_name_terms() {
+        let kpae_paine = WaypointSearchRecord {
+            identifier: "KPAE".to_string(),
+            kind: "airport".to_string(),
+            display_name: "Seattle Paine Fld Intl\nEverett, WA".to_string(),
+            lat: 47.904,
+            lon: -122.281,
+            matched_term: "PAINE".to_string(),
+            match_kind: WaypointSearchMatchKind::AirportName,
+        };
+        let other_paine = WaypointSearchRecord {
+            identifier: "PAIN".to_string(),
+            kind: "fix".to_string(),
+            display_name: "PAIN".to_string(),
+            lat: 40.0,
+            lon: -120.0,
+            matched_term: "PAIN".to_string(),
+            match_kind: WaypointSearchMatchKind::Identifier,
+        };
+        let kpae_everett = WaypointSearchRecord {
+            matched_term: "EVERETT".to_string(),
+            ..kpae_paine.clone()
+        };
+        let store = test_nav_kv_store(&[
+            (
+                "waypoint/search-prefix/PAI",
+                serde_json::to_value(vec![kpae_paine, other_paine])
+                    .expect("encode PAI search bucket"),
+            ),
+            (
+                "waypoint/search-prefix/EVE",
+                serde_json::to_value(vec![kpae_everett]).expect("encode EVE search bucket"),
+            ),
+        ]);
+
+        let suggestions = suggest_waypoint_identifier_candidates(
+            &store,
+            "PAINE EVERETT",
+            5,
+            LatLon {
+                lat: 47.904,
+                lon: -122.281,
+            },
+        )
+        .expect("intersect airport name terms");
+
+        assert_eq!(suggestions.len(), 1);
+        assert_eq!(suggestions[0].identifier, "KPAE");
+    }
+
+    #[test]
+    fn waypoint_search_ranks_identifier_matches_before_name_matches() {
+        let bucket = vec![
+            WaypointSearchRecord {
+                identifier: "KPAE".to_string(),
+                kind: "airport".to_string(),
+                display_name: "Seattle Paine Fld Intl\nEverett, WA".to_string(),
+                lat: 47.904,
+                lon: -122.281,
+                matched_term: "PAINE".to_string(),
+                match_kind: WaypointSearchMatchKind::AirportName,
+            },
+            WaypointSearchRecord {
+                identifier: "PAICE".to_string(),
+                kind: "fix".to_string(),
+                display_name: "PAICE".to_string(),
+                lat: 31.1485,
+                lon: -94.7165,
+                matched_term: "PAICE".to_string(),
+                match_kind: WaypointSearchMatchKind::Identifier,
+            },
+        ];
+        let store = test_nav_kv_store(&[(
+            "waypoint/search-prefix/PAI",
+            serde_json::to_value(bucket).expect("encode PAI search bucket"),
+        )]);
+
+        let suggestions = suggest_waypoint_identifier_candidates(
+            &store,
+            "PAI",
+            5,
+            LatLon {
+                lat: 47.904,
+                lon: -122.281,
+            },
+        )
+        .expect("rank mixed search matches");
+
+        assert_eq!(
+            suggestions
+                .iter()
+                .map(|suggestion| suggestion.identifier.as_str())
+                .collect::<Vec<_>>(),
+            vec!["PAICE", "KPAE"]
+        );
     }
 
     #[test]

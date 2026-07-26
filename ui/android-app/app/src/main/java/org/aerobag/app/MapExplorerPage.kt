@@ -1482,8 +1482,8 @@ internal fun MapExplorerPage(
     }
 
     LaunchedEffect(chartSearchText, currentViewport.centerWorldX, currentViewport.centerWorldY) {
-        val prefix = chartSearchText.trim().uppercase()
-        if (prefix.isBlank()) {
+        val query = chartSearchText.trim().uppercase()
+        if (query.isBlank()) {
             chartSearchLoading = false
             chartSearchError = null
             chartSearchSuggestions = emptyList()
@@ -1496,7 +1496,7 @@ internal fun MapExplorerPage(
             withContext(Dispatchers.IO) {
                 appCore.suggestWaypointIdentifiersNear(
                     anchor = LatLonPoint(centerLat, centerLon),
-                    prefix = prefix,
+                    query = query,
                     limit = 8,
                 )
             }

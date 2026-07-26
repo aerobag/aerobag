@@ -731,7 +731,7 @@ export interface UiSession {
   pollSessionSnapshotRefresh(): Promise<SessionSnapshotRefreshDecision>;
   deriveChartPageState(): Promise<DerivedChartPageState>;
   insertWaypointAtFlightPlanRow(rowUid: string, before: boolean, waypoint: NavRef): Promise<UiSessionSnapshot>;
-  suggestWaypointIdentifiersAtFlightPlanRow(rowUid: string, before: boolean, prefix: string, limit?: number): Promise<WaypointIdentifierSuggestion[]>;
+  suggestWaypointIdentifiersAtFlightPlanRow(rowUid: string, before: boolean, query: string, limit?: number): Promise<WaypointIdentifierSuggestion[]>;
   previewFlightPlanEntry(input: string): Promise<FlightPlanEntryPreview>;
   appendFlightPlanEntry(input: string): Promise<UiSessionSnapshot>;
   prepareAirwayPresentationAtFlightPlanRow(rowUid: string, airwayName: string): Promise<AirwayPresentationPlan>;
@@ -831,7 +831,7 @@ export interface AppCoreAdapter {
   ): Promise<UiSession>;
   resolveWaypointIdentifier(identifier: string): Promise<NavRef | null>;
   resolveNavRefPosition(navRef: NavRef): Promise<LatLon>;
-  suggestWaypointIdentifiersNear(anchor: LatLon, prefix: string, limit?: number): Promise<WaypointIdentifierSuggestion[]>;
+  suggestWaypointIdentifiersNear(anchor: LatLon, query: string, limit?: number): Promise<WaypointIdentifierSuggestion[]>;
   suggestAirwaysNearAnchor(anchor: NavRef, limit?: number): Promise<AirwaySuggestion[]>;
   listProcedures(airportId: string, kind: "sid" | "star" | "approach"): Promise<ProcedureSummary[]>;
   describeProcedureOptions(airportId: string, procedureId: string, kind: "sid" | "star" | "approach"): Promise<ProcedureOptions>;
@@ -1273,12 +1273,12 @@ export class WasmAppCoreAdapter implements AppCoreAdapter {
           waypoint,
         });
       },
-      suggestWaypointIdentifiersAtFlightPlanRow: async (rowUid, before, prefix, limit = 8) => {
+      suggestWaypointIdentifiersAtFlightPlanRow: async (rowUid, before, query, limit = 8) => {
         return queryFlightPlan<WaypointIdentifierSuggestion[]>({
           kind: "suggest_waypoint_identifiers_at_row",
           row_uid: rowUid,
           before,
-          prefix,
+          query,
           limit,
         });
       },
@@ -1754,11 +1754,11 @@ export class WasmAppCoreAdapter implements AppCoreAdapter {
     return runCoreHadOperation<LatLon>({ kind: "resolve_nav_ref_position", nav_ref: navRef });
   }
 
-  async suggestWaypointIdentifiersNear(anchor: LatLon, prefix: string, limit = 8): Promise<WaypointIdentifierSuggestion[]> {
+  async suggestWaypointIdentifiersNear(anchor: LatLon, query: string, limit = 8): Promise<WaypointIdentifierSuggestion[]> {
     return runCoreHadOperation<WaypointIdentifierSuggestion[]>({
       kind: "suggest_waypoint_identifiers_near",
       anchor,
-      prefix,
+      query,
       limit,
     });
   }

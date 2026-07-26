@@ -5,6 +5,7 @@
 package org.aerobag.app
 
 import java.io.File
+import org.aerobag.app.domain.AirportInfoUiView
 import org.aerobag.app.domain.WeatherDetailUiView
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
@@ -20,6 +21,21 @@ class FlightPlanOverlayStateTest {
             metarAgeLabel = null,
             tafText = null,
             tafAgeLabel = null,
+        )
+    private val airportInfo =
+        AirportInfoUiView(
+            airportId = "KBOI",
+            name = "Boise Air Terminal",
+            elevationLabel = "2,871 ft",
+            trafficPatternAltitudeLabel = "3,871 ft",
+            trafficPatternAltitudeSource = "derived",
+            localTimeLabel = "12:00",
+            utcTimeLabel = "18:00Z",
+            timeZoneLabel = "MDT",
+            sunrise = null,
+            sunset = null,
+            communications = emptyList(),
+            runways = emptyList(),
         )
 
     @Test
@@ -42,6 +58,37 @@ class FlightPlanOverlayStateTest {
 
         assertEquals("row-KMAN", state.present().selectedRowUid)
         assertNull(state.present().weatherDetail)
+    }
+
+    @Test
+    fun airportInfoReplacesRowTrayAtomicallyAndPublishesLoadingImmediately() {
+        var state: FlightPlanOverlayState = FlightPlanOverlayState.RowTray("row-KBOI")
+
+        state = state.transition(FlightPlanOverlayAction.ShowAirportInfo("KBOI"))
+
+        assertNull(state.present().selectedRowUid)
+        assertEquals("KBOI", state.present().airportInfo?.airportId)
+        assertNull(state.present().airportInfo?.detail)
+    }
+
+    @Test
+    fun airportInfoResolutionUpdatesOnlyTheMatchingOpenModal() {
+        val loading =
+            FlightPlanOverlayState.RowTray("row-KBOI")
+                .transition(FlightPlanOverlayAction.ShowAirportInfo("KBOI"))
+
+        val resolved =
+            loading.transition(
+                FlightPlanOverlayAction.ResolveAirportInfo("KBOI", airportInfo),
+            )
+        val stale =
+            resolved
+                .transition(FlightPlanOverlayAction.ShowAirportInfo("KMAN"))
+                .transition(FlightPlanOverlayAction.ResolveAirportInfo("KBOI", airportInfo))
+
+        assertEquals(airportInfo, resolved.present().airportInfo?.detail)
+        assertEquals("KMAN", stale.present().airportInfo?.airportId)
+        assertNull(stale.present().airportInfo?.detail)
     }
 
     @Test
@@ -70,25 +117,30 @@ class FlightPlanOverlayStateTest {
     }
 
     @Test
-    fun weatherModalIsOwnedByTheAppOverlayHost() {
+    fun flightPlanModalsAreOwnedByTheSingleAppOverlayHost() {
         val appSource = sourceFile("src/main/java/org/aerobag/app/MainActivity.kt").readText()
         val flightPlanSource = sourceFile("src/main/java/org/aerobag/app/FlightPlanPage.kt").readText()
 
         assertTrue(
-            "AerobagApp must render flight-plan weather on the app-wide modal plane.",
-            appSource.contains("FlightPlanWeatherOverlayHost(flightPlanOverlayController)"),
+            "AerobagApp must render flight-plan modals on the app-wide modal plane.",
+            appSource.contains("FlightPlanOverlayHost(flightPlanOverlayController)"),
         )
         assertTrue(
-            "The overlay host must directly observe controller state so weather invalidates its own composition.",
-            appSource.contains("controller.state.present().weatherDetail?.let"),
+            "The overlay host must directly observe controller state so every modal invalidates its own composition.",
+            appSource.contains("val presentation = controller.state.present()"),
         )
         assertTrue(
             "The app-wide flight-plan weather host must render the common weather modal.",
             appSource.contains("WeatherDetailModal("),
         )
+        assertTrue(
+            "The app-wide flight-plan host must render airport information.",
+            appSource.contains("AirportInfoModal("),
+        )
         assertFalse(
-            "FlightPlanPage must request weather rather than owning a modal that can miss invalidation.",
-            flightPlanSource.contains("WeatherDetailModal("),
+            "FlightPlanPage must request modals rather than rendering them below row selection.",
+            flightPlanSource.contains("WeatherDetailModal(") ||
+                flightPlanSource.contains("AirportInfoModal("),
         )
     }
 

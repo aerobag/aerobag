@@ -2164,8 +2164,11 @@ internal data class UiInvalidationRevisions(
 }
 
 @Composable
-private fun FlightPlanWeatherOverlayHost(controller: FlightPlanOverlayController) {
-    controller.state.present().weatherDetail?.let { detail ->
+private fun FlightPlanOverlayHost(controller: FlightPlanOverlayController) {
+    val presentation = controller.state.present()
+    val weatherDetail = presentation.weatherDetail
+    val airportInfo = presentation.airportInfo
+    if (weatherDetail != null || airportInfo != null) {
         Box(
             modifier = Modifier
                 .fillMaxSize()
@@ -2174,12 +2177,31 @@ private fun FlightPlanWeatherOverlayHost(controller: FlightPlanOverlayController
             Scrim {
                 controller.dispatch(FlightPlanOverlayAction.Dismiss)
             }
-            WeatherDetailModal(
-                detail = detail,
-                modifier = Modifier
-                    .align(Alignment.Center)
-                    .zIndex(OverlayPlaneModal),
-            )
+            when {
+                weatherDetail != null ->
+                    WeatherDetailModal(
+                        detail = weatherDetail,
+                        modifier = Modifier
+                            .align(Alignment.Center)
+                            .zIndex(OverlayPlaneModal),
+                    )
+                airportInfo?.detail != null ->
+                    AirportInfoModal(
+                        detail = airportInfo.detail,
+                        modifier = Modifier
+                            .align(Alignment.Center)
+                            .zIndex(OverlayPlaneModal),
+                    )
+                airportInfo != null ->
+                    MapSelectionDetailModal(
+                        title = airportInfo.airportId,
+                        text = airportInfo.error?.let { "Airport info unavailable: $it" }
+                            ?: "Loading airport info...",
+                        modifier = Modifier
+                            .align(Alignment.Center)
+                            .zIndex(OverlayPlaneModal),
+                    )
+            }
         }
     }
 }
@@ -3230,7 +3252,7 @@ internal fun AerobagApp(
                     onArmLayerNavKvFault = { debugLayerNavKvFaultsRemaining = 2 },
                 )
             }
-            FlightPlanWeatherOverlayHost(flightPlanOverlayController)
+            FlightPlanOverlayHost(flightPlanOverlayController)
             if (sessionSnapshot.disclaimerState.required) {
                 DisclaimerConsentModal(
                     state = sessionSnapshot.disclaimerState,

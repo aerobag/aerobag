@@ -170,8 +170,6 @@ import androidx.compose.ui.unit.IntSize
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
-import androidx.compose.ui.window.Popup
-import androidx.compose.ui.window.PopupProperties
 import androidx.compose.ui.zIndex
 import androidx.core.content.ContextCompat
 import kotlinx.coroutines.CompletableDeferred
@@ -258,7 +256,6 @@ import org.aerobag.app.domain.VisibleMapFeature
 import org.aerobag.app.domain.VisibleMetarFeature
 import org.aerobag.app.domain.VisiblePirepFeature
 import org.aerobag.app.domain.WeatherDetailUiView
-import org.aerobag.app.domain.AirportInfoUiView
 import org.aerobag.app.domain.applyPinchGesture
 import org.aerobag.app.domain.clampZoom
 import org.aerobag.app.domain.createInitialImageViewport
@@ -328,12 +325,6 @@ import kotlin.math.min
 import kotlin.math.pow
 import kotlin.math.sin
 
-private data class AirportInfoModalState(
-    val airportId: String,
-    val detail: AirportInfoUiView? = null,
-    val error: String? = null,
-)
-
 @Composable
 internal fun FlightPlanPage(
     appCore: NativeAppCoreAdapter,
@@ -363,7 +354,6 @@ internal fun FlightPlanPage(
     var airwayPicker by remember { mutableStateOf<AndroidAirwayPickerState?>(null) }
     var procedurePicker by remember { mutableStateOf<AndroidProcedurePickerState?>(null) }
     var airportInsert by remember { mutableStateOf<AndroidAirportInsertState?>(null) }
-    var airportInfoModal by remember { mutableStateOf<AirportInfoModalState?>(null) }
     val airportInfoScope = rememberCoroutineScope()
     var routeEntryText by remember { mutableStateOf("") }
     var routeEntryPreview by remember { mutableStateOf(emptyFlightPlanEntryPreview()) }
@@ -1239,27 +1229,33 @@ internal fun FlightPlanPage(
                                             return@MenuPanelRow
                                         }
                                         action.airportInfoAirportId?.let { airportId ->
-                                            airportInfoModal = AirportInfoModalState(airportId)
-                                            closePanels()
+                                            selectedWaypointTrayAnchor = null
+                                            airwayPicker = null
+                                            procedurePicker = null
+                                            airportInsert = null
+                                            onOverlayAction(
+                                                FlightPlanOverlayAction.ShowAirportInfo(airportId),
+                                            )
                                             airportInfoScope.launch {
                                                 runCatching {
                                                     withContext(Dispatchers.IO) {
                                                         uiSession.airportInfo(airportId)
                                                     }
                                                 }.onSuccess { detail ->
-                                                    if (airportInfoModal?.airportId == airportId) {
-                                                        airportInfoModal = AirportInfoModalState(
+                                                    onOverlayAction(
+                                                        FlightPlanOverlayAction.ResolveAirportInfo(
                                                             airportId = airportId,
                                                             detail = detail,
-                                                        )
-                                                    }
+                                                        ),
+                                                    )
                                                 }.onFailure { error ->
-                                                    if (airportInfoModal?.airportId == airportId) {
-                                                        airportInfoModal = AirportInfoModalState(
+                                                    onOverlayAction(
+                                                        FlightPlanOverlayAction.FailAirportInfo(
                                                             airportId = airportId,
-                                                            error = error.message ?: error.toString(),
-                                                        )
-                                                    }
+                                                            error = error.message
+                                                                ?: error.toString(),
+                                                        ),
+                                                    )
                                                 }
                                             }
                                             return@MenuPanelRow
@@ -1351,33 +1347,6 @@ internal fun FlightPlanPage(
                         }
                     }
                 }
-        }
-        airportInfoModal?.let { state ->
-            Popup(
-                onDismissRequest = { airportInfoModal = null },
-                properties = PopupProperties(focusable = true, clippingEnabled = false),
-            ) {
-                Box(modifier = Modifier.fillMaxSize()) {
-                    Scrim { airportInfoModal = null }
-                    if (state.detail != null) {
-                        AirportInfoModal(
-                            detail = state.detail,
-                            modifier = Modifier
-                                .align(Alignment.Center)
-                                .zIndex(OverlayPlaneModal),
-                        )
-                    } else {
-                        MapSelectionDetailModal(
-                            title = state.airportId,
-                            text = state.error?.let { "Airport info unavailable: $it" }
-                                ?: "Loading airport info...",
-                            modifier = Modifier
-                                .align(Alignment.Center)
-                                .zIndex(OverlayPlaneModal),
-                        )
-                    }
-                }
-            }
         }
     }
 }

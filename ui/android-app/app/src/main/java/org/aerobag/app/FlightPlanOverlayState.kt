@@ -8,6 +8,7 @@ import androidx.compose.runtime.Stable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
+import org.aerobag.app.domain.AirportInfoUiView
 import org.aerobag.app.domain.WeatherDetailUiView
 
 internal sealed interface FlightPlanOverlayState {
@@ -20,6 +21,12 @@ internal sealed interface FlightPlanOverlayState {
     data class Weather(
         val detail: WeatherDetailUiView,
     ) : FlightPlanOverlayState
+
+    data class AirportInfo(
+        val airportId: String,
+        val detail: AirportInfoUiView? = null,
+        val error: String? = null,
+    ) : FlightPlanOverlayState
 }
 
 internal sealed interface FlightPlanOverlayAction {
@@ -31,6 +38,20 @@ internal sealed interface FlightPlanOverlayAction {
         val detail: WeatherDetailUiView,
     ) : FlightPlanOverlayAction
 
+    data class ShowAirportInfo(
+        val airportId: String,
+    ) : FlightPlanOverlayAction
+
+    data class ResolveAirportInfo(
+        val airportId: String,
+        val detail: AirportInfoUiView,
+    ) : FlightPlanOverlayAction
+
+    data class FailAirportInfo(
+        val airportId: String,
+        val error: String,
+    ) : FlightPlanOverlayAction
+
     data object Dismiss : FlightPlanOverlayAction
 }
 
@@ -38,19 +59,35 @@ internal fun FlightPlanOverlayState.transition(action: FlightPlanOverlayAction):
     when (action) {
         is FlightPlanOverlayAction.SelectRow -> FlightPlanOverlayState.RowTray(action.rowUid)
         is FlightPlanOverlayAction.ShowWeather -> FlightPlanOverlayState.Weather(action.detail)
+        is FlightPlanOverlayAction.ShowAirportInfo ->
+            FlightPlanOverlayState.AirportInfo(action.airportId)
+        is FlightPlanOverlayAction.ResolveAirportInfo ->
+            if (this is FlightPlanOverlayState.AirportInfo && airportId == action.airportId) {
+                copy(detail = action.detail, error = null)
+            } else {
+                this
+            }
+        is FlightPlanOverlayAction.FailAirportInfo ->
+            if (this is FlightPlanOverlayState.AirportInfo && airportId == action.airportId) {
+                copy(detail = null, error = action.error)
+            } else {
+                this
+            }
         FlightPlanOverlayAction.Dismiss -> FlightPlanOverlayState.None
     }
 
 internal data class FlightPlanOverlayPresentation(
     val selectedRowUid: String?,
     val weatherDetail: WeatherDetailUiView?,
+    val airportInfo: FlightPlanOverlayState.AirportInfo?,
 )
 
 internal fun FlightPlanOverlayState.present(): FlightPlanOverlayPresentation =
     when (this) {
-        FlightPlanOverlayState.None -> FlightPlanOverlayPresentation(null, null)
-        is FlightPlanOverlayState.RowTray -> FlightPlanOverlayPresentation(rowUid, null)
-        is FlightPlanOverlayState.Weather -> FlightPlanOverlayPresentation(null, detail)
+        FlightPlanOverlayState.None -> FlightPlanOverlayPresentation(null, null, null)
+        is FlightPlanOverlayState.RowTray -> FlightPlanOverlayPresentation(rowUid, null, null)
+        is FlightPlanOverlayState.Weather -> FlightPlanOverlayPresentation(null, detail, null)
+        is FlightPlanOverlayState.AirportInfo -> FlightPlanOverlayPresentation(null, null, this)
     }
 
 @Stable

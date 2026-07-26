@@ -203,23 +203,19 @@ import kotlinx.coroutines.withContext
 import kotlinx.coroutines.yield
 import org.aerobag.app.domain.ChartAirport
 import org.aerobag.app.domain.ChartAsset
-import org.aerobag.app.domain.AppState
 import org.aerobag.app.domain.AirwayPresentationPlan
 import org.aerobag.app.domain.AirwaySuggestion
 import org.aerobag.app.domain.WaypointIdentifierSuggestion
 import org.aerobag.app.domain.CoreMapViewport
 import org.aerobag.app.domain.DerivedChartPageState
 import org.aerobag.app.domain.FlightDataBannerModel
-import org.aerobag.app.domain.FlightPlan
 import org.aerobag.app.domain.FlightPlanEntryPreview
-import org.aerobag.app.domain.FlightPlanUiMutation
 import org.aerobag.app.domain.FlightPlanDisplayRowKind
 import org.aerobag.app.domain.FlightPlanDisplayRowUiView
 import org.aerobag.app.domain.FlightPlanRowActionUiView
 import org.aerobag.app.domain.FlightPlanRouteSegment
 import org.aerobag.app.domain.FlightPlanRouteProjection
 import org.aerobag.app.domain.FlightPlanUiState
-import org.aerobag.app.domain.GuidanceState
 import org.aerobag.app.domain.CoreResourceRequest
 import org.aerobag.app.domain.AirspaceDisplayDecoration
 import org.aerobag.app.domain.AirspaceDisplayLabel
@@ -261,13 +257,10 @@ import org.aerobag.app.domain.ProcedureKind
 import org.aerobag.app.domain.ProcedureLoadOption
 import org.aerobag.app.domain.ProcedureOptions
 import org.aerobag.app.domain.ProcedureSummary
-import org.aerobag.app.domain.ResolvedLeg
-import org.aerobag.app.domain.ResolvedLegSource
 import org.aerobag.app.domain.RenderTile
 import org.aerobag.app.domain.RenderTileSource
 import org.aerobag.app.domain.RouteSegmentStatus
 import org.aerobag.app.domain.RouteComponentViewKind
-import org.aerobag.app.domain.RouteComponent
 import org.aerobag.app.domain.RasterMapUiState
 import org.aerobag.app.domain.ScreenPoint
 import org.aerobag.app.domain.SequencingMode
@@ -626,7 +619,6 @@ internal fun MapExplorerPage(
     onOpenPlateTarget: (airportId: String, target: String, chartId: String) -> Unit,
     onOpenPlan: () -> Unit,
     navElement: NavElementUiView?,
-    plan: org.aerobag.app.domain.FlightPlan,
     planUiState: FlightPlanUiState?,
 ) {
     val context = LocalContext.current
@@ -1827,7 +1819,7 @@ internal fun MapExplorerPage(
                 "AerobagGuidance",
                 "route projection revision=${sessionSnapshot.sessionRevision} " +
                     "mode=${guidance?.sequencingMode} " +
-                    "activeLeg=${guidance?.activeLegIndex} " +
+                    "activeRow=${guidance?.activeToRowUid} " +
                     "activeSummary=${guidance?.navElement?.activeLegSummary} " +
                     "cdi=${guidance?.navElement?.cdiIndicatorDots} " +
                     "directTarget=${directTo?.target} " +

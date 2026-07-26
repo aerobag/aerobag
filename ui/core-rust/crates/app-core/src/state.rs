@@ -31,13 +31,6 @@ pub struct AppUiState {
     pub last_content_report: Option<ContentReport>,
 }
 
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub struct UiSnapshotAppState {
-    pub active_plan: Option<FlightPlan>,
-    pub content_policy: ContentPolicy,
-    pub last_content_report: Option<ContentReport>,
-}
-
 impl Default for AppState {
     fn default() -> Self {
         Self {
@@ -112,14 +105,6 @@ pub fn project_app_ui_state(state: &AppState) -> AppUiState {
             controls: state.ownship.controls.clone(),
         },
         flight_data_banner: FlightDataBannerModel::default(),
-        content_policy: state.content_policy,
-        last_content_report: state.last_content_report.clone(),
-    }
-}
-
-pub fn project_ui_snapshot_app_state(state: &AppState) -> UiSnapshotAppState {
-    UiSnapshotAppState {
-        active_plan: state.active_plan.clone(),
         content_policy: state.content_policy,
         last_content_report: state.last_content_report.clone(),
     }
@@ -280,7 +265,13 @@ mod tests {
         assert_eq!(ui.ownship.render.mode, crate::OwnshipMode::None);
         assert_eq!(ui.content_policy, with_plan.content_policy);
         assert_eq!(
-            ui.active_plan.as_ref().unwrap().components.len(),
+            ui.active_plan
+                .as_ref()
+                .unwrap()
+                .display_rows
+                .iter()
+                .filter(|row| row.depth == 0)
+                .count(),
             with_plan
                 .active_plan
                 .as_ref()

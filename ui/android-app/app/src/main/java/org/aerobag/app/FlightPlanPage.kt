@@ -193,23 +193,19 @@ import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
 import org.aerobag.app.domain.ChartAirport
 import org.aerobag.app.domain.ChartAsset
-import org.aerobag.app.domain.AppState
 import org.aerobag.app.domain.AirwayPresentationPlan
 import org.aerobag.app.domain.AirwaySuggestion
 import org.aerobag.app.domain.WaypointIdentifierSuggestion
 import org.aerobag.app.domain.CoreMapViewport
 import org.aerobag.app.domain.DerivedChartPageState
-import org.aerobag.app.domain.FlightPlan
 import org.aerobag.app.domain.FlightPlanControlId
 import org.aerobag.app.domain.FlightPlanEntryPreview
-import org.aerobag.app.domain.FlightPlanUiMutation
 import org.aerobag.app.domain.FlightPlanDisplayRowKind
 import org.aerobag.app.domain.FlightPlanDisplayRowUiView
 import org.aerobag.app.domain.FlightPlanRowActionUiView
 import org.aerobag.app.domain.FlightPlanRowNavigationAction
 import org.aerobag.app.domain.FlightPlanRouteSegment
 import org.aerobag.app.domain.FlightPlanUiState
-import org.aerobag.app.domain.GuidanceState
 import org.aerobag.app.domain.InstalledPackages
 import org.aerobag.app.domain.AirspaceDisplayDecoration
 import org.aerobag.app.domain.AirspaceDisplayLabel
@@ -244,12 +240,9 @@ import org.aerobag.app.domain.ProcedureKind
 import org.aerobag.app.domain.ProcedureLoadOption
 import org.aerobag.app.domain.ProcedureOptions
 import org.aerobag.app.domain.ProcedureSummary
-import org.aerobag.app.domain.ResolvedLeg
-import org.aerobag.app.domain.ResolvedLegSource
 import org.aerobag.app.domain.RenderTile
 import org.aerobag.app.domain.RouteSegmentStatus
 import org.aerobag.app.domain.RouteComponentViewKind
-import org.aerobag.app.domain.RouteComponent
 import org.aerobag.app.domain.ScreenPoint
 import org.aerobag.app.domain.SectionalPackages
 import org.aerobag.app.domain.SequencingMode
@@ -346,7 +339,6 @@ internal fun FlightPlanPage(
     navElement: NavElementUiView?,
     planUiState: FlightPlanUiState?,
     planListState: LazyListState,
-    plan: FlightPlan,
     uiTheme: UiTheme,
     onSelectPage: (AppPage) -> Unit,
     onOpenRecentChartOrPlate: () -> Unit,
@@ -358,9 +350,8 @@ internal fun FlightPlanPage(
     val density = LocalDensity.current
     val focusManager = LocalFocusManager.current
     val keyboardController = LocalSoftwareKeyboardController.current
-    var selectedWaypointIndex by remember { mutableStateOf<Int?>(null) }
+    var selectedWaypointUid by remember { mutableStateOf<String?>(null) }
     var selectedWaypointTrayAnchor by remember { mutableStateOf<Dp?>(null) }
-    var pendingSelectedRowKey by remember { mutableStateOf<String?>(null) }
     var reorderOpen by remember { mutableStateOf(false) }
     var airwayPicker by remember { mutableStateOf<AndroidAirwayPickerState?>(null) }
     var procedurePicker by remember { mutableStateOf<AndroidProcedurePickerState?>(null) }
@@ -442,7 +433,7 @@ internal fun FlightPlanPage(
         }
     var structuredSurfaceBounds by remember { mutableStateOf<Rect?>(null) }
     val structuredRowBounds = remember { mutableStateMapOf<String, Rect>() }
-    val selectedRow = selectedWaypointIndex?.let(rows::getOrNull)
+    val selectedRow = selectedWaypointUid?.let { uid -> rows.find { row -> row.id == uid } }
     val selectedRowBounds = selectedRow?.let { structuredRowBounds[it.id] }
     val waypointTrayStart = planWaypointTrayStart
     val selectedRowActionMatrix = selectedRow?.actionMatrix.orEmpty()
@@ -472,7 +463,7 @@ internal fun FlightPlanPage(
                             when {
                                 picker.loading || picker.error != null -> 2
                                 picker.selectedAirwayName == null -> 1 + picker.suggestions.size
-                                picker.selectedEntryIndex == null -> 1 + (picker.presentation?.points?.size ?: 0)
+                                picker.selectedEntryUid == null -> 1 + (picker.presentation?.points?.size ?: 0)
                                 else -> 1 + (picker.presentation?.points?.size ?: 0)
                             }
                         }
@@ -502,7 +493,7 @@ internal fun FlightPlanPage(
                             when {
                                 picker.loading || picker.error != null -> 2
                                 picker.selectedAirwayName == null -> 1 + picker.suggestions.size
-                                picker.selectedEntryIndex == null -> 1 + (picker.presentation?.points?.size ?: 0)
+                                picker.selectedEntryUid == null -> 1 + (picker.presentation?.points?.size ?: 0)
                                 else -> 1 + (picker.presentation?.points?.size ?: 0)
                             }
                         }
@@ -616,9 +607,8 @@ internal fun FlightPlanPage(
         }
 
     fun closePanels() {
-        selectedWaypointIndex = null
+        selectedWaypointUid = null
         selectedWaypointTrayAnchor = null
-        pendingSelectedRowKey = null
         airwayPicker = null
         procedurePicker = null
         airportInsert = null
@@ -666,7 +656,11 @@ internal fun FlightPlanPage(
         routeEntryError = next.error
     }
 
-    LaunchedEffect(plan, routeEntryText) {
+    LaunchedEffect(
+        projectedPlanUiState.planId,
+        projectedPlanUiState.planVersion,
+        routeEntryText,
+    ) {
         val input = routeEntryText.trim()
         val request = routeEntryPreviewController.begin(input, currentRouteEntryPreviewState())
         applyRouteEntryPreviewState(request.state)
@@ -713,18 +707,10 @@ internal fun FlightPlanPage(
         }
     }
 
-    LaunchedEffect(rows, pendingSelectedRowKey) {
-        val selectionKey = pendingSelectedRowKey ?: return@LaunchedEffect
-        val nextIndex =
-            rows.indexOfFirst { row ->
-                row.selectionKey == selectionKey
-            }
-        if (nextIndex >= 0) {
-            selectedWaypointIndex = nextIndex
-        } else {
-            selectedWaypointIndex = null
+    LaunchedEffect(rows, selectedWaypointUid) {
+        if (selectedWaypointUid != null && selectedRow == null) {
+            selectedWaypointUid = null
         }
-        pendingSelectedRowKey = null
     }
 
     LaunchedEffect(routeEntryFocused, keyboardAvoidancePadding, blocks.size) {
@@ -789,7 +775,7 @@ internal fun FlightPlanPage(
                                 is FlightPlanDisplayBlock.Single -> {
                                     FlightPlanDataRow(
                                         row = block.row,
-                                        selected = selectedWaypointIndex == block.index,
+                                        selected = selectedWaypointUid == block.row.id,
                                         structuredRowBounds = structuredRowBounds,
                                         onWaypointClick = {
                                             trayOpenedAtMs = SystemClock.elapsedRealtime()
@@ -799,8 +785,7 @@ internal fun FlightPlanPage(
                                                         with(density) { (top - surface.top).toDp() } + (ThumbSize + ThumbGap * 1.25f)
                                                     }
                                                 }
-                                            selectedWaypointIndex = block.index
-                                            pendingSelectedRowKey = block.row.selectionKey
+                                            selectedWaypointUid = block.row.id
                                             airwayPicker = null
                                             procedurePicker = null
                                             airportInsert = null
@@ -811,7 +796,7 @@ internal fun FlightPlanPage(
                                 is FlightPlanDisplayBlock.Group -> {
                                     FlightPlanGroupBlock(
                                         header = block.header,
-                                        headerSelected = selectedWaypointIndex == block.headerIndex,
+                                        headerSelected = selectedWaypointUid == block.header.id,
                                         structuredRowBounds = structuredRowBounds,
                                         onHeaderClick = {
                                             trayOpenedAtMs = SystemClock.elapsedRealtime()
@@ -821,26 +806,22 @@ internal fun FlightPlanPage(
                                                         with(density) { (top - surface.top).toDp() } + (ThumbSize + ThumbGap * 1.25f)
                                                     }
                                                 }
-                                            selectedWaypointIndex = block.headerIndex
-                                            pendingSelectedRowKey = block.header.selectionKey
+                                            selectedWaypointUid = block.header.id
                                             airwayPicker = null
                                             procedurePicker = null
                                             airportInsert = null
                                         },
                                         children = block.children,
-                                        selectedWaypointIndex = selectedWaypointIndex,
-                                        onChildClick = { childIndex ->
+                                        selectedWaypointUid = selectedWaypointUid,
+                                        onChildClick = { childRow ->
                                             trayOpenedAtMs = SystemClock.elapsedRealtime()
                                             selectedWaypointTrayAnchor =
                                                 structuredSurfaceBounds?.let { surface ->
-                                                    block.children.firstOrNull { it.first == childIndex }?.second?.id?.let { rowId ->
-                                                        structuredRowBounds[rowId]?.top?.let { top ->
+                                                    structuredRowBounds[childRow.id]?.top?.let { top ->
                                                             with(density) { (top - surface.top).toDp() } + (ThumbSize + ThumbGap * 1.25f)
-                                                        }
                                                     }
                                                 }
-                                            selectedWaypointIndex = childIndex
-                                            pendingSelectedRowKey = block.children.firstOrNull { it.first == childIndex }?.second?.selectionKey
+                                            selectedWaypointUid = childRow.id
                                             airwayPicker = null
                                             procedurePicker = null
                                             airportInsert = null
@@ -954,7 +935,7 @@ internal fun FlightPlanPage(
             )
         }
 
-        if (selectedWaypointIndex != null && selectedRow != null) {
+        if (selectedWaypointUid != null && selectedRow != null) {
             Scrim {
                 if (SystemClock.elapsedRealtime() - trayOpenedAtMs >= 150L) {
                     closePanels()
@@ -1137,10 +1118,9 @@ internal fun FlightPlanPage(
                                     onSelect = {
                                         airwayPicker = picker.copy(loading = true, error = null)
                                         runCatching {
-                                            appCore.prepareAirwayPresentationForAnchors(
+                                            uiSession.prepareAirwayPresentationAtFlightPlanRow(
+                                                picker.rowUid,
                                                 suggestion.airwayName,
-                                                picker.originAnchor,
-                                                picker.destinationAnchor,
                                             )
                                         }.onSuccess { presentation ->
                                             airwayPicker =
@@ -1148,7 +1128,7 @@ internal fun FlightPlanPage(
                                                     loading = false,
                                                     selectedAirwayName = suggestion.airwayName,
                                                     presentation = presentation,
-                                                    selectedEntryIndex = null,
+                                                    selectedEntryUid = null,
                                                 )
                                         }.onFailure { error ->
                                             airwayPicker = picker.copy(loading = false, error = error.message ?: error.toString())
@@ -1157,7 +1137,7 @@ internal fun FlightPlanPage(
                                 )
                             }
                         }
-                    } else if (picker.selectedEntryIndex == null) {
+                    } else if (picker.selectedEntryUid == null) {
                         val presentation = requireNotNull(picker.presentation)
                         LazyColumn(
                             modifier = Modifier
@@ -1165,14 +1145,14 @@ internal fun FlightPlanPage(
                                 .weight(1f, fill = false),
                             verticalArrangement = Arrangement.spacedBy(waypointActionGap),
                         ) {
-                            items(presentation.points.size) { index ->
+                            items(presentation.points.size, key = { presentation.points[it].uid }) { index ->
                                 val point = presentation.points[index]
                                 MenuPanelRow(
                                     label = navRefLabel(point.navRef),
-                                    active = index == presentation.suggestedEntryIndex,
+                                    active = point.uid == presentation.suggestedEntryUid,
                                     enabled = true,
                                     onSelect = {
-                                        airwayPicker = picker.copy(selectedEntryIndex = index)
+                                        airwayPicker = picker.copy(selectedEntryUid = point.uid)
                                     },
                                 )
                             }
@@ -1186,12 +1166,12 @@ internal fun FlightPlanPage(
                                 .weight(1f, fill = false),
                             verticalArrangement = Arrangement.spacedBy(waypointActionGap),
                         ) {
-                            items(presentation.points.size) { exitIndex ->
+                            items(presentation.points.size, key = { presentation.points[it].uid }) { exitIndex ->
                                 val point = presentation.points[exitIndex]
-                                val isEntry = exitIndex == picker.selectedEntryIndex
+                                val isEntry = point.uid == picker.selectedEntryUid
                                 MenuPanelRow(
                                     label = navRefLabel(point.navRef),
-                                    active = exitIndex == presentation.suggestedExitIndex,
+                                    active = point.uid == presentation.suggestedExitUid,
                                     enabled = !isEntry,
                                     disabledReason = if (isEntry) "That fix is the airway entry; choose an exit." else null,
                                     onSelect = {
@@ -1201,8 +1181,8 @@ internal fun FlightPlanPage(
                                             uiSession.insertAirwayAtFlightPlanRow(
                                                 picker.rowUid,
                                                 presentation,
-                                                picker.selectedEntryIndex,
-                                                exitIndex,
+                                                requireNotNull(picker.selectedEntryUid),
+                                                point.uid,
                                             )
                                         }
                                         if (snapshot != null) {
@@ -1214,7 +1194,7 @@ internal fun FlightPlanPage(
                                 )
                             }
                         }
-                        MenuPanelRow(label = "Back", active = false, enabled = true, onSelect = { airwayPicker = picker.copy(selectedEntryIndex = null) })
+                        MenuPanelRow(label = "Back", active = false, enabled = true, onSelect = { airwayPicker = picker.copy(selectedEntryUid = null) })
                     }
                 }
             } else {
@@ -1294,7 +1274,7 @@ internal fun FlightPlanPage(
                                                         suggestions = emptyList(),
                                                         selectedAirwayName = null,
                                                         presentation = null,
-                                                        selectedEntryIndex = null,
+                                                        selectedEntryUid = null,
                                                     )
                                                 runCatching {
                                                     appCore.suggestAirwaysNear(selectedRow.originAnchor!!)

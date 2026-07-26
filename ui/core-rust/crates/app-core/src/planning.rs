@@ -916,8 +916,8 @@ pub struct DirectToState {
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct FlightPlanUiState {
-    pub components: Vec<RouteComponentUiView>,
-    pub resolved_legs: Vec<ResolvedLegUiView>,
+    pub plan_id: String,
+    pub plan_version: u64,
     #[serde(default)]
     pub data_columns: Vec<FlightDataColumn>,
     pub display_rows: Vec<FlightPlanDisplayRowUiView>,
@@ -1025,9 +1025,11 @@ pub struct FlightPlanDisplayRowUiView {
     pub row_kind: FlightPlanDisplayRowKind,
     pub component_kind: Option<RouteComponentViewKind>,
     pub component_uid: Option<String>,
+    #[serde(skip)]
     pub component_index: Option<usize>,
     pub procedure_id: Option<String>,
     pub procedure_kind: Option<ProcedureKind>,
+    #[serde(skip)]
     pub leg_index: Option<usize>,
     #[serde(default)]
     pub data_cells: Vec<FlightDataCell>,
@@ -1051,9 +1053,6 @@ pub struct FlightPlanDisplayRowUiView {
     pub can_reorder_component: bool,
     pub can_reorder_up: bool,
     pub can_reorder_down: bool,
-    pub replace_procedure_component_index: Option<usize>,
-    pub start_component_index: Option<usize>,
-    pub end_component_index: Option<usize>,
     pub origin_anchor: Option<NavRef>,
     pub destination_anchor: Option<NavRef>,
     pub preceding_waypoint: Option<NavRef>,
@@ -1070,8 +1069,8 @@ pub enum RouteComponentViewKind {
     Procedure,
 }
 
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub struct RouteComponentUiView {
+#[derive(Debug, Clone, PartialEq)]
+pub(crate) struct RouteComponentUiView {
     pub uid: String,
     pub component_index: usize,
     pub kind: RouteComponentViewKind,
@@ -1094,23 +1093,13 @@ pub struct RouteComponentUiView {
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub struct ResolvedLegUiView {
-    pub leg_index: usize,
-    pub leg_id: String,
-    pub component_index: Option<usize>,
-    pub from: NavRef,
-    pub to: NavRef,
-    pub active: bool,
-    pub suspend_boundary_after: bool,
-    pub display_path: Option<LegDisplayPath>,
-}
-
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct GuidanceUiView {
     pub sequencing_mode: SequencingMode,
+    #[serde(skip)]
     pub active_leg_index: Option<usize>,
     pub active_from_row_uid: Option<String>,
     pub active_to_row_uid: Option<String>,
+    #[serde(skip)]
     pub active_component_index: Option<usize>,
     pub active_leg: Option<PlanLeg>,
     #[serde(default)]
@@ -2110,7 +2099,7 @@ fn project_component_ui_views(
 
 pub(crate) fn project_identity_rows(plan: &FlightPlan) -> Vec<FlightPlanDisplayRowUiView> {
     let components = project_component_ui_views(plan, None);
-    project_display_rows(plan, &components, &[])
+    project_display_rows(plan, &components)
 }
 
 pub fn project_ui_state(plan: &FlightPlan) -> FlightPlanUiState {
@@ -2121,32 +2110,7 @@ pub fn project_ui_state(plan: &FlightPlan) -> FlightPlanUiState {
         .and_then(|guidance| active_component_index_for_guidance(&plan, guidance));
     let components = project_component_ui_views(&plan, active_component_index);
 
-    let resolved_legs: Vec<ResolvedLegUiView> = plan
-        .resolved_legs
-        .iter()
-        .enumerate()
-        .map(|(leg_index, leg)| ResolvedLegUiView {
-            leg_index,
-            leg_id: leg.id.clone(),
-            component_index: match leg.source {
-                ResolvedLegSource::RouteComponent { component_index } => Some(component_index),
-                ResolvedLegSource::SyntheticBridge { .. } => None,
-            },
-            from: leg.from.clone(),
-            to: leg.to.clone(),
-            active: plan.guidance.as_ref().is_some_and(|guidance| {
-                guidance.sequencing_mode != SequencingMode::DirectTo
-                    && guidance.active_leg_index == leg_index
-            }),
-            suspend_boundary_after: should_suspend_after_active_leg(&plan, leg_index),
-            display_path: leg
-                .procedure_provenance
-                .as_ref()
-                .and_then(|provenance| provenance.display_path.clone()),
-        })
-        .collect();
-
-    let mut display_rows = project_display_rows(&plan, &components, &resolved_legs);
+    let mut display_rows = project_display_rows(&plan, &components);
     populate_default_flight_data_cells(&mut display_rows);
     let (active_from_row_uid, active_to_row_uid) = active_guidance_row_uids(&plan, &display_rows);
 
@@ -2175,9 +2139,9 @@ pub fn project_ui_state(plan: &FlightPlan) -> FlightPlanUiState {
     });
 
     FlightPlanUiState {
+        plan_id: plan.id.clone(),
+        plan_version: plan.version,
         display_rows,
-        components,
-        resolved_legs,
         data_columns: crate::flight_data::flight_plan_columns(),
         guidance,
         controls: project_flight_plan_controls(&plan),
@@ -2266,7 +2230,6 @@ pub fn guidance_detail_ref_by_index(
 fn project_display_rows(
     plan: &FlightPlan,
     components: &[RouteComponentUiView],
-    _resolved_legs: &[ResolvedLegUiView],
 ) -> Vec<FlightPlanDisplayRowUiView> {
     let direct_to = plan.guidance.as_ref().and_then(|guidance| {
         (guidance.sequencing_mode == SequencingMode::DirectTo)
@@ -2284,11 +2247,6 @@ fn project_display_rows(
             let projected_nav_ref = projected_component_waypoint_nav_ref(component);
             let origin_anchor = projected_nav_ref.clone();
             let destination_anchor = component.following_waypoint.clone();
-            let end_component_index = if destination_anchor.is_some() {
-                Some(component.component_index + 1)
-            } else {
-                None
-            };
             let leg_index = top_level_waypoint_row_leg_index(plan, component.component_index);
             let uid = top_level_waypoint_row_uid(component, leg_index);
             let actions = assign_action_uids(
@@ -2337,9 +2295,6 @@ fn project_display_rows(
                 can_reorder_component: component.can_reorder,
                 can_reorder_up: component.can_reorder_up,
                 can_reorder_down: component.can_reorder_down,
-                replace_procedure_component_index: component.replace_procedure_component_index,
-                start_component_index: Some(component.component_index),
-                end_component_index,
                 origin_anchor,
                 destination_anchor,
                 preceding_waypoint: component.preceding_waypoint.clone(),
@@ -2377,9 +2332,6 @@ fn project_display_rows(
                 can_reorder_component: component.can_reorder,
                 can_reorder_up: component.can_reorder_up,
                 can_reorder_down: component.can_reorder_down,
-                replace_procedure_component_index: None,
-                start_component_index: None,
-                end_component_index: None,
                 origin_anchor: origin_anchor.clone(),
                 destination_anchor: destination_anchor.clone(),
                 preceding_waypoint: component.preceding_waypoint.clone(),
@@ -2462,9 +2414,6 @@ fn project_display_rows(
                             can_reorder_component: false,
                             can_reorder_up: false,
                             can_reorder_down: false,
-                            replace_procedure_component_index: None,
-                            start_component_index: None,
-                            end_component_index: None,
                             origin_anchor: None,
                             destination_anchor: None,
                             preceding_waypoint: component.preceding_waypoint.clone(),
@@ -2519,9 +2468,6 @@ fn project_display_rows(
                             can_reorder_component: false,
                             can_reorder_up: false,
                             can_reorder_down: false,
-                            replace_procedure_component_index: None,
-                            start_component_index: None,
-                            end_component_index: None,
                             origin_anchor: None,
                             destination_anchor: None,
                             preceding_waypoint: component.preceding_waypoint.clone(),
@@ -2569,9 +2515,6 @@ fn project_display_rows(
             can_reorder_component: false,
             can_reorder_up: false,
             can_reorder_down: false,
-            replace_procedure_component_index: None,
-            start_component_index: None,
-            end_component_index: None,
             origin_anchor: Some(direct_to.start.clone()),
             destination_anchor: Some(direct_to.target.clone()),
             preceding_waypoint: None,
@@ -3575,7 +3518,7 @@ fn guidance_anchor_display_rows(plan: &FlightPlan) -> Vec<FlightPlanDisplayRowUi
             }
         })
         .collect::<Vec<_>>();
-    project_display_rows(&plan, &components, &[])
+    project_display_rows(&plan, &components)
 }
 
 pub fn delete_component(plan: &FlightPlan, component_index: usize) -> AppResult<FlightPlan> {
@@ -5275,6 +5218,15 @@ fn resume_leg_index_after_leg(plan: &FlightPlan, leg_index: usize) -> Option<usi
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn projected_components_for_test(plan: &FlightPlan) -> Vec<RouteComponentUiView> {
+        let plan = plan.clone().normalized();
+        let active_component_index = plan
+            .guidance
+            .as_ref()
+            .and_then(|guidance| active_component_index_for_guidance(&plan, guidance));
+        project_component_ui_views(&plan, active_component_index)
+    }
 
     fn activate_direct_to_test_leg(
         plan: &FlightPlan,
@@ -7370,13 +7322,13 @@ mod tests {
         )
         .unwrap();
 
-        let ui = project_ui_state(&inserted);
+        let components = projected_components_for_test(&inserted);
 
-        assert_eq!(ui.components.len(), 4);
-        assert_eq!(ui.components[1].kind, RouteComponentViewKind::Airway);
-        assert_eq!(ui.components[1].summary, "V2");
+        assert_eq!(components.len(), 4);
+        assert_eq!(components[1].kind, RouteComponentViewKind::Airway);
+        assert_eq!(components[1].summary, "V2");
         assert_eq!(
-            ui.components[1].items,
+            components[1].items,
             vec![
                 ConcretizedNavItem::Waypoint {
                     nav_ref: NavRef::Navaid("SEA".to_string())
@@ -7390,10 +7342,13 @@ mod tests {
             ]
         );
         assert_eq!(
-            ui.resolved_legs[0].from,
+            inserted.resolved_legs[0].from,
             NavRef::Airport("KRNT".to_string())
         );
-        assert_eq!(ui.resolved_legs[0].to, NavRef::Navaid("SEA".to_string()));
+        assert_eq!(
+            inserted.resolved_legs[0].to,
+            NavRef::Navaid("SEA".to_string())
+        );
     }
 
     #[test]
@@ -7415,9 +7370,10 @@ mod tests {
         .normalized();
 
         let ui = project_ui_state(&plan);
+        let components = projected_components_for_test(&plan);
 
-        assert_eq!(ui.components.len(), 1);
-        assert_eq!(ui.components[0].summary, "ILS or LOC 34R");
+        assert_eq!(components.len(), 1);
+        assert_eq!(components[0].summary, "ILS or LOC 34R");
         assert_eq!(ui.display_rows[0].label, "ILS or LOC 34R");
     }
 
@@ -7432,42 +7388,42 @@ mod tests {
         )
         .unwrap();
 
-        let ui = project_ui_state(&inserted);
+        let components = projected_components_for_test(&inserted);
 
-        assert!(!ui.components[0].can_add_airway_after);
-        assert_eq!(ui.components[0].following_waypoint, None);
+        assert!(!components[0].can_add_airway_after);
+        assert_eq!(components[0].following_waypoint, None);
 
-        assert!(ui.components[2].can_add_airway_after);
+        assert!(components[2].can_add_airway_after);
 
-        assert!(ui.components[1].can_remove);
+        assert!(components[1].can_remove);
         assert_eq!(
-            ui.components[1].preceding_waypoint,
+            components[1].preceding_waypoint,
             Some(NavRef::Airport("KRNT".to_string()))
         );
         assert_eq!(
-            ui.components[1].following_waypoint,
+            components[1].following_waypoint,
             Some(NavRef::Airport("KUAO".to_string()))
         );
     }
 
     #[test]
     fn project_ui_state_enables_remove_and_reorder_for_plain_waypoint_routes() {
-        let ui = project_ui_state(&sample_waypoint_only_plan());
+        let components = projected_components_for_test(&sample_waypoint_only_plan());
 
-        assert!(ui.components.iter().all(|component| component.can_remove));
-        assert!(ui.components.iter().all(|component| component.can_reorder));
-        assert!(!ui.components[0].can_reorder_up);
-        assert!(ui.components[0].can_reorder_down);
-        assert!(ui.components[1].can_reorder_up);
-        assert!(ui.components[1].can_reorder_down);
-        assert!(ui.components[2].can_reorder_up);
-        assert!(!ui.components[2].can_reorder_down);
+        assert!(components.iter().all(|component| component.can_remove));
+        assert!(components.iter().all(|component| component.can_reorder));
+        assert!(!components[0].can_reorder_up);
+        assert!(components[0].can_reorder_down);
+        assert!(components[1].can_reorder_up);
+        assert!(components[1].can_reorder_down);
+        assert!(components[2].can_reorder_up);
+        assert!(!components[2].can_reorder_down);
 
-        let grouped = project_ui_state(&sample_airway_component_plan());
-        assert!(grouped.components[0].can_remove);
-        assert!(grouped.components[0].can_reorder);
-        assert!(!grouped.components[0].can_reorder_up);
-        assert!(grouped.components[0].can_reorder_down);
+        let grouped = projected_components_for_test(&sample_airway_component_plan());
+        assert!(grouped[0].can_remove);
+        assert!(grouped[0].can_reorder);
+        assert!(!grouped[0].can_reorder_up);
+        assert!(grouped[0].can_reorder_down);
     }
 
     #[test]
@@ -7572,15 +7528,13 @@ mod tests {
     }
 
     #[test]
-    fn final_waypoint_add_airway_row_projects_open_ended_insert_span() {
+    fn final_waypoint_add_airway_row_projects_open_ended_anchors() {
         let ui = project_ui_state(&sample_waypoint_only_plan());
         let middle_row = ui
             .display_rows
             .iter()
             .find(|row| row.component_index == Some(1) && row.depth == 0)
             .expect("middle waypoint row");
-        assert_eq!(middle_row.start_component_index, Some(1));
-        assert_eq!(middle_row.end_component_index, Some(2));
         assert_eq!(
             middle_row.origin_anchor,
             Some(NavRef::Airport("KUAO".to_string()))
@@ -7598,8 +7552,6 @@ mod tests {
 
         assert!(flight_plan_row_actions(row)
             .any(|action| action.id == FlightPlanRowActionId::AddAirway && action.enabled));
-        assert_eq!(row.start_component_index, Some(2));
-        assert_eq!(row.end_component_index, None);
         assert_eq!(row.origin_anchor, Some(NavRef::Airport("KHIO".to_string())));
         assert_eq!(row.destination_anchor, None);
     }
@@ -7612,48 +7564,19 @@ mod tests {
             .iter()
             .find(|row| row.component_index == Some(2) && row.depth == 0)
             .expect("final waypoint row");
-        let selection = crate::AirwayAutoSelection {
-            airway_name: "V2".to_string(),
-            branch_key: "V2-A".to_string(),
-            entry: crate::AirwayEntryCandidate {
-                airway_name: "V2".to_string(),
-                branch_key: "V2-A".to_string(),
-                branch_point_index: 0,
-                sequence: 0,
-                nav_ref: NavRef::Navaid("SEA".to_string()),
-                distance_from_anchor_nm: 0.0,
-                previous_nav_ref: None,
-                next_nav_ref: Some(NavRef::Fix("SUMMA".to_string())),
-            },
-            exit: crate::AirwayExitCandidate {
-                airway_name: "V2".to_string(),
-                branch_key: "V2-A".to_string(),
-                branch_point_index: 2,
-                sequence: 2,
-                nav_ref: NavRef::Fix("VAMPS".to_string()),
-                leg_offset_from_entry: 2,
-                distance_from_target_nm: None,
-                is_entry: false,
-            },
-            origin_distance_nm: 0.0,
-            destination_distance_nm: 0.0,
-            total_anchor_distance_nm: 0.0,
-        };
         let (airway, airway_legs) = sample_inserted_airway();
 
-        let mutation = crate::insert_airway_materialized_ui(
+        let mutation = crate::insert_airway_materialized(
             &sample_waypoint_only_plan(),
-            row.start_component_index.unwrap(),
-            row.end_component_index,
-            selection,
+            row.component_index.unwrap(),
+            None,
             airway,
             airway_legs,
         )
         .unwrap();
 
-        assert_eq!(mutation.mutation.component_index, 3);
         assert!(matches!(
-            mutation.mutation.plan.route_components.last(),
+            mutation.route_components.last(),
             Some(RouteComponent::Airway { .. })
         ));
     }
@@ -7695,9 +7618,9 @@ mod tests {
             ..sample_single_component_plan()
         };
 
-        let ui = project_ui_state(&plan);
+        let components = projected_components_for_test(&plan);
         assert_eq!(
-            ui.components[1].items,
+            components[1].items,
             vec![
                 ConcretizedNavItem::Waypoint {
                     nav_ref: NavRef::Fix("BTG".to_string())
@@ -7707,8 +7630,11 @@ mod tests {
                 },
             ]
         );
-        assert_eq!(ui.resolved_legs[0].from, NavRef::Navaid("SEA".to_string()));
-        assert_eq!(ui.resolved_legs[0].to, NavRef::Fix("BTG".to_string()));
+        assert_eq!(
+            plan.resolved_legs[0].from,
+            NavRef::Navaid("SEA".to_string())
+        );
+        assert_eq!(plan.resolved_legs[0].to, NavRef::Fix("BTG".to_string()));
     }
 
     #[test]
@@ -7748,9 +7674,9 @@ mod tests {
             ..sample_single_component_plan()
         };
 
-        let ui = project_ui_state(&plan);
+        let components = projected_components_for_test(&plan);
         assert_eq!(
-            ui.components[0].items,
+            components[0].items,
             vec![
                 ConcretizedNavItem::Waypoint {
                     nav_ref: NavRef::Navaid("SEA".to_string())
@@ -7760,7 +7686,7 @@ mod tests {
                 },
             ]
         );
-        let last_leg = ui.resolved_legs.last().unwrap();
+        let last_leg = plan.resolved_legs.last().unwrap();
         assert_eq!(last_leg.from, NavRef::Fix("BTG".to_string()));
         assert_eq!(last_leg.to, NavRef::Fix("UBG".to_string()));
     }
@@ -7814,15 +7740,15 @@ mod tests {
             ..sample_single_component_plan()
         };
 
-        let ui = project_ui_state(&plan);
+        let components = projected_components_for_test(&plan);
         assert_eq!(
-            ui.components[0].items,
+            components[0].items,
             vec![ConcretizedNavItem::Waypoint {
                 nav_ref: NavRef::Fix("PAE".to_string())
             }]
         );
         assert_eq!(
-            ui.components[1].items,
+            components[1].items,
             vec![
                 ConcretizedNavItem::Waypoint {
                     nav_ref: NavRef::Fix("UBG".to_string())
@@ -7835,8 +7761,8 @@ mod tests {
                 },
             ]
         );
-        assert_eq!(ui.resolved_legs[0].leg_id, "v23-0");
-        assert_eq!(ui.resolved_legs[1].leg_id, "v165-0");
+        assert_eq!(plan.resolved_legs[0].id, "v23-0");
+        assert_eq!(plan.resolved_legs[1].id, "v165-0");
     }
 
     #[test]
@@ -7845,9 +7771,9 @@ mod tests {
 
         assert_eq!(deleted.route_components.len(), 1);
         assert!(deleted.resolved_legs.is_empty());
-        let ui = project_ui_state(&deleted);
-        assert!(ui.components[0].can_remove);
-        assert!(!ui.components[0].can_reorder);
+        let components = projected_components_for_test(&deleted);
+        assert!(components[0].can_remove);
+        assert!(!components[0].can_reorder);
     }
 
     #[test]
@@ -8025,9 +7951,6 @@ mod tests {
             can_reorder_component: false,
             can_reorder_up: false,
             can_reorder_down: false,
-            replace_procedure_component_index: None,
-            start_component_index: None,
-            end_component_index: None,
             origin_anchor: None,
             destination_anchor: None,
             preceding_waypoint: None,
@@ -8153,25 +8076,26 @@ mod tests {
             moved.route_components[2],
             RouteComponent::Airway { .. }
         ));
-        let ui = project_ui_state(&moved);
-        assert!(ui.components.iter().all(|component| component.can_reorder));
+        let components = projected_components_for_test(&moved);
+        assert!(components.iter().all(|component| component.can_reorder));
     }
 
     #[test]
     fn project_ui_state_enables_procedure_insertion_before_airport_with_waypoint_predecessor() {
-        let ui = project_ui_state(&sample_waypoint_only_plan());
+        let components = projected_components_for_test(&sample_waypoint_only_plan());
 
-        assert!(ui.components[0].can_add_procedure_before);
-        assert!(ui.components[1].can_add_procedure_before);
-        assert!(ui.components[2].can_add_procedure_before);
+        assert!(components[0].can_add_procedure_before);
+        assert!(components[1].can_add_procedure_before);
+        assert!(components[2].can_add_procedure_before);
     }
 
     #[test]
     fn project_ui_state_enables_procedure_insertion_for_single_airport_plan() {
         let ui = project_ui_state(&sample_single_component_plan());
+        let components = projected_components_for_test(&sample_single_component_plan());
 
-        assert_eq!(ui.components.len(), 1);
-        assert!(ui.components[0].can_add_procedure_before);
+        assert_eq!(components.len(), 1);
+        assert!(components[0].can_add_procedure_before);
         let airport_row = ui
             .display_rows
             .iter()
@@ -8284,9 +8208,10 @@ mod tests {
         };
 
         let ui = project_ui_state(&plan);
+        let components = projected_components_for_test(&plan);
 
-        assert!(ui.components[2].can_add_procedure_before);
-        assert_eq!(ui.components[2].replace_procedure_component_index, Some(1));
+        assert!(components[2].can_add_procedure_before);
+        assert_eq!(components[2].replace_procedure_component_index, Some(1));
         let airport_row = ui
             .display_rows
             .iter()
@@ -8294,13 +8219,15 @@ mod tests {
                 row.component_index == Some(2) && row.row_kind == FlightPlanDisplayRowKind::Waypoint
             })
             .expect("airport row");
-        assert_eq!(airport_row.replace_procedure_component_index, Some(1));
+        assert!(flight_plan_row_actions(airport_row).any(|action| {
+            action.id == FlightPlanRowActionId::SelectProcedure && action.enabled
+        }));
     }
 
     #[test]
     fn move_component_round_trip_preserves_seeded_grouped_materialization() {
         let initial = sample_seeded_reorder_plan();
-        let initial_ui = project_ui_state(&initial);
+        let initial_components = projected_components_for_test(&initial);
 
         let moved_down_once = move_component(&initial, 0, 1).unwrap();
         let moved_down_twice = move_component(&moved_down_once, 1, 1).unwrap();
@@ -8309,19 +8236,19 @@ mod tests {
         let moved_up_once = move_component(&moved_to_bottom, 3, -1).unwrap();
         let moved_up_twice = move_component(&moved_up_once, 2, -1).unwrap();
         let final_plan = move_component(&moved_up_twice, 1, -1).unwrap();
-        let final_ui = project_ui_state(&final_plan);
+        let final_components = projected_components_for_test(&final_plan);
 
-        assert_eq!(final_ui.components, initial_ui.components);
-        assert_eq!(final_ui.resolved_legs, initial_ui.resolved_legs);
+        assert_eq!(final_components, initial_components);
+        assert_eq!(final_plan.resolved_legs, initial.resolved_legs);
     }
 
     #[test]
     fn single_top_level_component_disables_reorder() {
-        let ui = project_ui_state(&sample_single_component_plan());
-        assert_eq!(ui.components.len(), 1);
-        assert!(!ui.components[0].can_reorder);
-        assert!(!ui.components[0].can_reorder_up);
-        assert!(!ui.components[0].can_reorder_down);
+        let components = projected_components_for_test(&sample_single_component_plan());
+        assert_eq!(components.len(), 1);
+        assert!(!components[0].can_reorder);
+        assert!(!components[0].can_reorder_up);
+        assert!(!components[0].can_reorder_down);
     }
 
     #[test]
@@ -8347,11 +8274,12 @@ mod tests {
         };
 
         let ui = project_ui_state(&guided);
+        let components = projected_components_for_test(&guided);
 
-        assert!(ui.components[1].active);
-        assert_eq!(ui.components[1].kind, RouteComponentViewKind::Procedure);
+        assert!(components[1].active);
+        assert_eq!(components[1].kind, RouteComponentViewKind::Procedure);
         assert!(matches!(
-            ui.components[1].items.last(),
+            components[1].items.last(),
             Some(ConcretizedNavItem::Discontinuity {
                 discontinuity: ProcedureDiscontinuity::Vectors,
                 ..

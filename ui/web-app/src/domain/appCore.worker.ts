@@ -305,7 +305,7 @@ function summarizeWorkerResult(result: unknown): { important: boolean; data: Rec
       },
     };
   }
-  if ("app_state" in record && "debug_state" in record) {
+  if ("app_ui_state" in record && "debug_state" in record) {
     return { important: true, data: { result_kind: "session_snapshot" } };
   }
   return { important: false, data: { result_kind: "object" } };

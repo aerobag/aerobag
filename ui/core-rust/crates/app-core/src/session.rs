@@ -33,8 +33,9 @@ use crate::{
     },
     guidance_detail_id_for_leg_element,
     had_ops::{
-        insert_waypoint_best_position, materialize_airway_presentation_selection,
-        materialize_procedure, nav_kv_page_resources, nav_ref_position, nav_symbol_feature,
+        chart_page_state, describe_plate_loads, insert_waypoint_best_position,
+        materialize_airway_presentation_selection, materialize_procedure, nav_kv_page_resources,
+        nav_ref_position, nav_symbol_feature, prepare_airway_presentation_for_anchors,
         suggest_waypoint_identifiers, CoreResourceRequest, CoreResourceSource, HadOperationOutcome,
         HadReadError, UiInvalidation,
     },
@@ -59,7 +60,7 @@ use crate::{
     publication::{PublicationResolvedResource, PublicationResolver},
     query_map_overlay_for_surface_at, query_map_selection_for_surface_in_time_zone, state,
     AirportNotamIndex, AirportPlateAvailability, AirspaceFeaturePayload, AirspaceLabelTilePayload,
-    AirspaceReferenceTilePayload, AirwayPresentationPlan, AppError, AppErrorKind, AppEvent,
+    AirspaceReferenceTilePayload, AirwayPresentationSelection, AppError, AppErrorKind, AppEvent,
     AppResult, AppState, AppUiState, FlightPlan, FlightPlanDisplayRowKind,
     FlightPlanRowActionExecution, FlightPlanRowActionId, FlightPlanUiState, GuidanceState, LatLon,
     LegDisplayElement, MapOverlayConfig, MapOverlayQueryResult, MapSelectionForNavRefResult,
@@ -69,8 +70,8 @@ use crate::{
     PlaybackUiState, PointTilePayload, ProcedureDiscontinuity, ProcedureKind, ProcedureLoadCommand,
     RasterMapCatalog, RasterResourceMode, RasterTilePlan, ResolvedLeg, ResolvedLegSource,
     RouteComponentViewKind, SequencingMode, SituationControlInput, SituationControlMenuItem,
-    TafProductPayload, TerrainOverlayQueryResult, TfrProductPayload, UiSnapshotAppState,
-    VectorAggregateTilePayload, VectorIdentLabelStyle,
+    TafProductPayload, TerrainOverlayQueryResult, TfrProductPayload, VectorAggregateTilePayload,
+    VectorIdentLabelStyle,
 };
 
 const WORLD_MERCATOR_MAX_LATITUDE: f64 = 85.051_128_78;
@@ -357,7 +358,10 @@ pub struct UiSessionSnapshot {
     pub nav_data_epoch: u64,
     pub active_nav_db: Option<UiNavDbIdentity>,
     pub next_nav_db_maintenance_epoch_ms: Option<i64>,
-    pub app_state: UiSnapshotAppState,
+    // Unit tests inspect authoritative guidance internals after exercising the same
+    // JSON outcome path. Production platform snapshots must never expose that state.
+    #[cfg_attr(not(test), serde(skip))]
+    pub app_state: AppState,
     pub app_ui_state: AppUiState,
     pub playback_ui_state: PlaybackUiState,
     pub playback_panel_state: UiPlaybackPanelState,
@@ -3434,10 +3438,6 @@ fn create_ui_session_inner(
     if let Some(mark) = mark.as_deref_mut() {
         mark("core_default_session_state");
     }
-    let snapshot_app_state = state::project_ui_snapshot_app_state(&app_state);
-    if let Some(mark) = mark.as_deref_mut() {
-        mark("core_project_snapshot_app_state");
-    }
     let debug_state = default_debug_state();
     let mut app_ui_state = state::project_app_ui_state(&app_state);
     project_bad_autopilot_availability_for_state(&debug_state, false, &mut app_ui_state);
@@ -3473,7 +3473,7 @@ fn create_ui_session_inner(
         nav_data_epoch: 0,
         active_nav_db: None,
         next_nav_db_maintenance_epoch_ms: None,
-        app_state: snapshot_app_state,
+        app_state: app_state.clone(),
         app_ui_state,
         playback_ui_state,
         playback_panel_state,
@@ -4698,23 +4698,196 @@ pub fn tick_bad_autopilot_in_session(
     changed_session_snapshot_outcome_for_ownship_motion(session, motion)
 }
 
-pub fn activate_next_leg_in_session(handle: u32) -> AppResult<HadOperationOutcome> {
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum FlightPlanSessionCommand {
+    InsertWaypointAtRow {
+        row_uid: String,
+        before: bool,
+        waypoint: NavRef,
+    },
+    AppendEntry {
+        input: String,
+    },
+    InsertAirwayAtRow {
+        row_uid: String,
+        selection: AirwayPresentationSelection,
+    },
+    SelectProcedureAtRow {
+        row_uid: String,
+        airport_id: String,
+        procedure_id: String,
+        procedure_kind: ProcedureKind,
+        runway_transition: Option<String>,
+        enroute_transition: Option<String>,
+    },
+    LoadPlateProcedure {
+        load_id: String,
+    },
+    RestoreDirectTo,
+    PerformRowAction {
+        row_uid: String,
+        action_uid: String,
+    },
+    ActivateNextLeg,
+    StopNavigation,
+    SuspendSequencing,
+    UnsuspendSequencing,
+    SequenceActiveLeg,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum FlightPlanSessionQuery {
+    ChartPageState,
+    SuggestWaypointIdentifiersAtRow {
+        row_uid: String,
+        before: bool,
+        prefix: String,
+        limit: usize,
+    },
+    PreviewEntry {
+        input: String,
+    },
+    PrepareAirwayPresentationAtRow {
+        row_uid: String,
+        airway_name: String,
+    },
+    DescribePlateProcedureLoads {
+        plate_id: String,
+    },
+}
+
+pub fn perform_flight_plan_command_in_session(
+    handle: u32,
+    command: FlightPlanSessionCommand,
+) -> AppResult<HadOperationOutcome> {
+    match command {
+        FlightPlanSessionCommand::InsertWaypointAtRow {
+            row_uid,
+            before,
+            waypoint,
+        } => insert_waypoint_at_flight_plan_row_in_session(handle, row_uid, before, waypoint),
+        FlightPlanSessionCommand::AppendEntry { input } => {
+            append_flight_plan_entry_in_session(handle, input)
+        }
+        FlightPlanSessionCommand::InsertAirwayAtRow { row_uid, selection } => {
+            insert_airway_at_flight_plan_row_in_session(handle, row_uid, selection)
+        }
+        FlightPlanSessionCommand::SelectProcedureAtRow {
+            row_uid,
+            airport_id,
+            procedure_id,
+            procedure_kind,
+            runway_transition,
+            enroute_transition,
+        } => select_procedure_at_flight_plan_row_in_session(
+            handle,
+            row_uid,
+            airport_id,
+            procedure_id,
+            procedure_kind,
+            runway_transition,
+            enroute_transition,
+        ),
+        FlightPlanSessionCommand::LoadPlateProcedure { load_id } => {
+            load_plate_procedure_in_session(handle, load_id)
+        }
+        FlightPlanSessionCommand::RestoreDirectTo => restore_direct_to_in_session(handle),
+        FlightPlanSessionCommand::PerformRowAction {
+            row_uid,
+            action_uid,
+        } => perform_flight_plan_row_action_in_session(handle, row_uid, action_uid),
+        FlightPlanSessionCommand::ActivateNextLeg => activate_next_leg_in_session(handle),
+        FlightPlanSessionCommand::StopNavigation => stop_navigation_in_session(handle),
+        FlightPlanSessionCommand::SuspendSequencing => suspend_sequencing_in_session(handle),
+        FlightPlanSessionCommand::UnsuspendSequencing => unsuspend_sequencing_in_session(handle),
+        FlightPlanSessionCommand::SequenceActiveLeg => sequence_active_leg_in_session(handle),
+    }
+}
+
+pub fn query_flight_plan_in_session(
+    handle: u32,
+    query: FlightPlanSessionQuery,
+) -> AppResult<HadOperationOutcome> {
+    match query {
+        FlightPlanSessionQuery::ChartPageState => chart_page_state_in_session(handle),
+        FlightPlanSessionQuery::SuggestWaypointIdentifiersAtRow {
+            row_uid,
+            before,
+            prefix,
+            limit,
+        } => suggest_waypoint_identifiers_at_flight_plan_row_in_session(
+            handle, row_uid, before, prefix, limit,
+        ),
+        FlightPlanSessionQuery::PreviewEntry { input } => {
+            preview_flight_plan_entry_in_session(handle, input)
+        }
+        FlightPlanSessionQuery::PrepareAirwayPresentationAtRow {
+            row_uid,
+            airway_name,
+        } => {
+            prepare_airway_presentation_at_flight_plan_row_in_session(handle, row_uid, airway_name)
+        }
+        FlightPlanSessionQuery::DescribePlateProcedureLoads { plate_id } => {
+            describe_plate_procedure_loads_in_session(handle, plate_id)
+        }
+    }
+}
+
+fn chart_page_state_in_session(handle: u32) -> AppResult<HadOperationOutcome> {
+    let sessions = lock_sessions();
+    let session = session_ref(&sessions, handle)?;
+    let plan = session_plan(session)?;
+    let compact = &session.chart_page_state;
+    let derived = match chart_page_state(
+        session_nav_kv_store(session)?,
+        &plan,
+        &compact.recent_airport_ids,
+        compact.plate_target_airport_id.as_deref(),
+        Some(&compact.selected_airport_id),
+        compact.selected_reference_family_id.as_deref(),
+        (!compact.selected_chart_id.is_empty()).then_some(compact.selected_chart_id.as_str()),
+        &compact.suggested_chart_ids,
+    ) {
+        Ok(derived) => derived,
+        Err(HadReadError::NeedPages(pages)) => {
+            return Ok(HadOperationOutcome::NeedResources {
+                resources: nav_kv_page_resources(pages),
+            })
+        }
+        Err(HadReadError::Fatal(message)) => {
+            return Err(AppError {
+                kind: AppErrorKind::InvalidFlightPlan,
+                message,
+            })
+        }
+    };
+    Ok(HadOperationOutcome::complete(
+        serde_json::to_value(derived).map_err(|err| AppError {
+            kind: AppErrorKind::Internal,
+            message: err.to_string(),
+        })?,
+    ))
+}
+
+pub(crate) fn activate_next_leg_in_session(handle: u32) -> AppResult<HadOperationOutcome> {
     mutate_session_flight_plan(handle, crate::activate_next_leg)
 }
 
-pub fn stop_navigation_in_session(handle: u32) -> AppResult<HadOperationOutcome> {
+pub(crate) fn stop_navigation_in_session(handle: u32) -> AppResult<HadOperationOutcome> {
     mutate_session_flight_plan(handle, crate::stop_navigation)
 }
 
-pub fn suspend_sequencing_in_session(handle: u32) -> AppResult<HadOperationOutcome> {
+pub(crate) fn suspend_sequencing_in_session(handle: u32) -> AppResult<HadOperationOutcome> {
     mutate_session_flight_plan(handle, crate::suspend_sequencing)
 }
 
-pub fn unsuspend_sequencing_in_session(handle: u32) -> AppResult<HadOperationOutcome> {
+pub(crate) fn unsuspend_sequencing_in_session(handle: u32) -> AppResult<HadOperationOutcome> {
     mutate_session_flight_plan(handle, crate::unsuspend_sequencing)
 }
 
-pub fn sequence_active_leg_in_session(handle: u32) -> AppResult<HadOperationOutcome> {
+pub(crate) fn sequence_active_leg_in_session(handle: u32) -> AppResult<HadOperationOutcome> {
     mutate_session_flight_plan(handle, crate::sequence_active_leg)
 }
 
@@ -4770,10 +4943,10 @@ fn insert_waypoint_best_position_for_session(
             });
         }
     };
-    commit_session_flight_plan_with_invalidations_outcome(session, mutation.plan)
+    commit_session_flight_plan_with_invalidations_outcome(session, mutation)
 }
 
-pub fn insert_waypoint_at_flight_plan_row_in_session(
+pub(crate) fn insert_waypoint_at_flight_plan_row_in_session(
     handle: u32,
     row_uid: String,
     before: bool,
@@ -4807,7 +4980,7 @@ pub fn insert_waypoint_at_flight_plan_row_in_session(
     commit_session_flight_plan_with_invalidations_outcome(session, next_plan)
 }
 
-pub fn suggest_waypoint_identifiers_at_flight_plan_row_in_session(
+pub(crate) fn suggest_waypoint_identifiers_at_flight_plan_row_in_session(
     handle: u32,
     row_uid: String,
     before: bool,
@@ -4862,7 +5035,84 @@ pub fn suggest_waypoint_identifiers_at_flight_plan_row_in_session(
     ))
 }
 
-pub fn preview_flight_plan_entry_in_session(
+fn prepare_airway_presentation_at_flight_plan_row_in_session(
+    handle: u32,
+    row_uid: String,
+    airway_name: String,
+) -> AppResult<HadOperationOutcome> {
+    let sessions = lock_sessions();
+    let session = session_ref(&sessions, handle)?;
+    let plan = session_plan(session)?;
+    let ui = crate::project_ui_state(&plan);
+    let row = ui
+        .display_rows
+        .iter()
+        .find(|row| row.uid == row_uid)
+        .ok_or_else(|| AppError {
+            kind: AppErrorKind::InvalidFlightPlan,
+            message: format!("flight-plan airway target is stale: {row_uid}"),
+        })?;
+    let origin_anchor = row.origin_anchor.as_ref().ok_or_else(|| AppError {
+        kind: AppErrorKind::InvalidFlightPlan,
+        message: "airway insert row has no origin anchor".to_string(),
+    })?;
+    let presentation = match prepare_airway_presentation_for_anchors(
+        session_nav_kv_store(session)?,
+        &airway_name,
+        origin_anchor,
+        row.destination_anchor.as_ref(),
+    ) {
+        Ok(presentation) => presentation,
+        Err(HadReadError::NeedPages(pages)) => {
+            return Ok(HadOperationOutcome::NeedResources {
+                resources: nav_kv_page_resources(pages),
+            })
+        }
+        Err(HadReadError::Fatal(message)) => {
+            return Err(AppError {
+                kind: AppErrorKind::InvalidFlightPlan,
+                message,
+            })
+        }
+    };
+    Ok(HadOperationOutcome::complete(
+        serde_json::to_value(presentation).map_err(|err| AppError {
+            kind: AppErrorKind::Internal,
+            message: err.to_string(),
+        })?,
+    ))
+}
+
+fn describe_plate_procedure_loads_in_session(
+    handle: u32,
+    plate_id: String,
+) -> AppResult<HadOperationOutcome> {
+    let sessions = lock_sessions();
+    let session = session_ref(&sessions, handle)?;
+    let plan = session_plan(session)?;
+    let loads = match describe_plate_loads(session_nav_kv_store(session)?, &plan, &plate_id) {
+        Ok(loads) => loads,
+        Err(HadReadError::NeedPages(pages)) => {
+            return Ok(HadOperationOutcome::NeedResources {
+                resources: nav_kv_page_resources(pages),
+            })
+        }
+        Err(HadReadError::Fatal(message)) => {
+            return Err(AppError {
+                kind: AppErrorKind::InvalidFlightPlan,
+                message,
+            })
+        }
+    };
+    Ok(HadOperationOutcome::complete(
+        serde_json::to_value(loads).map_err(|err| AppError {
+            kind: AppErrorKind::Internal,
+            message: err.to_string(),
+        })?,
+    ))
+}
+
+pub(crate) fn preview_flight_plan_entry_in_session(
     handle: u32,
     input: String,
 ) -> AppResult<HadOperationOutcome> {
@@ -4887,7 +5137,7 @@ pub fn preview_flight_plan_entry_in_session(
     }
 }
 
-pub fn append_flight_plan_entry_in_session(
+pub(crate) fn append_flight_plan_entry_in_session(
     handle: u32,
     input: String,
 ) -> AppResult<HadOperationOutcome> {
@@ -4911,15 +5161,13 @@ pub fn append_flight_plan_entry_in_session(
             }
         }
     };
-    commit_session_flight_plan_with_invalidations_outcome(session, mutation.plan)
+    commit_session_flight_plan_with_invalidations_outcome(session, mutation)
 }
 
-pub fn insert_airway_at_flight_plan_row_in_session(
+pub(crate) fn insert_airway_at_flight_plan_row_in_session(
     handle: u32,
     row_uid: String,
-    presentation: AirwayPresentationPlan,
-    entry_index: usize,
-    exit_index: usize,
+    selection: AirwayPresentationSelection,
 ) -> AppResult<HadOperationOutcome> {
     let mut sessions = lock_sessions();
     let session = session_mut(&mut sessions, handle)?;
@@ -4933,10 +5181,12 @@ pub fn insert_airway_at_flight_plan_row_in_session(
             kind: AppErrorKind::InvalidFlightPlan,
             message: format!("flight-plan airway insert target is stale: {row_uid}"),
         })?;
-    let origin_anchor = row.origin_anchor.clone().ok_or_else(|| AppError {
-        kind: AppErrorKind::InvalidFlightPlan,
-        message: "airway insert row has no origin anchor".to_string(),
-    })?;
+    if row.origin_anchor.is_none() {
+        return Err(AppError {
+            kind: AppErrorKind::InvalidFlightPlan,
+            message: "airway insert row has no origin anchor".to_string(),
+        });
+    }
     let component_uid = row.component_uid.as_deref().ok_or_else(|| AppError {
         kind: AppErrorKind::InvalidFlightPlan,
         message: "airway insert row has no route component uid".to_string(),
@@ -4955,40 +5205,32 @@ pub fn insert_airway_at_flight_plan_row_in_session(
         None
     };
     let store = session_nav_kv_store(session)?;
-    let materialized = match materialize_airway_presentation_selection(
-        store,
-        start_component_index,
-        presentation,
-        entry_index,
-        exit_index,
-        &origin_anchor,
-        row.destination_anchor.as_ref(),
-    ) {
-        Ok(materialized) => materialized,
-        Err(HadReadError::NeedPages(pages)) => {
-            return Ok(HadOperationOutcome::NeedResources {
-                resources: nav_kv_page_resources(pages),
-            })
-        }
-        Err(HadReadError::Fatal(message)) => {
-            return Err(AppError {
-                kind: AppErrorKind::InvalidFlightPlan,
-                message,
-            });
-        }
-    };
-    let mutation = crate::insert_airway_materialized_ui(
+    let materialized =
+        match materialize_airway_presentation_selection(store, start_component_index, selection) {
+            Ok(materialized) => materialized,
+            Err(HadReadError::NeedPages(pages)) => {
+                return Ok(HadOperationOutcome::NeedResources {
+                    resources: nav_kv_page_resources(pages),
+                })
+            }
+            Err(HadReadError::Fatal(message)) => {
+                return Err(AppError {
+                    kind: AppErrorKind::InvalidFlightPlan,
+                    message,
+                });
+            }
+        };
+    let mutation = crate::insert_airway_materialized(
         &plan,
         start_component_index,
         end_component_index,
-        materialized.selection,
         materialized.airway,
         materialized.resolved_legs,
     )?;
-    commit_session_flight_plan_with_invalidations_outcome(session, mutation.mutation.plan)
+    commit_session_flight_plan_with_invalidations_outcome(session, mutation)
 }
 
-pub fn select_procedure_at_flight_plan_row_in_session(
+pub(crate) fn select_procedure_at_flight_plan_row_in_session(
     handle: u32,
     row_uid: String,
     airport_id: String,
@@ -5133,16 +5375,16 @@ pub fn select_procedure_at_flight_plan_row_in_session(
     };
     let mutation_started = crate::CoreDebugTimer::start();
     let mutation = if let Some(replace_component_index) = replace_component_index {
-        crate::replace_procedure_materialized_ui(&plan, replace_component_index, built)?
+        crate::replace_procedure_materialized(&plan, replace_component_index, built)?
     } else if let Some(start_component_index) = start_component_index {
-        crate::insert_procedure_materialized_ui(
+        crate::insert_procedure_materialized(
             &plan,
             start_component_index,
             airport_component_index,
             built,
         )?
     } else {
-        crate::insert_initial_procedure_materialized_ui(&plan, airport_component_index, built)?
+        crate::insert_initial_procedure_materialized(&plan, airport_component_index, built)?
     };
     crate::core_debug_log(
         "plan.procedure.select.core_phase",
@@ -5153,8 +5395,7 @@ pub fn select_procedure_at_flight_plan_row_in_session(
         }),
     );
     let commit_started = crate::CoreDebugTimer::start();
-    let outcome =
-        commit_session_flight_plan_with_invalidations_outcome(session, mutation.mutation.plan);
+    let outcome = commit_session_flight_plan_with_invalidations_outcome(session, mutation);
     crate::core_debug_log(
         "plan.procedure.select.core_phase",
         &serde_json::json!({
@@ -5167,7 +5408,7 @@ pub fn select_procedure_at_flight_plan_row_in_session(
     outcome
 }
 
-pub fn load_plate_procedure_in_session(
+pub(crate) fn load_plate_procedure_in_session(
     handle: u32,
     load_id: String,
 ) -> AppResult<HadOperationOutcome> {
@@ -5267,18 +5508,18 @@ pub fn load_plate_procedure_in_session(
         built.procedure.display_label = Some(display_label.to_string());
     }
     let mutation = if let Some(replace_component_index) = replace_component_index {
-        crate::replace_procedure_materialized_ui(&plan, replace_component_index, built)?
+        crate::replace_procedure_materialized(&plan, replace_component_index, built)?
     } else if let Some(start_component_index) = start_component_index {
-        crate::insert_procedure_materialized_ui(
+        crate::insert_procedure_materialized(
             &plan,
             start_component_index,
             airport_component_index,
             built,
         )?
     } else {
-        crate::insert_initial_procedure_materialized_ui(&plan, airport_component_index, built)?
+        crate::insert_initial_procedure_materialized(&plan, airport_component_index, built)?
     };
-    commit_session_flight_plan_with_invalidations_outcome(session, mutation.mutation.plan)
+    commit_session_flight_plan_with_invalidations_outcome(session, mutation)
 }
 
 fn activate_direct_to_nav_ref_in_session_outcome(
@@ -5359,7 +5600,7 @@ fn invalid_settings_action_value(action_id: &str, value_id: &str) -> AppError {
     }
 }
 
-pub fn perform_flight_plan_row_action_in_session(
+pub(crate) fn perform_flight_plan_row_action_in_session(
     handle: u32,
     row_uid: String,
     action_uid: String,
@@ -5484,7 +5725,7 @@ pub fn perform_flight_plan_row_action_in_session(
     commit_session_flight_plan_with_invalidations_outcome(session, next_plan)
 }
 
-pub fn restore_direct_to_in_session(handle: u32) -> AppResult<HadOperationOutcome> {
+pub(crate) fn restore_direct_to_in_session(handle: u32) -> AppResult<HadOperationOutcome> {
     let mut sessions = lock_sessions();
     let session = session_mut(&mut sessions, handle)?;
     let plan = session_plan(session)?;
@@ -10161,9 +10402,6 @@ fn try_snapshot_for_session(session: &mut UiSession) -> Result<UiSessionSnapshot
     let playback_panel_started_at = crate::core_clock_ms();
     let playback_panel_state = playback_panel_state_for_app_state(&session.app_state);
     let playback_panel_ms = elapsed_ms(playback_panel_started_at);
-    let app_state_started_at = crate::core_clock_ms();
-    let app_state = state::project_ui_snapshot_app_state(&session.app_state);
-    let app_state_ms = elapsed_ms(app_state_started_at);
     let playback_started_at = crate::core_clock_ms();
     let playback_ui_state = session.playback.ui_state();
     let playback_ms = elapsed_ms(playback_started_at);
@@ -10201,7 +10439,6 @@ fn try_snapshot_for_session(session: &mut UiSession) -> Result<UiSessionSnapshot
             "app_ui_ms": app_ui_ms,
             "debug_ms": debug_ms,
             "playback_panel_ms": playback_panel_ms,
-            "app_state_ms": app_state_ms,
             "playback_ms": playback_ms,
             "map_follow_ms": map_follow_ms,
             "clone_ms": clone_ms,
@@ -10218,7 +10455,7 @@ fn try_snapshot_for_session(session: &mut UiSession) -> Result<UiSessionSnapshot
         nav_data_epoch: session.nav_data_epoch,
         active_nav_db: session.nav_db_artifact.as_ref().map(UiNavDbIdentity::from),
         next_nav_db_maintenance_epoch_ms: next_nav_db_maintenance_epoch_ms(session),
-        app_state,
+        app_state: session.app_state.clone(),
         app_ui_state,
         playback_ui_state,
         playback_panel_state,
@@ -12277,13 +12514,12 @@ fn replace_flight_plan_in_session(handle: u32, plan: FlightPlan) -> AppResult<Ha
 mod tests {
     use super::*;
     use crate::{
-        map_overlay::NotamProductPayload, AirportId, FlightPlan, GuidanceState, HadOperation,
-        LegDisplayElement, LegDisplayPath, LegDisplayPathStyle, MapSelectionAction,
-        MapSelectionCategory, MapSelectionHighlight, MapSelectionItem, MaterializedProcedure,
-        NavRef, OwnshipSourceId, OwnshipSourceKind, PathTermination, PointVectorRecord,
-        ProcedureLegProvenance, ProcedureSegmentRole, ResolvedLeg, ResolvedLegSource,
-        RouteComponent, SequencingMode, Situation, SituationPosition, SituationSample,
-        REQUIRED_NAV_DB_CONTRACT_ID,
+        map_overlay::NotamProductPayload, AirportId, FlightPlan, GuidanceState, LegDisplayElement,
+        LegDisplayPath, LegDisplayPathStyle, MapSelectionAction, MapSelectionCategory,
+        MapSelectionHighlight, MapSelectionItem, NavRef, OwnshipSourceId, OwnshipSourceKind,
+        PathTermination, PointVectorRecord, ProcedureLegProvenance, ProcedureSegmentRole,
+        ResolvedLeg, ResolvedLegSource, RouteComponent, SequencingMode, Situation,
+        SituationPosition, SituationSample, REQUIRED_NAV_DB_CONTRACT_ID,
     };
     use std::io::Read;
 
@@ -13711,7 +13947,14 @@ mod tests {
 
         assert_eq!(result.disposition, NavDbAdvanceDisposition::Rejected);
         assert_eq!(result.snapshot.nav_data_epoch, 0);
-        assert_eq!(result.snapshot.app_state.active_plan.as_ref(), Some(&plan));
+        let projected_plan = result
+            .snapshot
+            .app_ui_state
+            .active_plan
+            .as_ref()
+            .expect("projected active plan");
+        assert_eq!(projected_plan.plan_id, plan.id);
+        assert_eq!(projected_plan.plan_version, plan.version);
         assert!(result
             .rejection_reason
             .as_deref()
@@ -13800,29 +14043,19 @@ mod tests {
             updated_at_epoch_ms: 0,
             version: 1,
         };
-        let materialized = match crate::run_had_operation(
+        let materialized = crate::had_ops::materialize_procedure(
             &old_store,
-            HadOperation::MaterializeProcedure {
-                airport_id: "KPAE".to_string(),
-                procedure_id: "VOR-A".to_string(),
-                procedure_kind: ProcedureKind::Approach,
-                runway_transition: None,
-                enroute_transition: Some("ECEPO".to_string()),
-                component_index: 2,
-            },
+            "KPAE",
+            "VOR-A",
+            ProcedureKind::Approach,
+            None,
+            Some("ECEPO"),
+            2,
         )
-        .expect("materialize 2607 procedure")
-        {
-            HadOperationOutcome::Complete { result, .. } => {
-                serde_json::from_value::<MaterializedProcedure>(result)
-                    .expect("decode materialized procedure")
-            }
-            outcome => panic!("fully loaded fixture unexpectedly faulted: {outcome:?}"),
-        };
-        let mutation = crate::insert_procedure_materialized_ui(&base_plan, 1, 2, materialized)
+        .expect("materialize 2607 procedure");
+        let mutation = crate::insert_procedure_materialized(&base_plan, 1, 2, materialized)
             .expect("insert KPAE VOR-A ECEPO");
-        let plan = crate::activate_leg(&mutation.mutation.plan, 5)
-            .expect("activate procedure hold inbound leg");
+        let plan = crate::activate_leg(&mutation, 5).expect("activate procedure hold inbound leg");
         let expected_plan = plan.clone();
         let airport_key = nav_kv_key_for_query(&NavKvQuery::PlateAirport {
             airport_id: "KPAE".to_string(),
@@ -19813,7 +20046,15 @@ mod tests {
             .as_ref()
             .and_then(|plan_ui| plan_ui.guidance.as_ref())
             .expect("ui guidance");
-        assert_eq!(ui_guidance.active_leg_index, Some(active_leg_index));
+        assert_eq!(
+            snapshot
+                .app_state
+                .active_plan
+                .as_ref()
+                .and_then(|plan| plan.guidance.as_ref())
+                .map(|guidance| guidance.active_leg_index),
+            Some(active_leg_index)
+        );
         assert!(
             ui_guidance
                 .nav_element
@@ -20208,7 +20449,15 @@ mod tests {
             .expect("active plan")
             .display_rows
             .iter()
-            .find(|row| row.leg_index == Some(1))
+            .find(|row| {
+                snapshot
+                    .app_ui_state
+                    .active_plan
+                    .as_ref()
+                    .and_then(|plan| plan.guidance.as_ref())
+                    .and_then(|guidance| guidance.active_to_row_uid.as_ref())
+                    == Some(&row.uid)
+            })
             .and_then(|row| {
                 row.data_cells
                     .iter()
@@ -20916,12 +21165,12 @@ mod tests {
         );
 
         let active_leg_index = snapshot
-            .app_ui_state
+            .app_state
             .active_plan
             .as_ref()
             .and_then(|plan| plan.guidance.as_ref())
-            .and_then(|guidance| guidance.active_leg_index)
-            .expect("active FP row");
+            .map(|guidance| guidance.active_leg_index)
+            .expect("active core leg");
         let expected_active_leg_id = &snapshot
             .app_state
             .active_plan
@@ -20970,12 +21219,12 @@ mod tests {
         }
 
         let active_leg_index = snapshot
-            .app_ui_state
+            .app_state
             .active_plan
             .as_ref()
             .and_then(|plan| plan.guidance.as_ref())
-            .and_then(|guidance| guidance.active_leg_index)
-            .expect("FP snapshot active leg");
+            .map(|guidance| guidance.active_leg_index)
+            .expect("core snapshot active leg");
         let expected_active_leg_id = &snapshot
             .app_state
             .active_plan
@@ -21700,7 +21949,7 @@ mod tests {
             .and_then(|plan| plan.guidance.as_ref())
             .expect("guidance");
 
-        assert_eq!(guidance.active_leg_index, Some(0));
+        assert!(guidance.active_to_row_uid.is_some());
         let sessions = lock_sessions();
         let core_guidance = session_ref(&sessions, init.handle)
             .expect("session")
@@ -22377,7 +22626,12 @@ mod tests {
         let clicked_row = ui
             .display_rows
             .iter()
-            .find(|row| row.component_index == Some(3))
+            .filter(|row| {
+                row.depth == 0
+                    && row.row_kind == FlightPlanDisplayRowKind::Waypoint
+                    && row.label == "KRNT"
+            })
+            .nth(1)
             .expect("second KRNT row");
         let direct_to_action = crate::planning::flight_plan_row_actions(clicked_row)
             .find(|action| action.id == FlightPlanRowActionId::DirectTo)

@@ -194,21 +194,17 @@ import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
 import org.aerobag.app.domain.ChartAirport
 import org.aerobag.app.domain.ChartAsset
-import org.aerobag.app.domain.AppState
 import org.aerobag.app.domain.AirwayPresentationPlan
 import org.aerobag.app.domain.AirwaySuggestion
 import org.aerobag.app.domain.WaypointIdentifierSuggestion
 import org.aerobag.app.domain.CoreMapViewport
 import org.aerobag.app.domain.DerivedChartPageState
-import org.aerobag.app.domain.FlightPlan
 import org.aerobag.app.domain.FlightPlanEntryPreview
-import org.aerobag.app.domain.FlightPlanUiMutation
 import org.aerobag.app.domain.FlightPlanDisplayRowKind
 import org.aerobag.app.domain.FlightPlanDisplayRowUiView
 import org.aerobag.app.domain.FlightPlanRowActionUiView
 import org.aerobag.app.domain.FlightPlanRouteSegment
 import org.aerobag.app.domain.FlightPlanUiState
-import org.aerobag.app.domain.GuidanceState
 import org.aerobag.app.domain.InstalledPackages
 import org.aerobag.app.domain.AirspaceDisplayDecoration
 import org.aerobag.app.domain.AirspaceDisplayLabel
@@ -243,12 +239,9 @@ import org.aerobag.app.domain.ProcedureKind
 import org.aerobag.app.domain.ProcedureLoadOption
 import org.aerobag.app.domain.ProcedureOptions
 import org.aerobag.app.domain.ProcedureSummary
-import org.aerobag.app.domain.ResolvedLeg
-import org.aerobag.app.domain.ResolvedLegSource
 import org.aerobag.app.domain.RenderTile
 import org.aerobag.app.domain.RouteSegmentStatus
 import org.aerobag.app.domain.RouteComponentViewKind
-import org.aerobag.app.domain.RouteComponent
 import org.aerobag.app.domain.ScreenPoint
 import org.aerobag.app.domain.SectionalPackages
 import org.aerobag.app.domain.SequencingMode
@@ -562,8 +555,8 @@ internal fun FlightPlanGroupBlock(
     structuredRowBounds: MutableMap<String, Rect>? = null,
     onHeaderClick: () -> Unit,
     children: List<Pair<Int, FlightPlanDisplayRow>>,
-    selectedWaypointIndex: Int?,
-    onChildClick: (Int) -> Unit,
+    selectedWaypointUid: String?,
+    onChildClick: (FlightPlanDisplayRow) -> Unit,
 ) {
     val uiTheme = LocalAerobagUiTheme.current
     val groupOverhang = 8.dp
@@ -598,12 +591,12 @@ internal fun FlightPlanGroupBlock(
             structuredRowBounds = structuredRowBounds,
             onWaypointClick = onHeaderClick,
         )
-        children.forEach { (childIndex, childRow) ->
+        children.forEach { (_, childRow) ->
             FlightPlanDataRow(
                 row = childRow,
-                selected = selectedWaypointIndex == childIndex,
+                selected = selectedWaypointUid == childRow.id,
                 structuredRowBounds = structuredRowBounds,
-                onWaypointClick = { onChildClick(childIndex) },
+                onWaypointClick = { onChildClick(childRow) },
             )
         }
     }

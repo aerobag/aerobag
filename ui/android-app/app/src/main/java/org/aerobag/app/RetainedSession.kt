@@ -7,7 +7,6 @@ package org.aerobag.app
 import android.content.Context
 import android.util.Log
 import androidx.lifecycle.ViewModel
-import org.aerobag.app.domain.FlightPlan
 import org.aerobag.app.domain.MapViewportState
 import org.aerobag.app.domain.ClientBuildInfo
 import org.aerobag.app.domain.NativeAppCoreAdapter
@@ -18,7 +17,6 @@ import org.aerobag.app.domain.SituationRingCandidate
 internal class AerobagRetainedCoreSession(
     val runtimeContent: RuntimeContent,
     val appCore: NativeAppCoreAdapter,
-    val initialPlan: FlightPlan,
     val uiSession: NativeUiSession,
     val situationRingCandidates: List<SituationRingCandidate>,
     val decodedTileBitmapCache: DecodedTileBitmapCache,
@@ -69,9 +67,7 @@ internal class AerobagRetainedModel : ViewModel() {
 
         coreSession?.close()
         val appCore = NativeAppCoreAdapter(navKvStore = runtimeContent.navKvStore)
-        val initialPlan = appCore.emptyFlightPlan()
         val uiSession = appCore.createUiSession(
-            initialPlan,
             recentAirportIds,
             selectedAirportId,
             selectedChartId,
@@ -91,7 +87,6 @@ internal class AerobagRetainedModel : ViewModel() {
         return AerobagRetainedCoreSession(
             runtimeContent = runtimeContent,
             appCore = appCore,
-            initialPlan = initialPlan,
             uiSession = uiSession,
             situationRingCandidates = appCore.situationRingCandidates(),
             decodedTileBitmapCache = DecodedTileBitmapCache(DecodedTileCacheMaxBytes),

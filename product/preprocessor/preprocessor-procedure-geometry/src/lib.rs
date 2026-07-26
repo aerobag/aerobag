@@ -453,9 +453,7 @@ pub fn materialize_procedure_from_records(
                 terminal_discontinuity,
                 data_quality: data_quality.clone(),
             },
-            concretized_items,
             resolved_legs,
-            data_quality,
         });
     }
 
@@ -546,9 +544,7 @@ pub fn materialize_procedure_from_records(
             terminal_discontinuity,
             data_quality: data_quality.clone(),
         },
-        concretized_items,
         resolved_legs,
-        data_quality,
     })
 }
 
@@ -4943,6 +4939,7 @@ fn procedure_geometry_record_from_materialized(
         components: Vec::new(),
         leg_bundles,
         data_quality: built
+            .procedure
             .data_quality
             .into_iter()
             .map(|message| pgt::ProcedureDataQualityAnnotation { message })

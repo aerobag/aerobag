@@ -268,13 +268,8 @@ fn platform_adapters_use_paged_loops_for_paged_session_exports() {
         "load_raster_map_catalog_in_session",
         "select_map_family_in_session",
         "perform_map_selection_action_in_session",
-        "insert_waypoint_at_flight_plan_row_in_session",
-        "suggest_waypoint_identifiers_at_flight_plan_row_in_session",
-        "insert_airway_at_flight_plan_row_in_session",
-        "select_procedure_at_flight_plan_row_in_session",
-        "load_plate_procedure_in_session",
-        "restore_direct_to_in_session",
-        "perform_flight_plan_row_action_in_session",
+        "perform_flight_plan_command_in_session",
+        "query_flight_plan_in_session",
         "sync_guidance_geometry_in_session",
         "project_flight_plan_route_in_session",
         "set_situation_in_session_paged",
@@ -314,13 +309,8 @@ fn platform_adapters_use_paged_loops_for_paged_session_exports() {
         "loadRasterMapCatalogInSessionJson",
         "selectMapFamilyInSessionJson",
         "performMapSelectionActionInSessionJson",
-        "insertWaypointAtFlightPlanRowInSessionJson",
-        "suggestWaypointIdentifiersAtFlightPlanRowInSessionJson",
-        "insertAirwayAtFlightPlanRowInSessionJson",
-        "selectProcedureAtFlightPlanRowInSessionJson",
-        "loadPlateProcedureInSessionJson",
-        "restoreDirectToInSessionJson",
-        "performFlightPlanRowActionInSessionJson",
+        "performFlightPlanCommandInSessionJson",
+        "queryFlightPlanInSessionJson",
         "syncGuidanceGeometryInSessionJson",
         "projectFlightPlanRouteInSessionJson",
     ];
@@ -370,6 +360,154 @@ fn platform_adapters_use_paged_loops_for_paged_session_exports() {
         "platform adapters must drive paged session exports through resource loops:\n{}",
         violations.join("\n")
     );
+}
+
+#[test]
+fn flight_plan_platform_boundary_is_uid_based_and_singular() {
+    let session = read_repo_file("ui/core-rust/crates/app-core/src/session.rs");
+    let wasm = read_repo_file("ui/core-rust/crates/app-wasm/src/lib.rs");
+    let ffi = read_repo_file("ui/core-rust/crates/app-ffi/src/lib.rs");
+    let web = read_repo_file("ui/web-app/src/domain/appCoreAdapter.ts");
+    let android = read_repo_file(
+        "ui/android-app/app/src/main/java/org/aerobag/app/domain/NativeAppCoreAdapter.kt",
+    );
+    let android_plan =
+        read_repo_file("ui/android-app/app/src/main/java/org/aerobag/app/FlightPlanPage.kt");
+    let web_types = read_repo_file("ui/web-app/src/domain/types.ts");
+    let android_models =
+        read_repo_file("ui/android-app/app/src/main/java/org/aerobag/app/domain/Models.kt");
+    let android_wire =
+        read_repo_file("ui/android-app/app/src/main/java/org/aerobag/app/domain/WireModels.kt");
+
+    for (platform, source, command_name, query_name) in [
+        (
+            "WASM",
+            wasm.as_str(),
+            "perform_flight_plan_command_in_session",
+            "query_flight_plan_in_session",
+        ),
+        (
+            "JNI",
+            ffi.as_str(),
+            "performFlightPlanCommandInSession",
+            "queryFlightPlanInSession",
+        ),
+    ] {
+        assert!(
+            source.contains(command_name) && source.contains(query_name),
+            "{platform} must expose the shared flight-plan command/query dispatchers"
+        );
+        for legacy in [
+            "insertWaypointAtFlightPlanRowInSession",
+            "suggestWaypointIdentifiersAtFlightPlanRowInSession",
+            "insertAirwayAtFlightPlanRowInSession",
+            "selectProcedureAtFlightPlanRowInSession",
+            "loadPlateProcedureInSession",
+            "restoreDirectToInSession",
+            "performFlightPlanRowActionInSession",
+        ] {
+            assert!(
+                !source.contains(legacy),
+                "{platform} retains legacy per-operation flight-plan export {legacy}"
+            );
+        }
+        assert!(
+            !source.contains("empty_flight_plan") && !source.contains("emptyFlightPlan"),
+            "{platform} must not round-trip a core-created FlightPlan through platform code"
+        );
+    }
+
+    for (platform, source) in [("web", web.as_str()), ("Android", android.as_str())] {
+        assert!(
+            source.contains("row_uid") && source.contains("action_uid"),
+            "{platform} flight-plan commands must identify rows and actions by opaque UID"
+        );
+        assert!(
+            !source.contains("\"component_index\"") && !source.contains("\"leg_index\""),
+            "{platform} must not construct index-addressed flight-plan commands"
+        );
+    }
+
+    for kind in [
+        "insert_waypoint_at_row",
+        "append_entry",
+        "insert_airway_at_row",
+        "select_procedure_at_row",
+        "load_plate_procedure",
+        "restore_direct_to",
+        "perform_row_action",
+        "activate_next_leg",
+        "stop_navigation",
+        "suspend_sequencing",
+        "unsuspend_sequencing",
+        "sequence_active_leg",
+        "chart_page_state",
+        "suggest_waypoint_identifiers_at_row",
+        "preview_entry",
+        "prepare_airway_presentation_at_row",
+        "describe_plate_procedure_loads",
+    ] {
+        assert!(
+            web.contains(&format!("kind: \"{kind}\"")),
+            "web is missing shared flight-plan command/query {kind}"
+        );
+        assert!(
+            android.contains(&format!("put(\"kind\", \"{kind}\")")),
+            "Android is missing shared flight-plan command/query {kind}"
+        );
+    }
+
+    assert!(
+        android_plan.contains("selectedWaypointUid")
+            && !android_plan.contains("selectedWaypointIndex"),
+        "Android tray selection must follow the selected row UID across reorders"
+    );
+    assert!(
+        !web.contains("runSessionCall"),
+        "web must not retain the old mirrored-session retry wrapper"
+    );
+    assert!(
+        !web_types.contains("export type FlightPlan = {")
+            && !android_models.contains("data class FlightPlan(")
+            && !android_wire.contains("data class WireFlightPlan("),
+        "platform models must not mirror core's authoritative FlightPlan"
+    );
+    assert!(
+        session.contains("#[cfg_attr(not(test), serde(skip))]\n    pub app_state: AppState"),
+        "authoritative AppState may be retained for core unit diagnostics only when production serialization skips it"
+    );
+    for (platform, source) in [
+        ("web", web_types.as_str()),
+        ("Android domain", android_models.as_str()),
+        ("Android wire", android_wire.as_str()),
+    ] {
+        assert!(
+            !source.contains("active_leg_index")
+                && !source.contains("activeLegIndex")
+                && !source.contains("component_index")
+                && !source.contains("componentIndex"),
+            "{platform} must not expose core-internal flight-plan indices"
+        );
+    }
+}
+
+#[test]
+fn production_session_snapshot_wire_omits_authoritative_flight_plan_state() {
+    let init = app_core::create_ui_session(app_core::FlightPlan::empty(), &[], None, None)
+        .expect("create core session");
+    let wire = serde_json::to_value(&init.snapshot).expect("serialize session snapshot");
+    app_core::destroy_session(init.handle);
+
+    assert!(
+        wire.get("app_state").is_none(),
+        "production session snapshots must not serialize authoritative AppState"
+    );
+    let plan_ui = &wire["app_ui_state"]["active_plan"];
+    assert!(plan_ui.get("plan_id").is_some());
+    assert!(plan_ui.get("plan_version").is_some());
+    assert!(plan_ui.get("route_components").is_none());
+    assert!(plan_ui.get("resolved_legs").is_none());
+    assert!(plan_ui.get("guidance").is_some());
 }
 
 #[test]

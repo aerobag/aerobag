@@ -278,7 +278,7 @@ function summarizeWorkerResponseResult(result: unknown): Record<string, unknown>
       airspace_labels: Array.isArray(record.airspace_labels) ? record.airspace_labels.length : null,
     };
   }
-  if ("app_state" in record && "debug_state" in record) {
+  if ("app_ui_state" in record && "debug_state" in record) {
     return { result_kind: "session_snapshot" };
   }
   return { result_kind: "object" };
@@ -314,7 +314,6 @@ function workerBackedAdapter(client: AppCoreWorkerClient): AppCoreAdapter {
     prewarm: () => client.callAdapter("prewarm"),
     situationRingCandidates: () => cachedSituationRingCandidates,
     loadSituationRingCandidates,
-    emptyFlightPlan: () => client.callAdapter("emptyFlightPlan"),
     createUiSession: async (...args) => {
       const marker = await client.callAdapter<WorkerSessionMarker>("createUiSession", [
         ...args,
@@ -322,16 +321,13 @@ function workerBackedAdapter(client: AppCoreWorkerClient): AppCoreAdapter {
       ]);
       return workerBackedSession(client, marker.__aerobagWorkerSessionId, marker.initialSnapshot);
     },
-    deriveChartPageState: (...args) => client.callAdapter("deriveChartPageState", args),
     resolveWaypointIdentifier: (...args) => client.callAdapter("resolveWaypointIdentifier", args),
     resolveNavRefPosition: (...args) => client.callAdapter("resolveNavRefPosition", args),
     suggestWaypointIdentifiersNear: (...args) => client.callAdapter("suggestWaypointIdentifiersNear", args),
     suggestAirwaysNearAnchor: (...args) => client.callAdapter("suggestAirwaysNearAnchor", args),
-    prepareAirwayPresentationForAnchors: (...args) => client.callAdapter("prepareAirwayPresentationForAnchors", args),
     listProcedures: (...args) => client.callAdapter("listProcedures", args),
     describeProcedureOptions: (...args) => client.callAdapter("describeProcedureOptions", args),
     findProcedurePlateMatch: (...args) => client.callAdapter("findProcedurePlateMatch", args),
-    describePlateProcedureLoads: (...args) => client.callAdapter("describePlateProcedureLoads", args),
   };
 }
 
@@ -352,12 +348,15 @@ function workerBackedSession(client: AppCoreWorkerClient, sessionId: number, ini
     sessionSnapshotViewportActivity: () => call("sessionSnapshotViewportActivity"),
     sessionSnapshotRefreshCompleted: () => call("sessionSnapshotRefreshCompleted"),
     pollSessionSnapshotRefresh: () => call("pollSessionSnapshotRefresh"),
+    deriveChartPageState: () => call("deriveChartPageState"),
     insertWaypointAtFlightPlanRow: (...args) => updateSnapshot(call("insertWaypointAtFlightPlanRow", args)),
     suggestWaypointIdentifiersAtFlightPlanRow: (...args) => call("suggestWaypointIdentifiersAtFlightPlanRow", args),
     previewFlightPlanEntry: (...args) => call("previewFlightPlanEntry", args),
     appendFlightPlanEntry: (...args) => updateSnapshot(call("appendFlightPlanEntry", args)),
+    prepareAirwayPresentationAtFlightPlanRow: (...args) => call("prepareAirwayPresentationAtFlightPlanRow", args),
     insertAirwayAtFlightPlanRow: (...args) => updateSnapshot(call("insertAirwayAtFlightPlanRow", args)),
     selectProcedureAtFlightPlanRow: (...args) => updateSnapshot(call("selectProcedureAtFlightPlanRow", args)),
+    describePlateProcedureLoads: (...args) => call("describePlateProcedureLoads", args),
     loadPlateProcedure: (...args) => updateSnapshot(call("loadPlateProcedure", args)),
     restoreDirectTo: () => updateSnapshot(call("restoreDirectTo")),
     performFlightPlanRowAction: (...args) => updateSnapshot(call("performFlightPlanRowAction", args)),

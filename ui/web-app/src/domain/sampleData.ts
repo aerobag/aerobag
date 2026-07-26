@@ -5,7 +5,6 @@
 import bootstrapJson from "@shared-bootstrap";
 import { sampleCatalogFixture } from "./sampleFixtures";
 import type {
-  AppState,
   CatalogJson,
   ChartPageData,
   ContentInventory,
@@ -86,52 +85,4 @@ export const installedInventory: ContentInventory = {
   installed_packages: [],
   cached_tilesets: [],
   cached_plates: [],
-};
-
-export const emptyState: AppState = {
-  active_plan: null,
-  ownship: {
-    policy: {
-      selection: { kind: "auto" },
-      source_priority: [],
-      allow_auto_replay: false,
-      allow_auto_simulated: false,
-    },
-    resolved: {
-      mode: "none",
-      active_source_id: null,
-      active_source_kind: null,
-      banner_text: "NO GPS POSITION",
-      banner_severity: "warning",
-      guidance_enabled: false,
-      sequencing_enabled: false,
-    },
-    render: {
-      mode: "none",
-      banner_text: "NO GPS POSITION",
-      banner_severity: "warning",
-      draw_aircraft: false,
-      draw_predictor: false,
-      draw_cdi: false,
-      position: null,
-      orientation_deg: null,
-      magnetic_variation_deg: null,
-      speed_kt: null,
-      altitude_msl_ft: null,
-      pressure_altitude_ft: null,
-      terrain_altitude_bucket_ft: null,
-    },
-    controls: {
-      mode: "none",
-      selection: { kind: "auto" },
-      launcher_label: "No GPS",
-      launcher_tone: "unavailable",
-      launcher_text_tone: "unavailable",
-      sources: [],
-      situation_controls: [],
-    },
-    sources: [],
-  },
-  content_policy: bootstrap.content_policy,
-  last_content_report: null,
 };

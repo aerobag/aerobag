@@ -6,37 +6,30 @@ use serde::{Deserialize, Serialize};
 
 use crate::geometry::LatLon;
 use crate::map_overlay::NavSymbolFeature;
-use crate::planning::{ConcretizedNavItem, NavRef, ProcedureKind, ResolvedLeg};
+use crate::planning::{NavRef, ProcedureKind, ResolvedLeg};
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub struct AirwayPoint {
-    pub airway_name: String,
-    pub sequence: i32,
-    pub position: LatLon,
+pub(crate) struct AirwayFixPoint {
+    pub(crate) airway_name: String,
+    pub(crate) sequence: i32,
+    pub(crate) position: LatLon,
+    pub(crate) nav_ref: NavRef,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub struct AirwayFixPoint {
-    pub airway_name: String,
-    pub sequence: i32,
-    pub position: LatLon,
-    pub nav_ref: NavRef,
+pub(crate) struct AirwayBranch {
+    pub(crate) display_name: String,
+    pub(crate) branch_key: String,
+    pub(crate) points: Vec<AirwayFixPoint>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub struct AirwayBranch {
-    pub display_name: String,
-    pub branch_key: String,
-    pub points: Vec<AirwayFixPoint>,
-}
-
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub struct AirwaySpatialPoint {
-    pub airway_name: String,
-    pub branch_key: String,
-    pub sequence: i32,
-    pub position: LatLon,
-    pub nav_ref: NavRef,
+pub(crate) struct AirwaySpatialPoint {
+    pub(crate) airway_name: String,
+    pub(crate) branch_key: String,
+    pub(crate) sequence: i32,
+    pub(crate) position: LatLon,
+    pub(crate) nav_ref: NavRef,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -69,52 +62,32 @@ pub struct WaypointIdentifierRecord {
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub struct AirwayEntryCandidate {
-    pub airway_name: String,
-    pub branch_key: String,
-    pub branch_point_index: usize,
-    pub sequence: i32,
-    pub nav_ref: NavRef,
-    pub distance_from_anchor_nm: f64,
-    pub previous_nav_ref: Option<NavRef>,
-    pub next_nav_ref: Option<NavRef>,
+pub(crate) struct AirwayEntryCandidate {
+    pub(crate) airway_name: String,
+    pub(crate) branch_key: String,
+    pub(crate) branch_point_index: usize,
+    pub(crate) sequence: i32,
+    pub(crate) nav_ref: NavRef,
+    pub(crate) distance_from_anchor_nm: f64,
+    pub(crate) previous_nav_ref: Option<NavRef>,
+    pub(crate) next_nav_ref: Option<NavRef>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub struct AirwayExitCandidate {
-    pub airway_name: String,
-    pub branch_key: String,
-    pub branch_point_index: usize,
-    pub sequence: i32,
-    pub nav_ref: NavRef,
-    pub leg_offset_from_entry: isize,
-    pub is_entry: bool,
-    pub distance_from_target_nm: Option<f64>,
-}
-
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub struct AirwayExitSelection {
-    pub airway_name: String,
-    pub branch_key: String,
-    pub entry_branch_point_index: usize,
-    pub recommended_exit_branch_point_index: Option<usize>,
-    pub candidates: Vec<AirwayExitCandidate>,
-}
-
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub struct AirwayAutoSelection {
-    pub airway_name: String,
-    pub branch_key: String,
-    pub entry: AirwayEntryCandidate,
-    pub exit: AirwayExitCandidate,
-    pub origin_distance_nm: f64,
-    pub destination_distance_nm: f64,
-    pub total_anchor_distance_nm: f64,
+pub(crate) struct AirwayExitCandidate {
+    pub(crate) airway_name: String,
+    pub(crate) branch_key: String,
+    pub(crate) branch_point_index: usize,
+    pub(crate) sequence: i32,
+    pub(crate) nav_ref: NavRef,
+    pub(crate) leg_offset_from_entry: isize,
+    pub(crate) is_entry: bool,
+    pub(crate) distance_from_target_nm: Option<f64>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct AirwayPresentationPoint {
-    pub branch_point_index: usize,
+    pub uid: String,
     pub sequence: i32,
     pub nav_ref: NavRef,
 }
@@ -124,8 +97,16 @@ pub struct AirwayPresentationPlan {
     pub airway_name: String,
     pub branch_key: String,
     pub points: Vec<AirwayPresentationPoint>,
-    pub suggested_entry_index: usize,
-    pub suggested_exit_index: Option<usize>,
+    pub suggested_entry_uid: String,
+    pub suggested_exit_uid: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AirwayPresentationSelection {
+    pub airway_name: String,
+    pub branch_key: String,
+    pub entry_point_uid: String,
+    pub exit_point_uid: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -180,8 +161,5 @@ pub struct ProcedureOptions {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct MaterializedProcedure {
     pub procedure: crate::planning::ProcedureSegment,
-    pub concretized_items: Vec<ConcretizedNavItem>,
     pub resolved_legs: Vec<ResolvedLeg>,
-    #[serde(default)]
-    pub data_quality: Vec<String>,
 }

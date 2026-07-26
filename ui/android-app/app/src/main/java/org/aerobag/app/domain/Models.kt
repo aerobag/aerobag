@@ -4,12 +4,6 @@
 
 package org.aerobag.app.domain
 
-sealed interface RouteComponent {
-    data class Waypoint(val waypoint: NavRef) : RouteComponent
-    data class Airway(val airway: AirwaySegment) : RouteComponent
-    data class Procedure(val procedure: ProcedureSegment) : RouteComponent
-}
-
 sealed interface NavRef {
     data class Airport(val code: String) : NavRef
     data class Navaid(val code: String) : NavRef
@@ -31,23 +25,6 @@ sealed interface NavRef {
     data class Spot(val lat: Double, val lon: Double) : NavRef
 }
 
-data class FlightPlan(
-    val id: String,
-    val name: String,
-    val routeComponents: List<RouteComponent> = emptyList(),
-    val routeComponentUids: List<String> = emptyList(),
-    val routeComponentUidCounter: Long = 0,
-    val resolvedLegs: List<ResolvedLeg> = emptyList(),
-    val guidance: GuidanceState? = null,
-    val departure: String?,
-    val destination: String?,
-    val alternate: String?,
-    val cruiseAltitudeFt: Int?,
-    val notes: String?,
-    val updatedAtEpochMs: Long,
-    val version: Long,
-)
-
 data class LatLonPoint(
     val lat: Double,
     val lon: Double,
@@ -57,13 +34,6 @@ data class PlanLeg(
     val from: NavRef,
     val to: NavRef,
     val airway: String? = null,
-)
-
-data class AirwaySegment(
-    val name: String,
-    val branchKey: String? = null,
-    val entry: NavRef,
-    val exit: NavRef,
 )
 
 data class AirwaySuggestion(
@@ -82,59 +52,8 @@ data class WaypointIdentifierSuggestion(
     val distanceFromAnchorNm: Double,
 )
 
-data class AirwayEntryCandidate(
-    val airwayName: String,
-    val branchKey: String,
-    val branchPointIndex: Int,
-    val sequence: Int,
-    val navRef: NavRef,
-    val distanceFromAnchorNm: Double,
-    val previousNavRef: NavRef?,
-    val nextNavRef: NavRef?,
-)
-
-data class AirwayExitCandidate(
-    val airwayName: String,
-    val branchKey: String,
-    val branchPointIndex: Int,
-    val sequence: Int,
-    val navRef: NavRef,
-    val legOffsetFromEntry: Int,
-    val isEntry: Boolean,
-    val distanceFromTargetNm: Double?,
-)
-
-data class AirwayAutoSelection(
-    val airwayName: String,
-    val branchKey: String,
-    val entry: AirwayEntryCandidate,
-    val exit: AirwayExitCandidate,
-    val originDistanceNm: Double,
-    val destinationDistanceNm: Double,
-    val totalAnchorDistanceNm: Double,
-)
-
-data class MaterializedAirway(
-    val selection: AirwayAutoSelection,
-    val airway: AirwaySegment,
-    val resolvedLegs: List<ResolvedLeg>,
-)
-
-data class AirwayFixPoint(
-    val airwayName: String,
-    val sequence: Int,
-    val position: LatLonPoint,
-    val navRef: NavRef,
-)
-
-data class AirwayBranch(
-    val displayName: String,
-    val branchKey: String,
-    val points: List<AirwayFixPoint>,
-)
-
 data class AirwayPresentationPoint(
-    val branchPointIndex: Int,
+    val uid: String,
     val sequence: Int,
     val navRef: NavRef,
 )
@@ -143,8 +62,8 @@ data class AirwayPresentationPlan(
     val airwayName: String,
     val branchKey: String,
     val points: List<AirwayPresentationPoint>,
-    val suggestedEntryIndex: Int,
-    val suggestedExitIndex: Int?,
+    val suggestedEntryUid: String,
+    val suggestedExitUid: String?,
 )
 
 enum class ProcedureKind {
@@ -152,22 +71,6 @@ enum class ProcedureKind {
     Star,
     Approach,
 }
-
-sealed interface ProcedureDiscontinuity {
-    data object Vectors : ProcedureDiscontinuity
-    data object Hold : ProcedureDiscontinuity
-    data class Other(val value: String) : ProcedureDiscontinuity
-}
-
-data class ProcedureSegment(
-    val airportId: String,
-    val procedureId: String,
-    val displayLabel: String? = null,
-    val kind: ProcedureKind,
-    val runwayTransition: String?,
-    val enrouteTransition: String?,
-    val terminalDiscontinuity: ProcedureDiscontinuity? = null,
-)
 
 data class ProcedureSummary(
     val airportId: String,
@@ -215,19 +118,6 @@ data class ProcedureLegMaterializationRecord(
     val pathTermination: String,
 )
 
-sealed interface ResolvedLegSource {
-    data class RouteComponent(val componentIndex: Int) : ResolvedLegSource
-    data class SyntheticBridge(val fromComponentIndex: Int, val toComponentIndex: Int) : ResolvedLegSource
-}
-
-data class ResolvedLeg(
-    val id: String,
-    val from: NavRef,
-    val to: NavRef,
-    val procedureAirportId: String? = null,
-    val source: ResolvedLegSource,
-)
-
 enum class RouteSegmentStatus {
     Completed,
     Active,
@@ -258,79 +148,11 @@ enum class SequencingMode {
     DirectTo,
 }
 
-enum class SuspendReason {
-    Manual,
-    Boundary,
-    RouteEnd,
-    DirectToComplete,
-}
-
-enum class DirectToTargetRowKind {
-    Planned,
-    Temporary,
-}
-
-data class DirectToTargetRow(
-    val kind: DirectToTargetRowKind,
-    val rowId: String,
-)
-
-data class DirectToState(
-    val start: NavRef,
-    val target: NavRef,
-    val targetRow: DirectToTargetRow,
-    val resumeRowId: String?,
-)
-
-data class GuidanceState(
-    val activeLegIndex: Int,
-    val activeDetailIndex: Int? = null,
-    val displaySplitLegId: String? = null,
-    val sequencingMode: SequencingMode,
-    val directTo: DirectToState?,
-    val suspendReason: SuspendReason? = null,
-)
-
-sealed interface ConcretizedNavItem {
-    data class Waypoint(val navRef: NavRef) : ConcretizedNavItem
-    data class Discontinuity(val discontinuity: ProcedureDiscontinuity, val label: String) : ConcretizedNavItem
-}
-
 enum class RouteComponentViewKind {
     Waypoint,
     Airway,
     Procedure,
 }
-
-data class RouteComponentUiView(
-    val uid: String,
-    val componentIndex: Int,
-    val kind: RouteComponentViewKind,
-    val summary: String,
-    val procedureId: String?,
-    val procedureKind: ProcedureKind?,
-    val chartAirportId: String?,
-    val items: List<ConcretizedNavItem>,
-    val active: Boolean,
-    val canAddAirwayAfter: Boolean,
-    val canAddProcedureBefore: Boolean,
-    val canRemove: Boolean,
-    val canReorder: Boolean,
-    val canReorderUp: Boolean,
-    val canReorderDown: Boolean,
-    val precedingWaypoint: NavRef?,
-    val followingWaypoint: NavRef?,
-)
-
-data class ResolvedLegUiView(
-    val legIndex: Int,
-    val legId: String,
-    val componentIndex: Int?,
-    val from: NavRef,
-    val to: NavRef,
-    val active: Boolean,
-    val suspendBoundaryAfter: Boolean,
-)
 
 data class DirectToUiView(
     val start: NavRef,
@@ -341,10 +163,8 @@ data class DirectToUiView(
 
 data class GuidanceUiView(
     val sequencingMode: SequencingMode,
-    val activeLegIndex: Int?,
     val activeFromRowUid: String? = null,
     val activeToRowUid: String? = null,
-    val activeComponentIndex: Int?,
     val activeLeg: PlanLeg?,
     val navElement: NavElementUiView,
     val directTo: DirectToUiView?,
@@ -374,8 +194,8 @@ data class NavElementUiView(
 )
 
 data class FlightPlanUiState(
-    val components: List<RouteComponentUiView>,
-    val resolvedLegs: List<ResolvedLegUiView>,
+    val planId: String,
+    val planVersion: Long,
     val displayRows: List<FlightPlanDisplayRowUiView>,
     val dataColumns: List<FlightDataColumn>,
     val controls: List<FlightPlanControlUiView>,
@@ -451,10 +271,8 @@ data class FlightPlanDisplayRowUiView(
     val rowKind: FlightPlanDisplayRowKind,
     val componentKind: RouteComponentViewKind?,
     val componentUid: String? = null,
-    val componentIndex: Int?,
     val procedureId: String?,
     val procedureKind: ProcedureKind?,
-    val legIndex: Int?,
     val dataCells: List<FlightDataCell>,
     val showPlateTargetId: String?,
     val chartAirportId: String?,
@@ -471,19 +289,11 @@ data class FlightPlanDisplayRowUiView(
     val canReorderComponent: Boolean,
     val canReorderUp: Boolean,
     val canReorderDown: Boolean,
-    val replaceProcedureComponentIndex: Int?,
-    val startComponentIndex: Int?,
-    val endComponentIndex: Int?,
     val originAnchor: NavRef?,
     val destinationAnchor: NavRef?,
     val precedingWaypoint: NavRef?,
     val followingWaypoint: NavRef?,
     val actionMatrix: List<List<FlightPlanRowActionUiView>> = emptyList(),
-)
-
-data class FlightPlanUiMutation(
-    val plan: FlightPlan,
-    val uiState: FlightPlanUiState,
 )
 
 data class FlightPlanEntryToken(
@@ -502,12 +312,6 @@ data class FlightPlanEntryPreview(
     val canCommit: Boolean,
     val tokens: List<FlightPlanEntryToken>,
     val issues: List<FlightPlanEntryIssue>,
-)
-
-data class MaterializedProcedure(
-    val procedure: ProcedureSegment,
-    val concretizedItems: List<ConcretizedNavItem>,
-    val resolvedLegs: List<ResolvedLeg>,
 )
 
 enum class TileStorageKind {
@@ -568,18 +372,10 @@ data class ChartPageFixture(
     val airports: List<ChartAirport>,
 )
 
-data class AppState(
-    val activePlan: FlightPlan? = null,
-)
-
 data class AppUiState(
     val activePlan: FlightPlanUiState? = null,
     val ownship: OwnshipUiState = OwnshipUiState(),
     val flightDataBanner: FlightDataBannerModel = FlightDataBannerModel(),
-)
-
-data class UiSnapshotAppState(
-    val activePlan: FlightPlan? = null,
 )
 
 sealed interface OwnshipSelection {

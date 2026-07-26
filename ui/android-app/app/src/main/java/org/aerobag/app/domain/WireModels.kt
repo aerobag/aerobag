@@ -24,21 +24,10 @@ import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
 
 @Serializable
-data class WireAppState(
-    val active_plan: WireFlightPlan? = null,
-    val ownship: WireOwnshipState = WireOwnshipState(),
-)
-
-@Serializable
 data class WireAppUiState(
     val active_plan: WireFlightPlanUiState? = null,
     val ownship: WireOwnshipUiState = WireOwnshipUiState(),
     val flight_data_banner: WireFlightDataBannerModel = WireFlightDataBannerModel(),
-)
-
-@Serializable
-data class WireUiSnapshotAppState(
-    val active_plan: WireFlightPlan? = null,
 )
 
 @Serializable
@@ -196,24 +185,6 @@ data class WireOwnshipSourceStatus(
     val auto_eligible: Boolean = true,
     val active: Boolean = false,
     val status_label: String = "",
-)
-
-@Serializable
-data class WireFlightPlan(
-    val id: String,
-    val name: String,
-    val route_components: List<WireRouteComponent> = emptyList(),
-    val route_component_uids: List<String> = emptyList(),
-    val route_component_uid_counter: Long = 0,
-    val resolved_legs: List<WireResolvedLeg> = emptyList(),
-    val guidance: WireGuidanceState? = null,
-    val departure: String? = null,
-    val destination: String? = null,
-    val alternate: String? = null,
-    val cruise_altitude_ft: Int? = null,
-    val notes: String? = null,
-    val updated_at_epoch_ms: Long,
-    val version: Long,
 )
 
 @Serializable
@@ -926,66 +897,8 @@ data class WireWaypointIdentifierSuggestion(
 )
 
 @Serializable
-data class WireAirwayEntryCandidate(
-    val airway_name: String,
-    val branch_key: String,
-    val branch_point_index: Int,
-    val sequence: Int,
-    val nav_ref: WireNavRef,
-    val distance_from_anchor_nm: Double,
-    val previous_nav_ref: WireNavRef? = null,
-    val next_nav_ref: WireNavRef? = null,
-)
-
-@Serializable
-data class WireAirwayExitCandidate(
-    val airway_name: String,
-    val branch_key: String,
-    val branch_point_index: Int,
-    val sequence: Int,
-    val nav_ref: WireNavRef,
-    val leg_offset_from_entry: Int,
-    val is_entry: Boolean,
-    val distance_from_target_nm: Double? = null,
-)
-
-@Serializable
-data class WireAirwayAutoSelection(
-    val airway_name: String,
-    val branch_key: String,
-    val entry: WireAirwayEntryCandidate,
-    val exit: WireAirwayExitCandidate,
-    val origin_distance_nm: Double,
-    val destination_distance_nm: Double,
-    val total_anchor_distance_nm: Double,
-)
-
-@Serializable
-data class WireAirwaySegment(
-    val name: String,
-    val branch_key: String? = null,
-    val entry: WireNavRef,
-    val exit: WireNavRef,
-)
-
-@Serializable
-data class WireAirwayFixPoint(
-    val airway_name: String,
-    val sequence: Int,
-    val position: WireLatLon,
-    val nav_ref: WireNavRef,
-)
-
-@Serializable
-data class WireAirwayBranch(
-    val display_name: String,
-    val branch_key: String,
-    val points: List<WireAirwayFixPoint>,
-)
-
-@Serializable
 data class WireAirwayPresentationPoint(
-    val branch_point_index: Int,
+    val uid: String,
     val sequence: Int,
     val nav_ref: WireNavRef,
 )
@@ -995,8 +908,8 @@ data class WireAirwayPresentationPlan(
     val airway_name: String,
     val branch_key: String,
     val points: List<WireAirwayPresentationPoint>,
-    val suggested_entry_index: Int,
-    val suggested_exit_index: Int? = null,
+    val suggested_entry_uid: String,
+    val suggested_exit_uid: String? = null,
 )
 
 @Serializable
@@ -1010,45 +923,6 @@ enum class WireProcedureKind {
     @SerialName("approach")
     Approach,
 }
-
-@Serializable(with = WireProcedureDiscontinuitySerializer::class)
-sealed interface WireProcedureDiscontinuity {
-    data object Vectors : WireProcedureDiscontinuity
-    data object Hold : WireProcedureDiscontinuity
-    data class Other(val value: String) : WireProcedureDiscontinuity
-}
-
-object WireProcedureDiscontinuitySerializer : KSerializer<WireProcedureDiscontinuity> {
-    override val descriptor: SerialDescriptor =
-        PrimitiveSerialDescriptor("WireProcedureDiscontinuity", PrimitiveKind.STRING)
-
-    override fun serialize(encoder: Encoder, value: WireProcedureDiscontinuity) {
-        val text = when (value) {
-            WireProcedureDiscontinuity.Vectors -> "vectors"
-            WireProcedureDiscontinuity.Hold -> "hold"
-            is WireProcedureDiscontinuity.Other -> value.value
-        }
-        encoder.encodeString(text)
-    }
-
-    override fun deserialize(decoder: Decoder): WireProcedureDiscontinuity =
-        when (val text = decoder.decodeString()) {
-            "vectors" -> WireProcedureDiscontinuity.Vectors
-            "hold" -> WireProcedureDiscontinuity.Hold
-            else -> WireProcedureDiscontinuity.Other(text)
-        }
-}
-
-@Serializable
-data class WireProcedureSegment(
-    val airport_id: String,
-    val procedure_id: String,
-    val display_label: String? = null,
-    val kind: WireProcedureKind,
-    val runway_transition: String? = null,
-    val enroute_transition: String? = null,
-    val terminal_discontinuity: WireProcedureDiscontinuity? = null,
-)
 
 @Serializable
 data class WireProcedureSummary(
@@ -1095,58 +969,6 @@ data class WireProcedureLegMaterializationRecord(
     val sequence: Int,
     val nav_ref: WireNavRef? = null,
     val path_termination: String,
-)
-
-@Serializable(with = WireResolvedLegSourceSerializer::class)
-sealed interface WireResolvedLegSource {
-    data class RouteComponent(val component_index: Int) : WireResolvedLegSource
-    data class SyntheticBridge(val from_component_index: Int, val to_component_index: Int) : WireResolvedLegSource
-}
-
-object WireResolvedLegSourceSerializer : KSerializer<WireResolvedLegSource> {
-    override val descriptor: SerialDescriptor =
-        PrimitiveSerialDescriptor("WireResolvedLegSource", PrimitiveKind.STRING)
-
-    override fun serialize(encoder: Encoder, value: WireResolvedLegSource) {
-        require(encoder is JsonEncoder) { "WireResolvedLegSource is JSON-only" }
-        val element = when (value) {
-            is WireResolvedLegSource.RouteComponent -> JsonObject(
-                mapOf("kind" to JsonPrimitive("route_component"), "component_index" to JsonPrimitive(value.component_index)),
-            )
-            is WireResolvedLegSource.SyntheticBridge -> JsonObject(
-                mapOf(
-                    "kind" to JsonPrimitive("synthetic_bridge"),
-                    "from_component_index" to JsonPrimitive(value.from_component_index),
-                    "to_component_index" to JsonPrimitive(value.to_component_index),
-                ),
-            )
-        }
-        encoder.encodeJsonElement(element)
-    }
-
-    override fun deserialize(decoder: Decoder): WireResolvedLegSource {
-        require(decoder is JsonDecoder) { "WireResolvedLegSource is JSON-only" }
-        val obj = decoder.decodeJsonElement() as? JsonObject ?: error("WireResolvedLegSource must be an object")
-        return when (obj["kind"]?.jsonPrimitive?.content) {
-            "route_component" -> WireResolvedLegSource.RouteComponent(
-                component_index = obj["component_index"]?.jsonPrimitive?.content?.toInt() ?: error("component_index required"),
-            )
-            "synthetic_bridge" -> WireResolvedLegSource.SyntheticBridge(
-                from_component_index = obj["from_component_index"]?.jsonPrimitive?.content?.toInt() ?: error("from_component_index required"),
-                to_component_index = obj["to_component_index"]?.jsonPrimitive?.content?.toInt() ?: error("to_component_index required"),
-            )
-            else -> error("Unsupported WireResolvedLegSource")
-        }
-    }
-}
-
-@Serializable
-data class WireResolvedLeg(
-    val id: String,
-    val from: WireNavRef,
-    val to: WireNavRef,
-    val procedure_airport_id: String? = null,
-    val source: WireResolvedLegSource,
 )
 
 @Serializable
@@ -1197,154 +1019,6 @@ enum class WireSequencingMode {
 }
 
 @Serializable
-enum class WireDirectToTargetRowKind {
-    @SerialName("planned")
-    Planned,
-
-    @SerialName("temporary")
-    Temporary,
-}
-
-@Serializable
-data class WireDirectToTargetRow(
-    val kind: WireDirectToTargetRowKind,
-    val row_id: String,
-)
-
-@Serializable
-data class WireDirectToState(
-    val start: WireNavRef,
-    val target: WireNavRef,
-    val target_row: WireDirectToTargetRow,
-    val resume_row_id: String? = null,
-)
-
-@Serializable
-data class WireGuidanceState(
-    val active_leg_index: Int,
-    val active_detail_index: Int? = null,
-    val display_split_leg_id: String? = null,
-    val sequencing_mode: WireSequencingMode,
-    val direct_to: WireDirectToState? = null,
-    val suspend_reason: WireSuspendReason? = null,
-)
-
-@Serializable
-enum class WireSuspendReason {
-    @SerialName("manual")
-    Manual,
-
-    @SerialName("boundary")
-    Boundary,
-
-    @SerialName("route_end")
-    RouteEnd,
-
-    @SerialName("direct_to_complete")
-    DirectToComplete,
-}
-
-@Serializable(with = WireRouteComponentSerializer::class)
-sealed interface WireRouteComponent {
-    data class Waypoint(val waypoint: WireNavRef) : WireRouteComponent
-    data class Airway(val airway: WireAirwaySegment) : WireRouteComponent
-    data class Procedure(val procedure: WireProcedureSegment) : WireRouteComponent
-}
-
-object WireRouteComponentSerializer : KSerializer<WireRouteComponent> {
-    override val descriptor: SerialDescriptor =
-        PrimitiveSerialDescriptor("WireRouteComponent", PrimitiveKind.STRING)
-
-    override fun serialize(encoder: Encoder, value: WireRouteComponent) {
-        require(encoder is JsonEncoder) { "WireRouteComponent is JSON-only" }
-        val element = when (value) {
-            is WireRouteComponent.Waypoint -> JsonObject(
-                mapOf(
-                    "kind" to JsonPrimitive("waypoint"),
-                    "waypoint" to encoder.json.encodeToJsonElement(WireNavRefSerializer, value.waypoint),
-                ),
-            )
-            is WireRouteComponent.Airway -> JsonObject(
-                mapOf(
-                    "kind" to JsonPrimitive("airway"),
-                    "airway" to encoder.json.encodeToJsonElement(WireAirwaySegment.serializer(), value.airway),
-                ),
-            )
-            is WireRouteComponent.Procedure -> JsonObject(
-                mapOf(
-                    "kind" to JsonPrimitive("procedure"),
-                    "procedure" to encoder.json.encodeToJsonElement(WireProcedureSegment.serializer(), value.procedure),
-                ),
-            )
-        }
-        encoder.encodeJsonElement(element)
-    }
-
-    override fun deserialize(decoder: Decoder): WireRouteComponent {
-        require(decoder is JsonDecoder) { "WireRouteComponent is JSON-only" }
-        val obj = decoder.decodeJsonElement() as? JsonObject ?: error("WireRouteComponent must be an object")
-        return when (obj["kind"]?.jsonPrimitive?.content) {
-            "waypoint" -> WireRouteComponent.Waypoint(
-                waypoint = decoder.json.decodeFromJsonElement(WireNavRefSerializer, obj["waypoint"] ?: error("waypoint required")),
-            )
-            "airway" -> WireRouteComponent.Airway(
-                airway = decoder.json.decodeFromJsonElement(WireAirwaySegment.serializer(), obj["airway"] ?: error("airway required")),
-            )
-            "procedure" -> WireRouteComponent.Procedure(
-                procedure = decoder.json.decodeFromJsonElement(WireProcedureSegment.serializer(), obj["procedure"] ?: error("procedure required")),
-            )
-            else -> error("Unsupported WireRouteComponent")
-        }
-    }
-}
-
-@Serializable(with = WireConcretizedNavItemSerializer::class)
-sealed interface WireConcretizedNavItem {
-    data class Waypoint(val nav_ref: WireNavRef) : WireConcretizedNavItem
-    data class Discontinuity(val discontinuity: WireProcedureDiscontinuity, val label: String) : WireConcretizedNavItem
-}
-
-object WireConcretizedNavItemSerializer : KSerializer<WireConcretizedNavItem> {
-    override val descriptor: SerialDescriptor =
-        PrimitiveSerialDescriptor("WireConcretizedNavItem", PrimitiveKind.STRING)
-
-    override fun serialize(encoder: Encoder, value: WireConcretizedNavItem) {
-        require(encoder is JsonEncoder) { "WireConcretizedNavItem is JSON-only" }
-        val element = when (value) {
-            is WireConcretizedNavItem.Waypoint -> JsonObject(
-                mapOf(
-                    "kind" to JsonPrimitive("waypoint"),
-                    "nav_ref" to encoder.json.encodeToJsonElement(WireNavRefSerializer, value.nav_ref),
-                ),
-            )
-            is WireConcretizedNavItem.Discontinuity -> JsonObject(
-                mapOf(
-                    "kind" to JsonPrimitive("discontinuity"),
-                    "discontinuity" to encoder.json.encodeToJsonElement(WireProcedureDiscontinuitySerializer, value.discontinuity),
-                    "label" to JsonPrimitive(value.label),
-                ),
-            )
-        }
-        encoder.encodeJsonElement(element)
-    }
-
-    override fun deserialize(decoder: Decoder): WireConcretizedNavItem {
-        require(decoder is JsonDecoder) { "WireConcretizedNavItem is JSON-only" }
-        val obj = decoder.decodeJsonElement() as? JsonObject ?: error("WireConcretizedNavItem must be an object")
-        return when (obj["kind"]?.jsonPrimitive?.content) {
-            "waypoint" -> WireConcretizedNavItem.Waypoint(
-                nav_ref = decoder.json.decodeFromJsonElement(WireNavRefSerializer, obj["nav_ref"] ?: error("nav_ref required")),
-            )
-            "discontinuity" -> WireConcretizedNavItem.Discontinuity(
-                discontinuity = decoder.json.decodeFromJsonElement(WireProcedureDiscontinuitySerializer, obj["discontinuity"] ?: error("discontinuity required")),
-                label = obj["label"]?.jsonPrimitive?.content ?: error("label required"),
-            )
-            else -> error("Unsupported WireConcretizedNavItem")
-        }
-    }
-}
-
-@Serializable
 enum class WireRouteComponentViewKind {
     @SerialName("waypoint")
     Waypoint,
@@ -1357,38 +1031,6 @@ enum class WireRouteComponentViewKind {
 }
 
 @Serializable
-data class WireRouteComponentUiView(
-    val uid: String,
-    val component_index: Int,
-    val kind: WireRouteComponentViewKind,
-    val summary: String,
-    val procedure_id: String? = null,
-    val procedure_kind: WireProcedureKind? = null,
-    val chart_airport_id: String? = null,
-    val items: List<WireConcretizedNavItem>,
-    val active: Boolean,
-    val can_add_airway_after: Boolean,
-    val can_add_procedure_before: Boolean,
-    val can_remove: Boolean,
-    val can_reorder: Boolean,
-    val can_reorder_up: Boolean,
-    val can_reorder_down: Boolean,
-    val preceding_waypoint: WireNavRef? = null,
-    val following_waypoint: WireNavRef? = null,
-)
-
-@Serializable
-data class WireResolvedLegUiView(
-    val leg_index: Int,
-    val leg_id: String,
-    val component_index: Int? = null,
-    val from: WireNavRef,
-    val to: WireNavRef,
-    val active: Boolean,
-    val suspend_boundary_after: Boolean,
-)
-
-@Serializable
 data class WireDirectToUiView(
     val start: WireNavRef,
     val target: WireNavRef,
@@ -1399,10 +1041,8 @@ data class WireDirectToUiView(
 @Serializable
 data class WireGuidanceUiView(
     val sequencing_mode: WireSequencingMode,
-    val active_leg_index: Int? = null,
     val active_from_row_uid: String? = null,
     val active_to_row_uid: String? = null,
-    val active_component_index: Int? = null,
     val active_leg: WirePlanLeg? = null,
     val nav_element: WireNavElementUiView = WireNavElementUiView(),
     val direct_to: WireDirectToUiView? = null,
@@ -1447,8 +1087,8 @@ data class WireNavElementUiView(
 
 @Serializable
 data class WireFlightPlanUiState(
-    val components: List<WireRouteComponentUiView>,
-    val resolved_legs: List<WireResolvedLegUiView>,
+    val plan_id: String,
+    val plan_version: Long,
     val display_rows: List<WireFlightPlanDisplayRowUiView>,
     val data_columns: List<WireFlightDataColumn>,
     val controls: List<WireFlightPlanControlUiView> = emptyList(),
@@ -1516,10 +1156,8 @@ data class WireFlightPlanDisplayRowUiView(
     val row_kind: WireFlightPlanDisplayRowKind,
     val component_kind: WireRouteComponentViewKind? = null,
     val component_uid: String? = null,
-    val component_index: Int? = null,
     val procedure_id: String? = null,
     val procedure_kind: WireProcedureKind? = null,
-    val leg_index: Int? = null,
     val data_cells: List<WireFlightDataCell>,
     val show_plate_target_id: String? = null,
     val chart_airport_id: String? = null,
@@ -1536,20 +1174,11 @@ data class WireFlightPlanDisplayRowUiView(
     val can_reorder_component: Boolean,
     val can_reorder_up: Boolean,
     val can_reorder_down: Boolean,
-    val replace_procedure_component_index: Int? = null,
-    val start_component_index: Int? = null,
-    val end_component_index: Int? = null,
     val origin_anchor: WireNavRef? = null,
     val destination_anchor: WireNavRef? = null,
     val preceding_waypoint: WireNavRef? = null,
     val following_waypoint: WireNavRef? = null,
     val action_matrix: List<List<WireFlightPlanRowActionUiView>> = emptyList(),
-)
-
-@Serializable
-data class WireFlightPlanUiMutation(
-    val plan: WireFlightPlan,
-    val ui_state: WireFlightPlanUiState,
 )
 
 @Serializable
@@ -1571,49 +1200,6 @@ data class WireFlightPlanEntryPreview(
     val can_commit: Boolean,
     val tokens: List<WireFlightPlanEntryToken>,
     val issues: List<WireFlightPlanEntryIssue>,
-)
-
-@Serializable
-data class WireAirwayPlanMutation(
-    val plan: WireFlightPlan,
-    val selection: WireAirwayAutoSelection,
-    val airway: WireAirwaySegment,
-    val resolved_legs: List<WireResolvedLeg>,
-)
-
-@Serializable
-data class WireMaterializedAirway(
-    val selection: WireAirwayAutoSelection,
-    val airway: WireAirwaySegment,
-    val resolvedLegs: List<WireResolvedLeg>,
-)
-
-@Serializable
-data class WireAirwayPlanUiMutation(
-    val mutation: WireAirwayPlanMutation,
-    val ui_state: WireFlightPlanUiState,
-)
-
-@Serializable
-data class WireProcedurePlanMutation(
-    val plan: WireFlightPlan,
-    val component_index: Int,
-    val procedure: WireProcedureSegment,
-    val concretized_items: List<WireConcretizedNavItem>,
-    val resolved_legs: List<WireResolvedLeg>,
-)
-
-@Serializable
-data class WireProcedurePlanUiMutation(
-    val mutation: WireProcedurePlanMutation,
-    val ui_state: WireFlightPlanUiState,
-)
-
-@Serializable
-data class WireMaterializedProcedure(
-    val procedure: WireProcedureSegment,
-    val concretized_items: List<WireConcretizedNavItem>,
-    val resolved_legs: List<WireResolvedLeg>,
 )
 
 @Serializable

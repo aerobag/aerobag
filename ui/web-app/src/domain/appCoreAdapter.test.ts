@@ -6,11 +6,6 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { createLiveFeedSubscription, loadBestAvailableAdapter, resolveLiveFeedResourceUrl, resolveLiveFeedSourceUrl } from "./appCoreAdapter";
 
 const snapshotJson = JSON.stringify({
-  app_state: {
-    active_plan: null,
-    content_policy: "PreferLocal",
-    last_content_report: null,
-  },
   app_ui_state: {
     active_plan: null,
     ownship: {
@@ -92,8 +87,7 @@ describe("loadBestAvailableAdapter", () => {
   it("uses the wasm adapter when the generated module exports the expected API", async () => {
     const loaded = await loadBestAvailableAdapter(async () => ({
       situation_ring_candidates_json: () => "[]",
-      empty_flight_plan_json: () => JSON.stringify({ id: "plan-empty", name: "Flight Plan", route_components: [], route_component_uids: [], route_component_uid_counter: 0, resolved_legs: [], guidance: null, departure: null, destination: null, alternate: null, cruise_altitude_ft: null, notes: null, updated_at_epoch_ms: 0, version: 1 }),
-      create_ui_session: async (_planJson: string, _recentAirportIdsJson: string, _selectedAirportIdJson: string, _selectedChartIdJson: string, _nowEpochMs: number) => {
+      create_ui_session: async (_recentAirportIdsJson: string, _selectedAirportIdJson: string, _selectedChartIdJson: string, _nowEpochMs: number) => {
         return JSON.stringify({ handle: 1, snapshot: JSON.parse(snapshotJson) });
       },
       maintain_nav_db_in_session_at_epoch_ms: async () => JSON.stringify({
@@ -132,8 +126,8 @@ describe("loadBestAvailableAdapter", () => {
       load_raster_map_catalog_in_session: async () => JSON.stringify({ state: "complete", result: JSON.parse(snapshotJson) }),
       select_map_family_in_session: async () => snapshotJson,
       select_raster_map_in_session: async () => snapshotJson,
-      insert_waypoint_at_flight_plan_row_in_session: async () => JSON.stringify({ state: "complete", result: JSON.parse(snapshotJson) }),
-      perform_flight_plan_row_action_in_session: async () => JSON.stringify({ state: "complete", result: JSON.parse(snapshotJson) }),
+      perform_flight_plan_command_in_session: async () => JSON.stringify({ state: "complete", result: JSON.parse(snapshotJson) }),
+      query_flight_plan_in_session: async () => JSON.stringify({ state: "complete", result: [] }),
       perform_status_action_in_session: async () => snapshotJson,
       sync_guidance_geometry_in_session: async () => JSON.stringify({ state: "complete", result: JSON.parse(snapshotJson) }),
       project_flight_plan_route_in_session: async () => JSON.stringify({
@@ -198,18 +192,6 @@ describe("loadBestAvailableAdapter", () => {
       ingest_live_feed_sse_event_in_session: async () => JSON.stringify({ state: "complete", result: { products: [] } }),
       ingest_live_feed_sse_events_in_session: async () => JSON.stringify({ state: "complete", result: { products: [] } }),
       report_live_feed_connection_event_in_session: async () => snapshotJson,
-      suggest_waypoint_identifiers_at_flight_plan_row_in_session: async () => JSON.stringify({ state: "complete", result: [] }),
-      preview_flight_plan_entry_in_session: async () => JSON.stringify({ state: "complete", result: { can_commit: false, tokens: [], issues: [] } }),
-      append_flight_plan_entry_in_session: async () => JSON.stringify({ state: "complete", result: JSON.parse(snapshotJson) }),
-      insert_airway_at_flight_plan_row_in_session: async () => JSON.stringify({ state: "complete", result: JSON.parse(snapshotJson) }),
-      select_procedure_at_flight_plan_row_in_session: async () => JSON.stringify({ state: "complete", result: JSON.parse(snapshotJson) }),
-      load_plate_procedure_in_session: async () => JSON.stringify({ state: "complete", result: JSON.parse(snapshotJson) }),
-      restore_direct_to_in_session: async () => JSON.stringify({ state: "complete", result: JSON.parse(snapshotJson) }),
-      activate_next_leg_in_session: async () => snapshotJson,
-      stop_navigation_in_session: async () => snapshotJson,
-      suspend_sequencing_in_session: async () => snapshotJson,
-      unsuspend_sequencing_in_session: async () => snapshotJson,
-      sequence_active_leg_in_session: async () => snapshotJson,
     }));
 
     expect(loaded.backend).toBe("wasm");

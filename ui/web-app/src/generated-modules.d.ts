@@ -20,15 +20,10 @@ declare module "@shared/*.html?raw" {
 declare module "@generated/app_wasm.js" {
   const init: (...args: unknown[]) => Promise<unknown>;
   export default init;
-  export const activate_next_leg_in_session: (...args: unknown[]) => string;
-  export const stop_navigation_in_session: (...args: unknown[]) => string;
-  export const suspend_sequencing_in_session: (...args: unknown[]) => string;
-  export const unsuspend_sequencing_in_session: (...args: unknown[]) => string;
-  export const sequence_active_leg_in_session: (...args: unknown[]) => string;
-  export const perform_flight_plan_row_action_in_session: (...args: unknown[]) => string;
+  export const perform_flight_plan_command_in_session: (...args: unknown[]) => string;
+  export const query_flight_plan_in_session: (...args: unknown[]) => string;
   export const perform_status_action_in_session: (...args: unknown[]) => string;
   export const perform_map_selection_action_in_session: (...args: unknown[]) => string;
-  export const empty_flight_plan_json: (...args: unknown[]) => string;
   export const create_ui_session: (...args: unknown[]) => string;
   export const sync_guidance_geometry_in_session: (...args: unknown[]) => string;
   export const project_flight_plan_route_in_session: (...args: unknown[]) => string;
@@ -51,14 +46,6 @@ declare module "@generated/app_wasm.js" {
   export const set_map_layer_visibility_in_session_paged: (...args: unknown[]) => string;
   export const set_map_layer_enabled_in_session_paged: (...args: unknown[]) => string;
   export const set_resource_policy_in_session: (...args: unknown[]) => string;
-  export const insert_waypoint_at_flight_plan_row_in_session: (...args: unknown[]) => string;
-  export const suggest_waypoint_identifiers_at_flight_plan_row_in_session: (...args: unknown[]) => string;
-  export const preview_flight_plan_entry_in_session: (...args: unknown[]) => string;
-  export const append_flight_plan_entry_in_session: (...args: unknown[]) => string;
-  export const insert_airway_at_flight_plan_row_in_session: (...args: unknown[]) => string;
-  export const select_procedure_at_flight_plan_row_in_session: (...args: unknown[]) => string;
-  export const load_plate_procedure_in_session: (...args: unknown[]) => string;
-  export const restore_direct_to_in_session: (...args: unknown[]) => string;
   export const accept_disclaimer_in_session: (...args: unknown[]) => string;
   export const perform_settings_action_in_session: (...args: unknown[]) => string;
   export const select_airport_in_session: (...args: unknown[]) => string;

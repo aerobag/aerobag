@@ -194,22 +194,18 @@ import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
 import org.aerobag.app.domain.ChartAirport
 import org.aerobag.app.domain.ChartAsset
-import org.aerobag.app.domain.AppState
 import org.aerobag.app.domain.AirwayPresentationPlan
 import org.aerobag.app.domain.AirwaySuggestion
 import org.aerobag.app.domain.WaypointIdentifierSuggestion
 import org.aerobag.app.domain.CoreMapViewport
 import org.aerobag.app.domain.DerivedChartPageState
-import org.aerobag.app.domain.FlightPlan
 import org.aerobag.app.domain.FlightDataColumn
 import org.aerobag.app.domain.FlightPlanEntryPreview
-import org.aerobag.app.domain.FlightPlanUiMutation
 import org.aerobag.app.domain.FlightPlanDisplayRowKind
 import org.aerobag.app.domain.FlightPlanDisplayRowUiView
 import org.aerobag.app.domain.FlightPlanRowActionUiView
 import org.aerobag.app.domain.FlightPlanRouteSegment
 import org.aerobag.app.domain.FlightPlanUiState
-import org.aerobag.app.domain.GuidanceState
 import org.aerobag.app.domain.InstalledPackages
 import org.aerobag.app.domain.AirspaceDisplayDecoration
 import org.aerobag.app.domain.AirspaceDisplayLabel
@@ -244,12 +240,9 @@ import org.aerobag.app.domain.ProcedureKind
 import org.aerobag.app.domain.ProcedureLoadOption
 import org.aerobag.app.domain.ProcedureOptions
 import org.aerobag.app.domain.ProcedureSummary
-import org.aerobag.app.domain.ResolvedLeg
-import org.aerobag.app.domain.ResolvedLegSource
 import org.aerobag.app.domain.RenderTile
 import org.aerobag.app.domain.RouteSegmentStatus
 import org.aerobag.app.domain.RouteComponentViewKind
-import org.aerobag.app.domain.RouteComponent
 import org.aerobag.app.domain.ScreenPoint
 import org.aerobag.app.domain.SectionalPackages
 import org.aerobag.app.domain.SequencingMode
@@ -345,10 +338,9 @@ internal fun PlanHeaderRow(columns: List<FlightDataColumn>) {
 }
 
 internal fun buildFlightPlanDisplayRows(planUiState: FlightPlanUiState): List<FlightPlanDisplayRow> =
-    planUiState.displayRows.mapIndexed { index, row ->
+    planUiState.displayRows.map { row ->
         FlightPlanDisplayRow(
             id = row.uid,
-            selectionKey = selectionKeyForDisplayRow(row, index),
             label = row.label,
             rowKind =
                 when (row.rowKind) {
@@ -359,10 +351,8 @@ internal fun buildFlightPlanDisplayRows(planUiState: FlightPlanUiState): List<Fl
                 },
             componentKind = row.componentKind,
             componentUid = row.componentUid,
-            componentIndex = row.componentIndex,
             procedureId = row.procedureId,
             procedureKind = row.procedureKind,
-            legIndex = row.legIndex,
             dataCells = row.dataCells,
             showPlateTargetId = row.showPlateTargetId,
             chartAirportId = row.chartAirportId,
@@ -380,15 +370,10 @@ internal fun buildFlightPlanDisplayRows(planUiState: FlightPlanUiState): List<Fl
             canReorderUp = row.canReorderUp,
             canReorderDown = row.canReorderDown,
             actionMatrix = row.actionMatrix,
-            startComponentIndex = row.startComponentIndex,
-            endComponentIndex = row.endComponentIndex,
             originAnchor = row.originAnchor,
             destinationAnchor = row.destinationAnchor,
         )
     }
-
-internal fun selectionKeyForDisplayRow(row: FlightPlanDisplayRowUiView, index: Int): String =
-    row.uid.ifEmpty { "row:$index" }
 
 internal fun buildFlightPlanDisplayBlocks(rows: List<FlightPlanDisplayRow>): List<FlightPlanDisplayBlock> {
     val blocks = mutableListOf<FlightPlanDisplayBlock>()

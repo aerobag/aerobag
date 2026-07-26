@@ -9,7 +9,6 @@ import type {
   AirwaySuggestion,
   ChartPageData,
   ChartFamilyId,
-  FlightPlan,
   FlightPlanControlId,
   FlightPlanEntryPreview,
   FlightPlanRouteProjection,
@@ -136,7 +135,6 @@ import type {
   VisibleMetarFeature,
   VisiblePirepFeature,
 } from "./domain/appCoreAdapter";
-import { airwayExitCandidatesFromPresentation } from "./domain/airwayPresentation";
 import {
   debugLog,
   DebugLogDeveloperServerPath,
@@ -1884,11 +1882,6 @@ export default function App() {
     nav_data_epoch: 0,
     active_nav_db: null,
     next_nav_db_maintenance_epoch_ms: null,
-    app_state: {
-      active_plan: null,
-      content_policy: "PreferLocal",
-      last_content_report: null,
-    },
     app_ui_state: {
       active_plan: null,
       ownship: {
@@ -2083,7 +2076,6 @@ export default function App() {
       highLatencyWarningTimerRef.current = null;
     }, startupHighLatencyWarningGraceMs);
   }, []);
-  const appState = sessionSnapshot.app_state;
   const appUiState = sessionSnapshot.app_ui_state;
   const mapLayerState = useMemo(
     () => normalizeUiMapLayerState(sessionSnapshot.map_layer_state),
@@ -2598,37 +2590,12 @@ export default function App() {
       }
     };
   }, [uiSession]);
-  const currentPlan = appState.active_plan;
-  const chartPageStateRequest = useMemo(() => {
-    if (!currentPlan) {
-      return null;
-    }
-    const recentAirportIds = sessionSnapshot.chart_page_state.recent_airport_ids;
-    const plateTargetAirportId = sessionSnapshot.chart_page_state.plate_target_airport_id ?? null;
-    const selectedAirportId = sessionSnapshot.chart_page_state.selected_airport_id || undefined;
-    const selectedReferenceFamilyId = sessionSnapshot.chart_page_state.selected_reference_family_id ?? null;
-    const selectedChartId = sessionSnapshot.chart_page_state.selected_chart_id || undefined;
-    const suggestedChartIds = sessionSnapshot.chart_page_state.suggested_chart_ids ?? [];
-    return {
-      key: JSON.stringify([currentPlan, recentAirportIds, plateTargetAirportId, selectedAirportId ?? null, selectedReferenceFamilyId, selectedChartId ?? null, suggestedChartIds]),
-      plan: currentPlan,
-      recentAirportIds,
-      plateTargetAirportId,
-      selectedAirportId,
-      selectedReferenceFamilyId,
-      selectedChartId,
-      suggestedChartIds,
-    };
-  }, [
-    currentPlan,
-    sessionSnapshot.chart_page_state.recent_airport_ids,
-    sessionSnapshot.chart_page_state.plate_target_airport_id,
-    sessionSnapshot.chart_page_state.selected_airport_id,
-    sessionSnapshot.chart_page_state.selected_reference_family_id,
-    sessionSnapshot.chart_page_state.selected_chart_id,
-    sessionSnapshot.chart_page_state.suggested_chart_ids,
-  ]);
   const planUiState = appUiState.active_plan;
+  const chartPageStateRequestKey = JSON.stringify([
+    planUiState?.plan_id ?? null,
+    planUiState?.plan_version ?? null,
+    sessionSnapshot.chart_page_state,
+  ]);
   useEffect(() => {
     if (typeof window === "undefined") {
       return;
@@ -2640,11 +2607,14 @@ export default function App() {
       advance_warning:
         sessionSnapshot.data_status_state.boxes.find((box) => box.id === "nav_db:advance")
         ?? null,
-      active_plan: currentPlan,
+      active_plan: planUiState
+        ? {
+          plan_id: planUiState.plan_id,
+          plan_version: planUiState.plan_version,
+        }
+        : null,
       plan_ui_state: planUiState
         ? {
-          components: planUiState.components,
-          resolved_legs: planUiState.resolved_legs,
           guidance: planUiState.guidance,
         }
         : null,
@@ -2659,7 +2629,6 @@ export default function App() {
       }
     };
   }, [
-    currentPlan,
     planUiState,
     sessionSnapshot.active_nav_db,
     sessionSnapshot.data_status_state.boxes,
@@ -2763,13 +2732,8 @@ export default function App() {
       return;
     }
     debugTiming("startup.session.create", async () => {
-      markStartupProgress("session.empty_plan", "Creating empty flight plan");
-      const initialPlan = await debugTiming("startup.session.empty_plan.core", () =>
-        appCoreAdapter.emptyFlightPlan(),
-      );
       markStartupProgress("session.create", "Creating core UI session");
       const created = await debugTiming("startup.session.create.core", () => appCoreAdapter.createUiSession(
-        initialPlan,
         initialRecentAirportIds,
         initialChartPageState.selected_airport_id,
         initialChartPageState.selected_chart_id,
@@ -2782,7 +2746,7 @@ export default function App() {
         }
       }
       debugLog("session.create.snapshot", {
-        app_state_active_plan: createdSnapshot.app_state.active_plan?.id ?? null,
+        plan_id: createdSnapshot.app_ui_state.active_plan?.plan_id ?? null,
         app_ui_state_nav_element: createdSnapshot.app_ui_state.active_plan?.guidance?.nav_element ?? null,
       });
       nextSession = created;
@@ -2850,20 +2814,12 @@ export default function App() {
 
   useEffect(() => {
     let cancelled = false;
-    if (!appCoreAdapter || !chartPageStateRequest || !uiSession) {
+    if (!uiSession || !planUiState) {
       return;
     }
     debugTiming(
       "charts.page_state.load",
-      () => appCoreAdapter.deriveChartPageState(
-        chartPageStateRequest.plan,
-        chartPageStateRequest.recentAirportIds,
-        chartPageStateRequest.plateTargetAirportId,
-        chartPageStateRequest.selectedAirportId,
-        chartPageStateRequest.selectedReferenceFamilyId,
-        chartPageStateRequest.selectedChartId,
-        chartPageStateRequest.suggestedChartIds,
-      ),
+      () => uiSession.deriveChartPageState(),
     ).then((state) => {
       if (cancelled) {
         return;
@@ -2879,8 +2835,7 @@ export default function App() {
       cancelled = true;
     };
   }, [
-    appCoreAdapter,
-    chartPageStateRequest?.key,
+    chartPageStateRequestKey,
     uiSession,
   ]);
 
@@ -2898,7 +2853,6 @@ export default function App() {
     uiSession !== null &&
     selectedMap !== null &&
     mapViewport !== null &&
-    currentPlan !== null &&
     planUiState !== null;
 
   useEffect(() => {
@@ -3195,9 +3149,7 @@ export default function App() {
       sessionInitError !== null ||
       mapSelectorLoadError !== null ||
       chartPageStateLoadError !== null ||
-      (appReady &&
-        currentPlan !== null &&
-        planUiState !== null);
+      (appReady && planUiState !== null);
     if (shouldHideStartupShell) {
       const reason = page === "about"
         ? "about_page"
@@ -3212,7 +3164,7 @@ export default function App() {
               : "app_ready";
       window.__aerobag_hide_startup_shell?.(reason);
     }
-  }, [appReady, chartPageStateLoadError, currentPlan, mapSelectorLoadError, page, planUiState, sessionInitError, startupFatalError]);
+  }, [appReady, chartPageStateLoadError, mapSelectorLoadError, page, planUiState, sessionInitError, startupFatalError]);
 
   if (page === "about") {
     return (
@@ -3240,7 +3192,7 @@ export default function App() {
     );
   }
 
-  if (!appReady || !currentPlan || !planUiState || !selectedMap || !rasterMapState || !mapViewport) {
+  if (!appReady || !planUiState || !selectedMap || !rasterMapState || !mapViewport) {
     return (
       <main className="startupProgressHost" aria-live="polite">
         <span>{startupProgress.detail ?? startupProgress.phase}</span>
@@ -3318,7 +3270,6 @@ export default function App() {
               applySessionSnapshot(nextSnapshot, "status_action");
             });
           }}
-          plan={currentPlan}
           planUiState={planUiState}
           playbackUiState={playbackUiState}
           mapFollowUiState={mapFollowUiState}
@@ -3346,7 +3297,6 @@ export default function App() {
           page={page}
           pageHistory={pageHistory}
           uptimeLabel={uptimeLabel}
-          plan={currentPlan}
           planUiState={planUiState}
           mostRecentChartOrPlatePage={mostRecentChartOrPlatePage}
           onOpenRecentChartOrPlate={navigateToMostRecentChartOrPlate}
@@ -3450,10 +3400,10 @@ export default function App() {
               "flight_plan_row_action",
             );
           }}
-          onInsertAirwayAtRow={async (rowUid, entryIndex, exitIndex, presentation) => {
+          onInsertAirwayAtRow={async (rowUid, entryPointUid, exitPointUid, presentation) => {
             if (!uiSession) return;
             applySessionSnapshot(
-              await uiSession.insertAirwayAtFlightPlanRow(rowUid, presentation, entryIndex, exitIndex),
+              await uiSession.insertAirwayAtFlightPlanRow(rowUid, presentation, entryPointUid, exitPointUid),
               "insert_airway_at_row",
             );
           }}
@@ -3479,7 +3429,6 @@ export default function App() {
         <ChartsPage
           appCoreAdapter={appCoreAdapter}
           page={page}
-          plan={currentPlan}
           planUiState={planUiState}
           airportMenuEntries={airportMenuEntries}
           selectedCollection={selectedChartCollection}
@@ -3647,7 +3596,6 @@ function MapPage(props: {
   flightDataBanner: FlightDataBannerModel;
   dataStatusState: UiDataStatusState;
   onStatusAction: (actionId: string) => void | Promise<void>;
-  plan: FlightPlan;
   planUiState: FlightPlanUiState | null;
   playbackUiState: PlaybackUiState;
   mapFollowUiState: MapFollowUiState;
@@ -3694,7 +3642,6 @@ function MapPage(props: {
     flightDataBanner,
     dataStatusState,
     onStatusAction,
-    plan,
     planUiState,
     uiSession,
     debugOpen,
@@ -5072,13 +5019,13 @@ function MapPage(props: {
 
   useEffect(() => {
     perfDebugLog("map.nav_element.render", () => ({
-      app_state_active_plan: plan?.id ?? null,
+      plan_id: planUiState?.plan_id ?? null,
       plan_guidance: planUiState?.guidance?.nav_element ?? null,
       ownship_mode: ownship.mode,
       ownship_draw_cdi: ownship.draw_cdi,
       ownship_position: ownship.position,
     }));
-  }, [ownship.draw_cdi, ownship.mode, ownship.position, plan, planUiState]);
+  }, [ownship.draw_cdi, ownship.mode, ownship.position, planUiState]);
 
   useEffect(() => {
     if (!uiSession) {
@@ -7525,7 +7472,6 @@ function FlightPlanPage(props: {
   page: AppPage;
   pageHistory: AppViewSnapshot[];
   uptimeLabel: string;
-  plan: FlightPlan;
   planUiState: FlightPlanUiState | null;
   mostRecentChartOrPlatePage: AppPage;
   onOpenRecentChartOrPlate: () => void;
@@ -7538,8 +7484,8 @@ function FlightPlanPage(props: {
   onPerformFlightPlanRowAction: (rowUid: string, actionUid: string) => void | Promise<void>;
   onInsertAirwayAtRow: (
     rowUid: string,
-    entryIndex: number,
-    exitIndex: number,
+    entryPointUid: string,
+    exitPointUid: string,
     presentation: AirwayPresentationPlan,
   ) => void | Promise<void>;
   onSelectProcedureAtRow: (rowUid: string, airportId: string, procedureId: string, enrouteTransition: string | null) => void | Promise<void>;
@@ -7558,7 +7504,7 @@ function FlightPlanPage(props: {
     suggestions: AirwaySuggestion[];
     selectedAirwayName: string | null;
     presentation: AirwayPresentationPlan | null;
-    selectedEntryIndex: number | null;
+    selectedEntryUid: string | null;
   } | null>(null);
   const [procedurePicker, setProcedurePicker] = useState<{
     loading: boolean;
@@ -7616,7 +7562,7 @@ function FlightPlanPage(props: {
   const [structuredGroupBoxes, setStructuredGroupBoxes] = useState<Array<{ key: string; top: number; left: number; width: number; height: number }>>([]);
   const [waypointModalTop, setWaypointModalTop] = useState<number | null>(null);
   const [waypointModalMaxHeight, setWaypointModalMaxHeight] = useState<number | null>(null);
-  const waypointSuggestionPlanKey = useMemo(() => JSON.stringify(props.plan), [props.plan]);
+  const waypointSuggestionPlanKey = `${planUiState.plan_id}:${planUiState.plan_version}`;
   useEffect(() => {
     const editor = airportInsert;
     if (!editor) {
@@ -7691,7 +7637,7 @@ function FlightPlanPage(props: {
     };
   }, [routeEntryText, waypointSuggestionPlanKey]);
   const displayRows = useMemo(() => {
-    return planUiState.display_rows.map((row, index) => ({
+    return planUiState.display_rows.map((row) => ({
         showPlateTargetId:
           typeof (row as { show_plate_target_id?: unknown }).show_plate_target_id === "string"
             ? (row as { show_plate_target_id?: string | null }).show_plate_target_id ?? null
@@ -7722,17 +7668,12 @@ function FlightPlanPage(props: {
                 ? row.uid
                 : row.uid,
         chartAirportId: row.chart_airport_id,
-        legIndex: row.leg_index,
         removeLegIndex: null as number | null,
-        startComponentIndex: row.start_component_index,
-        endComponentIndex: row.end_component_index,
-        replaceProcedureComponentIndex: row.replace_procedure_component_index,
         originAnchor: row.origin_anchor,
         destinationAnchor: row.destination_anchor,
         navRef: row.nav_ref,
         symbolFeature: row.symbol_feature,
-        groupKey: row.row_kind === "group" || row.depth > 0 ? `group:${row.component_uid ?? row.component_index ?? index}` : null,
-        componentIndex: row.component_index,
+        groupKey: row.row_kind === "group" || row.depth > 0 ? `group:${row.component_uid!}` : null,
         componentKind: row.component_kind,
         procedureId: row.procedure_id,
         procedureKind: row.procedure_kind,
@@ -7742,12 +7683,9 @@ function FlightPlanPage(props: {
       }));
   }, [planUiState.display_rows]);
   const planDataColumns = planUiState.data_columns;
-  const selectedWaypointIndex = selectedWaypointUid === null
+  const selectedRow = selectedWaypointUid === null
     ? null
-    : displayRows.findIndex((row) => row.rowUid === selectedWaypointUid);
-  const selectedRow = selectedWaypointIndex !== null && selectedWaypointIndex >= 0
-    ? displayRows[selectedWaypointIndex] ?? null
-    : null;
+    : displayRows.find((row) => row.rowUid === selectedWaypointUid) ?? null;
 
   const rowActionRows = useMemo(() => {
     if (!selectedRow) {
@@ -7822,7 +7760,7 @@ function FlightPlanPage(props: {
               suggestions: [],
               selectedAirwayName: null,
               presentation: null,
-              selectedEntryIndex: null,
+              selectedEntryUid: null,
             });
             window.requestAnimationFrame(() => {
               void adapter.suggestAirwaysNearAnchor(selectedRow.originAnchor!).then((suggestions) => {
@@ -8111,7 +8049,7 @@ function FlightPlanPage(props: {
     airwayPicker?.loading,
     airwayPicker?.presentation,
     airwayPicker?.selectedAirwayName,
-    airwayPicker?.selectedEntryIndex,
+    airwayPicker?.selectedEntryUid,
   ]);
 
   return (
@@ -8148,7 +8086,7 @@ function FlightPlanPage(props: {
                 {planDataColumns.map((column) => (
                   <div key={column.id} className="planHeader">{column.label}</div>
                 ))}
-                {displayRows.map((row, index) => {
+                {displayRows.map((row) => {
                   const procedureGroupCell = row.rowKind === "group" && row.componentKind === "procedure";
                   return (
                     <Fragment key={row.id}>
@@ -8188,7 +8126,7 @@ function FlightPlanPage(props: {
                           className={[
                             "planWaypointCell",
                             "planWaypointButton",
-                            selectedWaypointIndex === index ? "isSelected" : "",
+                            selectedWaypointUid === row.rowUid ? "isSelected" : "",
                             row.active ? "isActiveLeg" : "",
                             !row.enabled ? "isDisabled" : "",
                             row.syntheticDirectTo ? "isSyntheticDirectTo" : "",
@@ -8617,16 +8555,15 @@ function FlightPlanPage(props: {
                           onPointerDown={stopPointer}
                           onPointerUp={stopPointer}
                           onClick={async () => {
-                            const adapter = props.appCoreAdapter;
-                            if (!adapter) {
+                            const uiSession = props.uiSession;
+                            if (!uiSession || airwayPicker.rowUid === null) {
                               return;
                             }
                             setAirwayPicker((current) => current ? { ...current, loading: true, error: null } : current);
                             try {
-                              const presentation = await adapter.prepareAirwayPresentationForAnchors(
+                              const presentation = await uiSession.prepareAirwayPresentationAtFlightPlanRow(
+                                airwayPicker.rowUid,
                                 suggestion.airway_name,
-                                airwayPicker.originAnchor,
-                                airwayPicker.destinationAnchor,
                               );
                               setAirwayPicker((current) => current ? {
                                 ...current,
@@ -8647,23 +8584,23 @@ function FlightPlanPage(props: {
                         </button>
                       ))}
                   </div>
-                ) : airwayPicker.selectedEntryIndex === null && airwayPicker.presentation ? (
+                ) : airwayPicker.selectedEntryUid === null && airwayPicker.presentation ? (
                   <>
-                    {airwayPicker.presentation.points.map((point, index) => (
+                    {airwayPicker.presentation.points.map((point) => (
                       <button
-                        key={`${airwayPicker.presentation?.branch_key}:${point.branch_point_index}`}
+                        key={point.uid}
                         type="button"
-                        className={`trayButton airwayChoiceButton${index === airwayPicker.presentation?.suggested_entry_index ? " isSuggested" : ""}`}
+                        className={`trayButton airwayChoiceButton${point.uid === airwayPicker.presentation?.suggested_entry_uid ? " isSuggested" : ""}`}
                         onPointerDown={stopPointer}
                         onPointerUp={stopPointer}
                         onClick={() => {
                           setAirwayPicker((current) => current ? {
                             ...current,
-                            selectedEntryIndex: index,
+                            selectedEntryUid: point.uid,
                           } : current);
                         }}
                       >
-                        {index === airwayPicker.presentation?.suggested_entry_index ? "▸ " : ""}
+                        {point.uid === airwayPicker.presentation?.suggested_entry_uid ? "▸ " : ""}
                         {navRefLabel(point.nav_ref)}
                       </button>
                     ))}
@@ -8683,26 +8620,25 @@ function FlightPlanPage(props: {
                   </>
                 ) : (
                   <>
-                    {airwayPicker.presentation ? airwayExitCandidatesFromPresentation(
-                      airwayPicker.presentation,
-                      airwayPicker.selectedEntryIndex ?? 0,
-                    ).map((exit, index) => (
+                    {airwayPicker.presentation?.points.map((exit) => {
+                      const isEntry = exit.uid === airwayPicker.selectedEntryUid;
+                      return (
                       <button
-                        key={`${exit.airway_name}:${exit.branch_key}:${exit.branch_point_index}`}
+                        key={exit.uid}
                         type="button"
-                        className={`trayButton airwayChoiceButton${index === airwayPicker.presentation?.suggested_exit_index && !exit.is_entry ? " isSuggested" : ""}${exit.is_entry ? " isDisabled" : ""}`}
-                        aria-disabled={exit.is_entry ? "true" : undefined}
-                        title={exit.is_entry ? "That fix is the airway entry; choose an exit." : undefined}
+                        className={`trayButton airwayChoiceButton${exit.uid === airwayPicker.presentation?.suggested_exit_uid && !isEntry ? " isSuggested" : ""}${isEntry ? " isDisabled" : ""}`}
+                        aria-disabled={isEntry ? "true" : undefined}
+                        title={isEntry ? "That fix is the airway entry; choose an exit." : undefined}
                         onPointerDown={stopPointer}
                         onPointerUp={stopPointer}
                         onClick={async () => {
-                          if (exit.is_entry) {
+                          if (isEntry) {
                             showDisabledAction("That fix is the airway entry; choose an exit.");
                             return;
                           }
                           const presentation = airwayPicker.presentation;
-                          const selectedEntryIndex = airwayPicker.selectedEntryIndex;
-                          if (!presentation || selectedEntryIndex === null) {
+                          const selectedEntryUid = airwayPicker.selectedEntryUid;
+                          if (!presentation || selectedEntryUid === null) {
                             return;
                           }
                           setAirwayPicker((current) => current ? { ...current, loading: true, error: null } : current);
@@ -8710,8 +8646,8 @@ function FlightPlanPage(props: {
                             if (airwayPicker.rowUid !== null) {
                               await props.onInsertAirwayAtRow(
                                 airwayPicker.rowUid,
-                                selectedEntryIndex,
-                                index,
+                                selectedEntryUid,
+                                exit.uid,
                                 presentation,
                               );
                             } else {
@@ -8728,10 +8664,11 @@ function FlightPlanPage(props: {
                           }
                         }}
                       >
-                        {index === airwayPicker.presentation?.suggested_exit_index ? "▸ " : ""}
+                        {exit.uid === airwayPicker.presentation?.suggested_exit_uid ? "▸ " : ""}
                         {navRefLabel(exit.nav_ref)}
                       </button>
-                    )) : null}
+                      );
+                    }) ?? null}
                     <button
                       type="button"
                       className="trayButton airwayChoiceButton"
@@ -8739,7 +8676,7 @@ function FlightPlanPage(props: {
                       onPointerUp={stopPointer}
                       onClick={() => setAirwayPicker((current) => current ? {
                         ...current,
-                        selectedEntryIndex: null,
+                        selectedEntryUid: null,
                       } : current)}
                     >
                       Back
@@ -9569,7 +9506,6 @@ function MapSelectionItemIcon(props: { item: MapSelectionItem }) {
 function ChartsPage(props: {
   appCoreAdapter: AppCoreAdapter | null;
   page: AppPage;
-  plan: FlightPlan;
   planUiState: FlightPlanUiState | null;
   airportMenuEntries: DerivedChartPageState["airport_menu_entries"];
   selectedCollection: ChartPageData["airports"][number] | null;
@@ -9597,7 +9533,7 @@ function ChartsPage(props: {
   debugWarningActive: boolean;
   onFirstVisualReady: () => void;
 }) {
-  const { appCoreAdapter, page, plan, planUiState, airportMenuEntries, selectedCollection, selectedChart, suggestedChartIds, folderOpen, viewport, onViewportChange, onFolderOpenChange, onSelectPage, onOpenPlan, onSelectAirport, onSelectReference, onSelectChart, uiSession, ownship, ownshipControls, onFirstVisualReady } = props;
+  const { appCoreAdapter, page, planUiState, airportMenuEntries, selectedCollection, selectedChart, suggestedChartIds, folderOpen, viewport, onViewportChange, onFolderOpenChange, onSelectPage, onOpenPlan, onSelectAirport, onSelectReference, onSelectChart, uiSession, ownship, ownshipControls, onFirstVisualReady } = props;
   const containerRef = useRef<HTMLDivElement | null>(null);
   const imageRef = useRef<HTMLImageElement | null>(null);
   const [surfaceSize, setSurfaceSize] = useState<SurfaceSize>({ width: 0, height: 0 });
@@ -9617,7 +9553,9 @@ function ChartsPage(props: {
   const { toast: disabledActionToast, show: showDisabledAction } = useDisabledActionToast();
   const trayOpen = trayGroup.scrimOpen;
   const sortedCharts = selectedCollection?.charts ?? [];
-  const planProcedureLoadKey = `${plan.id}:${plan.version}`;
+  const planProcedureLoadKey = planUiState
+    ? `${planUiState.plan_id}:${planUiState.plan_version}`
+    : "no-plan";
   const selectedImageSize = imageSize && imageSize.chartId === (selectedChart?.id ?? "") ? imageSize : null;
   const selectedChartAssetUrl = selectedChart ? resolvedChartUrls[selectedChart.id]?.assetUrl ?? null : null;
   const fallbackViewport = useMemo(() => {
@@ -9834,13 +9772,13 @@ function ChartsPage(props: {
     if (page !== "charts") {
       return;
     }
-    if (!appCoreAdapter || !selectedChart || selectedChart.kind !== "plate") {
+    if (!props.uiSession || !selectedChart || selectedChart.kind !== "plate") {
       setPlateProcedureLoads([]);
       return;
     }
     let cancelled = false;
     debugLog("charts.load_procedure.query", { plate_id: selectedChart.id });
-    void appCoreAdapter.describePlateProcedureLoads(plan, selectedChart.id).then((loads) => {
+    void props.uiSession.describePlateProcedureLoads(selectedChart.id).then((loads) => {
       debugLog("charts.load_procedure.result", {
         plate_id: selectedChart.id,
         load_count: loads.length,

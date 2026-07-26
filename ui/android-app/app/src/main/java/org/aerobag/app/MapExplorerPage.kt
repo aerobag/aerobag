@@ -1473,7 +1473,7 @@ internal fun MapExplorerPage(
     }
 
     fun submitChartSearch() {
-        val query = chartSearchText.trim().uppercase()
+        val query = chartSearchText
         if (query.isBlank()) {
             return
         }
@@ -1491,7 +1491,7 @@ internal fun MapExplorerPage(
     }
 
     LaunchedEffect(chartSearchText, currentViewport.centerWorldX, currentViewport.centerWorldY) {
-        val query = chartSearchText.trim().uppercase()
+        val query = chartSearchText
         if (query.isBlank()) {
             chartSearchLoading = false
             chartSearchError = null
@@ -2691,7 +2691,7 @@ internal fun MapExplorerPage(
             chartSearchError = chartSearchError,
             chartSearchSuggestions = chartSearchSuggestions,
             onChartSearchTextChange = { value ->
-                chartSearchText = value.uppercase().filter { it in 'A'..'Z' || it in '0'..'9' }.take(8)
+                chartSearchText = value
                 chartSearchOpen = true
             },
             onChartSearchFocus = { chartSearchOpen = true },

@@ -122,6 +122,33 @@ fn platform_session_adapters_have_no_plain_snapshot_escape_hatch() {
 }
 
 #[test]
+fn platform_search_and_route_inputs_do_not_rewrite_core_syntax() {
+    let web = read_repo_file("ui/web-app/src/App.tsx");
+    let android_map =
+        read_repo_file("ui/android-app/app/src/main/java/org/aerobag/app/MapExplorerPage.kt");
+    let android_plan =
+        read_repo_file("ui/android-app/app/src/main/java/org/aerobag/app/FlightPlanPage.kt");
+
+    assert!(
+        web.contains("setRouteEntryText(event.target.value);"),
+        "web must pass append-route text to core without rewriting it"
+    );
+    assert!(
+        android_plan.contains("routeEntryText = value"),
+        "Android must pass append-route text to core without rewriting it"
+    );
+    assert!(
+        android_map.contains("chartSearchText = value"),
+        "Android must pass chart-search text to core without a platform character whitelist"
+    );
+    assert!(
+        !web.contains("chartSearch.query.trim().toUpperCase()")
+            && !android_map.contains("chartSearchText.trim().uppercase()"),
+        "platform chart search must not normalize syntax before core sees it"
+    );
+}
+
+#[test]
 fn platform_live_feed_adapters_do_not_own_nexrad_policy() {
     let android_cache =
         read_repo_file("ui/android-app/app/src/main/java/org/aerobag/app/domain/LiveFeedCache.kt");

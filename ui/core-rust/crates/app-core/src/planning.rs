@@ -4959,8 +4959,12 @@ fn nav_ref_label(nav_ref: &NavRef) -> String {
             identifier.clone()
         }
         NavRef::LatLon(position) => format!("{:.4},{:.4}", position.lat, position.lon),
-        NavRef::Spot(position) => format!("SPOT\n{:.4},{:.4}", position.lat, position.lon),
+        NavRef::Spot(position) => format!("SPOT\n{}", format_spot_coordinates(*position)),
     }
+}
+
+pub(crate) fn format_spot_coordinates(position: LatLon) -> String {
+    format!("{:.4},{:.4}", position.lat, position.lon)
 }
 
 fn rewrite_grouped_legs_source(legs: &[ResolvedLeg], component_index: usize) -> Vec<ResolvedLeg> {

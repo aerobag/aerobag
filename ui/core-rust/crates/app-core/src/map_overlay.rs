@@ -6924,6 +6924,10 @@ mod tests {
 
     #[test]
     fn selected_map_selection_item_id_matches_nav_ref_in_core() {
+        let spot = LatLon {
+            lat: 47.3,
+            lon: -122.9,
+        };
         let result = MapSelectionQueryResult {
             click_lat: 0.0,
             click_lon: 0.0,
@@ -6934,6 +6938,7 @@ mod tests {
                 items: vec![
                     test_selection_item("khwd", Some(NavRef::Airport("KHWD".to_string()))),
                     test_selection_item("koak", Some(NavRef::Airport("KOAK".to_string()))),
+                    test_selection_item("spot", Some(NavRef::Spot(spot))),
                 ],
             }],
         };
@@ -6945,6 +6950,10 @@ mod tests {
             )
             .as_deref(),
             Some("khwd"),
+        );
+        assert_eq!(
+            selected_map_selection_item_id_for_nav_ref(&result, &NavRef::Spot(spot)).as_deref(),
+            Some("spot"),
         );
     }
 

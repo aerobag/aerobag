@@ -838,11 +838,8 @@ class NativeUiSession internal constructor(
         }
     }
 
-    fun projectFlightPlanRoute(): FlightPlanRouteProjection {
-        val store = navKvStore ?: return FlightPlanRouteProjection(
-            flightPlanRouteRevision = snapshot.flightPlanRouteRevision,
-            segments = emptyList(),
-        )
+    fun projectFlightPlanRoute(): List<FlightPlanRouteSegment> {
+        val store = navKvStore ?: return emptyList()
         val outcome = store.runPagedSessionOperation(
             drainSessionResourceEffects = { bridge.drainSessionResourceEffectsJson(handle) },
         ) {
@@ -851,7 +848,7 @@ class NativeUiSession internal constructor(
         publishInvalidations("projectFlightPlanRoute", outcome.invalidations)
         val effectInvalidations = outcome.effectInvalidations
         publishInvalidations("session_effect", effectInvalidations)
-        return json.decodeFromJsonElement<WireFlightPlanRouteProjection>(outcome.result).toUi()
+        return json.decodeFromJsonElement<List<WireFlightPlanRouteSegment>>(outcome.result).map { it.toUi() }
     }
 
     fun performMapSelectionAction(action: String): UiSessionSnapshot {
@@ -1174,33 +1171,38 @@ class NativeUiSession internal constructor(
     }
 
     fun activateNextLeg(): UiSessionSnapshot {
-        return runPagedSnapshot("activateNextLeg") {
+        runPagedSnapshot("activateNextLeg") {
             bridge.activateNextLegInSessionJson(handle)
         }
+        return syncGuidanceGeometry("activateNextLeg.syncGuidanceGeometry")
     }
 
     fun stopNavigation(): UiSessionSnapshot {
-        return runPagedSnapshot("stopNavigation") {
+        runPagedSnapshot("stopNavigation") {
             bridge.stopNavigationInSessionJson(handle)
         }
+        return syncGuidanceGeometry("stopNavigation.syncGuidanceGeometry")
     }
 
     fun suspendSequencing(): UiSessionSnapshot {
-        return runPagedSnapshot("suspendSequencing") {
+        runPagedSnapshot("suspendSequencing") {
             bridge.suspendSequencingInSessionJson(handle)
         }
+        return syncGuidanceGeometry("suspendSequencing.syncGuidanceGeometry")
     }
 
     fun unsuspendSequencing(): UiSessionSnapshot {
-        return runPagedSnapshot("unsuspendSequencing") {
+        runPagedSnapshot("unsuspendSequencing") {
             bridge.unsuspendSequencingInSessionJson(handle)
         }
+        return syncGuidanceGeometry("unsuspendSequencing.syncGuidanceGeometry")
     }
 
     fun sequenceActiveLeg(): UiSessionSnapshot {
-        return runPagedSnapshot("sequenceActiveLeg") {
+        runPagedSnapshot("sequenceActiveLeg") {
             bridge.sequenceActiveLegInSessionJson(handle)
         }
+        return syncGuidanceGeometry("sequenceActiveLeg.syncGuidanceGeometry")
     }
 
     fun restoreChartPageState(
@@ -2153,7 +2155,6 @@ private data class WireUiPlaybackPanelState(
 @kotlinx.serialization.Serializable
 private data class WireUiSessionSnapshot(
     val session_revision: Long = 0,
-    val flight_plan_route_revision: Long = 0,
     val nav_data_epoch: Long = 0,
     val active_nav_db: WireUiNavDbIdentity? = null,
     val next_nav_db_maintenance_epoch_ms: Long? = null,
@@ -2354,7 +2355,6 @@ data class DerivedChartPageState(
 
 data class UiSessionSnapshot(
     val sessionRevision: Long,
-    val flightPlanRouteRevision: Long,
     val navDataEpoch: Long,
     val activeNavDb: UiNavDbIdentity?,
     val nextNavDbMaintenanceEpochMs: Long?,
@@ -2741,7 +2741,6 @@ private fun WireUiPlaybackPanelState.toUi() = UiPlaybackPanelState(
 
 private fun WireUiSessionSnapshot.toUi() = UiSessionSnapshot(
     sessionRevision = session_revision,
-    flightPlanRouteRevision = flight_plan_route_revision,
     navDataEpoch = nav_data_epoch,
     activeNavDb = active_nav_db?.let {
         UiNavDbIdentity(
@@ -3761,11 +3760,6 @@ private fun WireFlightPlanRouteSegment.toUi() = FlightPlanRouteSegment(
     distanceNm = distance_nm,
     courseDeg = course_deg,
     status = status.toUi(),
-)
-
-private fun WireFlightPlanRouteProjection.toUi() = FlightPlanRouteProjection(
-    flightPlanRouteRevision = flight_plan_route_revision,
-    segments = segments.map { it.toUi() },
 )
 
 private fun WireRouteSegmentStatus.toUi() = when (this) {

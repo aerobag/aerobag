@@ -338,7 +338,6 @@ pub struct UiPlaybackPanelState {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct UiSessionSnapshot {
     pub session_revision: u64,
-    pub flight_plan_route_revision: u64,
     pub nav_data_epoch: u64,
     pub active_nav_db: Option<UiNavDbIdentity>,
     pub next_nav_db_maintenance_epoch_ms: Option<i64>,
@@ -376,7 +375,6 @@ pub struct UiSessionCreateTiming {
 #[derive(Clone)]
 struct UiSession {
     session_revision: u64,
-    flight_plan_route_revision: u64,
     nav_data_epoch: u64,
     nav_db_advance_blocked: bool,
     app_state: AppState,
@@ -3451,7 +3449,6 @@ fn create_ui_session_inner(
     let home_page_state = project_home_page_state(&platform_capabilities);
     let snapshot = UiSessionSnapshot {
         session_revision: 0,
-        flight_plan_route_revision: 0,
         nav_data_epoch: 0,
         active_nav_db: None,
         next_nav_db_maintenance_epoch_ms: None,
@@ -3478,7 +3475,6 @@ fn create_ui_session_inner(
         handle,
         UiSession {
             session_revision: 0,
-            flight_plan_route_revision: 0,
             nav_data_epoch: 0,
             nav_db_advance_blocked: false,
             app_state,
@@ -4306,23 +4302,17 @@ pub fn project_flight_plan_route_in_session(handle: u32) -> AppResult<HadOperati
     let session = session_ref(&sessions, handle)?;
     let Some(plan) = session.app_state.active_plan.clone() else {
         return Ok(HadOperationOutcome::complete(
-            serde_json::to_value(crate::FlightPlanRouteProjection {
-                flight_plan_route_revision: session.flight_plan_route_revision,
-                segments: Vec::new(),
-            })
-            .map_err(|err| AppError {
-                kind: AppErrorKind::Internal,
-                message: err.to_string(),
+            serde_json::to_value(Vec::<crate::FlightPlanRouteSegment>::new()).map_err(|err| {
+                AppError {
+                    kind: AppErrorKind::Internal,
+                    message: err.to_string(),
+                }
             })?,
         ));
     };
     match crate::had_ops::project_flight_plan_route(session_nav_kv_store(session)?, &plan) {
-        Ok(segments) => Ok(HadOperationOutcome::complete(
-            serde_json::to_value(crate::FlightPlanRouteProjection {
-                flight_plan_route_revision: session.flight_plan_route_revision,
-                segments,
-            })
-            .map_err(|err| AppError {
+        Ok(route) => Ok(HadOperationOutcome::complete(
+            serde_json::to_value(route).map_err(|err| AppError {
                 kind: AppErrorKind::Internal,
                 message: err.to_string(),
             })?,
@@ -4689,11 +4679,11 @@ pub fn stop_navigation_in_session(handle: u32) -> AppResult<HadOperationOutcome>
 }
 
 pub fn suspend_sequencing_in_session(handle: u32) -> AppResult<HadOperationOutcome> {
-    mutate_session_flight_plan(handle, crate::suspend_sequencing)
+    mutate_session_guidance(handle, crate::suspend_sequencing)
 }
 
 pub fn unsuspend_sequencing_in_session(handle: u32) -> AppResult<HadOperationOutcome> {
-    mutate_session_flight_plan(handle, crate::unsuspend_sequencing)
+    mutate_session_guidance(handle, crate::unsuspend_sequencing)
 }
 
 pub fn sequence_active_leg_in_session(handle: u32) -> AppResult<HadOperationOutcome> {
@@ -4708,7 +4698,20 @@ fn mutate_session_flight_plan(
     let session = session_mut(&mut sessions, handle)?;
     let plan = session_plan(session)?;
     let next_plan = mutation(&plan)?;
-    commit_session_flight_plan_with_invalidations_outcome(session, next_plan)
+    replace_session_flight_plan(session, next_plan)?;
+    changed_session_snapshot_outcome(session)
+}
+
+fn mutate_session_guidance(
+    handle: u32,
+    mutation: impl FnOnce(&FlightPlan) -> AppResult<FlightPlan>,
+) -> AppResult<HadOperationOutcome> {
+    let mut sessions = lock_sessions();
+    let session = session_mut(&mut sessions, handle)?;
+    let plan = session_plan(session)?;
+    let next_plan = mutation(&plan)?;
+    session.app_state = state::reduce(&session.app_state, AppEvent::ReplaceFlightPlan(next_plan))?;
+    changed_session_snapshot_outcome(session)
 }
 
 pub fn perform_map_selection_action_in_session(
@@ -9810,7 +9813,10 @@ fn airport_plate_availability(
 }
 
 fn replace_session_flight_plan(session: &mut UiSession, plan: FlightPlan) -> AppResult<()> {
-    store_session_flight_plan(session, plan)?;
+    session.app_state = state::reduce(
+        &session.app_state,
+        AppEvent::ReplaceFlightPlan(plan.clone()),
+    )?;
     let normalized_plan = session
         .app_state
         .active_plan
@@ -9834,12 +9840,6 @@ fn replace_session_flight_plan(session: &mut UiSession, plan: FlightPlan) -> App
         &session.chart_page_state.suggested_chart_ids,
     );
     sync_procedure_geometry_status_records(session, &normalized_plan);
-    Ok(())
-}
-
-fn store_session_flight_plan(session: &mut UiSession, plan: FlightPlan) -> AppResult<()> {
-    session.app_state = state::reduce(&session.app_state, AppEvent::ReplaceFlightPlan(plan))?;
-    session.flight_plan_route_revision = session.flight_plan_route_revision.saturating_add(1);
     Ok(())
 }
 
@@ -10039,7 +10039,6 @@ fn try_snapshot_for_session(session: &mut UiSession) -> Result<UiSessionSnapshot
     });
     Ok(UiSessionSnapshot {
         session_revision: session.session_revision,
-        flight_plan_route_revision: session.flight_plan_route_revision,
         nav_data_epoch: session.nav_data_epoch,
         active_nav_db: session.nav_db_artifact.as_ref().map(UiNavDbIdentity::from),
         next_nav_db_maintenance_epoch_ms: next_nav_db_maintenance_epoch_ms(session),
@@ -11695,7 +11694,8 @@ fn sequence_guidance_by_ownship_position(session: &mut UiSession) -> AppResult<b
         } else {
             crate::sequence_active_detail(plan)?
         };
-        store_session_flight_plan(session, next_plan)?;
+        session.app_state =
+            state::reduce(&session.app_state, AppEvent::ReplaceFlightPlan(next_plan))?;
         sequenced = true;
     }
     Ok(sequenced)
@@ -15217,7 +15217,6 @@ mod tests {
     fn live_metar_layer_survives_vector_manifest_without_weather_layers() {
         let mut session = UiSession {
             session_revision: 0,
-            flight_plan_route_revision: 0,
             nav_data_epoch: 0,
             nav_db_advance_blocked: false,
             app_state: register_default_situation_sources(AppState::default()).expect("app state"),
@@ -15410,7 +15409,6 @@ mod tests {
         );
         let mut session = UiSession {
             session_revision: 0,
-            flight_plan_route_revision: 0,
             nav_data_epoch: 0,
             nav_db_advance_blocked: false,
             app_state: register_default_situation_sources(AppState::default()).expect("app state"),
@@ -15854,7 +15852,6 @@ mod tests {
     fn malformed_live_tfr_state_records_data_status_without_failing_overlay() {
         let mut session = UiSession {
             session_revision: 0,
-            flight_plan_route_revision: 0,
             nav_data_epoch: 0,
             nav_db_advance_blocked: false,
             app_state: register_default_situation_sources(AppState::default()).expect("app state"),
@@ -19459,9 +19456,7 @@ mod tests {
         let HadOperationOutcome::Complete { result, .. } = route else {
             panic!("route unexpectedly needed resources");
         };
-        serde_json::from_value::<crate::FlightPlanRouteProjection>(result)
-            .expect("route projection")
-            .segments
+        serde_json::from_value(result).expect("route segments")
     }
 
     fn session_route_statuses(handle: u32) -> Vec<crate::FlightPlanRouteSegmentStatus> {
@@ -20472,9 +20467,8 @@ mod tests {
         let HadOperationOutcome::Complete { result, .. } = route else {
             panic!("empty-plan direct-to route unexpectedly needed resources");
         };
-        let projection: crate::FlightPlanRouteProjection =
-            serde_json::from_value(result).expect("route projection");
-        let segments = projection.segments;
+        let segments: Vec<crate::FlightPlanRouteSegment> =
+            serde_json::from_value(result).expect("route segments");
 
         assert_eq!(segments.len(), 1);
         assert_eq!(segments[0].id, "direct-to");
@@ -20524,99 +20518,6 @@ mod tests {
                 .sequencing_mode,
             SequencingMode::FollowPlan
         );
-    }
-
-    #[test]
-    fn sequencing_atomically_advances_snapshot_and_route_projection() {
-        let init = create_ui_session(short_lat_lon_preview_plan(), &[], None, None)
-            .expect("create session");
-        let store = crate::navkv::nav_kv_store_for_test(&[], 256);
-        attach_nav_kv_store_to_session(init.handle, 1, &store).expect("attach nav kv");
-
-        let initial_route =
-            project_flight_plan_route_in_session(init.handle).expect("project initial route");
-        let HadOperationOutcome::Complete { result, .. } = initial_route else {
-            panic!("initial route unexpectedly needed resources");
-        };
-        let initial_projection: crate::FlightPlanRouteProjection =
-            serde_json::from_value(result).expect("initial route projection");
-        assert_eq!(initial_projection.flight_plan_route_revision, 0);
-        assert_eq!(
-            initial_projection
-                .segments
-                .iter()
-                .map(|segment| segment.status.clone())
-                .collect::<Vec<_>>(),
-            vec![
-                crate::FlightPlanRouteSegmentStatus::Active,
-                crate::FlightPlanRouteSegmentStatus::Remaining,
-            ]
-        );
-
-        let outcome = super::sequence_active_leg_in_session(init.handle)
-            .expect("sequence active flight-plan leg");
-        let HadOperationOutcome::Complete {
-            result,
-            invalidations,
-        } = outcome
-        else {
-            panic!("sequencing unexpectedly needed resources");
-        };
-        let snapshot: UiSessionSnapshot =
-            serde_json::from_value(result).expect("sequenced snapshot");
-        assert!(invalidations.contains(&UiInvalidation::SessionSnapshot));
-        assert!(invalidations.contains(&UiInvalidation::FlightPlanRoute));
-        assert!(invalidations.contains(&UiInvalidation::MapOverlay));
-        assert_eq!(snapshot.flight_plan_route_revision, 1);
-
-        let route =
-            project_flight_plan_route_in_session(init.handle).expect("project sequenced route");
-        let HadOperationOutcome::Complete { result, .. } = route else {
-            panic!("sequenced route unexpectedly needed resources");
-        };
-        let projection: crate::FlightPlanRouteProjection =
-            serde_json::from_value(result).expect("sequenced route projection");
-        assert_eq!(
-            projection.flight_plan_route_revision,
-            snapshot.flight_plan_route_revision
-        );
-        assert_ne!(
-            projection.flight_plan_route_revision,
-            initial_projection.flight_plan_route_revision
-        );
-        assert_eq!(
-            projection
-                .segments
-                .iter()
-                .map(|segment| segment.status.clone())
-                .collect::<Vec<_>>(),
-            vec![
-                crate::FlightPlanRouteSegmentStatus::Completed,
-                crate::FlightPlanRouteSegmentStatus::Active,
-            ]
-        );
-
-        let active_leg_index = snapshot
-            .app_ui_state
-            .active_plan
-            .as_ref()
-            .and_then(|plan| plan.guidance.as_ref())
-            .and_then(|guidance| guidance.active_leg_index)
-            .expect("active FP row");
-        let expected_active_leg_id = &snapshot
-            .app_state
-            .active_plan
-            .as_ref()
-            .expect("active plan")
-            .resolved_legs[active_leg_index]
-            .id;
-        let active_segments = projection
-            .segments
-            .iter()
-            .filter(|segment| segment.status == crate::FlightPlanRouteSegmentStatus::Active)
-            .collect::<Vec<_>>();
-        assert_eq!(active_segments.len(), 1);
-        assert_eq!(&active_segments[0].leg_id, expected_active_leg_id);
     }
 
     #[test]

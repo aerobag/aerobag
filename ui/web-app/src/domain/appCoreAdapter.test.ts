@@ -138,7 +138,7 @@ describe("loadBestAvailableAdapter", () => {
       sync_guidance_geometry_in_session: async () => JSON.stringify({ state: "complete", result: JSON.parse(snapshotJson) }),
       project_flight_plan_route_in_session: async () => JSON.stringify({
         state: "complete",
-        result: { flight_plan_route_revision: 0, segments: [] },
+        result: [],
       }),
       select_airport_in_session: async () => snapshotJson,
       select_chart_in_session: async () => snapshotJson,

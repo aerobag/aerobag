@@ -12,7 +12,7 @@ import type {
   ChartPageData,
   FlightPlan,
   FlightPlanEntryPreview,
-  FlightPlanRouteProjection,
+  FlightPlanRouteSegment,
   ChartFamilyId,
   FlightDataCell,
   LatLon,
@@ -125,7 +125,6 @@ export type RasterMapUiState = {
 
 export type UiSessionSnapshot = {
   session_revision: number;
-  flight_plan_route_revision: number;
   nav_data_epoch: number;
   active_nav_db: {
     package_id: string;
@@ -787,7 +786,7 @@ export interface UiSession {
   queryNexradOverlay(viewport: MapViewportState, widthPx: number, heightPx: number): Promise<NexradOverlayQueryResult>;
   queryRasterTilePlan(viewport: MapViewportState, widthPx: number, heightPx: number, devicePixelRatio?: number): Promise<RasterTilePlan>;
   renderTerrainOverlayTileByKey(tileKey: string, aircraftAltitudeFt: number): Promise<Uint8Array>;
-  projectFlightPlanRoute(): Promise<FlightPlanRouteProjection>;
+  projectFlightPlanRoute(): Promise<FlightPlanRouteSegment[]>;
   syncLiveFeeds(): Promise<void>;
   startLiveFeedSubscription(): Promise<void>;
   notifyLiveFeedOnline(): void;
@@ -1415,29 +1414,44 @@ export class WasmAppCoreAdapter implements AppCoreAdapter {
         return snapshot;
       },
       activateNextLeg: async () => {
-        return runFlightPlanMutation(
-          () => this.module.activate_next_leg_in_session(handle),
+        snapshot = await withSessionRetry(async () =>
+          runSessionOperation<UiSessionSnapshot>(() =>
+            this.module.activate_next_leg_in_session(handle),
+          ),
         );
+        return syncGuidanceGeometry("activate_next_leg");
       },
       stopNavigation: async () => {
-        return runFlightPlanMutation(
-          () => this.module.stop_navigation_in_session(handle),
+        snapshot = await withSessionRetry(async () =>
+          runSessionOperation<UiSessionSnapshot>(() =>
+            this.module.stop_navigation_in_session(handle),
+          ),
         );
+        return syncGuidanceGeometry("stop_navigation");
       },
       suspendSequencing: async () => {
-        return runFlightPlanMutation(
-          () => this.module.suspend_sequencing_in_session(handle),
+        snapshot = await withSessionRetry(async () =>
+          runSessionOperation<UiSessionSnapshot>(() =>
+            this.module.suspend_sequencing_in_session(handle),
+          ),
         );
+        return syncGuidanceGeometry("suspend_sequencing");
       },
       unsuspendSequencing: async () => {
-        return runFlightPlanMutation(
-          () => this.module.unsuspend_sequencing_in_session(handle),
+        snapshot = await withSessionRetry(async () =>
+          runSessionOperation<UiSessionSnapshot>(() =>
+            this.module.unsuspend_sequencing_in_session(handle),
+          ),
         );
+        return syncGuidanceGeometry("unsuspend_sequencing");
       },
       sequenceActiveLeg: async () => {
-        return runFlightPlanMutation(
-          () => this.module.sequence_active_leg_in_session(handle),
+        snapshot = await withSessionRetry(async () =>
+          runSessionOperation<UiSessionSnapshot>(() =>
+            this.module.sequence_active_leg_in_session(handle),
+          ),
         );
+        return syncGuidanceGeometry("sequence_active_leg");
       },
       setSituation: async (situation) => {
         snapshot = await withSessionRetry(async () =>
@@ -1820,7 +1834,7 @@ export class WasmAppCoreAdapter implements AppCoreAdapter {
         ),
       projectFlightPlanRoute: async () =>
         withSessionRetry(async () =>
-          runSessionOperation<FlightPlanRouteProjection>(() =>
+          runSessionOperation<FlightPlanRouteSegment[]>(() =>
             this.module.project_flight_plan_route_in_session(handle),
           ),
         ),

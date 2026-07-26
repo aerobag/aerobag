@@ -390,12 +390,6 @@ pub struct FlightPlanRouteSegment {
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub struct FlightPlanRouteProjection {
-    pub flight_plan_route_revision: u64,
-    pub segments: Vec<FlightPlanRouteSegment>,
-}
-
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct FlightPlanRouteFinishLine {
     pub start: LatLon,
     pub end: LatLon,

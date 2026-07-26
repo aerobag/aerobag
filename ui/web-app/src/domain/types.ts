@@ -304,11 +304,6 @@ export type FlightPlanRouteSegment = {
   finish_lines?: { start: LatLon; end: LatLon }[];
 };
 
-export type FlightPlanRouteProjection = {
-  flight_plan_route_revision: number;
-  segments: FlightPlanRouteSegment[];
-};
-
 export type SequencingMode = "follow_plan" | "suspended" | "direct_to";
 
 export type DirectToTargetRow = {

@@ -247,11 +247,6 @@ data class FlightPlanRouteSegment(
     val status: RouteSegmentStatus,
 )
 
-data class FlightPlanRouteProjection(
-    val flightPlanRouteRevision: Long,
-    val segments: List<FlightPlanRouteSegment>,
-)
-
 enum class SequencingMode {
     FollowPlan,
     Suspended,

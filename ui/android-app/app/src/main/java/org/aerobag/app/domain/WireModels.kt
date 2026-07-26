@@ -1178,12 +1178,6 @@ data class WireFlightPlanRouteSegment(
 )
 
 @Serializable
-data class WireFlightPlanRouteProjection(
-    val flight_plan_route_revision: Long,
-    val segments: List<WireFlightPlanRouteSegment>,
-)
-
-@Serializable
 enum class WireSequencingMode {
     @SerialName("follow_plan")
     FollowPlan,

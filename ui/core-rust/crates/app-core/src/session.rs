@@ -20620,6 +20620,67 @@ mod tests {
     }
 
     #[test]
+    fn manual_sequence_cannot_leave_rendered_route_on_previous_active_leg() {
+        let init = create_ui_session(short_lat_lon_preview_plan(), &[], None, None)
+            .expect("create session");
+        let initial_snapshot = get_session_snapshot(init.handle).expect("initial snapshot");
+        let mut rendered_route_plan = initial_snapshot
+            .app_state
+            .active_plan
+            .clone()
+            .expect("initial active plan");
+
+        let outcome = super::sequence_active_leg_in_session(init.handle)
+            .expect("sequence active flight-plan leg");
+        let HadOperationOutcome::Complete {
+            result,
+            invalidations,
+        } = outcome
+        else {
+            panic!("sequencing unexpectedly needed resources");
+        };
+        let snapshot: UiSessionSnapshot =
+            serde_json::from_value(result).expect("sequenced snapshot");
+
+        if invalidations.contains(&UiInvalidation::FlightPlanRoute) {
+            rendered_route_plan = snapshot
+                .app_state
+                .active_plan
+                .clone()
+                .expect("refreshed route plan");
+        }
+
+        let active_leg_index = snapshot
+            .app_ui_state
+            .active_plan
+            .as_ref()
+            .and_then(|plan| plan.guidance.as_ref())
+            .and_then(|guidance| guidance.active_leg_index)
+            .expect("FP snapshot active leg");
+        let expected_active_leg_id = &snapshot
+            .app_state
+            .active_plan
+            .as_ref()
+            .expect("active plan")
+            .resolved_legs[active_leg_index]
+            .id;
+        let rendered_active_leg_ids = rendered_route_plan
+            .resolved_legs
+            .iter()
+            .zip(self_contained_route_statuses(&rendered_route_plan))
+            .filter_map(|(leg, status)| {
+                (status == crate::FlightPlanRouteSegmentStatus::Active).then_some(leg.id.as_str())
+            })
+            .collect::<Vec<_>>();
+
+        assert_eq!(
+            rendered_active_leg_ids,
+            vec![expected_active_leg_id.as_str()],
+            "the rendered magenta route must identify the FP snapshot's active leg"
+        );
+    }
+
+    #[test]
     fn session_revision_advances_on_mutation_not_read() {
         let init =
             create_ui_session(FlightPlan::default(), &[], None, None).expect("create session");

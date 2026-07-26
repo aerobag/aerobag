@@ -518,6 +518,14 @@ internal fun FlightPlanPage(
     val waypointTrayWidth = waypointActionButtonWidth * 2f + waypointActionGap + 6.dp
     val procedureChoiceButtonWidth = ThumbSize * 3f
     val procedureTrayWidth = procedureChoiceButtonWidth * 2f + waypointActionGap + 6.dp
+    val waypointTrayPaneBottom =
+        structuredSurfaceBounds?.let { surfaceBounds ->
+            with(density) { (surfaceBounds.bottom - surfaceBounds.top).toDp() } +
+                ThumbSize + ThumbGap * 1.25f
+        } ?: (configuration.screenHeightDp.dp - ThumbSize * 2.15f)
+    val waypointTrayMaxHeight =
+        (waypointTrayPaneBottom - waypointTrayTop - ThumbGap)
+            .coerceAtLeast(ThumbSize * 2f)
     val structuredArrow =
         remember(rows, guidance?.activeFromRowUid, guidance?.activeToRowUid, structuredSurfaceBounds, structuredRowBounds.toMap(), density) {
             val surfaceBounds = structuredSurfaceBounds ?: return@remember null
@@ -1091,6 +1099,7 @@ internal fun FlightPlanPage(
                     modifier = Modifier
                         .align(Alignment.TopStart)
                         .padding(top = waypointTrayTop, start = waypointTrayStart, end = ThumbGap)
+                        .heightIn(max = waypointTrayMaxHeight)
                         .zIndex(5f),
                     width = waypointTrayWidth,
                 ) {
@@ -1113,72 +1122,97 @@ internal fun FlightPlanPage(
                     if (picker.loading) {
                         MenuPanelRow(label = "Loading…", active = false, enabled = false, onSelect = {})
                     } else if (picker.selectedAirwayName == null) {
-                        picker.suggestions.forEach { suggestion ->
-                            MenuPanelRow(
-                                label = suggestion.airwayName,
-                                active = false,
-                                enabled = true,
-                                onSelect = {
-                                    airwayPicker = picker.copy(loading = true, error = null)
-                                    runCatching {
-                                        appCore.prepareAirwayPresentationForAnchors(
-                                            suggestion.airwayName,
-                                            picker.originAnchor,
-                                            picker.destinationAnchor,
-                                        )
-                                    }.onSuccess { presentation ->
-                                        airwayPicker =
-                                            picker.copy(
-                                                loading = false,
-                                                selectedAirwayName = suggestion.airwayName,
-                                                presentation = presentation,
-                                                selectedEntryIndex = null,
+                        LazyColumn(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .weight(1f, fill = false),
+                            verticalArrangement = Arrangement.spacedBy(waypointActionGap),
+                        ) {
+                            items(picker.suggestions.size) { index ->
+                                val suggestion = picker.suggestions[index]
+                                MenuPanelRow(
+                                    label = suggestion.airwayName,
+                                    active = false,
+                                    enabled = true,
+                                    onSelect = {
+                                        airwayPicker = picker.copy(loading = true, error = null)
+                                        runCatching {
+                                            appCore.prepareAirwayPresentationForAnchors(
+                                                suggestion.airwayName,
+                                                picker.originAnchor,
+                                                picker.destinationAnchor,
                                             )
-                                    }.onFailure { error ->
-                                        airwayPicker = picker.copy(loading = false, error = error.message ?: error.toString())
-                                    }
-                                },
-                            )
+                                        }.onSuccess { presentation ->
+                                            airwayPicker =
+                                                picker.copy(
+                                                    loading = false,
+                                                    selectedAirwayName = suggestion.airwayName,
+                                                    presentation = presentation,
+                                                    selectedEntryIndex = null,
+                                                )
+                                        }.onFailure { error ->
+                                            airwayPicker = picker.copy(loading = false, error = error.message ?: error.toString())
+                                        }
+                                    },
+                                )
+                            }
                         }
                     } else if (picker.selectedEntryIndex == null) {
-                        picker.presentation?.points?.forEachIndexed { index, point ->
-                            MenuPanelRow(
-                                label = navRefLabel(point.navRef),
-                                active = index == picker.presentation.suggestedEntryIndex,
-                                enabled = true,
-                                onSelect = {
-                                    airwayPicker = picker.copy(selectedEntryIndex = index)
-                                },
-                            )
+                        val presentation = requireNotNull(picker.presentation)
+                        LazyColumn(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .weight(1f, fill = false),
+                            verticalArrangement = Arrangement.spacedBy(waypointActionGap),
+                        ) {
+                            items(presentation.points.size) { index ->
+                                val point = presentation.points[index]
+                                MenuPanelRow(
+                                    label = navRefLabel(point.navRef),
+                                    active = index == presentation.suggestedEntryIndex,
+                                    enabled = true,
+                                    onSelect = {
+                                        airwayPicker = picker.copy(selectedEntryIndex = index)
+                                    },
+                                )
+                            }
                         }
                         MenuPanelRow(label = "Back", active = false, enabled = true, onSelect = { airwayPicker = picker.copy(selectedAirwayName = null, presentation = null) })
                     } else {
-                        val presentation = picker.presentation
-                        presentation?.points?.forEachIndexed { exitIndex, point ->
-                            val isEntry = exitIndex == picker.selectedEntryIndex
-                            MenuPanelRow(
-                                label = navRefLabel(point.navRef),
-                                active = exitIndex == presentation.suggestedExitIndex,
-                                enabled = !isEntry,
-                                disabledReason = if (isEntry) "That fix is the airway entry; choose an exit." else null,
-                                onSelect = {
-                                    if (isEntry) return@MenuPanelRow
-                                    airwayPicker = picker.copy(loading = true, error = null)
-                                    val snapshot = applySessionCommand("insertAirwayAtFlightPlanRow") {
-                                        uiSession.insertAirwayAtFlightPlanRow(
-                                            picker.rowUid,
-                                            presentation,
-                                            picker.selectedEntryIndex,
-                                            exitIndex,
-                                        )
-                                    }
-                                    if (snapshot != null) {
-                                        closePanels()
-                                    } else {
-                                        airwayPicker = picker.copy(loading = false)
-                                    }
-                                },
-                            )
+                        val presentation = requireNotNull(picker.presentation)
+                        LazyColumn(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .weight(1f, fill = false),
+                            verticalArrangement = Arrangement.spacedBy(waypointActionGap),
+                        ) {
+                            items(presentation.points.size) { exitIndex ->
+                                val point = presentation.points[exitIndex]
+                                val isEntry = exitIndex == picker.selectedEntryIndex
+                                MenuPanelRow(
+                                    label = navRefLabel(point.navRef),
+                                    active = exitIndex == presentation.suggestedExitIndex,
+                                    enabled = !isEntry,
+                                    disabledReason = if (isEntry) "That fix is the airway entry; choose an exit." else null,
+                                    onSelect = {
+                                        if (isEntry) return@MenuPanelRow
+                                        airwayPicker = picker.copy(loading = true, error = null)
+                                        val snapshot = applySessionCommand("insertAirwayAtFlightPlanRow") {
+                                            uiSession.insertAirwayAtFlightPlanRow(
+                                                picker.rowUid,
+                                                presentation,
+                                                picker.selectedEntryIndex,
+                                                exitIndex,
+                                            )
+                                        }
+                                        if (snapshot != null) {
+                                            closePanels()
+                                        } else {
+                                            airwayPicker = picker.copy(loading = false)
+                                        }
+                                    },
+                                )
+                            }
                         }
                         MenuPanelRow(label = "Back", active = false, enabled = true, onSelect = { airwayPicker = picker.copy(selectedEntryIndex = null) })
                     }

@@ -3195,7 +3195,7 @@ export default function App() {
   if (page === "about") {
     return (
       <main className="appShell" style={themeVars}>
-        <AboutPage onOpenApp={() => navigateToPage("map")} />
+        <AboutPage />
       </main>
     );
   }
@@ -10604,9 +10604,7 @@ function HomePage(props: {
   );
 }
 
-function AboutPage(props: {
-  onOpenApp: () => void;
-}) {
+function AboutPage() {
   const [metadata, setMetadata] = useState<AndroidApkDownloadMetadata | null>(null);
   const [metadataError, setMetadataError] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
@@ -10701,9 +10699,9 @@ function AboutPage(props: {
             )}
           </div>
           <div className="aboutActionColumn">
-            <button type="button" className="aboutActionButton aboutWebActionButton" onClick={props.onOpenApp}>
+            <a href="/" className="aboutActionButton aboutWebActionButton">
               Open Web App
-            </button>
+            </a>
           </div>
         </div>
 

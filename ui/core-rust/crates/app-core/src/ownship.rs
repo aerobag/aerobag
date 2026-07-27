@@ -8,8 +8,16 @@ use crate::geometry::LatLon;
 
 const DEFAULT_STALE_AFTER_MS: i64 = 5_000;
 const FEET_PER_NAUTICAL_MILE: f64 = 6076.12;
-const VERTICAL_SPEED_FILTER_WINDOW_MS: i64 = 6_000;
-const VERTICAL_SPEED_HISTORY_RETENTION_MS: i64 = 12_000;
+const FEET_PER_METER: f64 = 3.280_839_895_013_123;
+const VERTICAL_SPEED_HISTORY_RETENTION_MS: i64 = 20_000;
+const VERTICAL_SPEED_RECENCY_HALF_LIFE_MS: f64 = 6_000.0;
+const VERTICAL_SPEED_MIN_SPAN_MS: i64 = 2_000;
+const VERTICAL_SPEED_MIN_SAMPLES: usize = 3;
+const VERTICAL_SPEED_DEFAULT_ACCURACY_M: f64 = 10.0;
+const VERTICAL_SPEED_MIN_ACCURACY_M: f64 = 3.0;
+const VERTICAL_SPEED_MAX_ACCURACY_M: f64 = 30.0;
+const VERTICAL_SPEED_ROBUST_ITERATIONS: usize = 2;
+const VERTICAL_SPEED_MIN_OUTLIER_THRESHOLD_FT: f64 = 3.0 * FEET_PER_METER;
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct SituationRingCandidate {
@@ -489,7 +497,9 @@ fn prune_recent_samples(source: &mut OwnshipSourceStatus) {
         return;
     };
     source.recent_samples.retain(|sample| {
-        latest_time - sample.event_time_epoch_ms <= VERTICAL_SPEED_HISTORY_RETENTION_MS
+        latest_time
+            .checked_sub(sample.event_time_epoch_ms)
+            .is_some_and(|age_ms| (0..=VERTICAL_SPEED_HISTORY_RETENTION_MS).contains(&age_ms))
     });
 }
 
@@ -571,6 +581,7 @@ fn resolve_state(
         pressure_altitude_ft: sample.pressure_altitude_ft,
         vertical_speed_fpm: sample
             .vertical_speed_fpm
+            .filter(|vertical_speed_fpm| vertical_speed_fpm.is_finite())
             .or_else(|| filtered_vertical_speed_fpm(source, sample)),
         event_time_epoch_ms: sample.event_time_epoch_ms,
     };
@@ -697,24 +708,148 @@ fn filtered_vertical_speed_fpm(
     source: &OwnshipSourceStatus,
     latest: &SituationSample,
 ) -> Option<f64> {
-    let latest_altitude_ft = sample_altitude_ft(latest)?;
-    let target_time_ms = latest.event_time_epoch_ms - VERTICAL_SPEED_FILTER_WINDOW_MS;
-    let oldest = source
+    sample_altitude_ft(latest).filter(|altitude_ft| altitude_ft.is_finite())?;
+    let points = source
         .recent_samples
         .iter()
-        .filter(|sample| sample.event_time_epoch_ms < latest.event_time_epoch_ms)
-        .filter(|sample| sample_altitude_ft(sample).is_some())
-        .min_by_key(|sample| (sample.event_time_epoch_ms - target_time_ms).abs())?;
-    let elapsed_ms = latest.event_time_epoch_ms - oldest.event_time_epoch_ms;
-    if elapsed_ms < 1_000 {
+        .filter_map(|sample| {
+            let age_ms = latest
+                .event_time_epoch_ms
+                .checked_sub(sample.event_time_epoch_ms)?;
+            if !(0..=VERTICAL_SPEED_HISTORY_RETENTION_MS).contains(&age_ms) {
+                return None;
+            }
+            let altitude_ft =
+                sample_altitude_ft(sample).filter(|altitude_ft| altitude_ft.is_finite())?;
+            let accuracy_m = sample
+                .vertical_accuracy_m
+                .filter(|accuracy_m| accuracy_m.is_finite() && *accuracy_m > 0.0)
+                .unwrap_or(VERTICAL_SPEED_DEFAULT_ACCURACY_M)
+                .clamp(VERTICAL_SPEED_MIN_ACCURACY_M, VERTICAL_SPEED_MAX_ACCURACY_M);
+            let recency_weight =
+                2.0_f64.powf(-(age_ms as f64) / VERTICAL_SPEED_RECENCY_HALF_LIFE_MS);
+            Some(VerticalSpeedPoint {
+                time_seconds: -(age_ms as f64) / 1_000.0,
+                altitude_ft,
+                base_weight: recency_weight / accuracy_m.powi(2),
+            })
+        })
+        .collect::<Vec<_>>();
+    if points.len() < VERTICAL_SPEED_MIN_SAMPLES {
         return None;
     }
-    let oldest_altitude_ft = sample_altitude_ft(oldest)?;
-    Some((latest_altitude_ft - oldest_altitude_ft) * 60_000.0 / elapsed_ms as f64)
+    let span_seconds = points.iter().map(|point| point.time_seconds).fold(
+        (f64::INFINITY, f64::NEG_INFINITY),
+        |(minimum, maximum), time| (minimum.min(time), maximum.max(time)),
+    );
+    if (span_seconds.1 - span_seconds.0) * 1_000.0 < VERTICAL_SPEED_MIN_SPAN_MS as f64 {
+        return None;
+    }
+
+    let mut weights = points
+        .iter()
+        .map(|point| point.base_weight)
+        .collect::<Vec<_>>();
+    let mut fit = weighted_vertical_speed_fit(&points, &weights)?;
+    for _ in 0..VERTICAL_SPEED_ROBUST_ITERATIONS {
+        let residuals = points
+            .iter()
+            .map(|point| {
+                (point.altitude_ft
+                    - (fit.intercept_ft + fit.slope_ft_per_second * point.time_seconds))
+                    .abs()
+            })
+            .collect::<Vec<_>>();
+        let threshold_ft = (2.5 * median(&residuals)?).max(VERTICAL_SPEED_MIN_OUTLIER_THRESHOLD_FT);
+        weights = points
+            .iter()
+            .zip(residuals)
+            .map(|(point, residual_ft)| {
+                point.base_weight * (threshold_ft / residual_ft.max(f64::EPSILON)).min(1.0)
+            })
+            .collect();
+        fit = weighted_vertical_speed_fit(&points, &weights)?;
+    }
+    Some(fit.slope_ft_per_second * 60.0)
 }
 
 fn sample_altitude_ft(sample: &SituationSample) -> Option<f64> {
     sample.altitude_msl_ft.or(sample.pressure_altitude_ft)
+}
+
+struct VerticalSpeedPoint {
+    time_seconds: f64,
+    altitude_ft: f64,
+    base_weight: f64,
+}
+
+struct VerticalSpeedFit {
+    intercept_ft: f64,
+    slope_ft_per_second: f64,
+}
+
+fn weighted_vertical_speed_fit(
+    points: &[VerticalSpeedPoint],
+    weights: &[f64],
+) -> Option<VerticalSpeedFit> {
+    if points.len() != weights.len() || points.is_empty() {
+        return None;
+    }
+    let weight_sum = weights.iter().sum::<f64>();
+    if !weight_sum.is_finite() || weight_sum <= 0.0 {
+        return None;
+    }
+    let mean_time_seconds = points
+        .iter()
+        .zip(weights)
+        .map(|(point, weight)| point.time_seconds * weight)
+        .sum::<f64>()
+        / weight_sum;
+    let mean_altitude_ft = points
+        .iter()
+        .zip(weights)
+        .map(|(point, weight)| point.altitude_ft * weight)
+        .sum::<f64>()
+        / weight_sum;
+    let denominator = points
+        .iter()
+        .zip(weights)
+        .map(|(point, weight)| weight * (point.time_seconds - mean_time_seconds).powi(2))
+        .sum::<f64>();
+    if !denominator.is_finite() || denominator <= 0.0 {
+        return None;
+    }
+    let slope_ft_per_second = points
+        .iter()
+        .zip(weights)
+        .map(|(point, weight)| {
+            weight
+                * (point.time_seconds - mean_time_seconds)
+                * (point.altitude_ft - mean_altitude_ft)
+        })
+        .sum::<f64>()
+        / denominator;
+    if !slope_ft_per_second.is_finite() {
+        return None;
+    }
+    Some(VerticalSpeedFit {
+        intercept_ft: mean_altitude_ft - slope_ft_per_second * mean_time_seconds,
+        slope_ft_per_second,
+    })
+}
+
+fn median(values: &[f64]) -> Option<f64> {
+    if values.is_empty() || values.iter().any(|value| !value.is_finite()) {
+        return None;
+    }
+    let mut ordered = values.to_vec();
+    ordered.sort_by(f64::total_cmp);
+    let middle = ordered.len() / 2;
+    if ordered.len().is_multiple_of(2) {
+        Some((ordered[middle - 1] + ordered[middle]) / 2.0)
+    } else {
+        Some(ordered[middle])
+    }
 }
 
 fn project_controls(
@@ -1288,13 +1423,65 @@ mod tests {
     }
 
     #[test]
-    fn vertical_speed_falls_back_to_six_second_altitude_history() {
+    fn vertical_speed_is_derived_from_meter_quantized_altitude_history() {
+        let mut state = OwnshipState::default();
+        for second in 0..=20 {
+            let altitude_ft = 3_000.0 + second as f64 * 500.0 / 60.0;
+            let quantized_altitude_ft = (altitude_ft / FEET_PER_METER).round() * FEET_PER_METER;
+            state = push_sample(
+                &state,
+                sample_with_altitude_and_accuracy(
+                    "gps",
+                    second * 1_000,
+                    quantized_altitude_ft,
+                    Some(3.0),
+                    None,
+                ),
+            );
+        }
+
+        let vertical_speed_fpm = state
+            .resolved
+            .kinematics
+            .as_ref()
+            .and_then(|kinematics| kinematics.vertical_speed_fpm)
+            .unwrap();
+        assert!((vertical_speed_fpm - 500.0).abs() < 15.0);
+    }
+
+    #[test]
+    fn vertical_speed_rejects_trace_shaped_low_confidence_altitude_excursion() {
+        let mut state = OwnshipState::default();
+        for second in 0..=20 {
+            let is_bad_fix = second == 14;
+            state = push_sample(
+                &state,
+                sample_with_altitude_and_accuracy(
+                    "gps",
+                    second * 1_000,
+                    if is_bad_fix { 111.8 } else { 51.0 } * FEET_PER_METER,
+                    Some(if is_bad_fix { 20.0 } else { 1.0 }),
+                    None,
+                ),
+            );
+        }
+
+        let vertical_speed_fpm = state
+            .resolved
+            .kinematics
+            .as_ref()
+            .and_then(|kinematics| kinematics.vertical_speed_fpm)
+            .unwrap();
+        assert!(vertical_speed_fpm.abs() < 5.0);
+    }
+
+    #[test]
+    fn vertical_speed_waits_for_enough_altitude_history() {
         let state = push_sample(
             &OwnshipState::default(),
             sample_with_altitude("gps", 1_000, 3_000.0, None),
         );
-        let state = push_sample(&state, sample_with_altitude("gps", 4_000, 3_150.0, None));
-        let state = push_sample(&state, sample_with_altitude("gps", 7_000, 3_600.0, None));
+        let state = push_sample(&state, sample_with_altitude("gps", 2_000, 3_010.0, None));
 
         assert_eq!(
             state
@@ -1302,7 +1489,7 @@ mod tests {
                 .kinematics
                 .as_ref()
                 .and_then(|kinematics| kinematics.vertical_speed_fpm),
-            Some(6000.0)
+            None
         );
     }
 
@@ -1310,6 +1497,22 @@ mod tests {
         source_id: &str,
         event_time_epoch_ms: i64,
         altitude_msl_ft: f64,
+        vertical_speed_fpm: Option<f64>,
+    ) -> SituationSample {
+        sample_with_altitude_and_accuracy(
+            source_id,
+            event_time_epoch_ms,
+            altitude_msl_ft,
+            None,
+            vertical_speed_fpm,
+        )
+    }
+
+    fn sample_with_altitude_and_accuracy(
+        source_id: &str,
+        event_time_epoch_ms: i64,
+        altitude_msl_ft: f64,
+        vertical_accuracy_m: Option<f64>,
         vertical_speed_fpm: Option<f64>,
     ) -> SituationSample {
         SituationSample {
@@ -1322,7 +1525,7 @@ mod tests {
                 lon: -122.0,
             }),
             horizontal_accuracy_m: None,
-            vertical_accuracy_m: None,
+            vertical_accuracy_m,
             track_deg_true: Some(90.0),
             heading_deg_true: None,
             ground_speed_kt: Some(120.0),

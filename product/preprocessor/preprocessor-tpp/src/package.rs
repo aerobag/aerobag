@@ -701,12 +701,12 @@ fn parse_plate_georef_comment(comment: &str) -> anyhow::Result<Option<PlateGeore
             }))
         }
         [a, b, c, d, e, f] => Ok(Some(PlateGeoref::AirportDiagramTransformV1 {
-            pixel_x_from_lon: *a / 2.0,
-            pixel_x_from_lat: *c / 2.0,
-            pixel_x_offset: *e / 2.0,
-            pixel_y_from_lon: *b / 2.0,
-            pixel_y_from_lat: *d / 2.0,
-            pixel_y_offset: *f / 2.0,
+            pixel_x_from_lon: *a,
+            pixel_x_from_lat: *c,
+            pixel_x_offset: *e,
+            pixel_y_from_lon: *b,
+            pixel_y_from_lat: *d,
+            pixel_y_offset: *f,
         })),
         _ => bail!("unsupported plate georef comment: {comment}"),
     }
@@ -768,7 +768,10 @@ fn remove_if_exists(path: &Path) -> anyhow::Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::thumbnail::write_tpp_thumbnail_from_source;
+    use crate::{
+        read_airport_diagram_tags, thumbnail::write_tpp_thumbnail_from_source,
+        AirportDiagramGeoref, PlateRotation,
+    };
     use tempfile::tempdir;
     use zip::{CompressionMethod, ZipArchive};
 
@@ -905,14 +908,106 @@ mod tests {
         assert_eq!(
             parse_plate_georef_comment("10|20|30|40|50|60").unwrap(),
             Some(PlateGeoref::AirportDiagramTransformV1 {
-                pixel_x_from_lon: 5.0,
-                pixel_x_from_lat: 15.0,
-                pixel_x_offset: 25.0,
-                pixel_y_from_lon: 10.0,
-                pixel_y_from_lat: 20.0,
-                pixel_y_offset: 30.0,
+                pixel_x_from_lon: 10.0,
+                pixel_x_from_lat: 30.0,
+                pixel_x_offset: 50.0,
+                pixel_y_from_lon: 20.0,
+                pixel_y_from_lat: 40.0,
+                pixel_y_offset: 60.0,
             })
         );
+    }
+
+    #[test]
+    fn krnt_airport_diagram_georef_maps_airport_onto_225_dpi_image() {
+        let temp = tempdir().unwrap();
+        let tags_path = temp.path().join("avare_aptdiags.php");
+        fs::write(
+            &tags_path,
+            "RNT,1.360544217687E-05,0,0,-9.2182890855452E-06,-122.227068027211,47.5041159660767,73500.0000000042,0,0,-108480.000000006,8983689.50000051,5153246.50000029\n",
+        )
+        .unwrap();
+
+        let tags = read_airport_diagram_tags(&tags_path).unwrap();
+        let georef = parse_plate_georef_comment(&tags.get("RNT").unwrap().to_comment())
+            .unwrap()
+            .expect("KRNT georef");
+        let PlateGeoref::AirportDiagramTransformV1 {
+            pixel_x_from_lon,
+            pixel_x_from_lat,
+            pixel_x_offset,
+            pixel_y_from_lon,
+            pixel_y_from_lat,
+            pixel_y_offset,
+        } = georef
+        else {
+            panic!("expected airport diagram transform");
+        };
+
+        let airport_lon = -122.21575;
+        let airport_lat = 47.49313888888889;
+        let image_x =
+            airport_lon * pixel_x_from_lon + airport_lat * pixel_x_from_lat + pixel_x_offset;
+        let image_y =
+            airport_lon * pixel_y_from_lon + airport_lat * pixel_y_from_lat + pixel_y_offset;
+
+        // The source inverse transform is expressed at 300 DPI; production renders at 225 DPI.
+        let render_scale =
+            f64::from(crate::TPP_RENDER_DPI) / crate::TPP_AIRPORT_DIAGRAM_GEOREF_SOURCE_DPI;
+        let expected_x =
+            (airport_lon * 73500.0000000042 + airport_lat * 0.0 + 8983689.50000051) * render_scale;
+        let expected_y =
+            (airport_lon * 0.0 + airport_lat * -108480.000000006 + 5153246.50000029) * render_scale;
+
+        assert!(
+            (image_x - expected_x).abs() < 0.01 && (image_y - expected_y).abs() < 0.01,
+            "KRNT airport should map near ({expected_x:.2}, {expected_y:.2}) in the 1210x1856 image; got ({image_x:.2}, {image_y:.2})"
+        );
+    }
+
+    #[test]
+    fn sideways_airport_diagram_georef_drives_rotation_and_remains_aligned() {
+        let source = AirportDiagramGeoref::from_source_inverse(&[
+            "0",
+            "-49260.0000000028",
+            "-65580.0000000037",
+            "0",
+            "2728481.00000016",
+            "-5371284.5000003",
+        ])
+        .unwrap();
+        assert_eq!(source.north_up_rotation(), PlateRotation::Clockwise90);
+
+        let lon = -109.0;
+        let lat = 41.6;
+        let source_x =
+            lon * source.pixel_x_from_lon + lat * source.pixel_x_from_lat + source.pixel_x_offset;
+        let source_y =
+            lon * source.pixel_y_from_lon + lat * source.pixel_y_from_lat + source.pixel_y_offset;
+        let rotated = source.rotated(PlateRotation::Clockwise90, 1_200, 1_800);
+        let rotated_x = lon * rotated.pixel_x_from_lon
+            + lat * rotated.pixel_x_from_lat
+            + rotated.pixel_x_offset;
+        let rotated_y = lon * rotated.pixel_y_from_lon
+            + lat * rotated.pixel_y_from_lat
+            + rotated.pixel_y_offset;
+
+        assert!((rotated_x - (1_799.0 - source_y)).abs() < 0.01);
+        assert!((rotated_y - source_x).abs() < 0.01);
+    }
+
+    #[test]
+    fn upside_down_airport_diagram_georef_drives_half_turn() {
+        let source = AirportDiagramGeoref::from_source_inverse(&[
+            "81599.9966997059",
+            "23.2081901876297",
+            "-28.703070511441",
+            "100919.995918227",
+            "7834248.78300751",
+            "-3632429.70570752",
+        ])
+        .unwrap();
+        assert_eq!(source.north_up_rotation(), PlateRotation::HalfTurn);
     }
 
     #[test]

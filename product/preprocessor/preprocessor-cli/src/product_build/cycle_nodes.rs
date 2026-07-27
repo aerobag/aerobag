@@ -1930,8 +1930,8 @@ pub(super) fn tpp_plan_inputs(
         ("source_urls".to_string(), hash_file(source_urls)?),
         ("fetch_jobs".to_string(), fetch_jobs.to_string()),
         (
-            "tpp_render_node_version".to_string(),
-            TPP_RENDER_NODE_VERSION.to_string(),
+            "tpp_plan_node_version".to_string(),
+            TPP_PLAN_NODE_VERSION.to_string(),
         ),
         (
             "cache_layout_version".to_string(),
@@ -2805,7 +2805,8 @@ mod tests {
             Some("source-content")
         );
         assert!(!inputs.contains_key("source_fetch_fingerprint"));
-        assert!(inputs.contains_key("tpp_render_node_version"));
+        assert!(inputs.contains_key("tpp_plan_node_version"));
+        assert!(!inputs.contains_key("tpp_render_node_version"));
         assert!(!inputs.contains_key("tpp_lib"));
         assert!(!inputs.contains_key("tools_lib"));
     }

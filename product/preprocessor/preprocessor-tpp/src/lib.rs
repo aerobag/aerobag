@@ -39,11 +39,12 @@ pub use thumbnail::{write_tpp_thumbnail, write_tpp_thumbnail_from_source};
 const TPP_AIRPORT_DIAGRAMS_URL: &str =
     "https://www.outerworldapps.com/WairToNowWork/avare_aptdiags.php";
 const TPP_BASIC_PIPELINE_VERSION: &str = "basic-v5-hotspot-stapled";
-const TPP_AIRPORT_DIAGRAM_PIPELINE_VERSION: &str = "airport-diagram-v1";
+const TPP_AIRPORT_DIAGRAM_PIPELINE_VERSION: &str = "airport-diagram-v3-georef-rotation";
 const TPP_CONTINUED_PIPELINE_VERSION: &str = "continued-v6-hotspot-shared-path";
 const TPP_GEOTAGGED_PIPELINE_VERSION: &str = "geotagged-v2-dstalpha";
 const TPP_MINIMUM_PIPELINE_VERSION: &str = "minimum-v1";
-const TPP_RENDER_DPI: &str = "225";
+const TPP_RENDER_DPI: u32 = 225;
+const TPP_AIRPORT_DIAGRAM_GEOREF_SOURCE_DPI: f64 = 300.0;
 const TPP_DELETED_JOB_PDF_NAME: &str = "DELETED_JOB.PDF";
 
 #[derive(Debug, Clone)]
@@ -114,7 +115,112 @@ enum PlateRenderKind {
 enum PlateRotation {
     None,
     Clockwise90,
+    HalfTurn,
     CounterClockwise90,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq)]
+struct AirportDiagramGeoref {
+    pixel_x_from_lon: f64,
+    pixel_x_from_lat: f64,
+    pixel_x_offset: f64,
+    pixel_y_from_lon: f64,
+    pixel_y_from_lat: f64,
+    pixel_y_offset: f64,
+}
+
+// Source values are checked for finiteness when parsed, so the usual NaN caveat
+// that prevents f64 from implementing Eq does not apply to this internal value.
+impl Eq for AirportDiagramGeoref {}
+
+impl AirportDiagramGeoref {
+    fn from_source_inverse(values: &[&str]) -> anyhow::Result<Self> {
+        let values = values
+            .iter()
+            .map(|value| value.parse::<f64>())
+            .collect::<Result<Vec<_>, _>>()
+            .context("invalid airport-diagram inverse transform")?;
+        let [a, b, c, d, e, f] = values.as_slice() else {
+            bail!(
+                "airport-diagram inverse transform has {} values, expected 6",
+                values.len()
+            );
+        };
+        if values.iter().any(|value| !value.is_finite()) {
+            bail!("airport-diagram inverse transform contains a non-finite value");
+        }
+        let scale = f64::from(TPP_RENDER_DPI) / TPP_AIRPORT_DIAGRAM_GEOREF_SOURCE_DPI;
+        Ok(Self {
+            pixel_x_from_lon: a * scale,
+            pixel_x_from_lat: c * scale,
+            pixel_x_offset: e * scale,
+            pixel_y_from_lon: b * scale,
+            pixel_y_from_lat: d * scale,
+            pixel_y_offset: f * scale,
+        })
+    }
+
+    fn north_up_rotation(self) -> PlateRotation {
+        let north_x = self.pixel_x_from_lat;
+        let north_y = self.pixel_y_from_lat;
+        if north_x.abs() > north_y.abs() {
+            if north_x < 0.0 {
+                PlateRotation::Clockwise90
+            } else {
+                PlateRotation::CounterClockwise90
+            }
+        } else if north_y > 0.0 {
+            PlateRotation::HalfTurn
+        } else {
+            PlateRotation::None
+        }
+    }
+
+    fn rotated(self, rotation: PlateRotation, width: u32, height: u32) -> Self {
+        let max_x = f64::from(width.saturating_sub(1));
+        let max_y = f64::from(height.saturating_sub(1));
+        match rotation {
+            PlateRotation::None => self,
+            PlateRotation::Clockwise90 => Self {
+                pixel_x_from_lon: -self.pixel_y_from_lon,
+                pixel_x_from_lat: -self.pixel_y_from_lat,
+                pixel_x_offset: max_y - self.pixel_y_offset,
+                pixel_y_from_lon: self.pixel_x_from_lon,
+                pixel_y_from_lat: self.pixel_x_from_lat,
+                pixel_y_offset: self.pixel_x_offset,
+            },
+            PlateRotation::HalfTurn => Self {
+                pixel_x_from_lon: -self.pixel_x_from_lon,
+                pixel_x_from_lat: -self.pixel_x_from_lat,
+                pixel_x_offset: max_x - self.pixel_x_offset,
+                pixel_y_from_lon: -self.pixel_y_from_lon,
+                pixel_y_from_lat: -self.pixel_y_from_lat,
+                pixel_y_offset: max_y - self.pixel_y_offset,
+            },
+            PlateRotation::CounterClockwise90 => Self {
+                pixel_x_from_lon: self.pixel_y_from_lon,
+                pixel_x_from_lat: self.pixel_y_from_lat,
+                pixel_x_offset: self.pixel_y_offset,
+                pixel_y_from_lon: -self.pixel_x_from_lon,
+                pixel_y_from_lat: -self.pixel_x_from_lat,
+                pixel_y_offset: max_x - self.pixel_x_offset,
+            },
+        }
+    }
+
+    fn to_comment(self) -> String {
+        // Keep the conventional affine ordering: A, B, C, D, E, F.
+        [
+            self.pixel_x_from_lon,
+            self.pixel_y_from_lon,
+            self.pixel_x_from_lat,
+            self.pixel_y_from_lat,
+            self.pixel_x_offset,
+            self.pixel_y_offset,
+        ]
+        .map(|value| value.to_string())
+        .join("|")
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -177,7 +283,7 @@ struct PlannedPlate {
     render_kind: PlateRenderKind,
     rotation: PlateRotation,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    airport_diagram_comment: Option<String>,
+    airport_diagram_georef: Option<AirportDiagramGeoref>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     minimum_pages: Vec<u32>,
 }
@@ -503,7 +609,7 @@ fn build_plate_tasks(plates: Vec<PlateRecord>) -> Vec<PlateTask> {
 }
 
 fn plan_plate_task(
-    ad_tags: &std::collections::HashMap<String, String>,
+    ad_tags: &std::collections::HashMap<String, AirportDiagramGeoref>,
     minimum_pages: &BTreeMap<(String, String), Vec<u32>>,
     pdf_facts: &BTreeMap<String, PdfPlanningFacts>,
     task: PlateTask,
@@ -651,7 +757,7 @@ fn plate_records_for_tasks(tasks: &[PlateTask]) -> Vec<&PlateRecord> {
 }
 
 fn plan_plate(
-    ad_tags: &std::collections::HashMap<String, String>,
+    ad_tags: &std::collections::HashMap<String, AirportDiagramGeoref>,
     minimum_pages: &BTreeMap<(String, String), Vec<u32>>,
     pdf_facts: &BTreeMap<String, PdfPlanningFacts>,
     plate: PlateRecord,
@@ -671,8 +777,18 @@ fn plan_plate(
             .non_special_render_kind
             .with_context(|| format!("missing render-kind facts for {}", plate.pdf_name))?
     };
+    let airport_diagram_georef = (render_kind == PlateRenderKind::AirportDiagram)
+        .then(|| ad_tags.get(&plate.apt_id).copied())
+        .flatten();
     let rotation = if plate.chart_code == "HOT" {
         PlateRotation::None
+    } else if render_kind == PlateRenderKind::AirportDiagram {
+        // The latitude column of the affine is the image-space direction of north.
+        // FAA airport diagrams delivered sideways therefore identify their own
+        // required reading rotation without a separate page-orientation heuristic.
+        airport_diagram_georef
+            .map(AirportDiagramGeoref::north_up_rotation)
+            .unwrap_or(PlateRotation::None)
     } else if should_detect_landscape_rotation(&output_name) {
         facts
             .landscape_rotation
@@ -680,8 +796,6 @@ fn plan_plate(
     } else {
         PlateRotation::None
     };
-    let airport_diagram_comment = (render_kind == PlateRenderKind::AirportDiagram)
-        .then(|| ad_tags.get(&plate.apt_id).cloned().unwrap_or_default());
     let minimum_pages = if output_name.starts_with("MIN-") {
         minimum_pages
             .get(&(plate.pdf_name.clone(), plate.apt_id.clone()))
@@ -694,7 +808,7 @@ fn plan_plate(
         pdf_hash: facts.pdf_hash.clone(),
         render_kind,
         rotation,
-        airport_diagram_comment,
+        airport_diagram_georef,
         minimum_pages,
         record: plate,
         output_name,
@@ -749,16 +863,20 @@ fn uppercase_pdf_names(work_dir: &Path) -> anyhow::Result<()> {
 
 fn read_airport_diagram_tags(
     path: &Path,
-) -> anyhow::Result<std::collections::HashMap<String, String>> {
+) -> anyhow::Result<std::collections::HashMap<String, AirportDiagramGeoref>> {
     let text =
         fs::read_to_string(path).with_context(|| format!("failed to read {}", path.display()))?;
     let mut map = std::collections::HashMap::new();
-    for line in text.lines() {
+    for (line_index, line) in text.lines().enumerate() {
         let tokens = line.split(',').collect::<Vec<_>>();
-        if tokens.len() < 12 {
+        if tokens.len() < 13 {
             continue;
         }
-        map.insert(tokens[0].to_string(), tokens[6..12].join("|"));
+        // The source row contains a six-value pixel-to-coordinate transform followed by
+        // the six-value inverse transform used to place lat/lon positions on the diagram.
+        let georef = AirportDiagramGeoref::from_source_inverse(&tokens[7..13])
+            .with_context(|| format!("invalid airport-diagram row {}", line_index + 1))?;
+        map.insert(tokens[0].to_string(), georef);
     }
     Ok(map)
 }
@@ -919,11 +1037,11 @@ fn make_resolved_plate(work_dir: &Path, plate: &PlannedPlate) -> anyhow::Result<
     }
 
     if output_name.starts_with("APD-") {
-        let fingerprint = airport_diagram_fingerprint(
-            pdf_hash,
-            output_name,
-            plate.airport_diagram_comment.as_deref().unwrap_or(""),
-        )?;
+        let georef_comment = plate
+            .airport_diagram_georef
+            .map(AirportDiagramGeoref::to_comment)
+            .unwrap_or_default();
+        let fingerprint = airport_diagram_fingerprint(pdf_hash, output_name, &georef_comment)?;
         invalidate_single_plate_if_stale(&png_path, None, &marker_path, &fingerprint)?;
         if png_path.is_file() {
             return Ok(());
@@ -932,7 +1050,8 @@ fn make_resolved_plate(work_dir: &Path, plate: &PlannedPlate) -> anyhow::Result<
             work_dir,
             &pdf_path,
             &png_path,
-            plate.airport_diagram_comment.as_ref(),
+            plate.airport_diagram_georef,
+            plate.rotation,
         )?;
         write_plate_marker(&marker_path, &fingerprint)?;
         return Ok(());
@@ -1132,14 +1251,18 @@ fn render_airport_diagram(
     work_dir: &Path,
     pdf_path: &Path,
     png_path: &Path,
-    comment: Option<&String>,
+    georef: Option<AirportDiagramGeoref>,
+    rotation: PlateRotation,
 ) -> anyhow::Result<()> {
     render_basic_png(work_dir, pdf_path, png_path, PlateRotation::None)?;
-    write_user_comment(
-        work_dir,
-        png_path,
-        comment.map(String::as_str).unwrap_or(""),
-    )?;
+    let (width, height) = image::image_dimensions(png_path)
+        .with_context(|| format!("failed to read dimensions from {}", png_path.display()))?;
+    let rotated_georef = georef.map(|value| value.rotated(rotation, width, height));
+    rotate_png_if_needed(work_dir, png_path, rotation)?;
+    let comment = rotated_georef
+        .map(AirportDiagramGeoref::to_comment)
+        .unwrap_or_default();
+    write_user_comment(work_dir, png_path, &comment)?;
     Ok(())
 }
 
@@ -1270,6 +1393,7 @@ fn rotate_png_if_needed(
     let angle = match rotation {
         PlateRotation::None => return Ok(()),
         PlateRotation::Clockwise90 => "90",
+        PlateRotation::HalfTurn => "180",
         PlateRotation::CounterClockwise90 => "270",
     };
     let invocation = ToolInvocation {
@@ -1907,16 +2031,82 @@ fn hard_link_or_copy_file(from: &Path, to: &Path) -> anyhow::Result<()> {
 mod tests {
     use super::{
         build_plate_tasks, clean_tpp_transient_work_files, geotag_comment_from_gdalinfo,
-        parse_dms_coordinate, parse_region_plates, resolved_continued_group_should_keep_separate,
-        PlannedPlate, PlateRecord, PlateRenderKind, PlateRotation, PlateTask,
+        parse_dms_coordinate, parse_region_plates, plan_plate,
+        resolved_continued_group_should_keep_separate, rotate_png_if_needed, AirportDiagramGeoref,
+        PdfPlanningFacts, PlannedPlate, PlateRecord, PlateRenderKind, PlateRotation, PlateTask,
     };
     use preprocessor_core::Region;
-    use std::fs;
+    use std::{
+        collections::{BTreeMap, HashMap},
+        fs,
+    };
 
     #[test]
     fn parse_west_coordinate() {
         let value = parse_dms_coordinate("74d54'12.53\"W").unwrap();
         assert!((value - (-74.90348055555556)).abs() < 1e-12);
+    }
+
+    #[test]
+    fn clockwise_png_rotation_matches_airport_georef_rotation() {
+        let temp = tempfile::tempdir().unwrap();
+        let png_path = temp.path().join("orientation.png");
+        let mut source = image::RgbImage::new(2, 3);
+        source.put_pixel(0, 0, image::Rgb([255, 0, 0]));
+        source.put_pixel(1, 0, image::Rgb([0, 255, 0]));
+        source.put_pixel(0, 1, image::Rgb([0, 0, 255]));
+        source.put_pixel(1, 1, image::Rgb([255, 255, 0]));
+        source.put_pixel(0, 2, image::Rgb([255, 0, 255]));
+        source.put_pixel(1, 2, image::Rgb([0, 255, 255]));
+        source.save(&png_path).unwrap();
+
+        rotate_png_if_needed(temp.path(), &png_path, PlateRotation::Clockwise90).unwrap();
+
+        let rotated = image::open(&png_path).unwrap().to_rgb8();
+        assert_eq!(rotated.dimensions(), (3, 2));
+        assert_eq!(rotated.get_pixel(2, 0), &image::Rgb([255, 0, 0]));
+        assert_eq!(rotated.get_pixel(2, 1), &image::Rgb([0, 255, 0]));
+        assert_eq!(rotated.get_pixel(1, 0), &image::Rgb([0, 0, 255]));
+        assert_eq!(rotated.get_pixel(0, 1), &image::Rgb([0, 255, 255]));
+    }
+
+    #[test]
+    fn airport_diagram_plan_uses_georef_orientation() {
+        let georef = AirportDiagramGeoref::from_source_inverse(&[
+            "0",
+            "-49260.0000000028",
+            "-65580.0000000037",
+            "0",
+            "2728481.00000016",
+            "-5371284.5000003",
+        ])
+        .unwrap();
+        let plate = PlateRecord {
+            apt_id: "RKS".to_string(),
+            state_id: "WY".to_string(),
+            chart_name: "AIRPORT DIAGRAM".to_string(),
+            chart_code: "APD".to_string(),
+            pdf_name: "00662AD.PDF".to_string(),
+        };
+        let facts = BTreeMap::from([(
+            plate.pdf_name.clone(),
+            PdfPlanningFacts {
+                pdf_hash: "hash".to_string(),
+                non_special_render_kind: None,
+                landscape_rotation: None,
+            },
+        )]);
+
+        let planned = plan_plate(
+            &HashMap::from([("RKS".to_string(), georef)]),
+            &BTreeMap::new(),
+            &facts,
+            plate,
+        )
+        .unwrap();
+
+        assert_eq!(planned.rotation, PlateRotation::Clockwise90);
+        assert_eq!(planned.airport_diagram_georef, Some(georef));
     }
 
     #[test]
@@ -2106,7 +2296,7 @@ Lower Right (-8246604.366, 4994848.615) ( 74d 4'49.83\"W, 40d52'52.67\"N)
             pdf_hash: "hash".to_string(),
             render_kind,
             rotation: PlateRotation::None,
-            airport_diagram_comment: None,
+            airport_diagram_georef: None,
             minimum_pages: Vec::new(),
         }
     }

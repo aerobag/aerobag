@@ -14,7 +14,9 @@ use rusqlite::{params, Connection, OptionalExtension, Transaction};
 use serde::Serialize;
 use sha2::{Digest, Sha256};
 
-use crate::{capture_initial_load, load_initial_load_capture, NmsApiSource};
+use crate::{
+    capture_initial_load, load_initial_load_capture, InitialLoadCaptureSource, NmsApiSource,
+};
 
 const NMS_API_STORE_SCHEMA_VERSION: u32 = 1;
 
@@ -193,6 +195,26 @@ impl NmsApiCollectorStore {
         let value = metadata(&connection, "poll_cursor_utc")?
             .context("NMS API collector has no poll cursor")?;
         parse_timestamp(&value, "NMS API poll cursor")
+    }
+
+    fn verify_source_identity(&self, source: &InitialLoadCaptureSource) -> anyhow::Result<()> {
+        let connection = self.open_connection()?;
+        let stored_environment = metadata(&connection, "source_environment")?
+            .context("NMS API collector baseline has no source environment")?;
+        let stored_api_base_url = metadata(&connection, "api_base_url")?
+            .context("NMS API collector baseline has no API base URL")?;
+        let configured_api_base_url = source.api_base_url.as_deref().unwrap_or_default();
+        if stored_environment != source.environment
+            || stored_api_base_url != configured_api_base_url
+        {
+            bail!(
+                "NMS API collector source mismatch: stored environment={stored_environment:?} \
+                 apiBaseUrl={stored_api_base_url:?}, configured environment={:?} \
+                 apiBaseUrl={configured_api_base_url:?}; reinitialize this collector state",
+                source.environment
+            );
+        }
+        Ok(())
     }
 
     pub fn apply_poll(
@@ -461,6 +483,8 @@ pub fn run_collector_with_observer(
                 "poll_cursor_utc": baseline.captured_at_utc,
             }))?
         );
+    } else {
+        store.verify_source_identity(&source.capture_source())?;
     }
     observer(&NmsCollectorEvent::StateReady {
         installed_initial_load,
@@ -799,6 +823,36 @@ mod tests {
         assert!(format!("{error:#}").contains("already locked"));
         drop(first);
         store.acquire_lock()?;
+        Ok(())
+    }
+
+    #[test]
+    fn collector_state_rejects_a_different_source_environment() -> anyhow::Result<()> {
+        let temp = tempdir()?;
+        let store = NmsApiCollectorStore::new(temp.path());
+        store.initialize()?;
+        let connection = store.open_connection()?;
+        set_metadata(&connection, "source_environment", "staging")?;
+        set_metadata(
+            &connection,
+            "api_base_url",
+            "https://api-staging.cgifederal-aim.com/nmsapi/v1",
+        )?;
+
+        store.verify_source_identity(&InitialLoadCaptureSource {
+            environment: "staging".to_string(),
+            api_base_url: Some("https://api-staging.cgifederal-aim.com/nmsapi/v1".to_string()),
+        })?;
+        let error = store
+            .verify_source_identity(&InitialLoadCaptureSource {
+                environment: "production".to_string(),
+                api_base_url: Some("https://api-nms.aim.faa.gov/nmsapi/v1".to_string()),
+            })
+            .expect_err("production source reused staging collector state");
+        assert!(
+            format!("{error:#}").contains("source mismatch"),
+            "{error:#}"
+        );
         Ok(())
     }
 

@@ -70,9 +70,11 @@ Enable production NOTAM ingestion only after production NMS credentials exist:
 }
 ```
 
-The credential JSON declares `sourceEnvironment`; the NMS client rejects
-unknown environments and non-HTTPS API/token URLs. Production deployment also
-refuses a credential file unless it declares `sourceEnvironment: "production"`.
+The credential JSON declares `sourceEnvironment`. The NMS client requires each
+environment to use its exact FAA API and token endpoints, so relabeling staging
+credentials as production cannot route a production daemon back to staging.
+Production deployment independently requires the production marker, production
+endpoints, and non-empty credentials before copying the secret.
 
 Production APK builds use the Android SDK under `/usr/lib/android-sdk`.
 They require a full JDK, not just a JRE, because Android Gradle transforms use

@@ -24,6 +24,10 @@ const NMS_HTTP_ATTEMPTS: usize = 5;
 const NMS_HTTP_RETRY_DELAY: Duration = Duration::from_secs(2);
 const NMS_JSON_RESPONSE_LIMIT: u64 = 512 * 1024 * 1024;
 const NMS_HTTP_ERROR_PREVIEW_LIMIT: u64 = 4 * 1024;
+const NMS_STAGING_API_BASE_URL: &str = "https://api-staging.cgifederal-aim.com/nmsapi/v1";
+const NMS_STAGING_TOKEN_URL: &str = "https://api-staging.cgifederal-aim.com/v1/auth/token";
+const NMS_PRODUCTION_API_BASE_URL: &str = "https://api-nms.aim.faa.gov/nmsapi/v1";
+const NMS_PRODUCTION_TOKEN_URL: &str = "https://api-nms.aim.faa.gov/v1/auth/token";
 
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -48,8 +52,22 @@ impl NmsConfig {
     fn validate(&self) -> anyhow::Result<()> {
         validate_https_url(&self.api_base_url, "apiBaseUrl")?;
         validate_https_url(&self.token_url, "tokenUrl")?;
-        if !matches!(self.source_environment.as_str(), "staging" | "production") {
-            bail!("NMS sourceEnvironment must be staging or production");
+        let (expected_api_base_url, expected_token_url) = match self.source_environment.as_str() {
+            "staging" => (NMS_STAGING_API_BASE_URL, NMS_STAGING_TOKEN_URL),
+            "production" => (NMS_PRODUCTION_API_BASE_URL, NMS_PRODUCTION_TOKEN_URL),
+            _ => bail!("NMS sourceEnvironment must be staging or production"),
+        };
+        if self.api_base_url != expected_api_base_url {
+            bail!(
+                "NMS {} apiBaseUrl must be {expected_api_base_url}",
+                self.source_environment
+            );
+        }
+        if self.token_url != expected_token_url {
+            bail!(
+                "NMS {} tokenUrl must be {expected_token_url}",
+                self.source_environment
+            );
         }
         validate_secret_value(&self.client_id, "clientId")?;
         validate_secret_value(&self.client_secret, "clientSecret")?;
@@ -772,6 +790,21 @@ mod tests {
         xml: String,
     }
 
+    fn valid_nms_config(source_environment: &str) -> NmsConfig {
+        let (api_base_url, token_url) = match source_environment {
+            "staging" => (NMS_STAGING_API_BASE_URL, NMS_STAGING_TOKEN_URL),
+            "production" => (NMS_PRODUCTION_API_BASE_URL, NMS_PRODUCTION_TOKEN_URL),
+            _ => panic!("unsupported test environment"),
+        };
+        NmsConfig {
+            source_environment: source_environment.to_string(),
+            api_base_url: api_base_url.to_string(),
+            token_url: token_url.to_string(),
+            client_id: "test-client".to_string(),
+            client_secret: "test-secret".to_string(),
+        }
+    }
+
     impl InitialLoadSource for FixtureSource {
         fn capture_source(&self) -> InitialLoadCaptureSource {
             InitialLoadCaptureSource {
@@ -831,6 +864,43 @@ mod tests {
         assert!(result.is_err());
         assert!(!output.exists());
         Ok(())
+    }
+
+    #[test]
+    fn config_accepts_the_declared_faa_environment_endpoints() -> anyhow::Result<()> {
+        valid_nms_config("staging").validate()?;
+        valid_nms_config("production").validate()?;
+        Ok(())
+    }
+
+    #[test]
+    fn production_config_rejects_staging_endpoints() {
+        let mut config = valid_nms_config("production");
+        config.api_base_url = NMS_STAGING_API_BASE_URL.to_string();
+        config.token_url = NMS_STAGING_TOKEN_URL.to_string();
+
+        let error = config
+            .validate()
+            .expect_err("production accepted the staging NMS endpoints");
+        assert!(
+            format!("{error:#}").contains("production apiBaseUrl"),
+            "{error:#}"
+        );
+    }
+
+    #[test]
+    fn staging_config_rejects_production_endpoints() {
+        let mut config = valid_nms_config("staging");
+        config.api_base_url = NMS_PRODUCTION_API_BASE_URL.to_string();
+        config.token_url = NMS_PRODUCTION_TOKEN_URL.to_string();
+
+        let error = config
+            .validate()
+            .expect_err("staging accepted the production NMS endpoints");
+        assert!(
+            format!("{error:#}").contains("staging apiBaseUrl"),
+            "{error:#}"
+        );
     }
 
     #[test]

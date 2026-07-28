@@ -11,7 +11,9 @@
   "additional_publication_refs": [
   ],
   "live_feeds_listen": "127.0.0.1:8095",
-  "nms_notams_enabled": false,
+  "nms_notams_enabled": true,
+  "nms_notams_credential_file": "/root/aerobag-credentials/nms-notams-production.json",
+  "nms_notams_prod_config": "/etc/aerobag/secrets/nms-notams.json",
   "pipeline_health_listen": "127.0.0.1:8098",
   "pipeline_health_poll_seconds": 60,
   "nginx_server_name": "_"

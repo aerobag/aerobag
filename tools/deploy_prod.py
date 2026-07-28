@@ -60,6 +60,8 @@ DEFAULT_NMS_NOTAMS_CREDENTIAL_FILE = Path(
     "/root/aerobag-credentials/nms-notams-production.json"
 )
 DEFAULT_NMS_NOTAMS_PROD_CONFIG = "/etc/aerobag/secrets/nms-notams.json"
+NMS_PRODUCTION_API_BASE_URL = "https://api-nms.aim.faa.gov/nmsapi/v1"
+NMS_PRODUCTION_TOKEN_URL = "https://api-nms.aim.faa.gov/v1/auth/token"
 
 
 def parse_args() -> argparse.Namespace:
@@ -395,6 +397,39 @@ def install_android_signing_key(config: dict[str, Any], *, dry_run: bool) -> Non
     )
 
 
+def validate_nms_notams_production_credential(source: Path) -> None:
+    try:
+        credential = json.loads(source.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as error:
+        raise SystemExit(f"invalid NMS NOTAM credential file {source}: {error}") from error
+    if not isinstance(credential, dict):
+        raise SystemExit(f"NMS NOTAM credential file must contain a JSON object: {source}")
+
+    expected_values = {
+        "sourceEnvironment": "production",
+        "apiBaseUrl": NMS_PRODUCTION_API_BASE_URL,
+        "tokenUrl": NMS_PRODUCTION_TOKEN_URL,
+    }
+    for field, expected in expected_values.items():
+        if credential.get(field) != expected:
+            raise SystemExit(
+                f"production deploy requires {field}={expected!r} in {source}"
+            )
+
+    for field in ("clientId", "clientSecret"):
+        value = credential.get(field)
+        if not isinstance(value, str) or not value:
+            raise SystemExit(
+                f"production deploy requires a non-empty string {field} in {source}"
+            )
+        if any(character.isspace() or ord(character) < 32 for character in value):
+            raise SystemExit(
+                f"production deploy rejects whitespace/control characters in {field} in {source}"
+            )
+    if ":" in credential["clientId"]:
+        raise SystemExit(f"production deploy rejects ':' in clientId in {source}")
+
+
 def install_nms_notams_credential(config: dict[str, Any], *, dry_run: bool) -> None:
     if not config["nms_notams_enabled"]:
         return
@@ -402,14 +437,7 @@ def install_nms_notams_credential(config: dict[str, Any], *, dry_run: bool) -> N
     target_dir = os.path.dirname(target)
     source = Path(config["nms_notams_credential_file"]).expanduser()
     if source.is_file():
-        try:
-            credential = json.loads(source.read_text(encoding="utf-8"))
-        except (OSError, json.JSONDecodeError) as error:
-            raise SystemExit(f"invalid NMS NOTAM credential file {source}: {error}") from error
-        if credential.get("sourceEnvironment") != "production":
-            raise SystemExit(
-                f"production deploy requires sourceEnvironment=production in {source}"
-            )
+        validate_nms_notams_production_credential(source)
     elif not dry_run:
         raise SystemExit(f"missing NMS NOTAM credential file: {source}")
     run_ssh(

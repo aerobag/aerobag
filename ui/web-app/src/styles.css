@@ -2347,6 +2347,11 @@ button {
   pointer-events: none;
 }
 
+.mapBottomRightDock.isRaisedForPrimaryNavigation,
+.zoomControl.isRaisedForPrimaryNavigation {
+  bottom: calc(var(--thumb) + (var(--thumb-gap) * 2) + var(--safe-bottom));
+}
+
 .mapDebugDock {
   position: relative;
   left: auto;

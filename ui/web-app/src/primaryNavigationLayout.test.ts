@@ -44,7 +44,7 @@ describe("primary navigation layout", () => {
     const mapPage = sourceBetween("function MapPage(", "function NavElementButton(");
     const searchIndex = mapPage.indexOf("<ChartSearchBox");
     const centerHereIndex = mapPage.indexOf('className={`centerHereButton');
-    const bottomRightIndex = mapPage.indexOf('<div className="mapBottomRightDock">');
+    const bottomRightIndex = mapPage.indexOf("mapBottomRightDock");
 
     expect(searchIndex).toBeGreaterThanOrEqual(0);
     expect(centerHereIndex).toBeGreaterThan(searchIndex);
@@ -57,5 +57,15 @@ describe("primary navigation layout", () => {
     expect(navElementCss).toMatch(/height:\s*var\(--thumb\)/);
     expect(styles).toContain(".primaryNavigationDock");
     expect(styles).toContain("gap: var(--thumb-gap)");
+  });
+
+  it("raises both corner-control docks when they would collide with primary navigation", () => {
+    const mapPage = sourceBetween("function MapPage(", "function NavElementButton(");
+    expect(mapPage).toContain("shouldRaiseBottomCornerControls(surfaceSize.width)");
+    expect(mapPage).toContain('raisedForPrimaryNavigation={bottomCornerControlsRaised}');
+    expect(mapPage).toContain('bottomCornerControlsRaised ? " isRaisedForPrimaryNavigation"');
+    expect(styles).toContain(".mapBottomRightDock.isRaisedForPrimaryNavigation");
+    expect(styles).toContain(".zoomControl.isRaisedForPrimaryNavigation");
+    expect(styles).toContain("bottom: calc(var(--thumb) + (var(--thumb-gap) * 2) + var(--safe-bottom))");
   });
 });

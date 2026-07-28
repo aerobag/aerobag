@@ -1327,6 +1327,16 @@ function shouldLowerStatusControlDock(surfaceWidthPx: number, includesDataStatus
   return surfaceWidthPx > 0 && surfaceWidthPx < thumbPixels(leftControlWidthThumbs + ownshipPillWidthThumbs + dataStatusWidthThumbs + outerGutterThumbs);
 }
 
+function shouldRaiseBottomCornerControls(surfaceWidthPx: number) {
+  const primaryNavigationWidthThumbs = 5.2;
+  const widestCornerControlWidthThumbs = 3;
+  const cornerOuterAndSeparationGuttersThumbs = 0.2;
+  const collisionWidthThumbs =
+    primaryNavigationWidthThumbs
+    + 2 * (widestCornerControlWidthThumbs + cornerOuterAndSeparationGuttersThumbs);
+  return surfaceWidthPx > 0 && surfaceWidthPx < thumbPixels(collisionWidthThumbs);
+}
+
 function flightDataEdgeColumnCount(
   surfaceSize: SurfaceSize,
   cellCount: number,
@@ -3831,6 +3841,7 @@ function MapPage(props: {
   const { toast: disabledActionToast, show: showDisabledAction } = useDisabledActionToast();
   const firstVisualReadyRef = useRef(false);
   const statusControlDockLowered = shouldLowerStatusControlDock(surfaceSize.width, dataStatusState.boxes.length > 0);
+  const bottomCornerControlsRaised = shouldRaiseBottomCornerControls(surfaceSize.width);
   const flightDataBannerEdgeLayout = surfaceSize.width > surfaceSize.height;
   const flightDataBannerEdgeColumnCount = flightDataBannerEdgeLayout
     ? flightDataEdgeColumnCount(surfaceSize, flightDataBanner.cells.length, statusControlDockLowered)
@@ -6990,9 +7001,10 @@ function MapPage(props: {
           minZoom={selectedMap.min_zoom}
           maxZoom={selectedMap.max_zoom}
           onZoomChange={setViewportZoom}
+          raisedForPrimaryNavigation={bottomCornerControlsRaised}
         />
 
-        <div className="mapBottomRightDock">
+        <div className={`mapBottomRightDock${bottomCornerControlsRaised ? " isRaisedForPrimaryNavigation" : ""}`}>
           <div className="debugDock mapDebugDock isRightAligned">
             <DebugDock open={debugOpen} warn={debugWarningActive} onToggle={onDebugToggle}>
               <CommonDebugPanel
@@ -11075,14 +11087,20 @@ function DebugDock(props: { open: boolean; warn?: boolean; onToggle: () => void;
   );
 }
 
-function ZoomControl(props: { zoom: number; minZoom: number; maxZoom: number; onZoomChange: (zoom: number) => void }) {
+function ZoomControl(props: {
+  zoom: number;
+  minZoom: number;
+  maxZoom: number;
+  onZoomChange: (zoom: number) => void;
+  raisedForPrimaryNavigation: boolean;
+}) {
   const step = 0.05;
   const buttonStep = 0.5;
   const zoom = Math.min(props.maxZoom, Math.max(props.minZoom, props.zoom));
 
   return (
     <div
-      className="zoomControl"
+      className={`zoomControl${props.raisedForPrimaryNavigation ? " isRaisedForPrimaryNavigation" : ""}`}
       onPointerDown={stopPointer}
       onPointerUp={stopPointer}
       onDoubleClick={stopDoubleClick}

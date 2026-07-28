@@ -4,6 +4,7 @@
 
 package org.aerobag.app
 
+import androidx.compose.ui.unit.dp
 import java.io.File
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
@@ -83,6 +84,13 @@ class PrimaryNavigationLayoutTest {
         val navElement = chartsSource.substring(startIndex)
         assertTrue(navElement.contains(".height(ThumbSize)"))
         assertFalse(navElement.contains("ThumbSize * 0.67f"))
+    }
+
+    @Test
+    fun narrowSurfacesRaiseCornerControlsByOneRow() {
+        val collisionWidth = PrimaryNavigationDockWidth + (BottomRightControlClearance * 2f)
+        assertTrue(shouldRaiseBottomCornerControls(collisionWidth - 0.1.dp))
+        assertFalse(shouldRaiseBottomCornerControls(collisionWidth))
     }
 
     private fun sourceBetween(source: String, start: String, end: String): String {

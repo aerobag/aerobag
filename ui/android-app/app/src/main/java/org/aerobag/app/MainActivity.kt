@@ -371,6 +371,8 @@ internal val LocalAerobagUiTheme = staticCompositionLocalOf<UiTheme> {
 internal val ThumbSize = 56.dp
 internal val ThumbGap = 5.6.dp
 internal val SituationDockOverlapWidth = ThumbSize * 10f
+internal val PrimaryNavigationDockWidth = (ThumbSize * 5f) + (ThumbGap * 2f)
+internal val BottomRightControlClearance = ThumbSize + (ThumbGap * 2f)
 internal val PlanGridGap = 2.dp
 internal const val DefaultPlaybackTracePath = "/gps-captures/black-tablet-flight-2026-06-27-0800-1700-pdt.jsonl"
 internal const val DefaultAndroidPackageSourceBaseUrl = "aerobag.org"
@@ -383,6 +385,10 @@ internal const val MapLayerLogTag = "MapLayers"
 internal const val TileBudgetLogTag = "AerobagTileBudget"
 internal const val DecodedTileCacheMaxBytes = 96L * 1024L * 1024L
 private const val SessionCommandNoticeDurationMs = 4_000L
+
+internal fun shouldRaiseBottomCornerControls(surfaceWidth: Dp): Boolean =
+    surfaceWidth > 0.dp &&
+        surfaceWidth < PrimaryNavigationDockWidth + (BottomRightControlClearance * 2f)
 internal const val MapTileLoadWorkerCount = 4
 internal const val SlowTileLoadLogMs = 1000L
 internal val TileLoadGenerationIds = AtomicLong()
@@ -2946,7 +2952,9 @@ internal fun AerobagApp(
     }
 
     CompositionLocalProvider(LocalAerobagUiTheme provides uiTheme) {
-        Box(modifier = Modifier.fillMaxSize()) {
+        BoxWithConstraints(modifier = Modifier.fillMaxSize()) {
+            val bottomCornerControlsRaised =
+                page != AppPage.OfflinePackages && shouldRaiseBottomCornerControls(maxWidth)
             when (page) {
                 AppPage.Map -> {
                     key(sessionSnapshot.navDataEpoch) {
@@ -3246,7 +3254,10 @@ internal fun AerobagApp(
                 expandAbove = true,
                 modifier = Modifier
                     .zIndex(OverlayPlaneControls)
-                    .align(Alignment.BottomEnd),
+                    .align(Alignment.BottomEnd)
+                    .padding(
+                        bottom = if (bottomCornerControlsRaised) ThumbSize + ThumbGap else 0.dp,
+                    ),
             ) {
                 CommonDebugPanel(
                     uptimeLabel = uptimeLabel,

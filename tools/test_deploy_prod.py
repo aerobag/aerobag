@@ -19,6 +19,26 @@ sys.path.insert(0, str(TOOLS_DIR))
 import deploy_prod  # noqa: E402
 
 
+class AndroidSigningKeyTests(unittest.TestCase):
+    def test_default_key_lives_in_the_credentials_tree(self) -> None:
+        self.assertEqual(
+            deploy_prod.DEFAULT_ANDROID_SIGNING_SOURCE_KEYSTORE,
+            Path("/root/aerobag-credentials/android/aerobag-app.keystore"),
+        )
+
+    def test_missing_key_fails_instead_of_copying_an_implicit_debug_key(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            missing = Path(temp_dir) / "missing.keystore"
+            config = {
+                "android_signing_source_keystore": str(missing),
+                "android_signing_expected_cert_sha256": (
+                    deploy_prod.ANDROID_SIGNING_EXPECTED_CERT_SHA256
+                ),
+            }
+            with self.assertRaisesRegex(SystemExit, "missing Android signing keystore"):
+                deploy_prod.ensure_local_android_signing_key(config, dry_run=False)
+
+
 class NmsProductionCredentialTests(unittest.TestCase):
     def write_credential(self, **overrides: str) -> Path:
         credential = {

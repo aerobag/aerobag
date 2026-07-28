@@ -9,7 +9,6 @@ from __future__ import annotations
 import argparse
 import json
 import os
-import shutil
 import shlex
 import subprocess
 import tempfile
@@ -50,9 +49,8 @@ ANDROID_SIGNING_KEYSTORE_PASSWORD = "android"
 ANDROID_SIGNING_KEY_ALIAS = "androiddebugkey"
 ANDROID_SIGNING_KEY_PASSWORD = "android"
 DEFAULT_ANDROID_SIGNING_SOURCE_KEYSTORE = Path(
-    "/root/aerobag-secrets/android/aerobag-app.keystore"
+    "/root/aerobag-credentials/android/aerobag-app.keystore"
 )
-DEFAULT_ANDROID_SIGNING_BOOTSTRAP_KEYSTORE = Path("/root/.android/debug.keystore")
 DEFAULT_ANDROID_SIGNING_PROD_KEYSTORE = (
     "/etc/aerobag/secrets/android/aerobag-app.keystore"
 )
@@ -207,10 +205,6 @@ def load_config(path: Path) -> dict[str, Any]:
         "android_signing_source_keystore",
         os.fspath(DEFAULT_ANDROID_SIGNING_SOURCE_KEYSTORE),
     )
-    config.setdefault(
-        "android_signing_bootstrap_keystore",
-        os.fspath(DEFAULT_ANDROID_SIGNING_BOOTSTRAP_KEYSTORE),
-    )
     config.setdefault("android_signing_prod_keystore", DEFAULT_ANDROID_SIGNING_PROD_KEYSTORE)
     config.setdefault(
         "android_signing_expected_cert_sha256",
@@ -326,21 +320,11 @@ def android_keystore_cert_sha256(
 
 def ensure_local_android_signing_key(config: dict[str, Any], *, dry_run: bool) -> Path:
     source = Path(config["android_signing_source_keystore"]).expanduser()
-    bootstrap = Path(config["android_signing_bootstrap_keystore"]).expanduser()
     expected = normalize_cert_fingerprint(config["android_signing_expected_cert_sha256"])
     if not source.exists():
-        if not bootstrap.exists():
-            if dry_run:
-                print(f"+ would install local Android signing key {bootstrap} -> {source}", flush=True)
-                return source
-            raise SystemExit(
-                f"missing Android signing keystore {source}; bootstrap key {bootstrap} also missing"
-            )
-        print(f"+ install local Android signing key {bootstrap} -> {source}", flush=True)
-        if not dry_run:
-            source.parent.mkdir(parents=True, mode=0o700, exist_ok=True)
-            shutil.copy2(bootstrap, source)
-            os.chmod(source, 0o600)
+        if dry_run:
+            return source
+        raise SystemExit(f"missing Android signing keystore {source}")
     fingerprint = android_keystore_cert_sha256(
         source,
         storepass=config["android_signing_keystore_password"],
@@ -386,10 +370,14 @@ def install_android_signing_key(config: dict[str, Any], *, dry_run: bool) -> Non
               exit 1
             fi
             implicit=/root/.android/debug.keystore
-            if [ -f "$implicit" ] && ! cmp -s "$implicit" "$key"; then
-              quarantine=/root/.android/aerobag-quarantined
-              install -d -m 0700 "$quarantine"
-              mv "$implicit" "$quarantine/debug.keystore.$(date -u +%Y%m%dT%H%M%SZ)"
+            if [ -f "$implicit" ]; then
+              if cmp -s "$implicit" "$key"; then
+                rm -f "$implicit"
+              else
+                quarantine=/root/.android/aerobag-quarantined
+                install -d -m 0700 "$quarantine"
+                mv "$implicit" "$quarantine/debug.keystore.$(date -u +%Y%m%dT%H%M%SZ)"
+              fi
             fi
             """
         ).strip(),

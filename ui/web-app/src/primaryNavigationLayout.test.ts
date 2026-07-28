@@ -17,8 +17,8 @@ function sourceBetween(start: string, end: string): string {
 }
 
 describe("primary navigation layout", () => {
-  it("uses one shared bottom dock on map, plate, home, and flight-plan pages", () => {
-    expect(appSource.match(/<PrimaryNavigationDock/g)).toHaveLength(4);
+  it("uses one shared bottom dock on every top-level product page", () => {
+    expect(appSource.match(/<PrimaryNavigationDock/g)).toHaveLength(6);
 
     const dock = sourceBetween("function PrimaryNavigationDock(", "function TrayDock(");
     expect(dock).toContain("<HomeNavButton");
@@ -30,8 +30,10 @@ describe("primary navigation layout", () => {
   it("keeps page navigation out of the map and plate top control rows", () => {
     const mapPage = sourceBetween("function MapPage(", "function NavElementButton(");
     const chartsPage = sourceBetween("function ChartsPage(", "function HomePage(");
+    const settingsPage = sourceBetween("function SettingsPage(", "function DataStatusPage(");
+    const dataStatusPage = sourceBetween("function DataStatusPage(", "function DataStatusPageRowArticle(");
 
-    for (const page of [mapPage, chartsPage]) {
+    for (const page of [mapPage, chartsPage, settingsPage, dataStatusPage]) {
       expect(page).not.toContain("<HomeNavButton");
       expect(page).not.toContain("<ChartPlateToggleButton");
       expect(page).toContain("<PrimaryNavigationDock");

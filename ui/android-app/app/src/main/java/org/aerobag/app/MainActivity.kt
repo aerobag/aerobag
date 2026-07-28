@@ -3216,7 +3216,9 @@ internal fun AerobagApp(
                         page = page,
                         state = sessionSnapshot.dataStatusPageState,
                         dataSourcesRow = dataSourcesStatusRow(appContext, prefs),
+                        navElement = navElement,
                         mostRecentChartOrPlatePage = mostRecentChartOrPlatePageFromHistory(pageHistory),
+                        onOpenPlan = { navigateToPage(AppPage.Plan) },
                         onOpenRecentChartOrPlate = ::navigateToMostRecentChartOrPlate,
                         onSelectPage = ::navigateToPage,
                     )
@@ -3225,7 +3227,9 @@ internal fun AerobagApp(
                     SettingsPage(
                         page = page,
                         state = sessionSnapshot.settingsPageState,
+                        navElement = navElement,
                         mostRecentChartOrPlatePage = mostRecentChartOrPlatePageFromHistory(pageHistory),
+                        onOpenPlan = { navigateToPage(AppPage.Plan) },
                         onOpenRecentChartOrPlate = ::navigateToMostRecentChartOrPlate,
                         onSelectPage = ::navigateToPage,
                         onSettingsAction = { actionId, valueId ->

@@ -39,6 +39,7 @@ import androidx.compose.ui.unit.sp
 import androidx.compose.ui.zIndex
 import kotlin.math.floor
 import kotlin.math.roundToInt
+import org.aerobag.app.domain.NavElementUiView
 import org.aerobag.app.domain.UiSettingsPageRow
 import org.aerobag.app.domain.UiSettingsPageState
 
@@ -52,7 +53,9 @@ private val SettingsSliderStopLabelsHeight = 12.dp
 internal fun SettingsPage(
     page: AppPage,
     state: UiSettingsPageState,
+    navElement: NavElementUiView?,
     mostRecentChartOrPlatePage: AppPage,
+    onOpenPlan: () -> Unit,
     onOpenRecentChartOrPlate: () -> Unit,
     onSelectPage: (AppPage) -> Unit,
     onSettingsAction: (String, String) -> Unit,
@@ -63,13 +66,18 @@ internal fun SettingsPage(
             .fillMaxSize()
             .background(uiTheme.controls.chartSurfaceBg),
     ) {
-        HomeReturnDock(
-            modifier = Modifier
-                .zIndex(OverlayPlaneControls),
+        PrimaryNavigationDock(
             currentPage = page,
+            navElement = navElement,
             chartPlateTargetPage = mostRecentChartOrPlatePage,
             onHomeClick = { onSelectPage(AppPage.Home) },
+            onOpenPlan = onOpenPlan,
+            onSelectPage = onSelectPage,
             onOpenChartOrPlate = onOpenRecentChartOrPlate,
+            modifier = Modifier
+                .align(Alignment.BottomCenter)
+                .padding(bottom = ThumbGap)
+                .zIndex(OverlayPlaneControls),
         )
         Column(
             modifier = Modifier
@@ -77,8 +85,8 @@ internal fun SettingsPage(
                 .padding(
                     start = ThumbGap,
                     end = ThumbGap,
-                    top = ThumbSize + (ThumbGap * 2f),
-                    bottom = ThumbGap,
+                    top = ThumbGap,
+                    bottom = ThumbSize + (ThumbGap * 2f),
                 )
                 .clip(RoundedCornerShape(ThumbRadius))
                 .background(uiTheme.controls.buttonUnchecked.copy(alpha = 0.84f))

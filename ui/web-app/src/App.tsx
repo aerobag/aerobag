@@ -3561,7 +3561,9 @@ export default function App() {
           page={page}
           state={sessionSnapshot.data_status_page_state}
           dataSourcesRow={dataSourcesStatusRow(sessionSnapshot.debug_state)}
+          navElement={planUiState?.guidance?.nav_element}
           mostRecentChartOrPlatePage={mostRecentChartOrPlatePage}
+          onOpenPlan={() => navigateToPage("plan")}
           onOpenRecentChartOrPlate={navigateToMostRecentChartOrPlate}
           onSelectPage={navigateToPage}
         />
@@ -3570,7 +3572,9 @@ export default function App() {
         <SettingsPage
           page={page}
           state={sessionSnapshot.settings_page_state}
+          navElement={planUiState?.guidance?.nav_element}
           mostRecentChartOrPlatePage={mostRecentChartOrPlatePage}
+          onOpenPlan={() => navigateToPage("plan")}
           onOpenRecentChartOrPlate={navigateToMostRecentChartOrPlate}
           onSelectPage={navigateToPage}
           onSettingsAction={(actionId, valueId) => {
@@ -10724,20 +10728,23 @@ function formatApkSize(bytes: number): string {
 function SettingsPage(props: {
   page: AppPage;
   state: UiSessionSnapshot["settings_page_state"];
+  navElement: NavElementUiView | null | undefined;
   mostRecentChartOrPlatePage: AppPage;
+  onOpenPlan: () => void;
   onOpenRecentChartOrPlate: () => void;
   onSelectPage: (page: AppPage) => void;
   onSettingsAction: (actionId: string, valueId: string) => void;
 }) {
   return (
     <section className="appPage settingsPage">
-      <div className="chartDock">
-        <HomeNavButton active={props.page === "home"} onClick={() => props.onSelectPage("home")} />
-        <ChartPlateReturnButton
-          targetPage={props.mostRecentChartOrPlatePage}
-          onClick={props.onOpenRecentChartOrPlate}
-        />
-      </div>
+      <PrimaryNavigationDock
+        page={props.page}
+        navElement={props.navElement}
+        chartPlateTargetPage={props.mostRecentChartOrPlatePage}
+        onSelectPage={props.onSelectPage}
+        onOpenPlan={props.onOpenPlan}
+        onOpenChartOrPlate={props.onOpenRecentChartOrPlate}
+      />
 
       <div className="settingsPagePanel" aria-label={props.state.title}>
         <header className="settingsPageHeader">
@@ -10790,7 +10797,9 @@ function DataStatusPage(props: {
   page: AppPage;
   state: UiDataStatusPageState;
   dataSourcesRow: UiDataStatusPageState["rows"][number];
+  navElement: NavElementUiView | null | undefined;
   mostRecentChartOrPlatePage: AppPage;
+  onOpenPlan: () => void;
   onOpenRecentChartOrPlate: () => void;
   onSelectPage: (page: AppPage) => void;
 }) {
@@ -10806,13 +10815,14 @@ function DataStatusPage(props: {
 
   return (
     <section className="appPage dataStatusPage">
-      <div className="chartDock">
-        <HomeNavButton active={props.page === "home"} onClick={() => props.onSelectPage("home")} />
-        <ChartPlateReturnButton
-          targetPage={props.mostRecentChartOrPlatePage}
-          onClick={props.onOpenRecentChartOrPlate}
-        />
-      </div>
+      <PrimaryNavigationDock
+        page={props.page}
+        navElement={props.navElement}
+        chartPlateTargetPage={props.mostRecentChartOrPlatePage}
+        onSelectPage={props.onSelectPage}
+        onOpenPlan={props.onOpenPlan}
+        onOpenChartOrPlate={props.onOpenRecentChartOrPlate}
+      />
 
       <div className="dataStatusPagePanel" aria-label={props.state.title}>
         <header className="dataStatusPageHeader">

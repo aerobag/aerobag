@@ -3014,7 +3014,7 @@ button {
 .dataStatusPage {
   display: flex;
   flex-direction: column;
-  padding: calc(var(--thumb) * 1.25) var(--thumb-gap) calc(var(--thumb) * 0.45);
+  padding: var(--thumb-gap) var(--thumb-gap) calc(var(--thumb) + (var(--thumb-gap) * 2) + var(--safe-bottom));
   background:
     radial-gradient(circle at 12% 14%, rgba(255, 255, 255, 0.52), transparent 28%),
     var(--theme-chart-surface-bg);
@@ -3024,7 +3024,7 @@ button {
 .settingsPage {
   display: flex;
   flex-direction: column;
-  padding: calc(var(--thumb) * 1.25) var(--thumb-gap) calc(var(--thumb) * 0.45);
+  padding: var(--thumb-gap) var(--thumb-gap) calc(var(--thumb) + (var(--thumb-gap) * 2) + var(--safe-bottom));
   background:
     radial-gradient(circle at 86% 12%, rgba(255, 255, 255, 0.46), transparent 30%),
     var(--theme-chart-surface-bg);

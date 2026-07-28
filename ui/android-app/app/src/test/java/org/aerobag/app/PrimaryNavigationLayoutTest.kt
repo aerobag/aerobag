@@ -26,14 +26,20 @@ class PrimaryNavigationLayoutTest {
         assertTrue(dock.contains("ChartPlateToggleButton("))
         assertTrue(dock.contains("ChartPlateReturnButton("))
 
+        val dataStatusSource = sourceFile("src/main/java/org/aerobag/app/DataStatusPage.kt").readText()
+        val settingsSource = sourceFile("src/main/java/org/aerobag/app/SettingsPage.kt").readText()
         val pageSources = listOf(
             chartsSource,
             sourceFile("src/main/java/org/aerobag/app/MapExplorerPage.kt").readText(),
             sourceFile("src/main/java/org/aerobag/app/HomePage.kt").readText(),
             sourceFile("src/main/java/org/aerobag/app/FlightPlanPage.kt").readText(),
+            dataStatusSource,
+            settingsSource,
         )
         val callCount = pageSources.sumOf { Regex("""(?m)^\s{8,}PrimaryNavigationDock\(""").findAll(it).count() }
-        assertEquals("Map, plate, Home, and FP must all render the shared dock.", 4, callCount)
+        assertEquals("Every top-level product page must render the shared dock.", 6, callCount)
+        assertFalse(dataStatusSource.contains("HomeReturnDock("))
+        assertFalse(settingsSource.contains("HomeReturnDock("))
     }
 
     @Test

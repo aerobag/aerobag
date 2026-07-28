@@ -62,6 +62,7 @@ import androidx.compose.ui.window.Popup
 import androidx.compose.ui.window.PopupProperties
 import androidx.compose.ui.zIndex
 import kotlinx.coroutines.delay
+import org.aerobag.app.domain.NavElementUiView
 import org.aerobag.app.domain.UiDataStatusPageFact
 import org.aerobag.app.domain.UiDataStatusPageRow
 import org.aerobag.app.domain.UiDataStatusPageState
@@ -332,7 +333,9 @@ internal fun DataStatusPage(
     page: AppPage,
     state: UiDataStatusPageState,
     dataSourcesRow: UiDataStatusPageRow,
+    navElement: NavElementUiView?,
     mostRecentChartOrPlatePage: AppPage,
+    onOpenPlan: () -> Unit,
     onOpenRecentChartOrPlate: () -> Unit,
     onSelectPage: (AppPage) -> Unit,
 ) {
@@ -349,14 +352,18 @@ internal fun DataStatusPage(
             .fillMaxSize()
             .background(uiTheme.controls.chartSurfaceBg),
     ) {
-        HomeReturnDock(
-            modifier = Modifier
-                .align(Alignment.TopStart)
-                .zIndex(OverlayPlaneControls),
+        PrimaryNavigationDock(
             currentPage = page,
+            navElement = navElement,
             chartPlateTargetPage = mostRecentChartOrPlatePage,
             onHomeClick = { onSelectPage(AppPage.Home) },
+            onOpenPlan = onOpenPlan,
+            onSelectPage = onSelectPage,
             onOpenChartOrPlate = onOpenRecentChartOrPlate,
+            modifier = Modifier
+                .align(Alignment.BottomCenter)
+                .padding(bottom = ThumbGap)
+                .zIndex(OverlayPlaneControls),
         )
         Column(
             modifier = Modifier
@@ -364,8 +371,8 @@ internal fun DataStatusPage(
                 .padding(
                     start = ThumbGap,
                     end = ThumbGap,
-                    top = ThumbSize + (ThumbGap * 2f),
-                    bottom = ThumbGap,
+                    top = ThumbGap,
+                    bottom = ThumbSize + (ThumbGap * 2f),
                 )
                 .clip(RoundedCornerShape(ThumbRadius))
                 .background(uiTheme.controls.buttonUnchecked.copy(alpha = 0.84f))

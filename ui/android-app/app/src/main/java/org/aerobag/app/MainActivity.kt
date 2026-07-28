@@ -3242,8 +3242,7 @@ internal fun AerobagApp(
                 expandAbove = true,
                 modifier = Modifier
                     .zIndex(OverlayPlaneControls)
-                    .align(Alignment.BottomEnd)
-                    .padding(end = ThumbSize + (ThumbSize * 0.1f)),
+                    .align(Alignment.BottomEnd),
             ) {
                 CommonDebugPanel(
                     uptimeLabel = uptimeLabel,

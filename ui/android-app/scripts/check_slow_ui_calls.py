@@ -131,6 +131,13 @@ CHECKS = (
                 "Resource callbacks from this runner execute inside scheduled IO work.",
             ),
             AllowRule(
+                "RetainedSession.kt",
+                "fetchCoreResource(",
+                "background session effect",
+                "The retained session supplies this callback only to NativeUiSession's dedicated asynchronous effect pump.",
+                ("sessionResourceFetcher = { resource ->",),
+            ),
+            AllowRule(
                 "MapExplorerPage.kt",
                 "fetchCoreResource(",
                 "background IO/render",

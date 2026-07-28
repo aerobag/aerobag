@@ -66,7 +66,12 @@ internal class AerobagRetainedModel : ViewModel() {
             ?.let { return it }
 
         coreSession?.close()
-        val appCore = NativeAppCoreAdapter(navKvStore = runtimeContent.navKvStore)
+        val appCore = NativeAppCoreAdapter(
+            navKvStore = runtimeContent.navKvStore,
+            sessionResourceFetcher = { resource ->
+                fetchCoreResource(context.applicationContext, resource, "")
+            },
+        )
         val uiSession = appCore.createUiSession(
             recentAirportIds,
             selectedAirportId,

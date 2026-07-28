@@ -441,6 +441,7 @@ struct UiSession {
     nexrad_installed: BTreeMap<String, LiveNexradInstalledState>,
     nexrad_tile_cache: HashMap<String, Vec<u8>>,
     terrain_source_tile_cache: HashMap<String, Vec<u8>>,
+    agl_terrain_resource_ids_in_flight: HashSet<String>,
     pending_resource_effects: Vec<UiSessionResourceEffect>,
     wall_clock_epoch_ms: i64,
     live_feed_current_refresh: LiveFeedCurrentRefreshState,
@@ -3561,6 +3562,7 @@ fn create_ui_session_inner(
             airspace_feature_cache: HashMap::new(),
             tfr_payload: None,
             terrain_source_tile_cache: HashMap::new(),
+            agl_terrain_resource_ids_in_flight: HashSet::new(),
             pending_resource_effects: Vec::new(),
             wall_clock_epoch_ms,
             live_feed_current_refresh: LiveFeedCurrentRefreshState::Idle,
@@ -5879,6 +5881,7 @@ pub fn advance_nav_kv_store_in_session_with_open_result(
     candidate.metar_station_importance_status = None;
     candidate.weather_station_airport_aliases = None;
     candidate.terrain_source_tile_cache.clear();
+    candidate.agl_terrain_resource_ids_in_flight.clear();
     rebuild_metar_tile_cache(&mut candidate);
     mark_cycle_product_freshness_dirty(&mut candidate);
 
@@ -6610,6 +6613,9 @@ pub fn ingest_resource_in_session_at_epoch_ms(
         };
         let mut sessions = lock_sessions();
         let session = session_mut(&mut sessions, handle)?;
+        session
+            .agl_terrain_resource_ids_in_flight
+            .remove(resource_id);
         session
             .terrain_source_tile_cache
             .insert(rest.to_string(), abt2_bytes);
@@ -8931,6 +8937,42 @@ fn terrain_elevation_from_cache(session: &UiSession, position: LatLon) -> Option
         .flatten()
 }
 
+fn enqueue_ownship_agl_terrain_effect(session: &mut UiSession) {
+    if session
+        .settings_preferences
+        .disabled_flight_data_cell_ids
+        .contains(crate::flight_data::FLIGHT_DATA_AGL_CELL_ID)
+    {
+        return;
+    }
+    let ownship = &session.app_state.ownship.render;
+    if !ownship.altitude_msl_ft.is_some_and(f64::is_finite) {
+        return;
+    }
+    let Some(position) = ownship.position else {
+        return;
+    };
+    let Some(mut request) = terrain_elevation_request_for_session(session, position) else {
+        return;
+    };
+    if let TerrainSourceResolution::NeedResources(resources) = resolve_terrain_source_resources(
+        session,
+        request.source_tiles.iter_mut(),
+        TerrainSourceFetchPolicy::OptionalPayload,
+    ) {
+        for resource in resources {
+            if resource.id.starts_with("terrain/source/")
+                && !session
+                    .agl_terrain_resource_ids_in_flight
+                    .insert(resource.id.clone())
+            {
+                continue;
+            }
+            enqueue_session_resource_effect(session, resource, [UiInvalidation::SessionSnapshot]);
+        }
+    }
+}
+
 fn map_selection_with_point_details(
     mut selection: MapSelectionQueryResult,
     mut terrain_elevation: impl FnMut(LatLon) -> Option<f64>,
@@ -10451,6 +10493,7 @@ fn try_snapshot_for_session(session: &mut UiSession) -> Result<UiSessionSnapshot
     if session.metar_payload.is_some() || session.taf_payload.is_some() {
         ensure_weather_station_airport_aliases_loaded(session)?;
     }
+    enqueue_ownship_agl_terrain_effect(session);
     let app_ui_started_at = crate::core_clock_ms();
     let mut app_ui_state = project_session_app_ui_state(session)?;
     let app_ui_ms = elapsed_ms(app_ui_started_at);
@@ -11004,6 +11047,13 @@ fn project_flight_data_banner(
         crate::FlightDataComputer::with_clock(ownship.speed_kt, Some(session.wall_clock_epoch_ms));
 
     let altitude_ft = ownship.altitude_msl_ft.or(ownship.pressure_altitude_ft);
+    let agl_ft = ownship
+        .altitude_msl_ft
+        .zip(position.and_then(|position| terrain_elevation_from_cache(session, position)))
+        .map(|(altitude_msl_ft, terrain_elevation_msl_ft)| {
+            altitude_msl_ft - terrain_elevation_msl_ft
+        })
+        .filter(|agl_ft| agl_ft.is_finite());
     let track_magnetic_deg = match (store, position, ownship.orientation_deg) {
         (Some(store), Some(position), Some(true_course_deg)) => {
             crate::had_ops::true_to_magnetic_course_deg_optional(store, true_course_deg, position)?
@@ -11027,6 +11077,7 @@ fn project_flight_data_banner(
 
     let banner = flight_data_computer.banner(crate::FlightDataBannerInput {
         altitude_ft,
+        agl_ft,
         vertical_speed_fpm: session
             .app_state
             .ownship
@@ -13003,7 +13054,7 @@ mod tests {
         let row = &snapshot.settings_page_state.rows[0];
         assert_eq!(row.id, "flight_data_visibility");
         assert_eq!(row.kind, "grid_choices");
-        assert_eq!(row.items.len(), 12);
+        assert_eq!(row.items.len(), 13);
         assert!(row.items.iter().all(|item| item.enabled));
         assert!(snapshot.display_policy.is_none());
     }
@@ -13091,7 +13142,7 @@ mod tests {
             Some(storage.clone()),
         )
         .expect("configure platform capabilities");
-        assert_eq!(snapshot.app_ui_state.flight_data_banner.cells.len(), 12);
+        assert_eq!(snapshot.app_ui_state.flight_data_banner.cells.len(), 13);
 
         let snapshot = perform_settings_action_in_session(
             init.handle,
@@ -15836,6 +15887,7 @@ mod tests {
             airspace_feature_cache: HashMap::new(),
             tfr_payload: None,
             terrain_source_tile_cache: HashMap::new(),
+            agl_terrain_resource_ids_in_flight: HashSet::new(),
             pending_resource_effects: Vec::new(),
             wall_clock_epoch_ms: 0,
             live_feed_current_refresh: LiveFeedCurrentRefreshState::Idle,
@@ -16036,6 +16088,7 @@ mod tests {
             airspace_feature_cache: HashMap::new(),
             tfr_payload: None,
             terrain_source_tile_cache: HashMap::new(),
+            agl_terrain_resource_ids_in_flight: HashSet::new(),
             pending_resource_effects: Vec::new(),
             wall_clock_epoch_ms: 0,
             live_feed_current_refresh: LiveFeedCurrentRefreshState::Idle,
@@ -16511,6 +16564,7 @@ mod tests {
             airspace_feature_cache: HashMap::new(),
             tfr_payload: None,
             terrain_source_tile_cache: HashMap::new(),
+            agl_terrain_resource_ids_in_flight: HashSet::new(),
             pending_resource_effects: Vec::new(),
             wall_clock_epoch_ms: 0,
             live_feed_current_refresh: LiveFeedCurrentRefreshState::Idle,
@@ -21641,6 +21695,130 @@ mod tests {
                 .get(cache_key)
                 .is_some_and(Vec::is_empty));
         }
+        destroy_session(init.handle);
+    }
+
+    #[test]
+    fn agl_returns_immediately_then_fills_after_background_terrain_ingest() {
+        let init = create_current_test_session();
+        let terrain_package_id = format!("terrain-nw_{}", product_contracts::TERRAIN_CONTRACT_ID);
+        let discovery =
+            serde_json::from_value::<crate::CurrentArtifactsManifest>(serde_json::json!({
+                "schema_version": 1,
+                "contracts": {
+                    "terrain": product_contracts::TERRAIN_CONTRACT_ID
+                },
+                "artifact_roots": {
+                    "packaged": "published_packaged",
+                    "unpacked": "published_unpacked"
+                },
+                "as_of_utc": "2026-05-20T12:00:00Z",
+                "bundles": [{
+                    "filename": "terrain-bundle.json",
+                    "relative_path": "terrain-bundle.json",
+                    "id": "terrain-bundle",
+                    "bundle_type": "static"
+                }]
+            }))
+            .expect("terrain discovery");
+        let terrain_package =
+            serde_json::from_value::<crate::BundlePackageArtifact>(serde_json::json!({
+                "id": terrain_package_id,
+                "family_id": "terrain",
+                "contract_id": product_contracts::TERRAIN_CONTRACT_ID,
+                "filename": format!("{terrain_package_id}.zip"),
+                "relative_path": format!("{terrain_package_id}.zip")
+            }))
+            .expect("terrain package");
+        load_offline_package_library_cache_in_session(
+            init.handle,
+            OfflinePackagesLibraryCache {
+                package_source_base_url: "https://example.test/packages".to_string(),
+                fetched_at_epoch_ms: utc("2026-05-20T12:00:00Z").timestamp_millis(),
+                discovery_manifests: vec![discovery],
+                bundle_manifests_by_filename: BTreeMap::from([(
+                    "terrain-bundle.json".to_string(),
+                    crate::BundleManifest {
+                        packages: vec![terrain_package],
+                    },
+                )]),
+            },
+        )
+        .expect("load terrain package metadata");
+        set_installed_package_ids_in_session(init.handle, vec![terrain_package_id.clone()])
+            .expect("install terrain package");
+
+        let position = LatLon {
+            lat: 47.6062,
+            lon: -122.3321,
+        };
+        let initial = set_situation_in_session(
+            init.handle,
+            Situation {
+                position: SituationPosition::LatLon {
+                    lat: position.lat,
+                    lon: position.lon,
+                },
+                orientation_deg: None,
+                speed_kt: Some(90.0),
+                altitude_msl_ft: Some(1_512.0),
+            },
+        )
+        .expect("set ownship");
+        assert_eq!(
+            initial
+                .app_ui_state
+                .flight_data_banner
+                .cells
+                .iter()
+                .find(|cell| cell.id == crate::flight_data::FLIGHT_DATA_AGL_CELL_ID)
+                .and_then(|cell| cell.value.as_deref()),
+            None
+        );
+
+        let effects = drain_session_resource_effects(init.handle).expect("drain terrain effect");
+        let terrain_effect = effects
+            .iter()
+            .find(|effect| effect.resource.id.starts_with("terrain/source/"))
+            .expect("ownship terrain resource effect");
+        assert!(terrain_effect.resource.optional);
+        assert!(terrain_effect
+            .after_success_invalidations
+            .contains(&UiInvalidation::SessionSnapshot));
+        assert!(matches!(
+            terrain_effect.resource.source,
+            CoreResourceSource::PackageMember { .. }
+        ));
+
+        let mut terrain_bytes = Vec::new();
+        terrain_bytes.extend_from_slice(b"ABT2");
+        terrain_bytes.extend_from_slice(&1_u16.to_le_bytes());
+        terrain_bytes.extend_from_slice(&1_u16.to_le_bytes());
+        terrain_bytes.extend_from_slice(&(-32768_i16).to_le_bytes());
+        terrain_bytes.extend_from_slice(&0_i16.to_le_bytes());
+        terrain_bytes.extend_from_slice(
+            &(product_contracts::TERRAIN_TER2_HEIGHT_QUANTIZATION_FT as f32).to_le_bytes(),
+        );
+        terrain_bytes.extend_from_slice(&0.0_f32.to_le_bytes());
+        terrain_bytes.extend_from_slice(&8_i16.to_le_bytes());
+        ingest_resource_in_session(init.handle, &terrain_effect.resource.id, &terrain_bytes)
+            .expect("ingest ownship terrain");
+
+        let loaded = get_session_snapshot(init.handle).expect("refresh snapshot");
+        assert_eq!(
+            loaded
+                .app_ui_state
+                .flight_data_banner
+                .cells
+                .iter()
+                .find(|cell| cell.id == crate::flight_data::FLIGHT_DATA_AGL_CELL_ID)
+                .and_then(|cell| cell.value.as_deref()),
+            Some("1000")
+        );
+        assert!(drain_session_resource_effects(init.handle)
+            .expect("drain after terrain ingest")
+            .iter()
+            .all(|effect| !effect.resource.id.starts_with("terrain/source/")));
         destroy_session(init.handle);
     }
 

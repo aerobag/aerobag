@@ -54,7 +54,6 @@ sealed class CoreResourceSource {
 data class PagedSessionOperationResult(
     val result: JsonElement,
     val invalidations: List<String>,
-    val effectInvalidations: List<String> = emptyList(),
 )
 
 private data class CoreSessionResourceEffect(
@@ -378,19 +377,16 @@ class NavKvStore private constructor(
     fun runPagedSessionOperationElement(
         fetchSessionResource: ((CoreResourceRequest) -> ByteArray)? = null,
         ingestSessionResource: ((CoreResourceRequest, ByteArray) -> Unit)? = null,
-        drainSessionResourceEffects: (() -> String)? = null,
         operation: () -> String,
     ): JsonElement = runPagedSessionOperation(
         fetchSessionResource = fetchSessionResource,
         ingestSessionResource = ingestSessionResource,
-        drainSessionResourceEffects = drainSessionResourceEffects,
         operation = operation,
     ).result
 
     fun runPagedSessionOperation(
         fetchSessionResource: ((CoreResourceRequest) -> ByteArray)? = null,
         ingestSessionResource: ((CoreResourceRequest, ByteArray) -> Unit)? = null,
-        drainSessionResourceEffects: (() -> String)? = null,
         resumeSnapshot: (() -> String)? = null,
         operation: () -> String,
     ): PagedSessionOperationResult = backendLock.read {
@@ -399,7 +395,6 @@ class NavKvStore private constructor(
             activeBackend = backend,
             fetchSessionResource = fetchSessionResource,
             ingestSessionResource = ingestSessionResource,
-            drainSessionResourceEffects = drainSessionResourceEffects,
             resumeSnapshot = resumeSnapshot,
             operation = operation,
         )
@@ -409,7 +404,6 @@ class NavKvStore private constructor(
         activeBackend: NavKvBackend,
         fetchSessionResource: ((CoreResourceRequest) -> ByteArray)?,
         ingestSessionResource: ((CoreResourceRequest, ByteArray) -> Unit)?,
-        drainSessionResourceEffects: (() -> String)?,
         resumeSnapshot: (() -> String)?,
         operation: () -> String,
     ): PagedSessionOperationResult {
@@ -419,16 +413,6 @@ class NavKvStore private constructor(
             val outcome = json.parseToJsonElement(activeOperation()).jsonObject
             return when (val state = outcome.getValue("state").jsonPrimitive.content) {
                 "complete" -> {
-                    val effectInvalidations = drainSessionResourceEffects
-                        ?.let {
-                            pumpSessionResourceEffects(
-                                activeBackend = activeBackend,
-                                drainSessionResourceEffects = it,
-                                fetchSessionResource = fetchSessionResource,
-                                ingestSessionResource = ingestSessionResource,
-                            )
-                        }
-                        ?: emptyList()
                     PagedSessionOperationResult(
                         result = outcome["result"] ?: JsonNull,
                         invalidations = (pendingInvalidations + (
@@ -437,7 +421,6 @@ class NavKvStore private constructor(
                                 ?.map { it.jsonPrimitive.content }
                                 ?: emptyList()
                             )).toList(),
-                        effectInvalidations = effectInvalidations,
                     )
                 }
                 "need_resources", "need_snapshot_resources" -> {

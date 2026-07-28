@@ -21,6 +21,7 @@ import kotlinx.serialization.json.jsonPrimitive
 import org.aerobag.app.diagnosticLogInfo
 import org.aerobag.app.generated.NexradOverlayQueryResult
 import java.time.ZoneId
+import java.util.concurrent.Executors
 
 data class VectorTileRequest(
     val layer: String,
@@ -398,6 +399,7 @@ class NativeAppCoreAdapter(
     private val navKvStore: NavKvStore? = null,
     private val bridge: NativeBridge = NativeBindings,
     private val json: Json = NativeAppCoreJson,
+    private val sessionResourceFetcher: ((CoreResourceRequest) -> ByteArray)? = null,
 ) {
     fun situationRingCandidates(): List<SituationRingCandidate> =
         json.decodeFromString<List<WireSituationRingCandidate>>(bridge.situationRingCandidatesJson())
@@ -423,6 +425,7 @@ class NativeAppCoreAdapter(
             bridge = bridge,
             json = json,
             navKvStore = navKvStore,
+            sessionResourceFetcher = sessionResourceFetcher,
             initialSnapshot = result.snapshot.toUi(),
         )
         navKvStore?.attachToSession(result.handle)
@@ -571,12 +574,35 @@ class NativeUiSession internal constructor(
     private val bridge: NativeBridge,
     private val json: Json,
     private val navKvStore: NavKvStore?,
+    private val sessionResourceFetcher: ((CoreResourceRequest) -> ByteArray)?,
     initialSnapshot: UiSessionSnapshot,
 ) {
     var snapshot: UiSessionSnapshot = initialSnapshot
         private set
 
+    @Volatile
     private var invalidationListener: ((List<String>) -> Unit)? = null
+    private val sessionResourceEffectPump = navKvStore?.let { store ->
+        AsyncSessionResourceEffectPump(
+            executor = Executors.newSingleThreadExecutor { runnable ->
+                Thread(runnable, "aerobag-session-effects").apply { isDaemon = true }
+            },
+            pump = {
+                store.pumpSessionResourceEffects(
+                    drainSessionResourceEffects = {
+                        bridge.drainSessionResourceEffectsJson(handle)
+                    },
+                    fetchSessionResource = sessionResourceFetcher,
+                    ingestSessionResource = { resource, bytes ->
+                        bridge.ingestResourceInSession(handle, resource.id, bytes)
+                    },
+                )
+            },
+            publishInvalidations = { invalidations ->
+                publishInvalidations("sessionResourceEffect", invalidations)
+            },
+        )
+    }
 
     fun setInvalidationListener(listener: ((List<String>) -> Unit)?) {
         invalidationListener = listener
@@ -596,7 +622,7 @@ class NativeUiSession internal constructor(
         )
         val result = json.decodeFromJsonElement<WireNavDbAdvanceResult>(outcome.result)
         snapshot = result.snapshot.toUi()
-        publishInvalidations("navDbAdvance", outcome.invalidations)
+        publishPagedInvalidations("navDbAdvance", outcome)
         return NavDbAdvanceUiResult(
             adopted = result.disposition == "adopted",
             snapshot = snapshot,
@@ -610,12 +636,11 @@ class NativeUiSession internal constructor(
             operation = {
                 bridge.maintainNavDbInSessionAtEpochMsJson(handle, nowEpochMs)
             },
-            drainSessionResourceEffects = { bridge.drainSessionResourceEffectsJson(handle) },
             resumeSnapshot = { bridge.getSessionSnapshotPagedJson(handle) },
         ) ?: error("NAVDB maintenance requires a nav kv store")
         val result = json.decodeFromJsonElement<WireNavDbMaintenanceResult>(outcome.result)
         snapshot = result.snapshot.toUi()
-        publishInvalidations("navDbMaintenance", outcome.invalidations)
+        publishPagedInvalidations("navDbMaintenance", outcome)
         return NavDbMaintenanceUiResult(
             shouldAttemptAdvance = result.action == "attempt_advance",
             snapshot = snapshot,
@@ -639,15 +664,16 @@ class NativeUiSession internal constructor(
 
     private fun queryFlightPlan(query: JsonObject): JsonElement {
         val store = navKvStore ?: error("nav_kv store is required for flight-plan queries")
-        return store.runPagedSessionOperationElement {
+        val result = store.runPagedSessionOperationElement {
             bridge.queryFlightPlanInSessionJson(handle, query.toString())
         }
+        sessionResourceEffectPump?.request()
+        return result
     }
 
     private fun executePagedSnapshot(commandName: String, operation: () -> String): UiSessionSnapshot {
         val outcome = navKvStore?.runPagedSessionOperation(
             operation = operation,
-            drainSessionResourceEffects = { bridge.drainSessionResourceEffectsJson(handle) },
             resumeSnapshot = { bridge.getSessionSnapshotPagedJson(handle) },
         )
             ?: run {
@@ -674,8 +700,9 @@ class NativeUiSession internal constructor(
         commandName: String,
         outcome: PagedSessionOperationResult,
     ): List<String> {
-        val invalidations = (outcome.invalidations + outcome.effectInvalidations).distinct()
+        val invalidations = outcome.invalidations.distinct()
         publishInvalidations(commandName, invalidations)
+        sessionResourceEffectPump?.request()
         return invalidations
     }
 
@@ -765,9 +792,7 @@ class NativeUiSession internal constructor(
             flightPlanRouteRevision = snapshot.flightPlanRouteRevision,
             segments = emptyList(),
         )
-        val outcome = store.runPagedSessionOperation(
-            drainSessionResourceEffects = { bridge.drainSessionResourceEffectsJson(handle) },
-        ) {
+        val outcome = store.runPagedSessionOperation {
             bridge.projectFlightPlanRouteInSessionJson(handle)
         }
         publishPagedInvalidations("projectFlightPlanRoute", outcome)
@@ -1225,7 +1250,6 @@ class NativeUiSession internal constructor(
             ingestSessionResource = { resource, bytes ->
                 bridge.ingestResourceInSession(handle, resource.id, bytes)
             },
-            drainSessionResourceEffects = { bridge.drainSessionResourceEffectsJson(handle) },
         )
         return publishPagedInvalidations("syncLiveFeeds", outcome)
     }
@@ -1243,7 +1267,6 @@ class NativeUiSession internal constructor(
             ingestSessionResource = { resource, bytes ->
                 bridge.ingestResourceInSession(handle, resource.id, bytes)
             },
-            drainSessionResourceEffects = { bridge.drainSessionResourceEffectsJson(handle) },
         )
         return publishPagedInvalidations("ingestLiveFeedSseEvents", outcome)
     }
@@ -1278,7 +1301,6 @@ class NativeUiSession internal constructor(
             ingestSessionResource = { resource, bytes ->
                 bridge.ingestResourceInSession(handle, resource.id, bytes)
             },
-            drainSessionResourceEffects = { bridge.drainSessionResourceEffectsJson(handle) },
         )
         val invalidations = publishPagedInvalidations("queryMapOverlay", outcome)
         return MapOverlayQueryOutcome(
@@ -1304,7 +1326,6 @@ class NativeUiSession internal constructor(
             ingestSessionResource = { resource, bytes ->
                 bridge.ingestResourceInSession(handle, resource.id, bytes)
             },
-            drainSessionResourceEffects = { bridge.drainSessionResourceEffectsJson(handle) },
         ) {
                 bridge.getMapSelectionInSessionWithPointDisplayScaleJson(
                     handle,
@@ -1336,7 +1357,6 @@ class NativeUiSession internal constructor(
             ingestSessionResource = { resource, bytes ->
                 bridge.ingestResourceInSession(handle, resource.id, bytes)
             },
-            drainSessionResourceEffects = { bridge.drainSessionResourceEffectsJson(handle) },
         ) {
                 bridge.getMapSelectionForNavRefInSessionWithPointDisplayScaleJson(
                     handle,
@@ -1378,7 +1398,6 @@ class NativeUiSession internal constructor(
             ingestSessionResource = { resource, bytes ->
                 bridge.ingestResourceInSession(handle, resource.id, bytes)
             },
-            drainSessionResourceEffects = { bridge.drainSessionResourceEffectsJson(handle) },
         )
         publishPagedInvalidations("queryTerrainOverlay", result)
         return json.decodeFromJsonElement<WireTerrainOverlayQueryResult>(result.result).toUi()
@@ -1399,7 +1418,6 @@ class NativeUiSession internal constructor(
             ingestSessionResource = { resource, bytes ->
                 bridge.ingestResourceInSession(handle, resource.id, bytes)
             },
-            drainSessionResourceEffects = { bridge.drainSessionResourceEffectsJson(handle) },
         ) ?: error("session missing nav_db for NEXRAD overlay")
         publishPagedInvalidations("queryNexradOverlay", result)
         return json.decodeFromJsonElement(
@@ -1421,7 +1439,6 @@ class NativeUiSession internal constructor(
             ingestSessionResource = { resource, bytes ->
                 bridge.ingestResourceInSession(handle, resource.id, bytes)
             },
-            drainSessionResourceEffects = { bridge.drainSessionResourceEffectsJson(handle) },
         ) {
             bridge.resolveChartAssetResourceInSessionJson(handle, chartId, assetKind)
         }
@@ -1455,7 +1472,6 @@ class NativeUiSession internal constructor(
             ingestSessionResource = { resource, bytes ->
                 bridge.ingestResourceInSession(handle, resource.id, bytes)
             },
-            drainSessionResourceEffects = { bridge.drainSessionResourceEffectsJson(handle) },
         ) {
             bridge.prepareNexradTileInSessionJson(handle, src)
         }
@@ -1504,6 +1520,7 @@ class NativeUiSession internal constructor(
     }
 
     fun destroy() {
+        sessionResourceEffectPump?.close()
         bridge.destroySession(handle)
     }
 

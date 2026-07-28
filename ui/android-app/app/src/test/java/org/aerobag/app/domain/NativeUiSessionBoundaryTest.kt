@@ -36,10 +36,9 @@ class NativeUiSessionBoundaryTest {
             sessionBody.contains("publishPagedInvalidations(commandName, outcome)"),
         )
         assertTrue(
-            "Paged operations must publish both direct and resource-effect invalidations through one path.",
-            sessionBody.contains(
-                "val invalidations = (outcome.invalidations + outcome.effectInvalidations).distinct()",
-            ),
+            "Paged operations must publish direct invalidations and then launch background resource effects.",
+            sessionBody.contains("val invalidations = outcome.invalidations.distinct()") &&
+                sessionBody.contains("sessionResourceEffectPump?.request()"),
         )
         assertTrue(
             "NEXRAD queries must publish core's frame-change invalidation.",
@@ -164,6 +163,8 @@ class NativeUiSessionBoundaryTest {
         val nativeBridge = sourceFile("src/main/java/org/aerobag/app/domain/NativeBindings.kt").readText()
         val nativeSession = sourceFile("src/main/java/org/aerobag/app/domain/NativeAppCoreAdapter.kt").readText()
         val navKvStore = sourceFile("src/main/java/org/aerobag/app/domain/NavKvStore.kt").readText()
+        val pagedOperationRunner =
+            balancedBlockAfterMarker(navKvStore, "private fun runPagedSessionOperation(")
 
         assertTrue(
             "Android JNI bridge must expose core's pending session resource effects, matching web's drain_session_resource_effects.",
@@ -171,17 +172,21 @@ class NativeUiSessionBoundaryTest {
                 nativeBridge.contains("external override fun drainSessionResourceEffectsJson(handle: Long): String"),
         )
         assertTrue(
-            "Android NavKvStore must pump pending session effects and publish their after-success invalidations.",
+            "Android NavKvStore must expose an explicit session-effect pump and preserve after-success invalidations.",
             navKvStore.contains("pumpSessionResourceEffects(") &&
                 navKvStore.contains("after_success_invalidations") &&
                 navKvStore.contains("afterSuccessInvalidations"),
         )
         assertTrue(
-            "NativeUiSession must wire the session-effect pump to core invalidation listeners.",
+            "NativeUiSession must run effects on its asynchronous pump and publish their invalidations.",
             nativeSession.contains("bridge.drainSessionResourceEffectsJson(handle)") &&
-                nativeSession.contains(
-                    "val invalidations = (outcome.invalidations + outcome.effectInvalidations).distinct()",
-                ),
+                nativeSession.contains("AsyncSessionResourceEffectPump(") &&
+                nativeSession.contains("sessionResourceEffectPump?.request()"),
+        )
+        assertFalse(
+            "Normal paged operations must never synchronously drain background session effects.",
+            navKvStore.contains("effectInvalidations") ||
+                pagedOperationRunner.contains("pumpSessionResourceEffects"),
         )
     }
 

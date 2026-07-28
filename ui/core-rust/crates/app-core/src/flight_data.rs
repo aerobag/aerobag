@@ -50,6 +50,7 @@ pub struct FlightDataComputer {
 #[derive(Debug, Clone, Default)]
 pub struct FlightDataBannerInput {
     pub altitude_ft: Option<f64>,
+    pub agl_ft: Option<f64>,
     pub vertical_speed_fpm: Option<f64>,
     pub track_magnetic_deg: Option<f64>,
     pub desired_track_magnetic_deg: Option<f64>,
@@ -61,6 +62,7 @@ pub struct FlightDataBannerInput {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum FlightDataBannerField {
     Altitude,
+    AboveGroundLevel,
     GroundSpeed,
     VerticalSpeed,
     Track,
@@ -81,8 +83,15 @@ struct FlightDataBannerCellDefinition {
     label: &'static str,
 }
 
-const FLIGHT_DATA_BANNER_CELLS: [FlightDataBannerCellDefinition; 12] = [
-    banner_cell(FlightDataBannerField::Altitude, "altitude", "ALT ft"),
+pub(crate) const FLIGHT_DATA_AGL_CELL_ID: &str = "agl";
+
+const FLIGHT_DATA_BANNER_CELLS: [FlightDataBannerCellDefinition; 13] = [
+    banner_cell(FlightDataBannerField::Altitude, "altitude", "MSL ft"),
+    banner_cell(
+        FlightDataBannerField::AboveGroundLevel,
+        FLIGHT_DATA_AGL_CELL_ID,
+        "AGL ft",
+    ),
     banner_cell(FlightDataBannerField::GroundSpeed, "ground_speed", "GS kt"),
     banner_cell(
         FlightDataBannerField::VerticalSpeed,
@@ -165,6 +174,7 @@ impl FlightDataComputer {
                 .map(|definition| {
                     let value = match definition.field {
                         FlightDataBannerField::Altitude => input.altitude_ft.map(format_feet),
+                        FlightDataBannerField::AboveGroundLevel => input.agl_ft.map(format_feet),
                         FlightDataBannerField::GroundSpeed => {
                             self.ground_speed_kt.map(format_knots)
                         }
@@ -542,13 +552,13 @@ mod tests {
     }
 
     #[test]
-    fn banner_uses_one_ordered_definition_set_for_all_twelve_cells() {
+    fn banner_uses_one_ordered_definition_set_for_all_thirteen_cells() {
         let banner = FlightDataComputer::default().banner(FlightDataBannerInput {
             nexrad_age: Some("4m".to_string()),
             ..FlightDataBannerInput::default()
         });
 
-        assert_eq!(banner.cells.len(), 12);
+        assert_eq!(banner.cells.len(), 13);
         assert_eq!(
             banner.cells.last().map(|cell| cell.id.as_str()),
             Some("nexrad_age")
@@ -561,6 +571,24 @@ mod tests {
             .cells
             .iter()
             .all(|cell| is_flight_data_banner_cell_id(&cell.id)));
+    }
+
+    #[test]
+    fn banner_reports_above_ground_level_when_supplied() {
+        let banner = FlightDataComputer::default().banner(FlightDataBannerInput {
+            altitude_ft: Some(1_512.0),
+            agl_ft: Some(1_000.0),
+            ..FlightDataBannerInput::default()
+        });
+
+        assert_eq!(
+            banner
+                .cells
+                .iter()
+                .find(|cell| cell.id == FLIGHT_DATA_AGL_CELL_ID)
+                .and_then(|cell| cell.value.as_deref()),
+            Some("1000")
+        );
     }
 
     #[test]

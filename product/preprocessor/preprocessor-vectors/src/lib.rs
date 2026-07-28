@@ -1752,17 +1752,16 @@ fn load_points(conn: &Connection) -> anyhow::Result<Vec<PointRecord>> {
 
 fn load_obstacle_points(input_dir: &Path) -> anyhow::Result<Vec<ObstaclePointRecord>> {
     let dof_path = input_dir.join("DOF.DAT");
-    let text = String::from_utf8_lossy(
-        &fs::read(&dof_path).with_context(|| format!("failed to read {}", dof_path.display()))?,
-    )
-    .into_owned();
+    let bytes =
+        fs::read(&dof_path).with_context(|| format!("failed to read {}", dof_path.display()))?;
     let mut points = Vec::new();
     let mut seen = BTreeSet::new();
-    for (line_index, raw) in text.lines().enumerate() {
+    for (line_index, raw) in bytes.split(|byte| *byte == b'\n').enumerate() {
+        let raw = raw.strip_suffix(b"\r").unwrap_or(raw);
         if raw.len() < 95 {
             continue;
         }
-        if !raw.as_bytes()[0].is_ascii_alphanumeric() || raw.as_bytes().get(2) != Some(&b'-') {
+        if !raw[0].is_ascii_alphanumeric() || raw.get(2) != Some(&b'-') {
             continue;
         }
         let line_number = line_index + 1;
@@ -2743,13 +2742,12 @@ fn surface_is_paved(surface: &str) -> bool {
         .any(|part| matches!(part.trim(), "ASPH" | "CONC" | "BIT" | "PEM"))
 }
 
-fn field(line: &str, start: usize, len: usize) -> &str {
-    let bytes = line.as_bytes();
-    if start >= bytes.len() {
+fn field(line: &[u8], start: usize, len: usize) -> &str {
+    if start >= line.len() {
         return "";
     }
-    let end = (start + len).min(bytes.len());
-    std::str::from_utf8(&bytes[start..end]).unwrap_or("")
+    let end = (start + len).min(line.len());
+    std::str::from_utf8(&line[start..end]).unwrap_or("")
 }
 
 fn parse_required_float(value: &str, field_name: &str, line_number: usize) -> anyhow::Result<f64> {
@@ -4990,6 +4988,33 @@ mod tests {
         assert!(malformed
             .to_string()
             .contains("line 7 has invalid height AGL value"));
+    }
+
+    #[test]
+    fn obstacle_fixed_width_fields_survive_windows_1252_city_text() -> anyhow::Result<()> {
+        let temp = tempfile::tempdir()?;
+        let mut line = obstacle_dof_line(
+            "38", "44", "02.82", "N", "090", "41", "19.10", "W", "00404", "00933",
+        )
+        .into_bytes();
+        line[22] = 0x92;
+        line.extend_from_slice(b"\r\n");
+        fs::write(temp.path().join("DOF.DAT"), line)?;
+
+        let points = load_obstacle_points(temp.path())?;
+
+        assert_eq!(points.len(), 1);
+        assert_eq!(points[0].record.lat, 38.7341167);
+        assert_eq!(points[0].record.lon, -90.6886389);
+        assert_eq!(
+            points[0]
+                .record
+                .obstacle
+                .as_ref()
+                .map(|value| value.top_msl_ft),
+            Some(933.0)
+        );
+        Ok(())
     }
 
     #[test]

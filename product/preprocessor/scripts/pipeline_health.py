@@ -29,6 +29,7 @@ DASHBOARD_SERIES_LIMIT = HISTORY_RECORD_LIMIT
 HISTORY_LOOKBACK_DAYS = 14
 HISTORY_TAIL_CHUNK_BYTES = 64 * 1024
 HISTORY_TAIL_MAX_BYTES = 16 * 1024 * 1024
+LIVE_FEED_FAILURE_WINDOW_SECONDS = 2 * 60 * 60
 
 LIVE_FEED_STALE_THRESHOLDS: dict[str, tuple[int, int]] = {
     "tafs": (60 * 60, 3 * 60 * 60),
@@ -488,15 +489,33 @@ def add_live_feed_metrics(
         )
         attempts = status.get("attempts")
         if isinstance(attempts, list) and attempts:
-            attempt_count = len(attempts)
-            failed_attempts = [
+            failure_window_start = now - timedelta(
+                seconds=LIVE_FEED_FAILURE_WINDOW_SECONDS
+            )
+            window_attempts = [
                 attempt
                 for attempt in attempts
-                if isinstance(attempt, dict) and attempt.get("result") == "failure"
+                if isinstance(attempt, dict)
+                and (
+                    attempt_time := parse_time(attempt.get("attempted_at_utc"))
+                )
+                is not None
+                and failure_window_start <= attempt_time <= now
+            ]
+            attempt_count = len(window_attempts)
+            failed_attempts = [
+                attempt
+                for attempt in window_attempts
+                if attempt.get("result") == "failure"
             ]
             failure_count = len(failed_attempts)
-            failure_rate = failure_count / attempt_count
-            last_failure_time = parse_time(status.get("last_failure_at_utc"))
+            failure_rate = failure_count / attempt_count if attempt_count else 0.0
+            last_failure = failed_attempts[-1] if failed_attempts else None
+            last_failure_time = (
+                parse_time(last_failure.get("attempted_at_utc"))
+                if last_failure is not None
+                else None
+            )
             last_failure_age_seconds = (
                 max(0, int((now - last_failure_time).total_seconds()))
                 if last_failure_time is not None
@@ -515,16 +534,20 @@ def add_live_feed_metrics(
                 if isinstance(attempt, dict)
             ]
             if last_failure_age_seconds is None:
-                failure_message = f"{display} recent failures: {failure_count}/{attempt_count} attempts"
+                failure_message = (
+                    f"{display} failures in the last 2h: "
+                    f"{failure_count}/{attempt_count} attempts"
+                )
             else:
                 failure_message = (
-                    f"{display} recent failures: {failure_count}/{attempt_count} attempts; "
+                    f"{display} failures in the last 2h: "
+                    f"{failure_count}/{attempt_count} attempts; "
                     f"last failure {last_failure_age_seconds} seconds ago"
                 )
             add_metric(
                 metrics,
-                metric_id=f"live_feed.{product}.recent_failure_rate",
-                label=f"{display} recent failure rate",
+                metric_id=f"live_feed.{product}.failure_rate_2h",
+                label=f"{display} 2h failure rate",
                 value=round(failure_rate, 6),
                 unit="ratio",
                 severity=severity,
@@ -532,11 +555,20 @@ def add_live_feed_metrics(
                 critical_threshold=0.5,
                 message=failure_message,
                 details={
+                    "window_seconds": LIVE_FEED_FAILURE_WINDOW_SECONDS,
                     "attempt_count": attempt_count,
                     "failure_count": failure_count,
-                    "last_failure_at_utc": status.get("last_failure_at_utc"),
-                    "last_failure_phase": status.get("last_failure_phase"),
-                    "last_error": status.get("last_error"),
+                    "last_failure_at_utc": (
+                        last_failure.get("attempted_at_utc")
+                        if last_failure is not None
+                        else None
+                    ),
+                    "last_failure_phase": (
+                        last_failure.get("phase") if last_failure is not None else None
+                    ),
+                    "last_error": (
+                        last_failure.get("error") if last_failure is not None else None
+                    ),
                     "last_failure_age_seconds": last_failure_age_seconds,
                     "failures": detail_failures,
                 },
@@ -977,7 +1009,16 @@ def compact_metric_series(records: list[dict[str, Any]]) -> dict[str, Any]:
         for metric in metrics:
             if not isinstance(metric, dict) or not isinstance(metric.get("id"), str):
                 continue
-            metric_values[metric["id"]] = metric.get("value")
+            value = metric.get("value")
+            severity = metric.get("severity", "ok")
+            metric_values[metric["id"]] = (
+                value
+                if severity == "ok"
+                else {
+                    "value": value,
+                    "severity": severity,
+                }
+            )
         samples.append(
             {
                 "sampled_at_utc": record.get("sampled_at_utc"),
@@ -1211,6 +1252,34 @@ function seriesValue(metric) {
   if (metric && typeof metric === "object" && Object.hasOwn(metric, "value")) return metric.value;
   return metric;
 }
+function seriesSeverity(metric) {
+  if (metric && typeof metric === "object" && typeof metric.severity === "string") return metric.severity;
+  return "ok";
+}
+function severityTrace(points, severity) {
+  const x = [], y = [];
+  for (let index = 1; index < points.length; index += 1) {
+    const previous = points[index - 1];
+    const current = points[index];
+    const segmentSeverity = (severityRank[current.severity] || 0) >= (severityRank[previous.severity] || 0)
+      ? current.severity
+      : previous.severity;
+    if (segmentSeverity !== severity) continue;
+    x.push(previous.x, current.x, null);
+    y.push(previous.y, current.y, null);
+  }
+  if (!x.length) return null;
+  const colors = { ok:"#50d890", warning:"#f0c85a", critical:"#ff6b6b" };
+  return {
+    type:"scatter",
+    mode:"lines",
+    name:severity,
+    x,
+    y,
+    line:{color:colors[severity], width:2},
+    connectgaps:false,
+  };
+}
 function formatValue(metric) {
   const value = metric?.value;
   if (value === null || value === undefined) return "missing";
@@ -1300,20 +1369,26 @@ function renderMetricRows(current, series) {
     : `<section><div class="muted">No graphable metrics yet.</div></section>`;
   if (!window.Plotly) return;
   metrics.forEach((metric, index) => {
-    const x = [], y = [];
+    const points = [];
     for (const sample of series.samples || []) {
-      const value = graphValue(seriesValue(sample.metrics?.[metric.id]));
+      const historicalMetric = sample.metrics?.[metric.id];
+      const value = graphValue(seriesValue(historicalMetric));
       if (value !== null && sample.sampled_at_utc) {
-        x.push(sample.sampled_at_utc);
-        y.push(value);
+        points.push({
+          x:sample.sampled_at_utc,
+          y:value,
+          severity:seriesSeverity(historicalMetric),
+        });
       }
     }
-    const traces = [{ type:"scatter", mode:"lines", name:metric.id, x, y, line:{color:"#50d890", width:2} }];
-    if (typeof metric.warning_threshold === "number" && x.length) {
-      traces.push({ type:"scatter", mode:"lines", name:"warning", x:[x[0], x[x.length - 1]], y:[metric.warning_threshold, metric.warning_threshold], line:{color:"#f0c85a", width:1, dash:"dot"} });
+    const traces = ["ok", "warning", "critical"]
+      .map((severity) => severityTrace(points, severity))
+      .filter((trace) => trace !== null);
+    if (typeof metric.warning_threshold === "number" && points.length) {
+      traces.push({ type:"scatter", mode:"lines", name:"warning threshold", x:[points[0].x, points[points.length - 1].x], y:[metric.warning_threshold, metric.warning_threshold], line:{color:"#f0c85a", width:1, dash:"dot"} });
     }
-    if (typeof metric.critical_threshold === "number" && x.length) {
-      traces.push({ type:"scatter", mode:"lines", name:"critical", x:[x[0], x[x.length - 1]], y:[metric.critical_threshold, metric.critical_threshold], line:{color:"#ff6b6b", width:1, dash:"dot"} });
+    if (typeof metric.critical_threshold === "number" && points.length) {
+      traces.push({ type:"scatter", mode:"lines", name:"critical threshold", x:[points[0].x, points[points.length - 1].x], y:[metric.critical_threshold, metric.critical_threshold], line:{color:"#ff6b6b", width:1, dash:"dot"} });
     }
     Plotly.react(`metricPlot${index}`, traces, {
       paper_bgcolor:"#171b19",

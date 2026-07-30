@@ -23,6 +23,9 @@ class PipelineHealthTests(unittest.TestCase):
         html = pipeline_health.dashboard_html()
 
         self.assertIn("Plotly.purge(plot)", html)
+        self.assertIn("severityTrace(points, severity)", html)
+        self.assertIn('warning:"#f0c85a"', html)
+        self.assertIn('critical:"#ff6b6b"', html)
         self.assertIn("setTimeout(refreshLoop, 30000)", html)
         self.assertNotIn("setInterval(", html)
 
@@ -40,9 +43,18 @@ class PipelineHealthTests(unittest.TestCase):
                                 "last_source_timestamp_utc": "2026-06-19T12:00:00Z",
                                 "consecutive_failure_count": 0,
                                 "attempts": [
-                                    {"result": "success"},
-                                    {"result": "failure"},
-                                    {"result": "failure"},
+                                    {
+                                        "attempted_at_utc": "2026-06-19T11:55:00Z",
+                                        "result": "success",
+                                    },
+                                    {
+                                        "attempted_at_utc": "2026-06-19T12:00:00Z",
+                                        "result": "failure",
+                                    },
+                                    {
+                                        "attempted_at_utc": "2026-06-19T12:05:00Z",
+                                        "result": "failure",
+                                    },
                                 ],
                             }
                         }
@@ -61,7 +73,7 @@ class PipelineHealthTests(unittest.TestCase):
         self.assertEqual(stale["severity"], "warning")
         self.assertEqual(stale["warning_threshold"], 420)
         self.assertEqual(stale["critical_threshold"], 1800)
-        failure_rate = metric(evaluation, "live_feed.metars.recent_failure_rate")
+        failure_rate = metric(evaluation, "live_feed.metars.failure_rate_2h")
         self.assertEqual(failure_rate["value"], 0.666667)
         self.assertEqual(failure_rate["severity"], "critical")
 
@@ -120,8 +132,14 @@ class PipelineHealthTests(unittest.TestCase):
                                         "phase": "build",
                                         "error": "gzip failed",
                                     },
-                                    {"result": "success"},
-                                    {"result": "success"},
+                                    {
+                                        "attempted_at_utc": "2026-06-19T11:30:00Z",
+                                        "result": "success",
+                                    },
+                                    {
+                                        "attempted_at_utc": "2026-06-19T11:55:00Z",
+                                        "result": "success",
+                                    },
                                 ],
                             }
                         }
@@ -135,7 +153,7 @@ class PipelineHealthTests(unittest.TestCase):
 
         evaluation = pipeline_health.evaluate_health(facts, [], now)
 
-        failure_rate = metric(evaluation, "live_feed.metars.recent_failure_rate")
+        failure_rate = metric(evaluation, "live_feed.metars.failure_rate_2h")
         self.assertEqual(failure_rate["value"], 0.333333)
         self.assertEqual(failure_rate["severity"], "warning")
         self.assertEqual(failure_rate["details"]["last_error"], "gzip failed")
@@ -143,6 +161,58 @@ class PipelineHealthTests(unittest.TestCase):
             failure_rate["details"]["failures"][0]["attempted_at_utc"],
             "2026-06-19T11:00:00Z",
         )
+
+    def test_live_feed_failure_rate_expires_after_two_hours(self) -> None:
+        now = datetime(2026, 6, 19, 12, 0, 0, tzinfo=timezone.utc)
+        facts = {
+            "inputs": {
+                "current_artifacts": {"error": None, "payload": []},
+                "deploy_health": {"error": None, "payload": {}},
+                "live_feeds_status": {
+                    "error": None,
+                    "payload": {
+                        "products": {
+                            "metars": {
+                                "last_source_timestamp_utc": "2026-06-19T11:59:00Z",
+                                "last_failure_at_utc": "2026-06-19T09:59:59Z",
+                                "last_failure_phase": "build",
+                                "last_error": "expired failure",
+                                "consecutive_failure_count": 0,
+                                "attempts": [
+                                    {
+                                        "attempted_at_utc": "2026-06-19T09:59:59Z",
+                                        "result": "failure",
+                                        "phase": "build",
+                                        "error": "expired failure",
+                                    },
+                                    {
+                                        "attempted_at_utc": "2026-06-19T10:30:00Z",
+                                        "result": "success",
+                                    },
+                                    {
+                                        "attempted_at_utc": "2026-06-19T11:59:00Z",
+                                        "result": "success",
+                                    },
+                                ],
+                            }
+                        }
+                    },
+                },
+                "build_watch": {"error": None, "payload": {}},
+                "faa_cycle_calendar": {"error": None, "payload": {"cycles": []}},
+                "product_facts": [],
+            }
+        }
+
+        evaluation = pipeline_health.evaluate_health(facts, [], now)
+
+        failure_rate = metric(evaluation, "live_feed.metars.failure_rate_2h")
+        self.assertEqual(failure_rate["value"], 0.0)
+        self.assertEqual(failure_rate["severity"], "ok")
+        self.assertEqual(failure_rate["details"]["attempt_count"], 2)
+        self.assertEqual(failure_rate["details"]["failure_count"], 0)
+        self.assertIsNone(failure_rate["details"]["last_error"])
+        self.assertEqual(failure_rate["details"]["failures"], [])
 
     def test_notams_without_a_successful_sample_are_critical(self) -> None:
         now = datetime(2026, 7, 17, 20, 0, 0, tzinfo=timezone.utc)
@@ -202,8 +272,9 @@ class PipelineHealthTests(unittest.TestCase):
         self.assertEqual(stale["critical_threshold"], 15 * 60)
         failures = metric(evaluation, "live_feed.notams.consecutive_failures")
         self.assertEqual(failures["severity"], "warning")
-        failure_rate = metric(evaluation, "live_feed.notams.recent_failure_rate")
-        self.assertEqual(failure_rate["details"]["last_error"], "unsupported NOTAM type R")
+        failure_rate = metric(evaluation, "live_feed.notams.failure_rate_2h")
+        self.assertEqual(failure_rate["severity"], "ok")
+        self.assertIsNone(failure_rate["details"]["last_error"])
         rejected = metric(evaluation, "live_feed.notams.rejected_row_count")
         self.assertEqual(rejected["value"], 1)
         self.assertEqual(rejected["severity"], "warning")
@@ -576,7 +647,7 @@ class PipelineHealthTests(unittest.TestCase):
         self.assertNotIn("payload", encoded)
         self.assertLess(len(encoded), 1_000)
 
-    def test_compact_metric_series_keeps_only_historical_values(self) -> None:
+    def test_compact_metric_series_keeps_historical_values_and_severity(self) -> None:
         series = pipeline_health.compact_metric_series(
             [
                 {
@@ -588,7 +659,12 @@ class PipelineHealthTests(unittest.TestCase):
                                 "value": 123,
                                 "severity": "warning",
                                 "message": "not needed in series",
-                            }
+                            },
+                            {
+                                "id": "live_feed.metars.consecutive_failures",
+                                "value": 0,
+                                "severity": "ok",
+                            },
                         ]
                     },
                 }
@@ -597,9 +673,15 @@ class PipelineHealthTests(unittest.TestCase):
 
         self.assertEqual(
             series["samples"][0]["metrics"]["live_feed.metars.stale_seconds"],
-            123,
+            {"value": 123, "severity": "warning"},
         )
-        self.assertNotIn("warning", json.dumps(series))
+        self.assertEqual(
+            series["samples"][0]["metrics"][
+                "live_feed.metars.consecutive_failures"
+            ],
+            0,
+        )
+        self.assertNotIn("not needed in series", json.dumps(series))
 
     def test_daily_history_reader_bounds_record_count_across_days(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:

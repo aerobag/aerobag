@@ -3013,8 +3013,8 @@ mod tests {
             &config_path,
             r#"{
               "sourceEnvironment": "staging",
-              "apiBaseUrl": "https://api-staging.example.test/nmsapi/v1",
-              "tokenUrl": "https://api-staging.example.test/auth/token",
+              "apiBaseUrl": "https://api-staging.cgifederal-aim.com/nmsapi/v1",
+              "tokenUrl": "https://api-staging.cgifederal-aim.com/v1/auth/token",
               "clientId": "client-id",
               "clientSecret": "client-secret"
             }"#,

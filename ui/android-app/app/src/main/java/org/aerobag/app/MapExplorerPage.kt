@@ -2357,19 +2357,16 @@ internal fun MapExplorerPage(
                 perfLogInfo(MapViewportLogTag) {
                     "key-zoom map=$selectedMapId delta=${"%.2f".format(delta)} base=${"%.2f".format(viewportState.value.zoom)}"
                 }
-                updateViewport(
-                    zoomAroundPoint(
-                        viewport = viewportState.value,
-                        minZoom = selectedMap.minZoom,
-                        maxZoom = interactiveMaxZoom,
-                        anchor = ScreenPoint(surfaceWidthPx / 2f, surfaceHeightPx / 2f),
-                        widthPx = surfaceWidthPx,
-                        heightPx = surfaceHeightPx,
-                        nextZoom = clampZoom(viewportState.value.zoom + delta, selectedMap.minZoom, interactiveMaxZoom),
-                    ),
-                    syncFollow = false,
+                val nextViewport = zoomAroundPoint(
+                    viewport = viewportState.value,
+                    minZoom = selectedMap.minZoom,
+                    maxZoom = interactiveMaxZoom,
+                    anchor = ScreenPoint(surfaceWidthPx / 2f, surfaceHeightPx / 2f),
+                    widthPx = surfaceWidthPx,
+                    heightPx = surfaceHeightPx,
+                    nextZoom = clampZoom(viewportState.value.zoom + delta, selectedMap.minZoom, interactiveMaxZoom),
                 )
-                syncFollowStateForViewport(viewportState.value)
+                updateViewport(nextViewport)
                 true
             }
             .focusable()
@@ -2505,19 +2502,16 @@ internal fun MapExplorerPage(
                 if (event.action == MotionEvent.ACTION_SCROLL) {
                     val wheelDelta = event.getAxisValue(MotionEvent.AXIS_VSCROLL).takeIf { it != 0f }
                         ?: event.getAxisValue(MotionEvent.AXIS_SCROLL)
-                    updateViewport(
-                        zoomAroundPoint(
-                            viewport = viewportState.value,
-                            minZoom = selectedMap.minZoom,
-                            maxZoom = interactiveMaxZoom,
-                            anchor = ScreenPoint(surfaceWidthPx / 2f, surfaceHeightPx / 2f),
-                            widthPx = surfaceWidthPx,
-                            heightPx = surfaceHeightPx,
-                            nextZoom = clampZoom(viewportState.value.zoom - wheelDelta * 0.28, selectedMap.minZoom, interactiveMaxZoom),
-                        ),
-                        syncFollow = false,
+                    val nextViewport = zoomAroundPoint(
+                        viewport = viewportState.value,
+                        minZoom = selectedMap.minZoom,
+                        maxZoom = interactiveMaxZoom,
+                        anchor = ScreenPoint(surfaceWidthPx / 2f, surfaceHeightPx / 2f),
+                        widthPx = surfaceWidthPx,
+                        heightPx = surfaceHeightPx,
+                        nextZoom = clampZoom(viewportState.value.zoom - wheelDelta * 0.28, selectedMap.minZoom, interactiveMaxZoom),
                     )
-                    syncFollowStateForViewport(viewportState.value)
+                    updateViewport(nextViewport)
                     true
                 } else {
                     false

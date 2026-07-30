@@ -120,6 +120,20 @@ export function findNode(xml, predicate) {
   return findNodes(xml, predicate)[0] ?? null;
 }
 
+export function findSystemUiAnrWaitButton(xml) {
+  const systemUiTitle = findNode(xml, (node) =>
+    node.package === "android" &&
+    node["resource-id"] === "android:id/alertTitle" &&
+    node.text === "System UI isn't responding"
+  );
+  if (!systemUiTitle) return null;
+  return findNode(xml, (node) =>
+    node.package === "android" &&
+    node["resource-id"] === "android:id/aerr_wait" &&
+    node.enabled === "true"
+  );
+}
+
 export function androidTag(node) {
   const contentDescription = node["content-desc"] ?? "";
   if (contentDescription.startsWith("parity:")) return contentDescription;
@@ -322,7 +336,20 @@ export async function launchFreshAndroidApp(serial, { clearUiPrefs = true, clear
     adbBestEffort(serial, ["shell", "run-as", ANDROID_PACKAGE, "rm", "files/core-settings-v1.json"]);
   }
   adb(serial, ["shell", "am", "start", "-W", "-n", ANDROID_ACTIVITY]);
-  await waitForNode(serial, (node) => node.package === ANDROID_PACKAGE, 90000, "Aerobag app visible");
+  let dismissedSystemUiAnr = false;
+  await waitFor(async () => {
+    const xml = dumpAndroid(serial);
+    if (findNode(xml, (node) => node.package === ANDROID_PACKAGE)) {
+      return true;
+    }
+    const waitButton = findSystemUiAnrWaitButton(xml);
+    if (waitButton && !dismissedSystemUiAnr) {
+      dismissedSystemUiAnr = true;
+      console.warn("Android System UI ANR obscured Aerobag during startup; selecting Wait once");
+      await tapNode(serial, waitButton);
+    }
+    return false;
+  }, 90000, "Aerobag app visible");
 }
 
 export async function acceptDisclaimerIfPresent(serial) {

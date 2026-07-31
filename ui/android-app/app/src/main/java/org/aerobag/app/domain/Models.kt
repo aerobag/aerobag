@@ -265,6 +265,7 @@ data class AirportRunwayUiView(
 
 data class WeatherDetailUiView(
     val stationId: String,
+    val advisoryText: String,
     val metarText: String?,
     val metarAgeLabel: String?,
     val metarAgeWarning: Boolean = false,

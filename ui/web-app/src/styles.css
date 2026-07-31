@@ -1689,6 +1689,21 @@ button {
   pointer-events: none;
 }
 
+.weatherDetailAdvisory {
+  padding: calc(var(--thumb) * 0.13);
+  border: 1px solid var(--theme-data-status-warning-stroke);
+  border-radius: var(--thumb-radius);
+  color: color-mix(in srgb, var(--theme-data-status-warning-stroke) 30%, black);
+  background: var(--theme-data-status-warning-bg);
+  font-size: calc(var(--thumb) * 0.18);
+  font-weight: 700;
+  line-height: 1.25;
+}
+
+.hoverWeatherDetailModal .weatherDetailAdvisory {
+  display: none;
+}
+
 .weatherDetailSections {
   display: grid;
   grid-template-rows: auto auto minmax(0, 1fr);

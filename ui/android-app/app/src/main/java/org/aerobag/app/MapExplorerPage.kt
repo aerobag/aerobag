@@ -4080,6 +4080,19 @@ internal fun WeatherDetailModal(
                 maxLines = 1,
                 overflow = TextOverflow.Ellipsis,
             )
+            Text(
+                text = detail.advisoryText,
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .background(uiTheme.controls.dataStatusWarningBg, RoundedCornerShape(ThumbRadius))
+                    .border(1.dp, uiTheme.controls.dataStatusWarningStroke, RoundedCornerShape(ThumbRadius))
+                    .padding(ThumbSize * 0.13f),
+                style = MaterialTheme.typography.bodyMedium.copy(
+                    fontWeight = FontWeight.Bold,
+                    lineHeight = 18.sp,
+                ),
+                color = lerp(Color.Black, uiTheme.controls.dataStatusWarningStroke, 0.3f),
+            )
             WeatherDetailSection(
                 label = "METAR",
                 ageLabel = detail.metarAgeLabel,

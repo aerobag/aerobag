@@ -17,6 +17,7 @@ class FlightPlanOverlayStateTest {
     private val weather =
         WeatherDetailUiView(
             stationId = "KBOI",
+            advisoryText = "NOTAMs and weather may be incomplete; check official sources.",
             metarText = "KBOI METAR",
             metarAgeLabel = null,
             tafText = null,

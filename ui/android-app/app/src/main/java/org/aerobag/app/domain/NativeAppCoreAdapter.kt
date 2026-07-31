@@ -3070,6 +3070,7 @@ private fun WireMapSelectionDetailStatus.toUi() = MapSelectionDetailStatus(
 
 private fun WireWeatherDetailUiView.toUi() = WeatherDetailUiView(
     stationId = station_id,
+    advisoryText = advisory_text,
     metarText = metar_text,
     metarAgeLabel = metar_age_label,
     metarAgeWarning = metar_age_warning,
@@ -3087,6 +3088,7 @@ private fun WireAirportNotamUiView.toUi() = AirportNotamUiView(
 
 private fun WeatherDetailUiView.toWire() = WireWeatherDetailUiView(
     station_id = stationId,
+    advisory_text = advisoryText,
     metar_text = metarText,
     metar_age_label = metarAgeLabel,
     metar_age_warning = metarAgeWarning,

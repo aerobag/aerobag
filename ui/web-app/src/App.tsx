@@ -9526,6 +9526,7 @@ function WeatherDetailModal(props: { detail: WeatherDetailUiView; className?: st
       onDoubleClick={stopDoubleClick}
     >
       <div className="mapSelectionDetailTitle">WX {detail.station_id}</div>
+      <div className="weatherDetailAdvisory">{detail.advisory_text}</div>
       <div className="weatherDetailSections">
         <WeatherDetailSection
           label="METAR"

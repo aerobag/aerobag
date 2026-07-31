@@ -735,9 +735,13 @@ fn validate_projection_mutation_order(
     Ok(())
 }
 
+pub const WEATHER_DETAIL_ADVISORY_TEXT: &str =
+    "NOTAMs and weather may be incomplete; check official sources.";
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct WeatherDetailUiView {
     pub station_id: String,
+    pub advisory_text: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub metar_text: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -3962,6 +3966,7 @@ fn weather_detail_from_records(
     }
     Some(WeatherDetailUiView {
         station_id: station_id.trim().to_ascii_uppercase(),
+        advisory_text: WEATHER_DETAIL_ADVISORY_TEXT.to_string(),
         metar_text,
         metar_age_label,
         metar_age_warning,
@@ -8907,6 +8912,7 @@ mod tests {
         assert_eq!(detail.notams[0].text, "RWY 18 CLSD");
         assert_eq!(detail.metar_text, None);
         assert_eq!(detail.taf_text, None);
+        assert_eq!(detail.advisory_text, WEATHER_DETAIL_ADVISORY_TEXT);
     }
 
     #[test]
@@ -10736,6 +10742,7 @@ mod tests {
             },
             Some(WeatherDetailUiView {
                 station_id: "KSEA".to_string(),
+                advisory_text: WEATHER_DETAIL_ADVISORY_TEXT.to_string(),
                 metar_text: None,
                 metar_age_label: None,
                 metar_age_warning: false,

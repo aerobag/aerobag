@@ -743,6 +743,7 @@ data class WireMapSelectionDetailStatus(
 @Serializable
 data class WireWeatherDetailUiView(
     val station_id: String,
+    val advisory_text: String,
     val metar_text: String? = null,
     val metar_age_label: String? = null,
     val metar_age_warning: Boolean = false,

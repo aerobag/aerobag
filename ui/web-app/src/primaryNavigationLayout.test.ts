@@ -19,7 +19,7 @@ function sourceBetween(start: string, end: string): string {
 
 describe("primary navigation layout", () => {
   it("uses one shared bottom dock on every top-level product page", () => {
-    expect(appSource.match(/<PrimaryNavigationDock/g)).toHaveLength(6);
+    expect(appSource.match(/<PrimaryNavigationDock/g)).toHaveLength(7);
 
     const dock = sourceBetween("function PrimaryNavigationDock(", "function TrayDock(");
     expect(dock).toContain("<HomeNavButton");

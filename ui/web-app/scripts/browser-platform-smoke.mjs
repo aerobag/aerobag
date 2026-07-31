@@ -110,7 +110,7 @@ async function acceptDisclaimerIfPresent(page) {
       const state = await page.evaluate(`(() => ({
         accept: Boolean(document.querySelector('.disclaimerAcceptButton')),
         map: Boolean(document.querySelector('[data-testid="map-surface"]')),
-        startupError: document.querySelector('.startupFailure')?.textContent ?? null,
+        startupError: document.querySelector('.startupErrorModal')?.textContent ?? null,
       }))()`);
       if (state.startupError) {
         throw new Error(state.startupError);

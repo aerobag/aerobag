@@ -3086,6 +3086,237 @@ button {
   color: var(--theme-panel-fg);
 }
 
+.cloudPage {
+  display: flex;
+  flex-direction: column;
+  padding: var(--thumb-gap) var(--thumb-gap) calc(var(--thumb) + (var(--thumb-gap) * 2) + var(--safe-bottom));
+  color: var(--theme-panel-fg);
+  background:
+    linear-gradient(120deg, transparent 0 55%, rgba(255, 255, 255, 0.32) 55% 56%, transparent 56%),
+    radial-gradient(circle at 18% 10%, rgba(255, 255, 255, 0.58), transparent 31%),
+    var(--theme-chart-surface-bg);
+}
+
+.cloudPagePanel {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow-y: auto;
+  padding: calc(var(--thumb) * 0.36);
+  border: 1px solid var(--theme-panel-border);
+  border-radius: calc(var(--thumb-radius) * 0.85);
+  background: var(--theme-panel-bg);
+  box-shadow: var(--shadow);
+}
+
+.cloudPageHeader {
+  display: grid;
+  grid-template-columns: auto 1fr;
+  align-items: end;
+  column-gap: calc(var(--thumb) * 0.24);
+  margin-bottom: calc(var(--thumb) * 0.3);
+}
+
+.cloudPageEyebrow,
+.cloudPageHeader h1,
+.cloudPageHeader p {
+  margin: 0;
+}
+
+.cloudPageEyebrow {
+  grid-column: 1 / -1;
+  color: var(--theme-panel-muted);
+  font-size: calc(var(--thumb) * 0.14);
+  font-weight: 900;
+  letter-spacing: 0.18em;
+}
+
+.cloudPageHeader h1 {
+  font-size: calc(var(--thumb) * 0.5);
+  font-weight: 950;
+  letter-spacing: -0.04em;
+  text-transform: uppercase;
+}
+
+.cloudPageHeader p {
+  max-width: calc(var(--thumb) * 8);
+  padding-bottom: calc(var(--thumb) * 0.06);
+  color: var(--theme-panel-muted);
+  font-size: calc(var(--thumb) * 0.19);
+  font-weight: 750;
+}
+
+.cloudStateStrip {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: var(--thumb-gap);
+  margin-bottom: calc(var(--thumb) * 0.24);
+}
+
+.cloudProviderOptions {
+  display: flex;
+  gap: var(--thumb-gap);
+  margin-bottom: calc(var(--thumb) * 0.24);
+}
+
+.cloudProviderOptions button {
+  min-height: calc(var(--thumb) * 0.58);
+  border: 1px solid var(--theme-panel-border);
+  border-radius: calc(var(--thumb-radius) * 0.65);
+  padding: calc(var(--thumb) * 0.1) calc(var(--thumb) * 0.2);
+  background: var(--theme-button-unchecked);
+  color: var(--theme-button-fg);
+  font: inherit;
+  font-size: calc(var(--thumb) * 0.16);
+  font-weight: 950;
+  text-transform: uppercase;
+}
+
+.cloudProviderOptions button[aria-pressed="true"] {
+  background: var(--theme-button-checked);
+}
+
+.cloudStateStrip > div {
+  display: grid;
+  gap: calc(var(--thumb) * 0.05);
+  min-height: calc(var(--thumb) * 0.72);
+  padding: calc(var(--thumb) * 0.16);
+  border-left: calc(var(--thumb) * 0.06) solid var(--theme-button-checked);
+  background: color-mix(in srgb, white 88%, var(--theme-button-unchecked) 12%);
+}
+
+.cloudStateStrip span,
+.cloudFacts dt,
+.cloudPairingField > span,
+.cloudPairingToken h2 {
+  color: var(--theme-panel-muted);
+  font-size: calc(var(--thumb) * 0.13);
+  font-weight: 900;
+  letter-spacing: 0.09em;
+  text-transform: uppercase;
+}
+
+.cloudStateStrip strong {
+  overflow: hidden;
+  color: var(--theme-panel-fg);
+  font-size: calc(var(--thumb) * 0.22);
+  font-weight: 950;
+  text-overflow: ellipsis;
+  text-transform: uppercase;
+  white-space: nowrap;
+}
+
+.cloudFacts {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(calc(var(--thumb) * 2), 1fr));
+  gap: var(--thumb-gap);
+  margin: 0 0 calc(var(--thumb) * 0.24);
+}
+
+.cloudFacts > div {
+  padding: calc(var(--thumb) * 0.15);
+  border: 1px solid var(--theme-panel-border);
+  border-radius: calc(var(--thumb-radius) * 0.55);
+}
+
+.cloudFacts dt,
+.cloudFacts dd {
+  margin: 0;
+}
+
+.cloudActionError {
+  margin: 0 0 calc(var(--thumb) * 0.2);
+  padding: calc(var(--thumb) * 0.14);
+  border: 1px solid var(--theme-data-status-warning-stroke);
+  border-radius: calc(var(--thumb-radius) * 0.5);
+  background: var(--theme-data-status-warning-bg);
+  color: var(--theme-data-status-warning-stroke);
+  font-size: calc(var(--thumb) * 0.17);
+  font-weight: 900;
+}
+
+.cloudFacts dd {
+  margin-top: calc(var(--thumb) * 0.05);
+  color: var(--theme-panel-fg);
+  font-size: calc(var(--thumb) * 0.2);
+  font-weight: 900;
+}
+
+.cloudPairingField,
+.cloudPairingToken {
+  display: grid;
+  gap: calc(var(--thumb) * 0.1);
+  margin-bottom: calc(var(--thumb) * 0.24);
+  padding: calc(var(--thumb) * 0.2);
+  border: 1px solid var(--theme-panel-border);
+  border-radius: calc(var(--thumb-radius) * 0.65);
+  background: color-mix(in srgb, white 92%, var(--theme-button-unchecked) 8%);
+}
+
+.cloudPairingField textarea,
+.cloudPairingToken textarea {
+  box-sizing: border-box;
+  width: 100%;
+  min-height: calc(var(--thumb) * 0.9);
+  resize: vertical;
+  border: 1px solid var(--theme-panel-border);
+  border-radius: calc(var(--thumb-radius) * 0.45);
+  padding: calc(var(--thumb) * 0.12);
+  background: white;
+  color: var(--theme-panel-fg);
+  font: 800 calc(var(--thumb) * 0.16) / 1.25 monospace;
+}
+
+.cloudPairingToken h2,
+.cloudPairingToken p {
+  margin: 0;
+}
+
+.cloudPairingToken p {
+  color: var(--theme-panel-fg);
+  font-size: calc(var(--thumb) * 0.17);
+  font-weight: 750;
+}
+
+.cloudActionGrid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(calc(var(--thumb) * 2), 1fr));
+  gap: var(--thumb-gap);
+}
+
+.cloudActionGrid button,
+.cloudPairingToken button {
+  min-height: calc(var(--thumb) * 0.72);
+  border: 1px solid var(--theme-panel-border);
+  border-radius: calc(var(--thumb-radius) * 0.65);
+  padding: calc(var(--thumb) * 0.1);
+  background: var(--theme-button-unchecked);
+  color: var(--theme-button-fg);
+  font: inherit;
+  font-size: calc(var(--thumb) * 0.16);
+  font-weight: 950;
+  text-transform: uppercase;
+}
+
+.cloudActionGrid button:disabled {
+  background: var(--theme-button-disabled);
+  color: color-mix(in srgb, var(--theme-button-fg) 55%, transparent);
+}
+
+.cloudCopyStatus {
+  color: var(--theme-panel-fg);
+  font-weight: 900;
+}
+
+@media (max-width: 700px) {
+  .cloudPageHeader {
+    grid-template-columns: 1fr;
+  }
+
+  .cloudStateStrip {
+    grid-template-columns: 1fr;
+  }
+}
+
 .settingsPagePanel {
   flex: 1 1 auto;
   min-height: 0;

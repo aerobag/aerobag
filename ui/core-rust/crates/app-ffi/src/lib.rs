@@ -225,6 +225,55 @@ pub fn perform_settings_action_in_session_json(
     serde_json::to_string(&snapshot).map_err(|err| err.to_string())
 }
 
+pub fn report_cloud_credential_state_in_session_json(
+    handle: u64,
+    state_json: &str,
+) -> Result<String, String> {
+    let state: app_core::CloudCredentialState =
+        serde_json::from_str(state_json).map_err(|err| err.to_string())?;
+    let outcome = app_core::report_cloud_credential_state_in_session(handle as u32, state)
+        .map_err(|err| err.to_string())?;
+    serde_json::to_string(&outcome).map_err(|err| err.to_string())
+}
+
+pub fn perform_cloud_action_in_session_json(
+    handle: u64,
+    action_json: &str,
+) -> Result<String, String> {
+    let action: app_core::CloudAction =
+        serde_json::from_str(action_json).map_err(|err| err.to_string())?;
+    let outcome = app_core::perform_cloud_action_in_session(handle as u32, action)
+        .map_err(|err| err.to_string())?;
+    serde_json::to_string(&outcome).map_err(|err| err.to_string())
+}
+
+pub fn take_cloud_provider_request_in_session_json(
+    handle: u64,
+    now_epoch_ms: i64,
+) -> Result<String, String> {
+    let request = app_core::take_cloud_provider_request_in_session(handle as u32, now_epoch_ms)
+        .map_err(|err| err.to_string())?;
+    serde_json::to_string(&request).map_err(|err| err.to_string())
+}
+
+pub fn complete_cloud_provider_request_in_session_json(
+    handle: u64,
+    request_id: u64,
+    response_json: &str,
+    now_epoch_ms: i64,
+) -> Result<String, String> {
+    let response: app_core::CloudProviderResponse =
+        serde_json::from_str(response_json).map_err(|err| err.to_string())?;
+    let outcome = app_core::complete_cloud_provider_request_in_session(
+        handle as u32,
+        request_id,
+        response,
+        now_epoch_ms,
+    )
+    .map_err(|err| err.to_string())?;
+    serde_json::to_string(&outcome).map_err(|err| err.to_string())
+}
+
 pub fn accept_disclaimer_in_session_json(
     handle: u64,
     agreement_id: &str,

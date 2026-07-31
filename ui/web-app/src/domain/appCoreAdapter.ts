@@ -147,6 +147,7 @@ export type UiSessionSnapshot = {
   data_status_state: UiDataStatusState;
   data_status_page_state: UiDataStatusPageState;
   settings_page_state: UiSettingsPageState;
+  cloud_page_state: UiCloudPageState;
   home_page_state: UiHomePageState;
   display_policy: UiDisplayPolicy | null;
   disclaimer_state: UiDisclaimerState;
@@ -165,6 +166,70 @@ export type UiHomePageButton = {
 export type UiHomePageState = {
   buttons: UiHomePageButton[];
 };
+
+export type UiCloudPageState = {
+  title: string;
+  provider_label: string;
+  connection_label: string;
+  account_label: string;
+  summary: string;
+  provider_options: Array<{
+    id: "google_drive";
+    label: string;
+    selected: boolean;
+    enabled: boolean;
+  }>;
+  facts: Array<{ label: string; value: string }>;
+  actions: Array<{
+    id: string;
+    label: string;
+    enabled: boolean;
+    disabled_reason?: string | null;
+  }>;
+  pairing_token?: string | null;
+  pairing_input_enabled: boolean;
+};
+
+export type CloudCredentialState =
+  | { state: "disconnected" }
+  | { state: "connecting" }
+  | { state: "ready"; expires_at_epoch_ms?: number | null }
+  | { state: "needs_user_action"; detail: string }
+  | { state: "transient_failure"; detail: string }
+  | { state: "failed"; detail: string };
+
+export type CloudAction =
+  | { kind: "select_provider"; provider: "google_drive" }
+  | { kind: "create_account" }
+  | { kind: "link_existing"; pairing_token: string }
+  | { kind: "reveal_pairing_token" }
+  | { kind: "hide_pairing_token" }
+  | { kind: "sync_now" }
+  | { kind: "disconnect" };
+
+export type CloudProviderRequest = {
+  request_id: number;
+  provider: "google_drive";
+  operation:
+    | { operation: "allocate_ids"; count: number }
+    | { operation: "read"; id: string }
+    | { operation: "create_once"; id: string; name: string; bytes_base64: string }
+    | { operation: "delete"; id: string }
+    | { operation: "list"; page_token?: string | null };
+};
+
+export type CloudProviderResponse =
+  | { result: "allocated_ids"; ids: string[] }
+  | { result: "read"; bytes_base64: string | null }
+  | { result: "created" }
+  | { result: "already_exists" }
+  | { result: "deleted"; existed: boolean }
+  | {
+      result: "listed";
+      objects: Array<{ id: string; size_bytes: number; created_at?: string | null }>;
+      next_page_token?: string | null;
+    }
+  | { result: "error"; kind: "unauthorized" | "transient" | "permanent"; detail: string };
 
 export type UiDisclaimerState = {
   agreement_id: string;
@@ -812,6 +877,10 @@ export interface UiSession {
   setMapLayerEnabled(layerId: MapLayerId, enabled: boolean): Promise<UiSessionSnapshot>;
   setDebugFlag(flagId: DebugFlagId, enabled: boolean): Promise<UiSessionSnapshot>;
   performSettingsAction(actionId: string, valueId: string): Promise<UiSessionSnapshot>;
+  reportCloudCredentialState(state: CloudCredentialState): Promise<UiSessionSnapshot>;
+  performCloudAction(action: CloudAction): Promise<UiSessionSnapshot>;
+  takeCloudProviderRequest(nowEpochMs: number): Promise<CloudProviderRequest | null>;
+  completeCloudProviderRequest(requestId: number, response: CloudProviderResponse, nowEpochMs: number): Promise<UiSessionSnapshot>;
   acceptDisclaimer(agreementId: string): Promise<UiSessionSnapshot>;
   loadRasterMapCatalog(): Promise<UiSessionSnapshot>;
   resolveChartAssetUrl(chartId: string, assetKind: "asset" | "thumbnail"): Promise<string>;
@@ -937,6 +1006,10 @@ type WasmModule = {
   set_map_layer_enabled_in_session_paged(handle: number, layerIdJson: string, enabled: boolean): Promise<string> | string;
   set_debug_flag_in_session(handle: number, flagIdJson: string, enabled: boolean): Promise<string> | string;
   perform_settings_action_in_session(handle: number, actionJson: string): Promise<string> | string;
+  report_cloud_credential_state_in_session(handle: number, stateJson: string): Promise<string> | string;
+  perform_cloud_action_in_session(handle: number, actionJson: string): Promise<string> | string;
+  take_cloud_provider_request_in_session(handle: number, nowEpochMs: bigint): Promise<string> | string;
+  complete_cloud_provider_request_in_session(handle: number, requestId: bigint, responseJson: string, nowEpochMs: bigint): Promise<string> | string;
   accept_disclaimer_in_session(handle: number, agreementId: string): Promise<string> | string;
   load_raster_map_catalog_in_session(handle: number): Promise<string> | string;
   sync_guidance_geometry_in_session(handle: number): Promise<string> | string;
@@ -1107,6 +1180,7 @@ export class WasmAppCoreAdapter implements AppCoreAdapter {
           JSON.stringify({
             display_policy: null,
             offline_packages: null,
+            cloud: {},
             live_feeds: { acquisition_policy: "jit_public_resources" },
             client_build: __AEROBAG_CLIENT_BUILD_INFO__,
             local_time_zone: Intl.DateTimeFormat().resolvedOptions().timeZone,
@@ -1480,6 +1554,37 @@ export class WasmAppCoreAdapter implements AppCoreAdapter {
           this.module.perform_settings_action_in_session(
             handle,
             JSON.stringify({ action_id: actionId, value_id: valueId }),
+          ),
+        );
+        return snapshot;
+      },
+      reportCloudCredentialState: async (state) => {
+        snapshot = await runSessionOperation<UiSessionSnapshot>(() =>
+          this.module.report_cloud_credential_state_in_session(handle, JSON.stringify(state)),
+        );
+        return snapshot;
+      },
+      performCloudAction: async (action) => {
+        snapshot = await runSessionOperation<UiSessionSnapshot>(() =>
+          this.module.perform_cloud_action_in_session(handle, JSON.stringify(action)),
+        );
+        return snapshot;
+      },
+      takeCloudProviderRequest: async (nowEpochMs) => {
+        return JSON.parse(
+          await this.module.take_cloud_provider_request_in_session(
+            handle,
+            BigInt(Math.trunc(nowEpochMs)),
+          ),
+        ) as CloudProviderRequest | null;
+      },
+      completeCloudProviderRequest: async (requestId, response, nowEpochMs) => {
+        snapshot = await runSessionOperation<UiSessionSnapshot>(() =>
+          this.module.complete_cloud_provider_request_in_session(
+            handle,
+            BigInt(requestId),
+            JSON.stringify(response),
+            BigInt(Math.trunc(nowEpochMs)),
           ),
         );
         return snapshot;
@@ -1928,6 +2033,10 @@ async function loadBestAvailableAdapterUncached(
     "set_map_layer_enabled_in_session_paged",
     "set_debug_flag_in_session",
     "perform_settings_action_in_session",
+    "report_cloud_credential_state_in_session",
+    "perform_cloud_action_in_session",
+    "take_cloud_provider_request_in_session",
+    "complete_cloud_provider_request_in_session",
     "accept_disclaimer_in_session",
     "load_raster_map_catalog_in_session",
     "resolve_chart_asset_resource_in_session",

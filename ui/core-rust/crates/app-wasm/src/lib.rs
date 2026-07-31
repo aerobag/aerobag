@@ -29,6 +29,7 @@ const WEB_CORE_SETTINGS_STORAGE_KEY: &str = "aerobag.core.settings.v1";
 extern "C" {
     #[wasm_bindgen(js_namespace = performance, js_name = now)]
     fn performance_now() -> f64;
+
 }
 
 #[derive(Serialize)]
@@ -688,6 +689,59 @@ pub fn perform_settings_action_in_session(
     let snapshot = app_core::perform_settings_action_in_session(session_handle, action)
         .map_err(|err| JsValue::from_str(&err.to_string()))?;
     serde_json::to_string(&snapshot).map_err(|err| JsValue::from_str(&err.to_string()))
+}
+
+#[wasm_bindgen]
+pub fn report_cloud_credential_state_in_session(
+    session_handle: u32,
+    state_json: &str,
+) -> Result<String, JsValue> {
+    let state: app_core::CloudCredentialState =
+        serde_json::from_str(state_json).map_err(|err| JsValue::from_str(&err.to_string()))?;
+    let outcome = app_core::report_cloud_credential_state_in_session(session_handle, state)
+        .map_err(|err| JsValue::from_str(&err.to_string()))?;
+    serde_json::to_string(&outcome).map_err(|err| JsValue::from_str(&err.to_string()))
+}
+
+#[wasm_bindgen]
+pub fn perform_cloud_action_in_session(
+    session_handle: u32,
+    action_json: &str,
+) -> Result<String, JsValue> {
+    let action: app_core::CloudAction =
+        serde_json::from_str(action_json).map_err(|err| JsValue::from_str(&err.to_string()))?;
+    let outcome = app_core::perform_cloud_action_in_session(session_handle, action)
+        .map_err(|err| JsValue::from_str(&err.to_string()))?;
+    serde_json::to_string(&outcome).map_err(|err| JsValue::from_str(&err.to_string()))
+}
+
+#[wasm_bindgen]
+pub fn take_cloud_provider_request_in_session(
+    session_handle: u32,
+    now_epoch_ms: i64,
+) -> Result<String, JsValue> {
+    let request = app_core::take_cloud_provider_request_in_session(session_handle, now_epoch_ms)
+        .map_err(|err| JsValue::from_str(&err.to_string()))?;
+    serde_json::to_string(&request).map_err(|err| JsValue::from_str(&err.to_string()))
+}
+
+#[wasm_bindgen]
+pub fn complete_cloud_provider_request_in_session(
+    session_handle: u32,
+    request_id: u64,
+    response_json: &str,
+    now_epoch_ms: i64,
+) -> Result<String, JsValue> {
+    let response: app_core::CloudProviderResponse =
+        serde_json::from_str(response_json).map_err(|err| JsValue::from_str(&err.to_string()))?;
+    let outcome = app_core::complete_cloud_provider_request_in_session(
+        session_handle,
+        request_id,
+        response,
+        now_epoch_ms,
+    )
+    .map_err(|err| JsValue::from_str(&err.to_string()))?;
+    serde_json::to_string(&outcome).map_err(|err| JsValue::from_str(&err.to_string()))
 }
 
 #[wasm_bindgen]

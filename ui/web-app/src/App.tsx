@@ -94,9 +94,17 @@ import {
   type UiDataStatusState,
   type UiSession,
   type UiSessionSnapshot,
+  type CloudAction,
   type UiHomePageState,
   type UiInvalidation,
 } from "./domain/appCoreAdapter";
+import {
+  authorizeGoogleDrive,
+  executeGoogleDriveCloudRequest,
+  preloadGoogleDriveAuthorization,
+  revokeGoogleDrive,
+  type GoogleDriveAuthorization,
+} from "./domain/googleDriveCloudProvider";
 import { flightPlanWaypointUsesFullWidthLabel } from "./domain/flightPlanLayout";
 import {
   applyPinchGesture,
@@ -782,7 +790,7 @@ function offlineRegionSummaryIcon(action: string): string {
   }
 }
 
-type AppPage = "map" | "plan" | "charts" | "home" | "data" | "settings" | "about";
+type AppPage = "map" | "plan" | "charts" | "home" | "data" | "settings" | "cloud" | "about";
 
 type WebPageTilePaintTiming = {
   id: number;
@@ -936,6 +944,8 @@ function webHomeButtonPresentation(id: string): { page: AppPage | null; iconSrc?
       return { page: "data" };
     case "settings":
       return { page: "settings" };
+    case "cloud":
+      return { page: "cloud" };
     case "offline-packages":
       return { page: null };
     case "about":
@@ -1911,6 +1921,9 @@ export default function App() {
     [initialRecentAirportIds, persistedUiState.selectedAirportId, persistedUiState.selectedChartId],
   );
   const [uiSession, setUiSession] = useState<UiSession | null>(null);
+  const googleDriveAuthorizationRef = useRef<GoogleDriveAuthorization | null>(null);
+  const cloudPumpInFlightRef = useRef(false);
+  const cloudAuthorizationExpiryTimerRef = useRef<number | null>(null);
   const webIdleState = useWebIdleState();
   const [uiInvalidationRevisions, setUiInvalidationRevisions] = useState<UiInvalidationRevisions>(
     initialUiInvalidationRevisions,
@@ -1986,6 +1999,23 @@ export default function App() {
       summary: "No platform settings are available.",
       rows: [],
     },
+    cloud_page_state: {
+      title: "Cloud",
+      provider_label: "Google Drive",
+      connection_label: "DISCONNECTED",
+      account_label: "NOT LINKED",
+      summary: "Connect a provider, then create or link a cloud account.",
+      provider_options: [{
+        id: "google_drive",
+        label: "Google Drive",
+        selected: true,
+        enabled: true,
+      }],
+      facts: [],
+      actions: [],
+      pairing_token: null,
+      pairing_input_enabled: false,
+    },
     home_page_state: {
       buttons: [],
     },
@@ -2031,6 +2061,113 @@ export default function App() {
     }
     applySessionSnapshot(nextSnapshot, "session_callback");
   }, [applySessionSnapshot]);
+
+  const pumpCloudProvider = useCallback(async () => {
+    if (!uiSession || cloudPumpInFlightRef.current) {
+      return;
+    }
+    cloudPumpInFlightRef.current = true;
+    try {
+      for (let step = 0; step < 32; step += 1) {
+        const request = await uiSession.takeCloudProviderRequest(Date.now());
+        if (!request) {
+          return;
+        }
+        const response = await executeGoogleDriveCloudRequest(
+          request,
+          googleDriveAuthorizationRef.current?.accessToken ?? null,
+        );
+        const nextSnapshot = await uiSession.completeCloudProviderRequest(
+          request.request_id,
+          response,
+          Date.now(),
+        );
+        applySessionSnapshot(nextSnapshot, "cloud_provider_completion");
+      }
+      throw new Error("cloud provider pump exceeded its bounded work batch");
+    } catch (error) {
+      debugLog("cloud.provider_pump.failed", { error: errorMessage(error) });
+    } finally {
+      cloudPumpInFlightRef.current = false;
+    }
+  }, [applySessionSnapshot, uiSession]);
+
+  useEffect(() => {
+    void preloadGoogleDriveAuthorization().catch((error) => {
+      debugLog("cloud.google_identity.preload_failed", { error: errorMessage(error) });
+    });
+  }, []);
+
+  useEffect(() => {
+    if (!uiSession) {
+      return;
+    }
+    void pumpCloudProvider();
+    const timer = window.setInterval(() => void pumpCloudProvider(), 1_000);
+    return () => window.clearInterval(timer);
+  }, [pumpCloudProvider, uiSession]);
+
+  const connectGoogleDrive = useCallback(async () => {
+    if (!uiSession) {
+      return;
+    }
+    const authorizationPromise = authorizeGoogleDrive();
+    void uiSession.reportCloudCredentialState({ state: "connecting" }).then((nextSnapshot) => {
+      applySessionSnapshot(nextSnapshot, "cloud_connecting");
+    });
+    try {
+      const authorization = await authorizationPromise;
+      googleDriveAuthorizationRef.current = authorization;
+      if (cloudAuthorizationExpiryTimerRef.current !== null) {
+        window.clearTimeout(cloudAuthorizationExpiryTimerRef.current);
+      }
+      const expiresInMs = Math.max(0, authorization.expiresAtEpochMs - Date.now());
+      cloudAuthorizationExpiryTimerRef.current = window.setTimeout(() => {
+        googleDriveAuthorizationRef.current = null;
+        if (uiSession) {
+          void uiSession.reportCloudCredentialState({
+            state: "needs_user_action",
+            detail: "Google Drive authorization expired. Reconnect to resume cloud synchronization.",
+          }).then((nextSnapshot) => {
+            applySessionSnapshot(nextSnapshot, "cloud_authorization_expired");
+          });
+        }
+      }, Math.min(expiresInMs, 2_147_000_000));
+      const nextSnapshot = await uiSession.reportCloudCredentialState({
+        state: "ready",
+        expires_at_epoch_ms: authorization.expiresAtEpochMs,
+      });
+      applySessionSnapshot(nextSnapshot, "cloud_connected");
+      await pumpCloudProvider();
+    } catch (error) {
+      googleDriveAuthorizationRef.current = null;
+      const nextSnapshot = await uiSession.reportCloudCredentialState({
+        state: "needs_user_action",
+        detail: errorMessage(error),
+      });
+      applySessionSnapshot(nextSnapshot, "cloud_authorization_failed");
+    }
+  }, [applySessionSnapshot, pumpCloudProvider, uiSession]);
+
+  const performCloudPageAction = useCallback(async (action: CloudAction) => {
+    if (!uiSession) {
+      return;
+    }
+    if (action.kind === "disconnect") {
+      const token = googleDriveAuthorizationRef.current?.accessToken ?? null;
+      googleDriveAuthorizationRef.current = null;
+      if (cloudAuthorizationExpiryTimerRef.current !== null) {
+        window.clearTimeout(cloudAuthorizationExpiryTimerRef.current);
+        cloudAuthorizationExpiryTimerRef.current = null;
+      }
+      if (token) {
+        await revokeGoogleDrive(token);
+      }
+    }
+    const nextSnapshot = await uiSession.performCloudAction(action);
+    applySessionSnapshot(nextSnapshot, `cloud_action_${action.kind}`);
+    await pumpCloudProvider();
+  }, [applySessionSnapshot, pumpCloudProvider, uiSession]);
   useEffect(() => {
     if (typeof window === "undefined") {
       return;
@@ -3622,6 +3759,19 @@ export default function App() {
               applySessionSnapshot(nextSnapshot, "settings_action");
             });
           }}
+        />
+      </div>
+      <div className={`pageLayer${page === "cloud" ? " isActive" : ""}`} aria-hidden={page !== "cloud"}>
+        <CloudPage
+          page={page}
+          state={sessionSnapshot.cloud_page_state}
+          navElement={planUiState?.guidance?.nav_element}
+          mostRecentChartOrPlatePage={mostRecentChartOrPlatePage}
+          onOpenPlan={() => navigateToPage("plan")}
+          onOpenRecentChartOrPlate={navigateToMostRecentChartOrPlate}
+          onSelectPage={navigateToPage}
+          onConnect={connectGoogleDrive}
+          onAction={performCloudPageAction}
         />
       </div>
       {flightPlanWeatherModal ? (
@@ -10863,6 +11013,163 @@ function formatApkSize(bytes: number): string {
   return `${megabytes >= 10 ? megabytes.toFixed(0) : megabytes.toFixed(1)} MB`;
 }
 
+function CloudPage(props: {
+  page: AppPage;
+  state: UiSessionSnapshot["cloud_page_state"];
+  navElement: NavElementUiView | null | undefined;
+  mostRecentChartOrPlatePage: AppPage;
+  onOpenPlan: () => void;
+  onOpenRecentChartOrPlate: () => void;
+  onSelectPage: (page: AppPage) => void;
+  onConnect: () => Promise<void>;
+  onAction: (action: CloudAction) => Promise<void>;
+}) {
+  const [pairingInput, setPairingInput] = useState("");
+  const [copyStatus, setCopyStatus] = useState("");
+  const [actionError, setActionError] = useState("");
+
+  const invoke = async (actionId: string) => {
+    setActionError("");
+    try {
+      switch (actionId) {
+        case "select_provider_google_drive":
+          await props.onAction({ kind: "select_provider", provider: "google_drive" });
+          break;
+        case "connect":
+          await props.onConnect();
+          break;
+        case "create_account":
+          await props.onAction({ kind: "create_account" });
+          break;
+        case "link_existing":
+          await props.onAction({ kind: "link_existing", pairing_token: pairingInput.trim() });
+          break;
+        case "reveal_pairing":
+          await props.onAction({ kind: "reveal_pairing_token" });
+          break;
+        case "hide_pairing":
+          await props.onAction({ kind: "hide_pairing_token" });
+          break;
+        case "sync_now":
+          await props.onAction({ kind: "sync_now" });
+          break;
+        case "disconnect":
+          await props.onAction({ kind: "disconnect" });
+          break;
+        default:
+          throw new Error(`Unsupported core Cloud action id: ${actionId}`);
+      }
+    } catch (error) {
+      setActionError(errorMessage(error));
+    }
+  };
+
+  return (
+    <section className="appPage cloudPage" data-testid="cloud-page">
+      <PrimaryNavigationDock
+        page={props.page}
+        navElement={props.navElement}
+        chartPlateTargetPage={props.mostRecentChartOrPlatePage}
+        onSelectPage={props.onSelectPage}
+        onOpenPlan={props.onOpenPlan}
+        onOpenChartOrPlate={props.onOpenRecentChartOrPlate}
+      />
+      <div className="cloudPagePanel" aria-label={props.state.title}>
+        <header className="cloudPageHeader">
+          <p className="cloudPageEyebrow">ENCRYPTED USER STORAGE</p>
+          <h1>{props.state.title}</h1>
+          <p>{props.state.summary}</p>
+        </header>
+        <div className="cloudProviderOptions" aria-label="Cloud provider">
+          {props.state.provider_options.map((provider) => (
+            <button
+              key={provider.id}
+              type="button"
+              data-testid={`cloud-provider-${provider.id}`}
+              aria-pressed={provider.selected}
+              disabled={!provider.enabled}
+              onClick={() => void invoke(`select_provider_${provider.id}`)}
+            >
+              {provider.label}
+            </button>
+          ))}
+        </div>
+        <div className="cloudStateStrip">
+          <div>
+            <span>PROVIDER</span>
+            <strong>{props.state.provider_label}</strong>
+          </div>
+          <div>
+            <span>GOOGLE DRIVE</span>
+            <strong data-testid="cloud-connection-state">{props.state.connection_label}</strong>
+          </div>
+          <div>
+            <span>AEROBAG ACCOUNT</span>
+            <strong data-testid="cloud-account-state">{props.state.account_label}</strong>
+          </div>
+        </div>
+        <dl className="cloudFacts">
+          {props.state.facts.map((fact) => (
+            <div key={fact.label}>
+              <dt>{fact.label}</dt>
+              <dd>{fact.value}</dd>
+            </div>
+          ))}
+        </dl>
+        {actionError ? <p className="cloudActionError" role="alert">{actionError}</p> : null}
+        {props.state.pairing_input_enabled ? (
+          <label className="cloudPairingField">
+            <span>PAIRING TOKEN FROM ANOTHER DEVICE</span>
+            <textarea
+              data-testid="cloud-pairing-input"
+              value={pairingInput}
+              onChange={(event) => setPairingInput(event.target.value)}
+              placeholder="AB1..."
+              spellCheck={false}
+            />
+          </label>
+        ) : null}
+        {props.state.pairing_token ? (
+          <section className="cloudPairingToken">
+            <h2>PAIRING TOKEN</h2>
+            <p>This token grants full access to your encrypted Aerobag account. Transfer it privately.</p>
+            <textarea data-testid="cloud-pairing-token" readOnly value={props.state.pairing_token} spellCheck={false} />
+            <button
+              type="button"
+              onClick={() => {
+                void navigator.clipboard.writeText(props.state.pairing_token ?? "").then(() => {
+                  setCopyStatus("Copied");
+                });
+              }}
+            >
+              COPY TOKEN
+            </button>
+            {copyStatus ? <span className="cloudCopyStatus">{copyStatus}</span> : null}
+          </section>
+        ) : null}
+        <div className="cloudActionGrid">
+          {props.state.actions.map((action) => {
+            const enabled = action.enabled
+              && (action.id !== "link_existing" || pairingInput.trim().length > 0);
+            return (
+              <button
+                key={action.id}
+                type="button"
+                data-testid={`cloud-action-${action.id}`}
+                disabled={!enabled}
+                title={!enabled ? action.disabled_reason ?? "Enter a pairing token first." : undefined}
+                onClick={() => void invoke(action.id)}
+              >
+                {action.label}
+              </button>
+            );
+          })}
+        </div>
+      </div>
+    </section>
+  );
+}
+
 function SettingsPage(props: {
   page: AppPage;
   state: UiSessionSnapshot["settings_page_state"];
@@ -11275,7 +11582,7 @@ function readPersistedWebUiState(): PersistedWebUiState {
     const page = rawPage;
     const mapOrientationMode = parsed.mapOrientationMode === "track" ? "track" : "north";
     return {
-      page: page === "map" || page === "plan" || page === "charts" || page === "home" || page === "data" || page === "settings" ? page : undefined,
+      page: page === "map" || page === "plan" || page === "charts" || page === "home" || page === "data" || page === "settings" || page === "cloud" ? page : undefined,
       mapOrientationMode,
       selectedAirportId: parsed.selectedAirportId,
       selectedChartId: parsed.selectedChartId,

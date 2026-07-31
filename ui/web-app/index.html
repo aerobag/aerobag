@@ -295,6 +295,9 @@ SPDX-License-Identifier: AGPL-3.0-or-later
           });
           return state;
         }
+        if (window.location.pathname.startsWith("/experiments/")) {
+          return finish("skipped_experiment");
+        }
         function selectStartupPrefetchCycle(prefetch) {
           const cycles = prefetch && Array.isArray(prefetch.cycle_resources)
             ? prefetch.cycle_resources

@@ -6,6 +6,7 @@ use serde::{Deserialize, Serialize};
 
 pub mod airport_info;
 pub mod chart_page;
+pub mod cloud;
 pub mod content;
 pub mod data_status;
 pub mod debug_log;
@@ -45,6 +46,12 @@ pub use chart_page::{
     ChartReferenceFamilyRecord, ChartReferenceFamilySummary, DerivedChartAirport,
     DerivedChartAirportMenuEntry, DerivedChartAsset, DerivedChartCatalog, DerivedChartPage,
     DerivedChartPageState, DerivedChartReferenceFamily,
+};
+pub use cloud::{
+    CloudAction, CloudCompletion, CloudCredentialState, CloudEngine, CloudPersistentState,
+    CloudProviderErrorKind, CloudProviderKind, CloudProviderObject, CloudProviderOperation,
+    CloudProviderRequest, CloudProviderResponse, UiCloudAction, UiCloudPageFact, UiCloudPageState,
+    UiCloudProviderOption, CLOUD_STATUS_ID,
 };
 pub use content::{
     AvailabilityDetail, CachedPlate, CachedTileset, ContentAvailability, ContentInventory,
@@ -209,13 +216,13 @@ pub use raster_tiles::{
 pub use session::{
     accept_disclaimer_in_session, advance_nav_kv_store_in_session_with_open_result,
     apply_situation_control_input_in_session, attach_nav_kv_store_to_session,
-    attach_nav_kv_store_to_session_with_open_result, configure_live_feed_source_in_session,
-    configure_platform_capabilities_in_session, create_ui_session, create_ui_session_at_epoch_ms,
-    create_ui_session_profiled, create_ui_session_profiled_at_epoch_ms,
-    debug_drop_nav_kv_pages_for_attached_sessions, destroy_session,
-    disengage_map_follow_in_session, drain_session_resource_effects, engage_map_follow_in_session,
-    get_map_overlay_in_session, get_map_overlay_in_session_at_epoch_ms,
-    get_map_overlay_in_session_with_point_display_scale,
+    attach_nav_kv_store_to_session_with_open_result, complete_cloud_provider_request_in_session,
+    configure_live_feed_source_in_session, configure_platform_capabilities_in_session,
+    create_ui_session, create_ui_session_at_epoch_ms, create_ui_session_profiled,
+    create_ui_session_profiled_at_epoch_ms, debug_drop_nav_kv_pages_for_attached_sessions,
+    destroy_session, disengage_map_follow_in_session, drain_session_resource_effects,
+    engage_map_follow_in_session, get_map_overlay_in_session,
+    get_map_overlay_in_session_at_epoch_ms, get_map_overlay_in_session_with_point_display_scale,
     get_map_overlay_in_session_with_point_display_scale_at_epoch_ms,
     get_map_selection_for_nav_ref_in_session_with_point_display_scale_at_epoch_ms,
     get_map_selection_in_session, get_map_selection_in_session_at_epoch_ms,
@@ -240,15 +247,15 @@ pub use session::{
     install_prepared_live_feed_cache_product_in_session, live_feed_runtime_decision_in_session,
     load_offline_package_library_cache_in_session, load_playback_trace_in_session,
     load_raster_map_catalog_in_session, maintain_nav_db_in_session_at_epoch_ms,
-    nexrad_tile_bytes_in_session, pause_playback_in_session,
+    nexrad_tile_bytes_in_session, pause_playback_in_session, perform_cloud_action_in_session,
     perform_flight_plan_command_in_session, perform_map_selection_action_in_session,
     perform_settings_action_in_session, perform_status_action_in_session, play_playback_in_session,
     prepare_nexrad_tile_in_session, project_flight_plan_route_in_session,
     push_situation_sample_in_session, query_flight_plan_in_session,
     refresh_live_feed_current_in_session, register_ownship_source_in_session,
     render_terrain_overlay_tile_by_key_in_session, render_terrain_overlay_tile_in_session,
-    render_terrain_overlay_tiles_in_session, report_live_feed_connection_event_in_session,
-    report_session_resource_failure_in_session,
+    render_terrain_overlay_tiles_in_session, report_cloud_credential_state_in_session,
+    report_live_feed_connection_event_in_session, report_session_resource_failure_in_session,
     report_session_resource_failure_in_session_at_epoch_ms,
     resolve_chart_asset_resource_in_session, resolve_metar_manifest_in_session,
     resolve_nav_db_artifact_candidates_in_session, restore_chart_page_state_in_session,
@@ -259,17 +266,18 @@ pub use session::{
     set_map_layer_enabled_in_session, set_map_layer_visibility_in_session,
     set_playback_rate_in_session, set_resource_policy_in_session, set_situation_in_session,
     sync_guidance_geometry_in_session, sync_live_feed_catalog_in_session,
-    sync_live_feeds_in_session, sync_map_follow_in_session, tick_bad_autopilot_in_session,
-    tick_playback_in_session, update_ownship_source_status_in_session, ClientBuildInfo,
-    DisplayDimTimeout, FlightPlanSessionCommand, FlightPlanSessionQuery, GuidanceLegGeometry,
+    sync_live_feeds_in_session, sync_map_follow_in_session, take_cloud_provider_request_in_session,
+    tick_bad_autopilot_in_session, tick_playback_in_session,
+    update_ownship_source_status_in_session, ClientBuildInfo, DisplayDimTimeout,
+    FlightPlanSessionCommand, FlightPlanSessionQuery, GuidanceLegGeometry,
     LiveFeedAcquisitionPolicy, NavDbAdvanceDisposition, NavDbAdvanceResult, NavDbMaintenanceAction,
-    NavDbMaintenanceResult, PlatformCapabilities, PlatformDisplayPolicyCapability,
-    PlatformLiveFeedsCapability, PlatformOfflinePackagesCapability, SettingsPreferences,
-    SettingsStorage, SettingsStorageHandle, UiChartPageState, UiDebugState, UiDisclaimerState,
-    UiDisplayPolicy, UiHomePageButton, UiHomePageState, UiMapLayerState, UiMapLayerToggleState,
-    UiNavDbIdentity, UiPlaybackPanelState, UiSessionInitResult, UiSessionResourceEffect,
-    UiSessionSnapshot, UiSettingsAction, UiSettingsGridItem, UiSettingsPageRow,
-    UiSettingsPageState, UiSettingsSliderStop,
+    NavDbMaintenanceResult, PlatformCapabilities, PlatformCloudCapability,
+    PlatformDisplayPolicyCapability, PlatformLiveFeedsCapability,
+    PlatformOfflinePackagesCapability, SettingsPreferences, SettingsStorage, SettingsStorageHandle,
+    UiChartPageState, UiDebugState, UiDisclaimerState, UiDisplayPolicy, UiHomePageButton,
+    UiHomePageState, UiMapLayerState, UiMapLayerToggleState, UiNavDbIdentity, UiPlaybackPanelState,
+    UiSessionInitResult, UiSessionResourceEffect, UiSessionSnapshot, UiSettingsAction,
+    UiSettingsGridItem, UiSettingsPageRow, UiSettingsPageState, UiSettingsSliderStop,
 };
 pub use situation::{Situation, SituationPosition};
 pub use state::{project_app_ui_state, AppEvent, AppState, AppUiState};

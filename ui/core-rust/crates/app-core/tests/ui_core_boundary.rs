@@ -177,6 +177,30 @@ fn platform_live_feed_adapters_do_not_own_nexrad_policy() {
 }
 
 #[test]
+fn cloud_provider_adapters_do_not_own_storage_or_application_policy() {
+    let web_provider =
+        read_repo_file("ui/web-app/src/domain/googleDriveCloudProvider.ts").to_ascii_lowercase();
+    let forbidden = [
+        "flight_plan",
+        "flightplan",
+        "merkle",
+        "successor",
+        "merge_policy",
+        "mergepolicy",
+    ];
+    let violations = forbidden
+        .into_iter()
+        .filter(|needle| web_provider.contains(needle))
+        .collect::<Vec<_>>();
+
+    assert!(
+        violations.is_empty(),
+        "cloud provider adapters are platform effects only; core owns storage and application policy: {}",
+        violations.join(", ")
+    );
+}
+
+#[test]
 fn bulk_notam_state_cannot_cross_into_the_ui_session() {
     let session_text = read_repo_file("ui/core-rust/crates/app-core/src/session.rs");
     let session = strip_rust_tests(&session_text);

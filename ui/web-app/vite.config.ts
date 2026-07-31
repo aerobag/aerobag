@@ -27,11 +27,16 @@ const gpsCaptureRoot = process.env.AEROBAG_GPS_CAPTURE_ROOT
   ? path.resolve(process.env.AEROBAG_GPS_CAPTURE_ROOT)
   : path.join("/tmp", "aerobag-gps-captures");
 const liveFeedsOrigin = process.env.AEROBAG_LIVE_FEEDS_ORIGIN ?? null;
+const googleDriveClientId = process.env.AEROBAG_GOOGLE_DRIVE_CLIENT_ID
+  ?? process.env.AEROBAG_GOOGLE_DRIVE_EXPERIMENT_CLIENT_ID
+  ?? "768838226465-vvnomuvnongnia7hk5kgcg7bepjdvpsd.apps.googleusercontent.com";
+const googleDriveExperimentClientId = googleDriveClientId;
 const webDebugLogEnabled = /^(1|true|yes)$/i.test(process.env.AEROBAG_WEB_DEBUG_LOG_ENABLED ?? "");
 const sharedRoot = path.join(repoRoot, "ui", "shared");
 const sharedFixturesRoot = path.join(repoRoot, "ui", "shared-fixtures");
 const productContractsPath = path.join(repoRoot, "crates", "product-contracts", "src", "lib.rs");
 const debugLogPath = path.join("/tmp", "aerobag-web-debug.log");
+const driveCasReportPath = path.join("/tmp", "aerobag-drive-cas-reports.jsonl");
 const requestLogPath = path.join("/tmp", "aerobag-web-requests.log");
 const artifactReadPathConfigFile = path.join(repoRoot, ".aerobag-artifact-read-path");
 const configuredArtifactRoot = fs.readFileSync(artifactReadPathConfigFile, "utf8").trim();
@@ -158,6 +163,48 @@ function appendRequestLog(entry: Record<string, unknown>) {
   fs.appendFileSync(requestLogPath, `${JSON.stringify({ ts: Date.now(), ...entry })}\n`);
 }
 
+function redactDriveCasUrl(value: string): string {
+  try {
+    const url = new URL(value);
+    const keys = [...url.searchParams.keys()];
+    const carriesUploadSession = keys.some((key) => /^(upload_?id|session_crd|x-goog-upload-id)$/i.test(key));
+    for (const key of keys) {
+      if (
+        /^(upload_?id|session_crd|x-goog-upload-id)$/i.test(key)
+        || (carriesUploadSession && !/^(uploadType|fields)$/i.test(key))
+      ) {
+        url.searchParams.set(key, "<redacted>");
+      }
+    }
+    return url.toString();
+  } catch {
+    return "<invalid-url-redacted>";
+  }
+}
+
+function sanitizeDriveCasEvidence(value: unknown, key = ""): unknown {
+  if (Array.isArray(value)) {
+    return value.map((entry) => sanitizeDriveCasEvidence(entry));
+  }
+  if (typeof value === "object" && value !== null) {
+    return Object.fromEntries(
+      Object.entries(value).map(([entryKey, entryValue]) => [
+        entryKey,
+        sanitizeDriveCasEvidence(entryValue, entryKey),
+      ]),
+    );
+  }
+  if (typeof value === "string") {
+    if (/upload-?id/i.test(key)) {
+      return "<redacted>";
+    }
+    if (key === "location" || key === "url") {
+      return redactDriveCasUrl(value);
+    }
+  }
+  return value;
+}
+
 function mountStaticTree(sourceRoot: string, options: { missingStatus?: number; logPrefix?: string; direct?: boolean } = {}) {
   return (req: { headers?: Record<string, string | string[] | undefined>; method?: string; url?: string }, res: { statusCode: number; end: (body?: string | Buffer) => void; setHeader: (name: string, value: string) => void }, next: () => void) => {
     const requestPath = decodeURIComponent((req.url ?? "/").split("?")[0] ?? "/");
@@ -278,6 +325,60 @@ function aerobagStaticPlugin(): Plugin {
         }
       });
     });
+    server.middlewares.use("/__drive_cas_report", (req, res, next) => {
+      if (req.method !== "POST") {
+        next();
+        return;
+      }
+      const maxBodyBytes = 8 * 1024 * 1024;
+      const chunks: Buffer[] = [];
+      let bodyBytes = 0;
+      let bodyTooLarge = false;
+      req.on("data", (chunk) => {
+        const buffer = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
+        bodyBytes += buffer.byteLength;
+        if (bodyBytes > maxBodyBytes) {
+          bodyTooLarge = true;
+          chunks.length = 0;
+          return;
+        }
+        chunks.push(buffer);
+      });
+      req.on("end", () => {
+        if (bodyTooLarge) {
+          appendRequestLog({ kind: "drive_cas_report_rejected", reason: "too_large", body_bytes: bodyBytes });
+          res.statusCode = 413;
+          res.end("Drive CAS report exceeds 8 MiB");
+          return;
+        }
+        try {
+          const payload = JSON.parse(Buffer.concat(chunks).toString("utf8")) as {
+            schema?: unknown;
+          };
+          if (
+            typeof payload !== "object"
+            || payload === null
+            || ![
+              "aerobag-drive-cas-report-v1",
+              "aerobag-drive-create-once-report-v1",
+            ].includes(String(payload.schema))
+          ) {
+            throw new Error("expected a recognized Aerobag Drive experiment report");
+          }
+          fs.appendFileSync(driveCasReportPath, `${JSON.stringify({
+            received_at: new Date().toISOString(),
+            report: sanitizeDriveCasEvidence(payload),
+          })}\n`);
+          appendRequestLog({ kind: "drive_cas_report_saved", body_bytes: bodyBytes });
+          res.statusCode = 204;
+          res.end();
+        } catch (error) {
+          appendRequestLog({ kind: "drive_cas_report_rejected", reason: "invalid_json_or_schema" });
+          res.statusCode = 400;
+          res.end(error instanceof Error ? error.message : String(error));
+        }
+      });
+    });
     server.middlewares.use("/__ping", (req, res, next) => {
       const requestPath = decodeURIComponent((req.url ?? "/").split("?")[0] ?? "/");
       if (requestPath !== "/") {
@@ -347,6 +448,8 @@ export default defineConfig({
   define: {
     __AEROBAG_DEBUG_LOG_ENABLED__: JSON.stringify(webDebugLogEnabled),
     __AEROBAG_LIVE_FEEDS_ORIGIN__: JSON.stringify(liveFeedsOrigin),
+    __AEROBAG_GOOGLE_DRIVE_EXPERIMENT_CLIENT_ID__: JSON.stringify(googleDriveExperimentClientId),
+    __AEROBAG_GOOGLE_DRIVE_CLIENT_ID__: JSON.stringify(googleDriveClientId),
     __AEROBAG_CLIENT_BUILD_INFO__: JSON.stringify(clientBuildInfo),
   },
   resolve: {

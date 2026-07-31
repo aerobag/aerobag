@@ -20,6 +20,10 @@ use crate::{
     chart_ident_label_for_nav_ref_symbol,
     chart_page::chart_page_airport_ids_from_plan,
     chart_page::ChartAssetRecord,
+    cloud::{
+        CloudAction, CloudCredentialState, CloudEngine, CloudPersistentState, CloudProviderRequest,
+        CloudProviderResponse, UiCloudPageState, CLOUD_STATUS_ID,
+    },
     data_status::{
         parse_status_action_id, project_data_status_state, DataStatusRecord, UiDataStatusPageFact,
         UiDataStatusPageRow, UiDataStatusPageState, UiDataStatusPageTimeDisplay, UiDataStatusState,
@@ -197,6 +201,9 @@ pub struct PlatformDisplayPolicyCapability {}
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
 pub struct PlatformOfflinePackagesCapability {}
 
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
+pub struct PlatformCloudCapability {}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum LiveFeedAcquisitionPolicy {
@@ -227,6 +234,8 @@ pub struct PlatformCapabilities {
     pub display_policy: Option<PlatformDisplayPolicyCapability>,
     #[serde(default)]
     pub offline_packages: Option<PlatformOfflinePackagesCapability>,
+    #[serde(default)]
+    pub cloud: Option<PlatformCloudCapability>,
     #[serde(default)]
     pub live_feeds: Option<PlatformLiveFeedsCapability>,
     #[serde(default)]
@@ -340,10 +349,12 @@ pub struct UiSettingsAction {
     pub value_id: String,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 struct SettingsPersistenceDocument {
     version: u32,
     preferences: SettingsPreferences,
+    #[serde(default)]
+    cloud: CloudPersistentState,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -372,6 +383,7 @@ pub struct UiSessionSnapshot {
     pub data_status_state: UiDataStatusState,
     pub data_status_page_state: UiDataStatusPageState,
     pub settings_page_state: UiSettingsPageState,
+    pub cloud_page_state: UiCloudPageState,
     pub home_page_state: UiHomePageState,
     pub display_policy: Option<UiDisplayPolicy>,
     pub disclaimer_state: UiDisclaimerState,
@@ -417,6 +429,7 @@ struct UiSession {
     platform_capabilities: PlatformCapabilities,
     settings_preferences: SettingsPreferences,
     settings_storage: Option<SettingsStorageHandle>,
+    cloud: CloudEngine,
     debug_state: UiDebugState,
     resource_policy: CoreResourcePolicy,
     installed_package_ids: BTreeSet<String>,
@@ -927,6 +940,14 @@ fn clear_data_status_record(session: &mut UiSession, id: &str) -> bool {
         sync_data_status_projection(session);
     }
     changed
+}
+
+fn sync_cloud_status_record(session: &mut UiSession) {
+    if let Some(record) = session.cloud.status_record() {
+        upsert_data_status_record(session, record);
+    } else {
+        clear_data_status_record(session, CLOUD_STATUS_ID);
+    }
 }
 
 fn enqueue_session_resource_effect(
@@ -2221,12 +2242,71 @@ fn project_data_status_page_state(session: &UiSession) -> UiDataStatusPageState 
                 }),
         ),
     ];
+    if session.platform_capabilities.cloud.is_some() {
+        rows.insert(3, cloud_status_page_row(session));
+    }
     rows.extend(package_warning_status_page_rows(session));
     UiDataStatusPageState {
         title: "Status".to_string(),
         summary: data_status_page_summary(&rows),
         rows,
     }
+}
+
+fn cloud_status_page_row(session: &UiSession) -> UiDataStatusPageRow {
+    let page = session.cloud.page_state();
+    let linked = page.account_label == "LINKED";
+    let (severity, detail) = match session.cloud.credential_state() {
+        CloudCredentialState::Ready { .. } => (
+            UiStatusSeverity::Ok,
+            if linked {
+                "Cloud synchronization is connected."
+            } else {
+                "Google Drive is connected; no cloud account is linked."
+            },
+        ),
+        CloudCredentialState::Connecting => (
+            UiStatusSeverity::Info,
+            "Cloud provider authorization is in progress.",
+        ),
+        CloudCredentialState::TransientFailure { .. } => (
+            UiStatusSeverity::Info,
+            "Cloud synchronization is temporarily unavailable and will retry automatically.",
+        ),
+        CloudCredentialState::NeedsUserAction { .. }
+        | CloudCredentialState::Failed { .. }
+        | CloudCredentialState::Disconnected
+            if linked =>
+        {
+            (
+                UiStatusSeverity::Caution,
+                "Cloud synchronization requires user attention.",
+            )
+        }
+        CloudCredentialState::NeedsUserAction { .. }
+        | CloudCredentialState::Failed { .. }
+        | CloudCredentialState::Disconnected => (
+            UiStatusSeverity::Info,
+            "No cloud provider connection is configured.",
+        ),
+    };
+    let mut facts = vec![
+        status_fact("Provider", page.provider_label),
+        status_fact("Account", page.account_label),
+    ];
+    facts.extend(
+        page.facts
+            .into_iter()
+            .map(|fact| status_fact(fact.label, fact.value)),
+    );
+    status_page_row(
+        "cloud:status",
+        "Cloud",
+        page.connection_label,
+        severity,
+        session.cloud.credential_state().detail().unwrap_or(detail),
+        facts,
+    )
 }
 
 fn package_warning_status_page_rows(session: &UiSession) -> Vec<UiDataStatusPageRow> {
@@ -3518,6 +3598,8 @@ fn create_ui_session_inner(
     let data_status_page_state = default_data_status_page_state();
     let settings_page_state = default_settings_page_state();
     let settings_preferences = SettingsPreferences::default();
+    let cloud = CloudEngine::new(CloudPersistentState::default());
+    let cloud_page_state = cloud.page_state();
     let platform_capabilities = PlatformCapabilities::default();
     let home_page_state = project_home_page_state(&platform_capabilities);
     let snapshot = UiSessionSnapshot {
@@ -3537,6 +3619,7 @@ fn create_ui_session_inner(
         data_status_state: data_status_state.clone(),
         data_status_page_state,
         settings_page_state,
+        cloud_page_state,
         home_page_state,
         display_policy: None,
         disclaimer_state: project_disclaimer_state(&settings_preferences),
@@ -3571,6 +3654,7 @@ fn create_ui_session_inner(
             platform_capabilities,
             settings_preferences,
             settings_storage: None,
+            cloud,
             debug_state,
             resource_policy: CoreResourcePolicy::InstalledPackage,
             installed_package_ids: BTreeSet::new(),
@@ -3846,8 +3930,142 @@ pub fn configure_platform_capabilities_in_session(
     let session = session_mut(&mut sessions, handle)?;
     session.platform_capabilities = capabilities;
     session.settings_storage = settings_storage;
-    load_settings_preferences_from_storage(session)?;
+    load_session_persistence_from_storage(session)?;
     changed_session_snapshot_outcome(session)
+}
+
+pub fn report_cloud_credential_state_in_session(
+    handle: u32,
+    state: CloudCredentialState,
+) -> AppResult<HadOperationOutcome> {
+    let mut sessions = lock_sessions();
+    let session = session_mut(&mut sessions, handle)?;
+    if session.platform_capabilities.cloud.is_none() {
+        return Err(AppError {
+            kind: AppErrorKind::InvalidCatalog,
+            message: "this platform did not advertise cloud-provider support".to_string(),
+        });
+    }
+    let mut candidate = session.clone();
+    candidate.cloud.set_credential_state(state);
+    commit_cloud_candidate(session, candidate, vec![UiInvalidation::SessionSnapshot])
+}
+
+pub fn perform_cloud_action_in_session(
+    handle: u32,
+    action: CloudAction,
+) -> AppResult<HadOperationOutcome> {
+    let mut sessions = lock_sessions();
+    let session = session_mut(&mut sessions, handle)?;
+    if session.platform_capabilities.cloud.is_none() {
+        return Err(AppError {
+            kind: AppErrorKind::InvalidCatalog,
+            message: "this platform did not advertise cloud-provider support".to_string(),
+        });
+    }
+    let mut candidate = session.clone();
+    let plan = candidate
+        .app_state
+        .active_plan
+        .clone()
+        .ok_or_else(|| missing_active_plan_error("cloud action"))?;
+    candidate.cloud.perform_action(action, &plan)?;
+    commit_cloud_candidate(session, candidate, vec![UiInvalidation::SessionSnapshot])
+}
+
+pub fn take_cloud_provider_request_in_session(
+    handle: u32,
+    now_epoch_ms: i64,
+) -> AppResult<Option<CloudProviderRequest>> {
+    let mut sessions = lock_sessions();
+    let session = session_mut(&mut sessions, handle)?;
+    if session.platform_capabilities.cloud.is_none() {
+        return Ok(None);
+    }
+    let request = session.cloud.take_provider_request(now_epoch_ms)?;
+    if request.is_some() {
+        write_session_persistence_to_storage(session)?;
+    }
+    Ok(request)
+}
+
+pub fn complete_cloud_provider_request_in_session(
+    handle: u32,
+    request_id: u64,
+    response: CloudProviderResponse,
+    now_epoch_ms: i64,
+) -> AppResult<HadOperationOutcome> {
+    let mut sessions = lock_sessions();
+    let session = session_mut(&mut sessions, handle)?;
+    let mut candidate = session.clone();
+    let completion =
+        candidate
+            .cloud
+            .complete_provider_request(request_id, response, now_epoch_ms)?;
+    let mut invalidations = vec![UiInvalidation::SessionSnapshot];
+    if let Some(remote_plan) = completion.remote_flight_plan {
+        let navigation_active = candidate
+            .app_state
+            .active_plan
+            .as_ref()
+            .is_some_and(|plan| plan.guidance.is_some());
+        if navigation_active {
+            candidate.cloud.set_pending_remote_flight_plan(remote_plan);
+        } else {
+            replace_session_flight_plan(&mut candidate, remote_plan)?;
+            match sync_guidance_geometry_for_session(
+                &mut candidate,
+                &crate::CoreDebugTimer::start(),
+            ) {
+                Ok(()) => {}
+                Err(HadReadError::NeedPages(pages)) => {
+                    return Ok(HadOperationOutcome::NeedResources {
+                        resources: nav_kv_page_resources(pages),
+                    });
+                }
+                Err(HadReadError::Fatal(message)) => {
+                    return Err(AppError {
+                        kind: AppErrorKind::InvalidFlightPlan,
+                        message,
+                    });
+                }
+            }
+            invalidations.extend([UiInvalidation::FlightPlanRoute, UiInvalidation::MapOverlay]);
+        }
+    }
+    commit_cloud_candidate(session, candidate, invalidations)
+}
+
+fn commit_cloud_candidate(
+    session: &mut UiSession,
+    mut candidate: UiSession,
+    invalidations: Vec<UiInvalidation>,
+) -> AppResult<HadOperationOutcome> {
+    advance_session_revision(&mut candidate);
+    let snapshot = match try_snapshot_for_session(&mut candidate) {
+        Ok(snapshot) => snapshot,
+        Err(HadReadError::NeedPages(pages)) => {
+            return Ok(HadOperationOutcome::NeedResources {
+                resources: nav_kv_page_resources(pages),
+            });
+        }
+        Err(HadReadError::Fatal(message)) => {
+            return Err(AppError {
+                kind: AppErrorKind::InvalidFlightPlan,
+                message,
+            });
+        }
+    };
+    write_session_persistence_to_storage(&candidate)?;
+    *session = candidate;
+    let snapshot = serde_json::to_value(snapshot).map_err(|err| AppError {
+        kind: AppErrorKind::Internal,
+        message: err.to_string(),
+    })?;
+    Ok(HadOperationOutcome::complete_with_invalidations(
+        snapshot,
+        invalidations,
+    ))
 }
 
 pub fn perform_settings_action_in_session(
@@ -3865,7 +4083,7 @@ pub fn perform_settings_action_in_session(
                 invalid_settings_action_value(&action.action_id, &action.value_id)
             })?;
             session.settings_preferences.display_dim_timeout = timeout;
-            write_settings_preferences_to_storage(session)?;
+            write_session_persistence_to_storage(session)?;
         }
         FLIGHT_DATA_VISIBILITY_ACTION_ID => {
             if !crate::flight_data::is_flight_data_banner_cell_id(&action.value_id) {
@@ -3884,7 +4102,7 @@ pub fn perform_settings_action_in_session(
                     .disabled_flight_data_cell_ids
                     .insert(action.value_id);
             }
-            write_settings_preferences_to_storage(session)?;
+            write_session_persistence_to_storage(session)?;
         }
         _ => return Err(invalid_settings_action(&action.action_id)),
     }
@@ -3907,7 +4125,7 @@ pub fn accept_disclaimer_in_session(
         .settings_preferences
         .accepted_disclaimer_agreement_ids
         .insert(agreement_id.to_string());
-    write_settings_preferences_to_storage(session)?;
+    write_session_persistence_to_storage(session)?;
     changed_session_snapshot_outcome(session)
 }
 
@@ -10417,11 +10635,18 @@ fn commit_session_flight_plan_with_invalidations_outcome(
     let started = crate::CoreDebugTimer::start();
     let mut candidate = session.clone();
     replace_session_flight_plan(&mut candidate, plan)?;
+    let accepted_plan = candidate
+        .app_state
+        .active_plan
+        .as_ref()
+        .ok_or_else(|| missing_active_plan_error("cloud flight-plan publication"))?;
+    candidate.cloud.record_local_flight_plan(accepted_plan);
     match sync_guidance_geometry_for_session(&mut candidate, &started) {
         Ok(()) => {
             advance_session_revision(&mut candidate);
             match try_snapshot_for_session(&mut candidate) {
                 Ok(snapshot) => {
+                    write_session_persistence_to_storage(&candidate)?;
                     *session = candidate;
                     let snapshot = serde_json::to_value(snapshot).map_err(|err| AppError {
                         kind: AppErrorKind::Internal,
@@ -10544,6 +10769,7 @@ fn session_snapshot_outcome_with_invalidations(
 
 fn try_snapshot_for_session(session: &mut UiSession) -> Result<UiSessionSnapshot, HadReadError> {
     let total_started_at = crate::core_clock_ms();
+    sync_cloud_status_record(session);
     if session.metar_payload.is_some() || session.taf_payload.is_some() {
         ensure_weather_station_airport_aliases_loaded(session)?;
     }
@@ -10572,6 +10798,7 @@ fn try_snapshot_for_session(session: &mut UiSession) -> Result<UiSessionSnapshot
     let data_status_page_state = project_data_status_page_state(session);
     let settings_page_state =
         project_settings_page_state(session, &app_ui_state.flight_data_banner);
+    let cloud_page_state = session.cloud.page_state();
     let home_page_state = project_home_page_state(&session.platform_capabilities);
     app_ui_state.flight_data_banner.cells.retain(|cell| {
         !session
@@ -10621,6 +10848,7 @@ fn try_snapshot_for_session(session: &mut UiSession) -> Result<UiSessionSnapshot
         data_status_state,
         data_status_page_state,
         settings_page_state,
+        cloud_page_state,
         home_page_state,
         display_policy,
         disclaimer_state: project_disclaimer_state(&session.settings_preferences),
@@ -10773,25 +11001,29 @@ fn project_home_page_state(capabilities: &PlatformCapabilities) -> UiHomePageSta
         enabled: true,
         disabled_reason: None,
     };
-    UiHomePageState {
-        buttons: vec![
-            button("chart", "CHART"),
-            button("plate", "PLATE"),
-            button("flight-plan", "FLIGHT\nPLAN"),
-            button("data-status", "STATUS"),
-            button("settings", "SETTINGS"),
-            UiHomePageButton {
-                id: "offline-packages".to_string(),
-                label: "OFFLINE\nPACKAGES".to_string(),
-                enabled: offline_packages_enabled,
-                disabled_reason: (!offline_packages_enabled).then(|| {
-                    "This client fetches data as needed and does not support managing Offline Packages."
-                        .to_string()
-                }),
-            },
-            button("about", "ABOUT"),
-        ],
+    let mut buttons = vec![
+        button("chart", "CHART"),
+        button("plate", "PLATE"),
+        button("flight-plan", "FLIGHT\nPLAN"),
+        button("data-status", "STATUS"),
+        button("settings", "SETTINGS"),
+    ];
+    if capabilities.cloud.is_some() {
+        buttons.push(button("cloud", "CLOUD"));
     }
+    buttons.extend([
+        UiHomePageButton {
+            id: "offline-packages".to_string(),
+            label: "OFFLINE\nPACKAGES".to_string(),
+            enabled: offline_packages_enabled,
+            disabled_reason: (!offline_packages_enabled).then(|| {
+                "This client fetches data as needed and does not support managing Offline Packages."
+                    .to_string()
+            }),
+        },
+        button("about", "ABOUT"),
+    ]);
+    UiHomePageState { buttons }
 }
 
 fn project_settings_page_state(
@@ -10885,40 +11117,53 @@ fn no_warranty_disclaimer_text() -> String {
     stripped.split_whitespace().collect::<Vec<_>>().join(" ")
 }
 
-fn load_settings_preferences_from_storage(session: &mut UiSession) -> AppResult<()> {
+fn load_session_persistence_from_storage(session: &mut UiSession) -> AppResult<()> {
     let Some(storage) = session.settings_storage.as_ref() else {
         return Ok(());
     };
     let Some(bytes) = storage.read_settings()? else {
         return Ok(());
     };
-    session.settings_preferences = decode_settings_preferences(&bytes);
+    let document = decode_session_persistence(&bytes);
+    session.settings_preferences = document.preferences;
+    session.cloud = CloudEngine::new(document.cloud);
+    if let Some(plan) = session.cloud.cached_flight_plan().cloned() {
+        replace_session_flight_plan(session, plan)?;
+    }
     Ok(())
 }
 
-fn write_settings_preferences_to_storage(session: &UiSession) -> AppResult<()> {
+fn write_session_persistence_to_storage(session: &UiSession) -> AppResult<()> {
     let Some(storage) = session.settings_storage.as_ref() else {
         return Ok(());
     };
-    let bytes = encode_settings_preferences(&session.settings_preferences)?;
+    let bytes = encode_session_persistence(session)?;
     storage.write_settings(&bytes)
 }
 
-fn decode_settings_preferences(bytes: &[u8]) -> SettingsPreferences {
+fn decode_session_persistence(bytes: &[u8]) -> SettingsPersistenceDocument {
     if bytes.is_empty() {
-        return SettingsPreferences::default();
+        return default_session_persistence();
     }
     serde_json::from_slice::<SettingsPersistenceDocument>(bytes)
         .ok()
         .filter(|document| document.version == SETTINGS_PERSISTENCE_VERSION)
-        .map(|document| document.preferences)
-        .unwrap_or_default()
+        .unwrap_or_else(default_session_persistence)
 }
 
-fn encode_settings_preferences(preferences: &SettingsPreferences) -> AppResult<Vec<u8>> {
+fn default_session_persistence() -> SettingsPersistenceDocument {
+    SettingsPersistenceDocument {
+        version: SETTINGS_PERSISTENCE_VERSION,
+        preferences: SettingsPreferences::default(),
+        cloud: CloudPersistentState::default(),
+    }
+}
+
+fn encode_session_persistence(session: &UiSession) -> AppResult<Vec<u8>> {
     serde_json::to_vec(&SettingsPersistenceDocument {
         version: SETTINGS_PERSISTENCE_VERSION,
-        preferences: preferences.clone(),
+        preferences: session.settings_preferences.clone(),
+        cloud: session.cloud.persistent().clone(),
     })
     .map_err(|err| AppError {
         kind: AppErrorKind::Internal,
@@ -15980,6 +16225,7 @@ mod tests {
             platform_capabilities: PlatformCapabilities::default(),
             settings_preferences: SettingsPreferences::default(),
             settings_storage: None,
+            cloud: CloudEngine::new(CloudPersistentState::default()),
             debug_state: default_debug_state(),
             resource_policy: CoreResourcePolicy::InstalledPackage,
             installed_package_ids: BTreeSet::new(),
@@ -16181,6 +16427,7 @@ mod tests {
             platform_capabilities: PlatformCapabilities::default(),
             settings_preferences: SettingsPreferences::default(),
             settings_storage: None,
+            cloud: CloudEngine::new(CloudPersistentState::default()),
             debug_state: default_debug_state(),
             resource_policy: CoreResourcePolicy::InstalledPackage,
             installed_package_ids: BTreeSet::new(),
@@ -16657,6 +16904,7 @@ mod tests {
             platform_capabilities: PlatformCapabilities::default(),
             settings_preferences: SettingsPreferences::default(),
             settings_storage: None,
+            cloud: CloudEngine::new(CloudPersistentState::default()),
             debug_state: default_debug_state(),
             resource_policy: CoreResourcePolicy::InstalledPackage,
             installed_package_ids: BTreeSet::new(),
@@ -24623,5 +24871,178 @@ mod tests {
             .expect("selected level");
 
         assert_eq!(selected.res, 0);
+    }
+
+    #[test]
+    fn cloud_crossfill_adopts_one_coherent_flight_plan_snapshot() {
+        use crate::cloud::CloudProviderOperation;
+
+        #[derive(Default)]
+        struct Provider {
+            next_id: u64,
+            objects: BTreeMap<String, String>,
+        }
+
+        impl Provider {
+            fn execute(&mut self, request: &CloudProviderRequest) -> CloudProviderResponse {
+                match &request.operation {
+                    CloudProviderOperation::AllocateIds { count } => {
+                        let ids = (0..*count)
+                            .map(|_| {
+                                self.next_id += 1;
+                                format!("session-cloud-object-{}", self.next_id)
+                            })
+                            .collect();
+                        CloudProviderResponse::AllocatedIds { ids }
+                    }
+                    CloudProviderOperation::Read { id } => CloudProviderResponse::Read {
+                        bytes_base64: self.objects.get(id).cloned(),
+                    },
+                    CloudProviderOperation::CreateOnce {
+                        id, bytes_base64, ..
+                    } => {
+                        if self.objects.contains_key(id) {
+                            CloudProviderResponse::AlreadyExists
+                        } else {
+                            self.objects.insert(id.clone(), bytes_base64.clone());
+                            CloudProviderResponse::Created
+                        }
+                    }
+                    CloudProviderOperation::Delete { .. } | CloudProviderOperation::List { .. } => {
+                        panic!("session cloud synchronization does not issue maintenance effects")
+                    }
+                }
+            }
+        }
+
+        fn configure_cloud(handle: u32, storage: Option<SettingsStorageHandle>) {
+            configure_platform_capabilities_in_session(
+                handle,
+                PlatformCapabilities {
+                    cloud: Some(PlatformCloudCapability::default()),
+                    ..PlatformCapabilities::default()
+                },
+                storage,
+            )
+            .expect("configure cloud capability");
+            report_cloud_credential_state_in_session(
+                handle,
+                CloudCredentialState::Ready {
+                    expires_at_epoch_ms: None,
+                },
+            )
+            .expect("connect cloud provider");
+        }
+
+        fn pump_cloud(handle: u32, provider: &mut Provider, now_epoch_ms: i64) -> usize {
+            let mut route_invalidations = 0;
+            for _ in 0..64 {
+                let Some(request) = take_cloud_provider_request_in_session(handle, now_epoch_ms)
+                    .expect("take cloud effect")
+                else {
+                    return route_invalidations;
+                };
+                let response = provider.execute(&request);
+                let outcome = complete_cloud_provider_request_in_session(
+                    handle,
+                    request.request_id,
+                    response,
+                    now_epoch_ms,
+                )
+                .expect("complete cloud effect");
+                let HadOperationOutcome::Complete { invalidations, .. } = outcome else {
+                    panic!("cloud effect unexpectedly faulted on a resource")
+                };
+                route_invalidations += invalidations
+                    .iter()
+                    .filter(|item| **item == UiInvalidation::FlightPlanRoute)
+                    .count();
+            }
+            panic!("cloud session pump did not quiesce")
+        }
+
+        let mut provider = Provider::default();
+        let storage: SettingsStorageHandle = Arc::new(MemorySettingsStorage::default());
+        let mut original_plan = lat_lon_preview_plan();
+        original_plan.guidance = None;
+        let first =
+            create_ui_session(original_plan.clone(), &[], None, None).expect("first session");
+        configure_cloud(first.handle, Some(storage.clone()));
+        perform_cloud_action_in_session(first.handle, CloudAction::CreateAccount)
+            .expect("create cloud account");
+        assert_eq!(pump_cloud(first.handle, &mut provider, 10_000), 0);
+        perform_cloud_action_in_session(first.handle, CloudAction::RevealPairingToken)
+            .expect("reveal pairing token");
+        let token = get_session_snapshot(first.handle)
+            .expect("first snapshot")
+            .cloud_page_state
+            .pairing_token
+            .expect("pairing token");
+        destroy_session(first.handle);
+
+        let restarted =
+            create_ui_session(FlightPlan::empty(), &[], None, None).expect("restarted session");
+        configure_platform_capabilities_in_session(
+            restarted.handle,
+            PlatformCapabilities {
+                cloud: Some(PlatformCloudCapability::default()),
+                ..PlatformCapabilities::default()
+            },
+            Some(storage),
+        )
+        .expect("restore persisted cloud account");
+        let restored = get_session_snapshot(restarted.handle).expect("restored snapshot");
+        assert_eq!(
+            restored.app_state.active_plan.as_ref(),
+            Some(&original_plan)
+        );
+        assert_eq!(restored.cloud_page_state.account_label, "LINKED");
+        assert!(restored.data_status_state.boxes.iter().any(|box_state| {
+            box_state.id == CLOUD_STATUS_ID
+                && box_state.drives_caution
+                && box_state.severity == UiStatusSeverity::Caution
+        }));
+        report_cloud_credential_state_in_session(
+            restarted.handle,
+            CloudCredentialState::Ready {
+                expires_at_epoch_ms: None,
+            },
+        )
+        .expect("reconnect restarted cloud provider");
+
+        let second =
+            create_ui_session(FlightPlan::empty(), &[], None, None).expect("second session");
+        configure_cloud(second.handle, None);
+        perform_cloud_action_in_session(
+            second.handle,
+            CloudAction::LinkExisting {
+                pairing_token: token,
+            },
+        )
+        .expect("link second session");
+        assert_eq!(pump_cloud(second.handle, &mut provider, 20_000), 1);
+
+        let mut edited_plan = short_lat_lon_preview_plan();
+        edited_plan.guidance = None;
+        replace_flight_plan_in_session(restarted.handle, edited_plan.clone())
+            .expect("edit first flight plan");
+        assert_eq!(pump_cloud(restarted.handle, &mut provider, 30_000), 0);
+        perform_cloud_action_in_session(second.handle, CloudAction::SyncNow)
+            .expect("poll from second session");
+        assert_eq!(pump_cloud(second.handle, &mut provider, 30_001), 1);
+
+        let adopted = get_session_snapshot(second.handle).expect("adopted snapshot");
+        assert_eq!(adopted.app_state.active_plan.as_ref(), Some(&edited_plan));
+        assert_eq!(
+            adopted
+                .app_ui_state
+                .active_plan
+                .as_ref()
+                .map(|plan| plan.plan_id.as_str()),
+            Some(edited_plan.id.as_str())
+        );
+
+        destroy_session(restarted.handle);
+        destroy_session(second.handle);
     }
 }

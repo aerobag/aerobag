@@ -23,6 +23,7 @@
     "inner:ci": "npm run generate:symbols && npm run generate:wire && npm run prepare:dev-assets && npm run build:wasm && node ./scripts/wasm-startup-smoke.mjs && tsc --noEmit && vite build && vitest run --reporter=default --reporter=junit --outputFile.junit=${AEROBAG_JUNIT_PATH:-vitest-junit.xml}",
     "inner:e2e:android-chrome-livefeed": "node ${AEROBAG_REPO_ROOT:-../..}/tools/e2e/run-android-chrome-livefeed-e2e.mjs",
     "inner:e2e:browser-platform": "node ./scripts/browser-platform-smoke.mjs",
+    "inner:e2e:cloud-page": "node ./scripts/cloud-page-smoke.mjs",
     "inner:e2e:disclaimer-persistence": "node ./scripts/disclaimer-persistence-e2e.mjs",
     "inner:e2e:nav-db-rollover": "npm run generate:symbols && npm run generate:wire && npm run build:wasm && node ./scripts/nav-db-rollover-e2e.mjs",
     "perf:startup-network": "node ./scripts/startup-network-perf.mjs",
@@ -37,6 +38,7 @@
     "ci": "./scripts/run-target-workspace.sh inner:ci",
     "e2e:android-chrome-livefeed": "./scripts/run-target-workspace.sh inner:e2e:android-chrome-livefeed",
     "e2e:browser-platform": "./scripts/run-target-workspace.sh inner:e2e:browser-platform",
+    "e2e:cloud-page": "./scripts/run-target-workspace.sh inner:e2e:cloud-page",
     "e2e:disclaimer-persistence": "./scripts/run-target-workspace.sh inner:e2e:disclaimer-persistence",
     "e2e:nav-db-rollover": "./scripts/run-target-workspace.sh inner:e2e:nav-db-rollover"
   },

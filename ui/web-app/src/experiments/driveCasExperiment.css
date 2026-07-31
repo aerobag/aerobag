@@ -1,0 +1,399 @@
+/* SPDX-FileCopyrightText: 2026 Aerobag contributors */
+/* SPDX-License-Identifier: AGPL-3.0-or-later */
+
+.driveCasLab {
+  --lab-shadow: 0 18px 45px rgba(10, 26, 38, 0.16);
+  box-sizing: border-box;
+  min-height: 100vh;
+  padding: clamp(24px, 5vw, 72px);
+  overflow: auto;
+  color: var(--lab-ink);
+  background:
+    linear-gradient(125deg, rgba(255, 255, 255, 0.74), rgba(255, 255, 255, 0.12)),
+    repeating-linear-gradient(90deg, rgba(35, 79, 119, 0.07) 0 1px, transparent 1px 72px),
+    #dce7ed;
+  font-family: "IBM Plex Sans", "Avenir Next", "Segoe UI", sans-serif;
+}
+
+.driveCasLab *,
+.driveCasLab *::before,
+.driveCasLab *::after {
+  box-sizing: border-box;
+}
+
+.driveCasLab code,
+.driveCasLab pre,
+.driveCasFileId {
+  font-family: "JetBrains Mono", "SFMono-Regular", "Consolas", monospace;
+}
+
+.driveCasHero {
+  display: flex;
+  max-width: 1200px;
+  margin: 0 auto 24px;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 32px;
+}
+
+.driveCasHero h1 {
+  max-width: 800px;
+  margin: 4px 0 10px;
+  font-family: "Avenir Next Condensed", "IBM Plex Sans Condensed", sans-serif;
+  font-size: clamp(42px, 7vw, 86px);
+  font-weight: 800;
+  line-height: 0.92;
+  letter-spacing: -0.045em;
+}
+
+.driveCasHero p:not(.driveCasEyebrow) {
+  max-width: 760px;
+  margin: 0;
+  font-size: clamp(17px, 2vw, 23px);
+  line-height: 1.45;
+}
+
+.driveCasHero > a {
+  flex: none;
+  padding: 12px 16px;
+  border: 2px solid var(--lab-blue);
+  color: var(--lab-blue);
+  font-weight: 800;
+  text-decoration: none;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  background: rgba(255, 255, 255, 0.62);
+}
+
+.driveCasEyebrow {
+  margin: 0;
+  color: var(--lab-blue);
+  font-size: 13px;
+  font-weight: 900;
+  letter-spacing: 0.18em;
+}
+
+.driveCasWarning {
+  display: grid;
+  grid-template-columns: minmax(170px, 0.35fr) 1fr;
+  max-width: 1200px;
+  margin: 0 auto 22px;
+  padding: 16px 20px;
+  border: 2px solid var(--lab-warn);
+  background: var(--lab-warn-bg);
+  box-shadow: 5px 5px 0 var(--lab-warn);
+  font-size: 16px;
+  line-height: 1.45;
+}
+
+.driveCasWarning strong {
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+}
+
+.driveCasColumns {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  max-width: 1200px;
+  margin: 0 auto;
+  gap: 20px;
+}
+
+.driveCasCard,
+.driveCasResults,
+.driveCasObservations {
+  border: 1px solid var(--lab-border);
+  background: color-mix(in srgb, var(--lab-paper) 95%, transparent);
+  box-shadow: var(--lab-shadow);
+}
+
+.driveCasCard {
+  padding: 22px;
+}
+
+.driveCasCard > header,
+.driveCasResults > header,
+.driveCasModeResult > header {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.driveCasCard > header {
+  justify-content: flex-start;
+  margin-bottom: 18px;
+}
+
+.driveCasCard > header > span {
+  display: grid;
+  width: 34px;
+  height: 34px;
+  place-items: center;
+  border-radius: 50%;
+  color: var(--lab-button-fg);
+  background: var(--lab-blue);
+  font-weight: 900;
+}
+
+.driveCasLab h2,
+.driveCasLab h3 {
+  margin: 0;
+  font-weight: 900;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+.driveCasLab label {
+  display: grid;
+  gap: 7px;
+  color: var(--lab-muted);
+  font-size: 13px;
+  font-weight: 900;
+  letter-spacing: 0.07em;
+  text-transform: uppercase;
+}
+
+.driveCasLab input {
+  width: 100%;
+  min-height: 46px;
+  padding: 10px 12px;
+  border: 2px solid var(--lab-border);
+  border-radius: 0;
+  color: var(--lab-ink);
+  background: white;
+  font: 600 16px/1.2 "JetBrains Mono", "Consolas", monospace;
+}
+
+.driveCasLab input:focus {
+  outline: 3px solid color-mix(in srgb, var(--lab-blue) 35%, transparent);
+  border-color: var(--lab-blue);
+}
+
+.driveCasHelp {
+  color: var(--lab-muted);
+  line-height: 1.5;
+}
+
+.driveCasActions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 9px;
+  margin-top: 16px;
+}
+
+.driveCasLab button {
+  min-height: 44px;
+  padding: 10px 15px;
+  border: 0;
+  border-radius: 0;
+  color: var(--lab-button-fg);
+  background: var(--lab-blue);
+  font: 900 13px/1.1 "IBM Plex Sans", "Avenir Next", sans-serif;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  cursor: pointer;
+}
+
+.driveCasLab button:hover:not(:disabled) {
+  filter: brightness(1.12);
+}
+
+.driveCasLab button:disabled {
+  cursor: not-allowed;
+  background: var(--lab-disabled);
+  opacity: 0.72;
+}
+
+.driveCasLab button.isQuiet {
+  color: var(--lab-ink);
+  background: var(--lab-quiet-bg);
+  box-shadow: inset 0 0 0 2px var(--lab-quiet);
+}
+
+.driveCasLab button.isDanger {
+  color: var(--lab-ink);
+  background: var(--lab-warn-bg);
+  box-shadow: inset 0 0 0 2px var(--lab-warn);
+}
+
+.driveCasStatus,
+.driveCasProgress,
+.driveCasError {
+  margin-top: 16px;
+  padding: 11px 13px;
+  border-left: 5px solid var(--lab-quiet);
+  background: var(--lab-quiet-bg);
+  font-weight: 700;
+}
+
+.driveCasStatus.isGood,
+.driveCasResults > header.isGood {
+  border-color: #287a52;
+  background: #d8f1e4;
+}
+
+.driveCasError {
+  border-color: var(--lab-warn);
+  background: var(--lab-warn-bg);
+}
+
+.driveCasFileId {
+  min-height: 52px;
+  margin: 0;
+  padding: 12px;
+  overflow-wrap: anywhere;
+  color: var(--lab-blue);
+  background: color-mix(in srgb, var(--lab-blue) 8%, white);
+}
+
+.driveCasFacts {
+  display: grid;
+  margin: 16px 0 0;
+  gap: 8px;
+}
+
+.driveCasFacts div {
+  display: flex;
+  justify-content: space-between;
+  gap: 20px;
+  border-bottom: 1px solid var(--lab-border);
+}
+
+.driveCasFacts dt {
+  color: var(--lab-muted);
+}
+
+.driveCasFacts dd {
+  margin: 0;
+  font-weight: 800;
+}
+
+.driveCasRunCard {
+  max-width: 1200px;
+  margin: 20px auto;
+}
+
+.driveCasParameters {
+  display: grid;
+  grid-template-columns: minmax(140px, 0.35fr) minmax(140px, 0.35fr) minmax(220px, 1fr);
+  align-items: end;
+  gap: 16px;
+}
+
+.driveCasRunButton {
+  height: 48px;
+  font-size: 15px !important;
+}
+
+.driveCasResults {
+  max-width: 1200px;
+  margin: 20px auto;
+  padding: 22px;
+}
+
+.driveCasResults > header {
+  margin: -22px -22px 20px;
+  padding: 20px 22px;
+  border-bottom: 1px solid var(--lab-border);
+  background: var(--lab-quiet-bg);
+}
+
+.driveCasModeResult {
+  margin-top: 14px;
+  padding: 18px;
+  border: 2px solid var(--lab-quiet);
+}
+
+.driveCasModeResult.is-cas-observed {
+  border-color: #287a52;
+}
+
+.driveCasModeResult.is-unsafe {
+  border-color: var(--lab-warn);
+  background: color-mix(in srgb, var(--lab-warn-bg) 45%, white);
+}
+
+.driveCasModeResult > header > span {
+  font-size: 13px;
+  font-weight: 900;
+  letter-spacing: 0.08em;
+}
+
+.driveCasRaceTable {
+  min-width: 720px;
+  margin: 14px 0;
+  font-family: "JetBrains Mono", "Consolas", monospace;
+  font-size: 13px;
+}
+
+.driveCasModeResult {
+  overflow-x: auto;
+}
+
+.driveCasRaceRow {
+  display: grid;
+  grid-template-columns: 54px 1.5fr 70px 70px 1.25fr 1fr;
+  gap: 10px;
+  padding: 7px 8px;
+  border-bottom: 1px solid var(--lab-border);
+}
+
+.driveCasRaceRow.isHeader {
+  color: var(--lab-button-fg);
+  background: var(--lab-blue);
+  font-weight: 900;
+  text-transform: uppercase;
+}
+
+.driveCasLab details {
+  margin-top: 12px;
+}
+
+.driveCasLab summary {
+  color: var(--lab-blue);
+  font-weight: 900;
+  cursor: pointer;
+}
+
+.driveCasLab pre {
+  max-height: 520px;
+  padding: 14px;
+  overflow: auto;
+  color: #e5f1f8;
+  background: #10232f;
+  font-size: 12px;
+  line-height: 1.45;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+.driveCasObservations {
+  max-width: 1200px;
+  margin: 20px auto 0;
+  padding: 18px 22px;
+}
+
+@media (max-width: 760px) {
+  .driveCasLab {
+    padding: 18px;
+  }
+
+  .driveCasHero,
+  .driveCasWarning {
+    grid-template-columns: 1fr;
+  }
+
+  .driveCasHero {
+    display: grid;
+  }
+
+  .driveCasHero > a {
+    justify-self: start;
+  }
+
+  .driveCasColumns,
+  .driveCasParameters {
+    grid-template-columns: 1fr;
+  }
+}

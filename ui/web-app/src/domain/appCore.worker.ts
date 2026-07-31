@@ -197,12 +197,14 @@ async function callSessionMethod(
   if (method === "setInvalidationListener") {
     throw new Error("session invalidation listener is controlled by the worker proxy");
   }
+  const settingsBefore = workerCoreSettingsJson();
   try {
     const result = await callMethod(session, method, args);
-    if (method === "acceptDisclaimer" || method === "performSettingsAction") {
+    const settingsAfter = workerCoreSettingsJson();
+    if (settingsAfter !== settingsBefore) {
       ctx.postMessage({
         kind: "coreSettingsChanged",
-        settingsJson: workerCoreSettingsJson(),
+        settingsJson: settingsAfter,
       });
     }
     return result;

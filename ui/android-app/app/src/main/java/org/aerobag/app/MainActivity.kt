@@ -6,6 +6,7 @@ package org.aerobag.app
 
 import android.Manifest
 import android.content.Context
+import android.content.Intent
 import android.content.SharedPreferences
 import android.content.pm.PackageManager
 import android.graphics.BitmapFactory
@@ -822,6 +823,8 @@ internal data class OfflinePackagesSyncSummary(
 
 @Serializable
 internal data class OfflinePackagesSyncProgressWire(
+    @SerialName("planned_fetch_artifact_ids")
+    val plannedFetchArtifactIds: Set<String> = emptySet(),
     @SerialName("completed_fetch_artifact_ids")
     val completedFetchArtifactIds: Set<String> = emptySet(),
     @SerialName("active_fetch_bytes_by_artifact_id")
@@ -1952,6 +1955,10 @@ class MainActivity : ComponentActivity() {
             Log.w("AerobagGpsCapture", "failed to configure GPS capture log path", error)
         }
         val retainedModel = ViewModelProvider(this)[AerobagRetainedModel::class.java]
+        if (intent?.getBooleanExtra(OpenOfflinePackagesExtra, false) == true) {
+            retainedModel.page = AppPage.OfflinePackages
+            intent?.removeExtra(OpenOfflinePackagesExtra)
+        }
         val perfScenario = androidPerfScenarioFromIntentValue(
             intent?.getStringExtra(AndroidPerfScenarioExtra),
         )
@@ -1967,6 +1974,16 @@ class MainActivity : ComponentActivity() {
                     AerobagApp(retainedModel, perfScenario)
                 }
             }
+        }
+    }
+
+    override fun onNewIntent(intent: Intent) {
+        super.onNewIntent(intent)
+        setIntent(intent)
+        if (intent.getBooleanExtra(OpenOfflinePackagesExtra, false)) {
+            intent.removeExtra(OpenOfflinePackagesExtra)
+            ViewModelProvider(this)[AerobagRetainedModel::class.java].page = AppPage.OfflinePackages
+            recreate()
         }
     }
 

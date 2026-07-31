@@ -85,11 +85,15 @@ class ChartAssetLoadKeyTest {
                 mainActivity.contains("chartAssetDataRevision = chartAssetDataRevision + 1") &&
                 mainActivity.contains("chartAssetDataRevision = chartAssetDataRevision,"),
         )
+        val awaitingAdoption = homePage.indexOf("DurableOfflinePackageSyncPhase.AwaitingAdoption")
+        val runtimeAdoption = homePage.indexOf("onOfflinePackageArtifactsChanged(", awaitingAdoption)
+        val deferredGc = homePage.indexOf("gcOfflinePackages(", runtimeAdoption)
         assertTrue(
-            "Runtime adoption must happen after fetch and before GC can delete the active package.",
-            homePage.contains("onOfflinePackageArtifactsChanged") &&
-                homePage.contains("beforeGc =") &&
-                homePage.contains("requireNotNull(result.libraryCacheJson)"),
+            "Durable sync must enter AwaitingAdoption, let the runtime adopt replacements, " +
+                "and only then delete superseded packages.",
+            awaitingAdoption >= 0 &&
+                runtimeAdoption > awaitingAdoption &&
+                deferredGc > runtimeAdoption,
         )
     }
 

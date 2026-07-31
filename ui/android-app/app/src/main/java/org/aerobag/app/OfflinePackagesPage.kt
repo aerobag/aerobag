@@ -308,6 +308,8 @@ import kotlinx.serialization.decodeFromString
 import kotlinx.serialization.encodeToString
 import java.io.BufferedOutputStream
 import java.io.File
+import java.io.FileOutputStream
+import java.io.IOException
 import java.nio.ByteBuffer
 import java.net.URL
 import java.security.MessageDigest
@@ -1175,7 +1177,6 @@ internal suspend fun syncOfflinePackages(
         resolvePublicationRootUrl(packageSourceBaseUrl),
     )
     val packagesById = bundle.packages.associateBy { it.id }
-    val installedByFilename = listInstalledPackageArtifacts(context).associateBy { it.filename }
     val warnings = mutableListOf<OfflinePackagesWarning>()
     val totalFetchBytes = plan.fetch.sumOf { artifactId -> packagesById[artifactId]?.sizeBytes ?: 0L }
     val completedFetchArtifactIds = linkedSetOf<String>()
@@ -1233,15 +1234,15 @@ internal suspend fun syncOfflinePackages(
                             progressMutex.withLock {
                                 activeFetchBytesByArtifactId[artifactId] = 0L
                             }
-                            val tempFile = downloadPackageToTempFile(
+                            val tempFile = downloadPackageWithRetries(
                                 context = context,
                                 filename = pkg.filename,
                                 sourceUrl = sourceUrl,
                                 expectedSizeBytes = pkg.sizeBytes,
                                 expectedSha256 = pkg.checksumSha256,
                                 activeConnections = activeConnections,
-                                onBytesRead = { bytesRead ->
-                                    packageDownloadedBytes += bytesRead
+                                onBytesRead = { downloadedBytes ->
+                                    packageDownloadedBytes = downloadedBytes
                                     var shouldReport = false
                                     progressMutex.withLock {
                                         activeFetchBytesByArtifactId[artifactId] = packageDownloadedBytes
@@ -1286,6 +1287,7 @@ internal suspend fun syncOfflinePackages(
                                 "fetch installed $artifactId worker=$workerIndex in ${SystemClock.elapsedRealtime() - fetchStartMs}ms from $sourceUrl"
                             }
                         }.onFailure {
+                            if (it is CancellationException) throw it
                             progressMutex.withLock {
                                 activeFetchBytesByArtifactId.remove(artifactId)
                                 warnings += OfflinePackagesWarning(
@@ -1341,35 +1343,15 @@ internal suspend fun syncOfflinePackages(
     } else {
         emptySet()
     }
-    plan.gc.forEachIndexed { index, filename ->
-        currentCoroutineContext().ensureActive()
-        if (filename in retainedFilenames) {
-            diagnosticLogInfo("OfflinePackages") { "gc retained active artifact $filename" }
-            return@forEachIndexed
-        }
-        runCatching {
-            val gcStartMs = SystemClock.elapsedRealtime()
-            reportProgress("Removing package ${index + 1}/${plan.gc.size}: $filename")
-            val installedArtifact = installedByFilename[filename]
-                ?: error("missing installed metadata for gc filename $filename")
-            val keepFilename = packagesById[installedArtifact.artifactId]?.filename
-                ?.takeIf { plan.fetch.contains(installedArtifact.artifactId) }
-            deleteInstalledArtifact(context, installedArtifact.artifactId, filename, keepFilename)
-            gcCount += 1
-            diagnosticLogInfo("OfflinePackages") {
-                "gc removed $filename in ${SystemClock.elapsedRealtime() - gcStartMs}ms keep=$keepFilename"
-            }
-        }.onFailure {
-            Log.e("OfflinePackages", "gc failed for $filename", it)
-            val installedArtifact = installedByFilename[filename]
-            warnings += OfflinePackagesWarning(
-                artifactId = installedArtifact?.artifactId ?: filename,
-                familyId = installedArtifact?.artifactId?.let { packagesById[it]?.familyId },
-                regionId = installedArtifact?.artifactId?.let { packagesById[it]?.regionId },
-                message = it.message ?: it::class.simpleName ?: "gc failed",
-            )
-        }
-    }
+    val gcResult = gcOfflinePackages(
+        context = context,
+        plan = plan,
+        bundle = bundle,
+        retainedFilenames = retainedFilenames,
+        onProgress = { message -> reportProgress(message) },
+    )
+    gcCount += gcResult.gcCount
+    warnings += gcResult.warnings
     reportProgress("Sync complete: fetched $fetchedCount, GC $gcCount")
     return OfflinePackagesSyncSummary(
         fetchedCount = fetchedCount,
@@ -1381,6 +1363,60 @@ internal suspend fun syncOfflinePackages(
                 "(fetch=${plan.fetch.size}, gc=${plan.gc.size}, warnings=${warnings.size})"
         }
     }
+}
+
+internal data class OfflinePackageGcResult(
+    val gcCount: Int,
+    val warnings: List<OfflinePackagesWarning>,
+)
+
+internal suspend fun gcOfflinePackages(
+    context: Context,
+    plan: PackageManagementPlanWire,
+    bundle: BundleManifestWire,
+    retainedFilenames: Set<String>,
+    onProgress: suspend (String) -> Unit = {},
+): OfflinePackageGcResult {
+    val packagesById = bundle.packages.associateBy { it.id }
+    val installedByFilename = listInstalledPackageArtifacts(context).associateBy { it.filename }
+    val warnings = mutableListOf<OfflinePackagesWarning>()
+    var gcCount = 0
+    plan.gc.forEachIndexed { index, filename ->
+        currentCoroutineContext().ensureActive()
+        if (filename in retainedFilenames) {
+            diagnosticLogInfo("OfflinePackages") { "gc retained active artifact $filename" }
+            return@forEachIndexed
+        }
+        runCatching {
+            val gcStartMs = SystemClock.elapsedRealtime()
+            onProgress("Removing package ${index + 1}/${plan.gc.size}: $filename")
+            val installedArtifact = installedByFilename[filename]
+            if (installedArtifact == null) {
+                diagnosticLogInfo("OfflinePackages") {
+                    "gc artifact already absent after interrupted cleanup: $filename"
+                }
+                return@runCatching
+            }
+            val keepFilename = packagesById[installedArtifact.artifactId]?.filename
+                ?.takeIf { plan.fetch.contains(installedArtifact.artifactId) }
+            deleteInstalledArtifact(context, installedArtifact.artifactId, filename, keepFilename)
+            gcCount += 1
+            diagnosticLogInfo("OfflinePackages") {
+                "gc removed $filename in ${SystemClock.elapsedRealtime() - gcStartMs}ms keep=$keepFilename"
+            }
+        }.onFailure {
+            if (it is CancellationException) throw it
+            Log.e("OfflinePackages", "gc failed for $filename", it)
+            val installedArtifact = installedByFilename[filename]
+            warnings += OfflinePackagesWarning(
+                artifactId = installedArtifact?.artifactId ?: filename,
+                familyId = installedArtifact?.artifactId?.let { packagesById[it]?.familyId },
+                regionId = installedArtifact?.artifactId?.let { packagesById[it]?.regionId },
+                message = it.message ?: it::class.simpleName ?: "gc failed",
+            )
+        }
+    }
+    return OfflinePackageGcResult(gcCount = gcCount, warnings = warnings)
 }
 
 internal fun syncProgressText(
@@ -1398,7 +1434,7 @@ internal fun syncProgressText(
 internal fun formatProgressMegabytes(bytes: Long): String = "${bytes / 1_000_000L}MB"
 
 internal const val PackageHttpConnectTimeoutMs = 5_000
-internal const val PackageHttpReadTimeoutMs = 5_000
+internal const val PackageHttpReadTimeoutMs = 30_000
 
 internal class ActivePackageConnections {
     private val connections = linkedSetOf<HttpURLConnection>()
@@ -1536,6 +1572,16 @@ internal fun openCancellablePackageConnection(sourceUrl: String): HttpURLConnect
         useCaches = false
     }
 
+internal fun openCancellablePackageConnection(
+    sourceUrl: String,
+    resumeOffsetBytes: Long,
+): HttpURLConnection =
+    openCancellablePackageConnection(sourceUrl).apply {
+        if (resumeOffsetBytes > 0L) {
+            setRequestProperty("Range", "bytes=$resumeOffsetBytes-")
+        }
+    }
+
 private fun downloadTimingMs(nanos: Long): Long = nanos / 1_000_000L
 
 internal fun resolvePublicationRootUrl(configuredPackageSourceBaseUrl: String): String {
@@ -1558,6 +1604,55 @@ internal fun resolvePublicationRootUrl(configuredPackageSourceBaseUrl: String): 
     return "https://$configured/$PublicationPackageRootPath"
 }
 
+internal class PackageHttpStatusException(
+    val statusCode: Int,
+    sourceUrl: String,
+) : IOException("HTTP $statusCode fetching $sourceUrl")
+
+internal suspend fun downloadPackageWithRetries(
+    context: Context,
+    filename: String,
+    sourceUrl: String,
+    expectedSizeBytes: Long?,
+    expectedSha256: String?,
+    activeConnections: ActivePackageConnections,
+    onBytesRead: suspend (Long) -> Unit = {},
+): File {
+    var attempt = 1
+    while (true) {
+        try {
+            return downloadPackageToTempFile(
+                context = context,
+                filename = filename,
+                sourceUrl = sourceUrl,
+                expectedSizeBytes = expectedSizeBytes,
+                expectedSha256 = expectedSha256,
+                activeConnections = activeConnections,
+                onBytesRead = onBytesRead,
+            )
+        } catch (error: CancellationException) {
+            throw error
+        } catch (error: Throwable) {
+            if (attempt >= PackageDownloadMaxAttempts || !packageDownloadErrorIsRetryable(error)) {
+                throw error
+            }
+            diagnosticLogInfo("OfflinePackages") {
+                "retrying package download filename=$filename attempt=${attempt + 1}/$PackageDownloadMaxAttempts after ${error::class.simpleName}: ${error.message}"
+            }
+            delay(PackageDownloadRetryBaseDelayMs * attempt)
+            attempt += 1
+        }
+    }
+}
+
+internal fun packageDownloadErrorIsRetryable(error: Throwable): Boolean =
+    when (error) {
+        is PackageHttpStatusException ->
+            error.statusCode == 408 || error.statusCode == 429 || error.statusCode >= 500
+        is IOException -> true
+        else -> false
+    }
+
 internal suspend fun downloadPackageToTempFile(
     context: Context,
     filename: String,
@@ -1570,8 +1665,10 @@ internal suspend fun downloadPackageToTempFile(
     val target = InstalledPackages.internalPackageFile(context, filename)
     target.parentFile?.mkdirs()
     val temp = File(target.parentFile, "${target.name}.download")
-    if (temp.exists()) {
-        temp.delete()
+    var resumeOffsetBytes = temp.length().coerceAtLeast(0L)
+    if (temp.isFile && expectedSizeBytes != null && resumeOffsetBytes >= expectedSizeBytes) {
+        check(temp.delete()) { "failed to discard completed staging file ${temp.absolutePath}" }
+        resumeOffsetBytes = 0L
     }
     val digest = MessageDigest.getInstance("SHA-256")
     var sizeBytes = 0L
@@ -1584,7 +1681,7 @@ internal suspend fun downloadPackageToTempFile(
     var progressNanos = 0L
     var progressCallbacks = 0L
     val downloadStartNanos = SystemClock.elapsedRealtimeNanos()
-    val connection = openCancellablePackageConnection(sourceUrl)
+    val connection = openCancellablePackageConnection(sourceUrl, resumeOffsetBytes)
     activeConnections.add(connection)
     val completionHandle = currentCoroutineContext()[Job]?.invokeOnCompletion { error ->
         if (error is CancellationException) {
@@ -1596,11 +1693,31 @@ internal suspend fun downloadPackageToTempFile(
         val responseStartNanos = SystemClock.elapsedRealtimeNanos()
         responseCode = connection.responseCode
         responseContentLength = connection.contentLengthLong.takeIf { it >= 0L }
+        if (responseCode !in 200..299) {
+            throw PackageHttpStatusException(responseCode, sourceUrl)
+        }
+        val appendToPartial = resumeOffsetBytes > 0L &&
+            responseCode == HttpURLConnection.HTTP_PARTIAL &&
+            contentRangeStartsAt(connection.getHeaderField("Content-Range"), resumeOffsetBytes)
+        if (appendToPartial) {
+            temp.inputStream().buffered().use { input ->
+                val buffer = ByteArray(64 * 1024)
+                while (true) {
+                    val read = input.read(buffer)
+                    if (read < 0) break
+                    digest.update(buffer, 0, read)
+                }
+            }
+            sizeBytes = resumeOffsetBytes
+            onBytesRead(sizeBytes)
+        } else {
+            resumeOffsetBytes = 0L
+        }
         diagnosticLogInfo("OfflinePackages") {
-            "http download start $sourceUrl response=$responseCode contentLength=${responseContentLength ?: "unknown"} setupMs=${downloadTimingMs(SystemClock.elapsedRealtimeNanos() - responseStartNanos)}"
+            "http download start $sourceUrl response=$responseCode contentLength=${responseContentLength ?: "unknown"} resume=$resumeOffsetBytes setupMs=${downloadTimingMs(SystemClock.elapsedRealtimeNanos() - responseStartNanos)}"
         }
         connection.inputStream.buffered().use { input ->
-            BufferedOutputStream(temp.outputStream()).use { output ->
+            BufferedOutputStream(FileOutputStream(temp, appendToPartial)).use { output ->
                 val buffer = ByteArray(64 * 1024)
                 while (true) {
                     currentCoroutineContext().ensureActive()
@@ -1619,7 +1736,7 @@ internal suspend fun downloadPackageToTempFile(
                     digestNanos += SystemClock.elapsedRealtimeNanos() - digestStartNanos
                     sizeBytes += read.toLong()
                     val progressStartNanos = SystemClock.elapsedRealtimeNanos()
-                    onBytesRead(read.toLong())
+                    onBytesRead(sizeBytes)
                     progressNanos += SystemClock.elapsedRealtimeNanos() - progressStartNanos
                     progressCallbacks += 1
                 }
@@ -1634,22 +1751,36 @@ internal suspend fun downloadPackageToTempFile(
         diagnosticLogInfo("OfflinePackages") {
             "http download stats filename=$filename bytes=$sizeBytes complete=$complete totalMs=${downloadTimingMs(SystemClock.elapsedRealtimeNanos() - downloadStartNanos)} readMs=${downloadTimingMs(readNanos)} writeMs=${downloadTimingMs(writeNanos)} digestMs=${downloadTimingMs(digestNanos)} progressMs=${downloadTimingMs(progressNanos)} progressCallbacks=$progressCallbacks response=$responseCode contentLength=${responseContentLength ?: "unknown"} url=$sourceUrl"
         }
-        if (!complete) {
-            temp.delete()
-        }
     }
     expectedSizeBytes?.let { expected ->
-        check(sizeBytes == expected) {
-            "size mismatch for $filename: expected $expected got $sizeBytes"
+        if (sizeBytes != expected) {
+            temp.delete()
+            error("size mismatch for $filename: expected $expected got $sizeBytes")
         }
     }
     expectedSha256?.let { expected ->
         val actual = digest.digest().joinToString("") { "%02x".format(it) }
-        check(actual.equals(expected, ignoreCase = true)) {
-            "checksum mismatch for $filename: expected $expected got $actual"
+        if (!actual.equals(expected, ignoreCase = true)) {
+            temp.delete()
+            error("checksum mismatch for $filename: expected $expected got $actual")
         }
     }
     return temp
+}
+
+internal const val PackageDownloadMaxAttempts = 3
+internal const val PackageDownloadRetryBaseDelayMs = 1_000L
+
+internal fun contentRangeStartsAt(
+    contentRange: String?,
+    expectedOffsetBytes: Long,
+): Boolean {
+    val start = contentRange
+        ?.trim()
+        ?.removePrefix("bytes ")
+        ?.substringBefore('-')
+        ?.toLongOrNull()
+    return start == expectedOffsetBytes
 }
 
 internal fun installDownloadedPackage(

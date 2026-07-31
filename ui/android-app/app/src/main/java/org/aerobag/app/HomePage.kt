@@ -86,6 +86,7 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.CompositionLocalProvider
@@ -563,56 +564,65 @@ internal fun HomePage(
                 }
             }
             is OfflinePackagesControllerCommandWire.Sync -> {
-                val summary = try {
-                    withContext(Dispatchers.IO) {
-                        syncOfflinePackages(
-                            context = context.applicationContext,
-                            plan = command.plan,
-                            bundle = command.bundle,
-                            packageSourceBaseUrl = command.packageSourceBaseUrl,
-                            packagedArtifactRoot = command.packagedArtifactRoot,
-                            maxParallelFetches = command.maxParallelFetches,
-                            activeConnections = activePackageConnections,
-                            beforeGc = {
-                                onOfflinePackageArtifactsChanged(
-                                    requireNotNull(result.libraryCacheJson) {
-                                        "package sync changed installed artifacts without a package library cache"
-                                    },
-                                    command.plan.gc.toSet(),
-                                )
-                            },
-                            onProgress = { message, progress ->
-                                withContext(Dispatchers.Main) {
-                                    if (progress != null) {
-                                        dispatchOfflinePackagesController(
-                                            OfflinePackagesControllerEventWire.SyncProgressObserved(progress),
-                                        )
-                                    }
-                                }
-                            },
-                        )
+                OfflinePackageSyncScheduler.schedule(context.applicationContext, command)
+                    .onFailure { error ->
+                        Log.e("OfflinePackages", "failed to schedule durable package sync", error)
                     }
-                } catch (error: CancellationException) {
-                    OfflinePackagesSyncSummary(
-                        fetchedCount = 0,
-                        gcCount = 0,
-                        warnings = listOf(
-                            OfflinePackagesWarning(
-                                artifactId = "sync",
-                                familyId = null,
-                                regionId = null,
-                                message = "sync canceled",
-                            ),
-                        ),
-                    )
-                }
-                withContext(NonCancellable) {
-                    dispatchOfflinePackagesController(
-                        OfflinePackagesControllerEventWire.SyncFinished(summary = summary),
-                    )
-                }
             }
             null -> Unit
+        }
+    }
+    val durableSyncRecord by OfflinePackageSyncStore
+        .observe(context.applicationContext)
+        .collectAsState()
+    LaunchedEffect(
+        durableSyncRecord?.id,
+        durableSyncRecord?.phase,
+        durableSyncRecord?.updatedAtEpochMs,
+        offlinePackagesControllerHandle,
+    ) {
+        val record = durableSyncRecord ?: return@LaunchedEffect
+        when (record.phase) {
+            DurableOfflinePackageSyncPhase.Queued,
+            DurableOfflinePackageSyncPhase.Running,
+            -> dispatchOfflinePackagesController(
+                OfflinePackagesControllerEventWire.SyncProgressObserved(record.progress),
+            )
+
+            DurableOfflinePackageSyncPhase.AwaitingAdoption -> {
+                val libraryCacheJson = offlinePackagesControllerResult?.libraryCacheJson
+                    ?: readOfflinePackagesLibraryCacheJson(prefs)
+                val retainedFilenames = onOfflinePackageArtifactsChanged(
+                    libraryCacheJson,
+                    record.command.plan.gc.toSet(),
+                )
+                val gcResult = withContext(Dispatchers.IO) {
+                    gcOfflinePackages(
+                        context = context.applicationContext,
+                        plan = record.command.plan,
+                        bundle = record.command.bundle,
+                        retainedFilenames = retainedFilenames,
+                    )
+                }
+                val downloadSummary = requireNotNull(record.summary)
+                OfflinePackageSyncStore.markComplete(
+                    context.applicationContext,
+                    record.id,
+                    downloadSummary.copy(
+                        gcCount = downloadSummary.gcCount + gcResult.gcCount,
+                        warnings = downloadSummary.warnings + gcResult.warnings,
+                    ),
+                )
+            }
+
+            DurableOfflinePackageSyncPhase.Complete -> {
+                offlinePackageCancelRequested = false
+                dispatchOfflinePackagesController(
+                    OfflinePackagesControllerEventWire.SyncFinished(
+                        summary = requireNotNull(record.summary),
+                    ),
+                )
+            }
         }
     }
     LaunchedEffect(offlinePackagesRouted) {
@@ -894,8 +904,7 @@ internal fun HomePage(
                     onCancelOperation = {
                         diagnosticLogInfo("OfflinePackages") { "sync cancel requested" }
                         offlinePackageCancelRequested = true
-                        activePackageConnections.disconnectAll()
-                        offlinePackageOperationJob?.cancel(CancellationException("offline package operation canceled"))
+                        OfflinePackageSyncScheduler.cancel(context.applicationContext)
                     },
                     syncInFlight = controllerUiState.syncInFlight,
                     closeEnabled = false,

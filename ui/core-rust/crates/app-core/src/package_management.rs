@@ -480,6 +480,8 @@ pub struct OfflinePackagesControllerState {
     pub sync_progress: Option<OfflinePackagesSyncProgress>,
     pub library_loading: bool,
     pub library_error_message: Option<String>,
+    #[serde(default)]
+    pub sync_after_library_refresh: bool,
     pub sync_in_flight: bool,
     pub sync_message: Option<String>,
 }
@@ -796,10 +798,15 @@ pub fn reduce_offline_packages_controller(
             });
             state.library_loading = false;
             state.library_error_message = None;
+            if state.sync_after_library_refresh {
+                state.sync_after_library_refresh = false;
+                return start_offline_packages_sync(state, &package_source_base_url, input);
+            }
         }
         OfflinePackagesControllerEvent::LibraryRefreshFailed { message } => {
             state.library_loading = false;
             state.library_error_message = Some(message.clone());
+            state.sync_after_library_refresh = false;
         }
         OfflinePackagesControllerEvent::PackagesEvent { event } => {
             let Some(library_cache) = state.library_cache.as_ref() else {
@@ -846,101 +853,21 @@ pub fn reduce_offline_packages_controller(
             };
         }
         OfflinePackagesControllerEvent::SyncRequested => {
-            if state.library_error_message.is_some() {
-                let forced_gc_installed_filenames =
-                    forced_gc_installed_filenames(&state, &input.installed);
-                let planner_ui_state = replan_controller_ui_state(
-                    &mut state,
-                    &package_source_base_url,
-                    input.now_epoch_ms,
-                    &input.installed,
-                    &forced_gc_installed_filenames,
-                );
-                return OfflinePackagesControllerResult {
-                    ui_state: project_offline_packages_controller_ui_state(
-                        &state,
-                        &package_source_base_url,
-                        planner_ui_state,
-                        input.storage.as_ref(),
-                    ),
-                    state,
-                    command,
-                };
-            }
-            let Some(library_cache) = state.library_cache.as_ref() else {
+            if state.library_cache.is_none() {
                 state.library_error_message =
                     Some("offline packages library is not loaded".to_string());
-                return OfflinePackagesControllerResult {
-                    ui_state: project_offline_packages_controller_ui_state(
-                        &state,
-                        &package_source_base_url,
-                        None,
-                        input.storage.as_ref(),
-                    ),
-                    state,
-                    command,
-                };
-            };
-            let packaged_artifact_root =
-                match packaged_artifact_root(&library_cache.discovery_manifests) {
-                    Some(root) => root,
-                    None => {
-                        state.library_error_message = Some(
-                            "offline packages library has no packaged artifact root".to_string(),
-                        );
-                        return OfflinePackagesControllerResult {
-                            ui_state: project_offline_packages_controller_ui_state(
-                                &state,
-                                &package_source_base_url,
-                                None,
-                                input.storage.as_ref(),
-                            ),
-                            state,
-                            command,
-                        };
-                    }
-                };
-            let current = initialize_offline_packages(&OfflinePackagesInitInput {
-                state: state.packages_state.clone(),
-                now_epoch_ms: input.now_epoch_ms,
-                discovery_manifests: library_cache.discovery_manifests.clone(),
-                bundle_manifests_by_filename: library_cache.bundle_manifests_by_filename.clone(),
-                installed: effective_installed_artifacts(&state, &input.installed),
-                forced_gc_installed_filenames: forced_gc_installed_filenames(
-                    &state,
-                    &input.installed,
-                ),
-                suppressed_fetch_filenames: state
-                    .suppressed_fetch_filename_messages
-                    .keys()
-                    .cloned()
-                    .collect(),
-            });
-            state.packages_state = Some(current.state.clone());
-            state.sync_in_flight = true;
-            state.sync_progress = Some(OfflinePackagesSyncProgress {
-                planned_fetch_artifact_ids: current.plan.fetch.iter().cloned().collect(),
-                ..OfflinePackagesSyncProgress::default()
-            });
-            command = Some(OfflinePackagesControllerCommand::Sync {
-                package_source_base_url: package_source_base_url.clone(),
-                packaged_artifact_root,
-                plan: current.plan,
-                bundle: current.bundle,
-                max_parallel_fetches: OFFLINE_PACKAGES_MAX_PARALLEL_FETCHES,
-            });
-            return OfflinePackagesControllerResult {
-                ui_state: project_offline_packages_controller_ui_state(
-                    &state,
-                    &package_source_base_url,
-                    Some(current.ui_state),
-                    input.storage.as_ref(),
-                ),
-                state,
-                command,
-            };
+            } else {
+                state.sync_after_library_refresh = true;
+                state.library_loading = true;
+                state.library_error_message = None;
+                command = Some(OfflinePackagesControllerCommand::RefreshLibrary {
+                    package_source_base_url: package_source_base_url.clone(),
+                    discovery_filenames: input.discovery_filenames.clone(),
+                });
+            }
         }
         OfflinePackagesControllerEvent::SyncProgressObserved { progress } => {
+            state.sync_in_flight = true;
             let planned_fetch_artifact_ids = progress
                 .planned_fetch_artifact_ids
                 .is_empty()
@@ -959,6 +886,7 @@ pub fn reduce_offline_packages_controller(
             });
         }
         OfflinePackagesControllerEvent::SyncFinished { summary } => {
+            state.sync_after_library_refresh = false;
             state.sync_in_flight = false;
             state.sync_progress = None;
             state.sync_message = format_offline_packages_sync_summary(summary);
@@ -984,6 +912,97 @@ pub fn reduce_offline_packages_controller(
             &state,
             &package_source_base_url,
             planner_ui_state,
+            input.storage.as_ref(),
+        ),
+        state,
+        command,
+    }
+}
+
+fn start_offline_packages_sync(
+    mut state: OfflinePackagesControllerState,
+    package_source_base_url: &str,
+    input: &OfflinePackagesControllerInput,
+) -> OfflinePackagesControllerResult {
+    if state.library_error_message.is_some() {
+        let forced_gc_installed_filenames = forced_gc_installed_filenames(&state, &input.installed);
+        let planner_ui_state = replan_controller_ui_state(
+            &mut state,
+            package_source_base_url,
+            input.now_epoch_ms,
+            &input.installed,
+            &forced_gc_installed_filenames,
+        );
+        return OfflinePackagesControllerResult {
+            ui_state: project_offline_packages_controller_ui_state(
+                &state,
+                package_source_base_url,
+                planner_ui_state,
+                input.storage.as_ref(),
+            ),
+            state,
+            command: None,
+        };
+    }
+    let Some(library_cache) = state.library_cache.as_ref() else {
+        state.library_error_message = Some("offline packages library is not loaded".to_string());
+        return OfflinePackagesControllerResult {
+            ui_state: project_offline_packages_controller_ui_state(
+                &state,
+                package_source_base_url,
+                None,
+                input.storage.as_ref(),
+            ),
+            state,
+            command: None,
+        };
+    };
+    let Some(packaged_artifact_root) = packaged_artifact_root(&library_cache.discovery_manifests)
+    else {
+        state.library_error_message =
+            Some("offline packages library has no packaged artifact root".to_string());
+        return OfflinePackagesControllerResult {
+            ui_state: project_offline_packages_controller_ui_state(
+                &state,
+                package_source_base_url,
+                None,
+                input.storage.as_ref(),
+            ),
+            state,
+            command: None,
+        };
+    };
+    let current = initialize_offline_packages(&OfflinePackagesInitInput {
+        state: state.packages_state.clone(),
+        now_epoch_ms: input.now_epoch_ms,
+        discovery_manifests: library_cache.discovery_manifests.clone(),
+        bundle_manifests_by_filename: library_cache.bundle_manifests_by_filename.clone(),
+        installed: effective_installed_artifacts(&state, &input.installed),
+        forced_gc_installed_filenames: forced_gc_installed_filenames(&state, &input.installed),
+        suppressed_fetch_filenames: state
+            .suppressed_fetch_filename_messages
+            .keys()
+            .cloned()
+            .collect(),
+    });
+    state.packages_state = Some(current.state.clone());
+    state.sync_in_flight = true;
+    state.sync_progress = Some(OfflinePackagesSyncProgress {
+        planned_fetch_artifact_ids: current.plan.fetch.iter().cloned().collect(),
+        ..OfflinePackagesSyncProgress::default()
+    });
+    let command = Some(OfflinePackagesControllerCommand::Sync {
+        package_source_base_url: package_source_base_url.to_string(),
+        packaged_artifact_root,
+        plan: current.plan,
+        bundle: current.bundle,
+        max_parallel_fetches: OFFLINE_PACKAGES_MAX_PARALLEL_FETCHES,
+    });
+    OfflinePackagesControllerResult {
+        ui_state: project_offline_packages_controller_ui_state(
+            &state,
+            package_source_base_url,
+            Some(current.ui_state),
             input.storage.as_ref(),
         ),
         state,
@@ -3299,6 +3318,143 @@ mod tests {
         }
     }
 
+    fn controller_test_catalog(
+        packaged_root: &str,
+    ) -> (CurrentArtifactsManifest, BTreeMap<String, BundleManifest>) {
+        let bundle_filename = "bundle_cycle_2605.json".to_string();
+        let discovery = CurrentArtifactsManifest {
+            schema_version: Some(1),
+            contracts: test_contracts(),
+            artifact_roots: CurrentArtifactsArtifactRoots {
+                packaged: packaged_root.to_string(),
+                unpacked: "unpacked/".to_string(),
+            },
+            as_of_date: Some("2026-05-20".to_string()),
+            as_of_utc: Some("2026-05-20T12:00:00Z".to_string()),
+            bundles: vec![CurrentArtifactsBundleRef {
+                filename: bundle_filename.clone(),
+                relative_path: bundle_filename.clone(),
+                id: "cycle-2605".to_string(),
+                bundle_type: "cycle".to_string(),
+                cycle: Some("2605".to_string()),
+                cycle_version: Some("01".to_string()),
+                start_valid: None,
+                end_valid: None,
+                checksum_sha256: None,
+                size_bytes: None,
+            }],
+            startup_prefetch: None,
+        };
+        let bundles = BTreeMap::from([(
+            bundle_filename,
+            BundleManifest {
+                packages: vec![pkg(
+                    "NAV_DB_2605_01",
+                    "nav-db",
+                    None,
+                    None,
+                    Some("2099-01-01"),
+                )],
+            },
+        )]);
+        (discovery, bundles)
+    }
+
+    #[test]
+    fn explicit_sync_refreshes_catalog_before_emitting_transfer_command() {
+        let (old_discovery, old_bundles) = controller_test_catalog("old-packaged/");
+        let initial_state = OfflinePackagesControllerState {
+            packages_state: Some(OfflinePackagesState {
+                preferences: default_offline_package_preferences(Vec::<String>::new(), ["nav-db"]),
+                now_override_epoch_ms: None,
+            }),
+            library_cache: Some(OfflinePackagesLibraryCache {
+                package_source_base_url: "https://example.test/packages".to_string(),
+                fetched_at_epoch_ms: 1_778_025_600_000,
+                discovery_manifests: vec![old_discovery],
+                bundle_manifests_by_filename: old_bundles,
+            }),
+            ..Default::default()
+        };
+        let requested = reduce_offline_packages_controller(&OfflinePackagesControllerInput {
+            state: Some(initial_state),
+            package_source_base_url: "https://example.test/packages".to_string(),
+            discovery_filenames: vec![],
+            now_epoch_ms: 1_778_025_600_000,
+            installed: vec![],
+            storage: None,
+            event: OfflinePackagesControllerEvent::SyncRequested,
+        });
+
+        assert!(requested.state.sync_after_library_refresh);
+        assert!(matches!(
+            requested.command,
+            Some(OfflinePackagesControllerCommand::RefreshLibrary { .. })
+        ));
+
+        let (fresh_discovery, fresh_bundles) = controller_test_catalog("fresh-packaged/");
+        let refreshed = reduce_offline_packages_controller(&OfflinePackagesControllerInput {
+            state: Some(requested.state),
+            package_source_base_url: "https://example.test/packages".to_string(),
+            discovery_filenames: vec![],
+            now_epoch_ms: 1_778_025_600_000,
+            installed: vec![],
+            storage: None,
+            event: OfflinePackagesControllerEvent::LibraryRefreshSucceeded {
+                fetched_at_epoch_ms: 1_778_025_600_001,
+                discovery_manifests: vec![fresh_discovery],
+                bundle_manifests_by_filename: fresh_bundles,
+            },
+        });
+
+        let Some(OfflinePackagesControllerCommand::Sync {
+            packaged_artifact_root,
+            plan,
+            ..
+        }) = refreshed.command
+        else {
+            panic!("fresh catalog should produce a transfer command");
+        };
+        assert_eq!(packaged_artifact_root, "fresh-packaged/");
+        assert_eq!(plan.fetch, vec!["NAV_DB_2605_01"]);
+        assert!(refreshed.state.sync_in_flight);
+        assert!(!refreshed.state.sync_after_library_refresh);
+    }
+
+    #[test]
+    fn durable_progress_reestablishes_sync_after_controller_recreation() {
+        let result = reduce_offline_packages_controller(&OfflinePackagesControllerInput {
+            state: Some(OfflinePackagesControllerState::default()),
+            package_source_base_url: "https://example.test/packages".to_string(),
+            discovery_filenames: vec![],
+            now_epoch_ms: 1_778_025_600_000,
+            installed: vec![],
+            storage: None,
+            event: OfflinePackagesControllerEvent::SyncProgressObserved {
+                progress: OfflinePackagesSyncProgress {
+                    planned_fetch_artifact_ids: BTreeSet::from(["NW_SEC_2605".to_string()]),
+                    completed_fetch_artifact_ids: BTreeSet::new(),
+                    active_fetch_bytes_by_artifact_id: BTreeMap::from([(
+                        "NW_SEC_2605".to_string(),
+                        1_000,
+                    )]),
+                },
+            },
+        });
+
+        assert!(result.state.sync_in_flight);
+        assert_eq!(
+            result
+                .state
+                .sync_progress
+                .as_ref()
+                .unwrap()
+                .active_fetch_bytes_by_artifact_id
+                .get("NW_SEC_2605"),
+            Some(&1_000)
+        );
+    }
+
     #[test]
     fn current_artifacts_root_requires_list_json() {
         let object_json = serde_json::to_string(&discovery_manifest_with_nav_contract(
@@ -3411,6 +3567,7 @@ mod tests {
                 sync_progress: None,
                 library_loading: false,
                 library_error_message: None,
+                sync_after_library_refresh: false,
                 sync_in_flight: true,
                 sync_message: None,
             }),
@@ -3529,6 +3686,7 @@ mod tests {
                 sync_progress: None,
                 library_loading: true,
                 library_error_message: None,
+                sync_after_library_refresh: false,
                 sync_in_flight: false,
                 sync_message: None,
             }),
@@ -3596,6 +3754,7 @@ mod tests {
                 sync_progress: None,
                 library_loading: true,
                 library_error_message: None,
+                sync_after_library_refresh: false,
                 sync_in_flight: false,
                 sync_message: None,
             }),

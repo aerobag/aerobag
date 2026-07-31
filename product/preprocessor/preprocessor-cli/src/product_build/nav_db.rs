@@ -185,6 +185,7 @@ pub(super) fn build_bundle_manifest(
                     .and_then(|name| name.to_str())
                     .unwrap_or_default(),
                 &package.checksum_sha256,
+                resource_package_chart_tier(package)?,
             )?;
             publish_flat_artifact(&package_path, &config.packaged_dir.join(&filename))?;
             Ok(BundlePackageArtifact {
@@ -1349,6 +1350,7 @@ pub(super) fn bundle_package_artifact_from_resource_package(
         &package.region_id,
         source_filename,
         &package.checksum_sha256,
+        resource_package_chart_tier(package)?,
     )?;
     Ok(BundlePackageArtifact {
         id: package.id.clone(),
@@ -1370,6 +1372,23 @@ pub(super) fn bundle_package_artifact_from_resource_package(
         warning_text: None,
         metadata: package_metadata_with_contract_id(package.metadata.clone(), contract_id),
     })
+}
+
+fn resource_package_chart_tier(
+    package: &preprocessor_resource_index::ResourcePackage,
+) -> anyhow::Result<Option<ChartPackageTier>> {
+    package
+        .metadata
+        .get(CHART_PACKAGE_TIER_METADATA_KEY)
+        .cloned()
+        .map(serde_json::from_value)
+        .transpose()
+        .with_context(|| {
+            format!(
+                "package {} has invalid {CHART_PACKAGE_TIER_METADATA_KEY}",
+                package.id
+            )
+        })
 }
 
 pub(super) fn build_nav_kv_chart_catalog(
@@ -1419,6 +1438,18 @@ pub(super) fn build_nav_kv_chart_catalog(
                     })
                 })
                 .unwrap_or(serde_json::Value::Null);
+            let detail = collection
+                .detail_package_id
+                .as_ref()
+                .map(|package_id| {
+                    serde_json::json!({
+                        "package_name": package_id,
+                        "tile_url_root": "tiles",
+                        "tile_path_template": collection.tile_path_template.strip_prefix("tiles/").unwrap_or(&collection.tile_path_template),
+                        "levels": tile_levels_json(&collection.detail_levels),
+                    })
+                })
+                .unwrap_or(serde_json::Value::Null);
             serde_json::json!({
                 "id": collection.id,
                 "label": format!(
@@ -1443,6 +1474,7 @@ pub(super) fn build_nav_kv_chart_catalog(
                     "min_zoom": min_zoom_for_levels(collection),
                     "max_zoom": max_zoom_for_levels(collection),
                     "wide_angle": wide_angle,
+                    "detail": detail,
                     "storage_kind": "sectional_package",
                     "package_name": collection.package_id,
                     "initial_viewport": {

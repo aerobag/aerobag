@@ -26,9 +26,9 @@ use geo::{BooleanOps, Coord, LineString, MultiPolygon, Polygon};
 use had_key::{component as had_key_component, upper_component as had_upper_key_component};
 use preprocessor_charts::{
     build_family_insets, build_family_legends, build_family_reference_catalog, build_family_tiles,
-    build_family_vrts, package_family_bundle_region_versioned_to,
-    package_family_bundle_wide_angle_versioned_to, stage_work_dir, CHART_REFERENCE_CATALOG_NAME,
-    FULL_COVERAGE_ZOOM, WIDE_ANGLE_REGION_ID,
+    build_family_vrts, package_family_bundle_detail_region_versioned_to,
+    package_family_bundle_region_versioned_to, package_family_bundle_wide_angle_versioned_to,
+    stage_work_dir, CHART_REFERENCE_CATALOG_NAME, FULL_COVERAGE_ZOOM, WIDE_ANGLE_REGION_ID,
 };
 use preprocessor_core::nav_kv::{
     build_nav_kv_sorted, NavKvPair, NavKvRoot, NAVKV_STORAGE_FORMAT as NAV_KV_STORAGE_FORMAT,
@@ -69,7 +69,8 @@ use preprocessor_vectors::{
 use preprocessor_zip::{write_deterministic_zip, ZipSource};
 use procedure_geometry_types as pgt;
 use product_contracts::{
-    WaypointSearchMatchKind, WaypointSearchRecord, NAV_DB_CONTRACT_ID, SHADED_RELIEF_CONTRACT_ID,
+    ChartPackageTier, WaypointSearchMatchKind, WaypointSearchRecord,
+    CHART_PACKAGE_TIER_METADATA_KEY, NAV_DB_CONTRACT_ID, SHADED_RELIEF_CONTRACT_ID,
     TERRAIN_CONTRACT_ID, TERRAIN_TER2_HEIGHT_QUANTIZATION_FT, TERRAIN_TER2_MAX_ZOOM,
     WAYPOINT_SEARCH_MAX_RESULTS, WORLD_BASEMAP_CONTRACT_ID,
 };
@@ -2457,6 +2458,21 @@ mod tests {
     }
 
     #[test]
+    fn canonical_chart_detail_filename_preserves_tier_identity() {
+        assert_eq!(
+            canonical_package_filename_hashed(
+                "sec",
+                "nw",
+                "NW_SEC_DETAIL_SEC1_2607.zip",
+                "abc123",
+                Some(ChartPackageTier::Detail),
+            )
+            .expect("detail filename"),
+            "sec_nw_detail_SEC1_2607_01_abc123.zip"
+        );
+    }
+
+    #[test]
     fn automatic_product_build_includes_cycles_inside_publication_lead_window() {
         let before_lead_window = NaiveDate::from_ymd_opt(2026, 6, 18).unwrap();
         let inside_lead_window = NaiveDate::from_ymd_opt(2026, 6, 20).unwrap();
@@ -2767,6 +2783,7 @@ mod tests {
                 family_id: "sec".to_string(),
                 region_id: "nw".to_string(),
                 package_id: "NW_SEC".to_string(),
+                detail_package_id: None,
                 chart_index: 0,
                 tile_path_template: "tiles/0/{z}/{x}/{y}.webp".to_string(),
                 levels: vec![TileLevelRecord {
@@ -2778,6 +2795,7 @@ mod tests {
                         y_tms_max: 4,
                     }],
                 }],
+                detail_levels: Vec::new(),
                 coverage_bounds: CoverageBounds {
                     lat_min: 40.0,
                     lat_max: 50.0,
@@ -3329,10 +3347,22 @@ mod tests {
     #[test]
     fn nav_kv_chart_catalog_emits_tile_path_templates_for_chart_packages() {
         let mut resource_index = minimal_resource_index();
+        resource_index.chart_collections[0].detail_package_id =
+            Some("NW_SEC_DETAIL_SEC1_2607".to_string());
+        resource_index.chart_collections[0].detail_levels = vec![TileLevelRecord {
+            zoom: 11,
+            boxes: vec![TileBoundsRecord {
+                x_min: 2,
+                x_max: 4,
+                y_tms_min: 6,
+                y_tms_max: 8,
+            }],
+        }];
         let mut flyway = resource_index.chart_collections[0].clone();
         flyway.id = "flyway:nw".to_string();
         flyway.family_id = "flyway".to_string();
         flyway.package_id = "NW_TAC_TAC1_2607".to_string();
+        flyway.detail_package_id = Some("NW_TAC_DETAIL_TAC1_2607".to_string());
         flyway.chart_index = 2;
         flyway.tile_path_template = "tiles/2/{z}/{x}/{y}.webp".to_string();
         resource_index.chart_collections.push(flyway);
@@ -3355,6 +3385,15 @@ mod tests {
             sectional["map_view"]["tile_path_template"],
             "0/{z}/{x}/{y}.webp"
         );
+        assert_eq!(
+            sectional["map_view"]["detail"]["package_name"],
+            "NW_SEC_DETAIL_SEC1_2607"
+        );
+        assert_eq!(
+            sectional["map_view"]["detail"]["tile_path_template"],
+            "0/{z}/{x}/{y}.webp"
+        );
+        assert_eq!(sectional["map_view"]["detail"]["levels"][0]["zoom"], 11);
         let flyway = entries
             .iter()
             .find(|entry| entry["id"] == "flyway:nw")

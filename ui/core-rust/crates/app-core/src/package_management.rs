@@ -6,6 +6,8 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use serde::{Deserialize, Serialize};
 
+pub const CHART_HIGH_RESOLUTION_PRODUCT_ID: &str = "chart-high-resolution";
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Ord, PartialOrd)]
 #[serde(rename_all = "snake_case")]
 pub enum OfflinePackageSelection {
@@ -47,6 +49,8 @@ pub struct BundlePackageArtifact {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct BundlePackageMetadata {
+    #[serde(default)]
+    pub chart_package_tier: Option<product_contracts::ChartPackageTier>,
     pub full_coverage_zoom: Option<u32>,
     pub wide_angle_region_id: Option<String>,
     pub wide_angle_max_zoom: Option<u32>,
@@ -592,6 +596,7 @@ struct AvailablePackageArtifact {
     product_id: String,
     region_id: Option<String>,
     wide_angle: bool,
+    chart_package_tier: Option<product_contracts::ChartPackageTier>,
     effective_at_epoch_ms: Option<i64>,
     expires_at_epoch_ms: Option<i64>,
 }
@@ -613,7 +618,11 @@ where
             .collect(),
         products: product_ids
             .into_iter()
-            .map(|id| (id.into(), OfflinePackageSelection::Play))
+            .map(|id| {
+                let id = id.into();
+                let selection = default_product_selection(&id);
+                (id, selection)
+            })
             .collect(),
     }
 }
@@ -1501,7 +1510,7 @@ fn project_offline_packages_ui_state(
                         .products
                         .get(id)
                         .copied()
-                        .unwrap_or(OfflinePackageSelection::Play),
+                        .unwrap_or_else(|| default_product_selection(id)),
                     rows.products.get(id),
                 )
             })
@@ -1542,6 +1551,9 @@ fn offline_package_catalog_dimensions(
             if let Some(region_id) = pkg.region_id.as_deref() {
                 region_ids.insert(region_id.to_string());
                 product_ids.insert(pkg.family_id.clone());
+                if chart_package_is_detail(pkg) {
+                    product_ids.insert(CHART_HIGH_RESOLUTION_PRODUCT_ID.to_string());
+                }
             }
         }
     }
@@ -1601,6 +1613,7 @@ fn offline_product_label(id: &str) -> String {
         "enr-h" => "IFR-H",
         "tpp" => "TPP",
         "csup" => "CSUP",
+        CHART_HIGH_RESOLUTION_PRODUCT_ID => "High Resolution",
         other => return fallback_dimension_label(other),
     }
     .to_string()
@@ -1616,6 +1629,7 @@ fn offline_product_sort_order(id: &str) -> usize {
         "enr-h" => 5,
         "tpp" => 6,
         "csup" => 7,
+        CHART_HIGH_RESOLUTION_PRODUCT_ID => 8,
         _ => usize::MAX,
     }
 }
@@ -1998,6 +2012,13 @@ fn apply_to_package_dimensions(
         mutate(rows.core_products.entry(pkg.family_id.clone()).or_default());
     }
     mutate(rows.products.entry(pkg.family_id.clone()).or_default());
+    if chart_package_is_detail(pkg) {
+        mutate(
+            rows.products
+                .entry(CHART_HIGH_RESOLUTION_PRODUCT_ID.to_string())
+                .or_default(),
+        );
+    }
 }
 
 fn apply_to_package_dimensions_opt(
@@ -2144,10 +2165,18 @@ fn normalize_preferences(
                         .get(id)
                         .copied()
                         .or(migrated)
-                        .unwrap_or(OfflinePackageSelection::Play),
+                        .unwrap_or_else(|| default_product_selection(id)),
                 )
             })
             .collect(),
+    }
+}
+
+fn default_product_selection(id: &str) -> OfflinePackageSelection {
+    if id == CHART_HIGH_RESOLUTION_PRODUCT_ID {
+        OfflinePackageSelection::Unselected
+    } else {
+        OfflinePackageSelection::Play
     }
 }
 
@@ -2224,6 +2253,10 @@ fn bundle_package_to_artifact(pkg: &BundlePackageArtifact) -> Option<AvailablePa
                 .as_ref()
                 .and_then(|metadata| metadata.wide_angle)
                 .unwrap_or(false),
+            chart_package_tier: pkg
+                .metadata
+                .as_ref()
+                .and_then(|metadata| metadata.chart_package_tier),
             effective_at_epoch_ms: pkg.effective_date.as_deref().and_then(ymd_date_to_epoch_ms),
             expires_at_epoch_ms: pkg
                 .expiration_date
@@ -2232,6 +2265,13 @@ fn bundle_package_to_artifact(pkg: &BundlePackageArtifact) -> Option<AvailablePa
         }),
         _ => None,
     }
+}
+
+fn chart_package_is_detail(pkg: &BundlePackageArtifact) -> bool {
+    pkg.metadata
+        .as_ref()
+        .and_then(|metadata| metadata.chart_package_tier)
+        == Some(product_contracts::ChartPackageTier::Detail)
 }
 
 fn ymd_date_to_epoch_ms(date: &str) -> Option<i64> {
@@ -2293,8 +2333,18 @@ fn civil_from_days(days: i64) -> (i32, u32, u32) {
     (year, month as u32, day as u32)
 }
 
-fn artifact_slot(artifact: &AvailablePackageArtifact) -> (String, Option<String>) {
-    (artifact.product_id.clone(), artifact.region_id.clone())
+fn artifact_slot(
+    artifact: &AvailablePackageArtifact,
+) -> (
+    String,
+    Option<String>,
+    Option<product_contracts::ChartPackageTier>,
+) {
+    (
+        artifact.product_id.clone(),
+        artifact.region_id.clone(),
+        artifact.chart_package_tier,
+    )
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -2352,17 +2402,24 @@ fn selected_state(
         .and_then(|region_id| input.preferences.regions.get(region_id))
         .copied()
         .unwrap_or(OfflinePackageSelection::Unselected);
-
-    match (region, product) {
-        (OfflinePackageSelection::Unselected, _) | (_, OfflinePackageSelection::Unselected) => {
-            OfflinePackageSelection::Unselected
-        }
-        (OfflinePackageSelection::Pause, _) | (_, OfflinePackageSelection::Pause) => {
-            OfflinePackageSelection::Pause
-        }
-        (OfflinePackageSelection::Play, OfflinePackageSelection::Play) => {
+    let high_resolution =
+        if artifact.chart_package_tier == Some(product_contracts::ChartPackageTier::Detail) {
+            input
+                .preferences
+                .products
+                .get(CHART_HIGH_RESOLUTION_PRODUCT_ID)
+                .copied()
+                .unwrap_or(OfflinePackageSelection::Unselected)
+        } else {
             OfflinePackageSelection::Play
-        }
+        };
+
+    if [region, product, high_resolution].contains(&OfflinePackageSelection::Unselected) {
+        OfflinePackageSelection::Unselected
+    } else if [region, product, high_resolution].contains(&OfflinePackageSelection::Pause) {
+        OfflinePackageSelection::Pause
+    } else {
+        OfflinePackageSelection::Play
     }
 }
 
@@ -2444,6 +2501,7 @@ mod tests {
 
     fn nav_db_metadata() -> BundlePackageMetadata {
         BundlePackageMetadata {
+            chart_package_tier: None,
             full_coverage_zoom: None,
             wide_angle_region_id: None,
             wide_angle_max_zoom: None,
@@ -2462,12 +2520,28 @@ mod tests {
     ) -> BundlePackageArtifact {
         let mut pkg = pkg(id, product, Some(region), None, expires);
         pkg.metadata = Some(BundlePackageMetadata {
+            chart_package_tier: None,
             full_coverage_zoom: None,
             wide_angle_region_id: Some(region.to_string()),
             wide_angle_max_zoom: Some(7),
             wide_angle: Some(true),
             min_source_zoom: None,
             max_source_zoom: Some(7),
+            tile_count: Some(100),
+        });
+        pkg
+    }
+
+    fn detail_pkg(id: &str, product: &str, region: &str) -> BundlePackageArtifact {
+        let mut pkg = pkg(id, product, Some(region), None, Some("2099-01-01"));
+        pkg.metadata = Some(BundlePackageMetadata {
+            chart_package_tier: Some(product_contracts::ChartPackageTier::Detail),
+            full_coverage_zoom: None,
+            wide_angle_region_id: None,
+            wide_angle_max_zoom: None,
+            wide_angle: Some(false),
+            min_source_zoom: Some(12),
+            max_source_zoom: Some(12),
             tile_count: Some(100),
         });
         pkg
@@ -2850,6 +2924,83 @@ mod tests {
         assert_eq!(plan.retain_installed, vec!["NW_SEC_2603.zip"]);
         assert!(plan.gc.is_empty());
         assert_eq!(plan.protected_by_pause, vec!["NW_SEC_2603.zip"]);
+    }
+
+    #[test]
+    fn high_resolution_is_opt_in_and_controls_only_regional_detail_packages() {
+        let base = pkg("NW_TAC_BASE", "tac", Some("nw"), None, Some("2099-01-01"));
+        let detail = detail_pkg("NW_TAC_DETAIL", "tac", "nw");
+        let bundle = BundleManifest {
+            packages: vec![base.clone(), detail.clone()],
+        };
+        let normalized = normalize_preferences(
+            None,
+            &["nw".to_string()],
+            &[
+                "tac".to_string(),
+                CHART_HIGH_RESOLUTION_PRODUCT_ID.to_string(),
+            ],
+        );
+        assert_eq!(
+            normalized.products[CHART_HIGH_RESOLUTION_PRODUCT_ID],
+            OfflinePackageSelection::Unselected
+        );
+
+        let mut preferences =
+            default_offline_package_preferences(["nw"], ["tac", CHART_HIGH_RESOLUTION_PRODUCT_ID]);
+        preferences.products.insert(
+            CHART_HIGH_RESOLUTION_PRODUCT_ID.to_string(),
+            OfflinePackageSelection::Play,
+        );
+        let play_input = PackageManagementInput {
+            now_epoch_ms: 200,
+            preferences: preferences.clone(),
+            bundle: bundle.clone(),
+            installed: Vec::new(),
+            forced_gc_installed_filenames: Vec::new(),
+            suppressed_fetch_filenames: Vec::new(),
+        };
+        let play = plan_offline_packages(&play_input);
+        assert_eq!(play.fetch, vec!["NW_TAC_BASE", "NW_TAC_DETAIL"]);
+        let rows = plan_rows_by_dimension(&play_input, &play, &BTreeMap::new(), None);
+        assert_eq!(
+            rows.products[CHART_HIGH_RESOLUTION_PRODUCT_ID].fetch_count,
+            1
+        );
+
+        preferences.products.insert(
+            CHART_HIGH_RESOLUTION_PRODUCT_ID.to_string(),
+            OfflinePackageSelection::Pause,
+        );
+        let pause = plan_offline_packages(&PackageManagementInput {
+            now_epoch_ms: 200,
+            preferences: preferences.clone(),
+            bundle: bundle.clone(),
+            installed: vec![installed("NW_TAC_BASE"), installed("NW_TAC_DETAIL")],
+            forced_gc_installed_filenames: Vec::new(),
+            suppressed_fetch_filenames: Vec::new(),
+        });
+        assert!(pause.fetch.is_empty());
+        assert_eq!(
+            pause.retain_installed,
+            vec!["NW_TAC_BASE.zip", "NW_TAC_DETAIL.zip"]
+        );
+        assert_eq!(pause.protected_by_pause, vec!["NW_TAC_DETAIL.zip"]);
+
+        preferences.products.insert(
+            CHART_HIGH_RESOLUTION_PRODUCT_ID.to_string(),
+            OfflinePackageSelection::Unselected,
+        );
+        let deleted = plan_offline_packages(&PackageManagementInput {
+            now_epoch_ms: 200,
+            preferences,
+            bundle,
+            installed: vec![installed("NW_TAC_BASE"), installed("NW_TAC_DETAIL")],
+            forced_gc_installed_filenames: Vec::new(),
+            suppressed_fetch_filenames: Vec::new(),
+        });
+        assert_eq!(deleted.retain_installed, vec!["NW_TAC_BASE.zip"]);
+        assert_eq!(deleted.gc, vec!["NW_TAC_DETAIL.zip"]);
     }
 
     #[test]

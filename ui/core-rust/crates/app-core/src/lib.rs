@@ -200,11 +200,11 @@ pub use publication::{
 pub use raster_tiles::{
     preferred_family_map, raster_map_ui_state, raster_tile_plan, raster_tile_plan_with_options,
     select_map_family_in_catalog, select_map_in_catalog, RasterChartReferenceAction,
-    RasterChartReferenceAsset, RasterChartReferenceCoverage, RasterDisplayGeometry,
-    RasterDisplayPolygonSet, RasterInitialViewport, RasterMapCatalog, RasterMapFamilyOption,
-    RasterMapUiState, RasterMapView, RasterMapViewOption, RasterPolygon, RasterResourceMode,
-    RasterTileBounds, RasterTileDraw, RasterTileLevel, RasterTilePlan, RasterTilePlanOptions,
-    RasterTileResource, RasterTileSource,
+    RasterChartReferenceAsset, RasterChartReferenceCoverage, RasterDetailMapView,
+    RasterDisplayGeometry, RasterDisplayPolygonSet, RasterInitialViewport, RasterMapCatalog,
+    RasterMapFamilyOption, RasterMapUiState, RasterMapView, RasterMapViewOption, RasterPolygon,
+    RasterResourceMode, RasterTileBounds, RasterTileDraw, RasterTileLevel, RasterTilePlan,
+    RasterTilePlanOptions, RasterTileResource, RasterTileSource,
 };
 pub use session::{
     accept_disclaimer_in_session, advance_nav_kv_store_in_session_with_open_result,

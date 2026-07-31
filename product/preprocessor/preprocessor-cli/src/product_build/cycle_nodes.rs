@@ -469,6 +469,18 @@ pub(super) fn build_chart_package_nodes(
             artifact_version
         )));
         expected_outputs.push(package_root.join(format!(
+            "{}_{}_DETAIL_{}.zip",
+            region.code(),
+            manifest_chart_name(family),
+            artifact_version
+        )));
+        expected_outputs.push(package_root.join(format!(
+            "{}_{}_DETAIL_{}.manifest",
+            region.code(),
+            manifest_chart_name(family),
+            artifact_version
+        )));
+        expected_outputs.push(package_root.join(format!(
             "{}_{}_{}.manifest",
             region.code(),
             manifest_chart_name(family),
@@ -508,6 +520,18 @@ pub(super) fn build_chart_package_nodes(
                 )?;
                 if chart_package_record_has_tiles(&record, &package_root)? {
                     package_records.push(record);
+                }
+                let detail_record = package_family_bundle_detail_region_versioned_to(
+                    family,
+                    &work_dir,
+                    &bundled_families,
+                    &package_root,
+                    *region,
+                    version_label,
+                    &artifact_version,
+                )?;
+                if chart_package_record_has_tiles(&detail_record, &package_root)? {
+                    package_records.push(detail_record);
                 }
             }
             package_records.push(package_family_bundle_wide_angle_versioned_to(
@@ -624,6 +648,17 @@ pub(super) fn chart_wide_angle_package_metadata(
     tile_count: Option<u64>,
 ) -> BTreeMap<String, serde_json::Value> {
     let mut metadata = BTreeMap::from([
+        (
+            CHART_PACKAGE_TIER_METADATA_KEY.to_string(),
+            serde_json::Value::from(
+                if is_wide_angle {
+                    ChartPackageTier::Wide
+                } else {
+                    ChartPackageTier::Regional
+                }
+                .as_str(),
+            ),
+        ),
         (
             "wide_angle_region_id".to_string(),
             serde_json::Value::from(WIDE_ANGLE_REGION_ID),

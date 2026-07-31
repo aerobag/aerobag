@@ -736,6 +736,8 @@ pub enum MapLayerId {
 fn raster_catalog_for_layer_state(
     catalog: &RasterMapCatalog,
     layer_state: &UiMapLayerState,
+    resource_policy: CoreResourcePolicy,
+    installed_package_ids: &BTreeSet<String>,
 ) -> RasterMapCatalog {
     let mut catalog = catalog.clone();
     if !layer_state.world_basemap.visible {
@@ -749,6 +751,38 @@ fn raster_catalog_for_layer_state(
         {
             catalog.selected_map = None;
         }
+    }
+    let apply_detail_availability = |option: &mut crate::RasterMapViewOption| {
+        let detail_available = option.map_view.detail.as_ref().is_some_and(|detail| {
+            resource_policy == CoreResourcePolicy::PublicUnpacked
+                || installed_package_ids.contains(&detail.package_name)
+        });
+        if !detail_available {
+            option.map_view.detail = None;
+        }
+        option.map_view.max_source_zoom = option
+            .map_view
+            .levels
+            .iter()
+            .chain(
+                option
+                    .map_view
+                    .detail
+                    .iter()
+                    .flat_map(|detail| detail.levels.iter()),
+            )
+            .map(|level| level.zoom)
+            .max()
+            .unwrap_or(option.map_view.max_source_zoom);
+    };
+    if let Some(selected) = catalog.selected_map.as_mut() {
+        apply_detail_availability(selected);
+    }
+    for option in &mut catalog.available_maps {
+        apply_detail_availability(option);
+    }
+    for option in &mut catalog.displayed_maps {
+        apply_detail_availability(option);
     }
     catalog
 }
@@ -1632,7 +1666,12 @@ fn sync_displayed_chart_validity_freshness(session: &mut UiSession) -> CycleProd
         sync.changed = clear_data_status_record(session, CYCLE_DISPLAYED_CHART_STATUS_ID);
         return sync;
     };
-    let catalog = raster_catalog_for_layer_state(catalog, &session.map_layer_state);
+    let catalog = raster_catalog_for_layer_state(
+        catalog,
+        &session.map_layer_state,
+        session.resource_policy,
+        &session.installed_package_ids,
+    );
     let now_utc = session_wall_clock_utc(session);
     let mut seen = BTreeSet::new();
     let mut violations = Vec::new();
@@ -3964,7 +4003,12 @@ pub fn get_raster_tile_plan_in_session_at_epoch_ms(
         resource_mode: raster_resource_mode_for_policy(session.resource_policy),
         device_pixel_ratio: 1.0,
     };
-    let catalog = raster_catalog_for_layer_state(catalog, &session.map_layer_state);
+    let catalog = raster_catalog_for_layer_state(
+        catalog,
+        &session.map_layer_state,
+        session.resource_policy,
+        &session.installed_package_ids,
+    );
     let mut plan =
         crate::raster_tile_plan_with_options(&catalog, &viewport, width_px, height_px, options);
     resolve_raster_tile_plan_public_urls(session, &mut plan)?;
@@ -4000,7 +4044,12 @@ pub fn get_raster_tile_plan_in_session_with_options_at_epoch_ms(
             message: "session missing raster map catalog".to_string(),
         });
     };
-    let catalog = raster_catalog_for_layer_state(catalog, &session.map_layer_state);
+    let catalog = raster_catalog_for_layer_state(
+        catalog,
+        &session.map_layer_state,
+        session.resource_policy,
+        &session.installed_package_ids,
+    );
     let mut plan =
         crate::raster_tile_plan_with_options(&catalog, &viewport, width_px, height_px, options);
     resolve_raster_tile_plan_public_urls(session, &mut plan)?;
@@ -4059,7 +4108,12 @@ pub fn get_raster_tile_plan_in_session_with_display_scale_at_epoch_ms(
         resource_mode: raster_resource_mode_for_policy(session.resource_policy),
     };
     let catalog_started_at = crate::core_clock_ms();
-    let catalog = raster_catalog_for_layer_state(catalog, &session.map_layer_state);
+    let catalog = raster_catalog_for_layer_state(
+        catalog,
+        &session.map_layer_state,
+        session.resource_policy,
+        &session.installed_package_ids,
+    );
     let catalog_filter_ms = elapsed_ms(catalog_started_at);
     let displayed_maps = catalog.displayed_maps.len();
     let mut plan =
@@ -14429,6 +14483,7 @@ mod tests {
                 package_expiration_date: expiration_date.map(str::to_string),
                 full_coverage_zoom: None,
                 wide_angle: None,
+                detail: None,
                 initial_viewport: crate::RasterInitialViewport {
                     lat: 47.0,
                     lon: -122.0,
@@ -14456,6 +14511,71 @@ mod tests {
     fn expired_raster_catalog(expiration_date: &str) -> RasterMapCatalog {
         let option = raster_map_option("sec:nw", "NW Charts", None, Some(expiration_date));
         raster_catalog_with_displayed_maps(option.clone(), vec![option])
+    }
+
+    #[test]
+    fn detail_catalog_is_always_available_on_web_and_requires_install_on_android() {
+        let mut option = raster_map_option("tac:nw", "NW TAC", None, None);
+        option.map_view.levels = vec![crate::RasterTileLevel {
+            zoom: 11,
+            boxes: Vec::new(),
+        }];
+        option.map_view.detail = Some(crate::RasterDetailMapView {
+            package_name: "NW_TAC_DETAIL".to_string(),
+            package_relative_path: Some("nw_tac_detail.zip".to_string()),
+            package_effective_date: None,
+            package_expiration_date: None,
+            tile_url_root: "tiles".to_string(),
+            tile_path_template: "1/{z}/{x}/{y}.webp".to_string(),
+            levels: vec![crate::RasterTileLevel {
+                zoom: 12,
+                boxes: Vec::new(),
+            }],
+        });
+        let catalog = raster_catalog_with_displayed_maps(option.clone(), vec![option]);
+
+        let web = raster_catalog_for_layer_state(
+            &catalog,
+            &default_map_layer_state(),
+            CoreResourcePolicy::PublicUnpacked,
+            &BTreeSet::new(),
+        );
+        assert!(web.displayed_maps[0].map_view.detail.is_some());
+        assert_eq!(web.displayed_maps[0].map_view.max_source_zoom, 12);
+
+        let android_without_detail = raster_catalog_for_layer_state(
+            &catalog,
+            &default_map_layer_state(),
+            CoreResourcePolicy::InstalledPackage,
+            &BTreeSet::new(),
+        );
+        assert!(android_without_detail.displayed_maps[0]
+            .map_view
+            .detail
+            .is_none());
+        assert_eq!(
+            android_without_detail.displayed_maps[0]
+                .map_view
+                .max_source_zoom,
+            11
+        );
+
+        let android_with_detail = raster_catalog_for_layer_state(
+            &catalog,
+            &default_map_layer_state(),
+            CoreResourcePolicy::InstalledPackage,
+            &BTreeSet::from(["NW_TAC_DETAIL".to_string()]),
+        );
+        assert!(android_with_detail.displayed_maps[0]
+            .map_view
+            .detail
+            .is_some());
+        assert_eq!(
+            android_with_detail.displayed_maps[0]
+                .map_view
+                .max_source_zoom,
+            12
+        );
     }
 
     #[test]

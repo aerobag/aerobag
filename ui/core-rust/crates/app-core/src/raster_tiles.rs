@@ -127,7 +127,23 @@ pub struct RasterMapView {
     pub full_coverage_zoom: Option<f64>,
     #[serde(default)]
     pub wide_angle: Option<RasterWideAngleMapView>,
+    #[serde(default)]
+    pub detail: Option<RasterDetailMapView>,
     pub initial_viewport: RasterInitialViewport,
+    pub levels: Vec<RasterTileLevel>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct RasterDetailMapView {
+    pub package_name: String,
+    #[serde(default)]
+    pub package_relative_path: Option<String>,
+    #[serde(default)]
+    pub package_effective_date: Option<String>,
+    #[serde(default)]
+    pub package_expiration_date: Option<String>,
+    pub tile_url_root: String,
+    pub tile_path_template: String,
     pub levels: Vec<RasterTileLevel>,
 }
 
@@ -787,6 +803,7 @@ fn render_wide_angle_tiles_for_family(
     map_view.levels = wide_angle.levels.clone();
     map_view.full_coverage_zoom = None;
     map_view.wide_angle = None;
+    map_view.detail = None;
 
     let synthetic_option = RasterMapViewOption {
         id: format!("{}:{}", map_view.chart_family, wide_angle.region_id),
@@ -1042,11 +1059,31 @@ fn tile_source(
     y_tms: i64,
     resource_mode: RasterResourceMode,
 ) -> RasterTileSource {
-    let relative_path = tile_relative_path(map_view, zoom, x, y_tms);
-    let resource = tile_source_resource(map_view, &relative_path, resource_mode);
+    let detail = map_view
+        .detail
+        .as_ref()
+        .filter(|detail| detail.levels.iter().any(|level| level.zoom == zoom));
+    let package_name = detail
+        .map(|detail| detail.package_name.clone())
+        .or_else(|| map_view.package_name.clone());
+    let tile_path_template = detail
+        .map(|detail| detail.tile_path_template.as_str())
+        .unwrap_or(&map_view.tile_path_template);
+    let tile_root = detail
+        .map(|detail| detail.tile_url_root.as_str())
+        .unwrap_or(&map_view.tile_root);
+    let relative_path =
+        tile_relative_path_from_template(tile_path_template, map_view.chart_index, zoom, x, y_tms);
+    let resource = tile_source_resource(
+        map_view,
+        package_name.clone(),
+        tile_root,
+        &relative_path,
+        resource_mode,
+    );
     RasterTileSource {
         map_view_id: map_view_id.to_string(),
-        package_name: map_view.package_name.clone(),
+        package_name,
         storage_kind: map_view.storage_kind.clone(),
         relative_path,
         resource,
@@ -1055,6 +1092,8 @@ fn tile_source(
 
 fn tile_source_resource(
     map_view: &RasterMapView,
+    package_name: Option<String>,
+    tile_root: &str,
     relative_path: &str,
     resource_mode: RasterResourceMode,
 ) -> RasterTileResource {
@@ -1063,13 +1102,13 @@ fn tile_source_resource(
     // path. This is not the general resource model. New resource consumers
     // should ask core for opaque CoreResourceRequest values instead; see
     // resolve_chart_asset_resource_in_session and the terrain/NEXRAD overlays.
-    let package_name = map_view.package_name.clone().unwrap_or_else(|| {
+    let package_name = package_name.unwrap_or_else(|| {
         panic!(
             "raster map view {} is missing package_name",
             map_view.chart_name
         )
     });
-    let member_path = tile_package_member_path(map_view, relative_path);
+    let member_path = tile_package_member_path(tile_root, relative_path);
     match resource_mode {
         RasterResourceMode::InstalledPackage => RasterTileResource::InstalledPackage {
             package_name,
@@ -1082,8 +1121,8 @@ fn tile_source_resource(
     }
 }
 
-fn tile_package_member_path(map_view: &RasterMapView, relative_path: &str) -> String {
-    let tile_root = map_view.tile_root.trim_matches('/');
+fn tile_package_member_path(tile_root: &str, relative_path: &str) -> String {
+    let tile_root = tile_root.trim_matches('/');
     if tile_root.is_empty() {
         relative_path.trim_start_matches('/').to_string()
     } else {
@@ -1091,11 +1130,17 @@ fn tile_package_member_path(map_view: &RasterMapView, relative_path: &str) -> St
     }
 }
 
-fn tile_relative_path(map_view: &RasterMapView, zoom: i64, x: i64, y_tms: i64) -> String {
-    let template = if map_view.tile_path_template.is_empty() {
-        format!("{}/{{z}}/{{x}}/{{y}}.webp", map_view.chart_index)
+fn tile_relative_path_from_template(
+    tile_path_template: &str,
+    chart_index: i64,
+    zoom: i64,
+    x: i64,
+    y_tms: i64,
+) -> String {
+    let template = if tile_path_template.is_empty() {
+        format!("{chart_index}/{{z}}/{{x}}/{{y}}.webp")
     } else {
-        map_view.tile_path_template.clone()
+        tile_path_template.to_string()
     };
     template
         .replace("{z}", &zoom.to_string())
@@ -1160,9 +1205,18 @@ fn pick_level(
     };
     let max_display_size = map_tile_display_size(map_view) * multiplier;
     let max_reasonable_source_zoom = zoom.ceil() as i64;
-    let eligible_levels = map_view.levels.iter().filter(|level| {
-        level.zoom <= map_view.max_source_zoom && level.zoom <= max_reasonable_source_zoom
-    });
+    let eligible_levels = map_view
+        .levels
+        .iter()
+        .chain(
+            map_view
+                .detail
+                .iter()
+                .flat_map(|detail| detail.levels.iter()),
+        )
+        .filter(|level| {
+            level.zoom <= map_view.max_source_zoom && level.zoom <= max_reasonable_source_zoom
+        });
     eligible_levels
         .clone()
         .filter(|level| {
@@ -1197,6 +1251,12 @@ fn level_contains(map_view: &RasterMapView, zoom: i64, x: i64, y_tms: i64) -> bo
     map_view
         .levels
         .iter()
+        .chain(
+            map_view
+                .detail
+                .iter()
+                .flat_map(|detail| detail.levels.iter()),
+        )
         .any(|level| level.zoom == zoom && level_contains_tile(level, x, y_tms))
 }
 
@@ -1284,6 +1344,7 @@ mod tests {
                 package_expiration_date: None,
                 full_coverage_zoom: Some(7.0),
                 wide_angle: None,
+                detail: None,
                 initial_viewport: RasterInitialViewport {
                     lat: 38.1,
                     lon: -122.0,
@@ -2148,6 +2209,59 @@ mod tests {
 
         assert!(!plan.tiles.is_empty());
         assert!(plan.tiles.iter().all(|tile| tile.source_zoom == 12));
+    }
+
+    #[test]
+    fn detail_zoom_uses_its_own_package_and_base_stretches_without_it() {
+        let mut chart = option(
+            "tac:nw",
+            "tac",
+            "NW_TAC_BASE",
+            vec![level(11, 0, 2047, 0, 2047)],
+        );
+        chart.map_view.max_source_zoom = 12;
+        chart.map_view.detail = Some(RasterDetailMapView {
+            package_name: "NW_TAC_DETAIL".to_string(),
+            package_relative_path: Some("nw_tac_detail.zip".to_string()),
+            package_effective_date: None,
+            package_expiration_date: None,
+            tile_url_root: "tiles".to_string(),
+            tile_path_template: "1/{z}/{x}/{y}.webp".to_string(),
+            levels: vec![level(12, 0, 4095, 0, 4095)],
+        });
+        let catalog = |chart: RasterMapViewOption| RasterMapCatalog {
+            selected_map_id: "tac:nw".to_string(),
+            selected_map: None,
+            available_maps: Vec::new(),
+            displayed_maps: vec![chart],
+            geometry: RasterDisplayGeometry::default(),
+            family_options: Vec::new(),
+        };
+        let viewport = MapViewport {
+            center: LatLon {
+                lat: 47.5,
+                lon: -122.3,
+            },
+            zoom: 12.1,
+            rotation_deg: 0.0,
+            pitch_deg: 0.0,
+        };
+
+        let detailed = raster_tile_plan(&catalog(chart.clone()), &viewport, 512.0, 512.0);
+        assert!(!detailed.tiles.is_empty());
+        assert!(detailed.tiles.iter().all(|tile| {
+            tile.source_zoom == 12
+                && tile.primary.package_name.as_deref() == Some("NW_TAC_DETAIL")
+                && tile.primary.relative_path.starts_with("1/12/")
+        }));
+
+        chart.map_view.detail = None;
+        chart.map_view.max_source_zoom = 11;
+        let base_only = raster_tile_plan(&catalog(chart), &viewport, 512.0, 512.0);
+        assert!(!base_only.tiles.is_empty());
+        assert!(base_only.tiles.iter().all(|tile| {
+            tile.source_zoom == 11 && tile.primary.package_name.as_deref() == Some("NW_TAC_BASE")
+        }));
     }
 
     #[test]

@@ -188,6 +188,27 @@ Servers must not synthesize transparent placeholder tiles for these holes.
 Clients should treat missing raster tiles as no-draw, not as a fatal product or
 publication-contract error.
 
+## Chart Package Tiers
+
+Chart package manifests declare `metadata.chart_package_tier` as exactly one of
+`wide`, `regional`, or `detail`.
+
+- `wide` owns the all-region overview levels through z7.
+- `regional` owns one region's normal-resolution levels from z8 through the
+  family-specific base maximum.
+- `detail` owns only the same region's next zoom level. It contains tiles and
+  the package manifest, but does not duplicate chart reference assets.
+
+The NAV chart catalog combines one regional package and its optional detail
+package into one logical map view. A detail package must start exactly one zoom
+after its regional package and must not overlap the regional levels.
+
+Public-unpacked clients may use every advertised detail package. Clients using
+installed packages may use a detail package only when that exact artifact is
+installed. If detail is unavailable, core plans from the regional maximum and
+intentionally stretches that tile; clients must not probe a missing detail
+resource and fall back after an error.
+
 ## Package-Relative HAD Paths
 
 HAD records describe logical package contents. Paths inside HAD records are

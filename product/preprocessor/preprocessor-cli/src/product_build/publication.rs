@@ -2005,13 +2005,19 @@ pub(super) fn canonical_package_filename_hashed(
     region_id: &str,
     original_filename: &str,
     checksum_sha256: &str,
+    tier: Option<ChartPackageTier>,
 ) -> anyhow::Result<String> {
     let cycle = package_version_from_filename(original_filename)?;
     let contract_id = product_contract_id_for_family(family_id)?;
+    let tier_token = match tier {
+        Some(ChartPackageTier::Detail) => "_detail",
+        Some(ChartPackageTier::Wide | ChartPackageTier::Regional) | None => "",
+    };
     Ok(format!(
-        "{}_{}_{}_{}_{}_{}.zip",
+        "{}_{}{}_{}_{}_{}_{}.zip",
         family_id.replace('-', "_"),
         region_id.to_ascii_lowercase(),
+        tier_token,
         contract_id,
         cycle,
         PACKAGE_CYCLE_VERSION,

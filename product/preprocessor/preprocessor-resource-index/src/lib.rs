@@ -11,6 +11,7 @@ use preprocessor_core::{
 };
 use preprocessor_data::INTERMEDIATE_SQLITE_BASENAME;
 use preprocessor_fetch::PackageOutputRecord;
+use product_contracts::{ChartPackageTier, CHART_PACKAGE_TIER_METADATA_KEY};
 use rayon::prelude::*;
 use rusqlite::Connection;
 use serde::{Deserialize, Serialize};
@@ -232,9 +233,13 @@ pub struct ChartCollectionRecord {
     pub family_id: String,
     pub region_id: String,
     pub package_id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub detail_package_id: Option<String>,
     pub chart_index: u32,
     pub tile_path_template: String,
     pub levels: Vec<TileLevelRecord>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub detail_levels: Vec<TileLevelRecord>,
     pub coverage_bounds: CoverageBounds,
     pub default_view: DefaultView,
 }
@@ -945,6 +950,7 @@ fn collect_chart_collections(
                 })
                 .map(|entry| {
                     let (record, artifact_path) = entry?;
+                    let tier = chart_package_tier(&record)?;
                     chart_collections_for_package(&record, &source.family_id)?
                         .into_iter()
                         .map(|collection_source| {
@@ -969,17 +975,20 @@ fn collect_chart_collections(
                                 family_id: collection_source.family_id,
                                 region_id: record.region.to_ascii_lowercase(),
                                 package_id: package_id_from_manifest_name(&record.manifest),
+                                detail_package_id: None,
                                 chart_index: metadata.chart_index,
                                 tile_path_template: format!(
                                     "tiles/{}/{}/{{x}}/{{y}}.webp",
                                     metadata.chart_index, "{z}"
                                 ),
                                 levels: metadata.levels,
+                                detail_levels: Vec::new(),
                                 coverage_bounds: metadata.coverage_bounds,
                                 default_view: metadata.default_view,
                             };
                             Ok::<_, anyhow::Error>(ChartCollectionWithTiles {
                                 collection,
+                                tier,
                                 tiles: metadata.tiles,
                             })
                         })
@@ -997,10 +1006,17 @@ fn collect_chart_collections(
         .flatten()
         .collect::<Vec<_>>();
     validate_chart_tile_bbox_invariant(&collections_with_tiles)?;
-    let mut collections = collections_with_tiles
-        .drain(..)
-        .map(|entry| entry.collection)
-        .collect::<Vec<_>>();
+    let mut grouped = BTreeMap::<String, Vec<ChartCollectionWithTiles>>::new();
+    for entry in collections_with_tiles.drain(..) {
+        grouped
+            .entry(entry.collection.id.clone())
+            .or_default()
+            .push(entry);
+    }
+    let mut collections = grouped
+        .into_values()
+        .map(merge_chart_collection_tiers)
+        .collect::<anyhow::Result<Vec<_>>>()?;
     collections.sort_by(|left, right| left.id.cmp(&right.id));
     Ok(collections)
 }
@@ -1011,6 +1027,9 @@ fn collect_chart_references(
     let mut by_id = BTreeMap::<String, ChartReferenceRecord>::new();
     for source in chart_sources {
         for package in read_package_outputs(&source.package_outputs_path)? {
+            if chart_package_tier(&package)? == ChartPackageTier::Detail {
+                continue;
+            }
             let package_id = package_id_from_manifest_name(&package.manifest);
             let zip_path = source.package_root.join(&package.zip);
             for collection in chart_collections_for_package(&package, &source.family_id)? {
@@ -1111,10 +1130,113 @@ fn merge_chart_reference(
     Ok(())
 }
 
+fn chart_package_tier(record: &PackageOutputRecord) -> anyhow::Result<ChartPackageTier> {
+    let value = record
+        .metadata
+        .get(CHART_PACKAGE_TIER_METADATA_KEY)
+        .with_context(|| {
+            format!(
+                "chart package {} is missing {CHART_PACKAGE_TIER_METADATA_KEY}",
+                record.zip
+            )
+        })?;
+    serde_json::from_value(value.clone()).with_context(|| {
+        format!(
+            "chart package {} has invalid {CHART_PACKAGE_TIER_METADATA_KEY}",
+            record.zip
+        )
+    })
+}
+
 #[derive(Debug)]
 struct ChartCollectionWithTiles {
     collection: ChartCollectionRecord,
+    tier: ChartPackageTier,
     tiles: BTreeSet<(u32, u32, u32)>,
+}
+
+fn merge_chart_collection_tiers(
+    entries: Vec<ChartCollectionWithTiles>,
+) -> anyhow::Result<ChartCollectionRecord> {
+    let id = entries
+        .first()
+        .map(|entry| entry.collection.id.as_str())
+        .unwrap_or("<empty>")
+        .to_string();
+    let mut wide = Vec::new();
+    let mut regional = Vec::new();
+    let mut detail = Vec::new();
+    for entry in entries {
+        match entry.tier {
+            ChartPackageTier::Wide => wide.push(entry),
+            ChartPackageTier::Regional => regional.push(entry),
+            ChartPackageTier::Detail => detail.push(entry),
+        }
+    }
+    if !wide.is_empty() {
+        if wide.len() != 1 || !regional.is_empty() || !detail.is_empty() {
+            bail!("chart collection {id} has conflicting wide/base/detail package records");
+        }
+        return Ok(wide.pop().expect("one wide chart collection").collection);
+    }
+    if regional.len() != 1 {
+        bail!(
+            "chart collection {id} requires exactly one regional base package, found {}",
+            regional.len()
+        );
+    }
+    if detail.len() > 1 {
+        bail!(
+            "chart collection {id} has multiple detail packages: {}",
+            detail.len()
+        );
+    }
+
+    let mut base = regional
+        .pop()
+        .expect("one regional chart collection")
+        .collection;
+    let Some(detail) = detail.pop().map(|entry| entry.collection) else {
+        return Ok(base);
+    };
+    if base.family_id != detail.family_id
+        || base.region_id != detail.region_id
+        || base.chart_index != detail.chart_index
+        || base.tile_path_template != detail.tile_path_template
+    {
+        bail!("chart collection {id} detail package does not match its regional base");
+    }
+    let base_max_zoom = base
+        .levels
+        .iter()
+        .map(|level| level.zoom)
+        .max()
+        .with_context(|| format!("chart collection {id} base package has no tile levels"))?;
+    let detail_min_zoom = detail
+        .levels
+        .iter()
+        .map(|level| level.zoom)
+        .min()
+        .with_context(|| format!("chart collection {id} detail package has no tile levels"))?;
+    if detail_min_zoom != base_max_zoom + 1
+        || detail
+            .levels
+            .iter()
+            .any(|level| level.zoom != detail_min_zoom)
+    {
+        bail!(
+            "chart collection {id} detail levels must contain only z{}, found {:?}",
+            base_max_zoom + 1,
+            detail
+                .levels
+                .iter()
+                .map(|level| level.zoom)
+                .collect::<Vec<_>>()
+        );
+    }
+    base.detail_package_id = Some(detail.package_id);
+    base.detail_levels = detail.levels;
+    Ok(base)
 }
 
 fn validate_chart_tile_bbox_invariant(
@@ -1129,17 +1251,18 @@ fn validate_chart_tile_bbox_invariant(
     // file or all omit it. If this fires, do not weaken it casually; otherwise
     // the client can choose a region with no tile and fail to draw a tile that
     // exists in another region package.
-    let mut by_family: BTreeMap<&str, Vec<&ChartCollectionWithTiles>> = BTreeMap::new();
+    let mut by_family: BTreeMap<(&str, ChartPackageTier), Vec<&ChartCollectionWithTiles>> =
+        BTreeMap::new();
     for collection in collections
         .iter()
         .filter(|entry| entry.collection.region_id != "wide")
     {
         by_family
-            .entry(collection.collection.family_id.as_str())
+            .entry((collection.collection.family_id.as_str(), collection.tier))
             .or_default()
             .push(collection);
     }
-    for (family_id, entries) in by_family {
+    for ((family_id, _tier), entries) in by_family {
         let mut all_tiles = BTreeSet::new();
         for entry in &entries {
             all_tiles.extend(entry.tiles.iter().copied());
@@ -2469,28 +2592,55 @@ mod tests {
             .expect("write reference manifest");
         }
         zip.finish().expect("finish chart zip");
+        let detail_zip_path = package_root.join("NW_TAC_DETAIL_TAC1_2607.zip");
+        let file = fs::File::create(&detail_zip_path).expect("create detail chart zip");
+        let mut zip = ZipWriter::new(file);
+        for member in ["tiles/1/9/80/180.webp", "tiles/2/9/80/180.webp"] {
+            zip.start_file(member, SimpleFileOptions::default())
+                .expect("start detail tile");
+            zip.write_all(b"detail tile").expect("write detail tile");
+        }
+        zip.finish().expect("finish detail chart zip");
         let package_outputs_path = package_root.join("package_outputs.jsonl");
+        let base_record = serde_json::json!({
+            "event": "package_output",
+            "label": "charts-tac",
+            "chart": "TAC",
+            "region": "NW",
+            "manifest": "NW_TAC_TAC1_2607.manifest",
+            "manifest_sha256": "manifest",
+            "zip": "NW_TAC_TAC1_2607.zip",
+            "zip_sha256": "zip",
+            "metadata": {
+                "chart_package_tier": "regional",
+                "tile_count": 2,
+                "chart_collections": [
+                    {"family_id": "tac", "chart_index": 1},
+                    {"family_id": "flyway", "chart_index": 2}
+                ]
+            }
+        });
+        let detail_record = serde_json::json!({
+            "event": "package_output",
+            "label": "charts-tac",
+            "chart": "TAC",
+            "region": "NW",
+            "manifest": "NW_TAC_DETAIL_TAC1_2607.manifest",
+            "manifest_sha256": "detail-manifest",
+            "zip": "NW_TAC_DETAIL_TAC1_2607.zip",
+            "zip_sha256": "detail-zip",
+            "metadata": {
+                "chart_package_tier": "detail",
+                "tile_count": 2,
+                "chart_collections": [
+                    {"family_id": "tac", "chart_index": 1},
+                    {"family_id": "flyway", "chart_index": 2}
+                ]
+            }
+        });
         fs::write(
             &package_outputs_path,
-            serde_json::json!({
-                "event": "package_output",
-                "label": "charts-tac",
-                "chart": "TAC",
-                "region": "NW",
-                "manifest": "NW_TAC_TAC1_2607.manifest",
-                "manifest_sha256": "manifest",
-                "zip": "NW_TAC_TAC1_2607.zip",
-                "zip_sha256": "zip",
-                "metadata": {
-                    "tile_count": 2,
-                    "chart_collections": [
-                        {"family_id": "tac", "chart_index": 1},
-                        {"family_id": "flyway", "chart_index": 2}
-                    ]
-                }
-            })
-            .to_string()
-                + "\n",
+            format!("{base_record}\n{detail_record}\n"),
         )
         .expect("package outputs");
 
@@ -2511,14 +2661,28 @@ mod tests {
                 .map(|collection| (
                     collection.id.as_str(),
                     collection.package_id.as_str(),
+                    collection.detail_package_id.as_deref(),
                     collection.chart_index,
                 ))
                 .collect::<Vec<_>>(),
             vec![
-                ("flyway:nw", "NW_TAC_TAC1_2607", 2),
-                ("tac:nw", "NW_TAC_TAC1_2607", 1),
+                (
+                    "flyway:nw",
+                    "NW_TAC_TAC1_2607",
+                    Some("NW_TAC_DETAIL_TAC1_2607"),
+                    2
+                ),
+                (
+                    "tac:nw",
+                    "NW_TAC_TAC1_2607",
+                    Some("NW_TAC_DETAIL_TAC1_2607"),
+                    1
+                ),
             ]
         );
+        assert!(collections
+            .iter()
+            .all(|collection| collection.detail_levels[0].zoom == 9));
         assert_eq!(
             collect_families(&[], &collections, false, false)
                 .iter()
@@ -2608,7 +2772,7 @@ mod tests {
         let chart_outputs = temp.path().join("chart-package-outputs.jsonl");
         fs::write(
             &chart_outputs,
-            "{\"event\":\"package_output\",\"label\":\"charts-sec\",\"chart\":\"SEC\",\"manifest\":\"NW_SEC\",\"manifest_sha256\":\"m\",\"region\":\"NW\",\"zip\":\"NW_SEC.zip\",\"zip_sha256\":\"abc\"}\n",
+            "{\"event\":\"package_output\",\"label\":\"charts-sec\",\"chart\":\"SEC\",\"manifest\":\"NW_SEC\",\"manifest_sha256\":\"m\",\"region\":\"NW\",\"zip\":\"NW_SEC.zip\",\"zip_sha256\":\"abc\",\"metadata\":{\"chart_package_tier\":\"regional\"}}\n",
         )
         .expect("chart outputs");
         let chart_source_urls = temp.path().join("chart-source-urls.jsonl");
@@ -3031,6 +3195,7 @@ mod tests {
                 family_id: "sec".to_string(),
                 region_id: "left".to_string(),
                 package_id: "SEC_LEFT".to_string(),
+                detail_package_id: None,
                 chart_index: 0,
                 tile_path_template: "tiles/0/{z}/{x}/{y}.webp".to_string(),
                 levels: vec![TileLevelRecord {
@@ -3042,6 +3207,7 @@ mod tests {
                         y_tms_max: 20,
                     }],
                 }],
+                detail_levels: Vec::new(),
                 coverage_bounds: CoverageBounds {
                     lat_min: 0.0,
                     lat_max: 1.0,
@@ -3054,6 +3220,7 @@ mod tests {
                     zoom: 8.0,
                 },
             },
+            tier: ChartPackageTier::Regional,
             tiles: BTreeSet::from([(8, 10, 20), (8, 12, 20)]),
         };
         let right = ChartCollectionWithTiles {
@@ -3062,6 +3229,7 @@ mod tests {
                 family_id: "sec".to_string(),
                 region_id: "right".to_string(),
                 package_id: "SEC_RIGHT".to_string(),
+                detail_package_id: None,
                 chart_index: 0,
                 tile_path_template: "tiles/0/{z}/{x}/{y}.webp".to_string(),
                 levels: vec![TileLevelRecord {
@@ -3073,6 +3241,7 @@ mod tests {
                         y_tms_max: 20,
                     }],
                 }],
+                detail_levels: Vec::new(),
                 coverage_bounds: CoverageBounds {
                     lat_min: 0.0,
                     lat_max: 1.0,
@@ -3085,6 +3254,7 @@ mod tests {
                     zoom: 8.0,
                 },
             },
+            tier: ChartPackageTier::Regional,
             tiles: BTreeSet::from([(8, 11, 20)]),
         };
 

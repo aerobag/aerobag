@@ -11,6 +11,25 @@ pub struct ProductContract {
 }
 
 pub const WAYPOINT_SEARCH_MAX_RESULTS: usize = 100;
+pub const CHART_PACKAGE_TIER_METADATA_KEY: &str = "chart_package_tier";
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ChartPackageTier {
+    Wide,
+    Regional,
+    Detail,
+}
+
+impl ChartPackageTier {
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Wide => "wide",
+            Self::Regional => "regional",
+            Self::Detail => "detail",
+        }
+    }
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -49,7 +68,7 @@ pub enum AirportNotamEffect {
     Other,
 }
 
-pub const NAV_DB_CONTRACT_ID: &str = "NAV15";
+pub const NAV_DB_CONTRACT_ID: &str = "NAV16";
 pub const SEC_CONTRACT_ID: &str = "SEC1";
 pub const TAC_CONTRACT_ID: &str = "TAC1";
 pub const ENR_L_CONTRACT_ID: &str = "ENL1";

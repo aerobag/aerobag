@@ -544,6 +544,7 @@ mod tests {
                 expiration_date: None,
                 warning_text: None,
                 metadata: Some(crate::package_management::BundlePackageMetadata {
+                    chart_package_tier: None,
                     full_coverage_zoom: None,
                     wide_angle_region_id: None,
                     wide_angle_max_zoom: None,

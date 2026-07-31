@@ -10,6 +10,7 @@ version.workspace = true
 anyhow.workspace = true
 chrono.workspace = true
 preprocessor-core = { path = "../preprocessor-core" }
+product-contracts = { path = "../../../crates/product-contracts" }
 preprocessor-fetch = { path = "../preprocessor-fetch" }
 preprocessor-tools = { path = "../preprocessor-tools" }
 preprocessor-zip = { path = "../preprocessor-zip" }

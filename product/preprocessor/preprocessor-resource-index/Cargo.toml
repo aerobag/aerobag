@@ -12,6 +12,7 @@ preprocessor-core = { path = "../preprocessor-core" }
 preprocessor-data = { path = "../preprocessor-data" }
 preprocessor-fetch = { path = "../preprocessor-fetch" }
 preprocessor-tools = { path = "../preprocessor-tools" }
+product-contracts = { path = "../../../crates/product-contracts" }
 rayon.workspace = true
 rusqlite.workspace = true
 serde.workspace = true

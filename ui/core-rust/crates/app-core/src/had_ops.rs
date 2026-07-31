@@ -1026,7 +1026,23 @@ struct MapViewRecord {
     full_coverage_zoom: Option<f64>,
     #[serde(default)]
     wide_angle: Option<WideAngleMapViewRecord>,
+    #[serde(default)]
+    detail: Option<DetailMapViewRecord>,
     initial_viewport: MapInitialViewportRecord,
+    levels: Vec<MapViewLevelRecord>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+struct DetailMapViewRecord {
+    package_name: String,
+    #[serde(default)]
+    package_relative_path: Option<String>,
+    #[serde(default)]
+    package_effective_date: Option<String>,
+    #[serde(default)]
+    package_expiration_date: Option<String>,
+    tile_url_root: String,
+    tile_path_template: String,
     levels: Vec<MapViewLevelRecord>,
 }
 
@@ -1713,8 +1729,18 @@ fn map_selector_state(
 fn normalize_map_views(map_views: &mut [MapViewOptionRecord]) {
     for view in map_views {
         if view.map_view.max_source_zoom.is_none() {
-            view.map_view.max_source_zoom =
-                view.map_view.levels.iter().map(|level| level.zoom).max();
+            view.map_view.max_source_zoom = view
+                .map_view
+                .levels
+                .iter()
+                .chain(
+                    view.map_view
+                        .detail
+                        .iter()
+                        .flat_map(|detail| detail.levels.iter()),
+                )
+                .map(|level| level.zoom)
+                .max();
         }
         if view.map_view.max_display_zoom.is_none() {
             view.map_view.max_display_zoom = Some(view.map_view.max_zoom);
@@ -1751,7 +1777,22 @@ fn enrich_map_views_with_package_metadata(
         if let Some(wide_angle) = view.map_view.wide_angle.as_mut() {
             enrich_wide_angle_map_view_with_package_metadata(store, wide_angle, &view.id)?;
         }
+        if let Some(detail) = view.map_view.detail.as_mut() {
+            enrich_detail_map_view_with_package_metadata(store, detail, &view.id)?;
+        }
     }
+    Ok(())
+}
+
+fn enrich_detail_map_view_with_package_metadata(
+    store: &NavKvStore,
+    detail: &mut DetailMapViewRecord,
+    map_view_id: &str,
+) -> Result<(), HadReadError> {
+    let package = package_record_for_raster_source(store, &detail.package_name, map_view_id)?;
+    detail.package_relative_path = Some(package_zip_relative_path(&package)?.to_string());
+    detail.package_effective_date = package.effective_date.clone();
+    detail.package_expiration_date = package.expiration_date.clone();
     Ok(())
 }
 

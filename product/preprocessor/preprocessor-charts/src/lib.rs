@@ -29,6 +29,7 @@ use preprocessor_tools::{
     sanitize_label, write_thumbnail_from_png, ToolInvocation, ToolOutcome,
 };
 use preprocessor_zip::{write_deterministic_zip, ZipSource};
+use product_contracts::{ChartPackageTier, CHART_PACKAGE_TIER_METADATA_KEY};
 use serde::{Deserialize, Serialize};
 
 pub const FULL_COVERAGE_ZOOM: u32 = 7;
@@ -177,7 +178,7 @@ struct ChartSpec {
     script_name: &'static str,
     chart_dir_name: &'static str,
     tile_index: &'static str,
-    max_zoom: u32,
+    base_max_zoom: u32,
     vrt_kind: VrtKind,
 }
 
@@ -196,7 +197,7 @@ impl ChartSpec {
                 script_name: "sec.py",
                 chart_dir_name: "SEC",
                 tile_index: "0",
-                max_zoom: 10,
+                base_max_zoom: 10,
                 vrt_kind: VrtKind::Vfr,
             },
             ChartFamily::Tac => Self {
@@ -205,7 +206,7 @@ impl ChartSpec {
                 script_name: "tac.py",
                 chart_dir_name: "TAC",
                 tile_index: "1",
-                max_zoom: 11,
+                base_max_zoom: 11,
                 vrt_kind: VrtKind::Vfr,
             },
             ChartFamily::Flyway => Self {
@@ -214,7 +215,7 @@ impl ChartSpec {
                 script_name: "flyway.py",
                 chart_dir_name: "FLY",
                 tile_index: "2",
-                max_zoom: 11,
+                base_max_zoom: 11,
                 vrt_kind: VrtKind::Vfr,
             },
             ChartFamily::EnrL => Self {
@@ -223,7 +224,7 @@ impl ChartSpec {
                 script_name: "enr_l.py",
                 chart_dir_name: "ENR_L",
                 tile_index: "3",
-                max_zoom: 10,
+                base_max_zoom: 10,
                 vrt_kind: VrtKind::Ifr,
             },
             ChartFamily::EnrH => Self {
@@ -232,10 +233,14 @@ impl ChartSpec {
                 script_name: "enr_h.py",
                 chart_dir_name: "ENR_H",
                 tile_index: "4",
-                max_zoom: 9,
+                base_max_zoom: 9,
                 vrt_kind: VrtKind::Ifr,
             },
         }
+    }
+
+    fn detail_zoom(self) -> u32 {
+        self.base_max_zoom + 1
     }
 }
 
@@ -550,6 +555,7 @@ pub fn package_family_bundle_region_versioned_to(
         output_dir,
         &sources,
         &[region],
+        ChartPackageTier::Regional,
         true,
         manifest_version,
         artifact_version,
@@ -557,6 +563,41 @@ pub fn package_family_bundle_region_versioned_to(
     .into_iter()
     .next()
     .ok_or_else(|| anyhow::anyhow!("no package record generated for {}", region.code()))
+}
+
+pub fn package_family_bundle_detail_region_versioned_to(
+    family: ChartFamily,
+    work_dir: &Path,
+    bundled_families: &[(ChartFamily, &Path)],
+    output_dir: &Path,
+    region: Region,
+    manifest_version: &str,
+    artifact_version: &str,
+) -> anyhow::Result<PackageOutputRecord> {
+    let mut sources = vec![PackageChartSource {
+        spec: ChartSpec::for_family(family),
+        work_dir,
+    }];
+    sources.extend(
+        bundled_families
+            .iter()
+            .map(|(family, work_dir)| PackageChartSource {
+                spec: ChartSpec::for_family(*family),
+                work_dir,
+            }),
+    );
+    package_region_records_from_sources(
+        output_dir,
+        &sources,
+        &[region],
+        ChartPackageTier::Detail,
+        true,
+        manifest_version,
+        artifact_version,
+    )?
+    .into_iter()
+    .next()
+    .ok_or_else(|| anyhow::anyhow!("no detail package record generated for {}", region.code()))
 }
 
 pub fn package_family_wide_angle_versioned(
@@ -1673,7 +1714,7 @@ fn build_tiles_from_spec(
             "--processes".to_string(),
             cpu_jobs.to_string(),
             "-z".to_string(),
-            format!("0-{}", spec.max_zoom),
+            format!("0-{}", spec.detail_zoom()),
             "-r".to_string(),
             "near".to_string(),
             format!("{}.vrt", spec.chart_name),
@@ -1711,10 +1752,20 @@ fn package_regions_from_spec(
         work_dir,
         &sources,
         &regions,
+        ChartPackageTier::Regional,
         true,
         &manifest_cycle,
         &manifest_cycle,
     )?;
+    package_records.extend(package_region_records_from_sources(
+        work_dir,
+        &sources,
+        &regions,
+        ChartPackageTier::Detail,
+        true,
+        &manifest_cycle,
+        &manifest_cycle,
+    )?);
     package_records.push(package_wide_angle_record_from_sources(
         work_dir,
         &sources,
@@ -1734,10 +1785,19 @@ fn package_regions_from_spec(
     })
 }
 
+fn chart_package_tier_filename_token(tier: ChartPackageTier) -> &'static str {
+    match tier {
+        ChartPackageTier::Regional => "",
+        ChartPackageTier::Detail => "_DETAIL",
+        ChartPackageTier::Wide => unreachable!("wide chart packages use a separate package path"),
+    }
+}
+
 fn package_region_records_from_sources(
     output_dir: &Path,
     sources: &[PackageChartSource<'_>],
     regions: &[Region],
+    tier: ChartPackageTier,
     produce_records: bool,
     manifest_version: &str,
     artifact_version: &str,
@@ -1758,15 +1818,17 @@ fn package_region_records_from_sources(
 
     for region in regions {
         let manifest_name = format!(
-            "{}_{}_{}.manifest",
+            "{}_{}{}_{}.manifest",
             region.code(),
             primary.spec.chart_name,
+            chart_package_tier_filename_token(tier),
             artifact_version
         );
         let zip_name = format!(
-            "{}_{}_{}.zip",
+            "{}_{}{}_{}.zip",
             region.code(),
             primary.spec.chart_name,
+            chart_package_tier_filename_token(tier),
             artifact_version
         );
         let manifest_path = output_dir.join(&manifest_name);
@@ -1780,7 +1842,7 @@ fn package_region_records_from_sources(
         let mut selected = Vec::<(String, PathBuf)>::new();
         for (source, paths) in &tile_paths {
             for tile_path in paths {
-                if tile_belongs_to_region(tile_path, region) {
+                if tile_belongs_to_region_tier(tile_path, region, source.spec, tier) {
                     selected.push((tile_path.clone(), source.work_dir.join(tile_path)));
                 }
             }
@@ -1805,20 +1867,24 @@ fn package_region_records_from_sources(
             .with_context(|| format!("failed to write {}", manifest_path.display()))?;
 
         let package_id = manifest_name.trim_end_matches(".manifest");
-        let reference_groups = sources
-            .iter()
-            .map(|source| {
-                let assets = chart_reference_assets_for_package(source.work_dir, Some(region))?;
-                let manifest = write_chart_reference_manifest(
-                    output_dir,
-                    source.spec.family,
-                    package_id,
-                    &assets,
-                    source.spec.family == primary.spec.family,
-                )?;
-                Ok((*source, assets, manifest))
-            })
-            .collect::<anyhow::Result<Vec<_>>>()?;
+        let reference_groups = if tier == ChartPackageTier::Regional {
+            sources
+                .iter()
+                .map(|source| {
+                    let assets = chart_reference_assets_for_package(source.work_dir, Some(region))?;
+                    let manifest = write_chart_reference_manifest(
+                        output_dir,
+                        source.spec.family,
+                        package_id,
+                        &assets,
+                        source.spec.family == primary.spec.family,
+                    )?;
+                    Ok((*source, assets, manifest))
+                })
+                .collect::<anyhow::Result<Vec<_>>>()?
+        } else {
+            Vec::new()
+        };
 
         write_chart_package_zip(
             &zip_path,
@@ -1829,7 +1895,7 @@ fn package_region_records_from_sources(
         )?;
 
         if produce_records {
-            let metadata = chart_package_metadata(false, selected.len() as u64, &included_sources);
+            let metadata = chart_package_metadata(tier, selected.len() as u64, &included_sources);
             package_records.push(PackageOutputRecord {
                 label: primary.spec.family.capture_label().to_string(),
                 chart: Some(primary.spec.chart_name.to_string()),
@@ -1921,7 +1987,11 @@ fn package_wide_angle_record_from_sources(
     )?;
 
     if produce_record {
-        let metadata = chart_package_metadata(true, selected.len() as u64, &included_sources);
+        let metadata = chart_package_metadata(
+            ChartPackageTier::Wide,
+            selected.len() as u64,
+            &included_sources,
+        );
         Ok(PackageOutputRecord {
             label: primary.spec.family.capture_label().to_string(),
             chart: Some(primary.spec.chart_name.to_string()),
@@ -2098,6 +2168,23 @@ fn tile_belongs_to_region(tile_path: &str, region: &Region) -> bool {
     })
 }
 
+fn tile_belongs_to_region_tier(
+    tile_path: &str,
+    region: &Region,
+    spec: ChartSpec,
+    tier: ChartPackageTier,
+) -> bool {
+    let Some((zoom, _, _)) = tile_path_xyz(tile_path) else {
+        return false;
+    };
+    let zoom_matches = match tier {
+        ChartPackageTier::Regional => zoom > FULL_COVERAGE_ZOOM && zoom <= spec.base_max_zoom,
+        ChartPackageTier::Detail => zoom == spec.detail_zoom(),
+        ChartPackageTier::Wide => unreachable!("wide packages use the wide-angle tile selector"),
+    };
+    zoom_matches && tile_belongs_to_region(tile_path, region)
+}
+
 fn tile_overlaps_region_bounds(
     tile_lon_min: f64,
     tile_lat_min: f64,
@@ -2145,11 +2232,16 @@ fn tile_path_xyz(tile_path: &str) -> Option<(u32, u32, u32)> {
 }
 
 fn chart_package_metadata(
-    is_wide_angle: bool,
+    tier: ChartPackageTier,
     tile_count: u64,
     sources: &[PackageChartSource<'_>],
 ) -> BTreeMap<String, serde_json::Value> {
+    let is_wide_angle = tier == ChartPackageTier::Wide;
     let mut metadata = BTreeMap::from([
+        (
+            CHART_PACKAGE_TIER_METADATA_KEY.to_string(),
+            serde_json::Value::from(tier.as_str()),
+        ),
         (
             "wide_angle_region_id".to_string(),
             serde_json::Value::from(WIDE_ANGLE_REGION_ID),
@@ -2179,6 +2271,36 @@ fn chart_package_metadata(
         "tile_count".to_string(),
         serde_json::Value::from(tile_count),
     );
+    if !is_wide_angle {
+        let min_zoom = if tier == ChartPackageTier::Detail {
+            sources
+                .iter()
+                .map(|source| source.spec.detail_zoom())
+                .min()
+                .unwrap_or(FULL_COVERAGE_ZOOM + 1)
+        } else {
+            FULL_COVERAGE_ZOOM + 1
+        };
+        let max_zoom = sources
+            .iter()
+            .map(|source| {
+                if tier == ChartPackageTier::Detail {
+                    source.spec.detail_zoom()
+                } else {
+                    source.spec.base_max_zoom
+                }
+            })
+            .max()
+            .unwrap_or(min_zoom);
+        metadata.insert(
+            "min_source_zoom".to_string(),
+            serde_json::Value::from(min_zoom),
+        );
+        metadata.insert(
+            "max_source_zoom".to_string(),
+            serde_json::Value::from(max_zoom),
+        );
+    }
     metadata.insert(
         "chart_collections".to_string(),
         serde_json::to_value(
@@ -2388,6 +2510,7 @@ mod tests {
     use super::{
         antimeridian_supplement_from_html, build_family_insets, build_family_legends,
         build_family_reference_catalog, copy_dir_recursive, inspect_raster,
+        package_family_bundle_detail_region_versioned_to,
         package_family_bundle_region_versioned_to, package_family_region_versioned_to,
         package_family_wide_angle_versioned_to, resolve_chart_input_filename,
         source_chart_coverage, tile_belongs_to_region, validate_chart_extract_layout,
@@ -2397,6 +2520,7 @@ mod tests {
     use preprocessor_core::{
         ChartFamily, ChartReferenceAssetRecord, ChartReferenceCoverage, Region,
     };
+    use product_contracts::{ChartPackageTier, CHART_PACKAGE_TIER_METADATA_KEY};
     use std::{
         fs,
         path::{Path, PathBuf},
@@ -2896,6 +3020,86 @@ mod tests {
                 {"family_id": "flyway", "chart_index": 2}
             ])
         );
+    }
+
+    #[test]
+    fn regional_base_and_detail_packages_partition_zoom_levels() {
+        let temp = TempDir::new("chart-detail-package");
+        let work_dir = temp.path.join("sec");
+        let output_dir = temp.path.join("packages");
+        let tile_paths = [
+            "tiles/0/7/6/70.webp",
+            "tiles/0/8/13/141.webp",
+            "tiles/0/10/52/564.webp",
+            "tiles/0/11/104/1128.webp",
+        ];
+        for tile_path in tile_paths {
+            let path = work_dir.join(tile_path);
+            fs::create_dir_all(path.parent().unwrap()).unwrap();
+            fs::write(path, tile_path.as_bytes()).unwrap();
+        }
+        fs::write(
+            work_dir.join(CHART_REFERENCE_CATALOG_NAME),
+            serde_json::to_vec(&ChartReferenceCatalog {
+                schema_version: 1,
+                family_id: "sec".to_string(),
+                assets: Vec::new(),
+            })
+            .unwrap(),
+        )
+        .unwrap();
+
+        let base = package_family_bundle_region_versioned_to(
+            ChartFamily::Sec,
+            &work_dir,
+            &[],
+            &output_dir,
+            Region::Pac,
+            "2607",
+            "SEC1_2607",
+        )
+        .unwrap();
+        let detail = package_family_bundle_detail_region_versioned_to(
+            ChartFamily::Sec,
+            &work_dir,
+            &[],
+            &output_dir,
+            Region::Pac,
+            "2607",
+            "SEC1_2607",
+        )
+        .unwrap();
+
+        let base_entries = zip_entries(&output_dir.join(&base.zip));
+        let detail_entries = zip_entries(&output_dir.join(&detail.zip));
+        assert!(base_entries.iter().any(|entry| entry == tile_paths[1]));
+        assert!(base_entries.iter().any(|entry| entry == tile_paths[2]));
+        assert!(!base_entries.iter().any(|entry| entry == tile_paths[0]));
+        assert!(!base_entries.iter().any(|entry| entry == tile_paths[3]));
+        assert_eq!(
+            detail_entries
+                .iter()
+                .filter(|entry| entry.ends_with(".webp"))
+                .map(String::as_str)
+                .collect::<Vec<_>>(),
+            vec![tile_paths[3]]
+        );
+        assert!(!detail_entries
+            .iter()
+            .any(|entry| entry.starts_with("chart-references/")));
+        assert_eq!(
+            base.metadata[CHART_PACKAGE_TIER_METADATA_KEY],
+            ChartPackageTier::Regional.as_str()
+        );
+        assert_eq!(
+            detail.metadata[CHART_PACKAGE_TIER_METADATA_KEY],
+            ChartPackageTier::Detail.as_str()
+        );
+        assert_eq!(base.metadata["max_source_zoom"], 10);
+        assert_eq!(detail.metadata["min_source_zoom"], 11);
+        assert_eq!(detail.metadata["max_source_zoom"], 11);
+        assert!(detail.zip.contains("_DETAIL_"));
+        assert!(detail.manifest.contains("_DETAIL_"));
     }
 
     fn zip_entries(path: &Path) -> Vec<String> {

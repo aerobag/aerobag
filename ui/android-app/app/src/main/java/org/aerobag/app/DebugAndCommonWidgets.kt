@@ -79,7 +79,6 @@ import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
 import androidx.compose.foundation.lazy.grid.items as lazyGridItems
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
-import androidx.compose.material3.Button
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.Checkbox
@@ -330,9 +329,20 @@ import kotlin.math.min
 import kotlin.math.pow
 import kotlin.math.sin
 
+private var activeActionToast: Toast? = null
+
+internal fun showActionToast(context: Context, message: String?, long: Boolean = false) {
+    val text = message?.trim()?.takeIf { it.isNotEmpty() } ?: return
+    activeActionToast?.cancel()
+    activeActionToast = Toast.makeText(
+        context.applicationContext,
+        text,
+        if (long) Toast.LENGTH_LONG else Toast.LENGTH_SHORT,
+    ).also(Toast::show)
+}
+
 internal fun showDisabledActionToast(context: Context, reason: String?) {
-    val message = reason?.trim()?.takeIf { it.isNotEmpty() } ?: return
-    Toast.makeText(context, message, Toast.LENGTH_SHORT).show()
+    showActionToast(context, reason)
 }
 
 @Composable
@@ -340,7 +350,6 @@ internal fun CommonDebugPanel(
     uptimeLabel: String,
     debugState: UiDebugState,
     onDebugFlagChange: (String, Boolean) -> Unit,
-    onArmLayerNavKvFault: () -> Unit,
 ) {
     Text("up $uptimeLabel", style = MaterialTheme.typography.labelSmall, color = Color(0xFF52656D))
     DebugCheckbox("tile labels", debugState.tileLabels) { onDebugFlagChange("tile_labels", it) }
@@ -353,14 +362,6 @@ internal fun CommonDebugPanel(
         onDebugFlagChange("bad_autopilot", it)
     }
     DebugCheckbox("capture GPS samples", debugState.gpsCapture) { onDebugFlagChange("gps_capture", it) }
-    if (BuildConfig.DEBUG) {
-        Button(
-            onClick = onArmLayerNavKvFault,
-            modifier = Modifier.testTag("parity:debug-action:arm-layer-nav-kv-fault"),
-        ) {
-            Text("Arm layer nav fault")
-        }
-    }
 }
 
 @Composable

@@ -7,6 +7,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use serde::{Deserialize, Serialize};
 
 pub const CHART_HIGH_RESOLUTION_PRODUCT_ID: &str = "chart-high-resolution";
+const WIDE_COVERAGE_REGION_ID: &str = "wide";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Ord, PartialOrd)]
 #[serde(rename_all = "snake_case")]
@@ -359,6 +360,10 @@ pub struct OfflinePackagesUiRow {
     #[serde(default)]
     pub label: String,
     pub selection: OfflinePackageSelection,
+    #[serde(default)]
+    pub selection_event: Option<OfflinePackagesEvent>,
+    #[serde(default)]
+    pub help_text: Option<String>,
     pub fetch_count: usize,
     pub gc_count: usize,
     pub pause_count: usize,
@@ -405,6 +410,7 @@ pub struct OfflinePackagesUiState {
     pub clock_options: Vec<OfflinePackagesClockOption>,
     pub all_packages: OfflinePackagesUiRow,
     pub core_products: Vec<OfflinePackagesUiRow>,
+    pub zoom_levels: Vec<OfflinePackagesUiRow>,
     pub regions: Vec<OfflinePackagesUiRow>,
     pub products: Vec<OfflinePackagesUiRow>,
 }
@@ -597,7 +603,6 @@ struct AvailablePackageArtifact {
     filename: String,
     product_id: String,
     region_id: Option<String>,
-    wide_angle: bool,
     chart_package_tier: Option<product_contracts::ChartPackageTier>,
     effective_at_epoch_ms: Option<i64>,
     expires_at_epoch_ms: Option<i64>,
@@ -1427,7 +1432,7 @@ fn project_offline_packages_ui_state(
     suppressed_fetch_filenames: &[String],
     sync_progress: Option<&OfflinePackagesSyncProgress>,
 ) -> OfflinePackagesUiState {
-    let bundle = resolve_cycle_bundle_manifest(
+    let active_bundle = resolve_cycle_bundle_manifest(
         discovery_manifests,
         bundle_manifests_by_filename,
         now_epoch_ms,
@@ -1435,7 +1440,7 @@ fn project_offline_packages_ui_state(
     let plan = plan_offline_packages(&PackageManagementInput {
         now_epoch_ms,
         preferences: state.preferences.clone(),
-        bundle,
+        bundle: active_bundle.clone(),
         installed: installed.to_vec(),
         forced_gc_installed_filenames: forced_gc_installed_filenames.to_vec(),
         suppressed_fetch_filenames: suppressed_fetch_filenames.to_vec(),
@@ -1444,11 +1449,7 @@ fn project_offline_packages_ui_state(
         &PackageManagementInput {
             now_epoch_ms,
             preferences: state.preferences.clone(),
-            bundle: resolve_cycle_bundle_manifest(
-                discovery_manifests,
-                bundle_manifests_by_filename,
-                now_epoch_ms,
-            ),
+            bundle: active_bundle.clone(),
             installed: installed.to_vec(),
             forced_gc_installed_filenames: forced_gc_installed_filenames.to_vec(),
             suppressed_fetch_filenames: suppressed_fetch_filenames.to_vec(),
@@ -1471,21 +1472,14 @@ fn project_offline_packages_ui_state(
             "all-packages".to_string(),
             "All packages".to_string(),
             OfflinePackageSelection::Play,
+            None,
+            None,
             Some(&rows.all_packages),
         ),
         core_products: {
-            let active_bundle = resolve_cycle_bundle_manifest(
-                discovery_manifests,
-                bundle_manifests_by_filename,
-                now_epoch_ms,
-            );
             let mut ids = BTreeSet::new();
             for pkg in &active_bundle.packages {
-                if pkg.region_id.is_none()
-                    && !product_ids
-                        .iter()
-                        .any(|product_id| product_id == &pkg.family_id)
-                {
+                if pkg.region_id.is_none() {
                     ids.insert(pkg.family_id.clone());
                 }
             }
@@ -1497,10 +1491,63 @@ fn project_offline_packages_ui_state(
                         id.clone(),
                         offline_core_product_label(&id),
                         OfflinePackageSelection::Play,
+                        None,
+                        offline_core_product_help_text(&id),
                         row,
                     )
                 })
                 .collect()
+        },
+        zoom_levels: {
+            let mut zoom_levels = Vec::new();
+            if active_bundle
+                .packages
+                .iter()
+                .any(|pkg| pkg.region_id.as_deref() == Some(WIDE_COVERAGE_REGION_ID))
+                || rows.zoom_levels.contains_key(WIDE_COVERAGE_REGION_ID)
+            {
+                let details = rows.zoom_levels.get(WIDE_COVERAGE_REGION_ID);
+                zoom_levels.push(offline_packages_ui_row(
+                    WIDE_COVERAGE_REGION_ID.to_string(),
+                    "Wide all-region coverage".to_string(),
+                    automatic_row_selection(details),
+                    None,
+                    Some(
+                        "Automatically included for each selected product when any region is selected."
+                            .to_string(),
+                    ),
+                    details,
+                ));
+            }
+            if product_ids
+                .iter()
+                .any(|id| id == CHART_HIGH_RESOLUTION_PRODUCT_ID)
+                || rows
+                    .zoom_levels
+                    .contains_key(CHART_HIGH_RESOLUTION_PRODUCT_ID)
+            {
+                zoom_levels.push(offline_packages_ui_row(
+                    CHART_HIGH_RESOLUTION_PRODUCT_ID.to_string(),
+                    "High resolution charts".to_string(),
+                    state
+                        .preferences
+                        .products
+                        .get(CHART_HIGH_RESOLUTION_PRODUCT_ID)
+                        .copied()
+                        .unwrap_or_else(|| {
+                            default_product_selection(CHART_HIGH_RESOLUTION_PRODUCT_ID)
+                        }),
+                    Some(OfflinePackagesEvent::CycleProduct {
+                        id: CHART_HIGH_RESOLUTION_PRODUCT_ID.to_string(),
+                    }),
+                    Some(
+                        "Adds one more layer of tiles at the cost of downloading more data."
+                            .to_string(),
+                    ),
+                    rows.zoom_levels.get(CHART_HIGH_RESOLUTION_PRODUCT_ID),
+                ));
+            }
+            zoom_levels
         },
         regions: region_ids
             .iter()
@@ -1514,12 +1561,15 @@ fn project_offline_packages_ui_state(
                         .get(id)
                         .copied()
                         .unwrap_or(OfflinePackageSelection::Play),
+                    Some(OfflinePackagesEvent::CycleRegion { id: id.clone() }),
+                    Some(offline_region_help_text(id)),
                     rows.regions.get(id),
                 )
             })
             .collect(),
         products: product_ids
             .iter()
+            .filter(|id| id.as_str() != CHART_HIGH_RESOLUTION_PRODUCT_ID)
             .map(|id| {
                 offline_packages_ui_row(
                     id.clone(),
@@ -1530,6 +1580,8 @@ fn project_offline_packages_ui_state(
                         .get(id)
                         .copied()
                         .unwrap_or_else(|| default_product_selection(id)),
+                    Some(OfflinePackagesEvent::CycleProduct { id: id.clone() }),
+                    Some(offline_product_help_text(id)),
                     rows.products.get(id),
                 )
             })
@@ -1568,7 +1620,9 @@ fn offline_package_catalog_dimensions(
     {
         for pkg in &bundle.packages {
             if let Some(region_id) = pkg.region_id.as_deref() {
-                region_ids.insert(region_id.to_string());
+                if region_id != WIDE_COVERAGE_REGION_ID {
+                    region_ids.insert(region_id.to_string());
+                }
                 product_ids.insert(pkg.family_id.clone());
                 if chart_package_is_detail(pkg) {
                     product_ids.insert(CHART_HIGH_RESOLUTION_PRODUCT_ID.to_string());
@@ -1638,6 +1692,32 @@ fn offline_product_label(id: &str) -> String {
     .to_string()
 }
 
+fn offline_region_help_text(id: &str) -> String {
+    format!(
+        "Select {} region products. Enable Offline Regions to display coverage areas.",
+        offline_region_label(id)
+    )
+}
+
+fn offline_product_help_text(id: &str) -> String {
+    match id {
+        "sec" => "VFR Sectional Aeronautical Charts.".to_string(),
+        "tac" => "VFR Terminal Area Charts for major metropolitan areas.".to_string(),
+        "shaded-relief" => {
+            "Uncluttered base maps useful for vector-only and track-up displays.".to_string()
+        }
+        "terrain" => "Terrain data, used for the terrain warning layer, SPOT altitude measurements, and ownship AGL."
+            .to_string(),
+        "enr-l" => "Low-altitude IFR enroute charts.".to_string(),
+        "enr-h" => "High-altitude IFR enroute charts.".to_string(),
+        "tpp" =>
+            "Approach plates, airport diagrams, departure and arrival procedures, and terminal minima."
+                .to_string(),
+        "csup" => "Chart Supplement airport and facility directory pages.".to_string(),
+        _ => format!("{} packages.", offline_product_label(id)),
+    }
+}
+
 fn offline_product_sort_order(id: &str) -> usize {
     match id {
         "sec" => 0,
@@ -1656,12 +1736,23 @@ fn offline_product_sort_order(id: &str) -> usize {
 fn offline_core_product_label(id: &str) -> String {
     match id {
         "nav-db" => "NAV DB",
+        "world-basemap" => "WORLD BASEMAP",
         "vectors" => "VECTORS",
         "geo" => "GEO",
         "terrain" => "TERRAIN",
         other => return fallback_dimension_label(other),
     }
     .to_string()
+}
+
+fn offline_core_product_help_text(id: &str) -> Option<String> {
+    match id {
+        "nav-db" => Some(
+            "Required navigation data for airports, fixes, airways, and procedures.".to_string(),
+        ),
+        "world-basemap" => Some("Lightweight base map for the entire globe.".to_string()),
+        _ => None,
+    }
 }
 
 fn fallback_dimension_label(id: &str) -> String {
@@ -1741,6 +1832,7 @@ struct PlanEntryAccumulator {
 struct PlanRowsByDimension {
     all_packages: DimensionPlanDetails,
     core_products: BTreeMap<String, DimensionPlanDetails>,
+    zoom_levels: BTreeMap<String, DimensionPlanDetails>,
     regions: BTreeMap<String, DimensionPlanDetails>,
     products: BTreeMap<String, DimensionPlanDetails>,
 }
@@ -1749,6 +1841,8 @@ fn offline_packages_ui_row(
     id: String,
     label: String,
     selection: OfflinePackageSelection,
+    selection_event: Option<OfflinePackagesEvent>,
+    help_text: Option<String>,
     details: Option<&DimensionPlanDetails>,
 ) -> OfflinePackagesUiRow {
     let plan_entries = details.map_or_else(Vec::new, |details| {
@@ -1793,6 +1887,8 @@ fn offline_packages_ui_row(
         id,
         label,
         selection,
+        selection_event,
+        help_text,
         fetch_count: details.map_or(0, |details| details.fetch_count),
         gc_count: details.map_or(0, |details| details.gc_count),
         pause_count: details.map_or(0, |details| details.pause_count),
@@ -1802,6 +1898,24 @@ fn offline_packages_ui_row(
         planned_total_size_label: format_package_size_label(planned_total_size_bytes),
         planned_size_change_visible: planned_delta_bytes != 0,
         sync_progress_per_mille,
+    }
+}
+
+fn automatic_row_selection(details: Option<&DimensionPlanDetails>) -> OfflinePackageSelection {
+    let Some(details) = details else {
+        return OfflinePackageSelection::Unselected;
+    };
+    if details.plan_groups.keys().any(|action| {
+        matches!(
+            action,
+            OfflinePackagesUiPlanAction::Keep | OfflinePackagesUiPlanAction::Fetch
+        )
+    }) {
+        OfflinePackageSelection::Play
+    } else if details.pause_count > 0 {
+        OfflinePackageSelection::Pause
+    } else {
+        OfflinePackageSelection::Unselected
     }
 }
 
@@ -2026,14 +2140,22 @@ fn apply_to_package_dimensions(
 ) {
     mutate(&mut rows.all_packages);
     if let Some(region_id) = &pkg.region_id {
-        mutate(rows.regions.entry(region_id.clone()).or_default());
+        if region_id == WIDE_COVERAGE_REGION_ID {
+            mutate(
+                rows.zoom_levels
+                    .entry(WIDE_COVERAGE_REGION_ID.to_string())
+                    .or_default(),
+            );
+        } else {
+            mutate(rows.regions.entry(region_id.clone()).or_default());
+        }
+        mutate(rows.products.entry(pkg.family_id.clone()).or_default());
     } else {
         mutate(rows.core_products.entry(pkg.family_id.clone()).or_default());
     }
-    mutate(rows.products.entry(pkg.family_id.clone()).or_default());
     if chart_package_is_detail(pkg) {
         mutate(
-            rows.products
+            rows.zoom_levels
                 .entry(CHART_HIGH_RESOLUTION_PRODUCT_ID.to_string())
                 .or_default(),
         );
@@ -2267,11 +2389,6 @@ fn bundle_package_to_artifact(pkg: &BundlePackageArtifact) -> Option<AvailablePa
             filename: pkg.filename.clone(),
             product_id: pkg.family_id.clone(),
             region_id: pkg.region_id.clone(),
-            wide_angle: pkg
-                .metadata
-                .as_ref()
-                .and_then(|metadata| metadata.wide_angle)
-                .unwrap_or(false),
             chart_package_tier: pkg
                 .metadata
                 .as_ref()
@@ -2397,7 +2514,7 @@ fn selected_state(
     input: &PackageManagementInput,
     artifact: &AvailablePackageArtifact,
 ) -> OfflinePackageSelection {
-    if artifact.wide_angle {
+    if artifact.region_id.as_deref() == Some(WIDE_COVERAGE_REGION_ID) {
         return wide_angle_selected_state(input, artifact);
     }
     if artifact.region_id.is_none() {
@@ -2675,6 +2792,8 @@ mod tests {
             "nw".to_string(),
             "Northwest".to_string(),
             OfflinePackageSelection::Play,
+            None,
+            None,
             rows.regions.get("nw"),
         );
         assert_eq!(
@@ -2748,6 +2867,8 @@ mod tests {
             "world-basemap".to_string(),
             "WORLD BASEMAP".to_string(),
             OfflinePackageSelection::Play,
+            None,
+            None,
             rows.core_products.get("world-basemap"),
         );
         assert_eq!(row.fetch_count, 1);
@@ -2769,6 +2890,33 @@ mod tests {
         let plan = plan_offline_packages(&input);
 
         assert_eq!(plan.fetch, vec!["TAC_WIDE_2604"]);
+    }
+
+    #[test]
+    fn wide_region_policy_includes_terrain_without_optional_chart_metadata() {
+        let input = PackageManagementInput {
+            now_epoch_ms: 200,
+            preferences: default_offline_package_preferences(["nw"], ["terrain"]),
+            bundle: BundleManifest {
+                packages: vec![pkg(
+                    "TERRAIN_WIDE",
+                    "terrain",
+                    Some(WIDE_COVERAGE_REGION_ID),
+                    None,
+                    Some("2099-01-01"),
+                )],
+            },
+            installed: vec![],
+            forced_gc_installed_filenames: vec![],
+            suppressed_fetch_filenames: vec![],
+        };
+
+        let plan = plan_offline_packages(&input);
+
+        assert_eq!(plan.fetch, vec!["TERRAIN_WIDE"]);
+        let rows = plan_rows_by_dimension(&input, &plan, &BTreeMap::new(), None);
+        assert_eq!(rows.zoom_levels[WIDE_COVERAGE_REGION_ID].fetch_count, 1);
+        assert!(!rows.regions.contains_key(WIDE_COVERAGE_REGION_ID));
     }
 
     #[test]
@@ -2983,7 +3131,7 @@ mod tests {
         assert_eq!(play.fetch, vec!["NW_TAC_BASE", "NW_TAC_DETAIL"]);
         let rows = plan_rows_by_dimension(&play_input, &play, &BTreeMap::new(), None);
         assert_eq!(
-            rows.products[CHART_HIGH_RESOLUTION_PRODUCT_ID].fetch_count,
+            rows.zoom_levels[CHART_HIGH_RESOLUTION_PRODUCT_ID].fetch_count,
             1
         );
 
@@ -3020,6 +3168,147 @@ mod tests {
         });
         assert_eq!(deleted.retain_installed, vec!["NW_TAC_BASE.zip"]);
         assert_eq!(deleted.gc, vec!["NW_TAC_DETAIL.zip"]);
+    }
+
+    #[test]
+    fn offline_package_ui_owns_sections_actions_and_help_in_core() {
+        let discovery = discovery_manifest_with_nav_contract(crate::REQUIRED_NAV_DB_CONTRACT_ID);
+        let mut shaded = pkg(
+            "NW_SHADED",
+            "shaded-relief",
+            Some("nw"),
+            None,
+            Some("2099-01-01"),
+        );
+        shaded.metadata = Some(BundlePackageMetadata {
+            chart_package_tier: Some(product_contracts::ChartPackageTier::Regional),
+            full_coverage_zoom: None,
+            wide_angle_region_id: Some(WIDE_COVERAGE_REGION_ID.to_string()),
+            wide_angle_max_zoom: Some(7),
+            wide_angle: Some(false),
+            min_source_zoom: Some(8),
+            max_source_zoom: Some(11),
+            tile_count: Some(100),
+        });
+        let bundles = BTreeMap::from([(
+            "bundle_cycle_2605.json".to_string(),
+            BundleManifest {
+                packages: vec![
+                    pkg("NAV_DB", "nav-db", None, None, Some("2099-01-01")),
+                    pkg(
+                        "WORLD_BASEMAP",
+                        "world-basemap",
+                        None,
+                        None,
+                        Some("2099-01-01"),
+                    ),
+                    pkg("NW_SEC", "sec", Some("nw"), None, Some("2099-01-01")),
+                    detail_pkg("NW_SEC_DETAIL", "sec", "nw"),
+                    shaded,
+                    pkg(
+                        "TERRAIN_WIDE",
+                        "terrain",
+                        Some(WIDE_COVERAGE_REGION_ID),
+                        None,
+                        Some("2099-01-01"),
+                    ),
+                ],
+            },
+        )]);
+
+        let result = initialize_offline_packages(&OfflinePackagesInitInput {
+            state: None,
+            now_epoch_ms: 200,
+            discovery_manifests: vec![discovery],
+            bundle_manifests_by_filename: bundles,
+            installed: vec![],
+            forced_gc_installed_filenames: vec![],
+            suppressed_fetch_filenames: vec![],
+        });
+
+        assert!(!result
+            .state
+            .preferences
+            .regions
+            .contains_key(WIDE_COVERAGE_REGION_ID));
+        assert_eq!(
+            result
+                .ui_state
+                .core_products
+                .iter()
+                .map(|row| row.id.as_str())
+                .collect::<Vec<_>>(),
+            vec!["nav-db", "world-basemap"]
+        );
+        assert!(result
+            .ui_state
+            .core_products
+            .iter()
+            .all(|row| row.selection_event.is_none()));
+        assert_eq!(
+            result
+                .ui_state
+                .products
+                .iter()
+                .map(|row| row.id.as_str())
+                .collect::<Vec<_>>(),
+            vec!["sec", "shaded-relief", "terrain"]
+        );
+        assert_eq!(
+            result
+                .ui_state
+                .regions
+                .iter()
+                .map(|row| row.id.as_str())
+                .collect::<Vec<_>>(),
+            vec!["nw"]
+        );
+        assert_eq!(
+            result.ui_state.regions[0].help_text.as_deref(),
+            Some(
+                "Select Northwest region products. Enable Offline Regions to display coverage areas."
+            )
+        );
+        assert_eq!(
+            result
+                .ui_state
+                .zoom_levels
+                .iter()
+                .map(|row| row.label.as_str())
+                .collect::<Vec<_>>(),
+            vec!["Wide all-region coverage", "High resolution charts"]
+        );
+        assert!(result.ui_state.zoom_levels[0].selection_event.is_none());
+        assert_eq!(
+            result.ui_state.zoom_levels[1].selection_event,
+            Some(OfflinePackagesEvent::CycleProduct {
+                id: CHART_HIGH_RESOLUTION_PRODUCT_ID.to_string(),
+            })
+        );
+        assert_eq!(
+            result
+                .ui_state
+                .products
+                .iter()
+                .find(|row| row.id == "shaded-relief")
+                .and_then(|row| row.help_text.as_deref()),
+            Some("Uncluttered base maps useful for vector-only and track-up displays.")
+        );
+        assert!(result.ui_state.products.iter().all(|row| row
+            .help_text
+            .as_deref()
+            .is_some_and(|text| !text.is_empty())));
+        assert_eq!(
+            result
+                .ui_state
+                .products
+                .iter()
+                .find(|row| row.id == "terrain")
+                .and_then(|row| row.help_text.as_deref()),
+            Some(
+                "Terrain data, used for the terrain warning layer, SPOT altitude measurements, and ownship AGL."
+            )
+        );
     }
 
     #[test]
@@ -3115,12 +3404,16 @@ mod tests {
             "nw".to_string(),
             "Northwest".to_string(),
             OfflinePackageSelection::Play,
+            None,
+            None,
             rows.regions.get("nw"),
         );
         let all = offline_packages_ui_row(
             "all-packages".to_string(),
             "All packages".to_string(),
             OfflinePackageSelection::Play,
+            None,
+            None,
             Some(&rows.all_packages),
         );
 
@@ -3154,6 +3447,8 @@ mod tests {
                 "all-packages".to_string(),
                 "All packages".to_string(),
                 OfflinePackageSelection::Play,
+                None,
+                None,
                 Some(&replanned_rows.all_packages),
             )
             .sync_progress_per_mille,
@@ -3199,6 +3494,8 @@ mod tests {
                 "nw".to_string(),
                 "Northwest".to_string(),
                 OfflinePackageSelection::Play,
+                None,
+                None,
                 None,
             )
             .planned_size_change_visible
@@ -3268,6 +3565,8 @@ mod tests {
                 "nw".to_string(),
                 "Northwest".to_string(),
                 OfflinePackageSelection::Play,
+                None,
+                None,
                 rows.regions.get("nw"),
             )
             .sync_progress_per_mille,
@@ -3598,7 +3897,7 @@ mod tests {
             .ui_state
             .planner_ui_state
             .unwrap()
-            .products
+            .core_products
             .into_iter()
             .find(|row| row.id == "nav-db")
             .unwrap();

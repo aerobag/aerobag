@@ -724,7 +724,26 @@ internal fun OfflinePackagesPanel(
             ) {
                 if (uiState.coreProducts.isNotEmpty()) {
                     item("core-products") {
-                        OfflinePackageCoreSection(rows = uiState.coreProducts)
+                        OfflinePackageSection(
+                            title = "CORE",
+                            testTagPrefix = "parity:offline-core",
+                            rows = uiState.coreProducts,
+                            enabled = plannerInteractionsEnabled,
+                            disabledReason = plannerInteractionsDisabledReason,
+                            onRowClick = onRowClick,
+                        )
+                    }
+                }
+                if (uiState.zoomLevels.isNotEmpty()) {
+                    item("zoom-levels") {
+                        OfflinePackageSection(
+                            title = "ZOOM LEVELS",
+                            testTagPrefix = "parity:offline-zoom-level",
+                            rows = uiState.zoomLevels,
+                            enabled = plannerInteractionsEnabled,
+                            disabledReason = plannerInteractionsDisabledReason,
+                            onRowClick = onRowClick,
+                        )
                     }
                 }
                 item("regions") {
@@ -734,9 +753,7 @@ internal fun OfflinePackagesPanel(
                         rows = uiState.regions,
                         enabled = plannerInteractionsEnabled,
                         disabledReason = plannerInteractionsDisabledReason,
-                        onRowClick = { id ->
-                            onRowClick(OfflinePackagesEventWire(kind = "cycle_region", id = id))
-                        },
+                        onRowClick = onRowClick,
                     )
                 }
                 item("products") {
@@ -746,9 +763,7 @@ internal fun OfflinePackagesPanel(
                         rows = uiState.products,
                         enabled = plannerInteractionsEnabled,
                         disabledReason = plannerInteractionsDisabledReason,
-                        onRowClick = { id ->
-                            onRowClick(OfflinePackagesEventWire(kind = "cycle_product", id = id))
-                        },
+                        onRowClick = onRowClick,
                     )
                 }
             }
@@ -767,7 +782,6 @@ internal fun OfflinePackageAllSection(
             row = row,
             enabled = false,
             onCycleClick = null,
-            showSelectionIcon = false,
             backgroundOverride = lerp(uiTheme.controls.buttonUnchecked, Color.Gray, 0.34f),
         )
     }
@@ -780,7 +794,7 @@ internal fun OfflinePackageSection(
     rows: List<OfflinePackagesUiRowWire>,
     enabled: Boolean,
     disabledReason: String? = null,
-    onRowClick: (String) -> Unit,
+    onRowClick: (OfflinePackagesEventWire) -> Unit,
 ) {
     val uiTheme = LocalAerobagUiTheme.current
     MenuPanel(modifier = Modifier.fillMaxWidth()) {
@@ -792,59 +806,19 @@ internal fun OfflinePackageSection(
             color = uiTheme.controls.panelMuted,
         )
         rows.forEach { row ->
-            OfflinePackageSelectionRow(
-                label = row.label,
-                row = row,
-                testTag = "$testTagPrefix:${row.id}",
-                enabled = enabled,
-                disabledReason = disabledReason,
-                onClick = { onRowClick(row.id) },
-            )
-        }
-    }
-}
-
-@Composable
-internal fun OfflinePackageCoreSection(
-    rows: List<OfflinePackagesUiRowWire>,
-) {
-    val uiTheme = LocalAerobagUiTheme.current
-    MenuPanel(modifier = Modifier.fillMaxWidth()) {
-        Text(
-            text = "CORE",
-            modifier = Modifier.padding(horizontal = 9.dp, vertical = 5.dp),
-            style = MaterialTheme.typography.labelMedium,
-            fontWeight = FontWeight.ExtraBold,
-            color = uiTheme.controls.panelMuted,
-        )
-        rows.forEach { row ->
+            val selectionEvent = row.selectionEvent
             OfflinePackagePlanRow(
                 label = row.label,
                 row = row,
-                enabled = false,
-                onCycleClick = null,
+                testTag = "$testTagPrefix:${row.id}",
+                enabled = enabled && selectionEvent != null,
+                disabledReason = selectionEvent?.let { disabledReason },
+                onCycleClick = selectionEvent?.let { event ->
+                    { onRowClick(event) }
+                },
             )
         }
     }
-}
-
-@Composable
-internal fun OfflinePackageSelectionRow(
-    label: String,
-    row: OfflinePackagesUiRowWire,
-    testTag: String,
-    enabled: Boolean,
-    disabledReason: String? = null,
-    onClick: () -> Unit,
-) {
-    OfflinePackagePlanRow(
-        label = label,
-        row = row,
-        enabled = enabled,
-        disabledReason = disabledReason,
-        onCycleClick = onClick,
-        testTag = testTag,
-    )
 }
 
 @Composable
@@ -854,7 +828,6 @@ internal fun OfflinePackagePlanRow(
     enabled: Boolean,
     disabledReason: String? = null,
     onCycleClick: (() -> Unit)?,
-    showSelectionIcon: Boolean = true,
     backgroundOverride: Color? = null,
     testTag: String? = null,
 ) {
@@ -869,7 +842,7 @@ internal fun OfflinePackagePlanRow(
     Row(
         modifier = Modifier
             .fillMaxWidth()
-            .height(ThumbSize)
+            .height(ThumbSize * 1.32f)
             .then(testTag?.let { Modifier.testTag(it) } ?: Modifier)
             .clip(RoundedCornerShape(ThumbRadius))
             .background(background)
@@ -885,46 +858,79 @@ internal fun OfflinePackagePlanRow(
         verticalAlignment = Alignment.CenterVertically,
         horizontalArrangement = Arrangement.spacedBy(6.dp),
     ) {
-        if (showSelectionIcon) {
-            Box(
-                modifier = Modifier
-                    .size(ThumbSize * 0.46f)
-                    .clip(CircleShape)
-                    .then(testTag?.let { Modifier.testTag("$it:toggle") } ?: Modifier)
-                    .then(
-                        if (enabled && onCycleClick != null) {
-                            Modifier.clickable(
-                                indication = null,
-                                interactionSource = remember { MutableInteractionSource() },
-                            ) { onCycleClick() }
-                        } else {
-                            Modifier
-                                .alpha(0.58f)
-                                .then(
-                                    if (!disabledReason.isNullOrBlank()) {
-                                        Modifier.clickable(
-                                            indication = null,
-                                            interactionSource = remember { MutableInteractionSource() },
-                                        ) { showDisabledActionToast(context, disabledReason) }
-                                    } else {
-                                        Modifier
-                                    },
-                                )
-                        },
-                    ),
-                contentAlignment = Alignment.Center,
-            ) {
-                OfflinePackageSelectionIcon(selection = row.selection, modifier = Modifier.fillMaxSize())
+        Box(
+            modifier = Modifier.size(ThumbSize * 0.46f),
+            contentAlignment = Alignment.Center,
+        ) {
+            if (onCycleClick != null) {
+                Box(
+                    modifier = Modifier
+                        .fillMaxSize()
+                        .clip(CircleShape)
+                        .then(testTag?.let { Modifier.testTag("$it:toggle") } ?: Modifier)
+                        .then(
+                            if (enabled) {
+                                Modifier.clickable(
+                                    indication = null,
+                                    interactionSource = remember { MutableInteractionSource() },
+                                ) { onCycleClick() }
+                            } else {
+                                Modifier
+                                    .alpha(0.58f)
+                                    .then(
+                                        if (!disabledReason.isNullOrBlank()) {
+                                            Modifier.clickable(
+                                                indication = null,
+                                                interactionSource = remember { MutableInteractionSource() },
+                                            ) { showDisabledActionToast(context, disabledReason) }
+                                        } else {
+                                            Modifier
+                                        },
+                                    )
+                            },
+                        ),
+                    contentAlignment = Alignment.Center,
+                ) {
+                    OfflinePackageSelectionIcon(
+                        selection = row.selection,
+                        modifier = Modifier.fillMaxSize(),
+                    )
+                }
             }
         }
         Text(
             text = label,
             modifier = Modifier.width(ThumbSize * 1.72f),
-            style = MaterialTheme.typography.labelLarge,
+            style = MaterialTheme.typography.labelLarge.copy(lineHeight = 17.sp),
             color = uiTheme.controls.buttonFg,
-            maxLines = 1,
-            overflow = TextOverflow.Ellipsis,
+            maxLines = 3,
+            overflow = TextOverflow.Clip,
         )
+        Box(
+            modifier = Modifier.size(26.dp),
+            contentAlignment = Alignment.Center,
+        ) {
+            if (!row.helpText.isNullOrBlank()) {
+                Box(
+                    modifier = Modifier
+                        .fillMaxSize()
+                        .clip(CircleShape)
+                        .border(1.dp, uiTheme.controls.buttonFg, CircleShape)
+                        .clickable(
+                            indication = null,
+                            interactionSource = remember { MutableInteractionSource() },
+                        ) { showActionToast(context, row.helpText, long = true) },
+                    contentAlignment = Alignment.Center,
+                ) {
+                    Text(
+                        text = "?",
+                        style = MaterialTheme.typography.labelMedium,
+                        fontWeight = FontWeight.ExtraBold,
+                        color = uiTheme.controls.buttonFg,
+                    )
+                }
+            }
+        }
         OfflinePackagePlanSummary(
             entries = row.planEntries,
             modifier = Modifier.weight(1f),
@@ -941,6 +947,7 @@ internal fun OfflinePackagePlanSummary(
     entries: List<OfflinePackagesUiPlanEntryWire>,
     modifier: Modifier = Modifier,
 ) {
+    val unchangedColor = LocalAerobagUiTheme.current.controls.buttonFg
     val visibleEntries = entries.filter { it.count > 0 }.ifEmpty {
         listOf(OfflinePackagesUiPlanEntryWire(OfflinePackagesUiPlanActionWire.Keep, 0, emptyList()))
     }
@@ -973,7 +980,7 @@ internal fun OfflinePackagePlanSummary(
                         modifier = Modifier.weight(1f),
                         style = MaterialTheme.typography.labelSmall,
                         fontWeight = FontWeight.ExtraBold,
-                        color = offlinePackagePlanActionColor(entry.action),
+                        color = offlinePackagePlanActionColor(entry.action, unchangedColor),
                         maxLines = 1,
                         overflow = TextOverflow.Ellipsis,
                     )
@@ -1053,7 +1060,10 @@ internal fun OfflinePackagePlanActionIcon(
     action: OfflinePackagesUiPlanActionWire,
     modifier: Modifier = Modifier,
 ) {
-    val color = offlinePackagePlanActionColor(action)
+    val color = offlinePackagePlanActionColor(
+        action,
+        LocalAerobagUiTheme.current.controls.buttonFg,
+    )
     Canvas(modifier = modifier) {
         val w = size.width
         val h = size.height
@@ -1086,9 +1096,12 @@ internal val OfflinePackageMagenta = Color(0xFFFF3DCE)
 internal val OfflinePackageOrange = Color(0xFFFFA12B)
 internal val OfflinePackageRed = Color(0xFFFF4D5E)
 
-internal fun offlinePackagePlanActionColor(action: OfflinePackagesUiPlanActionWire): Color = when (action) {
+internal fun offlinePackagePlanActionColor(
+    action: OfflinePackagesUiPlanActionWire,
+    unchangedColor: Color,
+): Color = when (action) {
     OfflinePackagesUiPlanActionWire.Delete -> OfflinePackageRed
-    OfflinePackagesUiPlanActionWire.Keep -> Color.White
+    OfflinePackagesUiPlanActionWire.Keep -> unchangedColor
     OfflinePackagesUiPlanActionWire.Pause -> OfflinePackageOrange
     OfflinePackagesUiPlanActionWire.Fetch -> OfflinePackageMagenta
 }

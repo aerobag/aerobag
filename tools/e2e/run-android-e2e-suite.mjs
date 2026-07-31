@@ -50,7 +50,6 @@ const BAD_AUTOPILOT_SOURCE_TAG = "parity:ownship-source:__bad_autopilot__";
 const BAD_AUTOPILOT_DEBUG_TAG = "parity:debug-flag:bad_autopilot";
 const PLATE_SURFACE_TAG = "parity:plate-surface";
 const PLATE_FOLDER_TILE_PREFIX = "parity:plate-folder-tile:";
-const ARM_LAYER_NAV_KV_FAULT_DEBUG_TAG = "parity:debug-action:arm-layer-nav-kv-fault";
 const E2E_ARTIFACT_DIR = process.env.AEROBAG_E2E_ARTIFACT_DIR ?? join(tmpdir(), "aerobag-e2e-artifacts");
 
 function usage() {
@@ -910,8 +909,13 @@ async function runLayerToggleNavDbRegression(args) {
   const { serial, route } = args;
   const result = createTestResult("android.layer-toggle-navdb-regression");
   adb(serial, ["logcat", "-c"]);
-  await launchFreshAndroidApp(serial, { clearUiPrefs: true, clearCoreSettings: false });
+  await launchFreshAndroidApp(serial, {
+    clearUiPrefs: true,
+    clearCoreSettings: false,
+    armLayerNavKvFault: true,
+  });
   recordStep(result, "app launched", serial || "default adb device");
+  recordStep(result, "nav-db faults armed for the next two layer commands");
   if (await acceptDisclaimerIfPresent(serial)) {
     recordStep(result, "disclaimer accepted");
   }
@@ -926,12 +930,6 @@ async function runLayerToggleNavDbRegression(args) {
   await waitForRouteOverlay(serial, result);
   await ensureBadAutopilotAvailable(serial, result);
   await selectBadAutopilotSource(serial, result);
-
-  await tapTag(serial, "parity:button:DBG", 10000);
-  await tapTag(serial, ARM_LAYER_NAV_KV_FAULT_DEBUG_TAG, 10000);
-  recordStep(result, "nav-db faults armed for the next two layer commands");
-  await tapTag(serial, "parity:button:DBG", 10000);
-  await delay(300);
 
   let xml = await openLayersTray(serial, result);
   recordCheck(result, "layers.terrainInitiallyOn", layerToggleIsOn(xml, "terrain_warning"));

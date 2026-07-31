@@ -810,6 +810,28 @@ fn stable_product_package_metadata(id: &str) -> BTreeMap<String, serde_json::Val
             ),
         ]);
     }
+    if let Some(region_id) = id.strip_prefix("terrain-") {
+        let is_wide_angle = region_id == WIDE_ANGLE_REGION_ID;
+        return BTreeMap::from([
+            (
+                "wide_angle_region_id".to_string(),
+                serde_json::json!(WIDE_ANGLE_REGION_ID),
+            ),
+            (
+                "wide_angle_max_zoom".to_string(),
+                serde_json::json!(FULL_COVERAGE_ZOOM),
+            ),
+            ("wide_angle".to_string(), serde_json::json!(is_wide_angle)),
+            (
+                "max_source_zoom".to_string(),
+                serde_json::json!(if is_wide_angle {
+                    FULL_COVERAGE_ZOOM
+                } else {
+                    TERRAIN_ZOOM
+                }),
+            ),
+        ]);
+    }
     if let Some(region_id) = id.strip_prefix("shaded-relief-") {
         let is_wide_angle = region_id == WIDE_ANGLE_REGION_ID;
         let mut metadata = BTreeMap::from([
@@ -2402,6 +2424,23 @@ mod tests {
     };
     use product_contracts::{CSUP_CONTRACT_ID, ENR_L_CONTRACT_ID, SEC_CONTRACT_ID};
     use tempfile::tempdir;
+
+    #[test]
+    fn terrain_wide_metadata_declares_automatic_wide_coverage() {
+        let metadata = stable_product_package_metadata(&format!(
+            "terrain-{WIDE_ANGLE_REGION_ID}_{TERRAIN_CONTRACT_ID}"
+        ));
+
+        assert_eq!(metadata.get("wide_angle"), Some(&serde_json::json!(true)));
+        assert_eq!(
+            metadata.get("wide_angle_region_id"),
+            Some(&serde_json::json!(WIDE_ANGLE_REGION_ID))
+        );
+        assert_eq!(
+            metadata.get("max_source_zoom"),
+            Some(&serde_json::json!(FULL_COVERAGE_ZOOM))
+        );
+    }
 
     fn write_source_urls(root: &Path, relative: &str, lines: &[&str]) {
         let path = root.join(relative);

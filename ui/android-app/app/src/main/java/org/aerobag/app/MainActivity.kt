@@ -710,6 +710,10 @@ internal data class OfflinePackagesUiRowWire(
     val id: String,
     val label: String = id,
     val selection: OfflinePackageSelection,
+    @SerialName("selection_event")
+    val selectionEvent: OfflinePackagesEventWire? = null,
+    @SerialName("help_text")
+    val helpText: String? = null,
     @SerialName("fetch_count")
     val fetchCount: Int = 0,
     @SerialName("gc_count")
@@ -769,6 +773,8 @@ internal data class OfflinePackagesUiStateWire(
     ),
     @SerialName("core_products")
     val coreProducts: List<OfflinePackagesUiRowWire> = emptyList(),
+    @SerialName("zoom_levels")
+    val zoomLevels: List<OfflinePackagesUiRowWire> = emptyList(),
     val regions: List<OfflinePackagesUiRowWire> = emptyList(),
     val products: List<OfflinePackagesUiRowWire> = emptyList(),
 )
@@ -1877,6 +1883,9 @@ internal fun summarizeRuntimeBootstrapFailure(error: Throwable): String {
     }
 }
 
+private const val DebugArmLayerNavKvFaultExtra =
+    "org.aerobag.app.extra.DEBUG_ARM_LAYER_NAV_KV_FAULT"
+
 class MainActivity : ComponentActivity() {
     var onHardwareZoomDelta: ((Double) -> Boolean)? = null
     var onSituationControlInput: ((SituationControlInput) -> Boolean)? = null
@@ -1962,6 +1971,9 @@ class MainActivity : ComponentActivity() {
         val perfScenario = androidPerfScenarioFromIntentValue(
             intent?.getStringExtra(AndroidPerfScenarioExtra),
         )
+        val armLayerNavKvFault = BuildConfig.DEBUG &&
+            intent?.getBooleanExtra(DebugArmLayerNavKvFaultExtra, false) == true
+        intent?.removeExtra(DebugArmLayerNavKvFaultExtra)
         requestAndroidGps()
         setContent {
             MaterialTheme {
@@ -1971,7 +1983,11 @@ class MainActivity : ComponentActivity() {
                         .semantics { testTagsAsResourceId = true },
                     color = Color(0xFFF3EFE4),
                 ) {
-                    AerobagApp(retainedModel, perfScenario)
+                    AerobagApp(
+                        retainedModel = retainedModel,
+                        perfScenario = perfScenario,
+                        armLayerNavKvFault = armLayerNavKvFault,
+                    )
                 }
             }
         }
@@ -2233,6 +2249,7 @@ private fun FlightPlanOverlayHost(controller: FlightPlanOverlayController) {
 internal fun AerobagApp(
     retainedModel: AerobagRetainedModel,
     perfScenario: AndroidPerfScenario? = null,
+    armLayerNavKvFault: Boolean = false,
 ) {
     val context = LocalContext.current
     val appContext = context.applicationContext
@@ -2665,7 +2682,9 @@ internal fun AerobagApp(
     var pageTilePaintTiming by remember { mutableStateOf<PageTilePaintTiming?>(null) }
     var nextPageTilePaintTimingId by remember { mutableStateOf(1L) }
     var debugPanelOpen by remember { mutableStateOf(false) }
-    var debugLayerNavKvFaultsRemaining by remember { mutableIntStateOf(0) }
+    var debugLayerNavKvFaultsRemaining by remember(armLayerNavKvFault) {
+        mutableIntStateOf(if (armLayerNavKvFault) 2 else 0)
+    }
     val decodedTileBitmapCache = retainedCoreSession.decodedTileBitmapCache
     var playbackSourcePath by remember { mutableStateOf(DefaultPlaybackTracePath) }
     LaunchedEffect(page) {
@@ -3280,7 +3299,6 @@ internal fun AerobagApp(
                     uptimeLabel = uptimeLabel,
                     debugState = sessionSnapshot.debugState,
                     onDebugFlagChange = ::setDebugFlag,
-                    onArmLayerNavKvFault = { debugLayerNavKvFaultsRemaining = 2 },
                 )
             }
             FlightPlanOverlayHost(flightPlanOverlayController)

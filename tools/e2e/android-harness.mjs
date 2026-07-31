@@ -8,6 +8,8 @@ import { join } from "node:path";
 
 export const ANDROID_PACKAGE = "org.aerobag.app";
 export const ANDROID_ACTIVITY = `${ANDROID_PACKAGE}/.MainActivity`;
+export const DEBUG_ARM_LAYER_NAV_KV_FAULT_EXTRA =
+  `${ANDROID_PACKAGE}.extra.DEBUG_ARM_LAYER_NAV_KV_FAULT`;
 
 export function adbArgs(serial, args) {
   return serial ? ["-s", serial, ...args] : args;
@@ -324,7 +326,10 @@ export function grantAerobagRuntimePermissions(serial) {
   }
 }
 
-export async function launchFreshAndroidApp(serial, { clearUiPrefs = true, clearCoreSettings = false } = {}) {
+export async function launchFreshAndroidApp(
+  serial,
+  { clearUiPrefs = true, clearCoreSettings = false, armLayerNavKvFault = false } = {},
+) {
   adb(serial, ["wait-for-device"]);
   wakeAndUnlock(serial);
   grantAerobagRuntimePermissions(serial);
@@ -335,7 +340,11 @@ export async function launchFreshAndroidApp(serial, { clearUiPrefs = true, clear
   if (clearCoreSettings) {
     adbBestEffort(serial, ["shell", "run-as", ANDROID_PACKAGE, "rm", "files/core-settings-v1.json"]);
   }
-  adb(serial, ["shell", "am", "start", "-W", "-n", ANDROID_ACTIVITY]);
+  const startArgs = ["shell", "am", "start", "-W", "-n", ANDROID_ACTIVITY];
+  if (armLayerNavKvFault) {
+    startArgs.push("--ez", DEBUG_ARM_LAYER_NAV_KV_FAULT_EXTRA, "true");
+  }
+  adb(serial, startArgs);
   let dismissedSystemUiAnr = false;
   await waitFor(async () => {
     const xml = dumpAndroid(serial);

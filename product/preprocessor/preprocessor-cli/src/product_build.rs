@@ -54,8 +54,9 @@ use preprocessor_procedure_geometry::{
     build_procedure_geometry_records, procedure_kinds_from_lists,
 };
 use preprocessor_resource_index::{
-    write_resource_index, AssetSource, BuildResourceIndexRequest, ChartSource, DefaultView,
-    ResourceIndex, TileBoundsRecord, TileLevelRecord,
+    validate_resource_package_catalog, write_resource_index, AssetSource,
+    BuildResourceIndexRequest, ChartSource, DefaultView, ResourceIndex, TileBoundsRecord,
+    TileLevelRecord,
 };
 use preprocessor_tpp::{
     assemble_package_region_from_sources, plan_package_region_from_members, plan_tpp_region_render,
@@ -966,10 +967,6 @@ enum ScheduledTaskKind {
     },
     Vectors,
     ResourceIndex,
-    ChartUnpack {
-        family: ChartFamily,
-        region: Region,
-    },
     CsupUnpack {
         region: Region,
     },
@@ -1263,41 +1260,30 @@ mod nav_db;
 use nav_db::*;
 pub use nav_db::{audit_procedure_geometry_from_sqlite, ProcedureGeometryAuditFilter};
 
-fn resolve_bundle_package_source_path(
+fn resolve_resource_package_artifact_path(
     config: &ProductBuildConfig,
-    build_manifest: &BuildManifest,
     package: &preprocessor_resource_index::ResourcePackage,
 ) -> anyhow::Result<PathBuf> {
-    let region_id = package.region_id.to_ascii_lowercase();
-    let node_name = match package.family_id.as_str() {
-        "csup" => "csup-package".to_string(),
-        "tpp" => format!("tpp-{region_id}-package"),
-        family_id => format!("charts-{family_id}-package"),
-    };
-    let record = build_manifest
-        .nodes
-        .iter()
-        .find(|node| node.name == node_name)
-        .with_context(|| format!("build manifest missing package node {node_name}"))?;
-    if let Some(zip_path) = record.outputs.get("zip") {
-        return Ok(resolve_artifact_path(config, zip_path));
+    let relative_path = Path::new(&package.artifact_path);
+    if relative_path.is_absolute()
+        || relative_path
+            .components()
+            .any(|component| !matches!(component, std::path::Component::Normal(_)))
+    {
+        bail!(
+            "resource package {} has invalid artifact_path {}",
+            package.id,
+            package.artifact_path
+        );
     }
-    let package_outputs = resolve_artifact_path(config, output_path(record, "package_outputs")?);
-    let package_record = read_package_outputs_by_region(&package_outputs)?
-        .remove(&package.region_id)
-        .with_context(|| {
-            format!(
-                "build manifest package node {node_name} missing package output for region {}",
-                package.region_id
-            )
-        })?;
-    let package_root = record
-        .outputs
-        .get("package_root")
-        .map(|path| resolve_artifact_path(config, path))
-        .or_else(|| package_outputs.parent().map(Path::to_path_buf))
-        .with_context(|| format!("build manifest package node {node_name} missing package root"))?;
-    Ok(package_root.join(package_record.zip))
+    let path = config.build_root.join(relative_path);
+    verify_artifact_file(
+        &path,
+        &package.checksum_sha256,
+        package.size_bytes,
+        &format!("resource package {}", package.id),
+    )?;
+    Ok(path)
 }
 
 fn output_path<'a>(record: &'a NodeRecord, key: &str) -> anyhow::Result<&'a str> {
@@ -2769,7 +2755,7 @@ mod tests {
                 id: "NW_SEC".to_string(),
                 family_id: "sec".to_string(),
                 region_id: "nw".to_string(),
-                artifact_path: None,
+                artifact_path: String::new(),
                 size_bytes: 0,
                 checksum_sha256: String::new(),
                 cycle_code: None,
@@ -2814,6 +2800,308 @@ mod tests {
             plates: Vec::<PlateRecord>::new(),
             csups: Vec::<CsupRecord>::new(),
         }
+    }
+
+    fn package_publication_test_config(root: &Path) -> ProductBuildConfig {
+        let build_root = root.join("artifacts");
+        let publish_dir = build_root
+            .join("published")
+            .join("test")
+            .join("20260731T000000Z");
+        ProductBuildConfig {
+            chart_metadata_root: root.join("chart-metadata"),
+            build_root: build_root.clone(),
+            publish_dir: publish_dir.clone(),
+            packaged_dir: publish_dir.join("packaged"),
+            publish_label: "test".to_string(),
+            publish_timestamp: "20260731T000000Z".to_string(),
+            target_cycle: Some("2607".to_string()),
+            fetch_jobs: 1,
+            cpu_jobs: 1,
+            max_heavy_jobs: 1,
+            fetch_cache_root: build_root.join("cache/fetch"),
+            fetch_cache_mode: "cache-first".to_string(),
+        }
+    }
+
+    fn chart_resource_package(
+        config: &ProductBuildConfig,
+        id: &str,
+        relative_path: &str,
+        payload: &[u8],
+        tier: ChartPackageTier,
+    ) -> ResourcePackage {
+        let path = config.build_root.join(relative_path);
+        fs::create_dir_all(path.parent().unwrap()).unwrap();
+        fs::write(&path, payload).unwrap();
+        ResourcePackage {
+            id: id.to_string(),
+            family_id: "tac".to_string(),
+            region_id: "nw".to_string(),
+            artifact_path: relative_path.to_string(),
+            size_bytes: payload.len() as u64,
+            checksum_sha256: hash_file(&path).unwrap(),
+            cycle_code: Some("2607".to_string()),
+            version_label: Some(PACKAGE_CYCLE_VERSION.to_string()),
+            effective_date: Some("2026-07-09".to_string()),
+            expiration_date: Some("2026-08-06".to_string()),
+            metadata: BTreeMap::from([(
+                CHART_PACKAGE_TIER_METADATA_KEY.to_string(),
+                serde_json::to_value(tier).unwrap(),
+            )]),
+        }
+    }
+
+    fn build_manifest_for_resource_index(
+        config: &ProductBuildConfig,
+        resource_index: &ResourceIndex,
+    ) -> BuildManifest {
+        let relative_path = "intermediate/resource-index.json";
+        let path = config.build_root.join(relative_path);
+        fs::create_dir_all(path.parent().unwrap()).unwrap();
+        fs::write(&path, serde_json::to_vec(resource_index).unwrap()).unwrap();
+        BuildManifest {
+            schema_version: 1,
+            cycle: "2607".to_string(),
+            build_root: config.build_root.display().to_string(),
+            generated_at_utc: "2026-07-31T00:00:00Z".to_string(),
+            fetch_cache_root: "cache/fetch".to_string(),
+            fetch_cache_mode: "cache-first".to_string(),
+            nodes: vec![NodeRecord {
+                name: "resource-index".to_string(),
+                fingerprint: "resource-index-test".to_string(),
+                started_at_utc: "2026-07-31T00:00:00Z".to_string(),
+                finished_at_utc: "2026-07-31T00:00:00Z".to_string(),
+                elapsed_ms: 0,
+                cache_hit: false,
+                inputs: BTreeMap::new(),
+                outputs: BTreeMap::from([(
+                    "resource_index".to_string(),
+                    relative_path.to_string(),
+                )]),
+                output_details: BTreeMap::new(),
+                fetch_cache_refs: Vec::new(),
+            }],
+        }
+    }
+
+    #[test]
+    fn bundle_publication_preserves_each_exact_same_region_package_payload() {
+        let temp = tempdir().unwrap();
+        let config = package_publication_test_config(temp.path());
+        fs::create_dir_all(&config.packaged_dir).unwrap();
+        let regional_payload = b"regional zoom payload";
+        let detail_payload = b"detail zoom payload";
+        let regional = chart_resource_package(
+            &config,
+            "NW_TAC_TAC1_2607",
+            "cache/packages/NW_TAC_TAC1_2607.zip",
+            regional_payload,
+            ChartPackageTier::Regional,
+        );
+        let detail = chart_resource_package(
+            &config,
+            "NW_TAC_DETAIL_TAC1_2607",
+            "cache/packages/NW_TAC_DETAIL_TAC1_2607.zip",
+            detail_payload,
+            ChartPackageTier::Detail,
+        );
+        let mut index = minimal_resource_index();
+        index.cycle = Some("2607".to_string());
+        index.temporal_summary.uniform_effective_date = Some("2026-07-09".to_string());
+        index.temporal_summary.uniform_expiration_date = Some("2026-08-06".to_string());
+        index.packages = vec![regional.clone(), detail.clone()];
+        let build_manifest = build_manifest_for_resource_index(&config, &index);
+        let mut nav_db = bundle_package("nav-db", None);
+        nav_db.cycle = Some("2607".to_string());
+
+        let bundle = build_bundle_manifest(&config, &build_manifest, &[], &nav_db).unwrap();
+
+        for (source, expected_payload) in [
+            (&regional, regional_payload.as_slice()),
+            (&detail, detail_payload.as_slice()),
+        ] {
+            let published = bundle
+                .packages
+                .iter()
+                .find(|package| package.id == source.id)
+                .unwrap();
+            let published_path = config.packaged_dir.join(&published.filename);
+            assert_eq!(fs::read(&published_path).unwrap(), expected_payload);
+            verify_artifact_file(
+                &published_path,
+                &source.checksum_sha256,
+                source.size_bytes,
+                &source.id,
+            )
+            .unwrap();
+        }
+
+        let bundle_path = write_hashed_bundle_manifest(&config.packaged_dir, &bundle).unwrap();
+        let regional_published = bundle
+            .packages
+            .iter()
+            .find(|package| package.id == regional.id)
+            .unwrap();
+        fs::write(
+            config.packaged_dir.join(&regional_published.filename),
+            b"tampered regional payload",
+        )
+        .unwrap();
+        let error = validate_bundle_manifest(&config.packaged_dir, &bundle_path).unwrap_err();
+        assert!(
+            error.to_string().contains("mismatch"),
+            "unexpected error: {error:#}"
+        );
+    }
+
+    #[test]
+    fn bundle_publication_rejects_catalog_path_checksum_mismatch() {
+        let temp = tempdir().unwrap();
+        let config = package_publication_test_config(temp.path());
+        fs::create_dir_all(&config.packaged_dir).unwrap();
+        let mut package = chart_resource_package(
+            &config,
+            "NW_TAC_TAC1_2607",
+            "cache/packages/NW_TAC_TAC1_2607.zip",
+            b"regional zoom payload",
+            ChartPackageTier::Regional,
+        );
+        package.checksum_sha256 = "0".repeat(64);
+        let mut index = minimal_resource_index();
+        index.cycle = Some("2607".to_string());
+        index.temporal_summary.uniform_effective_date = Some("2026-07-09".to_string());
+        index.temporal_summary.uniform_expiration_date = Some("2026-08-06".to_string());
+        index.packages = vec![package];
+        let build_manifest = build_manifest_for_resource_index(&config, &index);
+        let nav_db = bundle_package("nav-db", None);
+
+        let error = build_bundle_manifest(&config, &build_manifest, &[], &nav_db).unwrap_err();
+        assert!(
+            error.to_string().contains("checksum mismatch"),
+            "unexpected error: {error:#}"
+        );
+    }
+
+    #[test]
+    fn same_region_chart_packages_unpack_from_their_exact_published_zip() {
+        let temp = tempdir().unwrap();
+        let config = package_publication_test_config(temp.path());
+        fs::create_dir_all(&config.packaged_dir).unwrap();
+        let source_root = config.build_root.join("cache/chart-unpack-source");
+        let regional_member = "tiles/1/9/10/11.webp";
+        let detail_member = "tiles/1/12/80/88.webp";
+        for (member, payload) in [
+            (regional_member, b"regional tile".as_slice()),
+            (detail_member, b"detail tile".as_slice()),
+        ] {
+            let path = source_root.join(member);
+            fs::create_dir_all(path.parent().unwrap()).unwrap();
+            fs::write(path, payload).unwrap();
+        }
+
+        let make_package = |id: &str, member: &str, tier: ChartPackageTier| {
+            let source_path = source_root.join(member);
+            let temporary_zip = config.build_root.join(format!("cache/{id}.zip"));
+            write_deterministic_zip(
+                &temporary_zip,
+                &[ZipSource::new(member, &source_path).stored()],
+            )
+            .unwrap();
+            let checksum_sha256 = hash_file(&temporary_zip).unwrap();
+            let filename = canonical_package_filename_hashed(
+                "tac",
+                "nw",
+                &format!("{id}.zip"),
+                &checksum_sha256,
+                Some(tier),
+            )
+            .unwrap();
+            let published_path = config.packaged_dir.join(&filename);
+            publish_flat_artifact(&temporary_zip, &published_path).unwrap();
+            BundlePackageArtifact {
+                id: id.to_string(),
+                family_id: "tac".to_string(),
+                contract_id: product_contract_id_for_family("tac").unwrap().to_string(),
+                region_id: Some("nw".to_string()),
+                filename: filename.clone(),
+                relative_path: filename,
+                cycle: Some("2607".to_string()),
+                cycle_version: Some(PACKAGE_CYCLE_VERSION.to_string()),
+                checksum_sha256,
+                size_bytes: fs::metadata(published_path).unwrap().len(),
+                published_at_utc: None,
+                source_generated_at_utc: None,
+                source_version: None,
+                source_fetched_at_utc: None,
+                effective_date: Some("2026-07-09".to_string()),
+                expiration_date: Some("2026-08-06".to_string()),
+                warning_text: None,
+                metadata: BTreeMap::from([(
+                    CHART_PACKAGE_TIER_METADATA_KEY.to_string(),
+                    serde_json::to_value(tier).unwrap(),
+                )]),
+            }
+        };
+        let regional = make_package(
+            "NW_TAC_TAC1_2607",
+            regional_member,
+            ChartPackageTier::Regional,
+        );
+        let detail = make_package(
+            "NW_TAC_DETAIL_TAC1_2607",
+            detail_member,
+            ChartPackageTier::Detail,
+        );
+        let bundle = BundleManifest {
+            schema_version: 2,
+            bundle_id: "cycle_2607_01".to_string(),
+            bundle_type: "cycle".to_string(),
+            cycle: "2607".to_string(),
+            cycle_version: PACKAGE_CYCLE_VERSION.to_string(),
+            generated_at_utc: "2026-07-31T00:00:00Z".to_string(),
+            effective_date: "2026-07-09".to_string(),
+            expiration_date: "2026-08-06".to_string(),
+            start_valid: "2026-07-09".to_string(),
+            end_valid: "2026-08-06".to_string(),
+            packages: vec![regional.clone(), detail.clone()],
+            ancillary: vec![],
+        };
+        let task_values = BTreeMap::from([(
+            "2607:charts-tac-package".to_string(),
+            ProductTaskValue::ChartSource(ChartSource {
+                family_id: "tac".to_string(),
+                package_outputs_path: config.build_root.join("unused-package-outputs.jsonl"),
+                asset_root: source_root.clone(),
+                package_root: config.build_root.join("unused-package-root"),
+                unpack_source_root: source_root,
+                source_urls_path: None,
+            }),
+        )]);
+        let unpacked_root = published_unpacked_root(&config).unwrap();
+        fs::create_dir_all(&unpacked_root).unwrap();
+
+        sync_cycle_bundle_unpacked_zips(&config, &bundle, &unpacked_root, Some(&task_values))
+            .unwrap();
+
+        assert_eq!(
+            fs::read(
+                unpacked_root
+                    .join(zip_stem(&regional.filename).unwrap())
+                    .join(regional_member)
+            )
+            .unwrap(),
+            b"regional tile"
+        );
+        assert_eq!(
+            fs::read(
+                unpacked_root
+                    .join(zip_stem(&detail.filename).unwrap())
+                    .join(detail_member)
+            )
+            .unwrap(),
+            b"detail tile"
+        );
     }
 
     #[test]
@@ -3756,7 +4044,7 @@ mod tests {
     fn nav_kv_package_inputs_include_resource_index_chart_metadata() {
         let mut resource_index = minimal_resource_index();
         resource_index.packages[0].id = "NW_SEC_SEC1_2604_01".to_string();
-        resource_index.packages[0].artifact_path = Some("products/sec_nw_2604.zip".to_string());
+        resource_index.packages[0].artifact_path = "products/sec_nw_2604.zip".to_string();
         resource_index.packages[0].size_bytes = 123;
         resource_index.packages[0].checksum_sha256 = "deadbeef".to_string();
         resource_index.packages[0].cycle_code = Some("2604".to_string());
@@ -4491,7 +4779,7 @@ mod tests {
             .join("20260531T010203Z");
         let root = publish_dir.join("packaged");
         fs::create_dir_all(&root).unwrap();
-        let nav_db_sha = "a".repeat(64);
+        let nav_db_sha = sha256_hex(&[]);
         let nav_db_filename = format!("nav_db_{NAV_DB_CONTRACT_ID}_2605_01_{nav_db_sha}.zip");
         let bundle = BundleManifest {
             schema_version: 2,
@@ -4578,7 +4866,7 @@ mod tests {
             .join("20260514T000000Z");
         let packaged_root = publish_dir.join("packaged");
         fs::create_dir_all(&packaged_root).unwrap();
-        let nav_db_sha = "a".repeat(64);
+        let nav_db_sha = sha256_hex(&[]);
         let nav_db_filename = format!("nav_db_{NAV_DB_CONTRACT_ID}_2605_01_{nav_db_sha}.zip");
         fs::write(packaged_root.join(&nav_db_filename), []).unwrap();
         let bundle = BundleManifest {
@@ -4669,11 +4957,7 @@ mod tests {
             let publish_dir = temp.path().join("published").join(label).join(timestamp);
             let packaged_root = publish_dir.join("packaged");
             fs::create_dir_all(&packaged_root).unwrap();
-            let nav_db_sha = if contract_id == "NAV6" {
-                "6".repeat(64)
-            } else {
-                "8".repeat(64)
-            };
+            let nav_db_sha = sha256_hex(&[]);
             let nav_db_filename = format!("nav_db_{contract_id}_2605_01_{nav_db_sha}.zip");
             fs::write(packaged_root.join(&nav_db_filename), []).unwrap();
             let bundle = BundleManifest {

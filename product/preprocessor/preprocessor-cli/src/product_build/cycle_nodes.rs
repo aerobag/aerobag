@@ -2312,7 +2312,7 @@ pub(super) fn build_data_match_node(
     ]);
     let mut tpp_zips = Vec::new();
     for (region, source, fingerprint) in tpp_sources {
-        let package = package_record_for_region(&source.package_outputs_path, *region)?;
+        let package = unique_package_record_for_region(&source.package_outputs_path, *region)?;
         let zip_path = source.package_root.join(&package.zip);
         inputs.insert(
             format!("tpp_{}_fingerprint", region.code().to_ascii_lowercase()),
@@ -2682,15 +2682,13 @@ pub(super) fn summarize_package_records(records: &[NodeRecord]) -> PackageSummar
     }
 }
 
-pub(super) fn read_package_outputs_by_region(
-    path: &Path,
-) -> anyhow::Result<BTreeMap<String, PackageOutputRecord>> {
+pub(super) fn read_package_outputs(path: &Path) -> anyhow::Result<Vec<PackageOutputRecord>> {
     if !path.is_file() {
-        return Ok(BTreeMap::new());
+        return Ok(Vec::new());
     }
     let text =
         fs::read_to_string(path).with_context(|| format!("failed to read {}", path.display()))?;
-    let mut records = BTreeMap::new();
+    let mut records = Vec::new();
     for line in text.lines().filter(|line| !line.trim().is_empty()) {
         let value: serde_json::Value =
             serde_json::from_str(line).context("failed to parse package output json")?;
@@ -2738,18 +2736,33 @@ pub(super) fn read_package_outputs_by_region(
                 .map(|obj| obj.iter().map(|(k, v)| (k.clone(), v.clone())).collect())
                 .unwrap_or_default(),
         };
-        records.insert(record.region.clone(), record);
+        records.push(record);
     }
     Ok(records)
 }
 
-pub(super) fn package_record_for_region(
+pub(super) fn unique_package_record_for_region(
     path: &Path,
     region: Region,
 ) -> anyhow::Result<PackageOutputRecord> {
-    read_package_outputs_by_region(path)?
-        .remove(&region.code().to_ascii_lowercase())
-        .ok_or_else(|| anyhow::anyhow!("missing package output for region {}", region.code()))
+    let region_id = region.code().to_ascii_lowercase();
+    let matches = read_package_outputs(path)?
+        .into_iter()
+        .filter(|record| record.region == region_id)
+        .collect::<Vec<_>>();
+    match matches.as_slice() {
+        [record] => Ok(record.clone()),
+        [] => bail!("missing package output for region {}", region.code()),
+        _ => bail!(
+            "multiple package outputs for region {} where exactly one is required: {}",
+            region.code(),
+            matches
+                .iter()
+                .map(|record| record.manifest.as_str())
+                .collect::<Vec<_>>()
+                .join(", ")
+        ),
+    }
 }
 
 #[cfg(test)]

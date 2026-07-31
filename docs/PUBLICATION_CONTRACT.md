@@ -203,6 +203,14 @@ The NAV chart catalog combines one regional package and its optional detail
 package into one logical map view. A detail package must start exactly one zoom
 after its regional package and must not overlap the regional levels.
 
+Each resource-index package is an exact artifact catalog entry: package id,
+family, region, tier, artifact path, byte size, and SHA-256 identify one source
+ZIP. Publication must consume that exact path and must not rediscover a package
+from a partial key such as region. Duplicate full package identities are build
+errors. Before publication, the source bytes must match the catalog size and
+checksum; completed publication validation independently checks the published
+bytes against the bundle manifest.
+
 Public-unpacked clients may use every advertised detail package. Clients using
 installed packages may use a detail package only when that exact artifact is
 installed. If detail is unavailable, core plans from the regional maximum and

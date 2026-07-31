@@ -74,6 +74,7 @@ pub(super) fn publish_content_addressed_zip(
             .with_context(|| format!("failed to stat {}", zip_path.display()))?
             .len(),
     };
+    verify_artifact_file(zip_path, &sha256, size_bytes, "source package")?;
     let published_path = build_root.join(format!("{file_prefix}_{sha256}.zip"));
     if !published_path.is_file() {
         fs::hard_link(zip_path, &published_path).with_context(|| {
@@ -1528,7 +1529,12 @@ pub(super) fn validate_bundle_manifest(
                 );
             }
         }
-        ensure_public_file_exists(&packaged_root.join(&package.filename))?;
+        verify_artifact_file(
+            &packaged_root.join(&package.filename),
+            &package.checksum_sha256,
+            package.size_bytes,
+            &format!("published package {}", package.id),
+        )?;
     }
     for artifact in &bundle.ancillary {
         validate_bundle_artifact_ref(packaged_root, artifact)?;
@@ -1678,7 +1684,42 @@ pub(super) fn validate_bundle_artifact_ref(
             artifact.relative_path
         );
     }
-    ensure_public_file_exists(&packaged_root.join(&artifact.filename))
+    verify_artifact_file(
+        &packaged_root.join(&artifact.filename),
+        &artifact.checksum_sha256,
+        artifact.size_bytes,
+        &format!("published ancillary artifact {}", artifact.filename),
+    )
+}
+
+pub(super) fn verify_artifact_file(
+    path: &Path,
+    expected_sha256: &str,
+    expected_size_bytes: u64,
+    label: &str,
+) -> anyhow::Result<()> {
+    ensure_public_file_exists(path)?;
+    let actual_size_bytes = fs::metadata(path)
+        .with_context(|| format!("failed to stat {}", path.display()))?
+        .len();
+    if actual_size_bytes != expected_size_bytes {
+        bail!(
+            "{label} size mismatch for {}: declared {} != actual {}",
+            path.display(),
+            expected_size_bytes,
+            actual_size_bytes
+        );
+    }
+    let actual_sha256 = hash_file(path)?;
+    if actual_sha256 != expected_sha256 {
+        bail!(
+            "{label} checksum mismatch for {}: declared {} != actual {}",
+            path.display(),
+            expected_sha256,
+            actual_sha256
+        );
+    }
+    Ok(())
 }
 
 pub(super) fn validate_bundle_contract_split(

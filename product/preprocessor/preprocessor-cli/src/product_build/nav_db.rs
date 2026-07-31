@@ -157,6 +157,7 @@ pub(super) fn build_bundle_manifest(
             .with_context(|| format!("failed to read {}", resource_index_path.display()))?,
     )
     .with_context(|| format!("failed to parse {}", resource_index_path.display()))?;
+    validate_resource_package_catalog(&index.packages)?;
     let start_valid = index
         .temporal_summary
         .uniform_good_beyond_date
@@ -176,7 +177,7 @@ pub(super) fn build_bundle_manifest(
         .iter()
         .map(|package| {
             let contract_id = product_contract_id_for_family(&package.family_id)?;
-            let package_path = resolve_bundle_package_source_path(config, build_manifest, package)?;
+            let package_path = resolve_resource_package_artifact_path(config, package)?;
             let filename = canonical_package_filename_hashed(
                 &package.family_id,
                 &package.region_id,
@@ -999,6 +1000,7 @@ pub(super) fn build_nav_kv_artifact(
             .with_context(|| format!("failed to read {}", resource_index_path.display()))?,
     )
     .with_context(|| format!("failed to parse {}", resource_index_path.display()))?;
+    validate_resource_package_catalog(&resource_index.packages)?;
     let mut package_artifacts = bundle_package_artifacts_from_resource_index(&resource_index)?;
     package_artifacts.extend(stable_packages.iter().cloned());
     let package_index_json = serde_json::to_string(&package_artifacts)
@@ -1337,10 +1339,7 @@ pub(super) fn bundle_package_artifact_from_resource_package(
     package: &preprocessor_resource_index::ResourcePackage,
 ) -> anyhow::Result<BundlePackageArtifact> {
     let contract_id = product_contract_id_for_family(&package.family_id)?;
-    let artifact_path = package
-        .artifact_path
-        .as_deref()
-        .with_context(|| format!("package {} missing artifact_path", package.id))?;
+    let artifact_path = package.artifact_path.as_str();
     let source_filename = Path::new(artifact_path)
         .file_name()
         .and_then(|name| name.to_str())

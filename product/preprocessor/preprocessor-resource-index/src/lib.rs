@@ -108,6 +108,7 @@ pub struct CatalogPackage {
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct CatalogPackageId {
+    pub package: String,
     pub region: String,
     pub family: String,
     pub cycle: String,
@@ -208,8 +209,7 @@ pub struct ResourcePackage {
     pub id: String,
     pub family_id: String,
     pub region_id: String,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub artifact_path: Option<String>,
+    pub artifact_path: String,
     pub size_bytes: u64,
     pub checksum_sha256: String,
     pub cycle_code: Option<String>,
@@ -362,6 +362,7 @@ pub fn build_resource_index(request: &BuildResourceIndexRequest) -> anyhow::Resu
         &request.csup_sources,
         &artifact_root,
     )?;
+    validate_resource_package_catalog(&packages)?;
     log_progress(request, "collected packages")?;
     let temporal_summary = build_temporal_summary(&packages, &nav_temporal);
     let chart_collections = collect_chart_collections(&request.chart_sources)?;
@@ -543,6 +544,7 @@ pub fn build_catalog(index: &ResourceIndex) -> Catalog {
         .filter(|package| supported_families.contains(&package.family_id))
         .map(|package| CatalogPackage {
             id: CatalogPackageId {
+                package: package.id.clone(),
                 region: package.region_id.clone(),
                 family: package.family_id.clone(),
                 cycle: cycle.clone(),
@@ -687,12 +689,12 @@ fn validate_packaged_assets(
     let package_map = packages
         .iter()
         .map(|package| {
-            let artifact_path = package.artifact_path.as_ref().with_context(|| {
-                format!("package {} missing internal artifact_path", package.id)
-            })?;
-            Ok::<_, anyhow::Error>((package.id.clone(), artifact_root.join(artifact_path)))
+            (
+                package.id.clone(),
+                artifact_root.join(&package.artifact_path),
+            )
         })
-        .collect::<anyhow::Result<BTreeMap<_, _>>>()?;
+        .collect::<BTreeMap<_, _>>();
     let package_members = package_map
         .iter()
         .map(|(package_id, package_path)| {
@@ -930,6 +932,59 @@ fn collect_packages(
             ))
     });
     Ok(packages)
+}
+
+pub fn validate_resource_package_catalog(packages: &[ResourcePackage]) -> anyhow::Result<()> {
+    let mut ids = BTreeSet::new();
+    let mut artifact_paths = BTreeSet::new();
+    let mut chart_identities = BTreeSet::new();
+    for package in packages {
+        if !ids.insert(package.id.clone()) {
+            bail!(
+                "resource package catalog contains duplicate id {}",
+                package.id
+            );
+        }
+        if !artifact_paths.insert(package.artifact_path.clone()) {
+            bail!(
+                "resource package catalog contains duplicate artifact_path {}",
+                package.artifact_path
+            );
+        }
+        if matches!(
+            package.family_id.as_str(),
+            "sec" | "tac" | "enr-l" | "enr-h"
+        ) {
+            let tier = package
+                .metadata
+                .get(CHART_PACKAGE_TIER_METADATA_KEY)
+                .cloned()
+                .with_context(|| {
+                    format!(
+                        "chart package {} is missing {CHART_PACKAGE_TIER_METADATA_KEY}",
+                        package.id
+                    )
+                })
+                .and_then(|value| {
+                    serde_json::from_value::<ChartPackageTier>(value).with_context(|| {
+                        format!(
+                            "chart package {} has invalid {CHART_PACKAGE_TIER_METADATA_KEY}",
+                            package.id
+                        )
+                    })
+                })?;
+            let identity = (package.family_id.clone(), package.region_id.clone(), tier);
+            if !chart_identities.insert(identity.clone()) {
+                bail!(
+                    "resource package catalog contains duplicate chart identity family={} region={} tier={}",
+                    identity.0,
+                    identity.1,
+                    identity.2.as_str()
+                );
+            }
+        }
+    }
+    Ok(())
 }
 
 fn collect_chart_collections(
@@ -1409,7 +1464,7 @@ fn package_from_record(
         id: package_id_from_manifest_name(&record.manifest),
         family_id: family_id.to_string(),
         region_id: record.region.to_ascii_lowercase(),
-        artifact_path: Some(relativize_to_artifact_root(&artifact_path, artifact_root)),
+        artifact_path: relativize_to_artifact_root(&artifact_path, artifact_root),
         size_bytes,
         checksum_sha256: record.zip_sha256.clone(),
         cycle_code: temporal.and_then(|value| value.cycle_code.clone()),
@@ -2529,6 +2584,60 @@ mod tests {
     use tempfile::tempdir;
     use zip::write::SimpleFileOptions;
     use zip::ZipWriter;
+
+    fn catalog_package(id: &str, artifact_path: &str, tier: ChartPackageTier) -> ResourcePackage {
+        ResourcePackage {
+            id: id.to_string(),
+            family_id: "tac".to_string(),
+            region_id: "nw".to_string(),
+            artifact_path: artifact_path.to_string(),
+            size_bytes: 1,
+            checksum_sha256: id.to_string(),
+            cycle_code: Some("2607".to_string()),
+            version_label: Some("01".to_string()),
+            effective_date: Some("2026-07-09".to_string()),
+            expiration_date: Some("2026-08-06".to_string()),
+            metadata: BTreeMap::from([(
+                CHART_PACKAGE_TIER_METADATA_KEY.to_string(),
+                serde_json::to_value(tier).unwrap(),
+            )]),
+        }
+    }
+
+    #[test]
+    fn package_catalog_preserves_distinct_tiers_for_one_family_region() {
+        let regional = catalog_package(
+            "NW_TAC_TAC1_2607",
+            "cache/regional/NW_TAC_TAC1_2607.zip",
+            ChartPackageTier::Regional,
+        );
+        let detail = catalog_package(
+            "NW_TAC_DETAIL_TAC1_2607",
+            "cache/detail/NW_TAC_DETAIL_TAC1_2607.zip",
+            ChartPackageTier::Detail,
+        );
+
+        validate_resource_package_catalog(&[regional.clone(), detail.clone()]).unwrap();
+        validate_resource_package_catalog(&[detail, regional]).unwrap();
+    }
+
+    #[test]
+    fn package_catalog_rejects_duplicate_exact_identity_instead_of_overwriting() {
+        let regional = catalog_package(
+            "NW_TAC_TAC1_2607",
+            "cache/regional/NW_TAC_TAC1_2607.zip",
+            ChartPackageTier::Regional,
+        );
+        let mut duplicate = regional.clone();
+        duplicate.id = "NW_TAC_OTHER_TAC1_2607".to_string();
+        duplicate.artifact_path = "cache/other/NW_TAC_OTHER_TAC1_2607.zip".to_string();
+
+        let error = validate_resource_package_catalog(&[regional, duplicate]).unwrap_err();
+        assert!(
+            error.to_string().contains("duplicate chart identity"),
+            "unexpected error: {error:#}"
+        );
+    }
 
     fn write_test_png(path: impl AsRef<Path>, width: u32, height: u32) {
         let image = RgbaImage::from_pixel(width, height, Rgba([255, 255, 255, 255]));

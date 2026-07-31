@@ -183,21 +183,6 @@ pub fn build_cycle(config: &ProductBuildConfig) -> anyhow::Result<PathBuf> {
                 weight: LIGHT_TASK_WEIGHT,
                 kind: ScheduledTaskKind::ChartPackage { family },
             });
-            for region in Region::ALL.iter() {
-                pending_tasks.push(GraphScheduledTask {
-                    id: format!(
-                        "charts-{}-unpack-{}",
-                        family_id,
-                        region.code().to_ascii_lowercase()
-                    ),
-                    deps: vec![format!("charts-{family_id}-package")],
-                    weight: LIGHT_TASK_WEIGHT,
-                    kind: ScheduledTaskKind::ChartUnpack {
-                        family,
-                        region: *region,
-                    },
-                });
-            }
         }
         pending_tasks.push(GraphScheduledTask {
             id: "charts-flyway-process".to_string(),
@@ -885,46 +870,13 @@ pub fn build_cycle(config: &ProductBuildConfig) -> anyhow::Result<PathBuf> {
                             completion_detail: format!("cache_hit={}", cache_hit),
                         })
                     }
-                    ScheduledTaskKind::ChartUnpack { family, region } => {
-                        let family_id = family_slug(family).to_string();
-                        let key = format!("charts-{family_id}-package");
-                        let source = match task_values_snapshot.get(&key) {
-                            Some(TaskValue::ChartSource(source)) => source.clone(),
-                            _ => bail!("missing chart source for {family_id}"),
-                        };
-                        let package =
-                            package_record_for_region(&source.package_outputs_path, region)?;
-                        let zip_path = source.package_root.join(&package.zip);
-                        let unpacked_root = published_unpacked_root(&config)?;
-                        let published_filename = canonical_package_filename(
-                            &family_id,
-                            &region.code().to_ascii_lowercase(),
-                            &package.zip,
-                        )?;
-                        let (cache_hit, unpack_dir) = sync_unpacked_zip_from_source(
-                            &zip_path,
-                            &source.unpack_source_root,
-                            &unpacked_root,
-                            &published_filename,
-                            Some(&package.zip_sha256),
-                        )?;
-                        Ok(TaskCompletion {
-                            node_records: vec![],
-                            value: TaskValue::None,
-                            completion_detail: format!(
-                                "cache_hit={} unpack_dir={}",
-                                cache_hit,
-                                unpack_dir.display()
-                            ),
-                        })
-                    }
                     ScheduledTaskKind::CsupUnpack { region } => {
                         let source = match task_values_snapshot.get("csup-package") {
                             Some(TaskValue::CsupSource(source)) => source.clone(),
                             _ => bail!("missing csup package source"),
                         };
                         let package =
-                            package_record_for_region(&source.package_outputs_path, region)?;
+                            unique_package_record_for_region(&source.package_outputs_path, region)?;
                         let zip_path = source.package_root.join(&package.zip);
                         let unpacked_root = published_unpacked_root(&config)?;
                         let published_filename = canonical_package_filename(
@@ -959,7 +911,7 @@ pub fn build_cycle(config: &ProductBuildConfig) -> anyhow::Result<PathBuf> {
                             _ => bail!("missing tpp package source for {region_id}"),
                         };
                         let package =
-                            package_record_for_region(&source.package_outputs_path, region)?;
+                            unique_package_record_for_region(&source.package_outputs_path, region)?;
                         let zip_path = source.package_root.join(&package.zip);
                         let unpacked_root = published_unpacked_root(&config)?;
                         let published_filename = canonical_package_filename(

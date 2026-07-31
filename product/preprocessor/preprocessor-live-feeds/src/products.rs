@@ -544,8 +544,8 @@ impl ProductBuilder for TfrLiveFeedBuilder {
             .filter(|tfr_id| !notams_by_fdc_id.contains_key(*tfr_id))
             .cloned()
             .collect::<BTreeSet<_>>();
-        if let Some(backfill_metadata) =
-            self.current_tfr_detail_backfill_metadata(&missing_from_notam_state)
+        if let Some(backfill_metadata) = self
+            .current_tfr_detail_backfill_metadata(&missing_from_notam_state, tfr_notam_ids.len())
         {
             for (fdc_id, metadata) in backfill_metadata {
                 notams_by_fdc_id.entry(fdc_id).or_insert(metadata);
@@ -606,12 +606,13 @@ impl TfrLiveFeedBuilder {
     fn current_tfr_detail_backfill_metadata(
         &self,
         missing_tfr_ids: &BTreeSet<String>,
+        current_tfr_count: usize,
     ) -> Option<Vec<(String, StructuredTfrNotamMetadata)>> {
         let Some(state_root) = &self.tfr_detail_backfill_state_root else {
             return None;
         };
         let store = TfrDetailBackfillStore::new(state_root);
-        if let Err(error) = store.record_desired_tfrs(missing_tfr_ids) {
+        if let Err(error) = store.reconcile_desired_tfrs(missing_tfr_ids, current_tfr_count) {
             eprintln!(
                 "TFR detail backfill queue unavailable from {}: {error:#}",
                 state_root.display()
@@ -635,11 +636,15 @@ pub struct TfrDetailBackfillRunSummary {
     pub attempted: usize,
     pub succeeded: usize,
     pub failed: usize,
-    pub desired: usize,
-    pub stored: usize,
-    pub total_failures: usize,
+    pub current_tfrs: usize,
+    pub current_desired: usize,
+    pub current_cached: usize,
+    pub historical_cached: usize,
+    pub current_failures: usize,
     pub remaining_unfetched: usize,
     pub remaining_due: usize,
+    pub last_reconciled_at_utc: Option<String>,
+    pub last_needed_at_utc: Option<String>,
 }
 
 pub fn fetch_tfr_detail_backfill_once(
@@ -672,11 +677,15 @@ pub fn fetch_tfr_detail_backfill_once(
         attempted: targets.len(),
         succeeded,
         failed,
-        desired: summary.desired,
-        stored: summary.stored,
-        total_failures: summary.failures,
+        current_tfrs: summary.current_tfrs,
+        current_desired: summary.current_desired,
+        current_cached: summary.current_cached,
+        historical_cached: summary.historical_cached,
+        current_failures: summary.current_failures,
         remaining_unfetched: summary.remaining_unfetched,
         remaining_due: summary.due,
+        last_reconciled_at_utc: summary.last_reconciled_at_utc,
+        last_needed_at_utc: summary.last_needed_at_utc,
     })
 }
 
@@ -1594,7 +1603,7 @@ mod tests {
         let missing = BTreeSet::from(["6/8212".to_string()]);
 
         let first = builder
-            .current_tfr_detail_backfill_metadata(&missing)
+            .current_tfr_detail_backfill_metadata(&missing, 3)
             .expect("metadata query");
         assert!(first.is_empty());
         let store = TfrDetailBackfillStore::new(&state_root);
@@ -1626,7 +1635,7 @@ mod tests {
         )?;
 
         let second = builder
-            .current_tfr_detail_backfill_metadata(&missing)
+            .current_tfr_detail_backfill_metadata(&missing, 3)
             .expect("metadata query");
         assert_eq!(second.len(), 1);
         assert_eq!(second[0].0, "6/8212");

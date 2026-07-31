@@ -12,7 +12,7 @@ use std::{
 
 use anyhow::{bail, Context};
 use chrono::{Duration, NaiveDateTime, Utc};
-use rusqlite::{params, Connection};
+use rusqlite::{params, Connection, OptionalExtension};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
@@ -41,11 +41,15 @@ pub struct TfrDetailFetchTarget {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TfrDetailBackfillStoreSummary {
-    pub desired: usize,
-    pub stored: usize,
-    pub failures: usize,
+    pub current_tfrs: usize,
+    pub current_desired: usize,
+    pub current_cached: usize,
+    pub historical_cached: usize,
+    pub current_failures: usize,
     pub remaining_unfetched: usize,
     pub due: usize,
+    pub last_reconciled_at_utc: Option<String>,
+    pub last_needed_at_utc: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -108,12 +112,24 @@ impl TfrDetailBackfillStore {
         Ok(TfrDetailBackfillLock { file, path })
     }
 
-    pub fn record_desired_tfrs(&self, tfr_ids: &BTreeSet<String>) -> anyhow::Result<()> {
+    pub fn reconcile_desired_tfrs(
+        &self,
+        tfr_ids: &BTreeSet<String>,
+        current_tfrs: usize,
+    ) -> anyhow::Result<()> {
+        if tfr_ids.len() > current_tfrs {
+            bail!(
+                "TFR detail fallback desired count {} exceeds current TFR count {current_tfrs}",
+                tfr_ids.len()
+            );
+        }
         let mut connection = self.open_connection()?;
         let tx = connection
             .transaction()
             .context("failed to start TFR detail desired transaction")?;
         let observed_at_utc = Utc::now().to_rfc3339();
+        tx.execute("DELETE FROM desired_tfrs", [])
+            .context("failed to clear prior TFR detail desired set")?;
         for tfr_id in tfr_ids {
             let source_url = detail_url_for_tfr_id(tfr_id)?;
             tx.execute(
@@ -125,6 +141,11 @@ impl TfrDetailBackfillStore {
                 params![tfr_id, source_url, observed_at_utc],
             )
             .with_context(|| format!("failed to record desired TFR detail {tfr_id}"))?;
+        }
+        set_metadata(&tx, "current_tfr_count", &current_tfrs.to_string())?;
+        set_metadata(&tx, "last_reconciled_at_utc", &observed_at_utc)?;
+        if !tfr_ids.is_empty() {
+            set_metadata(&tx, "last_needed_at_utc", &observed_at_utc)?;
         }
         tx.commit()
             .context("failed to commit TFR detail desired transaction")?;
@@ -170,9 +191,26 @@ impl TfrDetailBackfillStore {
     pub fn summary(&self) -> anyhow::Result<TfrDetailBackfillStoreSummary> {
         let connection = self.open_connection()?;
         let now = Utc::now().to_rfc3339();
-        let desired = scalar_count(&connection, "SELECT COUNT(*) FROM desired_tfrs", [])?;
-        let stored = scalar_count(&connection, "SELECT COUNT(*) FROM detail_records", [])?;
-        let failures = scalar_count(&connection, "SELECT COUNT(*) FROM fetch_failures", [])?;
+        let current_tfrs = metadata(&connection, "current_tfr_count")?
+            .and_then(|value| value.parse::<usize>().ok())
+            .unwrap_or_default();
+        let current_desired = scalar_count(&connection, "SELECT COUNT(*) FROM desired_tfrs", [])?;
+        let current_cached = scalar_count(
+            &connection,
+            "SELECT COUNT(*)
+             FROM desired_tfrs
+             JOIN detail_records ON detail_records.tfr_id = desired_tfrs.tfr_id",
+            [],
+        )?;
+        let historical_cached =
+            scalar_count(&connection, "SELECT COUNT(*) FROM detail_records", [])?;
+        let current_failures = scalar_count(
+            &connection,
+            "SELECT COUNT(*)
+             FROM desired_tfrs
+             JOIN fetch_failures ON fetch_failures.tfr_id = desired_tfrs.tfr_id",
+            [],
+        )?;
         let remaining_unfetched = scalar_count(
             &connection,
             "SELECT COUNT(*)
@@ -195,11 +233,15 @@ impl TfrDetailBackfillStore {
             [now],
         )?;
         Ok(TfrDetailBackfillStoreSummary {
-            desired,
-            stored,
-            failures,
+            current_tfrs,
+            current_desired,
+            current_cached,
+            historical_cached,
+            current_failures,
             remaining_unfetched,
             due,
+            last_reconciled_at_utc: metadata(&connection, "last_reconciled_at_utc")?,
+            last_needed_at_utc: metadata(&connection, "last_needed_at_utc")?,
         })
     }
 
@@ -392,6 +434,30 @@ where
         .query_row(sql, params, |row| row.get::<_, i64>(0))
         .context("failed to query TFR detail backfill count")?;
     Ok(count.max(0) as usize)
+}
+
+fn metadata(connection: &Connection, key: &str) -> anyhow::Result<Option<String>> {
+    connection
+        .query_row("SELECT value FROM metadata WHERE key = ?1", [key], |row| {
+            row.get(0)
+        })
+        .optional()
+        .with_context(|| format!("failed to read TFR detail backfill metadata {key}"))
+}
+
+fn set_metadata(
+    transaction: &rusqlite::Transaction<'_>,
+    key: &str,
+    value: &str,
+) -> anyhow::Result<()> {
+    transaction
+        .execute(
+            "INSERT INTO metadata(key, value) VALUES (?1, ?2)
+             ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+            params![key, value],
+        )
+        .with_context(|| format!("failed to write TFR detail backfill metadata {key}"))?;
+    Ok(())
 }
 
 impl Drop for TfrDetailBackfillLock {
@@ -636,7 +702,7 @@ mod tests {
         let store = TfrDetailBackfillStore::new(temp.path());
         store.initialize().expect("initialize");
         store
-            .record_desired_tfrs(&BTreeSet::from(["6/8212".to_string()]))
+            .reconcile_desired_tfrs(&BTreeSet::from(["6/8212".to_string()]), 4)
             .expect("desired");
         let targets = store.due_fetch_targets(10).expect("targets");
         assert_eq!(targets.len(), 1);
@@ -675,6 +741,26 @@ mod tests {
             .as_deref()
             .expect("text")
             .contains("FULL BODY"));
+
+        let active = store.summary().expect("active summary");
+        assert_eq!(active.current_tfrs, 4);
+        assert_eq!(active.current_desired, 1);
+        assert_eq!(active.current_cached, 1);
+        assert_eq!(active.historical_cached, 1);
+        assert_eq!(active.remaining_unfetched, 0);
+        assert!(active.last_needed_at_utc.is_some());
+
+        let last_needed_at_utc = active.last_needed_at_utc;
+        store
+            .reconcile_desired_tfrs(&BTreeSet::new(), 5)
+            .expect("clear desired set");
+        let idle = store.summary().expect("idle summary");
+        assert_eq!(idle.current_tfrs, 5);
+        assert_eq!(idle.current_desired, 0);
+        assert_eq!(idle.current_cached, 0);
+        assert_eq!(idle.historical_cached, 1);
+        assert_eq!(idle.last_needed_at_utc, last_needed_at_utc);
+        assert!(store.due_fetch_targets(10).expect("targets").is_empty());
     }
 
     #[test]

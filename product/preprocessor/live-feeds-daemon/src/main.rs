@@ -39,7 +39,8 @@ use preprocessor_live_feeds::{
     products::{
         fetch_tfr_detail_backfill_once, LiveFeedFetchConfig, MetarLiveFeedBuilder,
         NexradSourceGridLiveFeedBuilder, NotamLiveFeedBuilder, ObstaclesLiveFeedBuilder,
-        TafLiveFeedBuilder, TfrLiveFeedBuilder, WindsAloftLiveFeedBuilder,
+        TafLiveFeedBuilder, TfrDetailBackfillRunSummary, TfrLiveFeedBuilder,
+        WindsAloftLiveFeedBuilder,
     },
     simulation::{
         fixture_loop_duration, next_fixture_loop_virtual_zero, timeline_from_live_feed_root,
@@ -162,6 +163,8 @@ struct ProductStatusHistory {
     attempts: VecDeque<ProductAttemptSample>,
     samples: VecDeque<ProductUpdateSample>,
     source_samples: VecDeque<SourceIngestSample>,
+    auxiliary_worker: Option<AuxiliaryWorkerStatus>,
+    auxiliary_samples: VecDeque<AuxiliaryWorkerSample>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -204,6 +207,34 @@ struct ProductStatusSnapshot {
     attempts: Vec<ProductAttemptSample>,
     samples: Vec<ProductUpdateSample>,
     source_samples: Vec<SourceIngestSample>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    auxiliary_worker: Option<AuxiliaryWorkerStatus>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    auxiliary_samples: Vec<AuxiliaryWorkerSample>,
+}
+
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+struct AuxiliaryWorkerStatus {
+    kind: String,
+    state: String,
+    current_item_count: usize,
+    current_needed_count: usize,
+    current_cached_count: usize,
+    historical_cached_count: usize,
+    pending_count: usize,
+    retrying_count: usize,
+    last_reconciled_at_utc: Option<String>,
+    last_needed_at_utc: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+struct AuxiliaryWorkerSample {
+    observed_at_utc: chrono::DateTime<Utc>,
+    needed_count: usize,
+    pending_count: usize,
+    attempted_count: usize,
+    succeeded_count: usize,
+    failed_count: usize,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -347,6 +378,18 @@ impl DaemonStatus {
         push_limited(&mut history.source_samples, sample);
     }
 
+    fn record_auxiliary_worker(
+        &self,
+        product: &str,
+        worker: AuxiliaryWorkerStatus,
+        sample: AuxiliaryWorkerSample,
+    ) {
+        let mut state = self.inner.lock().expect("live-feed status lock");
+        let history = state.products.entry(product.to_string()).or_default();
+        history.auxiliary_worker = Some(worker);
+        push_limited(&mut history.auxiliary_samples, sample);
+    }
+
     fn record_source_failure(&self, product: &str, error: impl Into<String>) {
         self.record_product_failure(&preprocessor_live_feeds::engine::FailedLiveFeedTask {
             product: product.to_string(),
@@ -468,6 +511,8 @@ impl DaemonStatus {
                         attempts: history.attempts.iter().cloned().collect(),
                         samples: history.samples.iter().cloned().collect(),
                         source_samples: history.source_samples.iter().cloned().collect(),
+                        auxiliary_worker: history.auxiliary_worker.clone(),
+                        auxiliary_samples: history.auxiliary_samples.iter().cloned().collect(),
                     },
                 )
             })
@@ -1614,6 +1659,43 @@ fn parse_utc_timestamp(value: &str, label: &str) -> anyhow::Result<chrono::DateT
         .map(|value| value.with_timezone(&Utc))
 }
 
+fn tfr_detail_auxiliary_status(
+    summary: &TfrDetailBackfillRunSummary,
+    observed_at_utc: chrono::DateTime<Utc>,
+) -> (AuxiliaryWorkerStatus, AuxiliaryWorkerSample) {
+    let state = if summary.failed > 0 || summary.current_failures > 0 {
+        "degraded"
+    } else if summary.remaining_unfetched > 0 {
+        "fetching"
+    } else if summary.current_desired > 0 {
+        "active"
+    } else {
+        "idle"
+    };
+    (
+        AuxiliaryWorkerStatus {
+            kind: "tfr_detail_fallback".to_string(),
+            state: state.to_string(),
+            current_item_count: summary.current_tfrs,
+            current_needed_count: summary.current_desired,
+            current_cached_count: summary.current_cached,
+            historical_cached_count: summary.historical_cached,
+            pending_count: summary.remaining_unfetched,
+            retrying_count: summary.current_failures,
+            last_reconciled_at_utc: summary.last_reconciled_at_utc.clone(),
+            last_needed_at_utc: summary.last_needed_at_utc.clone(),
+        },
+        AuxiliaryWorkerSample {
+            observed_at_utc,
+            needed_count: summary.current_desired,
+            pending_count: summary.remaining_unfetched,
+            attempted_count: summary.attempted,
+            succeeded_count: summary.succeeded,
+            failed_count: summary.failed,
+        },
+    )
+}
+
 fn start_tfr_detail_backfill_supervisor(
     fetch: LiveFeedFetchConfig,
     state_root: PathBuf,
@@ -1645,34 +1727,28 @@ fn start_tfr_detail_backfill_supervisor(
                 &tick_scratch,
                 MAX_FETCHES_PER_TICK,
             ) {
-                Ok(summary) if summary.failed == 0 => status.record_source_success(
-                    PRODUCT,
-                    None,
-                    format!(
-                        "attempted={} succeeded={} stored={}/{} remaining_unfetched={} remaining_due={} failures={}",
-                        summary.attempted,
-                        summary.succeeded,
-                        summary.stored,
-                        summary.desired,
-                        summary.remaining_unfetched,
-                        summary.remaining_due,
-                        summary.total_failures
-                    ),
-                ),
-                Ok(summary) => status.record_source_failure(
-                    PRODUCT,
-                    format!(
-                        "attempted={} succeeded={} failed={} stored={}/{} remaining_unfetched={} remaining_due={} failures={}",
+                Ok(summary) => {
+                    let observed_at_utc = Utc::now();
+                    let detail = format!(
+                        "attempted={} succeeded={} failed={} current_needed={} current_cached={} current_tfrs={} pending={} retrying={} historical_cached={}",
                         summary.attempted,
                         summary.succeeded,
                         summary.failed,
-                        summary.stored,
-                        summary.desired,
+                        summary.current_desired,
+                        summary.current_cached,
+                        summary.current_tfrs,
                         summary.remaining_unfetched,
-                        summary.remaining_due,
-                        summary.total_failures
-                    ),
-                ),
+                        summary.current_failures,
+                        summary.historical_cached,
+                    );
+                    if summary.failed == 0 {
+                        status.record_source_success(PRODUCT, None, detail);
+                    } else {
+                        status.record_source_failure(PRODUCT, detail);
+                    }
+                    let (worker, sample) = tfr_detail_auxiliary_status(&summary, observed_at_utc);
+                    status.record_auxiliary_worker(PRODUCT, worker, sample);
+                }
                 Err(error) => status.record_source_failure(PRODUCT, format!("{error:#}")),
             }
             thread::sleep(INTERVAL);
@@ -2134,6 +2210,16 @@ th:first-child, td:first-child { text-align: left; }
 details.product-details { margin: 0 0 12px; }
 details.product-details summary { cursor: pointer; color: #245; font-weight: 600; }
 details.product-details table { margin-top: 8px; }
+.worker-heading { display: flex; align-items: center; gap: 10px; }
+.worker-badge { border-radius: 3px; padding: 3px 7px; font-size: 12px; font-weight: 700; letter-spacing: 0; }
+.worker-badge.idle { color: #315512; background: #e7f2dd; }
+.worker-badge.active, .worker-badge.fetching { color: #664900; background: #fff0bd; }
+.worker-badge.degraded { color: #7b1717; background: #f7d5d5; }
+.worker-summary { margin: 4px 0 10px; font-size: 15px; }
+.worker-metrics { display: grid; grid-template-columns: repeat(auto-fit, minmax(130px, 1fr)); gap: 8px; margin: 10px 0 14px; }
+.worker-metric { border-left: 3px solid #d7d7d0; padding: 3px 8px; }
+.worker-metric b { display: block; font-size: 18px; }
+.worker-metric span { color: #666; font-size: 12px; }
 </style>
 <h1>Aerobag Live Feeds</h1>
 <div id="status" class="muted">Loading...</div>
@@ -2178,6 +2264,50 @@ function productDetails(product, data) {
     <tr><th>latest attempt result</th><td>${latestAttempt?.result ?? "-"}</td></tr>
   </table>
   </details>`;
+}
+function productDisplayName(product) {
+  return product === "tfr-detail-backfill" ? "TFR detail fallback" : product;
+}
+function compactAge(fromUtc, toUtc) {
+  const elapsedSeconds = Math.max(0, (new Date(toUtc).getTime() - new Date(fromUtc).getTime()) / 1000);
+  if (!Number.isFinite(elapsedSeconds)) return "an unknown time";
+  if (elapsedSeconds < 3600) return `${Math.floor(elapsedSeconds / 60)}m`;
+  if (elapsedSeconds < 48 * 3600) return `${Math.floor(elapsedSeconds / 3600)}h`;
+  const days = Math.floor(elapsedSeconds / 86400);
+  const hours = Math.floor((elapsedSeconds % 86400) / 3600);
+  return hours === 0 ? `${days}d` : `${days}d ${hours}h`;
+}
+function auxiliaryWorkerPanel(data, generatedAtUtc) {
+  const worker = data.auxiliary_worker;
+  const state = data.consecutive_failure_count > 0 ? "degraded" : worker.state;
+  let summary;
+  if (worker.current_needed_count === 0) {
+    const age = worker.last_needed_at_utc == null
+      ? null
+      : compactAge(worker.last_needed_at_utc, generatedAtUtc);
+    summary = age == null
+      ? `No current TFR needs fallback. NMS covers all ${worker.current_item_count} current TFRs.`
+      : `No TFR has needed fallback for ${age}. NMS currently covers all ${worker.current_item_count} current TFRs.`;
+  } else if (worker.pending_count > 0) {
+    summary = `${worker.current_needed_count} current TFRs need fallback; ${worker.current_cached_count} are cached and ${worker.pending_count} are pending.`;
+  } else {
+    summary = `${worker.current_needed_count} current TFRs use cached fallback detail; none are pending.`;
+  }
+  const metrics = [
+    [worker.current_item_count, "Current TFRs"],
+    [worker.current_needed_count, "Need fallback"],
+    [worker.current_cached_count, "Cached current"],
+    [worker.pending_count, "Pending"],
+    [worker.retrying_count, "Retrying"],
+    [worker.historical_cached_count, "Historical cache"],
+    [data.consecutive_failure_count, "Worker failures"],
+  ];
+  return `
+    <div class="worker-heading"><span class="worker-badge ${state}">${state.toUpperCase()}</span></div>
+    <div class="worker-summary">${summary}</div>
+    <div class="worker-metrics">${metrics.map(([value, label]) =>
+      `<div class="worker-metric"><b>${value}</b><span>${label}</span></div>`
+    ).join("")}</div>`;
 }
 function plotId(product, field) {
   return `plot-${product.replace(/[^a-zA-Z0-9_-]/g, "_")}-${field}`;
@@ -2332,6 +2462,44 @@ function renderSourceRatePlot(product, data, generatedAtUtc) {
     marker: { color: "#4b7d19", size: 5 },
   }], basePlotLayout(`${product} source record rate`, "records/min"), { responsive: true, displaylogo: false });
 }
+function renderAuxiliaryWorkerPlot(product, data) {
+  const samples = data.auxiliary_samples || [];
+  const node = document.getElementById(plotId(product, "fallback_demand"));
+  if (!node) return;
+  if (!window.Plotly) {
+    node.textContent = "Plotly failed to load.";
+    node.className = "plot muted";
+    return;
+  }
+  if (samples.length === 0) {
+    node.textContent = "No fallback-demand samples yet.";
+    node.className = "plot muted";
+    return;
+  }
+  const traces = [
+    {
+      type: "scatter",
+      mode: "lines+markers",
+      name: "need fallback",
+      x: samples.map((sample) => sample.observed_at_utc),
+      y: samples.map((sample) => sample.needed_count),
+      line: { color: "#a84b00", width: 2 },
+      marker: { color: "#a84b00", size: 5 },
+    },
+    {
+      type: "scatter",
+      mode: "lines+markers",
+      name: "pending",
+      x: samples.map((sample) => sample.observed_at_utc),
+      y: samples.map((sample) => sample.pending_count),
+      line: { color: "#0067a8", width: 2 },
+      marker: { color: "#0067a8", size: 5 },
+    },
+  ];
+  const layout = basePlotLayout(`${productDisplayName(product)} demand`, "TFRs");
+  layout.legend = { orientation: "h", x: 0, y: 1.12 };
+  Plotly.react(node, traces, layout, { responsive: true, displaylogo: false });
+}
 async function render() {
   const response = await fetch("/live-feeds/status.json", { cache: "no-store" });
   const status = await response.json();
@@ -2349,19 +2517,26 @@ async function render() {
     </div>
     ${products.map(([product, data]) => `
       <div class="product">
-        <h2>${product}</h2>
+        <h2>${productDisplayName(product)}</h2>
+        ${data.auxiliary_worker ? auxiliaryWorkerPanel(data, status.generated_at_utc) : ""}
         ${productDetails(product, data)}
         <div class="plots">
-          <div id="${plotId(product, "update_interval_ms")}" class="plot"></div>
-          <div id="${plotId(product, "delta_bytes")}" class="plot"></div>
+          ${data.auxiliary_worker
+            ? `<div id="${plotId(product, "fallback_demand")}" class="plot"></div>`
+            : `<div id="${plotId(product, "update_interval_ms")}" class="plot"></div>
+               <div id="${plotId(product, "delta_bytes")}" class="plot"></div>`}
           ${(data.source_samples || []).length > 0 ? `<div id="${plotId(product, "source_rate")}" class="plot"></div>` : ""}
         </div>
       </div>
     `).join("")}
   `;
   for (const [product, data] of products) {
-    renderUpdateIntervalPlot(product, data);
-    renderSizePlot(product, data);
+    if (data.auxiliary_worker) {
+      renderAuxiliaryWorkerPlot(product, data);
+    } else {
+      renderUpdateIntervalPlot(product, data);
+      renderSizePlot(product, data);
+    }
     renderSourceRatePlot(product, data, status.generated_at_utc);
   }
 }
@@ -2749,6 +2924,12 @@ mod tests {
         assert!(response.starts_with("HTTP/1.1 200 OK"), "{response}");
         assert!(response.contains("Content-Type: text/html"), "{response}");
         assert!(response.contains("Aerobag Live Feeds"), "{response}");
+        assert!(response.contains("TFR detail fallback"), "{response}");
+        assert!(
+            response.contains("No TFR has needed fallback for"),
+            "{response}"
+        );
+        assert!(response.contains("fallback_demand"), "{response}");
         Ok(())
     }
 
@@ -2916,6 +3097,61 @@ mod tests {
         assert_eq!(notams.source_samples[1].removed_count, 1);
         assert_eq!(notams.source_samples[1].expired_count, 1);
         assert_eq!(notams.source_samples[1].cursor_utc, "2026-07-12T02:48:00Z");
+    }
+
+    #[test]
+    fn status_records_tfr_detail_fallback_as_an_auxiliary_worker() {
+        let status = DaemonStatus::default();
+        let observed_at_utc = chrono::DateTime::parse_from_rfc3339("2026-07-31T12:00:00Z")
+            .expect("test timestamp")
+            .with_timezone(&Utc);
+        let summary = TfrDetailBackfillRunSummary {
+            attempted: 0,
+            succeeded: 0,
+            failed: 0,
+            current_tfrs: 432,
+            current_desired: 0,
+            current_cached: 0,
+            historical_cached: 17,
+            current_failures: 0,
+            remaining_unfetched: 0,
+            remaining_due: 0,
+            last_reconciled_at_utc: Some("2026-07-31T11:59:00Z".to_string()),
+            last_needed_at_utc: Some("2026-07-31T08:00:00Z".to_string()),
+        };
+        let (worker, sample) = tfr_detail_auxiliary_status(&summary, observed_at_utc);
+        assert_eq!(worker.state, "idle");
+        assert_eq!(worker.current_item_count, 432);
+        assert_eq!(worker.current_needed_count, 0);
+        assert_eq!(worker.historical_cached_count, 17);
+
+        status.record_source_success("tfr-detail-backfill", None, "idle");
+        status.record_auxiliary_worker("tfr-detail-backfill", worker, sample);
+        let snapshot = status.snapshot();
+        let backfill = snapshot
+            .products
+            .get("tfr-detail-backfill")
+            .expect("TFR fallback status");
+        assert_eq!(
+            backfill
+                .auxiliary_worker
+                .as_ref()
+                .expect("auxiliary worker")
+                .kind,
+            "tfr_detail_fallback"
+        );
+        assert_eq!(backfill.auxiliary_samples.len(), 1);
+        assert_eq!(backfill.auxiliary_samples[0].needed_count, 0);
+        assert!(backfill.samples.is_empty());
+
+        let mut degraded = summary;
+        degraded.current_desired = 2;
+        degraded.current_cached = 1;
+        degraded.current_failures = 1;
+        degraded.remaining_unfetched = 1;
+        degraded.remaining_due = 1;
+        let (worker, _) = tfr_detail_auxiliary_status(&degraded, observed_at_utc);
+        assert_eq!(worker.state, "degraded");
     }
 
     #[test]

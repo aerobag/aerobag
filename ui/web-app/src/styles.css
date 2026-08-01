@@ -249,12 +249,18 @@ button {
     var(--theme-chart-surface-bg);
 }
 
+.mapBearingTransform,
 .mapContentTransform {
   position: absolute;
   inset: 0;
   pointer-events: none;
   transform-origin: center center;
   will-change: transform;
+}
+
+.mapUpright {
+  transform: rotate(var(--map-up-deg, 0deg));
+  transform-origin: 0 0;
 }
 
 .situationOverlay {
@@ -964,7 +970,7 @@ button {
   inset: 0;
   z-index: 0;
   pointer-events: none;
-  overflow: hidden;
+  overflow: visible;
 }
 
 .mapTileImage {
@@ -2477,6 +2483,24 @@ button {
 .debugToggle input {
   width: calc(var(--thumb) * 0.2);
   height: calc(var(--thumb) * 0.2);
+  margin: 0;
+}
+
+.debugRange {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  align-items: center;
+  gap: calc(var(--thumb) * 0.1);
+  margin: calc(var(--thumb) * 0.08) 0;
+  color: #253840;
+  font-size: calc(var(--thumb) * 0.16);
+  font-weight: 800;
+  white-space: nowrap;
+  user-select: none;
+}
+
+.debugRange input {
+  width: 100%;
   margin: 0;
 }
 

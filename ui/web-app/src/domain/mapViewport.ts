@@ -10,6 +10,7 @@ export type MapViewportState = {
   centerWorldX: number;
   centerWorldY: number;
   zoom: number;
+  rotationDeg?: number;
 };
 
 export type ScreenPoint = {
@@ -44,6 +45,7 @@ export function preserveViewportForMap(
     centerWorldX: viewport.centerWorldX,
     centerWorldY: viewport.centerWorldY,
     zoom: viewport.zoom,
+    rotationDeg: viewport.rotationDeg,
   };
 }
 
@@ -74,12 +76,14 @@ export function dragViewport(
   viewport: MapViewportState,
   dx: number,
   dy: number,
+  mapUpDeg = 0,
 ): MapViewportState {
   const scale = scaleForZoom(viewport.zoom);
+  const worldAlignedDelta = rotateScreenOffset(dx, dy, mapUpDeg);
   return {
     ...viewport,
-    centerWorldX: viewport.centerWorldX - dx / scale,
-    centerWorldY: viewport.centerWorldY - dy / scale,
+    centerWorldX: viewport.centerWorldX - worldAlignedDelta.x / scale,
+    centerWorldY: viewport.centerWorldY - worldAlignedDelta.y / scale,
   };
 }
 
@@ -103,11 +107,17 @@ export function screenToWorld(
   point: ScreenPoint,
   width: number,
   height: number,
+  mapUpDeg = 0,
 ): { x: number; y: number } {
   const scale = scaleForZoom(viewport.zoom);
+  const worldAlignedOffset = rotateScreenOffset(
+    point.x - width / 2,
+    point.y - height / 2,
+    mapUpDeg,
+  );
   return {
-    x: viewport.centerWorldX + (point.x - width / 2) / scale,
-    y: viewport.centerWorldY + (point.y - height / 2) / scale,
+    x: viewport.centerWorldX + worldAlignedOffset.x / scale,
+    y: viewport.centerWorldY + worldAlignedOffset.y / scale,
   };
 }
 
@@ -116,11 +126,41 @@ export function worldToScreen(
   world: { x: number; y: number },
   width: number,
   height: number,
+  mapUpDeg = 0,
 ): ScreenPoint {
   const scale = scaleForZoom(viewport.zoom);
+  const screenAlignedOffset = rotateScreenOffset(
+    (world.x - viewport.centerWorldX) * scale,
+    (world.y - viewport.centerWorldY) * scale,
+    -mapUpDeg,
+  );
   return {
-    x: (world.x - viewport.centerWorldX) * scale + width / 2,
-    y: (world.y - viewport.centerWorldY) * scale + height / 2,
+    x: screenAlignedOffset.x + width / 2,
+    y: screenAlignedOffset.y + height / 2,
+  };
+}
+
+export function rotatedViewportEnvelopeSize(
+  width: number,
+  height: number,
+  mapUpDeg: number,
+): { width: number; height: number } {
+  const radians = (mapUpDeg * Math.PI) / 180;
+  const absCos = Math.abs(Math.cos(radians));
+  const absSin = Math.abs(Math.sin(radians));
+  return {
+    width: width * absCos + height * absSin,
+    height: width * absSin + height * absCos,
+  };
+}
+
+function rotateScreenOffset(x: number, y: number, degrees: number): ScreenPoint {
+  const radians = (degrees * Math.PI) / 180;
+  const cos = Math.cos(radians);
+  const sin = Math.sin(radians);
+  return {
+    x: x * cos - y * sin,
+    y: x * sin + y * cos,
   };
 }
 
@@ -170,14 +210,20 @@ export function zoomAroundPoint(
   width: number,
   height: number,
   nextZoom: number,
+  mapUpDeg = 0,
 ): MapViewportState {
   const clamped = clampZoom(nextZoom, mapView);
-  const anchorWorld = screenToWorld(viewport, anchor, width, height);
+  const anchorWorld = screenToWorld(viewport, anchor, width, height, mapUpDeg);
   const nextScale = scaleForZoom(clamped);
+  const worldAlignedOffset = rotateScreenOffset(
+    anchor.x - width / 2,
+    anchor.y - height / 2,
+    mapUpDeg,
+  );
   return {
     zoom: clamped,
-    centerWorldX: anchorWorld.x - (anchor.x - width / 2) / nextScale,
-    centerWorldY: anchorWorld.y - (anchor.y - height / 2) / nextScale,
+    centerWorldX: anchorWorld.x - worldAlignedOffset.x / nextScale,
+    centerWorldY: anchorWorld.y - worldAlignedOffset.y / nextScale,
   };
 }
 
@@ -187,19 +233,22 @@ export function createPinchSnapshot(
   second: ScreenPoint,
   width: number,
   height: number,
+  mapUpDeg = 0,
 ): {
   viewport: MapViewportState;
   anchorOneWorld: { x: number; y: number };
   anchorTwoWorld: { x: number; y: number };
   first: ScreenPoint;
   second: ScreenPoint;
+  mapUpDeg: number;
 } {
   return {
     viewport,
-    anchorOneWorld: screenToWorld(viewport, first, width, height),
-    anchorTwoWorld: screenToWorld(viewport, second, width, height),
+    anchorOneWorld: screenToWorld(viewport, first, width, height, mapUpDeg),
+    anchorTwoWorld: screenToWorld(viewport, second, width, height, mapUpDeg),
     first,
     second,
+    mapUpDeg,
   };
 }
 
@@ -216,13 +265,23 @@ export function applyPinchGesture(
   const zoomDelta = startDistance > 0 ? Math.log2(currentDistance / startDistance) : 0;
   const nextZoom = clampZoom(snapshot.viewport.zoom + zoomDelta, mapView);
   const nextScale = scaleForZoom(nextZoom);
+  const currentFirstOffset = rotateScreenOffset(
+    currentFirst.x - width / 2,
+    currentFirst.y - height / 2,
+    snapshot.mapUpDeg,
+  );
+  const currentSecondOffset = rotateScreenOffset(
+    currentSecond.x - width / 2,
+    currentSecond.y - height / 2,
+    snapshot.mapUpDeg,
+  );
   const centerOne = {
-    x: snapshot.anchorOneWorld.x - (currentFirst.x - width / 2) / nextScale,
-    y: snapshot.anchorOneWorld.y - (currentFirst.y - height / 2) / nextScale,
+    x: snapshot.anchorOneWorld.x - currentFirstOffset.x / nextScale,
+    y: snapshot.anchorOneWorld.y - currentFirstOffset.y / nextScale,
   };
   const centerTwo = {
-    x: snapshot.anchorTwoWorld.x - (currentSecond.x - width / 2) / nextScale,
-    y: snapshot.anchorTwoWorld.y - (currentSecond.y - height / 2) / nextScale,
+    x: snapshot.anchorTwoWorld.x - currentSecondOffset.x / nextScale,
+    y: snapshot.anchorTwoWorld.y - currentSecondOffset.y / nextScale,
   };
   return {
     zoom: nextZoom,

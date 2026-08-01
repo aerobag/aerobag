@@ -105,6 +105,7 @@ import {
   dragViewport,
   latLonToWorld,
   preserveViewportForMap,
+  rotatedViewportEnvelopeSize,
   sameMapViewport,
   scaleForZoom,
   screenToWorld,
@@ -1431,30 +1432,32 @@ function VectorPointSymbol(props: { feature: VectorPointSymbolFeature; showLabel
     const halfLength = 8 * Math.max(feature.runway_length_ratio, 0.2);
     return (
       <>
-        {usesOpenAirportCircle ? (
-          <>
-            {airportOpenMarkerSymbol.map((layer) => (
-              <path
-                key={layer.paint}
-                d={layer.path}
-                style={navSymbolLayerStyle(layer)}
-              />
-            ))}
-          </>
-        ) : feature.fuel_available ? (
-          <path d={airportFuelMarkerPath} className={airportClass} />
-        ) : (
-          <path d={airportCircleMarkerPath} className={airportClass} />
-        )}
-        {isHeliport ? (
-          <path d={heliportHPath} className="airportSpecialGlyph airportHeliportGlyph" />
-        ) : isSeaplaneBase ? (
-          <path
-            d={seaplaneAnchorPath}
-            transform="rotate(15)"
-            className="airportSpecialGlyph airportAnchorGlyph"
-          />
-        ) : null}
+        <g className="mapUpright">
+          {usesOpenAirportCircle ? (
+            <>
+              {airportOpenMarkerSymbol.map((layer) => (
+                <path
+                  key={layer.paint}
+                  d={layer.path}
+                  style={navSymbolLayerStyle(layer)}
+                />
+              ))}
+            </>
+          ) : feature.fuel_available ? (
+            <path d={airportFuelMarkerPath} className={airportClass} />
+          ) : (
+            <path d={airportCircleMarkerPath} className={airportClass} />
+          )}
+          {isHeliport ? (
+            <path d={heliportHPath} className="airportSpecialGlyph airportHeliportGlyph" />
+          ) : isSeaplaneBase ? (
+            <path
+              d={seaplaneAnchorPath}
+              transform="rotate(15)"
+              className="airportSpecialGlyph airportAnchorGlyph"
+            />
+          ) : null}
+        </g>
         {!usesOpenAirportCircle && feature.longest_runway_heading_true_deg != null ? (
           <>
             <line
@@ -1476,25 +1479,27 @@ function VectorPointSymbol(props: { feature: VectorPointSymbolFeature; showLabel
           </>
         ) : null}
         {showLabel ? (
-          <VectorIdentLabel
-            label={feature.label}
-            y={airportLabelY}
-            className={airportLabelClass}
-            labelStyle={feature.label_style}
-          />
+          <g className="mapUpright">
+            <VectorIdentLabel
+              label={feature.label}
+              y={airportLabelY}
+              className={airportLabelClass}
+              labelStyle={feature.label_style}
+            />
+          </g>
         ) : null}
       </>
     );
   }
   if (isVor) {
     return (
-      <>
+      <g className="mapUpright">
         <path d={vorBandPath} className="vorBand" fillRule="evenodd" />
         <path d={vorOuterHexPath} className="vorBorder" />
         {showLabel ? (
           <VectorIdentLabel label={feature.label} y={vorLabelY} className="vorLabel" labelStyle={feature.label_style} />
         ) : null}
-      </>
+      </g>
     );
   }
   if (isObstacle) {
@@ -1512,7 +1517,7 @@ function VectorPointSymbol(props: { feature: VectorPointSymbolFeature; showLabel
     const obstaclePath = isTallObstacle ? obstacleTallPath : obstacleShortPath;
     const obstacleDotY = isTallObstacle ? obstacleTallDotY : obstacleShortDotY;
     return (
-      <>
+      <g className="mapUpright">
         <path d={obstaclePath} className={`${obstacleClass} obstacleMarkerUnder`} />
         <path d={obstaclePath} className={obstacleClass} />
         <circle cx="0" cy={obstacleDotY} r={obstacleDotRadius} className="obstacleDotUnder" />
@@ -1520,16 +1525,16 @@ function VectorPointSymbol(props: { feature: VectorPointSymbolFeature; showLabel
         {showLabel && feature.label ? (
           <VectorIdentLabel label={feature.label} y={obstacleLabelY} className="obstacleLabel" labelStyle={feature.label_style} />
         ) : null}
-      </>
+      </g>
     );
   }
   return (
-    <>
+    <g className="mapUpright">
       <path d="M 0 -8 L 7 6 L -7 6 Z" className="fixMarker" />
       {showLabel ? (
         <VectorIdentLabel label={feature.label} y={fixLabelY} className="fixLabel" labelStyle={feature.label_style} />
       ) : null}
-    </>
+    </g>
   );
 }
 
@@ -1589,7 +1594,7 @@ function navSymbolLayerStyle(layer: { fill?: string | null; stroke?: string | nu
 
 function MapSelectionSpotSymbol() {
   return (
-    <>
+    <g className="mapUpright">
       {mapSelectionSpotSymbol.map((layer) => (
         <path
           key={layer.paint}
@@ -1599,7 +1604,7 @@ function MapSelectionSpotSymbol() {
           transform={layer.transform_degrees != null ? `rotate(${layer.transform_degrees})` : undefined}
         />
       ))}
-    </>
+    </g>
   );
 }
 
@@ -1648,7 +1653,7 @@ function MetarSymbol(props: { feature: VisibleMetarFeature }) {
             ? metarMissingSymbol
             : metarClearSymbol;
   return (
-    <g className={`metarSymbol ${categoryClass}`} aria-hidden="true">
+    <g className={`mapUpright metarSymbol ${categoryClass}`} aria-hidden="true">
       <RenderNavSymbolLayers layers={layers} />
     </g>
   );
@@ -1689,13 +1694,15 @@ function PirepSymbol(props: { feature: VisiblePirepFeature; scale?: number }) {
               ? pirepSevereIcingSymbol
               : pirepGenericSymbol;
   return (
-    <g
-      className="pirepSymbol"
-      transform={scale === 1 ? undefined : `scale(${scale})`}
-      style={{ "--pirep-color": pirepStrokeColor(feature.symbol) } as CSSProperties}
-      aria-hidden="true"
-    >
-      <RenderNavSymbolLayers layers={layers} />
+    <g className="mapUpright">
+      <g
+        className="pirepSymbol"
+        transform={scale === 1 ? undefined : `scale(${scale})`}
+        style={{ "--pirep-color": pirepStrokeColor(feature.symbol) } as CSSProperties}
+        aria-hidden="true"
+      >
+        <RenderNavSymbolLayers layers={layers} />
+      </g>
     </g>
   );
 }
@@ -3704,6 +3711,7 @@ function MapPage(props: {
     onFirstVisualReady,
   } = props;
   const containerRef = useRef<HTMLDivElement | null>(null);
+  const mapBearingTransformRef = useRef<HTMLDivElement | null>(null);
   const mapContentTransformRef = useRef<HTMLDivElement | null>(null);
   const trayGroup = useModalTrayGroup(["family", "layers", "status", "ownship"] as const);
   const [layerToggleBusyId, setLayerToggleBusyId] = useState<MapLayerId | null>(null);
@@ -3823,6 +3831,16 @@ function MapPage(props: {
   const [followSyncPendingSerial, setFollowSyncPendingSerial] = useState(0);
   const [followTargetRetryToken, setFollowTargetRetryToken] = useState(0);
   const [surfaceSize, setSurfaceSize] = useState<SurfaceSize>({ width: 0, height: 0 });
+  const mapUpDegRef = useRef(0);
+  const [plannedMapUpDeg, setPlannedMapUpDeg] = useState(0);
+  const rasterPlanningViewport = useMemo(
+    () => ({ ...viewport, rotationDeg: plannedMapUpDeg }),
+    [plannedMapUpDeg, viewport],
+  );
+  const planningSurfaceSize = useMemo(() => {
+    const envelope = rotatedViewportEnvelopeSize(surfaceSize.width, surfaceSize.height, plannedMapUpDeg);
+    return { width: Math.ceil(envelope.width), height: Math.ceil(envelope.height) };
+  }, [plannedMapUpDeg, surfaceSize.height, surfaceSize.width]);
   const [liveDragPerfRunning, setLiveDragPerfRunning] = useState(false);
   const [lastLiveDragPerfRunId, setLastLiveDragPerfRunId] = useState<string | null>(null);
   const [mapSelection, setMapSelection] = useState<{
@@ -4466,6 +4484,7 @@ function MapPage(props: {
     nextViewport.zoom.toFixed(6),
     nextViewport.centerWorldX.toFixed(3),
     nextViewport.centerWorldY.toFixed(3),
+    (nextViewport.rotationDeg ?? 0).toFixed(3),
   ].join("|"), []);
   const reportRasterTilesReadyIfComplete = useCallback((tileList: RasterRenderTile[]) => {
     if (page !== "map" || tileList.length === 0) {
@@ -4768,7 +4787,7 @@ function MapPage(props: {
     }
     const devicePixelRatio = window.devicePixelRatio || 1;
     const key = rasterTilePlanKey(
-      viewport,
+      rasterPlanningViewport,
       surfaceSize.width,
       surfaceSize.height,
       devicePixelRatio,
@@ -4784,7 +4803,7 @@ function MapPage(props: {
       key,
       requestedAt: performance.now(),
       session: uiSession,
-      viewport,
+      viewport: rasterPlanningViewport,
       width: surfaceSize.width,
       height: surfaceSize.height,
       devicePixelRatio,
@@ -4794,7 +4813,7 @@ function MapPage(props: {
     };
     rasterTilePlanPendingRef.current = true;
     pumpRasterTilePlanQueue();
-  }, [navDataEpoch, rasterTilePlanKey, selectedMap.selected_map_id, surfaceSize.height, surfaceSize.width, uiSession, viewport]);
+  }, [navDataEpoch, rasterPlanningViewport, rasterTilePlanKey, selectedMap.selected_map_id, surfaceSize.height, surfaceSize.width, uiSession]);
   useEffect(() => {
     if (page !== "map" || !pageTilePaintTiming || tiles.length === 0) {
       return;
@@ -4897,12 +4916,12 @@ function MapPage(props: {
       id: ++terrainScheduleRequestIdRef.current,
       session: uiSession,
       viewport,
-      width: surfaceSize.width,
-      height: surfaceSize.height,
+      width: planningSurfaceSize.width,
+      height: planningSurfaceSize.height,
     };
     terrainSchedulePendingRef.current = true;
     pumpTerrainRenderQueue();
-  }, [mapIsVisible, mapLayerState.terrain_warning.visible, surfaceSize.height, surfaceSize.width, terrainAltitudeBucket, uiInvalidationRevisions.terrain_overlay, uiSession, viewport]);
+  }, [mapIsVisible, mapLayerState.terrain_warning.visible, planningSurfaceSize.height, planningSurfaceSize.width, surfaceSize.height, surfaceSize.width, terrainAltitudeBucket, uiInvalidationRevisions.terrain_overlay, uiSession, viewport]);
 
   useEffect(() => {
     nexradHasPaintableFrameRef.current = nexradOverlayFrame != null && nexradOverlay.tiles.length > 0;
@@ -4940,13 +4959,13 @@ function MapPage(props: {
       id: ++nexradQueryRequestIdRef.current,
       session: uiSession,
       viewport,
-      width: surfaceSize.width,
-      height: surfaceSize.height,
+      width: planningSurfaceSize.width,
+      height: planningSurfaceSize.height,
       debugTileLabels: debugState.nexrad_tile_labels,
     };
     nexradQueryPendingRef.current = true;
     pumpNexradQueryQueue();
-  }, [debugState.nexrad_tile_labels, mapIsVisible, mapLayerState.nexrad.visible, nexradAnimationTick, nexradViewportRefreshTick, surfaceSize.height, surfaceSize.width, uiInvalidationRevisions.nexrad_overlay, uiSession]);
+  }, [debugState.nexrad_tile_labels, mapIsVisible, mapLayerState.nexrad.visible, nexradAnimationTick, nexradViewportRefreshTick, planningSurfaceSize.height, planningSurfaceSize.width, surfaceSize.height, surfaceSize.width, uiInvalidationRevisions.nexrad_overlay, uiSession]);
 
   useEffect(() => {
     if (!mapIsVisible || !mapLayerState.nexrad.visible || !uiSession) {
@@ -5170,8 +5189,8 @@ function MapPage(props: {
       session: uiSession,
       viewport,
       center,
-      width: surfaceSize.width,
-      height: surfaceSize.height,
+      width: planningSurfaceSize.width,
+      height: planningSurfaceSize.height,
       layerKey: [
         mapOverlayLayersVisible,
         mapLayerState.metars.visible,
@@ -5189,6 +5208,8 @@ function MapPage(props: {
     mapOverlayLayersVisible,
     mapIsVisible,
     onDebugWarning,
+    planningSurfaceSize.height,
+    planningSurfaceSize.width,
     surfaceSize.height,
     surfaceSize.width,
     uiInvalidationRevisions.map_overlay,
@@ -5324,6 +5345,21 @@ function MapPage(props: {
     const transform = transientViewportTransform(committedViewportRef.current, viewportRef.current);
     element.style.transform = transform;
     element.style.transformOrigin = "center center";
+  }
+
+  function applyImperativeMapBearing(nextMapUpDeg: number) {
+    mapUpDegRef.current = nextMapUpDeg;
+    const element = mapBearingTransformRef.current;
+    if (!element) {
+      return;
+    }
+    element.style.transform = `rotate(${-nextMapUpDeg}deg)`;
+    element.style.setProperty("--map-up-deg", `${nextMapUpDeg}deg`);
+  }
+
+  function updateDebugMapUp(nextMapUpDeg: number) {
+    applyImperativeMapBearing(nextMapUpDeg);
+    setPlannedMapUpDeg(nextMapUpDeg);
   }
 
   function clearPendingReactViewportCommit() {
@@ -5509,7 +5545,7 @@ function MapPage(props: {
         const dy = surfaceSize.height * 0.66 / stepsPerDrag;
         setViewportGestureActive(true);
         for (let stepIndex = 0; stepIndex < stepsPerDrag; stepIndex += 1) {
-          const nextViewport = dragViewport(viewportRef.current, dx, dy);
+          const nextViewport = dragViewport(viewportRef.current, dx, dy, mapUpDegRef.current);
           noteViewportGesture();
           perfDebugLog("map.drag.viewport", () => ({
             automated: true,
@@ -5662,6 +5698,7 @@ function MapPage(props: {
         second,
         surfaceSize.width,
         surfaceSize.height,
+        mapUpDegRef.current,
       );
       dragRef.current = null;
     }
@@ -5684,7 +5721,7 @@ function MapPage(props: {
     if (pointers.length === 1 && dragRef.current?.id === event.pointerId) {
       const dx = point.x - dragRef.current.last.x;
       const dy = point.y - dragRef.current.last.y;
-      const nextViewport = dragViewport(viewportRef.current, dx, dy);
+      const nextViewport = dragViewport(viewportRef.current, dx, dy, mapUpDegRef.current);
       noteViewportGesture();
       perfDebugLog("map.drag.viewport", () => ({
         dx,
@@ -5711,6 +5748,7 @@ function MapPage(props: {
           second[1],
           surfaceSize.width,
           surfaceSize.height,
+          mapUpDegRef.current,
         );
       }
       const nextViewport = applyPinchGesture(
@@ -5766,7 +5804,13 @@ function MapPage(props: {
       uiSession
     ) {
       clickCandidateRef.current = null;
-      const world = screenToWorld(viewportRef.current, clickCandidate.latest, surfaceSize.width, surfaceSize.height);
+      const world = screenToWorld(
+        viewportRef.current,
+        clickCandidate.latest,
+        surfaceSize.width,
+        surfaceSize.height,
+        mapUpDegRef.current,
+      );
       const click = worldToLatLon(world.x, world.y);
       void uiSession
         .queryMapSelection(viewportRef.current, surfaceSize.width, surfaceSize.height, click)
@@ -5815,6 +5859,7 @@ function MapPage(props: {
       surfaceSize.width,
       surfaceSize.height,
       viewportRef.current.zoom - event.deltaY / 360,
+      mapUpDegRef.current,
     );
     noteViewportGesture();
     updateViewport(nextViewport);
@@ -5832,6 +5877,7 @@ function MapPage(props: {
       surfaceSize.width,
       surfaceSize.height,
       viewportRef.current.zoom + 0.75,
+      mapUpDegRef.current,
     );
     noteViewportGesture();
     updateViewport(nextViewport);
@@ -5849,6 +5895,7 @@ function MapPage(props: {
       surfaceSize.width,
       surfaceSize.height,
       nextZoom,
+      mapUpDegRef.current,
     );
     noteViewportGesture();
     updateViewport(nextViewport);
@@ -5900,6 +5947,7 @@ function MapPage(props: {
       latLonToWorld(position.lat, position.lon),
       surfaceSize.width,
       surfaceSize.height,
+      mapUpDegRef.current,
     );
     const selectedItem = mapSelectionItemById(inspection.selection, inspection.selected_item_id ?? null);
     setMapSelection({
@@ -5951,6 +5999,7 @@ function MapPage(props: {
       localPoint,
       surfaceSize.width,
       surfaceSize.height,
+      mapUpDegRef.current,
     );
     const click = worldToLatLon(world.x, world.y);
     const requestSerial = hoverWeatherRequestSerialRef.current + 1;
@@ -6342,6 +6391,7 @@ function MapPage(props: {
             {disabledActionToast.message}
           </div>
         ) : null}
+        <div ref={mapBearingTransformRef} className="mapBearingTransform">
         <div ref={mapContentTransformRef} className="mapContentTransform">
           <Profiler id="RasterLayer" onRender={logReactProfilerRender}>
             <div
@@ -6454,10 +6504,11 @@ function MapPage(props: {
                       return (
                         <g
                           key={`${label.feature_id}:${label.glyph.upper}:${label.glyph.lower}:${label.screen_x}:${label.screen_y}`}
-                          className={`airspaceFractionLabel airspaceLabel-${label.glyph.style_key}`}
                           transform={`translate(${label.screen_x} ${label.screen_y})`}
                         >
-                          <AirspaceLimitGlyph glyph={label.glyph} />
+                          <g className={`mapUpright airspaceFractionLabel airspaceLabel-${label.glyph.style_key}`}>
+                            <AirspaceLimitGlyph glyph={label.glyph} />
+                          </g>
                         </g>
                       );
                     })}
@@ -6493,33 +6544,37 @@ function MapPage(props: {
                             strokeLinejoin="round"
                             vectorEffect="non-scaling-stroke"
                           />
-                          <text
-                            x={region.label_x}
-                            y={region.label_y}
-                            textAnchor="middle"
-                            dominantBaseline="middle"
-                            fill="white"
-                            stroke="rgba(0,0,0,0.7)"
-                            strokeWidth="4"
-                            paintOrder="stroke"
-                          >
-                            <tspan x={region.label_x} dy={summaryLines.length ? "-0.72em" : "0"}>{region.label}</tspan>
-                            {summaryLines.map((summary, index) => (
-                              <tspan key={`${region.id}:summary:${index}`} x={region.label_x} dy="1.35em">{summary}</tspan>
-                            ))}
-                          </text>
-                          <text
-                            x={region.label_x}
-                            y={region.label_y}
-                            textAnchor="middle"
-                            dominantBaseline="middle"
-                            fill={color}
-                          >
-                            <tspan x={region.label_x} dy={summaryLines.length ? "-0.72em" : "0"}>{region.label}</tspan>
-                            {summaryLines.map((summary, index) => (
-                              <tspan key={`${region.id}:summary:${index}`} x={region.label_x} dy="1.35em">{summary}</tspan>
-                            ))}
-                          </text>
+                          <g transform={`translate(${region.label_x} ${region.label_y})`}>
+                            <g className="mapUpright">
+                              <text
+                                x="0"
+                                y="0"
+                                textAnchor="middle"
+                                dominantBaseline="middle"
+                                fill="white"
+                                stroke="rgba(0,0,0,0.7)"
+                                strokeWidth="4"
+                                paintOrder="stroke"
+                              >
+                                <tspan x="0" dy={summaryLines.length ? "-0.72em" : "0"}>{region.label}</tspan>
+                                {summaryLines.map((summary, index) => (
+                                  <tspan key={`${region.id}:summary:${index}`} x="0" dy="1.35em">{summary}</tspan>
+                                ))}
+                              </text>
+                              <text
+                                x="0"
+                                y="0"
+                                textAnchor="middle"
+                                dominantBaseline="middle"
+                                fill={color}
+                              >
+                                <tspan x="0" dy={summaryLines.length ? "-0.72em" : "0"}>{region.label}</tspan>
+                                {summaryLines.map((summary, index) => (
+                                  <tspan key={`${region.id}:summary:${index}`} x="0" dy="1.35em">{summary}</tspan>
+                                ))}
+                              </text>
+                            </g>
+                          </g>
                         </g>
                       );
                     })}
@@ -6874,6 +6929,7 @@ function MapPage(props: {
           </>
         ) : null}
         </div>
+        </div>
         <StatusControlDock
           controls={ownshipControls}
           dataStatusState={dataStatusState}
@@ -7015,6 +7071,7 @@ function MapPage(props: {
                 onRunDragPerf={runLiveDragPerf}
                 dragPerfRunning={liveDragPerfRunning}
                 lastDragPerfRunId={lastLiveDragPerfRunId}
+                onMapUpDegChange={updateDebugMapUp}
               />
             </DebugDock>
           </div>
@@ -11013,6 +11070,7 @@ function CommonDebugPanel(props: {
   onRunDragPerf?: () => void;
   dragPerfRunning?: boolean;
   lastDragPerfRunId?: string | null;
+  onMapUpDegChange?: (mapUpDeg: number) => void;
 }) {
   const flags: Array<{ id: DebugFlagId; label: string }> = [
     { id: "tile_labels", label: "tile labels" },
@@ -11047,6 +11105,9 @@ function CommonDebugPanel(props: {
           {props.dragPerfRunning ? "drag perf running" : "run drag perf"}
         </button>
       ) : null}
+      {props.onMapUpDegChange ? (
+        <DebugMapUpSlider onChange={props.onMapUpDegChange} />
+      ) : null}
       {flags.map((flag) => (
         <label key={flag.id} className="debugToggle">
           <input
@@ -11058,6 +11119,28 @@ function CommonDebugPanel(props: {
         </label>
       ))}
     </>
+  );
+}
+
+function DebugMapUpSlider(props: { onChange: (mapUpDeg: number) => void }) {
+  const [mapUpDeg, setMapUpDeg] = useState(0);
+  return (
+    <label className="debugRange">
+      <span>UP {mapUpDeg > 0 ? "+" : ""}{mapUpDeg}°</span>
+      <input
+        type="range"
+        min="-180"
+        max="180"
+        step="1"
+        value={mapUpDeg}
+        aria-label="Debug map-up rotation"
+        onChange={(event) => {
+          const next = Number(event.currentTarget.value);
+          setMapUpDeg(next);
+          props.onChange(next);
+        }}
+      />
+    </label>
   );
 }
 

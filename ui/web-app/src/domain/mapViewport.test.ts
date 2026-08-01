@@ -12,6 +12,7 @@ import {
   isStaleMapFollowTargetViewport,
   latLonToWorld,
   preserveViewportForMap,
+  rotatedViewportEnvelopeSize,
   sameMapViewport,
   screenToWorld,
   transformScreenPointBetweenFrames,
@@ -161,5 +162,29 @@ describe("mapViewport", () => {
 
     expect(carried.x).toBeCloseTo(direct.x, 8);
     expect(carried.y).toBeCloseTo(direct.y, 8);
+  });
+
+  it("round-trips screen and world coordinates with a rotated map", () => {
+    const viewport = createInitialViewport(mapView);
+    const screen = { x: 203, y: 711 };
+    const world = screenToWorld(viewport, screen, 1200, 900, 73);
+
+    expect(worldToScreen(viewport, world, 1200, 900, 73).x).toBeCloseTo(screen.x, 8);
+    expect(worldToScreen(viewport, world, 1200, 900, 73).y).toBeCloseTo(screen.y, 8);
+  });
+
+  it("pans in screen coordinates when the map is rotated", () => {
+    const viewport = createInitialViewport(mapView);
+    const worldUnderCursor = screenToWorld(viewport, { x: 600, y: 300 }, 1200, 900, 90);
+    const dragged = dragViewport(viewport, 0, 150, 90);
+
+    expect(worldToScreen(dragged, worldUnderCursor, 1200, 900, 90)).toEqual({ x: 600, y: 450 });
+  });
+
+  it("computes the north-up envelope needed to fill rotated corners", () => {
+    const envelope = rotatedViewportEnvelopeSize(1200, 800, 45);
+
+    expect(envelope.width).toBeCloseTo(Math.SQRT1_2 * 2000, 8);
+    expect(envelope.height).toBeCloseTo(Math.SQRT1_2 * 2000, 8);
   });
 });

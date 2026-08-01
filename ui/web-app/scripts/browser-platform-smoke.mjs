@@ -39,6 +39,8 @@ try {
   progress("waiting for map");
   await acceptDisclaimerIfPresent(page);
   const mapRect = await waitForMap(page);
+  progress("checking rotated raster coverage");
+  const rotatedRaster = await verifyRotatedRasterCoverage(page);
   progress("clicking map");
   await clickMap(page, mapRect);
   const selection = await waitForMapSelection(page);
@@ -53,7 +55,9 @@ try {
     throw new Error(`browser exceptions observed: ${JSON.stringify(page.diagnostics.slice(-10))}`);
   }
 
-  process.stdout.write(`browser map-selection smoke passed: ${JSON.stringify(selection)}\n`);
+  process.stdout.write(
+    `browser platform smoke passed: ${JSON.stringify({ rotatedRaster, selection })}\n`,
+  );
 } finally {
   await browser?.close();
   await stopProcess(chrome?.process);
@@ -120,6 +124,114 @@ async function waitForMap(page) {
     `timed out waiting for map surface; diagnostics=${JSON.stringify(page.diagnostics.slice(-10))}`,
     200,
   );
+}
+
+async function verifyRotatedRasterCoverage(page) {
+  await waitFor(
+    async () => await page.evaluate(`(() => [...document.querySelectorAll('.mapTileImage')]
+      .some((image) => image.complete && image.naturalWidth > 0))()`),
+    30000,
+    "timed out waiting for initial raster images",
+    200,
+  );
+
+  await page.evaluate(`(() => {
+    document.querySelector('.debugLauncher')?.click();
+    const slider = document.querySelector('input[aria-label="Debug map-up rotation"]');
+    if (!(slider instanceof HTMLInputElement)) {
+      throw new Error('debug map-up rotation control is unavailable');
+    }
+    Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value').set.call(slider, '45');
+    slider.dispatchEvent(new Event('input', { bubbles: true }));
+  })()`);
+
+  const plan = await waitFor(
+    async () => await page.evaluate(`(() => {
+      const layer = document.querySelector('.rasterTileLayer');
+      if (!(layer instanceof HTMLElement)) return null;
+      const loadedOffBoundaryTiles = [...layer.querySelectorAll('.mapTile')].filter((tile) => {
+        if (!(tile instanceof HTMLElement)) return false;
+        const image = tile.querySelector('.mapTileImage');
+        const loaded = image instanceof HTMLImageElement && image.complete && image.naturalWidth > 0;
+        const outside = tile.offsetLeft < 0
+          || tile.offsetTop < 0
+          || tile.offsetLeft + tile.offsetWidth > layer.offsetWidth
+          || tile.offsetTop + tile.offsetHeight > layer.offsetHeight;
+        return loaded && outside;
+      });
+      return loadedOffBoundaryTiles.length > 0 ? {
+        loadedTiles: [...layer.querySelectorAll('.mapTileImage')]
+          .filter((image) => image.complete && image.naturalWidth > 0).length,
+        loadedOffBoundaryTiles: loadedOffBoundaryTiles.length,
+      } : null;
+    })()`),
+    30000,
+    `rotated raster plan did not load off-boundary tiles; diagnostics=${JSON.stringify(page.diagnostics.slice(-10))}`,
+    100,
+  );
+
+  const paintProbe = await page.evaluate(`(() => {
+    const map = document.querySelector('[data-testid="map-surface"]');
+    const bearing = document.querySelector('.mapBearingTransform');
+    const content = document.querySelector('.mapContentTransform');
+    const layer = document.querySelector('.rasterTileLayer');
+    if (!(map instanceof HTMLElement)
+      || !(bearing instanceof HTMLElement)
+      || !(content instanceof HTMLElement)
+      || !(layer instanceof HTMLElement)) {
+      throw new Error('rotated raster transform stack is unavailable');
+    }
+
+    const marker = document.createElement('div');
+    marker.dataset.rasterOverflowProbe = 'true';
+    Object.assign(marker.style, {
+      position: 'absolute',
+      left: Math.round(layer.offsetWidth / 3) + 'px',
+      top: '-40px',
+      width: '20px',
+      height: '20px',
+      pointerEvents: 'auto',
+      zIndex: '2147483647',
+    });
+    const saved = {
+      bearingPointerEvents: bearing.style.pointerEvents,
+      contentPointerEvents: content.style.pointerEvents,
+      layerPointerEvents: layer.style.pointerEvents,
+      layerZIndex: layer.style.zIndex,
+    };
+    bearing.style.pointerEvents = 'auto';
+    content.style.pointerEvents = 'auto';
+    layer.style.pointerEvents = 'auto';
+    layer.style.zIndex = '2147483647';
+    layer.append(marker);
+
+    const mapRect = map.getBoundingClientRect();
+    const markerRect = marker.getBoundingClientRect();
+    const x = markerRect.left + markerRect.width / 2;
+    const y = markerRect.top + markerRect.height / 2;
+    const transformedInsideMap = x >= mapRect.left && x < mapRect.right
+      && y >= mapRect.top && y < mapRect.bottom;
+    const painted = transformedInsideMap && document.elementsFromPoint(x, y).includes(marker);
+    const overflow = getComputedStyle(layer).overflow;
+
+    marker.remove();
+    bearing.style.pointerEvents = saved.bearingPointerEvents;
+    content.style.pointerEvents = saved.contentPointerEvents;
+    layer.style.pointerEvents = saved.layerPointerEvents;
+    layer.style.zIndex = saved.layerZIndex;
+    return { painted, transformedInsideMap, overflow };
+  })()`);
+  if (!paintProbe.transformedInsideMap || !paintProbe.painted) {
+    throw new Error(`rotated off-boundary raster pixels were clipped: ${JSON.stringify(paintProbe)}`);
+  }
+
+  await page.evaluate(`(() => {
+    const slider = document.querySelector('input[aria-label="Debug map-up rotation"]');
+    Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value').set.call(slider, '0');
+    slider.dispatchEvent(new Event('input', { bubbles: true }));
+    document.querySelector('.debugLauncher')?.click();
+  })()`);
+  return { ...plan, ...paintProbe };
 }
 
 async function clickMap(page, rect) {

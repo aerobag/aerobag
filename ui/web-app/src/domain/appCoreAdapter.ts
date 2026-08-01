@@ -2011,12 +2011,12 @@ async function loadBestAvailableAdapterUncached(
   };
 }
 
-function coreViewportForMap(viewport: MapViewportState) {
+export function coreViewportForMap(viewport: MapViewportState) {
   const center = viewportCenterLatLon(viewport);
   return {
     center,
     zoom: viewport.zoom,
-    rotation_deg: 0,
+    rotation_deg: viewport.rotationDeg ?? 0,
     pitch_deg: 0,
   };
 }

@@ -25,6 +25,19 @@ function functionSource(name: string): string {
 }
 
 describe("map interaction boundaries", () => {
+  it("clips rotated rasters at the map surface rather than before rotation", () => {
+    const mapSurfaceBlocks = [...styles.matchAll(/\.mapSurface\s*\{([^}]*)\}/g)]
+      .map((match) => match[1] ?? "")
+      .join("\n");
+    expect(mapSurfaceBlocks).toContain("overflow: hidden");
+
+    const rasterLayerBlocks = [...styles.matchAll(/\.rasterTileLayer\s*\{([^}]*)\}/g)]
+      .map((match) => match[1] ?? "")
+      .join("\n");
+    expect(rasterLayerBlocks).toContain("overflow: visible");
+    expect(rasterLayerBlocks).not.toContain("overflow: hidden");
+  });
+
   it("keeps map-selection inspector interactions from bubbling into map gestures", () => {
     const trayShell = sourceBetween(
       'className="mapSelectionTray"',

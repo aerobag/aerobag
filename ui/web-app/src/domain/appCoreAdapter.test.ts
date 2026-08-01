@@ -3,7 +3,7 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { createLiveFeedSubscription, loadBestAvailableAdapter, resolveLiveFeedResourceUrl, resolveLiveFeedSourceUrl } from "./appCoreAdapter";
+import { coreViewportForMap, createLiveFeedSubscription, loadBestAvailableAdapter, resolveLiveFeedResourceUrl, resolveLiveFeedSourceUrl } from "./appCoreAdapter";
 
 const snapshotJson = JSON.stringify({
   app_ui_state: {
@@ -196,6 +196,21 @@ describe("loadBestAvailableAdapter", () => {
 
     expect(loaded.backend).toBe("wasm");
     expect(loaded.detail).toContain("Rust WASM");
+  });
+});
+
+describe("coreViewportForMap", () => {
+  it("passes web map-up rotation through to core planning", () => {
+    expect(coreViewportForMap({
+      centerWorldX: 128,
+      centerWorldY: 128,
+      zoom: 8,
+      rotationDeg: -73,
+    })).toMatchObject({
+      zoom: 8,
+      rotation_deg: -73,
+      pitch_deg: 0,
+    });
   });
 });
 

@@ -654,6 +654,119 @@ fn elapsed_ms(started_at: Option<f64>) -> u64 {
     (now_ms - started_at).max(0.0).round() as u64
 }
 
+#[derive(Debug, Clone, Copy)]
+struct PlanePoint {
+    x: f64,
+    y: f64,
+}
+
+#[derive(Debug, Clone, Copy)]
+struct AxisAlignedBounds {
+    min_x: f64,
+    max_x: f64,
+    min_y: f64,
+    max_y: f64,
+}
+
+#[derive(Debug, Clone, Copy)]
+struct RotatedViewportFootprint {
+    corners: [PlanePoint; 4],
+    bounds: AxisAlignedBounds,
+}
+
+impl RotatedViewportFootprint {
+    fn new(width_px: f64, height_px: f64, rotation_deg: f64) -> Self {
+        let rotation_deg = if rotation_deg.is_finite() {
+            rotation_deg
+        } else {
+            0.0
+        };
+        let radians = rotation_deg.to_radians();
+        let cos = radians.cos();
+        let sin = radians.sin();
+        let center = PlanePoint {
+            x: width_px / 2.0,
+            y: height_px / 2.0,
+        };
+        let corners = [
+            (-width_px / 2.0, -height_px / 2.0),
+            (width_px / 2.0, -height_px / 2.0),
+            (width_px / 2.0, height_px / 2.0),
+            (-width_px / 2.0, height_px / 2.0),
+        ]
+        .map(|(x, y)| PlanePoint {
+            x: center.x + x * cos - y * sin,
+            y: center.y + x * sin + y * cos,
+        });
+        let bounds = AxisAlignedBounds {
+            min_x: corners
+                .iter()
+                .map(|point| point.x)
+                .fold(f64::INFINITY, f64::min),
+            max_x: corners
+                .iter()
+                .map(|point| point.x)
+                .fold(f64::NEG_INFINITY, f64::max),
+            min_y: corners
+                .iter()
+                .map(|point| point.y)
+                .fold(f64::INFINITY, f64::min),
+            max_y: corners
+                .iter()
+                .map(|point| point.y)
+                .fold(f64::NEG_INFINITY, f64::max),
+        };
+        Self { corners, bounds }
+    }
+
+    fn intersects_square(&self, left: f64, top: f64, size: f64) -> bool {
+        let right = left + size;
+        let bottom = top + size;
+        if left >= self.bounds.max_x
+            || right <= self.bounds.min_x
+            || top >= self.bounds.max_y
+            || bottom <= self.bounds.min_y
+        {
+            return false;
+        }
+        let square = [
+            PlanePoint { x: left, y: top },
+            PlanePoint { x: right, y: top },
+            PlanePoint {
+                x: right,
+                y: bottom,
+            },
+            PlanePoint { x: left, y: bottom },
+        ];
+        let axes = [
+            PlanePoint { x: 1.0, y: 0.0 },
+            PlanePoint { x: 0.0, y: 1.0 },
+            edge_normal(self.corners[0], self.corners[1]),
+            edge_normal(self.corners[1], self.corners[2]),
+            edge_normal(self.corners[2], self.corners[3]),
+            edge_normal(self.corners[3], self.corners[0]),
+        ];
+        axes.into_iter()
+            .all(|axis| projections_overlap(&self.corners, &square, axis))
+    }
+}
+
+fn edge_normal(start: PlanePoint, end: PlanePoint) -> PlanePoint {
+    PlanePoint {
+        x: -(end.y - start.y),
+        y: end.x - start.x,
+    }
+}
+
+fn projections_overlap(left: &[PlanePoint; 4], right: &[PlanePoint; 4], axis: PlanePoint) -> bool {
+    let project = |point: &PlanePoint| point.x * axis.x + point.y * axis.y;
+    let left_min = left.iter().map(&project).fold(f64::INFINITY, f64::min);
+    let left_max = left.iter().map(&project).fold(f64::NEG_INFINITY, f64::max);
+    let right_min = right.iter().map(&project).fold(f64::INFINITY, f64::min);
+    let right_max = right.iter().map(project).fold(f64::NEG_INFINITY, f64::max);
+    left_min < right_max && right_min < left_max
+}
+
 fn render_tiles_for_family(
     family_views: &[(String, RasterMapViewOption)],
     viewport: &MapViewport,
@@ -681,10 +794,11 @@ fn render_tiles_for_family(
         .min_by(|left, right| left.total_cmp(right));
     let scale = scale_for_zoom(viewport.zoom);
     let center_world = lat_lon_to_world(viewport.center);
-    let min_world_x = center_world.0 - width_px / 2.0 / scale;
-    let max_world_x = center_world.0 + width_px / 2.0 / scale;
-    let min_world_y = center_world.1 - height_px / 2.0 / scale;
-    let max_world_y = center_world.1 + height_px / 2.0 / scale;
+    let footprint = RotatedViewportFootprint::new(width_px, height_px, viewport.rotation_deg);
+    let min_world_x = center_world.0 + (footprint.bounds.min_x - width_px / 2.0) / scale;
+    let max_world_x = center_world.0 + (footprint.bounds.max_x - width_px / 2.0) / scale;
+    let min_world_y = center_world.1 + (footprint.bounds.min_y - height_px / 2.0) / scale;
+    let max_world_y = center_world.1 + (footprint.bounds.max_y - height_px / 2.0) / scale;
     let mut tiles = Vec::new();
 
     for (map_view_id, option) in family_views {
@@ -736,13 +850,7 @@ fn render_tiles_for_family(
                         + width_px / 2.0;
                     let top_px =
                         (y_xyz as f64 * tile_world_size - center_world.1) * scale + height_px / 2.0;
-                    if !screen_rect_intersects_viewport(
-                        left_px,
-                        top_px,
-                        tile_screen_size,
-                        width_px,
-                        height_px,
-                    ) {
+                    if !footprint.intersects_square(left_px, top_px, tile_screen_size) {
                         continue;
                     }
                     tiles.push(PlannedTile {
@@ -863,10 +971,11 @@ fn render_tiles_for_single_map_view(
     let map_view = &option.map_view;
     let scale = scale_for_zoom(viewport.zoom);
     let center_world = lat_lon_to_world(viewport.center);
-    let min_world_x = center_world.0 - width_px / 2.0 / scale;
-    let max_world_x = center_world.0 + width_px / 2.0 / scale;
-    let min_world_y = center_world.1 - height_px / 2.0 / scale;
-    let max_world_y = center_world.1 + height_px / 2.0 / scale;
+    let footprint = RotatedViewportFootprint::new(width_px, height_px, viewport.rotation_deg);
+    let min_world_x = center_world.0 + (footprint.bounds.min_x - width_px / 2.0) / scale;
+    let max_world_x = center_world.0 + (footprint.bounds.max_x - width_px / 2.0) / scale;
+    let min_world_y = center_world.1 + (footprint.bounds.min_y - height_px / 2.0) / scale;
+    let max_world_y = center_world.1 + (footprint.bounds.max_y - height_px / 2.0) / scale;
     let mut tiles = Vec::new();
 
     for level in levels_for_map_view(map_view, display_zoom, viewport.zoom, options) {
@@ -889,13 +998,7 @@ fn render_tiles_for_single_map_view(
                     (display_x as f64 * tile_world_size - center_world.0) * scale + width_px / 2.0;
                 let top_px =
                     (y_xyz as f64 * tile_world_size - center_world.1) * scale + height_px / 2.0;
-                if !screen_rect_intersects_viewport(
-                    left_px,
-                    top_px,
-                    tile_screen_size,
-                    width_px,
-                    height_px,
-                ) {
+                if !footprint.intersects_square(left_px, top_px, tile_screen_size) {
                     continue;
                 }
                 tiles.push(PlannedTile {
@@ -914,16 +1017,6 @@ fn render_tiles_for_single_map_view(
         }
     }
     tiles
-}
-
-fn screen_rect_intersects_viewport(
-    left_px: f64,
-    top_px: f64,
-    size_px: f64,
-    width_px: f64,
-    height_px: f64,
-) -> bool {
-    left_px < width_px && top_px < height_px && left_px + size_px > 0.0 && top_px + size_px > 0.0
 }
 
 fn full_coverage_representative(
@@ -1976,6 +2069,51 @@ mod tests {
     fn world_basemap_sorts_below_other_raster_layers() {
         assert!(raster_tile_z_order(4, "world-basemap") < raster_tile_z_order(0, "shaded-relief"));
         assert!(raster_tile_z_order(4, "world-basemap") < raster_tile_z_order(0, "sec"));
+    }
+
+    #[test]
+    fn rotated_viewport_footprint_rejects_empty_aabb_corners() {
+        let footprint = RotatedViewportFootprint::new(400.0, 200.0, 45.0);
+
+        assert!(footprint.intersects_square(190.0, 90.0, 20.0));
+        assert!(385.0 < footprint.bounds.max_x);
+        assert!(-90.0 > footprint.bounds.min_y);
+        assert!(!footprint.intersects_square(385.0, -90.0, 20.0));
+    }
+
+    #[test]
+    fn rotated_raster_plan_includes_tiles_beyond_the_north_up_viewport() {
+        let catalog = RasterMapCatalog {
+            selected_map_id: "sec:world".to_string(),
+            selected_map: None,
+            available_maps: Vec::new(),
+            displayed_maps: vec![option(
+                "sec:world",
+                "sec",
+                "WORLD_SEC",
+                vec![level(4, 0, 15, 0, 15)],
+            )],
+            geometry: RasterDisplayGeometry::default(),
+            family_options: Vec::new(),
+        };
+        let viewport = MapViewport {
+            center: LatLon { lat: 0.0, lon: 0.0 },
+            zoom: 4.0,
+            rotation_deg: 45.0,
+            pitch_deg: 0.0,
+        };
+        let footprint = RotatedViewportFootprint::new(1200.0, 400.0, 45.0);
+
+        let plan = raster_tile_plan(&catalog, &viewport, 1200.0, 400.0);
+
+        assert!(plan
+            .tiles
+            .iter()
+            .any(|tile| { tile.top_px + tile.size_px <= 0.0 || tile.top_px >= 400.0 }));
+        assert!(plan
+            .tiles
+            .iter()
+            .all(|tile| { footprint.intersects_square(tile.left_px, tile.top_px, tile.size_px) }));
     }
 
     #[test]

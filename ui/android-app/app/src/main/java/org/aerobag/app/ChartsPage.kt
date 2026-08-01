@@ -285,6 +285,7 @@ import kotlinx.serialization.json.jsonPrimitive
 import org.aerobag.app.generated.airportCircleMarkerPath
 import org.aerobag.app.generated.airportFuelMarkerPath
 import org.aerobag.app.generated.airportOpenMarkerSymbol
+import org.aerobag.app.generated.compassSymbol
 import org.aerobag.app.generated.fixTrianglePath
 import org.aerobag.app.generated.heliportHPath
 import org.aerobag.app.generated.mapSelectionSpotSymbol
@@ -1202,38 +1203,16 @@ internal fun MapOrientationButton(
             Canvas(
                 modifier = Modifier
                     .align(Alignment.TopCenter)
-                    .size(ThumbSize * 0.72f)
-                    .padding(top = 5.dp),
+                    .offset(y = ThumbSize * 0.07f)
+                    .size(ThumbSize * 0.65f),
             ) {
                 val center = Offset(size.width / 2f, size.height / 2f)
-                val radius = size.minDimension * 0.39f
-                drawCircle(
-                    color = uiTheme.controls.buttonFg.copy(alpha = 0.82f),
-                    radius = radius,
-                    center = center,
-                    style = Stroke(width = 1.5.dp.toPx()),
-                )
+                val scale = size.minDimension / 40f
                 rotate(needleRotationDeg.toFloat(), center) {
-                    drawLine(
-                        color = uiTheme.controls.compassNorth,
-                        start = center,
-                        end = Offset(center.x, center.y - radius * 0.82f),
-                        strokeWidth = 4.dp.toPx(),
-                        cap = StrokeCap.Round,
-                    )
-                    drawLine(
-                        color = uiTheme.controls.compassSouth,
-                        start = center,
-                        end = Offset(center.x, center.y + radius * 0.82f),
-                        strokeWidth = 4.dp.toPx(),
-                        cap = StrokeCap.Round,
-                    )
+                    compassSymbol(center, scale).forEach { layer ->
+                        drawNavSymbolLayer(layer, scale, uiTheme)
+                    }
                 }
-                drawCircle(
-                    color = uiTheme.controls.buttonFg,
-                    radius = 2.dp.toPx(),
-                    center = center,
-                )
             }
             OutlinedButtonLabel(
                 text = if (trackUp) "TRK" else "N",

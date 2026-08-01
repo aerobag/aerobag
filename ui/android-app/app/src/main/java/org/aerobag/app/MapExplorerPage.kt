@@ -4735,6 +4735,8 @@ internal fun navSymbolColor(token: String?, uiTheme: UiTheme, dynamicColors: Map
     "ink_75" -> Color(0xBF081218)
     "class_c_magenta" -> uiTheme.aviation.classCMagenta
     "button_unchecked" -> uiTheme.controls.buttonUnchecked
+    "compass_north" -> uiTheme.controls.compassNorth
+    "compass_south" -> uiTheme.controls.compassSouth
     else -> dynamicColors[token]
 }
 

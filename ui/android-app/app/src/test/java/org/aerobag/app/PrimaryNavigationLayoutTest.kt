@@ -81,6 +81,18 @@ class PrimaryNavigationLayoutTest {
     }
 
     @Test
+    fun orientationUsesGeneratedSharedCompassSymbol() {
+        val orientationButton = sourceBetween(
+            chartsSource,
+            "internal fun MapOrientationButton(",
+            "internal fun AndroidChartSearchBox(",
+        )
+        assertTrue(orientationButton.contains("compassSymbol(center, scale)"))
+        assertTrue(orientationButton.contains("drawNavSymbolLayer(layer, scale, uiTheme)"))
+        assertFalse(orientationButton.contains("drawLine("))
+    }
+
+    @Test
     fun cdiIsOneThumbHigh() {
         val startIndex = chartsSource.indexOf("internal fun NavElementDock(")
         check(startIndex >= 0) { "could not find NavElementDock" }

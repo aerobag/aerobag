@@ -4,6 +4,7 @@
 
 import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
+import { compassSymbol } from "./generated/navSymbols";
 
 const appSource = readFileSync(new URL("./App.tsx", import.meta.url), "utf8");
 const styles = readFileSync(new URL("./styles.css", import.meta.url), "utf8");
@@ -53,6 +54,17 @@ describe("primary navigation layout", () => {
     expect(orientationIndex).toBeLessThan(bottomRightIndex);
     expect(mapPage.slice(bottomRightIndex)).not.toContain("centerHereButton");
     expect(mapPage).not.toContain("DebugMapUpSlider");
+  });
+
+  it("renders the shared compass symbol with triangular needle halves", () => {
+    const orientationButton = sourceBetween("function MapOrientationButton(", "function NavElementButton(");
+    expect(orientationButton).toContain("<RenderNavSymbolLayers layers={compassSymbol} />");
+    expect(orientationButton).not.toContain("mapOrientationNeedleNorth");
+    expect(styles).not.toContain(".mapOrientationNeedle");
+    expect(compassSymbol.find((layer) => layer.paint === "compass_north_needle")?.path)
+      .toBe("M 0 -15 L 3.2 0 L -3.2 0 Z");
+    expect(compassSymbol.find((layer) => layer.paint === "compass_south_needle")?.path)
+      .toBe("M 0 15 L -3.2 0 L 3.2 0 Z");
   });
 
   it("makes the CDI and both square buttons one thumb high", () => {

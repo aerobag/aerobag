@@ -10,6 +10,10 @@
     "obstacle_tall": "M -8 7.2 Q -6.6 4.4 -4.2 -1.2 Q -2.4 -7 -1.2 -15.6 Q -0.4 -24 0 -34 Q 0.4 -24 1.2 -15.6 Q 2.4 -7 4.2 -1.2 Q 6.6 4.4 8 7.2",
     "map_selection_spot_peg": "M 0 0 C -9 -9 -12 -16 -12 -23 C -12 -29.627 -6.627 -35 0 -35 C 6.627 -35 12 -29.627 12 -23 C 12 -16 9 -9 0 0 Z",
     "map_selection_spot_dot": "M 0 -27 C 2.209 -27 4 -25.209 4 -23 C 4 -20.791 2.209 -19 0 -19 C -2.209 -19 -4 -20.791 -4 -23 C -4 -25.209 -2.209 -27 0 -27 Z",
+    "compass_face": "M 0 -18 C 9.941 -18 18 -9.941 18 0 C 18 9.941 9.941 18 0 18 C -9.941 18 -18 9.941 -18 0 C -18 -9.941 -9.941 -18 0 -18 Z",
+    "compass_north_needle": "M 0 -15 L 3.2 0 L -3.2 0 Z",
+    "compass_south_needle": "M 0 15 L -3.2 0 L 3.2 0 Z",
+    "compass_hub": "M 0 -2.4 C 1.325 -2.4 2.4 -1.325 2.4 0 C 2.4 1.325 1.325 2.4 0 2.4 C -1.325 2.4 -2.4 1.325 -2.4 0 C -2.4 -1.325 -1.325 -2.4 0 -2.4 Z",
     "metar_circle": "M 0 -8 C 4.418 -8 8 -4.418 8 0 C 8 4.418 4.418 8 0 8 C -4.418 8 -8 4.418 -8 0 C -8 -4.418 -4.418 -8 0 -8 Z",
     "metar_few_bar": "M 0 -6.5 L 0 6.5",
     "metar_sct_fill": "M 0 0 L 0 -8 C 4.418 -8 8 -4.418 8 0 Z",
@@ -72,6 +76,24 @@
         "fill": "white",
         "stroke": "ink_75",
         "stroke_width": 1.5
+      }
+    ],
+    "compass": [
+      {
+        "path": "compass_face",
+        "paint": "compass_face",
+        "fill": "paper",
+        "stroke": "ink_75",
+        "stroke_width": 1.5
+      },
+      { "path": "compass_north_needle", "paint": "compass_north_needle", "fill": "compass_north" },
+      { "path": "compass_south_needle", "paint": "compass_south_needle", "fill": "compass_south" },
+      {
+        "path": "compass_hub",
+        "paint": "compass_hub",
+        "fill": "paper",
+        "stroke": "ink_75",
+        "stroke_width": 1
       }
     ],
     "metar_clear": [

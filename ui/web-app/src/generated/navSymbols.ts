@@ -92,6 +92,48 @@ export const mapSelectionSpotSymbol = [
     "transform_degrees": null
   }
 ] satisfies readonly NavSymbolLayer[];
+export const compassSymbol = [
+  {
+    "path": "M 0 -18 C 9.941 -18 18 -9.941 18 0 C 18 9.941 9.941 18 0 18 C -9.941 18 -18 9.941 -18 0 C -18 -9.941 -9.941 -18 0 -18 Z",
+    "paint": "compass_face",
+    "fill": "paper",
+    "stroke": "ink_75",
+    "stroke_width": 1.5,
+    "line_cap": null,
+    "line_join": null,
+    "transform_degrees": null
+  },
+  {
+    "path": "M 0 -15 L 3.2 0 L -3.2 0 Z",
+    "paint": "compass_north_needle",
+    "fill": "compass_north",
+    "stroke": null,
+    "stroke_width": null,
+    "line_cap": null,
+    "line_join": null,
+    "transform_degrees": null
+  },
+  {
+    "path": "M 0 15 L -3.2 0 L 3.2 0 Z",
+    "paint": "compass_south_needle",
+    "fill": "compass_south",
+    "stroke": null,
+    "stroke_width": null,
+    "line_cap": null,
+    "line_join": null,
+    "transform_degrees": null
+  },
+  {
+    "path": "M 0 -2.4 C 1.325 -2.4 2.4 -1.325 2.4 0 C 2.4 1.325 1.325 2.4 0 2.4 C -1.325 2.4 -2.4 1.325 -2.4 0 C -2.4 -1.325 -1.325 -2.4 0 -2.4 Z",
+    "paint": "compass_hub",
+    "fill": "paper",
+    "stroke": "ink_75",
+    "stroke_width": 1,
+    "line_cap": null,
+    "line_join": null,
+    "transform_degrees": null
+  }
+] satisfies readonly NavSymbolLayer[];
 export const metarClearSymbol = [
   {
     "path": "M 0 -8 C 4.418 -8 8 -4.418 8 0 C 8 4.418 4.418 8 0 8 C -4.418 8 -8 4.418 -8 0 C -8 -4.418 -4.418 -8 0 -8 Z",

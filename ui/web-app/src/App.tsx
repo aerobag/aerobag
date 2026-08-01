@@ -42,6 +42,7 @@ import {
   airportCircleMarkerPath,
   airportFuelMarkerPath,
   airportOpenMarkerSymbol,
+  compassSymbol,
   dataStatusWarningSymbol,
   heliportHPath,
   mapSelectionSpotSymbol,
@@ -1569,6 +1570,10 @@ function navSymbolColor(token: string | null | undefined): string | undefined {
       return "var(--theme-class-c-magenta)";
     case "button_unchecked":
       return "var(--theme-button-unchecked)";
+    case "compass_north":
+      return "var(--theme-compass-north)";
+    case "compass_south":
+      return "var(--theme-compass-south)";
     case "white_90":
       return "rgba(255, 255, 255, 0.9)";
     case "white_68":
@@ -7135,16 +7140,11 @@ function MapOrientationButton(props: {
       onDoubleClick={stopDoubleClick}
       onClick={props.onToggle}
     >
-      <span className="mapOrientationCompass" aria-hidden="true">
-        <span
-          className="mapOrientationNeedle"
-          style={{ transform: `translate(-50%, -50%) rotate(${needleRotationDeg}deg)` }}
-        >
-          <span className="mapOrientationNeedleNorth" />
-          <span className="mapOrientationNeedleSouth" />
-        </span>
-        <span className="mapOrientationHub" />
-      </span>
+      <svg className="mapOrientationCompass" viewBox="-20 -20 40 40" aria-hidden="true">
+        <g transform={`rotate(${needleRotationDeg})`}>
+          <RenderNavSymbolLayers layers={compassSymbol} />
+        </g>
+      </svg>
       <span className="chartButtonLabel">{label}</span>
     </button>
   );

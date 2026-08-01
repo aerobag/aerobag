@@ -99,12 +99,14 @@ import {
 import { flightPlanWaypointUsesFullWidthLabel } from "./domain/flightPlanLayout";
 import {
   applyPinchGesture,
+  compassNeedleRotationDegrees,
   createPinchSnapshot,
   createInitialViewport,
   displayFrameCssTransform,
   dragViewport,
   latLonToWorld,
   preserveViewportForMap,
+  resolveMapUpDegrees,
   rotatedViewportEnvelopeSize,
   sameMapViewport,
   scaleForZoom,
@@ -114,6 +116,7 @@ import {
   worldToScreen,
   zoomAroundPoint,
   type MapDisplayFrame,
+  type MapOrientationMode,
   type MapViewportState,
   type ScreenPoint,
 } from "./domain/mapViewport";
@@ -870,6 +873,8 @@ type UiThemeJson = {
     flight_data_passed_value: string;
     flight_data_active_value: string;
     cdi_pointer: string;
+    compass_north: string;
+    compass_south: string;
   };
   aviation: {
     class_b_d_blue: string;
@@ -1197,7 +1202,7 @@ const maxViewHistoryDepth = 64;
 const loadedUiTheme = uiTheme as UiThemeJson;
 const controlTheme = loadedUiTheme.controls;
 const plateFolderTheme = loadedUiTheme.plate_folder;
-const defaultPlaybackTracePath = "/adsb-traces/n550ar/n550ar-2024-09-29.json";
+const defaultPlaybackTracePath = "/gps-captures/black-tablet-20260727-drive.jsonl";
 const startupHighLatencyWarningGraceMs = 10_000;
 const browserGeolocationSourceId = "browser-geolocation";
 const metersPerSecondToKnots = 1.9438444924406;
@@ -1206,6 +1211,7 @@ const flightDataBannerEdge: FlightDataBannerEdge = "right";
 
 type PersistedWebUiState = {
   page?: AppPage;
+  mapOrientationMode?: MapOrientationMode;
   selectedAirportId?: string;
   selectedChartId?: string;
   recentAirportIds?: string[];
@@ -1861,6 +1867,9 @@ export default function App() {
   const persistedUiState = useMemo(readPersistedWebUiState, []);
   const initialPage = useMemo(() => appPageForCurrentPath() ?? persistedUiState.page ?? "map", [persistedUiState.page]);
   const [page, setPage] = useState<AppPage>(initialPage);
+  const [mapOrientationMode, setMapOrientationMode] = useState<MapOrientationMode>(
+    persistedUiState.mapOrientationMode ?? "north",
+  );
   const [pageHistory, setPageHistory] = useState<AppViewSnapshot[]>([]);
   const [flightPlanWeatherModal, setFlightPlanWeatherModal] = useState<WeatherDetailUiView | null>(null);
   const [appCoreAdapter, setAppCoreAdapter] = useState<AppCoreAdapter | null>(null);
@@ -1923,6 +1932,7 @@ export default function App() {
           draw_predictor: false,
           draw_cdi: false,
           position: null,
+          track_deg_true: null,
           orientation_deg: null,
           magnetic_variation_deg: null,
           speed_kt: null,
@@ -2928,11 +2938,12 @@ export default function App() {
   useEffect(() => {
     writePersistedWebUiState({
       page: page === "about" ? undefined : page,
+      mapOrientationMode,
       selectedAirportId,
       selectedChartId,
       recentAirportIds,
     });
-  }, [page, recentAirportIds, selectedAirportId, selectedChartId]);
+  }, [mapOrientationMode, page, recentAirportIds, selectedAirportId, selectedChartId]);
 
   function currentSnapshot(): AppViewSnapshot {
     if (mapViewport === null) {
@@ -3163,6 +3174,8 @@ export default function App() {
         "--theme-flight-data-passed-value": controlTheme.flight_data_passed_value,
         "--theme-flight-data-active-value": controlTheme.flight_data_active_value,
         "--theme-cdi-pointer": controlTheme.cdi_pointer,
+        "--theme-compass-north": controlTheme.compass_north,
+        "--theme-compass-south": controlTheme.compass_south,
         "--theme-class-b-d-blue": loadedUiTheme.aviation.class_b_d_blue,
         "--theme-class-c-magenta": loadedUiTheme.aviation.class_c_magenta,
         "--theme-tfr-active": loadedUiTheme.aviation.tfr_active,
@@ -3260,6 +3273,8 @@ export default function App() {
           selectedFamily={selectedFamily}
           familyOptions={rasterMapState.family_options}
           viewport={mapViewport}
+          mapOrientationMode={mapOrientationMode}
+          onMapOrientationModeChange={setMapOrientationMode}
           pageTilePaintTiming={pageTilePaintTimingRef.current}
           uiInvalidationRevisions={uiInvalidationRevisions}
           onPageTilePaintTimingComplete={(id) => {
@@ -3634,6 +3649,8 @@ function MapPage(props: {
   selectedFamily: RasterMapUiState["family_options"][number] | null;
   familyOptions: RasterMapUiState["family_options"];
   viewport: MapViewportState;
+  mapOrientationMode: MapOrientationMode;
+  onMapOrientationModeChange: (mode: MapOrientationMode) => void;
   pageTilePaintTiming: WebPageTilePaintTiming | null;
   uiInvalidationRevisions: UiInvalidationRevisions;
   onPageTilePaintTimingComplete: (id: number) => void;
@@ -3680,6 +3697,8 @@ function MapPage(props: {
     selectedFamily,
     familyOptions,
     viewport,
+    mapOrientationMode,
+    onMapOrientationModeChange,
     pageTilePaintTiming,
     uiInvalidationRevisions,
     onPageTilePaintTimingComplete,
@@ -3832,7 +3851,12 @@ function MapPage(props: {
   const [followTargetRetryToken, setFollowTargetRetryToken] = useState(0);
   const [surfaceSize, setSurfaceSize] = useState<SurfaceSize>({ width: 0, height: 0 });
   const mapUpDegRef = useRef(0);
-  const [plannedMapUpDeg, setPlannedMapUpDeg] = useState(0);
+  const previousMapOrientationModeRef = useRef(mapOrientationMode);
+  const plannedMapUpDeg = resolveMapUpDegrees(
+    mapOrientationMode,
+    ownship.track_deg_true,
+    previousMapOrientationModeRef.current === "track" ? mapUpDegRef.current : 0,
+  );
   const rasterPlanningViewport = useMemo(
     () => ({ ...viewport, rotationDeg: plannedMapUpDeg }),
     [plannedMapUpDeg, viewport],
@@ -4335,6 +4359,11 @@ function MapPage(props: {
       ...overlayCounts,
     });
   }
+
+  useLayoutEffect(() => {
+    mapUpDegRef.current = plannedMapUpDeg;
+    previousMapOrientationModeRef.current = mapOrientationMode;
+  }, [mapOrientationMode, plannedMapUpDeg]);
 
   useLayoutEffect(() => {
     const timing = mapOverlayLandingTimingRef.current;
@@ -5345,21 +5374,6 @@ function MapPage(props: {
     const transform = transientViewportTransform(committedViewportRef.current, viewportRef.current);
     element.style.transform = transform;
     element.style.transformOrigin = "center center";
-  }
-
-  function applyImperativeMapBearing(nextMapUpDeg: number) {
-    mapUpDegRef.current = nextMapUpDeg;
-    const element = mapBearingTransformRef.current;
-    if (!element) {
-      return;
-    }
-    element.style.transform = `rotate(${-nextMapUpDeg}deg)`;
-    element.style.setProperty("--map-up-deg", `${nextMapUpDeg}deg`);
-  }
-
-  function updateDebugMapUp(nextMapUpDeg: number) {
-    applyImperativeMapBearing(nextMapUpDeg);
-    setPlannedMapUpDeg(nextMapUpDeg);
   }
 
   function clearPendingReactViewportCommit() {
@@ -6391,7 +6405,14 @@ function MapPage(props: {
             {disabledActionToast.message}
           </div>
         ) : null}
-        <div ref={mapBearingTransformRef} className="mapBearingTransform">
+        <div
+          ref={mapBearingTransformRef}
+          className="mapBearingTransform"
+          style={{
+            transform: `rotate(${-plannedMapUpDeg}deg)`,
+            ["--map-up-deg" as string]: `${plannedMapUpDeg}deg`,
+          }}
+        >
         <div ref={mapContentTransformRef} className="mapContentTransform">
           <Profiler id="RasterLayer" onRender={logReactProfilerRender}>
             <div
@@ -6944,7 +6965,7 @@ function MapPage(props: {
           transportControls={<SituationTransportRow controls={ownshipControls.situation_controls} onInput={onSituationControlInput} onDisabledAction={showDisabledAction} />}
         />
 
-        <div className="chartDock">
+        <div className="chartDock mapChartDock">
           <TrayDock
             launcherLabel={selectedFamily?.launcher_label ?? "---"}
             launcherImageSrc={chartFamilyIconSrc(selectedFamily?.id)}
@@ -7030,6 +7051,14 @@ function MapPage(props: {
           >
             CTR
           </button>
+          <MapOrientationButton
+            mode={mapOrientationMode}
+            mapUpDeg={plannedMapUpDeg}
+            magneticVariationDeg={ownship.magnetic_variation_deg}
+            onToggle={() => onMapOrientationModeChange(
+              mapOrientationMode === "north" ? "track" : "north",
+            )}
+          />
         </div>
 
         <PrimaryNavigationDock
@@ -7071,7 +7100,6 @@ function MapPage(props: {
                 onRunDragPerf={runLiveDragPerf}
                 dragPerfRunning={liveDragPerfRunning}
                 lastDragPerfRunId={lastLiveDragPerfRunId}
-                onMapUpDegChange={updateDebugMapUp}
               />
             </DebugDock>
           </div>
@@ -7079,6 +7107,46 @@ function MapPage(props: {
         </div>
       </Profiler>
     </section>
+  );
+}
+
+function MapOrientationButton(props: {
+  mode: MapOrientationMode;
+  mapUpDeg: number;
+  magneticVariationDeg: number | null;
+  onToggle: () => void;
+}) {
+  const trackUp = props.mode === "track";
+  const label = trackUp ? "TRK" : "N";
+  const needleRotationDeg = compassNeedleRotationDegrees(
+    props.mapUpDeg,
+    props.magneticVariationDeg,
+  );
+  return (
+    <button
+      type="button"
+      className={`chartButton mapOrientationButton${trackUp ? " isTrackUp" : ""}`}
+      data-testid="map-orientation-button"
+      aria-label={`Map orientation: ${trackUp ? "track up" : "north up"}`}
+      aria-pressed={trackUp}
+      title={trackUp ? "Switch to north-up" : "Switch to track-up"}
+      onPointerDown={stopPointer}
+      onPointerUp={stopPointer}
+      onDoubleClick={stopDoubleClick}
+      onClick={props.onToggle}
+    >
+      <span className="mapOrientationCompass" aria-hidden="true">
+        <span
+          className="mapOrientationNeedle"
+          style={{ transform: `translate(-50%, -50%) rotate(${needleRotationDeg}deg)` }}
+        >
+          <span className="mapOrientationNeedleNorth" />
+          <span className="mapOrientationNeedleSouth" />
+        </span>
+        <span className="mapOrientationHub" />
+      </span>
+      <span className="chartButtonLabel">{label}</span>
+    </button>
   );
 }
 
@@ -11070,7 +11138,6 @@ function CommonDebugPanel(props: {
   onRunDragPerf?: () => void;
   dragPerfRunning?: boolean;
   lastDragPerfRunId?: string | null;
-  onMapUpDegChange?: (mapUpDeg: number) => void;
 }) {
   const flags: Array<{ id: DebugFlagId; label: string }> = [
     { id: "tile_labels", label: "tile labels" },
@@ -11105,9 +11172,6 @@ function CommonDebugPanel(props: {
           {props.dragPerfRunning ? "drag perf running" : "run drag perf"}
         </button>
       ) : null}
-      {props.onMapUpDegChange ? (
-        <DebugMapUpSlider onChange={props.onMapUpDegChange} />
-      ) : null}
       {flags.map((flag) => (
         <label key={flag.id} className="debugToggle">
           <input
@@ -11119,28 +11183,6 @@ function CommonDebugPanel(props: {
         </label>
       ))}
     </>
-  );
-}
-
-function DebugMapUpSlider(props: { onChange: (mapUpDeg: number) => void }) {
-  const [mapUpDeg, setMapUpDeg] = useState(0);
-  return (
-    <label className="debugRange">
-      <span>UP {mapUpDeg > 0 ? "+" : ""}{mapUpDeg}°</span>
-      <input
-        type="range"
-        min="-180"
-        max="180"
-        step="1"
-        value={mapUpDeg}
-        aria-label="Debug map-up rotation"
-        onChange={(event) => {
-          const next = Number(event.currentTarget.value);
-          setMapUpDeg(next);
-          props.onChange(next);
-        }}
-      />
-    </label>
   );
 }
 
@@ -11231,8 +11273,10 @@ function readPersistedWebUiState(): PersistedWebUiState {
     const parsed = JSON.parse(raw) as PersistedWebUiState;
     const rawPage = (parsed as { page?: string }).page;
     const page = rawPage;
+    const mapOrientationMode = parsed.mapOrientationMode === "track" ? "track" : "north";
     return {
       page: page === "map" || page === "plan" || page === "charts" || page === "home" || page === "data" || page === "settings" ? page : undefined,
+      mapOrientationMode,
       selectedAirportId: parsed.selectedAirportId,
       selectedChartId: parsed.selectedChartId,
       recentAirportIds: Array.isArray(parsed.recentAirportIds) ? parsed.recentAirportIds.filter((value): value is string => typeof value === "string") : [],

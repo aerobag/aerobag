@@ -570,6 +570,7 @@ export type OwnshipRenderState = {
   draw_predictor: boolean;
   draw_cdi: boolean;
   position: LatLon | null;
+  track_deg_true: number | null;
   orientation_deg: number | null;
   magnetic_variation_deg: number | null;
   speed_kt: number | null;

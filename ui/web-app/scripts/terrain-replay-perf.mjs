@@ -29,7 +29,7 @@ const logPath = args.log ?? process.env.AEROBAG_WEB_DEBUG_LOG ?? "/tmp/aerobag-w
 const runId = args.runId ?? args["run-id"] ?? `terrain-replay-${Date.now()}`;
 const durationMs = Number(args.durationMs ?? args["duration-ms"] ?? 16000);
 const dragDelayMs = Number(args.dragDelayMs ?? args["drag-delay-ms"] ?? 5000);
-const tracePath = args.trace ?? "/adsb-traces/n550ar/n550ar-2024-09-29.json";
+const tracePath = args.trace ?? "/gps-captures/black-tablet-20260727-drive.jsonl";
 const playbackRate = Number(args.rate ?? 8);
 const headed = args.headed === "true";
 const failOnThreshold = args.fail === "true" || process.env.AEROBAG_PERF_FAIL === "1";

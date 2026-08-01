@@ -17,6 +17,7 @@ const snapshotJson = JSON.stringify({
         draw_predictor: false,
         draw_cdi: false,
         position: null,
+        track_deg_true: null,
         orientation_deg: null,
         speed_kt: null,
       },

@@ -242,6 +242,7 @@ pub struct OwnshipRenderState {
     pub draw_predictor: bool,
     pub draw_cdi: bool,
     pub position: Option<LatLon>,
+    pub track_deg_true: Option<f64>,
     pub orientation_deg: Option<f64>,
     pub magnetic_variation_deg: Option<f64>,
     pub speed_kt: Option<f64>,
@@ -665,6 +666,10 @@ fn mode_for_kind(kind: OwnshipSourceKind) -> OwnshipMode {
 }
 
 fn project_render_state(resolved: &ResolvedOwnshipState) -> OwnshipRenderState {
+    let track_deg_true = resolved
+        .kinematics
+        .as_ref()
+        .and_then(|kinematics| kinematics.track_deg_true);
     let orientation_deg = resolved
         .kinematics
         .as_ref()
@@ -695,6 +700,7 @@ fn project_render_state(resolved: &ResolvedOwnshipState) -> OwnshipRenderState {
             .kinematics
             .as_ref()
             .map(|kinematics| kinematics.position),
+        track_deg_true,
         orientation_deg,
         magnetic_variation_deg: None,
         speed_kt,
@@ -1095,6 +1101,35 @@ fn launcher_text_tone_for_control_tone(tone: OwnshipControlTone) -> OwnshipLaunc
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn render_state_keeps_ground_track_separate_from_heading_orientation() {
+        let render = project_render_state(&ResolvedOwnshipState {
+            mode: OwnshipMode::Live,
+            active_source_id: Some(OwnshipSourceId("gps".to_string())),
+            active_source_kind: Some(OwnshipSourceKind::ExternalAhrs),
+            kinematics: Some(SituationKinematics {
+                position: LatLon {
+                    lat: 47.0,
+                    lon: -122.0,
+                },
+                track_deg_true: Some(42.0),
+                heading_deg_true: Some(47.0),
+                ground_speed_kt: Some(120.0),
+                altitude_msl_ft: None,
+                pressure_altitude_ft: None,
+                vertical_speed_fpm: None,
+                event_time_epoch_ms: 1_000,
+            }),
+            banner_text: "AHRS".to_string(),
+            banner_severity: OwnshipBannerSeverity::Info,
+            guidance_enabled: true,
+            sequencing_enabled: true,
+        });
+
+        assert_eq!(render.track_deg_true, Some(42.0));
+        assert_eq!(render.orientation_deg, Some(47.0));
+    }
 
     #[test]
     fn stale_or_missing_sources_resolve_to_none() {

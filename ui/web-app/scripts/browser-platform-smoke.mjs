@@ -4,7 +4,7 @@
 //
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import {
@@ -16,6 +16,8 @@ import {
 
 const args = parseArgs(process.argv.slice(2));
 const url = args.url ?? process.env.AEROBAG_E2E_URL ?? "http://127.0.0.1:8085/";
+const viewportWidth = parsePositiveInteger(args.width, 1200);
+const viewportHeight = parsePositiveInteger(args.height, 1000);
 const userDataDir = await mkdtemp(path.join(os.tmpdir(), "aerobag-browser-platform-"));
 let chrome;
 let browser;
@@ -25,6 +27,8 @@ try {
   chrome = await launchChrome({
     chromeBin: args.chrome ?? process.env.CHROME_BIN,
     userDataDir,
+    width: viewportWidth,
+    height: viewportHeight,
   });
   progress("connecting to Chrome");
   browser = await connectToBrowser(chrome.wsUrl);
@@ -32,6 +36,13 @@ try {
   await page.send("Page.enable");
   await page.send("Runtime.enable");
   await page.send("Log.enable");
+  await page.send("Emulation.setDeviceMetricsOverride", {
+    width: viewportWidth,
+    height: viewportHeight,
+    deviceScaleFactor: 1,
+    mobile: false,
+  });
+  await installSyntheticGeolocation(page);
   progress("loading app");
   await page.navigate(url);
   await page.waitForLoad();
@@ -40,7 +51,7 @@ try {
   await acceptDisclaimerIfPresent(page);
   const mapRect = await waitForMap(page);
   progress("checking rotated raster coverage");
-  const rotatedRaster = await verifyRotatedRasterCoverage(page);
+  const rotatedRaster = await verifyRotatedRasterCoverage(page, args.screenshot);
   progress("clicking map");
   await clickMap(page, mapRect);
   const selection = await waitForMapSelection(page);
@@ -61,7 +72,7 @@ try {
 } finally {
   await browser?.close();
   await stopProcess(chrome?.process);
-  await rm(userDataDir, { recursive: true, force: true });
+  await rm(userDataDir, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
 }
 
 function progress(message) {
@@ -86,6 +97,11 @@ function parseArgs(values) {
     }
   }
   return parsed;
+}
+
+function parsePositiveInteger(value, fallback) {
+  const parsed = Number(value);
+  return Number.isInteger(parsed) && parsed > 0 ? parsed : fallback;
 }
 
 async function acceptDisclaimerIfPresent(page) {
@@ -117,7 +133,7 @@ async function waitForMap(page) {
       const surface = document.querySelector('[data-testid="map-surface"]');
       if (!surface) return null;
       const rect = surface.getBoundingClientRect();
-      if (rect.width < 600 || rect.height < 500) return null;
+      if (rect.width < 300 || rect.height < 400) return null;
       return { left: rect.left, top: rect.top, width: rect.width, height: rect.height };
     })()`),
     60000,
@@ -126,7 +142,52 @@ async function waitForMap(page) {
   );
 }
 
-async function verifyRotatedRasterCoverage(page) {
+async function installSyntheticGeolocation(page) {
+  await page.send("Page.addScriptToEvaluateOnNewDocument", {
+    source: `(() => {
+      let heading = 45;
+      const position = () => ({
+        timestamp: Date.now(),
+        coords: {
+          latitude: 47.4931,
+          longitude: -122.2157,
+          accuracy: 3,
+          altitude: 20,
+          altitudeAccuracy: 5,
+          heading,
+          speed: 45,
+        },
+      });
+      let nextWatchId = 1;
+      const watchers = new Map();
+      window.__aerobagSetSyntheticTrack = (nextHeading) => {
+        heading = nextHeading;
+        for (const success of watchers.values()) {
+          setTimeout(() => success(position()), 0);
+        }
+      };
+      Object.defineProperty(navigator, 'geolocation', {
+        configurable: true,
+        value: {
+          getCurrentPosition(success) {
+            setTimeout(() => success(position()), 0);
+          },
+          watchPosition(success) {
+            const id = nextWatchId++;
+            watchers.set(id, success);
+            setTimeout(() => success(position()), 0);
+            return id;
+          },
+          clearWatch(id) {
+            watchers.delete(id);
+          },
+        },
+      });
+    })()`,
+  });
+}
+
+async function verifyRotatedRasterCoverage(page, screenshotPath) {
   await waitFor(
     async () => await page.evaluate(`(() => [...document.querySelectorAll('.mapTileImage')]
       .some((image) => image.complete && image.naturalWidth > 0))()`),
@@ -135,20 +196,39 @@ async function verifyRotatedRasterCoverage(page) {
     200,
   );
 
+  await waitFor(
+    async () => await page.evaluate(`(() => {
+      const trackCell = [...document.querySelectorAll('.flightDataCell')]
+        .find((cell) => cell.textContent?.includes('TRK °M'));
+      return trackCell && !trackCell.textContent?.includes('—') ? trackCell.textContent : null;
+    })()`),
+    20000,
+    "synthetic browser GPS track did not reach the UI",
+    100,
+  );
   await page.evaluate(`(() => {
-    document.querySelector('.debugLauncher')?.click();
-    const slider = document.querySelector('input[aria-label="Debug map-up rotation"]');
-    if (!(slider instanceof HTMLInputElement)) {
-      throw new Error('debug map-up rotation control is unavailable');
+    const button = document.querySelector('[data-testid="map-orientation-button"]');
+    if (!(button instanceof HTMLButtonElement)) {
+      throw new Error('map orientation button is unavailable');
     }
-    Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value').set.call(slider, '45');
-    slider.dispatchEvent(new Event('input', { bubbles: true }));
+    button.click();
   })()`);
 
   const plan = await waitFor(
     async () => await page.evaluate(`(() => {
+      const bearing = document.querySelector('.mapBearingTransform');
+      const button = document.querySelector('[data-testid="map-orientation-button"]');
       const layer = document.querySelector('.rasterTileLayer');
-      if (!(layer instanceof HTMLElement)) return null;
+      if (!(bearing instanceof HTMLElement)
+        || !(button instanceof HTMLButtonElement)
+        || !(layer instanceof HTMLElement)
+        || button.getAttribute('aria-pressed') !== 'true'
+        || !button.textContent?.includes('TRK')) return null;
+      const bearingTransform = getComputedStyle(bearing).transform;
+      if (!bearingTransform.startsWith('matrix(')
+        || Math.abs(Number(bearingTransform.split('(')[1].split(',')[0]) - Math.SQRT1_2) > 0.01) {
+        return null;
+      }
       const loadedOffBoundaryTiles = [...layer.querySelectorAll('.mapTile')].filter((tile) => {
         if (!(tile instanceof HTMLElement)) return false;
         const image = tile.querySelector('.mapTileImage');
@@ -160,6 +240,8 @@ async function verifyRotatedRasterCoverage(page) {
         return loaded && outside;
       });
       return loadedOffBoundaryTiles.length > 0 ? {
+        mode: button.textContent.trim(),
+        bearingTransform,
         loadedTiles: [...layer.querySelectorAll('.mapTileImage')]
           .filter((image) => image.complete && image.naturalWidth > 0).length,
         loadedOffBoundaryTiles: loadedOffBoundaryTiles.length,
@@ -186,8 +268,6 @@ async function verifyRotatedRasterCoverage(page) {
     marker.dataset.rasterOverflowProbe = 'true';
     Object.assign(marker.style, {
       position: 'absolute',
-      left: Math.round(layer.offsetWidth / 3) + 'px',
-      top: '-40px',
       width: '20px',
       height: '20px',
       pointerEvents: 'auto',
@@ -206,12 +286,29 @@ async function verifyRotatedRasterCoverage(page) {
     layer.append(marker);
 
     const mapRect = map.getBoundingClientRect();
-    const markerRect = marker.getBoundingClientRect();
-    const x = markerRect.left + markerRect.width / 2;
-    const y = markerRect.top + markerRect.height / 2;
-    const transformedInsideMap = x >= mapRect.left && x < mapRect.right
-      && y >= mapRect.top && y < mapRect.bottom;
-    const painted = transformedInsideMap && document.elementsFromPoint(x, y).includes(marker);
+    const width = layer.offsetWidth;
+    const height = layer.offsetHeight;
+    const fractions = [0.1, 0.25, 0.5, 0.75, 0.9];
+    const candidates = [
+      ...fractions.map((fraction) => ({ left: width * fraction, top: -30 })),
+      ...fractions.map((fraction) => ({ left: width * fraction, top: height + 10 })),
+      ...fractions.map((fraction) => ({ left: -30, top: height * fraction })),
+      ...fractions.map((fraction) => ({ left: width + 10, top: height * fraction })),
+    ];
+    let transformedInsideMap = false;
+    let painted = false;
+    for (const candidate of candidates) {
+      marker.style.left = Math.round(candidate.left) + 'px';
+      marker.style.top = Math.round(candidate.top) + 'px';
+      const markerRect = marker.getBoundingClientRect();
+      const x = markerRect.left + markerRect.width / 2;
+      const y = markerRect.top + markerRect.height / 2;
+      const inside = x >= mapRect.left + 2 && x < mapRect.right - 2
+        && y >= mapRect.top + 2 && y < mapRect.bottom - 2;
+      transformedInsideMap ||= inside;
+      painted ||= inside && document.elementsFromPoint(x, y).includes(marker);
+      if (painted) break;
+    }
     const overflow = getComputedStyle(layer).overflow;
 
     marker.remove();
@@ -225,13 +322,37 @@ async function verifyRotatedRasterCoverage(page) {
     throw new Error(`rotated off-boundary raster pixels were clipped: ${JSON.stringify(paintProbe)}`);
   }
 
-  await page.evaluate(`(() => {
-    const slider = document.querySelector('input[aria-label="Debug map-up rotation"]');
-    Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value').set.call(slider, '0');
-    slider.dispatchEvent(new Event('input', { bubbles: true }));
-    document.querySelector('.debugLauncher')?.click();
-  })()`);
-  return { ...plan, ...paintProbe };
+  await page.evaluate(`window.__aerobagSetSyntheticTrack?.(null)`);
+  const retainedTrackUp = await waitFor(
+    async () => await page.evaluate(`(() => {
+      const trackCell = [...document.querySelectorAll('.flightDataCell')]
+        .find((cell) => cell.textContent?.includes('TRK °M'));
+      const bearing = document.querySelector('.mapBearingTransform');
+      const button = document.querySelector('[data-testid="map-orientation-button"]');
+      if (!trackCell?.textContent?.includes('—')
+        || !(bearing instanceof HTMLElement)
+        || !(button instanceof HTMLButtonElement)
+        || button.getAttribute('aria-pressed') !== 'true') return null;
+      const bearingTransform = getComputedStyle(bearing).transform;
+      const firstMatrixValue = bearingTransform.startsWith('matrix(')
+        ? Number(bearingTransform.split('(')[1].split(',')[0])
+        : Number.NaN;
+      return Math.abs(firstMatrixValue - Math.SQRT1_2) <= 0.01
+        ? { bearingTransform, trackCell: trackCell.textContent.trim() }
+        : null;
+    })()`),
+    10000,
+    "track-up map snapped north when synthetic GPS track disappeared",
+    100,
+  );
+
+  if (screenshotPath) {
+    const screenshot = await page.send("Page.captureScreenshot", { format: "png", fromSurface: true });
+    await writeFile(screenshotPath, Buffer.from(screenshot.data, "base64"));
+  }
+
+  await page.evaluate(`document.querySelector('[data-testid="map-orientation-button"]')?.click()`);
+  return { ...plan, ...paintProbe, retainedTrackUp };
 }
 
 async function clickMap(page, rect) {

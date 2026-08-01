@@ -1034,6 +1034,13 @@ button {
   pointer-events: none;
 }
 
+@media (max-width: 420px) and (orientation: portrait) {
+  .mapChartDock {
+    --thumb: min(3.9rem, calc((100vw - 12px) / 6.3));
+    --thumb-gap: calc(var(--thumb) * 0.05);
+  }
+}
+
 .homeGrid {
   position: absolute;
   top: 50%;
@@ -2486,24 +2493,6 @@ button {
   margin: 0;
 }
 
-.debugRange {
-  display: grid;
-  grid-template-columns: auto minmax(0, 1fr);
-  align-items: center;
-  gap: calc(var(--thumb) * 0.1);
-  margin: calc(var(--thumb) * 0.08) 0;
-  color: #253840;
-  font-size: calc(var(--thumb) * 0.16);
-  font-weight: 800;
-  white-space: nowrap;
-  user-select: none;
-}
-
-.debugRange input {
-  width: 100%;
-  margin: 0;
-}
-
 .navElement {
   position: absolute;
   left: 50%;
@@ -2983,6 +2972,72 @@ button {
 
 .centerHereButton.isDisabled {
   cursor: help;
+}
+
+.mapOrientationButton {
+  align-items: flex-end;
+  padding-bottom: calc(var(--thumb) * 0.07);
+  background-image: none;
+}
+
+.mapOrientationButton.isTrackUp {
+  border-color: color-mix(in srgb, var(--theme-button-checked) 78%, black);
+  background-color: var(--theme-button-checked);
+}
+
+.mapOrientationCompass {
+  position: absolute;
+  top: calc(var(--thumb) * 0.07);
+  left: 50%;
+  width: calc(var(--thumb) * 0.65);
+  height: calc(var(--thumb) * 0.65);
+  border: 2px solid rgba(19, 33, 41, 0.72);
+  border-radius: 50%;
+  background: rgba(252, 248, 241, 0.92);
+  box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.72);
+  transform: translateX(-50%);
+  pointer-events: none;
+}
+
+.mapOrientationNeedle {
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  width: calc(var(--thumb) * 0.11);
+  height: calc(var(--thumb) * 0.5);
+  transform-origin: center center;
+}
+
+.mapOrientationNeedleNorth,
+.mapOrientationNeedleSouth {
+  position: absolute;
+  left: 0;
+  width: 100%;
+  height: 50%;
+}
+
+.mapOrientationNeedleNorth {
+  top: 0;
+  border-radius: 999px 999px 2px 2px;
+  background: var(--theme-compass-north);
+}
+
+.mapOrientationNeedleSouth {
+  bottom: 0;
+  border-radius: 2px 2px 999px 999px;
+  background: var(--theme-compass-south);
+}
+
+.mapOrientationHub {
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  width: calc(var(--thumb) * 0.11);
+  height: calc(var(--thumb) * 0.11);
+  border: 1px solid rgba(19, 33, 41, 0.76);
+  border-radius: 50%;
+  background: #fefcf7;
+  transform: translate(-50%, -50%);
 }
 
 .zoomControl {

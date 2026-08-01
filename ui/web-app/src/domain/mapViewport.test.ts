@@ -6,12 +6,14 @@ import { describe, expect, it } from "vitest";
 import { mapView } from "./sampleData";
 import {
   applyPinchGesture,
+  compassNeedleRotationDegrees,
   createInitialViewport,
   createPinchSnapshot,
   dragViewport,
   isStaleMapFollowTargetViewport,
   latLonToWorld,
   preserveViewportForMap,
+  resolveMapUpDegrees,
   rotatedViewportEnvelopeSize,
   sameMapViewport,
   screenToWorld,
@@ -186,5 +188,23 @@ describe("mapViewport", () => {
 
     expect(envelope.width).toBeCloseTo(Math.SQRT1_2 * 2000, 8);
     expect(envelope.height).toBeCloseTo(Math.SQRT1_2 * 2000, 8);
+  });
+
+  it("uses true ground track in track-up mode and can retain it through gaps", () => {
+    expect(resolveMapUpDegrees("north", 42)).toBe(0);
+    expect(resolveMapUpDegrees("track", 42)).toBe(42);
+    expect(resolveMapUpDegrees("track", 350)).toBe(-10);
+    expect(resolveMapUpDegrees("track", null)).toBe(0);
+    expect(resolveMapUpDegrees("track", Number.NaN)).toBe(0);
+    expect(resolveMapUpDegrees("track", null, 73)).toBe(73);
+    expect(resolveMapUpDegrees("track", Number.NaN, 350)).toBe(-10);
+    expect(resolveMapUpDegrees("north", null, 73)).toBe(0);
+  });
+
+  it("keeps the compass red end aimed at magnetic north as map-up changes", () => {
+    expect(compassNeedleRotationDegrees(0, 15)).toBe(15);
+    expect(compassNeedleRotationDegrees(42, 15)).toBe(-27);
+    expect(compassNeedleRotationDegrees(-10, 15)).toBe(25);
+    expect(compassNeedleRotationDegrees(42, null)).toBe(-42);
   });
 });

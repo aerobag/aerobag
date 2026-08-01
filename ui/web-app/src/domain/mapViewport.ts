@@ -24,6 +24,8 @@ export type MapDisplayFrame = {
   height: number;
 };
 
+export type MapOrientationMode = "north" | "track";
+
 const VIEWPORT_EPSILON = 1e-9;
 const WORLD_SIZE = 256;
 const MAX_LATITUDE = 85.05112878;
@@ -152,6 +154,35 @@ export function rotatedViewportEnvelopeSize(
     width: width * absCos + height * absSin,
     height: width * absSin + height * absCos,
   };
+}
+
+export function resolveMapUpDegrees(
+  mode: MapOrientationMode,
+  trackDegTrue: number | null | undefined,
+  retainedTrackUpDeg = 0,
+): number {
+  if (mode !== "track") {
+    return 0;
+  }
+  const mapUpDeg = typeof trackDegTrue === "number" && Number.isFinite(trackDegTrue)
+    ? trackDegTrue
+    : retainedTrackUpDeg;
+  return Number.isFinite(mapUpDeg) ? normalizeRotationDegrees(mapUpDeg) : 0;
+}
+
+export function compassNeedleRotationDegrees(
+  mapUpDeg: number,
+  magneticVariationDeg: number | null | undefined,
+): number {
+  const magneticNorthDegTrue = typeof magneticVariationDeg === "number" && Number.isFinite(magneticVariationDeg)
+    ? magneticVariationDeg
+    : 0;
+  return normalizeRotationDegrees(magneticNorthDegTrue - mapUpDeg);
+}
+
+function normalizeRotationDegrees(degrees: number): number {
+  const normalized = ((degrees + 180) % 360 + 360) % 360 - 180;
+  return Object.is(normalized, -0) ? 0 : normalized;
 }
 
 function rotateScreenOffset(x: number, y: number, degrees: number): ScreenPoint {

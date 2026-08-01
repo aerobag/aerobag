@@ -73,6 +73,7 @@ data class WireOwnshipRenderState(
     val draw_predictor: Boolean = false,
     val draw_cdi: Boolean = false,
     val position: WireLatLon? = null,
+    val track_deg_true: Double? = null,
     val orientation_deg: Double? = null,
     val magnetic_variation_deg: Double? = null,
     val speed_kt: Double? = null,

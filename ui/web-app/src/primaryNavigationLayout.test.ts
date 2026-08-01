@@ -40,16 +40,19 @@ describe("primary navigation layout", () => {
     }
   });
 
-  it("places the map-only CTR control after Search instead of beside DBG", () => {
+  it("places the map-only CTR and orientation controls after Search instead of beside DBG", () => {
     const mapPage = sourceBetween("function MapPage(", "function NavElementButton(");
     const searchIndex = mapPage.indexOf("<ChartSearchBox");
     const centerHereIndex = mapPage.indexOf('className={`centerHereButton');
+    const orientationIndex = mapPage.indexOf("<MapOrientationButton");
     const bottomRightIndex = mapPage.indexOf("mapBottomRightDock");
 
     expect(searchIndex).toBeGreaterThanOrEqual(0);
     expect(centerHereIndex).toBeGreaterThan(searchIndex);
-    expect(centerHereIndex).toBeLessThan(bottomRightIndex);
+    expect(orientationIndex).toBeGreaterThan(centerHereIndex);
+    expect(orientationIndex).toBeLessThan(bottomRightIndex);
     expect(mapPage.slice(bottomRightIndex)).not.toContain("centerHereButton");
+    expect(mapPage).not.toContain("DebugMapUpSlider");
   });
 
   it("makes the CDI and both square buttons one thumb high", () => {

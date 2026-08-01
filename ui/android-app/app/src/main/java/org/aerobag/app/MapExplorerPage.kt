@@ -229,6 +229,8 @@ import org.aerobag.app.domain.MapDisplayFrame
 import org.aerobag.app.domain.MapFollowTargetGate
 import org.aerobag.app.domain.MapLayerId
 import org.aerobag.app.domain.MapFollowUiState
+import org.aerobag.app.domain.MapOrientationMemory
+import org.aerobag.app.domain.MapOrientationMode
 import org.aerobag.app.domain.MapOverlayQueryResult
 import org.aerobag.app.domain.MapSelectionAction
 import org.aerobag.app.domain.MapSelectionDetailStatus
@@ -287,6 +289,7 @@ import org.aerobag.app.domain.AirportInfoUiView
 import org.aerobag.app.domain.AirportRunwayUiView
 import org.aerobag.app.domain.applyPinchGesture
 import org.aerobag.app.domain.clampZoom
+import org.aerobag.app.domain.compassNeedleRotationDegrees
 import org.aerobag.app.domain.createInitialImageViewport
 import org.aerobag.app.domain.createPinchSnapshot
 import org.aerobag.app.domain.dragImageViewport
@@ -350,6 +353,7 @@ import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicInteger
 import java.util.concurrent.atomic.AtomicLong
 import kotlin.math.abs
+import kotlin.math.ceil
 import kotlin.math.roundToInt
 import kotlin.math.atan2
 import kotlin.math.cos
@@ -602,6 +606,7 @@ internal fun MapExplorerPage(
     selectedMap: RasterMapUiState,
     mapFamilyOptions: List<MapFamilyOption>,
     viewport: MapViewportState,
+    mapOrientationMode: MapOrientationMode,
     decodedTileBitmapCache: DecodedTileBitmapCache,
     debugState: UiDebugState,
     perfScenario: AndroidPerfScenario? = null,
@@ -609,6 +614,7 @@ internal fun MapExplorerPage(
     ownshipControls: OwnshipControlModel,
     onPageTilePaintTimingComplete: (Long) -> Unit,
     onViewportChange: (MapViewportState) -> Unit,
+    onMapOrientationModeChange: (MapOrientationMode) -> Unit,
     onSessionSnapshotChange: (UiSessionSnapshot) -> Unit,
     onSessionCommandFailure: (Throwable) -> Unit,
     onBeforeMapLayerCommand: () -> Unit,
@@ -753,18 +759,27 @@ internal fun MapExplorerPage(
     val currentViewport = viewportState.value
     val surfaceWidthPx = surfaceSize.width.toFloat()
     val surfaceHeightPx = surfaceSize.height.toFloat()
+    val mapOrientationMemory = remember { MapOrientationMemory() }
+    val plannedMapUpDeg = mapOrientationMemory.resolve(mapOrientationMode, ownship.trackDegTrue)
+    val displayViewport = currentViewport.copy(rotationDeg = plannedMapUpDeg)
+    val planningDiameterPx = hypot(surfaceWidthPx, surfaceHeightPx)
+    val planningEnvelope = ScreenPoint(planningDiameterPx, planningDiameterPx)
+    val planningSurfaceSize = IntSize(
+        ceil(planningEnvelope.x.toDouble()).toInt(),
+        ceil(planningEnvelope.y.toDouble()).toInt(),
+    )
     val mapDisplayScale = density.density.toDouble().takeIf { it.isFinite() && it > 0.0 } ?: 1.0
     val interactiveMaxZoom = physicalDisplayMaxZoom(selectedMap.maxZoom, mapDisplayScale)
     val mapLayerState = sessionSnapshot.mapLayerState
     val terrainViewportState = rememberUpdatedState(currentViewport)
-    val terrainSurfaceSizeState = rememberUpdatedState(surfaceSize)
-    val terrainSurfaceWidthPxState = rememberUpdatedState(surfaceWidthPx)
-    val terrainSurfaceHeightPxState = rememberUpdatedState(surfaceHeightPx)
+    val terrainSurfaceSizeState = rememberUpdatedState(planningSurfaceSize)
+    val terrainSurfaceWidthPxState = rememberUpdatedState(planningEnvelope.x)
+    val terrainSurfaceHeightPxState = rememberUpdatedState(planningEnvelope.y)
     val terrainMapVisibleState = rememberUpdatedState(page == AppPage.Map)
     val nexradViewportState = rememberUpdatedState(currentViewport)
-    val nexradSurfaceSizeState = rememberUpdatedState(surfaceSize)
-    val nexradSurfaceWidthPxState = rememberUpdatedState(surfaceWidthPx)
-    val nexradSurfaceHeightPxState = rememberUpdatedState(surfaceHeightPx)
+    val nexradSurfaceSizeState = rememberUpdatedState(planningSurfaceSize)
+    val nexradSurfaceWidthPxState = rememberUpdatedState(planningEnvelope.x)
+    val nexradSurfaceHeightPxState = rememberUpdatedState(planningEnvelope.y)
     val nexradVisibleState = rememberUpdatedState(page == AppPage.Map && mapLayerState.nexrad.visible)
     val nexradEnabledState = rememberUpdatedState(mapLayerState.nexrad.enabled)
     val nexradDevServerBaseUrlState = rememberUpdatedState(devServerBaseUrl)
@@ -780,14 +795,14 @@ internal fun MapExplorerPage(
     val situationDockLowered = surfaceWidthDp.dp < SituationDockOverlapWidth
     val situationDockTopPadding =
         if (situationDockLowered) ThumbSize + (ThumbGap * 2f) else ThumbGap
-    val rasterPlanFrame = remember(selectedMapId, currentViewport, surfaceSize, mapDisplayScale, uiSession, debugState.fastTiles) {
+    val rasterPlanFrame = remember(selectedMapId, displayViewport, surfaceSize, mapDisplayScale, uiSession, debugState.fastTiles) {
         if (surfaceSize.width == 0 || surfaceSize.height == 0) {
             RasterPlanFrame()
         } else {
             val planStartMs = SystemClock.elapsedRealtime()
             val plan = json.decodeFromString<WireRasterTilePlan>(
                 uiSession.queryRasterTilePlanJson(
-                    currentViewport,
+                    displayViewport,
                     surfaceWidthDp.toDouble(),
                     surfaceHeightDp.toDouble(),
                     mapDisplayScale,
@@ -1042,10 +1057,10 @@ internal fun MapExplorerPage(
             )
         }
     }
-    val situationOverlay = remember(ownship, currentViewport, surfaceWidthPx, surfaceHeightPx) {
+    val situationOverlay = remember(ownship, displayViewport, surfaceWidthPx, surfaceHeightPx) {
         resolveSituationOverlay(
             ownship = ownship,
-            viewport = currentViewport,
+            viewport = displayViewport,
             widthUnits = surfaceWidthPx,
             heightUnits = surfaceHeightPx,
             ringCandidates = situationRingCandidates,
@@ -1055,7 +1070,7 @@ internal fun MapExplorerPage(
         mapFollowUiState.following,
         ownship.drawAircraft,
         ownship.position,
-        currentViewport,
+        displayViewport,
         surfaceWidthPx,
         surfaceHeightPx,
     ) {
@@ -1064,7 +1079,7 @@ internal fun MapExplorerPage(
             buildMapFollowProbeTag(
                 following = mapFollowUiState.following,
                 ownshipPosition = position,
-                viewport = currentViewport,
+                viewport = displayViewport,
                 surfaceWidthPx = surfaceWidthPx,
                 surfaceHeightPx = surfaceHeightPx,
             )
@@ -1104,14 +1119,15 @@ internal fun MapExplorerPage(
     }
 
     fun updateViewport(nextViewport: MapViewportState, syncFollow: Boolean = true) {
+        val northUpViewport = nextViewport.copy(rotationDeg = 0.0)
         perfLogInfo(MapViewportLogTag) {
-            "update map=$selectedMapId from=${"%.2f".format(viewportState.value.zoom)} to=${"%.2f".format(nextViewport.zoom)} fromCenter=${"%.3f".format(viewportState.value.centerWorldX)},${"%.3f".format(viewportState.value.centerWorldY)} toCenter=${"%.3f".format(nextViewport.centerWorldX)},${"%.3f".format(nextViewport.centerWorldY)} syncFollow=$syncFollow"
+            "update map=$selectedMapId from=${"%.2f".format(viewportState.value.zoom)} to=${"%.2f".format(northUpViewport.zoom)} fromCenter=${"%.3f".format(viewportState.value.centerWorldX)},${"%.3f".format(viewportState.value.centerWorldY)} toCenter=${"%.3f".format(northUpViewport.centerWorldX)},${"%.3f".format(northUpViewport.centerWorldY)} syncFollow=$syncFollow"
         }
-        viewportState.value = nextViewport
+        viewportState.value = northUpViewport
         viewportSyncPending = true
-        onViewportChange(nextViewport)
+        onViewportChange(northUpViewport)
         if (syncFollow) {
-            syncFollowStateForViewport(nextViewport)
+            syncFollowStateForViewport(northUpViewport)
         }
     }
 
@@ -1896,8 +1912,8 @@ internal fun MapExplorerPage(
             mapOverlayError = null
             return@LaunchedEffect
         }
-        val overlayWidthPx = surfaceSize.width.toFloat()
-        val overlayHeightPx = surfaceSize.height.toFloat()
+        val overlayWidthPx = planningEnvelope.x
+        val overlayHeightPx = planningEnvelope.y
         val overlayStartMs = SystemClock.elapsedRealtime()
         val queryEpoch = navDataEpoch
         sessionWorkRunner.submitOverlay(
@@ -2237,7 +2253,7 @@ internal fun MapExplorerPage(
         committedMapOverlay,
         committedOverlayViewport,
         committedOverlaySurfaceUnits,
-        currentViewport,
+        displayViewport,
         surfaceWidthPx,
         surfaceHeightPx,
     ) {
@@ -2245,7 +2261,7 @@ internal fun MapExplorerPage(
             overlay = committedMapOverlay,
             fromViewport = committedOverlayViewport,
             fromSurface = committedOverlaySurfaceUnits,
-            toViewport = currentViewport,
+            toViewport = displayViewport,
             toSurface = OverlaySurfaceUnits(surfaceWidthPx, surfaceHeightPx),
         )
     }
@@ -2302,15 +2318,16 @@ internal fun MapExplorerPage(
         }
     }
     fun requestMapSelection(point: Offset) {
+        val selectionViewport = viewportState.value.copy(rotationDeg = plannedMapUpDeg)
         val world = screenToWorld(
-            viewportState.value,
+            selectionViewport,
             ScreenPoint(point.x, point.y),
             surfaceWidthPx,
             surfaceHeightPx,
         )
         val (lat, lon) = worldToLatLon(world.x, world.y)
         sessionWorkRunner.submitMapSelection(
-            viewport = viewportState.value,
+            viewport = selectionViewport,
             widthPx = surfaceWidthPx.toDouble(),
             heightPx = surfaceHeightPx.toDouble(),
             click = LatLonPoint(lat = lat, lon = lon),
@@ -2373,7 +2390,7 @@ internal fun MapExplorerPage(
                     "key-zoom map=$selectedMapId delta=${"%.2f".format(delta)} base=${"%.2f".format(viewportState.value.zoom)}"
                 }
                 val nextViewport = zoomAroundPoint(
-                    viewport = viewportState.value,
+                    viewport = viewportState.value.copy(rotationDeg = plannedMapUpDeg),
                     minZoom = selectedMap.minZoom,
                     maxZoom = interactiveMaxZoom,
                     anchor = ScreenPoint(surfaceWidthPx / 2f, surfaceHeightPx / 2f),
@@ -2394,6 +2411,7 @@ internal fun MapExplorerPage(
                 mapSurfaceBounds,
                 mapFollowUiState.following,
                 ownshipControls.selection,
+                plannedMapUpDeg,
             ) {
                 if (surfaceWidthPx == 0f || surfaceHeightPx == 0f) {
                     return@pointerInput
@@ -2420,7 +2438,7 @@ internal fun MapExplorerPage(
                                     val dy = endingDragChange.position.y - last.y
                                     if (dx != 0f || dy != 0f) {
                                         gestureViewport = dragViewport(
-                                            viewportState.value,
+                                            viewportState.value.copy(rotationDeg = plannedMapUpDeg),
                                             dx = dx,
                                             dy = dy,
                                         )
@@ -2453,7 +2471,7 @@ internal fun MapExplorerPage(
                                     val last = dragLastPosition ?: change.position
                                     gestureViewport = viewportState.value
                                     gestureViewport = dragViewport(
-                                        gestureViewport,
+                                        gestureViewport.copy(rotationDeg = plannedMapUpDeg),
                                         dx = change.position.x - last.x,
                                         dy = change.position.y - last.y,
                                     )
@@ -2468,7 +2486,7 @@ internal fun MapExplorerPage(
                                 if (pinchSnapshot == null) {
                                     gestureViewport = viewportState.value
                                     pinchSnapshot = createPinchSnapshot(
-                                        viewport = gestureViewport,
+                                        viewport = gestureViewport.copy(rotationDeg = plannedMapUpDeg),
                                         first = ScreenPoint(first.position.x, first.position.y),
                                         second = ScreenPoint(second.position.x, second.position.y),
                                         widthPx = surfaceWidthPx,
@@ -2495,7 +2513,7 @@ internal fun MapExplorerPage(
                     } finally {
                         val completedGestureSyncViewport = mapFollowSyncViewportForCompletedGesture(
                             movedViewportDuringGesture = movedViewportDuringGesture,
-                            finalGestureViewport = gestureViewport,
+                            finalGestureViewport = gestureViewport.copy(rotationDeg = 0.0),
                         )
                         if (completedGestureSyncViewport != null) {
                             syncFollowStateForViewport(completedGestureSyncViewport)
@@ -2518,7 +2536,7 @@ internal fun MapExplorerPage(
                     val wheelDelta = event.getAxisValue(MotionEvent.AXIS_VSCROLL).takeIf { it != 0f }
                         ?: event.getAxisValue(MotionEvent.AXIS_SCROLL)
                     val nextViewport = zoomAroundPoint(
-                        viewport = viewportState.value,
+                        viewport = viewportState.value.copy(rotationDeg = plannedMapUpDeg),
                         minZoom = selectedMap.minZoom,
                         maxZoom = interactiveMaxZoom,
                         anchor = ScreenPoint(surfaceWidthPx / 2f, surfaceHeightPx / 2f),
@@ -2545,6 +2563,7 @@ internal fun MapExplorerPage(
             viewport = currentViewport,
             surfaceWidthPx = surfaceWidthPx,
             surfaceHeightPx = surfaceHeightPx,
+            mapUpDeg = plannedMapUpDeg,
         )
         AirspaceOverlayLayer(displayedMapOverlay, density.density, uiTheme)
         MapFeatureOverlayLayer(
@@ -2564,12 +2583,13 @@ internal fun MapExplorerPage(
             fixLabelFillPaint = fixLabelFillPaint,
             airportToweredLabelFillPaint = airportToweredLabelFillPaint,
             airportUntoweredLabelFillPaint = airportUntoweredLabelFillPaint,
+            mapUpDeg = plannedMapUpDeg,
         )
         ObservationOverlayLayer(displayedMapOverlay, density.density, uiTheme)
         OfflineRegionsOverlayLayer(displayedMapOverlay, density.density, uiTheme)
         RouteOverlayLayer(
             flightPlanRoute = flightPlanRoute,
-            viewport = currentViewport,
+            viewport = displayViewport,
             surfaceWidthPx = surfaceWidthPx,
             surfaceHeightPx = surfaceHeightPx,
             densityScale = density.density,
@@ -2593,15 +2613,17 @@ internal fun MapExplorerPage(
             airportToweredLabelFillPaint = airportToweredLabelFillPaint,
             airportUntoweredLabelFillPaint = airportUntoweredLabelFillPaint,
             flightPlanOnly = true,
+            mapUpDeg = plannedMapUpDeg,
         )
         MapSelectionHighlightLayer(
             selectedItem = mapSelection?.selectedItem,
             displayedMapOverlay = displayedMapOverlay,
-            viewport = currentViewport,
+            viewport = displayViewport,
             surfaceWidthPx = surfaceWidthPx,
             surfaceHeightPx = surfaceHeightPx,
             densityScale = density.density,
             uiTheme = uiTheme,
+            mapUpDeg = plannedMapUpDeg,
         )
         SituationOverlayLayer(
             situationOverlay = situationOverlay,
@@ -2718,6 +2740,20 @@ internal fun MapExplorerPage(
                         uiSession.engageMapFollow(viewportState.value)
                     }
                 }
+            },
+            mapOrientationMode = mapOrientationMode,
+            compassNeedleRotationDeg = compassNeedleRotationDegrees(
+                plannedMapUpDeg,
+                ownship.magneticVariationDeg,
+            ),
+            onMapOrientationToggle = {
+                onMapOrientationModeChange(
+                    if (mapOrientationMode == MapOrientationMode.North) {
+                        MapOrientationMode.Track
+                    } else {
+                        MapOrientationMode.North
+                    },
+                )
             },
         )
 
@@ -2947,8 +2983,16 @@ private fun RasterImageLayers(
     viewport: MapViewportState,
     surfaceWidthPx: Float,
     surfaceHeightPx: Float,
+    mapUpDeg: Double,
 ) {
-    Canvas(modifier = Modifier.fillMaxSize()) {
+    Canvas(
+        modifier = Modifier
+            .fillMaxSize()
+            .graphicsLayer {
+                rotationZ = -mapUpDeg.toFloat()
+                clip = false
+            },
+    ) {
         tiles.forEach { tile ->
             val tileRect = tileRects.getValue(renderTileKey(tile))
             val bitmap = tileBitmapCache[renderTileKey(tile)]
@@ -3096,6 +3140,7 @@ private fun MapFeatureOverlayLayer(
     airportToweredLabelFillPaint: Paint,
     airportUntoweredLabelFillPaint: Paint,
     flightPlanOnly: Boolean = false,
+    mapUpDeg: Double,
 ) {
     val features = if (flightPlanOnly) displayedMapOverlay.flightPlanFeatures else displayedMapOverlay.visibleFeatures
     if (features.isEmpty()) return
@@ -3126,6 +3171,7 @@ private fun MapFeatureOverlayLayer(
                 fixLabelFillPaint = fixLabelFillPaint,
                 airportToweredLabelFillPaint = airportToweredLabelFillPaint,
                 airportUntoweredLabelFillPaint = airportUntoweredLabelFillPaint,
+                mapUpDeg = mapUpDeg,
             )
         }
     }
@@ -3167,6 +3213,7 @@ private fun androidx.compose.ui.graphics.drawscope.DrawScope.drawVisibleMapFeatu
     drawLabel: Boolean = true,
     selectedLabel: Boolean = false,
     labelOverride: String? = null,
+    mapUpDeg: Double,
 ) {
     val center = Offset(feature.screenX.toFloat(), feature.screenY.toFloat())
     val contrastColor = Color.White
@@ -3225,7 +3272,7 @@ private fun androidx.compose.ui.graphics.drawscope.DrawScope.drawVisibleMapFeatu
             if (contrastOnly) {
                 return@let
             }
-            val headingRad = Math.toRadians(headingDeg)
+            val headingRad = Math.toRadians(headingDeg - mapUpDeg)
             val runwayHalfLength = (8f * feature.runwayLengthRatio.toFloat().coerceIn(0f, 1f)).coerceAtLeast(1.6f) * densityScale
             val dx = kotlin.math.sin(headingRad).toFloat() * runwayHalfLength
             val dy = (-kotlin.math.cos(headingRad)).toFloat() * runwayHalfLength
@@ -3634,6 +3681,7 @@ private fun MapSelectionHighlightLayer(
     surfaceHeightPx: Float,
     densityScale: Float,
     uiTheme: UiTheme,
+    mapUpDeg: Double,
 ) {
     val item = selectedItem ?: return
     Canvas(modifier = Modifier.fillMaxSize()) {
@@ -3659,6 +3707,7 @@ private fun MapSelectionHighlightLayer(
                         airportToweredLabelFillPaint = Paint(),
                         airportUntoweredLabelFillPaint = Paint(),
                         contrastOnly = true,
+                        mapUpDeg = mapUpDeg,
                     )
                     drawVisibleMapFeature(
                         feature = feature,
@@ -3709,6 +3758,7 @@ private fun MapSelectionHighlightLayer(
                         },
                         selectedLabel = true,
                         labelOverride = item.label,
+                        mapUpDeg = mapUpDeg,
                     )
                 }
                 (displayedMapOverlay.airspacePaths + displayedMapOverlay.tfrPaths).firstOrNull { it.id == highlight.id }?.let { path ->

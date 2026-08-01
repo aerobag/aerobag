@@ -63,7 +63,7 @@ class PrimaryNavigationLayoutTest {
     }
 
     @Test
-    fun ctrFollowsSearchAndIsNotBottomDocked() {
+    fun ctrAndOrientationFollowSearchAndAreNotBottomDocked() {
         val mapControls = sourceBetween(
             chartsSource,
             "internal fun MapTopLeftControls(",
@@ -71,10 +71,13 @@ class PrimaryNavigationLayoutTest {
         )
         val searchIndex = mapControls.indexOf("AndroidChartSearchBox(")
         val ctrIndex = mapControls.indexOf("""label = "CTR"""")
+        val orientationIndex = mapControls.indexOf("MapOrientationButton(")
         assertTrue("CTR must follow Search in the map top row.", ctrIndex > searchIndex)
+        assertTrue("Orientation must follow CTR in the map top row.", orientationIndex > ctrIndex)
 
         val mapPage = sourceFile("src/main/java/org/aerobag/app/MapExplorerPage.kt").readText()
         assertFalse("CTR must not return to the map's bottom-right corner.", mapPage.contains("""label = "CTR""""))
+        assertFalse("Orientation must use the shared top-row control.", mapPage.contains("internal fun MapOrientationButton("))
     }
 
     @Test

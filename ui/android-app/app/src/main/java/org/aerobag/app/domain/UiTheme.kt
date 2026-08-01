@@ -44,6 +44,8 @@ data class ControlsTheme(
     val flightDataPassedValue: Color,
     val flightDataActiveValue: Color,
     val cdiPointer: Color,
+    val compassNorth: Color,
+    val compassSouth: Color,
 )
 
 data class PlateFolderTheme(
@@ -113,6 +115,8 @@ private data class WireControlsTheme(
     val flight_data_passed_value: String,
     val flight_data_active_value: String,
     val cdi_pointer: String,
+    val compass_north: String,
+    val compass_south: String,
 )
 
 @Serializable
@@ -187,6 +191,8 @@ object UiThemeLoader {
                 flightDataPassedValue = wire.controls.flight_data_passed_value.toColor(),
                 flightDataActiveValue = wire.controls.flight_data_active_value.toColor(),
                 cdiPointer = wire.controls.cdi_pointer.toColor(),
+                compassNorth = wire.controls.compass_north.toColor(),
+                compassSouth = wire.controls.compass_south.toColor(),
             ),
             aviation = AviationTheme(
                 classBDBlue = wire.aviation.class_b_d_blue.toColor(),

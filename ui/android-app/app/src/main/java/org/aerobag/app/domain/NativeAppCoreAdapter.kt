@@ -1534,7 +1534,7 @@ private fun MapViewportState.toWire(): WireMapViewport {
     return WireMapViewport(
         center = WireLatLon(lat = lat, lon = lon),
         zoom = zoom,
-        rotation_deg = 0.0,
+        rotation_deg = rotationDeg,
         pitch_deg = 0.0,
     )
 }
@@ -2783,7 +2783,7 @@ private fun CoreMapViewport.toWire() = WireMapViewport(
 private fun MapViewportState.toCoreViewport() = CoreMapViewport(
     center = viewportCenterLatLon(this).let { LatLonPoint(lat = it.first, lon = it.second) },
     zoom = zoom,
-    rotationDeg = 0.0,
+    rotationDeg = rotationDeg,
     pitchDeg = 0.0,
 )
 

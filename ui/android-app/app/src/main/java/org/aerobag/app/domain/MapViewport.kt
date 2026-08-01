@@ -9,6 +9,7 @@ import kotlin.math.PI
 import kotlin.math.abs
 import kotlin.math.asinh
 import kotlin.math.atan
+import kotlin.math.cos
 import kotlin.math.exp
 import kotlin.math.hypot
 import kotlin.math.ln
@@ -16,6 +17,7 @@ import kotlin.math.max
 import kotlin.math.min
 import kotlin.math.pow
 import kotlin.math.roundToInt
+import kotlin.math.sin
 import kotlin.math.sinh
 import kotlin.math.tan
 
@@ -27,7 +29,25 @@ data class MapViewportState(
     val centerWorldX: Double,
     val centerWorldY: Double,
     val zoom: Double,
+    val rotationDeg: Double = 0.0,
 )
+
+enum class MapOrientationMode {
+    North,
+    Track,
+}
+
+class MapOrientationMemory {
+    private var previousMode = MapOrientationMode.North
+    private var retainedTrackUpDeg = 0.0
+
+    fun resolve(mode: MapOrientationMode, trackDegTrue: Double?): Double {
+        val fallback = if (previousMode == MapOrientationMode.Track) retainedTrackUpDeg else 0.0
+        retainedTrackUpDeg = resolveMapUpDegrees(mode, trackDegTrue, fallback)
+        previousMode = mode
+        return retainedTrackUpDeg
+    }
+}
 
 @Serializable
 data class ScreenPoint(
@@ -49,12 +69,7 @@ data class MapDisplayFrame(
         screenToWorld(viewport, point, widthPx, heightPx)
 
     fun worldToScreen(world: WorldPoint): ScreenPoint {
-        val scale = scaleForZoom(viewport.zoom)
-        val wrappedX = world.x + (((viewport.centerWorldX - world.x) / WORLD_SIZE).roundToInt() * WORLD_SIZE)
-        return ScreenPoint(
-            x = (((wrappedX - viewport.centerWorldX) * scale) + widthPx / 2f).toFloat(),
-            y = (((world.y - viewport.centerWorldY) * scale) + heightPx / 2f).toFloat(),
-        )
+        return worldToScreen(viewport, world, widthPx, heightPx)
     }
 
     fun latLonToScreen(lat: Double, lon: Double): ScreenPoint =
@@ -140,16 +155,18 @@ fun scaleForZoom(zoom: Double): Double = 2.0.pow(zoom)
 
 fun dragViewport(viewport: MapViewportState, dx: Float, dy: Float): MapViewportState {
     val scale = scaleForZoom(viewport.zoom)
+    val worldAlignedDelta = rotateScreenOffset(dx.toDouble(), dy.toDouble(), viewport.rotationDeg)
     return viewport.copy(
-        centerWorldX = viewport.centerWorldX - dx / scale,
-        centerWorldY = viewport.centerWorldY - dy / scale,
+        centerWorldX = viewport.centerWorldX - worldAlignedDelta.x / scale,
+        centerWorldY = viewport.centerWorldY - worldAlignedDelta.y / scale,
     )
 }
 
 fun sameMapViewport(left: MapViewportState, right: MapViewportState): Boolean =
     abs(left.centerWorldX - right.centerWorldX) < VIEWPORT_EPSILON &&
         abs(left.centerWorldY - right.centerWorldY) < VIEWPORT_EPSILON &&
-        abs(left.zoom - right.zoom) < VIEWPORT_EPSILON
+        abs(left.zoom - right.zoom) < VIEWPORT_EPSILON &&
+        abs(left.rotationDeg - right.rotationDeg) < VIEWPORT_EPSILON
 
 class MapFollowTargetGate {
     // Ownship can move before Compose observes a sync result, so viewport equality
@@ -200,9 +217,73 @@ fun screenToWorld(
     heightPx: Float,
 ): WorldPoint {
     val scale = scaleForZoom(viewport.zoom)
+    val worldAlignedOffset = rotateScreenOffset(
+        (point.x - widthPx / 2f).toDouble(),
+        (point.y - heightPx / 2f).toDouble(),
+        viewport.rotationDeg,
+    )
     return WorldPoint(
-        x = viewport.centerWorldX + (point.x - widthPx / 2f) / scale,
-        y = viewport.centerWorldY + (point.y - heightPx / 2f) / scale,
+        x = viewport.centerWorldX + worldAlignedOffset.x / scale,
+        y = viewport.centerWorldY + worldAlignedOffset.y / scale,
+    )
+}
+
+fun worldToScreen(
+    viewport: MapViewportState,
+    world: WorldPoint,
+    widthPx: Float,
+    heightPx: Float,
+): ScreenPoint {
+    val scale = scaleForZoom(viewport.zoom)
+    val wrappedX = world.x + (((viewport.centerWorldX - world.x) / WORLD_SIZE).roundToInt() * WORLD_SIZE)
+    val screenAlignedOffset = rotateScreenOffset(
+        (wrappedX - viewport.centerWorldX) * scale,
+        (world.y - viewport.centerWorldY) * scale,
+        -viewport.rotationDeg,
+    )
+    return ScreenPoint(
+        x = (screenAlignedOffset.x + widthPx / 2f).toFloat(),
+        y = (screenAlignedOffset.y + heightPx / 2f).toFloat(),
+    )
+}
+
+fun rotatedViewportEnvelopeSize(widthPx: Float, heightPx: Float, mapUpDeg: Double): ScreenPoint {
+    val radians = Math.toRadians(mapUpDeg)
+    val absCos = abs(cos(radians))
+    val absSin = abs(sin(radians))
+    return ScreenPoint(
+        x = (widthPx * absCos + heightPx * absSin).toFloat(),
+        y = (widthPx * absSin + heightPx * absCos).toFloat(),
+    )
+}
+
+fun resolveMapUpDegrees(
+    mode: MapOrientationMode,
+    trackDegTrue: Double?,
+    retainedTrackUpDeg: Double = 0.0,
+): Double {
+    if (mode != MapOrientationMode.Track) return 0.0
+    val mapUpDeg = trackDegTrue?.takeIf(Double::isFinite) ?: retainedTrackUpDeg
+    return if (mapUpDeg.isFinite()) normalizeRotationDegrees(mapUpDeg) else 0.0
+}
+
+fun compassNeedleRotationDegrees(mapUpDeg: Double, magneticVariationDeg: Double?): Double {
+    val magneticNorthDegTrue = magneticVariationDeg?.takeIf(Double::isFinite) ?: 0.0
+    return normalizeRotationDegrees(magneticNorthDegTrue - mapUpDeg)
+}
+
+private fun normalizeRotationDegrees(degrees: Double): Double {
+    val normalized = ((degrees + 180.0) % 360.0 + 360.0) % 360.0 - 180.0
+    return if (normalized == -0.0) 0.0 else normalized
+}
+
+private fun rotateScreenOffset(x: Double, y: Double, degrees: Double): WorldPoint {
+    val radians = Math.toRadians(degrees)
+    val cos = cos(radians)
+    val sin = sin(radians)
+    return WorldPoint(
+        x = x * cos - y * sin,
+        y = x * sin + y * cos,
     )
 }
 
@@ -218,10 +299,16 @@ fun zoomAroundPoint(
     val clampedZoom = clampZoom(nextZoom, minZoom, maxZoom)
     val anchorWorld = screenToWorld(viewport, anchor, widthPx, heightPx)
     val nextScale = scaleForZoom(clampedZoom)
+    val worldAlignedOffset = rotateScreenOffset(
+        (anchor.x - widthPx / 2f).toDouble(),
+        (anchor.y - heightPx / 2f).toDouble(),
+        viewport.rotationDeg,
+    )
     return MapViewportState(
-        centerWorldX = anchorWorld.x - (anchor.x - widthPx / 2f) / nextScale,
-        centerWorldY = anchorWorld.y - (anchor.y - heightPx / 2f) / nextScale,
+        centerWorldX = anchorWorld.x - worldAlignedOffset.x / nextScale,
+        centerWorldY = anchorWorld.y - worldAlignedOffset.y / nextScale,
         zoom = clampedZoom,
+        rotationDeg = viewport.rotationDeg,
     )
 }
 
@@ -259,18 +346,29 @@ fun applyPinchGesture(
     val zoomDelta = if (startDistance > 0.0) ln(currentDistance / startDistance) / ln(2.0) else 0.0
     val nextZoom = clampZoom(snapshot.viewport.zoom + zoomDelta, minZoom, maxZoom)
     val nextScale = scaleForZoom(nextZoom)
+    val firstOffset = rotateScreenOffset(
+        (currentFirst.x - widthPx / 2f).toDouble(),
+        (currentFirst.y - heightPx / 2f).toDouble(),
+        snapshot.viewport.rotationDeg,
+    )
+    val secondOffset = rotateScreenOffset(
+        (currentSecond.x - widthPx / 2f).toDouble(),
+        (currentSecond.y - heightPx / 2f).toDouble(),
+        snapshot.viewport.rotationDeg,
+    )
     val centerOne = WorldPoint(
-        x = snapshot.firstAnchorWorld.x - (currentFirst.x - widthPx / 2f) / nextScale,
-        y = snapshot.firstAnchorWorld.y - (currentFirst.y - heightPx / 2f) / nextScale,
+        x = snapshot.firstAnchorWorld.x - firstOffset.x / nextScale,
+        y = snapshot.firstAnchorWorld.y - firstOffset.y / nextScale,
     )
     val centerTwo = WorldPoint(
-        x = snapshot.secondAnchorWorld.x - (currentSecond.x - widthPx / 2f) / nextScale,
-        y = snapshot.secondAnchorWorld.y - (currentSecond.y - heightPx / 2f) / nextScale,
+        x = snapshot.secondAnchorWorld.x - secondOffset.x / nextScale,
+        y = snapshot.secondAnchorWorld.y - secondOffset.y / nextScale,
     )
     return MapViewportState(
         centerWorldX = (centerOne.x + centerTwo.x) / 2.0,
         centerWorldY = (centerOne.y + centerTwo.y) / 2.0,
         zoom = nextZoom,
+        rotationDeg = snapshot.viewport.rotationDeg,
     )
 }
 

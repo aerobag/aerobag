@@ -220,6 +220,7 @@ import org.aerobag.app.domain.ImageViewportState
 import org.aerobag.app.domain.LatLonPoint
 import org.aerobag.app.domain.MapLayerId
 import org.aerobag.app.domain.MapFollowUiState
+import org.aerobag.app.domain.MapOrientationMode
 import org.aerobag.app.domain.MapOverlayQueryResult
 import org.aerobag.app.domain.MapSelectionAction
 import org.aerobag.app.domain.MapSelectionHighlight
@@ -1097,6 +1098,9 @@ internal fun MapTopLeftControls(
     centerHereSelected: Boolean,
     centerHereDisabledReason: String?,
     onCenterHere: () -> Unit,
+    mapOrientationMode: MapOrientationMode,
+    compassNeedleRotationDeg: Double,
+    onMapOrientationToggle: () -> Unit,
 ) {
     val context = LocalContext.current
     Row(
@@ -1165,6 +1169,83 @@ internal fun MapTopLeftControls(
             },
             onClick = onCenterHere,
         )
+        MapOrientationButton(
+            mode = mapOrientationMode,
+            needleRotationDeg = compassNeedleRotationDeg,
+            onToggle = onMapOrientationToggle,
+        )
+    }
+}
+
+@Composable
+internal fun MapOrientationButton(
+    mode: MapOrientationMode,
+    needleRotationDeg: Double,
+    onToggle: () -> Unit,
+) {
+    val uiTheme = LocalAerobagUiTheme.current
+    val trackUp = mode == MapOrientationMode.Track
+    val containerColor = if (trackUp) uiTheme.controls.buttonChecked else uiTheme.controls.buttonUnchecked
+    Surface(
+        modifier = Modifier
+            .size(ThumbSize)
+            .testTag("parity:map-orientation-button")
+            .semantics { selected = trackUp }
+            .clickable(onClick = onToggle),
+        shape = RoundedCornerShape(ThumbRadius),
+        color = containerColor,
+        contentColor = uiTheme.controls.buttonFg,
+        border = BorderStroke(1.dp, lerp(containerColor, Color.Black, 0.22f)),
+        shadowElevation = 2.dp,
+    ) {
+        Box(modifier = Modifier.fillMaxSize()) {
+            Canvas(
+                modifier = Modifier
+                    .align(Alignment.TopCenter)
+                    .size(ThumbSize * 0.72f)
+                    .padding(top = 5.dp),
+            ) {
+                val center = Offset(size.width / 2f, size.height / 2f)
+                val radius = size.minDimension * 0.39f
+                drawCircle(
+                    color = uiTheme.controls.buttonFg.copy(alpha = 0.82f),
+                    radius = radius,
+                    center = center,
+                    style = Stroke(width = 1.5.dp.toPx()),
+                )
+                rotate(needleRotationDeg.toFloat(), center) {
+                    drawLine(
+                        color = uiTheme.controls.compassNorth,
+                        start = center,
+                        end = Offset(center.x, center.y - radius * 0.82f),
+                        strokeWidth = 4.dp.toPx(),
+                        cap = StrokeCap.Round,
+                    )
+                    drawLine(
+                        color = uiTheme.controls.compassSouth,
+                        start = center,
+                        end = Offset(center.x, center.y + radius * 0.82f),
+                        strokeWidth = 4.dp.toPx(),
+                        cap = StrokeCap.Round,
+                    )
+                }
+                drawCircle(
+                    color = uiTheme.controls.buttonFg,
+                    radius = 2.dp.toPx(),
+                    center = center,
+                )
+            }
+            OutlinedButtonLabel(
+                text = if (trackUp) "TRK" else "N",
+                modifier = Modifier
+                    .align(Alignment.BottomCenter)
+                    .fillMaxWidth()
+                    .padding(horizontal = 1.dp, vertical = 2.dp),
+                style = buttonLabelStyle().copy(fontSize = 13.sp),
+                maxLines = 1,
+                color = uiTheme.controls.buttonFg,
+            )
+        }
     }
 }
 

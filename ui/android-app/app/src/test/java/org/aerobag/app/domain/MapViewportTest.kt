@@ -149,6 +149,47 @@ class MapViewportTest {
     }
 
     @Test
+    fun rotatedViewportRoundTripsScreenAndWorldCoordinates() {
+        val viewport = createInitialViewport(initialViewport, minZoom, maxZoom).copy(rotationDeg = 73.0)
+        val screen = ScreenPoint(203f, 711f)
+        val world = screenToWorld(viewport, screen, 1200f, 900f)
+        val roundTrip = worldToScreen(viewport, world, 1200f, 900f)
+
+        assertEquals(screen.x.toDouble(), roundTrip.x.toDouble(), 1e-4)
+        assertEquals(screen.y.toDouble(), roundTrip.y.toDouble(), 1e-4)
+    }
+
+    @Test
+    fun rotatedViewportPansInScreenCoordinates() {
+        val viewport = createInitialViewport(initialViewport, minZoom, maxZoom).copy(rotationDeg = 90.0)
+        val worldUnderCursor = screenToWorld(viewport, ScreenPoint(600f, 300f), 1200f, 900f)
+        val dragged = dragViewport(viewport, dx = 0f, dy = 150f)
+        val after = worldToScreen(dragged, worldUnderCursor, 1200f, 900f)
+
+        assertEquals(600.0, after.x.toDouble(), 1e-4)
+        assertEquals(450.0, after.y.toDouble(), 1e-4)
+    }
+
+    @Test
+    fun trackUpMemoryRetainsLastTrackAcrossGapsOnlyWhileModeRemainsSelected() {
+        val memory = MapOrientationMemory()
+
+        assertEquals(0.0, memory.resolve(MapOrientationMode.Track, null), 1e-8)
+        assertEquals(42.0, memory.resolve(MapOrientationMode.Track, 42.0), 1e-8)
+        assertEquals(42.0, memory.resolve(MapOrientationMode.Track, null), 1e-8)
+        assertEquals(0.0, memory.resolve(MapOrientationMode.North, null), 1e-8)
+        assertEquals(0.0, memory.resolve(MapOrientationMode.Track, null), 1e-8)
+    }
+
+    @Test
+    fun rotatedViewportEnvelopeCoversAllRotatedCorners() {
+        val envelope = rotatedViewportEnvelopeSize(1200f, 800f, 45.0)
+
+        assertEquals(Math.sqrt(0.5) * 2000.0, envelope.x.toDouble(), 1e-4)
+        assertEquals(Math.sqrt(0.5) * 2000.0, envelope.y.toDouble(), 1e-4)
+    }
+
+    @Test
     fun mapFollowTargetGateBlocksTargetOlderThanLatestSync() {
         val gate = MapFollowTargetGate()
 

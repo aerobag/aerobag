@@ -229,6 +229,7 @@ import org.aerobag.app.domain.AirspaceLimitGlyph
 import org.aerobag.app.domain.AirspaceScreenPoint
 import org.aerobag.app.domain.MapLayerId
 import org.aerobag.app.domain.MapFollowUiState
+import org.aerobag.app.domain.MapOrientationMode
 import org.aerobag.app.domain.MapOverlayQueryResult
 import org.aerobag.app.domain.MapSelectionAction
 import org.aerobag.app.domain.MapSelectionDetailStatus
@@ -499,6 +500,7 @@ internal const val UiPrefsOfflinePackagePreferencesKey = "offline_package_prefer
 internal const val UiPrefsOfflinePackageLibraryCacheKey = "offline_package_library_cache"
 internal const val UiPrefsPackageSourceBaseUrlKey = "package_source_base_url"
 internal const val UiPrefsDebugGpsCaptureKey = "debug_gps_capture"
+internal const val UiPrefsMapOrientationModeKey = "map_orientation_mode"
 internal const val MapViewportLogTag = "MapViewport"
 internal const val MaxViewHistoryDepth = 64
 internal const val OverlayPlaneControls = 10f
@@ -1235,6 +1237,7 @@ internal fun mapViewportFromCore(viewport: CoreMapViewport): MapViewportState {
         centerWorldX = center.x,
         centerWorldY = center.y,
         zoom = viewport.zoom,
+        rotationDeg = viewport.rotationDeg,
     )
 }
 
@@ -1369,7 +1372,7 @@ internal fun resolveSituationOverlay(
     }
     return SituationOverlay(
         pointUnits = point,
-        headingDeg = heading,
+        headingDeg = heading - viewport.rotationDeg.toFloat(),
         predictorUnits = predictor,
         ring = selectSituationRing(
             position,
@@ -1377,7 +1380,7 @@ internal fun resolveSituationOverlay(
             widthUnits,
             heightUnits,
             ringCandidates,
-            ownship.magneticVariationDeg?.toFloat(),
+            ownship.magneticVariationDeg?.toFloat()?.minus(viewport.rotationDeg.toFloat()),
         ),
     )
 }
@@ -1852,6 +1855,19 @@ internal fun readStoredPage(prefs: SharedPreferences): AppPage {
 
 internal fun readStoredGpsCaptureDebugFlag(prefs: SharedPreferences): Boolean =
     prefs.getBoolean(UiPrefsDebugGpsCaptureKey, false)
+
+internal fun readStoredMapOrientationMode(prefs: SharedPreferences): MapOrientationMode =
+    if (prefs.getString(UiPrefsMapOrientationModeKey, null) == "track") {
+        MapOrientationMode.Track
+    } else {
+        MapOrientationMode.North
+    }
+
+internal fun writeStoredMapOrientationMode(prefs: SharedPreferences, mode: MapOrientationMode) {
+    prefs.edit()
+        .putString(UiPrefsMapOrientationModeKey, if (mode == MapOrientationMode.Track) "track" else "north")
+        .apply()
+}
 
 internal fun writeStoredGpsCaptureDebugFlag(prefs: SharedPreferences, enabled: Boolean) {
     prefs.edit().putBoolean(UiPrefsDebugGpsCaptureKey, enabled).apply()
@@ -2358,6 +2374,7 @@ internal fun AerobagApp(
             retainedModel.page ?: readStoredPage(prefs),
         )
     }
+    var mapOrientationMode by remember { mutableStateOf(readStoredMapOrientationMode(prefs)) }
     LaunchedEffect(perfScenario?.id) {
         if (perfScenario != null) {
             Log.i(AndroidPerfScenarioTag, "startup scenario=${perfScenario.id}")
@@ -3015,6 +3032,7 @@ internal fun AerobagApp(
                         selectedMap = selectedMap,
                         mapFamilyOptions = rasterMapState.familyOptions,
                         viewport = mapViewport,
+                        mapOrientationMode = mapOrientationMode,
                         decodedTileBitmapCache = decodedTileBitmapCache,
                         debugState = sessionSnapshot.debugState,
                         perfScenario = perfScenario,
@@ -3026,6 +3044,10 @@ internal fun AerobagApp(
                             }
                         },
                         onViewportChange = { mapViewport = it },
+                        onMapOrientationModeChange = { mode ->
+                            mapOrientationMode = mode
+                            writeStoredMapOrientationMode(prefs, mode)
+                        },
                         onSessionSnapshotChange = { applySessionSnapshot(it) },
                         onSessionCommandFailure = { recoverSessionCommandFailure(it) },
                         onBeforeMapLayerCommand = {

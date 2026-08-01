@@ -185,9 +185,8 @@ pub enum CloudProviderResponse {
     },
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(tag = "kind", rename_all = "snake_case")]
-pub enum CloudAction {
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum CloudAction {
     BeginSetupFromDevice,
     BeginCreateAccount,
     BackSetup,
@@ -202,16 +201,80 @@ pub enum CloudAction {
     SyncNow,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum CloudUiActionId {
+    BeginSetup,
+    BeginCreate,
+    BackSetup,
+    SelectProviderGoogleDrive,
+    SelectProviderAerobagCloud,
+    ScanSetupCode,
+    AcceptSetupCode,
+    AuthorizeProvider,
+    CreateAccount,
+    BackupSetupCode,
+    AddDevice,
+    CloseLinkedDetail,
+    BeginUnlink,
+    ConfirmUnlink,
+    SyncNow,
+    CopySetupCode,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum CloudUiFieldId {
+    DeviceSetupCode,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CloudUiFieldValue {
+    pub id: CloudUiFieldId,
+    pub value: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum CloudPlatformEffect {
+    AuthorizeProvider {
+        provider: CloudProviderKind,
+    },
+    CopyText {
+        text: String,
+        completion_label: String,
+    },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "state", rename_all = "snake_case")]
+pub enum CloudAuthorizationResponse {
+    Authorized {
+        expires_at_epoch_ms: Option<i64>,
+        principal: CloudProviderPrincipal,
+    },
+    AuthorizationRequired {
+        diagnostic: Option<String>,
+    },
+    Failed {
+        diagnostic: Option<String>,
+    },
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct UiCloudAction {
-    pub id: String,
+    pub id: CloudUiActionId,
     pub label: String,
     pub enabled: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub disabled_reason: Option<String>,
+    #[serde(default)]
+    pub required_fields: Vec<CloudUiFieldId>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub platform_effect: Option<CloudPlatformEffect>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum UiCloudPanelState {
     Complete,
@@ -226,12 +289,13 @@ pub enum UiCloudPanelState {
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum UiCloudPanelControl {
     DeviceSetupCodeInput {
+        field_id: CloudUiFieldId,
         label: String,
         placeholder: String,
-        accept_action_id: String,
     },
     DeviceSetupCodeOutput {
         setup_code: String,
+        copy_action: UiCloudAction,
     },
 }
 
@@ -240,6 +304,8 @@ pub struct UiCloudPanel {
     pub id: String,
     pub title: String,
     pub state: UiCloudPanelState,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub state_label: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub summary: Option<String>,
     pub actions: Vec<UiCloudAction>,
@@ -250,10 +316,16 @@ pub struct UiCloudPanel {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct UiCloudPageState {
     pub title: String,
+    pub summary: String,
+    pub sync_account_heading: String,
+    pub provider_heading: String,
+    pub overall_status_label: String,
     pub sync_account_panels: Vec<UiCloudPanel>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub provider_card: Option<UiCloudPanel>,
     pub overall_status: UiCloudPanel,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub next_refresh_epoch_ms: Option<i64>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -538,11 +610,77 @@ impl CloudEngine {
         }
     }
 
+    pub fn complete_authorization(
+        &mut self,
+        provider: CloudProviderKind,
+        response: CloudAuthorizationResponse,
+    ) {
+        let state = match response {
+            CloudAuthorizationResponse::Authorized {
+                expires_at_epoch_ms,
+                principal,
+            } => ProviderAuthorizationState::Authorized {
+                expires_at_epoch_ms,
+                principal,
+            },
+            CloudAuthorizationResponse::AuthorizationRequired { diagnostic } => {
+                ProviderAuthorizationState::AuthorizationRequired {
+                    detail: provider_authorization_detail(
+                        "Provider authorization was not completed.",
+                        diagnostic.as_deref(),
+                    ),
+                }
+            }
+            CloudAuthorizationResponse::Failed { diagnostic } => {
+                ProviderAuthorizationState::Failed {
+                    detail: provider_authorization_detail(
+                        "Provider authorization failed.",
+                        diagnostic.as_deref(),
+                    ),
+                }
+            }
+        };
+        self.set_authorization_state(provider, state);
+    }
+
     fn authorization_for(&self, provider: CloudProviderKind) -> ProviderAuthorizationState {
         self.authorizations
             .get(&provider)
             .cloned()
             .unwrap_or_default()
+    }
+
+    fn authorization_for_at(
+        &self,
+        provider: CloudProviderKind,
+        now_epoch_ms: i64,
+    ) -> ProviderAuthorizationState {
+        let authorization = self.authorization_for(provider);
+        match authorization {
+            ProviderAuthorizationState::Authorized {
+                expires_at_epoch_ms: Some(expires_at_epoch_ms),
+                ..
+            } if now_epoch_ms > 0 && expires_at_epoch_ms <= now_epoch_ms => {
+                ProviderAuthorizationState::AuthorizationRequired {
+                    detail: format!(
+                        "{} authorization expired. Authorize it again to resume cloud synchronization.",
+                        provider.label()
+                    ),
+                }
+            }
+            authorization => authorization,
+        }
+    }
+
+    fn next_authorization_refresh_epoch_ms(&self, now_epoch_ms: i64) -> Option<i64> {
+        let provider = self.current_provider().ok()?;
+        match self.authorization_for(provider) {
+            ProviderAuthorizationState::Authorized {
+                expires_at_epoch_ms: Some(expires_at_epoch_ms),
+                ..
+            } if expires_at_epoch_ms > now_epoch_ms => Some(expires_at_epoch_ms),
+            _ => None,
+        }
     }
 
     fn current_provider(&self) -> AppResult<CloudProviderKind> {
@@ -606,7 +744,7 @@ impl CloudEngine {
         }
     }
 
-    pub fn perform_action(
+    pub(crate) fn perform_action(
         &mut self,
         action: CloudAction,
         current_plan: &FlightPlan,
@@ -762,6 +900,67 @@ impl CloudEngine {
             }
             CloudAction::SyncNow => self.persistent.force_poll = true,
         }
+        Ok(())
+    }
+
+    pub fn perform_ui_action(
+        &mut self,
+        action_id: CloudUiActionId,
+        fields: &[CloudUiFieldValue],
+        current_plan: &FlightPlan,
+        now_epoch_ms: i64,
+    ) -> AppResult<()> {
+        let action = match action_id {
+            CloudUiActionId::BeginSetup => CloudAction::BeginSetupFromDevice,
+            CloudUiActionId::BeginCreate => CloudAction::BeginCreateAccount,
+            CloudUiActionId::BackSetup => CloudAction::BackSetup,
+            CloudUiActionId::SelectProviderGoogleDrive => CloudAction::SelectProvider {
+                provider: CloudProviderKind::GoogleDrive,
+            },
+            CloudUiActionId::SelectProviderAerobagCloud => CloudAction::SelectProvider {
+                provider: CloudProviderKind::AerobagCloud,
+            },
+            CloudUiActionId::CreateAccount => {
+                let provider = self.current_provider()?;
+                if !self
+                    .authorization_for_at(provider, now_epoch_ms)
+                    .is_ready(now_epoch_ms)
+                {
+                    return Err(cloud_error(
+                        "authorize the provider before creating a Sync Account",
+                    ));
+                }
+                CloudAction::CreateAccount
+            }
+            CloudUiActionId::AcceptSetupCode => CloudAction::AcceptDeviceSetupCode {
+                setup_code: required_ui_field(fields, CloudUiFieldId::DeviceSetupCode)?,
+            },
+            CloudUiActionId::BackupSetupCode => CloudAction::BackUpDeviceSetupCode,
+            CloudUiActionId::AddDevice => CloudAction::AddAnotherDevice,
+            CloudUiActionId::CloseLinkedDetail => CloudAction::CloseLinkedAccountDetail,
+            CloudUiActionId::BeginUnlink => CloudAction::BeginUnlinkDevice,
+            CloudUiActionId::ConfirmUnlink => CloudAction::ConfirmUnlinkDevice,
+            CloudUiActionId::SyncNow => CloudAction::SyncNow,
+            CloudUiActionId::AuthorizeProvider => {
+                let provider = self.current_provider()?;
+                if !provider.is_available() {
+                    return Err(cloud_error(format!(
+                        "{} cannot be authorized in this build",
+                        provider.label()
+                    )));
+                }
+                self.set_authorization_state(provider, ProviderAuthorizationState::Authorizing);
+                return Ok(());
+            }
+            CloudUiActionId::CopySetupCode => {
+                self.device_setup_code()?;
+                return Ok(());
+            }
+            CloudUiActionId::ScanSetupCode => {
+                return Err(cloud_error("QR scanning is not available in this build"));
+            }
+        };
+        self.perform_action(action, current_plan)?;
         Ok(())
     }
 
@@ -1207,7 +1406,7 @@ impl CloudEngine {
         self.persistent.pending_remote_flight_plan = Some(plan);
     }
 
-    pub fn page_state(&self) -> UiCloudPageState {
+    pub fn page_state(&self, now_epoch_ms: i64) -> UiCloudPageState {
         let mut panels = Vec::new();
         let account = self.persistent.account.as_ref();
         let linked = self.has_linked_account();
@@ -1228,12 +1427,22 @@ impl CloudEngine {
                 UiCloudPanelState::Active,
                 Some("Connect this device to a shared, encrypted Sync Account."),
                 vec![
-                    cloud_action("begin_setup", "Set up from another device", true, ""),
-                    cloud_action("begin_create", "Create new Sync Account", true, ""),
+                    cloud_action(
+                        CloudUiActionId::BeginSetup,
+                        "Set up from another device",
+                        true,
+                        "",
+                    ),
+                    cloud_action(
+                        CloudUiActionId::BeginCreate,
+                        "Create new Sync Account",
+                        true,
+                        "",
+                    ),
                 ],
                 None,
             ));
-            return self.cloud_page_state(panels);
+            return self.cloud_page_state(panels, now_epoch_ms);
         }
 
         match intent {
@@ -1254,21 +1463,26 @@ impl CloudEngine {
                         Some("Scan the other device's QR code or paste its Device Setup Code."),
                         vec![
                             cloud_action(
-                                "scan_setup_code",
+                                CloudUiActionId::ScanSetupCode,
                                 "Scan a QR code",
                                 false,
                                 "QR scanning is not available in this first web draft.",
                             ),
-                            cloud_action("accept_setup_code", "Use Device Setup Code", true, ""),
-                            cloud_action("back_setup", "Back", true, ""),
+                            cloud_action(
+                                CloudUiActionId::AcceptSetupCode,
+                                "Use Device Setup Code",
+                                true,
+                                "",
+                            ),
+                            cloud_action(CloudUiActionId::BackSetup, "Back", true, ""),
                         ],
                         Some(UiCloudPanelControl::DeviceSetupCodeInput {
+                            field_id: CloudUiFieldId::DeviceSetupCode,
                             label: "Paste Device Setup Code".to_string(),
                             placeholder: "AB2...".to_string(),
-                            accept_action_id: "accept_setup_code".to_string(),
                         }),
                     ));
-                    return self.cloud_page_state(panels);
+                    return self.cloud_page_state(panels, now_epoch_ms);
                 }
                 panels.push(cloud_panel(
                     "receive_setup",
@@ -1297,22 +1511,22 @@ impl CloudEngine {
                         Some("Choose where Aerobag stores your encrypted sync data."),
                         vec![
                             cloud_action(
-                                "select_provider_google_drive",
+                                CloudUiActionId::SelectProviderGoogleDrive,
                                 "My Google Drive",
                                 CloudProviderKind::GoogleDrive.is_available(),
                                 "My Google Drive is not available in this build.",
                             ),
                             cloud_action(
-                                "select_provider_aerobag_cloud",
+                                CloudUiActionId::SelectProviderAerobagCloud,
                                 "Aerobag Cloud",
                                 CloudProviderKind::AerobagCloud.is_available(),
                                 "Aerobag Cloud is not available in this build yet.",
                             ),
-                            cloud_action("back_setup", "Back", true, ""),
+                            cloud_action(CloudUiActionId::BackSetup, "Back", true, ""),
                         ],
                         None,
                     ));
-                    return self.cloud_page_state(panels);
+                    return self.cloud_page_state(panels, now_epoch_ms);
                 }
                 panels.push(cloud_panel(
                     "provider",
@@ -1330,12 +1544,12 @@ impl CloudEngine {
             if let Some(detail) = self.linked_account_detail {
                 panels.push(self.linked_summary_panel(UiCloudPanelState::Complete));
                 panels.push(self.linked_account_detail_panel(detail));
-                return self.cloud_page_state(panels);
+                return self.cloud_page_state(panels, now_epoch_ms);
             }
         }
 
         let account_is_pending = account.is_some_and(|account| account.tip.is_none());
-        let authorization_complete = self.provider_authorization_complete();
+        let authorization_complete = self.provider_authorization_complete(now_epoch_ms);
 
         if account_is_pending {
             let creating = account.is_some_and(|account| account.genesis_id.is_empty());
@@ -1382,14 +1596,14 @@ impl CloudEngine {
                 title,
                 state,
                 Some(&summary),
-                vec![cloud_action("back_setup", "Back", true, "")],
+                vec![cloud_action(CloudUiActionId::BackSetup, "Back", true, "")],
                 None,
             ));
         } else if account.is_none() {
             let provider = self
                 .current_provider()
                 .expect("account creation must have a selected provider");
-            let authorization = self.authorization_for(provider);
+            let authorization = self.authorization_for_at(provider, now_epoch_ms);
             let principal = authorization.principal();
             let suffix = principal
                 .map(|principal| format!(" as {}", principal.display_label))
@@ -1410,12 +1624,12 @@ impl CloudEngine {
                 ),
                 vec![
                     cloud_action(
-                        "create_account",
+                        CloudUiActionId::CreateAccount,
                         "Create new Sync Account",
                         authorization_complete,
                         &create_disabled_reason,
                     ),
-                    cloud_action("back_setup", "Back", true, ""),
+                    cloud_action(CloudUiActionId::BackSetup, "Back", true, ""),
                 ],
                 None,
             ));
@@ -1423,22 +1637,31 @@ impl CloudEngine {
             panels.push(self.linked_summary_panel(UiCloudPanelState::Active));
         }
 
-        self.cloud_page_state(panels)
+        self.cloud_page_state(panels, now_epoch_ms)
     }
 
-    fn cloud_page_state(&self, sync_account_panels: Vec<UiCloudPanel>) -> UiCloudPageState {
+    fn cloud_page_state(
+        &self,
+        sync_account_panels: Vec<UiCloudPanel>,
+        now_epoch_ms: i64,
+    ) -> UiCloudPageState {
         UiCloudPageState {
             title: "Cloud".to_string(),
+            summary: "Keep your Aerobag state synchronized between devices.".to_string(),
+            sync_account_heading: "Sync Account".to_string(),
+            provider_heading: "Provider".to_string(),
+            overall_status_label: "Overall Cloud status".to_string(),
             sync_account_panels,
             provider_card: self
                 .current_provider()
                 .ok()
-                .map(|provider| self.provider_card(provider)),
-            overall_status: self.overall_status_panel(),
+                .map(|provider| self.provider_card(provider, now_epoch_ms)),
+            overall_status: self.overall_status_panel(now_epoch_ms),
+            next_refresh_epoch_ms: self.next_authorization_refresh_epoch_ms(now_epoch_ms),
         }
     }
 
-    fn overall_status_panel(&self) -> UiCloudPanel {
+    fn overall_status_panel(&self, now_epoch_ms: i64) -> UiCloudPanel {
         if !self.has_linked_account() {
             return cloud_panel(
                 "overall_status",
@@ -1450,10 +1673,10 @@ impl CloudEngine {
             );
         }
 
-        if !self.provider_authorization_complete() {
+        if !self.provider_authorization_complete(now_epoch_ms) {
             let detail = if self.current_provider().ok().is_some_and(|provider| {
                 matches!(
-                    self.authorization_for(provider),
+                    self.authorization_for_at(provider, now_epoch_ms),
                     ProviderAuthorizationState::Authorizing
                 )
             }) {
@@ -1497,18 +1720,18 @@ impl CloudEngine {
         )
     }
 
-    fn provider_authorization_complete(&self) -> bool {
+    fn provider_authorization_complete(&self, now_epoch_ms: i64) -> bool {
         let Ok(provider) = self.current_provider() else {
             return false;
         };
         self.provider_principal_mismatch().is_none()
             && matches!(
-                self.authorization_for(provider),
-                ProviderAuthorizationState::Authorized { .. }
+                self.authorization_for_at(provider, now_epoch_ms),
+                authorization if authorization.is_ready(now_epoch_ms)
             )
     }
 
-    pub fn status_summary(&self) -> CloudStatusSummary {
+    pub fn status_summary(&self, now_epoch_ms: i64) -> CloudStatusSummary {
         let linked = self
             .persistent
             .account
@@ -1516,7 +1739,7 @@ impl CloudEngine {
             .is_some_and(|account| account.tip.is_some());
         let provider = self.current_provider().ok();
         let authorization = provider
-            .map(|provider| self.authorization_for(provider))
+            .map(|provider| self.authorization_for_at(provider, now_epoch_ms))
             .unwrap_or_default();
         let mut facts = Vec::new();
         if let Some(provider) = provider {
@@ -1630,20 +1853,21 @@ impl CloudEngine {
         }
     }
 
-    fn provider_card(&self, provider: CloudProviderKind) -> UiCloudPanel {
+    fn provider_card(&self, provider: CloudProviderKind, now_epoch_ms: i64) -> UiCloudPanel {
         let provider_label = provider.label();
-        let authorization = self.authorization_for(provider);
+        let authorization = self.authorization_for_at(provider, now_epoch_ms);
         if let Some(detail) = self.provider_principal_mismatch() {
             return cloud_panel(
                 "provider",
                 provider_label,
                 UiCloudPanelState::Error,
                 Some(&detail),
-                vec![cloud_action(
-                    "authorize_provider",
+                vec![cloud_effect_action(
+                    CloudUiActionId::AuthorizeProvider,
                     "Authorize a different Google account",
                     true,
                     "",
+                    CloudPlatformEffect::AuthorizeProvider { provider },
                 )],
                 None,
             );
@@ -1680,11 +1904,12 @@ impl CloudEngine {
                         UiCloudPanelState::Active
                     },
                     Some(detail),
-                    vec![cloud_action(
-                        "authorize_provider",
+                    vec![cloud_effect_action(
+                        CloudUiActionId::AuthorizeProvider,
                         &format!("Authorize {provider_label}"),
                         provider.is_available(),
                         "This provider cannot be authorized in this build.",
+                        CloudPlatformEffect::AuthorizeProvider { provider },
                     )],
                     None,
                 )
@@ -1706,9 +1931,14 @@ impl CloudEngine {
         let actions = (state == UiCloudPanelState::Active)
             .then(|| {
                 vec![
-                    cloud_action("backup_setup_code", "Back up Device Setup Code", true, ""),
-                    cloud_action("add_device", "Add another device", true, ""),
-                    cloud_action("begin_unlink", "Unlink this device", true, ""),
+                    cloud_action(
+                        CloudUiActionId::BackupSetupCode,
+                        "Back up Device Setup Code",
+                        true,
+                        "",
+                    ),
+                    cloud_action(CloudUiActionId::AddDevice, "Add another device", true, ""),
+                    cloud_action(CloudUiActionId::BeginUnlink, "Unlink this device", true, ""),
                 ]
             })
             .unwrap_or_default();
@@ -1729,11 +1959,23 @@ impl CloudEngine {
                 "Back up Device Setup Code",
                 UiCloudPanelState::Active,
                 Some("Store this code in a password manager or another secure place."),
-                vec![cloud_action("close_linked_detail", "Back", true, "")],
+                vec![cloud_action(CloudUiActionId::CloseLinkedDetail, "Back", true, "")],
                 Some(UiCloudPanelControl::DeviceSetupCodeOutput {
                     setup_code: self
                         .device_setup_code()
                         .expect("linked backup detail requires a Device Setup Code"),
+                    copy_action: cloud_effect_action(
+                        CloudUiActionId::CopySetupCode,
+                        "Copy Device Setup Code",
+                        true,
+                        "",
+                        CloudPlatformEffect::CopyText {
+                            text: self
+                                .device_setup_code()
+                                .expect("linked backup detail requires a Device Setup Code"),
+                            completion_label: "Copied".to_string(),
+                        },
+                    ),
                 }),
             ),
             LinkedAccountDetail::AddDevice => cloud_panel(
@@ -1741,11 +1983,23 @@ impl CloudEngine {
                 "Add another device",
                 UiCloudPanelState::Active,
                 Some("Use this Device Setup Code to set up the other device."),
-                vec![cloud_action("close_linked_detail", "Back", true, "")],
+                vec![cloud_action(CloudUiActionId::CloseLinkedDetail, "Back", true, "")],
                 Some(UiCloudPanelControl::DeviceSetupCodeOutput {
                     setup_code: self
                         .device_setup_code()
                         .expect("linked add-device detail requires a Device Setup Code"),
+                    copy_action: cloud_effect_action(
+                        CloudUiActionId::CopySetupCode,
+                        "Copy Device Setup Code",
+                        true,
+                        "",
+                        CloudPlatformEffect::CopyText {
+                            text: self
+                                .device_setup_code()
+                                .expect("linked add-device detail requires a Device Setup Code"),
+                            completion_label: "Copied".to_string(),
+                        },
+                    ),
                 }),
             ),
             LinkedAccountDetail::ConfirmUnlink => cloud_panel(
@@ -1756,9 +2010,9 @@ impl CloudEngine {
                     "This device's secret copy will be irretrievably deleted. Be sure you have a copy of the Device Setup Code before proceeding.",
                 ),
                 vec![
-                    cloud_action("close_linked_detail", "Back", true, ""),
+                    cloud_action(CloudUiActionId::CloseLinkedDetail, "Back", true, ""),
                     cloud_action(
-                        "confirm_unlink",
+                        CloudUiActionId::ConfirmUnlink,
                         "Yes, delete Sync Account from this device",
                         true,
                         "",
@@ -1769,7 +2023,7 @@ impl CloudEngine {
         }
     }
 
-    pub fn status_record(&self) -> Option<DataStatusRecord> {
+    pub fn status_record(&self, now_epoch_ms: i64) -> Option<DataStatusRecord> {
         let linked = self
             .persistent
             .account
@@ -1789,7 +2043,7 @@ impl CloudEngine {
             ));
         }
         let provider = self.current_provider().ok()?;
-        let authorization = self.authorization_for(provider);
+        let authorization = self.authorization_for_at(provider, now_epoch_ms);
         match &authorization {
             ProviderAuthorizationState::AuthorizationRequired { detail } => {
                 Some(DataStatusRecord::new(
@@ -1860,13 +2114,54 @@ impl CloudEngine {
     }
 }
 
-fn cloud_action(id: &str, label: &str, enabled: bool, disabled_reason: &str) -> UiCloudAction {
+fn cloud_action(
+    id: CloudUiActionId,
+    label: &str,
+    enabled: bool,
+    disabled_reason: &str,
+) -> UiCloudAction {
     UiCloudAction {
-        id: id.to_string(),
+        id,
         label: label.to_string(),
         enabled,
         disabled_reason: (!enabled).then(|| disabled_reason.to_string()),
+        required_fields: (id == CloudUiActionId::AcceptSetupCode)
+            .then_some(CloudUiFieldId::DeviceSetupCode)
+            .into_iter()
+            .collect(),
+        platform_effect: None,
     }
+}
+
+fn cloud_effect_action(
+    id: CloudUiActionId,
+    label: &str,
+    enabled: bool,
+    disabled_reason: &str,
+    platform_effect: CloudPlatformEffect,
+) -> UiCloudAction {
+    UiCloudAction {
+        platform_effect: Some(platform_effect),
+        ..cloud_action(id, label, enabled, disabled_reason)
+    }
+}
+
+fn required_ui_field(fields: &[CloudUiFieldValue], field_id: CloudUiFieldId) -> AppResult<String> {
+    let value = fields
+        .iter()
+        .find(|field| field.id == field_id)
+        .map(|field| field.value.trim())
+        .filter(|value| !value.is_empty())
+        .ok_or_else(|| cloud_error("Device Setup Code is required"))?;
+    Ok(value.to_string())
+}
+
+fn provider_authorization_detail(message: &str, diagnostic: Option<&str>) -> String {
+    diagnostic
+        .map(str::trim)
+        .filter(|diagnostic| !diagnostic.is_empty())
+        .map(|diagnostic| format!("{message} {diagnostic}"))
+        .unwrap_or_else(|| message.to_string())
 }
 
 fn cloud_panel(
@@ -1881,6 +2176,11 @@ fn cloud_panel(
         id: id.to_string(),
         title: title.to_string(),
         state,
+        state_label: match state {
+            UiCloudPanelState::Complete => Some("Complete".to_string()),
+            UiCloudPanelState::Working => Some("Working".to_string()),
+            _ => None,
+        },
         summary: summary.map(str::to_string),
         actions,
         control,
@@ -2214,7 +2514,7 @@ mod tests {
 
     fn active_panel(engine: &CloudEngine) -> UiCloudPanel {
         engine
-            .page_state()
+            .page_state(0)
             .sync_account_panels
             .into_iter()
             .find(|panel| panel.state != UiCloudPanelState::Complete)
@@ -2223,7 +2523,7 @@ mod tests {
 
     fn provider_card(engine: &CloudEngine) -> UiCloudPanel {
         engine
-            .page_state()
+            .page_state(0)
             .provider_card
             .expect("Cloud provider card")
     }
@@ -2315,7 +2615,7 @@ mod tests {
             !active_panel(&engine)
                 .actions
                 .iter()
-                .find(|action| action.id == "create_account")
+                .find(|action| action.id == CloudUiActionId::CreateAccount)
                 .unwrap()
                 .enabled
         );
@@ -2331,6 +2631,95 @@ mod tests {
         assert_eq!(active_panel(&engine).state, UiCloudPanelState::Working);
         assert!(engine.persistent.account.is_some());
         assert!(engine.persistent.selected_provider.is_none());
+    }
+
+    #[test]
+    fn ui_action_ids_are_interpreted_and_validated_only_by_core() {
+        let initial = plan(&["KRNT", "KPAE"]);
+        let mut engine = CloudEngine::new(CloudPersistentState::default());
+        engine
+            .perform_ui_action(CloudUiActionId::BeginCreate, &[], &initial, 1)
+            .unwrap();
+        engine
+            .perform_ui_action(CloudUiActionId::SelectProviderGoogleDrive, &[], &initial, 1)
+            .unwrap();
+
+        let authorize = engine
+            .page_state(1)
+            .provider_card
+            .unwrap()
+            .actions
+            .into_iter()
+            .find(|action| action.id == CloudUiActionId::AuthorizeProvider)
+            .unwrap();
+        assert_eq!(
+            authorize.platform_effect,
+            Some(CloudPlatformEffect::AuthorizeProvider {
+                provider: CloudProviderKind::GoogleDrive,
+            })
+        );
+        engine
+            .perform_ui_action(CloudUiActionId::AuthorizeProvider, &[], &initial, 1)
+            .unwrap();
+        assert_eq!(
+            engine.authorization_for(CloudProviderKind::GoogleDrive),
+            ProviderAuthorizationState::Authorizing
+        );
+
+        let mut receiver = CloudEngine::new(CloudPersistentState::default());
+        receiver
+            .perform_ui_action(CloudUiActionId::BeginSetup, &[], &initial, 1)
+            .unwrap();
+        let error = receiver
+            .perform_ui_action(
+                CloudUiActionId::AcceptSetupCode,
+                &[CloudUiFieldValue {
+                    id: CloudUiFieldId::DeviceSetupCode,
+                    value: "   ".to_string(),
+                }],
+                &initial,
+                1,
+            )
+            .unwrap_err();
+        assert!(error.message.contains("Device Setup Code is required"));
+    }
+
+    #[test]
+    fn authorization_expiry_is_projected_by_core_clock() {
+        let initial = plan(&["KRNT", "KPAE"]);
+        let mut engine = CloudEngine::new(CloudPersistentState::default());
+        create_account(&mut engine, &initial);
+
+        let before = engine.page_state(99_999);
+        assert_eq!(before.next_refresh_epoch_ms, Some(100_000));
+        assert_eq!(before.overall_status.state, UiCloudPanelState::Complete);
+
+        let expired = engine.page_state(100_000);
+        assert_eq!(expired.next_refresh_epoch_ms, None);
+        assert_eq!(expired.overall_status.state, UiCloudPanelState::Caution);
+        let provider = expired.provider_card.unwrap();
+        assert_eq!(provider.state, UiCloudPanelState::Active);
+        assert!(provider
+            .summary
+            .as_deref()
+            .unwrap()
+            .contains("authorization expired"));
+        assert_eq!(engine.status_summary(100_000).label, "AUTH");
+
+        let mut create_engine = CloudEngine::new(CloudPersistentState::default());
+        create_engine
+            .perform_ui_action(CloudUiActionId::BeginCreate, &[], &initial, 1)
+            .unwrap();
+        create_engine
+            .perform_ui_action(CloudUiActionId::SelectProviderGoogleDrive, &[], &initial, 1)
+            .unwrap();
+        ready(&mut create_engine);
+        let error = create_engine
+            .perform_ui_action(CloudUiActionId::CreateAccount, &[], &initial, 100_000)
+            .unwrap_err();
+        assert!(error
+            .message
+            .contains("authorize the provider before creating a Sync Account"));
     }
 
     #[test]
@@ -2465,7 +2854,7 @@ mod tests {
                 detail: "Authorize Google Drive again.".into(),
             },
         );
-        let auth = engine.status_record().unwrap();
+        let auth = engine.status_record(0).unwrap();
         assert_eq!(auth.severity, UiStatusSeverity::Caution);
         assert!(auth.drives_caution);
 
@@ -2484,7 +2873,7 @@ mod tests {
                 50,
             )
             .unwrap();
-        let network = engine.status_record().unwrap();
+        let network = engine.status_record(0).unwrap();
         assert_eq!(network.severity, UiStatusSeverity::Info);
         assert!(!network.drives_caution);
     }
@@ -2493,7 +2882,7 @@ mod tests {
     fn overall_status_distinguishes_account_and_provider_readiness() {
         let initial = plan(&["KRNT", "KPAE"]);
         let mut engine = CloudEngine::new(CloudPersistentState::default());
-        let unlinked = engine.page_state().overall_status;
+        let unlinked = engine.page_state(0).overall_status;
         assert_eq!(unlinked.title, "Cloud not active");
         assert_eq!(unlinked.state, UiCloudPanelState::Informational);
         assert_eq!(
@@ -2502,7 +2891,7 @@ mod tests {
         );
 
         create_account(&mut engine, &initial);
-        let active = engine.page_state().overall_status;
+        let active = engine.page_state(0).overall_status;
         assert_eq!(active.title, "Cloud active");
         assert_eq!(active.state, UiCloudPanelState::Complete);
         assert_eq!(
@@ -2516,7 +2905,7 @@ mod tests {
                 detail: "Authorize Google Drive again.".into(),
             },
         );
-        let authorization_required = engine.page_state().overall_status;
+        let authorization_required = engine.page_state(0).overall_status;
         assert_eq!(authorization_required.title, "Cloud not active");
         assert_eq!(authorization_required.state, UiCloudPanelState::Caution);
         assert_eq!(
@@ -2535,13 +2924,13 @@ mod tests {
             ProviderAuthorizationState::NotAuthorized,
         );
 
-        let page = engine.page_state();
+        let page = engine.page_state(0);
         let provider = page.provider_card.unwrap();
         assert_eq!(provider.id, "provider");
         assert!(!provider
             .actions
             .iter()
-            .any(|action| action.id == "begin_unlink" && action.enabled));
+            .any(|action| action.id == CloudUiActionId::BeginUnlink && action.enabled));
         let linked = page
             .sync_account_panels
             .iter()
@@ -2556,9 +2945,13 @@ mod tests {
             linked
                 .actions
                 .iter()
-                .map(|action| action.id.as_str())
+                .map(|action| action.id)
                 .collect::<Vec<_>>(),
-            vec!["backup_setup_code", "add_device", "begin_unlink"]
+            vec![
+                CloudUiActionId::BackupSetupCode,
+                CloudUiActionId::AddDevice,
+                CloudUiActionId::BeginUnlink,
+            ]
         );
 
         engine
@@ -2600,7 +2993,7 @@ mod tests {
         let backup = active_panel(&engine);
         assert_eq!(backup.id, "backup_code");
         assert!(engine
-            .page_state()
+            .page_state(0)
             .sync_account_panels
             .iter()
             .find(|panel| panel.id == "linked")
@@ -2608,7 +3001,7 @@ mod tests {
             .actions
             .is_empty());
         let backup_code = match backup.control.unwrap() {
-            UiCloudPanelControl::DeviceSetupCodeOutput { setup_code } => setup_code,
+            UiCloudPanelControl::DeviceSetupCodeOutput { setup_code, .. } => setup_code,
             control => panic!("unexpected backup control: {control:?}"),
         };
 
@@ -2621,7 +3014,7 @@ mod tests {
         let add_device = active_panel(&engine);
         assert_eq!(add_device.id, "add_device");
         let add_device_code = match add_device.control.unwrap() {
-            UiCloudPanelControl::DeviceSetupCodeOutput { setup_code } => setup_code,
+            UiCloudPanelControl::DeviceSetupCodeOutput { setup_code, .. } => setup_code,
             control => panic!("unexpected add-device control: {control:?}"),
         };
         assert_eq!(backup_code, add_device_code);

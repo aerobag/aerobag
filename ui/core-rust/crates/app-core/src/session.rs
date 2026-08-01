@@ -21,8 +21,9 @@ use crate::{
     chart_page::chart_page_airport_ids_from_plan,
     chart_page::ChartAssetRecord,
     cloud::{
-        CloudAction, CloudEngine, CloudPersistentState, CloudProviderKind, CloudProviderRequest,
-        CloudProviderResponse, ProviderAuthorizationState, UiCloudPageState, CLOUD_STATUS_ID,
+        CloudAuthorizationResponse, CloudEngine, CloudPersistentState, CloudProviderKind,
+        CloudProviderRequest, CloudProviderResponse, CloudUiActionId, CloudUiFieldValue,
+        UiCloudPageState, CLOUD_STATUS_ID,
     },
     data_status::{
         parse_status_action_id, project_data_status_state, DataStatusRecord, UiDataStatusPageFact,
@@ -77,7 +78,6 @@ use crate::{
     TafProductPayload, TerrainOverlayQueryResult, TfrProductPayload, VectorAggregateTilePayload,
     VectorIdentLabelStyle,
 };
-
 const WORLD_MERCATOR_MAX_LATITUDE: f64 = 85.051_128_78;
 const SETTINGS_PERSISTENCE_VERSION: u32 = 1;
 const NO_WARRANTY_DISCLAIMER_HTML: &str = include_str!("../../../../shared/no-warranty.html");
@@ -943,7 +943,7 @@ fn clear_data_status_record(session: &mut UiSession, id: &str) -> bool {
 }
 
 fn sync_cloud_status_record(session: &mut UiSession) {
-    if let Some(record) = session.cloud.status_record() {
+    if let Some(record) = session.cloud.status_record(session.wall_clock_epoch_ms) {
         upsert_data_status_record(session, record);
     } else {
         clear_data_status_record(session, CLOUD_STATUS_ID);
@@ -2254,7 +2254,7 @@ fn project_data_status_page_state(session: &UiSession) -> UiDataStatusPageState 
 }
 
 fn cloud_status_page_row(session: &UiSession) -> UiDataStatusPageRow {
-    let summary = session.cloud.status_summary();
+    let summary = session.cloud.status_summary(session.wall_clock_epoch_ms);
     status_page_row(
         "cloud:status",
         "Cloud",
@@ -3559,7 +3559,7 @@ fn create_ui_session_inner(
     let settings_page_state = default_settings_page_state();
     let settings_preferences = SettingsPreferences::default();
     let cloud = CloudEngine::new(CloudPersistentState::default());
-    let cloud_page_state = cloud.page_state();
+    let cloud_page_state = cloud.page_state(0);
     let platform_capabilities = PlatformCapabilities::default();
     let home_page_state = project_home_page_state(&platform_capabilities);
     let snapshot = UiSessionSnapshot {
@@ -3894,10 +3894,11 @@ pub fn configure_platform_capabilities_in_session(
     changed_session_snapshot_outcome(session)
 }
 
-pub fn report_cloud_authorization_state_in_session(
+pub fn complete_cloud_authorization_in_session(
     handle: u32,
     provider: CloudProviderKind,
-    state: ProviderAuthorizationState,
+    response: CloudAuthorizationResponse,
+    now_epoch_ms: i64,
 ) -> AppResult<HadOperationOutcome> {
     let mut sessions = lock_sessions();
     let session = session_mut(&mut sessions, handle)?;
@@ -3908,13 +3909,16 @@ pub fn report_cloud_authorization_state_in_session(
         });
     }
     let mut candidate = session.clone();
-    candidate.cloud.set_authorization_state(provider, state);
+    advance_session_wall_clock(&mut candidate, now_epoch_ms);
+    candidate.cloud.complete_authorization(provider, response);
     commit_cloud_candidate(session, candidate, vec![UiInvalidation::SessionSnapshot])
 }
 
-pub fn perform_cloud_action_in_session(
+pub fn perform_cloud_ui_action_in_session(
     handle: u32,
-    action: CloudAction,
+    action_id: CloudUiActionId,
+    fields: Vec<CloudUiFieldValue>,
+    now_epoch_ms: i64,
 ) -> AppResult<HadOperationOutcome> {
     let mut sessions = lock_sessions();
     let session = session_mut(&mut sessions, handle)?;
@@ -3925,12 +3929,15 @@ pub fn perform_cloud_action_in_session(
         });
     }
     let mut candidate = session.clone();
+    advance_session_wall_clock(&mut candidate, now_epoch_ms);
     let plan = candidate
         .app_state
         .active_plan
         .clone()
         .ok_or_else(|| missing_active_plan_error("cloud action"))?;
-    candidate.cloud.perform_action(action, &plan)?;
+    candidate
+        .cloud
+        .perform_ui_action(action_id, &fields, &plan, now_epoch_ms)?;
     commit_cloud_candidate(session, candidate, vec![UiInvalidation::SessionSnapshot])
 }
 
@@ -3943,6 +3950,7 @@ pub fn take_cloud_provider_request_in_session(
     if session.platform_capabilities.cloud.is_none() {
         return Ok(None);
     }
+    advance_session_wall_clock(session, now_epoch_ms);
     let request = session.cloud.take_provider_request(now_epoch_ms)?;
     if request.is_some() {
         write_session_persistence_to_storage(session)?;
@@ -3959,6 +3967,7 @@ pub fn complete_cloud_provider_request_in_session(
     let mut sessions = lock_sessions();
     let session = session_mut(&mut sessions, handle)?;
     let mut candidate = session.clone();
+    advance_session_wall_clock(&mut candidate, now_epoch_ms);
     let completion =
         candidate
             .cloud
@@ -10759,7 +10768,7 @@ fn try_snapshot_for_session(session: &mut UiSession) -> Result<UiSessionSnapshot
     let data_status_page_state = project_data_status_page_state(session);
     let settings_page_state =
         project_settings_page_state(session, &app_ui_state.flight_data_banner);
-    let cloud_page_state = session.cloud.page_state();
+    let cloud_page_state = session.cloud.page_state(session.wall_clock_epoch_ms);
     let home_page_state = project_home_page_state(&session.platform_capabilities);
     app_ui_state.flight_data_banner.cells.retain(|cell| {
         !session
@@ -24887,16 +24896,17 @@ mod tests {
                 storage,
             )
             .expect("configure cloud capability");
-            report_cloud_authorization_state_in_session(
+            complete_cloud_authorization_in_session(
                 handle,
                 CloudProviderKind::GoogleDrive,
-                ProviderAuthorizationState::Authorized {
+                CloudAuthorizationResponse::Authorized {
                     expires_at_epoch_ms: None,
                     principal: CloudProviderPrincipal {
                         stable_id: "session-test-principal".to_string(),
                         display_label: "pilot@example.com".to_string(),
                     },
                 },
+                1,
             )
             .expect("connect cloud provider");
         }
@@ -24935,39 +24945,57 @@ mod tests {
         let first =
             create_ui_session(original_plan.clone(), &[], None, None).expect("first session");
         configure_cloud(first.handle, Some(storage.clone()));
-        perform_cloud_action_in_session(first.handle, CloudAction::BeginCreateAccount)
-            .expect("begin cloud account creation");
-        perform_cloud_action_in_session(
+        perform_cloud_ui_action_in_session(
             first.handle,
-            CloudAction::SelectProvider {
-                provider: crate::CloudProviderKind::GoogleDrive,
-            },
+            CloudUiActionId::BeginCreate,
+            Vec::new(),
+            1,
+        )
+        .expect("begin cloud account creation");
+        perform_cloud_ui_action_in_session(
+            first.handle,
+            CloudUiActionId::SelectProviderGoogleDrive,
+            Vec::new(),
+            1,
         )
         .expect("select cloud provider");
-        report_cloud_authorization_state_in_session(
+        complete_cloud_authorization_in_session(
             first.handle,
             CloudProviderKind::GoogleDrive,
-            ProviderAuthorizationState::Authorized {
+            CloudAuthorizationResponse::Authorized {
                 expires_at_epoch_ms: None,
                 principal: CloudProviderPrincipal {
                     stable_id: "session-test-principal".to_string(),
                     display_label: "pilot@example.com".to_string(),
                 },
             },
+            1,
         )
         .expect("authorize selected provider");
-        perform_cloud_action_in_session(first.handle, CloudAction::CreateAccount)
-            .expect("create cloud account");
+        perform_cloud_ui_action_in_session(
+            first.handle,
+            CloudUiActionId::CreateAccount,
+            Vec::new(),
+            1,
+        )
+        .expect("create cloud account");
         assert_eq!(pump_cloud(first.handle, &mut provider, 10_000), 0);
-        perform_cloud_action_in_session(first.handle, CloudAction::BackUpDeviceSetupCode)
-            .expect("reveal Device Setup Code");
+        perform_cloud_ui_action_in_session(
+            first.handle,
+            CloudUiActionId::BackupSetupCode,
+            Vec::new(),
+            10_000,
+        )
+        .expect("reveal Device Setup Code");
         let token = get_session_snapshot(first.handle)
             .expect("first snapshot")
             .cloud_page_state
             .sync_account_panels
             .into_iter()
             .find_map(|panel| match panel.control {
-                Some(UiCloudPanelControl::DeviceSetupCodeOutput { setup_code }) => Some(setup_code),
+                Some(UiCloudPanelControl::DeviceSetupCodeOutput { setup_code, .. }) => {
+                    Some(setup_code)
+                }
                 _ => None,
             })
             .expect("Device Setup Code");
@@ -24999,25 +25027,31 @@ mod tests {
                 && box_state.drives_caution
                 && box_state.severity == UiStatusSeverity::Caution
         }));
-        report_cloud_authorization_state_in_session(
+        complete_cloud_authorization_in_session(
             restarted.handle,
             CloudProviderKind::GoogleDrive,
-            ProviderAuthorizationState::Authorized {
+            CloudAuthorizationResponse::Authorized {
                 expires_at_epoch_ms: None,
                 principal: CloudProviderPrincipal {
                     stable_id: "session-test-principal".to_string(),
                     display_label: "pilot@example.com".to_string(),
                 },
             },
+            20_000,
         )
         .expect("reconnect restarted cloud provider");
 
         let second =
             create_ui_session(FlightPlan::empty(), &[], None, None).expect("second session");
         configure_cloud(second.handle, None);
-        perform_cloud_action_in_session(
+        perform_cloud_ui_action_in_session(
             second.handle,
-            CloudAction::AcceptDeviceSetupCode { setup_code: token },
+            CloudUiActionId::AcceptSetupCode,
+            vec![CloudUiFieldValue {
+                id: crate::cloud::CloudUiFieldId::DeviceSetupCode,
+                value: token,
+            }],
+            20_000,
         )
         .expect("link second session");
         assert_eq!(pump_cloud(second.handle, &mut provider, 20_000), 1);
@@ -25027,8 +25061,13 @@ mod tests {
         replace_flight_plan_in_session(restarted.handle, edited_plan.clone())
             .expect("edit first flight plan");
         assert_eq!(pump_cloud(restarted.handle, &mut provider, 30_000), 0);
-        perform_cloud_action_in_session(second.handle, CloudAction::SyncNow)
-            .expect("poll from second session");
+        perform_cloud_ui_action_in_session(
+            second.handle,
+            CloudUiActionId::SyncNow,
+            Vec::new(),
+            30_001,
+        )
+        .expect("poll from second session");
         assert_eq!(pump_cloud(second.handle, &mut provider, 30_001), 1);
 
         let adopted = get_session_snapshot(second.handle).expect("adopted snapshot");

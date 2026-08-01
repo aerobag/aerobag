@@ -32,6 +32,30 @@ import type {
   WeatherDetailUiView,
 } from "./types";
 import type { NexradOverlayQueryResult } from "../generated/nexradOverlayWire";
+import type {
+  CloudAuthorizationResponse,
+  CloudProviderKind,
+  CloudProviderRequest,
+  CloudProviderResponse,
+  CloudUiActionId,
+  CloudUiFieldValue,
+  UiCloudPageState,
+} from "../generated/cloudWire";
+export type {
+  CloudAuthorizationResponse,
+  CloudPlatformEffect,
+  CloudProviderKind,
+  CloudProviderRequest,
+  CloudProviderResponse,
+  CloudUiActionId,
+  CloudUiFieldId,
+  CloudUiFieldValue,
+  UiCloudAction,
+  UiCloudPageState,
+  UiCloudPanel,
+  UiCloudPanelControl,
+  UiCloudPanelState,
+} from "../generated/cloudWire";
 import { viewportCenterLatLon, type MapViewportState } from "./mapViewport";
 import { advanceSharedNavKvStore, attachNavKvStoreToSession, resolveChartAssetUrl, runCoreHadOperation, runCoreHadSessionOperation, type UiInvalidation, type UiInvalidationListener } from "./navKv";
 import { debugLog, debugTiming, installRustDebugLogBridge, perfDebugLog } from "./debugLog";
@@ -166,86 +190,6 @@ export type UiHomePageButton = {
 export type UiHomePageState = {
   buttons: UiHomePageButton[];
 };
-
-export type UiCloudPanel = {
-  id: string;
-  title: string;
-  state: "complete" | "active" | "working" | "informational" | "caution" | "error";
-  summary?: string | null;
-  actions: Array<{
-    id: string;
-    label: string;
-    enabled: boolean;
-    disabled_reason?: string | null;
-  }>;
-  control?:
-    | {
-        kind: "device_setup_code_input";
-        label: string;
-        placeholder: string;
-        accept_action_id: string;
-      }
-    | { kind: "device_setup_code_output"; setup_code: string }
-    | null;
-};
-
-export type UiCloudPageState = {
-  title: string;
-  sync_account_panels: UiCloudPanel[];
-  provider_card?: UiCloudPanel | null;
-  overall_status: UiCloudPanel;
-};
-
-export type ProviderAuthorizationState =
-  | { state: "not_authorized" }
-  | { state: "authorizing" }
-  | {
-      state: "authorized";
-      expires_at_epoch_ms?: number | null;
-      principal: { stable_id: string; display_label: string };
-    }
-  | { state: "authorization_required"; detail: string }
-  | { state: "failed"; detail: string };
-
-export type CloudProviderKind = "google_drive" | "aerobag_cloud";
-
-export type CloudAction =
-  | { kind: "begin_setup_from_device" }
-  | { kind: "begin_create_account" }
-  | { kind: "back_setup" }
-  | { kind: "select_provider"; provider: CloudProviderKind }
-  | { kind: "create_account" }
-  | { kind: "accept_device_setup_code"; setup_code: string }
-  | { kind: "back_up_device_setup_code" }
-  | { kind: "add_another_device" }
-  | { kind: "close_linked_account_detail" }
-  | { kind: "begin_unlink_device" }
-  | { kind: "confirm_unlink_device" }
-  | { kind: "sync_now" };
-
-export type CloudProviderRequest = {
-  request_id: number;
-  provider: "google_drive" | "aerobag_cloud";
-  operation:
-    | { operation: "allocate_ids"; count: number }
-    | { operation: "read"; id: string }
-    | { operation: "create_once"; id: string; name: string; bytes_base64: string }
-    | { operation: "delete"; id: string }
-    | { operation: "list"; page_token?: string | null };
-};
-
-export type CloudProviderResponse =
-  | { result: "allocated_ids"; ids: string[] }
-  | { result: "read"; bytes_base64: string | null }
-  | { result: "created" }
-  | { result: "already_exists" }
-  | { result: "deleted"; existed: boolean }
-  | {
-      result: "listed";
-      objects: Array<{ id: string; size_bytes: number; created_at?: string | null }>;
-      next_page_token?: string | null;
-    }
-  | { result: "error"; kind: "unauthorized" | "transient" | "permanent"; detail: string };
 
 export type UiDisclaimerState = {
   agreement_id: string;
@@ -893,8 +837,8 @@ export interface UiSession {
   setMapLayerEnabled(layerId: MapLayerId, enabled: boolean): Promise<UiSessionSnapshot>;
   setDebugFlag(flagId: DebugFlagId, enabled: boolean): Promise<UiSessionSnapshot>;
   performSettingsAction(actionId: string, valueId: string): Promise<UiSessionSnapshot>;
-  reportCloudAuthorizationState(provider: CloudProviderKind, state: ProviderAuthorizationState): Promise<UiSessionSnapshot>;
-  performCloudAction(action: CloudAction): Promise<UiSessionSnapshot>;
+  completeCloudAuthorization(provider: CloudProviderKind, response: CloudAuthorizationResponse, nowEpochMs: number): Promise<UiSessionSnapshot>;
+  performCloudUiAction(actionId: CloudUiActionId, fields: CloudUiFieldValue[], nowEpochMs: number): Promise<UiSessionSnapshot>;
   takeCloudProviderRequest(nowEpochMs: number): Promise<CloudProviderRequest | null>;
   completeCloudProviderRequest(requestId: number, response: CloudProviderResponse, nowEpochMs: number): Promise<UiSessionSnapshot>;
   acceptDisclaimer(agreementId: string): Promise<UiSessionSnapshot>;
@@ -1022,8 +966,8 @@ type WasmModule = {
   set_map_layer_enabled_in_session_paged(handle: number, layerIdJson: string, enabled: boolean): Promise<string> | string;
   set_debug_flag_in_session(handle: number, flagIdJson: string, enabled: boolean): Promise<string> | string;
   perform_settings_action_in_session(handle: number, actionJson: string): Promise<string> | string;
-  report_cloud_authorization_state_in_session(handle: number, providerJson: string, stateJson: string): Promise<string> | string;
-  perform_cloud_action_in_session(handle: number, actionJson: string): Promise<string> | string;
+  complete_cloud_authorization_in_session(handle: number, providerJson: string, responseJson: string, nowEpochMs: bigint): Promise<string> | string;
+  perform_cloud_ui_action_in_session(handle: number, actionIdJson: string, fieldsJson: string, nowEpochMs: bigint): Promise<string> | string;
   take_cloud_provider_request_in_session(handle: number, nowEpochMs: bigint): Promise<string> | string;
   complete_cloud_provider_request_in_session(handle: number, requestId: bigint, responseJson: string, nowEpochMs: bigint): Promise<string> | string;
   accept_disclaimer_in_session(handle: number, agreementId: string): Promise<string> | string;
@@ -1574,19 +1518,25 @@ export class WasmAppCoreAdapter implements AppCoreAdapter {
         );
         return snapshot;
       },
-      reportCloudAuthorizationState: async (provider, state) => {
+      completeCloudAuthorization: async (provider, response, nowEpochMs) => {
         snapshot = await runSessionOperation<UiSessionSnapshot>(() =>
-          this.module.report_cloud_authorization_state_in_session(
+          this.module.complete_cloud_authorization_in_session(
             handle,
             JSON.stringify(provider),
-            JSON.stringify(state),
+            JSON.stringify(response),
+            BigInt(Math.trunc(nowEpochMs)),
           ),
         );
         return snapshot;
       },
-      performCloudAction: async (action) => {
+      performCloudUiAction: async (actionId, fields, nowEpochMs) => {
         snapshot = await runSessionOperation<UiSessionSnapshot>(() =>
-          this.module.perform_cloud_action_in_session(handle, JSON.stringify(action)),
+          this.module.perform_cloud_ui_action_in_session(
+            handle,
+            JSON.stringify(actionId),
+            JSON.stringify(fields),
+            BigInt(Math.trunc(nowEpochMs)),
+          ),
         );
         return snapshot;
       },
@@ -2053,8 +2003,8 @@ async function loadBestAvailableAdapterUncached(
     "set_map_layer_enabled_in_session_paged",
     "set_debug_flag_in_session",
     "perform_settings_action_in_session",
-    "report_cloud_authorization_state_in_session",
-    "perform_cloud_action_in_session",
+    "complete_cloud_authorization_in_session",
+    "perform_cloud_ui_action_in_session",
     "take_cloud_provider_request_in_session",
     "complete_cloud_provider_request_in_session",
     "accept_disclaimer_in_session",

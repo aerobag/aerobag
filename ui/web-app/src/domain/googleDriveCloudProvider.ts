@@ -2,7 +2,7 @@
 //
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
-import type { CloudProviderRequest, CloudProviderResponse } from "./appCoreAdapter";
+import type { CloudProviderRequest, CloudProviderResponse } from "../generated/cloudWire";
 
 declare const __AEROBAG_GOOGLE_DRIVE_CLIENT_ID__: string;
 
@@ -298,7 +298,7 @@ async function listObjects(
   return {
     result: "listed",
     objects,
-    ...(payload.nextPageToken ? { next_page_token: payload.nextPageToken } : {}),
+    next_page_token: payload.nextPageToken ?? null,
   };
 }
 

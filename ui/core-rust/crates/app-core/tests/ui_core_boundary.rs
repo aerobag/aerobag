@@ -122,6 +122,31 @@ fn platform_session_adapters_have_no_plain_snapshot_escape_hatch() {
 }
 
 #[test]
+fn cloud_ui_actions_and_wire_contract_are_core_owned() {
+    let app = read_repo_file("ui/web-app/src/App.tsx");
+    let adapter = read_repo_file("ui/web-app/src/domain/appCoreAdapter.ts");
+    let wasm = read_repo_file("ui/core-rust/crates/app-wasm/src/lib.rs");
+
+    assert!(
+        !app.contains("Unsupported core Cloud action id")
+            && !app.contains("case \"begin_setup\"")
+            && !app.contains("case \"authorize_provider\""),
+        "platform UI must render core Cloud actions and return their typed IDs without translating them"
+    );
+    assert!(
+        !adapter.contains("export type CloudAction =")
+            && !adapter.contains("export type UiCloudPanel =")
+            && adapter.contains("../generated/cloudWire"),
+        "Cloud platform wire types must come from the generated core schema"
+    );
+    assert!(
+        !wasm.contains("pub fn perform_cloud_action_in_session(")
+            && !wasm.contains("pub fn report_cloud_authorization_state_in_session("),
+        "the old platform-constructed Cloud action and authorization-state APIs must stay deleted"
+    );
+}
+
+#[test]
 fn platform_route_editors_promote_letters_without_filtering_search_syntax() {
     let web = read_repo_file("ui/web-app/src/App.tsx");
     let android_map =

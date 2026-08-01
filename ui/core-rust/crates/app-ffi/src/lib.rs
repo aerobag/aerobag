@@ -225,29 +225,43 @@ pub fn perform_settings_action_in_session_json(
     serde_json::to_string(&snapshot).map_err(|err| err.to_string())
 }
 
-pub fn report_cloud_authorization_state_in_session_json(
+pub fn complete_cloud_authorization_in_session_json(
     handle: u64,
     provider_json: &str,
-    state_json: &str,
+    response_json: &str,
+    now_epoch_ms: i64,
 ) -> Result<String, String> {
     let provider: app_core::CloudProviderKind =
         serde_json::from_str(provider_json).map_err(|err| err.to_string())?;
-    let state: app_core::ProviderAuthorizationState =
-        serde_json::from_str(state_json).map_err(|err| err.to_string())?;
-    let outcome =
-        app_core::report_cloud_authorization_state_in_session(handle as u32, provider, state)
-            .map_err(|err| err.to_string())?;
+    let response: app_core::CloudAuthorizationResponse =
+        serde_json::from_str(response_json).map_err(|err| err.to_string())?;
+    let outcome = app_core::complete_cloud_authorization_in_session(
+        handle as u32,
+        provider,
+        response,
+        now_epoch_ms,
+    )
+    .map_err(|err| err.to_string())?;
     serde_json::to_string(&outcome).map_err(|err| err.to_string())
 }
 
-pub fn perform_cloud_action_in_session_json(
+pub fn perform_cloud_ui_action_in_session_json(
     handle: u64,
-    action_json: &str,
+    action_id_json: &str,
+    fields_json: &str,
+    now_epoch_ms: i64,
 ) -> Result<String, String> {
-    let action: app_core::CloudAction =
-        serde_json::from_str(action_json).map_err(|err| err.to_string())?;
-    let outcome = app_core::perform_cloud_action_in_session(handle as u32, action)
-        .map_err(|err| err.to_string())?;
+    let action_id: app_core::CloudUiActionId =
+        serde_json::from_str(action_id_json).map_err(|err| err.to_string())?;
+    let fields: Vec<app_core::CloudUiFieldValue> =
+        serde_json::from_str(fields_json).map_err(|err| err.to_string())?;
+    let outcome = app_core::perform_cloud_ui_action_in_session(
+        handle as u32,
+        action_id,
+        fields,
+        now_epoch_ms,
+    )
+    .map_err(|err| err.to_string())?;
     serde_json::to_string(&outcome).map_err(|err| err.to_string())
 }
 

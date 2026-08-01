@@ -289,9 +289,11 @@ val generateSharedNavSymbols by tasks.registering(Exec::class) {
 val generateSharedWireTypes by tasks.registering(Exec::class) {
     workingDir = repoRoot
     inputs.file(repoRoot.resolve("ui/core-rust/schemas/nexrad-overlay-wire.schema.json"))
+    inputs.file(repoRoot.resolve("ui/core-rust/schemas/cloud-wire.schema.json"))
     inputs.file(repoRoot.resolve("tools/generate-ui-wire-types.mjs"))
     outputs.dir(generatedWireSourceDir)
     outputs.file(repoRoot.resolve("ui/web-app/src/generated/nexradOverlayWire.ts"))
+    outputs.file(repoRoot.resolve("ui/web-app/src/generated/cloudWire.ts"))
     commandLine(
         "node",
         repoRoot.resolve("tools/generate-ui-wire-types.mjs").absolutePath,

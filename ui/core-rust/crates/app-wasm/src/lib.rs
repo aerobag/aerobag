@@ -692,30 +692,44 @@ pub fn perform_settings_action_in_session(
 }
 
 #[wasm_bindgen]
-pub fn report_cloud_authorization_state_in_session(
+pub fn complete_cloud_authorization_in_session(
     session_handle: u32,
     provider_json: &str,
-    state_json: &str,
+    response_json: &str,
+    now_epoch_ms: i64,
 ) -> Result<String, JsValue> {
     let provider: app_core::CloudProviderKind =
         serde_json::from_str(provider_json).map_err(|err| JsValue::from_str(&err.to_string()))?;
-    let state: app_core::ProviderAuthorizationState =
-        serde_json::from_str(state_json).map_err(|err| JsValue::from_str(&err.to_string()))?;
-    let outcome =
-        app_core::report_cloud_authorization_state_in_session(session_handle, provider, state)
-            .map_err(|err| JsValue::from_str(&err.to_string()))?;
+    let response: app_core::CloudAuthorizationResponse =
+        serde_json::from_str(response_json).map_err(|err| JsValue::from_str(&err.to_string()))?;
+    let outcome = app_core::complete_cloud_authorization_in_session(
+        session_handle,
+        provider,
+        response,
+        now_epoch_ms,
+    )
+    .map_err(|err| JsValue::from_str(&err.to_string()))?;
     serde_json::to_string(&outcome).map_err(|err| JsValue::from_str(&err.to_string()))
 }
 
 #[wasm_bindgen]
-pub fn perform_cloud_action_in_session(
+pub fn perform_cloud_ui_action_in_session(
     session_handle: u32,
-    action_json: &str,
+    action_id_json: &str,
+    fields_json: &str,
+    now_epoch_ms: i64,
 ) -> Result<String, JsValue> {
-    let action: app_core::CloudAction =
-        serde_json::from_str(action_json).map_err(|err| JsValue::from_str(&err.to_string()))?;
-    let outcome = app_core::perform_cloud_action_in_session(session_handle, action)
-        .map_err(|err| JsValue::from_str(&err.to_string()))?;
+    let action_id: app_core::CloudUiActionId =
+        serde_json::from_str(action_id_json).map_err(|err| JsValue::from_str(&err.to_string()))?;
+    let fields: Vec<app_core::CloudUiFieldValue> =
+        serde_json::from_str(fields_json).map_err(|err| JsValue::from_str(&err.to_string()))?;
+    let outcome = app_core::perform_cloud_ui_action_in_session(
+        session_handle,
+        action_id,
+        fields,
+        now_epoch_ms,
+    )
+    .map_err(|err| JsValue::from_str(&err.to_string()))?;
     serde_json::to_string(&outcome).map_err(|err| JsValue::from_str(&err.to_string()))
 }
 

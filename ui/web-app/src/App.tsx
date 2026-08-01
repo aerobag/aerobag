@@ -94,16 +94,19 @@ import {
   type UiDataStatusState,
   type UiSession,
   type UiSessionSnapshot,
-  type CloudAction,
+  type CloudPlatformEffect,
+  type CloudUiActionId,
+  type CloudUiFieldId,
+  type CloudUiFieldValue,
   type UiHomePageState,
   type UiInvalidation,
 } from "./domain/appCoreAdapter";
 import {
-  authorizeGoogleDrive,
-  executeGoogleDriveCloudRequest,
-  preloadGoogleDriveAuthorization,
-  type GoogleDriveAuthorization,
-} from "./domain/googleDriveCloudProvider";
+  authorizeCloudProvider,
+  executeCloudProviderRequest,
+  prepareCloudProvider,
+  type CloudProviderAuthorization,
+} from "./domain/cloudProviderRuntime";
 import { flightPlanWaypointUsesFullWidthLabel } from "./domain/flightPlanLayout";
 import {
   applyPinchGesture,
@@ -1920,9 +1923,8 @@ export default function App() {
     [initialRecentAirportIds, persistedUiState.selectedAirportId, persistedUiState.selectedChartId],
   );
   const [uiSession, setUiSession] = useState<UiSession | null>(null);
-  const googleDriveAuthorizationRef = useRef<GoogleDriveAuthorization | null>(null);
+  const cloudProviderAuthorizationRef = useRef<CloudProviderAuthorization | null>(null);
   const cloudPumpInFlightRef = useRef(false);
-  const cloudAuthorizationExpiryTimerRef = useRef<number | null>(null);
   const webIdleState = useWebIdleState();
   const [uiInvalidationRevisions, setUiInvalidationRevisions] = useState<UiInvalidationRevisions>(
     initialUiInvalidationRevisions,
@@ -1932,6 +1934,7 @@ export default function App() {
   const appliedSessionRevisionRef = useRef(0);
   const cycleProductFreshnessTimerRef = useRef<number | null>(null);
   const navDbMaintenanceTimerRef = useRef<number | null>(null);
+  const cloudRefreshTimerRef = useRef<number | null>(null);
   const [sessionSnapshot, setSessionSnapshot] = useState<UiSessionSnapshot>({
     session_revision: 0,
     flight_plan_route_revision: 0,
@@ -1999,17 +2002,19 @@ export default function App() {
       rows: [],
     },
     cloud_page_state: {
-      title: "Cloud",
+      title: "",
+      summary: "",
+      sync_account_heading: "",
+      provider_heading: "",
+      overall_status_label: "",
       sync_account_panels: [],
-      provider_card: null,
       overall_status: {
-        id: "overall_status",
-        title: "Cloud not active",
+        id: "",
+        title: "",
         state: "informational",
-        summary: "No Sync Account linked yet.",
         actions: [],
-        control: null,
       },
+      next_refresh_epoch_ms: null,
     },
     home_page_state: {
       buttons: [],
@@ -2068,9 +2073,9 @@ export default function App() {
         if (!request) {
           return;
         }
-        const response = await executeGoogleDriveCloudRequest(
+        const response = await executeCloudProviderRequest(
           request,
-          googleDriveAuthorizationRef.current?.accessToken ?? null,
+          cloudProviderAuthorizationRef.current,
         );
         const nextSnapshot = await uiSession.completeCloudProviderRequest(
           request.request_id,
@@ -2088,12 +2093,6 @@ export default function App() {
   }, [applySessionSnapshot, uiSession]);
 
   useEffect(() => {
-    void preloadGoogleDriveAuthorization().catch((error) => {
-      debugLog("cloud.google_identity.preload_failed", { error: errorMessage(error) });
-    });
-  }, []);
-
-  useEffect(() => {
     if (!uiSession) {
       return;
     }
@@ -2102,56 +2101,60 @@ export default function App() {
     return () => window.clearInterval(timer);
   }, [pumpCloudProvider, uiSession]);
 
-  const connectGoogleDrive = useCallback(async () => {
-    if (!uiSession) {
+  const cloudProviderToPrepare = sessionSnapshot.cloud_page_state.provider_card?.actions
+    .map((action) => action.platform_effect)
+    .find((effect): effect is Extract<CloudPlatformEffect, { kind: "authorize_provider" }> =>
+      effect?.kind === "authorize_provider")
+    ?.provider ?? null;
+  useEffect(() => {
+    if (!cloudProviderToPrepare) {
       return;
     }
-    const authorizationPromise = authorizeGoogleDrive();
-    void uiSession.reportCloudAuthorizationState("google_drive", { state: "authorizing" }).then((nextSnapshot) => {
-      applySessionSnapshot(nextSnapshot, "cloud_connecting");
+    void prepareCloudProvider(cloudProviderToPrepare).catch((error: unknown) => {
+      debugLog("cloud.provider.prepare_failed", {
+        provider: cloudProviderToPrepare,
+        error: errorMessage(error),
+      });
     });
-    try {
-      const authorization = await authorizationPromise;
-      googleDriveAuthorizationRef.current = authorization;
-      if (cloudAuthorizationExpiryTimerRef.current !== null) {
-        window.clearTimeout(cloudAuthorizationExpiryTimerRef.current);
-      }
-      const expiresInMs = Math.max(0, authorization.expiresAtEpochMs - Date.now());
-      cloudAuthorizationExpiryTimerRef.current = window.setTimeout(() => {
-        googleDriveAuthorizationRef.current = null;
-        if (uiSession) {
-          void uiSession.reportCloudAuthorizationState("google_drive", {
-            state: "authorization_required",
-            detail: "Google Drive authorization expired. Reconnect to resume cloud synchronization.",
-          }).then((nextSnapshot) => {
-            applySessionSnapshot(nextSnapshot, "cloud_authorization_expired");
-          });
-        }
-      }, Math.min(expiresInMs, 2_147_000_000));
-      const nextSnapshot = await uiSession.reportCloudAuthorizationState("google_drive", {
-        state: "authorized",
-        expires_at_epoch_ms: authorization.expiresAtEpochMs,
-        principal: authorization.principal,
-      });
-      applySessionSnapshot(nextSnapshot, "cloud_connected");
-      await pumpCloudProvider();
-    } catch (error) {
-      googleDriveAuthorizationRef.current = null;
-      const nextSnapshot = await uiSession.reportCloudAuthorizationState("google_drive", {
-        state: "authorization_required",
-        detail: errorMessage(error),
-      });
-      applySessionSnapshot(nextSnapshot, "cloud_authorization_failed");
-    }
-  }, [applySessionSnapshot, pumpCloudProvider, uiSession]);
+  }, [cloudProviderToPrepare]);
 
-  const performCloudPageAction = useCallback(async (action: CloudAction) => {
+  const performCloudPageAction = useCallback(async (
+    actionId: CloudUiActionId,
+    fields: CloudUiFieldValue[],
+    platformEffect: CloudPlatformEffect | null,
+  ): Promise<string | null> => {
     if (!uiSession) {
-      return;
+      return null;
     }
-    const nextSnapshot = await uiSession.performCloudAction(action);
-    applySessionSnapshot(nextSnapshot, `cloud_action_${action.kind}`);
+    const authorizationPromise = platformEffect?.kind === "authorize_provider"
+      ? authorizeCloudProvider(platformEffect.provider)
+          .then((authorization) => ({ authorization, diagnostic: null }))
+          .catch((error: unknown) => ({ authorization: null, diagnostic: errorMessage(error) }))
+      : null;
+    const nextSnapshot = await uiSession.performCloudUiAction(actionId, fields, Date.now());
+    applySessionSnapshot(nextSnapshot, `cloud_action_${actionId}`);
+    if (platformEffect?.kind === "copy_text") {
+      await navigator.clipboard.writeText(platformEffect.text);
+      return platformEffect.completion_label;
+    }
+    if (platformEffect?.kind === "authorize_provider" && authorizationPromise) {
+      const result = await authorizationPromise;
+      cloudProviderAuthorizationRef.current = result.authorization;
+      const authorizationSnapshot = await uiSession.completeCloudAuthorization(
+        platformEffect.provider,
+        result.authorization?.response ?? {
+          state: "authorization_required",
+          diagnostic: result.diagnostic,
+        },
+        Date.now(),
+      );
+      applySessionSnapshot(
+        authorizationSnapshot,
+        result.authorization ? "cloud_authorized" : "cloud_authorization_required",
+      );
+    }
     await pumpCloudProvider();
+    return null;
   }, [applySessionSnapshot, pumpCloudProvider, uiSession]);
   useEffect(() => {
     if (typeof window === "undefined") {
@@ -2481,6 +2484,28 @@ export default function App() {
       }
     };
   }, [requestSessionSnapshotRefresh, sessionSnapshot.next_cycle_product_freshness_check_epoch_ms]);
+
+  useEffect(() => {
+    if (cloudRefreshTimerRef.current !== null) {
+      window.clearTimeout(cloudRefreshTimerRef.current);
+      cloudRefreshTimerRef.current = null;
+    }
+    const deadline = sessionSnapshot.cloud_page_state.next_refresh_epoch_ms;
+    if (deadline === null) {
+      return;
+    }
+    const delayMs = Math.max(0, Math.min(deadline - Date.now(), 2_147_000_000));
+    cloudRefreshTimerRef.current = window.setTimeout(() => {
+      cloudRefreshTimerRef.current = null;
+      requestSessionSnapshotRefresh("low_priority", "cloud_state_deadline");
+    }, delayMs);
+    return () => {
+      if (cloudRefreshTimerRef.current !== null) {
+        window.clearTimeout(cloudRefreshTimerRef.current);
+        cloudRefreshTimerRef.current = null;
+      }
+    };
+  }, [requestSessionSnapshotRefresh, sessionSnapshot.cloud_page_state.next_refresh_epoch_ms]);
 
   useEffect(() => {
     if (navDbMaintenanceTimerRef.current !== null) {
@@ -3755,7 +3780,6 @@ export default function App() {
           onOpenPlan={() => navigateToPage("plan")}
           onOpenRecentChartOrPlate={navigateToMostRecentChartOrPlate}
           onSelectPage={navigateToPage}
-          onConnect={connectGoogleDrive}
           onAction={performCloudPageAction}
         />
       </div>
@@ -11006,62 +11030,30 @@ function CloudPage(props: {
   onOpenPlan: () => void;
   onOpenRecentChartOrPlate: () => void;
   onSelectPage: (page: AppPage) => void;
-  onConnect: () => Promise<void>;
-  onAction: (action: CloudAction) => Promise<void>;
+  onAction: (
+    actionId: CloudUiActionId,
+    fields: CloudUiFieldValue[],
+    platformEffect: CloudPlatformEffect | null,
+  ) => Promise<string | null>;
 }) {
-  const [setupCodeInput, setSetupCodeInput] = useState("");
+  const [fieldValues, setFieldValues] = useState<Partial<Record<CloudUiFieldId, string>>>({});
   const [copyStatus, setCopyStatus] = useState("");
   const [actionError, setActionError] = useState("");
 
-  const invoke = async (actionId: string) => {
+  const invoke = async (action: UiSessionSnapshot["cloud_page_state"]["overall_status"]["actions"][number]) => {
     setActionError("");
+    setCopyStatus("");
     try {
-      switch (actionId) {
-        case "begin_setup":
-          await props.onAction({ kind: "begin_setup_from_device" });
-          break;
-        case "begin_create":
-          await props.onAction({ kind: "begin_create_account" });
-          break;
-        case "back_setup":
-          await props.onAction({ kind: "back_setup" });
-          break;
-        case "select_provider_google_drive":
-          await props.onAction({ kind: "select_provider", provider: "google_drive" });
-          break;
-        case "select_provider_aerobag_cloud":
-          await props.onAction({ kind: "select_provider", provider: "aerobag_cloud" });
-          break;
-        case "authorize_provider":
-          await props.onConnect();
-          break;
-        case "create_account":
-          await props.onAction({ kind: "create_account" });
-          break;
-        case "accept_setup_code":
-          await props.onAction({
-            kind: "accept_device_setup_code",
-            setup_code: setupCodeInput.trim(),
-          });
-          break;
-        case "backup_setup_code":
-          await props.onAction({ kind: "back_up_device_setup_code" });
-          break;
-        case "add_device":
-          await props.onAction({ kind: "add_another_device" });
-          break;
-        case "close_linked_detail":
-          await props.onAction({ kind: "close_linked_account_detail" });
-          break;
-        case "begin_unlink":
-          await props.onAction({ kind: "begin_unlink_device" });
-          break;
-        case "confirm_unlink":
-          await props.onAction({ kind: "confirm_unlink_device" });
-          break;
-        default:
-          throw new Error(`Unsupported core Cloud action id: ${actionId}`);
-      }
+      const fields = Object.entries(fieldValues).map(([id, value]) => ({
+        id: id as CloudUiFieldId,
+        value: value ?? "",
+      }));
+      const completionLabel = await props.onAction(
+        action.id,
+        fields,
+        action.platform_effect ?? null,
+      );
+      setCopyStatus(completionLabel ?? "");
     } catch (error) {
       setActionError(errorMessage(error));
     }
@@ -11070,8 +11062,9 @@ function CloudPage(props: {
   const renderPanel = (
     panel: UiSessionSnapshot["cloud_page_state"]["sync_account_panels"][number],
     region: "account" | "provider" | "status",
-  ) => (
-    <section
+  ) => {
+    const control = panel.control;
+    return <section
       key={`${region}:${panel.id}`}
       className={`cloudFlowPanel is-${panel.state}`}
       data-testid={region === "provider"
@@ -11082,39 +11075,37 @@ function CloudPage(props: {
     >
       <header>
         <h2>{panel.title}</h2>
-        {panel.state === "complete" ? <span>COMPLETE</span> : null}
-        {panel.state === "working" ? <span>WORKING</span> : null}
+        {panel.state_label ? <span>{panel.state_label}</span> : null}
       </header>
       {panel.summary ? <p>{panel.summary}</p> : null}
-      {panel.control?.kind === "device_setup_code_input" ? (
+      {control?.kind === "device_setup_code_input" ? (
         <label className="cloudSetupCodeField">
-          <span>{panel.control.label}</span>
+          <span>{control.label}</span>
           <textarea
             data-testid="cloud-setup-code-input"
-            value={setupCodeInput}
-            onChange={(event) => setSetupCodeInput(event.target.value)}
-            placeholder={panel.control.placeholder}
+            value={fieldValues[control.field_id] ?? ""}
+            onChange={(event) => setFieldValues((current) => ({
+              ...current,
+              [control.field_id]: event.target.value,
+            }))}
+            placeholder={control.placeholder}
             spellCheck={false}
           />
         </label>
       ) : null}
-      {panel.control?.kind === "device_setup_code_output" ? (
+      {control?.kind === "device_setup_code_output" ? (
         <div className="cloudSetupCodeOutput">
           <textarea
             data-testid="cloud-setup-code-output"
             readOnly
-            value={panel.control.setup_code}
+            value={control.setup_code}
             spellCheck={false}
           />
           <button
             type="button"
-            onClick={() => {
-              void navigator.clipboard.writeText(panel.control?.kind === "device_setup_code_output"
-                ? panel.control.setup_code
-                : "").then(() => setCopyStatus("Copied"));
-            }}
+            onClick={() => void invoke(control.copy_action)}
           >
-            COPY DEVICE SETUP CODE
+            {control.copy_action.label}
           </button>
           {copyStatus ? <span className="cloudCopyStatus">{copyStatus}</span> : null}
         </div>
@@ -11123,14 +11114,15 @@ function CloudPage(props: {
         <div className="cloudFlowActions">
           {panel.actions.map((action) => {
             const enabled = action.enabled
-              && (action.id !== "accept_setup_code" || setupCodeInput.trim().length > 0);
+              && action.required_fields.every((fieldId) =>
+                (fieldValues[fieldId] ?? "").trim().length > 0);
             return (
               <div className="cloudFlowAction" key={action.id}>
                 <button
                   type="button"
                   data-testid={`cloud-action-${action.id}`}
                   disabled={!enabled}
-                  onClick={() => void invoke(action.id)}
+                  onClick={() => void invoke(action)}
                 >
                   {action.label}
                 </button>
@@ -11140,8 +11132,8 @@ function CloudPage(props: {
           })}
         </div>
       ) : null}
-    </section>
-  );
+    </section>;
+  };
 
   return (
     <section className="appPage cloudPage" data-testid="cloud-page">
@@ -11156,23 +11148,23 @@ function CloudPage(props: {
       <div className="cloudFlow" aria-label={props.state.title}>
         <header className="cloudPageHeader">
           <h1>{props.state.title}</h1>
-          <p>Keep your Aerobag state synchronized between devices.</p>
+          <p>{props.state.summary}</p>
         </header>
         {actionError ? <p className="cloudActionError" role="alert">{actionError}</p> : null}
         <div className={`cloudFlowLayout${props.state.provider_card ? " has-provider" : ""}`}>
-          <section className="cloudFlowColumn cloudAccountColumn" aria-label="Sync Account">
-            <h2 className="cloudFlowColumnTitle">Sync Account</h2>
+          <section className="cloudFlowColumn cloudAccountColumn" aria-label={props.state.sync_account_heading}>
+            <h2 className="cloudFlowColumnTitle">{props.state.sync_account_heading}</h2>
             <div className="cloudFlowPanels">
               {props.state.sync_account_panels.map((panel) => renderPanel(panel, "account"))}
             </div>
           </section>
           {props.state.provider_card ? (
-            <aside className="cloudFlowColumn cloudProviderColumn" aria-label="Storage provider">
-              <h2 className="cloudFlowColumnTitle">Provider</h2>
+            <aside className="cloudFlowColumn cloudProviderColumn" aria-label={props.state.provider_heading}>
+              <h2 className="cloudFlowColumnTitle">{props.state.provider_heading}</h2>
               {renderPanel(props.state.provider_card, "provider")}
             </aside>
           ) : null}
-          <div className="cloudOverallStatus" aria-label="Overall Cloud status">
+          <div className="cloudOverallStatus" aria-label={props.state.overall_status_label}>
             {renderPanel(props.state.overall_status, "status")}
           </div>
         </div>

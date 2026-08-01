@@ -8344,7 +8344,7 @@ function FlightPlanPage(props: {
                     autoCapitalize="characters"
                     autoCorrect="off"
                     onChange={(event) => {
-                      setRouteEntryText(event.target.value);
+                      setRouteEntryText(event.target.value.toUpperCase());
                       setRouteEntryError(null);
                     }}
                     onKeyDown={(event) => {

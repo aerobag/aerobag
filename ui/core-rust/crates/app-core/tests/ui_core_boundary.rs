@@ -122,7 +122,7 @@ fn platform_session_adapters_have_no_plain_snapshot_escape_hatch() {
 }
 
 #[test]
-fn platform_search_and_route_inputs_do_not_rewrite_core_syntax() {
+fn platform_route_editors_promote_letters_without_filtering_search_syntax() {
     let web = read_repo_file("ui/web-app/src/App.tsx");
     let android_map =
         read_repo_file("ui/android-app/app/src/main/java/org/aerobag/app/MapExplorerPage.kt");
@@ -130,12 +130,12 @@ fn platform_search_and_route_inputs_do_not_rewrite_core_syntax() {
         read_repo_file("ui/android-app/app/src/main/java/org/aerobag/app/FlightPlanPage.kt");
 
     assert!(
-        web.contains("setRouteEntryText(event.target.value);"),
-        "web must pass append-route text to core without rewriting it"
+        web.contains("setRouteEntryText(event.target.value.toUpperCase());"),
+        "web must promote append-route letters while preserving coordinate punctuation"
     );
     assert!(
-        android_plan.contains("routeEntryText = value"),
-        "Android must pass append-route text to core without rewriting it"
+        android_plan.contains("routeEntryText = value.uppercase()"),
+        "Android must promote append-route letters while preserving coordinate punctuation"
     );
     assert!(
         android_map.contains("chartSearchText = value"),

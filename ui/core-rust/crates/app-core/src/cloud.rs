@@ -18,46 +18,57 @@ use crate::{
     AppError, AppErrorKind, AppResult, FlightPlan,
 };
 
-const CLOUD_PERSISTENCE_VERSION: u32 = 1;
+const CLOUD_PERSISTENCE_VERSION: u32 = 2;
 const CLOUD_ENVELOPE_VERSION: u32 = 1;
 const CLOUD_PAGE_VERSION: u32 = 1;
 const CLOUD_NODE_VERSION: u32 = 1;
-const CLOUD_PAIRING_VERSION: u32 = 1;
+const DEVICE_SETUP_CODE_VERSION: u32 = 2;
 const FLIGHT_PLAN_RECORD_KEY: &str = "flight_plan/current";
 const FLIGHT_PLAN_SCHEMA_VERSION: u32 = 1;
-const CLOUD_POLL_INTERVAL_MS: i64 = 3_000;
+const CLOUD_POLL_INTERVAL_MS: i64 = 60_000;
 const CLOUD_TRANSIENT_RETRY_MS: i64 = 5_000;
 pub const CLOUD_STATUS_ID: &str = "cloud:provider";
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize, Default)]
 #[serde(rename_all = "snake_case")]
 pub enum CloudProviderKind {
     #[default]
     GoogleDrive,
+    AerobagCloud,
 }
 
 impl CloudProviderKind {
     pub fn label(self) -> &'static str {
         match self {
-            Self::GoogleDrive => "Google Drive",
+            Self::GoogleDrive => "My Google Drive",
+            Self::AerobagCloud => "Aerobag Cloud",
         }
+    }
+
+    fn recovery_label(self) -> &'static str {
+        match self {
+            Self::GoogleDrive => "Google Drive",
+            Self::AerobagCloud => "Aerobag Cloud",
+        }
+    }
+
+    fn is_available(self) -> bool {
+        matches!(self, Self::GoogleDrive)
     }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
 #[serde(tag = "state", rename_all = "snake_case")]
-pub enum CloudCredentialState {
+pub enum ProviderAuthorizationState {
     #[default]
-    Disconnected,
-    Connecting,
-    Ready {
+    NotAuthorized,
+    Authorizing,
+    Authorized {
         #[serde(default)]
         expires_at_epoch_ms: Option<i64>,
+        principal: CloudProviderPrincipal,
     },
-    NeedsUserAction {
-        detail: String,
-    },
-    TransientFailure {
+    AuthorizationRequired {
         detail: String,
     },
     Failed {
@@ -65,36 +76,42 @@ pub enum CloudCredentialState {
     },
 }
 
-impl CloudCredentialState {
+impl ProviderAuthorizationState {
     pub fn is_ready(&self, now_epoch_ms: i64) -> bool {
         match self {
-            Self::Ready {
+            Self::Authorized {
                 expires_at_epoch_ms,
+                ..
             } => expires_at_epoch_ms.is_none_or(|expires| expires > now_epoch_ms),
-            Self::TransientFailure { .. } => true,
             _ => false,
         }
     }
 
-    fn label(&self) -> String {
+    fn principal(&self) -> Option<&CloudProviderPrincipal> {
         match self {
-            Self::Disconnected => "DISCONNECTED".to_string(),
-            Self::Connecting => "CONNECTING".to_string(),
-            Self::Ready { .. } => "CONNECTED".to_string(),
-            Self::NeedsUserAction { .. } => "AUTHORIZATION REQUIRED".to_string(),
-            Self::TransientFailure { .. } => "TEMPORARILY UNAVAILABLE".to_string(),
-            Self::Failed { .. } => "FAILED".to_string(),
+            Self::Authorized { principal, .. } => Some(principal),
+            _ => None,
         }
     }
 
     pub fn detail(&self) -> Option<&str> {
         match self {
-            Self::NeedsUserAction { detail }
-            | Self::TransientFailure { detail }
-            | Self::Failed { detail } => Some(detail),
+            Self::AuthorizationRequired { detail } | Self::Failed { detail } => Some(detail),
             _ => None,
         }
     }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CloudProviderPrincipal {
+    pub stable_id: String,
+    pub display_label: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+struct ProviderAccountBinding {
+    stable_principal_fingerprint: String,
+    display_hint: String,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -171,13 +188,18 @@ pub enum CloudProviderResponse {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum CloudAction {
+    BeginSetupFromDevice,
+    BeginCreateAccount,
+    BackSetup,
     SelectProvider { provider: CloudProviderKind },
     CreateAccount,
-    LinkExisting { pairing_token: String },
-    RevealPairingToken,
-    HidePairingToken,
+    AcceptDeviceSetupCode { setup_code: String },
+    BackUpDeviceSetupCode,
+    AddAnotherDevice,
+    CloseLinkedAccountDetail,
+    BeginUnlinkDevice,
+    ConfirmUnlinkDevice,
     SyncNow,
-    Disconnect,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -190,32 +212,62 @@ pub struct UiCloudAction {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct UiCloudPageFact {
-    pub label: String,
-    pub value: String,
+#[serde(rename_all = "snake_case")]
+pub enum UiCloudPanelState {
+    Complete,
+    Active,
+    Working,
+    Informational,
+    Caution,
+    Error,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct UiCloudProviderOption {
-    pub id: CloudProviderKind,
-    pub label: String,
-    pub selected: bool,
-    pub enabled: bool,
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum UiCloudPanelControl {
+    DeviceSetupCodeInput {
+        label: String,
+        placeholder: String,
+        accept_action_id: String,
+    },
+    DeviceSetupCodeOutput {
+        setup_code: String,
+    },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct UiCloudPanel {
+    pub id: String,
+    pub title: String,
+    pub state: UiCloudPanelState,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub summary: Option<String>,
+    pub actions: Vec<UiCloudAction>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub control: Option<UiCloudPanelControl>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct UiCloudPageState {
     pub title: String,
-    pub provider_label: String,
-    pub connection_label: String,
-    pub account_label: String,
-    pub summary: String,
-    pub provider_options: Vec<UiCloudProviderOption>,
-    pub facts: Vec<UiCloudPageFact>,
-    pub actions: Vec<UiCloudAction>,
+    pub sync_account_panels: Vec<UiCloudPanel>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub pairing_token: Option<String>,
-    pub pairing_input_enabled: bool,
+    pub provider_card: Option<UiCloudPanel>,
+    pub overall_status: UiCloudPanel,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CloudStatusFact {
+    pub label: String,
+    pub value: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CloudStatusSummary {
+    pub label: String,
+    pub severity: UiStatusSeverity,
+    pub detail: String,
+    pub facts: Vec<CloudStatusFact>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -251,9 +303,10 @@ struct CloudEnvelope {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-struct PairingPayload {
+struct DeviceSetupCodePayload {
     version: u32,
     provider: CloudProviderKind,
+    provider_account_binding: ProviderAccountBinding,
     genesis_id: String,
     root_secret_base64: String,
 }
@@ -271,6 +324,8 @@ struct VerifiedTip {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 struct CloudAccount {
     provider: CloudProviderKind,
+    #[serde(default)]
+    provider_account_binding: Option<ProviderAccountBinding>,
     root_secret_base64: String,
     genesis_id: String,
     #[serde(default)]
@@ -335,10 +390,26 @@ enum CloudWorkflow {
     },
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+enum CloudOnboardingIntent {
+    SetupFromDevice,
+    CreateAccount,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+struct CloudProviderFailure {
+    kind: CloudProviderErrorKind,
+    detail: String,
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct CloudPersistentState {
     version: u32,
-    provider: CloudProviderKind,
+    #[serde(default, alias = "provider")]
+    selected_provider: Option<CloudProviderKind>,
+    #[serde(default)]
+    onboarding_intent: Option<CloudOnboardingIntent>,
     #[serde(default)]
     account: Option<CloudAccount>,
     #[serde(default)]
@@ -362,14 +433,15 @@ pub struct CloudPersistentState {
     #[serde(default)]
     force_poll: bool,
     #[serde(default)]
-    last_error: Option<String>,
+    last_provider_failure: Option<CloudProviderFailure>,
 }
 
 impl Default for CloudPersistentState {
     fn default() -> Self {
         Self {
             version: CLOUD_PERSISTENCE_VERSION,
-            provider: CloudProviderKind::GoogleDrive,
+            selected_provider: None,
+            onboarding_intent: None,
             account: None,
             workflow: None,
             cached_flight_plan: None,
@@ -381,7 +453,7 @@ impl Default for CloudPersistentState {
             last_poll_epoch_ms: None,
             next_retry_epoch_ms: None,
             force_poll: false,
-            last_error: None,
+            last_provider_failure: None,
         }
     }
 }
@@ -389,9 +461,16 @@ impl Default for CloudPersistentState {
 #[derive(Debug, Clone)]
 pub struct CloudEngine {
     persistent: CloudPersistentState,
-    credential: CloudCredentialState,
+    authorizations: BTreeMap<CloudProviderKind, ProviderAuthorizationState>,
     request_in_flight: Option<u64>,
-    reveal_pairing_token: bool,
+    linked_account_detail: Option<LinkedAccountDetail>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum LinkedAccountDetail {
+    BackupCode,
+    AddDevice,
+    ConfirmUnlink,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -400,12 +479,19 @@ pub struct CloudCompletion {
 }
 
 impl CloudEngine {
-    pub fn new(persistent: CloudPersistentState) -> Self {
+    pub fn new(mut persistent: CloudPersistentState) -> Self {
+        let persisted_version = persistent.version;
+        persistent.version = CLOUD_PERSISTENCE_VERSION;
+        if persistent.account.is_some() {
+            persistent.selected_provider = None;
+        } else if persisted_version < CLOUD_PERSISTENCE_VERSION {
+            persistent.selected_provider = None;
+        }
         Self {
             persistent,
-            credential: CloudCredentialState::Disconnected,
+            authorizations: BTreeMap::new(),
             request_in_flight: None,
-            reveal_pairing_token: false,
+            linked_account_detail: None,
         }
     }
 
@@ -425,18 +511,87 @@ impl CloudEngine {
         self.persistent.pending_remote_flight_plan = None;
     }
 
-    pub fn set_credential_state(&mut self, state: CloudCredentialState) {
-        self.credential = state;
-        self.request_in_flight = None;
-        if matches!(self.credential, CloudCredentialState::Ready { .. }) {
-            self.persistent.next_retry_epoch_ms = None;
-            self.persistent.last_error = None;
-            self.persistent.force_poll = true;
+    pub fn set_authorization_state(
+        &mut self,
+        provider: CloudProviderKind,
+        state: ProviderAuthorizationState,
+    ) {
+        let principal = state.principal().cloned();
+        self.authorizations.insert(provider, state);
+        if self.current_provider().ok() == Some(provider) {
+            self.request_in_flight = None;
+        }
+        if let Some(principal) = principal {
+            if let Some(account) = self.persistent.account.as_mut() {
+                if account.provider == provider
+                    && account.tip.is_some()
+                    && account.provider_account_binding.is_none()
+                {
+                    account.provider_account_binding = Some(provider_account_binding(&principal));
+                }
+            }
+            if self.current_provider().ok() == Some(provider) {
+                self.persistent.next_retry_epoch_ms = None;
+                self.persistent.last_provider_failure = None;
+                self.persistent.force_poll = true;
+            }
         }
     }
 
-    pub fn credential_state(&self) -> &CloudCredentialState {
-        &self.credential
+    fn authorization_for(&self, provider: CloudProviderKind) -> ProviderAuthorizationState {
+        self.authorizations
+            .get(&provider)
+            .cloned()
+            .unwrap_or_default()
+    }
+
+    fn current_provider(&self) -> AppResult<CloudProviderKind> {
+        self.persistent
+            .account
+            .as_ref()
+            .map(|account| account.provider)
+            .or(self.persistent.selected_provider)
+            .ok_or_else(|| cloud_error("no cloud provider is selected"))
+    }
+
+    fn require_unlinked_and_idle(&self) -> AppResult<()> {
+        if self.persistent.account.is_some() || self.persistent.workflow.is_some() {
+            return Err(cloud_error(
+                "unlink this device before changing Sync Account setup",
+            ));
+        }
+        Ok(())
+    }
+
+    fn require_linked_account(&self) -> AppResult<()> {
+        if self.has_linked_account() {
+            Ok(())
+        } else {
+            Err(cloud_error("no verified Sync Account is linked"))
+        }
+    }
+
+    fn has_linked_account(&self) -> bool {
+        self.persistent.account.as_ref().is_some_and(|account| {
+            !account.genesis_id.is_empty()
+                && account.tip.is_some()
+                && account.provider_account_binding.is_some()
+        })
+    }
+
+    fn provider_principal_mismatch(&self) -> Option<String> {
+        let account = self.persistent.account.as_ref()?;
+        let expected = account.provider_account_binding.as_ref()?;
+        let actual = self.authorization_for(account.provider);
+        let actual = actual.principal()?;
+        (expected.stable_principal_fingerprint != principal_fingerprint(&actual.stable_id)).then(
+            || {
+                format!(
+                    "This Sync Account uses {}, but {} was authorized.",
+                    expected.display_hint, actual.display_label
+                )
+            },
+        )
     }
 
     pub fn record_local_flight_plan(&mut self, plan: &FlightPlan) {
@@ -457,42 +612,111 @@ impl CloudEngine {
         current_plan: &FlightPlan,
     ) -> AppResult<()> {
         match action {
+            CloudAction::BeginSetupFromDevice => {
+                self.require_unlinked_and_idle()?;
+                self.persistent.onboarding_intent = Some(CloudOnboardingIntent::SetupFromDevice);
+                self.persistent.selected_provider = None;
+                self.persistent.last_provider_failure = None;
+            }
+            CloudAction::BeginCreateAccount => {
+                self.require_unlinked_and_idle()?;
+                self.persistent.onboarding_intent = Some(CloudOnboardingIntent::CreateAccount);
+                self.persistent.last_provider_failure = None;
+            }
+            CloudAction::BackSetup => {
+                if self
+                    .persistent
+                    .account
+                    .as_ref()
+                    .is_some_and(|account| account.tip.is_some())
+                {
+                    return Err(cloud_error("unlink this device before starting over"));
+                }
+                match self.persistent.onboarding_intent {
+                    Some(CloudOnboardingIntent::SetupFromDevice) => {
+                        if self.persistent.account.is_some() {
+                            self.persistent.account = None;
+                        } else {
+                            self.persistent.onboarding_intent = None;
+                        }
+                    }
+                    Some(CloudOnboardingIntent::CreateAccount) => {
+                        if let Some(account) = self.persistent.account.take() {
+                            self.persistent.selected_provider = Some(account.provider);
+                        } else if self.persistent.selected_provider.take().is_none() {
+                            self.persistent.onboarding_intent = None;
+                        }
+                    }
+                    None => return Err(cloud_error("cloud setup has no earlier step")),
+                }
+                self.persistent.workflow = None;
+                self.persistent.pending_flight_plan = None;
+                self.persistent.pending_remote_flight_plan = None;
+                self.persistent.last_provider_failure = None;
+                self.request_in_flight = None;
+                self.linked_account_detail = None;
+            }
             CloudAction::SelectProvider { provider } => {
-                if self.persistent.account.is_some() || self.persistent.workflow.is_some() {
+                self.require_unlinked_and_idle()?;
+                if self.persistent.onboarding_intent != Some(CloudOnboardingIntent::CreateAccount) {
                     return Err(cloud_error(
-                        "disconnect the current cloud account before changing providers",
+                        "choose to create a Sync Account before selecting its provider",
                     ));
                 }
-                self.persistent.provider = provider;
-                self.persistent.last_error = None;
+                if !provider.is_available() {
+                    return Err(cloud_error(format!(
+                        "{} is not available in this build",
+                        provider.label()
+                    )));
+                }
+                self.persistent.selected_provider = Some(provider);
+                self.persistent.last_provider_failure = None;
             }
             CloudAction::CreateAccount => {
-                if self.persistent.account.is_some() || self.persistent.workflow.is_some() {
-                    return Err(cloud_error(
-                        "a cloud account is already linked or being created",
-                    ));
-                }
+                self.require_unlinked_and_idle()?;
+                let provider = self.persistent.selected_provider.ok_or_else(|| {
+                    cloud_error("select a provider before creating a Sync Account")
+                })?;
+                let authorization = self.authorization_for(provider);
+                let principal = authorization.principal().ok_or_else(|| {
+                    cloud_error("authorize the provider before creating a Sync Account")
+                })?;
                 let secret = random_bytes::<32>()?;
                 self.persistent.account = Some(CloudAccount {
-                    provider: self.persistent.provider,
+                    provider,
+                    provider_account_binding: Some(provider_account_binding(principal)),
                     root_secret_base64: URL_SAFE_NO_PAD.encode(secret),
                     genesis_id: String::new(),
                     tip: None,
                 });
+                self.persistent.selected_provider = None;
                 let plan = cloud_flight_plan_definition(current_plan);
                 self.persistent.cached_flight_plan = Some(plan.clone());
                 self.persistent.pending_flight_plan = Some(plan);
                 self.persistent.workflow = Some(CloudWorkflow::CreateAwaitIds);
-                self.persistent.last_error = None;
+                self.persistent.last_provider_failure = None;
             }
-            CloudAction::LinkExisting { pairing_token } => {
+            CloudAction::AcceptDeviceSetupCode { setup_code } => {
                 if self.persistent.workflow.is_some() {
                     return Err(cloud_error("cloud synchronization is already busy"));
                 }
-                let payload = decode_pairing_token(&pairing_token)?;
-                self.persistent.provider = payload.provider;
+                if self.persistent.account.is_some() {
+                    return Err(cloud_error(
+                        "unlink this device before accepting another device setup code",
+                    ));
+                }
+                let payload = decode_device_setup_code(&setup_code)?;
+                if !payload.provider.is_available() {
+                    return Err(cloud_error(format!(
+                        "{} is not available in this build",
+                        payload.provider.label()
+                    )));
+                }
+                self.persistent.onboarding_intent = Some(CloudOnboardingIntent::SetupFromDevice);
+                self.persistent.selected_provider = None;
                 self.persistent.account = Some(CloudAccount {
                     provider: payload.provider,
+                    provider_account_binding: Some(payload.provider_account_binding),
                     root_secret_base64: payload.root_secret_base64,
                     genesis_id: payload.genesis_id.clone(),
                     tip: None,
@@ -502,24 +726,41 @@ impl CloudEngine {
                     node_id: payload.genesis_id,
                     purpose: ReadPurpose::Link,
                 });
-                self.persistent.last_error = None;
+                self.persistent.last_provider_failure = None;
             }
-            CloudAction::RevealPairingToken => {
-                if self
-                    .persistent
-                    .account
-                    .as_ref()
-                    .is_some_and(|account| !account.genesis_id.is_empty() && account.tip.is_some())
-                {
-                    self.reveal_pairing_token = true;
+            CloudAction::BackUpDeviceSetupCode => {
+                self.require_linked_account()?;
+                self.linked_account_detail = Some(LinkedAccountDetail::BackupCode);
+            }
+            CloudAction::AddAnotherDevice => {
+                self.require_linked_account()?;
+                self.linked_account_detail = Some(LinkedAccountDetail::AddDevice);
+            }
+            CloudAction::CloseLinkedAccountDetail => {
+                self.linked_account_detail = None;
+            }
+            CloudAction::BeginUnlinkDevice => {
+                self.require_linked_account()?;
+                self.linked_account_detail = Some(LinkedAccountDetail::ConfirmUnlink);
+            }
+            CloudAction::ConfirmUnlinkDevice => {
+                self.require_linked_account()?;
+                if self.linked_account_detail != Some(LinkedAccountDetail::ConfirmUnlink) {
+                    return Err(cloud_error(
+                        "confirm unlink before deleting this device's copy",
+                    ));
                 }
-            }
-            CloudAction::HidePairingToken => self.reveal_pairing_token = false,
-            CloudAction::SyncNow => self.persistent.force_poll = true,
-            CloudAction::Disconnect => {
-                self.credential = CloudCredentialState::Disconnected;
+                self.persistent.account = None;
+                self.persistent.selected_provider = None;
+                self.persistent.onboarding_intent = None;
+                self.persistent.workflow = None;
+                self.persistent.pending_flight_plan = None;
+                self.persistent.pending_remote_flight_plan = None;
+                self.persistent.last_provider_failure = None;
                 self.request_in_flight = None;
+                self.linked_account_detail = None;
             }
+            CloudAction::SyncNow => self.persistent.force_poll = true,
         }
         Ok(())
     }
@@ -528,8 +769,10 @@ impl CloudEngine {
         &mut self,
         now_epoch_ms: i64,
     ) -> AppResult<Option<CloudProviderRequest>> {
+        let provider = self.current_provider()?;
         if self.request_in_flight.is_some()
-            || !self.credential.is_ready(now_epoch_ms)
+            || !self.authorization_for(provider).is_ready(now_epoch_ms)
+            || self.provider_principal_mismatch().is_some()
             || self
                 .persistent
                 .next_retry_epoch_ms
@@ -547,7 +790,7 @@ impl CloudEngine {
         self.request_in_flight = Some(request_id);
         Ok(Some(CloudProviderRequest {
             request_id,
-            provider: self.persistent.provider,
+            provider,
             operation,
         }))
     }
@@ -565,25 +808,32 @@ impl CloudEngine {
             )));
         }
         self.request_in_flight = None;
+        let provider = self.current_provider()?;
         if let CloudProviderResponse::Error { kind, detail } = response {
-            self.persistent.last_error = Some(detail.clone());
+            self.persistent.last_provider_failure = Some(CloudProviderFailure {
+                kind,
+                detail: detail.clone(),
+            });
             match kind {
                 CloudProviderErrorKind::Unauthorized => {
-                    self.credential = CloudCredentialState::NeedsUserAction { detail };
+                    self.authorizations.insert(
+                        provider,
+                        ProviderAuthorizationState::AuthorizationRequired { detail },
+                    );
                 }
                 CloudProviderErrorKind::Transient => {
-                    self.credential = CloudCredentialState::TransientFailure { detail };
                     self.persistent.next_retry_epoch_ms =
                         Some(now_epoch_ms.saturating_add(CLOUD_TRANSIENT_RETRY_MS));
                 }
                 CloudProviderErrorKind::Permanent => {
-                    self.credential = CloudCredentialState::Failed { detail };
+                    self.authorizations
+                        .insert(provider, ProviderAuthorizationState::Failed { detail });
                 }
             }
             return Ok(CloudCompletion::default());
         }
 
-        self.persistent.last_error = None;
+        self.persistent.last_provider_failure = None;
         self.persistent.next_retry_epoch_ms = None;
         let workflow = self
             .persistent
@@ -634,7 +884,6 @@ impl CloudEngine {
         match workflow {
             CloudWorkflow::CreateAwaitIds => {
                 let ids = expect_allocated_ids(response, 3)?;
-                let account = self.account()?.clone();
                 let staged = self.stage_publication(
                     PublicationPurpose::CreateAccount,
                     ids[0].clone(),
@@ -645,7 +894,6 @@ impl CloudEngine {
                 )?;
                 self.account_mut()?.genesis_id = staged.node_id.clone();
                 self.persistent.workflow = Some(CloudWorkflow::CreatePage { staged });
-                debug_assert_eq!(account.provider, self.persistent.provider);
             }
             CloudWorkflow::PublishAwaitIds => {
                 let ids = expect_allocated_ids(response, 2)?;
@@ -707,7 +955,7 @@ impl CloudEngine {
                     match purpose {
                         ReadPurpose::Link => {
                             return Err(cloud_error(
-                                "the pairing token's cloud account was not found",
+                                "the Device Setup Code's Sync Account was not found",
                             ));
                         }
                         ReadPurpose::Poll | ReadPurpose::PublishRace => {
@@ -847,7 +1095,7 @@ impl CloudEngine {
                     || node.parent_node_hash.is_some()
                 {
                     return Err(cloud_error(
-                        "pairing token did not resolve to a valid genesis node",
+                        "Device Setup Code did not resolve to a valid account genesis node",
                     ));
                 }
             }
@@ -960,140 +1208,590 @@ impl CloudEngine {
     }
 
     pub fn page_state(&self) -> UiCloudPageState {
+        let mut panels = Vec::new();
+        let account = self.persistent.account.as_ref();
+        let linked = self.has_linked_account();
+        let intent = self.persistent.onboarding_intent.or_else(|| {
+            account.map(|account| {
+                if account.genesis_id.is_empty() {
+                    CloudOnboardingIntent::CreateAccount
+                } else {
+                    CloudOnboardingIntent::SetupFromDevice
+                }
+            })
+        });
+
+        if account.is_none() && intent.is_none() {
+            panels.push(cloud_panel(
+                "get_started",
+                "Get started",
+                UiCloudPanelState::Active,
+                Some("Connect this device to a shared, encrypted Sync Account."),
+                vec![
+                    cloud_action("begin_setup", "Set up from another device", true, ""),
+                    cloud_action("begin_create", "Create new Sync Account", true, ""),
+                ],
+                None,
+            ));
+            return self.cloud_page_state(panels);
+        }
+
+        match intent {
+            Some(CloudOnboardingIntent::SetupFromDevice) => {
+                panels.push(cloud_panel(
+                    "get_started",
+                    "Get started: Set up from another device",
+                    UiCloudPanelState::Complete,
+                    None,
+                    Vec::new(),
+                    None,
+                ));
+                if account.is_none() {
+                    panels.push(cloud_panel(
+                        "receive_setup",
+                        "Set up from another device",
+                        UiCloudPanelState::Active,
+                        Some("Scan the other device's QR code or paste its Device Setup Code."),
+                        vec![
+                            cloud_action(
+                                "scan_setup_code",
+                                "Scan a QR code",
+                                false,
+                                "QR scanning is not available in this first web draft.",
+                            ),
+                            cloud_action("accept_setup_code", "Use Device Setup Code", true, ""),
+                            cloud_action("back_setup", "Back", true, ""),
+                        ],
+                        Some(UiCloudPanelControl::DeviceSetupCodeInput {
+                            label: "Paste Device Setup Code".to_string(),
+                            placeholder: "AB2...".to_string(),
+                            accept_action_id: "accept_setup_code".to_string(),
+                        }),
+                    ));
+                    return self.cloud_page_state(panels);
+                }
+                panels.push(cloud_panel(
+                    "receive_setup",
+                    "Sync Account setup received",
+                    UiCloudPanelState::Complete,
+                    None,
+                    Vec::new(),
+                    None,
+                ));
+            }
+            Some(CloudOnboardingIntent::CreateAccount) => {
+                panels.push(cloud_panel(
+                    "get_started",
+                    "Get started: Create new Sync Account",
+                    UiCloudPanelState::Complete,
+                    None,
+                    Vec::new(),
+                    None,
+                ));
+                let provider = self.current_provider().ok();
+                if provider.is_none() {
+                    panels.push(cloud_panel(
+                        "provider",
+                        "Select storage provider",
+                        UiCloudPanelState::Active,
+                        Some("Choose where Aerobag stores your encrypted sync data."),
+                        vec![
+                            cloud_action(
+                                "select_provider_google_drive",
+                                "My Google Drive",
+                                CloudProviderKind::GoogleDrive.is_available(),
+                                "My Google Drive is not available in this build.",
+                            ),
+                            cloud_action(
+                                "select_provider_aerobag_cloud",
+                                "Aerobag Cloud",
+                                CloudProviderKind::AerobagCloud.is_available(),
+                                "Aerobag Cloud is not available in this build yet.",
+                            ),
+                            cloud_action("back_setup", "Back", true, ""),
+                        ],
+                        None,
+                    ));
+                    return self.cloud_page_state(panels);
+                }
+                panels.push(cloud_panel(
+                    "provider",
+                    "Storage provider selected",
+                    UiCloudPanelState::Complete,
+                    None,
+                    Vec::new(),
+                    None,
+                ));
+            }
+            None => {}
+        }
+
+        if linked {
+            if let Some(detail) = self.linked_account_detail {
+                panels.push(self.linked_summary_panel(UiCloudPanelState::Complete));
+                panels.push(self.linked_account_detail_panel(detail));
+                return self.cloud_page_state(panels);
+            }
+        }
+
+        let account_is_pending = account.is_some_and(|account| account.tip.is_none());
+        let authorization_complete = self.provider_authorization_complete();
+
+        if account_is_pending {
+            let creating = account.is_some_and(|account| account.genesis_id.is_empty());
+            let (title, state, summary) = if !authorization_complete {
+                let provider = self
+                    .current_provider()
+                    .expect("pending Sync Account must name a provider");
+                (
+                    "Sync Account waiting for provider",
+                    UiCloudPanelState::Active,
+                    format!(
+                        "Authorize {} in the provider panel to continue.",
+                        provider.label()
+                    ),
+                )
+            } else {
+                let title = if creating {
+                    "Creating Sync Account..."
+                } else {
+                    "Linking Sync Account..."
+                };
+                let state = if self.persistent.last_provider_failure.is_some() {
+                    UiCloudPanelState::Error
+                } else {
+                    UiCloudPanelState::Working
+                };
+                let summary = self
+                    .persistent
+                    .last_provider_failure
+                    .as_ref()
+                    .map(|failure| failure.detail.clone())
+                    .unwrap_or_else(|| {
+                        "Aerobag is verifying encrypted account state with the provider."
+                            .to_string()
+                    });
+                (title, state, summary)
+            };
+            panels.push(cloud_panel(
+                if creating {
+                    "create_account"
+                } else {
+                    "link_account"
+                },
+                title,
+                state,
+                Some(&summary),
+                vec![cloud_action("back_setup", "Back", true, "")],
+                None,
+            ));
+        } else if account.is_none() {
+            let provider = self
+                .current_provider()
+                .expect("account creation must have a selected provider");
+            let authorization = self.authorization_for(provider);
+            let principal = authorization.principal();
+            let suffix = principal
+                .map(|principal| format!(" as {}", principal.display_label))
+                .unwrap_or_default();
+            let create_disabled_reason = format!(
+                "Authorize {} in the provider panel first.",
+                provider.label()
+            );
+            panels.push(cloud_panel(
+                "create_account",
+                &format!(
+                    "Create a new Sync Account in {}{suffix}",
+                    provider.label()
+                ),
+                UiCloudPanelState::Active,
+                Some(
+                    "This always creates a new Sync Account. It will not find or replace another account already stored by this provider. To use an existing account, go back and choose Set up from another device.",
+                ),
+                vec![
+                    cloud_action(
+                        "create_account",
+                        "Create new Sync Account",
+                        authorization_complete,
+                        &create_disabled_reason,
+                    ),
+                    cloud_action("back_setup", "Back", true, ""),
+                ],
+                None,
+            ));
+        } else if linked {
+            panels.push(self.linked_summary_panel(UiCloudPanelState::Active));
+        }
+
+        self.cloud_page_state(panels)
+    }
+
+    fn cloud_page_state(&self, sync_account_panels: Vec<UiCloudPanel>) -> UiCloudPageState {
+        UiCloudPageState {
+            title: "Cloud".to_string(),
+            sync_account_panels,
+            provider_card: self
+                .current_provider()
+                .ok()
+                .map(|provider| self.provider_card(provider)),
+            overall_status: self.overall_status_panel(),
+        }
+    }
+
+    fn overall_status_panel(&self) -> UiCloudPanel {
+        if !self.has_linked_account() {
+            return cloud_panel(
+                "overall_status",
+                "Cloud not active",
+                UiCloudPanelState::Informational,
+                Some("No Sync Account linked yet."),
+                Vec::new(),
+                None,
+            );
+        }
+
+        if !self.provider_authorization_complete() {
+            let detail = if self.current_provider().ok().is_some_and(|provider| {
+                matches!(
+                    self.authorization_for(provider),
+                    ProviderAuthorizationState::Authorizing
+                )
+            }) {
+                "Sync Account linked, but provider authorization is in progress."
+            } else {
+                "Sync Account linked, but provider requires authorization."
+            };
+            return cloud_panel(
+                "overall_status",
+                "Cloud not active",
+                UiCloudPanelState::Caution,
+                Some(detail),
+                Vec::new(),
+                None,
+            );
+        }
+
+        if self
+            .persistent
+            .last_provider_failure
+            .as_ref()
+            .is_some_and(|failure| failure.kind == CloudProviderErrorKind::Transient)
+        {
+            return cloud_panel(
+                "overall_status",
+                "Cloud not active",
+                UiCloudPanelState::Informational,
+                Some("Sync Account linked, but provider is temporarily unavailable."),
+                Vec::new(),
+                None,
+            );
+        }
+
+        cloud_panel(
+            "overall_status",
+            "Cloud active",
+            UiCloudPanelState::Complete,
+            Some("Sync Account linked, provider connected."),
+            Vec::new(),
+            None,
+        )
+    }
+
+    fn provider_authorization_complete(&self) -> bool {
+        let Ok(provider) = self.current_provider() else {
+            return false;
+        };
+        self.provider_principal_mismatch().is_none()
+            && matches!(
+                self.authorization_for(provider),
+                ProviderAuthorizationState::Authorized { .. }
+            )
+    }
+
+    pub fn status_summary(&self) -> CloudStatusSummary {
         let linked = self
             .persistent
             .account
             .as_ref()
-            .is_some_and(|account| !account.genesis_id.is_empty() && account.tip.is_some());
-        let busy = self.persistent.workflow.is_some() || self.request_in_flight.is_some();
-        let ready = matches!(self.credential, CloudCredentialState::Ready { .. });
-        let pairing_token = (linked && self.reveal_pairing_token)
-            .then(|| self.pairing_token())
-            .transpose()
-            .ok()
-            .flatten();
-        let generation = self
-            .persistent
-            .account
-            .as_ref()
-            .and_then(|account| account.tip.as_ref())
-            .map(|tip| tip.generation.to_string())
-            .unwrap_or_else(|| "-".to_string());
-        let outbox_count = usize::from(self.persistent.pending_flight_plan.is_some());
-        let mut facts = vec![
-            UiCloudPageFact {
-                label: "Cloud generation".to_string(),
-                value: generation,
-            },
-            UiCloudPageFact {
-                label: "Pending local records".to_string(),
-                value: outbox_count.to_string(),
-            },
-        ];
+            .is_some_and(|account| account.tip.is_some());
+        let provider = self.current_provider().ok();
+        let authorization = provider
+            .map(|provider| self.authorization_for(provider))
+            .unwrap_or_default();
+        let mut facts = Vec::new();
+        if let Some(provider) = provider {
+            facts.push(CloudStatusFact {
+                label: "Provider".to_string(),
+                value: provider.label().to_string(),
+            });
+        }
+        facts.push(CloudStatusFact {
+            label: "Sync Account".to_string(),
+            value: if linked { "Linked" } else { "Not linked" }.to_string(),
+        });
+        if let Some(principal) = authorization.principal() {
+            facts.push(CloudStatusFact {
+                label: "Authorized as".to_string(),
+                value: principal.display_label.clone(),
+            });
+        }
+        if let Some(account) = self.persistent.account.as_ref() {
+            if let Some(tip) = account.tip.as_ref() {
+                facts.push(CloudStatusFact {
+                    label: "Generation".to_string(),
+                    value: tip.generation.to_string(),
+                });
+            }
+        }
+        facts.push(CloudStatusFact {
+            label: "Pending local records".to_string(),
+            value: usize::from(self.persistent.pending_flight_plan.is_some()).to_string(),
+        });
         if let Some(last_success) = self.persistent.last_success_epoch_ms {
-            facts.push(UiCloudPageFact {
+            facts.push(CloudStatusFact {
                 label: "Last provider success".to_string(),
                 value: format_epoch_ms_utc(last_success),
             });
         }
-        let mut summary = if ready && !linked {
-            "Google Drive is connected. Create a new Aerobag cloud account, or link an existing one with its pairing token."
-                .to_string()
-        } else {
-            self.credential
-                .detail()
-                .unwrap_or(if linked {
-                    "Aerobag cloud account is linked."
-                } else {
-                    "Connect Google Drive, then create or link an Aerobag cloud account."
-                })
-                .to_string()
-        };
-        if busy {
-            summary = "Cloud synchronization is in progress.".to_string();
+
+        if let Some(detail) = self.provider_principal_mismatch() {
+            return CloudStatusSummary {
+                label: "ACCOUNT".to_string(),
+                severity: UiStatusSeverity::Caution,
+                detail,
+                facts,
+            };
         }
-        let action = |id: &str, label: &str, enabled: bool, reason: &str| UiCloudAction {
-            id: id.to_string(),
-            label: label.to_string(),
-            enabled,
-            disabled_reason: (!enabled).then(|| reason.to_string()),
-        };
-        UiCloudPageState {
-            title: "Cloud".to_string(),
-            provider_label: self.persistent.provider.label().to_string(),
-            connection_label: self.credential.label(),
-            account_label: if linked {
-                "LINKED".to_string()
+        if linked {
+            match &authorization {
+                ProviderAuthorizationState::NotAuthorized
+                | ProviderAuthorizationState::AuthorizationRequired { .. } => {
+                    return CloudStatusSummary {
+                        label: "AUTH".to_string(),
+                        severity: UiStatusSeverity::Caution,
+                        detail: authorization
+                            .detail()
+                            .unwrap_or("Provider authorization is required to resume syncing.")
+                            .to_string(),
+                        facts,
+                    };
+                }
+                ProviderAuthorizationState::Failed { detail } => {
+                    return CloudStatusSummary {
+                        label: "FAILED".to_string(),
+                        severity: UiStatusSeverity::Caution,
+                        detail: detail.clone(),
+                        facts,
+                    };
+                }
+                ProviderAuthorizationState::Authorizing => {
+                    return CloudStatusSummary {
+                        label: "AUTHORIZING".to_string(),
+                        severity: UiStatusSeverity::Info,
+                        detail: "Provider authorization is in progress.".to_string(),
+                        facts,
+                    };
+                }
+                ProviderAuthorizationState::Authorized { .. } => {}
+            }
+            if let Some(failure) = self.persistent.last_provider_failure.as_ref() {
+                if failure.kind == CloudProviderErrorKind::Transient {
+                    return CloudStatusSummary {
+                        label: "OFFLINE".to_string(),
+                        severity: UiStatusSeverity::Info,
+                        detail: failure.detail.clone(),
+                        facts,
+                    };
+                }
+            }
+            return CloudStatusSummary {
+                label: "OK".to_string(),
+                severity: UiStatusSeverity::Ok,
+                detail: if self.persistent.pending_flight_plan.is_some() {
+                    "Local changes are waiting to sync."
+                } else {
+                    "Sync Account is up to date."
+                }
+                .to_string(),
+                facts,
+            };
+        }
+
+        CloudStatusSummary {
+            label: if matches!(authorization, ProviderAuthorizationState::Authorizing) {
+                "AUTHORIZING"
             } else {
-                "NOT LINKED".to_string()
-            },
-            summary,
-            provider_options: vec![UiCloudProviderOption {
-                id: CloudProviderKind::GoogleDrive,
-                label: CloudProviderKind::GoogleDrive.label().to_string(),
-                selected: self.persistent.provider == CloudProviderKind::GoogleDrive,
-                enabled: !linked && !busy,
-            }],
+                "NOT SET UP"
+            }
+            .to_string(),
+            severity: UiStatusSeverity::Info,
+            detail: "This device is not linked to a Sync Account.".to_string(),
             facts,
-            actions: vec![
-                action(
-                    "connect",
-                    if ready {
-                        "Reconnect Google Drive"
+        }
+    }
+
+    fn provider_card(&self, provider: CloudProviderKind) -> UiCloudPanel {
+        let provider_label = provider.label();
+        let authorization = self.authorization_for(provider);
+        if let Some(detail) = self.provider_principal_mismatch() {
+            return cloud_panel(
+                "provider",
+                provider_label,
+                UiCloudPanelState::Error,
+                Some(&detail),
+                vec![cloud_action(
+                    "authorize_provider",
+                    "Authorize a different Google account",
+                    true,
+                    "",
+                )],
+                None,
+            );
+        }
+        match &authorization {
+            ProviderAuthorizationState::Authorized { principal, .. } => cloud_panel(
+                "provider",
+                provider_label,
+                UiCloudPanelState::Complete,
+                Some(&format!("Authorized as {}", principal.display_label)),
+                Vec::new(),
+                None,
+            ),
+            ProviderAuthorizationState::Authorizing => cloud_panel(
+                "provider",
+                provider_label,
+                UiCloudPanelState::Working,
+                Some("Authorization is in progress."),
+                Vec::new(),
+                None,
+            ),
+            ProviderAuthorizationState::NotAuthorized
+            | ProviderAuthorizationState::AuthorizationRequired { .. }
+            | ProviderAuthorizationState::Failed { .. } => {
+                let detail = authorization.detail().unwrap_or(
+                    "Authorization is required before this device can use the provider.",
+                );
+                cloud_panel(
+                    "provider",
+                    provider_label,
+                    if matches!(&authorization, ProviderAuthorizationState::Failed { .. }) {
+                        UiCloudPanelState::Error
                     } else {
-                        "Connect Google Drive"
+                        UiCloudPanelState::Active
                     },
-                    !busy,
-                    "Cloud synchronization is busy.",
+                    Some(detail),
+                    vec![cloud_action(
+                        "authorize_provider",
+                        &format!("Authorize {provider_label}"),
+                        provider.is_available(),
+                        "This provider cannot be authorized in this build.",
+                    )],
+                    None,
+                )
+            }
+        }
+    }
+
+    fn linked_summary_panel(&self, state: UiCloudPanelState) -> UiCloudPanel {
+        let provider = self
+            .persistent
+            .account
+            .as_ref()
+            .expect("linked summary requires a verified Sync Account")
+            .provider
+            .recovery_label();
+        let summary = format!(
+            "Backup Advice: Your Sync Account is set up. If it is removed from this device, it can only be recovered using your Device Setup Code. {provider} cannot recover it. Use the Back up Device Setup Code button and store your Device Setup Code in a password manager or another secure place."
+        );
+        let actions = (state == UiCloudPanelState::Active)
+            .then(|| {
+                vec![
+                    cloud_action("backup_setup_code", "Back up Device Setup Code", true, ""),
+                    cloud_action("add_device", "Add another device", true, ""),
+                    cloud_action("begin_unlink", "Unlink this device", true, ""),
+                ]
+            })
+            .unwrap_or_default();
+        cloud_panel(
+            "linked",
+            "Sync Account linked",
+            state,
+            Some(&summary),
+            actions,
+            None,
+        )
+    }
+
+    fn linked_account_detail_panel(&self, detail: LinkedAccountDetail) -> UiCloudPanel {
+        match detail {
+            LinkedAccountDetail::BackupCode => cloud_panel(
+                "backup_code",
+                "Back up Device Setup Code",
+                UiCloudPanelState::Active,
+                Some("Store this code in a password manager or another secure place."),
+                vec![cloud_action("close_linked_detail", "Back", true, "")],
+                Some(UiCloudPanelControl::DeviceSetupCodeOutput {
+                    setup_code: self
+                        .device_setup_code()
+                        .expect("linked backup detail requires a Device Setup Code"),
+                }),
+            ),
+            LinkedAccountDetail::AddDevice => cloud_panel(
+                "add_device",
+                "Add another device",
+                UiCloudPanelState::Active,
+                Some("Use this Device Setup Code to set up the other device."),
+                vec![cloud_action("close_linked_detail", "Back", true, "")],
+                Some(UiCloudPanelControl::DeviceSetupCodeOutput {
+                    setup_code: self
+                        .device_setup_code()
+                        .expect("linked add-device detail requires a Device Setup Code"),
+                }),
+            ),
+            LinkedAccountDetail::ConfirmUnlink => cloud_panel(
+                "confirm_unlink",
+                "Unlink this device?",
+                UiCloudPanelState::Caution,
+                Some(
+                    "This device's secret copy will be irretrievably deleted. Be sure you have a copy of the Device Setup Code before proceeding.",
                 ),
-                action(
-                    "create_account",
-                    "Create Aerobag account",
-                    ready && !linked && !busy,
-                    "Connect Google Drive and disconnect any existing account first.",
-                ),
-                action(
-                    "link_existing",
-                    "Link Aerobag account",
-                    ready && !linked && !busy,
-                    "Connect Google Drive and disconnect any existing account first.",
-                ),
-                action(
-                    if self.reveal_pairing_token {
-                        "hide_pairing"
-                    } else {
-                        "reveal_pairing"
-                    },
-                    if self.reveal_pairing_token {
-                        "Hide pairing token"
-                    } else {
-                        "Pair another device"
-                    },
-                    linked && !busy,
-                    "Create or link a cloud account first.",
-                ),
-                action(
-                    "sync_now",
-                    "Sync now",
-                    ready && linked && !busy,
-                    "Connect Google Drive and finish the current synchronization first.",
-                ),
-                action(
-                    "disconnect",
-                    "Disconnect Google Drive",
-                    !matches!(self.credential, CloudCredentialState::Disconnected),
-                    "Google Drive is already disconnected.",
-                ),
-            ],
-            pairing_token,
-            pairing_input_enabled: ready && !linked && !busy,
+                vec![
+                    cloud_action("close_linked_detail", "Back", true, ""),
+                    cloud_action(
+                        "confirm_unlink",
+                        "Yes, delete Sync Account from this device",
+                        true,
+                        "",
+                    ),
+                ],
+                None,
+            ),
         }
     }
 
     pub fn status_record(&self) -> Option<DataStatusRecord> {
-        let linked = self.persistent.account.is_some();
-        match &self.credential {
-            CloudCredentialState::NeedsUserAction { detail } if linked => {
+        let linked = self
+            .persistent
+            .account
+            .as_ref()
+            .is_some_and(|account| account.tip.is_some());
+        if !linked {
+            return None;
+        }
+        if let Some(detail) = self.provider_principal_mismatch() {
+            return Some(DataStatusRecord::new(
+                CLOUD_STATUS_ID,
+                "CLOUD",
+                Some("ACCOUNT".to_string()),
+                UiStatusSeverity::Caution,
+                true,
+                detail,
+            ));
+        }
+        let provider = self.current_provider().ok()?;
+        let authorization = self.authorization_for(provider);
+        match &authorization {
+            ProviderAuthorizationState::AuthorizationRequired { detail } => {
                 Some(DataStatusRecord::new(
                     CLOUD_STATUS_ID,
                     "CLOUD",
@@ -1103,7 +1801,7 @@ impl CloudEngine {
                     detail.clone(),
                 ))
             }
-            CloudCredentialState::Failed { detail } if linked => Some(DataStatusRecord::new(
+            ProviderAuthorizationState::Failed { detail } => Some(DataStatusRecord::new(
                 CLOUD_STATUS_ID,
                 "CLOUD",
                 Some("FAILED".to_string()),
@@ -1111,39 +1809,92 @@ impl CloudEngine {
                 true,
                 detail.clone(),
             )),
-            CloudCredentialState::Disconnected if linked => Some(DataStatusRecord::new(
+            ProviderAuthorizationState::NotAuthorized => Some(DataStatusRecord::new(
                 CLOUD_STATUS_ID,
                 "CLOUD",
                 Some("AUTH".to_string()),
                 UiStatusSeverity::Caution,
                 true,
-                "Cloud synchronization requires Google Drive authorization.".to_string(),
+                "Cloud synchronization requires provider authorization.".to_string(),
             )),
-            CloudCredentialState::TransientFailure { detail } if linked => {
+            _ if self
+                .persistent
+                .last_provider_failure
+                .as_ref()
+                .is_some_and(|failure| failure.kind == CloudProviderErrorKind::Transient) =>
+            {
+                let detail = self
+                    .persistent
+                    .last_provider_failure
+                    .as_ref()
+                    .map(|failure| failure.detail.clone())
+                    .unwrap_or_default();
                 Some(DataStatusRecord::new(
                     CLOUD_STATUS_ID,
                     "CLOUD",
                     Some("OFFLINE".to_string()),
                     UiStatusSeverity::Info,
                     false,
-                    detail.clone(),
+                    detail,
                 ))
             }
             _ => None,
         }
     }
 
-    pub fn pairing_token(&self) -> AppResult<String> {
+    pub fn device_setup_code(&self) -> AppResult<String> {
         let account = self.account()?;
         if account.genesis_id.is_empty() || account.tip.is_none() {
             return Err(cloud_error("cloud account creation has not completed"));
         }
-        encode_pairing_token(&PairingPayload {
-            version: CLOUD_PAIRING_VERSION,
+        encode_device_setup_code(&DeviceSetupCodePayload {
+            version: DEVICE_SETUP_CODE_VERSION,
             provider: account.provider,
+            provider_account_binding: account
+                .provider_account_binding
+                .clone()
+                .ok_or_else(|| cloud_error("provider account identity is unavailable"))?,
             genesis_id: account.genesis_id.clone(),
             root_secret_base64: account.root_secret_base64.clone(),
         })
+    }
+}
+
+fn cloud_action(id: &str, label: &str, enabled: bool, disabled_reason: &str) -> UiCloudAction {
+    UiCloudAction {
+        id: id.to_string(),
+        label: label.to_string(),
+        enabled,
+        disabled_reason: (!enabled).then(|| disabled_reason.to_string()),
+    }
+}
+
+fn cloud_panel(
+    id: &str,
+    title: &str,
+    state: UiCloudPanelState,
+    summary: Option<&str>,
+    actions: Vec<UiCloudAction>,
+    control: Option<UiCloudPanelControl>,
+) -> UiCloudPanel {
+    UiCloudPanel {
+        id: id.to_string(),
+        title: title.to_string(),
+        state,
+        summary: summary.map(str::to_string),
+        actions,
+        control,
+    }
+}
+
+fn principal_fingerprint(stable_id: &str) -> String {
+    sha256_hex(stable_id.as_bytes())
+}
+
+fn provider_account_binding(principal: &CloudProviderPrincipal) -> ProviderAccountBinding {
+    ProviderAccountBinding {
+        stable_principal_fingerprint: principal_fingerprint(&principal.stable_id),
+        display_hint: principal.display_label.clone(),
     }
 }
 
@@ -1288,33 +2039,34 @@ fn envelope_aad(version: u32, account_tag: &str, role: &str) -> String {
     format!("aerobag-cloud-envelope:{version}:{account_tag}:{role}")
 }
 
-fn encode_pairing_token(payload: &PairingPayload) -> AppResult<String> {
+fn encode_device_setup_code(payload: &DeviceSetupCodePayload) -> AppResult<String> {
     let bytes = serde_json::to_vec(payload).map_err(cloud_json_error)?;
     let body = URL_SAFE_NO_PAD.encode(&bytes);
     let checksum = &sha256_hex(&bytes)[..16];
-    Ok(format!("AB1.{body}.{checksum}"))
+    Ok(format!("AB2.{body}.{checksum}"))
 }
 
-fn decode_pairing_token(token: &str) -> AppResult<PairingPayload> {
-    let parts = token.trim().split('.').collect::<Vec<_>>();
-    if parts.len() != 3 || parts[0] != "AB1" {
-        return Err(cloud_error("pairing token has an unsupported format"));
+fn decode_device_setup_code(setup_code: &str) -> AppResult<DeviceSetupCodePayload> {
+    let parts = setup_code.trim().split('.').collect::<Vec<_>>();
+    if parts.len() != 3 || parts[0] != "AB2" {
+        return Err(cloud_error("Device Setup Code has an unsupported format"));
     }
     let bytes = URL_SAFE_NO_PAD
         .decode(parts[1])
-        .map_err(|_| cloud_error("pairing token is not valid base64"))?;
+        .map_err(|_| cloud_error("Device Setup Code is not valid base64"))?;
     if &sha256_hex(&bytes)[..16] != parts[2] {
-        return Err(cloud_error("pairing token checksum does not match"));
+        return Err(cloud_error("Device Setup Code checksum does not match"));
     }
-    let payload: PairingPayload = serde_json::from_slice(&bytes).map_err(cloud_json_error)?;
-    if payload.version != CLOUD_PAIRING_VERSION
+    let payload: DeviceSetupCodePayload =
+        serde_json::from_slice(&bytes).map_err(cloud_json_error)?;
+    if payload.version != DEVICE_SETUP_CODE_VERSION
         || payload.genesis_id.trim().is_empty()
         || URL_SAFE_NO_PAD
             .decode(&payload.root_secret_base64)
             .ok()
             .is_none_or(|bytes| bytes.len() != 32)
     {
-        return Err(cloud_error("pairing token content is invalid"));
+        return Err(cloud_error("Device Setup Code content is invalid"));
     }
     Ok(payload)
 }
@@ -1444,9 +2196,36 @@ mod tests {
     }
 
     fn ready(engine: &mut CloudEngine) {
-        engine.set_credential_state(CloudCredentialState::Ready {
-            expires_at_epoch_ms: Some(100_000),
-        });
+        authorize_as(engine, "google-principal-1", "pilot@example.com");
+    }
+
+    fn authorize_as(engine: &mut CloudEngine, stable_id: &str, display_label: &str) {
+        engine.set_authorization_state(
+            CloudProviderKind::GoogleDrive,
+            ProviderAuthorizationState::Authorized {
+                expires_at_epoch_ms: Some(100_000),
+                principal: CloudProviderPrincipal {
+                    stable_id: stable_id.to_string(),
+                    display_label: display_label.to_string(),
+                },
+            },
+        );
+    }
+
+    fn active_panel(engine: &CloudEngine) -> UiCloudPanel {
+        engine
+            .page_state()
+            .sync_account_panels
+            .into_iter()
+            .find(|panel| panel.state != UiCloudPanelState::Complete)
+            .expect("active Cloud panel")
+    }
+
+    fn provider_card(engine: &CloudEngine) -> UiCloudPanel {
+        engine
+            .page_state()
+            .provider_card
+            .expect("Cloud provider card")
     }
 
     fn complete(
@@ -1464,6 +2243,17 @@ mod tests {
     }
 
     fn create_account(engine: &mut CloudEngine, initial: &FlightPlan) -> String {
+        engine
+            .perform_action(CloudAction::BeginCreateAccount, initial)
+            .unwrap();
+        engine
+            .perform_action(
+                CloudAction::SelectProvider {
+                    provider: CloudProviderKind::GoogleDrive,
+                },
+                initial,
+            )
+            .unwrap();
         ready(engine);
         engine
             .perform_action(CloudAction::CreateAccount, initial)
@@ -1477,14 +2267,14 @@ mod tests {
         );
         complete(engine, 2, CloudProviderResponse::Created);
         complete(engine, 3, CloudProviderResponse::Created);
-        engine.pairing_token().unwrap()
+        engine.device_setup_code().unwrap()
     }
 
     #[test]
-    fn account_creation_emits_encrypted_create_once_chain_and_pairing_token() {
+    fn account_creation_emits_encrypted_create_once_chain_and_device_setup_code() {
         let mut engine = CloudEngine::new(CloudPersistentState::default());
-        let pairing = create_account(&mut engine, &plan(&["KRNT", "KPAE"]));
-        assert!(pairing.starts_with("AB1."));
+        let setup_code = create_account(&mut engine, &plan(&["KRNT", "KPAE"]));
+        assert!(setup_code.starts_with("AB2."));
         assert_eq!(
             engine
                 .persistent
@@ -1498,26 +2288,368 @@ mod tests {
             0
         );
         assert!(engine.persistent.pending_flight_plan.is_none());
-        assert!(!pairing.contains("KRNT"));
+        assert!(!setup_code.contains("KRNT"));
+    }
+
+    #[test]
+    fn new_user_flow_reveals_exactly_one_next_step_at_a_time() {
+        let initial = plan(&["KRNT", "KPAE"]);
+        let mut engine = CloudEngine::new(CloudPersistentState::default());
+        assert_eq!(active_panel(&engine).id, "get_started");
+
+        engine
+            .perform_action(CloudAction::BeginCreateAccount, &initial)
+            .unwrap();
+        assert_eq!(active_panel(&engine).id, "provider");
+
+        engine
+            .perform_action(
+                CloudAction::SelectProvider {
+                    provider: CloudProviderKind::GoogleDrive,
+                },
+                &initial,
+            )
+            .unwrap();
+        assert_eq!(active_panel(&engine).id, "create_account");
+        assert!(
+            !active_panel(&engine)
+                .actions
+                .iter()
+                .find(|action| action.id == "create_account")
+                .unwrap()
+                .enabled
+        );
+        assert_eq!(provider_card(&engine).state, UiCloudPanelState::Active);
+
+        ready(&mut engine);
+        assert_eq!(active_panel(&engine).id, "create_account");
+
+        engine
+            .perform_action(CloudAction::CreateAccount, &initial)
+            .unwrap();
+        assert_eq!(active_panel(&engine).id, "create_account");
+        assert_eq!(active_panel(&engine).state, UiCloudPanelState::Working);
+        assert!(engine.persistent.account.is_some());
+        assert!(engine.persistent.selected_provider.is_none());
+    }
+
+    #[test]
+    fn unavailable_provider_cannot_be_selected_by_bypassing_the_ui() {
+        let initial = plan(&["KRNT", "KPAE"]);
+        let mut engine = CloudEngine::new(CloudPersistentState::default());
+        engine
+            .perform_action(CloudAction::BeginCreateAccount, &initial)
+            .unwrap();
+
+        let error = engine
+            .perform_action(
+                CloudAction::SelectProvider {
+                    provider: CloudProviderKind::AerobagCloud,
+                },
+                &initial,
+            )
+            .unwrap_err();
+
+        assert!(error.message.contains("not available"));
+        assert!(engine.persistent.selected_provider.is_none());
+        assert_eq!(active_panel(&engine).id, "provider");
+    }
+
+    #[test]
+    fn backing_out_of_setup_preserves_unexpired_provider_authorization() {
+        let initial = plan(&["KRNT", "KPAE"]);
+        let mut engine = CloudEngine::new(CloudPersistentState::default());
+        engine
+            .perform_action(CloudAction::BeginCreateAccount, &initial)
+            .unwrap();
+        engine
+            .perform_action(
+                CloudAction::SelectProvider {
+                    provider: CloudProviderKind::GoogleDrive,
+                },
+                &initial,
+            )
+            .unwrap();
+        ready(&mut engine);
+        assert_eq!(active_panel(&engine).id, "create_account");
+
+        engine
+            .perform_action(CloudAction::BackSetup, &initial)
+            .unwrap();
+        assert_eq!(active_panel(&engine).id, "provider");
+        engine
+            .perform_action(
+                CloudAction::SelectProvider {
+                    provider: CloudProviderKind::GoogleDrive,
+                },
+                &initial,
+            )
+            .unwrap();
+
+        assert_eq!(active_panel(&engine).id, "create_account");
+    }
+
+    #[test]
+    fn received_setup_code_selects_provider_then_rejects_wrong_provider_identity() {
+        let initial = plan(&["KRNT", "KPAE"]);
+        let mut source = CloudEngine::new(CloudPersistentState::default());
+        let setup_code = create_account(&mut source, &initial);
+
+        let mut target = CloudEngine::new(CloudPersistentState::default());
+        target
+            .perform_action(CloudAction::BeginSetupFromDevice, &FlightPlan::default())
+            .unwrap();
+        assert_eq!(active_panel(&target).id, "receive_setup");
+        target
+            .perform_action(
+                CloudAction::AcceptDeviceSetupCode { setup_code },
+                &FlightPlan::default(),
+            )
+            .unwrap();
+        assert_eq!(
+            target.current_provider().unwrap(),
+            CloudProviderKind::GoogleDrive
+        );
+        assert!(target.persistent.selected_provider.is_none());
+        assert_eq!(active_panel(&target).id, "link_account");
+        assert_eq!(provider_card(&target).state, UiCloudPanelState::Active);
+
+        authorize_as(&mut target, "wrong-google-principal", "wrong@example.com");
+        let mismatch = provider_card(&target);
+        assert_eq!(mismatch.id, "provider");
+        assert_eq!(mismatch.state, UiCloudPanelState::Error);
+        assert!(mismatch
+            .summary
+            .as_deref()
+            .is_some_and(|summary| summary.contains("pilot@example.com")
+                && summary.contains("wrong@example.com")));
+        assert!(target.take_provider_request(10).unwrap().is_none());
+    }
+
+    #[test]
+    fn setup_back_unwinds_received_account_before_leaving_the_receive_branch() {
+        let initial = plan(&["KRNT", "KPAE"]);
+        let mut source = CloudEngine::new(CloudPersistentState::default());
+        let setup_code = create_account(&mut source, &initial);
+        let mut target = CloudEngine::new(CloudPersistentState::default());
+        target
+            .perform_action(CloudAction::BeginSetupFromDevice, &FlightPlan::default())
+            .unwrap();
+        target
+            .perform_action(
+                CloudAction::AcceptDeviceSetupCode { setup_code },
+                &FlightPlan::default(),
+            )
+            .unwrap();
+        assert_eq!(active_panel(&target).id, "link_account");
+
+        target
+            .perform_action(CloudAction::BackSetup, &FlightPlan::default())
+            .unwrap();
+        assert!(target.persistent.account.is_none());
+        assert_eq!(active_panel(&target).id, "receive_setup");
+
+        target
+            .perform_action(CloudAction::BackSetup, &FlightPlan::default())
+            .unwrap();
+        assert_eq!(active_panel(&target).id, "get_started");
     }
 
     #[test]
     fn authorization_failure_drives_caution_but_network_failure_does_not() {
         let mut engine = CloudEngine::new(CloudPersistentState::default());
         create_account(&mut engine, &plan(&["KRNT", "KPAE"]));
-        engine.set_credential_state(CloudCredentialState::NeedsUserAction {
-            detail: "Authorize Google Drive again.".into(),
-        });
+        engine.set_authorization_state(
+            CloudProviderKind::GoogleDrive,
+            ProviderAuthorizationState::AuthorizationRequired {
+                detail: "Authorize Google Drive again.".into(),
+            },
+        );
         let auth = engine.status_record().unwrap();
         assert_eq!(auth.severity, UiStatusSeverity::Caution);
         assert!(auth.drives_caution);
 
-        engine.set_credential_state(CloudCredentialState::TransientFailure {
-            detail: "Network is unavailable.".into(),
-        });
+        ready(&mut engine);
+        engine
+            .perform_action(CloudAction::SyncNow, &FlightPlan::default())
+            .unwrap();
+        let request = engine.take_provider_request(50).unwrap().unwrap();
+        engine
+            .complete_provider_request(
+                request.request_id,
+                CloudProviderResponse::Error {
+                    kind: CloudProviderErrorKind::Transient,
+                    detail: "Network is unavailable.".into(),
+                },
+                50,
+            )
+            .unwrap();
         let network = engine.status_record().unwrap();
         assert_eq!(network.severity, UiStatusSeverity::Info);
         assert!(!network.drives_caution);
+    }
+
+    #[test]
+    fn overall_status_distinguishes_account_and_provider_readiness() {
+        let initial = plan(&["KRNT", "KPAE"]);
+        let mut engine = CloudEngine::new(CloudPersistentState::default());
+        let unlinked = engine.page_state().overall_status;
+        assert_eq!(unlinked.title, "Cloud not active");
+        assert_eq!(unlinked.state, UiCloudPanelState::Informational);
+        assert_eq!(
+            unlinked.summary.as_deref(),
+            Some("No Sync Account linked yet.")
+        );
+
+        create_account(&mut engine, &initial);
+        let active = engine.page_state().overall_status;
+        assert_eq!(active.title, "Cloud active");
+        assert_eq!(active.state, UiCloudPanelState::Complete);
+        assert_eq!(
+            active.summary.as_deref(),
+            Some("Sync Account linked, provider connected.")
+        );
+
+        engine.set_authorization_state(
+            CloudProviderKind::GoogleDrive,
+            ProviderAuthorizationState::AuthorizationRequired {
+                detail: "Authorize Google Drive again.".into(),
+            },
+        );
+        let authorization_required = engine.page_state().overall_status;
+        assert_eq!(authorization_required.title, "Cloud not active");
+        assert_eq!(authorization_required.state, UiCloudPanelState::Caution);
+        assert_eq!(
+            authorization_required.summary.as_deref(),
+            Some("Sync Account linked, but provider requires authorization.")
+        );
+    }
+
+    #[test]
+    fn linked_account_can_be_unlinked_while_authorization_is_absent() {
+        let initial = plan(&["KRNT", "KPAE"]);
+        let mut engine = CloudEngine::new(CloudPersistentState::default());
+        create_account(&mut engine, &initial);
+        engine.set_authorization_state(
+            CloudProviderKind::GoogleDrive,
+            ProviderAuthorizationState::NotAuthorized,
+        );
+
+        let page = engine.page_state();
+        let provider = page.provider_card.unwrap();
+        assert_eq!(provider.id, "provider");
+        assert!(!provider
+            .actions
+            .iter()
+            .any(|action| action.id == "begin_unlink" && action.enabled));
+        let linked = page
+            .sync_account_panels
+            .iter()
+            .find(|panel| panel.id == "linked")
+            .unwrap();
+        assert!(linked
+            .summary
+            .as_deref()
+            .unwrap()
+            .contains("Your Sync Account is set up"));
+        assert_eq!(
+            linked
+                .actions
+                .iter()
+                .map(|action| action.id.as_str())
+                .collect::<Vec<_>>(),
+            vec!["backup_setup_code", "add_device", "begin_unlink"]
+        );
+
+        engine
+            .perform_action(CloudAction::BeginUnlinkDevice, &initial)
+            .unwrap();
+        let confirmation = active_panel(&engine);
+        assert_eq!(confirmation.id, "confirm_unlink");
+        assert_eq!(confirmation.state, UiCloudPanelState::Caution);
+        assert!(confirmation
+            .summary
+            .as_deref()
+            .unwrap()
+            .contains("irretrievably deleted"));
+        assert!(engine.persistent.account.is_some());
+
+        engine
+            .perform_action(CloudAction::CloseLinkedAccountDetail, &initial)
+            .unwrap();
+        assert!(engine.persistent.account.is_some());
+        engine
+            .perform_action(CloudAction::BeginUnlinkDevice, &initial)
+            .unwrap();
+        engine
+            .perform_action(CloudAction::ConfirmUnlinkDevice, &initial)
+            .unwrap();
+        assert_eq!(active_panel(&engine).id, "get_started");
+        assert!(engine.persistent.account.is_none());
+    }
+
+    #[test]
+    fn backup_and_add_device_reveal_the_same_code_for_distinct_intents() {
+        let initial = plan(&["KRNT", "KPAE"]);
+        let mut engine = CloudEngine::new(CloudPersistentState::default());
+        create_account(&mut engine, &initial);
+
+        engine
+            .perform_action(CloudAction::BackUpDeviceSetupCode, &initial)
+            .unwrap();
+        let backup = active_panel(&engine);
+        assert_eq!(backup.id, "backup_code");
+        assert!(engine
+            .page_state()
+            .sync_account_panels
+            .iter()
+            .find(|panel| panel.id == "linked")
+            .unwrap()
+            .actions
+            .is_empty());
+        let backup_code = match backup.control.unwrap() {
+            UiCloudPanelControl::DeviceSetupCodeOutput { setup_code } => setup_code,
+            control => panic!("unexpected backup control: {control:?}"),
+        };
+
+        engine
+            .perform_action(CloudAction::CloseLinkedAccountDetail, &initial)
+            .unwrap();
+        engine
+            .perform_action(CloudAction::AddAnotherDevice, &initial)
+            .unwrap();
+        let add_device = active_panel(&engine);
+        assert_eq!(add_device.id, "add_device");
+        let add_device_code = match add_device.control.unwrap() {
+            UiCloudPanelControl::DeviceSetupCodeOutput { setup_code } => setup_code,
+            control => panic!("unexpected add-device control: {control:?}"),
+        };
+        assert_eq!(backup_code, add_device_code);
+    }
+
+    #[test]
+    fn unlinking_sync_account_does_not_log_out_of_provider() {
+        let initial = plan(&["KRNT", "KPAE"]);
+        let mut engine = CloudEngine::new(CloudPersistentState::default());
+        create_account(&mut engine, &initial);
+        engine
+            .perform_action(CloudAction::BeginUnlinkDevice, &initial)
+            .unwrap();
+        engine
+            .perform_action(CloudAction::ConfirmUnlinkDevice, &initial)
+            .unwrap();
+        engine
+            .perform_action(CloudAction::BeginCreateAccount, &initial)
+            .unwrap();
+        engine
+            .perform_action(
+                CloudAction::SelectProvider {
+                    provider: CloudProviderKind::GoogleDrive,
+                },
+                &initial,
+            )
+            .unwrap();
+        assert_eq!(active_panel(&engine).id, "create_account");
     }
 
     #[test]
@@ -1534,11 +2666,11 @@ mod tests {
     }
 
     #[test]
-    fn pairing_token_checksum_rejects_typo() {
+    fn device_setup_code_checksum_rejects_typo() {
         let mut engine = CloudEngine::new(CloudPersistentState::default());
-        let mut pairing = create_account(&mut engine, &plan(&["KRNT", "KPAE"]));
-        pairing.push('x');
-        assert!(decode_pairing_token(&pairing).is_err());
+        let mut setup_code = create_account(&mut engine, &plan(&["KRNT", "KPAE"]));
+        setup_code.push('x');
+        assert!(decode_device_setup_code(&setup_code).is_err());
     }
 
     #[test]
@@ -1547,18 +2679,29 @@ mod tests {
         let changed = plan(&["KRNT", "KSEA", "KPAE"]);
         let mut provider = MemoryProvider::default();
         let mut first = CloudEngine::new(CloudPersistentState::default());
+        first
+            .perform_action(CloudAction::BeginCreateAccount, &initial)
+            .unwrap();
+        first
+            .perform_action(
+                CloudAction::SelectProvider {
+                    provider: CloudProviderKind::GoogleDrive,
+                },
+                &initial,
+            )
+            .unwrap();
         ready(&mut first);
         first
             .perform_action(CloudAction::CreateAccount, &initial)
             .unwrap();
         assert!(pump(&mut first, &mut provider, 10).is_empty());
-        let pairing_token = first.pairing_token().unwrap();
+        let setup_code = first.device_setup_code().unwrap();
 
         let mut second = CloudEngine::new(CloudPersistentState::default());
         ready(&mut second);
         second
             .perform_action(
-                CloudAction::LinkExisting { pairing_token },
+                CloudAction::AcceptDeviceSetupCode { setup_code },
                 &FlightPlan::default(),
             )
             .unwrap();

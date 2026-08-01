@@ -54,12 +54,12 @@ try {
       const cloud = document.querySelector('.pageLayer.isActive [data-testid="cloud-page"]');
       if (!cloud) return null;
       return {
-        provider: cloud.querySelector('[data-testid="cloud-provider-google_drive"]')?.textContent?.trim(),
-        providerSelected: cloud.querySelector('[data-testid="cloud-provider-google_drive"]')?.getAttribute('aria-pressed'),
-        connection: cloud.querySelector('[data-testid="cloud-connection-state"]')?.textContent?.trim(),
-        account: cloud.querySelector('[data-testid="cloud-account-state"]')?.textContent?.trim(),
-        connectEnabled: !cloud.querySelector('[data-testid="cloud-action-connect"]')?.disabled,
-        createDisabled: Boolean(cloud.querySelector('[data-testid="cloud-action-create_account"]')?.disabled),
+        panels: Array.from(cloud.querySelectorAll('.cloudAccountColumn .cloudFlowPanel'))
+          .map((panel) => panel.getAttribute('data-testid')),
+        setupEnabled: !cloud.querySelector('[data-testid="cloud-action-begin_setup"]')?.disabled,
+        createEnabled: !cloud.querySelector('[data-testid="cloud-action-begin_create"]')?.disabled,
+        overallTitle: cloud.querySelector('[data-testid="cloud-overall-status"] h2')?.textContent ?? null,
+        overallDetail: cloud.querySelector('[data-testid="cloud-overall-status"] p')?.textContent ?? null,
       };
     })()`),
     10_000,
@@ -67,20 +67,78 @@ try {
   );
 
   if (JSON.stringify(state) !== JSON.stringify({
-    provider: "Google Drive",
-    providerSelected: "true",
-    connection: "DISCONNECTED",
-    account: "NOT LINKED",
-    connectEnabled: true,
-    createDisabled: true,
+    panels: ["cloud-panel-get_started"],
+    setupEnabled: true,
+    createEnabled: true,
+    overallTitle: "Cloud not active",
+    overallDetail: "No Sync Account linked yet.",
   })) {
     throw new Error(`unexpected initial Cloud page state: ${JSON.stringify(state)}`);
   }
-  process.stdout.write(`cloud page smoke passed: ${JSON.stringify(state)}\n`);
+  await click(page, '[data-testid="cloud-action-begin_create"]');
+  const providerState = await waitFor(
+    async () => page.evaluate(`(() => {
+      const activePanel = document.querySelector('.pageLayer.isActive .cloudFlowPanel.is-active')
+        ?.getAttribute('data-testid');
+      const drive = document.querySelector('[data-testid="cloud-action-select_provider_google_drive"]');
+      const aerobag = document.querySelector('[data-testid="cloud-action-select_provider_aerobag_cloud"]');
+      if (activePanel !== 'cloud-panel-provider' || !(drive instanceof HTMLButtonElement) || !(aerobag instanceof HTMLButtonElement)) {
+        return null;
+      }
+      return {
+        activePanel,
+        driveEnabled: !drive.disabled,
+        aerobagDisabled: aerobag.disabled,
+      };
+    })()`),
+    10_000,
+    "Cloud provider selection did not appear",
+  );
+  if (JSON.stringify(providerState) !== JSON.stringify({
+    activePanel: "cloud-panel-provider",
+    driveEnabled: true,
+    aerobagDisabled: true,
+  })) {
+    throw new Error(`unexpected provider selection state: ${JSON.stringify(providerState)}`);
+  }
+  await click(page, '[data-testid="cloud-action-select_provider_google_drive"]');
+  const splitState = await waitFor(
+    async () => page.evaluate(`(() => {
+      const accountPanel = document.querySelector(
+        '.pageLayer.isActive .cloudAccountColumn .cloudFlowPanel.is-active'
+      );
+      const providerCard = document.querySelector(
+        '.pageLayer.isActive [data-testid="cloud-provider-card"]'
+      );
+      const create = document.querySelector('[data-testid="cloud-action-create_account"]');
+      const authorize = document.querySelector('[data-testid="cloud-action-authorize_provider"]');
+      if (!accountPanel || !providerCard || !(create instanceof HTMLButtonElement)
+          || !(authorize instanceof HTMLButtonElement)) {
+        return null;
+      }
+      return {
+        accountPanel: accountPanel.getAttribute('data-testid'),
+        providerTitle: providerCard.querySelector('h2')?.textContent ?? null,
+        createDisabled: create.disabled,
+        authorizeEnabled: !authorize.disabled,
+      };
+    })()`),
+    10_000,
+    "Cloud provider card did not separate from Sync Account flow",
+  );
+  if (JSON.stringify(splitState) !== JSON.stringify({
+    accountPanel: "cloud-panel-create_account",
+    providerTitle: "My Google Drive",
+    createDisabled: true,
+    authorizeEnabled: true,
+  })) {
+    throw new Error(`unexpected split Cloud state: ${JSON.stringify(splitState)}`);
+  }
+  process.stdout.write(`cloud page smoke passed: ${JSON.stringify({ state, splitState })}\n`);
 } finally {
   await browser?.close();
   await stopProcess(chrome?.process);
-  await rm(userDataDir, { recursive: true, force: true });
+  await rm(userDataDir, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
 }
 
 async function click(page, selector) {

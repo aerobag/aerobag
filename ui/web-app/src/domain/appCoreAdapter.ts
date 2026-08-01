@@ -167,49 +167,65 @@ export type UiHomePageState = {
   buttons: UiHomePageButton[];
 };
 
-export type UiCloudPageState = {
+export type UiCloudPanel = {
+  id: string;
   title: string;
-  provider_label: string;
-  connection_label: string;
-  account_label: string;
-  summary: string;
-  provider_options: Array<{
-    id: "google_drive";
-    label: string;
-    selected: boolean;
-    enabled: boolean;
-  }>;
-  facts: Array<{ label: string; value: string }>;
+  state: "complete" | "active" | "working" | "informational" | "caution" | "error";
+  summary?: string | null;
   actions: Array<{
     id: string;
     label: string;
     enabled: boolean;
     disabled_reason?: string | null;
   }>;
-  pairing_token?: string | null;
-  pairing_input_enabled: boolean;
+  control?:
+    | {
+        kind: "device_setup_code_input";
+        label: string;
+        placeholder: string;
+        accept_action_id: string;
+      }
+    | { kind: "device_setup_code_output"; setup_code: string }
+    | null;
 };
 
-export type CloudCredentialState =
-  | { state: "disconnected" }
-  | { state: "connecting" }
-  | { state: "ready"; expires_at_epoch_ms?: number | null }
-  | { state: "needs_user_action"; detail: string }
-  | { state: "transient_failure"; detail: string }
+export type UiCloudPageState = {
+  title: string;
+  sync_account_panels: UiCloudPanel[];
+  provider_card?: UiCloudPanel | null;
+  overall_status: UiCloudPanel;
+};
+
+export type ProviderAuthorizationState =
+  | { state: "not_authorized" }
+  | { state: "authorizing" }
+  | {
+      state: "authorized";
+      expires_at_epoch_ms?: number | null;
+      principal: { stable_id: string; display_label: string };
+    }
+  | { state: "authorization_required"; detail: string }
   | { state: "failed"; detail: string };
 
+export type CloudProviderKind = "google_drive" | "aerobag_cloud";
+
 export type CloudAction =
-  | { kind: "select_provider"; provider: "google_drive" }
+  | { kind: "begin_setup_from_device" }
+  | { kind: "begin_create_account" }
+  | { kind: "back_setup" }
+  | { kind: "select_provider"; provider: CloudProviderKind }
   | { kind: "create_account" }
-  | { kind: "link_existing"; pairing_token: string }
-  | { kind: "reveal_pairing_token" }
-  | { kind: "hide_pairing_token" }
-  | { kind: "sync_now" }
-  | { kind: "disconnect" };
+  | { kind: "accept_device_setup_code"; setup_code: string }
+  | { kind: "back_up_device_setup_code" }
+  | { kind: "add_another_device" }
+  | { kind: "close_linked_account_detail" }
+  | { kind: "begin_unlink_device" }
+  | { kind: "confirm_unlink_device" }
+  | { kind: "sync_now" };
 
 export type CloudProviderRequest = {
   request_id: number;
-  provider: "google_drive";
+  provider: "google_drive" | "aerobag_cloud";
   operation:
     | { operation: "allocate_ids"; count: number }
     | { operation: "read"; id: string }
@@ -877,7 +893,7 @@ export interface UiSession {
   setMapLayerEnabled(layerId: MapLayerId, enabled: boolean): Promise<UiSessionSnapshot>;
   setDebugFlag(flagId: DebugFlagId, enabled: boolean): Promise<UiSessionSnapshot>;
   performSettingsAction(actionId: string, valueId: string): Promise<UiSessionSnapshot>;
-  reportCloudCredentialState(state: CloudCredentialState): Promise<UiSessionSnapshot>;
+  reportCloudAuthorizationState(provider: CloudProviderKind, state: ProviderAuthorizationState): Promise<UiSessionSnapshot>;
   performCloudAction(action: CloudAction): Promise<UiSessionSnapshot>;
   takeCloudProviderRequest(nowEpochMs: number): Promise<CloudProviderRequest | null>;
   completeCloudProviderRequest(requestId: number, response: CloudProviderResponse, nowEpochMs: number): Promise<UiSessionSnapshot>;
@@ -1006,7 +1022,7 @@ type WasmModule = {
   set_map_layer_enabled_in_session_paged(handle: number, layerIdJson: string, enabled: boolean): Promise<string> | string;
   set_debug_flag_in_session(handle: number, flagIdJson: string, enabled: boolean): Promise<string> | string;
   perform_settings_action_in_session(handle: number, actionJson: string): Promise<string> | string;
-  report_cloud_credential_state_in_session(handle: number, stateJson: string): Promise<string> | string;
+  report_cloud_authorization_state_in_session(handle: number, providerJson: string, stateJson: string): Promise<string> | string;
   perform_cloud_action_in_session(handle: number, actionJson: string): Promise<string> | string;
   take_cloud_provider_request_in_session(handle: number, nowEpochMs: bigint): Promise<string> | string;
   complete_cloud_provider_request_in_session(handle: number, requestId: bigint, responseJson: string, nowEpochMs: bigint): Promise<string> | string;
@@ -1558,9 +1574,13 @@ export class WasmAppCoreAdapter implements AppCoreAdapter {
         );
         return snapshot;
       },
-      reportCloudCredentialState: async (state) => {
+      reportCloudAuthorizationState: async (provider, state) => {
         snapshot = await runSessionOperation<UiSessionSnapshot>(() =>
-          this.module.report_cloud_credential_state_in_session(handle, JSON.stringify(state)),
+          this.module.report_cloud_authorization_state_in_session(
+            handle,
+            JSON.stringify(provider),
+            JSON.stringify(state),
+          ),
         );
         return snapshot;
       },
@@ -2033,7 +2053,7 @@ async function loadBestAvailableAdapterUncached(
     "set_map_layer_enabled_in_session_paged",
     "set_debug_flag_in_session",
     "perform_settings_action_in_session",
-    "report_cloud_credential_state_in_session",
+    "report_cloud_authorization_state_in_session",
     "perform_cloud_action_in_session",
     "take_cloud_provider_request_in_session",
     "complete_cloud_provider_request_in_session",

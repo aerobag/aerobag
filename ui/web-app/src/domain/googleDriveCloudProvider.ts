@@ -34,6 +34,10 @@ type GoogleOauth2 = {
 export type GoogleDriveAuthorization = {
   accessToken: string;
   expiresAtEpochMs: number;
+  principal: {
+    stable_id: string;
+    display_label: string;
+  };
 };
 
 function oauth2(): GoogleOauth2 | null {
@@ -76,7 +80,7 @@ export async function authorizeGoogleDrive(): Promise<GoogleDriveAuthorization> 
   if (!googleOauth) {
     throw new Error("Google Identity Services did not initialize.");
   }
-  return new Promise((resolve, reject) => {
+  const token = await new Promise<{ accessToken: string; expiresAtEpochMs: number }>((resolve, reject) => {
     const client = googleOauth.initTokenClient({
       client_id: clientId,
       scope: DRIVE_SCOPE,
@@ -100,14 +104,34 @@ export async function authorizeGoogleDrive(): Promise<GoogleDriveAuthorization> 
     });
     client.requestAccessToken({ prompt: "consent" });
   });
+  return {
+    ...token,
+    principal: await readGoogleDrivePrincipal(token.accessToken),
+  };
 }
 
-export function revokeGoogleDrive(accessToken: string): Promise<void> {
-  const googleOauth = oauth2();
-  if (!googleOauth) {
-    return Promise.resolve();
+export async function readGoogleDrivePrincipal(accessToken: string): Promise<GoogleDriveAuthorization["principal"]> {
+  const response = await fetch(
+    `${DRIVE_API_ROOT}/about?fields=user(permissionId,displayName,emailAddress)`,
+    { headers: authorizationHeaders(accessToken) },
+  );
+  if (!response.ok) {
+    const detail = (await response.text()).slice(0, 500).trim();
+    throw new Error(`Could not identify the authorized Google Drive account: HTTP ${response.status}${detail ? ` ${detail}` : ""}`);
   }
-  return new Promise((resolve) => googleOauth.revoke(accessToken, resolve));
+  const payload = await response.json() as {
+    user?: { permissionId?: string; displayName?: string; emailAddress?: string };
+  };
+  const stableId = payload.user?.permissionId?.trim();
+  if (!stableId) {
+    throw new Error("Google Drive did not provide a stable account identifier.");
+  }
+  return {
+    stable_id: stableId,
+    display_label: payload.user?.emailAddress?.trim()
+      || payload.user?.displayName?.trim()
+      || "Google Drive user",
+  };
 }
 
 export async function executeGoogleDriveCloudRequest(

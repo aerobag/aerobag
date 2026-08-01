@@ -44,7 +44,7 @@ client appears on the other through the Drive synchronization path.
 - Notifications are optional latency hints. Polling and chain traversal are
   sufficient for correctness.
 - Provider credentials are device-local and are never included in Aerobag
-  pairing tokens.
+  Device Setup Codes.
 - Active navigation state is device-local. A cloud flight-plan definition
   cannot silently replace a plan currently being flown.
 
@@ -67,7 +67,8 @@ client appears on the other through the Drive synchronization path.
 - Synchronizing active-leg execution, direct-to state, ownship, viewport, open
   trays, or other transient navigation state.
 - General collaborative editing or user-driven conflict resolution.
-- QR pairing; copy/paste pairing tokens are sufficient for the first slice.
+- QR scanning; copy/paste Device Setup Codes are sufficient for the first
+  slice.
 - Google webhook relays or background synchronization after the web access
   token expires.
 - Garbage-collecting the immutable successor-chain spine.
@@ -76,23 +77,45 @@ client appears on the other through the Drive synchronization path.
 - Aerobag UCS, WebDAV, or provider migration.
 - Cloud storage as a package or live-feed cache.
 
-## Identity, Keys, And Pairing
+## Identity, Keys, And Device Setup
 
 ### Local-First Identity
 
 A fresh installation generates a device ID and stores all state locally. It
 does not allocate cloud objects or contact a cloud provider.
 
-The Cloud page offers:
+The product vocabulary is:
 
-- `Create cloud account`, which publishes the current eligible local state;
-- `Link existing account`, which imports a pairing token;
-- `Pair another device`, which displays a copyable pairing token;
-- `Disconnect`, which stops cloud access without deleting local state; and
-- a later, separately confirmed `Delete cloud account` operation.
+- **Storage provider**: Google Drive, Aerobag Cloud, or another implementation
+  of the provider contract.
+- **Provider authorization**: this device's credential for one provider.
+- **Sync Account**: the encrypted Aerobag account stored at one provider.
+- **Linked device**: a device that holds the Sync Account descriptor and can
+  verify its genesis state.
+- **Device Setup Code**: the secret, copyable descriptor used to add another
+  device to a Sync Account.
+- **Unlink this device**: after an explicit warning and confirmation, remove
+  the local Sync Account descriptor without deleting cloud data or changing
+  another device.
 
-Linking never transfers provider credentials. Each device independently
-authenticates to the provider named in the token.
+Device setup never transfers provider credentials. Each device independently
+authorizes the provider named in the Device Setup Code.
+
+Provider authorization is independent of Sync Account setup. `Back` abandons
+an incomplete setup journey, and `Unlink this device` removes the local Sync
+Account descriptor; neither operation logs out of the provider or revokes an
+otherwise-valid provider token. Authorization ends only through expiry,
+provider revocation, or a future explicit provider-logout action.
+
+The following invariant is structural, not a UI convention:
+
+```text
+Sync Account != NOT LINKED  =>  Provider != NOT SELECTED
+```
+
+The provider belongs to the Sync Account descriptor. Core installs both in one
+transition when it accepts a Device Setup Code; platform code cannot select a
+different provider for an already-linked account.
 
 ### Root Secret
 
@@ -107,14 +130,20 @@ independent material with a versioned KDF and distinct context labels:
 Cryptography and serialization are implemented once in core. Web and Android
 must not implement parallel cryptographic formats.
 
-The pairing token contains the root secret, provider kind, provider-specific
-non-secret configuration, genesis object ID, and contract versions. Possession
-of the token grants complete account access. It must not appear in a normal URL
-query or path.
+The Device Setup Code contains the root secret, provider kind,
+provider-specific non-secret configuration, genesis object ID, contract
+versions, and an expected provider-account identity fingerprint plus a display
+hint. Possession of the code grants complete account access. It must not appear
+in a normal URL query or path.
+
+The identity binding catches the common error where the receiving device
+authorizes a different Google account. It is an early diagnostic, not the
+security boundary: successful authenticated decryption of the genesis object
+is the final proof that the provider account and Sync Account agree.
 
 ### Optional Provider Recovery
 
-By default, the root secret exists only on paired devices. Losing all paired
+By default, the root secret exists only on linked devices. Losing all linked
 devices loses access to encrypted cloud data.
 
 A future opt-in `Google account recovery` option may store a recovery bundle in
@@ -202,18 +231,21 @@ watch_changes(cursor)
 Optional capabilities reduce polling or listing. They never determine
 correctness.
 
-The provider adapter also reports credential state:
+The provider adapter also reports authorization state:
 
 ```text
-Disconnected
-Connecting
-Ready { expires_at? }
-NeedsUserAction
-Failed { category, detail }
+NotAuthorized
+Authorizing
+Authorized { expires_at?, principal { stable_id, display_label } }
+AuthorizationRequired { detail }
+Failed { detail }
 ```
 
-Core uses this state to pause and resume the outbox and to construct the Cloud
-page. Platform UI must not infer provider readiness from exceptions.
+Core uses this state to bind and verify the provider identity, pause and resume
+the outbox, and construct the Cloud page. Transient operation failures are
+separate from authorization: losing the network does not erase a valid
+credential or pretend that the user must authorize again. Platform UI must not
+infer provider readiness from exceptions.
 
 ### Platform Boundary
 
@@ -241,7 +273,7 @@ The MVP uses:
 
 - immutable Merkle pages containing synchronized records;
 - immutable state nodes naming one Merkle root;
-- a genesis state node named by the pairing token; and
+- a genesis state node named by the Device Setup Code; and
 - optional untrusted hints or provider bookkeeping objects later.
 
 Every envelope includes a format version, account binding, object role,
@@ -299,13 +331,18 @@ that tip's `next_slot_id`:
 - malformed, unauthenticated, or discontinuous data raises a core warning and
   is never adopted.
 
-For the MVP, foreground clients poll the next slot frequently enough to target
-crossfill within five seconds. Polling backs off while hidden, idle,
-disconnected, or unauthorized and runs immediately after foregrounding,
-reconnect, local publication, or a provider change hint.
+For the first Drive implementation, an authorized foreground client polls the
+next slot every 60 seconds. Local mutations still publish immediately, and a
+client checks immediately after foregrounding, reconnect, authorization, local
+publication, or a provider change hint. Polling pauses while hidden, idle,
+disconnected, or unauthorized.
 
-Drive Changes API support and webhook notification relays are deferred
-optimizations.
+Three-second Drive polling demonstrated the feature but is not an acceptable
+product policy, especially over an airborne or metered link. Drive Changes API
+support and webhook notification relays remain deferred optimizations. A future
+Aerobag Cloud provider should emit SSE invalidations for the Sync Account root
+and retain a one-minute-or-longer correctness poll as a backstop. Notifications
+change latency, never correctness.
 
 ### Startup And History
 
@@ -425,10 +462,10 @@ a small self-hostable OAuth token broker. The broker need not proxy Drive data.
 The MVP does not introduce an Aerobag OAuth-token broker. Instead:
 
 - the Cloud page shows token expiry;
-- core transitions to `NeedsUserAction` when authorization expires;
+- core transitions to `AuthorizationRequired` when authorization expires;
 - local edits continue into the durable outbox;
 - synchronization pauses without data loss; and
-- `Reconnect Google Drive` resumes it.
+- `Authorize Google Drive` resumes it.
 
 This is sufficient for the sub-hour MVP demonstration. Production background
 web synchronization requires a separate decision about a token broker or
@@ -441,9 +478,9 @@ Core owns the distinction between an authorization break and a temporarily
 unreachable provider. Provider adapters report typed credential and operation
 states; platform UI never infers severity from exception strings.
 
-- `NeedsUserAction`, revoked authorization, and authentication rejection are a
-  caution. They drive the yellow `/!\` launcher because synchronization cannot
-  heal until the user acts.
+- `AuthorizationRequired`, revoked authorization, provider-identity mismatch,
+  and authentication rejection are a caution. They drive the yellow `/!\`
+  launcher because synchronization cannot heal until the user acts.
 - network loss, timeout, provider throttling, and a provider that simply has not
   been contacted recently are informational. They appear in Cloud and Data
   Status but do not turn the launcher yellow because normal retry may heal them.
@@ -455,41 +492,115 @@ states; platform UI never infers severity from exception strings.
 
 ## Cloud Page
 
-The Home page gains a `CLOUD` destination. Core supplies the complete page
-model and action enablement.
+The Home page has a `CLOUD` destination. Core supplies two explicitly separated
+regions; platform code must not classify or rearrange panels by identifier:
 
-Minimum controls:
+- `sync_account_panels` is the progressive Sync Account setup and management
+  flow.
+- `provider_card` is absent until a provider is selected or inherited from a
+  Device Setup Code, then describes that provider's device-local authorization
+  state and actions.
+- `overall_status` spans both regions and states whether Cloud is operational,
+  separating "a Sync Account exists" from "its provider is ready".
 
-- provider scheme selector, with only `Google Drive` enabled initially;
-- `Connect Google Drive` / `Reconnect Google Drive`;
-- `Disconnect Google Drive`;
-- `Create cloud account`;
-- `Link existing account` with a pairing-token text input;
-- `Pair another device`, exposing a copyable token;
-- `Sync now`; and
-- account and synchronization status.
+Web and Android render the regions side by side when space permits and stack
+them on narrow displays. They only render core-projected state and perform the
+semantic actions requested by core.
 
-Minimum status:
+Within `sync_account_panels`, exactly one panel is active, working, cautionary,
+or in error. The independent provider card may also offer its authorization
+action. Earlier account decisions remain visible as compact completed
+summaries. `Back` is a core action that unwinds one incomplete account decision:
+creation returns to provider selection, while a pending account received by
+Device Setup Code returns to code entry. Once an account is verified, the
+`Sync Account linked`
+panel always explains that the provider cannot recover the account, warns that
+the Device Setup Code grants full read/write access, and tells the user to
+store that code securely. `Back up Device Setup Code`, `Add another device`, and
+`Unlink this device` always belong to this panel, not to provider authorization.
 
-- provider and credential state, including expiry;
-- linked/unlinked account state;
-- local outbox count;
-- current verified cloud generation;
-- last successful poll and publication;
-- pending remote records;
-- paused/offline/auth-required state; and
-- actionable error text.
+The initial panel contains only:
+
+```text
+Get started
+[Set up from another device] [Create new Sync Account]
+```
+
+The receive path unfolds as:
+
+1. `Get started: Set up from another device`.
+2. `Scan a QR code` or paste a Device Setup Code. QR is visibly unavailable in
+   the first web draft; paste is functional.
+3. `Sync Account received` after core validates the code and atomically
+   installs its provider and pending account descriptor.
+4. The selected provider card requests authorization if it is absent.
+5. `Linking account...` while core reads and verifies the genesis state.
+6. `Account linked`, with `Back up Device Setup Code`, `Add another device`, and
+   `Unlink this device`.
+
+The creation path unfolds as:
+
+1. `Get started: Create new Sync Account`.
+2. Provider selection: `My Google Drive` is available; `Aerobag Cloud` is
+   visible but disabled until that provider exists.
+3. `Authorize Google Drive`, followed by a completed summary naming the
+   authorized Google identity.
+4. `Create new Sync Account on Google Drive as <identity>`.
+5. `Creating Sync Account...` while core publishes genesis.
+6. `Account linked`, with `Back up Device Setup Code`, `Add another device`, and
+   `Unlink this device`.
+
+The first two linked-account actions intentionally reveal the same Device Setup
+Code under different task-oriented language. The backup action is suitable
+for copying into a password manager; the add-device action can later add a QR
+code without changing the recovery flow. `Unlink this device` unfolds a
+caution panel. Core does not delete the local descriptor until the user chooses
+`Yes, delete Sync Account from this device`; `Back` leaves it intact.
+While any of these child panels is open, the completed linked-account panel has
+no actions, so there is only one actionable account-management level.
+
+Provider authorization is not another step in the Sync Account panel stack.
+The provider card is a single stateful surface: it identifies the provider,
+shows the authorized identity or current authorization problem, and offers the
+appropriate authorization action. This keeps account lifecycle actions such as
+recovery and unlinking separate from the device-local credential needed to use
+the provider. Confirmed unlinking removes the account's provider association,
+so the card disappears, but it does not revoke an otherwise-valid cached
+provider credential.
+
+The overall status uses core-owned conditions and language:
+
+- `Cloud active: Sync Account linked, provider connected.`
+- `Cloud not active: Sync Account linked, but provider requires authorization.`
+- `Cloud not active: No Sync Account linked yet.`
+
+Authorization in progress and temporary provider unavailability have distinct
+truthful variants rather than claiming that the provider is connected.
+
+The creation panel explicitly says that it always creates a new independent
+Sync Account, does not find or replace another account already stored by that
+provider, and directs existing-account users back to `Set up from another
+device`. Account discovery is not part of the MVP.
+
+Receiving a Device Setup Code before provider authorization is intentional. It
+lets the code choose the provider and tells core which provider identity to
+expect. If the subsequently authorized identity does not match, the
+authorization panel reports both identities and no storage read is attempted.
+
+The linked summary may include low-frequency operational facts such as current
+generation, pending outbox work, and last successful synchronization. These are
+supporting status, not a dashboard that competes with the setup flow.
 
 The `/!\` tray also receives a core-owned cloud status record whenever the
 provider is known to require user authorization. Recoverable network/provider
 staleness is an informational record with `drives_caution = false`.
 
 Controls issue semantic actions to core. OAuth itself is a platform effect
-requested by core and returned as typed credential state.
+requested by core and returned as typed provider-authorization state.
 
 The optional `Back up recovery key to Google Drive` control is deferred until
-the basic pairing flow works. When added, it requires explicit confirmation of
-the changed privacy model.
+the basic device-setup flow works. When added, it requires explicit
+confirmation of the changed privacy model.
 
 ## First Record: Flight Plan
 
@@ -518,12 +629,12 @@ flight plan back into core.
 
 ### 1. Contracts And Test Provider
 
-- Define provider request/response, credential-state, and capability wire
+- Define provider request/response, authorization-state, and capability wire
   types.
 - Implement an in-memory deterministic provider with generated IDs, atomic
   create-once, injected ambiguity, failures, and delayed visibility.
-- Define encrypted envelope, genesis, state-node, Merkle-page, pairing-token,
-  and local-engine-state contracts.
+- Define encrypted envelope, genesis, state-node, Merkle-page,
+  Device-Setup-Code, and local-engine-state contracts.
 - Select and version cryptographic primitives and derivation labels.
 - Add model tests for races, crashes, retries, corruption, and chain traversal.
 
@@ -531,7 +642,7 @@ flight plan back into core.
 
 - Implement generic local persistence and the durable outbox.
 - Implement Merkle record read/replace and typed record registration.
-- Implement genesis creation and pairing-token import/export.
+- Implement genesis creation and Device Setup Code import/export.
 - Implement successor publication, conflict retry, polling, and remote
   adoption.
 - Expose passive Cloud page and Data Status models.
@@ -550,8 +661,8 @@ flight plan back into core.
 ### 4. Cloud Page
 
 - Add the Home-page destination and provider selection.
-- Add Google authorization, account creation, pairing-token copy/paste,
-  disconnect, and sync controls.
+- Add the progressive setup flow, Google authorization, Sync Account creation,
+  Device Setup Code copy/paste, unlink, and sync controls.
 - Render only core-computed enablement, status, and errors.
 - Add a small debug diagnostic showing provider request, node generation, and
   adoption source for acceptance testing.
@@ -571,8 +682,8 @@ flight plan back into core.
   sharing local storage do not count.
 - Authenticate both clients to the same Google account.
 - Create the cloud account on client A.
-- Authenticate client B independently and link it with A's pairing token.
-- Edit the inactive flight plan on A and observe it on B within five seconds.
+- Authenticate client B independently and set it up with A's Device Setup Code.
+- Edit the inactive flight plan on A and observe it on B within one Drive poll.
 - Edit it on B and observe the reverse update on A.
 - Verify diagnostics show a Drive successor node and `source = cloud`, not
   local-storage or tab-broadcast propagation.
@@ -597,7 +708,8 @@ in CI; real Google authorization remains a manual/provider qualification test.
 - Polling resumes after foreground, reconnect, and reauthorization.
 - Token expiry pauses cloud effects but not local flight-plan editing.
 - Authorization failure drives caution; transient network failure does not.
-- Pairing reconstructs account access without transferring Google credentials.
+- Device setup reconstructs account access without transferring Google
+  credentials.
 - Two devices editing sequentially crossfill the flight plan in both
   directions.
 - Concurrent flight-plan replacement resolves deterministically and retains
@@ -605,8 +717,8 @@ in CI; real Google authorization remains a manual/provider qualification test.
 - A remote plan arriving during active navigation is persisted but not adopted.
 - Snapshot invalidation after remote adoption occurs exactly once.
 - Provider/platform code contains no flight-plan, Merkle, or merge policy.
-- Logs, provider objects, and report endpoints contain no OAuth token, pairing
-  token, root secret, or plaintext flight plan.
+- Logs, provider objects, and report endpoints contain no OAuth token, Device
+  Setup Code, root secret, or plaintext flight plan.
 
 ## After The MVP
 
@@ -621,7 +733,7 @@ in CI; real Google authorization remains a manual/provider qualification test.
 - WebDAV qualification using `If-None-Match: *` or another proven atomic
   create-once primitive.
 - Provider migration and multiple package-policy profiles.
-- QR pairing and camera scanning.
+- QR Device Setup Codes and camera scanning.
 
 ## Future State Placement
 
@@ -672,7 +784,7 @@ Previously agreed service constraints remain:
 ## Deferred Decisions
 
 - Exact AEAD, signature, KDF, and envelope formats pending cryptographic review.
-- Exact foreground polling and idle-backoff intervals.
+- Polling/backoff policy after Drive change hints or Aerobag Cloud SSE exist.
 - Checkpoint/compaction strategy for the immutable chain.
 - Production web refresh-token architecture.
 - Recovery-key rotation and re-encryption UX.

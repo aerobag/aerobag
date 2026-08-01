@@ -692,14 +692,18 @@ pub fn perform_settings_action_in_session(
 }
 
 #[wasm_bindgen]
-pub fn report_cloud_credential_state_in_session(
+pub fn report_cloud_authorization_state_in_session(
     session_handle: u32,
+    provider_json: &str,
     state_json: &str,
 ) -> Result<String, JsValue> {
-    let state: app_core::CloudCredentialState =
+    let provider: app_core::CloudProviderKind =
+        serde_json::from_str(provider_json).map_err(|err| JsValue::from_str(&err.to_string()))?;
+    let state: app_core::ProviderAuthorizationState =
         serde_json::from_str(state_json).map_err(|err| JsValue::from_str(&err.to_string()))?;
-    let outcome = app_core::report_cloud_credential_state_in_session(session_handle, state)
-        .map_err(|err| JsValue::from_str(&err.to_string()))?;
+    let outcome =
+        app_core::report_cloud_authorization_state_in_session(session_handle, provider, state)
+            .map_err(|err| JsValue::from_str(&err.to_string()))?;
     serde_json::to_string(&outcome).map_err(|err| JsValue::from_str(&err.to_string()))
 }
 

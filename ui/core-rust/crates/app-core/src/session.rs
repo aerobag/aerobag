@@ -21,8 +21,8 @@ use crate::{
     chart_page::chart_page_airport_ids_from_plan,
     chart_page::ChartAssetRecord,
     cloud::{
-        CloudAction, CloudCredentialState, CloudEngine, CloudPersistentState, CloudProviderRequest,
-        CloudProviderResponse, UiCloudPageState, CLOUD_STATUS_ID,
+        CloudAction, CloudEngine, CloudPersistentState, CloudProviderKind, CloudProviderRequest,
+        CloudProviderResponse, ProviderAuthorizationState, UiCloudPageState, CLOUD_STATUS_ID,
     },
     data_status::{
         parse_status_action_id, project_data_status_state, DataStatusRecord, UiDataStatusPageFact,
@@ -2254,58 +2254,18 @@ fn project_data_status_page_state(session: &UiSession) -> UiDataStatusPageState 
 }
 
 fn cloud_status_page_row(session: &UiSession) -> UiDataStatusPageRow {
-    let page = session.cloud.page_state();
-    let linked = page.account_label == "LINKED";
-    let (severity, detail) = match session.cloud.credential_state() {
-        CloudCredentialState::Ready { .. } => (
-            UiStatusSeverity::Ok,
-            if linked {
-                "Cloud synchronization is connected."
-            } else {
-                "Google Drive is connected; no cloud account is linked."
-            },
-        ),
-        CloudCredentialState::Connecting => (
-            UiStatusSeverity::Info,
-            "Cloud provider authorization is in progress.",
-        ),
-        CloudCredentialState::TransientFailure { .. } => (
-            UiStatusSeverity::Info,
-            "Cloud synchronization is temporarily unavailable and will retry automatically.",
-        ),
-        CloudCredentialState::NeedsUserAction { .. }
-        | CloudCredentialState::Failed { .. }
-        | CloudCredentialState::Disconnected
-            if linked =>
-        {
-            (
-                UiStatusSeverity::Caution,
-                "Cloud synchronization requires user attention.",
-            )
-        }
-        CloudCredentialState::NeedsUserAction { .. }
-        | CloudCredentialState::Failed { .. }
-        | CloudCredentialState::Disconnected => (
-            UiStatusSeverity::Info,
-            "No cloud provider connection is configured.",
-        ),
-    };
-    let mut facts = vec![
-        status_fact("Provider", page.provider_label),
-        status_fact("Account", page.account_label),
-    ];
-    facts.extend(
-        page.facts
-            .into_iter()
-            .map(|fact| status_fact(fact.label, fact.value)),
-    );
+    let summary = session.cloud.status_summary();
     status_page_row(
         "cloud:status",
         "Cloud",
-        page.connection_label,
-        severity,
-        session.cloud.credential_state().detail().unwrap_or(detail),
-        facts,
+        summary.label,
+        summary.severity,
+        summary.detail,
+        summary
+            .facts
+            .into_iter()
+            .map(|fact| status_fact(fact.label, fact.value))
+            .collect(),
     )
 }
 
@@ -3934,9 +3894,10 @@ pub fn configure_platform_capabilities_in_session(
     changed_session_snapshot_outcome(session)
 }
 
-pub fn report_cloud_credential_state_in_session(
+pub fn report_cloud_authorization_state_in_session(
     handle: u32,
-    state: CloudCredentialState,
+    provider: CloudProviderKind,
+    state: ProviderAuthorizationState,
 ) -> AppResult<HadOperationOutcome> {
     let mut sessions = lock_sessions();
     let session = session_mut(&mut sessions, handle)?;
@@ -3947,7 +3908,7 @@ pub fn report_cloud_credential_state_in_session(
         });
     }
     let mut candidate = session.clone();
-    candidate.cloud.set_credential_state(state);
+    candidate.cloud.set_authorization_state(provider, state);
     commit_cloud_candidate(session, candidate, vec![UiInvalidation::SessionSnapshot])
 }
 
@@ -12932,12 +12893,13 @@ fn replace_flight_plan_in_session(handle: u32, plan: FlightPlan) -> AppResult<Ha
 mod tests {
     use super::*;
     use crate::{
-        map_overlay::NotamProductPayload, AirportId, FlightPlan, GuidanceState, LegDisplayElement,
-        LegDisplayPath, LegDisplayPathStyle, MapSelectionAction, MapSelectionCategory,
-        MapSelectionHighlight, MapSelectionItem, NavRef, OwnshipSourceId, OwnshipSourceKind,
-        PathTermination, PointVectorRecord, ProcedureLegProvenance, ProcedureSegmentRole,
-        ResolvedLeg, ResolvedLegSource, RouteComponent, SequencingMode, Situation,
-        SituationPosition, SituationSample, REQUIRED_NAV_DB_CONTRACT_ID,
+        map_overlay::NotamProductPayload, AirportId, CloudProviderPrincipal, FlightPlan,
+        GuidanceState, LegDisplayElement, LegDisplayPath, LegDisplayPathStyle, MapSelectionAction,
+        MapSelectionCategory, MapSelectionHighlight, MapSelectionItem, NavRef, OwnshipSourceId,
+        OwnshipSourceKind, PathTermination, PointVectorRecord, ProcedureLegProvenance,
+        ProcedureSegmentRole, ResolvedLeg, ResolvedLegSource, RouteComponent, SequencingMode,
+        Situation, SituationPosition, SituationSample, UiCloudPanelControl,
+        REQUIRED_NAV_DB_CONTRACT_ID,
     };
     use std::io::Read;
 
@@ -24925,10 +24887,15 @@ mod tests {
                 storage,
             )
             .expect("configure cloud capability");
-            report_cloud_credential_state_in_session(
+            report_cloud_authorization_state_in_session(
                 handle,
-                CloudCredentialState::Ready {
+                CloudProviderKind::GoogleDrive,
+                ProviderAuthorizationState::Authorized {
                     expires_at_epoch_ms: None,
+                    principal: CloudProviderPrincipal {
+                        stable_id: "session-test-principal".to_string(),
+                        display_label: "pilot@example.com".to_string(),
+                    },
                 },
             )
             .expect("connect cloud provider");
@@ -24968,16 +24935,42 @@ mod tests {
         let first =
             create_ui_session(original_plan.clone(), &[], None, None).expect("first session");
         configure_cloud(first.handle, Some(storage.clone()));
+        perform_cloud_action_in_session(first.handle, CloudAction::BeginCreateAccount)
+            .expect("begin cloud account creation");
+        perform_cloud_action_in_session(
+            first.handle,
+            CloudAction::SelectProvider {
+                provider: crate::CloudProviderKind::GoogleDrive,
+            },
+        )
+        .expect("select cloud provider");
+        report_cloud_authorization_state_in_session(
+            first.handle,
+            CloudProviderKind::GoogleDrive,
+            ProviderAuthorizationState::Authorized {
+                expires_at_epoch_ms: None,
+                principal: CloudProviderPrincipal {
+                    stable_id: "session-test-principal".to_string(),
+                    display_label: "pilot@example.com".to_string(),
+                },
+            },
+        )
+        .expect("authorize selected provider");
         perform_cloud_action_in_session(first.handle, CloudAction::CreateAccount)
             .expect("create cloud account");
         assert_eq!(pump_cloud(first.handle, &mut provider, 10_000), 0);
-        perform_cloud_action_in_session(first.handle, CloudAction::RevealPairingToken)
-            .expect("reveal pairing token");
+        perform_cloud_action_in_session(first.handle, CloudAction::BackUpDeviceSetupCode)
+            .expect("reveal Device Setup Code");
         let token = get_session_snapshot(first.handle)
             .expect("first snapshot")
             .cloud_page_state
-            .pairing_token
-            .expect("pairing token");
+            .sync_account_panels
+            .into_iter()
+            .find_map(|panel| match panel.control {
+                Some(UiCloudPanelControl::DeviceSetupCodeOutput { setup_code }) => Some(setup_code),
+                _ => None,
+            })
+            .expect("Device Setup Code");
         destroy_session(first.handle);
 
         let restarted =
@@ -24996,16 +24989,25 @@ mod tests {
             restored.app_state.active_plan.as_ref(),
             Some(&original_plan)
         );
-        assert_eq!(restored.cloud_page_state.account_label, "LINKED");
+        assert!(restored
+            .cloud_page_state
+            .sync_account_panels
+            .iter()
+            .any(|panel| panel.id == "linked"));
         assert!(restored.data_status_state.boxes.iter().any(|box_state| {
             box_state.id == CLOUD_STATUS_ID
                 && box_state.drives_caution
                 && box_state.severity == UiStatusSeverity::Caution
         }));
-        report_cloud_credential_state_in_session(
+        report_cloud_authorization_state_in_session(
             restarted.handle,
-            CloudCredentialState::Ready {
+            CloudProviderKind::GoogleDrive,
+            ProviderAuthorizationState::Authorized {
                 expires_at_epoch_ms: None,
+                principal: CloudProviderPrincipal {
+                    stable_id: "session-test-principal".to_string(),
+                    display_label: "pilot@example.com".to_string(),
+                },
             },
         )
         .expect("reconnect restarted cloud provider");
@@ -25015,9 +25017,7 @@ mod tests {
         configure_cloud(second.handle, None);
         perform_cloud_action_in_session(
             second.handle,
-            CloudAction::LinkExisting {
-                pairing_token: token,
-            },
+            CloudAction::AcceptDeviceSetupCode { setup_code: token },
         )
         .expect("link second session");
         assert_eq!(pump_cloud(second.handle, &mut provider, 20_000), 1);

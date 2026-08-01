@@ -102,7 +102,6 @@ import {
   authorizeGoogleDrive,
   executeGoogleDriveCloudRequest,
   preloadGoogleDriveAuthorization,
-  revokeGoogleDrive,
   type GoogleDriveAuthorization,
 } from "./domain/googleDriveCloudProvider";
 import { flightPlanWaypointUsesFullWidthLabel } from "./domain/flightPlanLayout";
@@ -2001,20 +2000,16 @@ export default function App() {
     },
     cloud_page_state: {
       title: "Cloud",
-      provider_label: "Google Drive",
-      connection_label: "DISCONNECTED",
-      account_label: "NOT LINKED",
-      summary: "Connect a provider, then create or link a cloud account.",
-      provider_options: [{
-        id: "google_drive",
-        label: "Google Drive",
-        selected: true,
-        enabled: true,
-      }],
-      facts: [],
-      actions: [],
-      pairing_token: null,
-      pairing_input_enabled: false,
+      sync_account_panels: [],
+      provider_card: null,
+      overall_status: {
+        id: "overall_status",
+        title: "Cloud not active",
+        state: "informational",
+        summary: "No Sync Account linked yet.",
+        actions: [],
+        control: null,
+      },
     },
     home_page_state: {
       buttons: [],
@@ -2112,7 +2107,7 @@ export default function App() {
       return;
     }
     const authorizationPromise = authorizeGoogleDrive();
-    void uiSession.reportCloudCredentialState({ state: "connecting" }).then((nextSnapshot) => {
+    void uiSession.reportCloudAuthorizationState("google_drive", { state: "authorizing" }).then((nextSnapshot) => {
       applySessionSnapshot(nextSnapshot, "cloud_connecting");
     });
     try {
@@ -2125,24 +2120,25 @@ export default function App() {
       cloudAuthorizationExpiryTimerRef.current = window.setTimeout(() => {
         googleDriveAuthorizationRef.current = null;
         if (uiSession) {
-          void uiSession.reportCloudCredentialState({
-            state: "needs_user_action",
+          void uiSession.reportCloudAuthorizationState("google_drive", {
+            state: "authorization_required",
             detail: "Google Drive authorization expired. Reconnect to resume cloud synchronization.",
           }).then((nextSnapshot) => {
             applySessionSnapshot(nextSnapshot, "cloud_authorization_expired");
           });
         }
       }, Math.min(expiresInMs, 2_147_000_000));
-      const nextSnapshot = await uiSession.reportCloudCredentialState({
-        state: "ready",
+      const nextSnapshot = await uiSession.reportCloudAuthorizationState("google_drive", {
+        state: "authorized",
         expires_at_epoch_ms: authorization.expiresAtEpochMs,
+        principal: authorization.principal,
       });
       applySessionSnapshot(nextSnapshot, "cloud_connected");
       await pumpCloudProvider();
     } catch (error) {
       googleDriveAuthorizationRef.current = null;
-      const nextSnapshot = await uiSession.reportCloudCredentialState({
-        state: "needs_user_action",
+      const nextSnapshot = await uiSession.reportCloudAuthorizationState("google_drive", {
+        state: "authorization_required",
         detail: errorMessage(error),
       });
       applySessionSnapshot(nextSnapshot, "cloud_authorization_failed");
@@ -2152,17 +2148,6 @@ export default function App() {
   const performCloudPageAction = useCallback(async (action: CloudAction) => {
     if (!uiSession) {
       return;
-    }
-    if (action.kind === "disconnect") {
-      const token = googleDriveAuthorizationRef.current?.accessToken ?? null;
-      googleDriveAuthorizationRef.current = null;
-      if (cloudAuthorizationExpiryTimerRef.current !== null) {
-        window.clearTimeout(cloudAuthorizationExpiryTimerRef.current);
-        cloudAuthorizationExpiryTimerRef.current = null;
-      }
-      if (token) {
-        await revokeGoogleDrive(token);
-      }
     }
     const nextSnapshot = await uiSession.performCloudAction(action);
     applySessionSnapshot(nextSnapshot, `cloud_action_${action.kind}`);
@@ -11024,7 +11009,7 @@ function CloudPage(props: {
   onConnect: () => Promise<void>;
   onAction: (action: CloudAction) => Promise<void>;
 }) {
-  const [pairingInput, setPairingInput] = useState("");
+  const [setupCodeInput, setSetupCodeInput] = useState("");
   const [copyStatus, setCopyStatus] = useState("");
   const [actionError, setActionError] = useState("");
 
@@ -11032,29 +11017,47 @@ function CloudPage(props: {
     setActionError("");
     try {
       switch (actionId) {
+        case "begin_setup":
+          await props.onAction({ kind: "begin_setup_from_device" });
+          break;
+        case "begin_create":
+          await props.onAction({ kind: "begin_create_account" });
+          break;
+        case "back_setup":
+          await props.onAction({ kind: "back_setup" });
+          break;
         case "select_provider_google_drive":
           await props.onAction({ kind: "select_provider", provider: "google_drive" });
           break;
-        case "connect":
+        case "select_provider_aerobag_cloud":
+          await props.onAction({ kind: "select_provider", provider: "aerobag_cloud" });
+          break;
+        case "authorize_provider":
           await props.onConnect();
           break;
         case "create_account":
           await props.onAction({ kind: "create_account" });
           break;
-        case "link_existing":
-          await props.onAction({ kind: "link_existing", pairing_token: pairingInput.trim() });
+        case "accept_setup_code":
+          await props.onAction({
+            kind: "accept_device_setup_code",
+            setup_code: setupCodeInput.trim(),
+          });
           break;
-        case "reveal_pairing":
-          await props.onAction({ kind: "reveal_pairing_token" });
+        case "backup_setup_code":
+          await props.onAction({ kind: "back_up_device_setup_code" });
           break;
-        case "hide_pairing":
-          await props.onAction({ kind: "hide_pairing_token" });
+        case "add_device":
+          await props.onAction({ kind: "add_another_device" });
           break;
-        case "sync_now":
-          await props.onAction({ kind: "sync_now" });
+        case "close_linked_detail":
+          await props.onAction({ kind: "close_linked_account_detail" });
           break;
-        case "disconnect":
-          await props.onAction({ kind: "disconnect" });
+        case "begin_unlink":
+          await props.onAction({ kind: "begin_unlink_device" });
+          break;
+        case "confirm_unlink":
+          await props.onAction({ kind: "confirm_unlink_device" });
           break;
         default:
           throw new Error(`Unsupported core Cloud action id: ${actionId}`);
@@ -11063,6 +11066,82 @@ function CloudPage(props: {
       setActionError(errorMessage(error));
     }
   };
+
+  const renderPanel = (
+    panel: UiSessionSnapshot["cloud_page_state"]["sync_account_panels"][number],
+    region: "account" | "provider" | "status",
+  ) => (
+    <section
+      key={`${region}:${panel.id}`}
+      className={`cloudFlowPanel is-${panel.state}`}
+      data-testid={region === "provider"
+        ? "cloud-provider-card"
+        : region === "status"
+          ? "cloud-overall-status"
+          : `cloud-panel-${panel.id}`}
+    >
+      <header>
+        <h2>{panel.title}</h2>
+        {panel.state === "complete" ? <span>COMPLETE</span> : null}
+        {panel.state === "working" ? <span>WORKING</span> : null}
+      </header>
+      {panel.summary ? <p>{panel.summary}</p> : null}
+      {panel.control?.kind === "device_setup_code_input" ? (
+        <label className="cloudSetupCodeField">
+          <span>{panel.control.label}</span>
+          <textarea
+            data-testid="cloud-setup-code-input"
+            value={setupCodeInput}
+            onChange={(event) => setSetupCodeInput(event.target.value)}
+            placeholder={panel.control.placeholder}
+            spellCheck={false}
+          />
+        </label>
+      ) : null}
+      {panel.control?.kind === "device_setup_code_output" ? (
+        <div className="cloudSetupCodeOutput">
+          <textarea
+            data-testid="cloud-setup-code-output"
+            readOnly
+            value={panel.control.setup_code}
+            spellCheck={false}
+          />
+          <button
+            type="button"
+            onClick={() => {
+              void navigator.clipboard.writeText(panel.control?.kind === "device_setup_code_output"
+                ? panel.control.setup_code
+                : "").then(() => setCopyStatus("Copied"));
+            }}
+          >
+            COPY DEVICE SETUP CODE
+          </button>
+          {copyStatus ? <span className="cloudCopyStatus">{copyStatus}</span> : null}
+        </div>
+      ) : null}
+      {panel.actions.length > 0 ? (
+        <div className="cloudFlowActions">
+          {panel.actions.map((action) => {
+            const enabled = action.enabled
+              && (action.id !== "accept_setup_code" || setupCodeInput.trim().length > 0);
+            return (
+              <div className="cloudFlowAction" key={action.id}>
+                <button
+                  type="button"
+                  data-testid={`cloud-action-${action.id}`}
+                  disabled={!enabled}
+                  onClick={() => void invoke(action.id)}
+                >
+                  {action.label}
+                </button>
+                {!enabled && action.disabled_reason ? <small>{action.disabled_reason}</small> : null}
+              </div>
+            );
+          })}
+        </div>
+      ) : null}
+    </section>
+  );
 
   return (
     <section className="appPage cloudPage" data-testid="cloud-page">
@@ -11074,96 +11153,28 @@ function CloudPage(props: {
         onOpenPlan={props.onOpenPlan}
         onOpenChartOrPlate={props.onOpenRecentChartOrPlate}
       />
-      <div className="cloudPagePanel" aria-label={props.state.title}>
+      <div className="cloudFlow" aria-label={props.state.title}>
         <header className="cloudPageHeader">
-          <p className="cloudPageEyebrow">ENCRYPTED USER STORAGE</p>
           <h1>{props.state.title}</h1>
-          <p>{props.state.summary}</p>
+          <p>Keep your Aerobag state synchronized between devices.</p>
         </header>
-        <div className="cloudProviderOptions" aria-label="Cloud provider">
-          {props.state.provider_options.map((provider) => (
-            <button
-              key={provider.id}
-              type="button"
-              data-testid={`cloud-provider-${provider.id}`}
-              aria-pressed={provider.selected}
-              disabled={!provider.enabled}
-              onClick={() => void invoke(`select_provider_${provider.id}`)}
-            >
-              {provider.label}
-            </button>
-          ))}
-        </div>
-        <div className="cloudStateStrip">
-          <div>
-            <span>PROVIDER</span>
-            <strong>{props.state.provider_label}</strong>
-          </div>
-          <div>
-            <span>GOOGLE DRIVE</span>
-            <strong data-testid="cloud-connection-state">{props.state.connection_label}</strong>
-          </div>
-          <div>
-            <span>AEROBAG ACCOUNT</span>
-            <strong data-testid="cloud-account-state">{props.state.account_label}</strong>
-          </div>
-        </div>
-        <dl className="cloudFacts">
-          {props.state.facts.map((fact) => (
-            <div key={fact.label}>
-              <dt>{fact.label}</dt>
-              <dd>{fact.value}</dd>
-            </div>
-          ))}
-        </dl>
         {actionError ? <p className="cloudActionError" role="alert">{actionError}</p> : null}
-        {props.state.pairing_input_enabled ? (
-          <label className="cloudPairingField">
-            <span>PAIRING TOKEN FROM ANOTHER DEVICE</span>
-            <textarea
-              data-testid="cloud-pairing-input"
-              value={pairingInput}
-              onChange={(event) => setPairingInput(event.target.value)}
-              placeholder="AB1..."
-              spellCheck={false}
-            />
-          </label>
-        ) : null}
-        {props.state.pairing_token ? (
-          <section className="cloudPairingToken">
-            <h2>PAIRING TOKEN</h2>
-            <p>This token grants full access to your encrypted Aerobag account. Transfer it privately.</p>
-            <textarea data-testid="cloud-pairing-token" readOnly value={props.state.pairing_token} spellCheck={false} />
-            <button
-              type="button"
-              onClick={() => {
-                void navigator.clipboard.writeText(props.state.pairing_token ?? "").then(() => {
-                  setCopyStatus("Copied");
-                });
-              }}
-            >
-              COPY TOKEN
-            </button>
-            {copyStatus ? <span className="cloudCopyStatus">{copyStatus}</span> : null}
+        <div className={`cloudFlowLayout${props.state.provider_card ? " has-provider" : ""}`}>
+          <section className="cloudFlowColumn cloudAccountColumn" aria-label="Sync Account">
+            <h2 className="cloudFlowColumnTitle">Sync Account</h2>
+            <div className="cloudFlowPanels">
+              {props.state.sync_account_panels.map((panel) => renderPanel(panel, "account"))}
+            </div>
           </section>
-        ) : null}
-        <div className="cloudActionGrid">
-          {props.state.actions.map((action) => {
-            const enabled = action.enabled
-              && (action.id !== "link_existing" || pairingInput.trim().length > 0);
-            return (
-              <button
-                key={action.id}
-                type="button"
-                data-testid={`cloud-action-${action.id}`}
-                disabled={!enabled}
-                title={!enabled ? action.disabled_reason ?? "Enter a pairing token first." : undefined}
-                onClick={() => void invoke(action.id)}
-              >
-                {action.label}
-              </button>
-            );
-          })}
+          {props.state.provider_card ? (
+            <aside className="cloudFlowColumn cloudProviderColumn" aria-label="Storage provider">
+              <h2 className="cloudFlowColumnTitle">Provider</h2>
+              {renderPanel(props.state.provider_card, "provider")}
+            </aside>
+          ) : null}
+          <div className="cloudOverallStatus" aria-label="Overall Cloud status">
+            {renderPanel(props.state.overall_status, "status")}
+          </div>
         </div>
       </div>
     </section>

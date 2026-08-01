@@ -225,14 +225,18 @@ pub fn perform_settings_action_in_session_json(
     serde_json::to_string(&snapshot).map_err(|err| err.to_string())
 }
 
-pub fn report_cloud_credential_state_in_session_json(
+pub fn report_cloud_authorization_state_in_session_json(
     handle: u64,
+    provider_json: &str,
     state_json: &str,
 ) -> Result<String, String> {
-    let state: app_core::CloudCredentialState =
+    let provider: app_core::CloudProviderKind =
+        serde_json::from_str(provider_json).map_err(|err| err.to_string())?;
+    let state: app_core::ProviderAuthorizationState =
         serde_json::from_str(state_json).map_err(|err| err.to_string())?;
-    let outcome = app_core::report_cloud_credential_state_in_session(handle as u32, state)
-        .map_err(|err| err.to_string())?;
+    let outcome =
+        app_core::report_cloud_authorization_state_in_session(handle as u32, provider, state)
+            .map_err(|err| err.to_string())?;
     serde_json::to_string(&outcome).map_err(|err| err.to_string())
 }
 

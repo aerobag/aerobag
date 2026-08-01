@@ -48,10 +48,11 @@ pub use chart_page::{
     DerivedChartPageState, DerivedChartReferenceFamily,
 };
 pub use cloud::{
-    CloudAction, CloudCompletion, CloudCredentialState, CloudEngine, CloudPersistentState,
-    CloudProviderErrorKind, CloudProviderKind, CloudProviderObject, CloudProviderOperation,
-    CloudProviderRequest, CloudProviderResponse, UiCloudAction, UiCloudPageFact, UiCloudPageState,
-    UiCloudProviderOption, CLOUD_STATUS_ID,
+    CloudAction, CloudCompletion, CloudEngine, CloudPersistentState, CloudProviderErrorKind,
+    CloudProviderKind, CloudProviderObject, CloudProviderOperation, CloudProviderPrincipal,
+    CloudProviderRequest, CloudProviderResponse, CloudStatusFact, CloudStatusSummary,
+    ProviderAuthorizationState, UiCloudAction, UiCloudPageState, UiCloudPanel, UiCloudPanelControl,
+    UiCloudPanelState, CLOUD_STATUS_ID,
 };
 pub use content::{
     AvailabilityDetail, CachedPlate, CachedTileset, ContentAvailability, ContentInventory,
@@ -254,7 +255,7 @@ pub use session::{
     push_situation_sample_in_session, query_flight_plan_in_session,
     refresh_live_feed_current_in_session, register_ownship_source_in_session,
     render_terrain_overlay_tile_by_key_in_session, render_terrain_overlay_tile_in_session,
-    render_terrain_overlay_tiles_in_session, report_cloud_credential_state_in_session,
+    render_terrain_overlay_tiles_in_session, report_cloud_authorization_state_in_session,
     report_live_feed_connection_event_in_session, report_session_resource_failure_in_session,
     report_session_resource_failure_in_session_at_epoch_ms,
     resolve_chart_asset_resource_in_session, resolve_metar_manifest_in_session,

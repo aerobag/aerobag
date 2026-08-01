@@ -151,39 +151,38 @@ fun sameMapViewport(left: MapViewportState, right: MapViewportState): Boolean =
         abs(left.centerWorldY - right.centerWorldY) < VIEWPORT_EPSILON &&
         abs(left.zoom - right.zoom) < VIEWPORT_EPSILON
 
-fun isStaleMapFollowTargetViewport(
-    targetViewport: MapViewportState,
-    awaitedTargetViewport: MapViewportState?,
-): Boolean = awaitedTargetViewport != null && !sameMapViewport(targetViewport, awaitedTargetViewport)
-
 class MapFollowTargetGate {
-    private var awaitedTargetViewport: MapViewportState? = null
+    // Ownship can move before Compose observes a sync result, so viewport equality
+    // cannot identify the first authoritative target after that sync.
+    private var syncInFlight = false
+    private var minimumTargetRevision: Long? = null
 
-    fun beginSync(requestedViewport: MapViewportState) {
-        awaitedTargetViewport = requestedViewport
+    fun beginSync() {
+        syncInFlight = true
+        minimumTargetRevision = null
     }
 
-    fun acknowledgeSyncSnapshot(following: Boolean, targetViewport: MapViewportState?) {
+    fun acknowledgeSyncSnapshot(following: Boolean, targetRevision: Long) {
+        syncInFlight = false
         if (!following) {
-            awaitedTargetViewport = null
+            minimumTargetRevision = null
             return
         }
-        if (targetViewport != null) {
-            awaitedTargetViewport = targetViewport
-        }
+        minimumTargetRevision = targetRevision
     }
 
     fun clear() {
-        awaitedTargetViewport = null
+        syncInFlight = false
+        minimumTargetRevision = null
     }
 
-    fun awaitedViewport(): MapViewportState? = awaitedTargetViewport
+    fun minimumRevision(): Long? = minimumTargetRevision
 
-    fun shouldApplyTarget(targetViewport: MapViewportState): Boolean {
-        if (isStaleMapFollowTargetViewport(targetViewport, awaitedTargetViewport)) {
+    fun shouldApplyTarget(targetRevision: Long): Boolean {
+        if (syncInFlight || minimumTargetRevision?.let { targetRevision < it } == true) {
             return false
         }
-        awaitedTargetViewport = null
+        minimumTargetRevision = null
         return true
     }
 }

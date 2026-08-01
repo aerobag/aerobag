@@ -998,7 +998,13 @@ async function runMapFollowCtrGestureSmoke(args) {
   await selectBadAutopilotSource(serial, result);
   await ensureMapFollowEngaged(serial, result);
   await dragMapWhileFollowing(serial, result);
-  await zoomMapWhileFollowing(serial, result);
+  for (let cycle = 1; cycle <= 8; cycle += 1) {
+    await zoomMapWhileFollowing(serial, result);
+    recordStep(result, "CTR zoom stress cycle", String(cycle));
+    pressKey(serial, "KEYCODE_MINUS");
+    pressKey(serial, "KEYCODE_MINUS");
+    await delay(1200);
+  }
   result.status = "pass";
   result.finished_at = new Date().toISOString();
   return result;

@@ -149,46 +149,61 @@ class MapViewportTest {
     }
 
     @Test
-    fun mapFollowTargetGateBlocksStaleTargetBetweenSyncAndSnapshotPropagation() {
+    fun mapFollowTargetGateBlocksTargetOlderThanLatestSync() {
         val gate = MapFollowTargetGate()
-        val oldTarget = createInitialViewport(initialViewport, minZoom, maxZoom)
-        val draggedViewport = dragViewport(oldTarget, 120f, 80f)
-        val acknowledgedTarget = dragViewport(oldTarget, 122f, 82f)
 
-        gate.beginSync(draggedViewport)
+        gate.beginSync()
         gate.acknowledgeSyncSnapshot(
             following = true,
-            targetViewport = acknowledgedTarget,
+            targetRevision = 42,
         )
 
-        assertTrue(gate.shouldApplyTarget(oldTarget).not())
-        assertEquals(acknowledgedTarget, gate.awaitedViewport())
-        assertTrue(gate.shouldApplyTarget(acknowledgedTarget))
-        assertEquals(null, gate.awaitedViewport())
+        assertFalse(gate.shouldApplyTarget(41))
+        assertEquals(42L, gate.minimumRevision())
+        assertTrue(gate.shouldApplyTarget(42))
+        assertEquals(null, gate.minimumRevision())
+    }
+
+    @Test
+    fun mapFollowTargetGateBlocksTargetsWhileSyncIsInFlight() {
+        val gate = MapFollowTargetGate()
+
+        gate.beginSync()
+
+        assertFalse(gate.shouldApplyTarget(42))
+    }
+
+    @Test
+    fun mapFollowTargetGateAllowsNewerTargetWhenAcknowledgedSnapshotWasSkipped() {
+        val gate = MapFollowTargetGate()
+
+        gate.beginSync()
+        gate.acknowledgeSyncSnapshot(
+            following = true,
+            targetRevision = 42,
+        )
+
+        assertTrue(gate.shouldApplyTarget(43))
+        assertEquals(null, gate.minimumRevision())
     }
 
     @Test
     fun mapFollowTargetGateAllowsTargetsWhenNoFollowSyncIsPending() {
         val gate = MapFollowTargetGate()
-        val target = createInitialViewport(initialViewport, minZoom, maxZoom)
-
-        assertTrue(gate.shouldApplyTarget(target))
+        assertTrue(gate.shouldApplyTarget(1))
     }
 
     @Test
     fun mapFollowTargetGateClearsPendingTargetWhenFollowDisengagesDuringSync() {
         val gate = MapFollowTargetGate()
-        val oldTarget = createInitialViewport(initialViewport, minZoom, maxZoom)
-        val draggedViewport = dragViewport(oldTarget, 120f, 80f)
-
-        gate.beginSync(draggedViewport)
+        gate.beginSync()
         gate.acknowledgeSyncSnapshot(
             following = false,
-            targetViewport = null,
+            targetRevision = 42,
         )
 
-        assertEquals(null, gate.awaitedViewport())
-        assertTrue(gate.shouldApplyTarget(oldTarget))
+        assertEquals(null, gate.minimumRevision())
+        assertTrue(gate.shouldApplyTarget(41))
     }
 
     @Test

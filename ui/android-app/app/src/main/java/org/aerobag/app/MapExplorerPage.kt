@@ -1076,7 +1076,10 @@ internal fun MapExplorerPage(
         if (!mapFollowUiState.following || surfaceWidthPx <= 0f || surfaceHeightPx <= 0f) {
             return
         }
-        followTargetGate.beginSync(nextViewport)
+        followTargetGate.beginSync()
+        perfLogInfo(MapViewportLogTag) {
+            "follow-sync begin revision=${sessionSnapshot.sessionRevision} zoom=${"%.2f".format(nextViewport.zoom)} center=${"%.3f".format(nextViewport.centerWorldX)},${"%.3f".format(nextViewport.centerWorldY)}"
+        }
         runCatching {
             uiSession.syncMapFollow(
                 nextViewport,
@@ -1084,9 +1087,13 @@ internal fun MapExplorerPage(
                 surfaceHeightPx.toDouble(),
             )
         }.onSuccess { snapshot ->
+            val target = snapshot.mapFollowTargetViewport?.let(::mapViewportFromCore)
+            perfLogInfo(MapViewportLogTag) {
+                "follow-sync result revision=${snapshot.sessionRevision} following=${snapshot.mapFollowUiState.following} targetZoom=${target?.zoom?.let { "%.2f".format(it) }} targetCenter=${target?.let { "%.3f,%.3f".format(it.centerWorldX, it.centerWorldY) }}"
+            }
             followTargetGate.acknowledgeSyncSnapshot(
                 following = snapshot.mapFollowUiState.following,
-                targetViewport = snapshot.mapFollowTargetViewport?.let(::mapViewportFromCore),
+                targetRevision = snapshot.sessionRevision,
             )
             onSessionSnapshotChange(snapshot)
         }
@@ -1855,7 +1862,12 @@ internal fun MapExplorerPage(
             applySessionCommand("engageMapFollow") { uiSession.engageMapFollow(viewport) }
         }
     }
-    LaunchedEffect(mapFollowUiState.following, mapFollowTargetViewport, mapGestureActive) {
+    LaunchedEffect(
+        mapFollowUiState.following,
+        mapFollowTargetViewport,
+        sessionSnapshot.sessionRevision,
+        mapGestureActive,
+    ) {
         if (!mapFollowUiState.following) {
             followTargetGate.clear()
             return@LaunchedEffect
@@ -1865,10 +1877,13 @@ internal fun MapExplorerPage(
         }
         val target = mapFollowTargetViewport ?: return@LaunchedEffect
         val nextViewport = mapViewportFromCore(target)
-        val awaitedViewport = followTargetGate.awaitedViewport()
-        if (!followTargetGate.shouldApplyTarget(nextViewport)) {
+        val minimumTargetRevision = followTargetGate.minimumRevision()
+        perfLogInfo(MapViewportLogTag) {
+            "follow-target revision=${sessionSnapshot.sessionRevision} minimumRevision=$minimumTargetRevision targetZoom=${"%.2f".format(nextViewport.zoom)} targetCenter=${"%.3f".format(nextViewport.centerWorldX)},${"%.3f".format(nextViewport.centerWorldY)} localZoom=${"%.2f".format(viewportState.value.zoom)} localCenter=${"%.3f".format(viewportState.value.centerWorldX)},${"%.3f".format(viewportState.value.centerWorldY)}"
+        }
+        if (!followTargetGate.shouldApplyTarget(sessionSnapshot.sessionRevision)) {
             perfLogInfo(MapViewportLogTag) {
-                "follow-target stale targetZoom=${"%.2f".format(nextViewport.zoom)} awaitedZoom=${awaitedViewport?.zoom?.let { "%.2f".format(it) }}"
+                "follow-target stale revision=${sessionSnapshot.sessionRevision} minimumRevision=$minimumTargetRevision"
             }
             return@LaunchedEffect
         }

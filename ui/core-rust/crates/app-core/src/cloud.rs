@@ -27,6 +27,7 @@ const FLIGHT_PLAN_RECORD_KEY: &str = "flight_plan/current";
 const FLIGHT_PLAN_SCHEMA_VERSION: u32 = 1;
 const CLOUD_POLL_INTERVAL_MS: i64 = 60_000;
 const CLOUD_TRANSIENT_RETRY_MS: i64 = 5_000;
+const GOOGLE_DRIVE_APPDATA_SCOPE: &str = "https://www.googleapis.com/auth/drive.appdata";
 pub const CLOUD_STATUS_ID: &str = "cloud:provider";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize, Default)]
@@ -71,6 +72,13 @@ pub enum ProviderAuthorizationState {
     AuthorizationRequired {
         detail: String,
     },
+    Denied {
+        detail: String,
+    },
+    TransientFailure {
+        detail: String,
+        retry_at_epoch_ms: i64,
+    },
     Failed {
         detail: String,
     },
@@ -96,7 +104,10 @@ impl ProviderAuthorizationState {
 
     pub fn detail(&self) -> Option<&str> {
         match self {
-            Self::AuthorizationRequired { detail } | Self::Failed { detail } => Some(detail),
+            Self::AuthorizationRequired { detail }
+            | Self::Denied { detail }
+            | Self::TransientFailure { detail, .. }
+            | Self::Failed { detail } => Some(detail),
             _ => None,
         }
     }
@@ -116,15 +127,14 @@ struct ProviderAccountBinding {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
-pub enum CloudProviderErrorKind {
+pub(crate) enum CloudProviderErrorKind {
     Unauthorized,
     Transient,
     Permanent,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(tag = "operation", rename_all = "snake_case")]
-pub enum CloudProviderOperation {
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum CloudProviderOperation {
     AllocateIds {
         count: usize,
     },
@@ -136,33 +146,32 @@ pub enum CloudProviderOperation {
         name: String,
         bytes_base64: String,
     },
+    #[allow(dead_code)] // Required by the provider contract for future unreachable-object GC.
     Delete {
         id: String,
     },
+    #[allow(dead_code)] // Required by the provider contract for future recovery and GC.
     List {
-        #[serde(default)]
         page_token: Option<String>,
     },
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct CloudProviderObject {
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct CloudProviderObject {
     pub id: String,
     pub size_bytes: u64,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub created_at: Option<String>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct CloudProviderRequest {
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct CloudProviderRequest {
     pub request_id: u64,
     pub provider: CloudProviderKind,
     pub operation: CloudProviderOperation,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(tag = "result", rename_all = "snake_case")]
-pub enum CloudProviderResponse {
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum CloudProviderResponse {
     AllocatedIds {
         ids: Vec<String>,
     },
@@ -176,7 +185,6 @@ pub enum CloudProviderResponse {
     },
     Listed {
         objects: Vec<CloudProviderObject>,
-        #[serde(default, skip_serializing_if = "Option::is_none")]
         next_page_token: Option<String>,
     },
     Error {
@@ -235,15 +243,42 @@ pub struct CloudUiFieldValue {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct UiQrCode {
+    pub rows: Vec<String>,
+    pub quiet_zone_modules: u32,
+    pub accessibility_label: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum CloudPlatformEffect {
-    AuthorizeProvider {
+    BeginAuthorization {
         provider: CloudProviderKind,
+        scopes: Vec<String>,
+    },
+    ScanQrCode {
+        completion_action: CloudUiActionId,
+        field_id: CloudUiFieldId,
     },
     CopyText {
         text: String,
         completion_label: String,
     },
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum CloudAuthorizationMode {
+    Silent,
+    Interactive,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CloudAuthorizationRequest {
+    pub request_id: u64,
+    pub provider: CloudProviderKind,
+    pub mode: CloudAuthorizationMode,
+    pub scopes: Vec<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -253,11 +288,57 @@ pub enum CloudAuthorizationResponse {
         expires_at_epoch_ms: Option<i64>,
         principal: CloudProviderPrincipal,
     },
-    AuthorizationRequired {
+    InteractionRequired {
         diagnostic: Option<String>,
     },
-    Failed {
+    Denied {
         diagnostic: Option<String>,
+    },
+    TransientFailure {
+        diagnostic: Option<String>,
+    },
+    PermanentFailure {
+        diagnostic: Option<String>,
+    },
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum CloudHttpMethod {
+    Get,
+    Post,
+    Delete,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CloudHttpHeader {
+    pub name: String,
+    pub value: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CloudHttpRequest {
+    pub request_id: u64,
+    pub provider: CloudProviderKind,
+    pub method: CloudHttpMethod,
+    pub url: String,
+    pub headers: Vec<CloudHttpHeader>,
+    pub body_base64: Option<String>,
+    pub max_response_bytes: u64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "result", rename_all = "snake_case")]
+pub enum CloudHttpResponse {
+    Completed {
+        status_code: u16,
+        body_base64: String,
+    },
+    TransportError {
+        detail: String,
+    },
+    ResponseTooLarge {
+        limit_bytes: u64,
     },
 }
 
@@ -295,8 +376,15 @@ pub enum UiCloudPanelControl {
     },
     DeviceSetupCodeOutput {
         setup_code: String,
+        qr_code: UiQrCode,
         copy_action: UiCloudAction,
     },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct UiCloudTimeFact {
+    pub label: String,
+    pub epoch_ms: i64,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -308,6 +396,8 @@ pub struct UiCloudPanel {
     pub state_label: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub summary: Option<String>,
+    #[serde(default)]
+    pub time_facts: Vec<UiCloudTimeFact>,
     pub actions: Vec<UiCloudAction>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub control: Option<UiCloudPanelControl>,
@@ -358,6 +448,8 @@ struct CloudPage {
 struct CloudNode {
     version: u32,
     generation: u64,
+    #[serde(default)]
+    published_at_epoch_ms: Option<i64>,
     parent_node_id: Option<String>,
     parent_node_hash: Option<String>,
     merkle_root_id: String,
@@ -388,6 +480,8 @@ struct VerifiedTip {
     node_id: String,
     node_hash: String,
     generation: u64,
+    #[serde(default)]
+    published_at_epoch_ms: Option<i64>,
     merkle_root_id: String,
     merkle_root_hash: String,
     next_slot_id: String,
@@ -415,6 +509,7 @@ struct StagedPublication {
     node_hash: String,
     merkle_root_hash: String,
     generation: u64,
+    published_at_epoch_ms: i64,
     local_revision: u64,
 }
 
@@ -499,6 +594,10 @@ pub struct CloudPersistentState {
     #[serde(default)]
     last_success_epoch_ms: Option<i64>,
     #[serde(default)]
+    last_read_epoch_ms: Option<i64>,
+    #[serde(default)]
+    last_write_epoch_ms: Option<i64>,
+    #[serde(default)]
     last_poll_epoch_ms: Option<i64>,
     #[serde(default)]
     next_retry_epoch_ms: Option<i64>,
@@ -522,6 +621,8 @@ impl Default for CloudPersistentState {
             local_revision: 0,
             next_request_id: 1,
             last_success_epoch_ms: None,
+            last_read_epoch_ms: None,
+            last_write_epoch_ms: None,
             last_poll_epoch_ms: None,
             next_retry_epoch_ms: None,
             force_poll: false,
@@ -534,7 +635,10 @@ impl Default for CloudPersistentState {
 pub struct CloudEngine {
     persistent: CloudPersistentState,
     authorizations: BTreeMap<CloudProviderKind, ProviderAuthorizationState>,
-    request_in_flight: Option<u64>,
+    authorization_request_in_flight: Option<CloudAuthorizationRequest>,
+    pending_authorization_mode: Option<CloudAuthorizationMode>,
+    next_authorization_request_id: u64,
+    provider_request_in_flight: Option<CloudProviderRequest>,
     linked_account_detail: Option<LinkedAccountDetail>,
 }
 
@@ -562,7 +666,10 @@ impl CloudEngine {
         Self {
             persistent,
             authorizations: BTreeMap::new(),
-            request_in_flight: None,
+            authorization_request_in_flight: None,
+            pending_authorization_mode: None,
+            next_authorization_request_id: 1,
+            provider_request_in_flight: None,
             linked_account_detail: None,
         }
     }
@@ -591,7 +698,7 @@ impl CloudEngine {
         let principal = state.principal().cloned();
         self.authorizations.insert(provider, state);
         if self.current_provider().ok() == Some(provider) {
-            self.request_in_flight = None;
+            self.provider_request_in_flight = None;
         }
         if let Some(principal) = principal {
             if let Some(account) = self.persistent.account.as_mut() {
@@ -610,11 +717,69 @@ impl CloudEngine {
         }
     }
 
+    pub fn take_authorization_request(
+        &mut self,
+        now_epoch_ms: i64,
+    ) -> AppResult<Option<CloudAuthorizationRequest>> {
+        if self.authorization_request_in_flight.is_some() {
+            return Ok(None);
+        }
+        let Ok(provider) = self.current_provider() else {
+            return Ok(None);
+        };
+        if !provider.is_available() {
+            return Ok(None);
+        }
+        let mode = if let Some(mode) = self.pending_authorization_mode.take() {
+            mode
+        } else {
+            match self.authorization_for(provider) {
+                ProviderAuthorizationState::NotAuthorized => CloudAuthorizationMode::Silent,
+                ProviderAuthorizationState::Authorized {
+                    expires_at_epoch_ms: Some(expires_at_epoch_ms),
+                    ..
+                } if now_epoch_ms > 0 && expires_at_epoch_ms <= now_epoch_ms => {
+                    CloudAuthorizationMode::Silent
+                }
+                ProviderAuthorizationState::TransientFailure {
+                    retry_at_epoch_ms, ..
+                } if retry_at_epoch_ms <= now_epoch_ms => CloudAuthorizationMode::Silent,
+                _ => return Ok(None),
+            }
+        };
+        let request_id = self.next_authorization_request_id.max(1);
+        self.next_authorization_request_id = request_id.saturating_add(1);
+        let request = CloudAuthorizationRequest {
+            request_id,
+            provider,
+            mode,
+            scopes: provider_authorization_scopes(provider),
+        };
+        self.authorizations
+            .insert(provider, ProviderAuthorizationState::Authorizing);
+        self.authorization_request_in_flight = Some(request.clone());
+        Ok(Some(request))
+    }
+
     pub fn complete_authorization(
         &mut self,
-        provider: CloudProviderKind,
+        request_id: u64,
         response: CloudAuthorizationResponse,
-    ) {
+        now_epoch_ms: i64,
+    ) -> AppResult<()> {
+        let request = self.authorization_request_in_flight.take().ok_or_else(|| {
+            cloud_error(format!(
+                "cloud authorization response {request_id} arrived with no request in flight"
+            ))
+        })?;
+        if request.request_id != request_id {
+            self.authorization_request_in_flight = Some(request.clone());
+            return Err(cloud_error(format!(
+                "cloud authorization response {request_id} does not match in-flight request {}",
+                request.request_id
+            )));
+        }
+        let provider = request.provider;
         let state = match response {
             CloudAuthorizationResponse::Authorized {
                 expires_at_epoch_ms,
@@ -623,7 +788,7 @@ impl CloudEngine {
                 expires_at_epoch_ms,
                 principal,
             },
-            CloudAuthorizationResponse::AuthorizationRequired { diagnostic } => {
+            CloudAuthorizationResponse::InteractionRequired { diagnostic } => {
                 ProviderAuthorizationState::AuthorizationRequired {
                     detail: provider_authorization_detail(
                         "Provider authorization was not completed.",
@@ -631,7 +796,24 @@ impl CloudEngine {
                     ),
                 }
             }
-            CloudAuthorizationResponse::Failed { diagnostic } => {
+            CloudAuthorizationResponse::Denied { diagnostic } => {
+                ProviderAuthorizationState::Denied {
+                    detail: provider_authorization_detail(
+                        "Provider authorization was denied.",
+                        diagnostic.as_deref(),
+                    ),
+                }
+            }
+            CloudAuthorizationResponse::TransientFailure { diagnostic } => {
+                ProviderAuthorizationState::TransientFailure {
+                    detail: provider_authorization_detail(
+                        "Provider authorization is temporarily unavailable.",
+                        diagnostic.as_deref(),
+                    ),
+                    retry_at_epoch_ms: now_epoch_ms.saturating_add(CLOUD_TRANSIENT_RETRY_MS),
+                }
+            }
+            CloudAuthorizationResponse::PermanentFailure { diagnostic } => {
                 ProviderAuthorizationState::Failed {
                     detail: provider_authorization_detail(
                         "Provider authorization failed.",
@@ -641,6 +823,7 @@ impl CloudEngine {
             }
         };
         self.set_authorization_state(provider, state);
+        Ok(())
     }
 
     fn authorization_for(&self, provider: CloudProviderKind) -> ProviderAuthorizationState {
@@ -679,6 +862,9 @@ impl CloudEngine {
                 expires_at_epoch_ms: Some(expires_at_epoch_ms),
                 ..
             } if expires_at_epoch_ms > now_epoch_ms => Some(expires_at_epoch_ms),
+            ProviderAuthorizationState::TransientFailure {
+                retry_at_epoch_ms, ..
+            } if retry_at_epoch_ms > now_epoch_ms => Some(retry_at_epoch_ms),
             _ => None,
         }
     }
@@ -791,7 +977,9 @@ impl CloudEngine {
                 self.persistent.pending_flight_plan = None;
                 self.persistent.pending_remote_flight_plan = None;
                 self.persistent.last_provider_failure = None;
-                self.request_in_flight = None;
+                self.authorization_request_in_flight = None;
+                self.pending_authorization_mode = None;
+                self.provider_request_in_flight = None;
                 self.linked_account_detail = None;
             }
             CloudAction::SelectProvider { provider } => {
@@ -819,10 +1007,12 @@ impl CloudEngine {
                 let principal = authorization.principal().ok_or_else(|| {
                     cloud_error("authorize the provider before creating a Sync Account")
                 })?;
+                let account_binding = provider_account_binding(principal);
                 let secret = random_bytes::<32>()?;
+                self.reset_sync_activity();
                 self.persistent.account = Some(CloudAccount {
                     provider,
-                    provider_account_binding: Some(provider_account_binding(principal)),
+                    provider_account_binding: Some(account_binding),
                     root_secret_base64: URL_SAFE_NO_PAD.encode(secret),
                     genesis_id: String::new(),
                     tip: None,
@@ -852,6 +1042,7 @@ impl CloudEngine {
                 }
                 self.persistent.onboarding_intent = Some(CloudOnboardingIntent::SetupFromDevice);
                 self.persistent.selected_provider = None;
+                self.reset_sync_activity();
                 self.persistent.account = Some(CloudAccount {
                     provider: payload.provider,
                     provider_account_binding: Some(payload.provider_account_binding),
@@ -895,12 +1086,23 @@ impl CloudEngine {
                 self.persistent.pending_flight_plan = None;
                 self.persistent.pending_remote_flight_plan = None;
                 self.persistent.last_provider_failure = None;
-                self.request_in_flight = None;
+                self.reset_sync_activity();
+                self.authorization_request_in_flight = None;
+                self.pending_authorization_mode = None;
+                self.provider_request_in_flight = None;
                 self.linked_account_detail = None;
             }
             CloudAction::SyncNow => self.persistent.force_poll = true,
         }
         Ok(())
+    }
+
+    fn reset_sync_activity(&mut self) {
+        self.persistent.last_success_epoch_ms = None;
+        self.persistent.last_read_epoch_ms = None;
+        self.persistent.last_write_epoch_ms = None;
+        self.persistent.last_poll_epoch_ms = None;
+        self.persistent.force_poll = false;
     }
 
     pub fn perform_ui_action(
@@ -949,6 +1151,7 @@ impl CloudEngine {
                         provider.label()
                     )));
                 }
+                self.pending_authorization_mode = Some(CloudAuthorizationMode::Interactive);
                 self.set_authorization_state(provider, ProviderAuthorizationState::Authorizing);
                 return Ok(());
             }
@@ -957,7 +1160,7 @@ impl CloudEngine {
                 return Ok(());
             }
             CloudUiActionId::ScanSetupCode => {
-                return Err(cloud_error("QR scanning is not available in this build"));
+                return Ok(());
             }
         };
         self.perform_action(action, current_plan)?;
@@ -967,9 +1170,11 @@ impl CloudEngine {
     pub fn take_provider_request(
         &mut self,
         now_epoch_ms: i64,
-    ) -> AppResult<Option<CloudProviderRequest>> {
-        let provider = self.current_provider()?;
-        if self.request_in_flight.is_some()
+    ) -> AppResult<Option<CloudHttpRequest>> {
+        let Ok(provider) = self.current_provider() else {
+            return Ok(None);
+        };
+        if self.provider_request_in_flight.is_some()
             || !self.authorization_for(provider).is_ready(now_epoch_ms)
             || self.provider_principal_mismatch().is_some()
             || self
@@ -986,27 +1191,38 @@ impl CloudEngine {
         let operation = operation_for_workflow(workflow)?;
         let request_id = self.persistent.next_request_id.max(1);
         self.persistent.next_request_id = request_id.saturating_add(1);
-        self.request_in_flight = Some(request_id);
-        Ok(Some(CloudProviderRequest {
+        let request = CloudProviderRequest {
             request_id,
             provider,
             operation,
-        }))
+        };
+        let http_request = crate::cloud_google_drive::plan_request(&request)?;
+        self.provider_request_in_flight = Some(request);
+        Ok(Some(http_request))
     }
 
     pub fn complete_provider_request(
         &mut self,
         request_id: u64,
-        response: CloudProviderResponse,
+        response: CloudHttpResponse,
         now_epoch_ms: i64,
     ) -> AppResult<CloudCompletion> {
-        if self.request_in_flight != Some(request_id) {
+        let Some(request) = self.provider_request_in_flight.as_ref() else {
             return Err(cloud_error(format!(
-                "cloud provider response {request_id} does not match in-flight request {:?}",
-                self.request_in_flight
+                "cloud provider response {request_id} arrived with no request in flight"
+            )));
+        };
+        if request.request_id != request_id {
+            return Err(cloud_error(format!(
+                "cloud provider response {request_id} does not match in-flight request {}",
+                request.request_id
             )));
         }
-        self.request_in_flight = None;
+        let request = self
+            .provider_request_in_flight
+            .take()
+            .expect("provider request checked above");
+        let response = crate::cloud_google_drive::parse_response(&request, response);
         let provider = self.current_provider()?;
         if let CloudProviderResponse::Error { kind, detail } = response {
             self.persistent.last_provider_failure = Some(CloudProviderFailure {
@@ -1090,6 +1306,7 @@ impl CloudEngine {
                     ids[2].clone(),
                     0,
                     None,
+                    now_epoch_ms,
                 )?;
                 self.account_mut()?.genesis_id = staged.node_id.clone();
                 self.persistent.workflow = Some(CloudWorkflow::CreatePage { staged });
@@ -1104,6 +1321,7 @@ impl CloudEngine {
                     ids[1].clone(),
                     tip.generation.saturating_add(1),
                     Some(&tip),
+                    now_epoch_ms,
                 )?;
                 self.persistent.workflow = Some(CloudWorkflow::CreatePage { staged });
             }
@@ -1158,6 +1376,7 @@ impl CloudEngine {
                             ));
                         }
                         ReadPurpose::Poll | ReadPurpose::PublishRace => {
+                            self.persistent.last_read_epoch_ms = Some(now_epoch_ms);
                             self.persistent.last_poll_epoch_ms = Some(now_epoch_ms);
                             self.persistent.workflow = None;
                         }
@@ -1194,10 +1413,12 @@ impl CloudEngine {
                     node_id,
                     node_hash,
                     generation: node.generation,
+                    published_at_epoch_ms: node.published_at_epoch_ms,
                     merkle_root_id: node.merkle_root_id,
                     merkle_root_hash: node.merkle_root_hash,
                     next_slot_id: node.next_slot_id,
                 });
+                self.persistent.last_read_epoch_ms = Some(now_epoch_ms);
                 self.persistent.last_poll_epoch_ms = Some(now_epoch_ms);
                 self.persistent.workflow = None;
                 let should_adopt = matches!(purpose, ReadPurpose::Link)
@@ -1221,6 +1442,7 @@ impl CloudEngine {
         next_slot_id: String,
         generation: u64,
         parent: Option<&VerifiedTip>,
+        now_epoch_ms: i64,
     ) -> AppResult<StagedPublication> {
         let plan = self
             .persistent
@@ -1234,6 +1456,7 @@ impl CloudEngine {
         let node = CloudNode {
             version: CLOUD_NODE_VERSION,
             generation,
+            published_at_epoch_ms: Some(now_epoch_ms),
             parent_node_id: parent.map(|tip| tip.node_id.clone()),
             parent_node_hash: parent.map(|tip| tip.node_hash.clone()),
             merkle_root_id: page_id.clone(),
@@ -1251,6 +1474,7 @@ impl CloudEngine {
             node_bytes_base64: URL_SAFE_NO_PAD.encode(node_bytes),
             merkle_root_hash: page_hash,
             generation,
+            published_at_epoch_ms: now_epoch_ms,
             local_revision: self.persistent.local_revision,
         })
     }
@@ -1260,10 +1484,12 @@ impl CloudEngine {
             node_id: staged.node_id,
             node_hash: staged.node_hash,
             generation: staged.generation,
+            published_at_epoch_ms: Some(staged.published_at_epoch_ms),
             merkle_root_id: staged.page_id,
             merkle_root_hash: staged.merkle_root_hash,
             next_slot_id: staged.next_slot_id,
         });
+        self.persistent.last_write_epoch_ms = Some(staged.published_at_epoch_ms);
         if self.persistent.local_revision == staged.local_revision {
             self.persistent.pending_flight_plan = None;
         }
@@ -1407,6 +1633,14 @@ impl CloudEngine {
     }
 
     pub fn page_state(&self, now_epoch_ms: i64) -> UiCloudPageState {
+        self.page_state_with_qr_scanner(now_epoch_ms, false)
+    }
+
+    pub fn page_state_with_qr_scanner(
+        &self,
+        now_epoch_ms: i64,
+        qr_scanner_available: bool,
+    ) -> UiCloudPageState {
         let mut panels = Vec::new();
         let account = self.persistent.account.as_ref();
         let linked = self.has_linked_account();
@@ -1462,12 +1696,25 @@ impl CloudEngine {
                         UiCloudPanelState::Active,
                         Some("Scan the other device's QR code or paste its Device Setup Code."),
                         vec![
-                            cloud_action(
-                                CloudUiActionId::ScanSetupCode,
-                                "Scan a QR code",
-                                false,
-                                "QR scanning is not available in this first web draft.",
-                            ),
+                            if qr_scanner_available {
+                                cloud_effect_action(
+                                    CloudUiActionId::ScanSetupCode,
+                                    "Scan a QR code",
+                                    true,
+                                    "",
+                                    CloudPlatformEffect::ScanQrCode {
+                                        completion_action: CloudUiActionId::AcceptSetupCode,
+                                        field_id: CloudUiFieldId::DeviceSetupCode,
+                                    },
+                                )
+                            } else {
+                                cloud_action(
+                                    CloudUiActionId::ScanSetupCode,
+                                    "Scan a QR code",
+                                    false,
+                                    "QR scanning is not available on this device.",
+                                )
+                            },
                             cloud_action(
                                 CloudUiActionId::AcceptSetupCode,
                                 "Use Device Setup Code",
@@ -1710,14 +1957,45 @@ impl CloudEngine {
             );
         }
 
-        cloud_panel(
+        let mut panel = cloud_panel(
             "overall_status",
             "Cloud active",
             UiCloudPanelState::Complete,
             Some("Sync Account linked, provider connected."),
             Vec::new(),
             None,
-        )
+        );
+        panel.time_facts = self.sync_time_facts();
+        panel
+    }
+
+    fn sync_time_facts(&self) -> Vec<UiCloudTimeFact> {
+        let mut facts = Vec::new();
+        if let Some(epoch_ms) = self.persistent.last_read_epoch_ms {
+            facts.push(UiCloudTimeFact {
+                label: "Last read from cloud".to_string(),
+                epoch_ms,
+            });
+        }
+        if let Some(epoch_ms) = self
+            .persistent
+            .account
+            .as_ref()
+            .and_then(|account| account.tip.as_ref())
+            .and_then(|tip| tip.published_at_epoch_ms)
+        {
+            facts.push(UiCloudTimeFact {
+                label: "Last update on cloud".to_string(),
+                epoch_ms,
+            });
+        }
+        if let Some(epoch_ms) = self.persistent.last_write_epoch_ms {
+            facts.push(UiCloudTimeFact {
+                label: "Last write to cloud from this device".to_string(),
+                epoch_ms,
+            });
+        }
+        facts
     }
 
     fn provider_authorization_complete(&self, now_epoch_ms: i64) -> bool {
@@ -1788,7 +2066,8 @@ impl CloudEngine {
         if linked {
             match &authorization {
                 ProviderAuthorizationState::NotAuthorized
-                | ProviderAuthorizationState::AuthorizationRequired { .. } => {
+                | ProviderAuthorizationState::AuthorizationRequired { .. }
+                | ProviderAuthorizationState::Denied { .. } => {
                     return CloudStatusSummary {
                         label: "AUTH".to_string(),
                         severity: UiStatusSeverity::Caution,
@@ -1812,6 +2091,14 @@ impl CloudEngine {
                         label: "AUTHORIZING".to_string(),
                         severity: UiStatusSeverity::Info,
                         detail: "Provider authorization is in progress.".to_string(),
+                        facts,
+                    };
+                }
+                ProviderAuthorizationState::TransientFailure { detail, .. } => {
+                    return CloudStatusSummary {
+                        label: "OFFLINE".to_string(),
+                        severity: UiStatusSeverity::Info,
+                        detail: detail.clone(),
                         facts,
                     };
                 }
@@ -1862,12 +2149,12 @@ impl CloudEngine {
                 provider_label,
                 UiCloudPanelState::Error,
                 Some(&detail),
-                vec![cloud_effect_action(
+                vec![cloud_authorization_action(
                     CloudUiActionId::AuthorizeProvider,
                     "Authorize a different Google account",
+                    provider,
                     true,
                     "",
-                    CloudPlatformEffect::AuthorizeProvider { provider },
                 )],
                 None,
             );
@@ -1889,8 +2176,17 @@ impl CloudEngine {
                 Vec::new(),
                 None,
             ),
+            ProviderAuthorizationState::TransientFailure { .. } => cloud_panel(
+                "provider",
+                provider_label,
+                UiCloudPanelState::Working,
+                authorization.detail(),
+                Vec::new(),
+                None,
+            ),
             ProviderAuthorizationState::NotAuthorized
             | ProviderAuthorizationState::AuthorizationRequired { .. }
+            | ProviderAuthorizationState::Denied { .. }
             | ProviderAuthorizationState::Failed { .. } => {
                 let detail = authorization.detail().unwrap_or(
                     "Authorization is required before this device can use the provider.",
@@ -1904,12 +2200,12 @@ impl CloudEngine {
                         UiCloudPanelState::Active
                     },
                     Some(detail),
-                    vec![cloud_effect_action(
+                    vec![cloud_authorization_action(
                         CloudUiActionId::AuthorizeProvider,
                         &format!("Authorize {provider_label}"),
+                        provider,
                         provider.is_available(),
                         "This provider cannot be authorized in this build.",
-                        CloudPlatformEffect::AuthorizeProvider { provider },
                     )],
                     None,
                 )
@@ -1960,23 +2256,7 @@ impl CloudEngine {
                 UiCloudPanelState::Active,
                 Some("Store this code in a password manager or another secure place."),
                 vec![cloud_action(CloudUiActionId::CloseLinkedDetail, "Back", true, "")],
-                Some(UiCloudPanelControl::DeviceSetupCodeOutput {
-                    setup_code: self
-                        .device_setup_code()
-                        .expect("linked backup detail requires a Device Setup Code"),
-                    copy_action: cloud_effect_action(
-                        CloudUiActionId::CopySetupCode,
-                        "Copy Device Setup Code",
-                        true,
-                        "",
-                        CloudPlatformEffect::CopyText {
-                            text: self
-                                .device_setup_code()
-                                .expect("linked backup detail requires a Device Setup Code"),
-                            completion_label: "Copied".to_string(),
-                        },
-                    ),
-                }),
+                Some(self.device_setup_code_output()),
             ),
             LinkedAccountDetail::AddDevice => cloud_panel(
                 "add_device",
@@ -1984,23 +2264,7 @@ impl CloudEngine {
                 UiCloudPanelState::Active,
                 Some("Use this Device Setup Code to set up the other device."),
                 vec![cloud_action(CloudUiActionId::CloseLinkedDetail, "Back", true, "")],
-                Some(UiCloudPanelControl::DeviceSetupCodeOutput {
-                    setup_code: self
-                        .device_setup_code()
-                        .expect("linked add-device detail requires a Device Setup Code"),
-                    copy_action: cloud_effect_action(
-                        CloudUiActionId::CopySetupCode,
-                        "Copy Device Setup Code",
-                        true,
-                        "",
-                        CloudPlatformEffect::CopyText {
-                            text: self
-                                .device_setup_code()
-                                .expect("linked add-device detail requires a Device Setup Code"),
-                            completion_label: "Copied".to_string(),
-                        },
-                    ),
-                }),
+                Some(self.device_setup_code_output()),
             ),
             LinkedAccountDetail::ConfirmUnlink => cloud_panel(
                 "confirm_unlink",
@@ -2020,6 +2284,26 @@ impl CloudEngine {
                 ],
                 None,
             ),
+        }
+    }
+
+    fn device_setup_code_output(&self) -> UiCloudPanelControl {
+        let setup_code = self
+            .device_setup_code()
+            .expect("linked account detail requires a Device Setup Code");
+        UiCloudPanelControl::DeviceSetupCodeOutput {
+            qr_code: qr_code_for_setup_code(&setup_code),
+            copy_action: cloud_effect_action(
+                CloudUiActionId::CopySetupCode,
+                "Copy Device Setup Code",
+                true,
+                "",
+                CloudPlatformEffect::CopyText {
+                    text: setup_code.clone(),
+                    completion_label: "Copied".to_string(),
+                },
+            ),
+            setup_code,
         }
     }
 
@@ -2045,16 +2329,15 @@ impl CloudEngine {
         let provider = self.current_provider().ok()?;
         let authorization = self.authorization_for_at(provider, now_epoch_ms);
         match &authorization {
-            ProviderAuthorizationState::AuthorizationRequired { detail } => {
-                Some(DataStatusRecord::new(
-                    CLOUD_STATUS_ID,
-                    "CLOUD",
-                    Some("AUTH".to_string()),
-                    UiStatusSeverity::Caution,
-                    true,
-                    detail.clone(),
-                ))
-            }
+            ProviderAuthorizationState::AuthorizationRequired { detail }
+            | ProviderAuthorizationState::Denied { detail } => Some(DataStatusRecord::new(
+                CLOUD_STATUS_ID,
+                "CLOUD",
+                Some("AUTH".to_string()),
+                UiStatusSeverity::Caution,
+                true,
+                detail.clone(),
+            )),
             ProviderAuthorizationState::Failed { detail } => Some(DataStatusRecord::new(
                 CLOUD_STATUS_ID,
                 "CLOUD",
@@ -2071,6 +2354,16 @@ impl CloudEngine {
                 true,
                 "Cloud synchronization requires provider authorization.".to_string(),
             )),
+            ProviderAuthorizationState::TransientFailure { detail, .. } => {
+                Some(DataStatusRecord::new(
+                    CLOUD_STATUS_ID,
+                    "CLOUD",
+                    Some("OFFLINE".to_string()),
+                    UiStatusSeverity::Info,
+                    false,
+                    detail.clone(),
+                ))
+            }
             _ if self
                 .persistent
                 .last_provider_failure
@@ -2146,6 +2439,48 @@ fn cloud_effect_action(
     }
 }
 
+fn qr_code_for_setup_code(setup_code: &str) -> UiQrCode {
+    let code = qrcode::QrCode::new(setup_code.as_bytes())
+        .expect("a Device Setup Code must fit in a QR code");
+    let width = code.width();
+    let colors = code.to_colors();
+    let rows = colors
+        .chunks(width)
+        .map(|row| {
+            row.iter()
+                .map(|color| match color {
+                    qrcode::Color::Dark => '1',
+                    qrcode::Color::Light => '0',
+                })
+                .collect()
+        })
+        .collect();
+    UiQrCode {
+        rows,
+        quiet_zone_modules: 4,
+        accessibility_label: "Device Setup Code QR code".to_string(),
+    }
+}
+
+fn cloud_authorization_action(
+    id: CloudUiActionId,
+    label: &str,
+    provider: CloudProviderKind,
+    enabled: bool,
+    disabled_reason: &str,
+) -> UiCloudAction {
+    cloud_effect_action(
+        id,
+        label,
+        enabled,
+        disabled_reason,
+        CloudPlatformEffect::BeginAuthorization {
+            provider,
+            scopes: provider_authorization_scopes(provider),
+        },
+    )
+}
+
 fn required_ui_field(fields: &[CloudUiFieldValue], field_id: CloudUiFieldId) -> AppResult<String> {
     let value = fields
         .iter()
@@ -2162,6 +2497,13 @@ fn provider_authorization_detail(message: &str, diagnostic: Option<&str>) -> Str
         .filter(|diagnostic| !diagnostic.is_empty())
         .map(|diagnostic| format!("{message} {diagnostic}"))
         .unwrap_or_else(|| message.to_string())
+}
+
+fn provider_authorization_scopes(provider: CloudProviderKind) -> Vec<String> {
+    match provider {
+        CloudProviderKind::GoogleDrive => vec![GOOGLE_DRIVE_APPDATA_SCOPE.to_string()],
+        CloudProviderKind::AerobagCloud => Vec::new(),
+    }
 }
 
 fn cloud_panel(
@@ -2182,6 +2524,7 @@ fn cloud_panel(
             _ => None,
         },
         summary: summary.map(str::to_string),
+        time_facts: Vec::new(),
         actions,
         control,
     }
@@ -2467,13 +2810,83 @@ mod tests {
         }
     }
 
+    fn wire_response(
+        request: &CloudProviderRequest,
+        response: CloudProviderResponse,
+    ) -> CloudHttpResponse {
+        let (status_code, body) = match response {
+            CloudProviderResponse::AllocatedIds { ids } => (
+                200,
+                serde_json::to_vec(&serde_json::json!({
+                    "ids": ids,
+                    "space": "appDataFolder",
+                }))
+                .unwrap(),
+            ),
+            CloudProviderResponse::Read {
+                bytes_base64: Some(bytes),
+            } => (200, URL_SAFE_NO_PAD.decode(bytes).unwrap()),
+            CloudProviderResponse::Read { bytes_base64: None } => (404, Vec::new()),
+            CloudProviderResponse::Created => (
+                200,
+                serde_json::to_vec(&serde_json::json!({
+                    "id": match &request.operation {
+                        CloudProviderOperation::CreateOnce { id, .. } => id,
+                        _ => "created",
+                    },
+                }))
+                .unwrap(),
+            ),
+            CloudProviderResponse::AlreadyExists => (409, Vec::new()),
+            CloudProviderResponse::Deleted { existed } => {
+                (if existed { 204 } else { 404 }, Vec::new())
+            }
+            CloudProviderResponse::Listed {
+                objects,
+                next_page_token,
+            } => (
+                200,
+                serde_json::to_vec(&serde_json::json!({
+                    "files": objects.into_iter().map(|object| serde_json::json!({
+                        "id": object.id,
+                        "size": object.size_bytes.to_string(),
+                        "createdTime": object.created_at,
+                    })).collect::<Vec<_>>(),
+                    "nextPageToken": next_page_token,
+                }))
+                .unwrap(),
+            ),
+            CloudProviderResponse::Error {
+                kind: CloudProviderErrorKind::Transient,
+                detail,
+            } => return CloudHttpResponse::TransportError { detail },
+            CloudProviderResponse::Error {
+                kind: CloudProviderErrorKind::Unauthorized,
+                detail,
+            } => (401, detail.into_bytes()),
+            CloudProviderResponse::Error {
+                kind: CloudProviderErrorKind::Permanent,
+                detail,
+            } => (400, detail.into_bytes()),
+        };
+        CloudHttpResponse::Completed {
+            status_code,
+            body_base64: URL_SAFE_NO_PAD.encode(body),
+        }
+    }
+
     fn pump(engine: &mut CloudEngine, provider: &mut MemoryProvider, now: i64) -> Vec<FlightPlan> {
         let mut remote_plans = Vec::new();
         for _ in 0..32 {
             let Some(request) = engine.take_provider_request(now).unwrap() else {
                 return remote_plans;
             };
-            let response = provider.execute(&request);
+            let semantic_request = engine
+                .provider_request_in_flight
+                .as_ref()
+                .expect("semantic provider request")
+                .clone();
+            let response = wire_response(&semantic_request, provider.execute(&semantic_request));
             let completion = engine
                 .complete_provider_request(request.request_id, response, now)
                 .unwrap();
@@ -2537,8 +2950,17 @@ mod tests {
             .take_provider_request(now)
             .unwrap()
             .expect("provider request");
+        let semantic_request = engine
+            .provider_request_in_flight
+            .as_ref()
+            .expect("semantic provider request")
+            .clone();
         engine
-            .complete_provider_request(request.request_id, response, now)
+            .complete_provider_request(
+                request.request_id,
+                wire_response(&semantic_request, response),
+                now,
+            )
             .unwrap()
     }
 
@@ -2654,8 +3076,9 @@ mod tests {
             .unwrap();
         assert_eq!(
             authorize.platform_effect,
-            Some(CloudPlatformEffect::AuthorizeProvider {
+            Some(CloudPlatformEffect::BeginAuthorization {
                 provider: CloudProviderKind::GoogleDrive,
+                scopes: vec![GOOGLE_DRIVE_APPDATA_SCOPE.to_string()],
             })
         );
         engine
@@ -2664,6 +3087,15 @@ mod tests {
         assert_eq!(
             engine.authorization_for(CloudProviderKind::GoogleDrive),
             ProviderAuthorizationState::Authorizing
+        );
+        let authorization_request = engine.take_authorization_request(1).unwrap().unwrap();
+        assert_eq!(
+            authorization_request.mode,
+            CloudAuthorizationMode::Interactive
+        );
+        assert_eq!(
+            authorization_request.scopes,
+            vec![GOOGLE_DRIVE_APPDATA_SCOPE]
         );
 
         let mut receiver = CloudEngine::new(CloudPersistentState::default());
@@ -2682,6 +3114,41 @@ mod tests {
             )
             .unwrap_err();
         assert!(error.message.contains("Device Setup Code is required"));
+    }
+
+    #[test]
+    fn qr_scanner_capability_enables_a_typed_setup_completion_effect() {
+        let initial = plan(&[]);
+        let mut engine = CloudEngine::new(CloudPersistentState::default());
+        engine
+            .perform_ui_action(CloudUiActionId::BeginSetup, &[], &initial, 0)
+            .unwrap();
+
+        let scan_action = |page: UiCloudPageState| {
+            page.sync_account_panels
+                .into_iter()
+                .find(|panel| panel.id == "receive_setup")
+                .unwrap()
+                .actions
+                .into_iter()
+                .find(|action| action.id == CloudUiActionId::ScanSetupCode)
+                .unwrap()
+        };
+        assert!(!scan_action(engine.page_state(0)).enabled);
+
+        let available = scan_action(engine.page_state_with_qr_scanner(0, true));
+        assert!(available.enabled);
+        assert_eq!(
+            available.platform_effect,
+            Some(CloudPlatformEffect::ScanQrCode {
+                completion_action: CloudUiActionId::AcceptSetupCode,
+                field_id: CloudUiFieldId::DeviceSetupCode,
+            })
+        );
+        engine
+            .perform_ui_action(CloudUiActionId::ScanSetupCode, &[], &initial, 0)
+            .unwrap();
+        assert!(engine.persistent.account.is_none());
     }
 
     #[test]
@@ -2866,8 +3333,7 @@ mod tests {
         engine
             .complete_provider_request(
                 request.request_id,
-                CloudProviderResponse::Error {
-                    kind: CloudProviderErrorKind::Transient,
+                CloudHttpResponse::TransportError {
                     detail: "Network is unavailable.".into(),
                 },
                 50,
@@ -3001,7 +3467,21 @@ mod tests {
             .actions
             .is_empty());
         let backup_code = match backup.control.unwrap() {
-            UiCloudPanelControl::DeviceSetupCodeOutput { setup_code, .. } => setup_code,
+            UiCloudPanelControl::DeviceSetupCodeOutput {
+                setup_code,
+                qr_code,
+                ..
+            } => {
+                assert!(!qr_code.rows.is_empty());
+                assert_eq!(qr_code.rows.len(), qr_code.rows[0].len());
+                assert!(qr_code
+                    .rows
+                    .iter()
+                    .all(|row| row.len() == qr_code.rows.len()
+                        && row.bytes().all(|value| matches!(value, b'0' | b'1'))));
+                assert_eq!(qr_code.quiet_zone_modules, 4);
+                setup_code
+            }
             control => panic!("unexpected backup control: {control:?}"),
         };
 
@@ -3050,9 +3530,13 @@ mod tests {
         let mut engine = CloudEngine::new(CloudPersistentState::default());
         create_account(&mut engine, &plan(&["KRNT", "KPAE"]));
         engine.record_local_flight_plan(&plan(&["KRNT", "KSEA", "KPAE"]));
-        let request = engine.take_provider_request(10).unwrap().unwrap();
+        let _request = engine.take_provider_request(10).unwrap().unwrap();
+        let semantic_request = engine
+            .provider_request_in_flight
+            .as_ref()
+            .expect("semantic provider request");
         assert_eq!(
-            request.operation,
+            semantic_request.operation,
             CloudProviderOperation::AllocateIds { count: 2 }
         );
         assert!(engine.persistent.pending_flight_plan.is_some());
@@ -3088,6 +3572,8 @@ mod tests {
             .perform_action(CloudAction::CreateAccount, &initial)
             .unwrap();
         assert!(pump(&mut first, &mut provider, 10).is_empty());
+        assert_eq!(first.persistent.last_write_epoch_ms, Some(10));
+        assert_eq!(first.tip().unwrap().published_at_epoch_ms, Some(10));
         let setup_code = first.device_setup_code().unwrap();
 
         let mut second = CloudEngine::new(CloudPersistentState::default());
@@ -3099,12 +3585,72 @@ mod tests {
             )
             .unwrap();
         assert_eq!(pump(&mut second, &mut provider, 20), vec![initial]);
+        assert_eq!(second.persistent.last_read_epoch_ms, Some(20));
+        assert_eq!(second.persistent.last_write_epoch_ms, None);
+        assert_eq!(second.tip().unwrap().published_at_epoch_ms, Some(10));
 
         first.record_local_flight_plan(&changed);
         assert!(pump(&mut first, &mut provider, 30).is_empty());
+        assert_eq!(first.persistent.last_write_epoch_ms, Some(30));
+        assert_eq!(first.tip().unwrap().published_at_epoch_ms, Some(30));
+        assert_eq!(
+            first.page_state(30).overall_status.time_facts,
+            vec![
+                UiCloudTimeFact {
+                    label: "Last read from cloud".to_string(),
+                    epoch_ms: 30,
+                },
+                UiCloudTimeFact {
+                    label: "Last update on cloud".to_string(),
+                    epoch_ms: 30,
+                },
+                UiCloudTimeFact {
+                    label: "Last write to cloud from this device".to_string(),
+                    epoch_ms: 30,
+                },
+            ]
+        );
         second
             .perform_action(CloudAction::SyncNow, &FlightPlan::default())
             .unwrap();
         assert_eq!(pump(&mut second, &mut provider, 40), vec![changed]);
+        assert_eq!(second.persistent.last_read_epoch_ms, Some(40));
+        assert_eq!(second.persistent.last_write_epoch_ms, None);
+        assert_eq!(second.tip().unwrap().published_at_epoch_ms, Some(30));
+        assert_eq!(
+            second.page_state(40).overall_status.time_facts,
+            vec![
+                UiCloudTimeFact {
+                    label: "Last read from cloud".to_string(),
+                    epoch_ms: 40,
+                },
+                UiCloudTimeFact {
+                    label: "Last update on cloud".to_string(),
+                    epoch_ms: 30,
+                },
+            ]
+        );
     }
+
+    #[test]
+    fn cloud_nodes_written_before_publication_timestamps_remain_readable() {
+        let node: CloudNode = serde_json::from_value(serde_json::json!({
+            "version": CLOUD_NODE_VERSION,
+            "generation": 3,
+            "parent_node_id": "parent",
+            "parent_node_hash": "parent-hash",
+            "merkle_root_id": "page",
+            "merkle_root_hash": "page-hash",
+            "next_slot_id": "next"
+        }))
+        .unwrap();
+
+        assert_eq!(node.published_at_epoch_ms, None);
+    }
+}
+#[test]
+fn unconfigured_engine_has_no_provider_work() {
+    let mut engine = CloudEngine::new(CloudPersistentState::default());
+
+    assert!(engine.take_provider_request(0).unwrap().is_none());
 }

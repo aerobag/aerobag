@@ -528,6 +528,7 @@ internal enum class AppPage {
     Home,
     DataStatus,
     Settings,
+    Cloud,
     OfflinePackages,
 }
 
@@ -3005,6 +3006,10 @@ internal fun AerobagApp(
     }
 
     CompositionLocalProvider(LocalAerobagUiTheme provides uiTheme) {
+        CloudEffectPump(
+            uiSession = uiSession,
+            onSnapshot = ::applySessionSnapshot,
+        )
         BoxWithConstraints(modifier = Modifier.fillMaxSize()) {
             val bottomCornerControlsRaised =
                 page != AppPage.OfflinePackages && shouldRaiseBottomCornerControls(maxWidth)
@@ -3301,6 +3306,26 @@ internal fun AerobagApp(
                         onSettingsAction = { actionId, valueId ->
                             applySessionCommand("performSettingsAction") {
                                 uiSession.performSettingsAction(actionId, valueId)
+                            }
+                        },
+                    )
+                }
+                AppPage.Cloud -> {
+                    CloudPage(
+                        page = page,
+                        state = sessionSnapshot.cloudPageState,
+                        navElement = navElement,
+                        mostRecentChartOrPlatePage = mostRecentChartOrPlatePageFromHistory(pageHistory),
+                        onOpenPlan = { navigateToPage(AppPage.Plan) },
+                        onOpenRecentChartOrPlate = ::navigateToMostRecentChartOrPlate,
+                        onSelectPage = ::navigateToPage,
+                        onAction = { actionId, fields ->
+                            applySessionCommand("performCloudUiAction") {
+                                uiSession.performCloudUiAction(
+                                    actionId,
+                                    fields,
+                                    System.currentTimeMillis(),
+                                )
                             }
                         },
                     )

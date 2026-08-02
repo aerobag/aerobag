@@ -33,20 +33,25 @@ import type {
 } from "./types";
 import type { NexradOverlayQueryResult } from "../generated/nexradOverlayWire";
 import type {
+  CloudAuthorizationRequest,
   CloudAuthorizationResponse,
-  CloudProviderKind,
-  CloudProviderRequest,
-  CloudProviderResponse,
+  CloudHttpRequest,
+  CloudHttpResponse,
   CloudUiActionId,
   CloudUiFieldValue,
   UiCloudPageState,
 } from "../generated/cloudWire";
+import type { UiHomePageState } from "../generated/homePageWire";
 export type {
+  CloudAuthorizationMode,
+  CloudAuthorizationRequest,
   CloudAuthorizationResponse,
+  CloudHttpHeader,
+  CloudHttpMethod,
+  CloudHttpRequest,
+  CloudHttpResponse,
   CloudPlatformEffect,
   CloudProviderKind,
-  CloudProviderRequest,
-  CloudProviderResponse,
   CloudUiActionId,
   CloudUiFieldId,
   CloudUiFieldValue,
@@ -55,7 +60,9 @@ export type {
   UiCloudPanel,
   UiCloudPanelControl,
   UiCloudPanelState,
+  UiQrCode,
 } from "../generated/cloudWire";
+export type { UiHomeDestination, UiHomePageButton, UiHomePageState } from "../generated/homePageWire";
 import { viewportCenterLatLon, type MapViewportState } from "./mapViewport";
 import { advanceSharedNavKvStore, attachNavKvStoreToSession, resolveChartAssetUrl, runCoreHadOperation, runCoreHadSessionOperation, type UiInvalidation, type UiInvalidationListener } from "./navKv";
 import { debugLog, debugTiming, installRustDebugLogBridge, perfDebugLog } from "./debugLog";
@@ -178,17 +185,6 @@ export type UiSessionSnapshot = {
   debug_state: UiDebugState;
   raster_map?: RasterMapUiState | null;
   next_cycle_product_freshness_check_epoch_ms?: number | null;
-};
-
-export type UiHomePageButton = {
-  id: string;
-  label: string;
-  enabled: boolean;
-  disabled_reason: string | null;
-};
-
-export type UiHomePageState = {
-  buttons: UiHomePageButton[];
 };
 
 export type UiDisclaimerState = {
@@ -837,10 +833,11 @@ export interface UiSession {
   setMapLayerEnabled(layerId: MapLayerId, enabled: boolean): Promise<UiSessionSnapshot>;
   setDebugFlag(flagId: DebugFlagId, enabled: boolean): Promise<UiSessionSnapshot>;
   performSettingsAction(actionId: string, valueId: string): Promise<UiSessionSnapshot>;
-  completeCloudAuthorization(provider: CloudProviderKind, response: CloudAuthorizationResponse, nowEpochMs: number): Promise<UiSessionSnapshot>;
+  takeCloudAuthorizationRequest(nowEpochMs: number): Promise<CloudAuthorizationRequest | null>;
+  completeCloudAuthorization(requestId: number, response: CloudAuthorizationResponse, nowEpochMs: number): Promise<UiSessionSnapshot>;
   performCloudUiAction(actionId: CloudUiActionId, fields: CloudUiFieldValue[], nowEpochMs: number): Promise<UiSessionSnapshot>;
-  takeCloudProviderRequest(nowEpochMs: number): Promise<CloudProviderRequest | null>;
-  completeCloudProviderRequest(requestId: number, response: CloudProviderResponse, nowEpochMs: number): Promise<UiSessionSnapshot>;
+  takeCloudProviderRequest(nowEpochMs: number): Promise<CloudHttpRequest | null>;
+  completeCloudProviderRequest(requestId: number, response: CloudHttpResponse, nowEpochMs: number): Promise<UiSessionSnapshot>;
   acceptDisclaimer(agreementId: string): Promise<UiSessionSnapshot>;
   loadRasterMapCatalog(): Promise<UiSessionSnapshot>;
   resolveChartAssetUrl(chartId: string, assetKind: "asset" | "thumbnail"): Promise<string>;
@@ -966,7 +963,8 @@ type WasmModule = {
   set_map_layer_enabled_in_session_paged(handle: number, layerIdJson: string, enabled: boolean): Promise<string> | string;
   set_debug_flag_in_session(handle: number, flagIdJson: string, enabled: boolean): Promise<string> | string;
   perform_settings_action_in_session(handle: number, actionJson: string): Promise<string> | string;
-  complete_cloud_authorization_in_session(handle: number, providerJson: string, responseJson: string, nowEpochMs: bigint): Promise<string> | string;
+  take_cloud_authorization_request_in_session(handle: number, nowEpochMs: bigint): Promise<string> | string;
+  complete_cloud_authorization_in_session(handle: number, requestId: bigint, responseJson: string, nowEpochMs: bigint): Promise<string> | string;
   perform_cloud_ui_action_in_session(handle: number, actionIdJson: string, fieldsJson: string, nowEpochMs: bigint): Promise<string> | string;
   take_cloud_provider_request_in_session(handle: number, nowEpochMs: bigint): Promise<string> | string;
   complete_cloud_provider_request_in_session(handle: number, requestId: bigint, responseJson: string, nowEpochMs: bigint): Promise<string> | string;
@@ -1140,7 +1138,7 @@ export class WasmAppCoreAdapter implements AppCoreAdapter {
           JSON.stringify({
             display_policy: null,
             offline_packages: null,
-            cloud: {},
+            cloud: { qr_scan: false },
             live_feeds: { acquisition_policy: "jit_public_resources" },
             client_build: __AEROBAG_CLIENT_BUILD_INFO__,
             local_time_zone: Intl.DateTimeFormat().resolvedOptions().timeZone,
@@ -1518,11 +1516,19 @@ export class WasmAppCoreAdapter implements AppCoreAdapter {
         );
         return snapshot;
       },
-      completeCloudAuthorization: async (provider, response, nowEpochMs) => {
+      takeCloudAuthorizationRequest: async (nowEpochMs) => {
+        return JSON.parse(
+          await this.module.take_cloud_authorization_request_in_session(
+            handle,
+            BigInt(Math.trunc(nowEpochMs)),
+          ),
+        ) as CloudAuthorizationRequest | null;
+      },
+      completeCloudAuthorization: async (requestId, response, nowEpochMs) => {
         snapshot = await runSessionOperation<UiSessionSnapshot>(() =>
           this.module.complete_cloud_authorization_in_session(
             handle,
-            JSON.stringify(provider),
+            BigInt(requestId),
             JSON.stringify(response),
             BigInt(Math.trunc(nowEpochMs)),
           ),
@@ -1546,7 +1552,7 @@ export class WasmAppCoreAdapter implements AppCoreAdapter {
             handle,
             BigInt(Math.trunc(nowEpochMs)),
           ),
-        ) as CloudProviderRequest | null;
+        ) as CloudHttpRequest | null;
       },
       completeCloudProviderRequest: async (requestId, response, nowEpochMs) => {
         snapshot = await runSessionOperation<UiSessionSnapshot>(() =>
@@ -2003,6 +2009,7 @@ async function loadBestAvailableAdapterUncached(
     "set_map_layer_enabled_in_session_paged",
     "set_debug_flag_in_session",
     "perform_settings_action_in_session",
+    "take_cloud_authorization_request_in_session",
     "complete_cloud_authorization_in_session",
     "perform_cloud_ui_action_in_session",
     "take_cloud_provider_request_in_session",

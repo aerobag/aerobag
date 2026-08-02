@@ -67,8 +67,6 @@ client appears on the other through the Drive synchronization path.
 - Synchronizing active-leg execution, direct-to state, ownship, viewport, open
   trays, or other transient navigation state.
 - General collaborative editing or user-driven conflict resolution.
-- QR scanning; copy/paste Device Setup Codes are sufficient for the first
-  slice.
 - Google webhook relays or background synchronization after the web access
   token expires.
 - Garbage-collecting the immutable successor-chain spine.
@@ -253,8 +251,9 @@ Provider request descriptions and responses are typed core contracts.
 
 Platform-specific responsibilities are limited to:
 
-- obtaining and storing provider credentials;
-- executing typed provider network/SDK operations;
+- obtaining provider credentials with the platform-native OAuth flow;
+- executing core-planned, credentialed, size-bounded HTTP requests without
+  interpreting provider storage semantics;
 - generic local durable storage;
 - connectivity and foreground/idle events; and
 - rendering core-owned UI state and forwarding user actions.
@@ -417,7 +416,8 @@ record and manually feeds it back into core.
 - Map `409 fileIdInUse` to `AlreadyExists`.
 - On an ambiguous create, read the generated ID and let core verify its
   envelope.
-- Use direct REST/CORS calls from web for the MVP.
+- Core owns Drive URLs, request bodies, response parsing, and error mapping.
+  Web and Android execute the same core-planned REST requests.
 - Never use Drive file update as CAS.
 
 ### OAuth Identity
@@ -432,6 +432,11 @@ The OAuth client ID is public. Trust comes from platform registration:
 
 Production web and Android clients must belong to the same Aerobag Google
 project so both platforms address the same per-user application data.
+
+The Aerobag Google project therefore needs an Android OAuth client registered
+for package `org.aerobag.app` and the SHA-1 of the shared Aerobag APK signing
+certificate. `AuthorizationClient` discovers that client from package and
+signature; no Android client secret or client ID is baked into the APK.
 
 ### Token Lifetime
 
@@ -469,8 +474,10 @@ The MVP does not introduce an Aerobag OAuth-token broker. Instead:
 
 This is sufficient for the sub-hour MVP demonstration. Production background
 web synchronization requires a separate decision about a token broker or
-acceptable user reauthorization. Android uses its platform-appropriate OAuth
-flow and credential storage.
+acceptable user reauthorization. Android uses Google Play Services
+`AuthorizationClient`. Access tokens remain in process memory; a fresh app
+process asks `AuthorizationClient` to restore an existing grant silently before
+asking the user to intervene.
 
 ### Provider Connection Health
 
@@ -529,8 +536,9 @@ Get started
 The receive path unfolds as:
 
 1. `Get started: Set up from another device`.
-2. `Scan a QR code` or paste a Device Setup Code. QR is visibly unavailable in
-   the first web draft; paste is functional.
+2. `Scan a QR code` or paste a Device Setup Code. Core emits the QR matrix and
+   the typed scan-completion action; platforms only render the matrix or invoke
+   a platform scanner when they advertise that capability.
 3. `Sync Account received` after core validates the code and atomically
    installs its provider and pending account descriptor.
 4. The selected provider card requests authorization if it is absent.
@@ -552,8 +560,8 @@ The creation path unfolds as:
 
 The first two linked-account actions intentionally reveal the same Device Setup
 Code under different task-oriented language. The backup action is suitable
-for copying into a password manager; the add-device action can later add a QR
-code without changing the recovery flow. `Unlink this device` unfolds a
+for copying into a password manager; both actions also display the same QR code
+for device-to-device setup. `Unlink this device` unfolds a
 caution panel. Core does not delete the local descriptor until the user chooses
 `Yes, delete Sync Account from this device`; `Back` leaves it intact.
 While any of these child panels is open, the completed linked-account panel has
@@ -648,11 +656,13 @@ flight plan back into core.
 - Expose passive Cloud page and Data Status models.
 - Keep provider operations asynchronous and outside platform UI threads.
 
-### 3. Web Google Drive Adapter
+### 3. Google Drive Platform Effects
 
-- Promote the experiment's OAuth and REST plumbing into a production adapter;
-  do not retain lab types or duplicate storage policy.
-- Implement ID allocation, read, create-once, delete, and list.
+- Keep web Google Identity Services and Android `AuthorizationClient` as thin
+  credential-acquisition effects.
+- Implement ID allocation, read, create-once, delete, list, URLs, and response
+  interpretation once in core.
+- Let both platforms execute only opaque, bounded HTTP requests from core.
 - Persist only non-token provider configuration in ordinary web storage.
 - Keep access tokens in memory and surface expiry/reauthorization.
 - Use a production client ID configured by deployment and a separate dev
@@ -722,7 +732,6 @@ in CI; real Google authorization remains a manual/provider qualification test.
 
 ## After The MVP
 
-- Android Google Drive adapter and native OAuth lifecycle.
 - Recovery-key backup in Drive.
 - Preferences, aircraft, package policy, saved plans, and traces.
 - Signed checkpoints, bounded startup traversal, and chain compaction.
@@ -733,7 +742,6 @@ in CI; real Google authorization remains a manual/provider qualification test.
 - WebDAV qualification using `If-None-Match: *` or another proven atomic
   create-once primitive.
 - Provider migration and multiple package-policy profiles.
-- QR Device Setup Codes and camera scanning.
 
 ## Future State Placement
 

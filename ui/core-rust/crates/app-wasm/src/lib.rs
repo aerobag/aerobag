@@ -694,22 +694,31 @@ pub fn perform_settings_action_in_session(
 #[wasm_bindgen]
 pub fn complete_cloud_authorization_in_session(
     session_handle: u32,
-    provider_json: &str,
+    request_id: u64,
     response_json: &str,
     now_epoch_ms: i64,
 ) -> Result<String, JsValue> {
-    let provider: app_core::CloudProviderKind =
-        serde_json::from_str(provider_json).map_err(|err| JsValue::from_str(&err.to_string()))?;
     let response: app_core::CloudAuthorizationResponse =
         serde_json::from_str(response_json).map_err(|err| JsValue::from_str(&err.to_string()))?;
     let outcome = app_core::complete_cloud_authorization_in_session(
         session_handle,
-        provider,
+        request_id,
         response,
         now_epoch_ms,
     )
     .map_err(|err| JsValue::from_str(&err.to_string()))?;
     serde_json::to_string(&outcome).map_err(|err| JsValue::from_str(&err.to_string()))
+}
+
+#[wasm_bindgen]
+pub fn take_cloud_authorization_request_in_session(
+    session_handle: u32,
+    now_epoch_ms: i64,
+) -> Result<String, JsValue> {
+    let request =
+        app_core::take_cloud_authorization_request_in_session(session_handle, now_epoch_ms)
+            .map_err(|err| JsValue::from_str(&err.to_string()))?;
+    serde_json::to_string(&request).map_err(|err| JsValue::from_str(&err.to_string()))
 }
 
 #[wasm_bindgen]
@@ -750,7 +759,7 @@ pub fn complete_cloud_provider_request_in_session(
     response_json: &str,
     now_epoch_ms: i64,
 ) -> Result<String, JsValue> {
-    let response: app_core::CloudProviderResponse =
+    let response: app_core::CloudHttpResponse =
         serde_json::from_str(response_json).map_err(|err| JsValue::from_str(&err.to_string()))?;
     let outcome = app_core::complete_cloud_provider_request_in_session(
         session_handle,

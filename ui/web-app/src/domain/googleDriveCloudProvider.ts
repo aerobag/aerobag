@@ -2,7 +2,7 @@
 //
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
-import type { CloudProviderRequest, CloudProviderResponse } from "../generated/cloudWire";
+import type { CloudAuthorizationMode } from "../generated/cloudWire";
 
 declare const __AEROBAG_GOOGLE_DRIVE_CLIENT_ID__: string;
 
@@ -10,9 +10,6 @@ const GOOGLE_IDENTITY_SCRIPT_ID = "aerobag-google-identity-services";
 const GOOGLE_IDENTITY_SCRIPT_URL = "https://accounts.google.com/gsi/client";
 const DRIVE_SCOPE = "https://www.googleapis.com/auth/drive.appdata";
 const DRIVE_API_ROOT = "https://www.googleapis.com/drive/v3";
-const DRIVE_UPLOAD_ROOT = "https://www.googleapis.com/upload/drive/v3";
-const CLOUD_OBJECT_MIME = "application/vnd.aerobag.cloud-object";
-const MAX_CLOUD_OBJECT_BYTES = 4 * 1024 * 1024;
 
 type GoogleTokenResponse = {
   access_token?: string;
@@ -39,6 +36,22 @@ export type GoogleDriveAuthorization = {
     display_label: string;
   };
 };
+
+export type GoogleDriveAuthorizationFailureKind =
+  | "interaction_required"
+  | "denied"
+  | "transient"
+  | "permanent";
+
+export class GoogleDriveAuthorizationError extends Error {
+  constructor(
+    readonly kind: GoogleDriveAuthorizationFailureKind,
+    message: string,
+  ) {
+    super(message);
+    this.name = "GoogleDriveAuthorizationError";
+  }
+}
 
 function oauth2(): GoogleOauth2 | null {
   const google = (window as unknown as {
@@ -70,7 +83,10 @@ export function preloadGoogleDriveAuthorization(): Promise<void> {
   });
 }
 
-export async function authorizeGoogleDrive(): Promise<GoogleDriveAuthorization> {
+export async function authorizeGoogleDrive(
+  mode: CloudAuthorizationMode,
+  scopes: string[],
+): Promise<GoogleDriveAuthorization> {
   await preloadGoogleDriveAuthorization();
   const clientId = __AEROBAG_GOOGLE_DRIVE_CLIENT_ID__.trim();
   if (!clientId) {
@@ -83,10 +99,14 @@ export async function authorizeGoogleDrive(): Promise<GoogleDriveAuthorization> 
   const token = await new Promise<{ accessToken: string; expiresAtEpochMs: number }>((resolve, reject) => {
     const client = googleOauth.initTokenClient({
       client_id: clientId,
-      scope: DRIVE_SCOPE,
+      scope: scopes.join(" ") || DRIVE_SCOPE,
       callback: (response) => {
         if (!response.access_token) {
-          reject(new Error(response.error_description ?? response.error ?? "Google Drive authorization failed."));
+          reject(authorizationError(
+            response.error,
+            response.error_description ?? response.error ?? "Google Drive authorization failed.",
+            mode,
+          ));
           return;
         }
         const lifetimeSeconds = Number(response.expires_in);
@@ -99,10 +119,14 @@ export async function authorizeGoogleDrive(): Promise<GoogleDriveAuthorization> 
         });
       },
       error_callback: (error) => {
-        reject(new Error(error.message ?? error.type ?? "Google Drive authorization popup failed."));
+        reject(authorizationError(
+          error.type,
+          error.message ?? error.type ?? "Google Drive authorization popup failed.",
+          mode,
+        ));
       },
     });
-    client.requestAccessToken({ prompt: "consent" });
+    client.requestAccessToken({ prompt: mode === "interactive" ? "consent" : "" });
   });
   return {
     ...token,
@@ -117,14 +141,25 @@ export async function readGoogleDrivePrincipal(accessToken: string): Promise<Goo
   );
   if (!response.ok) {
     const detail = (await response.text()).slice(0, 500).trim();
-    throw new Error(`Could not identify the authorized Google Drive account: HTTP ${response.status}${detail ? ` ${detail}` : ""}`);
+    const message = `Could not identify the authorized Google Drive account: HTTP ${response.status}${detail ? ` ${detail}` : ""}`;
+    throw new GoogleDriveAuthorizationError(
+      response.status === 401 || response.status === 403
+        ? "interaction_required"
+        : response.status === 408 || response.status === 425 || response.status === 429 || response.status >= 500
+          ? "transient"
+          : "permanent",
+      message,
+    );
   }
   const payload = await response.json() as {
     user?: { permissionId?: string; displayName?: string; emailAddress?: string };
   };
   const stableId = payload.user?.permissionId?.trim();
   if (!stableId) {
-    throw new Error("Google Drive did not provide a stable account identifier.");
+    throw new GoogleDriveAuthorizationError(
+      "permanent",
+      "Google Drive did not provide a stable account identifier.",
+    );
   }
   return {
     stable_id: stableId,
@@ -134,212 +169,34 @@ export async function readGoogleDrivePrincipal(accessToken: string): Promise<Goo
   };
 }
 
-export async function executeGoogleDriveCloudRequest(
-  request: CloudProviderRequest,
-  accessToken: string | null,
-): Promise<CloudProviderResponse> {
-  if (request.provider !== "google_drive") {
-    return permanentError(`Unsupported cloud provider ${request.provider}.`);
-  }
-  if (!accessToken) {
-    return unauthorizedError("Google Drive authorization is required.");
-  }
-  try {
-    switch (request.operation.operation) {
-      case "allocate_ids":
-        return await allocateIds(accessToken, request.operation.count);
-      case "read":
-        return await readObject(accessToken, request.operation.id);
-      case "create_once":
-        return await createObjectOnce(
-          accessToken,
-          request.operation.id,
-          request.operation.name,
-          request.operation.bytes_base64,
-        );
-      case "delete":
-        return await deleteObject(accessToken, request.operation.id);
-      case "list":
-        return await listObjects(accessToken, request.operation.page_token ?? null);
-    }
-  } catch (error) {
-    return transientError(error instanceof Error ? error.message : String(error));
-  }
-}
-
-async function allocateIds(accessToken: string, count: number): Promise<CloudProviderResponse> {
-  const response = await fetch(
-    `${DRIVE_API_ROOT}/files/generateIds?count=${encodeURIComponent(String(count))}&space=appDataFolder&type=files`,
-    { headers: authorizationHeaders(accessToken) },
-  );
-  if (!response.ok) {
-    return responseError(response, "allocate Google Drive object IDs");
-  }
-  const payload = await response.json() as { ids?: string[]; space?: string };
-  if (payload.space !== "appDataFolder" || payload.ids?.length !== count) {
-    return permanentError(`Google Drive returned an invalid generated-ID response.`);
-  }
-  return { result: "allocated_ids", ids: payload.ids };
-}
-
-async function readObject(accessToken: string, id: string): Promise<CloudProviderResponse> {
-  const response = await fetch(
-    `${DRIVE_API_ROOT}/files/${encodeURIComponent(id)}?alt=media`,
-    { headers: authorizationHeaders(accessToken) },
-  );
-  if (response.status === 404) {
-    return { result: "read", bytes_base64: null };
-  }
-  if (!response.ok) {
-    return responseError(response, "read Google Drive cloud object");
-  }
-  const contentLength = Number(response.headers.get("content-length"));
-  if (Number.isFinite(contentLength) && contentLength > MAX_CLOUD_OBJECT_BYTES) {
-    return permanentError(`Google Drive cloud object exceeds ${MAX_CLOUD_OBJECT_BYTES} bytes.`);
-  }
-  const bytes = new Uint8Array(await response.arrayBuffer());
-  if (bytes.byteLength > MAX_CLOUD_OBJECT_BYTES) {
-    return permanentError(`Google Drive cloud object exceeds ${MAX_CLOUD_OBJECT_BYTES} bytes.`);
-  }
-  return { result: "read", bytes_base64: encodeBase64Url(bytes) };
-}
-
-async function createObjectOnce(
-  accessToken: string,
-  id: string,
-  name: string,
-  bytesBase64: string,
-): Promise<CloudProviderResponse> {
-  const bytes = decodeBase64Url(bytesBase64);
-  if (bytes.byteLength > MAX_CLOUD_OBJECT_BYTES) {
-    return permanentError(`Cloud object exceeds ${MAX_CLOUD_OBJECT_BYTES} bytes.`);
-  }
-  const boundary = `aerobag_cloud_${crypto.randomUUID().replaceAll("-", "")}`;
-  const metadata = JSON.stringify({
-    id,
-    name,
-    mimeType: CLOUD_OBJECT_MIME,
-    parents: ["appDataFolder"],
-  });
-  const body = new Blob([
-    `--${boundary}\r\nContent-Type: application/json; charset=UTF-8\r\n\r\n${metadata}\r\n`,
-    `--${boundary}\r\nContent-Type: ${CLOUD_OBJECT_MIME}\r\n\r\n`,
-    bytes.buffer as ArrayBuffer,
-    `\r\n--${boundary}--\r\n`,
-  ]);
-  const response = await fetch(
-    `${DRIVE_UPLOAD_ROOT}/files?uploadType=multipart&fields=id`,
-    {
-      method: "POST",
-      headers: authorizationHeaders(accessToken, {
-        "Content-Type": `multipart/related; boundary=${boundary}`,
-      }),
-      body,
-    },
-  );
-  if (response.status === 409 || response.status === 412) {
-    return { result: "already_exists" };
-  }
-  if (!response.ok) {
-    return responseError(response, "create Google Drive cloud object");
-  }
-  return { result: "created" };
-}
-
-async function deleteObject(accessToken: string, id: string): Promise<CloudProviderResponse> {
-  const response = await fetch(
-    `${DRIVE_API_ROOT}/files/${encodeURIComponent(id)}`,
-    { method: "DELETE", headers: authorizationHeaders(accessToken) },
-  );
-  if (response.status === 404) {
-    return { result: "deleted", existed: false };
-  }
-  if (!response.ok) {
-    return responseError(response, "delete Google Drive cloud object");
-  }
-  return { result: "deleted", existed: true };
-}
-
-async function listObjects(
-  accessToken: string,
-  pageToken: string | null,
-): Promise<CloudProviderResponse> {
-  const params = new URLSearchParams({
-    spaces: "appDataFolder",
-    pageSize: "1000",
-    q: `trashed = false and mimeType = '${CLOUD_OBJECT_MIME}'`,
-    fields: "nextPageToken,files(id,size,createdTime)",
-  });
-  if (pageToken) {
-    params.set("pageToken", pageToken);
-  }
-  const response = await fetch(
-    `${DRIVE_API_ROOT}/files?${params.toString()}`,
-    { headers: authorizationHeaders(accessToken) },
-  );
-  if (!response.ok) {
-    return responseError(response, "list Google Drive cloud objects");
-  }
-  const payload = await response.json() as {
-    files?: Array<{ id?: string; size?: string; createdTime?: string }>;
-    nextPageToken?: string;
-  };
-  const objects = (payload.files ?? []).map((file) => {
-    const sizeBytes = Number(file.size);
-    if (!file.id || !Number.isSafeInteger(sizeBytes) || sizeBytes < 0) {
-      throw new Error("Google Drive returned invalid cloud object metadata.");
-    }
-    return {
-      id: file.id,
-      size_bytes: sizeBytes,
-      ...(file.createdTime ? { created_at: file.createdTime } : {}),
-    };
-  });
-  return {
-    result: "listed",
-    objects,
-    next_page_token: payload.nextPageToken ?? null,
-  };
-}
-
 function authorizationHeaders(accessToken: string, extra: Record<string, string> = {}): HeadersInit {
   return { Authorization: `Bearer ${accessToken}`, ...extra };
 }
 
-async function responseError(response: Response, operation: string): Promise<CloudProviderResponse> {
-  const detailBody = (await response.text()).slice(0, 500).trim();
-  const detail = `${operation} failed: HTTP ${response.status}${detailBody ? ` ${detailBody}` : ""}`;
-  if (response.status === 401 || response.status === 403) {
-    return unauthorizedError(detail);
+function authorizationError(
+  code: string | undefined,
+  message: string,
+  mode: CloudAuthorizationMode,
+): GoogleDriveAuthorizationError {
+  switch (code) {
+    case "access_denied":
+    case "popup_closed":
+      return new GoogleDriveAuthorizationError("denied", message);
+    case "temporarily_unavailable":
+    case "server_error":
+      return new GoogleDriveAuthorizationError("transient", message);
+    case "interaction_required":
+    case "consent_required":
+    case "login_required":
+      return new GoogleDriveAuthorizationError("interaction_required", message);
+    case "invalid_client":
+    case "invalid_request":
+    case "invalid_scope":
+      return new GoogleDriveAuthorizationError("permanent", message);
+    default:
+      return new GoogleDriveAuthorizationError(
+        mode === "silent" ? "interaction_required" : "permanent",
+        message,
+      );
   }
-  if (response.status === 408 || response.status === 425 || response.status === 429 || response.status >= 500) {
-    return transientError(detail);
-  }
-  return permanentError(detail);
-}
-
-function unauthorizedError(detail: string): CloudProviderResponse {
-  return { result: "error", kind: "unauthorized", detail };
-}
-
-function transientError(detail: string): CloudProviderResponse {
-  return { result: "error", kind: "transient", detail };
-}
-
-function permanentError(detail: string): CloudProviderResponse {
-  return { result: "error", kind: "permanent", detail };
-}
-
-function decodeBase64Url(value: string): Uint8Array {
-  const padded = value.replaceAll("-", "+").replaceAll("_", "/").padEnd(Math.ceil(value.length / 4) * 4, "=");
-  const binary = atob(padded);
-  return Uint8Array.from(binary, (character) => character.charCodeAt(0));
-}
-
-function encodeBase64Url(bytes: Uint8Array): string {
-  let binary = "";
-  for (let offset = 0; offset < bytes.length; offset += 0x8000) {
-    binary += String.fromCharCode(...bytes.subarray(offset, offset + 0x8000));
-  }
-  return btoa(binary).replaceAll("+", "-").replaceAll("/", "_").replace(/=+$/, "");
 }

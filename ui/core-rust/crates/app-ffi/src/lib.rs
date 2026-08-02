@@ -227,22 +227,30 @@ pub fn perform_settings_action_in_session_json(
 
 pub fn complete_cloud_authorization_in_session_json(
     handle: u64,
-    provider_json: &str,
+    request_id: u64,
     response_json: &str,
     now_epoch_ms: i64,
 ) -> Result<String, String> {
-    let provider: app_core::CloudProviderKind =
-        serde_json::from_str(provider_json).map_err(|err| err.to_string())?;
     let response: app_core::CloudAuthorizationResponse =
         serde_json::from_str(response_json).map_err(|err| err.to_string())?;
     let outcome = app_core::complete_cloud_authorization_in_session(
         handle as u32,
-        provider,
+        request_id,
         response,
         now_epoch_ms,
     )
     .map_err(|err| err.to_string())?;
     serde_json::to_string(&outcome).map_err(|err| err.to_string())
+}
+
+pub fn take_cloud_authorization_request_in_session_json(
+    handle: u64,
+    now_epoch_ms: i64,
+) -> Result<String, String> {
+    let request =
+        app_core::take_cloud_authorization_request_in_session(handle as u32, now_epoch_ms)
+            .map_err(|err| err.to_string())?;
+    serde_json::to_string(&request).map_err(|err| err.to_string())
 }
 
 pub fn perform_cloud_ui_action_in_session_json(
@@ -280,7 +288,7 @@ pub fn complete_cloud_provider_request_in_session_json(
     response_json: &str,
     now_epoch_ms: i64,
 ) -> Result<String, String> {
-    let response: app_core::CloudProviderResponse =
+    let response: app_core::CloudHttpResponse =
         serde_json::from_str(response_json).map_err(|err| err.to_string())?;
     let outcome = app_core::complete_cloud_provider_request_in_session(
         handle as u32,
@@ -2927,6 +2935,96 @@ pub extern "system" fn Java_org_aerobag_app_domain_NativeBindings_performSetting
     let result = (|| {
         let action_json = get_java_string(&mut env, action_json)?;
         perform_settings_action_in_session_json(handle as u64, &action_json)
+    })();
+    return_string(&mut env, result)
+}
+
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_org_aerobag_app_domain_NativeBindings_takeCloudAuthorizationRequestInSessionJson(
+    mut env: JNIEnv,
+    _class: JClass,
+    handle: i64,
+    now_epoch_ms: i64,
+) -> jstring {
+    return_string(
+        &mut env,
+        take_cloud_authorization_request_in_session_json(handle as u64, now_epoch_ms),
+    )
+}
+
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_org_aerobag_app_domain_NativeBindings_completeCloudAuthorizationInSessionJson(
+    mut env: JNIEnv,
+    _class: JClass,
+    handle: i64,
+    request_id: i64,
+    response_json: JString,
+    now_epoch_ms: i64,
+) -> jstring {
+    let result = (|| {
+        let response_json = get_java_string(&mut env, response_json)?;
+        complete_cloud_authorization_in_session_json(
+            handle as u64,
+            request_id as u64,
+            &response_json,
+            now_epoch_ms,
+        )
+    })();
+    return_string(&mut env, result)
+}
+
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_org_aerobag_app_domain_NativeBindings_performCloudUiActionInSessionJson(
+    mut env: JNIEnv,
+    _class: JClass,
+    handle: i64,
+    action_id_json: JString,
+    fields_json: JString,
+    now_epoch_ms: i64,
+) -> jstring {
+    let result = (|| {
+        let action_id_json = get_java_string(&mut env, action_id_json)?;
+        let fields_json = get_java_string(&mut env, fields_json)?;
+        perform_cloud_ui_action_in_session_json(
+            handle as u64,
+            &action_id_json,
+            &fields_json,
+            now_epoch_ms,
+        )
+    })();
+    return_string(&mut env, result)
+}
+
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_org_aerobag_app_domain_NativeBindings_takeCloudProviderRequestInSessionJson(
+    mut env: JNIEnv,
+    _class: JClass,
+    handle: i64,
+    now_epoch_ms: i64,
+) -> jstring {
+    return_string(
+        &mut env,
+        take_cloud_provider_request_in_session_json(handle as u64, now_epoch_ms),
+    )
+}
+
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_org_aerobag_app_domain_NativeBindings_completeCloudProviderRequestInSessionJson(
+    mut env: JNIEnv,
+    _class: JClass,
+    handle: i64,
+    request_id: i64,
+    response_json: JString,
+    now_epoch_ms: i64,
+) -> jstring {
+    let result = (|| {
+        let response_json = get_java_string(&mut env, response_json)?;
+        complete_cloud_provider_request_in_session_json(
+            handle as u64,
+            request_id as u64,
+            &response_json,
+            now_epoch_ms,
+        )
     })();
     return_string(&mut env, result)
 }

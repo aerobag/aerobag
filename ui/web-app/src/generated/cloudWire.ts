@@ -10,7 +10,16 @@ export type CloudProviderPrincipal = {
   display_label: string;
 };
 
-export type CloudAuthorizationResponse = { state: "authorized"; expires_at_epoch_ms: number | null; principal: CloudProviderPrincipal } | { state: "authorization_required"; diagnostic: string | null } | { state: "failed"; diagnostic: string | null };
+export type CloudAuthorizationMode = "silent" | "interactive";
+
+export type CloudAuthorizationRequest = {
+  request_id: number;
+  provider: CloudProviderKind;
+  mode: CloudAuthorizationMode;
+  scopes: string[];
+};
+
+export type CloudAuthorizationResponse = { state: "authorized"; expires_at_epoch_ms: number | null; principal: CloudProviderPrincipal } | { state: "interaction_required"; diagnostic: string | null } | { state: "denied"; diagnostic: string | null } | { state: "transient_failure"; diagnostic: string | null } | { state: "permanent_failure"; diagnostic: string | null };
 
 export type CloudUiActionId = "begin_setup" | "begin_create" | "back_setup" | "select_provider_google_drive" | "select_provider_aerobag_cloud" | "scan_setup_code" | "accept_setup_code" | "authorize_provider" | "create_account" | "backup_setup_code" | "add_device" | "close_linked_detail" | "begin_unlink" | "confirm_unlink" | "sync_now" | "copy_setup_code";
 
@@ -21,7 +30,13 @@ export type CloudUiFieldValue = {
   value: string;
 };
 
-export type CloudPlatformEffect = { kind: "authorize_provider"; provider: CloudProviderKind } | { kind: "copy_text"; text: string; completion_label: string };
+export type UiQrCode = {
+  rows: string[];
+  quiet_zone_modules: number;
+  accessibility_label: string;
+};
+
+export type CloudPlatformEffect = { kind: "begin_authorization"; provider: CloudProviderKind; scopes: string[] } | { kind: "scan_qr_code"; completion_action: CloudUiActionId; field_id: CloudUiFieldId } | { kind: "copy_text"; text: string; completion_label: string };
 
 export type UiCloudPanelState = "complete" | "active" | "working" | "informational" | "caution" | "error";
 
@@ -34,7 +49,12 @@ export type UiCloudAction = {
   platform_effect?: CloudPlatformEffect;
 };
 
-export type UiCloudPanelControl = { kind: "device_setup_code_input"; field_id: CloudUiFieldId; label: string; placeholder: string } | { kind: "device_setup_code_output"; setup_code: string; copy_action: UiCloudAction };
+export type UiCloudPanelControl = { kind: "device_setup_code_input"; field_id: CloudUiFieldId; label: string; placeholder: string } | { kind: "device_setup_code_output"; setup_code: string; qr_code: UiQrCode; copy_action: UiCloudAction };
+
+export type UiCloudTimeFact = {
+  label: string;
+  epoch_ms: number;
+};
 
 export type UiCloudPanel = {
   id: string;
@@ -42,6 +62,7 @@ export type UiCloudPanel = {
   state: UiCloudPanelState;
   state_label?: string | null;
   summary?: string | null;
+  time_facts: UiCloudTimeFact[];
   actions: UiCloudAction[];
   control?: UiCloudPanelControl;
 };
@@ -58,20 +79,21 @@ export type UiCloudPageState = {
   next_refresh_epoch_ms: number | null;
 };
 
-export type CloudProviderErrorKind = "unauthorized" | "transient" | "permanent";
+export type CloudHttpMethod = "get" | "post" | "delete";
 
-export type CloudProviderOperation = { operation: "allocate_ids"; count: number } | { operation: "read"; id: string } | { operation: "create_once"; id: string; name: string; bytes_base64: string } | { operation: "delete"; id: string } | { operation: "list"; page_token: string | null };
-
-export type CloudProviderObject = {
-  id: string;
-  size_bytes: number;
-  created_at?: string | null;
+export type CloudHttpHeader = {
+  name: string;
+  value: string;
 };
 
-export type CloudProviderRequest = {
+export type CloudHttpRequest = {
   request_id: number;
   provider: CloudProviderKind;
-  operation: CloudProviderOperation;
+  method: CloudHttpMethod;
+  url: string;
+  headers: CloudHttpHeader[];
+  body_base64: string | null;
+  max_response_bytes: number;
 };
 
-export type CloudProviderResponse = { result: "allocated_ids"; ids: string[] } | { result: "read"; bytes_base64: string | null } | { result: "created" } | { result: "already_exists" } | { result: "deleted"; existed: boolean } | { result: "listed"; objects: CloudProviderObject[]; next_page_token: string | null } | { result: "error"; kind: CloudProviderErrorKind; detail: string };
+export type CloudHttpResponse = { result: "completed"; status_code: number; body_base64: string } | { result: "transport_error"; detail: string } | { result: "response_too_large"; limit_bytes: number };

@@ -123,6 +123,7 @@ describe("loadBestAvailableAdapter", () => {
       accept_disclaimer_in_session: async () => snapshotJson,
       set_resource_policy_in_session: async () => snapshotJson,
       configure_platform_capabilities_in_session: async () => snapshotJson,
+      take_cloud_authorization_request_in_session: async () => "null",
       complete_cloud_authorization_in_session: async () => snapshotJson,
       perform_cloud_ui_action_in_session: async () => snapshotJson,
       take_cloud_provider_request_in_session: async () => "null",

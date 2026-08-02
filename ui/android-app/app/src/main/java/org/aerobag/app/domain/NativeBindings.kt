@@ -324,6 +324,31 @@ interface NativeBridge {
         actionJson: String,
     ): String
 
+    fun takeCloudAuthorizationRequestInSessionJson(handle: Long, nowEpochMs: Long): String
+
+    fun completeCloudAuthorizationInSessionJson(
+        handle: Long,
+        requestId: Long,
+        responseJson: String,
+        nowEpochMs: Long,
+    ): String
+
+    fun performCloudUiActionInSessionJson(
+        handle: Long,
+        actionIdJson: String,
+        fieldsJson: String,
+        nowEpochMs: Long,
+    ): String
+
+    fun takeCloudProviderRequestInSessionJson(handle: Long, nowEpochMs: Long): String
+
+    fun completeCloudProviderRequestInSessionJson(
+        handle: Long,
+        requestId: Long,
+        responseJson: String,
+        nowEpochMs: Long,
+    ): String
+
     fun acceptDisclaimerInSessionJson(
         handle: Long,
         agreementId: String,
@@ -833,6 +858,31 @@ object NativeBindings : NativeBridge {
     external override fun performSettingsActionInSessionJson(
         handle: Long,
         actionJson: String,
+    ): String
+
+    external override fun takeCloudAuthorizationRequestInSessionJson(handle: Long, nowEpochMs: Long): String
+
+    external override fun completeCloudAuthorizationInSessionJson(
+        handle: Long,
+        requestId: Long,
+        responseJson: String,
+        nowEpochMs: Long,
+    ): String
+
+    external override fun performCloudUiActionInSessionJson(
+        handle: Long,
+        actionIdJson: String,
+        fieldsJson: String,
+        nowEpochMs: Long,
+    ): String
+
+    external override fun takeCloudProviderRequestInSessionJson(handle: Long, nowEpochMs: Long): String
+
+    external override fun completeCloudProviderRequestInSessionJson(
+        handle: Long,
+        requestId: Long,
+        responseJson: String,
+        nowEpochMs: Long,
     ): String
 
     external override fun acceptDisclaimerInSessionJson(

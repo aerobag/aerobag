@@ -7,6 +7,7 @@ use serde::{Deserialize, Serialize};
 pub mod airport_info;
 pub mod chart_page;
 pub mod cloud;
+mod cloud_google_drive;
 pub mod content;
 pub mod data_status;
 pub mod debug_log;
@@ -48,12 +49,12 @@ pub use chart_page::{
     DerivedChartPageState, DerivedChartReferenceFamily,
 };
 pub use cloud::{
-    CloudAuthorizationResponse, CloudCompletion, CloudEngine, CloudPersistentState,
-    CloudPlatformEffect, CloudProviderErrorKind, CloudProviderKind, CloudProviderObject,
-    CloudProviderOperation, CloudProviderPrincipal, CloudProviderRequest, CloudProviderResponse,
+    CloudAuthorizationMode, CloudAuthorizationRequest, CloudAuthorizationResponse, CloudCompletion,
+    CloudEngine, CloudHttpHeader, CloudHttpMethod, CloudHttpRequest, CloudHttpResponse,
+    CloudPersistentState, CloudPlatformEffect, CloudProviderKind, CloudProviderPrincipal,
     CloudStatusFact, CloudStatusSummary, CloudUiActionId, CloudUiFieldId, CloudUiFieldValue,
     ProviderAuthorizationState, UiCloudAction, UiCloudPageState, UiCloudPanel, UiCloudPanelControl,
-    UiCloudPanelState, CLOUD_STATUS_ID,
+    UiCloudPanelState, UiCloudTimeFact, UiQrCode, CLOUD_STATUS_ID,
 };
 pub use content::{
     AvailabilityDetail, CachedPlate, CachedTileset, ContentAvailability, ContentInventory,
@@ -269,7 +270,8 @@ pub use session::{
     set_map_layer_enabled_in_session, set_map_layer_visibility_in_session,
     set_playback_rate_in_session, set_resource_policy_in_session, set_situation_in_session,
     sync_guidance_geometry_in_session, sync_live_feed_catalog_in_session,
-    sync_live_feeds_in_session, sync_map_follow_in_session, take_cloud_provider_request_in_session,
+    sync_live_feeds_in_session, sync_map_follow_in_session,
+    take_cloud_authorization_request_in_session, take_cloud_provider_request_in_session,
     tick_bad_autopilot_in_session, tick_playback_in_session,
     update_ownship_source_status_in_session, ClientBuildInfo, DisplayDimTimeout,
     FlightPlanSessionCommand, FlightPlanSessionQuery, GuidanceLegGeometry,
@@ -277,10 +279,11 @@ pub use session::{
     NavDbMaintenanceResult, PlatformCapabilities, PlatformCloudCapability,
     PlatformDisplayPolicyCapability, PlatformLiveFeedsCapability,
     PlatformOfflinePackagesCapability, SettingsPreferences, SettingsStorage, SettingsStorageHandle,
-    UiChartPageState, UiDebugState, UiDisclaimerState, UiDisplayPolicy, UiHomePageButton,
-    UiHomePageState, UiMapLayerState, UiMapLayerToggleState, UiNavDbIdentity, UiPlaybackPanelState,
-    UiSessionInitResult, UiSessionResourceEffect, UiSessionSnapshot, UiSettingsAction,
-    UiSettingsGridItem, UiSettingsPageRow, UiSettingsPageState, UiSettingsSliderStop,
+    UiChartPageState, UiDebugState, UiDisclaimerState, UiDisplayPolicy, UiHomeDestination,
+    UiHomePageButton, UiHomePageState, UiMapLayerState, UiMapLayerToggleState, UiNavDbIdentity,
+    UiPlaybackPanelState, UiSessionInitResult, UiSessionResourceEffect, UiSessionSnapshot,
+    UiSettingsAction, UiSettingsGridItem, UiSettingsPageRow, UiSettingsPageState,
+    UiSettingsSliderStop,
 };
 pub use situation::{Situation, SituationPosition};
 pub use state::{project_app_ui_state, AppEvent, AppState, AppUiState};

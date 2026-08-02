@@ -251,8 +251,9 @@ import org.aerobag.app.domain.SituationControlInput
 import org.aerobag.app.domain.SituationRingCandidate
 import org.aerobag.app.domain.TileStorageKind
 import org.aerobag.app.domain.UiDebugState
-import org.aerobag.app.domain.UiHomePageButton
-import org.aerobag.app.domain.UiHomePageState
+import org.aerobag.app.generated.UiHomeDestination
+import org.aerobag.app.generated.UiHomePageButton
+import org.aerobag.app.generated.UiHomePageState
 import org.aerobag.app.domain.UiMapLayerToggleState
 import org.aerobag.app.domain.UiTheme
 import org.aerobag.app.domain.UiThemeLoader
@@ -339,46 +340,50 @@ private fun UiHomePageButton.toHomeGridButton(): HomeGridButton {
     val targetPage: AppPage?
     val externalUrl: String?
     val iconResId: Int?
-    when (id) {
-        "chart" -> {
+    when (destination) {
+        UiHomeDestination.Chart -> {
             targetPage = AppPage.Map
             externalUrl = null
             iconResId = R.drawable.page_chart_icon
         }
-        "plate" -> {
+        UiHomeDestination.Plate -> {
             targetPage = AppPage.Charts
             externalUrl = null
             iconResId = R.drawable.page_plate_icon
         }
-        "flight-plan" -> {
+        UiHomeDestination.FlightPlan -> {
             targetPage = AppPage.Plan
             externalUrl = null
             iconResId = null
         }
-        "data-status" -> {
+        UiHomeDestination.DataStatus -> {
             targetPage = AppPage.DataStatus
             externalUrl = null
             iconResId = null
         }
-        "settings" -> {
+        UiHomeDestination.Settings -> {
             targetPage = AppPage.Settings
             externalUrl = null
             iconResId = null
         }
-        "offline-packages" -> {
+        UiHomeDestination.Cloud -> {
+            targetPage = AppPage.Cloud
+            externalUrl = null
+            iconResId = null
+        }
+        UiHomeDestination.OfflinePackages -> {
             targetPage = AppPage.OfflinePackages
             externalUrl = null
             iconResId = null
         }
-        "about" -> {
+        UiHomeDestination.About -> {
             targetPage = null
             externalUrl = "https://aerobag.org/about"
             iconResId = null
         }
-        else -> error("Unsupported core Home button id: $id")
     }
     return HomeGridButton(
-        key = id,
+        key = destination.name,
         label = label,
         targetPage = targetPage,
         externalUrl = externalUrl,

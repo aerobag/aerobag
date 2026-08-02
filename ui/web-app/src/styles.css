@@ -3228,6 +3228,36 @@ button {
   font-weight: 750;
 }
 
+.cloudTimeFacts {
+  display: grid;
+  gap: calc(var(--thumb) * 0.06);
+  margin: calc(var(--thumb) * 0.12) 0 0;
+}
+
+.cloudTimeFacts > div {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: calc(var(--thumb) * 0.2);
+  align-items: baseline;
+}
+
+.cloudTimeFacts dt,
+.cloudTimeFacts dd {
+  margin: 0;
+  font-size: calc(var(--thumb) * 0.15);
+  font-weight: 800;
+}
+
+.cloudTimeFacts dt {
+  color: var(--theme-panel-muted);
+}
+
+.cloudTimeFacts dd {
+  color: var(--theme-panel-fg);
+  font-weight: 950;
+  white-space: nowrap;
+}
+
 .cloudSetupCodeField,
 .cloudSetupCodeOutput {
   display: grid;
@@ -3238,6 +3268,15 @@ button {
 .cloudSetupCodeField > span {
   font-size: calc(var(--thumb) * 0.15);
   font-weight: 900;
+}
+
+.cloudSetupQrCode {
+  box-sizing: border-box;
+  width: min(100%, calc(var(--thumb) * 5));
+  height: auto;
+  justify-self: center;
+  border: 1px solid var(--theme-panel-border);
+  background: #fff;
 }
 
 .cloudSetupCodeField textarea,

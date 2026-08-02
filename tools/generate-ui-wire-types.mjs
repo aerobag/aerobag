@@ -11,6 +11,7 @@ import { fileURLToPath } from "node:url";
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const nexradSchemaPath = path.join(repoRoot, "ui/core-rust/schemas/nexrad-overlay-wire.schema.json");
 const cloudSchemaPath = path.join(repoRoot, "ui/core-rust/schemas/cloud-wire.schema.json");
+const homePageSchemaPath = path.join(repoRoot, "ui/core-rust/schemas/home-page-wire.schema.json");
 
 const args = new Map();
 const flags = new Set();
@@ -35,6 +36,8 @@ const androidOut =
 const checkOnly = flags.has("--check");
 const cloudWebOut =
   args.get("--cloud-web-out") ?? path.join(repoRoot, "ui/web-app/src/generated/cloudWire.ts");
+const homePageWebOut =
+  args.get("--home-page-web-out") ?? path.join(repoRoot, "ui/web-app/src/generated/homePageWire.ts");
 
 let schemaPath;
 let schema;
@@ -326,3 +329,7 @@ writeOrCheck(webOut, webSource());
 loadSchema(cloudSchemaPath);
 writeOrCheck(path.join(androidOut, "CloudWire.kt"), androidSource());
 writeOrCheck(cloudWebOut, webSource());
+
+loadSchema(homePageSchemaPath);
+writeOrCheck(path.join(androidOut, "HomePageWire.kt"), androidSource());
+writeOrCheck(homePageWebOut, webSource());

@@ -36,21 +36,24 @@
   "x-export-order": [
     "CloudProviderKind",
     "CloudProviderPrincipal",
+    "CloudAuthorizationMode",
+    "CloudAuthorizationRequest",
     "CloudAuthorizationResponse",
     "CloudUiActionId",
     "CloudUiFieldId",
     "CloudUiFieldValue",
+    "UiQrCode",
     "CloudPlatformEffect",
     "UiCloudPanelState",
     "UiCloudAction",
     "UiCloudPanelControl",
+    "UiCloudTimeFact",
     "UiCloudPanel",
     "UiCloudPageState",
-    "CloudProviderErrorKind",
-    "CloudProviderOperation",
-    "CloudProviderObject",
-    "CloudProviderRequest",
-    "CloudProviderResponse"
+    "CloudHttpMethod",
+    "CloudHttpHeader",
+    "CloudHttpRequest",
+    "CloudHttpResponse"
   ],
   "$defs": {
     "CloudProviderKind": {
@@ -64,6 +67,24 @@
       "properties": {
         "stable_id": { "type": "string" },
         "display_label": { "type": "string" }
+      }
+    },
+    "CloudAuthorizationMode": {
+      "type": "string",
+      "enum": ["silent", "interactive"]
+    },
+    "CloudAuthorizationRequest": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["request_id", "provider", "mode", "scopes"],
+      "properties": {
+        "request_id": { "type": "integer", "format": "int64" },
+        "provider": { "$ref": "#/$defs/CloudProviderKind" },
+        "mode": { "$ref": "#/$defs/CloudAuthorizationMode" },
+        "scopes": {
+          "type": "array",
+          "items": { "type": "string" }
+        }
       }
     },
     "CloudAuthorizationResponse": {
@@ -80,20 +101,38 @@
           }
         },
         {
-          "title": "AuthorizationRequired",
+          "title": "InteractionRequired",
           "type": "object",
           "required": ["state", "diagnostic"],
           "properties": {
-            "state": { "const": "authorization_required" },
+            "state": { "const": "interaction_required" },
             "diagnostic": { "type": ["string", "null"] }
           }
         },
         {
-          "title": "Failed",
+          "title": "Denied",
           "type": "object",
           "required": ["state", "diagnostic"],
           "properties": {
-            "state": { "const": "failed" },
+            "state": { "const": "denied" },
+            "diagnostic": { "type": ["string", "null"] }
+          }
+        },
+        {
+          "title": "TransientFailure",
+          "type": "object",
+          "required": ["state", "diagnostic"],
+          "properties": {
+            "state": { "const": "transient_failure" },
+            "diagnostic": { "type": ["string", "null"] }
+          }
+        },
+        {
+          "title": "PermanentFailure",
+          "type": "object",
+          "required": ["state", "diagnostic"],
+          "properties": {
+            "state": { "const": "permanent_failure" },
             "diagnostic": { "type": ["string", "null"] }
           }
         }
@@ -133,16 +172,40 @@
         "value": { "type": "string" }
       }
     },
+    "UiQrCode": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["rows", "quiet_zone_modules", "accessibility_label"],
+      "properties": {
+        "rows": {
+          "type": "array",
+          "items": { "type": "string" }
+        },
+        "quiet_zone_modules": { "type": "integer", "format": "int32" },
+        "accessibility_label": { "type": "string" }
+      }
+    },
     "CloudPlatformEffect": {
       "x-discriminator": "kind",
       "oneOf": [
         {
-          "title": "AuthorizeProvider",
+          "title": "BeginAuthorization",
           "type": "object",
-          "required": ["kind", "provider"],
+          "required": ["kind", "provider", "scopes"],
           "properties": {
-            "kind": { "const": "authorize_provider" },
-            "provider": { "$ref": "#/$defs/CloudProviderKind" }
+            "kind": { "const": "begin_authorization" },
+            "provider": { "$ref": "#/$defs/CloudProviderKind" },
+            "scopes": { "type": "array", "items": { "type": "string" } }
+          }
+        },
+        {
+          "title": "ScanQrCode",
+          "type": "object",
+          "required": ["kind", "completion_action", "field_id"],
+          "properties": {
+            "kind": { "const": "scan_qr_code" },
+            "completion_action": { "$ref": "#/$defs/CloudUiActionId" },
+            "field_id": { "$ref": "#/$defs/CloudUiFieldId" }
           }
         },
         {
@@ -195,10 +258,11 @@
         {
           "title": "DeviceSetupCodeOutput",
           "type": "object",
-          "required": ["kind", "setup_code", "copy_action"],
+          "required": ["kind", "setup_code", "qr_code", "copy_action"],
           "properties": {
             "kind": { "const": "device_setup_code_output" },
             "setup_code": { "type": "string" },
+            "qr_code": { "$ref": "#/$defs/UiQrCode" },
             "copy_action": { "$ref": "#/$defs/UiCloudAction" }
           }
         }
@@ -207,13 +271,18 @@
     "UiCloudPanel": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["id", "title", "state", "actions"],
+      "required": ["id", "title", "state", "time_facts", "actions"],
       "properties": {
         "id": { "type": "string" },
         "title": { "type": "string" },
         "state": { "$ref": "#/$defs/UiCloudPanelState" },
         "state_label": { "type": ["string", "null"], "default": null },
         "summary": { "type": ["string", "null"], "default": null },
+        "time_facts": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/UiCloudTimeFact" },
+          "default": []
+        },
         "actions": {
           "type": "array",
           "items": { "$ref": "#/$defs/UiCloudAction" },
@@ -222,145 +291,74 @@
         "control": { "$ref": "#/$defs/UiCloudPanelControl" }
       }
     },
-    "CloudProviderErrorKind": {
-      "type": "string",
-      "enum": ["unauthorized", "transient", "permanent"]
-    },
-    "CloudProviderOperation": {
-      "x-discriminator": "operation",
-      "oneOf": [
-        {
-          "title": "AllocateIds",
-          "type": "object",
-          "required": ["operation", "count"],
-          "properties": {
-            "operation": { "const": "allocate_ids" },
-            "count": { "type": "integer" }
-          }
-        },
-        {
-          "title": "Read",
-          "type": "object",
-          "required": ["operation", "id"],
-          "properties": {
-            "operation": { "const": "read" },
-            "id": { "type": "string" }
-          }
-        },
-        {
-          "title": "CreateOnce",
-          "type": "object",
-          "required": ["operation", "id", "name", "bytes_base64"],
-          "properties": {
-            "operation": { "const": "create_once" },
-            "id": { "type": "string" },
-            "name": { "type": "string" },
-            "bytes_base64": { "type": "string" }
-          }
-        },
-        {
-          "title": "Delete",
-          "type": "object",
-          "required": ["operation", "id"],
-          "properties": {
-            "operation": { "const": "delete" },
-            "id": { "type": "string" }
-          }
-        },
-        {
-          "title": "List",
-          "type": "object",
-          "required": ["operation", "page_token"],
-          "properties": {
-            "operation": { "const": "list" },
-            "page_token": { "type": ["string", "null"] }
-          }
-        }
-      ]
-    },
-    "CloudProviderObject": {
+    "UiCloudTimeFact": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["id", "size_bytes"],
+      "required": ["label", "epoch_ms"],
       "properties": {
-        "id": { "type": "string" },
-        "size_bytes": { "type": "integer", "format": "int64" },
-        "created_at": { "type": ["string", "null"], "default": null }
+        "label": { "type": "string" },
+        "epoch_ms": { "type": "integer", "format": "int64" }
       }
     },
-    "CloudProviderRequest": {
+    "CloudHttpMethod": {
+      "type": "string",
+      "enum": ["get", "post", "delete"]
+    },
+    "CloudHttpHeader": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["request_id", "provider", "operation"],
+      "required": ["name", "value"],
+      "properties": {
+        "name": { "type": "string" },
+        "value": { "type": "string" }
+      }
+    },
+    "CloudHttpRequest": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["request_id", "provider", "method", "url", "headers", "body_base64", "max_response_bytes"],
       "properties": {
         "request_id": { "type": "integer", "format": "int64" },
         "provider": { "$ref": "#/$defs/CloudProviderKind" },
-        "operation": { "$ref": "#/$defs/CloudProviderOperation" }
+        "method": { "$ref": "#/$defs/CloudHttpMethod" },
+        "url": { "type": "string" },
+        "headers": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/CloudHttpHeader" }
+        },
+        "body_base64": { "type": ["string", "null"] },
+        "max_response_bytes": { "type": "integer", "format": "int64" }
       }
     },
-    "CloudProviderResponse": {
+    "CloudHttpResponse": {
       "x-discriminator": "result",
       "oneOf": [
         {
-          "title": "AllocatedIds",
+          "title": "Completed",
           "type": "object",
-          "required": ["result", "ids"],
+          "required": ["result", "status_code", "body_base64"],
           "properties": {
-            "result": { "const": "allocated_ids" },
-            "ids": { "type": "array", "items": { "type": "string" } }
+            "result": { "const": "completed" },
+            "status_code": { "type": "integer" },
+            "body_base64": { "type": "string" }
           }
         },
         {
-          "title": "Read",
+          "title": "TransportError",
           "type": "object",
-          "required": ["result", "bytes_base64"],
+          "required": ["result", "detail"],
           "properties": {
-            "result": { "const": "read" },
-            "bytes_base64": { "type": ["string", "null"] }
-          }
-        },
-        {
-          "title": "Created",
-          "type": "object",
-          "required": ["result"],
-          "properties": { "result": { "const": "created" } }
-        },
-        {
-          "title": "AlreadyExists",
-          "type": "object",
-          "required": ["result"],
-          "properties": { "result": { "const": "already_exists" } }
-        },
-        {
-          "title": "Deleted",
-          "type": "object",
-          "required": ["result", "existed"],
-          "properties": {
-            "result": { "const": "deleted" },
-            "existed": { "type": "boolean" }
-          }
-        },
-        {
-          "title": "Listed",
-          "type": "object",
-          "required": ["result", "objects", "next_page_token"],
-          "properties": {
-            "result": { "const": "listed" },
-            "objects": {
-              "type": "array",
-              "items": { "$ref": "#/$defs/CloudProviderObject" }
-            },
-            "next_page_token": { "type": ["string", "null"] }
-          }
-        },
-        {
-          "title": "Error",
-          "type": "object",
-          "required": ["result", "kind", "detail"],
-          "properties": {
-            "result": { "const": "error" },
-            "kind": { "$ref": "#/$defs/CloudProviderErrorKind" },
+            "result": { "const": "transport_error" },
             "detail": { "type": "string" }
+          }
+        },
+        {
+          "title": "ResponseTooLarge",
+          "type": "object",
+          "required": ["result", "limit_bytes"],
+          "properties": {
+            "result": { "const": "response_too_large" },
+            "limit_bytes": { "type": "integer", "format": "int64" }
           }
         }
       ]

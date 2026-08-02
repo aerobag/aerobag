@@ -21,8 +21,8 @@ use crate::{
     chart_page::chart_page_airport_ids_from_plan,
     chart_page::ChartAssetRecord,
     cloud::{
-        CloudAuthorizationResponse, CloudEngine, CloudPersistentState, CloudProviderKind,
-        CloudProviderRequest, CloudProviderResponse, CloudUiActionId, CloudUiFieldValue,
+        CloudAuthorizationRequest, CloudAuthorizationResponse, CloudEngine, CloudHttpRequest,
+        CloudHttpResponse, CloudPersistentState, CloudUiActionId, CloudUiFieldValue,
         UiCloudPageState, CLOUD_STATUS_ID,
     },
     data_status::{
@@ -202,7 +202,10 @@ pub struct PlatformDisplayPolicyCapability {}
 pub struct PlatformOfflinePackagesCapability {}
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
-pub struct PlatformCloudCapability {}
+pub struct PlatformCloudCapability {
+    #[serde(default)]
+    pub qr_scan: bool,
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -314,9 +317,22 @@ pub struct UiSettingsPageState {
     pub rows: Vec<UiSettingsPageRow>,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum UiHomeDestination {
+    Chart,
+    Plate,
+    FlightPlan,
+    DataStatus,
+    Settings,
+    Cloud,
+    OfflinePackages,
+    About,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct UiHomePageButton {
-    pub id: String,
+    pub destination: UiHomeDestination,
     pub label: String,
     pub enabled: bool,
     pub disabled_reason: Option<String>,
@@ -3896,7 +3912,7 @@ pub fn configure_platform_capabilities_in_session(
 
 pub fn complete_cloud_authorization_in_session(
     handle: u32,
-    provider: CloudProviderKind,
+    request_id: u64,
     response: CloudAuthorizationResponse,
     now_epoch_ms: i64,
 ) -> AppResult<HadOperationOutcome> {
@@ -3910,8 +3926,23 @@ pub fn complete_cloud_authorization_in_session(
     }
     let mut candidate = session.clone();
     advance_session_wall_clock(&mut candidate, now_epoch_ms);
-    candidate.cloud.complete_authorization(provider, response);
+    candidate
+        .cloud
+        .complete_authorization(request_id, response, now_epoch_ms)?;
     commit_cloud_candidate(session, candidate, vec![UiInvalidation::SessionSnapshot])
+}
+
+pub fn take_cloud_authorization_request_in_session(
+    handle: u32,
+    now_epoch_ms: i64,
+) -> AppResult<Option<CloudAuthorizationRequest>> {
+    let mut sessions = lock_sessions();
+    let session = session_mut(&mut sessions, handle)?;
+    if session.platform_capabilities.cloud.is_none() {
+        return Ok(None);
+    }
+    advance_session_wall_clock(session, now_epoch_ms);
+    session.cloud.take_authorization_request(now_epoch_ms)
 }
 
 pub fn perform_cloud_ui_action_in_session(
@@ -3944,7 +3975,7 @@ pub fn perform_cloud_ui_action_in_session(
 pub fn take_cloud_provider_request_in_session(
     handle: u32,
     now_epoch_ms: i64,
-) -> AppResult<Option<CloudProviderRequest>> {
+) -> AppResult<Option<CloudHttpRequest>> {
     let mut sessions = lock_sessions();
     let session = session_mut(&mut sessions, handle)?;
     if session.platform_capabilities.cloud.is_none() {
@@ -3961,7 +3992,7 @@ pub fn take_cloud_provider_request_in_session(
 pub fn complete_cloud_provider_request_in_session(
     handle: u32,
     request_id: u64,
-    response: CloudProviderResponse,
+    response: CloudHttpResponse,
     now_epoch_ms: i64,
 ) -> AppResult<HadOperationOutcome> {
     let mut sessions = lock_sessions();
@@ -10768,7 +10799,14 @@ fn try_snapshot_for_session(session: &mut UiSession) -> Result<UiSessionSnapshot
     let data_status_page_state = project_data_status_page_state(session);
     let settings_page_state =
         project_settings_page_state(session, &app_ui_state.flight_data_banner);
-    let cloud_page_state = session.cloud.page_state(session.wall_clock_epoch_ms);
+    let cloud_page_state = session.cloud.page_state_with_qr_scanner(
+        session.wall_clock_epoch_ms,
+        session
+            .platform_capabilities
+            .cloud
+            .as_ref()
+            .is_some_and(|cloud| cloud.qr_scan),
+    );
     let home_page_state = project_home_page_state(&session.platform_capabilities);
     app_ui_state.flight_data_banner.cells.retain(|cell| {
         !session
@@ -10965,25 +11003,25 @@ fn default_settings_page_state() -> UiSettingsPageState {
 
 fn project_home_page_state(capabilities: &PlatformCapabilities) -> UiHomePageState {
     let offline_packages_enabled = capabilities.offline_packages.is_some();
-    let button = |id: &str, label: &str| UiHomePageButton {
-        id: id.to_string(),
+    let button = |destination: UiHomeDestination, label: &str| UiHomePageButton {
+        destination,
         label: label.to_string(),
         enabled: true,
         disabled_reason: None,
     };
     let mut buttons = vec![
-        button("chart", "CHART"),
-        button("plate", "PLATE"),
-        button("flight-plan", "FLIGHT\nPLAN"),
-        button("data-status", "STATUS"),
-        button("settings", "SETTINGS"),
+        button(UiHomeDestination::Chart, "CHART"),
+        button(UiHomeDestination::Plate, "PLATE"),
+        button(UiHomeDestination::FlightPlan, "FLIGHT\nPLAN"),
+        button(UiHomeDestination::DataStatus, "STATUS"),
+        button(UiHomeDestination::Settings, "SETTINGS"),
     ];
     if capabilities.cloud.is_some() {
-        buttons.push(button("cloud", "CLOUD"));
+        buttons.push(button(UiHomeDestination::Cloud, "CLOUD"));
     }
     buttons.extend([
         UiHomePageButton {
-            id: "offline-packages".to_string(),
+            destination: UiHomeDestination::OfflinePackages,
             label: "OFFLINE\nPACKAGES".to_string(),
             enabled: offline_packages_enabled,
             disabled_reason: (!offline_packages_enabled).then(|| {
@@ -10991,7 +11029,7 @@ fn project_home_page_state(capabilities: &PlatformCapabilities) -> UiHomePageSta
                     .to_string()
             }),
         },
-        button("about", "ABOUT"),
+        button(UiHomeDestination::About, "ABOUT"),
     ]);
     UiHomePageState { buttons }
 }
@@ -13250,23 +13288,23 @@ mod tests {
                 .home_page_state
                 .buttons
                 .iter()
-                .map(|button| (button.id.as_str(), button.label.as_str()))
+                .map(|button| (button.destination, button.label.as_str()))
                 .collect::<Vec<_>>(),
             vec![
-                ("chart", "CHART"),
-                ("plate", "PLATE"),
-                ("flight-plan", "FLIGHT\nPLAN"),
-                ("data-status", "STATUS"),
-                ("settings", "SETTINGS"),
-                ("offline-packages", "OFFLINE\nPACKAGES"),
-                ("about", "ABOUT"),
+                (UiHomeDestination::Chart, "CHART"),
+                (UiHomeDestination::Plate, "PLATE"),
+                (UiHomeDestination::FlightPlan, "FLIGHT\nPLAN"),
+                (UiHomeDestination::DataStatus, "STATUS"),
+                (UiHomeDestination::Settings, "SETTINGS"),
+                (UiHomeDestination::OfflinePackages, "OFFLINE\nPACKAGES"),
+                (UiHomeDestination::About, "ABOUT"),
             ]
         );
         let web_offline = web_snapshot
             .home_page_state
             .buttons
             .iter()
-            .find(|button| button.id == "offline-packages")
+            .find(|button| button.destination == UiHomeDestination::OfflinePackages)
             .expect("offline packages button");
         assert!(!web_offline.enabled);
         assert_eq!(
@@ -13290,20 +13328,20 @@ mod tests {
                 .home_page_state
                 .buttons
                 .iter()
-                .map(|button| (&button.id, &button.label))
+                .map(|button| (button.destination, &button.label))
                 .collect::<Vec<_>>(),
             web_snapshot
                 .home_page_state
                 .buttons
                 .iter()
-                .map(|button| (&button.id, &button.label))
+                .map(|button| (button.destination, &button.label))
                 .collect::<Vec<_>>()
         );
         let android_offline = android_snapshot
             .home_page_state
             .buttons
             .iter()
-            .find(|button| button.id == "offline-packages")
+            .find(|button| button.destination == UiHomeDestination::OfflinePackages)
             .expect("offline packages button");
         assert!(android_offline.enabled);
         assert_eq!(android_offline.disabled_reason, None);
@@ -24846,44 +24884,101 @@ mod tests {
 
     #[test]
     fn cloud_crossfill_adopts_one_coherent_flight_plan_snapshot() {
-        use crate::cloud::CloudProviderOperation;
+        use crate::CloudHttpMethod;
+        use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine as _};
 
         #[derive(Default)]
         struct Provider {
             next_id: u64,
-            objects: BTreeMap<String, String>,
+            objects: BTreeMap<String, Vec<u8>>,
         }
 
         impl Provider {
-            fn execute(&mut self, request: &CloudProviderRequest) -> CloudProviderResponse {
-                match &request.operation {
-                    CloudProviderOperation::AllocateIds { count } => {
-                        let ids = (0..*count)
-                            .map(|_| {
-                                self.next_id += 1;
-                                format!("session-cloud-object-{}", self.next_id)
-                            })
-                            .collect();
-                        CloudProviderResponse::AllocatedIds { ids }
-                    }
-                    CloudProviderOperation::Read { id } => CloudProviderResponse::Read {
-                        bytes_base64: self.objects.get(id).cloned(),
-                    },
-                    CloudProviderOperation::CreateOnce {
-                        id, bytes_base64, ..
-                    } => {
-                        if self.objects.contains_key(id) {
-                            CloudProviderResponse::AlreadyExists
-                        } else {
-                            self.objects.insert(id.clone(), bytes_base64.clone());
-                            CloudProviderResponse::Created
-                        }
-                    }
-                    CloudProviderOperation::Delete { .. } | CloudProviderOperation::List { .. } => {
-                        panic!("session cloud synchronization does not issue maintenance effects")
-                    }
+            fn execute(&mut self, request: &CloudHttpRequest) -> CloudHttpResponse {
+                if request.url.contains("/files/generateIds?") {
+                    let count = request
+                        .url
+                        .split("count=")
+                        .nth(1)
+                        .and_then(|tail| tail.split('&').next())
+                        .and_then(|value| value.parse::<usize>().ok())
+                        .expect("generated-ID count");
+                    let ids = (0..count)
+                        .map(|_| {
+                            self.next_id += 1;
+                            format!("session-cloud-object-{}", self.next_id)
+                        })
+                        .collect::<Vec<_>>();
+                    return completed_http(
+                        200,
+                        serde_json::to_vec(&serde_json::json!({
+                            "ids": ids,
+                            "space": "appDataFolder",
+                        }))
+                        .unwrap(),
+                    );
                 }
+                if request.method == CloudHttpMethod::Get && request.url.contains("?alt=media") {
+                    let id = request
+                        .url
+                        .split("/files/")
+                        .nth(1)
+                        .unwrap()
+                        .split('?')
+                        .next()
+                        .unwrap();
+                    return self
+                        .objects
+                        .get(id)
+                        .cloned()
+                        .map(|bytes| completed_http(200, bytes))
+                        .unwrap_or_else(|| completed_http(404, Vec::new()));
+                }
+                if request.method == CloudHttpMethod::Post
+                    && request.url.contains("uploadType=multipart")
+                {
+                    let body = URL_SAFE_NO_PAD
+                        .decode(request.body_base64.as_deref().unwrap())
+                        .unwrap();
+                    let metadata_start = find_bytes(&body, b"\r\n\r\n").unwrap() + 4;
+                    let metadata_end =
+                        find_bytes(&body[metadata_start..], b"\r\n--").unwrap() + metadata_start;
+                    let metadata: serde_json::Value =
+                        serde_json::from_slice(&body[metadata_start..metadata_end]).unwrap();
+                    let id = metadata["id"].as_str().unwrap().to_string();
+                    if self.objects.contains_key(&id) {
+                        return completed_http(409, Vec::new());
+                    }
+                    let payload_marker = format!(
+                        "Content-Type: {}\r\n\r\n",
+                        "application/vnd.aerobag.cloud-object"
+                    );
+                    let payload_start = find_bytes(&body, payload_marker.as_bytes()).unwrap()
+                        + payload_marker.len();
+                    let payload_end =
+                        find_bytes(&body[payload_start..], b"\r\n--").unwrap() + payload_start;
+                    self.objects
+                        .insert(id.clone(), body[payload_start..payload_end].to_vec());
+                    return completed_http(
+                        200,
+                        serde_json::to_vec(&serde_json::json!({ "id": id })).unwrap(),
+                    );
+                }
+                panic!("unexpected Drive HTTP request: {request:?}")
             }
+        }
+
+        fn completed_http(status_code: u16, body: Vec<u8>) -> CloudHttpResponse {
+            CloudHttpResponse::Completed {
+                status_code,
+                body_base64: URL_SAFE_NO_PAD.encode(body),
+            }
+        }
+
+        fn find_bytes(haystack: &[u8], needle: &[u8]) -> Option<usize> {
+            haystack
+                .windows(needle.len())
+                .position(|window| window == needle)
         }
 
         fn configure_cloud(handle: u32, storage: Option<SettingsStorageHandle>) {
@@ -24896,9 +24991,15 @@ mod tests {
                 storage,
             )
             .expect("configure cloud capability");
+        }
+
+        fn authorize_cloud(handle: u32, now_epoch_ms: i64) {
+            let request = take_cloud_authorization_request_in_session(handle, now_epoch_ms)
+                .expect("take cloud authorization")
+                .expect("cloud authorization request");
             complete_cloud_authorization_in_session(
                 handle,
-                CloudProviderKind::GoogleDrive,
+                request.request_id,
                 CloudAuthorizationResponse::Authorized {
                     expires_at_epoch_ms: None,
                     principal: CloudProviderPrincipal {
@@ -24906,7 +25007,7 @@ mod tests {
                         display_label: "pilot@example.com".to_string(),
                     },
                 },
-                1,
+                now_epoch_ms,
             )
             .expect("connect cloud provider");
         }
@@ -24959,19 +25060,7 @@ mod tests {
             1,
         )
         .expect("select cloud provider");
-        complete_cloud_authorization_in_session(
-            first.handle,
-            CloudProviderKind::GoogleDrive,
-            CloudAuthorizationResponse::Authorized {
-                expires_at_epoch_ms: None,
-                principal: CloudProviderPrincipal {
-                    stable_id: "session-test-principal".to_string(),
-                    display_label: "pilot@example.com".to_string(),
-                },
-            },
-            1,
-        )
-        .expect("authorize selected provider");
+        authorize_cloud(first.handle, 1);
         perform_cloud_ui_action_in_session(
             first.handle,
             CloudUiActionId::CreateAccount,
@@ -25027,19 +25116,7 @@ mod tests {
                 && box_state.drives_caution
                 && box_state.severity == UiStatusSeverity::Caution
         }));
-        complete_cloud_authorization_in_session(
-            restarted.handle,
-            CloudProviderKind::GoogleDrive,
-            CloudAuthorizationResponse::Authorized {
-                expires_at_epoch_ms: None,
-                principal: CloudProviderPrincipal {
-                    stable_id: "session-test-principal".to_string(),
-                    display_label: "pilot@example.com".to_string(),
-                },
-            },
-            20_000,
-        )
-        .expect("reconnect restarted cloud provider");
+        authorize_cloud(restarted.handle, 20_000);
 
         let second =
             create_ui_session(FlightPlan::empty(), &[], None, None).expect("second session");
@@ -25054,6 +25131,7 @@ mod tests {
             20_000,
         )
         .expect("link second session");
+        authorize_cloud(second.handle, 20_000);
         assert_eq!(pump_cloud(second.handle, &mut provider, 20_000), 1);
 
         let mut edited_plan = short_lat_lon_preview_plan();

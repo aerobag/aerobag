@@ -98,13 +98,16 @@ import {
   type CloudUiActionId,
   type CloudUiFieldId,
   type CloudUiFieldValue,
+  type UiHomeDestination,
   type UiHomePageState,
   type UiInvalidation,
+  type UiQrCode,
 } from "./domain/appCoreAdapter";
 import {
-  authorizeCloudProvider,
-  executeCloudProviderRequest,
-  prepareCloudProvider,
+  beginInteractiveCloudAuthorization,
+  executeCloudAuthorizationRequest,
+  executeCloudHttpRequest,
+  type CloudAuthorizationExecution,
   type CloudProviderAuthorization,
 } from "./domain/cloudProviderRuntime";
 import { flightPlanWaypointUsesFullWidthLabel } from "./domain/flightPlanLayout";
@@ -934,26 +937,24 @@ const CHART_REFERENCE_ICON_SRC = "/icons/icons/chart-reference-icon.png?v=202607
 const NEXRAD_VIEWPORT_REFRESH_THROTTLE_MS = 1_000;
 const HOME_GRID_COLUMN_COUNT = 3;
 
-function webHomeButtonPresentation(id: string): { page: AppPage | null; iconSrc?: string } {
-  switch (id) {
+function webHomeButtonPresentation(destination: UiHomeDestination): { page: AppPage | null; iconSrc?: string } {
+  switch (destination) {
     case "chart":
       return { page: "map", iconSrc: PAGE_CHART_ICON_SRC };
     case "plate":
       return { page: "charts", iconSrc: PAGE_PLATE_ICON_SRC };
-    case "flight-plan":
+    case "flight_plan":
       return { page: "plan" };
-    case "data-status":
+    case "data_status":
       return { page: "data" };
     case "settings":
       return { page: "settings" };
     case "cloud":
       return { page: "cloud" };
-    case "offline-packages":
+    case "offline_packages":
       return { page: null };
     case "about":
       return { page: "about" };
-    default:
-      throw new Error(`Unsupported core Home button id: ${id}`);
   }
 }
 
@@ -1924,6 +1925,10 @@ export default function App() {
   );
   const [uiSession, setUiSession] = useState<UiSession | null>(null);
   const cloudProviderAuthorizationRef = useRef<CloudProviderAuthorization | null>(null);
+  const pendingInteractiveCloudAuthorizationRef = useRef<{
+    provider: CloudProviderAuthorization["provider"];
+    execution: Promise<CloudAuthorizationExecution>;
+  } | null>(null);
   const cloudPumpInFlightRef = useRef(false);
   const webIdleState = useWebIdleState();
   const [uiInvalidationRevisions, setUiInvalidationRevisions] = useState<UiInvalidationRevisions>(
@@ -2012,6 +2017,7 @@ export default function App() {
         id: "",
         title: "",
         state: "informational",
+        time_facts: [],
         actions: [],
       },
       next_refresh_epoch_ms: null,
@@ -2069,11 +2075,30 @@ export default function App() {
     cloudPumpInFlightRef.current = true;
     try {
       for (let step = 0; step < 32; step += 1) {
+        const authorizationRequest = await uiSession.takeCloudAuthorizationRequest(Date.now());
+        if (authorizationRequest) {
+          const pendingInteractive = pendingInteractiveCloudAuthorizationRef.current;
+          const result = pendingInteractive?.provider === authorizationRequest.provider
+            && authorizationRequest.mode === "interactive"
+            ? await pendingInteractive.execution
+            : await executeCloudAuthorizationRequest(authorizationRequest);
+          if (pendingInteractive?.provider === authorizationRequest.provider) {
+            pendingInteractiveCloudAuthorizationRef.current = null;
+          }
+          cloudProviderAuthorizationRef.current = result.authorization;
+          const nextSnapshot = await uiSession.completeCloudAuthorization(
+            authorizationRequest.request_id,
+            result.response,
+            Date.now(),
+          );
+          applySessionSnapshot(nextSnapshot, "cloud_authorization_completion");
+          continue;
+        }
         const request = await uiSession.takeCloudProviderRequest(Date.now());
         if (!request) {
           return;
         }
-        const response = await executeCloudProviderRequest(
+        const response = await executeCloudHttpRequest(
           request,
           cloudProviderAuthorizationRef.current,
         );
@@ -2101,23 +2126,6 @@ export default function App() {
     return () => window.clearInterval(timer);
   }, [pumpCloudProvider, uiSession]);
 
-  const cloudProviderToPrepare = sessionSnapshot.cloud_page_state.provider_card?.actions
-    .map((action) => action.platform_effect)
-    .find((effect): effect is Extract<CloudPlatformEffect, { kind: "authorize_provider" }> =>
-      effect?.kind === "authorize_provider")
-    ?.provider ?? null;
-  useEffect(() => {
-    if (!cloudProviderToPrepare) {
-      return;
-    }
-    void prepareCloudProvider(cloudProviderToPrepare).catch((error: unknown) => {
-      debugLog("cloud.provider.prepare_failed", {
-        provider: cloudProviderToPrepare,
-        error: errorMessage(error),
-      });
-    });
-  }, [cloudProviderToPrepare]);
-
   const performCloudPageAction = useCallback(async (
     actionId: CloudUiActionId,
     fields: CloudUiFieldValue[],
@@ -2126,32 +2134,29 @@ export default function App() {
     if (!uiSession) {
       return null;
     }
-    const authorizationPromise = platformEffect?.kind === "authorize_provider"
-      ? authorizeCloudProvider(platformEffect.provider)
-          .then((authorization) => ({ authorization, diagnostic: null }))
-          .catch((error: unknown) => ({ authorization: null, diagnostic: errorMessage(error) }))
-      : null;
-    const nextSnapshot = await uiSession.performCloudUiAction(actionId, fields, Date.now());
+    if (platformEffect?.kind === "begin_authorization") {
+      pendingInteractiveCloudAuthorizationRef.current = {
+        provider: platformEffect.provider,
+        execution: beginInteractiveCloudAuthorization(
+          platformEffect.provider,
+          platformEffect.scopes,
+        ),
+      };
+    }
+    let nextSnapshot: UiSessionSnapshot;
+    try {
+      nextSnapshot = await uiSession.performCloudUiAction(actionId, fields, Date.now());
+    } catch (error) {
+      if (platformEffect?.kind === "begin_authorization"
+          && pendingInteractiveCloudAuthorizationRef.current?.provider === platformEffect.provider) {
+        pendingInteractiveCloudAuthorizationRef.current = null;
+      }
+      throw error;
+    }
     applySessionSnapshot(nextSnapshot, `cloud_action_${actionId}`);
     if (platformEffect?.kind === "copy_text") {
       await navigator.clipboard.writeText(platformEffect.text);
       return platformEffect.completion_label;
-    }
-    if (platformEffect?.kind === "authorize_provider" && authorizationPromise) {
-      const result = await authorizationPromise;
-      cloudProviderAuthorizationRef.current = result.authorization;
-      const authorizationSnapshot = await uiSession.completeCloudAuthorization(
-        platformEffect.provider,
-        result.authorization?.response ?? {
-          state: "authorization_required",
-          diagnostic: result.diagnostic,
-        },
-        Date.now(),
-      );
-      applySessionSnapshot(
-        authorizationSnapshot,
-        result.authorization ? "cloud_authorized" : "cloud_authorization_required",
-      );
     }
     await pumpCloudProvider();
     return null;
@@ -10853,15 +10858,15 @@ function HomePage(props: {
         style={{ "--home-grid-column-count": HOME_GRID_COLUMN_COUNT } as CSSProperties}
       >
         {props.state.buttons.map((button) => {
-          const presentation = webHomeButtonPresentation(button.id);
+          const presentation = webHomeButtonPresentation(button.destination);
           const disabledReason = disabledReasonText(button.disabled_reason);
           const disabled = !button.enabled;
           return (
             <button
-              key={button.id}
+              key={button.destination}
               type="button"
               className={`chartButton chartButtonDouble homeButton${presentation.page === page ? " isOpen" : ""}${disabled ? " isDisabled" : ""}`}
-              data-testid={`home-button-${button.id}`}
+              data-testid={`home-button-${button.destination}`}
               disabled={disabled && !disabledReason}
               aria-disabled={disabled ? "true" : undefined}
               title={disabledReason ?? undefined}
@@ -10876,7 +10881,7 @@ function HomePage(props: {
                   return;
                 }
                 if (!presentation.page) {
-                  throw new Error(`Enabled core Home button has no web navigation target: ${button.id}`);
+                  throw new Error(`Enabled core Home button has no web navigation target: ${button.destination}`);
                 }
                 onSelectPage(presentation.page);
               }}
@@ -11022,6 +11027,31 @@ function formatApkSize(bytes: number): string {
   return `${megabytes >= 10 ? megabytes.toFixed(0) : megabytes.toFixed(1)} MB`;
 }
 
+function CloudQrCode({ code }: { code: UiQrCode }) {
+  const quietZone = code.quiet_zone_modules;
+  const moduleCount = code.rows.length + (quietZone * 2);
+  const darkModules: string[] = [];
+  code.rows.forEach((row, rowIndex) => {
+    for (let columnIndex = 0; columnIndex < row.length; columnIndex += 1) {
+      if (row[columnIndex] === "1") {
+        darkModules.push(`M${columnIndex + quietZone} ${rowIndex + quietZone}h1v1h-1z`);
+      }
+    }
+  });
+  return (
+    <svg
+      className="cloudSetupQrCode"
+      viewBox={`0 0 ${moduleCount} ${moduleCount}`}
+      role="img"
+      aria-label={code.accessibility_label}
+      shapeRendering="crispEdges"
+    >
+      <rect width={moduleCount} height={moduleCount} fill="#fff" />
+      <path d={darkModules.join("")} fill="#000" />
+    </svg>
+  );
+}
+
 function CloudPage(props: {
   page: AppPage;
   state: UiSessionSnapshot["cloud_page_state"];
@@ -11039,6 +11069,11 @@ function CloudPage(props: {
   const [fieldValues, setFieldValues] = useState<Partial<Record<CloudUiFieldId, string>>>({});
   const [copyStatus, setCopyStatus] = useState("");
   const [actionError, setActionError] = useState("");
+  const [nowMs, setNowMs] = useState(() => Date.now());
+  useEffect(() => {
+    const timer = window.setInterval(() => setNowMs(Date.now()), 1_000);
+    return () => window.clearInterval(timer);
+  }, []);
 
   const invoke = async (action: UiSessionSnapshot["cloud_page_state"]["overall_status"]["actions"][number]) => {
     setActionError("");
@@ -11078,6 +11113,16 @@ function CloudPage(props: {
         {panel.state_label ? <span>{panel.state_label}</span> : null}
       </header>
       {panel.summary ? <p>{panel.summary}</p> : null}
+      {panel.time_facts.length > 0 ? (
+        <dl className="cloudTimeFacts">
+          {panel.time_facts.map((fact) => (
+            <div key={fact.label}>
+              <dt>{fact.label}</dt>
+              <dd>{formatCloudRelativeTime(fact.epoch_ms, nowMs)}</dd>
+            </div>
+          ))}
+        </dl>
+      ) : null}
       {control?.kind === "device_setup_code_input" ? (
         <label className="cloudSetupCodeField">
           <span>{control.label}</span>
@@ -11095,6 +11140,7 @@ function CloudPage(props: {
       ) : null}
       {control?.kind === "device_setup_code_output" ? (
         <div className="cloudSetupCodeOutput">
+          <CloudQrCode code={control.qr_code} />
           <textarea
             data-testid="cloud-setup-code-output"
             readOnly
@@ -11171,6 +11217,28 @@ function CloudPage(props: {
       </div>
     </section>
   );
+}
+
+function formatCloudRelativeTime(epochMs: number, nowMs: number) {
+  const deltaMs = epochMs - nowMs;
+  const magnitude = formatCloudDuration(Math.abs(deltaMs));
+  return deltaMs > 0 ? `in ${magnitude}` : `${magnitude} ago`;
+}
+
+function formatCloudDuration(durationMs: number) {
+  const seconds = Math.floor(durationMs / 1_000);
+  if (seconds < 60) {
+    return `${seconds}s`;
+  }
+  const minutes = Math.floor(seconds / 60);
+  if (minutes < 60) {
+    return `${minutes}m`;
+  }
+  const hours = Math.floor(minutes / 60);
+  if (hours < 48) {
+    return `${hours}h`;
+  }
+  return `${Math.floor(hours / 24)}d`;
 }
 
 function SettingsPage(props: {

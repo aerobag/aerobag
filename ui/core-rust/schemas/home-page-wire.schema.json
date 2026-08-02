@@ -1,0 +1,46 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "org.aerobag.ui-wire.home-page",
+  "title": "UiHomePageState",
+  "description": "Core-owned Home-page navigation contract.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["buttons"],
+  "properties": {
+    "buttons": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/UiHomePageButton" }
+    }
+  },
+  "x-export-order": [
+    "UiHomeDestination",
+    "UiHomePageButton",
+    "UiHomePageState"
+  ],
+  "$defs": {
+    "UiHomeDestination": {
+      "type": "string",
+      "enum": [
+        "chart",
+        "plate",
+        "flight_plan",
+        "data_status",
+        "settings",
+        "cloud",
+        "offline_packages",
+        "about"
+      ]
+    },
+    "UiHomePageButton": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["destination", "label", "enabled", "disabled_reason"],
+      "properties": {
+        "destination": { "$ref": "#/$defs/UiHomeDestination" },
+        "label": { "type": "string" },
+        "enabled": { "type": "boolean" },
+        "disabled_reason": { "type": ["string", "null"] }
+      }
+    }
+  }
+}

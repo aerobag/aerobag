@@ -393,6 +393,7 @@ function workerBackedSession(client: AppCoreWorkerClient, sessionId: number, ini
     setMapLayerEnabled: (...args) => updateSnapshot(call("setMapLayerEnabled", args)),
     setDebugFlag: (...args) => updateSnapshot(call("setDebugFlag", args)),
     performSettingsAction: (...args) => updateSnapshot(call("performSettingsAction", args)),
+    takeCloudAuthorizationRequest: (...args) => call("takeCloudAuthorizationRequest", args),
     completeCloudAuthorization: (...args) => updateSnapshot(call("completeCloudAuthorization", args)),
     performCloudUiAction: (...args) => updateSnapshot(call("performCloudUiAction", args)),
     takeCloudProviderRequest: (...args) => call("takeCloudProviderRequest", args),

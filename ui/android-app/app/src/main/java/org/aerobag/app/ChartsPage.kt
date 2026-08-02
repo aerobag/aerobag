@@ -207,6 +207,7 @@ import org.aerobag.app.domain.FlightPlanDisplayRowKind
 import org.aerobag.app.domain.FlightPlanDisplayRowUiView
 import org.aerobag.app.domain.FlightPlanRowActionUiView
 import org.aerobag.app.domain.FlightPlanRouteSegment
+import org.aerobag.app.domain.FlightPlanRouteProjection
 import org.aerobag.app.domain.FlightPlanUiState
 import org.aerobag.app.domain.InstalledPackages
 import org.aerobag.app.domain.AirspaceDisplayDecoration
@@ -361,6 +362,8 @@ internal fun ChartsPage(
     suggestedChartIds: List<String>,
     chartAssetDataRevision: Int,
     flightPlanVersion: Long,
+    flightPlanRouteRevision: Long,
+    debugState: UiDebugState,
     uiTheme: UiTheme,
     ownship: OwnshipRenderState,
     ownshipControls: OwnshipControlModel,
@@ -467,6 +470,37 @@ internal fun ChartsPage(
                     .onFailure { Log.w("AerobagCharts", "plate procedure loads unavailable chart=${chart.id}", it) }
                     .getOrDefault(emptyList())
             }
+        }
+    }
+    val plateFlightPlanRoute by produceState(
+        initialValue = FlightPlanRouteProjection(
+            flightPlanRouteRevision = -1,
+            segments = emptyList(),
+        ),
+        uiSession,
+        flightPlanRouteRevision,
+        debugState.plateFlightPlan,
+        selectedChart?.id,
+        selectedChart?.georef,
+        page,
+    ) {
+        value = FlightPlanRouteProjection(
+            flightPlanRouteRevision = flightPlanRouteRevision,
+            segments = emptyList(),
+        )
+        if (page != AppPage.Charts || !debugState.plateFlightPlan || selectedChart?.georef == null) {
+            return@produceState
+        }
+        value = try {
+            withContext(Dispatchers.IO) { uiSession.projectFlightPlanRoute() }
+        } catch (error: CancellationException) {
+            throw error
+        } catch (error: Throwable) {
+            Log.w("AerobagCharts", "plate flight-plan route unavailable", error)
+            FlightPlanRouteProjection(
+                flightPlanRouteRevision = flightPlanRouteRevision,
+                segments = emptyList(),
+            )
         }
     }
 
@@ -666,6 +700,26 @@ internal fun ChartsPage(
             } else {
                 null
             }
+            val plateFlightPlanOverlay = if (
+                debugState.plateFlightPlan &&
+                plateFlightPlanRoute.flightPlanRouteRevision == flightPlanRouteRevision &&
+                currentViewport != null &&
+                currentBitmap != null &&
+                currentDisplaySize != null
+            ) {
+                resolvePlateFlightPlanOverlay(
+                    segments = plateFlightPlanRoute.segments,
+                    georef = selectedChart?.georef,
+                    imageWidthPx = currentBitmap.width.toFloat(),
+                    imageHeightPx = currentBitmap.height.toFloat(),
+                    viewport = currentViewport,
+                    displaySize = currentDisplaySize,
+                    surfaceWidthPx = surfaceSize.width.toFloat(),
+                    surfaceHeightPx = surfaceSize.height.toFloat(),
+                )
+            } else {
+                emptyList()
+            }
             Canvas(
                 modifier = Modifier
                     .fillMaxSize()
@@ -682,6 +736,19 @@ internal fun ChartsPage(
                         topLeft = Offset(currentViewport.leftPx, currentViewport.topPx),
                         size = Size(currentDisplaySize.widthPx, currentDisplaySize.heightPx),
                         style = Stroke(width = 1.dp.toPx()),
+                    )
+                }
+            }
+            if (plateFlightPlanOverlay.isNotEmpty()) {
+                Canvas(
+                    modifier = Modifier
+                        .fillMaxSize()
+                        .testTag("parity:plate-flight-plan-overlay:segments:${plateFlightPlanOverlay.size}"),
+                ) {
+                    drawPlateFlightPlanOverlay(
+                        segments = plateFlightPlanOverlay,
+                        densityScale = density.density,
+                        uiTheme = uiTheme,
                     )
                 }
             }
@@ -855,6 +922,11 @@ internal data class PlateOwnshipOverlay(
     val headingDeg: Float,
 )
 
+internal data class PlateFlightPlanScreenSegment(
+    val segment: FlightPlanRouteSegment,
+    val path: List<Offset>,
+)
+
 private data class PlateImagePoint(
     val x: Double,
     val y: Double,
@@ -885,6 +957,53 @@ internal fun resolvePlateOwnshipOverlay(
         screenY = (viewport.topPx.toDouble() + imagePoint.y * scaleY).toFloat(),
         headingDeg = (ownship.orientationDeg ?: 0.0).toFloat(),
     )
+}
+
+internal fun resolvePlateFlightPlanOverlay(
+    segments: List<FlightPlanRouteSegment>,
+    georef: PlateGeoref?,
+    imageWidthPx: Float,
+    imageHeightPx: Float,
+    viewport: ImageViewportState,
+    displaySize: ImageDisplaySize,
+    surfaceWidthPx: Float,
+    surfaceHeightPx: Float,
+): List<PlateFlightPlanScreenSegment> {
+    val chartGeoref = georef ?: return emptyList()
+    if (
+        imageWidthPx <= 0f || imageHeightPx <= 0f ||
+        displaySize.widthPx <= 0f || displaySize.heightPx <= 0f ||
+        surfaceWidthPx <= 0f || surfaceHeightPx <= 0f
+    ) return emptyList()
+    val scaleX = displaySize.widthPx.toDouble() / imageWidthPx.toDouble()
+    val scaleY = displaySize.heightPx.toDouble() / imageHeightPx.toDouble()
+    return segments.mapNotNull { segment ->
+        val sourcePath = segment.path.ifEmpty { listOf(segment.from, segment.to) }
+        val path = sourcePath.map { position ->
+            val imagePoint = plateImagePoint(position, chartGeoref)
+            if (!imagePoint.x.isFinite() || !imagePoint.y.isFinite()) return@mapNotNull null
+            Offset(
+                x = (viewport.leftPx.toDouble() + imagePoint.x * scaleX).toFloat(),
+                y = (viewport.topPx.toDouble() + imagePoint.y * scaleY).toFloat(),
+            )
+        }
+        if (path.size < 2 || !platePathBoundsIntersectSurface(path, surfaceWidthPx, surfaceHeightPx)) {
+            return@mapNotNull null
+        }
+        PlateFlightPlanScreenSegment(segment = segment, path = path)
+    }
+}
+
+private fun platePathBoundsIntersectSurface(
+    path: List<Offset>,
+    surfaceWidthPx: Float,
+    surfaceHeightPx: Float,
+): Boolean {
+    val marginPx = 12f
+    return path.maxOf { it.x } >= -marginPx &&
+        path.minOf { it.x } <= surfaceWidthPx + marginPx &&
+        path.maxOf { it.y } >= -marginPx &&
+        path.minOf { it.y } <= surfaceHeightPx + marginPx
 }
 
 private fun plateImagePoint(position: LatLonPoint, georef: PlateGeoref): PlateImagePoint =
@@ -922,6 +1041,38 @@ private fun androidx.compose.ui.graphics.drawscope.DrawScope.drawPlateOwnshipOve
         aircraftDrawable.setBounds(left, top, (left + iconSizePx).roundToInt(), (top + iconSizePx).roundToInt())
         aircraftDrawable.draw(this)
         restore()
+    }
+}
+
+private fun androidx.compose.ui.graphics.drawscope.DrawScope.drawPlateFlightPlanOverlay(
+    segments: List<PlateFlightPlanScreenSegment>,
+    densityScale: Float,
+    uiTheme: UiTheme,
+) {
+    segments.forEach { projected ->
+        val first = projected.path.firstOrNull() ?: return@forEach
+        val routePath = Path().apply {
+            moveTo(first.x, first.y)
+            projected.path.drop(1).forEach { point -> lineTo(point.x, point.y) }
+        }
+        drawPath(
+            path = routePath,
+            color = Color(0x8C000000),
+            style = Stroke(
+                width = 7f * densityScale,
+                cap = StrokeCap.Round,
+                join = StrokeJoin.Round,
+            ),
+        )
+        drawPath(
+            path = routePath,
+            color = routeSegmentColor(uiTheme, projected.segment.status),
+            style = Stroke(
+                width = 3.5f * densityScale,
+                cap = StrokeCap.Round,
+                join = StrokeJoin.Round,
+            ),
+        )
     }
 }
 

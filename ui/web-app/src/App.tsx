@@ -135,6 +135,7 @@ import {
   type ScreenPoint,
 } from "./domain/mapViewport";
 import { flightPlanRouteSegmentRenderKey } from "./domain/flightPlanRouteRender";
+import { plateImagePoint, projectPlateFlightPlanSegments } from "./domain/plateOverlay";
 import { MapFollowTargetGate } from "./domain/mapFollowTargetGate";
 import {
   clampImageViewport,
@@ -1840,6 +1841,7 @@ function defaultUiDebugState(): UiDebugState {
     fast_tiles: false,
     offline_simulated_clock_buttons: false,
     sequencing_finish_lines: false,
+    plate_flight_plan: false,
     bad_autopilot: false,
     gps_capture: false,
     debug_log_to_developer_server: readPersistedDebugLogDeveloperServerUploadEnabled(),
@@ -3647,6 +3649,7 @@ export default function App() {
           appCoreAdapter={appCoreAdapter}
           page={page}
           planUiState={planUiState}
+          flightPlanRouteRevision={sessionSnapshot.flight_plan_route_revision}
           airportMenuEntries={airportMenuEntries}
           selectedCollection={selectedChartCollection}
           selectedChart={selectedChart}
@@ -10109,6 +10112,7 @@ function ChartsPage(props: {
   appCoreAdapter: AppCoreAdapter | null;
   page: AppPage;
   planUiState: FlightPlanUiState | null;
+  flightPlanRouteRevision: number;
   airportMenuEntries: DerivedChartPageState["airport_menu_entries"];
   selectedCollection: ChartPageData["airports"][number] | null;
   selectedChart: ChartAsset | null;
@@ -10151,6 +10155,10 @@ function ChartsPage(props: {
   const firstVisualReadyRef = useRef(false);
   const trayGroup = useModalTrayGroup(["airport", "chart", "load", "ownship"] as const);
   const [plateProcedureLoads, setPlateProcedureLoads] = useState<ProcedureLoadOption[]>([]);
+  const [plateFlightPlanRouteProjection, setPlateFlightPlanRouteProjection] = useState<FlightPlanRouteProjection>({
+    flight_plan_route_revision: -1,
+    segments: [],
+  });
   const [resolvedChartUrls, setResolvedChartUrls] = useState<Record<string, ResolvedChartUrls>>({});
   const { toast: disabledActionToast, show: showDisabledAction } = useDisabledActionToast();
   const trayOpen = trayGroup.scrimOpen;
@@ -10183,6 +10191,74 @@ function ChartsPage(props: {
     () => resolvePlateOwnshipOverlay(ownship, selectedChart?.georef ?? null, selectedImageSize, effectiveViewport, displaySize),
     [displaySize, effectiveViewport, ownship, selectedChart?.georef, selectedImageSize],
   );
+  const plateFlightPlanScreenSegments = useMemo(() => {
+    if (
+      !props.debugState.plate_flight_plan ||
+      plateFlightPlanRouteProjection.flight_plan_route_revision !== props.flightPlanRouteRevision ||
+      !selectedChart?.georef || !selectedImageSize || !effectiveViewport || !displaySize
+    ) {
+      return [];
+    }
+    return projectPlateFlightPlanSegments({
+      segments: plateFlightPlanRouteProjection.segments,
+      georef: selectedChart.georef,
+      imageSize: selectedImageSize,
+      viewport: effectiveViewport,
+      displaySize,
+      surfaceSize,
+    });
+  }, [
+    displaySize,
+    effectiveViewport,
+    plateFlightPlanRouteProjection,
+    props.debugState.plate_flight_plan,
+    props.flightPlanRouteRevision,
+    selectedChart?.georef,
+    selectedImageSize,
+    surfaceSize,
+  ]);
+
+  useEffect(() => {
+    if (
+      page !== "charts" ||
+      !props.debugState.plate_flight_plan ||
+      !selectedChart?.georef ||
+      !uiSession
+    ) {
+      setPlateFlightPlanRouteProjection({
+        flight_plan_route_revision: props.flightPlanRouteRevision,
+        segments: [],
+      });
+      return;
+    }
+    let cancelled = false;
+    void uiSession.projectFlightPlanRoute().then((projection) => {
+      if (!cancelled) {
+        setPlateFlightPlanRouteProjection(projection);
+      }
+    }).catch((error: unknown) => {
+      debugLog("charts.plate_flight_plan.unavailable", {
+        chart_id: selectedChart.id,
+        error: errorMessage(error),
+      });
+      if (!cancelled) {
+        setPlateFlightPlanRouteProjection({
+          flight_plan_route_revision: props.flightPlanRouteRevision,
+          segments: [],
+        });
+      }
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [
+    page,
+    props.debugState.plate_flight_plan,
+    props.flightPlanRouteRevision,
+    selectedChart?.georef,
+    selectedChart?.id,
+    uiSession,
+  ]);
 
   useEffect(() => {
     if (!containerRef.current) {
@@ -10682,6 +10758,35 @@ function ChartsPage(props: {
                 visibility: selectedImageSize && effectiveViewport ? "visible" : "hidden",
               }}
             />
+            {plateFlightPlanScreenSegments.length > 0 ? (
+              <svg
+                className="plateFlightPlanOverlay"
+                data-testid={`plate-flight-plan-overlay:segments:${plateFlightPlanScreenSegments.length}`}
+                viewBox={`0 0 ${surfaceSize.width} ${surfaceSize.height}`}
+                preserveAspectRatio="none"
+              >
+                {plateFlightPlanScreenSegments.map((segment, segmentIndex) => (
+                  <Fragment key={`${segment.id}:${segmentIndex}`}>
+                    <polyline
+                      points={segment.path.map((point) => `${point.x},${point.y}`).join(" ")}
+                      fill="none"
+                      stroke="rgba(0, 0, 0, 0.55)"
+                      strokeWidth="7"
+                      strokeLinecap="round"
+                      strokeLinejoin="round"
+                    />
+                    <polyline
+                      points={segment.path.map((point) => `${point.x},${point.y}`).join(" ")}
+                      fill="none"
+                      stroke={routeSegmentColor(segment.status)}
+                      strokeWidth="3.5"
+                      strokeLinecap="round"
+                      strokeLinejoin="round"
+                    />
+                  </Fragment>
+                ))}
+              </svg>
+            ) : null}
             {plateOwnshipOverlay ? (
               <SituationAircraft
                 iconSrc={planViewIcon}
@@ -11524,6 +11629,7 @@ function CommonDebugPanel(props: {
     { id: "fast_tiles", label: "fast tiles" },
     { id: "offline_simulated_clock_buttons", label: "offline simulated clock buttons" },
     { id: "sequencing_finish_lines", label: "sequencing finish lines" },
+    { id: "plate_flight_plan", label: "flight plan on plates" },
     { id: "bad_autopilot", label: "Bad Autopilot" },
     { id: "gps_capture", label: "capture GPS samples" },
     { id: "debug_log_to_developer_server", label: "debug log to developer server" },
@@ -12079,27 +12185,6 @@ function resolvePlateOwnshipOverlay(
     },
     headingDeg: ownship.orientation_deg ?? 0,
   };
-}
-
-function plateImagePoint(position: LatLon, georef: PlateGeoref) {
-  switch (georef.kind) {
-    case "plate_transform_v1":
-      return {
-        x: (position.lon - georef.top_left_lon) * georef.pixels_per_longitude,
-        y: (position.lat - georef.top_left_lat) * georef.pixels_per_latitude,
-      };
-    case "airport_diagram_transform_v1":
-      return {
-        x:
-          position.lon * georef.pixel_x_from_lon +
-          position.lat * georef.pixel_x_from_lat +
-          georef.pixel_x_offset,
-        y:
-          position.lon * georef.pixel_y_from_lon +
-          position.lat * georef.pixel_y_from_lat +
-          georef.pixel_y_offset,
-      };
-  }
 }
 
 function latLonToScreen(lat: number, lon: number, viewport: MapViewportState, width: number, height: number) {

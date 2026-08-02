@@ -358,6 +358,9 @@ internal fun CommonDebugPanel(
     DebugCheckbox("offline simulated clock buttons", debugState.offlineSimulatedClockButtons) {
         onDebugFlagChange("offline_simulated_clock_buttons", it)
     }
+    DebugCheckbox("flight plan on plates", debugState.plateFlightPlan) {
+        onDebugFlagChange("plate_flight_plan", it)
+    }
     DebugCheckbox("Bad Autopilot", debugState.badAutopilot, testTag = "parity:debug-flag:bad_autopilot") {
         onDebugFlagChange("bad_autopilot", it)
     }

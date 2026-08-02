@@ -196,7 +196,7 @@ export type UiDisclaimerState = {
   accept_label: string;
 };
 
-export type DebugFlagId = "tile_labels" | "nexrad_tile_labels" | "fast_tiles" | "offline_simulated_clock_buttons" | "sequencing_finish_lines" | "bad_autopilot" | "gps_capture" | "debug_log_to_developer_server";
+export type DebugFlagId = "tile_labels" | "nexrad_tile_labels" | "fast_tiles" | "offline_simulated_clock_buttons" | "sequencing_finish_lines" | "plate_flight_plan" | "bad_autopilot" | "gps_capture" | "debug_log_to_developer_server";
 
 export type UiDebugState = {
   tile_labels: boolean;
@@ -204,6 +204,7 @@ export type UiDebugState = {
   fast_tiles: boolean;
   offline_simulated_clock_buttons: boolean;
   sequencing_finish_lines: boolean;
+  plate_flight_plan: boolean;
   bad_autopilot: boolean;
   gps_capture: boolean;
   debug_log_to_developer_server: boolean;

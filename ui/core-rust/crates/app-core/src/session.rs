@@ -188,6 +188,8 @@ pub struct UiDebugState {
     #[serde(default)]
     pub sequencing_finish_lines: bool,
     #[serde(default)]
+    pub plate_flight_plan: bool,
+    #[serde(default)]
     pub bad_autopilot: bool,
     #[serde(default)]
     pub gps_capture: bool,
@@ -6527,6 +6529,7 @@ pub fn set_debug_flag_in_session(
             session.debug_state.offline_simulated_clock_buttons = enabled
         }
         "sequencing_finish_lines" => session.debug_state.sequencing_finish_lines = enabled,
+        "plate_flight_plan" => session.debug_state.plate_flight_plan = enabled,
         "gps_capture" => session.debug_state.gps_capture = enabled,
         "debug_log_to_developer_server" => {
             session.debug_state.debug_log_to_developer_server = enabled
@@ -11247,6 +11250,7 @@ fn default_debug_state() -> UiDebugState {
         fast_tiles: false,
         offline_simulated_clock_buttons: false,
         sequencing_finish_lines: false,
+        plate_flight_plan: false,
         bad_autopilot: false,
         gps_capture: false,
         debug_log_to_developer_server: false,
@@ -22376,6 +22380,21 @@ mod tests {
             set_debug_flag_in_session(init.handle, "debug_log_to_developer_server", false)
                 .expect("disable developer-server debug log");
         assert!(!disabled.debug_state.debug_log_to_developer_server);
+    }
+
+    #[test]
+    fn plate_flight_plan_debug_flag_is_core_owned_and_default_off() {
+        let init =
+            create_ui_session(lat_lon_preview_plan(), &[], None, None).expect("create session");
+        assert!(!init.snapshot.debug_state.plate_flight_plan);
+
+        let enabled = set_debug_flag_in_session(init.handle, "plate_flight_plan", true)
+            .expect("enable plate flight plan");
+        assert!(enabled.debug_state.plate_flight_plan);
+
+        let disabled = set_debug_flag_in_session(init.handle, "plate_flight_plan", false)
+            .expect("disable plate flight plan");
+        assert!(!disabled.debug_state.plate_flight_plan);
     }
 
     #[test]

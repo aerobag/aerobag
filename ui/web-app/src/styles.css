@@ -4283,6 +4283,14 @@ button {
   box-shadow: 0 14px 46px rgba(19, 33, 41, 0.22);
 }
 
+.plateFlightPlanOverlay {
+  position: absolute;
+  inset: 0;
+  z-index: 1;
+  pointer-events: none;
+  overflow: hidden;
+}
+
 .chartSurface {
   background: var(--theme-chart-surface-bg);
 }

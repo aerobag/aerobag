@@ -749,6 +749,22 @@ pub fn perform_cloud_ui_action_in_session(
 }
 
 #[wasm_bindgen]
+pub fn record_offline_package_preferences_in_session(
+    session_handle: u32,
+    preferences_json: &str,
+    now_epoch_ms: i64,
+) -> Result<String, JsValue> {
+    app_core::record_offline_package_preferences_in_session(
+        session_handle,
+        preferences_json,
+        now_epoch_ms,
+    )
+    .map_err(|err| JsValue::from_str(&err.to_string()))?;
+    get_session_snapshot_at_epoch_ms_paged_json(session_handle, now_epoch_ms)
+        .map_err(|err| JsValue::from_str(&err))
+}
+
+#[wasm_bindgen]
 pub fn take_cloud_provider_request_in_session(
     session_handle: u32,
     now_epoch_ms: i64,
@@ -774,6 +790,27 @@ pub fn complete_cloud_provider_request_in_session(
         now_epoch_ms,
     )
     .map_err(|err| JsValue::from_str(&err.to_string()))?;
+    serde_json::to_string(&outcome).map_err(|err| JsValue::from_str(&err.to_string()))
+}
+
+#[wasm_bindgen]
+pub fn cloud_event_stream_plan_in_session(session_handle: u32) -> Result<String, JsValue> {
+    let plan = app_core::cloud_event_stream_plan_in_session(session_handle)
+        .map_err(|err| JsValue::from_str(&err.to_string()))?;
+    serde_json::to_string(&plan).map_err(|err| JsValue::from_str(&err.to_string()))
+}
+
+#[wasm_bindgen]
+pub fn report_cloud_event_stream_event_in_session(
+    session_handle: u32,
+    event_json: &str,
+    now_epoch_ms: i64,
+) -> Result<String, JsValue> {
+    let event: app_core::CloudEventStreamEvent =
+        serde_json::from_str(event_json).map_err(|err| JsValue::from_str(&err.to_string()))?;
+    let outcome =
+        app_core::report_cloud_event_stream_event_in_session(session_handle, event, now_epoch_ms)
+            .map_err(|err| JsValue::from_str(&err.to_string()))?;
     serde_json::to_string(&outcome).map_err(|err| JsValue::from_str(&err.to_string()))
 }
 

@@ -207,6 +207,8 @@ pub struct PlatformOfflinePackagesCapability {}
 pub struct PlatformCloudCapability {
     #[serde(default)]
     pub qr_scan: bool,
+    #[serde(default)]
+    pub aerobag_cloud_base_url: Option<String>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -3904,6 +3906,13 @@ pub fn configure_platform_capabilities_in_session(
     session.platform_capabilities = capabilities;
     session.settings_storage = settings_storage;
     load_session_persistence_from_storage(session)?;
+    session.cloud.set_acs_default_base_url(
+        session
+            .platform_capabilities
+            .cloud
+            .as_ref()
+            .and_then(|cloud| cloud.aerobag_cloud_base_url.clone()),
+    )?;
     changed_session_snapshot_outcome(session)
 }
 
@@ -4004,6 +4013,29 @@ pub fn take_cloud_provider_request_in_session(
         write_session_persistence_to_storage(session)?;
     }
     Ok(request)
+}
+
+pub fn cloud_event_stream_plan_in_session(
+    handle: u32,
+) -> AppResult<Option<crate::CloudEventStreamPlan>> {
+    let mut sessions = lock_sessions();
+    let session = session_mut(&mut sessions, handle)?;
+    Ok(session.cloud.event_stream_plan())
+}
+
+pub fn report_cloud_event_stream_event_in_session(
+    handle: u32,
+    event: crate::CloudEventStreamEvent,
+    now_epoch_ms: i64,
+) -> AppResult<HadOperationOutcome> {
+    let mut sessions = lock_sessions();
+    let session = session_mut(&mut sessions, handle)?;
+    let mut candidate = session.clone();
+    advance_session_wall_clock(&mut candidate, now_epoch_ms);
+    candidate
+        .cloud
+        .report_event_stream_event(event, now_epoch_ms)?;
+    commit_cloud_candidate(session, candidate, vec![UiInvalidation::SessionSnapshot])
 }
 
 pub fn complete_cloud_provider_request_in_session(

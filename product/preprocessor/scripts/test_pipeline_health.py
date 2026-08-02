@@ -29,6 +29,59 @@ class PipelineHealthTests(unittest.TestCase):
         self.assertIn("setTimeout(refreshLoop, 30000)", html)
         self.assertNotIn("setInterval(", html)
 
+    def test_aerobag_cloud_uses_server_reported_limits_and_mode(self) -> None:
+        now = datetime(2026, 8, 2, 12, 0, 0, tzinfo=timezone.utc)
+        facts = {
+            "inputs": {
+                "current_artifacts": {"error": None, "payload": []},
+                "deploy_health": {"error": None, "payload": {}},
+                "live_feeds_status": {"error": None, "payload": {"products": {}}},
+                "aerobag_cloud_status": {
+                    "error": None,
+                    "payload": {
+                        "mode": "read_only",
+                        "database_healthy": True,
+                        "metrics": [
+                            {
+                                "id": "stored_bytes",
+                                "current": 85,
+                                "peak": 90,
+                                "warning_at": 80,
+                                "critical_at": 90,
+                                "hard_limit": 100,
+                                "window_seconds": None,
+                                "rejected_in_window": 0,
+                            },
+                            {
+                                "id": "current_sse_connections",
+                                "current": 20,
+                                "peak": 20,
+                                "warning_at": None,
+                                "critical_at": None,
+                                "hard_limit": 20,
+                                "window_seconds": None,
+                                "rejected_in_window": 1,
+                            },
+                        ],
+                    },
+                },
+                "build_watch": {"error": None, "payload": {}},
+                "faa_cycle_calendar": {"error": None, "payload": {"cycles": []}},
+                "product_facts": [],
+            }
+        }
+
+        evaluation = pipeline_health.evaluate_health(facts, [], now)
+
+        self.assertEqual(metric(evaluation, "aerobag_cloud.mode")["severity"], "warning")
+        stored = metric(evaluation, "aerobag_cloud.stored_bytes")
+        self.assertEqual(stored["severity"], "warning")
+        self.assertEqual(stored["warning_threshold"], 80)
+        self.assertEqual(stored["critical_threshold"], 90)
+        connections = metric(evaluation, "aerobag_cloud.current_sse_connections")
+        self.assertEqual(connections["severity"], "critical")
+        self.assertEqual(connections["critical_threshold"], 20)
+
     def test_live_feed_staleness_uses_monitor_thresholds(self) -> None:
         now = datetime(2026, 6, 19, 12, 10, 0, tzinfo=timezone.utc)
         facts = {

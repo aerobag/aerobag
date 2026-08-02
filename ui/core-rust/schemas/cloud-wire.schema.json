@@ -53,7 +53,10 @@
     "CloudHttpMethod",
     "CloudHttpHeader",
     "CloudHttpRequest",
-    "CloudHttpResponse"
+    "CloudHttpResponse",
+    "CloudEventStreamPlan",
+    "CloudEventStreamEventKind",
+    "CloudEventStreamEvent"
   ],
   "$defs": {
     "CloudProviderKind": {
@@ -302,7 +305,7 @@
     },
     "CloudHttpMethod": {
       "type": "string",
-      "enum": ["get", "post", "delete"]
+      "enum": ["get", "post", "put", "delete"]
     },
     "CloudHttpHeader": {
       "type": "object",
@@ -362,6 +365,32 @@
           }
         }
       ]
+    },
+    "CloudEventStreamPlan": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["stream_id", "url", "connect_timeout_ms", "idle_timeout_ms"],
+      "properties": {
+        "stream_id": { "type": "integer", "format": "int64" },
+        "url": { "type": "string" },
+        "connect_timeout_ms": { "type": "integer", "format": "int64" },
+        "idle_timeout_ms": { "type": "integer", "format": "int64" }
+      }
+    },
+    "CloudEventStreamEventKind": {
+      "type": "string",
+      "enum": ["connecting", "connected", "message", "error", "closed", "idle_timeout"]
+    },
+    "CloudEventStreamEvent": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["stream_id", "kind"],
+      "properties": {
+        "stream_id": { "type": "integer", "format": "int64" },
+        "kind": { "$ref": "#/$defs/CloudEventStreamEventKind" },
+        "data": { "type": ["string", "null"] },
+        "detail": { "type": ["string", "null"] }
+      }
     }
   }
 }

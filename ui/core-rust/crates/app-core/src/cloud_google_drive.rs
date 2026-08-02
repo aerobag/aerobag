@@ -117,6 +117,17 @@ pub(crate) fn plan_request(request: &CloudProviderRequest) -> AppResult<CloudHtt
                 MAX_CLOUD_OBJECT_BYTES,
             )
         }
+        CloudProviderOperation::AcsIssueAccountChallenge
+        | CloudProviderOperation::AcsCreateAccount { .. }
+        | CloudProviderOperation::AcsCreateObject { .. }
+        | CloudProviderOperation::AcsReadObject { .. }
+        | CloudProviderOperation::AcsReadRoot
+        | CloudProviderOperation::AcsCompareAndSwapRoot { .. }
+        | CloudProviderOperation::AcsCreateSseTicket { .. } => {
+            return Err(protocol_error(
+                "Aerobag Cloud operation sent to the Google Drive adapter".to_string(),
+            ));
+        }
     };
     Ok(CloudHttpRequest {
         request_id: request.request_id,
@@ -304,6 +315,13 @@ fn operation_label(operation: &CloudProviderOperation) -> &'static str {
         CloudProviderOperation::CreateOnce { .. } => "create Google Drive cloud object",
         CloudProviderOperation::Delete { .. } => "delete Google Drive cloud object",
         CloudProviderOperation::List { .. } => "list Google Drive cloud objects",
+        CloudProviderOperation::AcsIssueAccountChallenge
+        | CloudProviderOperation::AcsCreateAccount { .. }
+        | CloudProviderOperation::AcsCreateObject { .. }
+        | CloudProviderOperation::AcsReadObject { .. }
+        | CloudProviderOperation::AcsReadRoot
+        | CloudProviderOperation::AcsCompareAndSwapRoot { .. }
+        | CloudProviderOperation::AcsCreateSseTicket { .. } => "invalid ACS operation",
     }
 }
 

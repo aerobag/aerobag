@@ -27,11 +27,13 @@ const gpsCaptureRoot = process.env.AEROBAG_GPS_CAPTURE_ROOT
   ? path.resolve(process.env.AEROBAG_GPS_CAPTURE_ROOT)
   : path.join("/tmp", "aerobag-gps-captures");
 const liveFeedsOrigin = process.env.AEROBAG_LIVE_FEEDS_ORIGIN ?? null;
+const aerobagCloudServerBaseUrl = process.env.AEROBAG_CLOUD_SERVER_BASE_URL ?? null;
 const googleDriveClientId = process.env.AEROBAG_GOOGLE_DRIVE_CLIENT_ID
   ?? process.env.AEROBAG_GOOGLE_DRIVE_EXPERIMENT_CLIENT_ID
   ?? "768838226465-vvnomuvnongnia7hk5kgcg7bepjdvpsd.apps.googleusercontent.com";
 const googleDriveExperimentClientId = googleDriveClientId;
 const webDebugLogEnabled = /^(1|true|yes)$/i.test(process.env.AEROBAG_WEB_DEBUG_LOG_ENABLED ?? "");
+const webE2eEnabled = /^(1|true|yes)$/i.test(process.env.AEROBAG_E2E_ENABLED ?? "");
 const sharedRoot = path.join(repoRoot, "ui", "shared");
 const sharedFixturesRoot = path.join(repoRoot, "ui", "shared-fixtures");
 const productContractsPath = path.join(repoRoot, "crates", "product-contracts", "src", "lib.rs");
@@ -447,7 +449,9 @@ export default defineConfig({
   plugins: [aerobagProductContractsPlugin(), react(), aerobagStaticPlugin()],
   define: {
     __AEROBAG_DEBUG_LOG_ENABLED__: JSON.stringify(webDebugLogEnabled),
+    __AEROBAG_E2E_ENABLED__: JSON.stringify(webE2eEnabled),
     __AEROBAG_LIVE_FEEDS_ORIGIN__: JSON.stringify(liveFeedsOrigin),
+    __AEROBAG_CLOUD_SERVER_BASE_URL__: JSON.stringify(aerobagCloudServerBaseUrl),
     __AEROBAG_GOOGLE_DRIVE_EXPERIMENT_CLIENT_ID__: JSON.stringify(googleDriveExperimentClientId),
     __AEROBAG_GOOGLE_DRIVE_CLIENT_ID__: JSON.stringify(googleDriveClientId),
     __AEROBAG_CLIENT_BUILD_INFO__: JSON.stringify(clientBuildInfo),

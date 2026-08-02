@@ -154,6 +154,7 @@ class MonitorConfig:
     current_artifacts_path: Path
     deploy_health_path: Path
     live_feeds_status_url: str
+    cloud_status_url: str
     build_watch_url: str
     calendar_path: Path
     listen: str
@@ -178,6 +179,10 @@ def default_config_from_env() -> MonitorConfig:
         "AEROBAG_BUILD_WATCH_LISTEN",
         env.get("AEROBAG_BUILD_WATCH_LISTEN", "127.0.0.1:8097"),
     )
+    cloud_listen = os.environ.get(
+        "AEROBAG_CLOUD_SERVER_LISTEN",
+        env.get("AEROBAG_CLOUD_SERVER_LISTEN", "127.0.0.1:8096"),
+    )
     return MonitorConfig(
         artifact_root=artifact_root,
         data_root=data_root,
@@ -185,6 +190,7 @@ def default_config_from_env() -> MonitorConfig:
         current_artifacts_path=artifact_root / "published" / "current_artifacts.json",
         deploy_health_path=data_root / "health" / "status.json",
         live_feeds_status_url=f"http://{live_listen}/live-feeds/status.json",
+        cloud_status_url=f"http://{cloud_listen}/cloud/v1/status",
         build_watch_url=f"http://{build_watch_listen}/api/state",
         calendar_path=Path("/etc/aerobag/faa-cycle-calendar.json"),
         listen=os.environ.get(
@@ -205,6 +211,11 @@ def collect_facts(config: MonitorConfig, now: datetime) -> dict[str, Any]:
     product_facts = collect_product_facts(config.artifact_root, current_artifacts)
     deploy_health, deploy_health_error = read_json_file(config.deploy_health_path)
     live_status, live_error = fetch_json_url(config.live_feeds_status_url)
+    cloud_status, cloud_error = fetch_json_url(config.cloud_status_url)
+    if isinstance(cloud_status, dict):
+        # Pipeline-health is broadly visible; opaque account/network rankings are operator-only.
+        cloud_status = dict(cloud_status)
+        cloud_status.pop("top_contributors", None)
     build_watch, build_watch_error = fetch_json_url(config.build_watch_url)
     calendar, calendar_error = read_json_file(config.calendar_path)
     return {
@@ -226,6 +237,11 @@ def collect_facts(config: MonitorConfig, now: datetime) -> dict[str, Any]:
                 "url": config.live_feeds_status_url,
                 "payload": live_status,
                 "error": live_error,
+            },
+            "aerobag_cloud_status": {
+                "url": config.cloud_status_url,
+                "payload": cloud_status,
+                "error": cloud_error,
             },
             "build_watch": {
                 "url": config.build_watch_url,
@@ -282,6 +298,7 @@ def evaluate_health(
     add_input_metrics(metrics, facts)
     add_build_watch_metrics(metrics, facts)
     add_live_feed_metrics(metrics, facts, now)
+    add_aerobag_cloud_metrics(metrics, facts)
     add_product_fact_metrics(metrics, facts, previous_records)
     add_cycle_calendar_metrics(metrics, facts, now)
 
@@ -350,13 +367,16 @@ def threshold_severity(value: float, warning: float, critical: float) -> str:
 
 def add_input_metrics(metrics: list[dict[str, Any]], facts: dict[str, Any]) -> None:
     inputs = facts.get("inputs", {})
-    for key in [
+    keys = [
         "current_artifacts",
         "deploy_health",
         "live_feeds_status",
         "build_watch",
         "faa_cycle_calendar",
-    ]:
+    ]
+    if "aerobag_cloud_status" in inputs:
+        keys.append("aerobag_cloud_status")
+    for key in keys:
         source = inputs.get(key, {})
         error = source.get("error") if isinstance(source, dict) else "missing input source"
         add_metric(
@@ -427,6 +447,76 @@ def add_build_watch_metrics(metrics: list[dict[str, Any]], facts: dict[str, Any]
         )
 
 
+def add_aerobag_cloud_metrics(metrics: list[dict[str, Any]], facts: dict[str, Any]) -> None:
+    source = facts.get("inputs", {}).get("aerobag_cloud_status")
+    if not isinstance(source, dict):
+        return
+    payload = source.get("payload")
+    if not isinstance(payload, dict):
+        return
+
+    mode = payload.get("mode")
+    mode_severity = "ok"
+    if mode == "read_only":
+        mode_severity = "warning"
+    elif mode != "normal":
+        mode_severity = "critical"
+    add_metric(
+        metrics,
+        metric_id="aerobag_cloud.mode",
+        label="Aerobag Cloud mode",
+        value=mode,
+        severity=mode_severity,
+        message=f"Aerobag Cloud mode is {mode}",
+    )
+
+    database_healthy = payload.get("database_healthy") is True
+    add_metric(
+        metrics,
+        metric_id="aerobag_cloud.database_healthy",
+        label="Aerobag Cloud database healthy",
+        value=database_healthy,
+        severity="ok" if database_healthy else "critical",
+        message=(
+            "Aerobag Cloud database is healthy"
+            if database_healthy
+            else "Aerobag Cloud reports an unhealthy database"
+        ),
+    )
+
+    for status_metric in payload.get("metrics", []):
+        if not isinstance(status_metric, dict) or not isinstance(status_metric.get("id"), str):
+            continue
+        current = status_metric.get("current")
+        if not isinstance(current, (int, float)):
+            continue
+        warning = status_metric.get("warning_at")
+        critical = status_metric.get("critical_at")
+        hard_limit = status_metric.get("hard_limit")
+        severity = "ok"
+        if isinstance(hard_limit, (int, float)) and current >= hard_limit:
+            severity = "critical"
+        elif isinstance(critical, (int, float)) and current >= critical:
+            severity = "critical"
+        elif isinstance(warning, (int, float)) and current >= warning:
+            severity = "warning"
+        metric_id = status_metric["id"]
+        add_metric(
+            metrics,
+            metric_id=f"aerobag_cloud.{metric_id}",
+            label=f"Aerobag Cloud {metric_id.replace('_', ' ')}",
+            value=current,
+            severity=severity,
+            warning_threshold=warning,
+            critical_threshold=critical if critical is not None else hard_limit,
+            message=f"Aerobag Cloud {metric_id.replace('_', ' ')}: {current}",
+            details={
+                "peak": status_metric.get("peak"),
+                "hard_limit": hard_limit,
+                "window_seconds": status_metric.get("window_seconds"),
+                "rejected_in_window": status_metric.get("rejected_in_window"),
+            },
+        )
 def add_live_feed_metrics(
     metrics: list[dict[str, Any]], facts: dict[str, Any], now: datetime
 ) -> None:
@@ -1435,6 +1525,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--current-artifacts", type=Path, default=defaults.current_artifacts_path)
     parser.add_argument("--deploy-health", type=Path, default=defaults.deploy_health_path)
     parser.add_argument("--live-feeds-status-url", default=defaults.live_feeds_status_url)
+    parser.add_argument("--cloud-status-url", default=defaults.cloud_status_url)
     parser.add_argument("--build-watch-url", default=defaults.build_watch_url)
     parser.add_argument("--calendar", type=Path, default=defaults.calendar_path)
     parser.add_argument("--listen", default=defaults.listen)
@@ -1451,6 +1542,7 @@ def config_from_args(args: argparse.Namespace) -> MonitorConfig:
         current_artifacts_path=args.current_artifacts,
         deploy_health_path=args.deploy_health,
         live_feeds_status_url=args.live_feeds_status_url,
+        cloud_status_url=args.cloud_status_url,
         build_watch_url=args.build_watch_url,
         calendar_path=args.calendar,
         listen=args.listen,

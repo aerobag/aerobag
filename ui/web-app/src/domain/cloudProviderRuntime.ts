@@ -76,13 +76,16 @@ export async function executeCloudHttpRequest(
   request: CloudHttpRequest,
   authorization: CloudProviderAuthorization | null,
 ): Promise<CloudHttpResponse> {
-  if (authorization?.provider !== request.provider || authorization.expiresAtEpochMs <= Date.now()) {
+  if (request.provider === "google_drive"
+      && (authorization?.provider !== request.provider || authorization.expiresAtEpochMs <= Date.now())) {
     return { result: "transport_error", detail: "Cloud provider authorization is unavailable or expired." };
   }
 
   try {
     const headers = new Headers(request.headers.map((header) => [header.name, header.value]));
-    headers.set("Authorization", `Bearer ${authorization.credential}`);
+    if (request.provider === "google_drive") {
+      headers.set("Authorization", `Bearer ${authorization!.credential}`);
+    }
     const response = await fetch(request.url, {
       method: request.method.toUpperCase(),
       headers,

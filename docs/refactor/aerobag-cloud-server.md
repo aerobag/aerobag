@@ -604,8 +604,7 @@ service. Do not silently invent compatibility or migration behavior.
 
 ### Phase 2: Local ACS Daemon
 
-Status: implementation complete on 2026-08-02; awaiting contract/operations
-review before Phase 3.
+Status: complete and reviewed on 2026-08-02.
 
 - Implement SQLite metadata, inline objects, filesystem blobs, root CAS,
   visible authenticated references, and startup reconciliation.
@@ -652,6 +651,8 @@ reported threshold.
 
 ### Phase 3: Dev Stack And Web
 
+Status: complete on 2026-08-02.
+
 - Add ACS to `tools/run_dev_stack.py` at the documented persistent data path
   and `/cloud/` route.
 - Add the core ACS adapter and thin web HTTP/SSE transport.
@@ -661,6 +662,14 @@ reported threshold.
 Gate: two independent browser profiles exchange flight-plan and package-policy
 edits promptly through SSE. The test must prove adoption happened before the
 correctness poll and that a dropped stream recovers without lost state.
+
+The automated two-profile browser gate creates and links an ACS Sync Account
+through the real dev-stack HTTP daemon, then checks flight-plan and
+offline-package-preference adoption. Its initial run observed 2.16-second and
+0.97-second adoption respectively. It then forcibly dropped the receiving
+browser's event stream, observed core acquire a distinct replacement stream,
+and received a subsequent update in 1.01 seconds. The 20-second assertions are
+strictly below the 60-second disconnected correctness poll.
 
 ### Phase 4: Android
 

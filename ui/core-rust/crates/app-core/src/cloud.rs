@@ -13,6 +13,14 @@ use chacha20poly1305::{
     ChaCha20Poly1305, KeyInit, Nonce,
 };
 use hkdf::Hkdf;
+use product_contracts::{
+    acs_encrypted_value_associated_data, AcsCompareAndSwapRootRequest,
+    AcsCompareAndSwapRootResponse, AcsCreateAccountRequest, AcsCreateAccountResponse,
+    AcsCreateObjectRequest, AcsCreateSseTicketRequest, AcsCreateSseTicketResponse,
+    AcsCreationChallengeResponse, AcsEncryptedValue, AcsEncryptedValueKind, AcsObjectSnapshot,
+    AcsRootSnapshot, AcsSseEvent, ACS_FIXED_ROOT_ID, ACS_KDF_PAYLOAD_ENCRYPTION_LABEL,
+    ACS_KDF_SALT, AEROBAG_SSE_TRANSPORT_POLICY,
+};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
@@ -25,7 +33,7 @@ use crate::{
     OfflinePackageSelection,
 };
 
-const CLOUD_PERSISTENCE_VERSION: u32 = 4;
+const CLOUD_PERSISTENCE_VERSION: u32 = 5;
 const CLOUD_ENVELOPE_VERSION: u32 = 1;
 const CLOUD_PAGE_VERSION: u32 = 1;
 const CLOUD_NODE_VERSION: u32 = 1;
@@ -37,6 +45,7 @@ const OFFLINE_PACKAGE_SELECTION_SCHEMA_VERSION: u32 = 1;
 const LEGACY_UNKNOWN_MUTATION_EPOCH_MS: i64 = i64::MIN;
 const CLOUD_POLL_INTERVAL_MS: i64 = 60_000;
 const CLOUD_TRANSIENT_RETRY_MS: i64 = 5_000;
+const ACS_CORRECTNESS_POLL_INTERVAL_MS: i64 = 30 * 60_000;
 const GOOGLE_DRIVE_APPDATA_SCOPE: &str = "https://www.googleapis.com/auth/drive.appdata";
 pub const CLOUD_STATUS_ID: &str = "cloud:provider";
 
@@ -69,7 +78,7 @@ impl CloudProviderKind {
         }
     }
 
-    fn is_available(self) -> bool {
+    fn uses_platform_authorization(self) -> bool {
         matches!(self, Self::GoogleDrive)
     }
 
@@ -177,6 +186,23 @@ pub(crate) enum CloudProviderOperation {
     List {
         page_token: Option<String>,
     },
+    AcsIssueAccountChallenge,
+    AcsCreateAccount {
+        request: AcsCreateAccountRequest,
+    },
+    AcsCreateObject {
+        request: AcsCreateObjectRequest,
+    },
+    AcsReadObject {
+        id: String,
+    },
+    AcsReadRoot,
+    AcsCompareAndSwapRoot {
+        request: AcsCompareAndSwapRootRequest,
+    },
+    AcsCreateSseTicket {
+        request: AcsCreateSseTicketRequest,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -209,6 +235,24 @@ pub(crate) enum CloudProviderResponse {
     Listed {
         objects: Vec<CloudProviderObject>,
         next_page_token: Option<String>,
+    },
+    AcsCreationChallenge {
+        response: AcsCreationChallengeResponse,
+    },
+    AcsAccountCreated {
+        response: AcsCreateAccountResponse,
+    },
+    AcsObject {
+        object: Option<AcsObjectSnapshot>,
+    },
+    AcsRoot {
+        root: Option<AcsRootSnapshot>,
+    },
+    AcsRootCas {
+        response: AcsCompareAndSwapRootResponse,
+    },
+    AcsSseTicket {
+        response: AcsCreateSseTicketResponse,
     },
     Error {
         kind: CloudProviderErrorKind,
@@ -330,6 +374,7 @@ pub enum CloudAuthorizationResponse {
 pub enum CloudHttpMethod {
     Get,
     Post,
+    Put,
     Delete,
 }
 
@@ -348,6 +393,35 @@ pub struct CloudHttpRequest {
     pub headers: Vec<CloudHttpHeader>,
     pub body_base64: Option<String>,
     pub max_response_bytes: u64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CloudEventStreamPlan {
+    pub stream_id: u64,
+    pub url: String,
+    pub connect_timeout_ms: i64,
+    pub idle_timeout_ms: i64,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum CloudEventStreamEventKind {
+    Connecting,
+    Connected,
+    Message,
+    Error,
+    Closed,
+    IdleTimeout,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CloudEventStreamEvent {
+    pub stream_id: u64,
+    pub kind: CloudEventStreamEventKind,
+    #[serde(default)]
+    pub data: Option<String>,
+    #[serde(default)]
+    pub detail: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -561,6 +635,20 @@ struct CloudAccount {
     imported_device_setup_code: Option<String>,
     #[serde(default)]
     tip: Option<VerifiedTip>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    acs: Option<AcsAccountState>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+struct AcsAccountState {
+    base_url: String,
+    account_locator: String,
+    #[serde(default)]
+    root_revision: u64,
+    #[serde(default)]
+    root_hash: Option<String>,
+    #[serde(default)]
+    last_event_sequence: Option<u64>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -620,6 +708,29 @@ enum CloudWorkflow {
         node: CloudNode,
         purpose: ReadPurpose,
     },
+    AcsCreateChallenge,
+    AcsCreateAccount {
+        challenge: String,
+    },
+    AcsCreatePage {
+        staged: StagedPublication,
+        expected_revision: u64,
+        expected_root_hash: Option<String>,
+    },
+    AcsCommitRoot {
+        staged: StagedPublication,
+        expected_revision: u64,
+        expected_root_hash: Option<String>,
+    },
+    AcsReadRoot {
+        purpose: ReadPurpose,
+    },
+    AcsReadPage {
+        root: AcsRootSnapshot,
+        node: CloudNode,
+        purpose: ReadPurpose,
+    },
+    AcsCreateSseTicket,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -708,6 +819,11 @@ pub struct CloudEngine {
     next_authorization_request_id: u64,
     provider_request_in_flight: Option<CloudProviderRequest>,
     linked_account_detail: Option<LinkedAccountDetail>,
+    acs_default_base_url: Option<String>,
+    acs_event_stream_plan: Option<CloudEventStreamPlan>,
+    acs_event_stream_connected: bool,
+    acs_event_stream_next_retry_epoch_ms: Option<i64>,
+    acs_event_stream_consecutive_failures: u32,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -786,7 +902,129 @@ impl CloudEngine {
             next_authorization_request_id: 1,
             provider_request_in_flight: None,
             linked_account_detail: None,
+            acs_default_base_url: None,
+            acs_event_stream_plan: None,
+            acs_event_stream_connected: false,
+            acs_event_stream_next_retry_epoch_ms: None,
+            acs_event_stream_consecutive_failures: 0,
         }
+    }
+
+    pub fn set_acs_default_base_url(&mut self, base_url: Option<String>) -> AppResult<()> {
+        self.acs_default_base_url = base_url
+            .map(|value| crate::cloud_acs::validate_base_url(&value))
+            .transpose()?;
+        Ok(())
+    }
+
+    pub fn event_stream_plan(&self) -> Option<CloudEventStreamPlan> {
+        self.acs_event_stream_plan.clone()
+    }
+
+    pub fn report_event_stream_event(
+        &mut self,
+        event: CloudEventStreamEvent,
+        now_epoch_ms: i64,
+    ) -> AppResult<()> {
+        if self
+            .acs_event_stream_plan
+            .as_ref()
+            .is_none_or(|plan| plan.stream_id != event.stream_id)
+        {
+            return Ok(());
+        }
+        match event.kind {
+            CloudEventStreamEventKind::Connecting => {}
+            CloudEventStreamEventKind::Connected => {
+                self.acs_event_stream_connected = true;
+                self.acs_event_stream_consecutive_failures = 0;
+                self.acs_event_stream_next_retry_epoch_ms = None;
+                if self
+                    .persistent
+                    .last_provider_failure
+                    .as_ref()
+                    .is_some_and(|failure| failure.kind == CloudProviderErrorKind::Transient)
+                {
+                    self.persistent.last_provider_failure = None;
+                }
+            }
+            CloudEventStreamEventKind::Message => {
+                let data = event
+                    .data
+                    .as_deref()
+                    .ok_or_else(|| cloud_error("Aerobag Cloud event has no data"))?;
+                let message: AcsSseEvent = serde_json::from_str(data).map_err(|error| {
+                    cloud_error(format!("Aerobag Cloud event is invalid: {error}"))
+                })?;
+                let account = self.account_mut()?;
+                let acs = account
+                    .acs
+                    .as_mut()
+                    .ok_or_else(|| cloud_error("Aerobag Cloud configuration is missing"))?;
+                if acs
+                    .last_event_sequence
+                    .is_some_and(|sequence| message.sequence() <= sequence)
+                {
+                    return Ok(());
+                }
+                acs.last_event_sequence = Some(message.sequence());
+                let (root_revision, root_hash, force_read) = match &message {
+                    AcsSseEvent::Ready {
+                        root_revision,
+                        root_hash,
+                        ..
+                    }
+                    | AcsSseEvent::Heartbeat {
+                        root_revision,
+                        root_hash,
+                        ..
+                    } => (*root_revision, root_hash.as_deref(), false),
+                    AcsSseEvent::RootChanged {
+                        root_revision,
+                        root_hash,
+                        ..
+                    } => (*root_revision, Some(root_hash.as_str()), false),
+                    AcsSseEvent::Reset {
+                        root_revision,
+                        root_hash,
+                        ..
+                    } => (*root_revision, root_hash.as_deref(), true),
+                };
+                if force_read
+                    || root_revision != acs.root_revision
+                    || root_hash != acs.root_hash.as_deref()
+                {
+                    self.persistent.force_poll = true;
+                }
+                self.acs_event_stream_connected = true;
+                self.acs_event_stream_consecutive_failures = 0;
+                self.acs_event_stream_next_retry_epoch_ms = None;
+            }
+            CloudEventStreamEventKind::Error
+            | CloudEventStreamEventKind::Closed
+            | CloudEventStreamEventKind::IdleTimeout => {
+                self.acs_event_stream_plan = None;
+                self.acs_event_stream_connected = false;
+                self.acs_event_stream_consecutive_failures =
+                    self.acs_event_stream_consecutive_failures.saturating_add(1);
+                let delay = if event.kind == CloudEventStreamEventKind::IdleTimeout {
+                    0
+                } else {
+                    AEROBAG_SSE_TRANSPORT_POLICY
+                        .reconnect_delay_ms(self.acs_event_stream_consecutive_failures)
+                };
+                self.acs_event_stream_next_retry_epoch_ms =
+                    Some(now_epoch_ms.saturating_add(delay));
+                self.persistent.last_provider_failure = Some(CloudProviderFailure {
+                    kind: CloudProviderErrorKind::Transient,
+                    detail: event.detail.unwrap_or_else(|| {
+                        "Aerobag Cloud notification stream disconnected; synchronization will retry."
+                            .to_string()
+                    }),
+                });
+            }
+        }
+        Ok(())
     }
 
     pub fn persistent(&self) -> &CloudPersistentState {
@@ -864,7 +1102,7 @@ impl CloudEngine {
         let Ok(provider) = self.current_provider() else {
             return Ok(None);
         };
-        if !provider.is_available() {
+        if !provider.uses_platform_authorization() {
             return Ok(None);
         }
         let mode = if let Some(mode) = self.pending_authorization_mode.take() {
@@ -975,6 +1213,17 @@ impl CloudEngine {
         provider: CloudProviderKind,
         now_epoch_ms: i64,
     ) -> ProviderAuthorizationState {
+        if provider == CloudProviderKind::AerobagCloud
+            && self.provider_ready(provider, now_epoch_ms)
+        {
+            return ProviderAuthorizationState::Authorized {
+                expires_at_epoch_ms: None,
+                principal: CloudProviderPrincipal {
+                    stable_id: "aerobag-cloud".to_string(),
+                    display_label: "Aerobag Cloud".to_string(),
+                },
+            };
+        }
         let authorization = self.authorization_for(provider);
         match authorization {
             ProviderAuthorizationState::Authorized {
@@ -1034,10 +1283,39 @@ impl CloudEngine {
 
     fn has_linked_account(&self) -> bool {
         self.persistent.account.as_ref().is_some_and(|account| {
-            !account.genesis_id.is_empty()
-                && account.tip.is_some()
-                && account.provider_account_binding.is_some()
+            account.tip.is_some()
+                && match account.provider {
+                    CloudProviderKind::GoogleDrive => {
+                        !account.genesis_id.is_empty()
+                            && account.provider_account_binding.is_some()
+                            && account.acs.is_none()
+                    }
+                    CloudProviderKind::AerobagCloud => account.acs.is_some(),
+                }
         })
+    }
+
+    fn provider_available(&self, provider: CloudProviderKind) -> bool {
+        match provider {
+            CloudProviderKind::GoogleDrive => true,
+            CloudProviderKind::AerobagCloud => self.acs_default_base_url.is_some(),
+        }
+    }
+
+    fn provider_ready(&self, provider: CloudProviderKind, now_epoch_ms: i64) -> bool {
+        match provider {
+            CloudProviderKind::GoogleDrive => {
+                self.authorization_for(provider).is_ready(now_epoch_ms)
+            }
+            CloudProviderKind::AerobagCloud => {
+                self.persistent
+                    .account
+                    .as_ref()
+                    .and_then(|account| account.acs.as_ref())
+                    .is_some()
+                    || self.acs_default_base_url.is_some()
+            }
+        }
     }
 
     fn provider_principal_mismatch(&self) -> Option<String> {
@@ -1225,7 +1503,7 @@ impl CloudEngine {
                         "choose to create a Sync Account before selecting its provider",
                     ));
                 }
-                if !provider.is_available() {
+                if !self.provider_available(provider) {
                     return Err(cloud_error(format!(
                         "{} is not available in this build",
                         provider.label()
@@ -1239,20 +1517,46 @@ impl CloudEngine {
                 let provider = self.persistent.selected_provider.ok_or_else(|| {
                     cloud_error("select a provider before creating a Sync Account")
                 })?;
-                let authorization = self.authorization_for(provider);
-                let principal = authorization.principal().ok_or_else(|| {
-                    cloud_error("authorize the provider before creating a Sync Account")
-                })?;
-                let account_binding = provider_account_binding(principal);
                 let secret = random_bytes::<32>()?;
+                let (provider_account_binding, acs, workflow) = match provider {
+                    CloudProviderKind::GoogleDrive => {
+                        let authorization = self.authorization_for(provider);
+                        let principal = authorization.principal().ok_or_else(|| {
+                            cloud_error("authorize the provider before creating a Sync Account")
+                        })?;
+                        (
+                            Some(provider_account_binding(principal)),
+                            None,
+                            CloudWorkflow::CreateAwaitIds,
+                        )
+                    }
+                    CloudProviderKind::AerobagCloud => {
+                        let base_url = self.acs_default_base_url.clone().ok_or_else(|| {
+                            cloud_error("this build has no Aerobag Cloud server configured")
+                        })?;
+                        let identity = crate::cloud_acs::derive_identity(&secret)?;
+                        (
+                            None,
+                            Some(AcsAccountState {
+                                base_url,
+                                account_locator: identity.account_locator,
+                                root_revision: 0,
+                                root_hash: None,
+                                last_event_sequence: None,
+                            }),
+                            CloudWorkflow::AcsCreateChallenge,
+                        )
+                    }
+                };
                 self.reset_sync_activity();
                 self.persistent.account = Some(CloudAccount {
                     provider,
-                    provider_account_binding: Some(account_binding),
+                    provider_account_binding,
                     root_secret_base64: URL_SAFE_NO_PAD.encode(secret),
                     genesis_id: String::new(),
                     imported_device_setup_code: None,
                     tip: None,
+                    acs,
                 });
                 self.persistent.selected_provider = None;
                 let plan = cloud_flight_plan_definition(current_plan);
@@ -1276,7 +1580,7 @@ impl CloudEngine {
                 );
                 self.persistent.records.pending_keys =
                     self.persistent.records.cached.keys().cloned().collect();
-                self.persistent.workflow = Some(CloudWorkflow::CreateAwaitIds);
+                self.persistent.workflow = Some(workflow);
                 self.persistent.last_provider_failure = None;
             }
             CloudAction::AcceptDeviceSetupCode { setup_code } => {
@@ -1289,7 +1593,8 @@ impl CloudEngine {
                     ));
                 }
                 let payload = decode_device_setup_code(&setup_code).map_err(cloud_error)?;
-                let (provider, provider_account_binding, genesis_id) = match payload.provider {
+                let root_secret = payload.root_secret;
+                let (provider, provider_account_binding, genesis_id, acs) = match payload.provider {
                     DeviceSetupProvider::GoogleDrive {
                         stable_principal_fingerprint,
                         display_hint,
@@ -1301,33 +1606,56 @@ impl CloudEngine {
                             display_hint,
                         }),
                         genesis_id,
+                        None,
                     ),
-                    DeviceSetupProvider::AerobagCloud { .. } => {
-                        (CloudProviderKind::AerobagCloud, None, String::new())
+                    DeviceSetupProvider::AerobagCloud {
+                        base_url,
+                        account_locator,
+                    } => {
+                        let base_url = crate::cloud_acs::validate_base_url(&base_url)?;
+                        let identity = crate::cloud_acs::derive_identity(&root_secret)?;
+                        let encoded_locator = URL_SAFE_NO_PAD.encode(account_locator);
+                        if identity.account_locator != encoded_locator {
+                            return Err(cloud_error(
+                                "Device Setup Code account locator does not match its root secret",
+                            ));
+                        }
+                        (
+                            CloudProviderKind::AerobagCloud,
+                            None,
+                            String::new(),
+                            Some(AcsAccountState {
+                                base_url,
+                                account_locator: encoded_locator,
+                                root_revision: 0,
+                                root_hash: None,
+                                last_event_sequence: None,
+                            }),
+                        )
                     }
                 };
-                if !provider.is_available() {
-                    return Err(cloud_error(format!(
-                        "{} is not available in this build",
-                        provider.label()
-                    )));
-                }
                 self.persistent.onboarding_intent = Some(CloudOnboardingIntent::SetupFromDevice);
                 self.persistent.selected_provider = None;
                 self.reset_sync_activity();
                 self.persistent.account = Some(CloudAccount {
                     provider,
                     provider_account_binding,
-                    root_secret_base64: URL_SAFE_NO_PAD.encode(payload.root_secret),
+                    root_secret_base64: URL_SAFE_NO_PAD.encode(root_secret),
                     genesis_id: genesis_id.clone(),
                     imported_device_setup_code: Some(setup_code.trim().to_string()),
                     tip: None,
+                    acs,
                 });
                 self.persistent.records.pending_keys.clear();
                 self.persistent.records.deferred_adoption.clear();
-                self.persistent.workflow = Some(CloudWorkflow::ReadNode {
-                    node_id: genesis_id,
-                    purpose: ReadPurpose::Link,
+                self.persistent.workflow = Some(match provider {
+                    CloudProviderKind::GoogleDrive => CloudWorkflow::ReadNode {
+                        node_id: genesis_id,
+                        purpose: ReadPurpose::Link,
+                    },
+                    CloudProviderKind::AerobagCloud => CloudWorkflow::AcsReadRoot {
+                        purpose: ReadPurpose::Link,
+                    },
                 });
                 self.persistent.last_provider_failure = None;
             }
@@ -1377,6 +1705,10 @@ impl CloudEngine {
         self.persistent.last_write_epoch_ms = None;
         self.persistent.last_poll_epoch_ms = None;
         self.persistent.force_poll = false;
+        self.acs_event_stream_plan = None;
+        self.acs_event_stream_connected = false;
+        self.acs_event_stream_next_retry_epoch_ms = None;
+        self.acs_event_stream_consecutive_failures = 0;
     }
 
     pub fn perform_ui_action(
@@ -1397,11 +1729,8 @@ impl CloudEngine {
                 provider: CloudProviderKind::AerobagCloud,
             },
             CloudUiActionId::CreateAccount => {
-                let provider = self.current_provider()?;
-                if !self
-                    .authorization_for_at(provider, now_epoch_ms)
-                    .is_ready(now_epoch_ms)
-                {
+                self.current_provider()?;
+                if !self.provider_authorization_complete(now_epoch_ms) {
                     return Err(cloud_error(
                         "authorize the provider before creating a Sync Account",
                     ));
@@ -1419,7 +1748,7 @@ impl CloudEngine {
             CloudUiActionId::SyncNow => CloudAction::SyncNow,
             CloudUiActionId::AuthorizeProvider => {
                 let provider = self.current_provider()?;
-                if !provider.is_available() {
+                if !provider.uses_platform_authorization() {
                     return Err(cloud_error(format!(
                         "{} cannot be authorized in this build",
                         provider.label()
@@ -1449,7 +1778,7 @@ impl CloudEngine {
             return Ok(None);
         };
         if self.provider_request_in_flight.is_some()
-            || !self.authorization_for(provider).is_ready(now_epoch_ms)
+            || !self.provider_ready(provider, now_epoch_ms)
             || self.provider_principal_mismatch().is_some()
             || self
                 .persistent
@@ -1462,7 +1791,8 @@ impl CloudEngine {
         let Some(workflow) = self.persistent.workflow.as_ref() else {
             return Ok(None);
         };
-        let operation = operation_for_workflow(provider, workflow)?;
+        let operation =
+            operation_for_workflow(provider, workflow, self.persistent.account.as_ref())?;
         let request_id = self.persistent.next_request_id.max(1);
         self.persistent.next_request_id = request_id.saturating_add(1);
         let request = CloudProviderRequest {
@@ -1470,7 +1800,23 @@ impl CloudEngine {
             provider,
             operation,
         };
-        let http_request = crate::cloud_google_drive::plan_request(&request)?;
+        let http_request = match provider {
+            CloudProviderKind::GoogleDrive => crate::cloud_google_drive::plan_request(&request)?,
+            CloudProviderKind::AerobagCloud => {
+                let account = self.account()?;
+                let acs = account
+                    .acs
+                    .as_ref()
+                    .ok_or_else(|| cloud_error("Aerobag Cloud account configuration is missing"))?;
+                crate::cloud_acs::plan_request(
+                    &request,
+                    &acs.base_url,
+                    &account_secret(account)?,
+                    &acs.account_locator,
+                    now_epoch_ms,
+                )?
+            }
+        };
         self.provider_request_in_flight = Some(request);
         Ok(Some(http_request))
     }
@@ -1496,7 +1842,12 @@ impl CloudEngine {
             .provider_request_in_flight
             .take()
             .expect("provider request checked above");
-        let response = crate::cloud_google_drive::parse_response(&request, response);
+        let response = match request.provider {
+            CloudProviderKind::GoogleDrive => {
+                crate::cloud_google_drive::parse_response(&request, response)
+            }
+            CloudProviderKind::AerobagCloud => crate::cloud_acs::parse_response(&request, response),
+        };
         let provider = self.current_provider()?;
         if let CloudProviderResponse::Error { kind, detail } = response {
             self.persistent.last_provider_failure = Some(CloudProviderFailure {
@@ -1504,11 +1855,16 @@ impl CloudEngine {
                 detail: detail.clone(),
             });
             match kind {
-                CloudProviderErrorKind::Unauthorized => {
+                CloudProviderErrorKind::Unauthorized
+                    if provider == CloudProviderKind::GoogleDrive =>
+                {
                     self.authorizations.insert(
                         provider,
                         ProviderAuthorizationState::AuthorizationRequired { detail },
                     );
+                }
+                CloudProviderErrorKind::Unauthorized => {
+                    self.persistent.next_retry_epoch_ms = None;
                 }
                 CloudProviderErrorKind::Transient => {
                     self.persistent.next_retry_epoch_ms =
@@ -1541,25 +1897,69 @@ impl CloudEngine {
         let Some(account) = self.persistent.account.as_ref() else {
             return Ok(());
         };
-        if account.tip.is_none() || account.genesis_id.is_empty() {
+        if account.tip.is_none()
+            || (account.provider == CloudProviderKind::GoogleDrive && account.genesis_id.is_empty())
+        {
             return Ok(());
         }
         if !self.persistent.records.pending_keys.is_empty() {
-            self.persistent.workflow = Some(CloudWorkflow::PublishAwaitIds);
+            self.persistent.workflow = Some(match account.provider {
+                CloudProviderKind::GoogleDrive => CloudWorkflow::PublishAwaitIds,
+                CloudProviderKind::AerobagCloud => {
+                    let acs = account.acs.as_ref().ok_or_else(|| {
+                        cloud_error("Aerobag Cloud account configuration is missing")
+                    })?;
+                    let tip = account.tip.as_ref().expect("tip checked above");
+                    let staged = self.stage_acs_publication(
+                        PublicationPurpose::Publish,
+                        tip.generation.saturating_add(1),
+                        Some(tip),
+                        now_epoch_ms,
+                    )?;
+                    CloudWorkflow::AcsCreatePage {
+                        staged,
+                        expected_revision: acs.root_revision,
+                        expected_root_hash: acs.root_hash.clone(),
+                    }
+                }
+            });
             return Ok(());
         }
+        let poll_interval_ms = if account.provider == CloudProviderKind::AerobagCloud
+            && self.acs_event_stream_connected
+        {
+            ACS_CORRECTNESS_POLL_INTERVAL_MS
+        } else {
+            CLOUD_POLL_INTERVAL_MS
+        };
         let poll_due = self.persistent.force_poll
             || self
                 .persistent
                 .last_poll_epoch_ms
-                .is_none_or(|last| now_epoch_ms.saturating_sub(last) >= CLOUD_POLL_INTERVAL_MS);
+                .is_none_or(|last| now_epoch_ms.saturating_sub(last) >= poll_interval_ms);
         if poll_due {
-            let tip = account.tip.as_ref().expect("tip checked above");
             self.persistent.force_poll = false;
-            self.persistent.workflow = Some(CloudWorkflow::ReadNode {
-                node_id: tip.next_slot_id.clone(),
-                purpose: ReadPurpose::Poll,
+            self.persistent.workflow = Some(match account.provider {
+                CloudProviderKind::GoogleDrive => {
+                    let tip = account.tip.as_ref().expect("tip checked above");
+                    CloudWorkflow::ReadNode {
+                        node_id: tip.next_slot_id.clone(),
+                        purpose: ReadPurpose::Poll,
+                    }
+                }
+                CloudProviderKind::AerobagCloud => CloudWorkflow::AcsReadRoot {
+                    purpose: ReadPurpose::Poll,
+                },
             });
+        }
+        if self.persistent.workflow.is_none()
+            && account.provider == CloudProviderKind::AerobagCloud
+            && self.acs_event_stream_plan.is_none()
+            && self
+                .acs_event_stream_next_retry_epoch_ms
+                .is_none_or(|retry| retry <= now_epoch_ms)
+        {
+            self.persistent.workflow = Some(CloudWorkflow::AcsCreateSseTicket);
         }
         Ok(())
     }
@@ -1704,6 +2104,229 @@ impl CloudEngine {
                     self.persistent.force_poll = true;
                 }
             }
+            CloudWorkflow::AcsCreateChallenge => {
+                let CloudProviderResponse::AcsCreationChallenge { response } = response else {
+                    return Err(unexpected_response(
+                        "request ACS account challenge",
+                        response,
+                    ));
+                };
+                if response.contract_id != product_contracts::ACS_CONTRACT_ID
+                    || response.challenge.trim().is_empty()
+                    || response.expires_at_epoch_ms <= now_epoch_ms
+                {
+                    return Err(cloud_error(
+                        "Aerobag Cloud returned an invalid account-creation challenge",
+                    ));
+                }
+                self.persistent.workflow = Some(CloudWorkflow::AcsCreateAccount {
+                    challenge: response.challenge,
+                });
+            }
+            CloudWorkflow::AcsCreateAccount { .. } => {
+                let CloudProviderResponse::AcsAccountCreated { response } = response else {
+                    return Err(unexpected_response("create ACS account", response));
+                };
+                let acs = self
+                    .account()?
+                    .acs
+                    .as_ref()
+                    .ok_or_else(|| cloud_error("Aerobag Cloud configuration is missing"))?;
+                if response.contract_id != product_contracts::ACS_CONTRACT_ID
+                    || response.account_locator != acs.account_locator
+                {
+                    return Err(cloud_error(
+                        "Aerobag Cloud created a different account than requested",
+                    ));
+                }
+                let staged = self.stage_acs_publication(
+                    PublicationPurpose::CreateAccount,
+                    0,
+                    None,
+                    now_epoch_ms,
+                )?;
+                self.persistent.workflow = Some(CloudWorkflow::AcsCreatePage {
+                    staged,
+                    expected_revision: 0,
+                    expected_root_hash: None,
+                });
+            }
+            CloudWorkflow::AcsCreatePage {
+                staged,
+                expected_revision,
+                expected_root_hash,
+            } => match response {
+                CloudProviderResponse::Created | CloudProviderResponse::AlreadyExists => {
+                    self.persistent.workflow = Some(CloudWorkflow::AcsCommitRoot {
+                        staged,
+                        expected_revision,
+                        expected_root_hash,
+                    });
+                }
+                other => return Err(unexpected_response("create ACS state page", other)),
+            },
+            CloudWorkflow::AcsCommitRoot { staged, .. } => {
+                let CloudProviderResponse::AcsRootCas { response } = response else {
+                    return Err(unexpected_response("commit ACS root", response));
+                };
+                match response {
+                    AcsCompareAndSwapRootResponse::Committed { root } => {
+                        validate_acs_root_snapshot(&root)?;
+                        if root.root_hash != staged.node_hash {
+                            return Err(cloud_error(
+                                "Aerobag Cloud committed a different root than requested",
+                            ));
+                        }
+                        let acs =
+                            self.account_mut()?.acs.as_mut().ok_or_else(|| {
+                                cloud_error("Aerobag Cloud configuration is missing")
+                            })?;
+                        acs.root_revision = root.revision;
+                        acs.root_hash = Some(root.root_hash);
+                        self.finish_publication(staged)?;
+                    }
+                    AcsCompareAndSwapRootResponse::Conflict { .. } => {
+                        self.persistent.workflow = Some(CloudWorkflow::AcsReadRoot {
+                            purpose: ReadPurpose::PublishRace,
+                        });
+                    }
+                }
+            }
+            CloudWorkflow::AcsReadRoot { purpose } => {
+                let CloudProviderResponse::AcsRoot { root } = response else {
+                    return Err(unexpected_response("read ACS root", response));
+                };
+                let Some(root) = root else {
+                    if matches!(purpose, ReadPurpose::Link) {
+                        return Err(cloud_error(
+                            "the Device Setup Code's Sync Account has no published root",
+                        ));
+                    }
+                    self.persistent.last_read_epoch_ms = Some(now_epoch_ms);
+                    self.persistent.last_poll_epoch_ms = Some(now_epoch_ms);
+                    self.persistent.workflow = None;
+                    return Ok(CloudCompletion::default());
+                };
+                validate_acs_root_snapshot(&root)?;
+                let current = self
+                    .account()?
+                    .acs
+                    .as_ref()
+                    .ok_or_else(|| cloud_error("Aerobag Cloud configuration is missing"))?;
+                if current.root_revision == root.revision
+                    && current.root_hash.as_deref() == Some(root.root_hash.as_str())
+                    && !matches!(purpose, ReadPurpose::Link)
+                {
+                    self.persistent.last_read_epoch_ms = Some(now_epoch_ms);
+                    self.persistent.last_poll_epoch_ms = Some(now_epoch_ms);
+                    self.persistent.workflow = None;
+                    return Ok(CloudCompletion::default());
+                }
+                let node: CloudNode = self.decrypt_acs_value(
+                    &root.value,
+                    "state_node",
+                    AcsEncryptedValueKind::Root,
+                    ACS_FIXED_ROOT_ID,
+                )?;
+                validate_acs_node(&root, &node, self.account()?.tip.as_ref(), purpose)?;
+                self.persistent.workflow = Some(CloudWorkflow::AcsReadPage {
+                    root,
+                    node,
+                    purpose,
+                });
+            }
+            CloudWorkflow::AcsReadPage {
+                root,
+                node,
+                purpose,
+            } => {
+                let CloudProviderResponse::AcsObject { object } = response else {
+                    return Err(unexpected_response("read ACS state page", response));
+                };
+                let object = object.ok_or_else(|| {
+                    cloud_error(format!(
+                        "Aerobag Cloud state page {} is missing",
+                        node.merkle_root_id
+                    ))
+                })?;
+                if object.object_id != node.merkle_root_id {
+                    return Err(cloud_error("Aerobag Cloud returned the wrong state page"));
+                }
+                let actual_hash = object
+                    .value
+                    .authenticated_hash(AcsEncryptedValueKind::Object, &object.object_id)
+                    .map_err(cloud_error)?;
+                if actual_hash != node.merkle_root_hash {
+                    return Err(cloud_error(format!(
+                        "Aerobag Cloud page hash mismatch: expected {}, got {actual_hash}",
+                        node.merkle_root_hash
+                    )));
+                }
+                let page: CloudPage = self.decrypt_acs_value(
+                    &object.value,
+                    "merkle_page",
+                    AcsEncryptedValueKind::Object,
+                    &object.object_id,
+                )?;
+                validate_cloud_page(&page)?;
+                self.account_mut()?.tip = Some(VerifiedTip {
+                    node_id: ACS_FIXED_ROOT_ID.to_string(),
+                    node_hash: root.root_hash.clone(),
+                    generation: node.generation,
+                    published_at_epoch_ms: node.published_at_epoch_ms,
+                    merkle_root_id: node.merkle_root_id,
+                    merkle_root_hash: node.merkle_root_hash,
+                    next_slot_id: String::new(),
+                });
+                let acs = self
+                    .account_mut()?
+                    .acs
+                    .as_mut()
+                    .ok_or_else(|| cloud_error("Aerobag Cloud configuration is missing"))?;
+                acs.root_revision = root.revision;
+                acs.root_hash = Some(root.root_hash);
+                self.persistent.last_read_epoch_ms = Some(now_epoch_ms);
+                self.persistent.last_poll_epoch_ms = Some(now_epoch_ms);
+                self.persistent.workflow = None;
+                let completion = self.reconcile_page(page, purpose)?;
+                if !completion.changed_records.is_empty()
+                    || matches!(purpose, ReadPurpose::PublishRace)
+                {
+                    self.persistent.force_poll = true;
+                }
+                return Ok(completion);
+            }
+            CloudWorkflow::AcsCreateSseTicket => {
+                let CloudProviderResponse::AcsSseTicket { response } = response else {
+                    return Err(unexpected_response("create ACS event ticket", response));
+                };
+                if response.contract_id != product_contracts::ACS_CONTRACT_ID
+                    || response.ticket.trim().is_empty()
+                    || response.expires_at_epoch_ms <= now_epoch_ms
+                {
+                    return Err(cloud_error(
+                        "Aerobag Cloud returned an invalid event-stream ticket",
+                    ));
+                }
+                let base_url = self
+                    .account()?
+                    .acs
+                    .as_ref()
+                    .ok_or_else(|| cloud_error("Aerobag Cloud configuration is missing"))?
+                    .base_url
+                    .clone();
+                let stream_id = self.persistent.next_request_id.max(1);
+                self.persistent.next_request_id = stream_id.saturating_add(1);
+                self.acs_event_stream_plan = Some(CloudEventStreamPlan {
+                    stream_id,
+                    url: crate::cloud_acs::resolve_event_url(&base_url, &response.events_url)?,
+                    connect_timeout_ms: AEROBAG_SSE_TRANSPORT_POLICY.connect_timeout_ms,
+                    idle_timeout_ms: AEROBAG_SSE_TRANSPORT_POLICY.idle_timeout_ms,
+                });
+                self.acs_event_stream_connected = false;
+                self.acs_event_stream_next_retry_epoch_ms = None;
+                self.persistent.workflow = None;
+            }
         }
         Ok(CloudCompletion::default())
     }
@@ -1795,6 +2418,147 @@ impl CloudEngine {
             published_at_epoch_ms: now_epoch_ms,
             local_revision: self.persistent.local_revision,
         })
+    }
+
+    fn stage_acs_publication(
+        &self,
+        purpose: PublicationPurpose,
+        generation: u64,
+        parent: Option<&VerifiedTip>,
+        now_epoch_ms: i64,
+    ) -> AppResult<StagedPublication> {
+        let page_id = URL_SAFE_NO_PAD.encode(random_bytes::<24>()?);
+        let page = page_for_records(&self.persistent.records.cached);
+        let page_value = self.encrypt_acs_value(
+            &page,
+            "merkle_page",
+            AcsEncryptedValueKind::Object,
+            &page_id,
+            Vec::new(),
+        )?;
+        let page_bytes = page_value.ciphertext().map_err(cloud_error)?;
+        let page_hash = page_value
+            .authenticated_hash(AcsEncryptedValueKind::Object, &page_id)
+            .map_err(cloud_error)?;
+        let node = CloudNode {
+            version: CLOUD_NODE_VERSION,
+            generation,
+            published_at_epoch_ms: Some(now_epoch_ms),
+            parent_node_id: parent.map(|tip| tip.node_id.clone()),
+            parent_node_hash: parent.map(|tip| tip.node_hash.clone()),
+            merkle_root_id: page_id.clone(),
+            merkle_root_hash: page_hash.clone(),
+            next_slot_id: String::new(),
+        };
+        let node_value = self.encrypt_acs_value(
+            &node,
+            "state_node",
+            AcsEncryptedValueKind::Root,
+            ACS_FIXED_ROOT_ID,
+            vec![page_id.clone()],
+        )?;
+        let node_bytes = node_value.ciphertext().map_err(cloud_error)?;
+        let node_hash = node_value
+            .authenticated_hash(AcsEncryptedValueKind::Root, ACS_FIXED_ROOT_ID)
+            .map_err(cloud_error)?;
+        Ok(StagedPublication {
+            purpose,
+            node_id: ACS_FIXED_ROOT_ID.to_string(),
+            page_id,
+            next_slot_id: String::new(),
+            page_bytes_base64: URL_SAFE_NO_PAD.encode(page_bytes),
+            node_bytes_base64: URL_SAFE_NO_PAD.encode(node_bytes),
+            node_hash,
+            merkle_root_hash: page_hash,
+            generation,
+            published_at_epoch_ms: now_epoch_ms,
+            local_revision: self.persistent.local_revision,
+        })
+    }
+
+    fn encrypt_acs_value<T: Serialize>(
+        &self,
+        value: &T,
+        role: &str,
+        kind: AcsEncryptedValueKind,
+        value_id: &str,
+        child_object_ids: Vec<String>,
+    ) -> AppResult<AcsEncryptedValue> {
+        let account = self.account()?;
+        let secret = account_secret(account)?;
+        let account_tag = account_tag(&secret);
+        let key = derive_acs_payload_key(&secret)?;
+        let cipher = ChaCha20Poly1305::new_from_slice(&key)
+            .map_err(|_| cloud_error("invalid Aerobag Cloud encryption key"))?;
+        let nonce = random_bytes::<12>()?;
+        let aad = acs_encrypted_value_associated_data(kind, value_id, &child_object_ids)
+            .map_err(cloud_error)?;
+        let plaintext = serde_json::to_vec(value).map_err(cloud_json_error)?;
+        let ciphertext = cipher
+            .encrypt(
+                Nonce::from_slice(&nonce),
+                Payload {
+                    msg: &plaintext,
+                    aad: &aad,
+                },
+            )
+            .map_err(|_| cloud_error("Aerobag Cloud encryption failed"))?;
+        let envelope = serde_json::to_vec(&CloudEnvelope {
+            version: CLOUD_ENVELOPE_VERSION,
+            account_tag,
+            role: role.to_string(),
+            nonce_base64: URL_SAFE_NO_PAD.encode(nonce),
+            ciphertext_base64: URL_SAFE_NO_PAD.encode(ciphertext),
+        })
+        .map_err(cloud_json_error)?;
+        Ok(AcsEncryptedValue::from_ciphertext(
+            &envelope,
+            child_object_ids,
+        ))
+    }
+
+    fn decrypt_acs_value<T: for<'de> Deserialize<'de>>(
+        &self,
+        value: &AcsEncryptedValue,
+        role: &str,
+        kind: AcsEncryptedValueKind,
+        value_id: &str,
+    ) -> AppResult<T> {
+        value.validate().map_err(cloud_error)?;
+        let envelope: CloudEnvelope =
+            serde_json::from_slice(&value.ciphertext().map_err(cloud_error)?)
+                .map_err(cloud_json_error)?;
+        let account = self.account()?;
+        let secret = account_secret(account)?;
+        if envelope.version != CLOUD_ENVELOPE_VERSION
+            || envelope.account_tag != account_tag(&secret)
+            || envelope.role != role
+        {
+            return Err(cloud_error(
+                "Aerobag Cloud envelope binding does not match this account",
+            ));
+        }
+        let nonce: [u8; 12] = URL_SAFE_NO_PAD
+            .decode(&envelope.nonce_base64)
+            .map_err(|_| cloud_error("Aerobag Cloud envelope nonce is invalid"))?
+            .try_into()
+            .map_err(|_| cloud_error("Aerobag Cloud envelope nonce has the wrong size"))?;
+        let ciphertext = URL_SAFE_NO_PAD
+            .decode(&envelope.ciphertext_base64)
+            .map_err(|_| cloud_error("Aerobag Cloud envelope ciphertext is invalid"))?;
+        let aad = value.associated_data(kind, value_id).map_err(cloud_error)?;
+        let cipher = ChaCha20Poly1305::new_from_slice(&derive_acs_payload_key(&secret)?)
+            .map_err(|_| cloud_error("invalid Aerobag Cloud decryption key"))?;
+        let plaintext = cipher
+            .decrypt(
+                Nonce::from_slice(&nonce),
+                Payload {
+                    msg: &ciphertext,
+                    aad: &aad,
+                },
+            )
+            .map_err(|_| cloud_error("Aerobag Cloud envelope authentication failed"))?;
+        serde_json::from_slice(&plaintext).map_err(cloud_json_error)
     }
 
     fn finish_publication(&mut self, staged: StagedPublication) -> AppResult<()> {
@@ -2094,14 +2858,14 @@ impl CloudEngine {
                             cloud_action(
                                 CloudUiActionId::SelectProviderGoogleDrive,
                                 "My Google Drive",
-                                CloudProviderKind::GoogleDrive.is_available(),
+                                self.provider_available(CloudProviderKind::GoogleDrive),
                                 "My Google Drive is not available in this build.",
                             ),
                             cloud_action(
                                 CloudUiActionId::SelectProviderAerobagCloud,
                                 "Aerobag Cloud",
-                                CloudProviderKind::AerobagCloud.is_available(),
-                                "Aerobag Cloud is not available in this build yet.",
+                                self.provider_available(CloudProviderKind::AerobagCloud),
+                                "This build has no Aerobag Cloud server configured.",
                             ),
                             cloud_action(CloudUiActionId::BackSetup, "Back", true, ""),
                         ],
@@ -2336,11 +3100,7 @@ impl CloudEngine {
         let Ok(provider) = self.current_provider() else {
             return false;
         };
-        self.provider_principal_mismatch().is_none()
-            && matches!(
-                self.authorization_for_at(provider, now_epoch_ms),
-                authorization if authorization.is_ready(now_epoch_ms)
-            )
+        self.provider_principal_mismatch().is_none() && self.provider_ready(provider, now_epoch_ms)
     }
 
     pub fn status_summary(&self, now_epoch_ms: i64) -> CloudStatusSummary {
@@ -2476,6 +3236,24 @@ impl CloudEngine {
 
     fn provider_card(&self, provider: CloudProviderKind, now_epoch_ms: i64) -> UiCloudPanel {
         let provider_label = provider.label();
+        if provider == CloudProviderKind::AerobagCloud {
+            let server = self
+                .persistent
+                .account
+                .as_ref()
+                .and_then(|account| account.acs.as_ref())
+                .map(|acs| acs.base_url.as_str())
+                .or(self.acs_default_base_url.as_deref())
+                .unwrap_or("No server configured");
+            return cloud_panel(
+                "provider",
+                provider_label,
+                UiCloudPanelState::Complete,
+                Some(&format!("Connected to {server}")),
+                Vec::new(),
+                None,
+            );
+        }
         let authorization = self.authorization_for_at(provider, now_epoch_ms);
         if let Some(detail) = self.provider_principal_mismatch() {
             return cloud_panel(
@@ -2538,7 +3316,7 @@ impl CloudEngine {
                         CloudUiActionId::AuthorizeProvider,
                         &format!("Authorize {provider_label}"),
                         provider,
-                        provider.is_available(),
+                        provider.uses_platform_authorization(),
                         "This provider cannot be authorized in this build.",
                     )],
                     None,
@@ -2725,26 +3503,47 @@ impl CloudEngine {
 
     pub fn device_setup_code(&self) -> AppResult<String> {
         let account = self.account()?;
-        if account.genesis_id.is_empty() || account.tip.is_none() {
+        if account.tip.is_none()
+            || (account.provider == CloudProviderKind::GoogleDrive && account.genesis_id.is_empty())
+        {
             return Err(cloud_error("cloud account creation has not completed"));
         }
         if let Some(imported) = &account.imported_device_setup_code {
             return Ok(imported.clone());
         }
-        let account_binding = account
-            .provider_account_binding
-            .as_ref()
-            .ok_or_else(|| cloud_error("provider account identity is unavailable"))?;
-        let stable_principal_fingerprint = decode_hex_32(
-            &account_binding.stable_principal_fingerprint,
-            "provider account fingerprint is invalid",
-        )?;
         Ok(encode_device_setup_code(&DeviceSetupCode {
             root_secret: account_secret(account)?,
-            provider: DeviceSetupProvider::GoogleDrive {
-                stable_principal_fingerprint,
-                display_hint: account_binding.display_hint.clone(),
-                genesis_id: account.genesis_id.clone(),
+            provider: match account.provider {
+                CloudProviderKind::GoogleDrive => {
+                    let account_binding = account
+                        .provider_account_binding
+                        .as_ref()
+                        .ok_or_else(|| cloud_error("provider account identity is unavailable"))?;
+                    DeviceSetupProvider::GoogleDrive {
+                        stable_principal_fingerprint: decode_hex_32(
+                            &account_binding.stable_principal_fingerprint,
+                            "provider account fingerprint is invalid",
+                        )?,
+                        display_hint: account_binding.display_hint.clone(),
+                        genesis_id: account.genesis_id.clone(),
+                    }
+                }
+                CloudProviderKind::AerobagCloud => {
+                    let acs = account
+                        .acs
+                        .as_ref()
+                        .ok_or_else(|| cloud_error("Aerobag Cloud configuration is unavailable"))?;
+                    DeviceSetupProvider::AerobagCloud {
+                        base_url: acs.base_url.clone(),
+                        account_locator: URL_SAFE_NO_PAD
+                            .decode(&acs.account_locator)
+                            .map_err(|_| cloud_error("Aerobag Cloud account locator is invalid"))?
+                            .try_into()
+                            .map_err(|_| {
+                                cloud_error("Aerobag Cloud account locator has the wrong size")
+                            })?,
+                    }
+                }
             },
         }))
     }
@@ -2887,6 +3686,7 @@ fn provider_account_binding(principal: &CloudProviderPrincipal) -> ProviderAccou
 fn operation_for_workflow(
     provider: CloudProviderKind,
     workflow: &CloudWorkflow,
+    account: Option<&CloudAccount>,
 ) -> AppResult<CloudProviderOperation> {
     Ok(match workflow {
         CloudWorkflow::CreateAwaitIds => CloudProviderOperation::AllocateIds { count: 3 },
@@ -2910,7 +3710,130 @@ fn operation_for_workflow(
         CloudWorkflow::ReadPage { node, .. } => CloudProviderOperation::Read {
             id: node.merkle_root_id.clone(),
         },
+        CloudWorkflow::AcsCreateChallenge => CloudProviderOperation::AcsIssueAccountChallenge,
+        CloudWorkflow::AcsCreateAccount { challenge } => {
+            let account = account.ok_or_else(|| cloud_error("Aerobag Cloud account is missing"))?;
+            let acs = account
+                .acs
+                .as_ref()
+                .ok_or_else(|| cloud_error("Aerobag Cloud configuration is missing"))?;
+            let identity = crate::cloud_acs::derive_identity(&account_secret(account)?)?;
+            CloudProviderOperation::AcsCreateAccount {
+                request: AcsCreateAccountRequest {
+                    contract_id: product_contracts::ACS_CONTRACT_ID.to_string(),
+                    account_locator: acs.account_locator.clone(),
+                    signing_key_id: identity.signing_key_id,
+                    signing_public_key_base64url: identity.signing_public_key_base64url,
+                    creation_challenge: challenge.clone(),
+                },
+            }
+        }
+        CloudWorkflow::AcsCreatePage { staged, .. } => CloudProviderOperation::AcsCreateObject {
+            request: AcsCreateObjectRequest {
+                contract_id: product_contracts::ACS_CONTRACT_ID.to_string(),
+                object_id: staged.page_id.clone(),
+                value: acs_staged_page_value(staged)?,
+            },
+        },
+        CloudWorkflow::AcsCommitRoot {
+            staged,
+            expected_revision,
+            expected_root_hash,
+        } => CloudProviderOperation::AcsCompareAndSwapRoot {
+            request: AcsCompareAndSwapRootRequest {
+                contract_id: product_contracts::ACS_CONTRACT_ID.to_string(),
+                expected_revision: *expected_revision,
+                expected_root_hash: expected_root_hash.clone(),
+                replacement: acs_staged_root_value(staged)?,
+            },
+        },
+        CloudWorkflow::AcsReadRoot { .. } => CloudProviderOperation::AcsReadRoot,
+        CloudWorkflow::AcsReadPage { node, .. } => CloudProviderOperation::AcsReadObject {
+            id: node.merkle_root_id.clone(),
+        },
+        CloudWorkflow::AcsCreateSseTicket => {
+            let account = account.ok_or_else(|| cloud_error("Aerobag Cloud account is missing"))?;
+            let acs = account
+                .acs
+                .as_ref()
+                .ok_or_else(|| cloud_error("Aerobag Cloud configuration is missing"))?;
+            CloudProviderOperation::AcsCreateSseTicket {
+                request: AcsCreateSseTicketRequest {
+                    contract_id: product_contracts::ACS_CONTRACT_ID.to_string(),
+                    last_event_sequence: acs.last_event_sequence,
+                },
+            }
+        }
     })
+}
+
+fn acs_staged_page_value(staged: &StagedPublication) -> AppResult<AcsEncryptedValue> {
+    let bytes = URL_SAFE_NO_PAD
+        .decode(&staged.page_bytes_base64)
+        .map_err(|_| cloud_error("staged Aerobag Cloud page is not valid base64url"))?;
+    let value = AcsEncryptedValue::from_ciphertext(&bytes, Vec::new());
+    let hash = value
+        .authenticated_hash(AcsEncryptedValueKind::Object, &staged.page_id)
+        .map_err(cloud_error)?;
+    if hash != staged.merkle_root_hash {
+        return Err(cloud_error("staged Aerobag Cloud page hash changed"));
+    }
+    Ok(value)
+}
+
+fn acs_staged_root_value(staged: &StagedPublication) -> AppResult<AcsEncryptedValue> {
+    let bytes = URL_SAFE_NO_PAD
+        .decode(&staged.node_bytes_base64)
+        .map_err(|_| cloud_error("staged Aerobag Cloud root is not valid base64url"))?;
+    let value = AcsEncryptedValue::from_ciphertext(&bytes, vec![staged.page_id.clone()]);
+    let hash = value
+        .authenticated_hash(AcsEncryptedValueKind::Root, ACS_FIXED_ROOT_ID)
+        .map_err(cloud_error)?;
+    if hash != staged.node_hash {
+        return Err(cloud_error("staged Aerobag Cloud root hash changed"));
+    }
+    Ok(value)
+}
+
+fn validate_acs_root_snapshot(root: &AcsRootSnapshot) -> AppResult<()> {
+    if root.revision == 0 {
+        return Err(cloud_error("Aerobag Cloud returned root revision zero"));
+    }
+    let hash = root
+        .value
+        .authenticated_hash(AcsEncryptedValueKind::Root, ACS_FIXED_ROOT_ID)
+        .map_err(cloud_error)?;
+    if hash != root.root_hash {
+        return Err(cloud_error(format!(
+            "Aerobag Cloud root hash mismatch: expected {}, got {hash}",
+            root.root_hash
+        )));
+    }
+    Ok(())
+}
+
+fn validate_acs_node(
+    root: &AcsRootSnapshot,
+    node: &CloudNode,
+    current_tip: Option<&VerifiedTip>,
+    purpose: ReadPurpose,
+) -> AppResult<()> {
+    if node.version != CLOUD_NODE_VERSION
+        || root.value.child_object_ids.as_slice() != [node.merkle_root_id.as_str()]
+    {
+        return Err(cloud_error(
+            "Aerobag Cloud root does not describe one valid state page",
+        ));
+    }
+    if matches!(purpose, ReadPurpose::Link) {
+        return Ok(());
+    }
+    let current_tip = current_tip
+        .ok_or_else(|| cloud_error("Aerobag Cloud account has no previously verified root"))?;
+    if node.generation <= current_tip.generation {
+        return Err(cloud_error("Aerobag Cloud root generation did not advance"));
+    }
+    Ok(())
 }
 
 fn root_publication_operation(
@@ -3090,6 +4013,14 @@ fn derive_key(secret: &[u8; 32], role: &str) -> AppResult<[u8; 32]> {
     Ok(key)
 }
 
+fn derive_acs_payload_key(secret: &[u8; 32]) -> AppResult<[u8; 32]> {
+    let hkdf = Hkdf::<Sha256>::new(Some(ACS_KDF_SALT), secret);
+    let mut key = [0_u8; 32];
+    hkdf.expand(ACS_KDF_PAYLOAD_ENCRYPTION_LABEL, &mut key)
+        .map_err(|_| cloud_error("Aerobag Cloud payload key derivation failed"))?;
+    Ok(key)
+}
+
 fn account_tag(secret: &[u8; 32]) -> String {
     let mut hash = Sha256::new();
     hash.update(b"aerobag-cloud-account-locator-v1");
@@ -3101,7 +4032,7 @@ fn envelope_aad(version: u32, account_tag: &str, role: &str) -> String {
     format!("aerobag-cloud-envelope:{version}:{account_tag}:{role}")
 }
 
-fn random_bytes<const N: usize>() -> AppResult<[u8; N]> {
+pub(crate) fn random_bytes<const N: usize>() -> AppResult<[u8; N]> {
     let mut bytes = [0_u8; N];
     getrandom::getrandom(&mut bytes)
         .map_err(|error| cloud_error(format!("secure random generation failed: {error}")))?;
@@ -3217,6 +4148,15 @@ mod tests {
                         next_page_token: None,
                     }
                 }
+                CloudProviderOperation::AcsIssueAccountChallenge
+                | CloudProviderOperation::AcsCreateAccount { .. }
+                | CloudProviderOperation::AcsCreateObject { .. }
+                | CloudProviderOperation::AcsReadObject { .. }
+                | CloudProviderOperation::AcsReadRoot
+                | CloudProviderOperation::AcsCompareAndSwapRoot { .. }
+                | CloudProviderOperation::AcsCreateSseTicket { .. } => {
+                    panic!("Drive test provider received an ACS operation")
+                }
             }
         }
     }
@@ -3279,6 +4219,14 @@ mod tests {
                 kind: CloudProviderErrorKind::Permanent,
                 detail,
             } => (400, detail.into_bytes()),
+            CloudProviderResponse::AcsCreationChallenge { .. }
+            | CloudProviderResponse::AcsAccountCreated { .. }
+            | CloudProviderResponse::AcsObject { .. }
+            | CloudProviderResponse::AcsRoot { .. }
+            | CloudProviderResponse::AcsRootCas { .. }
+            | CloudProviderResponse::AcsSseTicket { .. } => {
+                panic!("Drive wire response received an ACS response")
+            }
         };
         CloudHttpResponse::Completed {
             status_code,
@@ -3306,6 +4254,123 @@ mod tests {
         panic!("cloud test pump did not quiesce");
     }
 
+    fn execute_acs(
+        provider: &mut crate::cloud_acs_memory::InMemoryAcsProvider,
+        request: &CloudProviderRequest,
+        account_locator: &str,
+        now: i64,
+    ) -> CloudHttpResponse {
+        use crate::cloud_acs_memory::AcsMemoryDelivery;
+        let (status_code, body) = match &request.operation {
+            CloudProviderOperation::AcsIssueAccountChallenge => (
+                200,
+                serde_json::to_vec(&AcsCreationChallengeResponse {
+                    contract_id: product_contracts::ACS_CONTRACT_ID.to_string(),
+                    challenge: "test-challenge".to_string(),
+                    expires_at_epoch_ms: now + 60_000,
+                    server_time_epoch_ms: now,
+                })
+                .unwrap(),
+            ),
+            CloudProviderOperation::AcsCreateAccount { request } => {
+                provider.create_account(&request.account_locator).unwrap();
+                (
+                    201,
+                    serde_json::to_vec(&AcsCreateAccountResponse {
+                        contract_id: product_contracts::ACS_CONTRACT_ID.to_string(),
+                        account_locator: request.account_locator.clone(),
+                        server_time_epoch_ms: now,
+                        quota_class: "anonymous".to_string(),
+                        quota_bytes: 1024 * 1024,
+                    })
+                    .unwrap(),
+                )
+            }
+            CloudProviderOperation::AcsCreateObject { request } => (
+                200,
+                serde_json::to_vec(
+                    &provider
+                        .create_object(account_locator, request.clone(), now)
+                        .unwrap(),
+                )
+                .unwrap(),
+            ),
+            CloudProviderOperation::AcsReadObject { id } => {
+                match provider.read_object(account_locator, id).unwrap() {
+                    Some(object) => (200, serde_json::to_vec(&object).unwrap()),
+                    None => (404, Vec::new()),
+                }
+            }
+            CloudProviderOperation::AcsReadRoot => match provider.root(account_locator).unwrap() {
+                Some(root) => (200, serde_json::to_vec(&root).unwrap()),
+                None => (404, Vec::new()),
+            },
+            CloudProviderOperation::AcsCompareAndSwapRoot { request: operation } => {
+                match provider
+                    .compare_and_swap_root(account_locator, operation.clone(), now)
+                    .unwrap()
+                {
+                    AcsMemoryDelivery::Delivered(response) => (
+                        if matches!(response, AcsCompareAndSwapRootResponse::Conflict { .. }) {
+                            409
+                        } else {
+                            200
+                        },
+                        serde_json::to_vec(&response).unwrap(),
+                    ),
+                    AcsMemoryDelivery::LostAfterCommit => panic!("unexpected lost test response"),
+                }
+            }
+            CloudProviderOperation::AcsCreateSseTicket { .. } => (
+                200,
+                serde_json::to_vec(&AcsCreateSseTicketResponse {
+                    contract_id: product_contracts::ACS_CONTRACT_ID.to_string(),
+                    ticket: "test-ticket".to_string(),
+                    expires_at_epoch_ms: now + 60_000,
+                    events_url: "/cloud/v1/events?ticket=test-ticket".to_string(),
+                })
+                .unwrap(),
+            ),
+            operation => panic!("unexpected ACS test operation {operation:?}"),
+        };
+        CloudHttpResponse::Completed {
+            status_code,
+            body_base64: URL_SAFE_NO_PAD.encode(body),
+        }
+    }
+
+    fn pump_acs(
+        engine: &mut CloudEngine,
+        provider: &mut crate::cloud_acs_memory::InMemoryAcsProvider,
+        now: i64,
+    ) -> Vec<FlightPlan> {
+        let mut remote_plans = Vec::new();
+        for _ in 0..32 {
+            let Some(http_request) = engine.take_provider_request(now).unwrap() else {
+                return remote_plans;
+            };
+            let semantic_request = engine
+                .provider_request_in_flight
+                .as_ref()
+                .expect("request is in flight")
+                .clone();
+            let account_locator = engine
+                .account()
+                .unwrap()
+                .acs
+                .as_ref()
+                .unwrap()
+                .account_locator
+                .clone();
+            let response = execute_acs(provider, &semantic_request, &account_locator, now);
+            let completion = engine
+                .complete_provider_request(http_request.request_id, response, now)
+                .unwrap();
+            remote_plans.extend(completion.remote_flight_plan().unwrap());
+        }
+        panic!("ACS cloud test pump did not quiesce");
+    }
+
     fn plan(idents: &[&str]) -> FlightPlan {
         FlightPlan {
             route_components: idents
@@ -3317,6 +4382,66 @@ mod tests {
             ..FlightPlan::default()
         }
         .normalized()
+    }
+
+    #[test]
+    fn aerobag_cloud_creates_and_links_through_fixed_root_cas() {
+        let initial_plan = plan(&["KPAE", "KAPA"]);
+        let mut provider = crate::cloud_acs_memory::InMemoryAcsProvider::default();
+        let mut source = CloudEngine::new(CloudPersistentState::default());
+        source
+            .set_acs_default_base_url(Some("https://cloud.example/cloud/".to_string()))
+            .unwrap();
+        source
+            .perform_action_at(CloudAction::BeginCreateAccount, &initial_plan, 1_000)
+            .unwrap();
+        source
+            .perform_action_at(
+                CloudAction::SelectProvider {
+                    provider: CloudProviderKind::AerobagCloud,
+                },
+                &initial_plan,
+                1_000,
+            )
+            .unwrap();
+        source
+            .perform_action_at(CloudAction::CreateAccount, &initial_plan, 1_000)
+            .unwrap();
+        assert!(pump_acs(&mut source, &mut provider, 1_000).is_empty());
+        assert!(source.has_linked_account());
+        assert_eq!(
+            source
+                .account()
+                .unwrap()
+                .acs
+                .as_ref()
+                .unwrap()
+                .root_revision,
+            1
+        );
+
+        let setup_code = source.device_setup_code().unwrap();
+        let mut target = CloudEngine::new(CloudPersistentState::default());
+        target
+            .perform_action_at(
+                CloudAction::AcceptDeviceSetupCode { setup_code },
+                &FlightPlan::default(),
+                2_000,
+            )
+            .unwrap();
+        let remote = pump_acs(&mut target, &mut provider, 2_000);
+        assert_eq!(remote, vec![initial_plan]);
+        assert!(target.has_linked_account());
+        assert_eq!(
+            target
+                .account()
+                .unwrap()
+                .acs
+                .as_ref()
+                .unwrap()
+                .root_revision,
+            1
+        );
     }
 
     fn ready(engine: &mut CloudEngine) {

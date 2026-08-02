@@ -35,6 +35,8 @@ import type { NexradOverlayQueryResult } from "../generated/nexradOverlayWire";
 import type {
   CloudAuthorizationRequest,
   CloudAuthorizationResponse,
+  CloudEventStreamEvent,
+  CloudEventStreamPlan,
   CloudHttpRequest,
   CloudHttpResponse,
   CloudUiActionId,
@@ -71,6 +73,7 @@ import { liveFeedSourceUrl } from "./liveFeedUrls";
 export { resolveLiveFeedResourceUrl, resolveLiveFeedSourceUrl } from "./liveFeedUrls";
 
 declare const __AEROBAG_CLIENT_BUILD_INFO__: ClientBuildInfo;
+declare const __AEROBAG_CLOUD_SERVER_BASE_URL__: string | null;
 
 type LiveFeedE2eProbeState = {
   open_attempts: number;
@@ -839,8 +842,11 @@ export interface UiSession {
   takeCloudAuthorizationRequest(nowEpochMs: number): Promise<CloudAuthorizationRequest | null>;
   completeCloudAuthorization(requestId: number, response: CloudAuthorizationResponse, nowEpochMs: number): Promise<UiSessionSnapshot>;
   performCloudUiAction(actionId: CloudUiActionId, fields: CloudUiFieldValue[], nowEpochMs: number): Promise<UiSessionSnapshot>;
+  recordOfflinePackagePreferences(preferencesJson: string, nowEpochMs: number): Promise<UiSessionSnapshot>;
   takeCloudProviderRequest(nowEpochMs: number): Promise<CloudHttpRequest | null>;
   completeCloudProviderRequest(requestId: number, response: CloudHttpResponse, nowEpochMs: number): Promise<UiSessionSnapshot>;
+  cloudEventStreamPlan(): Promise<CloudEventStreamPlan | null>;
+  reportCloudEventStreamEvent(event: CloudEventStreamEvent, nowEpochMs: number): Promise<UiSessionSnapshot>;
   acceptDisclaimer(agreementId: string): Promise<UiSessionSnapshot>;
   loadRasterMapCatalog(): Promise<UiSessionSnapshot>;
   resolveChartAssetUrl(chartId: string, assetKind: "asset" | "thumbnail"): Promise<string>;
@@ -969,8 +975,11 @@ type WasmModule = {
   take_cloud_authorization_request_in_session(handle: number, nowEpochMs: bigint): Promise<string> | string;
   complete_cloud_authorization_in_session(handle: number, requestId: bigint, responseJson: string, nowEpochMs: bigint): Promise<string> | string;
   perform_cloud_ui_action_in_session(handle: number, actionIdJson: string, fieldsJson: string, nowEpochMs: bigint): Promise<string> | string;
+  record_offline_package_preferences_in_session(handle: number, preferencesJson: string, nowEpochMs: bigint): Promise<string> | string;
   take_cloud_provider_request_in_session(handle: number, nowEpochMs: bigint): Promise<string> | string;
   complete_cloud_provider_request_in_session(handle: number, requestId: bigint, responseJson: string, nowEpochMs: bigint): Promise<string> | string;
+  cloud_event_stream_plan_in_session(handle: number): Promise<string> | string;
+  report_cloud_event_stream_event_in_session(handle: number, eventJson: string, nowEpochMs: bigint): Promise<string> | string;
   accept_disclaimer_in_session(handle: number, agreementId: string): Promise<string> | string;
   load_raster_map_catalog_in_session(handle: number): Promise<string> | string;
   sync_guidance_geometry_in_session(handle: number): Promise<string> | string;
@@ -1149,7 +1158,13 @@ export class WasmAppCoreAdapter implements AppCoreAdapter {
           JSON.stringify({
             display_policy: null,
             offline_packages: null,
-            cloud: { qr_scan: false },
+            cloud: {
+              qr_scan: false,
+              aerobag_cloud_base_url: new URL(
+                __AEROBAG_CLOUD_SERVER_BASE_URL__?.trim() || "/cloud/",
+                globalThis.location.href,
+              ).toString(),
+            },
             live_feeds: { acquisition_policy: "jit_public_resources" },
             client_build: __AEROBAG_CLIENT_BUILD_INFO__,
             local_time_zone: Intl.DateTimeFormat().resolvedOptions().timeZone,
@@ -1567,6 +1582,16 @@ export class WasmAppCoreAdapter implements AppCoreAdapter {
         );
         return snapshot;
       },
+      recordOfflinePackagePreferences: async (preferencesJson, nowEpochMs) => {
+        snapshot = await runSessionOperation<UiSessionSnapshot>(() =>
+          this.module.record_offline_package_preferences_in_session(
+            handle,
+            preferencesJson,
+            BigInt(Math.trunc(nowEpochMs)),
+          ),
+        );
+        return snapshot;
+      },
       takeCloudProviderRequest: async (nowEpochMs) => {
         return JSON.parse(
           await this.module.take_cloud_provider_request_in_session(
@@ -1581,6 +1606,21 @@ export class WasmAppCoreAdapter implements AppCoreAdapter {
             handle,
             BigInt(requestId),
             JSON.stringify(response),
+            BigInt(Math.trunc(nowEpochMs)),
+          ),
+        );
+        return snapshot;
+      },
+      cloudEventStreamPlan: async () => {
+        return JSON.parse(
+          await this.module.cloud_event_stream_plan_in_session(handle),
+        ) as CloudEventStreamPlan | null;
+      },
+      reportCloudEventStreamEvent: async (event, nowEpochMs) => {
+        snapshot = await runSessionOperation<UiSessionSnapshot>(() =>
+          this.module.report_cloud_event_stream_event_in_session(
+            handle,
+            JSON.stringify(event),
             BigInt(Math.trunc(nowEpochMs)),
           ),
         );
@@ -2033,8 +2073,11 @@ async function loadBestAvailableAdapterUncached(
     "take_cloud_authorization_request_in_session",
     "complete_cloud_authorization_in_session",
     "perform_cloud_ui_action_in_session",
+    "record_offline_package_preferences_in_session",
     "take_cloud_provider_request_in_session",
     "complete_cloud_provider_request_in_session",
+    "cloud_event_stream_plan_in_session",
+    "report_cloud_event_stream_event_in_session",
     "accept_disclaimer_in_session",
     "load_raster_map_catalog_in_session",
     "resolve_chart_asset_resource_in_session",

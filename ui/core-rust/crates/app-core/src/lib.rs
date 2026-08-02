@@ -7,6 +7,7 @@ use serde::{Deserialize, Serialize};
 pub mod airport_info;
 pub mod chart_page;
 pub mod cloud;
+mod cloud_acs;
 #[cfg(test)]
 mod cloud_acs_memory;
 mod cloud_google_drive;
@@ -54,9 +55,10 @@ pub use chart_page::{
 };
 pub use cloud::{
     CloudAuthorizationMode, CloudAuthorizationRequest, CloudAuthorizationResponse, CloudCompletion,
-    CloudEngine, CloudHttpHeader, CloudHttpMethod, CloudHttpRequest, CloudHttpResponse,
-    CloudPersistentState, CloudPlatformEffect, CloudProviderKind, CloudProviderPrincipal,
-    CloudStatusFact, CloudStatusSummary, CloudUiActionId, CloudUiFieldId, CloudUiFieldValue,
+    CloudEngine, CloudEventStreamEvent, CloudEventStreamEventKind, CloudEventStreamPlan,
+    CloudHttpHeader, CloudHttpMethod, CloudHttpRequest, CloudHttpResponse, CloudPersistentState,
+    CloudPlatformEffect, CloudProviderKind, CloudProviderPrincipal, CloudStatusFact,
+    CloudStatusSummary, CloudUiActionId, CloudUiFieldId, CloudUiFieldValue,
     ProviderAuthorizationState, UiCloudAction, UiCloudPageState, UiCloudPanel, UiCloudPanelControl,
     UiCloudPanelState, UiCloudTimeFact, UiQrCode, CLOUD_STATUS_ID,
 };
@@ -223,14 +225,14 @@ pub use raster_tiles::{
 pub use session::{
     accept_disclaimer_in_session, advance_nav_kv_store_in_session_with_open_result,
     apply_situation_control_input_in_session, attach_nav_kv_store_to_session,
-    attach_nav_kv_store_to_session_with_open_result, complete_cloud_authorization_in_session,
-    complete_cloud_provider_request_in_session, configure_live_feed_source_in_session,
-    configure_platform_capabilities_in_session, create_ui_session, create_ui_session_at_epoch_ms,
-    create_ui_session_profiled, create_ui_session_profiled_at_epoch_ms,
-    debug_drop_nav_kv_pages_for_attached_sessions, destroy_session,
-    disengage_map_follow_in_session, drain_session_resource_effects, engage_map_follow_in_session,
-    get_map_overlay_in_session, get_map_overlay_in_session_at_epoch_ms,
-    get_map_overlay_in_session_with_point_display_scale,
+    attach_nav_kv_store_to_session_with_open_result, cloud_event_stream_plan_in_session,
+    complete_cloud_authorization_in_session, complete_cloud_provider_request_in_session,
+    configure_live_feed_source_in_session, configure_platform_capabilities_in_session,
+    create_ui_session, create_ui_session_at_epoch_ms, create_ui_session_profiled,
+    create_ui_session_profiled_at_epoch_ms, debug_drop_nav_kv_pages_for_attached_sessions,
+    destroy_session, disengage_map_follow_in_session, drain_session_resource_effects,
+    engage_map_follow_in_session, get_map_overlay_in_session,
+    get_map_overlay_in_session_at_epoch_ms, get_map_overlay_in_session_with_point_display_scale,
     get_map_overlay_in_session_with_point_display_scale_at_epoch_ms,
     get_map_selection_for_nav_ref_in_session_with_point_display_scale_at_epoch_ms,
     get_map_selection_in_session, get_map_selection_in_session_at_epoch_ms,
@@ -263,7 +265,8 @@ pub use session::{
     record_offline_package_preferences_in_session, refresh_live_feed_current_in_session,
     register_ownship_source_in_session, render_terrain_overlay_tile_by_key_in_session,
     render_terrain_overlay_tile_in_session, render_terrain_overlay_tiles_in_session,
-    report_live_feed_connection_event_in_session, report_session_resource_failure_in_session,
+    report_cloud_event_stream_event_in_session, report_live_feed_connection_event_in_session,
+    report_session_resource_failure_in_session,
     report_session_resource_failure_in_session_at_epoch_ms,
     resolve_chart_asset_resource_in_session, resolve_metar_manifest_in_session,
     resolve_nav_db_artifact_candidates_in_session, restore_chart_page_state_in_session,

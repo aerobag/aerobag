@@ -79,7 +79,7 @@ export type UiCloudPageState = {
   next_refresh_epoch_ms: number | null;
 };
 
-export type CloudHttpMethod = "get" | "post" | "delete";
+export type CloudHttpMethod = "get" | "post" | "put" | "delete";
 
 export type CloudHttpHeader = {
   name: string;
@@ -97,3 +97,19 @@ export type CloudHttpRequest = {
 };
 
 export type CloudHttpResponse = { result: "completed"; status_code: number; body_base64: string } | { result: "transport_error"; detail: string } | { result: "response_too_large"; limit_bytes: number };
+
+export type CloudEventStreamPlan = {
+  stream_id: number;
+  url: string;
+  connect_timeout_ms: number;
+  idle_timeout_ms: number;
+};
+
+export type CloudEventStreamEventKind = "connecting" | "connected" | "message" | "error" | "closed" | "idle_timeout";
+
+export type CloudEventStreamEvent = {
+  stream_id: number;
+  kind: CloudEventStreamEventKind;
+  data?: string | null;
+  detail?: string | null;
+};

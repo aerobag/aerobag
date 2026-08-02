@@ -170,12 +170,18 @@ import {
 import { TerrainOverlayRenderer } from "./domain/terrainOverlayRenderer";
 
 declare const __AEROBAG_LIVE_FEEDS_ORIGIN__: string | null;
+declare const __AEROBAG_E2E_ENABLED__: boolean;
 
 declare global {
   interface Window {
     __aerobagE2e?: {
       liveFeeds?: () => unknown;
       navDb?: () => unknown;
+      cloud?: {
+        state: () => unknown;
+        setOfflinePackagePreferences: (preferences: unknown) => Promise<void>;
+        dropEventStream: () => Promise<void>;
+      };
     };
   }
 }
@@ -1945,6 +1951,13 @@ export default function App() {
     execution: Promise<CloudAuthorizationExecution>;
   } | null>(null);
   const cloudPumpInFlightRef = useRef(false);
+  const cloudEventStreamRef = useRef<{
+    streamId: number;
+    source: EventSource;
+    connectTimer: number | null;
+    idleTimer: number | null;
+  } | null>(null);
+  const cloudEventReportQueueRef = useRef<Promise<void>>(Promise.resolve());
   const webIdleState = useWebIdleState();
   const [uiInvalidationRevisions, setUiInvalidationRevisions] = useState<UiInvalidationRevisions>(
     initialUiInvalidationRevisions,
@@ -2133,14 +2146,160 @@ export default function App() {
     }
   }, [applySessionSnapshot, uiSession]);
 
+  const reconcileCloudEventStream = useCallback(async () => {
+    if (!uiSession) {
+      return;
+    }
+    const plan = await uiSession.cloudEventStreamPlan();
+    const current = cloudEventStreamRef.current;
+    if (current?.streamId === plan?.stream_id) {
+      return;
+    }
+    if (current) {
+      current.source.close();
+      if (current.connectTimer !== null) window.clearTimeout(current.connectTimer);
+      if (current.idleTimer !== null) window.clearTimeout(current.idleTimer);
+      cloudEventStreamRef.current = null;
+    }
+    if (!plan) {
+      return;
+    }
+
+    const source = new EventSource(plan.url);
+    const runtime = {
+      streamId: plan.stream_id,
+      source,
+      connectTimer: null as number | null,
+      idleTimer: null as number | null,
+    };
+    cloudEventStreamRef.current = runtime;
+    const closeRuntime = () => {
+      source.close();
+      if (runtime.connectTimer !== null) window.clearTimeout(runtime.connectTimer);
+      if (runtime.idleTimer !== null) window.clearTimeout(runtime.idleTimer);
+      if (cloudEventStreamRef.current === runtime) {
+        cloudEventStreamRef.current = null;
+      }
+    };
+    const report = (kind: "connecting" | "connected" | "message" | "error" | "closed" | "idle_timeout", data?: string, detail?: string) => {
+      cloudEventReportQueueRef.current = cloudEventReportQueueRef.current.then(async () => {
+        const nextSnapshot = await uiSession.reportCloudEventStreamEvent({
+          stream_id: plan.stream_id,
+          kind,
+          data: data ?? null,
+          detail: detail ?? null,
+        }, Date.now());
+        applySessionSnapshot(nextSnapshot, `cloud_event_stream_${kind}`);
+      }).catch((error) => {
+        debugLog("cloud.event_stream.report_failed", { error: errorMessage(error), kind });
+      });
+    };
+    const armIdleTimer = () => {
+      if (runtime.idleTimer !== null) window.clearTimeout(runtime.idleTimer);
+      runtime.idleTimer = window.setTimeout(() => {
+        closeRuntime();
+        report("idle_timeout", undefined, "Aerobag Cloud notification stream went quiet.");
+      }, plan.idle_timeout_ms);
+    };
+    report("connecting");
+    runtime.connectTimer = window.setTimeout(() => {
+      closeRuntime();
+      report("error", undefined, "Aerobag Cloud notification stream did not connect in time.");
+    }, plan.connect_timeout_ms);
+    source.onopen = () => {
+      if (runtime.connectTimer !== null) {
+        window.clearTimeout(runtime.connectTimer);
+        runtime.connectTimer = null;
+      }
+      armIdleTimer();
+      report("connected");
+    };
+    const onMessage = (event: MessageEvent<string>) => {
+      armIdleTimer();
+      report("message", event.data);
+    };
+    for (const eventName of ["ready", "root-changed", "reset", "heartbeat"]) {
+      source.addEventListener(eventName, onMessage as EventListener);
+    }
+    source.onerror = () => {
+      closeRuntime();
+      report("error", undefined, "Aerobag Cloud notification stream disconnected.");
+    };
+  }, [applySessionSnapshot, uiSession]);
+
+  useEffect(() => {
+    if (!__AEROBAG_E2E_ENABLED__ || !uiSession) {
+      return;
+    }
+    const cloud = {
+      state: () => ({
+        offline_package_preferences: JSON.parse(sessionSnapshot.offline_package_preferences_json),
+        overall_status: sessionSnapshot.cloud_page_state.overall_status,
+        event_stream_id: cloudEventStreamRef.current?.streamId ?? null,
+        flight_plan_rows: sessionSnapshot.app_ui_state.active_plan?.display_rows.map((row) => row.label) ?? [],
+      }),
+      setOfflinePackagePreferences: async (preferences: unknown) => {
+        const nextSnapshot = await uiSession.recordOfflinePackagePreferences(
+          JSON.stringify(preferences),
+          Date.now(),
+        );
+        applySessionSnapshot(nextSnapshot, "e2e_offline_package_preferences");
+        await pumpCloudProvider();
+      },
+      dropEventStream: async () => {
+        const current = cloudEventStreamRef.current;
+        if (!current) {
+          throw new Error("Aerobag Cloud event stream is not connected");
+        }
+        current.source.close();
+        if (current.connectTimer !== null) window.clearTimeout(current.connectTimer);
+        if (current.idleTimer !== null) window.clearTimeout(current.idleTimer);
+        cloudEventStreamRef.current = null;
+        const nextSnapshot = await uiSession.reportCloudEventStreamEvent({
+          stream_id: current.streamId,
+          kind: "error",
+          data: null,
+          detail: "Event stream dropped by browser regression harness.",
+        }, Date.now());
+        applySessionSnapshot(nextSnapshot, "e2e_cloud_event_stream_drop");
+      },
+    };
+    window.__aerobagE2e = { ...(window.__aerobagE2e ?? {}), cloud };
+    return () => {
+      if (window.__aerobagE2e?.cloud === cloud) {
+        delete window.__aerobagE2e.cloud;
+      }
+    };
+  }, [
+    applySessionSnapshot,
+    pumpCloudProvider,
+    sessionSnapshot.cloud_page_state.overall_status,
+    sessionSnapshot.app_ui_state.active_plan,
+    sessionSnapshot.offline_package_preferences_json,
+    uiSession,
+  ]);
+
   useEffect(() => {
     if (!uiSession) {
       return;
     }
     void pumpCloudProvider();
-    const timer = window.setInterval(() => void pumpCloudProvider(), 1_000);
-    return () => window.clearInterval(timer);
-  }, [pumpCloudProvider, uiSession]);
+    void reconcileCloudEventStream();
+    const timer = window.setInterval(() => {
+      void pumpCloudProvider();
+      void reconcileCloudEventStream();
+    }, 1_000);
+    return () => {
+      window.clearInterval(timer);
+      const current = cloudEventStreamRef.current;
+      if (current) {
+        current.source.close();
+        if (current.connectTimer !== null) window.clearTimeout(current.connectTimer);
+        if (current.idleTimer !== null) window.clearTimeout(current.idleTimer);
+        cloudEventStreamRef.current = null;
+      }
+    };
+  }, [pumpCloudProvider, reconcileCloudEventStream, uiSession]);
 
   const performCloudPageAction = useCallback(async (
     actionId: CloudUiActionId,

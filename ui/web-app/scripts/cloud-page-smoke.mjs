@@ -88,7 +88,7 @@ try {
       return {
         activePanel,
         driveEnabled: !drive.disabled,
-        aerobagDisabled: aerobag.disabled,
+        aerobagEnabled: !aerobag.disabled,
       };
     })()`),
     10_000,
@@ -97,11 +97,11 @@ try {
   if (JSON.stringify(providerState) !== JSON.stringify({
     activePanel: "cloud-panel-provider",
     driveEnabled: true,
-    aerobagDisabled: true,
+    aerobagEnabled: true,
   })) {
     throw new Error(`unexpected provider selection state: ${JSON.stringify(providerState)}`);
   }
-  await click(page, '[data-testid="cloud-action-select_provider_google_drive"]');
+  await click(page, '[data-testid="cloud-action-select_provider_aerobag_cloud"]');
   const splitState = await waitFor(
     async () => page.evaluate(`(() => {
       const accountPanel = document.querySelector(
@@ -112,15 +112,14 @@ try {
       );
       const create = document.querySelector('[data-testid="cloud-action-create_account"]');
       const authorize = document.querySelector('[data-testid="cloud-action-authorize_provider"]');
-      if (!accountPanel || !providerCard || !(create instanceof HTMLButtonElement)
-          || !(authorize instanceof HTMLButtonElement)) {
+      if (!accountPanel || !providerCard || !(create instanceof HTMLButtonElement)) {
         return null;
       }
       return {
         accountPanel: accountPanel.getAttribute('data-testid'),
         providerTitle: providerCard.querySelector('h2')?.textContent ?? null,
-        createDisabled: create.disabled,
-        authorizeEnabled: !authorize.disabled,
+        createEnabled: !create.disabled,
+        authorizePresent: authorize instanceof HTMLButtonElement,
       };
     })()`),
     10_000,
@@ -128,13 +127,31 @@ try {
   );
   if (JSON.stringify(splitState) !== JSON.stringify({
     accountPanel: "cloud-panel-create_account",
-    providerTitle: "My Google Drive",
-    createDisabled: true,
-    authorizeEnabled: true,
+    providerTitle: "Aerobag Cloud",
+    createEnabled: true,
+    authorizePresent: false,
   })) {
     throw new Error(`unexpected split Cloud state: ${JSON.stringify(splitState)}`);
   }
-  process.stdout.write(`cloud page smoke passed: ${JSON.stringify({ state, splitState })}\n`);
+  await click(page, '[data-testid="cloud-action-create_account"]');
+  const linkedState = await waitFor(
+    async () => page.evaluate(`(() => {
+      const linked = document.querySelector('[data-testid="cloud-panel-linked"]');
+      const overall = document.querySelector('[data-testid="cloud-overall-status"]');
+      if (!linked || !overall) return null;
+      return {
+        linkedTitle: linked.querySelector('h2')?.textContent ?? null,
+        overallTitle: overall.querySelector('h2')?.textContent ?? null,
+        overallDetail: overall.querySelector('p')?.textContent ?? null,
+      };
+    })()`),
+    10_000,
+    "Aerobag Cloud account was not created",
+  );
+  if (linkedState.overallTitle !== "Cloud active") {
+    throw new Error(`unexpected linked Cloud state: ${JSON.stringify(linkedState)}`);
+  }
+  process.stdout.write(`cloud page smoke passed: ${JSON.stringify({ state, splitState, linkedState })}\n`);
 } finally {
   await browser?.close();
   await stopProcess(chrome?.process);

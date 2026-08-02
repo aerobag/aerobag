@@ -33,11 +33,15 @@ PIPELINE_HEALTH = REPO_ROOT / "product" / "preprocessor" / "scripts" / "pipeline
 FAA_CYCLE_CALENDAR = REPO_ROOT / "deploy" / "faa-cycle-calendar.json"
 DEFAULT_FRONT_DOOR = "0.0.0.0:18080"
 DEFAULT_LIVE_FEEDS = "127.0.0.1:18095"
+DEFAULT_CLOUD_SERVER = "127.0.0.1:18096"
 DEFAULT_BUILD_WATCH = "127.0.0.1:18097"
 DEFAULT_PIPELINE_HEALTH = "127.0.0.1:18098"
 LIVE_FEEDS_CONTRACT_PATH = "v2"
 DEFAULT_NMS_NOTAMS_CONFIG = Path(
     "/root/aerobag-credentials/dev-stack/nms-notams-staging.json"
+)
+DEFAULT_CLOUD_SERVER_SECRET = Path(
+    "/root/aerobag-credentials/dev-stack/aerobag-cloud-server.bin"
 )
 
 
@@ -141,14 +145,17 @@ class DevStackConfig:
     target_dir: Path
     listen: str
     live_feeds_listen: str
+    cloud_server_listen: str
     build_watch_listen: str
     pipeline_health_listen: str
     live_feed_fetch_mode: str
     nms_notams_enabled: bool
     nms_notams_config: Path
     nms_notams_state_root: Path
+    cloud_server_secret: Path
     skip_binary_build: bool
     disable_live_feeds: bool
+    disable_cloud_server: bool
     disable_build_watch: bool
     disable_pipeline_health: bool
 
@@ -177,6 +184,10 @@ class DevStackConfig:
         return self.stack_root / "health"
 
     @property
+    def cloud_data_root(self) -> Path:
+        return self.stack_root / "state" / "aerobag-cloud-server"
+
+    @property
     def deploy_health_path(self) -> Path:
         return self.health_root / "status.json"
 
@@ -193,6 +204,10 @@ class DevStackConfig:
     @property
     def live_feeds_binary(self) -> Path:
         return self.target_dir / "debug" / "aerobag-live-feedsd"
+
+    @property
+    def cloud_server_binary(self) -> Path:
+        return self.target_dir / "debug" / "aerobag-cloud-serverd"
 
 
 @dataclass
@@ -228,10 +243,18 @@ class DevStack:
 
     def start(self) -> None:
         self.prepare_dirs()
-        if not self.config.skip_binary_build and not self.config.disable_live_feeds:
+        if not self.config.skip_binary_build and (
+            not self.config.disable_live_feeds or not self.config.disable_cloud_server
+        ):
             self.build_binaries()
         if not self.config.disable_live_feeds:
             self.start_child("live-feeds", self.live_feeds_command())
+        if not self.config.disable_cloud_server:
+            if not self.config.cloud_server_secret.is_file():
+                raise RuntimeError(
+                    f"ACS server secret is missing: {self.config.cloud_server_secret}"
+                )
+            self.start_child("aerobag-cloud-server", self.cloud_server_command())
         if not self.config.disable_build_watch:
             self.start_child("build-watch", self.build_watch_command())
         if not self.config.disable_pipeline_health:
@@ -247,22 +270,27 @@ class DevStack:
             self.config.health_root,
             self.config.target_dir,
             self.config.nms_notams_state_root.parent,
+            self.config.cloud_data_root,
         ]:
             path.mkdir(parents=True, exist_ok=True)
         self.write_health()
 
     def build_binaries(self) -> None:
         env = self.child_env()
-        command = [
-            "cargo",
-            "build",
-            "--manifest-path",
-            str(PREPROCESSOR_MANIFEST),
-            "-p",
-            "live-feeds-daemon",
-        ]
-        print(f"+ {' '.join(command)}", flush=True)
-        subprocess.run(command, cwd=REPO_ROOT, env=env, check=True)
+        commands: list[list[str]] = []
+        if not self.config.disable_live_feeds:
+            commands.append([
+                "cargo", "build", "--manifest-path", str(PREPROCESSOR_MANIFEST),
+                "-p", "live-feeds-daemon",
+            ])
+        if not self.config.disable_cloud_server:
+            commands.append([
+                "cargo", "build", "--manifest-path", str(REPO_ROOT / "services" / "Cargo.toml"),
+                "-p", "aerobag-cloud-server",
+            ])
+        for command in commands:
+            print(f"+ {' '.join(command)}", flush=True)
+            subprocess.run(command, cwd=REPO_ROOT, env=env, check=True)
 
     def start_child(self, name: str, command: list[str]) -> None:
         print(f"+ start {name}: {' '.join(command)}", flush=True)
@@ -320,6 +348,18 @@ class DevStack:
             )
         return command
 
+    def cloud_server_command(self) -> list[str]:
+        return [
+            str(self.config.cloud_server_binary),
+            "serve",
+            "--data-root",
+            str(self.config.cloud_data_root),
+            "--server-secret",
+            str(self.config.cloud_server_secret),
+            "--listen",
+            self.config.cloud_server_listen,
+        ]
+
     def build_watch_command(self) -> list[str]:
         return [
             str(WATCH_BUILD_LOG),
@@ -345,6 +385,8 @@ class DevStack:
             str(self.config.deploy_health_path),
             "--live-feeds-status-url",
             f"http://{self.config.live_feeds_listen}/live-feeds/status.json",
+            "--cloud-status-url",
+            f"http://{self.config.cloud_server_listen}/cloud/v1/status",
             "--build-watch-url",
             f"http://{self.config.build_watch_listen}/api/state",
             "--calendar",
@@ -379,6 +421,7 @@ class DevStack:
             "routes": {
                 "packages": "/packages/",
                 "live_feeds": "/live-feeds/",
+                "cloud": "/cloud/",
                 "build_watch": "/build-watch/",
                 "pipeline_health": "/pipeline-health/",
             },
@@ -439,10 +482,20 @@ def make_handler(stack: DevStack):
         def do_GET(self) -> None:
             self.handle_request(send_body=True)
 
+        def do_POST(self) -> None:
+            self.handle_request(send_body=True)
+
+        def do_PUT(self) -> None:
+            self.handle_request(send_body=True)
+
+        def do_DELETE(self) -> None:
+            self.handle_request(send_body=True)
+
         def do_OPTIONS(self) -> None:
             parsed = urlparse(self.path)
             path = parsed.path
-            if path == "/live-feeds" or path.startswith("/live-feeds/"):
+            if (path == "/live-feeds" or path.startswith("/live-feeds/")
+                    or path == "/cloud" or path.startswith("/cloud/")):
                 self.send_cors_options()
                 return
             self.send_response(204)
@@ -462,6 +515,13 @@ def make_handler(stack: DevStack):
                     self.send_text(503, "live-feeds disabled\n", send_body)
                 else:
                     self.proxy(config.live_feeds_listen, path, parsed.query, send_body, cors=True)
+            elif path == "/cloud/v1/status":
+                self.send_text(404, "not found\n", send_body)
+            elif path == "/cloud" or path.startswith("/cloud/"):
+                if config.disable_cloud_server:
+                    self.send_text(503, "Aerobag Cloud disabled\n", send_body)
+                else:
+                    self.proxy(config.cloud_server_listen, path, parsed.query, send_body)
             elif path == "/build-watch" or path.startswith("/build-watch/"):
                 if config.disable_build_watch:
                     self.send_text(503, "build-watch disabled\n", send_body)
@@ -531,11 +591,28 @@ def make_handler(stack: DevStack):
             if query:
                 target = f"{target}?{query}"
             connection = http.client.HTTPConnection(host, port, timeout=3600)
+            response_started = False
             try:
+                request_body = None
+                content_length = self.headers.get("Content-Length")
+                if content_length:
+                    length = int(content_length)
+                    if length > 2 * 1024 * 1024:
+                        self.send_text(413, "request too large\n", send_body)
+                        return
+                    request_body = self.rfile.read(length)
+                forwarded_headers = {
+                    header: value
+                    for header, value in self.headers.items()
+                    if header.lower().startswith("aerobag-")
+                    or header.lower() in {"content-type", "last-event-id"}
+                }
+                forwarded_headers["Host"] = listen
                 connection.request(
-                    "HEAD" if not send_body else "GET",
+                    "HEAD" if not send_body else self.command,
                     target,
-                    headers={"Host": listen},
+                    body=request_body,
+                    headers=forwarded_headers,
                 )
                 response = connection.getresponse()
                 self.send_response(response.status, response.reason)
@@ -560,21 +637,23 @@ def make_handler(stack: DevStack):
                 if cors and not has_cors_origin:
                     self.send_header("Access-Control-Allow-Origin", "*")
                 self.end_headers()
+                response_started = True
                 if send_body:
                     chunk_size = 1 if response.getheader("Content-Type", "").startswith("text/event-stream") else 1024 * 64
                     while chunk := response.read(chunk_size):
                         self.wfile.write(chunk)
                         self.wfile.flush()
             except (ConnectionError, OSError, TimeoutError) as exc:
-                self.send_text(502, f"upstream {listen} unavailable: {exc}\n", send_body)
+                if not response_started:
+                    self.send_text(502, f"upstream {listen} unavailable: {exc}\n", send_body)
             finally:
                 connection.close()
 
         def send_cors_options(self) -> None:
             self.send_response(204)
             self.send_header("Access-Control-Allow-Origin", "*")
-            self.send_header("Access-Control-Allow-Methods", "GET, HEAD, OPTIONS")
-            self.send_header("Access-Control-Allow-Headers", "Last-Event-ID, Cache-Control, Content-Type")
+            self.send_header("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, HEAD, OPTIONS")
+            self.send_header("Access-Control-Allow-Headers", "Last-Event-ID, Cache-Control, Content-Type, Aerobag-Contract, Aerobag-Account, Aerobag-Key-Id, Aerobag-Signature-Algorithm, Aerobag-Timestamp-Ms, Aerobag-Nonce, Aerobag-Body-SHA256, Aerobag-Signature")
             self.send_header("Access-Control-Max-Age", "600")
             self.send_header("Content-Length", "0")
             self.end_headers()
@@ -632,6 +711,7 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument("--listen", default=DEFAULT_FRONT_DOOR)
     parser.add_argument("--live-feeds-listen", default=DEFAULT_LIVE_FEEDS)
+    parser.add_argument("--cloud-server-listen", default=DEFAULT_CLOUD_SERVER)
     parser.add_argument("--build-watch-listen", default=DEFAULT_BUILD_WATCH)
     parser.add_argument("--pipeline-health-listen", default=DEFAULT_PIPELINE_HEALTH)
     parser.add_argument("--live-feed-fetch-mode", default="fill", choices=["fill", "offline"])
@@ -643,6 +723,12 @@ def parse_args() -> argparse.Namespace:
             "operator-owned NMS API credential file; dev-stack enables NOTAM ingestion "
             "when this exists unless --disable-nms-notams is set"
         ),
+    )
+    parser.add_argument(
+        "--cloud-server-secret",
+        type=Path,
+        default=DEFAULT_CLOUD_SERVER_SECRET,
+        help="operator-owned 32-byte ACS daemon secret",
     )
     parser.add_argument(
         "--nms-notams-state-root",
@@ -658,6 +744,7 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument("--skip-binary-build", action="store_true")
     parser.add_argument("--disable-live-feeds", action="store_true")
+    parser.add_argument("--disable-cloud-server", action="store_true")
     parser.add_argument("--disable-nms-notams", action="store_true")
     parser.add_argument("--disable-build-watch", action="store_true")
     parser.add_argument("--disable-pipeline-health", action="store_true")
@@ -690,6 +777,7 @@ def config_from_args(args: argparse.Namespace) -> DevStackConfig:
         target_dir=target_dir,
         listen=args.listen,
         live_feeds_listen=args.live_feeds_listen,
+        cloud_server_listen=args.cloud_server_listen,
         build_watch_listen=args.build_watch_listen,
         pipeline_health_listen=args.pipeline_health_listen,
         live_feed_fetch_mode=args.live_feed_fetch_mode,
@@ -698,8 +786,10 @@ def config_from_args(args: argparse.Namespace) -> DevStackConfig:
         nms_notams_state_root=(
             args.nms_notams_state_root or stack_root / "state" / "nms-notams"
         ).resolve(),
+        cloud_server_secret=args.cloud_server_secret.resolve(),
         skip_binary_build=args.skip_binary_build,
         disable_live_feeds=args.disable_live_feeds,
+        disable_cloud_server=args.disable_cloud_server,
         disable_build_watch=args.disable_build_watch,
         disable_pipeline_health=args.disable_pipeline_health,
     )
@@ -717,6 +807,9 @@ def print_config(config: DevStackConfig) -> None:
                 "live_contract_root": str(config.live_contract_root),
                 "target_dir": str(config.target_dir),
                 "live_feeds_listen": config.live_feeds_listen,
+                "cloud_server_listen": config.cloud_server_listen,
+                "cloud_data_root": str(config.cloud_data_root),
+                "cloud_server_secret": str(config.cloud_server_secret),
                 "nms_notams_enabled": config.nms_notams_enabled,
                 "nms_notams_config": str(config.nms_notams_config),
                 "nms_notams_state_root": str(config.nms_notams_state_root),

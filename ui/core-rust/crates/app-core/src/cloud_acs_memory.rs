@@ -12,7 +12,7 @@ use product_contracts::{
 };
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-enum AcsMemoryDelivery<T> {
+pub(crate) enum AcsMemoryDelivery<T> {
     Delivered(T),
     LostAfterCommit,
 }
@@ -26,13 +26,13 @@ struct AcsMemoryAccount {
 }
 
 #[derive(Debug, Default)]
-struct InMemoryAcsProvider {
+pub(crate) struct InMemoryAcsProvider {
     accounts: BTreeMap<String, AcsMemoryAccount>,
     lose_next_root_response: bool,
 }
 
 impl InMemoryAcsProvider {
-    fn create_account(&mut self, account_locator: &str) -> Result<(), AcsErrorResponse> {
+    pub(crate) fn create_account(&mut self, account_locator: &str) -> Result<(), AcsErrorResponse> {
         if account_locator.is_empty() {
             return Err(error(AcsErrorCode::InvalidRequest, "empty account locator"));
         }
@@ -42,7 +42,7 @@ impl InMemoryAcsProvider {
         Ok(())
     }
 
-    fn create_object(
+    pub(crate) fn create_object(
         &mut self,
         account_locator: &str,
         request: AcsCreateObjectRequest,
@@ -79,7 +79,7 @@ impl InMemoryAcsProvider {
         Ok(AcsCreateObjectOutcome::Created)
     }
 
-    fn read_object(
+    pub(crate) fn read_object(
         &self,
         account_locator: &str,
         object_id: &str,
@@ -91,11 +91,14 @@ impl InMemoryAcsProvider {
             .cloned())
     }
 
-    fn root(&self, account_locator: &str) -> Result<Option<AcsRootSnapshot>, AcsErrorResponse> {
+    pub(crate) fn root(
+        &self,
+        account_locator: &str,
+    ) -> Result<Option<AcsRootSnapshot>, AcsErrorResponse> {
         Ok(self.account(account_locator)?.root.clone())
     }
 
-    fn compare_and_swap_root(
+    pub(crate) fn compare_and_swap_root(
         &mut self,
         account_locator: &str,
         request: AcsCompareAndSwapRootRequest,

@@ -746,3 +746,42 @@ fn app_core_runtime_code_does_not_use_host_clock_apis() {
         violations.join("\n")
     );
 }
+
+#[test]
+fn platform_sse_transports_do_not_define_timing_policy() {
+    let android =
+        read_repo_file("ui/android-app/app/src/main/java/org/aerobag/app/domain/LiveFeedCache.kt");
+    let web = read_repo_file("ui/web-app/src/domain/appCoreAdapter.ts");
+    let runtime = read_repo_file("ui/core-rust/crates/app-core/src/live_feed_runtime.rs");
+    let daemon = read_repo_file("product/preprocessor/live-feeds-daemon/src/main.rs");
+
+    for forbidden in [
+        "LiveFeedSseConnectTimeoutMs",
+        "LiveFeedSseIdleTimeoutMs",
+        ".connectTimeout(5_000",
+        ".readTimeout(65_000",
+    ] {
+        assert!(
+            !android.contains(forbidden),
+            "Android defines SSE timing policy instead of executing core's policy: {forbidden}"
+        );
+    }
+    assert!(
+        android.contains("transportPolicy.connectTimeoutMs")
+            && android.contains("transportPolicy.idleTimeoutMs"),
+        "Android must construct the SSE transport from core's serialized policy"
+    );
+    assert!(
+        !web.contains("SSE_CONNECT_TIMEOUT") && !web.contains("SSE_IDLE_TIMEOUT"),
+        "web must not define independent SSE timing constants"
+    );
+    assert!(
+        runtime.contains("AEROBAG_SSE_TRANSPORT_POLICY"),
+        "app-core reconnect decisions must consume the shared SSE policy"
+    );
+    assert!(
+        daemon.contains("AEROBAG_SSE_TRANSPORT_POLICY.heartbeat_interval_ms")
+            && !daemon.contains("recv_timeout(Duration::from_secs(30))"),
+        "the live-feed daemon heartbeat must consume the shared SSE policy"
+    );
+}

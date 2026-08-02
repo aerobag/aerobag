@@ -5,6 +5,14 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { coreViewportForMap, createLiveFeedSubscription, loadBestAvailableAdapter, resolveLiveFeedResourceUrl, resolveLiveFeedSourceUrl } from "./appCoreAdapter";
 
+const TEST_SSE_TRANSPORT_POLICY = {
+  heartbeat_interval_ms: 30_000,
+  connect_timeout_ms: 5_000,
+  idle_timeout_ms: 65_000,
+  reconnect_initial_delay_ms: 5_000,
+  reconnect_max_delay_ms: 65_000,
+};
+
 const snapshotJson = JSON.stringify({
   app_ui_state: {
     active_plan: null,
@@ -190,6 +198,7 @@ describe("loadBestAvailableAdapter", () => {
       live_feed_runtime_decision_in_session: async (_handle: number, inputJson: string) => {
         const input = JSON.parse(inputJson) as { kind: string };
         return JSON.stringify({
+          transport_policy: TEST_SSE_TRANSPORT_POLICY,
           connection_event: input.kind === "start" || input.kind === "online" ? null : input,
           refresh_current: input.kind === "connected" || input.kind === "network_status" || input.kind === "online",
           reconnect_delay_ms: input.kind === "error" ? 5000 : null,
@@ -340,6 +349,7 @@ describe("createLiveFeedSubscription", () => {
       async (input) => {
         runtimeEvents.push(input.kind);
         return {
+          transport_policy: TEST_SSE_TRANSPORT_POLICY,
           reconnect_delay_ms: input.kind === "error" ? 5000 : 0,
           refresh_current: input.kind === "online",
         };
@@ -382,6 +392,7 @@ describe("createLiveFeedSubscription", () => {
     const subscription = createLiveFeedSubscription(
       () => "https://feeds.example.test/live-feeds/v3/events",
       async (input) => ({
+        transport_policy: TEST_SSE_TRANSPORT_POLICY,
         reconnect_delay_ms: input.kind === "online" ? 0 : null,
         refresh_current: input.kind === "online",
       }),

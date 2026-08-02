@@ -48,6 +48,7 @@ use preprocessor_live_feeds::{
     },
     tfr_detail_backfill::TfrDetailBackfillStore,
 };
+use product_contracts::AEROBAG_SSE_TRANSPORT_POLICY;
 use serde::Serialize;
 
 const STATUS_HISTORY_LIMIT: usize = 256;
@@ -1932,7 +1933,9 @@ fn write_sse_stream(
         thread::sleep(interval);
     }
     loop {
-        match receiver.recv_timeout(Duration::from_secs(30)) {
+        match receiver.recv_timeout(Duration::from_millis(
+            AEROBAG_SSE_TRANSPORT_POLICY.heartbeat_interval_ms as u64,
+        )) {
             Ok(queued) => {
                 let latency_ms =
                     checked_duration_ms(Utc::now().signed_duration_since(queued.announced_at_utc))

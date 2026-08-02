@@ -43,8 +43,6 @@ import okhttp3.Request
 import org.aerobag.app.diagnosticLogInfo
 
 private const val LiveFeedCacheDirectoryName = "live-feeds"
-private const val LiveFeedSseConnectTimeoutMs = 5_000
-private const val LiveFeedSseIdleTimeoutMs = 65_000
 private const val LiveFeedLogTag = "AndroidLiveFeeds"
 internal const val LiveFeedMaxInMemoryFetchBytes = 64L * 1024L * 1024L
 
@@ -131,12 +129,28 @@ data class LiveFeedRuntimeInput(
 
 @Serializable
 data class LiveFeedRuntimeDecision(
+    @SerialName("transport_policy")
+    val transportPolicy: SseTransportPolicy,
     @SerialName("connection_event")
     val connectionEvent: LiveFeedConnectionEvent? = null,
     @SerialName("refresh_current")
     val refreshCurrent: Boolean = false,
     @SerialName("reconnect_delay_ms")
     val reconnectDelayMs: Long? = null,
+)
+
+@Serializable
+data class SseTransportPolicy(
+    @SerialName("heartbeat_interval_ms")
+    val heartbeatIntervalMs: Long,
+    @SerialName("connect_timeout_ms")
+    val connectTimeoutMs: Long,
+    @SerialName("idle_timeout_ms")
+    val idleTimeoutMs: Long,
+    @SerialName("reconnect_initial_delay_ms")
+    val reconnectInitialDelayMs: Long,
+    @SerialName("reconnect_max_delay_ms")
+    val reconnectMaxDelayMs: Long,
 )
 
 class LiveFeedCache(
@@ -367,18 +381,25 @@ class AndroidLiveFeedClient(
     private val pumpMutex = Mutex()
     private val eventsUrl = cache.liveFeedEventsUrl()
     private val statusUrl = cache.liveFeedStatusUrl()
-    private val sseHttpClient = OkHttpClient.Builder()
-        .connectTimeout(LiveFeedSseConnectTimeoutMs.toLong(), TimeUnit.MILLISECONDS)
-        .readTimeout(LiveFeedSseIdleTimeoutMs.toLong(), TimeUnit.MILLISECONDS)
-        .callTimeout(0, TimeUnit.MILLISECONDS)
-        .retryOnConnectionFailure(true)
-        .build()
 
     suspend fun bootstrapAndRun(
         promote: suspend (LiveFeedInstalledSummary) -> Unit,
         onChanged: suspend () -> Unit,
         onConnectionEvent: suspend (LiveFeedConnectionEvent) -> Unit = {},
     ) = coroutineScope {
+        val startDecision = handleRuntimeEvent(
+            kind = "start",
+            promote = promote,
+            onChanged = onChanged,
+            onConnectionEvent = onConnectionEvent,
+        )
+        val transportPolicy = startDecision.transportPolicy
+        val sseHttpClient = OkHttpClient.Builder()
+            .connectTimeout(transportPolicy.connectTimeoutMs, TimeUnit.MILLISECONDS)
+            .readTimeout(transportPolicy.idleTimeoutMs, TimeUnit.MILLISECONDS)
+            .callTimeout(0, TimeUnit.MILLISECONDS)
+            .retryOnConnectionFailure(true)
+            .build()
         val networkChanges = Channel<LiveFeedNetworkStatus>(Channel.CONFLATED)
         val networkCallback = registerLiveFeedNetworkCallback(context, eventsUrl) { status ->
             networkChanges.trySend(status)
@@ -395,21 +416,15 @@ class AndroidLiveFeedClient(
             }
         }
         try {
-            handleRuntimeEvent(
-                kind = "start",
-                promote = promote,
-                onChanged = onChanged,
-                onConnectionEvent = onConnectionEvent,
-            )
             networkChanges.trySend(detectLiveFeedNetworkStatus(context, eventsUrl))
             while (kotlin.coroutines.coroutineContext.isActive) {
                 runCatching {
-                    readSseLoop(promote, onChanged, onConnectionEvent)
+                    readSseLoop(sseHttpClient, promote, onChanged, onConnectionEvent)
                 }.onFailure { error ->
                     if (error is CancellationException) throw error
                     val decision = if (error is LiveFeedSseIdleTimeoutException) {
                         diagnosticLogInfo(TAG) {
-                            "live-feed SSE idle for ${LiveFeedSseIdleTimeoutMs}ms; reconnecting"
+                            "live-feed SSE idle for ${transportPolicy.idleTimeoutMs}ms; reconnecting"
                         }
                         handleRuntimeEvent(
                             kind = "idle_timeout",
@@ -558,6 +573,7 @@ class AndroidLiveFeedClient(
     }
 
     private suspend fun readSseLoop(
+        sseHttpClient: OkHttpClient,
         promote: suspend (LiveFeedInstalledSummary) -> Unit,
         onChanged: suspend () -> Unit,
         onConnectionEvent: suspend (LiveFeedConnectionEvent) -> Unit,

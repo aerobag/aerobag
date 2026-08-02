@@ -71,6 +71,7 @@ dependencies = [
  "postcard",
  "procedure-geometry-types",
  "product-contracts",
+ "prost",
  "qrcode",
  "rusqlite",
  "serde",
@@ -875,6 +876,7 @@ dependencies = [
  "nms-notams-fetch",
  "preprocessor-fetch",
  "preprocessor-live-feeds",
+ "product-contracts",
  "serde",
  "serde_json",
  "tempfile",
@@ -1329,7 +1331,9 @@ dependencies = [
 name = "product-contracts"
 version = "0.1.0"
 dependencies = [
+ "base64",
  "serde",
+ "sha2",
 ]
 
 [[package]]

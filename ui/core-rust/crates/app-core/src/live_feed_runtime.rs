@@ -2,11 +2,8 @@
 //
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
+use product_contracts::{SseTransportPolicy, AEROBAG_SSE_TRANSPORT_POLICY};
 use serde::{Deserialize, Serialize};
-
-pub const LIVE_FEED_SSE_CONNECT_TIMEOUT_MS: i64 = 5_000;
-pub const LIVE_FEED_SSE_IDLE_TIMEOUT_MS: i64 = 65_000;
-pub const LIVE_FEED_SSE_RECONNECT_INITIAL_DELAY_MS: i64 = 5_000;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -70,6 +67,7 @@ pub struct LiveFeedRuntimeInput {
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct LiveFeedRuntimeDecision {
+    pub transport_policy: SseTransportPolicy,
     #[serde(default)]
     pub connection_event: Option<LiveFeedConnectionEvent>,
     #[serde(default)]
@@ -122,6 +120,7 @@ pub fn live_feed_runtime_decision(
     };
 
     LiveFeedRuntimeDecision {
+        transport_policy: AEROBAG_SSE_TRANSPORT_POLICY,
         connection_event,
         refresh_current: matches!(
             input.kind,
@@ -132,13 +131,7 @@ pub fn live_feed_runtime_decision(
 }
 
 fn reconnect_delay_for_consecutive_errors(consecutive_errors: u32) -> i64 {
-    let mut delay_ms = LIVE_FEED_SSE_RECONNECT_INITIAL_DELAY_MS;
-    for _ in 1..consecutive_errors {
-        delay_ms = delay_ms
-            .saturating_mul(2)
-            .min(LIVE_FEED_SSE_IDLE_TIMEOUT_MS);
-    }
-    delay_ms
+    AEROBAG_SSE_TRANSPORT_POLICY.reconnect_delay_ms(consecutive_errors)
 }
 
 #[cfg(test)]
@@ -223,7 +216,7 @@ mod tests {
         assert!(!decision.refresh_current);
         assert_eq!(
             decision.reconnect_delay_ms,
-            Some(LIVE_FEED_SSE_RECONNECT_INITIAL_DELAY_MS)
+            Some(AEROBAG_SSE_TRANSPORT_POLICY.reconnect_initial_delay_ms)
         );
         let event = decision.connection_event.unwrap();
         assert_eq!(event.kind, LiveFeedConnectionEventKind::Error);
@@ -268,7 +261,7 @@ mod tests {
 
         assert_eq!(
             decision.reconnect_delay_ms,
-            Some(LIVE_FEED_SSE_RECONNECT_INITIAL_DELAY_MS)
+            Some(AEROBAG_SSE_TRANSPORT_POLICY.reconnect_initial_delay_ms)
         );
     }
 }

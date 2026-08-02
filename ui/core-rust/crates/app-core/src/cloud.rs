@@ -18,6 +18,9 @@ use sha2::{Digest, Sha256};
 
 use crate::{
     data_status::{DataStatusRecord, UiStatusSeverity},
+    device_setup_code::{
+        decode_device_setup_code, encode_device_setup_code, DeviceSetupCode, DeviceSetupProvider,
+    },
     AppError, AppErrorKind, AppResult, FlightPlan, OfflinePackagePreferences,
     OfflinePackageSelection,
 };
@@ -26,7 +29,6 @@ const CLOUD_PERSISTENCE_VERSION: u32 = 4;
 const CLOUD_ENVELOPE_VERSION: u32 = 1;
 const CLOUD_PAGE_VERSION: u32 = 1;
 const CLOUD_NODE_VERSION: u32 = 1;
-const DEVICE_SETUP_CODE_VERSION: u32 = 2;
 const FLIGHT_PLAN_RECORD_KEY: &str = "flight_plan/current";
 const FLIGHT_PLAN_SCHEMA_VERSION: u32 = 2;
 const OFFLINE_PACKAGE_REGION_RECORD_PREFIX: &str = "offline_packages/region/";
@@ -46,6 +48,12 @@ pub enum CloudProviderKind {
     AerobagCloud,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum CloudRootPublicationProtocol {
+    ImmutableSuccessor,
+    CompareAndSwapFixedRoot,
+}
+
 impl CloudProviderKind {
     pub fn label(self) -> &'static str {
         match self {
@@ -63,6 +71,13 @@ impl CloudProviderKind {
 
     fn is_available(self) -> bool {
         matches!(self, Self::GoogleDrive)
+    }
+
+    pub(crate) const fn root_publication_protocol(self) -> CloudRootPublicationProtocol {
+        match self {
+            Self::GoogleDrive => CloudRootPublicationProtocol::ImmutableSuccessor,
+            Self::AerobagCloud => CloudRootPublicationProtocol::CompareAndSwapFixedRoot,
+        }
     }
 }
 
@@ -524,15 +539,6 @@ struct CloudEnvelope {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-struct DeviceSetupCodePayload {
-    version: u32,
-    provider: CloudProviderKind,
-    provider_account_binding: ProviderAccountBinding,
-    genesis_id: String,
-    root_secret_base64: String,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 struct VerifiedTip {
     node_id: String,
     node_hash: String,
@@ -551,6 +557,8 @@ struct CloudAccount {
     provider_account_binding: Option<ProviderAccountBinding>,
     root_secret_base64: String,
     genesis_id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    imported_device_setup_code: Option<String>,
     #[serde(default)]
     tip: Option<VerifiedTip>,
 }
@@ -1243,6 +1251,7 @@ impl CloudEngine {
                     provider_account_binding: Some(account_binding),
                     root_secret_base64: URL_SAFE_NO_PAD.encode(secret),
                     genesis_id: String::new(),
+                    imported_device_setup_code: None,
                     tip: None,
                 });
                 self.persistent.selected_provider = None;
@@ -1279,27 +1288,45 @@ impl CloudEngine {
                         "unlink this device before accepting another device setup code",
                     ));
                 }
-                let payload = decode_device_setup_code(&setup_code)?;
-                if !payload.provider.is_available() {
+                let payload = decode_device_setup_code(&setup_code).map_err(cloud_error)?;
+                let (provider, provider_account_binding, genesis_id) = match payload.provider {
+                    DeviceSetupProvider::GoogleDrive {
+                        stable_principal_fingerprint,
+                        display_hint,
+                        genesis_id,
+                    } => (
+                        CloudProviderKind::GoogleDrive,
+                        Some(ProviderAccountBinding {
+                            stable_principal_fingerprint: hex_bytes(&stable_principal_fingerprint),
+                            display_hint,
+                        }),
+                        genesis_id,
+                    ),
+                    DeviceSetupProvider::AerobagCloud { .. } => {
+                        (CloudProviderKind::AerobagCloud, None, String::new())
+                    }
+                };
+                if !provider.is_available() {
                     return Err(cloud_error(format!(
                         "{} is not available in this build",
-                        payload.provider.label()
+                        provider.label()
                     )));
                 }
                 self.persistent.onboarding_intent = Some(CloudOnboardingIntent::SetupFromDevice);
                 self.persistent.selected_provider = None;
                 self.reset_sync_activity();
                 self.persistent.account = Some(CloudAccount {
-                    provider: payload.provider,
-                    provider_account_binding: Some(payload.provider_account_binding),
-                    root_secret_base64: payload.root_secret_base64,
-                    genesis_id: payload.genesis_id.clone(),
+                    provider,
+                    provider_account_binding,
+                    root_secret_base64: URL_SAFE_NO_PAD.encode(payload.root_secret),
+                    genesis_id: genesis_id.clone(),
+                    imported_device_setup_code: Some(setup_code.trim().to_string()),
                     tip: None,
                 });
                 self.persistent.records.pending_keys.clear();
                 self.persistent.records.deferred_adoption.clear();
                 self.persistent.workflow = Some(CloudWorkflow::ReadNode {
-                    node_id: payload.genesis_id,
+                    node_id: genesis_id,
                     purpose: ReadPurpose::Link,
                 });
                 self.persistent.last_provider_failure = None;
@@ -1435,7 +1462,7 @@ impl CloudEngine {
         let Some(workflow) = self.persistent.workflow.as_ref() else {
             return Ok(None);
         };
-        let operation = operation_for_workflow(workflow)?;
+        let operation = operation_for_workflow(provider, workflow)?;
         let request_id = self.persistent.next_request_id.max(1);
         self.persistent.next_request_id = request_id.saturating_add(1);
         let request = CloudProviderRequest {
@@ -2033,7 +2060,7 @@ impl CloudEngine {
                         Some(UiCloudPanelControl::DeviceSetupCodeInput {
                             field_id: CloudUiFieldId::DeviceSetupCode,
                             label: "Paste Device Setup Code".to_string(),
-                            placeholder: "AB2...".to_string(),
+                            placeholder: "AB3...".to_string(),
                         }),
                     ));
                     return self.cloud_page_state(panels, now_epoch_ms);
@@ -2701,16 +2728,25 @@ impl CloudEngine {
         if account.genesis_id.is_empty() || account.tip.is_none() {
             return Err(cloud_error("cloud account creation has not completed"));
         }
-        encode_device_setup_code(&DeviceSetupCodePayload {
-            version: DEVICE_SETUP_CODE_VERSION,
-            provider: account.provider,
-            provider_account_binding: account
-                .provider_account_binding
-                .clone()
-                .ok_or_else(|| cloud_error("provider account identity is unavailable"))?,
-            genesis_id: account.genesis_id.clone(),
-            root_secret_base64: account.root_secret_base64.clone(),
-        })
+        if let Some(imported) = &account.imported_device_setup_code {
+            return Ok(imported.clone());
+        }
+        let account_binding = account
+            .provider_account_binding
+            .as_ref()
+            .ok_or_else(|| cloud_error("provider account identity is unavailable"))?;
+        let stable_principal_fingerprint = decode_hex_32(
+            &account_binding.stable_principal_fingerprint,
+            "provider account fingerprint is invalid",
+        )?;
+        Ok(encode_device_setup_code(&DeviceSetupCode {
+            root_secret: account_secret(account)?,
+            provider: DeviceSetupProvider::GoogleDrive {
+                stable_principal_fingerprint,
+                display_hint: account_binding.display_hint.clone(),
+                genesis_id: account.genesis_id.clone(),
+            },
+        }))
     }
 }
 
@@ -2848,7 +2884,10 @@ fn provider_account_binding(principal: &CloudProviderPrincipal) -> ProviderAccou
     }
 }
 
-fn operation_for_workflow(workflow: &CloudWorkflow) -> AppResult<CloudProviderOperation> {
+fn operation_for_workflow(
+    provider: CloudProviderKind,
+    workflow: &CloudWorkflow,
+) -> AppResult<CloudProviderOperation> {
     Ok(match workflow {
         CloudWorkflow::CreateAwaitIds => CloudProviderOperation::AllocateIds { count: 3 },
         CloudWorkflow::PublishAwaitIds => CloudProviderOperation::AllocateIds { count: 2 },
@@ -2861,12 +2900,7 @@ fn operation_for_workflow(workflow: &CloudWorkflow) -> AppResult<CloudProviderOp
         CloudWorkflow::VerifyPage { staged } => CloudProviderOperation::Read {
             id: staged.page_id.clone(),
         },
-        CloudWorkflow::CreateNode { staged } => create_operation(
-            &staged.node_id,
-            staged.generation,
-            "node",
-            &staged.node_bytes_base64,
-        ),
+        CloudWorkflow::CreateNode { staged } => root_publication_operation(provider, staged)?,
         CloudWorkflow::VerifyNode { staged } => CloudProviderOperation::Read {
             id: staged.node_id.clone(),
         },
@@ -2877,6 +2911,23 @@ fn operation_for_workflow(workflow: &CloudWorkflow) -> AppResult<CloudProviderOp
             id: node.merkle_root_id.clone(),
         },
     })
+}
+
+fn root_publication_operation(
+    provider: CloudProviderKind,
+    staged: &StagedPublication,
+) -> AppResult<CloudProviderOperation> {
+    match provider.root_publication_protocol() {
+        CloudRootPublicationProtocol::ImmutableSuccessor => Ok(create_operation(
+            &staged.node_id,
+            staged.generation,
+            "node",
+            &staged.node_bytes_base64,
+        )),
+        CloudRootPublicationProtocol::CompareAndSwapFixedRoot => Err(cloud_error(
+            "ACS fixed-root publication is not connected to a network transport",
+        )),
+    }
 }
 
 fn create_operation(
@@ -3050,38 +3101,6 @@ fn envelope_aad(version: u32, account_tag: &str, role: &str) -> String {
     format!("aerobag-cloud-envelope:{version}:{account_tag}:{role}")
 }
 
-fn encode_device_setup_code(payload: &DeviceSetupCodePayload) -> AppResult<String> {
-    let bytes = serde_json::to_vec(payload).map_err(cloud_json_error)?;
-    let body = URL_SAFE_NO_PAD.encode(&bytes);
-    let checksum = &sha256_hex(&bytes)[..16];
-    Ok(format!("AB2.{body}.{checksum}"))
-}
-
-fn decode_device_setup_code(setup_code: &str) -> AppResult<DeviceSetupCodePayload> {
-    let parts = setup_code.trim().split('.').collect::<Vec<_>>();
-    if parts.len() != 3 || parts[0] != "AB2" {
-        return Err(cloud_error("Device Setup Code has an unsupported format"));
-    }
-    let bytes = URL_SAFE_NO_PAD
-        .decode(parts[1])
-        .map_err(|_| cloud_error("Device Setup Code is not valid base64"))?;
-    if &sha256_hex(&bytes)[..16] != parts[2] {
-        return Err(cloud_error("Device Setup Code checksum does not match"));
-    }
-    let payload: DeviceSetupCodePayload =
-        serde_json::from_slice(&bytes).map_err(cloud_json_error)?;
-    if payload.version != DEVICE_SETUP_CODE_VERSION
-        || payload.genesis_id.trim().is_empty()
-        || URL_SAFE_NO_PAD
-            .decode(&payload.root_secret_base64)
-            .ok()
-            .is_none_or(|bytes| bytes.len() != 32)
-    {
-        return Err(cloud_error("Device Setup Code content is invalid"));
-    }
-    Ok(payload)
-}
-
 fn random_bytes<const N: usize>() -> AppResult<[u8; N]> {
     let mut bytes = [0_u8; N];
     getrandom::getrandom(&mut bytes)
@@ -3095,6 +3114,18 @@ fn sha256_hex(bytes: &[u8]) -> String {
 
 fn hex_bytes(bytes: &[u8]) -> String {
     bytes.iter().map(|byte| format!("{byte:02x}")).collect()
+}
+
+fn decode_hex_32(value: &str, error: &str) -> AppResult<[u8; 32]> {
+    if value.len() != 64 {
+        return Err(cloud_error(error));
+    }
+    let mut bytes = [0_u8; 32];
+    for (index, byte) in bytes.iter_mut().enumerate() {
+        *byte = u8::from_str_radix(&value[index * 2..index * 2 + 2], 16)
+            .map_err(|_| cloud_error(error))?;
+    }
+    Ok(bytes)
 }
 
 fn format_epoch_ms_utc(epoch_ms: i64) -> String {
@@ -3124,6 +3155,18 @@ fn unexpected_response(context: &str, response: CloudProviderResponse) -> AppErr
 mod tests {
     use super::*;
     use crate::{planning::RouteComponent, NavRef};
+
+    #[test]
+    fn providers_select_one_explicit_root_publication_protocol() {
+        assert_eq!(
+            CloudProviderKind::GoogleDrive.root_publication_protocol(),
+            CloudRootPublicationProtocol::ImmutableSuccessor
+        );
+        assert_eq!(
+            CloudProviderKind::AerobagCloud.root_publication_protocol(),
+            CloudRootPublicationProtocol::CompareAndSwapFixedRoot
+        );
+    }
 
     #[derive(Default)]
     struct MemoryProvider {
@@ -3280,6 +3323,17 @@ mod tests {
         authorize_as(engine, "google-principal-1", "pilot@example.com");
     }
 
+    fn with_unknown_ab3_field(setup_code: &str) -> String {
+        let encoded = setup_code.strip_prefix("AB3.").expect("AB3 setup code");
+        let bytes = URL_SAFE_NO_PAD.decode(encoded).expect("decode setup code");
+        let mut payload = bytes[..bytes.len() - 8].to_vec();
+        // Future optional field 99, length-delimited value "new".
+        payload.extend_from_slice(&[0x9a, 0x06, 0x03, b'n', b'e', b'w']);
+        let checksum = Sha256::digest(&payload);
+        payload.extend_from_slice(&checksum[..8]);
+        format!("AB3.{}", URL_SAFE_NO_PAD.encode(payload))
+    }
+
     fn authorize_as(engine: &mut CloudEngine, stable_id: &str, display_label: &str) {
         engine.set_authorization_state(
             CloudProviderKind::GoogleDrive,
@@ -3364,7 +3418,7 @@ mod tests {
     fn account_creation_emits_encrypted_create_once_chain_and_device_setup_code() {
         let mut engine = CloudEngine::new(CloudPersistentState::default());
         let setup_code = create_account(&mut engine, &plan(&["KRNT", "KPAE"]));
-        assert!(setup_code.starts_with("AB2."));
+        assert!(setup_code.starts_with("AB3."));
         assert_eq!(
             engine
                 .persistent
@@ -3923,6 +3977,43 @@ mod tests {
         let mut setup_code = create_account(&mut engine, &plan(&["KRNT", "KPAE"]));
         setup_code.push('x');
         assert!(decode_device_setup_code(&setup_code).is_err());
+    }
+
+    #[test]
+    fn imported_ab3_is_reshared_byte_for_byte_with_unknown_fields() {
+        let initial = plan(&["KRNT", "KPAE"]);
+        let mut provider = MemoryProvider::default();
+        let mut first = CloudEngine::new(CloudPersistentState::default());
+        first
+            .perform_action(CloudAction::BeginCreateAccount, &initial)
+            .unwrap();
+        first
+            .perform_action(
+                CloudAction::SelectProvider {
+                    provider: CloudProviderKind::GoogleDrive,
+                },
+                &initial,
+            )
+            .unwrap();
+        ready(&mut first);
+        first
+            .perform_action(CloudAction::CreateAccount, &initial)
+            .unwrap();
+        assert!(pump(&mut first, &mut provider, 10).is_empty());
+        let future_code = with_unknown_ab3_field(&first.device_setup_code().unwrap());
+
+        let mut second = CloudEngine::new(CloudPersistentState::default());
+        ready(&mut second);
+        second
+            .perform_action(
+                CloudAction::AcceptDeviceSetupCode {
+                    setup_code: future_code.clone(),
+                },
+                &FlightPlan::default(),
+            )
+            .unwrap();
+        assert_eq!(pump(&mut second, &mut provider, 20), vec![initial]);
+        assert_eq!(second.device_setup_code().unwrap(), future_code);
     }
 
     #[test]

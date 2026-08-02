@@ -2142,6 +2142,13 @@ type LiveFeedRuntimeInput = {
 };
 
 type LiveFeedRuntimeDecision = {
+  transport_policy: {
+    heartbeat_interval_ms: number;
+    connect_timeout_ms: number;
+    idle_timeout_ms: number;
+    reconnect_initial_delay_ms: number;
+    reconnect_max_delay_ms: number;
+  };
   connection_event?: {
     kind: "connecting" | "connected" | "message" | "error" | "closed" | "network_status";
     message?: string | null;

@@ -1,0 +1,29 @@
+// SPDX-FileCopyrightText: 2026 Aerobag contributors
+//
+// SPDX-License-Identifier: AGPL-3.0-or-later
+
+syntax = "proto3";
+
+package aerobag.cloud.v3;
+
+message DeviceSetupCodeV3 {
+  bytes root_secret = 1;
+
+  reserved 2 to 9;
+
+  oneof provider {
+    GoogleDriveSetup google_drive = 10;
+    AerobagCloudSetup aerobag_cloud = 11;
+  }
+}
+
+message GoogleDriveSetup {
+  bytes stable_principal_fingerprint = 1;
+  string display_hint = 2;
+  string genesis_id = 3;
+}
+
+message AerobagCloudSetup {
+  string base_url = 1;
+  bytes account_locator = 2;
+}

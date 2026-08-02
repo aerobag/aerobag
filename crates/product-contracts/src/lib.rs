@@ -4,6 +4,10 @@
 
 use serde::{Deserialize, Serialize};
 
+mod aerobag_cloud;
+
+pub use aerobag_cloud::*;
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct ProductContract {
     pub family_id: &'static str,
@@ -84,6 +88,36 @@ pub const GEO_CONTRACT_ID: &str = "GEO1";
 pub const LIVE_FEEDS_SCHEMA_VERSION: u32 = 3;
 pub const NOTAM_LIVE_FEED_CONTRACT_VERSION: u32 = 3;
 
+/// Transport timing shared by every Aerobag SSE producer and consumer.
+///
+/// Platforms execute this policy; they do not define their own timing values.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SseTransportPolicy {
+    pub heartbeat_interval_ms: i64,
+    pub connect_timeout_ms: i64,
+    pub idle_timeout_ms: i64,
+    pub reconnect_initial_delay_ms: i64,
+    pub reconnect_max_delay_ms: i64,
+}
+
+impl SseTransportPolicy {
+    pub fn reconnect_delay_ms(self, consecutive_errors: u32) -> i64 {
+        let mut delay_ms = self.reconnect_initial_delay_ms;
+        for _ in 1..consecutive_errors {
+            delay_ms = delay_ms.saturating_mul(2).min(self.reconnect_max_delay_ms);
+        }
+        delay_ms
+    }
+}
+
+pub const AEROBAG_SSE_TRANSPORT_POLICY: SseTransportPolicy = SseTransportPolicy {
+    heartbeat_interval_ms: 30_000,
+    connect_timeout_ms: 5_000,
+    idle_timeout_ms: 65_000,
+    reconnect_initial_delay_ms: 5_000,
+    reconnect_max_delay_ms: 65_000,
+};
+
 pub const PRODUCT_CONTRACTS: &[ProductContract] = &[
     ProductContract {
         family_id: "nav-db",
@@ -151,5 +185,17 @@ mod tests {
             );
         }
         assert_eq!(contract_id_for_family("missing"), None);
+    }
+
+    #[test]
+    fn shared_sse_policy_preserves_the_existing_backoff_sequence() {
+        let delays = (1..=6)
+            .map(|failure| AEROBAG_SSE_TRANSPORT_POLICY.reconnect_delay_ms(failure))
+            .collect::<Vec<_>>();
+        assert_eq!(delays, vec![5_000, 10_000, 20_000, 40_000, 65_000, 65_000]);
+        assert!(
+            AEROBAG_SSE_TRANSPORT_POLICY.idle_timeout_ms
+                > 2 * AEROBAG_SSE_TRANSPORT_POLICY.heartbeat_interval_ms
+        );
     }
 }

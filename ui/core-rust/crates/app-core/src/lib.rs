@@ -7,10 +7,13 @@ use serde::{Deserialize, Serialize};
 pub mod airport_info;
 pub mod chart_page;
 pub mod cloud;
+#[cfg(test)]
+mod cloud_acs_memory;
 mod cloud_google_drive;
 pub mod content;
 pub mod data_status;
 pub mod debug_log;
+mod device_setup_code;
 pub mod errors;
 pub mod flight_data;
 mod flight_plan_materialization;
@@ -95,8 +98,7 @@ pub use live_feed_cache::{
 pub use live_feed_runtime::{
     live_feed_runtime_decision, LiveFeedConnectionEvent, LiveFeedConnectionEventKind,
     LiveFeedNetworkStatus, LiveFeedRuntimeDecision, LiveFeedRuntimeEventKind, LiveFeedRuntimeInput,
-    LiveFeedRuntimeState, LIVE_FEED_SSE_CONNECT_TIMEOUT_MS, LIVE_FEED_SSE_IDLE_TIMEOUT_MS,
-    LIVE_FEED_SSE_RECONNECT_INITIAL_DELAY_MS,
+    LiveFeedRuntimeState,
 };
 pub use live_feeds::{
     decode_prepared_live_feed, live_feed_events_url, live_feed_status_url,
@@ -204,6 +206,7 @@ pub use planning::{
     RouteComponent, RouteComponentViewKind, SequencingMode, StartRequirement, TerminalState,
 };
 pub use playback::{PlaybackGapSpan, PlaybackStatus, PlaybackUiState};
+pub use product_contracts::{SseTransportPolicy, AEROBAG_SSE_TRANSPORT_POLICY};
 pub use publication::{
     nav_db_artifact_candidates_from_installed_artifacts, serialize_publication_outcome,
     CoreResourcePolicy, PublicationResolvedResource,

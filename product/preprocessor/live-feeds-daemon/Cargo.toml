@@ -14,6 +14,7 @@ chrono.workspace = true
 nms-notams-fetch = { path = "../nms-notams-fetch" }
 preprocessor-fetch = { path = "../preprocessor-fetch" }
 preprocessor-live-feeds = { path = "../preprocessor-live-feeds" }
+product-contracts = { path = "../../../crates/product-contracts" }
 serde.workspace = true
 serde_json.workspace = true
 

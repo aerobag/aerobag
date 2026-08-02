@@ -453,6 +453,9 @@ internal fun HomePage(
     }
     var offlinePackagesControllerResult by remember { mutableStateOf<OfflinePackagesControllerResultWire?>(null) }
     var offlinePackageOperationJob by remember { mutableStateOf<Job?>(null) }
+    var appliedSynchronizedOfflinePackagePreferencesJson by remember(offlinePackagesControllerHandle) {
+        mutableStateOf<String?>(null)
+    }
     var offlinePackageCancelRequested by remember { mutableStateOf(false) }
     val activePackageConnections = remember { ActivePackageConnections() }
     fun launchOfflinePackageOperation(block: suspend () -> Unit) {
@@ -635,14 +638,27 @@ internal fun HomePage(
             }
         }
     }
-    LaunchedEffect(offlinePackagesRouted, synchronizedOfflinePackagePreferencesJson) {
-        if (offlinePackagesRouted) {
+    LaunchedEffect(
+        offlinePackagesRouted,
+        synchronizedOfflinePackagePreferencesJson,
+        offlinePackageOperationJob,
+    ) {
+        if (
+            shouldApplySynchronizedOfflinePackagePreferences(
+                offlinePackagesRouted = offlinePackagesRouted,
+                desiredPreferencesJson = synchronizedOfflinePackagePreferencesJson,
+                appliedPreferencesJson = appliedSynchronizedOfflinePackagePreferencesJson,
+                operationActive = offlinePackageOperationJob?.isActive == true,
+            )
+        ) {
+            val preferencesJson = synchronizedOfflinePackagePreferencesJson
             launchOfflinePackageOperation {
                 dispatchOfflinePackagesController(
                     OfflinePackagesControllerEventWire.ApplySynchronizedPreferences(
-                        synchronizedOfflinePackagePreferencesJson,
+                        preferencesJson,
                     ),
                 )
+                appliedSynchronizedOfflinePackagePreferencesJson = preferencesJson
                 dispatchOfflinePackagesController(OfflinePackagesControllerEventWire.EnsureLibrary)
             }
         }
@@ -921,3 +937,13 @@ internal fun HomePage(
         }
     }
 }
+
+internal fun shouldApplySynchronizedOfflinePackagePreferences(
+    offlinePackagesRouted: Boolean,
+    desiredPreferencesJson: String,
+    appliedPreferencesJson: String?,
+    operationActive: Boolean,
+): Boolean =
+    offlinePackagesRouted &&
+        !operationActive &&
+        desiredPreferencesJson != appliedPreferencesJson

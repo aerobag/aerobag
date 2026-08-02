@@ -1,0 +1,36 @@
+# SPDX-FileCopyrightText: 2026 Aerobag contributors
+#
+# SPDX-License-Identifier: AGPL-3.0-or-later
+
+[package]
+name = "aerobag-cloud-server"
+edition.workspace = true
+license.workspace = true
+version.workspace = true
+
+[[bin]]
+name = "aerobag-cloud-serverd"
+path = "src/main.rs"
+
+[dependencies]
+anyhow.workspace = true
+async-stream.workspace = true
+axum.workspace = true
+base64.workspace = true
+bytes.workspace = true
+ed25519-dalek.workspace = true
+fs2.workspace = true
+getrandom.workspace = true
+hmac.workspace = true
+http-body-util.workspace = true
+product-contracts = { path = "../../crates/product-contracts" }
+rusqlite.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+sha2.workspace = true
+tokio.workspace = true
+tower.workspace = true
+tower-http.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true

@@ -50,6 +50,8 @@ jobs:
         run: cargo +"$RUST_TOOLCHAIN" fmt --manifest-path ui/core-rust/Cargo.toml --all --check
       - name: Check preprocessors
         run: cargo +"$RUST_TOOLCHAIN" fmt --manifest-path product/preprocessor/Cargo.toml --all --check
+      - name: Check services
+        run: cargo +"$RUST_TOOLCHAIN" fmt --manifest-path services/Cargo.toml --all --check
 
   rust-shared:
     name: Rust shared crates
@@ -154,6 +156,27 @@ jobs:
       - name: Enforce test results
         if: ${{ steps.tests.outcome == 'failure' || steps.doctests.outcome == 'failure' }}
         run: exit 1
+
+  rust-services:
+    name: Rust services
+    runs-on: ubuntu-latest
+    env:
+      CARGO_TARGET_DIR: ${{ github.workspace }}/.ci/cargo-target/services
+    steps:
+      - uses: actions/checkout@v5
+      - name: Install Rust toolchain
+        run: rustup toolchain install "$RUST_TOOLCHAIN" --profile minimal
+      - name: Cache Cargo
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            .ci/cargo-target/services
+          key: rust-services-${{ runner.os }}-${{ env.RUST_TOOLCHAIN }}-${{ hashFiles('services/Cargo.lock') }}
+      - name: Run service tests
+        working-directory: services
+        run: cargo test --workspace --locked
 
   rust-preprocessor:
     name: Rust preprocessors

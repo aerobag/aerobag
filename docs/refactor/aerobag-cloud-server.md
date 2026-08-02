@@ -160,8 +160,9 @@ HTTP resources but deliberately does not expose them through a network daemon:
 | `GET` | `/cloud/v1/events?ticket=...` | Open the account-scoped SSE stream. |
 | `GET` | `/cloud/v1/status` | Read bounded operator statistics. |
 
-Except for the ticket-bearing `EventSource` request and operator status,
-requests carry `Aerobag-Contract`, `Aerobag-Account`, `Aerobag-Key-Id`,
+Except for unsigned challenge issuance, the ticket-bearing `EventSource`
+request, and operator status, requests carry `Aerobag-Contract`,
+`Aerobag-Account`, `Aerobag-Key-Id`,
 `Aerobag-Signature-Algorithm`, `Aerobag-Timestamp-Ms`, `Aerobag-Nonce`,
 `Aerobag-Body-SHA256`, and `Aerobag-Signature` headers. `Ed25519` is the only
 `ACS1` signature algorithm. The signature input is exactly:
@@ -470,6 +471,17 @@ cryptographic Sync Account identity.
 - advertise that URL in development client configuration; and
 - include the daemon in dev-stack status and lifecycle handling.
 
+The daemon's HMAC secret is runtime infrastructure state, not application data.
+Development consumes it directly from the existing operator-owned credentials
+tree at:
+
+```text
+/root/aerobag-credentials/dev-stack/aerobag-cloud-server.bin
+```
+
+It must never be generated under or copied through an artifact publication
+root.
+
 ### Production
 
 `tools/deploy_prod.py` will:
@@ -483,6 +495,14 @@ cryptographic Sync Account identity.
 - harden and restart the daemon through systemd without recreating its data;
   and
 - include ACS in deploy health and service reporting.
+
+Production follows the same secret-delivery pattern as NMS credentials. The
+deploy reads the operator-owned source
+`/root/aerobag-credentials/aerobag-cloud-server-production.bin`, installs it as
+`/etc/aerobag/secrets/aerobag-cloud-server.bin` with service-only permissions,
+and passes that explicit path to `aerobag-cloud-serverd serve`. Operator
+commands do not require this runtime HMAC secret. Rotating it invalidates
+outstanding creation challenges and SSE tickets, but not stored account data.
 
 ## Pipeline Health
 
@@ -511,6 +531,13 @@ ACS reports this shape where applicable for:
 - account-creation attempts, challenges, successes, and rejections;
 - concurrent HTTP requests and current/peak SSE connections; and
 - authentication, replay, malformed-request, quota, and rate-limit rejections.
+
+GC additionally reports run count, last and peak SQLite write-lock pause,
+cumulative write-lock pause, and last and peak total elapsed time. Every GC run
+emits one low-frequency structured log line containing those timings and its
+mark/delete counts. Warning thresholds remain unset until production-shaped
+measurements exist; adding pipeline-health alarms for sustained or excessive
+GC pauses is an explicit TODO below.
 
 The status response also includes bounded operator-only summaries of the
 accounts and network pseudonyms currently responsible for the largest storage,
@@ -577,6 +604,9 @@ service. Do not silently invent compatibility or migration behavior.
 
 ### Phase 2: Local ACS Daemon
 
+Status: implementation complete on 2026-08-02; awaiting contract/operations
+review before Phase 3.
+
 - Implement SQLite metadata, inline objects, filesystem blobs, root CAS,
   visible authenticated references, and startup reconciliation.
 - Implement signed authentication, anonymous account creation, `1 MiB` quota,
@@ -584,7 +614,37 @@ service. Do not silently invent compatibility or migration behavior.
   replay, and bounded operator status.
 - Implement server-owned mark-and-sweep GC and minimal operator commands for
   quota, read-only, suspension, and deletion.
+- Hold an exclusive lifetime lock for `serve`, while allowing operator commands
+  to use the same SQLite database; a second daemon must fail before processing
+  requests because SSE fanout and runtime throttles are process-local.
 - Add restart, race, quota, malformed-input, replay, GC, and monitoring tests.
+
+The implementation lives in the standalone `services/` Rust workspace. The
+initial configurable ceilings are a 1 MiB/2,048-object anonymous account,
+600 authenticated operations and 64 MiB egress per account per minute, 1,200
+operations per source-network pseudonym per minute, and 4/16/128 concurrent
+SSE streams per account/network/service. These are server policy defaults, not
+client storage-format constants. Root ciphertext counts toward account and
+global stored bytes.
+
+SQLite WAL owns metadata, inline ciphertext, quota reservations, fixed-root
+CAS, nonces, tickets, and event history. Ciphertext over 128 KiB uses durably
+renamed filesystem blobs. Startup reconciles interrupted reservations; the
+daemon runs hourly mark-and-sweep with a 24-hour grace and removes aged orphan
+blob files. Crossing the configured global stored-byte ceiling atomically
+persists service read-only mode.
+
+`serve` requires an explicit 32-byte `--server-secret` file outside the data
+root. The store no longer creates or reads secret material alongside SQLite and
+blob data. A `serve.lock` advisory lock under the data root enforces the current
+single-daemon architecture without blocking short-lived operator commands.
+
+Focused tests exercise the real HTTP router through signed account creation,
+create-once object publication, root CAS, ticket creation, and SSE readiness;
+they also cover concurrent CAS, nonce replay, retained-history reset, quota and
+rate limits, interrupted blob restart, orphan GC, typed malformed/oversized
+responses, persisted read-only mode, and bounded status output. CI now formats
+and runs the standalone services workspace.
 
 Gate: a local protocol test survives daemon termination at every publication
 boundary, converges after CAS races, and alarms when injected load crosses each
@@ -670,6 +730,49 @@ must be added to this plan or discussed; they are not license to expand scope.
 - Cross-platform E2E links two independent clients, modifies flight plan and
   offline-package preferences in each direction, and verifies prompt adoption
   without a poll.
+
+## TODO Before Production
+
+These are known limitations from the Phase 2 review. They are deliberately
+recorded rather than hidden behind compatibility behavior or guessed policy:
+
+- **Trusted proxy identity:** nginx must overwrite the forwarded-client header
+  with the socket peer it observed. ACS must accept that header only when the
+  immediate peer belongs to an explicit trusted-proxy allowlist; direct or
+  untrusted peers are identified by their socket address. Never trust arbitrary
+  client-supplied `Forwarded` or `X-Forwarded-For`, because that would let an
+  attacker choose the identity used by account-creation and rate limits.
+- **Operator authentication and status privacy:** split a minimal public health
+  response from detailed operator status. Top account locators and network
+  pseudonyms are privacy-sensitive even though they are opaque, and must be
+  available only through the same administrator-authentication mechanism used
+  for containment commands. Choose that administrator-authentication contract
+  before exposing detailed status through nginx.
+- **Rate limiting:** replace the current fixed one-minute, process-local windows
+  with configurable token buckets or equivalent bounded rolling limits. Report
+  maintained one-, five-, and sixty-minute observations, rejected counts, and
+  configured thresholds. Current Rust defaults are not yet daemon/deploy
+  configuration.
+- **Large transfers:** the current 2 MiB HTTP body ceiling is correct for
+  anonymous MVP accounts but is not a transport for future large GPS traces.
+  Add a resumable large-object transport when the blessed large-object quota
+  class is designed; do not force application-level chunking merely to bypass
+  this limit.
+- **GC at scale:** the current collector holds SQLite's in-process connection
+  mutex and an immediate write transaction while traversing every account.
+  Observe `gc_database_pause_ms` and `gc_elapsed_ms` under production-shaped
+  data, establish warning/critical thresholds, and make pipeline-health alarm
+  on bad pauses. If measurements warrant it, refactor marking into bounded
+  read phases and short validated delete transactions rather than merely
+  increasing an alarm threshold.
+- **Global read-only recovery:** exhausting the configured global storage
+  ceiling persistently latches the service read-only. Replace the unrestricted
+  `set-mode normal` recovery path with a `resume-writes` operation that verifies
+  current usage and required headroom after GC, deletion, or a raised ceiling.
+  Keep any forced override explicit and separately named.
+- **Policy configuration:** move quotas, rate limits, body limits, SSE limits,
+  retention, and warning thresholds from compile-time Rust defaults into a
+  validated daemon configuration installed by dev-stack/deploy tooling.
 
 ## Deferred Work
 

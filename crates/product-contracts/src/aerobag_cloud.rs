@@ -21,6 +21,7 @@ pub const ACS_PAYLOAD_ENCRYPTION_ALGORITHM: &str = "ChaCha20-Poly1305";
 pub const ACS_ACCOUNT_LOCATOR_BYTES: usize = 32;
 pub const ACS_SIGNING_KEY_ID_BYTES: usize = 16;
 pub const ACS_REQUEST_NONCE_BYTES: usize = 16;
+pub const ACS_MAX_VISIBLE_CHILD_OBJECTS: usize = 4_096;
 pub const ACS_AUTH_CONTRACT_HEADER: &str = "Aerobag-Contract";
 pub const ACS_AUTH_ACCOUNT_HEADER: &str = "Aerobag-Account";
 pub const ACS_AUTH_KEY_ID_HEADER: &str = "Aerobag-Key-Id";
@@ -231,6 +232,9 @@ pub fn acs_encrypted_value_associated_data(
 }
 
 fn validate_child_object_ids(child_object_ids: &[String]) -> Result<(), &'static str> {
+    if child_object_ids.len() > ACS_MAX_VISIBLE_CHILD_OBJECTS {
+        return Err("encrypted value has too many visible child objects");
+    }
     if child_object_ids.windows(2).any(|pair| pair[0] >= pair[1]) {
         return Err("child object IDs must be sorted and unique");
     }
@@ -480,6 +484,36 @@ pub fn acs_events_path() -> &'static str {
     "/cloud/v1/events"
 }
 
+/// Returns the request target used by ACS signatures.
+///
+/// Callers pass the already percent-encoded path and raw encoded query. Sorting
+/// encoded pairs makes client and server signatures independent of query order.
+pub fn acs_canonical_request_target(
+    path: &str,
+    query: Option<&str>,
+) -> Result<String, &'static str> {
+    if !path.starts_with(ACS_API_PREFIX)
+        || path.contains(['\r', '\n', '?', '#'])
+        || query.is_some_and(|query| query.contains(['\r', '\n', '#']))
+    {
+        return Err("invalid ACS request target");
+    }
+    let Some(query) = query.filter(|query| !query.is_empty()) else {
+        return Ok(path.to_string());
+    };
+    let mut pairs = query
+        .split('&')
+        .map(|pair| pair.split_once('=').unwrap_or((pair, "")))
+        .collect::<Vec<_>>();
+    pairs.sort_unstable();
+    let query = pairs
+        .into_iter()
+        .map(|(key, value)| format!("{key}={value}"))
+        .collect::<Vec<_>>()
+        .join("&");
+    Ok(format!("{path}?{query}"))
+}
+
 fn sha256_hex(bytes: &[u8]) -> String {
     hex_bytes(&Sha256::digest(bytes))
 }
@@ -512,6 +546,18 @@ mod tests {
             .unwrap(),
             "ACS1\nPUT\n/cloud/v1/accounts/acct/root\nacct\nkey\n123\nnonce\nbody\n"
         );
+    }
+
+    #[test]
+    fn canonical_request_target_sorts_encoded_query_pairs() {
+        assert_eq!(
+            acs_canonical_request_target(
+                "/cloud/v1/accounts/account/objects",
+                Some("limit=10&cursor=a%2Fb&cursor=a%20b"),
+            ),
+            Ok("/cloud/v1/accounts/account/objects?cursor=a%20b&cursor=a%2Fb&limit=10".to_string())
+        );
+        assert!(acs_canonical_request_target("/cloud/v1/status?bad", None).is_err());
     }
 
     #[test]
@@ -550,6 +596,17 @@ mod tests {
         let mut value = AcsEncryptedValue::from_ciphertext(b"ciphertext", Vec::new());
         value.ciphertext_sha256 = "wrong".to_string();
         assert_eq!(value.validate(), Err("ciphertext hash mismatch"));
+
+        let value = AcsEncryptedValue::from_ciphertext(
+            b"ciphertext",
+            (0..=ACS_MAX_VISIBLE_CHILD_OBJECTS)
+                .map(|index| format!("child-{index:05}"))
+                .collect(),
+        );
+        assert_eq!(
+            value.validate(),
+            Err("encrypted value has too many visible child objects")
+        );
     }
 
     #[test]

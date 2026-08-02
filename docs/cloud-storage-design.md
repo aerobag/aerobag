@@ -620,18 +620,29 @@ execution, sequencing progress, and ownship-derived state.
 
 Initial policy:
 
-- whole-record last-committed replacement, using the successor-chain generation
-  as the total order rather than trusting device clocks;
-- retain a losing local revision in local history;
+- whole-record replacement ordered by a semantic mutation stamp created by core
+  when the user changes the flight-plan definition;
+- persist that stamp with the durable outbox entry and preserve it unchanged
+  across offline waits, authorization waits, retries, and publication races;
+- use successor-chain generation only to order storage history and detect
+  concurrent publication, never to make a later upload masquerade as a newer
+  user edit;
+- combine the wall-clock mutation time with deterministic content ordering for
+  the rare equal-time case, and advance a local mutation beyond every observed
+  stamp so a causally later user action wins despite modest clock skew;
 - apply an incoming plan immediately when no navigation is active;
-- if navigation is active, persist the incoming revision as pending and expose
-  an explicit adoption action; and
+- if navigation is active, persist the incoming revision as pending and adopt
+  it when navigation stops unless a later user plan edit supersedes it; and
 - after adoption, invalidate the core snapshot exactly once so all UI surfaces
   render the same plan.
 
 Local flight-plan mutations use the existing session-owned mutation path. That
-path emits a synchronized-record mutation; web or Android must not mirror the
-flight plan back into core.
+path compares the cloud-normalized definition before and after the action and
+emits a synchronized-record mutation only when that definition changed.
+Guidance-only actions such as starting or stopping navigation do not mint a
+fresh cloud modification time. Both platforms supply the action's wall-clock
+time through the common command boundary; core owns stamp construction and
+ordering. Web or Android must not mirror the flight plan back into core.
 
 ## MVP Implementation Plan
 
@@ -722,9 +733,10 @@ in CI; real Google authorization remains a manual/provider qualification test.
   credentials.
 - Two devices editing sequentially crossfill the flight plan in both
   directions.
-- Concurrent flight-plan replacement resolves deterministically and retains
-  the losing local revision.
-- A remote plan arriving during active navigation is persisted but not adopted.
+- Concurrent flight-plan replacement resolves by the original user-mutation
+  times, regardless of later authentication or upload opportunities.
+- A remote plan arriving during active navigation is persisted, not adopted,
+  and is adopted after navigation stops when no later local plan edit exists.
 - Snapshot invalidation after remote adoption occurs exactly once.
 - Provider/platform code contains no flight-plan, Merkle, or merge policy.
 - Logs, provider objects, and report endpoints contain no OAuth token, Device

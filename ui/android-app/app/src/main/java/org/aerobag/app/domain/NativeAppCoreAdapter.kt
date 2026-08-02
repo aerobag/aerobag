@@ -673,7 +673,11 @@ class NativeUiSession internal constructor(
         command: JsonObject,
     ): UiSessionSnapshot =
         runPagedSnapshot(commandName) {
-            bridge.performFlightPlanCommandInSessionJson(handle, command.toString())
+            bridge.performFlightPlanCommandInSessionJson(
+                handle,
+                command.toString(),
+                System.currentTimeMillis(),
+            )
         }
 
     private fun queryFlightPlan(query: JsonObject): JsonElement {
@@ -815,7 +819,11 @@ class NativeUiSession internal constructor(
 
     fun performMapSelectionAction(action: String): UiSessionSnapshot {
         return runPagedSnapshot("performMapSelectionAction") {
-            bridge.performMapSelectionActionInSessionJson(handle, action)
+            bridge.performMapSelectionActionInSessionJson(
+                handle,
+                action,
+                System.currentTimeMillis(),
+            )
         }
     }
 

@@ -176,11 +176,13 @@ interface NativeBridge {
     fun performMapSelectionActionInSessionJson(
         handle: Long,
         actionJson: String,
+        nowEpochMs: Long,
     ): String
 
     fun performFlightPlanCommandInSessionJson(
         handle: Long,
         commandJson: String,
+        nowEpochMs: Long,
     ): String
 
     fun queryFlightPlanInSessionJson(
@@ -712,11 +714,13 @@ object NativeBindings : NativeBridge {
     external override fun performMapSelectionActionInSessionJson(
         handle: Long,
         actionJson: String,
+        nowEpochMs: Long,
     ): String
 
     external override fun performFlightPlanCommandInSessionJson(
         handle: Long,
         commandJson: String,
+        nowEpochMs: Long,
     ): String
 
     external override fun queryFlightPlanInSessionJson(

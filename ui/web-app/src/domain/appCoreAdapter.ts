@@ -974,8 +974,16 @@ type WasmModule = {
   project_flight_plan_route_in_session(handle: number): Promise<string> | string;
   select_map_family_in_session(handle: number, familyIdJson: string): Promise<string> | string;
   select_raster_map_in_session(handle: number, selectedMapIdJson: string): Promise<string> | string;
-  perform_map_selection_action_in_session(sessionHandle: number, actionJson: string): Promise<string> | string;
-  perform_flight_plan_command_in_session(sessionHandle: number, commandJson: string): Promise<string> | string;
+  perform_map_selection_action_in_session(
+    sessionHandle: number,
+    actionJson: string,
+    nowEpochMs: bigint,
+  ): Promise<string> | string;
+  perform_flight_plan_command_in_session(
+    sessionHandle: number,
+    commandJson: string,
+    nowEpochMs: bigint,
+  ): Promise<string> | string;
   query_flight_plan_in_session(sessionHandle: number, queryJson: string): Promise<string> | string;
   perform_status_action_in_session(sessionHandle: number, actionId: string): Promise<string> | string;
   select_airport_in_session(handle: number, airportIdJson: string): Promise<string> | string;
@@ -1250,7 +1258,12 @@ export class WasmAppCoreAdapter implements AppCoreAdapter {
     };
     const performFlightPlanCommand = (command: Record<string, unknown>) =>
       runFlightPlanMutation(
-        () => this.module.perform_flight_plan_command_in_session(handle, JSON.stringify(command)),
+        () =>
+          this.module.perform_flight_plan_command_in_session(
+            handle,
+            JSON.stringify(command),
+            BigInt(Date.now()),
+          ),
       );
     const queryFlightPlan = <T,>(query: Record<string, unknown>) =>
       runSessionOperation<T>(
@@ -1344,7 +1357,12 @@ export class WasmAppCoreAdapter implements AppCoreAdapter {
       },
       performMapSelectionAction: async (action) => {
         return runFlightPlanMutation(
-          () => this.module.perform_map_selection_action_in_session(handle, action),
+          () =>
+            this.module.perform_map_selection_action_in_session(
+              handle,
+              action,
+              BigInt(Date.now()),
+            ),
         );
       },
       insertWaypointAtFlightPlanRow: async (rowUid, before, waypoint) => {

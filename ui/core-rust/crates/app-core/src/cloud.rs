@@ -2,7 +2,7 @@
 //
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
-use std::collections::BTreeMap;
+use std::{cmp::Ordering, collections::BTreeMap};
 
 use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine as _};
 use chacha20poly1305::{
@@ -18,13 +18,14 @@ use crate::{
     AppError, AppErrorKind, AppResult, FlightPlan,
 };
 
-const CLOUD_PERSISTENCE_VERSION: u32 = 2;
+const CLOUD_PERSISTENCE_VERSION: u32 = 3;
 const CLOUD_ENVELOPE_VERSION: u32 = 1;
 const CLOUD_PAGE_VERSION: u32 = 1;
 const CLOUD_NODE_VERSION: u32 = 1;
 const DEVICE_SETUP_CODE_VERSION: u32 = 2;
 const FLIGHT_PLAN_RECORD_KEY: &str = "flight_plan/current";
-const FLIGHT_PLAN_SCHEMA_VERSION: u32 = 1;
+const FLIGHT_PLAN_SCHEMA_VERSION: u32 = 2;
+const LEGACY_UNKNOWN_MUTATION_EPOCH_MS: i64 = i64::MIN;
 const CLOUD_POLL_INTERVAL_MS: i64 = 60_000;
 const CLOUD_TRANSIENT_RETRY_MS: i64 = 5_000;
 const GOOGLE_DRIVE_APPDATA_SCOPE: &str = "https://www.googleapis.com/auth/drive.appdata";
@@ -435,7 +436,46 @@ pub struct CloudStatusSummary {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 struct CloudRecord {
     schema_version: u32,
+    #[serde(default)]
+    modified_at_epoch_ms: Option<i64>,
     value: serde_json::Value,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize)]
+struct StampedFlightPlan {
+    plan: FlightPlan,
+    modified_at_epoch_ms: i64,
+}
+
+impl<'de> Deserialize<'de> for StampedFlightPlan {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        #[derive(Deserialize)]
+        #[serde(untagged)]
+        enum Wire {
+            Current {
+                plan: FlightPlan,
+                modified_at_epoch_ms: i64,
+            },
+            Legacy(FlightPlan),
+        }
+
+        Ok(match Wire::deserialize(deserializer)? {
+            Wire::Current {
+                plan,
+                modified_at_epoch_ms,
+            } => Self {
+                plan,
+                modified_at_epoch_ms,
+            },
+            Wire::Legacy(plan) => Self {
+                plan,
+                modified_at_epoch_ms: LEGACY_UNKNOWN_MUTATION_EPOCH_MS,
+            },
+        })
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -582,11 +622,11 @@ pub struct CloudPersistentState {
     #[serde(default)]
     workflow: Option<CloudWorkflow>,
     #[serde(default)]
-    cached_flight_plan: Option<FlightPlan>,
+    cached_flight_plan: Option<StampedFlightPlan>,
     #[serde(default)]
-    pending_flight_plan: Option<FlightPlan>,
+    pending_flight_plan: Option<StampedFlightPlan>,
     #[serde(default)]
-    pending_remote_flight_plan: Option<FlightPlan>,
+    pending_remote_flight_plan: Option<StampedFlightPlan>,
     #[serde(default)]
     local_revision: u64,
     #[serde(default)]
@@ -658,6 +698,13 @@ impl CloudEngine {
     pub fn new(mut persistent: CloudPersistentState) -> Self {
         let persisted_version = persistent.version;
         persistent.version = CLOUD_PERSISTENCE_VERSION;
+        if persisted_version < CLOUD_PERSISTENCE_VERSION {
+            // Old outbox entries have no user-mutation time, so they must never
+            // overwrite a value merely because this client reconnects later.
+            persistent.pending_flight_plan = None;
+            persistent.pending_remote_flight_plan = None;
+            persistent.force_poll = persistent.account.is_some();
+        }
         if persistent.account.is_some() {
             persistent.selected_provider = None;
         } else if persisted_version < CLOUD_PERSISTENCE_VERSION {
@@ -679,15 +726,28 @@ impl CloudEngine {
     }
 
     pub fn cached_flight_plan(&self) -> Option<&FlightPlan> {
-        self.persistent.cached_flight_plan.as_ref()
+        self.persistent
+            .cached_flight_plan
+            .as_ref()
+            .map(|record| &record.plan)
     }
 
     pub fn pending_remote_flight_plan(&self) -> Option<&FlightPlan> {
-        self.persistent.pending_remote_flight_plan.as_ref()
+        self.persistent
+            .pending_remote_flight_plan
+            .as_ref()
+            .map(|record| &record.plan)
     }
 
     pub fn clear_pending_remote_flight_plan(&mut self) {
         self.persistent.pending_remote_flight_plan = None;
+    }
+
+    pub fn take_pending_remote_flight_plan(&mut self) -> Option<FlightPlan> {
+        self.persistent
+            .pending_remote_flight_plan
+            .take()
+            .map(|record| record.plan)
     }
 
     pub fn set_authorization_state(
@@ -918,22 +978,50 @@ impl CloudEngine {
         )
     }
 
-    pub fn record_local_flight_plan(&mut self, plan: &FlightPlan) {
-        let definition = cloud_flight_plan_definition(plan);
-        if self.persistent.cached_flight_plan.as_ref() == Some(&definition) {
-            return;
+    pub fn record_local_flight_plan_mutation(
+        &mut self,
+        before: &FlightPlan,
+        after: &FlightPlan,
+        now_epoch_ms: i64,
+    ) -> bool {
+        let before = cloud_flight_plan_definition(before);
+        let after = cloud_flight_plan_definition(after);
+        if before == after {
+            return false;
         }
+        let latest_observed_mutation = self
+            .persistent
+            .cached_flight_plan
+            .iter()
+            .chain(self.persistent.pending_flight_plan.iter())
+            .chain(self.persistent.pending_remote_flight_plan.iter())
+            .map(|record| record.modified_at_epoch_ms)
+            .max()
+            .unwrap_or(LEGACY_UNKNOWN_MUTATION_EPOCH_MS);
+        let modified_at_epoch_ms = now_epoch_ms.max(latest_observed_mutation.saturating_add(1));
+        let record = StampedFlightPlan {
+            plan: after,
+            modified_at_epoch_ms,
+        };
         self.persistent.local_revision = self.persistent.local_revision.saturating_add(1);
-        self.persistent.cached_flight_plan = Some(definition.clone());
+        self.persistent.cached_flight_plan = Some(record.clone());
+        self.persistent.pending_remote_flight_plan = None;
         if self.persistent.account.is_some() {
-            self.persistent.pending_flight_plan = Some(definition);
+            self.persistent.pending_flight_plan = Some(record);
         }
+        true
     }
 
-    pub(crate) fn perform_action(
+    #[cfg(test)]
+    fn perform_action(&mut self, action: CloudAction, current_plan: &FlightPlan) -> AppResult<()> {
+        self.perform_action_at(action, current_plan, 0)
+    }
+
+    fn perform_action_at(
         &mut self,
         action: CloudAction,
         current_plan: &FlightPlan,
+        now_epoch_ms: i64,
     ) -> AppResult<()> {
         match action {
             CloudAction::BeginSetupFromDevice => {
@@ -1019,8 +1107,21 @@ impl CloudEngine {
                 });
                 self.persistent.selected_provider = None;
                 let plan = cloud_flight_plan_definition(current_plan);
-                self.persistent.cached_flight_plan = Some(plan.clone());
-                self.persistent.pending_flight_plan = Some(plan);
+                let record = self
+                    .persistent
+                    .cached_flight_plan
+                    .as_ref()
+                    .filter(|record| {
+                        record.plan == plan
+                            && record.modified_at_epoch_ms != LEGACY_UNKNOWN_MUTATION_EPOCH_MS
+                    })
+                    .cloned()
+                    .unwrap_or(StampedFlightPlan {
+                        plan,
+                        modified_at_epoch_ms: now_epoch_ms,
+                    });
+                self.persistent.cached_flight_plan = Some(record.clone());
+                self.persistent.pending_flight_plan = Some(record);
                 self.persistent.workflow = Some(CloudWorkflow::CreateAwaitIds);
                 self.persistent.last_provider_failure = None;
             }
@@ -1163,7 +1264,7 @@ impl CloudEngine {
                 return Ok(());
             }
         };
-        self.perform_action(action, current_plan)?;
+        self.perform_action_at(action, current_plan, now_epoch_ms)?;
         Ok(())
     }
 
@@ -1421,13 +1522,28 @@ impl CloudEngine {
                 self.persistent.last_read_epoch_ms = Some(now_epoch_ms);
                 self.persistent.last_poll_epoch_ms = Some(now_epoch_ms);
                 self.persistent.workflow = None;
-                let should_adopt = matches!(purpose, ReadPurpose::Link)
-                    || self.persistent.pending_flight_plan.is_none();
+                let local_record = self
+                    .persistent
+                    .pending_flight_plan
+                    .as_ref()
+                    .or(self.persistent.cached_flight_plan.as_ref());
+                let should_adopt = if matches!(purpose, ReadPurpose::Link) {
+                    true
+                } else if let Some(local) = local_record {
+                    compare_flight_plan_records(&remote_plan, local)? != Ordering::Less
+                } else {
+                    true
+                };
                 if should_adopt {
+                    self.persistent.pending_flight_plan = None;
                     self.persistent.cached_flight_plan = Some(remote_plan.clone());
+                    self.persistent.force_poll = true;
                     return Ok(CloudCompletion {
-                        remote_flight_plan: Some(remote_plan),
+                        remote_flight_plan: Some(remote_plan.plan),
                     });
+                }
+                if matches!(purpose, ReadPurpose::PublishRace) {
+                    self.persistent.force_poll = true;
                 }
             }
         }
@@ -1444,13 +1560,13 @@ impl CloudEngine {
         parent: Option<&VerifiedTip>,
         now_epoch_ms: i64,
     ) -> AppResult<StagedPublication> {
-        let plan = self
+        let record = self
             .persistent
             .pending_flight_plan
             .as_ref()
             .or(self.persistent.cached_flight_plan.as_ref())
             .ok_or_else(|| cloud_error("cloud publication has no flight plan record"))?;
-        let page = page_for_flight_plan(plan)?;
+        let page = page_for_flight_plan(record)?;
         let page_bytes = self.encrypt(&page, "merkle_page")?;
         let page_hash = sha256_hex(&page_bytes);
         let node = CloudNode {
@@ -1628,8 +1744,18 @@ impl CloudEngine {
             .ok_or_else(|| cloud_error("cloud account has no verified tip"))
     }
 
-    pub fn set_pending_remote_flight_plan(&mut self, plan: FlightPlan) {
-        self.persistent.pending_remote_flight_plan = Some(plan);
+    pub fn set_pending_remote_flight_plan(&mut self, plan: FlightPlan) -> AppResult<()> {
+        let record = self
+            .persistent
+            .cached_flight_plan
+            .as_ref()
+            .filter(|record| record.plan == plan)
+            .cloned()
+            .ok_or_else(|| {
+                cloud_error("remote flight-plan completion did not match the reconciled record")
+            })?;
+        self.persistent.pending_remote_flight_plan = Some(record);
+        Ok(())
     }
 
     pub fn page_state(&self, now_epoch_ms: i64) -> UiCloudPageState {
@@ -2614,13 +2740,14 @@ fn expect_read_bytes(response: CloudProviderResponse, id: &str) -> AppResult<Vec
         .ok_or_else(|| cloud_error(format!("cloud object {id} is missing")))
 }
 
-fn page_for_flight_plan(plan: &FlightPlan) -> AppResult<CloudPage> {
+fn page_for_flight_plan(record: &StampedFlightPlan) -> AppResult<CloudPage> {
     let mut records = BTreeMap::new();
     records.insert(
         FLIGHT_PLAN_RECORD_KEY.to_string(),
         CloudRecord {
             schema_version: FLIGHT_PLAN_SCHEMA_VERSION,
-            value: serde_json::to_value(plan).map_err(cloud_json_error)?,
+            modified_at_epoch_ms: Some(record.modified_at_epoch_ms),
+            value: serde_json::to_value(&record.plan).map_err(cloud_json_error)?,
         },
     );
     Ok(CloudPage {
@@ -2629,7 +2756,7 @@ fn page_for_flight_plan(plan: &FlightPlan) -> AppResult<CloudPage> {
     })
 }
 
-fn flight_plan_from_page(page: &CloudPage) -> AppResult<FlightPlan> {
+fn flight_plan_from_page(page: &CloudPage) -> AppResult<StampedFlightPlan> {
     if page.version != CLOUD_PAGE_VERSION {
         return Err(cloud_error(format!(
             "unsupported cloud page version {}",
@@ -2640,13 +2767,38 @@ fn flight_plan_from_page(page: &CloudPage) -> AppResult<FlightPlan> {
         .records
         .get(FLIGHT_PLAN_RECORD_KEY)
         .ok_or_else(|| cloud_error("cloud page has no flight-plan record"))?;
-    if record.schema_version != FLIGHT_PLAN_SCHEMA_VERSION {
-        return Err(cloud_error(format!(
-            "unsupported cloud flight-plan schema {}",
-            record.schema_version
-        )));
+    let modified_at_epoch_ms = match record.schema_version {
+        1 if record.modified_at_epoch_ms.is_none() => LEGACY_UNKNOWN_MUTATION_EPOCH_MS,
+        FLIGHT_PLAN_SCHEMA_VERSION => record.modified_at_epoch_ms.ok_or_else(|| {
+            cloud_error("cloud flight-plan record has no user-mutation timestamp")
+        })?,
+        version => {
+            return Err(cloud_error(format!(
+                "unsupported cloud flight-plan schema {version}"
+            )))
+        }
+    };
+    let plan = serde_json::from_value(record.value.clone()).map_err(cloud_json_error)?;
+    Ok(StampedFlightPlan {
+        plan,
+        modified_at_epoch_ms,
+    })
+}
+
+fn compare_flight_plan_records(
+    left: &StampedFlightPlan,
+    right: &StampedFlightPlan,
+) -> AppResult<Ordering> {
+    let time_order = left.modified_at_epoch_ms.cmp(&right.modified_at_epoch_ms);
+    if time_order != Ordering::Equal {
+        return Ok(time_order);
     }
-    serde_json::from_value(record.value.clone()).map_err(cloud_json_error)
+    Ok(flight_plan_record_digest(left)?.cmp(&flight_plan_record_digest(right)?))
+}
+
+fn flight_plan_record_digest(record: &StampedFlightPlan) -> AppResult<[u8; 32]> {
+    let bytes = serde_json::to_vec(&record.plan).map_err(cloud_json_error)?;
+    Ok(Sha256::digest(bytes).into())
 }
 
 fn cloud_flight_plan_definition(plan: &FlightPlan) -> FlightPlan {
@@ -3528,8 +3680,9 @@ mod tests {
     #[test]
     fn local_plan_mutation_becomes_durable_outbox_work() {
         let mut engine = CloudEngine::new(CloudPersistentState::default());
-        create_account(&mut engine, &plan(&["KRNT", "KPAE"]));
-        engine.record_local_flight_plan(&plan(&["KRNT", "KSEA", "KPAE"]));
+        let initial = plan(&["KRNT", "KPAE"]);
+        create_account(&mut engine, &initial);
+        engine.record_local_flight_plan_mutation(&initial, &plan(&["KRNT", "KSEA", "KPAE"]), 9);
         let _request = engine.take_provider_request(10).unwrap().unwrap();
         let semantic_request = engine
             .provider_request_in_flight
@@ -3584,12 +3737,12 @@ mod tests {
                 &FlightPlan::default(),
             )
             .unwrap();
-        assert_eq!(pump(&mut second, &mut provider, 20), vec![initial]);
+        assert_eq!(pump(&mut second, &mut provider, 20), vec![initial.clone()]);
         assert_eq!(second.persistent.last_read_epoch_ms, Some(20));
         assert_eq!(second.persistent.last_write_epoch_ms, None);
         assert_eq!(second.tip().unwrap().published_at_epoch_ms, Some(10));
 
-        first.record_local_flight_plan(&changed);
+        first.record_local_flight_plan_mutation(&initial, &changed, 29);
         assert!(pump(&mut first, &mut provider, 30).is_empty());
         assert_eq!(first.persistent.last_write_epoch_ms, Some(30));
         assert_eq!(first.tip().unwrap().published_at_epoch_ms, Some(30));
@@ -3630,6 +3783,117 @@ mod tests {
                 },
             ]
         );
+    }
+
+    #[test]
+    fn delayed_authentication_cannot_publish_an_older_user_edit_over_a_newer_one() {
+        let initial = plan(&["KRNT", "KPAE"]);
+        let older_edit = plan(&["KRNT", "KSEA", "KPAE"]);
+        let newer_edit = plan(&["KRNT", "KSUS", "KPAE"]);
+        let mut provider = MemoryProvider::default();
+
+        let mut delayed = CloudEngine::new(CloudPersistentState::default());
+        delayed
+            .perform_action(CloudAction::BeginCreateAccount, &initial)
+            .unwrap();
+        delayed
+            .perform_action(
+                CloudAction::SelectProvider {
+                    provider: CloudProviderKind::GoogleDrive,
+                },
+                &initial,
+            )
+            .unwrap();
+        ready(&mut delayed);
+        delayed
+            .perform_action_at(CloudAction::CreateAccount, &initial, 10)
+            .unwrap();
+        assert!(pump(&mut delayed, &mut provider, 10).is_empty());
+        let setup_code = delayed.device_setup_code().unwrap();
+
+        let mut current = CloudEngine::new(CloudPersistentState::default());
+        ready(&mut current);
+        current
+            .perform_action(
+                CloudAction::AcceptDeviceSetupCode { setup_code },
+                &FlightPlan::default(),
+            )
+            .unwrap();
+        assert_eq!(pump(&mut current, &mut provider, 20), vec![initial.clone()]);
+
+        delayed.record_local_flight_plan_mutation(&initial, &older_edit, 100);
+        let delayed_persistent: CloudPersistentState = serde_json::from_slice(
+            &serde_json::to_vec(delayed.persistent()).expect("serialize delayed outbox"),
+        )
+        .expect("restore delayed outbox");
+        delayed = CloudEngine::new(delayed_persistent);
+        ready(&mut delayed);
+        current.record_local_flight_plan_mutation(&initial, &newer_edit, 200);
+        assert!(pump(&mut current, &mut provider, 210).is_empty());
+
+        assert_eq!(
+            pump(&mut delayed, &mut provider, 300),
+            vec![newer_edit.clone()]
+        );
+        assert!(delayed.persistent.pending_flight_plan.is_none());
+        assert_eq!(delayed.cached_flight_plan(), Some(&newer_edit));
+        assert_eq!(delayed.tip().unwrap().generation, 1);
+    }
+
+    #[test]
+    fn delayed_publication_preserves_the_original_user_mutation_time() {
+        let initial = plan(&["KRNT", "KPAE"]);
+        let earlier_edit = plan(&["KRNT", "KSEA", "KPAE"]);
+        let later_edit = plan(&["KRNT", "KSUS", "KPAE"]);
+        let mut provider = MemoryProvider::default();
+
+        let mut later = CloudEngine::new(CloudPersistentState::default());
+        later
+            .perform_action(CloudAction::BeginCreateAccount, &initial)
+            .unwrap();
+        later
+            .perform_action(
+                CloudAction::SelectProvider {
+                    provider: CloudProviderKind::GoogleDrive,
+                },
+                &initial,
+            )
+            .unwrap();
+        ready(&mut later);
+        later
+            .perform_action_at(CloudAction::CreateAccount, &initial, 10)
+            .unwrap();
+        assert!(pump(&mut later, &mut provider, 10).is_empty());
+        let setup_code = later.device_setup_code().unwrap();
+
+        let mut earlier = CloudEngine::new(CloudPersistentState::default());
+        ready(&mut earlier);
+        earlier
+            .perform_action(
+                CloudAction::AcceptDeviceSetupCode { setup_code },
+                &FlightPlan::default(),
+            )
+            .unwrap();
+        assert_eq!(pump(&mut earlier, &mut provider, 20), vec![initial.clone()]);
+
+        earlier.record_local_flight_plan_mutation(&initial, &earlier_edit, 200);
+        assert!(pump(&mut earlier, &mut provider, 210).is_empty());
+        later.record_local_flight_plan_mutation(&initial, &later_edit, 300);
+        assert_eq!(
+            later
+                .persistent
+                .pending_flight_plan
+                .as_ref()
+                .unwrap()
+                .modified_at_epoch_ms,
+            300
+        );
+        assert!(pump(&mut later, &mut provider, 10_000).is_empty());
+
+        earlier
+            .perform_action(CloudAction::SyncNow, &earlier_edit)
+            .unwrap();
+        assert_eq!(pump(&mut earlier, &mut provider, 10_100), vec![later_edit]);
     }
 
     #[test]

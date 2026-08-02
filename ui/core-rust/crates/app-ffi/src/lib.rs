@@ -189,11 +189,13 @@ fn resource_policy_from_wire(policy: &str) -> Result<app_core::CoreResourcePolic
 pub fn perform_flight_plan_command_in_session_json(
     handle: u64,
     command_json: &str,
+    now_epoch_ms: i64,
 ) -> Result<String, String> {
     let command: app_core::FlightPlanSessionCommand =
         serde_json::from_str(command_json).map_err(|err| err.to_string())?;
-    let outcome = app_core::perform_flight_plan_command_in_session(handle as u32, command)
-        .map_err(|err| err.to_string())?;
+    let outcome =
+        app_core::perform_flight_plan_command_in_session(handle as u32, command, now_epoch_ms)
+            .map_err(|err| err.to_string())?;
     serde_json::to_string(&outcome).map_err(|err| err.to_string())
 }
 
@@ -324,10 +326,14 @@ pub fn project_flight_plan_route_in_session_json(handle: u64) -> Result<String, 
 pub fn perform_map_selection_action_in_session_json(
     handle: u64,
     action_json: &str,
+    now_epoch_ms: i64,
 ) -> Result<String, String> {
-    let outcome =
-        app_core::perform_map_selection_action_in_session(handle as u32, action_json.to_string())
-            .map_err(|err| err.to_string())?;
+    let outcome = app_core::perform_map_selection_action_in_session(
+        handle as u32,
+        action_json.to_string(),
+        now_epoch_ms,
+    )
+    .map_err(|err| err.to_string())?;
     serde_json::to_string(&outcome).map_err(|err| err.to_string())
 }
 
@@ -2889,10 +2895,11 @@ pub extern "system" fn Java_org_aerobag_app_domain_NativeBindings_performFlightP
     _class: JClass,
     handle: i64,
     command_json: JString,
+    now_epoch_ms: i64,
 ) -> jstring {
     let result = (|| {
         let command_json = get_java_string(&mut env, command_json)?;
-        perform_flight_plan_command_in_session_json(handle as u64, &command_json)
+        perform_flight_plan_command_in_session_json(handle as u64, &command_json, now_epoch_ms)
     })();
     return_string(&mut env, result)
 }
@@ -3069,10 +3076,11 @@ pub extern "system" fn Java_org_aerobag_app_domain_NativeBindings_performMapSele
     _class: JClass,
     handle: i64,
     action_json: JString,
+    now_epoch_ms: i64,
 ) -> jstring {
     let result = (|| {
         let action = get_java_string(&mut env, action_json)?;
-        perform_map_selection_action_in_session_json(handle as u64, &action)
+        perform_map_selection_action_in_session_json(handle as u64, &action, now_epoch_ms)
     })();
     return_string(&mut env, result)
 }

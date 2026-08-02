@@ -637,10 +637,14 @@ pub fn report_live_feed_connection_event_in_session(
 pub fn perform_map_selection_action_in_session(
     session_handle: u32,
     action_json: &str,
+    now_epoch_ms: i64,
 ) -> Result<String, JsValue> {
-    let outcome =
-        app_core::perform_map_selection_action_in_session(session_handle, action_json.to_string())
-            .map_err(|err| JsValue::from_str(&err.to_string()))?;
+    let outcome = app_core::perform_map_selection_action_in_session(
+        session_handle,
+        action_json.to_string(),
+        now_epoch_ms,
+    )
+    .map_err(|err| JsValue::from_str(&err.to_string()))?;
     serde_json::to_string(&outcome).map_err(|err| JsValue::from_str(&err.to_string()))
 }
 
@@ -648,11 +652,13 @@ pub fn perform_map_selection_action_in_session(
 pub fn perform_flight_plan_command_in_session(
     session_handle: u32,
     command_json: &str,
+    now_epoch_ms: i64,
 ) -> Result<String, JsValue> {
     let command: app_core::FlightPlanSessionCommand =
         serde_json::from_str(command_json).map_err(|err| JsValue::from_str(&err.to_string()))?;
-    let outcome = app_core::perform_flight_plan_command_in_session(session_handle, command)
-        .map_err(|err| JsValue::from_str(&err.to_string()))?;
+    let outcome =
+        app_core::perform_flight_plan_command_in_session(session_handle, command, now_epoch_ms)
+            .map_err(|err| JsValue::from_str(&err.to_string()))?;
     serde_json::to_string(&outcome).map_err(|err| JsValue::from_str(&err.to_string()))
 }
 

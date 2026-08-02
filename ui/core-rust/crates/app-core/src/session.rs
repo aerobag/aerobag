@@ -4011,7 +4011,9 @@ pub fn complete_cloud_provider_request_in_session(
             .as_ref()
             .is_some_and(|plan| plan.guidance.is_some());
         if navigation_active {
-            candidate.cloud.set_pending_remote_flight_plan(remote_plan);
+            candidate
+                .cloud
+                .set_pending_remote_flight_plan(remote_plan)?;
         } else {
             replace_session_flight_plan(&mut candidate, remote_plan)?;
             match sync_guidance_geometry_for_session(
@@ -5054,7 +5056,12 @@ pub enum FlightPlanSessionQuery {
 pub fn perform_flight_plan_command_in_session(
     handle: u32,
     command: FlightPlanSessionCommand,
+    now_epoch_ms: i64,
 ) -> AppResult<HadOperationOutcome> {
+    {
+        let mut sessions = lock_sessions();
+        advance_session_wall_clock(session_mut(&mut sessions, handle)?, now_epoch_ms);
+    }
     match command {
         FlightPlanSessionCommand::InsertWaypointAtRow {
             row_uid,
@@ -5232,7 +5239,12 @@ fn mutate_session_flight_plan(
 pub fn perform_map_selection_action_in_session(
     handle: u32,
     action_json: String,
+    now_epoch_ms: i64,
 ) -> AppResult<HadOperationOutcome> {
+    {
+        let mut sessions = lock_sessions();
+        advance_session_wall_clock(session_mut(&mut sessions, handle)?, now_epoch_ms);
+    }
     let action: MapSelectionSessionAction =
         serde_json::from_str(&action_json).map_err(|err| AppError {
             kind: AppErrorKind::UnsupportedOperation,
@@ -10634,14 +10646,28 @@ fn commit_session_flight_plan_with_invalidations_outcome(
     plan: FlightPlan,
 ) -> AppResult<HadOperationOutcome> {
     let started = crate::CoreDebugTimer::start();
+    let prior_plan = session
+        .app_state
+        .active_plan
+        .clone()
+        .ok_or_else(|| missing_active_plan_error("flight-plan mutation"))?;
     let mut candidate = session.clone();
     replace_session_flight_plan(&mut candidate, plan)?;
     let accepted_plan = candidate
         .app_state
         .active_plan
-        .as_ref()
+        .clone()
         .ok_or_else(|| missing_active_plan_error("cloud flight-plan publication"))?;
-    candidate.cloud.record_local_flight_plan(accepted_plan);
+    let definition_changed = candidate.cloud.record_local_flight_plan_mutation(
+        &prior_plan,
+        &accepted_plan,
+        candidate.wall_clock_epoch_ms,
+    );
+    if !definition_changed && accepted_plan.guidance.is_none() {
+        if let Some(remote_plan) = candidate.cloud.take_pending_remote_flight_plan() {
+            replace_session_flight_plan(&mut candidate, remote_plan)?;
+        }
+    }
     match sync_guidance_geometry_for_session(&mut candidate, &started) {
         Ok(()) => {
             advance_session_revision(&mut candidate);
@@ -25139,6 +25165,10 @@ mod tests {
         replace_flight_plan_in_session(restarted.handle, edited_plan.clone())
             .expect("edit first flight plan");
         assert_eq!(pump_cloud(restarted.handle, &mut provider, 30_000), 0);
+        let mut navigating_plan = original_plan.clone();
+        navigating_plan.guidance = lat_lon_preview_plan().guidance;
+        replace_flight_plan_in_session(second.handle, navigating_plan)
+            .expect("start navigation on second session");
         perform_cloud_ui_action_in_session(
             second.handle,
             CloudUiActionId::SyncNow,
@@ -25146,7 +25176,15 @@ mod tests {
             30_001,
         )
         .expect("poll from second session");
-        assert_eq!(pump_cloud(second.handle, &mut provider, 30_001), 1);
+        assert_eq!(pump_cloud(second.handle, &mut provider, 30_001), 0);
+
+        let navigating = get_session_snapshot(second.handle).expect("navigating snapshot");
+        assert_ne!(
+            navigating.app_state.active_plan.as_ref(),
+            Some(&edited_plan),
+            "remote plan must remain pending while navigation is active"
+        );
+        stop_navigation_in_session(second.handle).expect("stop navigation and adopt pending plan");
 
         let adopted = get_session_snapshot(second.handle).expect("adopted snapshot");
         assert_eq!(adopted.app_state.active_plan.as_ref(), Some(&edited_plan));
@@ -25158,6 +25196,7 @@ mod tests {
                 .map(|plan| plan.plan_id.as_str()),
             Some(edited_plan.id.as_str())
         );
+        assert_eq!(pump_cloud(second.handle, &mut provider, 30_002), 0);
 
         destroy_session(restarted.handle);
         destroy_session(second.handle);

@@ -29,16 +29,18 @@ class PrimaryNavigationLayoutTest {
 
         val dataStatusSource = sourceFile("src/main/java/org/aerobag/app/DataStatusPage.kt").readText()
         val settingsSource = sourceFile("src/main/java/org/aerobag/app/SettingsPage.kt").readText()
+        val homeSource = sourceFile("src/main/java/org/aerobag/app/HomePage.kt").readText()
         val pageSources = listOf(
             chartsSource,
             sourceFile("src/main/java/org/aerobag/app/MapExplorerPage.kt").readText(),
-            sourceFile("src/main/java/org/aerobag/app/HomePage.kt").readText(),
+            homeSource,
             sourceFile("src/main/java/org/aerobag/app/FlightPlanPage.kt").readText(),
             dataStatusSource,
             settingsSource,
         )
         val callCount = pageSources.sumOf { Regex("""(?m)^\s{8,}PrimaryNavigationDock\(""").findAll(it).count() }
         assertEquals("Every top-level product page must render the shared dock.", 6, callCount)
+        assertFalse(homeSource.contains("HomeReturnDock("))
         assertFalse(dataStatusSource.contains("HomeReturnDock("))
         assertFalse(settingsSource.contains("HomeReturnDock("))
     }

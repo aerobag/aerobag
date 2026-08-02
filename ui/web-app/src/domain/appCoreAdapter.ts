@@ -179,6 +179,7 @@ export type UiSessionSnapshot = {
   data_status_page_state: UiDataStatusPageState;
   settings_page_state: UiSettingsPageState;
   cloud_page_state: UiCloudPageState;
+  offline_package_preferences_json: string;
   home_page_state: UiHomePageState;
   display_policy: UiDisplayPolicy | null;
   disclaimer_state: UiDisclaimerState;

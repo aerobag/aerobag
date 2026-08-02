@@ -2022,6 +2022,7 @@ export default function App() {
       },
       next_refresh_epoch_ms: null,
     },
+    offline_package_preferences_json: "{\"regions\":{},\"products\":{}}",
     home_page_state: {
       buttons: [],
     },

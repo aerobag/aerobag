@@ -400,6 +400,7 @@ pub struct UiSessionSnapshot {
     pub data_status_page_state: UiDataStatusPageState,
     pub settings_page_state: UiSettingsPageState,
     pub cloud_page_state: UiCloudPageState,
+    pub offline_package_preferences_json: String,
     pub home_page_state: UiHomePageState,
     pub display_policy: Option<UiDisplayPolicy>,
     pub disclaimer_state: UiDisclaimerState,
@@ -3576,6 +3577,11 @@ fn create_ui_session_inner(
     let settings_preferences = SettingsPreferences::default();
     let cloud = CloudEngine::new(CloudPersistentState::default());
     let cloud_page_state = cloud.page_state(0);
+    let offline_package_preferences_json =
+        serde_json::to_string(&cloud.offline_package_preferences()?).map_err(|error| AppError {
+            kind: AppErrorKind::Internal,
+            message: error.to_string(),
+        })?;
     let platform_capabilities = PlatformCapabilities::default();
     let home_page_state = project_home_page_state(&platform_capabilities);
     let snapshot = UiSessionSnapshot {
@@ -3596,6 +3602,7 @@ fn create_ui_session_inner(
         data_status_page_state,
         settings_page_state,
         cloud_page_state,
+        offline_package_preferences_json,
         home_page_state,
         display_policy: None,
         disclaimer_state: project_disclaimer_state(&settings_preferences),
@@ -3972,6 +3979,26 @@ pub fn perform_cloud_ui_action_in_session(
     commit_cloud_candidate(session, candidate, vec![UiInvalidation::SessionSnapshot])
 }
 
+pub fn record_offline_package_preferences_in_session(
+    handle: u32,
+    preferences_json: &str,
+    now_epoch_ms: i64,
+) -> AppResult<HadOperationOutcome> {
+    let preferences = serde_json::from_str::<crate::OfflinePackagePreferences>(preferences_json)
+        .map_err(|error| AppError {
+            kind: AppErrorKind::InvalidCatalog,
+            message: format!("invalid offline-package preferences: {error}"),
+        })?;
+    let mut sessions = lock_sessions();
+    let session = session_mut(&mut sessions, handle)?;
+    let mut candidate = session.clone();
+    advance_session_wall_clock(&mut candidate, now_epoch_ms);
+    candidate
+        .cloud
+        .record_local_offline_package_preferences(&preferences, now_epoch_ms)?;
+    commit_cloud_candidate(session, candidate, vec![UiInvalidation::SessionSnapshot])
+}
+
 pub fn take_cloud_provider_request_in_session(
     handle: u32,
     now_epoch_ms: i64,
@@ -4004,7 +4031,7 @@ pub fn complete_cloud_provider_request_in_session(
             .cloud
             .complete_provider_request(request_id, response, now_epoch_ms)?;
     let mut invalidations = vec![UiInvalidation::SessionSnapshot];
-    if let Some(remote_plan) = completion.remote_flight_plan {
+    if let Some(remote_plan) = completion.remote_flight_plan()? {
         let navigation_active = candidate
             .app_state
             .active_plan
@@ -10662,7 +10689,7 @@ fn commit_session_flight_plan_with_invalidations_outcome(
         &prior_plan,
         &accepted_plan,
         candidate.wall_clock_epoch_ms,
-    );
+    )?;
     if !definition_changed && accepted_plan.guidance.is_none() {
         if let Some(remote_plan) = candidate.cloud.take_pending_remote_flight_plan() {
             replace_session_flight_plan(&mut candidate, remote_plan)?;
@@ -10833,6 +10860,13 @@ fn try_snapshot_for_session(session: &mut UiSession) -> Result<UiSessionSnapshot
             .as_ref()
             .is_some_and(|cloud| cloud.qr_scan),
     );
+    let offline_package_preferences_json = serde_json::to_string(
+        &session
+            .cloud
+            .offline_package_preferences()
+            .map_err(|error| HadReadError::Fatal(error.message))?,
+    )
+    .map_err(|error| HadReadError::Fatal(error.to_string()))?;
     let home_page_state = project_home_page_state(&session.platform_capabilities);
     app_ui_state.flight_data_banner.cells.retain(|cell| {
         !session
@@ -10883,6 +10917,7 @@ fn try_snapshot_for_session(session: &mut UiSession) -> Result<UiSessionSnapshot
         data_status_page_state,
         settings_page_state,
         cloud_page_state,
+        offline_package_preferences_json,
         home_page_state,
         display_policy,
         disclaimer_state: project_disclaimer_state(&session.settings_preferences),
@@ -11161,7 +11196,7 @@ fn load_session_persistence_from_storage(session: &mut UiSession) -> AppResult<(
     let document = decode_session_persistence(&bytes);
     session.settings_preferences = document.preferences;
     session.cloud = CloudEngine::new(document.cloud);
-    if let Some(plan) = session.cloud.cached_flight_plan().cloned() {
+    if let Some(plan) = session.cloud.cached_flight_plan() {
         replace_session_flight_plan(session, plan)?;
     }
     Ok(())
@@ -13462,6 +13497,49 @@ mod tests {
                 .as_ref()
                 .and_then(|policy| policy.dim_after_ms),
             Some(30_000)
+        );
+    }
+
+    #[test]
+    fn offline_package_profile_is_core_persisted_across_session_restart() {
+        let storage: SettingsStorageHandle = Arc::new(MemorySettingsStorage::default());
+        let first =
+            create_ui_session(FlightPlan::default(), &[], None, None).expect("create session");
+        configure_platform_capabilities_in_session(
+            first.handle,
+            PlatformCapabilities::default(),
+            Some(storage.clone()),
+        )
+        .expect("configure storage");
+
+        let preferences = serde_json::json!({
+            "regions": {"nw": "pause"},
+            "products": {"terrain": "unselected"}
+        })
+        .to_string();
+        let snapshot = snapshot_from_outcome(
+            record_offline_package_preferences_in_session(first.handle, &preferences, 100)
+                .expect("record package profile"),
+        );
+        assert_eq!(
+            serde_json::from_str::<serde_json::Value>(&snapshot.offline_package_preferences_json)
+                .unwrap(),
+            serde_json::from_str::<serde_json::Value>(&preferences).unwrap()
+        );
+        destroy_session(first.handle);
+
+        let restarted =
+            create_ui_session(FlightPlan::default(), &[], None, None).expect("restart session");
+        let restored = configure_platform_capabilities_in_session(
+            restarted.handle,
+            PlatformCapabilities::default(),
+            Some(storage),
+        )
+        .expect("restore storage");
+        assert_eq!(
+            serde_json::from_str::<serde_json::Value>(&restored.offline_package_preferences_json)
+                .unwrap(),
+            serde_json::from_str::<serde_json::Value>(&preferences).unwrap()
         );
     }
 

@@ -425,6 +425,8 @@ internal fun HomePage(
     onOpenPlan: () -> Unit,
     onOpenRecentChartOrPlate: () -> Unit = {},
     offlinePackagesControllerHandle: Long,
+    synchronizedOfflinePackagePreferencesJson: String = "{\"regions\":{},\"products\":{}}",
+    onOfflinePackagePreferencesForCloud: (String, Long) -> Unit = { _, _ -> },
     onOfflinePackagesClosed: (() -> Unit)? = null,
     onOfflinePackageLibraryCacheChanged: (String?) -> Unit = {},
     onOfflinePackageArtifactsChanged: suspend (String, Set<String>) -> Set<String> = { _, _ -> emptySet() },
@@ -532,6 +534,9 @@ internal fun HomePage(
         writeOfflinePackagesStateJson(prefs, result.packagesStateJson)
         writeOfflinePackagesLibraryCacheJson(prefs, result.libraryCacheJson)
         offlinePackagesControllerResult = result
+        result.preferencesForCloudJson?.let { preferencesJson ->
+            onOfflinePackagePreferencesForCloud(preferencesJson, input.nowEpochMs)
+        }
         if (event is OfflinePackagesControllerEventWire.LibraryRefreshSucceeded) {
             onOfflinePackageLibraryCacheChanged(result.libraryCacheJson)
         }
@@ -630,9 +635,14 @@ internal fun HomePage(
             }
         }
     }
-    LaunchedEffect(offlinePackagesRouted) {
+    LaunchedEffect(offlinePackagesRouted, synchronizedOfflinePackagePreferencesJson) {
         if (offlinePackagesRouted) {
             launchOfflinePackageOperation {
+                dispatchOfflinePackagesController(
+                    OfflinePackagesControllerEventWire.ApplySynchronizedPreferences(
+                        synchronizedOfflinePackagePreferencesJson,
+                    ),
+                )
                 dispatchOfflinePackagesController(OfflinePackagesControllerEventWire.EnsureLibrary)
             }
         }
@@ -654,17 +664,19 @@ internal fun HomePage(
             (HomeGridTileSize * homeGridRowCount.toFloat()) +
                 (ThumbGap * (homeGridRowCount - 1).toFloat())
 
-        if (offlinePackagesRouted) {
-            HomeReturnDock(
-                modifier = Modifier
-                    .align(Alignment.TopStart)
-                    .zIndex(2f),
-                currentPage = page,
-                chartPlateTargetPage = mostRecentChartOrPlatePage,
-                onHomeClick = { onSelectPage(AppPage.Home) },
-                onOpenChartOrPlate = onOpenRecentChartOrPlate,
-            )
-        }
+        PrimaryNavigationDock(
+            currentPage = page,
+            navElement = navElement,
+            chartPlateTargetPage = mostRecentChartOrPlatePage,
+            onHomeClick = { onSelectPage(AppPage.Home) },
+            onOpenPlan = onOpenPlan,
+            onSelectPage = onSelectPage,
+            onOpenChartOrPlate = onOpenRecentChartOrPlate,
+            modifier = Modifier
+                .align(Alignment.BottomCenter)
+                .padding(bottom = ThumbGap)
+                .zIndex(OverlayPlaneControls),
+        )
 
         if (!offlinePackagesRouted) {
             LazyVerticalGrid(
@@ -704,18 +716,6 @@ internal fun HomePage(
                 }
             }
 
-            PrimaryNavigationDock(
-                currentPage = page,
-                navElement = navElement,
-                chartPlateTargetPage = mostRecentChartOrPlatePage,
-                onHomeClick = { onSelectPage(AppPage.Home) },
-                onOpenPlan = onOpenPlan,
-                onSelectPage = onSelectPage,
-                onOpenChartOrPlate = onOpenRecentChartOrPlate,
-                modifier = Modifier
-                    .align(Alignment.BottomCenter)
-                    .padding(bottom = ThumbGap),
-            )
         }
 
         if (offlinePackagesRouted) {
@@ -724,8 +724,8 @@ internal fun HomePage(
                 .padding(
                     start = ThumbGap,
                     end = ThumbGap,
-                    top = ThumbSize + (ThumbGap * 2f),
-                    bottom = ThumbGap,
+                    top = ThumbGap,
+                    bottom = ThumbSize + (ThumbGap * 2f),
                 )
                 .zIndex(1f)
             val controllerUiState = offlinePackagesControllerResult?.uiState

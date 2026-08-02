@@ -958,6 +958,8 @@ internal data class OfflinePackagesControllerResultWire(
     @SerialName("ui_state")
     val uiState: OfflinePackagesControllerUiStateWire,
     val command: OfflinePackagesControllerCommandWire? = null,
+    @SerialName("preferences_for_cloud_json")
+    val preferencesForCloudJson: String? = null,
 )
 
 @Serializable
@@ -1024,6 +1026,13 @@ internal sealed interface OfflinePackagesControllerEventWire {
     @SerialName("packages_event")
     data class PackagesEvent(
         val event: OfflinePackagesEventWire,
+    ) : OfflinePackagesControllerEventWire
+
+    @Serializable
+    @SerialName("apply_synchronized_preferences")
+    data class ApplySynchronizedPreferences(
+        @SerialName("preferences_json")
+        val preferencesJson: String,
     ) : OfflinePackagesControllerEventWire
 
     @Serializable
@@ -3011,8 +3020,7 @@ internal fun AerobagApp(
             onSnapshot = ::applySessionSnapshot,
         )
         BoxWithConstraints(modifier = Modifier.fillMaxSize()) {
-            val bottomCornerControlsRaised =
-                page != AppPage.OfflinePackages && shouldRaiseBottomCornerControls(maxWidth)
+            val bottomCornerControlsRaised = shouldRaiseBottomCornerControls(maxWidth)
             when (page) {
                 AppPage.Map -> {
                     key(sessionSnapshot.navDataEpoch) {
@@ -3249,6 +3257,16 @@ internal fun AerobagApp(
                         onOpenPlan = { navigateToPage(AppPage.Plan) },
                         onOpenRecentChartOrPlate = ::navigateToMostRecentChartOrPlate,
                         offlinePackagesControllerHandle = offlinePackagesControllerHandle,
+                        synchronizedOfflinePackagePreferencesJson =
+                            sessionSnapshot.offlinePackagePreferencesJson,
+                        onOfflinePackagePreferencesForCloud = { preferencesJson, nowEpochMs ->
+                            applySessionCommand("recordOfflinePackagePreferences") {
+                                uiSession.recordOfflinePackagePreferences(
+                                    preferencesJson,
+                                    nowEpochMs,
+                                )
+                            }
+                        },
                         onOfflinePackageLibraryCacheChanged = { cacheJson ->
                             applySessionCommand("loadOfflinePackageLibraryCache") {
                                 uiSession.loadOfflinePackageLibraryCache(cacheJson)
@@ -3272,6 +3290,16 @@ internal fun AerobagApp(
                         onOpenPlan = { navigateToPage(AppPage.Plan) },
                         onOpenRecentChartOrPlate = ::navigateToMostRecentChartOrPlate,
                         offlinePackagesControllerHandle = offlinePackagesControllerHandle,
+                        synchronizedOfflinePackagePreferencesJson =
+                            sessionSnapshot.offlinePackagePreferencesJson,
+                        onOfflinePackagePreferencesForCloud = { preferencesJson, nowEpochMs ->
+                            applySessionCommand("recordOfflinePackagePreferences") {
+                                uiSession.recordOfflinePackagePreferences(
+                                    preferencesJson,
+                                    nowEpochMs,
+                                )
+                            }
+                        },
                         onOfflinePackageLibraryCacheChanged = { cacheJson ->
                             applySessionCommand("loadOfflinePackageLibraryCache") {
                                 uiSession.loadOfflinePackageLibraryCache(cacheJson)

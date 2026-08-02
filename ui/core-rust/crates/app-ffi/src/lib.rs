@@ -275,6 +275,20 @@ pub fn perform_cloud_ui_action_in_session_json(
     serde_json::to_string(&outcome).map_err(|err| err.to_string())
 }
 
+pub fn record_offline_package_preferences_in_session_json(
+    handle: u64,
+    preferences_json: &str,
+    now_epoch_ms: i64,
+) -> Result<String, String> {
+    let outcome = app_core::record_offline_package_preferences_in_session(
+        handle as u32,
+        preferences_json,
+        now_epoch_ms,
+    )
+    .map_err(|err| err.to_string())?;
+    serde_json::to_string(&outcome).map_err(|err| err.to_string())
+}
+
 pub fn take_cloud_provider_request_in_session_json(
     handle: u64,
     now_epoch_ms: i64,
@@ -1906,6 +1920,9 @@ enum OfflinePackagesControllerEventWire {
     PackagesEvent {
         event: app_core::OfflinePackagesEvent,
     },
+    ApplySynchronizedPreferences {
+        preferences_json: String,
+    },
     SyncRequested,
     SyncProgressObserved {
         progress: app_core::OfflinePackagesSyncProgress,
@@ -1932,6 +1949,7 @@ struct OfflinePackagesControllerResultWire {
     library_cache_json: Option<String>,
     ui_state: app_core::OfflinePackagesControllerUiState,
     command: Option<app_core::OfflinePackagesControllerCommand>,
+    preferences_for_cloud_json: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -2075,6 +2093,12 @@ pub fn dispatch_offline_packages_controller_json(
         OfflinePackagesControllerEventWire::PackagesEvent { event } => {
             app_core::OfflinePackagesControllerEvent::PackagesEvent { event }
         }
+        OfflinePackagesControllerEventWire::ApplySynchronizedPreferences { preferences_json } => {
+            app_core::OfflinePackagesControllerEvent::ApplySynchronizedPreferences {
+                preferences: serde_json::from_str(&preferences_json)
+                    .map_err(|err| err.to_string())?,
+            }
+        }
         OfflinePackagesControllerEventWire::SyncRequested => {
             app_core::OfflinePackagesControllerEvent::SyncRequested
         }
@@ -2113,6 +2137,12 @@ pub fn dispatch_offline_packages_controller_json(
             .map_err(|err| err.to_string())?,
         ui_state: result.ui_state,
         command: result.command,
+        preferences_for_cloud_json: result
+            .preferences_for_cloud
+            .as_ref()
+            .map(serde_json::to_string)
+            .transpose()
+            .map_err(|err| err.to_string())?,
     })
     .map_err(|err| err.to_string())
 }
@@ -2996,6 +3026,25 @@ pub extern "system" fn Java_org_aerobag_app_domain_NativeBindings_performCloudUi
             handle as u64,
             &action_id_json,
             &fields_json,
+            now_epoch_ms,
+        )
+    })();
+    return_string(&mut env, result)
+}
+
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_org_aerobag_app_domain_NativeBindings_recordOfflinePackagePreferencesInSessionJson(
+    mut env: JNIEnv,
+    _class: JClass,
+    handle: i64,
+    preferences_json: JString,
+    now_epoch_ms: i64,
+) -> jstring {
+    let result = (|| {
+        let preferences_json = get_java_string(&mut env, preferences_json)?;
+        record_offline_package_preferences_in_session_json(
+            handle as u64,
+            &preferences_json,
             now_epoch_ms,
         )
     })();

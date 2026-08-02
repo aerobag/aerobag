@@ -1217,6 +1217,17 @@ class NativeUiSession internal constructor(
         )
     }
 
+    fun recordOfflinePackagePreferences(
+        preferencesJson: String,
+        nowEpochMs: Long,
+    ): UiSessionSnapshot = runPagedSnapshot("recordOfflinePackagePreferences") {
+        bridge.recordOfflinePackagePreferencesInSessionJson(
+            handle,
+            preferencesJson,
+            nowEpochMs,
+        )
+    }
+
     fun takeCloudProviderRequest(nowEpochMs: Long): CloudHttpRequest? =
         json.decodeFromString(
             bridge.takeCloudProviderRequestInSessionJson(handle, nowEpochMs),
@@ -2172,6 +2183,7 @@ private data class WireUiSessionSnapshot(
     val data_status_page_state: WireUiDataStatusPageState,
     val settings_page_state: WireUiSettingsPageState = WireUiSettingsPageState(),
     val cloud_page_state: UiCloudPageState,
+    val offline_package_preferences_json: String = "{\"regions\":{},\"products\":{}}",
     val home_page_state: UiHomePageState,
     val display_policy: WireUiDisplayPolicy? = null,
     val disclaimer_state: WireUiDisclaimerState = WireUiDisclaimerState(),
@@ -2373,6 +2385,7 @@ data class UiSessionSnapshot(
     val dataStatusPageState: UiDataStatusPageState,
     val settingsPageState: UiSettingsPageState,
     val cloudPageState: UiCloudPageState,
+    val offlinePackagePreferencesJson: String,
     val homePageState: UiHomePageState,
     val displayPolicy: UiDisplayPolicy?,
     val disclaimerState: UiDisclaimerState,
@@ -2746,6 +2759,7 @@ private fun WireUiSessionSnapshot.toUi() = UiSessionSnapshot(
     dataStatusPageState = data_status_page_state.toUi(),
     settingsPageState = settings_page_state.toUi(),
     cloudPageState = cloud_page_state,
+    offlinePackagePreferencesJson = offline_package_preferences_json,
     homePageState = home_page_state,
     displayPolicy = display_policy?.toUi(),
     disclaimerState = disclaimer_state.toUi(),

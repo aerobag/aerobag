@@ -518,6 +518,9 @@ pub enum OfflinePackagesControllerEvent {
     PackagesEvent {
         event: OfflinePackagesEvent,
     },
+    ApplySynchronizedPreferences {
+        preferences: OfflinePackagePreferences,
+    },
     SyncRequested,
     SyncProgressObserved {
         progress: OfflinePackagesSyncProgress,
@@ -595,6 +598,7 @@ pub struct OfflinePackagesControllerResult {
     pub state: OfflinePackagesControllerState,
     pub ui_state: OfflinePackagesControllerUiState,
     pub command: Option<OfflinePackagesControllerCommand>,
+    pub preferences_for_cloud: Option<OfflinePackagePreferences>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -766,6 +770,7 @@ pub fn reduce_offline_packages_controller(
         .trim_end_matches('/')
         .to_string();
     let mut command = None;
+    let mut preferences_for_cloud = None;
 
     match &input.event {
         OfflinePackagesControllerEvent::EnsureLibrary => {
@@ -826,6 +831,7 @@ pub fn reduce_offline_packages_controller(
                     ),
                     state,
                     command,
+                    preferences_for_cloud: None,
                 };
             };
             let reduced = reduce_offline_packages(&OfflinePackagesReduceInput {
@@ -855,7 +861,22 @@ pub fn reduce_offline_packages_controller(
                 ),
                 state,
                 command,
+                preferences_for_cloud: Some(reduced.state.preferences),
             };
+        }
+        OfflinePackagesControllerEvent::ApplySynchronizedPreferences { preferences } => {
+            let packages_state = state.packages_state.get_or_insert_with(Default::default);
+            packages_state
+                .preferences
+                .regions
+                .extend(preferences.regions.clone());
+            packages_state
+                .preferences
+                .products
+                .extend(preferences.products.clone());
+            if packages_state.preferences != *preferences {
+                preferences_for_cloud = Some(packages_state.preferences.clone());
+            }
         }
         OfflinePackagesControllerEvent::SyncRequested => {
             if state.library_cache.is_none() {
@@ -921,6 +942,7 @@ pub fn reduce_offline_packages_controller(
         ),
         state,
         command,
+        preferences_for_cloud,
     }
 }
 
@@ -947,6 +969,7 @@ fn start_offline_packages_sync(
             ),
             state,
             command: None,
+            preferences_for_cloud: None,
         };
     }
     let Some(library_cache) = state.library_cache.as_ref() else {
@@ -960,6 +983,7 @@ fn start_offline_packages_sync(
             ),
             state,
             command: None,
+            preferences_for_cloud: None,
         };
     };
     let Some(packaged_artifact_root) = packaged_artifact_root(&library_cache.discovery_manifests)
@@ -975,6 +999,7 @@ fn start_offline_packages_sync(
             ),
             state,
             command: None,
+            preferences_for_cloud: None,
         };
     };
     let current = initialize_offline_packages(&OfflinePackagesInitInput {
@@ -1012,6 +1037,7 @@ fn start_offline_packages_sync(
         ),
         state,
         command,
+        preferences_for_cloud: None,
     }
 }
 
@@ -4259,5 +4285,53 @@ mod tests {
                 .collect::<Vec<_>>(),
             vec!["NW_SEC_2603"]
         );
+    }
+
+    #[test]
+    fn synchronized_preferences_merge_without_starting_package_sync() {
+        let local = OfflinePackagePreferences {
+            regions: BTreeMap::from([("nw".to_string(), OfflinePackageSelection::Play)]),
+            products: BTreeMap::from([("terrain".to_string(), OfflinePackageSelection::Pause)]),
+        };
+        let synchronized = OfflinePackagePreferences {
+            regions: BTreeMap::from([("nw".to_string(), OfflinePackageSelection::Unselected)]),
+            products: BTreeMap::new(),
+        };
+        let result = reduce_offline_packages_controller(&OfflinePackagesControllerInput {
+            state: Some(OfflinePackagesControllerState {
+                packages_state: Some(OfflinePackagesState {
+                    preferences: local,
+                    now_override_epoch_ms: None,
+                }),
+                ..OfflinePackagesControllerState::default()
+            }),
+            package_source_base_url: "https://example.test/packages".to_string(),
+            discovery_filenames: Vec::new(),
+            now_epoch_ms: 100,
+            installed: Vec::new(),
+            storage: None,
+            event: OfflinePackagesControllerEvent::ApplySynchronizedPreferences {
+                preferences: synchronized,
+            },
+        });
+
+        let merged = result.preferences_for_cloud.unwrap();
+        assert_eq!(merged.regions["nw"], OfflinePackageSelection::Unselected);
+        assert_eq!(merged.products["terrain"], OfflinePackageSelection::Pause);
+        assert!(result.command.is_none());
+
+        let second = reduce_offline_packages_controller(&OfflinePackagesControllerInput {
+            state: Some(result.state),
+            package_source_base_url: "https://example.test/packages".to_string(),
+            discovery_filenames: Vec::new(),
+            now_epoch_ms: 101,
+            installed: Vec::new(),
+            storage: None,
+            event: OfflinePackagesControllerEvent::ApplySynchronizedPreferences {
+                preferences: merged,
+            },
+        });
+        assert!(second.preferences_for_cloud.is_none());
+        assert!(second.command.is_none());
     }
 }

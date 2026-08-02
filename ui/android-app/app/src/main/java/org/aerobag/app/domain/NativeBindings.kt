@@ -342,6 +342,12 @@ interface NativeBridge {
         nowEpochMs: Long,
     ): String
 
+    fun recordOfflinePackagePreferencesInSessionJson(
+        handle: Long,
+        preferencesJson: String,
+        nowEpochMs: Long,
+    ): String
+
     fun takeCloudProviderRequestInSessionJson(handle: Long, nowEpochMs: Long): String
 
     fun completeCloudProviderRequestInSessionJson(
@@ -877,6 +883,12 @@ object NativeBindings : NativeBridge {
         handle: Long,
         actionIdJson: String,
         fieldsJson: String,
+        nowEpochMs: Long,
+    ): String
+
+    external override fun recordOfflinePackagePreferencesInSessionJson(
+        handle: Long,
+        preferencesJson: String,
         nowEpochMs: Long,
     ): String
 

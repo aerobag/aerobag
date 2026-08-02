@@ -644,6 +644,39 @@ fresh cloud modification time. Both platforms supply the action's wall-clock
 time through the common command boundary; core owns stamp construction and
 ordering. Web or Android must not mirror the flight plan back into core.
 
+## Offline Package Profile
+
+The second synchronized data type is the user's desired offline-package
+selection profile. It deliberately excludes installed files, transfer
+progress, storage capacity, package-library caches, errors, tombstones,
+package-source URLs, and automatic-download policy. Those remain device-local.
+Receiving this profile updates the package planner's selections but never
+starts a download.
+
+Each region and product selection is an independent synchronized record:
+
+- `offline_packages/region/<id>`
+- `offline_packages/product/<id>`
+
+Each record contains one `play`, `pause`, or `unselected` value and its
+core-assigned user-mutation time. Consequently, concurrent changes to
+different cells merge without either device replacing the other device's
+whole profile. Equal-time changes to the same cell use the generic
+deterministic record digest tie-breaker.
+
+Cloud pages remain complete snapshots of all cached records. A client only
+projects package IDs present in its local catalog, but it retains and
+republishes unknown record keys unchanged. An older catalog therefore cannot
+erase a selection introduced by a newer application or publication.
+
+The session exposes the merged package profile to the Android package
+controller as opaque JSON. The controller emits an opaque profile update after
+a local package-selection action. Android relays those values between the two
+core-owned components; it does not decode the cloud profile, assign timestamps,
+merge selections, or initiate synchronization. Web has no package planner yet,
+but its generic record store preserves the same records while publishing other
+changes.
+
 ## MVP Implementation Plan
 
 ### 1. Contracts And Test Provider
@@ -745,7 +778,7 @@ in CI; real Google authorization remains a manual/provider qualification test.
 ## After The MVP
 
 - Recovery-key backup in Drive.
-- Preferences, aircraft, package policy, saved plans, and traces.
+- Other preferences, aircraft, saved plans, and traces.
 - Signed checkpoints, bounded startup traversal, and chain compaction.
 - Merkle-page garbage collection and provider accounting.
 - Drive Changes polling and optional webhook notification relay.

@@ -983,30 +983,6 @@ internal fun HomePageButton(
 }
 
 @Composable
-internal fun HomeReturnDock(
-    modifier: Modifier = Modifier,
-    currentPage: AppPage,
-    chartPlateTargetPage: AppPage,
-    onHomeClick: () -> Unit,
-    onOpenChartOrPlate: () -> Unit,
-) {
-    Row(
-        modifier = modifier.padding(ThumbGap),
-        horizontalArrangement = Arrangement.spacedBy(ThumbGap),
-        verticalAlignment = Alignment.Top,
-    ) {
-        HomePageButton(
-            currentPage = currentPage,
-            onClick = onHomeClick,
-        )
-        ChartPlateReturnButton(
-            targetPage = chartPlateTargetPage,
-            onClick = onOpenChartOrPlate,
-        )
-    }
-}
-
-@Composable
 internal fun PrimaryNavigationDock(
     currentPage: AppPage,
     navElement: NavElementUiView?,

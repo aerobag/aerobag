@@ -7,9 +7,10 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use crate::procedure_geometry_constants::{
-    BORROWED_LATER_HOLD_FOR_PI_SOURCE_PREFIX, EXPLICIT_MISSED_TURN_SOURCE_PREFIX,
-    INFERRED_MISSED_TURN_SOURCE_PREFIX, INVENTED_PI_ENTRY_REVERSAL_SOURCE_PREFIX,
-    MAX_APPROACH_DISPLAY_ELEMENT_DISTANCE_NM, MAX_ENROUTE_TRANSITION_DISPLAY_ELEMENT_DISTANCE_NM,
+    BORROWED_LATER_HOLD_FOR_PI_SOURCE_PREFIX, CF_DIRECT_SHORTCUT_MISALIGNED_SOURCE_PREFIX,
+    EXPLICIT_MISSED_TURN_SOURCE_PREFIX, INFERRED_MISSED_TURN_SOURCE_PREFIX,
+    INVENTED_PI_ENTRY_REVERSAL_SOURCE_PREFIX, MAX_APPROACH_DISPLAY_ELEMENT_DISTANCE_NM,
+    MAX_ENROUTE_TRANSITION_DISPLAY_ELEMENT_DISTANCE_NM,
     MAX_PUBLISHED_HOLD_OR_MISSED_SEGMENT_DISTANCE_NM, MIN_ARC_SWEEP_DEG, MIN_GEOMETRY_DISTANCE_NM,
     PLATE_EXCEPTION_MISSED_TURN_SOURCE_PREFIX, POSITION_EPSILON_DEG,
 };
@@ -4798,10 +4799,20 @@ pub struct ProcedureGeometryFinalRouteRejection {
     pub error: AppError,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ProcedureGeometryCourseJoinBypassCandidate {
+    pub airport_id: String,
+    pub procedure_id: String,
+    pub runway_transition: Option<String>,
+    pub enroute_transition: Option<String>,
+    pub diagnostic: String,
+}
+
 #[derive(Debug)]
 pub struct ProcedureGeometryRecordAudit {
     pub records: Vec<pgt::ProcedureGeometryRecord>,
     pub final_route_rejections: Vec<ProcedureGeometryFinalRouteRejection>,
+    pub course_join_bypass_candidates: Vec<ProcedureGeometryCourseJoinBypassCandidate>,
 }
 
 fn collect_procedure_geometry_records(
@@ -4811,6 +4822,7 @@ fn collect_procedure_geometry_records(
 ) -> anyhow::Result<ProcedureGeometryRecordAudit> {
     let mut records = Vec::new();
     let mut final_route_rejections = Vec::new();
+    let mut course_join_bypass_candidates = Vec::new();
     for ((airport_id, procedure_id), distinct_rows_value) in distinct_by_procedure {
         let Some(kind) = procedure_kinds
             .get(&(airport_id.clone(), procedure_id.clone()))
@@ -4853,7 +4865,17 @@ fn collect_procedure_geometry_records(
                 0,
                 distinct_rows.clone(),
                 materialization_rows.clone(),
-            )?;
+            )
+            .map_err(|error| {
+                anyhow::anyhow!(
+                    "failed to materialize {} {} runway={:?} enroute={:?}: {}",
+                    airport_id,
+                    procedure_id,
+                    choice.runway_transition,
+                    choice.enroute_transition,
+                    error,
+                )
+            })?;
             if let Err(error) =
                 app_core::planning::validate_materialized_procedure_final_route(&built)
             {
@@ -4865,12 +4887,29 @@ fn collect_procedure_geometry_records(
                     error,
                 });
             }
+            for diagnostic in built
+                .resolved_legs
+                .iter()
+                .filter_map(|leg| leg.procedure_provenance.as_ref())
+                .filter_map(|provenance| provenance.display_path.as_ref())
+                .flat_map(|path| path.debug_element_sources.iter())
+                .filter(|source| source.starts_with(CF_DIRECT_SHORTCUT_MISALIGNED_SOURCE_PREFIX))
+            {
+                course_join_bypass_candidates.push(ProcedureGeometryCourseJoinBypassCandidate {
+                    airport_id: airport_id.clone(),
+                    procedure_id: procedure_id.clone(),
+                    runway_transition: choice.runway_transition.clone(),
+                    enroute_transition: choice.enroute_transition.clone(),
+                    diagnostic: diagnostic.clone(),
+                });
+            }
             records.push(procedure_geometry_record_from_materialized(built, choice));
         }
     }
     Ok(ProcedureGeometryRecordAudit {
         records,
         final_route_rejections,
+        course_join_bypass_candidates,
     })
 }
 

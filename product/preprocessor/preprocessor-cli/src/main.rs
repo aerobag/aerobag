@@ -2711,6 +2711,20 @@ fn main() -> anyhow::Result<()> {
                     rejection.error,
                 );
             }
+            println!(
+                "procedure_geometry_course_join_bypass_candidates {}",
+                summary.course_join_bypass_candidates.len()
+            );
+            for candidate in &summary.course_join_bypass_candidates {
+                println!(
+                    "procedure_geometry_course_join_bypass_candidate {} {} runway={:?} enroute={:?} {}",
+                    candidate.airport_id,
+                    candidate.procedure_id,
+                    candidate.runway_transition,
+                    candidate.enroute_transition,
+                    candidate.diagnostic,
+                );
+            }
             for (message, count) in summary.data_quality_messages {
                 println!("procedure_geometry_data_quality {count} {message}");
             }

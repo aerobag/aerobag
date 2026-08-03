@@ -5,10 +5,10 @@
 use crate::arinc_ambiguity_resolutions;
 use crate::planning::LegDisplayPathStyle;
 use crate::procedure_geometry_constants::{
-    BORROWED_LATER_HOLD_FOR_PI_SOURCE_PREFIX, EXPLICIT_MISSED_TURN_SOURCE_PREFIX,
-    INFERRED_MISSED_TURN_SOURCE_PREFIX, INVENTED_PI_ENTRY_REVERSAL_SOURCE_PREFIX,
-    MIN_ARC_SWEEP_DEG, MIN_GEOMETRY_DISTANCE_NM, PLATE_EXCEPTION_MISSED_TURN_SOURCE_PREFIX,
-    POSITION_EPSILON_DEG,
+    BORROWED_LATER_HOLD_FOR_PI_SOURCE_PREFIX, CF_DIRECT_SHORTCUT_MISALIGNED_SOURCE_PREFIX,
+    EXPLICIT_MISSED_TURN_SOURCE_PREFIX, INFERRED_MISSED_TURN_SOURCE_PREFIX,
+    INVENTED_PI_ENTRY_REVERSAL_SOURCE_PREFIX, MIN_ARC_SWEEP_DEG, MIN_GEOMETRY_DISTANCE_NM,
+    PLATE_EXCEPTION_MISSED_TURN_SOURCE_PREFIX, POSITION_EPSILON_DEG,
 };
 use crate::{
     basic_terminal_state, direct_to_fix_with_course_continuation_requirement, reconcile_handoff,
@@ -419,6 +419,7 @@ pub fn build_trailing_course_to_intercept_display_path(
         &mut altitude_ft,
         intercept_step,
         TrackTermination::ToFix(intercept_step.nav_position?),
+        false,
     )?;
     Some(solid_path(elements, debug_sources))
 }
@@ -714,6 +715,7 @@ enum TrackTermination {
 enum CourseToFixStartDecision {
     DirectToFixAlreadySatisfiesCourse,
     JoinPublishedCourse,
+    JoinPublishedCourseFromMisalignedArrival,
 }
 
 fn build_procedure_leg_display_path(
@@ -883,6 +885,7 @@ fn build_procedure_leg_display_path(
                     &mut current_altitude_ft,
                     step,
                     termination,
+                    false,
                 )?;
                 current_position = new_position;
                 current_course_deg = Some(course_deg);
@@ -898,6 +901,7 @@ fn build_procedure_leg_display_path(
                     &mut current_altitude_ft,
                     step,
                     TrackTermination::ToDme { center, radius_nm },
+                    false,
                 )?;
                 current_position = new_position;
                 current_course_deg = Some(course_deg);
@@ -1412,6 +1416,17 @@ fn build_procedure_leg_display_path(
                         }
                     }
                 }
+                let previous_path_termination = index
+                    .checked_sub(1)
+                    .and_then(|previous_index| steps.get(previous_index))
+                    .map(|previous| previous.path_termination.trim());
+                let direct_shortcut_diagnostic = cf_direct_shortcut_misalignment_diagnostic(
+                    current_position,
+                    current_course_deg,
+                    step,
+                    fix,
+                    previous_path_termination,
+                );
                 if let Some((new_position, _)) = append_course_track_path(
                     &mut elements,
                     &mut debug_sources,
@@ -1420,7 +1435,13 @@ fn build_procedure_leg_display_path(
                     &mut current_altitude_ft,
                     step,
                     TrackTermination::ToFix(fix),
+                    previous_path_termination == Some("CA"),
                 ) {
+                    if let Some(diagnostic) = direct_shortcut_diagnostic {
+                        if let Some(source) = debug_sources.last_mut() {
+                            *source = diagnostic;
+                        }
+                    }
                     current_position = new_position;
                 } else {
                     let direct_course_deg = bearing_from(current_position, fix);
@@ -1752,6 +1773,7 @@ fn append_course_track_path(
     current_altitude_ft: &mut Option<f64>,
     step: &ProcedureLegMaterializationRecord,
     termination: TrackTermination,
+    force_misaligned_arrival_course_join: bool,
 ) -> Option<(LatLon, f64)> {
     let course_deg = step.magnetic_course_deg? + course_reference_variation_deg(step);
     if let TrackTermination::ToFix(fix) = termination {
@@ -1763,11 +1785,13 @@ fn append_course_track_path(
     let track_limit = track_limit_position(&termination);
     let course_to_fix_start_decision = course_to_fix_start_decision(
         current_position,
+        current_course_deg,
         step,
         termination,
         course_anchor,
         course_deg,
         track_limit,
+        force_misaligned_arrival_course_join,
     );
     let on_track_tolerance_nm = match termination {
         TrackTermination::ToDme { .. } => 0.5,
@@ -1922,13 +1946,24 @@ fn append_course_track_path(
                 intercept
             }
         } else {
-            let direct_intercept = intersect_heading_with_course(
-                current_position,
-                current_heading_deg,
-                course_anchor,
-                course_deg,
-                track_limit.unwrap_or(course_anchor),
-            )
+            let direct_intercept = if course_to_fix_start_decision
+                == CourseToFixStartDecision::JoinPublishedCourseFromMisalignedArrival
+            {
+                true_intersect_heading_with_course(
+                    current_position,
+                    current_heading_deg,
+                    course_anchor,
+                    course_deg,
+                )
+            } else {
+                intersect_heading_with_course(
+                    current_position,
+                    current_heading_deg,
+                    course_anchor,
+                    course_deg,
+                    track_limit.unwrap_or(course_anchor),
+                )
+            }
             .filter(|intercept| {
                 track_intercept_is_reasonable(
                     current_position,
@@ -2076,11 +2111,13 @@ fn append_course_track_path(
 
 fn course_to_fix_start_decision(
     current_position: LatLon,
+    current_heading_deg: Option<f64>,
     step: &ProcedureLegMaterializationRecord,
     termination: TrackTermination,
     course_anchor: LatLon,
     course_deg: f64,
     track_limit: Option<LatLon>,
+    force_misaligned_arrival_course_join: bool,
 ) -> CourseToFixStartDecision {
     let TrackTermination::ToFix(fix) = termination else {
         return CourseToFixStartDecision::JoinPublishedCourse;
@@ -2107,7 +2144,69 @@ fn course_to_fix_start_decision(
     ) {
         return CourseToFixStartDecision::JoinPublishedCourse;
     }
+    if force_misaligned_arrival_course_join
+        && current_heading_deg.is_some_and(|heading_deg| {
+            angular_difference_degrees(heading_deg, course_deg) > 20.0
+                && !current_position_is_on_track(
+                    current_position,
+                    course_anchor,
+                    course_deg,
+                    MIN_GEOMETRY_DISTANCE_NM,
+                )
+        })
+    {
+        return CourseToFixStartDecision::JoinPublishedCourseFromMisalignedArrival;
+    }
     CourseToFixStartDecision::DirectToFixAlreadySatisfiesCourse
+}
+
+fn cf_direct_shortcut_misalignment_diagnostic(
+    current_position: LatLon,
+    current_heading_deg: Option<f64>,
+    step: &ProcedureLegMaterializationRecord,
+    fix: LatLon,
+    previous_path_termination: Option<&str>,
+) -> Option<String> {
+    let current_heading_deg = current_heading_deg?;
+    if previous_path_termination != Some("CA") {
+        return None;
+    }
+    let course_deg = step.magnetic_course_deg? + course_reference_variation_deg(step);
+    if course_to_fix_start_decision(
+        current_position,
+        Some(current_heading_deg),
+        step,
+        TrackTermination::ToFix(fix),
+        step.defining_nav_position.or(step.nav_position)?,
+        course_deg,
+        Some(fix),
+        true,
+    ) != CourseToFixStartDecision::DirectToFixAlreadySatisfiesCourse
+    {
+        return None;
+    }
+    let incoming_delta_deg = angular_difference_degrees(current_heading_deg, course_deg);
+    if incoming_delta_deg <= 20.0 {
+        return None;
+    }
+    let offset = to_local_en(
+        step.defining_nav_position.or(step.nav_position)?,
+        current_position,
+    );
+    let course_unit = bearing_unit_vector(course_deg);
+    let cross_track_nm = (offset.0 * (-course_unit.1) + offset.1 * course_unit.0).abs();
+    if cross_track_nm <= MIN_GEOMETRY_DISTANCE_NM {
+        return None;
+    }
+    let direct_course_deg = bearing_from(current_position, fix);
+    Some(format!(
+        "{CF_DIRECT_SHORTCUT_MISALIGNED_SOURCE_PREFIX}route={} transition={} seq={} previous={} incoming_true={current_heading_deg:.1} course_true={course_deg:.1} direct_true={direct_course_deg:.1} incoming_delta={incoming_delta_deg:.1} direct_delta={:.1} cross_track_nm={cross_track_nm:.2}",
+        step.key.route_type.trim(),
+        step.key.transition_id.trim(),
+        step.sequence,
+        previous_path_termination.unwrap_or(""),
+        angular_difference_degrees(direct_course_deg, course_deg),
+    ))
 }
 
 fn ca_is_altitude_note_before_climbing_turn(
@@ -4221,7 +4320,88 @@ fn classify_hold_entry(
 
 #[cfg(test)]
 mod tests {
-    use super::{classify_hold_entry, HoldEntryKind};
+    use super::*;
+    use crate::{NavRef, PathTermination, ProcedureVariantKey};
+
+    #[test]
+    fn kcec_l12_missed_cf_joins_cec_radial_after_climb() {
+        let climb_end = LatLon {
+            lat: 41.7718832,
+            lon: -124.2228028,
+        };
+        let chide = LatLon {
+            lat: 41.5967528,
+            lon: -124.2397889,
+        };
+        let step = ProcedureLegMaterializationRecord {
+            key: ProcedureVariantKey {
+                airport_id: "KCEC".to_string(),
+                procedure_id: "L12".to_string(),
+                route_type: "L".to_string(),
+                transition_id: String::new(),
+            },
+            sequence: 50,
+            nav_ref: Some(NavRef::Fix("CHIDE".to_string())),
+            nav_position: Some(chide),
+            nav_magnetic_variation_deg: None,
+            defining_nav_ref: Some(NavRef::Navaid("CEC".to_string())),
+            defining_nav_position: Some(LatLon {
+                lat: 41.7795789,
+                lon: -124.2408472,
+            }),
+            defining_nav_magnetic_variation_deg: Some(14.0),
+            arc_center_fix_ref: None,
+            arc_center_fix_position: None,
+            arc_radius_nm: None,
+            airport_magnetic_variation_deg: Some(14.0),
+            altitude_1_ft: Some(3000.0),
+            altitude_2_ft: None,
+            path_termination: "CF".to_string(),
+            path_termination_kind: PathTermination::CourseToFix,
+            turn_direction: None,
+            theta_deg: Some(165.8),
+            magnetic_course_deg: Some(165.8),
+            route_distance_or_time: Some("0070".to_string()),
+        };
+        let mut elements = Vec::new();
+        let mut debug_sources = Vec::new();
+        let mut altitude_ft = Some(700.0);
+
+        append_course_track_path(
+            &mut elements,
+            &mut debug_sources,
+            climb_end,
+            Some(133.2),
+            &mut altitude_ft,
+            &step,
+            TrackTermination::ToFix(chide),
+            true,
+        )
+        .expect("materialize KCEC missed CF");
+
+        assert!(
+            matches!(
+                elements.first(),
+                Some(LegDisplayElement::Arc {
+                    clockwise: true,
+                    ..
+                })
+            ),
+            "KCEC missed must turn right from the climb heading to intercept CEC R-166; got {elements:?}"
+        );
+        assert!(
+            elements.len() >= 3,
+            "KCEC missed must distinguish the turn/intercept from the outbound radial to CHIDE; got {elements:?}"
+        );
+        let radial_start = elements
+            .last()
+            .and_then(display_element_start_position)
+            .expect("outbound radial segment");
+        assert!(
+            angular_difference_degrees(bearing_from(radial_start, chide), 179.8) <= 1.0,
+            "final segment to CHIDE must follow CEC R-166"
+        );
+    }
 
     #[test]
     fn left_hold_entry_sectors_match_expected_examples() {

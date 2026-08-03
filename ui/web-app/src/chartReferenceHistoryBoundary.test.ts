@@ -48,6 +48,15 @@ describe("chart-reference view history boundary", () => {
     expect(helper).toContain("restoreSnapshot(nextCurrent, nextHistory)");
   });
 
+  it("rebinds browser history restoration when the core session changes", () => {
+    const popstateEffect = sourceBetween(
+      "function handlePopState(event: PopStateEvent)",
+      "function navigateToPage(",
+    );
+
+    expect(popstateEffect).toContain("}, [applySessionSnapshot, uiSession]);");
+  });
+
   it("puts the reference action on its chart-family tray row", () => {
     const familyDock = sourceBetween(
       'testId="chart-family-button"',

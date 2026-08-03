@@ -930,6 +930,12 @@ const PAGE_CHART_ICON_SRC = "/icons/icons/page-chart-icon.png?v=20260424b";
 const PAGE_HOME_ICON_SRC = "/icons/icons/page-home-icon.png?v=20260617a";
 const PAGE_PLAN_ICON_SRC = "/icons/icons/page-plan1-icon.png?v=20260424b";
 const PAGE_PLATE_ICON_SRC = "/icons/icons/page-plate-icon.png?v=20260424b";
+const HOME_ABOUT_ICON_SRC = "/icons/icons/home-about-icon.png?v=20260802a";
+const HOME_CLOUD_ICON_SRC = "/icons/icons/home-cloud-icon.png?v=20260803a";
+const HOME_FLIGHT_PLAN_ICON_SRC = "/icons/icons/home-flight-plan-icon.png?v=20260802a";
+const HOME_OFFLINE_PACKAGES_ICON_SRC = "/icons/icons/home-offline-packages-icon.png?v=20260802a";
+const HOME_SETTINGS_ICON_SRC = "/icons/icons/home-settings-icon.png?v=20260802a";
+const HOME_STATUS_ICON_SRC = "/icons/icons/home-status-icon.png?v=20260802a";
 const HOME_PAGE_BACKDROP_SRC = "/icons/backdrops/home-page-backdrop.jpg?v=20260617a";
 const LAYER_VECTORS_ICON_SRC = "/icons/icons/layer-vectors-icon.png?v=20260424b";
 const LAYER_NEXRAD_ICON_SRC = "/icons/icons/layer-nexrad-icon.png?v=20260424b";
@@ -945,17 +951,17 @@ function webHomeButtonPresentation(destination: UiHomeDestination): { page: AppP
     case "plate":
       return { page: "charts", iconSrc: PAGE_PLATE_ICON_SRC };
     case "flight_plan":
-      return { page: "plan" };
+      return { page: "plan", iconSrc: HOME_FLIGHT_PLAN_ICON_SRC };
     case "data_status":
-      return { page: "data" };
+      return { page: "data", iconSrc: HOME_STATUS_ICON_SRC };
     case "settings":
-      return { page: "settings" };
+      return { page: "settings", iconSrc: HOME_SETTINGS_ICON_SRC };
     case "cloud":
-      return { page: "cloud" };
+      return { page: "cloud", iconSrc: HOME_CLOUD_ICON_SRC };
     case "offline_packages":
-      return { page: null };
+      return { page: null, iconSrc: HOME_OFFLINE_PACKAGES_ICON_SRC };
     case "about":
-      return { page: "about" };
+      return { page: "about", iconSrc: HOME_ABOUT_ICON_SRC };
   }
 }
 
@@ -3190,7 +3196,7 @@ export default function App() {
     }
     window.addEventListener("popstate", handlePopState);
     return () => window.removeEventListener("popstate", handlePopState);
-  }, [applySessionSnapshot]);
+  }, [applySessionSnapshot, uiSession]);
 
   function navigateToPage(nextPage: AppPage) {
     if (nextPage === page) {

@@ -354,32 +354,32 @@ private fun UiHomePageButton.toHomeGridButton(): HomeGridButton {
         UiHomeDestination.FlightPlan -> {
             targetPage = AppPage.Plan
             externalUrl = null
-            iconResId = null
+            iconResId = R.drawable.home_flight_plan_icon
         }
         UiHomeDestination.DataStatus -> {
             targetPage = AppPage.DataStatus
             externalUrl = null
-            iconResId = null
+            iconResId = R.drawable.home_status_icon
         }
         UiHomeDestination.Settings -> {
             targetPage = AppPage.Settings
             externalUrl = null
-            iconResId = null
+            iconResId = R.drawable.home_settings_icon
         }
         UiHomeDestination.Cloud -> {
             targetPage = AppPage.Cloud
             externalUrl = null
-            iconResId = null
+            iconResId = R.drawable.home_cloud_icon
         }
         UiHomeDestination.OfflinePackages -> {
             targetPage = AppPage.OfflinePackages
             externalUrl = null
-            iconResId = null
+            iconResId = R.drawable.home_offline_packages_icon
         }
         UiHomeDestination.About -> {
             targetPage = null
             externalUrl = "https://aerobag.org/about"
-            iconResId = null
+            iconResId = R.drawable.home_about_icon
         }
     }
     return HomeGridButton(

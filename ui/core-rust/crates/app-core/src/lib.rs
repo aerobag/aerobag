@@ -32,6 +32,7 @@ pub mod planning;
 pub mod playback;
 pub mod publication;
 pub mod raster_tiles;
+mod sequencing;
 pub mod session;
 pub mod situation;
 pub mod state;
@@ -518,34 +519,16 @@ fn guidance_route_terminal_course_deg(geometry: &GuidanceRouteGeometry) -> f64 {
     }
 }
 
-fn finish_line_normal_course_deg(inbound_course_deg: f64, outbound_course_deg: f64) -> f64 {
-    let inbound = inbound_course_deg.to_radians();
-    let outbound = outbound_course_deg.to_radians();
-    let x = inbound.sin() + outbound.sin();
-    let y = inbound.cos() + outbound.cos();
-    if x.hypot(y) < 1e-9 {
-        normalize_bearing_degrees(inbound_course_deg)
-    } else {
-        normalize_bearing_degrees(x.atan2(y).to_degrees())
-    }
-}
-
-fn sequencing_plane_finish_line(
+fn sequencing_plane_finish_lines(
     current: &GuidanceRouteGeometry,
     next: Option<&GuidanceRouteGeometry>,
-) -> FlightPlanRouteFinishLine {
+) -> Vec<FlightPlanRouteFinishLine> {
     let (_, intersection) = guidance_route_endpoints(current);
     let inbound_course = guidance_route_terminal_course_deg(current);
     let outbound_course = next
         .map(guidance_route_course_deg)
         .unwrap_or(inbound_course);
-    let line_course = normalize_bearing_degrees(
-        finish_line_normal_course_deg(inbound_course, outbound_course) + 90.0,
-    );
-    FlightPlanRouteFinishLine {
-        start: route_destination_point(intersection, line_course + 180.0, 20.0),
-        end: route_destination_point(intersection, line_course, 20.0),
-    }
+    sequencing::plane_finish_criterion(intersection, inbound_course, outbound_course).finish_lines()
 }
 
 fn sequencing_arc_finish_lines(
@@ -561,26 +544,8 @@ fn sequencing_arc_finish_lines(
     else {
         return None;
     };
-    let sweep = sweep_degrees.abs().min(360.0);
-    let untraveled_sweep = 360.0 - sweep;
-    if untraveled_sweep <= 1e-6 {
-        return None;
-    }
-    let finish_bearing = route_bearing_from(*center, *end);
-    let untraveled_mid_bearing = if *clockwise {
-        normalize_bearing_degrees(finish_bearing + untraveled_sweep / 2.0)
-    } else {
-        normalize_bearing_degrees(finish_bearing - untraveled_sweep / 2.0)
-    };
-    Some(
-        [finish_bearing, untraveled_mid_bearing]
-            .into_iter()
-            .map(|bearing| FlightPlanRouteFinishLine {
-                start: *center,
-                end: route_destination_point(*center, bearing, 20.0),
-            })
-            .collect(),
-    )
+    sequencing::arc_finish_criterion(*center, *end, *clockwise, *sweep_degrees)
+        .map(sequencing::SequencingFinishCriterion::finish_lines)
 }
 
 fn sequencing_finish_lines(
@@ -588,7 +553,7 @@ fn sequencing_finish_lines(
     next: Option<&GuidanceRouteGeometry>,
 ) -> Vec<FlightPlanRouteFinishLine> {
     sequencing_arc_finish_lines(current)
-        .unwrap_or_else(|| vec![sequencing_plane_finish_line(current, next)])
+        .unwrap_or_else(|| sequencing_plane_finish_lines(current, next))
 }
 
 fn guidance_route_endpoints(geometry: &GuidanceRouteGeometry) -> (LatLon, LatLon) {

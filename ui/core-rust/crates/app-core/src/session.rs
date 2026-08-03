@@ -12401,10 +12401,26 @@ fn apply_ownship_sample(
     sample: crate::SituationSample,
 ) -> AppResult<OwnshipMotionResult> {
     let terrain_key_before = ownship_terrain_refresh_key(session);
+    let previous_source_id = session.app_state.ownship.resolved.active_source_id.clone();
+    let previous_position = session.app_state.ownship.render.position;
     maybe_log_gps_capture_sample(session, &sample);
     advance_session_wall_clock(session, sample.received_time_epoch_ms);
     session.app_state = state::reduce(&session.app_state, AppEvent::PushSituationSample(sample))?;
-    let sequenced_guidance = sequence_guidance_by_ownship_position(session)?;
+    let current_source_id = session.app_state.ownship.resolved.active_source_id.clone();
+    let current_position = session.app_state.ownship.render.position;
+    let sequenced_guidance = match (
+        previous_source_id,
+        previous_position,
+        current_source_id,
+        current_position,
+    ) {
+        (Some(previous_source), Some(previous), Some(current_source), Some(current))
+            if previous_source == current_source =>
+        {
+            sequence_guidance_by_ownship_motion(session, previous, current)?
+        }
+        _ => false,
+    };
     Ok(OwnshipMotionResult {
         terrain_key_before,
         sequenced_guidance,
@@ -12535,28 +12551,11 @@ fn apply_playback_state_to_ownship(
     Ok(motion)
 }
 
-#[derive(Debug, Clone, Copy)]
-struct SequencingFinishPlane {
-    point: LatLon,
-    normal_course_deg: f64,
-}
-
-#[derive(Debug, Clone, Copy)]
-enum SequencingFinishCriterion {
-    Plane(SequencingFinishPlane),
-    ArcSector {
-        center: LatLon,
-        finish_point: LatLon,
-        finish_bearing_deg: f64,
-        untraveled_mid_bearing_deg: f64,
-        clockwise: bool,
-    },
-}
-
-fn sequence_guidance_by_ownship_position(session: &mut UiSession) -> AppResult<bool> {
-    let Some(position) = session.app_state.ownship.render.position else {
-        return Ok(false);
-    };
+fn sequence_guidance_by_ownship_motion(
+    session: &mut UiSession,
+    previous_position: LatLon,
+    current_position: LatLon,
+) -> AppResult<bool> {
     let mut sequenced = false;
     for _ in 0..16 {
         let Some(plan) = session.app_state.active_plan.as_ref() else {
@@ -12590,7 +12589,7 @@ fn sequence_guidance_by_ownship_position(session: &mut UiSession) -> AppResult<b
             };
             (finish_criterion, suspended_hold)
         };
-        if !position_satisfies_finish_criterion(position, finish_criterion) {
+        if !finish_criterion.crossed_by(previous_position, current_position) {
             return Ok(sequenced);
         }
         let next_plan = if suspended_hold {
@@ -12607,7 +12606,7 @@ fn sequence_guidance_by_ownship_position(session: &mut UiSession) -> AppResult<b
 fn direct_to_finish_criterion(
     plan: &FlightPlan,
     geometry_by_leg_id: &HashMap<String, GuidanceLegGeometry>,
-) -> Option<SequencingFinishCriterion> {
+) -> Option<crate::sequencing::SequencingFinishCriterion> {
     let guidance = plan.guidance.as_ref()?;
     if guidance.sequencing_mode != SequencingMode::DirectTo {
         return None;
@@ -12624,10 +12623,11 @@ fn direct_to_finish_criterion(
         })
         .and_then(|(_, geometry)| initial_course_for_guidance_geometry(&geometry))
         .unwrap_or(current_course);
-    Some(SequencingFinishCriterion::Plane(SequencingFinishPlane {
-        point: current.to,
-        normal_course_deg: finish_line_normal_course_deg(current_course, next_course),
-    }))
+    Some(crate::sequencing::plane_finish_criterion(
+        current.to,
+        current_course,
+        next_course,
+    ))
 }
 
 fn active_detail_finish_criterion(
@@ -12635,7 +12635,7 @@ fn active_detail_finish_criterion(
     active_detail_index: usize,
     geometry_by_leg_id: &HashMap<String, GuidanceLegGeometry>,
     wrap_terminal_hold: bool,
-) -> Option<SequencingFinishCriterion> {
+) -> Option<crate::sequencing::SequencingFinishCriterion> {
     let (_, current) =
         active_guidance_detail_geometry_for_index(plan, active_detail_index, geometry_by_leg_id)?;
     if let Some(arc_criterion) = active_detail_arc_finish_criterion(plan, active_detail_index) {
@@ -12653,16 +12653,17 @@ fn active_detail_finish_criterion(
         })
         .and_then(|(_, geometry)| initial_course_for_guidance_geometry(&geometry))
         .unwrap_or(current_course);
-    Some(SequencingFinishCriterion::Plane(SequencingFinishPlane {
-        point: current.to,
-        normal_course_deg: finish_line_normal_course_deg(current_course, next_course),
-    }))
+    Some(crate::sequencing::plane_finish_criterion(
+        current.to,
+        current_course,
+        next_course,
+    ))
 }
 
 fn active_detail_arc_finish_criterion(
     plan: &FlightPlan,
     active_detail_index: usize,
-) -> Option<SequencingFinishCriterion> {
+) -> Option<crate::sequencing::SequencingFinishCriterion> {
     let detail = crate::planning::guidance_detail_ref_by_index(plan, active_detail_index)?;
     let leg = plan.resolved_legs.get(detail.leg_index)?;
     let element = leg
@@ -12683,24 +12684,7 @@ fn active_detail_arc_finish_criterion(
     else {
         return None;
     };
-    let sweep = sweep_degrees.abs().min(360.0);
-    let untraveled_sweep = 360.0 - sweep;
-    if untraveled_sweep <= 1e-6 {
-        return None;
-    }
-    let finish_bearing_deg = bearing_degrees(*center, *end);
-    let untraveled_mid_bearing_deg = if *clockwise {
-        normalize_course_degrees(finish_bearing_deg + untraveled_sweep / 2.0)
-    } else {
-        normalize_course_degrees(finish_bearing_deg - untraveled_sweep / 2.0)
-    };
-    Some(SequencingFinishCriterion::ArcSector {
-        center: *center,
-        finish_point: *end,
-        finish_bearing_deg,
-        untraveled_mid_bearing_deg,
-        clockwise: *clockwise,
-    })
+    crate::sequencing::arc_finish_criterion(*center, *end, *clockwise, *sweep_degrees)
 }
 
 fn sequence_suspended_terminal_hold_detail(plan: &FlightPlan) -> AppResult<FlightPlan> {
@@ -12778,86 +12762,6 @@ fn terminal_course_for_guidance_geometry(geometry: &GuidanceLegGeometry) -> Opti
         .rev()
         .find(|segment| crate::great_circle_distance_nm(segment[0], segment[1]) > f64::EPSILON)
         .map(|segment| bearing_degrees(segment[0], segment[1]))
-}
-
-fn finish_line_normal_course_deg(inbound_course_deg: f64, outbound_course_deg: f64) -> f64 {
-    let inbound = inbound_course_deg.to_radians();
-    let outbound = outbound_course_deg.to_radians();
-    let x = inbound.sin() + outbound.sin();
-    let y = inbound.cos() + outbound.cos();
-    if x.hypot(y) < 1e-9 {
-        normalize_course_degrees(inbound_course_deg)
-    } else {
-        normalize_course_degrees(x.atan2(y).to_degrees())
-    }
-}
-
-fn normalize_course_degrees(course_deg: f64) -> f64 {
-    course_deg.rem_euclid(360.0)
-}
-
-fn signed_distance_beyond_finish_plane(
-    position: LatLon,
-    finish_plane: SequencingFinishPlane,
-) -> f64 {
-    let lat_rad = finish_plane.point.lat.to_radians();
-    let east_nm = (position.lon - finish_plane.point.lon).to_radians() * lat_rad.cos() * 3440.065;
-    let north_nm = (position.lat - finish_plane.point.lat).to_radians() * 3440.065;
-    let normal = finish_plane.normal_course_deg.to_radians();
-    east_nm * normal.sin() + north_nm * normal.cos()
-}
-
-fn position_satisfies_finish_criterion(
-    position: LatLon,
-    finish_criterion: SequencingFinishCriterion,
-) -> bool {
-    match finish_criterion {
-        SequencingFinishCriterion::Plane(finish_plane) => {
-            crate::great_circle_distance_nm(position, finish_plane.point) <= 10.0
-                && signed_distance_beyond_finish_plane(position, finish_plane) > 0.05
-        }
-        SequencingFinishCriterion::ArcSector {
-            center,
-            finish_point,
-            finish_bearing_deg,
-            untraveled_mid_bearing_deg,
-            clockwise,
-        } => {
-            if crate::great_circle_distance_nm(position, finish_point) > 10.0 {
-                return false;
-            }
-            let bearing = bearing_degrees(center, position);
-            bearing_is_in_arc_finish_sector(
-                bearing,
-                finish_bearing_deg,
-                untraveled_mid_bearing_deg,
-                clockwise,
-            )
-        }
-    }
-}
-
-fn bearing_is_in_arc_finish_sector(
-    bearing_deg: f64,
-    finish_bearing_deg: f64,
-    untraveled_mid_bearing_deg: f64,
-    clockwise: bool,
-) -> bool {
-    let sector_width = if clockwise {
-        clockwise_delta_degrees(finish_bearing_deg, untraveled_mid_bearing_deg)
-    } else {
-        clockwise_delta_degrees(untraveled_mid_bearing_deg, finish_bearing_deg)
-    };
-    let distance_into_sector = if clockwise {
-        clockwise_delta_degrees(finish_bearing_deg, bearing_deg)
-    } else {
-        clockwise_delta_degrees(bearing_deg, finish_bearing_deg)
-    };
-    distance_into_sector <= sector_width + 1e-6
-}
-
-fn clockwise_delta_degrees(from_deg: f64, to_deg: f64) -> f64 {
-    (normalize_course_degrees(to_deg) - normalize_course_degrees(from_deg)).rem_euclid(360.0)
 }
 
 fn derive_compact_chart_page_state(
@@ -22879,6 +22783,25 @@ mod tests {
         )
         .expect("install guidance geometry");
 
+        super::push_situation_sample_in_session(
+            init.handle,
+            SituationSample {
+                source_id: OwnshipSourceId("test-gps".to_string()),
+                source_kind: OwnshipSourceKind::DeviceGps,
+                event_time_epoch_ms: 500,
+                received_time_epoch_ms: 500,
+                position: Some(a),
+                horizontal_accuracy_m: None,
+                vertical_accuracy_m: None,
+                track_deg_true: Some(90.0),
+                heading_deg_true: None,
+                ground_speed_kt: Some(120.0),
+                altitude_msl_ft: Some(3000.0),
+                pressure_altitude_ft: None,
+                vertical_speed_fpm: None,
+            },
+        )
+        .expect("push pre-crossing sample");
         let outcome = super::push_situation_sample_in_session(
             init.handle,
             SituationSample {
@@ -23029,6 +22952,7 @@ mod tests {
                 .expect("activate direct-to route start");
         let init = create_ui_session(direct_to_plan, &[], None, None).expect("create session");
 
+        push_test_ownship_position(init.handle, direct_start, 500);
         let after_direct = push_test_ownship_position(
             init.handle,
             LatLon {
@@ -24593,6 +24517,19 @@ mod tests {
         )
         .expect("install guidance geometry");
 
+        set_situation_in_session(
+            init.handle,
+            crate::Situation {
+                position: crate::SituationPosition::LatLon {
+                    lat: outbound_start.lat,
+                    lon: outbound_start.lon,
+                },
+                orientation_deg: Some(90.0),
+                speed_kt: Some(120.0),
+                altitude_msl_ft: None,
+            },
+        )
+        .expect("push pre-crossing ownship sample");
         set_situation_in_session(
             init.handle,
             crate::Situation {

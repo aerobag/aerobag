@@ -51,7 +51,8 @@ use preprocessor_fetch::{
     CacheLayout, FetchCacheConfig, FetchCacheMode, PackageOutputRecord, PrefetchRequest,
 };
 use preprocessor_procedure_geometry::{
-    build_procedure_geometry_records, procedure_kinds_from_lists,
+    audit_procedure_geometry_records, build_procedure_geometry_records, procedure_kinds_from_lists,
+    ProcedureGeometryFinalRouteRejection,
 };
 use preprocessor_resource_index::{
     validate_resource_package_catalog, write_resource_index, AssetSource,

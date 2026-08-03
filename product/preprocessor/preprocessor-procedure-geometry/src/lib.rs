@@ -1140,6 +1140,7 @@ fn resolve_procedure_materialization_legs_with_provenance(
         validate_materialized_geometry_rows_have_display_paths(&resolved, procedure_id)?;
         validate_no_absurdly_long_display_elements(&resolved, procedure_id)?;
         validate_display_path_geometry_stitches(&resolved, procedure_id);
+        app_core::planning::validate_final_procedure_geometry(&resolved)?;
     }
     if validate_heading_continuity {
         row_ledger.validate_all_rows_explained(procedure_id)?;
@@ -4788,12 +4789,28 @@ fn merge_concretized_segments_from_records(
     merged
 }
 
-pub fn build_procedure_geometry_records(
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ProcedureGeometryFinalRouteRejection {
+    pub airport_id: String,
+    pub procedure_id: String,
+    pub runway_transition: Option<String>,
+    pub enroute_transition: Option<String>,
+    pub error: AppError,
+}
+
+#[derive(Debug)]
+pub struct ProcedureGeometryRecordAudit {
+    pub records: Vec<pgt::ProcedureGeometryRecord>,
+    pub final_route_rejections: Vec<ProcedureGeometryFinalRouteRejection>,
+}
+
+fn collect_procedure_geometry_records(
     procedure_kinds: BTreeMap<(String, String), ProcedureKind>,
     distinct_by_procedure: BTreeMap<(String, String), Vec<serde_json::Value>>,
     materialization_by_procedure: BTreeMap<(String, String), Vec<serde_json::Value>>,
-) -> anyhow::Result<Vec<pgt::ProcedureGeometryRecord>> {
+) -> anyhow::Result<ProcedureGeometryRecordAudit> {
     let mut records = Vec::new();
+    let mut final_route_rejections = Vec::new();
     for ((airport_id, procedure_id), distinct_rows_value) in distinct_by_procedure {
         let Some(kind) = procedure_kinds
             .get(&(airport_id.clone(), procedure_id.clone()))
@@ -4837,10 +4854,60 @@ pub fn build_procedure_geometry_records(
                 distinct_rows.clone(),
                 materialization_rows.clone(),
             )?;
+            if let Err(error) =
+                app_core::planning::validate_materialized_procedure_final_route(&built)
+            {
+                final_route_rejections.push(ProcedureGeometryFinalRouteRejection {
+                    airport_id: airport_id.clone(),
+                    procedure_id: procedure_id.clone(),
+                    runway_transition: choice.runway_transition.clone(),
+                    enroute_transition: choice.enroute_transition.clone(),
+                    error,
+                });
+            }
             records.push(procedure_geometry_record_from_materialized(built, choice));
         }
     }
-    Ok(records)
+    Ok(ProcedureGeometryRecordAudit {
+        records,
+        final_route_rejections,
+    })
+}
+
+pub fn audit_procedure_geometry_records(
+    procedure_kinds: BTreeMap<(String, String), ProcedureKind>,
+    distinct_by_procedure: BTreeMap<(String, String), Vec<serde_json::Value>>,
+    materialization_by_procedure: BTreeMap<(String, String), Vec<serde_json::Value>>,
+) -> anyhow::Result<ProcedureGeometryRecordAudit> {
+    collect_procedure_geometry_records(
+        procedure_kinds,
+        distinct_by_procedure,
+        materialization_by_procedure,
+    )
+}
+
+pub fn build_procedure_geometry_records(
+    procedure_kinds: BTreeMap<(String, String), ProcedureKind>,
+    distinct_by_procedure: BTreeMap<(String, String), Vec<serde_json::Value>>,
+    materialization_by_procedure: BTreeMap<(String, String), Vec<serde_json::Value>>,
+) -> anyhow::Result<Vec<pgt::ProcedureGeometryRecord>> {
+    let audit = collect_procedure_geometry_records(
+        procedure_kinds,
+        distinct_by_procedure,
+        materialization_by_procedure,
+    )?;
+    if let Some(rejection) = audit.final_route_rejections.first() {
+        anyhow::bail!(
+            "final materialized route rejected for {} {} runway={:?} enroute={:?}: {} ({} total rejections)",
+            rejection.airport_id,
+            rejection.procedure_id,
+            rejection.runway_transition,
+            rejection.enroute_transition,
+            rejection.error,
+            audit.final_route_rejections.len(),
+        );
+    }
+    Ok(audit.records)
 }
 
 #[cfg(test)]

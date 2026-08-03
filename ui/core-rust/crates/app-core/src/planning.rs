@@ -10,7 +10,7 @@ use crate::geodesy::initial_course_deg;
 use crate::geometry::LatLon;
 use crate::ids::AirportId;
 use crate::map_overlay::{NavSymbolFeature, WeatherDetailUiView};
-use crate::{FlightDataCell, FlightDataCellTone, FlightDataColumn};
+use crate::{FlightDataCell, FlightDataCellTone, FlightDataColumn, MaterializedProcedure};
 
 pub(crate) const OFF_PLAN_DIRECT_TO_EDIT_DISABLED_REASON: &str =
     "Restore FP before editing the flight plan.";
@@ -22,6 +22,7 @@ const PROCEDURE_REMOVE_DISABLED_REASON: &str =
     "This procedure cannot be removed from the flight plan.";
 const REMOVE_ALL_ABOVE_DISABLED_REASON: &str =
     "This row cannot be used as a Remove All Above target.";
+const MAX_INSTANTANEOUS_PROCEDURE_TURN_DEG: f64 = 150.0;
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct FlightPlan {
@@ -3319,6 +3320,8 @@ fn rebuild_plan_from_uid_components(
         materialize_rebuilt_components(&old_plan, rebuilt_components);
     let resolved_legs =
         rebuild_resolved_legs_with_grouped_components(&route_components, &grouped_legs);
+    validate_final_procedure_geometry(&resolved_legs)?;
+    validate_preserved_grouped_leg_order(&grouped_legs, &resolved_legs)?;
     let mut plan = FlightPlan {
         route_components,
         route_component_uids,
@@ -3336,6 +3339,140 @@ fn rebuild_plan_from_uid_components(
         GuidanceRebuildPolicy::Clear => None,
     };
     Ok(plan)
+}
+
+pub fn validate_final_procedure_geometry(resolved_legs: &[ResolvedLeg]) -> AppResult<()> {
+    for pair in resolved_legs.windows(2) {
+        let [incoming, outgoing] = pair else {
+            continue;
+        };
+        let (
+            ResolvedLegSource::RouteComponent {
+                component_index: incoming_component,
+            },
+            ResolvedLegSource::RouteComponent {
+                component_index: outgoing_component,
+            },
+        ) = (&incoming.source, &outgoing.source)
+        else {
+            continue;
+        };
+        if incoming_component != outgoing_component {
+            continue;
+        }
+        let (Some(incoming_provenance), Some(outgoing_provenance)) = (
+            incoming.procedure_provenance.as_ref(),
+            outgoing.procedure_provenance.as_ref(),
+        ) else {
+            continue;
+        };
+        if incoming_provenance.airport_id != outgoing_provenance.airport_id
+            || incoming_provenance.procedure_id != outgoing_provenance.procedure_id
+            || incoming_provenance.kind != outgoing_provenance.kind
+        {
+            continue;
+        }
+        let Some((incoming_position, incoming_course_deg)) = incoming_provenance
+            .display_path
+            .as_ref()
+            .and_then(display_path_terminal_position_and_course)
+        else {
+            continue;
+        };
+        let Some((outgoing_position, outgoing_course_deg)) = outgoing_provenance
+            .display_path
+            .as_ref()
+            .and_then(display_path_initial_position_and_course)
+        else {
+            continue;
+        };
+        if !positions_nearly_equal(incoming_position, outgoing_position) {
+            continue;
+        }
+        let turn_deg = angular_difference_degrees(incoming_course_deg, outgoing_course_deg);
+        if turn_deg >= MAX_INSTANTANEOUS_PROCEDURE_TURN_DEG {
+            return Err(AppError {
+                kind: AppErrorKind::InvalidFlightPlan,
+                message: format!(
+                    "procedure geometry has a {turn_deg:.1}-degree instantaneous hairpin between legs {} and {}",
+                    incoming.id, outgoing.id
+                ),
+            });
+        }
+    }
+    Ok(())
+}
+
+pub fn validate_materialized_procedure_final_route(
+    materialized: &MaterializedProcedure,
+) -> AppResult<()> {
+    let component = RouteComponent::Procedure {
+        procedure: materialized.procedure.clone(),
+    };
+    let plan = FlightPlan {
+        route_components: vec![component.clone()],
+        ..FlightPlan::empty()
+    };
+    rebuild_plan_with_nav_materializations(
+        &plan,
+        vec![(0, component, materialized.resolved_legs.clone())],
+    )
+    .map(|_| ())
+}
+
+fn display_path_initial_position_and_course(path: &LegDisplayPath) -> Option<(LatLon, f64)> {
+    path.elements.iter().find_map(|element| match element {
+        LegDisplayElement::Segment { start, end } if !positions_nearly_equal(*start, *end) => {
+            Some((*start, initial_course_deg(*start, *end)))
+        }
+        LegDisplayElement::Arc {
+            center,
+            radius_nm,
+            start,
+            clockwise,
+            sweep_degrees,
+            ..
+        } if *radius_nm > 0.0 && sweep_degrees.abs() > f64::EPSILON => {
+            Some((*start, arc_tangent_course_deg(*center, *start, *clockwise)))
+        }
+        _ => None,
+    })
+}
+
+fn display_path_terminal_position_and_course(path: &LegDisplayPath) -> Option<(LatLon, f64)> {
+    let (position, drawn_course_deg) =
+        path.elements
+            .iter()
+            .rev()
+            .find_map(|element| match element {
+                LegDisplayElement::Segment { start, end }
+                    if !positions_nearly_equal(*start, *end) =>
+                {
+                    Some((*end, initial_course_deg(*start, *end)))
+                }
+                LegDisplayElement::Arc {
+                    center,
+                    radius_nm,
+                    end,
+                    clockwise,
+                    sweep_degrees,
+                    ..
+                } if *radius_nm > 0.0 && sweep_degrees.abs() > f64::EPSILON => {
+                    Some((*end, arc_tangent_course_deg(*center, *end, *clockwise)))
+                }
+                _ => None,
+            })?;
+    Some((
+        position,
+        path.effective_terminal_course_deg
+            .unwrap_or(drawn_course_deg),
+    ))
+}
+
+fn arc_tangent_course_deg(center: LatLon, point: LatLon, clockwise: bool) -> f64 {
+    normalize_bearing_degrees(
+        initial_course_deg(center, point) + if clockwise { 90.0 } else { -90.0 },
+    )
 }
 
 pub(crate) fn rebuild_plan_with_nav_materializations(
@@ -4758,45 +4895,78 @@ fn rebuild_resolved_legs_with_grouped_components(
     grouped_component_legs: &BTreeMap<usize, Vec<ResolvedLeg>>,
 ) -> Vec<ResolvedLeg> {
     let mut resolved = Vec::new();
-    let per_component_items =
-        dedupe_component_items_for_projection(components, grouped_component_legs);
-    let flattened = flatten_visible_nav_sequence(&per_component_items);
     let mut previous_waypoint: Option<(usize, NavRef)> = None;
     let mut synthetic_leg_index = 0usize;
 
-    for item in flattened {
-        match item {
-            FlattenedNavItem::Break => previous_waypoint = None,
-            FlattenedNavItem::Waypoint(component_index, nav_ref) => {
-                if let Some((from_component_index, from)) = previous_waypoint.as_ref() {
-                    if from != &nav_ref {
-                        if let Some(grouped_leg) = grouped_leg_for_visible_pair(
-                            grouped_component_legs,
-                            *from_component_index,
-                            component_index,
-                            from,
-                            &nav_ref,
-                        ) {
-                            resolved.push(grouped_leg.clone());
-                        } else {
-                            resolved.push(ResolvedLeg {
-                                id: format!(
-                                    "component-{synthetic_leg_index}-{}",
-                                    synthetic_leg_index + 1
-                                ),
-                                from: from.clone(),
-                                to: nav_ref.clone(),
-                                source: ResolvedLegSource::SyntheticBridge {
-                                    from_component_index: *from_component_index,
-                                    to_component_index: component_index,
-                                },
-                                procedure_provenance: None,
-                            });
-                            synthetic_leg_index += 1;
-                        }
-                    }
+    for (component_index, component) in components.iter().enumerate() {
+        if let Some(grouped_legs) = grouped_component_legs
+            .get(&component_index)
+            .filter(|legs| !legs.is_empty())
+        {
+            let first = grouped_legs.first().expect("nonempty grouped legs");
+            push_synthetic_bridge_if_needed(
+                &mut resolved,
+                &mut synthetic_leg_index,
+                previous_waypoint.as_ref(),
+                component_index,
+                &first.from,
+            );
+            resolved.extend(grouped_legs.iter().cloned());
+
+            let has_terminal_discontinuity = matches!(
+                component,
+                RouteComponent::Procedure { procedure }
+                    if procedure.terminal_discontinuity.is_some()
+            );
+            previous_waypoint = if has_terminal_discontinuity {
+                None
+            } else {
+                grouped_legs
+                    .last()
+                    .map(|leg| (component_index, leg.to.clone()))
+            };
+            continue;
+        }
+
+        match component {
+            RouteComponent::Waypoint { waypoint } => {
+                if matches!(
+                    components.get(component_index + 1),
+                    Some(RouteComponent::Waypoint { waypoint: next }) if next == waypoint
+                ) {
+                    continue;
                 }
-                previous_waypoint = Some((component_index, nav_ref));
+                push_synthetic_bridge_if_needed(
+                    &mut resolved,
+                    &mut synthetic_leg_index,
+                    previous_waypoint.as_ref(),
+                    component_index,
+                    waypoint,
+                );
+                previous_waypoint = Some((component_index, waypoint.clone()));
+            }
+            RouteComponent::Airway { airway } => {
+                push_synthetic_bridge_if_needed(
+                    &mut resolved,
+                    &mut synthetic_leg_index,
+                    previous_waypoint.as_ref(),
+                    component_index,
+                    &airway.entry,
+                );
+                let entry = (component_index, airway.entry.clone());
+                push_synthetic_bridge_if_needed(
+                    &mut resolved,
+                    &mut synthetic_leg_index,
+                    Some(&entry),
+                    component_index,
+                    &airway.exit,
+                );
+                previous_waypoint = Some((component_index, airway.exit.clone()));
+            }
+            RouteComponent::Procedure { procedure } => {
+                if procedure.terminal_discontinuity.is_some() {
+                    previous_waypoint = None;
+                }
             }
         }
     }
@@ -4804,26 +4974,67 @@ fn rebuild_resolved_legs_with_grouped_components(
     resolved
 }
 
-fn grouped_leg_for_visible_pair<'a>(
-    grouped_component_legs: &'a BTreeMap<usize, Vec<ResolvedLeg>>,
-    from_component_index: usize,
+fn push_synthetic_bridge_if_needed(
+    resolved: &mut Vec<ResolvedLeg>,
+    synthetic_leg_index: &mut usize,
+    previous_waypoint: Option<&(usize, NavRef)>,
     to_component_index: usize,
-    from: &NavRef,
     to: &NavRef,
-) -> Option<&'a ResolvedLeg> {
-    if let Some(legs) = grouped_component_legs.get(&from_component_index) {
-        if let Some(leg) = legs.iter().find(|leg| leg.from == *from && leg.to == *to) {
-            return Some(leg);
+) {
+    let Some((from_component_index, from)) = previous_waypoint else {
+        return;
+    };
+    if from == to {
+        return;
+    }
+    resolved.push(ResolvedLeg {
+        id: format!(
+            "component-{}-{}",
+            *synthetic_leg_index,
+            *synthetic_leg_index + 1
+        ),
+        from: from.clone(),
+        to: to.clone(),
+        source: ResolvedLegSource::SyntheticBridge {
+            from_component_index: *from_component_index,
+            to_component_index,
+        },
+        procedure_provenance: None,
+    });
+    *synthetic_leg_index += 1;
+}
+
+fn validate_preserved_grouped_leg_order(
+    grouped_component_legs: &BTreeMap<usize, Vec<ResolvedLeg>>,
+    resolved_legs: &[ResolvedLeg],
+) -> AppResult<()> {
+    for (component_index, expected_legs) in grouped_component_legs {
+        let actual_ids = resolved_legs
+            .iter()
+            .filter(|leg| {
+                matches!(
+                    leg.source,
+                    ResolvedLegSource::RouteComponent {
+                        component_index: source_component_index
+                    } if source_component_index == *component_index
+                )
+            })
+            .map(|leg| leg.id.as_str())
+            .collect::<Vec<_>>();
+        let expected_ids = expected_legs
+            .iter()
+            .map(|leg| leg.id.as_str())
+            .collect::<Vec<_>>();
+        if actual_ids != expected_ids {
+            return Err(AppError {
+                kind: AppErrorKind::InvalidFlightPlan,
+                message: format!(
+                    "route rebuild did not preserve grouped legs for component {component_index}: expected {expected_ids:?}, got {actual_ids:?}"
+                ),
+            });
         }
     }
-    if to_component_index != from_component_index {
-        if let Some(legs) = grouped_component_legs.get(&to_component_index) {
-            if let Some(leg) = legs.iter().find(|leg| leg.from == *from && leg.to == *to) {
-                return Some(leg);
-            }
-        }
-    }
-    None
+    Ok(())
 }
 
 fn grouped_component_legs(plan: &FlightPlan) -> BTreeMap<usize, Vec<ResolvedLeg>> {
@@ -4904,20 +5115,14 @@ fn raw_component_ui_items(
         }
         RouteComponent::Procedure { procedure } => {
             let mut items = Vec::new();
-            let mut push_waypoint = |nav_ref: NavRef| {
-                let duplicate = matches!(
-                    items.last(),
-                    Some(ConcretizedNavItem::Waypoint { nav_ref: existing }) if *existing == nav_ref
-                );
-                if !duplicate {
-                    items.push(ConcretizedNavItem::Waypoint { nav_ref });
-                }
-            };
-
             if let Some(first) = grouped_legs.first() {
-                push_waypoint(first.from.clone());
+                items.push(ConcretizedNavItem::Waypoint {
+                    nav_ref: first.from.clone(),
+                });
                 for leg in grouped_legs {
-                    push_waypoint(leg.to.clone());
+                    items.push(ConcretizedNavItem::Waypoint {
+                        nav_ref: leg.to.clone(),
+                    });
                 }
             }
 
@@ -5034,31 +5239,6 @@ fn dedupe_component_items_for_projection(
     }
 
     per_component
-}
-
-#[derive(Debug, Clone, PartialEq)]
-enum FlattenedNavItem {
-    Waypoint(usize, NavRef),
-    Break,
-}
-
-fn flatten_visible_nav_sequence(
-    per_component_items: &[Vec<ConcretizedNavItem>],
-) -> Vec<FlattenedNavItem> {
-    let mut flattened = Vec::new();
-    for (component_index, items) in per_component_items.iter().enumerate() {
-        for item in items {
-            match item {
-                ConcretizedNavItem::Waypoint { nav_ref } => {
-                    flattened.push(FlattenedNavItem::Waypoint(component_index, nav_ref.clone()));
-                }
-                ConcretizedNavItem::Discontinuity { .. } => {
-                    flattened.push(FlattenedNavItem::Break);
-                }
-            }
-        }
-    }
-    flattened
 }
 
 fn leg_index_by_id(resolved_legs: &[ResolvedLeg], leg_id: &str) -> Option<usize> {
@@ -5229,6 +5409,275 @@ fn resume_leg_index_after_leg(plan: &FlightPlan, leg_index: usize) -> Option<usi
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn procedure_leg_with_path(
+        id: &str,
+        from: NavRef,
+        to: NavRef,
+        role: ProcedureSegmentRole,
+        path_termination: PathTermination,
+        elements: Vec<LegDisplayElement>,
+    ) -> ResolvedLeg {
+        ResolvedLeg {
+            id: id.to_string(),
+            from,
+            to,
+            source: ResolvedLegSource::RouteComponent { component_index: 0 },
+            procedure_provenance: Some(ProcedureLegProvenance {
+                airport_id: "KCEC".to_string(),
+                procedure_id: "I12".to_string(),
+                kind: ProcedureKind::Approach,
+                role,
+                path_termination,
+                leg_sequence: 0,
+                display_path: Some(LegDisplayPath {
+                    style: LegDisplayPathStyle::Solid,
+                    elements,
+                    effective_terminal_course_deg: None,
+                    debug_element_sources: Vec::new(),
+                    debug_element_roles: Vec::new(),
+                }),
+            }),
+        }
+    }
+
+    #[test]
+    fn final_procedure_geometry_rejects_kcec_style_hairpin() {
+        let slamm = LatLon {
+            lat: 41.8,
+            lon: -124.2,
+        };
+        let legs = vec![
+            procedure_leg_with_path(
+                "kcec-transition-to-slamm",
+                NavRef::Navaid("CEC".to_string()),
+                NavRef::Fix("SLAMM".to_string()),
+                ProcedureSegmentRole::EnrouteTransition,
+                PathTermination::TrackToFix,
+                vec![LegDisplayElement::Segment {
+                    start: LatLon {
+                        lat: 41.7,
+                        lon: -124.3,
+                    },
+                    end: slamm,
+                }],
+            ),
+            procedure_leg_with_path(
+                "kcec-slamm-to-common",
+                NavRef::Fix("SLAMM".to_string()),
+                NavRef::Fix("HUVMA".to_string()),
+                ProcedureSegmentRole::Common,
+                PathTermination::CourseToFix,
+                vec![LegDisplayElement::Segment {
+                    start: slamm,
+                    end: LatLon {
+                        lat: 41.7,
+                        lon: -124.3,
+                    },
+                }],
+            ),
+        ];
+
+        let err = crate::build_flight_plan(FlightPlan {
+            route_components: vec![RouteComponent::Procedure {
+                procedure: ProcedureSegment {
+                    airport_id: AirportId("KCEC".to_string()),
+                    procedure_id: "I12".to_string(),
+                    display_label: None,
+                    kind: ProcedureKind::Approach,
+                    runway_transition: None,
+                    enroute_transition: Some("CEC".to_string()),
+                    terminal_discontinuity: None,
+                    data_quality: Vec::new(),
+                },
+            }],
+            resolved_legs: legs,
+            ..FlightPlan::empty()
+        })
+        .unwrap_err();
+
+        assert_eq!(err.kind, AppErrorKind::InvalidFlightPlan);
+        assert!(err.message.contains("hairpin"));
+        assert!(err.message.contains("kcec-transition-to-slamm"));
+        assert!(err.message.contains("kcec-slamm-to-common"));
+    }
+
+    #[test]
+    fn final_procedure_geometry_uses_logical_hold_exit_course() {
+        let anchor = LatLon {
+            lat: 41.8,
+            lon: -124.2,
+        };
+        let mut hold = procedure_leg_with_path(
+            "published-hold",
+            NavRef::Fix("HOLD".to_string()),
+            NavRef::Fix("HOLD".to_string()),
+            ProcedureSegmentRole::EnrouteTransition,
+            PathTermination::Other("HF".to_string()),
+            vec![LegDisplayElement::Segment {
+                start: LatLon {
+                    lat: 41.81,
+                    lon: -124.2,
+                },
+                end: anchor,
+            }],
+        );
+        hold.procedure_provenance
+            .as_mut()
+            .and_then(|provenance| provenance.display_path.as_mut())
+            .expect("hold display path")
+            .effective_terminal_course_deg = Some(0.0);
+        let outgoing = procedure_leg_with_path(
+            "hold-to-common",
+            NavRef::Fix("HOLD".to_string()),
+            NavRef::Fix("NEXT".to_string()),
+            ProcedureSegmentRole::Common,
+            PathTermination::TrackToFix,
+            vec![LegDisplayElement::Segment {
+                start: anchor,
+                end: LatLon {
+                    lat: 41.81,
+                    lon: -124.2,
+                },
+            }],
+        );
+
+        validate_final_procedure_geometry(&[hold, outgoing])
+            .expect("logical hold exit course is continuous");
+    }
+
+    #[test]
+    fn route_rebuild_preserves_same_fix_procedure_turn_and_avoids_hairpin() {
+        let slamm = LatLon {
+            lat: 41.8,
+            lon: -124.2,
+        };
+        let components = vec![RouteComponent::Procedure {
+            procedure: ProcedureSegment {
+                airport_id: AirportId("KCEC".to_string()),
+                procedure_id: "I12".to_string(),
+                display_label: Some("ILS or LOC 12 CEC".to_string()),
+                kind: ProcedureKind::Approach,
+                runway_transition: None,
+                enroute_transition: Some("CEC".to_string()),
+                terminal_discontinuity: None,
+                data_quality: Vec::new(),
+            },
+        }];
+        let grouped = BTreeMap::from([(
+            0,
+            vec![
+                procedure_leg_with_path(
+                    "kcec-transition-to-slamm",
+                    NavRef::Navaid("CEC".to_string()),
+                    NavRef::Fix("SLAMM".to_string()),
+                    ProcedureSegmentRole::EnrouteTransition,
+                    PathTermination::TrackToFix,
+                    vec![LegDisplayElement::Segment {
+                        start: LatLon {
+                            lat: 41.79,
+                            lon: -124.2,
+                        },
+                        end: slamm,
+                    }],
+                ),
+                procedure_leg_with_path(
+                    "kcec-slamm-procedure-turn",
+                    NavRef::Fix("SLAMM".to_string()),
+                    NavRef::Fix("SLAMM".to_string()),
+                    ProcedureSegmentRole::EnrouteTransition,
+                    PathTermination::Other("PI".to_string()),
+                    vec![
+                        LegDisplayElement::Segment {
+                            start: slamm,
+                            end: LatLon {
+                                lat: 41.8,
+                                lon: -124.19,
+                            },
+                        },
+                        LegDisplayElement::Segment {
+                            start: LatLon {
+                                lat: 41.8,
+                                lon: -124.19,
+                            },
+                            end: LatLon {
+                                lat: 41.81,
+                                lon: -124.19,
+                            },
+                        },
+                        LegDisplayElement::Segment {
+                            start: LatLon {
+                                lat: 41.81,
+                                lon: -124.19,
+                            },
+                            end: LatLon {
+                                lat: 41.81,
+                                lon: -124.2,
+                            },
+                        },
+                        LegDisplayElement::Segment {
+                            start: LatLon {
+                                lat: 41.81,
+                                lon: -124.2,
+                            },
+                            end: slamm,
+                        },
+                    ],
+                ),
+                procedure_leg_with_path(
+                    "kcec-slamm-to-common",
+                    NavRef::Fix("SLAMM".to_string()),
+                    NavRef::Fix("HUVMA".to_string()),
+                    ProcedureSegmentRole::Common,
+                    PathTermination::CourseToFix,
+                    vec![LegDisplayElement::Segment {
+                        start: slamm,
+                        end: LatLon {
+                            lat: 41.79,
+                            lon: -124.2,
+                        },
+                    }],
+                ),
+            ],
+        )]);
+
+        let materialized = MaterializedProcedure {
+            procedure: match &components[0] {
+                RouteComponent::Procedure { procedure } => procedure.clone(),
+                _ => unreachable!("fixture component is a procedure"),
+            },
+            resolved_legs: grouped.get(&0).expect("fixture legs").clone(),
+        };
+        validate_materialized_procedure_final_route(&materialized)
+            .expect("production rebuild preserves the explicit procedure turn");
+
+        let rebuilt = rebuild_resolved_legs_with_grouped_components(&components, &grouped);
+
+        assert_eq!(
+            rebuilt
+                .iter()
+                .map(|leg| leg.id.as_str())
+                .collect::<Vec<_>>(),
+            vec![
+                "kcec-transition-to-slamm",
+                "kcec-slamm-procedure-turn",
+                "kcec-slamm-to-common",
+            ]
+        );
+        validate_final_procedure_geometry(&rebuilt).expect("explicit PI resolves the hairpin");
+
+        let plan = FlightPlan {
+            route_components: components,
+            resolved_legs: rebuilt,
+            ..FlightPlan::empty()
+        }
+        .normalized();
+        let projected_leg_indices = project_identity_rows(&plan)
+            .into_iter()
+            .filter_map(|row| row.leg_index)
+            .collect::<Vec<_>>();
+        assert_eq!(projected_leg_indices, vec![0, 1, 2]);
+    }
 
     fn projected_components_for_test(plan: &FlightPlan) -> Vec<RouteComponentUiView> {
         let plan = plan.clone().normalized();

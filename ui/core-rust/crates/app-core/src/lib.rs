@@ -749,6 +749,8 @@ pub fn build_flight_plan(plan: FlightPlan) -> AppResult<FlightPlan> {
         });
     }
 
+    planning::validate_final_procedure_geometry(&plan.resolved_legs)?;
+
     Ok(plan)
 }
 

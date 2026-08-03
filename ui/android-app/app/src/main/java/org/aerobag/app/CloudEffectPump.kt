@@ -11,6 +11,7 @@ import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.IntentSenderRequest
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -22,6 +23,7 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.repeatOnLifecycle
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
@@ -30,6 +32,7 @@ import org.aerobag.app.domain.NativeUiSession
 import org.aerobag.app.domain.UiSessionSnapshot
 import org.aerobag.app.generated.CloudAuthorizationRequest
 import org.aerobag.app.generated.CloudAuthorizationResponse
+import org.aerobag.app.generated.CloudEventStreamEvent
 
 private const val CloudEffectLogTag = "AerobagCloudEffect"
 
@@ -42,10 +45,19 @@ internal fun CloudEffectPump(
         "Cloud authorization requires an Activity context"
     }
     val runtime = remember(activity) { AndroidCloudProviderRuntime(activity) }
+    val eventStreamTransport = remember(uiSession) { AndroidCloudEventStreamTransport() }
+    val eventStreamEvents = remember(uiSession) { Channel<CloudEventStreamEvent>(Channel.UNLIMITED) }
     val currentOnSnapshot by rememberUpdatedState(onSnapshot)
     val scope = rememberCoroutineScope()
     var pendingInteractiveRequest by remember(uiSession) {
         mutableStateOf<CloudAuthorizationRequest?>(null)
+    }
+
+    DisposableEffect(eventStreamTransport, eventStreamEvents) {
+        onDispose {
+            eventStreamTransport.close()
+            eventStreamEvents.close()
+        }
     }
 
     suspend fun completeAuthorization(
@@ -84,63 +96,86 @@ internal fun CloudEffectPump(
 
     LaunchedEffect(uiSession, runtime) {
         activity.lifecycle.repeatOnLifecycle(Lifecycle.State.STARTED) {
-            while (isActive) {
-                if (pendingInteractiveRequest != null) {
-                    delay(250)
-                    continue
-                }
-                val authorizationRequest = withContext(Dispatchers.Default) {
-                    uiSession.takeCloudAuthorizationRequest(System.currentTimeMillis())
-                }
-                if (authorizationRequest != null) {
-                    Log.i(
-                        CloudEffectLogTag,
-                        "authorization requested request=${authorizationRequest.requestId} " +
-                            "mode=${authorizationRequest.mode}",
-                    )
-                    when (val step = runtime.beginAuthorization(authorizationRequest)) {
-                        is AndroidCloudAuthorizationStep.Complete -> {
-                            Log.i(
-                                CloudEffectLogTag,
-                                "authorization response request=${authorizationRequest.requestId} " +
-                                    step.response.logSummary(),
-                            )
-                            runCatching { completeAuthorization(authorizationRequest, step.response) }
-                                .onFailure { Log.w(CloudEffectLogTag, "authorization failed", it) }
-                        }
+            try {
+                while (isActive) {
+                    var didWork = false
+                    while (true) {
+                        val event = eventStreamEvents.tryReceive().getOrNull() ?: break
+                        didWork = true
+                        runCatching {
+                            withContext(Dispatchers.Default) {
+                                uiSession.reportCloudEventStreamEvent(event, System.currentTimeMillis())
+                            }
+                        }.onSuccess(currentOnSnapshot)
+                            .onFailure { Log.w(CloudEffectLogTag, "event stream report failed", it) }
+                    }
 
-                        is AndroidCloudAuthorizationStep.NeedsResolution -> {
+                    val streamPlan = withContext(Dispatchers.Default) {
+                        uiSession.cloudEventStreamPlan()
+                    }
+                    eventStreamTransport.reconcile(streamPlan, this) { event ->
+                        eventStreamEvents.trySend(event)
+                    }
+
+                    if (pendingInteractiveRequest == null) {
+                        val authorizationRequest = withContext(Dispatchers.Default) {
+                            uiSession.takeCloudAuthorizationRequest(System.currentTimeMillis())
+                        }
+                        if (authorizationRequest != null) {
+                            didWork = true
                             Log.i(
                                 CloudEffectLogTag,
-                                "authorization needs user resolution request=${authorizationRequest.requestId}",
+                                "authorization requested request=${authorizationRequest.requestId} " +
+                                    "mode=${authorizationRequest.mode}",
                             )
-                            pendingInteractiveRequest = authorizationRequest
-                            authorizationLauncher.launch(
-                                IntentSenderRequest.Builder(step.pendingIntent.intentSender).build(),
-                            )
+                            when (val step = runtime.beginAuthorization(authorizationRequest)) {
+                                is AndroidCloudAuthorizationStep.Complete -> {
+                                    Log.i(
+                                        CloudEffectLogTag,
+                                        "authorization response request=${authorizationRequest.requestId} " +
+                                            step.response.logSummary(),
+                                    )
+                                    runCatching { completeAuthorization(authorizationRequest, step.response) }
+                                        .onFailure { Log.w(CloudEffectLogTag, "authorization failed", it) }
+                                }
+
+                                is AndroidCloudAuthorizationStep.NeedsResolution -> {
+                                    Log.i(
+                                        CloudEffectLogTag,
+                                        "authorization needs user resolution request=${authorizationRequest.requestId}",
+                                    )
+                                    pendingInteractiveRequest = authorizationRequest
+                                    authorizationLauncher.launch(
+                                        IntentSenderRequest.Builder(step.pendingIntent.intentSender).build(),
+                                    )
+                                }
+                            }
+                        } else {
+                            val httpRequest = withContext(Dispatchers.Default) {
+                                uiSession.takeCloudProviderRequest(System.currentTimeMillis())
+                            }
+                            if (httpRequest != null) {
+                                didWork = true
+                                val response = runtime.executeHttp(httpRequest)
+                                runCatching {
+                                    withContext(Dispatchers.Default) {
+                                        uiSession.completeCloudProviderRequest(
+                                            httpRequest.requestId,
+                                            response,
+                                            System.currentTimeMillis(),
+                                        )
+                                    }
+                                }.onSuccess(currentOnSnapshot)
+                                    .onFailure {
+                                        Log.w(CloudEffectLogTag, "provider HTTP completion failed", it)
+                                    }
+                            }
                         }
                     }
-                    continue
+                    delay(if (didWork) 1 else 250)
                 }
-
-                val httpRequest = withContext(Dispatchers.Default) {
-                    uiSession.takeCloudProviderRequest(System.currentTimeMillis())
-                }
-                if (httpRequest != null) {
-                    val response = runtime.executeHttp(httpRequest)
-                    runCatching {
-                        withContext(Dispatchers.Default) {
-                            uiSession.completeCloudProviderRequest(
-                                httpRequest.requestId,
-                                response,
-                                System.currentTimeMillis(),
-                            )
-                        }
-                    }.onSuccess(currentOnSnapshot)
-                        .onFailure { Log.w(CloudEffectLogTag, "provider HTTP completion failed", it) }
-                    continue
-                }
-                delay(1_000)
+            } finally {
+                eventStreamTransport.close()
             }
         }
     }

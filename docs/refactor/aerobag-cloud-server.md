@@ -673,6 +673,8 @@ strictly below the 60-second disconnected correctness poll.
 
 ### Phase 4: Android
 
+Status: complete on 2026-08-03.
+
 - Add only the Android HTTP/SSE transport effects required by the same
   core-supplied plans.
 - Prove no ACS storage, retry, liveness, merge, or quota policy appears in
@@ -680,6 +682,23 @@ strictly below the 60-second disconnected correctness poll.
 
 Gate: Android and web exchange both synchronized record types in each direction
 and recover after disconnect/reconnect using the same core state machine.
+
+Android now exposes the core HTTP and event-stream plans through the generated
+JNI boundary. Kotlin supplies Google authorization, bounded HTTP execution, and
+a blocking SSE reader on `Dispatchers.IO`; core still owns request signing,
+URLs, retries, liveness, merge/adoption, and all persistent cloud state. The
+Android pump serializes every resulting event back through the session boundary
+instead of allowing transport coroutines to mutate a session concurrently.
+
+The real dev-stack gate created an ACS account on Android, then proved both
+flight-plan and offline-package-preference delivery from web to Android. It
+interrupted Android's stream, observed a replacement connection, and delivered
+a subsequent preference update over the replacement. Android then appended
+`KSUS` and paused Terrain; a fresh isolated browser profile read both changes
+from the shared account. This gate found and fixed two platform-boundary defects:
+Android had stripped the core-required trailing slash from `/cloud/`, and
+OkHttp requires an explicit zero-byte body for core's bodyless `POST`/`PUT`
+plans. Both cases now have Android unit coverage.
 
 ### Phase 5: Production Readiness
 

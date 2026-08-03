@@ -372,6 +372,14 @@ interface NativeBridge {
         nowEpochMs: Long,
     ): String
 
+    fun cloudEventStreamPlanInSessionJson(handle: Long): String
+
+    fun reportCloudEventStreamEventInSessionJson(
+        handle: Long,
+        eventJson: String,
+        nowEpochMs: Long,
+    ): String
+
     fun acceptDisclaimerInSessionJson(
         handle: Long,
         agreementId: String,
@@ -931,6 +939,14 @@ object NativeBindings : NativeBridge {
         handle: Long,
         requestId: Long,
         responseJson: String,
+        nowEpochMs: Long,
+    ): String
+
+    external override fun cloudEventStreamPlanInSessionJson(handle: Long): String
+
+    external override fun reportCloudEventStreamEventInSessionJson(
+        handle: Long,
+        eventJson: String,
         nowEpochMs: Long,
     ): String
 

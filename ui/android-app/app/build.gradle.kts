@@ -113,6 +113,9 @@ val androidPackageSourceBaseUrl = System.getenv("ANDROID_PACKAGE_SOURCE_BASE_URL
 val androidLiveFeedSourceBaseUrl = System.getenv("ANDROID_LIVE_FEED_SOURCE_BASE_URL")?.takeIf { it.isNotBlank() }
     ?: readInstanceConfigValue("ANDROID_LIVE_FEED_SOURCE_BASE_URL")
     ?: ""
+val androidCloudServerBaseUrl = System.getenv("ANDROID_CLOUD_SERVER_BASE_URL")?.takeIf { it.isNotBlank() }
+    ?: readInstanceConfigValue("ANDROID_CLOUD_SERVER_BASE_URL")
+    ?: ""
 fun readIntegerBuildConfig(key: String, defaultValue: Int): Int {
     val rawValue = System.getenv(key)
         ?: readInstanceConfigValue(key)
@@ -268,6 +271,7 @@ val stageCanonicalAndroidAssets by tasks.registering {
         fixturesDir.resolve("android-dev-server-base-url.txt").writeText(androidDevServerBaseUrl)
         fixturesDir.resolve("android-package-source-base-url.txt").writeText(androidPackageSourceBaseUrl)
         fixturesDir.resolve("android-live-feed-source-base-url.txt").writeText(androidLiveFeedSourceBaseUrl)
+        fixturesDir.resolve("android-cloud-server-base-url.txt").writeText(androidCloudServerBaseUrl)
     }
 }
 

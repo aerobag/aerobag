@@ -6,7 +6,6 @@ package org.aerobag.app
 import android.app.Activity
 import android.app.PendingIntent
 import android.content.Intent
-import android.util.Base64
 import com.google.android.gms.auth.api.identity.AuthorizationRequest
 import com.google.android.gms.auth.api.identity.AuthorizationResult
 import com.google.android.gms.auth.api.identity.Identity
@@ -96,47 +95,18 @@ internal class AndroidCloudProviderRuntime(
     fun authorizationCanceled(): CloudAuthorizationResponse =
         CloudAuthorizationResponse.Denied("Google Drive authorization was canceled.")
 
-    suspend fun executeHttp(request: CloudHttpRequest): CloudHttpResponse = withContext(Dispatchers.IO) {
-        val activeCredential = credential
-        if (activeCredential?.provider != request.provider) {
-            return@withContext CloudHttpResponse.TransportError(
-                "Cloud provider authorization is unavailable.",
-            )
-        }
-        try {
-            val headers = Headers.Builder().apply {
-                request.headers.forEach { add(it.name, it.value) }
-                set("Authorization", "Bearer ${activeCredential.accessToken}")
-            }.build()
-            val requestBody = request.bodyBase64?.let(::decodeBase64Url)?.toRequestBody(
-                request.headers
-                    .firstOrNull { it.name.equals("content-type", ignoreCase = true) }
-                    ?.value
-                    ?.toMediaTypeOrNull(),
-            )
-            val call = Request.Builder()
-                .url(request.url)
-                .headers(headers)
-                .method(
-                    when (request.method) {
-                        CloudHttpMethod.Get -> "GET"
-                        CloudHttpMethod.Post -> "POST"
-                        CloudHttpMethod.Delete -> "DELETE"
-                    },
-                    requestBody,
+    suspend fun executeHttp(request: CloudHttpRequest): CloudHttpResponse {
+        val bearerToken = when (request.provider) {
+            CloudProviderKind.GoogleDrive -> credential
+                ?.takeIf { it.provider == request.provider }
+                ?.accessToken
+                ?: return CloudHttpResponse.TransportError(
+                    "Cloud provider authorization is unavailable.",
                 )
-                .build()
-            httpClient.newCall(call).execute().use { response ->
-                val bytes = readBoundedResponse(response.body, request.maxResponseBytes)
-                    ?: return@withContext CloudHttpResponse.ResponseTooLarge(request.maxResponseBytes)
-                CloudHttpResponse.Completed(
-                    statusCode = response.code,
-                    bodyBase64 = encodeBase64Url(bytes),
-                )
-            }
-        } catch (error: Throwable) {
-            CloudHttpResponse.TransportError(error.message ?: error::class.simpleName ?: "HTTP request failed")
+
+            CloudProviderKind.AerobagCloud -> null
         }
+        return executeCloudHttpRequest(request, httpClient, bearerToken)
     }
 
     private suspend fun completeAuthorization(result: AuthorizationResult): CloudAuthorizationResponse {
@@ -170,7 +140,7 @@ internal class AndroidCloudProviderRuntime(
                     )
                 }
                 val bytes = readBoundedResponse(response.body, DrivePrincipalResponseLimit)
-                    ?: throw IOException("Google Drive principal response exceeded $DrivePrincipalResponseLimit bytes")
+                    ?: throw IOException("Drive principal response exceeded $DrivePrincipalResponseLimit bytes")
                 val user = json.parseToJsonElement(bytes.decodeToString())
                     .jsonObject["user"]
                     ?.jsonObject
@@ -187,6 +157,52 @@ internal class AndroidCloudProviderRuntime(
                 )
             }
         }
+}
+
+internal suspend fun executeCloudHttpRequest(
+    request: CloudHttpRequest,
+    httpClient: OkHttpClient,
+    bearerToken: String?,
+): CloudHttpResponse = withContext(Dispatchers.IO) {
+    try {
+        val headers = Headers.Builder().apply {
+            request.headers.forEach { add(it.name, it.value) }
+            bearerToken?.let { set("Authorization", "Bearer $it") }
+        }.build()
+        val contentType = request.headers
+            .firstOrNull { it.name.equals("content-type", ignoreCase = true) }
+            ?.value
+            ?.toMediaTypeOrNull()
+        val requestBody = when {
+            request.bodyBase64 != null -> decodeBase64Url(request.bodyBase64).toRequestBody(contentType)
+            request.method == CloudHttpMethod.Post || request.method == CloudHttpMethod.Put ->
+                ByteArray(0).toRequestBody(contentType)
+            else -> null
+        }
+        val call = Request.Builder()
+            .url(request.url)
+            .headers(headers)
+            .method(
+                when (request.method) {
+                    CloudHttpMethod.Get -> "GET"
+                    CloudHttpMethod.Post -> "POST"
+                    CloudHttpMethod.Put -> "PUT"
+                    CloudHttpMethod.Delete -> "DELETE"
+                },
+                requestBody,
+            )
+            .build()
+        httpClient.newCall(call).execute().use { response ->
+            val bytes = readBoundedResponse(response.body, request.maxResponseBytes)
+                ?: return@withContext CloudHttpResponse.ResponseTooLarge(request.maxResponseBytes)
+            CloudHttpResponse.Completed(
+                statusCode = response.code,
+                bodyBase64 = encodeBase64Url(bytes),
+            )
+        }
+    } catch (error: Throwable) {
+        CloudHttpResponse.TransportError(error.message ?: error::class.simpleName ?: "HTTP request failed")
+    }
 }
 
 private data class CloudCredential(
@@ -235,7 +251,7 @@ private fun readBoundedResponse(body: okhttp3.ResponseBody?, limit: Long): ByteA
 }
 
 private fun decodeBase64Url(value: String): ByteArray =
-    Base64.decode(value, Base64.URL_SAFE or Base64.NO_WRAP or Base64.NO_PADDING)
+    java.util.Base64.getUrlDecoder().decode(value)
 
 private fun encodeBase64Url(bytes: ByteArray): String =
-    Base64.encodeToString(bytes, Base64.URL_SAFE or Base64.NO_WRAP or Base64.NO_PADDING)
+    java.util.Base64.getUrlEncoder().withoutPadding().encodeToString(bytes)

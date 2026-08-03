@@ -24,6 +24,8 @@ import org.aerobag.app.generated.CloudAuthorizationRequest
 import org.aerobag.app.generated.CloudAuthorizationResponse
 import org.aerobag.app.generated.CloudHttpRequest
 import org.aerobag.app.generated.CloudHttpResponse
+import org.aerobag.app.generated.CloudEventStreamEvent
+import org.aerobag.app.generated.CloudEventStreamPlan
 import org.aerobag.app.generated.CloudUiActionId
 import org.aerobag.app.generated.CloudUiFieldValue
 import org.aerobag.app.generated.UiCloudPageState
@@ -420,6 +422,7 @@ class NativeAppCoreAdapter(
         installedPackageIds: List<String> = emptyList(),
         settingsStore: CoreSettingsStore? = null,
         displayPolicySettingsAvailable: Boolean = false,
+        aerobagCloudBaseUrl: String? = null,
         clientBuildInfo: ClientBuildInfo? = null,
     ): NativeUiSession {
         val resultJson = bridge.createUiSessionJson(
@@ -452,6 +455,7 @@ class NativeAppCoreAdapter(
                     "cloud",
                     buildJsonObject {
                         put("qr_scan", true)
+                        aerobagCloudBaseUrl?.let { put("aerobag_cloud_base_url", it) }
                     },
                 )
                 put(
@@ -1285,6 +1289,20 @@ class NativeUiSession internal constructor(
         return runPagedSnapshot("acceptDisclaimer") {
             bridge.acceptDisclaimerInSessionJson(handle, agreementId)
         }
+    }
+
+    fun cloudEventStreamPlan(): CloudEventStreamPlan? =
+        json.decodeFromString(bridge.cloudEventStreamPlanInSessionJson(handle))
+
+    fun reportCloudEventStreamEvent(
+        event: CloudEventStreamEvent,
+        nowEpochMs: Long,
+    ): UiSessionSnapshot = runPagedSnapshot("reportCloudEventStreamEvent") {
+        bridge.reportCloudEventStreamEventInSessionJson(
+            handle,
+            json.encodeToString(event),
+            nowEpochMs,
+        )
     }
 
     fun activateNextLeg(): UiSessionSnapshot {

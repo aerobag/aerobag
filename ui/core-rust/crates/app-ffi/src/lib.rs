@@ -316,6 +316,25 @@ pub fn complete_cloud_provider_request_in_session_json(
     serde_json::to_string(&outcome).map_err(|err| err.to_string())
 }
 
+pub fn cloud_event_stream_plan_in_session_json(handle: u64) -> Result<String, String> {
+    let plan = app_core::cloud_event_stream_plan_in_session(handle as u32)
+        .map_err(|err| err.to_string())?;
+    serde_json::to_string(&plan).map_err(|err| err.to_string())
+}
+
+pub fn report_cloud_event_stream_event_in_session_json(
+    handle: u64,
+    event_json: &str,
+    now_epoch_ms: i64,
+) -> Result<String, String> {
+    let event: app_core::CloudEventStreamEvent =
+        serde_json::from_str(event_json).map_err(|err| err.to_string())?;
+    let outcome =
+        app_core::report_cloud_event_stream_event_in_session(handle as u32, event, now_epoch_ms)
+            .map_err(|err| err.to_string())?;
+    serde_json::to_string(&outcome).map_err(|err| err.to_string())
+}
+
 pub fn accept_disclaimer_in_session_json(
     handle: u64,
     agreement_id: &str,
@@ -3227,6 +3246,33 @@ pub extern "system" fn Java_org_aerobag_app_domain_NativeBindings_completeCloudP
             &response_json,
             now_epoch_ms,
         )
+    })();
+    return_string(&mut env, result)
+}
+
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_org_aerobag_app_domain_NativeBindings_cloudEventStreamPlanInSessionJson(
+    mut env: JNIEnv,
+    _class: JClass,
+    handle: i64,
+) -> jstring {
+    return_string(
+        &mut env,
+        cloud_event_stream_plan_in_session_json(handle as u64),
+    )
+}
+
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_org_aerobag_app_domain_NativeBindings_reportCloudEventStreamEventInSessionJson(
+    mut env: JNIEnv,
+    _class: JClass,
+    handle: i64,
+    event_json: JString,
+    now_epoch_ms: i64,
+) -> jstring {
+    let result = (|| {
+        let event_json = get_java_string(&mut env, event_json)?;
+        report_cloud_event_stream_event_in_session_json(handle as u64, &event_json, now_epoch_ms)
     })();
     return_string(&mut env, result)
 }

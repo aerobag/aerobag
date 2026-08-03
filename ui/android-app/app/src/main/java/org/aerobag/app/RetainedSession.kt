@@ -88,6 +88,7 @@ internal class AerobagRetainedModel : ViewModel() {
             runtimeContent.installedPackageIds,
             settingsStore = AndroidCoreSettingsStore(context.applicationContext),
             displayPolicySettingsAvailable = true,
+            aerobagCloudBaseUrl = loadAndroidCloudServerBaseUrl(context.applicationContext),
             clientBuildInfo = ClientBuildInfo(
                 platform = "Android",
                 version = BuildConfig.VERSION_NAME,

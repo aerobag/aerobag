@@ -356,6 +356,16 @@ internal fun loadAndroidLiveFeedSourceBaseUrl(context: Context): String? =
             .takeIf { it.isNotBlank() }
     }.getOrNull()
 
+internal fun loadAndroidCloudServerBaseUrl(context: Context): String? =
+    runCatching {
+        context.assets.open("fixtures/android-cloud-server-base-url.txt")
+            .bufferedReader()
+            .use { parseAndroidCloudServerBaseUrl(it.readText()) }
+    }.getOrNull()
+
+internal fun parseAndroidCloudServerBaseUrl(raw: String): String? =
+    raw.trim().takeIf { it.isNotBlank() }
+
 internal fun readOfflinePackagesStateJson(
     prefs: android.content.SharedPreferences,
 ): String =

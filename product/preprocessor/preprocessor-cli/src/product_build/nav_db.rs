@@ -7,6 +7,7 @@ use preprocessor_core::runway::{
     parse_airport_magnetic_variation, parse_optional_position, resolve_true_heading,
     RunwayHeadingInput,
 };
+use preprocessor_data::is_suppressed_cifp_procedure;
 
 pub(super) fn nav_db_warning_text() -> Option<String> {
     None
@@ -1114,6 +1115,7 @@ pub(super) fn build_nav_kv_artifact(
                     wmm_metadata_path,
                     magvar_decimal_year,
                 )?);
+                attach_procedure_geometry_warnings_to_plate_pairs(&mut pairs)?;
                 let diagnostics = nav_db_build_diagnostics_from_pairs(&pairs)?;
                 fs::write(&diagnostics_path, serde_json::to_vec_pretty(&diagnostics)?)
                     .with_context(|| format!("failed to write {}", diagnostics_path.display()))?;
@@ -1296,6 +1298,73 @@ fn nav_db_build_diagnostics_from_pairs(
         }
     }
     Ok(diagnostics)
+}
+
+pub(super) fn attach_procedure_geometry_warnings_to_plate_pairs(
+    pairs: &mut [NavKvPair],
+) -> anyhow::Result<()> {
+    let mut plate_ids_by_match_key = BTreeMap::<String, BTreeSet<String>>::new();
+    for pair in pairs
+        .iter()
+        .filter(|pair| pair.key.starts_with("plate/cifp/"))
+    {
+        let rows: Vec<serde_json::Value> = serde_json::from_slice(&pair.value)
+            .with_context(|| format!("failed to decode {}", pair.key))?;
+        for row in rows {
+            if row.get("is_primary").and_then(|value| value.as_i64()) != Some(1) {
+                continue;
+            }
+            if let Some(plate_id) = row.get("plate_id").and_then(|value| value.as_str()) {
+                plate_ids_by_match_key
+                    .entry(pair.key.clone())
+                    .or_default()
+                    .insert(plate_id.to_string());
+            }
+        }
+    }
+
+    let mut warning_counts_by_plate = BTreeMap::<String, usize>::new();
+    for pair in pairs
+        .iter()
+        .filter(|pair| pair.key.starts_with("procedure/geometry/"))
+    {
+        let components = pair.key.split('/').collect::<Vec<_>>();
+        if components.len() != 7 || components[3] != "APPROACH" {
+            continue;
+        }
+        let value: serde_json::Value = serde_json::from_slice(&pair.value)
+            .with_context(|| format!("failed to decode {}", pair.key))?;
+        let warning_count = value
+            .get("data_quality")
+            .and_then(|value| value.as_array())
+            .map(Vec::len)
+            .unwrap_or_default();
+        if warning_count == 0 {
+            continue;
+        }
+        let match_key = format!("plate/cifp/{}/{}", components[2], components[4]);
+        for plate_id in plate_ids_by_match_key.get(&match_key).into_iter().flatten() {
+            *warning_counts_by_plate.entry(plate_id.clone()).or_default() += warning_count;
+        }
+    }
+
+    for pair in pairs
+        .iter_mut()
+        .filter(|pair| pair.key.starts_with("plate/by-id/"))
+    {
+        let mut value: serde_json::Value = serde_json::from_slice(&pair.value)
+            .with_context(|| format!("failed to decode {}", pair.key))?;
+        let Some(plate_id) = value.get("id").and_then(|value| value.as_str()) else {
+            continue;
+        };
+        let Some(warning_count) = warning_counts_by_plate.get(plate_id).copied() else {
+            continue;
+        };
+        value["procedure_geometry_warning_count"] = serde_json::json!(warning_count);
+        pair.value =
+            serde_json::to_vec(&value).with_context(|| format!("failed to encode {}", pair.key))?;
+    }
+    Ok(())
 }
 
 fn nav_db_startup_prefetch_members(nav_db_zip_path: &Path) -> anyhow::Result<Vec<String>> {
@@ -4387,7 +4456,22 @@ pub(super) fn load_nav_kv_cifp_tpp_matches(
             "is_primary": row.get::<_, i64>(8)?,
         }))
     })?;
-    rows.collect::<Result<Vec<_>, _>>().map_err(Into::into)
+    let mut matches = Vec::new();
+    for row in rows {
+        let row = row?;
+        let airport_id = row
+            .get("airport_id")
+            .and_then(|value| value.as_str())
+            .unwrap_or_default();
+        let procedure_id = row
+            .get("cifp_id")
+            .and_then(|value| value.as_str())
+            .unwrap_or_default();
+        if !is_suppressed_cifp_procedure(airport_id, procedure_id) {
+            matches.push(row);
+        }
+    }
+    Ok(matches)
 }
 
 pub(super) fn load_nav_kv_procedure_rows(

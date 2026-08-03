@@ -951,7 +951,72 @@ pub fn list_approach_procedures_from_match_rows(
             kind: ProcedureKind::Approach,
         });
     }
+    disambiguate_duplicate_procedure_display_labels(&mut summaries);
     Ok(summaries)
+}
+
+pub(crate) fn disambiguate_duplicate_procedure_display_labels(procedures: &mut [ProcedureSummary]) {
+    let mut label_counts = std::collections::BTreeMap::<(String, String), usize>::new();
+    for procedure in procedures.iter() {
+        *label_counts
+            .entry((
+                procedure.airport_id.trim().to_string(),
+                procedure.display_label.trim().to_string(),
+            ))
+            .or_default() += 1;
+    }
+    for procedure in procedures {
+        let key = (
+            procedure.airport_id.trim().to_string(),
+            procedure.display_label.trim().to_string(),
+        );
+        if label_counts.get(&key).copied().unwrap_or_default() > 1 {
+            procedure.display_label = pilot_facing_duplicate_procedure_label(procedure);
+        }
+    }
+}
+
+fn pilot_facing_duplicate_procedure_label(procedure: &ProcedureSummary) -> String {
+    let label = procedure.display_label.trim();
+    let procedure_id = procedure.procedure_id.trim();
+    let prefix = procedure_id.chars().next();
+    if let Some((left, right)) = label.split_once(" or ") {
+        match prefix {
+            Some('I') => {
+                if let Some(runway) = procedure_runway_designator(procedure_id) {
+                    return format!("{left} {runway}");
+                }
+            }
+            Some('L') => return right.to_string(),
+            _ => {}
+        }
+    }
+    if let Some(runway) = procedure_runway_designator(procedure_id) {
+        if let Some((left, right_side)) = label.rsplit_once(" and ") {
+            if matches!(right_side, "L" | "R" | "C") {
+                if let Some((prefix, published_runway)) = left.rsplit_once(' ') {
+                    if published_runway
+                        .chars()
+                        .last()
+                        .is_some_and(|side| matches!(side, 'L' | 'R' | 'C'))
+                    {
+                        return format!("{prefix} {runway}");
+                    }
+                }
+            }
+        }
+    }
+    format!("{label} ({procedure_id})")
+}
+
+fn procedure_runway_designator(procedure_id: &str) -> Option<&str> {
+    let base = procedure_id.split('-').next()?;
+    let runway = base.get(1..)?;
+    (!runway.is_empty()
+        && runway
+            .chars()
+            .all(|ch| ch.is_ascii_digit() || matches!(ch, 'L' | 'R' | 'C')))
+    .then_some(runway)
 }
 
 pub fn describe_plate_procedure_load_options(
@@ -1303,6 +1368,46 @@ pub fn resolve_content_status(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn duplicate_approach_labels_use_pilot_facing_procedure_names() {
+        let mut procedures = vec![
+            ProcedureSummary {
+                airport_id: "KAMA".to_string(),
+                procedure_id: "I04".to_string(),
+                display_label: "ILS or LOC 04".to_string(),
+                kind: ProcedureKind::Approach,
+            },
+            ProcedureSummary {
+                airport_id: "KAMA".to_string(),
+                procedure_id: "L04".to_string(),
+                display_label: "ILS or LOC 04".to_string(),
+                kind: ProcedureKind::Approach,
+            },
+            ProcedureSummary {
+                airport_id: "KBJC".to_string(),
+                procedure_id: "D30L".to_string(),
+                display_label: "VOR and DME 30L and R".to_string(),
+                kind: ProcedureKind::Approach,
+            },
+            ProcedureSummary {
+                airport_id: "KBJC".to_string(),
+                procedure_id: "D30R".to_string(),
+                display_label: "VOR and DME 30L and R".to_string(),
+                kind: ProcedureKind::Approach,
+            },
+        ];
+
+        disambiguate_duplicate_procedure_display_labels(&mut procedures);
+
+        assert_eq!(
+            procedures
+                .iter()
+                .map(|procedure| procedure.display_label.as_str())
+                .collect::<Vec<_>>(),
+            vec!["ILS 04", "LOC 04", "VOR and DME 30L", "VOR and DME 30R"]
+        );
+    }
 
     #[test]
     fn route_projection_uses_procedure_display_path_without_navref_lookup() {

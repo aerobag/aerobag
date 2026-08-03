@@ -3967,6 +3967,53 @@ mod tests {
         }
     }
 
+    #[test]
+    fn nav_kv_plate_assets_receive_aggregate_procedure_geometry_warning_count() {
+        let plate_id = "plate:KAAA:IAP-AA-VOR RWY 01.png";
+        let mut pairs = vec![
+            nav_db::json_pair(
+                "plate/cifp/KAAA/V01".to_string(),
+                &serde_json::json!([{
+                    "airport_id": "KAAA",
+                    "cifp_id": "V01",
+                    "plate_id": plate_id,
+                    "is_primary": 1
+                }]),
+                "test plate match",
+            )
+            .unwrap(),
+            nav_db::json_pair(
+                format!("plate/by-id/{}", had_key_component(plate_id)),
+                &serde_json::json!({"id": plate_id, "label": "VOR 01"}),
+                "test plate",
+            )
+            .unwrap(),
+            nav_db::json_pair(
+                "procedure/geometry/KAAA/APPROACH/V01/_/TRANS".to_string(),
+                &serde_json::json!({
+                    "data_quality": [
+                        {"message": "first warning"},
+                        {"message": "second warning"}
+                    ]
+                }),
+                "test geometry",
+            )
+            .unwrap(),
+        ];
+
+        nav_db::attach_procedure_geometry_warnings_to_plate_pairs(&mut pairs).unwrap();
+
+        let plate: serde_json::Value = serde_json::from_slice(
+            &pairs
+                .iter()
+                .find(|pair| pair.key.starts_with("plate/by-id/"))
+                .unwrap()
+                .value,
+        )
+        .unwrap();
+        assert_eq!(plate["procedure_geometry_warning_count"], 2);
+    }
+
     fn clear_omitted_procedure_geometry_fields(
         leg_bundles: &mut [pgt::ProcedureGeometryLegBundle],
     ) {

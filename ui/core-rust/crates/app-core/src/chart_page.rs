@@ -100,6 +100,8 @@ pub struct DerivedChartAsset {
     pub folder_category: String,
     pub has_thumbnail: bool,
     #[serde(default)]
+    pub procedure_geometry_warning_count: usize,
+    #[serde(default)]
     pub georef: Option<PlateGeoref>,
 }
 
@@ -119,6 +121,8 @@ pub struct ChartAssetRecord {
     pub asset_path: String,
     pub thumbnail_path: Option<String>,
     #[serde(default)]
+    pub procedure_geometry_warning_count: usize,
+    #[serde(default)]
     pub georef: Option<PlateGeoref>,
 }
 
@@ -132,6 +136,7 @@ impl From<ChartAssetRecord> for DerivedChartAsset {
             kind: record.kind,
             folder_category: record.folder_category,
             has_thumbnail: record.thumbnail_path.is_some(),
+            procedure_geometry_warning_count: record.procedure_geometry_warning_count,
             georef: record.georef,
         }
     }
@@ -582,8 +587,30 @@ mod tests {
             kind: kind.to_string(),
             folder_category: folder_category.to_string(),
             has_thumbnail: false,
+            procedure_geometry_warning_count: 0,
             georef: None,
         }
+    }
+
+    #[test]
+    fn chart_asset_preserves_procedure_geometry_warning_count() {
+        let record: ChartAssetRecord = serde_json::from_value(serde_json::json!({
+            "id": "plate:KAAA:IAP-AA-VOR RWY 01.png",
+            "airport_id": "KAAA",
+            "collection_id": "airport:KAAA",
+            "package_id": "tpp-aa",
+            "label": "VOR 01",
+            "kind": "plate",
+            "folder_category": "approach",
+            "asset_path": "plates/AAA/IAP-AA-VOR RWY 01.png",
+            "thumbnail_path": "thumbnails/plates/AAA/IAP-AA-VOR RWY 01.png",
+            "procedure_geometry_warning_count": 3
+        }))
+        .unwrap();
+
+        let chart = DerivedChartAsset::from(record);
+
+        assert_eq!(chart.procedure_geometry_warning_count, 3);
     }
 
     fn airport() -> DerivedChartAirport {
@@ -721,6 +748,7 @@ mod tests {
                     kind: "legend".to_string(),
                     folder_category: "legend".to_string(),
                     has_thumbnail: true,
+                    procedure_geometry_warning_count: 0,
                     georef: None,
                 },
                 DerivedChartAsset {
@@ -731,6 +759,7 @@ mod tests {
                     kind: "inset".to_string(),
                     folder_category: "inset".to_string(),
                     has_thumbnail: true,
+                    procedure_geometry_warning_count: 0,
                     georef: None,
                 },
             ],

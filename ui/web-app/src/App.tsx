@@ -10736,6 +10736,15 @@ function ChartsPage(props: {
                       draggable={false}
                     />
                   ) : null}
+                  {chart.procedure_geometry_warning_count > 0 ? (
+                    <span
+                      className="plateThumbWarning"
+                      aria-label={`${chart.procedure_geometry_warning_count} procedure geometry warning${chart.procedure_geometry_warning_count === 1 ? "" : "s"}; verify against the published plate`}
+                      title="Computed procedure geometry requires verification against the published plate"
+                    >
+                      !
+                    </span>
+                  ) : null}
                   <div className="plateThumbLabel" style={{ backgroundColor: plateFolderColor(chart.folder_category) }}>
                     {chart.label}
                   </div>

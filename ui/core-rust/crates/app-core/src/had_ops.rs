@@ -2857,6 +2857,7 @@ fn list_procedures_from_geometry(
     if !pages.is_empty() {
         return Err(HadReadError::NeedPages(pages));
     }
+    crate::disambiguate_duplicate_procedure_display_labels(&mut procedures);
     Ok(procedures)
 }
 
@@ -6360,6 +6361,77 @@ mod tests {
         assert_eq!(procedures.len(), 1);
         assert_eq!(procedures[0].procedure_id, "H34LZ");
         assert_eq!(procedures[0].display_label, "RNAV (RNP) Z 34L");
+    }
+
+    #[test]
+    fn list_approaches_disambiguates_procedures_sharing_a_plate_label() {
+        let (root, pages) = fixture(
+            &[
+                (
+                    "plate/cifp/KAMA/I04",
+                    br#"[{
+                        "airport_id": "KAMA",
+                        "cifp_id": "I04",
+                        "plate_id": "plate:KAMA:IAP-TX-ILS OR LOC RWY 04.png",
+                        "plate_label": "ILS or LOC 04",
+                        "package_id": "tpp-sc",
+                        "public": 1,
+                        "priority": 0,
+                        "match_kind": "unique",
+                        "is_primary": 1
+                    }]"#
+                    .as_slice(),
+                ),
+                (
+                    "plate/cifp/KAMA/L04",
+                    br#"[{
+                        "airport_id": "KAMA",
+                        "cifp_id": "L04",
+                        "plate_id": "plate:KAMA:IAP-TX-ILS OR LOC RWY 04.png",
+                        "plate_label": "ILS or LOC 04",
+                        "package_id": "tpp-sc",
+                        "public": 1,
+                        "priority": 0,
+                        "match_kind": "unique",
+                        "is_primary": 1
+                    }]"#
+                    .as_slice(),
+                ),
+                (
+                    "procedure/geometry/KAMA/APPROACH/I04/_/_",
+                    br#"{}"#.as_slice(),
+                ),
+                (
+                    "procedure/geometry/KAMA/APPROACH/L04/_/_",
+                    br#"{}"#.as_slice(),
+                ),
+            ],
+            4096,
+        );
+        let mut store = NavKvStore::new(root);
+        for (index, page) in pages.into_iter().enumerate() {
+            store.insert_page(index as u32, page);
+        }
+
+        let outcome = run_had_operation(
+            &store,
+            HadOperation::ListProcedures {
+                airport_id: "KAMA".to_string(),
+                procedure_kind: ProcedureKind::Approach,
+            },
+        )
+        .expect("list KAMA approaches through nav_kv");
+        let HadOperationOutcome::Complete { result, .. } = outcome else {
+            panic!("expected complete outcome, got missing resources: {outcome:?}");
+        };
+        let procedures =
+            serde_json::from_value::<Vec<ProcedureSummary>>(result).expect("decode procedures");
+        let labels = procedures
+            .iter()
+            .map(|procedure| procedure.display_label.as_str())
+            .collect::<Vec<_>>();
+
+        assert_eq!(labels, vec!["ILS 04", "LOC 04"]);
     }
 
     #[test]

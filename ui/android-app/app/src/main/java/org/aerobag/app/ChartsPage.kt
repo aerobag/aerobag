@@ -152,6 +152,7 @@ import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.semantics.selected
 import androidx.compose.ui.semantics.testTagsAsResourceId
 import androidx.compose.ui.semantics.disabled
+import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.SpanStyle
 import androidx.compose.ui.text.buildAnnotatedString
@@ -1692,6 +1693,32 @@ internal fun PlateFolderGrid(
                             contentDescription = null,
                             modifier = Modifier.fillMaxSize(),
                         )
+                    }
+                    if (chart.procedureGeometryWarningCount > 0) {
+                        Surface(
+                            modifier = Modifier
+                                .align(Alignment.TopEnd)
+                                .padding(4.dp)
+                                .size(24.dp)
+                                .semantics {
+                                    contentDescription =
+                                        "${chart.procedureGeometryWarningCount} procedure geometry " +
+                                        "warning${if (chart.procedureGeometryWarningCount == 1) "" else "s"}; " +
+                                        "verify against the published plate"
+                                },
+                            shape = CircleShape,
+                            color = uiTheme.controls.dataStatusWarningBg,
+                            border = BorderStroke(2.dp, uiTheme.controls.dataStatusWarningStroke),
+                        ) {
+                            Box(contentAlignment = Alignment.Center) {
+                                Text(
+                                    text = "!",
+                                    color = uiTheme.controls.dataStatusWarningStroke,
+                                    style = MaterialTheme.typography.labelLarge,
+                                    fontWeight = FontWeight.Black,
+                                )
+                            }
+                        }
                     }
                     Box(
                         modifier = Modifier

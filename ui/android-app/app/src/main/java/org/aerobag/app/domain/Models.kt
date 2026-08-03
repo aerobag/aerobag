@@ -395,6 +395,7 @@ data class ChartAsset(
     val kind: String,
     val folderCategory: String,
     val hasThumbnail: Boolean,
+    val procedureGeometryWarningCount: Int = 0,
     val georef: PlateGeoref? = null,
 )
 

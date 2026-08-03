@@ -2314,6 +2314,7 @@ internal data class WireDerivedChartAsset(
     val kind: String,
     val folder_category: String,
     val has_thumbnail: Boolean,
+    val procedure_geometry_warning_count: Int = 0,
     val georef: WirePlateGeoref? = null,
 )
 
@@ -2793,6 +2794,7 @@ internal fun WireDerivedChartAsset.toUi() = ChartAsset(
     kind = kind,
     folderCategory = folder_category,
     hasThumbnail = has_thumbnail,
+    procedureGeometryWarningCount = procedure_geometry_warning_count,
     georef = georef?.toUi(),
 )
 

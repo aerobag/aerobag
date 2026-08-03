@@ -735,6 +735,7 @@ export type ChartPageData = {
       kind: string;
       folder_category: string;
       has_thumbnail: boolean;
+      procedure_geometry_warning_count: number;
       georef: PlateGeoref | null;
     }>;
   }>;

@@ -897,12 +897,22 @@ pub fn load_cifp_approaches(db_path: &Path) -> Result<BTreeMap<String, BTreeSet<
         if airport_id.is_empty() || procedure_id.is_empty() {
             continue;
         }
+        if is_suppressed_cifp_procedure(&airport_id, &procedure_id) {
+            continue;
+        }
         by_airport
             .entry(airport_id)
             .or_default()
             .insert(procedure_id);
     }
     Ok(by_airport)
+}
+
+pub fn is_suppressed_cifp_procedure(airport_id: &str, procedure_id: &str) -> bool {
+    // FAA CIFP retains obsolete S08 (cycle 1611) beside current V08 (cycle 2213),
+    // while the current facility and published plate support only V08.
+    airport_id.trim().eq_ignore_ascii_case("KPNS")
+        && procedure_id.trim().eq_ignore_ascii_case("S08")
 }
 
 pub fn load_airport_aliases(db_path: &Path) -> Result<BTreeMap<String, String>> {
@@ -1420,6 +1430,7 @@ pub fn build_data_package_with_tpp_matches(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use tempfile::tempdir;
 
     #[test]
     fn recognizes_gps_runway_as_p_family() {
@@ -1445,6 +1456,32 @@ mod tests {
                 BTreeSet::from([String::from("I05-Y")]),
                 BTreeSet::from([String::from("L05-Y")]),
             ]
+        );
+    }
+
+    #[test]
+    fn excludes_obsolete_kpns_s08_but_keeps_current_v08() {
+        let dir = tempdir().unwrap();
+        let db_path = dir.path().join("cifp.db");
+        let connection = Connection::open(&db_path).unwrap();
+        connection
+            .execute_batch(
+                "CREATE TABLE cifp_sid_star_app (
+                    airport_identifier TEXT,
+                    sid_star_approach_identifier TEXT,
+                    route_type TEXT
+                );
+                INSERT INTO cifp_sid_star_app VALUES ('KPNS', 'S08', 'S');
+                INSERT INTO cifp_sid_star_app VALUES ('KPNS', 'V08', 'V');",
+            )
+            .unwrap();
+        drop(connection);
+
+        let approaches = load_cifp_approaches(&db_path).unwrap();
+
+        assert_eq!(
+            approaches.get("KPNS"),
+            Some(&BTreeSet::from(["V08".to_string()]))
         );
     }
 }

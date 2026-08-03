@@ -4,6 +4,8 @@
     "button_unchecked": "#4b6f90",
     "header_button": "#4a6d8e",
     "button_disabled": "#8da1b3",
+    "button_disabled_icon_saturation": 0.2,
+    "button_disabled_icon_opacity": 0.5,
     "button_fg": "#f7fbff",
     "panel_bg": "#fefcf7",
     "panel_border": "#d7d1c5",

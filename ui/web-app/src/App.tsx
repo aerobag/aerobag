@@ -865,6 +865,8 @@ type UiThemeJson = {
     button_unchecked: string;
     header_button: string;
     button_disabled: string;
+    button_disabled_icon_saturation: number;
+    button_disabled_icon_opacity: number;
     button_fg: string;
     panel_bg: string;
     panel_border: string;
@@ -3317,6 +3319,8 @@ export default function App() {
         "--theme-button-unchecked": controlTheme.button_unchecked,
         "--theme-header-button": controlTheme.header_button,
         "--theme-button-disabled": controlTheme.button_disabled,
+        "--theme-button-disabled-icon-saturation": String(controlTheme.button_disabled_icon_saturation),
+        "--theme-button-disabled-icon-opacity": String(controlTheme.button_disabled_icon_opacity),
         "--theme-button-fg": controlTheme.button_fg,
         "--theme-panel-bg": controlTheme.panel_bg,
         "--theme-panel-border": controlTheme.panel_border,
@@ -9329,6 +9333,8 @@ function TrayDock(props: {
         ["--theme-button-unchecked" as string]: launcherStyle.getPropertyValue("--theme-button-unchecked"),
         ["--theme-button-checked" as string]: launcherStyle.getPropertyValue("--theme-button-checked"),
         ["--theme-button-disabled" as string]: launcherStyle.getPropertyValue("--theme-button-disabled"),
+        ["--theme-button-disabled-icon-saturation" as string]: launcherStyle.getPropertyValue("--theme-button-disabled-icon-saturation"),
+        ["--theme-button-disabled-icon-opacity" as string]: launcherStyle.getPropertyValue("--theme-button-disabled-icon-opacity"),
         ["--theme-button-fg" as string]: launcherStyle.getPropertyValue("--theme-button-fg"),
       });
     }

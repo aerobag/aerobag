@@ -1929,6 +1929,12 @@ button {
   background-image: none;
 }
 
+.chartButton.isDisabled .chartButtonIcon,
+.chartButton:disabled .chartButtonIcon {
+  filter: saturate(var(--theme-button-disabled-icon-saturation));
+  opacity: var(--theme-button-disabled-icon-opacity);
+}
+
 .chartButton.isOpen {
   background-color: var(--theme-button-checked);
   background-image:
@@ -1942,7 +1948,6 @@ button {
 }
 
 .chartButton.isDisabled {
-  filter: saturate(0.7);
   box-shadow: none;
 }
 

@@ -110,6 +110,8 @@ import androidx.compose.ui.geometry.Rect
 import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.ColorFilter
+import androidx.compose.ui.graphics.ColorMatrix
 import androidx.compose.ui.graphics.Shadow
 import androidx.compose.ui.graphics.Path
 import androidx.compose.ui.graphics.PathEffect
@@ -614,6 +616,8 @@ internal fun FittedSingleLineText(
 internal fun IconFrame(
     @DrawableRes iconResId: Int,
     modifier: Modifier = Modifier,
+    saturation: Float = 1f,
+    opacity: Float = 1f,
 ) {
     Box(
         modifier = modifier.clip(RoundedCornerShape(ThumbRadius * 0.72f)),
@@ -624,6 +628,14 @@ internal fun IconFrame(
             contentDescription = null,
             contentScale = ContentScale.FillBounds,
             modifier = Modifier.fillMaxSize(),
+            alpha = opacity.coerceIn(0f, 1f),
+            colorFilter = if (saturation < 1f) {
+                ColorFilter.colorMatrix(
+                    ColorMatrix().apply { setToSaturation(saturation.coerceIn(0f, 1f)) },
+                )
+            } else {
+                null
+            },
         )
     }
 }
@@ -852,6 +864,8 @@ internal fun CompactSquareButton(
             if (iconResId != null) {
                 IconFrame(
                     iconResId = iconResId,
+                    saturation = if (enabled) 1f else uiTheme.controls.buttonDisabledIconSaturation,
+                    opacity = if (enabled) 1f else uiTheme.controls.buttonDisabledIconOpacity,
                     modifier = Modifier
                         .fillMaxSize()
                         .padding(8.dp),

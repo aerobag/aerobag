@@ -14,7 +14,7 @@ use std::{
     panic::{self, AssertUnwindSafe},
     path::{Path, PathBuf},
     process::Command,
-    sync::{Arc, RwLock},
+    sync::{Arc, Mutex, OnceLock, RwLock},
     thread,
     time::{Duration, Instant, SystemTime},
 };
@@ -2055,6 +2055,9 @@ fn product_cycle_is_currently_publishable(cycle: &str, as_of_date: NaiveDate) ->
 
 mod static_products;
 use static_products::*;
+
+mod artifact_verification;
+use artifact_verification::*;
 
 mod publication;
 use publication::*;

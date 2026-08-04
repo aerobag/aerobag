@@ -48,6 +48,21 @@ CYCLE_RE = re.compile(
     r"^(?:(?P<wall>\S+)\s+)?(?P<ts>\+\d+:\d+(?::\d+)?)\s+cycle\s+bundle=(?P<bundle>\S+)\s+(?P<rest>.*)$"
 )
 
+ACTIVITY_START_RE = re.compile(
+    r"^(?:(?P<wall>\S+)\s+)?(?P<ts>\+\d+:\d+(?::\d+)?)\s+activity-start\s+"
+    r"(?P<task>\S+)(?P<rest>.*)$"
+)
+
+ACTIVITY_PROGRESS_RE = re.compile(
+    r"^(?:(?P<wall>\S+)\s+)?(?P<ts>\+\d+:\d+(?::\d+)?)\s+activity-progress\s+"
+    r"(?P<task>\S+)(?P<rest>.*)$"
+)
+
+ACTIVITY_COMPLETE_RE = re.compile(
+    r"^(?:(?P<wall>\S+)\s+)?(?P<ts>\+\d+:\d+(?::\d+)?)\s+activity-complete\s+"
+    r"(?P<task>\S+)(?P<rest>.*)$"
+)
+
 
 @dataclass
 class TaskState:
@@ -113,6 +128,51 @@ class BuildState:
             self.last_timestamp = match.group("ts")
             self.bundle_cycle = match.group("bundle")
             self.cycle_summary = match.group("rest")
+            return
+
+        match = ACTIVITY_START_RE.match(line)
+        if match:
+            self.last_timestamp = match.group("ts")
+            task = match.group("task")
+            self.tasks[task] = TaskState(
+                task=task,
+                launched_at=match.group("ts"),
+                launched_wall=match.group("wall"),
+                weight=0,
+                status="active",
+                details=match.group("rest").strip(),
+            )
+            return
+
+        match = ACTIVITY_PROGRESS_RE.match(line)
+        if match:
+            self.last_timestamp = match.group("ts")
+            task = self.tasks.get(match.group("task"))
+            if task is not None:
+                task.details = match.group("rest").strip()
+            return
+
+        match = ACTIVITY_COMPLETE_RE.match(line)
+        if match:
+            self.last_timestamp = match.group("ts")
+            task_name = match.group("task")
+            task = self.tasks.get(task_name)
+            if task is None:
+                task = TaskState(
+                    task=task_name,
+                    launched_at="?",
+                    launched_wall=match.group("wall"),
+                    weight=0,
+                    status="done",
+                )
+                self.tasks[task_name] = task
+            task.status = "done"
+            task.completed_at = match.group("ts")
+            task.completed_wall = match.group("wall")
+            task.details = match.group("rest").strip()
+            if task_name not in self.completed_task_names:
+                self.completed_task_names.add(task_name)
+                self.completion_order.append(task_name)
             return
 
         match = READY_RE.match(line)
@@ -786,7 +846,7 @@ def run_ui(stdscr, log_path: Path, refresh_seconds: float) -> None:
                     stdscr,
                     row,
                     2,
-                    f"{task.launched_at}  {task.task}  weight={task.weight}  runtime={format_runtime(now_wall, task.launched_wall)}",
+                    f"{task.launched_at}  {task.task}  weight={task.weight}  runtime={format_runtime(now_wall, task.launched_wall)} {task.details}",
                     curses.color_pair(1),
                     max_x,
                 )
@@ -1180,7 +1240,7 @@ def build_dashboard_html(refresh_seconds: float) -> str:
         return `<tr><td colspan="${{active ? 4 : 2}}" class="subtle">(none)</td></tr>`;
       }}
       return tasks.map((task) => active
-        ? `<tr><td class="mono">${{escapeHtml(text(task.launched_at))}}</td><td class="mono">${{escapeHtml(task.task)}}</td><td>${{task.weight}}</td><td class="mono">${{escapeHtml(text(task.runtime))}}</td></tr>`
+        ? `<tr><td class="mono">${{escapeHtml(text(task.launched_at))}}</td><td><span class="mono">${{escapeHtml(task.task)}}</span><br><span class="subtle">${{escapeHtml(task.details || "")}}</span></td><td>${{task.weight}}</td><td class="mono">${{escapeHtml(text(task.runtime))}}</td></tr>`
         : `<tr><td class="mono">${{escapeHtml(text(task.completed_at))}}</td><td><span class="mono">${{escapeHtml(task.task)}}</span><br><span class="subtle">${{escapeHtml(task.details || "")}}</span></td></tr>`
       ).join("");
     }}

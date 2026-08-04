@@ -168,6 +168,41 @@ class WatchBuildLogTests(unittest.TestCase):
         self.assertEqual(completed["runtime_seconds"], 3)
         self.assertEqual(completed["runtime"], "0:03")
 
+    def test_named_activity_is_visible_without_changing_scheduler_counts(self) -> None:
+        state = watch_build_log.BuildState()
+        state.apply_line(
+            "2026-08-04T01:00:00+00:00 +10:00 product-scheduler-ready "
+            "tasks=154 work_unit_budget=152"
+        )
+        state.apply_line(
+            "2026-08-04T01:00:01+00:00 +10:01 activity-start "
+            "publication-integrity artifacts=126 bytes=11497139397"
+        )
+
+        self.assertEqual(state.total_tasks, 154)
+        self.assertEqual(len(state.active_tasks()), 1)
+        self.assertEqual(state.active_tasks()[0].task, "publication-integrity")
+        self.assertEqual(
+            state.active_tasks()[0].details,
+            "artifacts=126 bytes=11497139397",
+        )
+
+        state.apply_line(
+            "2026-08-04T01:00:03+00:00 +10:03 activity-progress "
+            "publication-integrity hashed_files=2 hashed_bytes=4096 reused_checks=5"
+        )
+        self.assertIn("hashed_files=2", state.active_tasks()[0].details)
+
+        state.apply_line(
+            "2026-08-04T01:00:05+00:00 +10:05 activity-complete "
+            "publication-integrity hashed_files=2 hashed_bytes=4096 reused_checks=250"
+        )
+        self.assertEqual(state.active_tasks(), [])
+        completed = state.recent_completed(1)[0]
+        self.assertEqual(completed.task, "publication-integrity")
+        self.assertIn("reused_checks=250", completed.details)
+        self.assertEqual(state.total_tasks, 154)
+
     def test_incremental_snapshot_reads_only_appended_log_lines(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             log_path = Path(tmp) / "master.log"

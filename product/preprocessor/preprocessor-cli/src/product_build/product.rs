@@ -2345,13 +2345,7 @@ pub fn build_product(config: &ProductBuildConfig) -> anyhow::Result<ProductBuild
             &product_artifacts_path,
             &static_products,
         )?;
-        validate_packaged_contract(&config.packaged_dir, &product_artifacts_path)?;
-        let unpacked_root = published_unpacked_root(config)?;
-        validate_unpacked_contract(
-            &config.packaged_dir,
-            &unpacked_root,
-            &product_artifacts_path,
-        )?;
+        validate_publication_integrity(config, &product_artifacts_path, &mut master_log)?;
         record_gc_roots(config, "full", &task_node_records)?;
 
         let build_result = ProductBuildResult {
@@ -2385,4 +2379,89 @@ pub fn build_product(config: &ProductBuildConfig) -> anyhow::Result<ProductBuild
             Err(err)
         }
     }
+}
+
+fn validate_publication_integrity(
+    config: &ProductBuildConfig,
+    product_artifacts_path: &Path,
+    master_log: &mut MasterLog,
+) -> anyhow::Result<()> {
+    let work = publication_integrity_work(&config.packaged_dir, product_artifacts_path)?;
+    let stats_before = artifact_verification_stats()?;
+    master_log.log(format!(
+        "activity-start publication-integrity artifacts={} bytes={}",
+        work.artifacts, work.bytes
+    ))?;
+
+    let packaged_root = config.packaged_dir.clone();
+    let unpacked_root = published_unpacked_root(config)?;
+    let current_artifacts_path = product_artifacts_path.to_path_buf();
+    let (finished_tx, finished_rx) = crossbeam_channel::bounded::<()>(1);
+    let validation = thread::spawn(move || {
+        let result = (|| {
+            validate_packaged_contract(&packaged_root, &current_artifacts_path)?;
+            validate_unpacked_contract(&packaged_root, &unpacked_root, &current_artifacts_path)
+        })();
+        let _ = finished_tx.send(());
+        result
+    });
+
+    let mut monitoring_error = None;
+    let mut last_stats = stats_before;
+    loop {
+        match finished_rx.recv_timeout(Duration::from_secs(2)) {
+            Ok(()) | Err(RecvTimeoutError::Disconnected) => break,
+            Err(RecvTimeoutError::Timeout) => {
+                let stats = match artifact_verification_stats() {
+                    Ok(stats) => stats,
+                    Err(error) => {
+                        monitoring_error = Some(error);
+                        break;
+                    }
+                };
+                if stats != last_stats {
+                    let progress = stats.since(stats_before);
+                    if let Err(error) = master_log.log(format!(
+                        "activity-progress publication-integrity hashed_files={} hashed_bytes={} reused_checks={} artifacts={} bytes={}",
+                        progress.hashed_files,
+                        progress.hashed_bytes,
+                        progress.reused_checks,
+                        work.artifacts,
+                        work.bytes,
+                    )) {
+                        monitoring_error = Some(error);
+                        break;
+                    }
+                    last_stats = stats;
+                }
+            }
+        }
+    }
+
+    let validation_result = validation
+        .join()
+        .map_err(|_| anyhow::anyhow!("publication integrity worker panicked"))?;
+    let final_stats = artifact_verification_stats()?.since(stats_before);
+    let completion = format!(
+        "hashed_files={} hashed_bytes={} reused_checks={} artifacts={} bytes={}",
+        final_stats.hashed_files,
+        final_stats.hashed_bytes,
+        final_stats.reused_checks,
+        work.artifacts,
+        work.bytes,
+    );
+    match &validation_result {
+        Ok(()) => master_log.log(format!(
+            "activity-complete publication-integrity {completion}"
+        ))?,
+        Err(error) => master_log.log(format!(
+            "activity-complete publication-integrity FAIL error={} {completion}",
+            log_error_chain(error)
+        ))?,
+    }
+    validation_result?;
+    if let Some(error) = monitoring_error {
+        return Err(error);
+    }
+    Ok(())
 }

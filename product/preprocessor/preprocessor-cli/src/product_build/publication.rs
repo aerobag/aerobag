@@ -64,17 +64,10 @@ pub(super) fn publish_content_addressed_zip(
     known_sha256: Option<&str>,
     known_size_bytes: Option<u64>,
 ) -> anyhow::Result<(PathBuf, String, u64)> {
-    let sha256 = match known_sha256 {
-        Some(value) => value.to_string(),
-        None => hash_file(zip_path)?,
-    };
-    let size_bytes = match known_size_bytes {
-        Some(value) => value,
-        None => fs::metadata(zip_path)
-            .with_context(|| format!("failed to stat {}", zip_path.display()))?
-            .len(),
-    };
-    verify_artifact_file(zip_path, &sha256, size_bytes, "source package")?;
+    let verified = verified_artifact_file(zip_path)?;
+    let sha256 = known_sha256.unwrap_or(&verified.sha256).to_string();
+    let size_bytes = known_size_bytes.unwrap_or(verified.size_bytes);
+    verify_expected_artifact(&verified, zip_path, &sha256, size_bytes, "source package")?;
     let published_path = build_root.join(format!("{file_prefix}_{sha256}.zip"));
     if !published_path.is_file() {
         fs::hard_link(zip_path, &published_path).with_context(|| {
@@ -1692,32 +1685,69 @@ pub(super) fn validate_bundle_artifact_ref(
     )
 }
 
-pub(super) fn verify_artifact_file(
-    path: &Path,
-    expected_sha256: &str,
-    expected_size_bytes: u64,
-    label: &str,
-) -> anyhow::Result<()> {
-    ensure_public_file_exists(path)?;
-    let actual_size_bytes = fs::metadata(path)
-        .with_context(|| format!("failed to stat {}", path.display()))?
-        .len();
-    if actual_size_bytes != expected_size_bytes {
-        bail!(
-            "{label} size mismatch for {}: declared {} != actual {}",
-            path.display(),
-            expected_size_bytes,
-            actual_size_bytes
-        );
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub(super) struct PublicationIntegrityWork {
+    pub(super) artifacts: usize,
+    pub(super) bytes: u64,
+}
+
+pub(super) fn publication_integrity_work(
+    packaged_root: &Path,
+    current_artifacts_path: &Path,
+) -> anyhow::Result<PublicationIntegrityWork> {
+    let current = load_current_artifacts_manifest(current_artifacts_path)?;
+    let mut artifacts = BTreeMap::<String, (String, u64)>::new();
+    for bundle_ref in &current.bundles {
+        let bundle = load_bundle_manifest(&packaged_root.join(&bundle_ref.filename))?;
+        for package in &bundle.packages {
+            register_integrity_artifact(
+                &mut artifacts,
+                &package.filename,
+                &package.checksum_sha256,
+                package.size_bytes,
+            )?;
+        }
+        for artifact in &bundle.ancillary {
+            register_integrity_artifact(
+                &mut artifacts,
+                &artifact.filename,
+                &artifact.checksum_sha256,
+                artifact.size_bytes,
+            )?;
+        }
     }
-    let actual_sha256 = hash_file(path)?;
-    if actual_sha256 != expected_sha256 {
-        bail!(
-            "{label} checksum mismatch for {}: declared {} != actual {}",
-            path.display(),
-            expected_sha256,
-            actual_sha256
-        );
+    let bytes = artifacts.values().try_fold(0_u64, |total, (_, size)| {
+        total
+            .checked_add(*size)
+            .context("publication integrity byte count overflow")
+    })?;
+    Ok(PublicationIntegrityWork {
+        artifacts: artifacts.len(),
+        bytes,
+    })
+}
+
+fn register_integrity_artifact(
+    artifacts: &mut BTreeMap<String, (String, u64)>,
+    filename: &str,
+    sha256: &str,
+    size_bytes: u64,
+) -> anyhow::Result<()> {
+    match artifacts.entry(filename.to_string()) {
+        std::collections::btree_map::Entry::Vacant(entry) => {
+            entry.insert((sha256.to_string(), size_bytes));
+        }
+        std::collections::btree_map::Entry::Occupied(entry)
+            if entry.get() == &(sha256.to_string(), size_bytes) => {}
+        std::collections::btree_map::Entry::Occupied(entry) => {
+            bail!(
+                "publication artifact {} has conflicting integrity declarations: {:?} and ({}, {})",
+                filename,
+                entry.get(),
+                sha256,
+                size_bytes
+            );
+        }
     }
     Ok(())
 }
@@ -1956,13 +1986,12 @@ pub(super) fn bundle_artifact(
     absolute_path: &Path,
     published_filename: &str,
 ) -> anyhow::Result<BundleArtifact> {
+    let verified = verified_artifact_file(absolute_path)?;
     Ok(BundleArtifact {
         filename: published_filename.to_string(),
         relative_path: published_filename.to_string(),
-        checksum_sha256: hash_file(absolute_path)?,
-        size_bytes: fs::metadata(absolute_path)
-            .with_context(|| format!("failed to stat {}", absolute_path.display()))?
-            .len(),
+        checksum_sha256: verified.sha256,
+        size_bytes: verified.size_bytes,
     })
 }
 

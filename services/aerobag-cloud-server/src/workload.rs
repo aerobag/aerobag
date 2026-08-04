@@ -1310,7 +1310,6 @@ fn http_method(method: AcsHttpMethod) -> Method {
         AcsHttpMethod::Get => Method::GET,
         AcsHttpMethod::Post => Method::POST,
         AcsHttpMethod::Put => Method::PUT,
-        AcsHttpMethod::Delete => Method::DELETE,
     }
 }
 

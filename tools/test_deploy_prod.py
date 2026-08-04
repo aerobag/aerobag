@@ -107,6 +107,8 @@ class AerobagCloudProductionTests(unittest.TestCase):
         self.assertIn("proxy_set_header Aerobag-Client-Address $remote_addr;", nginx)
         self.assertIn("location = /cloud/v1/status", nginx)
         self.assertIn("return 404;", nginx)
+        self.assertIn("location = /cloud/v1/events", nginx)
+        self.assertIn("access_log off;", nginx)
         self.assertIn("location /cloud/", nginx)
         self.assertIn("proxy_buffering off;", nginx)
         self.assertIn("client_max_body_size 2097152;", nginx)
@@ -118,6 +120,10 @@ class AerobagCloudProductionTests(unittest.TestCase):
         self.assertIn(' --policy "$AEROBAG_CLOUD_SERVER_POLICY"', unit)
         self.assertIn(' --server-secret "$AEROBAG_CLOUD_SERVER_SECRET"', unit)
         self.assertIn("ReadWritePaths=/mnt/aerobag-data/cloud-storage", unit)
+        self.assertIn("CapabilityBoundingSet=\n", unit)
+        self.assertIn("ProtectProc=invisible", unit)
+        self.assertIn("RestrictNamespaces=true", unit)
+        self.assertIn("TasksMax=256", unit)
         env = deploy_prod.env_file(self.config)
         self.assertIn("AEROBAG_CLOUD_SERVER_LISTEN=127.0.0.1:8099\n", env)
         self.assertIn(
@@ -153,7 +159,7 @@ class AerobagCloudProductionTests(unittest.TestCase):
 
     def test_cloud_policy_is_explicit_and_complete(self) -> None:
         policy = deploy_prod.cloud_policy(self.config)
-        self.assertEqual(policy["schema_version"], 2)
+        self.assertEqual(policy["schema_version"], 3)
         self.assertEqual(policy["storage"]["anonymous_account_quota_bytes"], 1_048_576)
         self.assertEqual(policy["storage"]["global_storage_limit_bytes"], 10 * 1024**3)
         self.assertEqual(policy["sse"]["max_connections_global"], 128)

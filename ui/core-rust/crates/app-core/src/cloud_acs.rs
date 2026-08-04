@@ -164,7 +164,6 @@ pub(crate) fn plan_request(
             AcsHttpMethod::Get => CloudHttpMethod::Get,
             AcsHttpMethod::Post => CloudHttpMethod::Post,
             AcsHttpMethod::Put => CloudHttpMethod::Put,
-            AcsHttpMethod::Delete => CloudHttpMethod::Delete,
         },
         url,
         headers,

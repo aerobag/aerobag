@@ -69,7 +69,7 @@ pub fn server_router(
     };
     let cors = CorsLayer::new()
         .allow_origin(Any)
-        .allow_methods([Method::GET, Method::POST, Method::PUT, Method::DELETE])
+        .allow_methods([Method::GET, Method::POST, Method::PUT])
         .allow_headers([
             header::CONTENT_TYPE,
             HeaderName::from_static("last-event-id"),
@@ -90,7 +90,7 @@ pub fn server_router(
         .route("/cloud/v1/accounts", post(create_account))
         .route(
             "/cloud/v1/accounts/{account}/objects/{object}",
-            get(read_object).put(create_object).delete(delete_object),
+            get(read_object).put(create_object),
         )
         .route("/cloud/v1/accounts/{account}/objects", get(list_objects))
         .route(
@@ -179,6 +179,18 @@ async fn bound_request_body(
     let (parts, body) = request.into_parts();
     match to_bytes(body, state.policy.request.max_body_bytes as usize).await {
         Ok(bytes) => {
+            let Some(network) = parts.extensions.get::<NetworkPseudonym>().cloned() else {
+                return ApiError::internal("request network identity is unavailable")
+                    .into_response();
+            };
+            let body_bytes = bytes.len() as u64;
+            let admitted = blocking(state.store, move |store| {
+                store.admit_network_ingress(&network.0, body_bytes, now_epoch_ms())
+            })
+            .await;
+            if let Err(error) = admitted {
+                return ApiError::from(error).into_response();
+            }
             next.run(Request::from_parts(parts, Body::from(bytes)))
                 .await
         }
@@ -350,6 +362,7 @@ async fn create_object(
 
 async fn read_object(
     State(state): State<AppState>,
+    Extension(network): Extension<NetworkPseudonym>,
     OriginalUri(uri): OriginalUri,
     Path((account, object)): Path<(String, String)>,
     headers: HeaderMap,
@@ -370,39 +383,10 @@ async fn read_object(
             &account,
             false,
         )?;
-        store.read_object(&account, &object)
+        store.read_object(&account, &object, &network.0)
     })
     .await?;
     json(StatusCode::OK, &response)
-}
-
-async fn delete_object(
-    State(state): State<AppState>,
-    OriginalUri(uri): OriginalUri,
-    Path((account, object)): Path<(String, String)>,
-    headers: HeaderMap,
-) -> Result<Response, ApiError> {
-    let path = uri.path().to_string();
-    let query = uri.query().map(str::to_string);
-    blocking(state.store, move |store| {
-        let now = now_epoch_ms();
-        verify_registered_request(
-            &store,
-            SignedRequest {
-                headers: &headers,
-                method: AcsHttpMethod::Delete,
-                path: &path,
-                query: query.as_deref(),
-                body: b"",
-                now_epoch_ms: now,
-            },
-            &account,
-            true,
-        )?;
-        store.delete_object(&account, &object, now)
-    })
-    .await?;
-    Ok(StatusCode::NO_CONTENT.into_response())
 }
 
 struct ListQuery {
@@ -412,6 +396,7 @@ struct ListQuery {
 
 async fn list_objects(
     State(state): State<AppState>,
+    Extension(network): Extension<NetworkPseudonym>,
     OriginalUri(uri): OriginalUri,
     Path(account): Path<String>,
     headers: HeaderMap,
@@ -437,6 +422,7 @@ async fn list_objects(
             &account,
             request.cursor.as_deref(),
             request.limit.unwrap_or(100),
+            &network.0,
         )
     })
     .await?;
@@ -445,6 +431,7 @@ async fn list_objects(
 
 async fn read_root(
     State(state): State<AppState>,
+    Extension(network): Extension<NetworkPseudonym>,
     OriginalUri(uri): OriginalUri,
     Path(account): Path<String>,
     headers: HeaderMap,
@@ -465,7 +452,7 @@ async fn read_root(
             &account,
             false,
         )?;
-        store.read_root(&account)
+        store.read_root(&account, &network.0)
     })
     .await?;
     json(StatusCode::OK, &response)
@@ -473,6 +460,7 @@ async fn read_root(
 
 async fn compare_and_swap_root(
     State(state): State<AppState>,
+    Extension(network): Extension<NetworkPseudonym>,
     OriginalUri(uri): OriginalUri,
     Path(account): Path<String>,
     headers: HeaderMap,
@@ -498,7 +486,7 @@ async fn compare_and_swap_root(
             &account,
             true,
         )?;
-        store.compare_and_swap_root(&account, &request, now)
+        store.compare_and_swap_root(&account, &request, &network.0, now)
     })
     .await?;
     let status = if matches!(response, AcsCompareAndSwapRootResponse::Conflict { .. }) {
@@ -569,8 +557,9 @@ async fn events(
     let guard = SseConnectionGuard {
         store: state.store.clone(),
         account: account.clone(),
-        network: network.0,
+        network: network.0.clone(),
     };
+    let stream_network = network.0;
     let mut receiver = state.store.subscribe();
     let initial_account = account.clone();
     let initial = blocking(state.store.clone(), move |store| {
@@ -582,7 +571,10 @@ async fn events(
         let mut last_sequence = 0_u64;
         for event in initial {
             last_sequence = last_sequence.max(event.sequence());
-            yield Ok::<Event, Infallible>(sse_event(&event));
+            let Ok(event) = metered_sse_event(&state.store, &account, &stream_network, &event) else {
+                return;
+            };
+            yield Ok::<Event, Infallible>(event);
         }
         let mut heartbeat = tokio::time::interval(Duration::from_millis(
             AEROBAG_SSE_TRANSPORT_POLICY.heartbeat_interval_ms as u64,
@@ -594,7 +586,10 @@ async fn events(
                     Ok(RootEventRecord { account_locator, event }) => {
                         if account_locator == account && event.sequence() > last_sequence {
                             last_sequence = event.sequence();
-                            yield Ok::<Event, Infallible>(sse_event(&event));
+                            let Ok(event) = metered_sse_event(&state.store, &account, &stream_network, &event) else {
+                                return;
+                            };
+                            yield Ok::<Event, Infallible>(event);
                         }
                     }
                     Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => {
@@ -611,7 +606,10 @@ async fn events(
                         match reset {
                             Ok(reset) => {
                                 last_sequence = reset.sequence();
-                                yield Ok::<Event, Infallible>(sse_event(&reset));
+                                let Ok(event) = metered_sse_event(&state.store, &account, &stream_network, &reset) else {
+                                    return;
+                                };
+                                yield Ok::<Event, Infallible>(event);
                             }
                             Err(_) => break,
                         }
@@ -625,7 +623,10 @@ async fn events(
                     }).await {
                         Ok(event) => {
                             last_sequence = last_sequence.max(event.sequence());
-                            yield Ok::<Event, Infallible>(sse_event(&event));
+                            let Ok(event) = metered_sse_event(&state.store, &account, &stream_network, &event) else {
+                                return;
+                            };
+                            yield Ok::<Event, Infallible>(event);
                         }
                         Err(_) => break,
                     }
@@ -687,18 +688,28 @@ impl Drop for SseConnectionGuard {
     }
 }
 
-fn sse_event(event: &AcsSseEvent) -> Event {
+fn metered_sse_event(
+    store: &CloudStore,
+    account: &str,
+    network: &str,
+    event: &AcsSseEvent,
+) -> StoreResult<Event> {
     let kind = match event {
         AcsSseEvent::Ready { .. } => "ready",
         AcsSseEvent::RootChanged { .. } => "root-changed",
         AcsSseEvent::Reset { .. } => "reset",
         AcsSseEvent::Heartbeat { .. } => "heartbeat",
     };
-    Event::default()
-        .event(kind)
-        .id(event.sequence().to_string())
-        .json_data(event)
-        .expect("ACS SSE events always serialize")
+    let data = serde_json::to_string(event)
+        .map_err(|error| StoreError::internal(format!("encode ACS SSE event: {error}")))?;
+    let sequence = event.sequence().to_string();
+    let wire_bytes = data
+        .len()
+        .saturating_add(kind.len())
+        .saturating_add(sequence.len())
+        .saturating_add(32) as u64;
+    store.admit_egress(account, network, wire_bytes, now_epoch_ms())?;
+    Ok(Event::default().event(kind).id(sequence).data(data))
 }
 
 fn require_contract(store: &CloudStore, contract_id: &str) -> Result<(), ApiError> {
@@ -789,7 +800,15 @@ fn valid_query_token(value: &str) -> bool {
 fn json(status: StatusCode, value: &impl serde::Serialize) -> Result<Response, ApiError> {
     let body = serde_json::to_vec(value)
         .map_err(|error| ApiError::internal(format!("encode JSON response: {error}")))?;
-    Ok((status, [(header::CONTENT_TYPE, "application/json")], body).into_response())
+    Ok((
+        status,
+        [
+            (header::CONTENT_TYPE, "application/json"),
+            (header::CACHE_CONTROL, "no-store"),
+        ],
+        body,
+    )
+        .into_response())
 }
 
 async fn blocking<T, F>(store: CloudStore, operation: F) -> StoreResult<T>
@@ -851,15 +870,28 @@ impl From<StoreError> for ApiError {
 
 impl IntoResponse for ApiError {
     fn into_response(self) -> Response {
-        let status = StatusCode::from_u16(self.error.code.http_status())
-            .unwrap_or(StatusCode::INTERNAL_SERVER_ERROR);
-        let retry_after_ms = self.error.retry_after_ms;
-        let rate_limit_gate = self.error.rate_limit_gate;
+        let StoreError {
+            code,
+            message,
+            retry_after_ms,
+            rate_limit_gate,
+        } = self.error;
+        let status =
+            StatusCode::from_u16(code.http_status()).unwrap_or(StatusCode::INTERNAL_SERVER_ERROR);
+        let message = if code == AcsErrorCode::Internal {
+            eprintln!(
+                "ACS internal request failure request_id={}: {}",
+                self.request_id, message
+            );
+            "Aerobag Cloud encountered an internal failure; report the request ID".to_string()
+        } else {
+            message
+        };
         let response = AcsErrorResponse {
             contract_id: ACS_CONTRACT_ID.to_string(),
             request_id: self.request_id,
-            code: self.error.code,
-            message: self.error.message,
+            code,
+            message,
             retry_after_ms,
             rate_limit_gate,
         };
@@ -998,6 +1030,50 @@ mod tests {
         assert_eq!(
             operator_authorization(),
             "Bearer oAvfo7uXmJVexL5TLb2Uwt5nQZ7smFsvuqkN6YXikFg"
+        );
+    }
+
+    #[tokio::test]
+    async fn internal_failures_are_redacted_and_json_is_not_cacheable() {
+        let response = ApiError::internal(
+            "cloud database failure: /secret/storage/path contained corrupt bytes",
+        )
+        .into_response();
+        assert_eq!(response.status(), StatusCode::INTERNAL_SERVER_ERROR);
+        assert_eq!(
+            response.headers().get(header::CACHE_CONTROL).unwrap(),
+            "no-store"
+        );
+        let body = response.into_body().collect().await.unwrap().to_bytes();
+        let error: AcsErrorResponse = serde_json::from_slice(&body).unwrap();
+        assert!(!error.message.contains("/secret/storage/path"));
+        assert_eq!(
+            error.message,
+            "Aerobag Cloud encountered an internal failure; report the request ID"
+        );
+        assert!(!error.request_id.is_empty());
+    }
+
+    #[test]
+    fn sse_frames_are_subject_to_the_same_egress_limits_as_reads() {
+        let root = TempDir::new().unwrap();
+        let mut config = crate::StoreConfig::for_test_data_root(root.path().to_path_buf());
+        config.global_egress_bucket = crate::TokenBucketConfig::per_minute(1, 1);
+        let store = CloudStore::open(config).unwrap();
+        let error = metered_sse_event(
+            &store,
+            "account",
+            "network",
+            &AcsSseEvent::Ready {
+                sequence: 0,
+                root_revision: 0,
+                root_hash: None,
+            },
+        )
+        .unwrap_err();
+        assert_eq!(
+            error.rate_limit_gate,
+            Some(product_contracts::AcsRateLimitGate::GlobalEgress)
         );
     }
 

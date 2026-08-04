@@ -108,18 +108,44 @@ fn create_backup_locked(
     now_epoch_ms: i64,
 ) -> StoreResult<BackupReport> {
     let started = Instant::now();
+    if let Err(error) = remove_stale_partial_snapshots(layout) {
+        let _ = record_backup_failure(layout, now_epoch_ms);
+        return Err(error);
+    }
+    let live_database_bytes = file_size(&layout.database_path());
+    let filesystem_free_bytes = match fs2::available_space(layout.root()) {
+        Ok(bytes) => bytes,
+        Err(error) => {
+            let _ = record_backup_failure(layout, now_epoch_ms);
+            return Err(StoreError::io(
+                "measure cloud backup filesystem free space",
+                error,
+            ));
+        }
+    };
+    let required_free_bytes =
+        live_database_bytes.saturating_add(config.write_resume_min_filesystem_free_bytes);
+    if filesystem_free_bytes < required_free_bytes {
+        let _ = record_backup_failure(layout, now_epoch_ms);
+        return Err(StoreError::internal(format!(
+            "cloud backup requires {live_database_bytes} bytes plus the configured filesystem safety reserve; only {filesystem_free_bytes} bytes are free"
+        )));
+    }
     let snapshot_name = format!("snapshot-{now_epoch_ms}");
     let partial = layout
         .snapshots_root()
         .join(format!(".{snapshot_name}.partial"));
     let completed = layout.snapshots_root().join(&snapshot_name);
     if partial.exists() || completed.exists() {
+        let _ = record_backup_failure(layout, now_epoch_ms);
         return Err(StoreError::internal(format!(
             "cloud backup snapshot already exists: {snapshot_name}"
         )));
     }
-    fs::create_dir(&partial)
-        .map_err(|error| StoreError::io("create partial cloud backup", error))?;
+    if let Err(error) = fs::create_dir(&partial) {
+        let _ = record_backup_failure(layout, now_epoch_ms);
+        return Err(StoreError::io("create partial cloud backup", error));
+    }
 
     let result = create_backup_inner(
         layout,
@@ -142,6 +168,14 @@ fn create_backup_locked(
             Ok(report)
         }
         Err(error) => {
+            if partial.exists() {
+                if let Err(cleanup_error) = fs::remove_dir_all(&partial) {
+                    let _ = record_backup_failure(layout, now_epoch_ms);
+                    return Err(StoreError::internal(format!(
+                        "{error}; remove failed cloud backup staging tree: {cleanup_error}"
+                    )));
+                }
+            }
             let _ = record_backup_failure(layout, now_epoch_ms);
             Err(error)
         }
@@ -471,6 +505,28 @@ fn prune_snapshots(layout: &StorageLayout, retain: u64, current: &str) -> StoreR
     Ok(())
 }
 
+fn remove_stale_partial_snapshots(layout: &StorageLayout) -> StoreResult<()> {
+    for entry in fs::read_dir(layout.snapshots_root())
+        .map_err(|error| StoreError::io("list cloud snapshot staging trees", error))?
+    {
+        let entry = entry.map_err(|error| StoreError::io("read cloud snapshot entry", error))?;
+        let Some(name) = entry.file_name().to_str().map(str::to_string) else {
+            continue;
+        };
+        if entry
+            .file_type()
+            .map_err(|error| StoreError::io("inspect cloud snapshot entry", error))?
+            .is_dir()
+            && name.starts_with(".snapshot-")
+            && name.ends_with(".partial")
+        {
+            fs::remove_dir_all(entry.path())
+                .map_err(|error| StoreError::io("remove stale cloud backup staging tree", error))?;
+        }
+    }
+    Ok(())
+}
+
 fn blob_path(root: &Path, storage_key: &str) -> PathBuf {
     root.join(&storage_key[..2])
         .join(format!("{storage_key}.blob"))
@@ -653,7 +709,6 @@ mod tests {
             assert_eq!(metric.critical_at, Some(critical));
         }
 
-        store.delete_object("account", "object", 200).unwrap();
         store.run_gc(300, 0).unwrap();
         verify_backup(&report.snapshot_path).unwrap();
         drop(store);
@@ -661,7 +716,7 @@ mod tests {
         let restored = restore_backup(root.path(), &report.snapshot_path, 400).unwrap();
         assert_eq!(restored.restored_blob_count, 1);
         let store = CloudStore::open(config).unwrap();
-        let object = store.read_object("account", "object").unwrap();
+        let object = store.read_object("account", "object", "network").unwrap();
         assert_eq!(object.value.ciphertext().unwrap(), b"blob ciphertext");
     }
 
@@ -755,5 +810,70 @@ mod tests {
             .expect("GC should continue after backup releases reclamation")
             .unwrap();
         gc_thread.join().unwrap();
+    }
+
+    #[test]
+    fn failed_backup_removes_partial_snapshot_and_records_failure() {
+        let root = TempDir::new().unwrap();
+        let (config, store) = store_with_blob(&root);
+        let layout = StorageLayout::new(config.storage_root.clone());
+        let connection = open_live_database(&layout).unwrap();
+        let blobs = query_ready_blobs(&connection).unwrap();
+        drop(connection);
+        fs::remove_file(blob_path(&layout.blob_root(), &blobs[0].storage_key)).unwrap();
+
+        let error = create_backup(&config, 100).unwrap_err();
+        assert!(error.message.contains("missing or has the wrong size"));
+        assert!(!layout
+            .snapshots_root()
+            .join(".snapshot-100.partial")
+            .exists());
+        let failures = store
+            .status(101)
+            .unwrap()
+            .metrics
+            .into_iter()
+            .find(|metric| metric.id == "backup_failures")
+            .unwrap();
+        assert_eq!(failures.current, 1);
+    }
+
+    #[test]
+    fn backup_cleans_stale_partial_snapshot_before_starting() {
+        let root = TempDir::new().unwrap();
+        let (config, _store) = store_with_blob(&root);
+        let layout = StorageLayout::new(config.storage_root.clone());
+        let stale = layout.snapshots_root().join(".snapshot-99.partial");
+        fs::create_dir(&stale).unwrap();
+        fs::write(stale.join("orphan"), b"partial backup").unwrap();
+
+        create_backup(&config, 100).unwrap();
+        assert!(!stale.exists());
+    }
+
+    #[test]
+    fn backup_rejects_insufficient_headroom_without_leaving_staging_data() {
+        let root = TempDir::new().unwrap();
+        let (mut config, store) = store_with_blob(&root);
+        config.write_resume_min_filesystem_free_bytes = u64::MAX;
+        let layout = StorageLayout::new(config.storage_root.clone());
+
+        let error = create_backup(&config, 100).unwrap_err();
+        assert!(error.message.contains("filesystem safety reserve"));
+        assert!(fs::read_dir(layout.snapshots_root())
+            .unwrap()
+            .all(|entry| !entry
+                .unwrap()
+                .file_name()
+                .to_string_lossy()
+                .ends_with(".partial")));
+        let failures = store
+            .status(101)
+            .unwrap()
+            .metrics
+            .into_iter()
+            .find(|metric| metric.id == "backup_failures")
+            .unwrap();
+        assert_eq!(failures.current, 1);
     }
 }

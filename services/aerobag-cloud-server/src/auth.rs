@@ -37,8 +37,17 @@ pub(crate) fn source_network_pseudonym(server_secret: &[u8; 32], address: IpAddr
         HmacSha256::new_from_slice(server_secret).expect("HMAC accepts a fixed-size server secret");
     hmac.update(b"aerobag-cloud-source-network-v1\0");
     match address {
-        IpAddr::V4(address) => hmac.update(&address.octets()),
-        IpAddr::V6(address) => hmac.update(&address.octets()),
+        IpAddr::V4(address) => {
+            hmac.update(b"ipv4/32\0");
+            hmac.update(&address.octets());
+        }
+        IpAddr::V6(address) => {
+            // IPv6 privacy addresses make a full /128 trivial to rotate. A /64 is
+            // the narrowest subnet identity that remains stable across those
+            // rotations while avoiding raw-address retention.
+            hmac.update(b"ipv6/64\0");
+            hmac.update(&address.octets()[..8]);
+        }
     }
     hex_bytes(&hmac.finalize().into_bytes()[..16])
 }
@@ -68,6 +77,11 @@ pub(crate) fn verify_registered_request(
         &registered.signing_public_key,
     )?;
     store.check_account_operation(path_account_locator, request.now_epoch_ms)?;
+    store.admit_account_ingress(
+        path_account_locator,
+        request.body.len() as u64,
+        request.now_epoch_ms,
+    )?;
     store.consume_nonce(
         path_account_locator,
         &authentication.signing_key_id,
@@ -388,6 +402,23 @@ mod tests {
             .unwrap_err()
             .code,
             AcsErrorCode::ReplayDetected
+        );
+    }
+
+    #[test]
+    fn source_network_groups_ipv6_privacy_addresses_by_prefix() {
+        let secret = [0x42; 32];
+        let first = "2001:db8:1234:5678::1".parse().unwrap();
+        let rotated = "2001:db8:1234:5678:ffff:eeee:dddd:cccc".parse().unwrap();
+        let other_prefix = "2001:db8:1234:5679::1".parse().unwrap();
+
+        assert_eq!(
+            source_network_pseudonym(&secret, first),
+            source_network_pseudonym(&secret, rotated)
+        );
+        assert_ne!(
+            source_network_pseudonym(&secret, first),
+            source_network_pseudonym(&secret, other_prefix)
         );
     }
 }

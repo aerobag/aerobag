@@ -9,7 +9,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::{StoreConfig, TokenBucketConfig};
 
-pub const ACS_POLICY_SCHEMA_VERSION: u32 = 2;
+pub const ACS_POLICY_SCHEMA_VERSION: u32 = 3;
 
 #[cfg(test)]
 pub(crate) fn checked_in_test_policy() -> AcsRuntimePolicy {
@@ -58,8 +58,14 @@ pub struct StoragePolicy {
 pub struct RateLimitPolicy {
     pub account_creation_per_network: TokenBucketPolicy,
     pub account_creation_global: TokenBucketPolicy,
+    pub operations_global: TokenBucketPolicy,
     pub operations_per_network: TokenBucketPolicy,
     pub operations_per_account: TokenBucketPolicy,
+    pub ingress_bytes_global: TokenBucketPolicy,
+    pub ingress_bytes_per_network: TokenBucketPolicy,
+    pub ingress_bytes_per_account: TokenBucketPolicy,
+    pub egress_bytes_global: TokenBucketPolicy,
+    pub egress_bytes_per_network: TokenBucketPolicy,
     pub egress_bytes_per_account: TokenBucketPolicy,
 }
 
@@ -194,12 +200,36 @@ impl AcsRuntimePolicy {
                 self.rate_limits.account_creation_global,
             ),
             (
+                "rate_limits.operations_global",
+                self.rate_limits.operations_global,
+            ),
+            (
                 "rate_limits.operations_per_network",
                 self.rate_limits.operations_per_network,
             ),
             (
                 "rate_limits.operations_per_account",
                 self.rate_limits.operations_per_account,
+            ),
+            (
+                "rate_limits.ingress_bytes_global",
+                self.rate_limits.ingress_bytes_global,
+            ),
+            (
+                "rate_limits.ingress_bytes_per_network",
+                self.rate_limits.ingress_bytes_per_network,
+            ),
+            (
+                "rate_limits.ingress_bytes_per_account",
+                self.rate_limits.ingress_bytes_per_account,
+            ),
+            (
+                "rate_limits.egress_bytes_global",
+                self.rate_limits.egress_bytes_global,
+            ),
+            (
+                "rate_limits.egress_bytes_per_network",
+                self.rate_limits.egress_bytes_per_network,
             ),
             (
                 "rate_limits.egress_bytes_per_account",
@@ -306,8 +336,14 @@ impl AcsRuntimePolicy {
             global_storage_limit_bytes: self.storage.global_storage_limit_bytes,
             inline_threshold_bytes: self.storage.inline_ciphertext_threshold_bytes,
             event_retention: self.storage.retained_sse_events,
+            global_operation_bucket: self.rate_limits.operations_global.into(),
             network_operation_bucket: self.rate_limits.operations_per_network.into(),
             account_operation_bucket: self.rate_limits.operations_per_account.into(),
+            global_ingress_bucket: self.rate_limits.ingress_bytes_global.into(),
+            network_ingress_bucket: self.rate_limits.ingress_bytes_per_network.into(),
+            account_ingress_bucket: self.rate_limits.ingress_bytes_per_account.into(),
+            global_egress_bucket: self.rate_limits.egress_bytes_global.into(),
+            network_egress_bucket: self.rate_limits.egress_bytes_per_network.into(),
             account_egress_bucket: self.rate_limits.egress_bytes_per_account.into(),
             global_sse_limit: self.sse.max_connections_global,
             account_sse_limit: self.sse.max_connections_per_account,
@@ -429,8 +465,8 @@ mod tests {
     #[test]
     fn unknown_fields_are_rejected() {
         let text = include_str!("../../../deploy/aerobag-cloud-policy.json").replace(
-            "\"schema_version\": 2,",
-            "\"schema_version\": 2, \"surprise\": true,",
+            "\"schema_version\": 3,",
+            "\"schema_version\": 3, \"surprise\": true,",
         );
         assert!(serde_json::from_str::<AcsRuntimePolicy>(&text).is_err());
     }

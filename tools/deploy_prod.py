@@ -243,8 +243,8 @@ def cloud_policy(config: dict[str, Any]) -> dict[str, Any]:
         policy = json.loads(path.read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError) as error:
         raise SystemExit(f"invalid ACS runtime policy {path}: {error}") from error
-    if not isinstance(policy, dict) or policy.get("schema_version") != 2:
-        raise SystemExit(f"ACS runtime policy {path} must use schema_version 2")
+    if not isinstance(policy, dict) or policy.get("schema_version") != 3:
+        raise SystemExit(f"ACS runtime policy {path} must use schema_version 3")
     return policy
 
 
@@ -1175,6 +1175,18 @@ def nginx_config(config: dict[str, Any]) -> str:
         proxy_read_timeout 1h;
     }}
 
+    # EventSource requires its short-lived bearer ticket in the query string.
+    # Never copy that transient capability into the host access log.
+    location = /cloud/v1/events {{
+        access_log off;
+        proxy_pass http://{config['cloud_server_listen']};
+        proxy_http_version 1.1;
+        proxy_set_header Aerobag-Client-Address $remote_addr;
+        proxy_buffering off;
+        proxy_cache off;
+        proxy_read_timeout 5m;
+    }}
+
     location = /cloud/v1/status {{
         return 404;
     }}
@@ -1265,16 +1277,27 @@ Restart=always
 RestartSec=10
 UMask=0077
 NoNewPrivileges=true
+CapabilityBoundingSet=
 PrivateDevices=true
 PrivateTmp=true
+LockPersonality=true
 ProtectControlGroups=true
+ProtectClock=true
 ProtectHome=true
+ProtectHostname=true
+ProtectKernelLogs=true
 ProtectKernelModules=true
 ProtectKernelTunables=true
+ProtectProc=invisible
 ProtectSystem=strict
+ProcSubset=pid
+RemoveIPC=true
 ReadWritePaths={config['cloud_server_storage_root']}
 RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+RestrictNamespaces=true
 RestrictSUIDSGID=true
+SystemCallArchitectures=native
+TasksMax=256
 
 [Install]
 WantedBy=multi-user.target

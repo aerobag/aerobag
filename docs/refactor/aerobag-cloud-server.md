@@ -153,7 +153,7 @@ HTTP resources but deliberately does not expose them through a network daemon:
 | --- | --- | --- |
 | `POST` | `/cloud/v1/account-challenges` | Obtain a short-lived, rate-limited account-creation challenge. |
 | `POST` | `/cloud/v1/accounts` | Create an account and register its signing public key. |
-| `GET`, `PUT`, `DELETE` | `/cloud/v1/accounts/{account}/objects/{object}` | Read, create once, or delete one immutable object. |
+| `GET`, `PUT` | `/cloud/v1/accounts/{account}/objects/{object}` | Read or create once one immutable object; server-owned GC performs deletion. |
 | `GET` | `/cloud/v1/accounts/{account}/objects` | Bounded cursor-based object listing for recovery and GC diagnostics. |
 | `GET`, `PUT` | `/cloud/v1/accounts/{account}/root` | Read or compare-and-swap the fixed account root. |
 | `POST` | `/cloud/v1/accounts/{account}/event-tickets` | Mint a short-lived SSE bearer ticket using a signed request. |
@@ -399,6 +399,10 @@ or embedded shared credentials provide no meaningful protection.
   unavailable to anonymous accounts.
 - Bound operations, ingress, egress, list page size, and concurrent SSE streams.
 - Enforce storage and object-count quotas transactionally with object creation.
+  Stored-byte accounting includes ciphertext, attacker-controlled object IDs,
+  visible graph edges, and a conservative fixed SQLite-row allowance; otherwise
+  dense tiny-object graphs can amplify a nominally small quota into a large
+  metadata database.
 - Reject malformed or oversized IDs, headers, bodies, cursors, and error text.
 
 Current-format sizing supports the smaller allowance. A synthetic state with a
@@ -412,7 +416,9 @@ casually multiplying anonymous storage.
 ### Creation And Network Limits
 
 - Immediately transform source IPs into server-keyed HMAC pseudonyms; never
-  persist or log raw addresses.
+  persist or log raw addresses. IPv4 identities use the full address; IPv6
+  identities use the /64 prefix so privacy-address rotation does not mint a new
+  limiter identity on every request.
 - Apply a small time-windowed anonymous account-creation allowance per
   pseudonym. Shared-NAT collateral damage is unavoidable, so creation pressure
   must not impair already-created accounts.
@@ -527,7 +533,7 @@ ACS reports this shape where applicable for:
 - total account bytes, inline bytes, filesystem-blob bytes, pending-upload
   bytes, orphan bytes, SQLite bytes, WAL bytes, and filesystem free space;
 - account count, object-row count, pending uploads, and retained SSE events;
-- read, create, root-CAS, delete, list, ingress-byte, and egress-byte rates;
+- read, create, root-CAS, list, ingress-byte, and egress-byte rates;
 - account-creation attempts, challenges, successes, and rejections;
 - concurrent HTTP requests and current/peak SSE connections; and
 - authentication, replay, malformed-request, quota, and rate-limit rejections.
@@ -620,11 +626,13 @@ Status: complete and reviewed on 2026-08-02.
 
 The implementation lives in the standalone `services/` Rust workspace. The
 initial configurable ceilings are a 1 MiB/2,048-object anonymous account,
-600 authenticated operations and 64 MiB egress per account per minute, 1,200
-operations per source-network pseudonym per minute, and 4/16/128 concurrent
-SSE streams per account/network/service. These are server policy defaults, not
-client storage-format constants. Root ciphertext counts toward account and
-global stored bytes.
+600 authenticated operations, 32 MiB ingress, and 64 MiB egress per account per
+minute; 1,200 operations, 64 MiB ingress, and 128 MiB egress per source-network
+pseudonym per minute; 12,000 operations, 512 MiB ingress, and 1 GiB egress
+service-wide per minute; and 4/16/128 concurrent SSE streams per
+account/network/service. These are server policy defaults, not client
+storage-format constants. Root ciphertext and visible graph metadata count
+toward account and global stored bytes.
 
 SQLite WAL owns metadata, inline ciphertext, quota reservations, fixed-root
 CAS, nonces, tickets, and event history. Ciphertext over 128 KiB uses durably
@@ -812,7 +820,10 @@ must be added to this plan or discussed; they are not license to expand scope.
 - Backup age, total duration, SQLite snapshot duration, WAL growth, linked blob
   count, and linked blob bytes are status metrics with explicit warning and
   critical thresholds. Pipeline health evaluates those thresholds without a
-  backup-specific side channel.
+  backup-specific side channel. Backup admission reserves enough free space
+  for another complete SQLite snapshot plus the normal filesystem safety floor;
+  failed and abandoned staging trees are removed so retries cannot fill the
+  disk with partial database copies.
 - **Global read-only recovery:** `set-mode normal` is not an operator command.
   `resume-writes` checks SQLite integrity, configured quota headroom, and free
   filesystem space. `force-resume-writes` is separately named, requires a

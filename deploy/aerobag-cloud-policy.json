@@ -1,5 +1,5 @@
 {
-  "schema_version": 2,
+  "schema_version": 3,
   "trusted_proxy_ips": [
     "127.0.0.1",
     "::1"
@@ -29,6 +29,11 @@
       "refill_amount": 10,
       "refill_period_seconds": 86400
     },
+    "operations_global": {
+      "capacity": 12000,
+      "refill_amount": 12000,
+      "refill_period_seconds": 60
+    },
     "operations_per_network": {
       "capacity": 1200,
       "refill_amount": 1200,
@@ -37,6 +42,31 @@
     "operations_per_account": {
       "capacity": 600,
       "refill_amount": 600,
+      "refill_period_seconds": 60
+    },
+    "ingress_bytes_global": {
+      "capacity": 536870912,
+      "refill_amount": 536870912,
+      "refill_period_seconds": 60
+    },
+    "ingress_bytes_per_network": {
+      "capacity": 67108864,
+      "refill_amount": 67108864,
+      "refill_period_seconds": 60
+    },
+    "ingress_bytes_per_account": {
+      "capacity": 33554432,
+      "refill_amount": 33554432,
+      "refill_period_seconds": 60
+    },
+    "egress_bytes_global": {
+      "capacity": 1073741824,
+      "refill_amount": 1073741824,
+      "refill_period_seconds": 60
+    },
+    "egress_bytes_per_network": {
+      "capacity": 134217728,
+      "refill_amount": 134217728,
       "refill_period_seconds": 60
     },
     "egress_bytes_per_account": {

@@ -38,7 +38,6 @@ pub enum AcsHttpMethod {
     Get,
     Post,
     Put,
-    Delete,
 }
 
 impl AcsHttpMethod {
@@ -47,7 +46,6 @@ impl AcsHttpMethod {
             Self::Get => "GET",
             Self::Post => "POST",
             Self::Put => "PUT",
-            Self::Delete => "DELETE",
         }
     }
 }
@@ -448,8 +446,14 @@ pub enum AcsRateLimitGate {
     AccountCreationNetwork,
     AccountCreationGlobal,
     OutstandingCreationChallenges,
+    GlobalOperations,
     NetworkOperations,
     AccountOperations,
+    GlobalIngress,
+    NetworkIngress,
+    AccountIngress,
+    GlobalEgress,
+    NetworkEgress,
     AccountEgress,
     GlobalSseConnections,
     AccountSseConnections,

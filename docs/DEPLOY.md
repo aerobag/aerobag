@@ -370,6 +370,12 @@ forward, any client-supplied identity:
 proxy_set_header Aerobag-Client-Address $remote_addr;
 ```
 
+The browser `EventSource` transport carries a short-lived, one-use ACS ticket
+in `/cloud/v1/events`'s query string. Disable access logging, or explicitly
+redact the query string, for that exact route at every proxy layer. The
+host-local generated nginx configuration already uses `access_log off` there;
+the public edge must do the same so bearer tickets never enter log storage.
+
 Do this before deploying the inner nginx configuration. Host nginx accepts the
 header only from `nginx_trusted_upstream_proxies`, derives its trusted
 `$remote_addr`, and overwrites the header again when calling ACS. ACS accepts

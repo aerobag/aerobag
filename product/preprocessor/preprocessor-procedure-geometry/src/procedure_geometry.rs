@@ -818,12 +818,19 @@ fn build_procedure_leg_display_path(
                 }
             }
             "CA" => {
+                let previous_step = index
+                    .checked_sub(1)
+                    .and_then(|previous_index| steps.get(previous_index).copied());
                 if ca_is_altitude_note_before_climbing_turn(step, steps.get(index + 1).copied()) {
-                    current_course_deg =
-                        Some(current_or_step_course_deg(step, current_course_deg)?);
+                    current_course_deg = Some(current_or_step_course_deg(
+                        step,
+                        previous_step,
+                        current_course_deg,
+                    )?);
                     continue;
                 }
-                let course_deg = current_or_step_course_deg(step, current_course_deg)?;
+                let course_deg =
+                    current_or_step_course_deg(step, previous_step, current_course_deg)?;
                 let climb_limit = steps.get(index + 1).and_then(|next_step| {
                     if ca_climb_should_not_stop_at_explicit_direct_turn(step, next_step)
                         || ca_climb_should_not_stop_at_fa_reciprocal_cf_reversal(
@@ -1768,11 +1775,38 @@ fn snap_nearby_display_element_boundaries(elements: &mut [LegDisplayElement]) {
 
 fn current_or_step_course_deg(
     step: &ProcedureLegMaterializationRecord,
+    previous_step: Option<&ProcedureLegMaterializationRecord>,
     current_course_deg: Option<f64>,
 ) -> Option<f64> {
-    step.magnetic_course_deg
-        .map(|course| course + course_reference_variation_deg(step))
-        .or(current_course_deg)
+    let Some(step_magnetic_course_deg) = step.magnetic_course_deg else {
+        return current_course_deg;
+    };
+    if step.path_termination.trim() == "CA"
+        && step
+            .turn_direction
+            .as_deref()
+            .unwrap_or("")
+            .trim()
+            .is_empty()
+        && current_course_deg.is_some()
+        && !has_navaid_course_reference(step)
+        && previous_step.is_some_and(|previous_step| {
+            previous_step.path_termination.trim() == "CF"
+                && has_navaid_course_reference(previous_step)
+                && previous_step
+                    .magnetic_course_deg
+                    .is_some_and(|previous_course_deg| {
+                        angular_difference_degrees(previous_course_deg, step_magnetic_course_deg)
+                            <= 0.1
+                    })
+        })
+    {
+        // A reference-less CA that repeats the preceding navaid-defined course is
+        // a straight continuation to altitude. Reinterpreting the same number with
+        // airport variation manufactures a turn when the navaid declination differs.
+        return current_course_deg;
+    }
+    Some(step_magnetic_course_deg + course_reference_variation_deg(step))
 }
 
 fn append_course_track_path(
@@ -3084,6 +3118,24 @@ fn course_reference_variation_deg(leg: &ProcedureLegMaterializationRecord) -> f6
     leg.airport_magnetic_variation_deg.unwrap_or(0.0)
 }
 
+fn has_navaid_course_reference(leg: &ProcedureLegMaterializationRecord) -> bool {
+    matches!(
+        leg.defining_nav_ref,
+        Some(
+            crate::NavRef::Navaid(_)
+                | crate::NavRef::ArincNavaid { .. }
+                | crate::NavRef::TerminalNavaid { .. }
+        )
+    ) || matches!(
+        leg.nav_ref,
+        Some(
+            crate::NavRef::Navaid(_)
+                | crate::NavRef::ArincNavaid { .. }
+                | crate::NavRef::TerminalNavaid { .. }
+        )
+    )
+}
+
 fn missed_approach_turn_radius_nm() -> f64 {
     let speed_nm_per_sec = NOMINAL_MISSED_APPROACH_GROUND_SPEED_KT / 3600.0;
     let rate_rad_per_sec = STANDARD_RATE_TURN_DEG_PER_SEC.to_radians();
@@ -4327,6 +4379,98 @@ fn classify_hold_entry(
 mod tests {
     use super::*;
     use crate::{NavRef, PathTermination, ProcedureVariantKey};
+
+    #[test]
+    fn reference_less_ca_continues_prior_navaid_referenced_course() {
+        let key = ProcedureVariantKey {
+            airport_id: "71J".to_string(),
+            procedure_id: "S31".to_string(),
+            route_type: "S".to_string(),
+            transition_id: String::new(),
+        };
+        let rrs = LatLon {
+            lat: 31.2845861111111,
+            lon: -85.4312111111111,
+        };
+        let yalsu = LatLon {
+            lat: 31.4099638888889,
+            lon: -85.5903638888889,
+        };
+        let rw31 = LatLon {
+            lat: 31.42814061111111,
+            lon: -85.61347138888888,
+        };
+        let final_cf = ProcedureLegMaterializationRecord {
+            key: key.clone(),
+            sequence: 30,
+            nav_ref: Some(NavRef::Fix("RW31".to_string())),
+            nav_position: Some(rw31),
+            nav_magnetic_variation_deg: None,
+            defining_nav_ref: Some(NavRef::Navaid("RRS".to_string())),
+            defining_nav_position: Some(rrs),
+            defining_nav_magnetic_variation_deg: Some(2.0),
+            arc_center_fix_ref: None,
+            arc_center_fix_position: None,
+            arc_radius_nm: None,
+            airport_magnetic_variation_deg: Some(-4.0),
+            altitude_1_ft: Some(350.0),
+            altitude_2_ft: None,
+            path_termination: "CF".to_string(),
+            path_termination_kind: PathTermination::CourseToFix,
+            turn_direction: None,
+            theta_deg: Some(310.6),
+            magnetic_course_deg: Some(310.6),
+            route_distance_or_time: Some("0016".to_string()),
+        };
+        let missed_ca = ProcedureLegMaterializationRecord {
+            key,
+            sequence: 40,
+            nav_ref: None,
+            nav_position: None,
+            nav_magnetic_variation_deg: None,
+            defining_nav_ref: None,
+            defining_nav_position: None,
+            defining_nav_magnetic_variation_deg: None,
+            arc_center_fix_ref: None,
+            arc_center_fix_position: None,
+            arc_radius_nm: None,
+            airport_magnetic_variation_deg: Some(-4.0),
+            altitude_1_ft: Some(758.0),
+            altitude_2_ft: None,
+            path_termination: "CA".to_string(),
+            path_termination_kind: PathTermination::Other("CA".to_string()),
+            turn_direction: None,
+            theta_deg: None,
+            magnetic_course_deg: Some(310.6),
+            route_distance_or_time: None,
+        };
+        let records = [final_cf, missed_ca];
+
+        let path = build_procedure_leg_display_path(
+            &records,
+            &records[0],
+            &records[1],
+            Some(yalsu),
+            Some(312.6),
+            None,
+            false,
+            false,
+        )
+        .expect("materialize 71J S31 final and initial missed climb");
+        let missed_course_deg = path
+            .elements
+            .last()
+            .and_then(|element| match element {
+                LegDisplayElement::Segment { start, end } => Some(bearing_from(*start, *end)),
+                LegDisplayElement::Arc { .. } => None,
+            })
+            .expect("missed climb segment");
+
+        assert!(
+            angular_difference_degrees(missed_course_deg, 312.6) <= 0.2,
+            "the same encoded course must not change true course when CA drops the RRS reference; got {missed_course_deg:.1}"
+        );
+    }
 
     #[test]
     fn kcec_l12_missed_cf_joins_cec_radial_after_climb() {

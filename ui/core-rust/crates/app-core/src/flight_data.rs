@@ -5,6 +5,8 @@
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 
+use crate::FlightEstimateKind;
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
 #[serde(rename_all = "snake_case")]
 pub enum FlightDataCellTone {
@@ -27,6 +29,8 @@ pub struct FlightDataCell {
     pub value: Option<String>,
     #[serde(default, skip_serializing_if = "FlightDataCellTone::is_planned")]
     pub tone: FlightDataCellTone,
+    #[serde(default, skip_serializing_if = "FlightEstimateKind::is_basic")]
+    pub estimate_kind: FlightEstimateKind,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -45,6 +49,13 @@ pub struct FlightDataComputer {
     ground_speed_kt: Option<f64>,
     fuel_flow_gph: Option<f64>,
     now_epoch_ms: Option<i64>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct FlightTimeFuelEstimate {
+    pub cumulative_ete_seconds: Option<f64>,
+    pub cumulative_fuel_gal: Option<f64>,
+    pub estimate_kind: FlightEstimateKind,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -214,6 +225,36 @@ impl FlightDataComputer {
         course_magnetic_deg: Option<f64>,
         distance_tone: FlightDataCellTone,
     ) -> Vec<FlightDataCell> {
+        let estimate = FlightTimeFuelEstimate {
+            cumulative_ete_seconds: cumulative_distance_nm
+                .and_then(|distance| self.ete_seconds(distance))
+                .map(|seconds| seconds as f64),
+            cumulative_fuel_gal: cumulative_distance_nm.and_then(|distance| {
+                self.ground_speed_kt
+                    .zip(self.fuel_flow_gph)
+                    .map(|(speed_kt, fuel_flow_gph)| distance / speed_kt * fuel_flow_gph)
+            }),
+            estimate_kind: FlightEstimateKind::Basic,
+        };
+        self.flight_plan_row_cells_with_estimate(
+            row_has_data,
+            segment_distance_nm,
+            eta,
+            course_magnetic_deg,
+            distance_tone,
+            estimate,
+        )
+    }
+
+    pub fn flight_plan_row_cells_with_estimate(
+        &self,
+        row_has_data: bool,
+        segment_distance_nm: Option<f64>,
+        eta: Option<String>,
+        course_magnetic_deg: Option<f64>,
+        distance_tone: FlightDataCellTone,
+        estimate: FlightTimeFuelEstimate,
+    ) -> Vec<FlightDataCell> {
         if !row_has_data {
             return flight_plan_columns()
                 .into_iter()
@@ -222,14 +263,21 @@ impl FlightDataComputer {
                     label: column.label,
                     value: Some(String::new()),
                     tone: FlightDataCellTone::Planned,
+                    estimate_kind: FlightEstimateKind::Basic,
                 })
                 .collect();
         }
 
-        let ete = cumulative_distance_nm.and_then(|distance| self.format_ete(distance));
-        let eta =
-            eta.or_else(|| cumulative_distance_nm.and_then(|distance| self.format_eta(distance)));
-        let fuel = cumulative_distance_nm.and_then(|distance| self.format_fuel(distance));
+        let ete_seconds = estimate
+            .cumulative_ete_seconds
+            .map(|seconds| seconds.round().max(0.0) as i64);
+        let ete = ete_seconds.map(format_ete_seconds);
+        let eta = eta.or_else(|| {
+            self.now_epoch_ms
+                .zip(ete_seconds)
+                .map(|(now, ete)| format_eta(now, ete))
+        });
+        let fuel = estimate.cumulative_fuel_gal.map(format_fuel_gal);
 
         vec![
             cell_with_tone(
@@ -238,9 +286,9 @@ impl FlightDataComputer {
                 segment_distance_nm.map(format_nm),
                 distance_tone,
             ),
-            cell("final_eta", "ETA", eta),
-            cell("waypoint_ete", "ETE", ete),
-            cell("fuel", "FUEL gal", fuel),
+            cell_with_estimate("final_eta", "ETA", eta, estimate.estimate_kind),
+            cell_with_estimate("waypoint_ete", "ETE", ete, estimate.estimate_kind),
+            cell_with_estimate("fuel", "FUEL gal", fuel, estimate.estimate_kind),
             cell(
                 "desired_track",
                 "DTK °M",
@@ -254,33 +302,34 @@ impl FlightDataComputer {
         total_distance_nm: Option<f64>,
         tone: FlightDataCellTone,
     ) -> Vec<FlightDataCell> {
-        vec![
-            cell_with_tone(
-                "waypoint_distance",
-                "DIST nm",
-                total_distance_nm.map(format_nm),
-                tone,
-            ),
-            cell_with_tone(
-                "final_eta",
-                "ETA",
-                total_distance_nm.and_then(|distance| self.format_eta(distance)),
-                tone,
-            ),
-            cell_with_tone(
-                "waypoint_ete",
-                "ETE",
-                total_distance_nm.and_then(|distance| self.format_ete(distance)),
-                tone,
-            ),
-            cell_with_tone(
-                "fuel",
-                "FUEL gal",
-                total_distance_nm.and_then(|distance| self.format_fuel(distance)),
-                tone,
-            ),
-            cell("desired_track", "DTK °M", None),
-        ]
+        let estimate = FlightTimeFuelEstimate {
+            cumulative_ete_seconds: total_distance_nm
+                .and_then(|distance| self.ete_seconds(distance))
+                .map(|seconds| seconds as f64),
+            cumulative_fuel_gal: total_distance_nm.and_then(|distance| {
+                self.ground_speed_kt
+                    .zip(self.fuel_flow_gph)
+                    .map(|(speed_kt, fuel_flow_gph)| distance / speed_kt * fuel_flow_gph)
+            }),
+            estimate_kind: FlightEstimateKind::Basic,
+        };
+        self.flight_plan_summary_cells_with_estimate(total_distance_nm, tone, estimate)
+    }
+
+    pub fn flight_plan_summary_cells_with_estimate(
+        &self,
+        total_distance_nm: Option<f64>,
+        tone: FlightDataCellTone,
+        estimate: FlightTimeFuelEstimate,
+    ) -> Vec<FlightDataCell> {
+        self.flight_plan_row_cells_with_estimate(
+            true,
+            total_distance_nm,
+            None,
+            None,
+            tone,
+            estimate,
+        )
     }
 
     pub fn format_eta_at(&self, distance_nm: f64, now_epoch_ms: i64) -> Option<String> {
@@ -352,6 +401,22 @@ pub fn cell_with_tone(
         label: label.to_string(),
         value,
         tone,
+        estimate_kind: FlightEstimateKind::Basic,
+    }
+}
+
+pub fn cell_with_estimate(
+    id: &str,
+    label: &str,
+    value: Option<String>,
+    estimate_kind: FlightEstimateKind,
+) -> FlightDataCell {
+    FlightDataCell {
+        id: id.to_string(),
+        label: label.to_string(),
+        value,
+        tone: FlightDataCellTone::Planned,
+        estimate_kind,
     }
 }
 
@@ -626,5 +691,35 @@ mod tests {
         assert_eq!(final_eta, Some("12:15"));
         assert_eq!(row_eta, final_eta);
         assert_eq!(summary_eta, final_eta);
+    }
+
+    #[test]
+    fn modeled_prediction_uses_shared_time_fuel_formatting_and_provenance() {
+        let computer = FlightDataComputer::with_clock(None, Some(12 * 60 * 60 * 1000));
+        let cells = computer.flight_plan_row_cells_with_estimate(
+            true,
+            Some(12.0),
+            None,
+            Some(270.0),
+            FlightDataCellTone::Active,
+            FlightTimeFuelEstimate {
+                cumulative_ete_seconds: Some(12.0 * 60.0 + 34.0),
+                cumulative_fuel_gal: Some(2.45),
+                estimate_kind: FlightEstimateKind::Modeled,
+            },
+        );
+
+        let ete = cells.iter().find(|cell| cell.id == "waypoint_ete").unwrap();
+        let fuel = cells.iter().find(|cell| cell.id == "fuel").unwrap();
+        let distance = cells
+            .iter()
+            .find(|cell| cell.id == "waypoint_distance")
+            .unwrap();
+        assert_eq!(ete.value.as_deref(), Some("12:34⏱️"));
+        assert_eq!(fuel.value.as_deref(), Some("2.5"));
+        assert_eq!(ete.estimate_kind, FlightEstimateKind::Modeled);
+        assert_eq!(fuel.estimate_kind, FlightEstimateKind::Modeled);
+        assert_eq!(distance.estimate_kind, FlightEstimateKind::Basic);
+        assert_eq!(distance.tone, FlightDataCellTone::Active);
     }
 }

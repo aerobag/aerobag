@@ -210,7 +210,26 @@ data class FlightPlanUiState(
     val displayRows: List<FlightPlanDisplayRowUiView>,
     val dataColumns: List<FlightDataColumn>,
     val controls: List<FlightPlanControlUiView>,
+    val altitudePlanner: AltitudePlannerUiView,
     val guidance: GuidanceUiView?,
+)
+
+data class AltitudePlannerControlUiView(
+    val id: String,
+    val label: String,
+    val enabled: Boolean,
+    val disabledReason: String?,
+)
+
+data class AltitudePlannerUnavailableReason(
+    val code: String,
+    val message: String,
+)
+
+data class AltitudePlannerUiView(
+    val estimateKind: String,
+    val controls: List<AltitudePlannerControlUiView>,
+    val unavailableReasons: List<AltitudePlannerUnavailableReason>,
 )
 
 enum class FlightPlanDisplayRowKind {
@@ -308,6 +327,7 @@ data class FlightDataCell(
     val label: String,
     val value: String?,
     val tone: String = "planned",
+    val estimateKind: String = "basic",
 )
 
 data class FlightDataColumn(

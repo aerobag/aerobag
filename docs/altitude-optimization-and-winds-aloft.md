@@ -2,10 +2,58 @@
 
 ## Goal
 
-Altitude optimization needs a weather model that can answer wind at latitude,
-longitude, altitude, and forecast time. The first aircraft-performance model can
-come later; this note records the current winds-aloft data source and packaging
-experiment.
+Altitude optimization needs an aircraft model and a weather model that can
+answer wind and temperature at latitude, longitude, altitude, and forecast
+time. This note records the first core planning engine and the current
+winds-aloft data source and packaging experiment.
+
+## Core Planner
+
+`app-core` owns the aircraft/profile contract, bounded interpolation, wind
+triangle, and trajectory integration. The integrator advances at no more than
+1 NM or 30 seconds per step, preserves Flight Plan row IDs in its output, and
+produces cumulative ETE and fuel for each row. Cruise, climb, and descent are
+separate pointwise performance tables with stable model/profile IDs, versions,
+and source metadata.
+
+The Flight Plan wire model distinguishes `basic` estimates from `modeled`
+estimates independently of the existing passed/active/planned row tone. Basic
+estimates retain today's altitude-independent behavior. Modeled estimates are
+all-or-nothing: missing aircraft data, cruise altitude, active-navigation
+ownship altitude, destination elevation, forecast coverage, or a required
+performance regime leaves the Basic estimate in place and supplies a core-owned
+explanation to both UIs. Without active navigation, the plan-origin elevation
+is also required; with active navigation, ownship altitude replaces it.
+
+The first sourced aircraft-model components are for the PA46-310P Malibu with a
+Continental TSIO-520-BE. Cruise points are a five-point reduction of the N9124Y
+Power Settings v3 model, itself sourced from a transcribed POH power table and a
+digitized cruise-speed chart. The reduction retains the source curves to within
+1 KT from sea level through 24,000 feet:
+
+- 75 percent high speed: 161/175/188/201/213 KTAS at
+  0/6,000/12,000/18,000/24,000 feet, 16 GPH at ISA.
+- 65 percent economy: 148/162/177/190/202 KTAS, 14 GPH at ISA.
+- 55 percent long range: 134/149/164/179/193 KTAS, 12 GPH at ISA.
+
+The initial climb schedule is an explicit rough assumption: 130 KIAS, 36 GPH,
+and 1,100 FPM through the same altitude range. The integrator converts its IAS
+schedule to TAS from pressure altitude and sampled temperature. Descent is also
+an explicit rough assumption: the selected cruise profile's TAS plus 8 KT, the
+same fuel flow as cruise, and 500 FPM down. Vertical schedules carry an explicit
+indicated-or-true airspeed basis so atmosphere correction cannot accidentally be
+applied to the TAS-based descent schedule. These assumptions complete all three
+PA46 profiles, but their source metadata preserves which values are POH-derived
+and which are rough planning choices.
+
+The first end-to-end UI slice intentionally fixes the selected profile to 65
+percent economy, uses 12,000 feet when the plan has no cruise altitude, and uses
+the no-wind ISA atmosphere. For an inactive plan whose first and last rows are
+airports, core reads their published elevations, predicts along the materialized
+route geometry, and supplies modeled ETE and fuel to the existing Flight Plan
+cells. The controls display these fixed choices but do not yet modify them.
+Active navigation with ownship groundspeed continues to use the familiar
+groundspeed extrapolation instead and reports `MODE GS`.
 
 ## Source Chosen
 
@@ -45,11 +93,19 @@ Each GRIB2 file is filtered to:
 
 - Forecast hours: 0, 3, 6, 9, 12
 - Pressure levels: 1000, 925, 850, 700, 600, 500, 400, 300 mb
-- Variables: UGRD, VGRD, HGT
+- Variables: UGRD, VGRD, HGT, TMP
 - Domain: 15N..55N, 135W..50W
 
 UGRD and VGRD are the wind vector components. HGT is included so pressure levels
-can be mapped to geometric altitude.
+can be mapped to geometric altitude. TMP supplies temperature at each pressure
+level for performance and density calculations.
+
+The first altitude-planner implementation uses a no-wind ISA atmosphere until
+the compact forecast decoder is connected. Airport elevation supplies the
+starting geometric altitude; the planner does not require a forecast pressure
+surface below terrain to begin a climb. Forecast samples remain unavailable
+where a requested pressure level is masked by terrain, and that must degrade the
+whole modeled estimate rather than silently mixing modeled and basic legs.
 
 ## Size Measurement
 

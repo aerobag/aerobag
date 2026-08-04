@@ -11495,6 +11495,11 @@ fn project_session_app_ui_state(session: &UiSession) -> Result<AppUiState, HadRe
             ),
             crate::had_ops::FlightPlanLiveData {
                 ownship_position: app_ui_state.ownship.render.position,
+                ownship_altitude_ft: app_ui_state
+                    .ownship
+                    .render
+                    .pressure_altitude_ft
+                    .or(app_ui_state.ownship.render.altitude_msl_ft),
                 now_epoch_ms: Some(session.wall_clock_epoch_ms),
             },
         )?;

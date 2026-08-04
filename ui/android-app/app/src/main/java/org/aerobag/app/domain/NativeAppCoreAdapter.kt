@@ -3554,6 +3554,7 @@ private fun WireFlightPlanUiState.toUi() = FlightPlanUiState(
     displayRows = display_rows.map { it.toUi() },
     dataColumns = data_columns.map { it.toUi() },
     controls = controls.map { it.toUi() },
+    altitudePlanner = altitude_planner.toUi(),
     guidance = guidance?.toUi(),
 )
 
@@ -3563,7 +3564,38 @@ private fun FlightPlanUiState.toWire() = WireFlightPlanUiState(
     display_rows = displayRows.map { it.toWire() },
     data_columns = dataColumns.map { it.toWire() },
     controls = controls.map { it.toWire() },
+    altitude_planner = altitudePlanner.toWire(),
     guidance = guidance?.toWire(),
+)
+
+private fun WireAltitudePlannerUiView.toUi() = AltitudePlannerUiView(
+    estimateKind = estimate_kind,
+    controls = controls.map {
+        AltitudePlannerControlUiView(
+            id = it.id,
+            label = it.label,
+            enabled = it.enabled,
+            disabledReason = it.disabled_reason,
+        )
+    },
+    unavailableReasons = unavailable_reasons.map {
+        AltitudePlannerUnavailableReason(code = it.code, message = it.message)
+    },
+)
+
+private fun AltitudePlannerUiView.toWire() = WireAltitudePlannerUiView(
+    estimate_kind = estimateKind,
+    controls = controls.map {
+        WireAltitudePlannerControlUiView(
+            id = it.id,
+            label = it.label,
+            enabled = it.enabled,
+            disabled_reason = it.disabledReason,
+        )
+    },
+    unavailable_reasons = unavailableReasons.map {
+        WireAltitudePlannerUnavailableReason(code = it.code, message = it.message)
+    },
 )
 
 private fun WireFlightDataCell.toUi() = FlightDataCell(
@@ -3571,6 +3603,7 @@ private fun WireFlightDataCell.toUi() = FlightDataCell(
     label = label,
     value = value,
     tone = tone,
+    estimateKind = estimate_kind,
 )
 
 private fun FlightDataCell.toWire() = WireFlightDataCell(
@@ -3578,6 +3611,7 @@ private fun FlightDataCell.toWire() = WireFlightDataCell(
     label = label,
     value = value,
     tone = tone,
+    estimate_kind = estimateKind,
 )
 
 private fun WireFlightDataColumn.toUi() = FlightDataColumn(

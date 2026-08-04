@@ -361,6 +361,7 @@ internal fun FlightPlanPage(
     var routeEntryError by remember { mutableStateOf<String?>(null) }
     var routeEntrySubmitting by remember { mutableStateOf(false) }
     var routeEntryFocused by remember { mutableStateOf(false) }
+    var altitudePlannerStatusOpen by remember { mutableStateOf(false) }
     val routeEntryPreviewController = remember { RouteEntryPreviewController() }
     var routeEntrySuppressNavigationUntilMs by remember { mutableLongStateOf(0L) }
     var trayOpenedAtMs by remember { mutableStateOf(0L) }
@@ -388,6 +389,7 @@ internal fun FlightPlanPage(
     }
     val guidance = projectedPlanUiState.guidance
     val planControls = projectedPlanUiState.controls
+    val altitudePlanner = projectedPlanUiState.altitudePlanner
     fun performFlightPlanControl(controlId: FlightPlanControlId) {
         when (controlId) {
             FlightPlanControlId.ActivateNextLeg ->
@@ -747,6 +749,29 @@ internal fun FlightPlanPage(
                 ),
             verticalArrangement = Arrangement.spacedBy(PlanGridGap),
         ) {
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(ThumbGap, Alignment.CenterHorizontally),
+            ) {
+                altitudePlanner.controls.forEach { control ->
+                    CompactSquareButton(
+                        label = control.label,
+                        modifier = Modifier.size(ThumbSize),
+                        maxLines = 2,
+                        enabled = control.enabled,
+                        selected = control.id == "status" && altitudePlannerStatusOpen,
+                        testTag = "parity:altitude-planner-control:${control.id}",
+                        onDisabledClick = control.disabledReason?.let { reason ->
+                            { showDisabledActionToast(context, reason) }
+                        },
+                        onClick = {
+                            if (control.id == "status") {
+                                altitudePlannerStatusOpen = !altitudePlannerStatusOpen
+                            }
+                        },
+                    )
+                }
+            }
             Box(
                 modifier = Modifier
                     .weight(1f)
@@ -896,6 +921,33 @@ internal fun FlightPlanPage(
                             drawPath(head, color = Color(0xFFD45A7A))
                         }
                     }
+                }
+            }
+        }
+
+        if (altitudePlannerStatusOpen) {
+            Column(
+                modifier = Modifier
+                    .align(Alignment.TopCenter)
+                    .padding(top = ThumbSize + ThumbGap * 2f)
+                    .widthIn(max = ThumbSize * 6f)
+                    .background(uiTheme.controls.panelBg, RoundedCornerShape(ThumbRadius))
+                    .border(1.dp, uiTheme.controls.panelBorder, RoundedCornerShape(ThumbRadius))
+                    .padding(ThumbSize * 0.22f),
+                verticalArrangement = Arrangement.spacedBy(ThumbGap),
+            ) {
+                Text(
+                    if (altitudePlanner.estimateKind == "modeled") "MODELED ESTIMATE" else "BASIC ESTIMATE",
+                    color = uiTheme.controls.panelFg,
+                    style = MaterialTheme.typography.labelLarge,
+                    fontWeight = FontWeight.Bold,
+                )
+                altitudePlanner.unavailableReasons.forEach { reason ->
+                    Text(
+                        reason.message,
+                        color = uiTheme.controls.panelFg,
+                        style = MaterialTheme.typography.bodyMedium,
+                    )
                 }
             }
         }

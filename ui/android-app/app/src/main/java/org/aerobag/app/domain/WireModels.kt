@@ -1095,7 +1095,29 @@ data class WireFlightPlanUiState(
     val display_rows: List<WireFlightPlanDisplayRowUiView>,
     val data_columns: List<WireFlightDataColumn>,
     val controls: List<WireFlightPlanControlUiView> = emptyList(),
+    val altitude_planner: WireAltitudePlannerUiView,
     val guidance: WireGuidanceUiView? = null,
+)
+
+@Serializable
+data class WireAltitudePlannerControlUiView(
+    val id: String,
+    val label: String,
+    val enabled: Boolean,
+    val disabled_reason: String? = null,
+)
+
+@Serializable
+data class WireAltitudePlannerUnavailableReason(
+    val code: String,
+    val message: String,
+)
+
+@Serializable
+data class WireAltitudePlannerUiView(
+    val estimate_kind: String,
+    val controls: List<WireAltitudePlannerControlUiView>,
+    val unavailable_reasons: List<WireAltitudePlannerUnavailableReason> = emptyList(),
 )
 
 @Serializable
@@ -1185,6 +1207,7 @@ data class WireFlightDataCell(
     val label: String,
     val value: String? = null,
     val tone: String = "planned",
+    val estimate_kind: String = "basic",
 )
 
 @Serializable

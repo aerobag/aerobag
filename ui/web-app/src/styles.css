@@ -3087,6 +3087,54 @@ button {
   background: var(--theme-chart-surface-bg);
 }
 
+.altitudePlannerDock {
+  position: relative;
+  z-index: var(--z-page-controls);
+  display: flex;
+  flex: 0 0 auto;
+  justify-content: center;
+  margin-bottom: var(--thumb-gap);
+}
+
+.altitudePlannerControls {
+  display: flex;
+  gap: var(--thumb-gap);
+}
+
+.altitudePlannerButton {
+  white-space: pre-line;
+  line-height: 1.02;
+}
+
+.altitudePlannerButton.isOpen {
+  background: var(--theme-button-checked);
+  border-color: color-mix(in srgb, var(--theme-button-checked) 78%, black);
+}
+
+.altitudePlannerStatus {
+  position: absolute;
+  top: calc(100% + var(--thumb-gap));
+  left: 50%;
+  width: min(calc(var(--thumb) * 6), calc(100vw - (var(--thumb-gap) * 4)));
+  transform: translateX(-50%);
+  padding: calc(var(--thumb) * 0.22);
+  border: 1px solid var(--theme-panel-border);
+  border-radius: var(--thumb-radius);
+  background: var(--theme-panel-bg);
+  box-shadow: var(--shadow);
+  color: var(--theme-panel-fg);
+  font-size: calc(var(--thumb) * 0.2);
+}
+
+.altitudePlannerStatus strong {
+  display: block;
+  margin-bottom: calc(var(--thumb-gap) * 0.6);
+}
+
+.altitudePlannerStatus p {
+  margin: calc(var(--thumb-gap) * 0.5) 0 0;
+}
+
 .dataStatusPage {
   display: flex;
   flex-direction: column;
@@ -3745,6 +3793,10 @@ button {
 
 .planSummaryCell {
   font-weight: 800;
+}
+
+.planCell.isModeled {
+  color: var(--theme-flight-data-modeled-value);
 }
 
 .planCell.isPassed {

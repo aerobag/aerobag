@@ -126,19 +126,34 @@ pub(crate) fn airport_info(
     airport_id: &str,
     now: DateTime<Utc>,
 ) -> Result<AirportInfoUiView, HadReadError> {
-    let key = format!("airport/info/{}", airport_id.trim().to_ascii_uppercase());
-    let record = match store.get_bytes(&key).map_err(HadReadError::Fatal)? {
-        NavKvLookup::Hit(bytes) => serde_json::from_slice::<AirportInfoRecord>(&bytes)
-            .map_err(|error| HadReadError::Fatal(format!("invalid {key}: {error}")))?,
-        NavKvLookup::MissingKey => {
-            return Err(HadReadError::Fatal(format!(
-                "airport info is unavailable for {}",
-                airport_id.trim().to_ascii_uppercase()
-            )))
-        }
-        NavKvLookup::MissingPages(pages) => return Err(HadReadError::NeedPages(pages)),
-    };
+    let record = read_airport_info_record(store, airport_id)?.ok_or_else(|| {
+        HadReadError::Fatal(format!(
+            "airport info is unavailable for {}",
+            airport_id.trim().to_ascii_uppercase()
+        ))
+    })?;
     project_airport_info(record, now).map_err(HadReadError::Fatal)
+}
+
+pub(crate) fn airport_elevation_msl_ft(
+    store: &NavKvStore,
+    airport_id: &str,
+) -> Result<Option<f64>, HadReadError> {
+    Ok(read_airport_info_record(store, airport_id)?.and_then(|record| record.elevation_msl_ft))
+}
+
+fn read_airport_info_record(
+    store: &NavKvStore,
+    airport_id: &str,
+) -> Result<Option<AirportInfoRecord>, HadReadError> {
+    let key = format!("airport/info/{}", airport_id.trim().to_ascii_uppercase());
+    match store.get_bytes(&key).map_err(HadReadError::Fatal)? {
+        NavKvLookup::Hit(bytes) => serde_json::from_slice::<AirportInfoRecord>(&bytes)
+            .map(Some)
+            .map_err(|error| HadReadError::Fatal(format!("invalid {key}: {error}"))),
+        NavKvLookup::MissingKey => Ok(None),
+        NavKvLookup::MissingPages(pages) => Err(HadReadError::NeedPages(pages)),
+    }
 }
 
 fn project_airport_info(

@@ -42,6 +42,7 @@ use crate::{
 #[derive(Debug, Clone, Copy, Default)]
 pub(crate) struct FlightPlanLiveData {
     pub ownship_position: Option<LatLon>,
+    pub ownship_altitude_ft: Option<f64>,
     pub now_epoch_ms: Option<i64>,
 }
 
@@ -1269,6 +1270,66 @@ pub(crate) struct FlightPlanUiProjection {
     pub materialized: crate::flight_plan_materialization::MaterializedFlightPlan,
 }
 
+const PROTOTYPE_PA46_CRUISE_ALTITUDE_FT: i32 = 12_000;
+const PROTOTYPE_PA46_CONFIGURATION: crate::Pa46CruiseConfiguration =
+    crate::Pa46CruiseConfiguration::Economy65;
+
+fn endpoint_airport_id(
+    plan: &FlightPlan,
+    materialized: &crate::flight_plan_materialization::MaterializedFlightPlan,
+    departure: bool,
+) -> Option<String> {
+    let declared = if departure {
+        plan.departure.as_ref()
+    } else {
+        plan.destination.as_ref()
+    };
+    declared.map(|airport| airport.0.clone()).or_else(|| {
+        let row_id = if departure {
+            materialized.order.first()
+        } else {
+            materialized.order.last()
+        }?;
+        materialized
+            .rows
+            .get(row_id)?
+            .location
+            .airport_code()
+            .map(str::to_string)
+    })
+}
+
+fn prototype_pa46_prediction(
+    materialized: &crate::flight_plan_materialization::MaterializedFlightPlan,
+    start_altitude_ft: f64,
+    cruise_altitude_ft: f64,
+    destination_altitude_ft: f64,
+    departure_epoch_ms: i64,
+) -> Result<crate::TrajectoryPrediction, crate::TrajectoryPlannerError> {
+    let legs = materialized
+        .order
+        .iter()
+        .filter_map(|row_id| {
+            let row = materialized.rows.get(row_id)?;
+            let geometry = row.geometry.as_ref()?;
+            Some(crate::TrajectoryRouteLeg {
+                row_id: row_id.clone(),
+                path: crate::flight_plan_materialization::geometry_points(geometry),
+            })
+        })
+        .collect();
+    let profile = crate::pa46_310p_profile(PROTOTYPE_PA46_CONFIGURATION);
+    crate::TrajectoryPlanner::new(&profile, &crate::NoWindIsaAtmosphere).predict(
+        &crate::TrajectoryPlanInput {
+            legs,
+            start_pressure_altitude_ft: start_altitude_ft,
+            cruise_pressure_altitude_ft: cruise_altitude_ft,
+            destination_pressure_altitude_ft: destination_altitude_ft,
+            departure_epoch_ms,
+        },
+    )
+}
+
 pub(crate) fn flight_plan_ui_projection(
     store: &NavKvStore,
     plan: FlightPlan,
@@ -1293,6 +1354,69 @@ pub(crate) fn flight_plan_ui_projection(
     )
     .map_err(|err| HadReadError::Fatal(err.message))?;
     let use_live_eta = live_data.ownship_position.is_some() && materialized.active.is_some();
+    let cruise_altitude_ft = plan
+        .cruise_altitude_ft
+        .unwrap_or(PROTOTYPE_PA46_CRUISE_ALTITUDE_FT);
+    let origin_airport_id = endpoint_airport_id(&plan, &materialized, true);
+    let destination_airport_id = endpoint_airport_id(&plan, &materialized, false);
+    let origin_altitude_ft = match origin_airport_id.as_deref() {
+        Some(airport_id) => missing_pages
+            .collect(crate::airport_info::airport_elevation_msl_ft(
+                store, airport_id,
+            ))?
+            .flatten(),
+        None => None,
+    };
+    let destination_altitude_ft = match destination_airport_id.as_deref() {
+        Some(airport_id) => missing_pages
+            .collect(crate::airport_info::airport_elevation_msl_ft(
+                store, airport_id,
+            ))?
+            .flatten(),
+        None => None,
+    };
+    let mut performance_regime_available = true;
+    let modeled_prediction = if !use_live_eta && materialized.active.is_none() {
+        match (origin_altitude_ft, destination_altitude_ft) {
+            (Some(origin), Some(destination)) => match prototype_pa46_prediction(
+                &materialized,
+                origin,
+                cruise_altitude_ft as f64,
+                destination,
+                live_data.now_epoch_ms.unwrap_or_default(),
+            ) {
+                Ok(prediction) => Some(prediction),
+                Err(_) => {
+                    performance_regime_available = false;
+                    None
+                }
+            },
+            _ => None,
+        }
+    } else {
+        None
+    };
+    ui_state.altitude_planner = crate::project_altitude_planner_ui(crate::AltitudePlannerUiInput {
+        aircraft_profile_label: Some(PROTOTYPE_PA46_CONFIGURATION.label().to_string()),
+        cruise_altitude_ft: Some(cruise_altitude_ft),
+        navigation_active: materialized.active.is_some(),
+        ownship_altitude_available: live_data.ownship_altitude_ft.is_some(),
+        plan_origin_altitude_available: origin_altitude_ft.is_some(),
+        plan_destination_altitude_available: destination_altitude_ft.is_some(),
+        performance_regime_available,
+        live_ground_speed_estimate_active: use_live_eta,
+        ..crate::AltitudePlannerUiInput::default()
+    });
+    let modeled_by_row_id = modeled_prediction
+        .as_ref()
+        .map(|prediction| {
+            prediction
+                .legs
+                .iter()
+                .map(|leg| (leg.row_id.clone(), leg))
+                .collect::<BTreeMap<_, _>>()
+        })
+        .unwrap_or_default();
     for row in ui_state.display_rows.iter_mut() {
         let mut course_deg = None;
         let materialized_row = materialized
@@ -1332,14 +1456,31 @@ pub(crate) fn flight_plan_ui_projection(
         } else {
             None
         };
-        row.data_cells = computer.flight_plan_row_cells(
-            row_has_data,
-            distance_nm,
-            cumulative_distance_nm,
-            eta,
-            course_deg,
-            tone,
-        );
+        row.data_cells = if let Some(prediction) =
+            modeled_by_row_id.get(&crate::FlightPlanRowId(row.uid.clone()))
+        {
+            computer.flight_plan_row_cells_with_estimate(
+                row_has_data,
+                distance_nm,
+                None,
+                course_deg,
+                tone,
+                crate::FlightTimeFuelEstimate {
+                    cumulative_ete_seconds: Some(prediction.cumulative_ete_seconds),
+                    cumulative_fuel_gal: Some(prediction.cumulative_fuel_gal),
+                    estimate_kind: crate::FlightEstimateKind::Modeled,
+                },
+            )
+        } else {
+            computer.flight_plan_row_cells(
+                row_has_data,
+                distance_nm,
+                cumulative_distance_nm,
+                eta,
+                course_deg,
+                tone,
+            )
+        };
         if crate::planning::flight_plan_row_actions(row)
             .any(|action| action.id == FlightPlanRowActionId::ShowPlate)
         {
@@ -1375,6 +1516,13 @@ pub(crate) fn flight_plan_ui_projection(
             &computer,
             total_remaining_distance_nm,
             summary_tone,
+            modeled_prediction
+                .as_ref()
+                .map(|prediction| crate::FlightTimeFuelEstimate {
+                    cumulative_ete_seconds: Some(prediction.total_ete_seconds),
+                    cumulative_fuel_gal: Some(prediction.total_fuel_gal),
+                    estimate_kind: crate::FlightEstimateKind::Modeled,
+                }),
         ));
     }
     ui_state.data_columns = crate::flight_data::flight_plan_columns();
@@ -1392,6 +1540,7 @@ fn flight_plan_summary_row(
     computer: &crate::FlightDataComputer,
     total_distance_nm: f64,
     tone: crate::FlightDataCellTone,
+    modeled_estimate: Option<crate::FlightTimeFuelEstimate>,
 ) -> crate::planning::FlightPlanDisplayRowUiView {
     crate::planning::FlightPlanDisplayRowUiView {
         uid: "flight-plan:summary".to_string(),
@@ -1403,7 +1552,16 @@ fn flight_plan_summary_row(
         procedure_id: None,
         procedure_kind: None,
         leg_index: None,
-        data_cells: computer.flight_plan_summary_cells(Some(total_distance_nm), tone),
+        data_cells: modeled_estimate.map_or_else(
+            || computer.flight_plan_summary_cells(Some(total_distance_nm), tone),
+            |estimate| {
+                computer.flight_plan_summary_cells_with_estimate(
+                    Some(total_distance_nm),
+                    tone,
+                    estimate,
+                )
+            },
+        ),
         show_plate_target_id: None,
         chart_airport_id: None,
         nav_ref: None,
@@ -4661,6 +4819,78 @@ mod tests {
             .expect("cell")
     }
 
+    fn airport_info_value(id: &str, position: LatLon, elevation_msl_ft: f64) -> serde_json::Value {
+        serde_json::json!({
+            "schema_version": 1,
+            "airport_id": id,
+            "name": format!("{id} TEST AIRPORT"),
+            "latitude": position.lat,
+            "longitude": position.lon,
+            "time_zone": "UTC",
+            "elevation_msl_ft": elevation_msl_ft,
+            "traffic_pattern_altitude_msl_ft": null
+        })
+    }
+
+    #[test]
+    fn inactive_airport_plan_uses_prototype_pa46_modeled_time_and_fuel() {
+        let aaa = LatLon { lat: 0.0, lon: 0.0 };
+        let bbb = LatLon { lat: 0.0, lon: 1.5 };
+        let ccc = LatLon { lat: 0.0, lon: 3.0 };
+        let store = test_nav_kv_store(&[
+            ("airport/info/KAAA", airport_info_value("KAAA", aaa, 100.0)),
+            ("airport/info/KCCC", airport_info_value("KCCC", ccc, 200.0)),
+            (
+                "navref/position/airport/KAAA",
+                serde_json::json!({"lat": aaa.lat, "lon": aaa.lon}),
+            ),
+            (
+                "navref/position/airport/KBBB",
+                serde_json::json!({"lat": bbb.lat, "lon": bbb.lon}),
+            ),
+            (
+                "navref/position/airport/KCCC",
+                serde_json::json!({"lat": ccc.lat, "lon": ccc.lon}),
+            ),
+        ]);
+        let plan = three_airport_test_plan();
+        let ui_state = default_flight_plan_ui_state_for_test(&store, &plan);
+
+        assert_eq!(
+            ui_state.altitude_planner.estimate_kind,
+            crate::FlightEstimateKind::Modeled
+        );
+        assert!(ui_state
+            .altitude_planner
+            .controls
+            .iter()
+            .any(
+                |control| control.id == crate::AltitudePlannerControlId::AircraftProfile
+                    && control.label.contains("65% ECONOMY")
+            ));
+        assert!(ui_state
+            .altitude_planner
+            .controls
+            .iter()
+            .any(
+                |control| control.id == crate::AltitudePlannerControlId::CruiseAltitude
+                    && control.label == "ALT\n12000"
+            ));
+
+        for label in ["KBBB", "KCCC", "TOTAL"] {
+            let row = ui_state
+                .display_rows
+                .iter()
+                .find(|row| row.label == label)
+                .expect("modeled row");
+            for cell_id in ["waypoint_ete", "fuel"] {
+                let cell = row_cell(row, cell_id);
+                assert!(cell.value.as_ref().is_some_and(|value| !value.is_empty()));
+                assert_eq!(cell.estimate_kind, crate::FlightEstimateKind::Modeled);
+            }
+        }
+    }
+
     #[test]
     fn nav_symbol_feature_decodes_current_navref_symbol_records() {
         let store = test_nav_kv_store(&[
@@ -4997,6 +5227,7 @@ mod tests {
             computer,
             FlightPlanLiveData {
                 ownship_position: Some(ownship),
+                ownship_altitude_ft: Some(4_000.0),
                 now_epoch_ms: Some(now_epoch_ms),
             },
         )
@@ -5084,6 +5315,7 @@ mod tests {
             crate::FlightDataComputer::default(),
             FlightPlanLiveData {
                 ownship_position: None,
+                ownship_altitude_ft: None,
                 now_epoch_ms: Some(12 * 60 * 60 * 1000),
             },
         )
@@ -5134,6 +5366,12 @@ mod tests {
             row_cell(summary_row, "waypoint_distance").tone,
             crate::FlightDataCellTone::Active
         );
+        assert!(ui_state
+            .altitude_planner
+            .unavailable_reasons
+            .iter()
+            .any(|reason| reason.code
+                == crate::AltitudePlannerUnavailableReasonCode::OwnshipAltitudeUnavailable));
     }
 
     #[test]
@@ -5154,6 +5392,7 @@ mod tests {
             crate::FlightDataComputer::default(),
             FlightPlanLiveData {
                 ownship_position: Some(ownship),
+                ownship_altitude_ft: Some(4_000.0),
                 now_epoch_ms: Some(12 * 60 * 60 * 1000),
             },
         )
@@ -5233,6 +5472,7 @@ mod tests {
             crate::FlightDataComputer::default(),
             FlightPlanLiveData {
                 ownship_position: Some(ownship),
+                ownship_altitude_ft: Some(4_000.0),
                 now_epoch_ms: Some(12 * 60 * 60 * 1000),
             },
         )

@@ -224,7 +224,35 @@ export type FlightPlanUiState = {
   data_columns: FlightDataColumn[];
   display_rows: FlightPlanDisplayRowUiView[];
   controls: FlightPlanControlUiView[];
+  altitude_planner: AltitudePlannerUiView;
   guidance: GuidanceUiView | null;
+};
+
+export type FlightEstimateKind = "basic" | "modeled";
+
+export type AltitudePlannerControlUiView = {
+  id: "aircraft_profile" | "cruise_altitude" | "wind_model" | "status";
+  label: string;
+  enabled: boolean;
+  disabled_reason?: string | null;
+};
+
+export type AltitudePlannerUnavailableReason = {
+  code:
+    | "aircraft_profile_unavailable"
+    | "cruise_altitude_unavailable"
+    | "plan_origin_altitude_unavailable"
+    | "plan_destination_altitude_unavailable"
+    | "ownship_altitude_unavailable"
+    | "wind_model_unavailable"
+    | "performance_regime_unavailable";
+  message: string;
+};
+
+export type AltitudePlannerUiView = {
+  estimate_kind: FlightEstimateKind;
+  controls: AltitudePlannerControlUiView[];
+  unavailable_reasons?: AltitudePlannerUnavailableReason[];
 };
 
 export type FlightPlanDisplayRowKind = "waypoint" | "group" | "discontinuity" | "summary";
@@ -501,6 +529,7 @@ export type FlightDataCell = {
   label: string;
   value: string | null;
   tone?: "planned" | "passed" | "active";
+  estimate_kind?: FlightEstimateKind;
 };
 
 export type FlightDataColumn = {

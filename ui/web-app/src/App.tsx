@@ -895,6 +895,7 @@ type UiThemeJson = {
     flight_data_missing_value: string;
     flight_data_passed_value: string;
     flight_data_active_value: string;
+    flight_data_modeled_value: string;
     cdi_pointer: string;
     compass_north: string;
     compass_south: string;
@@ -3507,6 +3508,7 @@ export default function App() {
         "--theme-flight-data-missing-value": controlTheme.flight_data_missing_value,
         "--theme-flight-data-passed-value": controlTheme.flight_data_passed_value,
         "--theme-flight-data-active-value": controlTheme.flight_data_active_value,
+        "--theme-flight-data-modeled-value": controlTheme.flight_data_modeled_value,
         "--theme-cdi-pointer": controlTheme.cdi_pointer,
         "--theme-compass-north": controlTheme.compass_north,
         "--theme-compass-south": controlTheme.compass_south,
@@ -8096,6 +8098,7 @@ function FlightPlanPage(props: {
   const [routeEntryLoading, setRouteEntryLoading] = useState(false);
   const [routeEntryError, setRouteEntryError] = useState<string | null>(null);
   const [routeEntrySubmitting, setRouteEntrySubmitting] = useState(false);
+  const [altitudePlannerStatusOpen, setAltitudePlannerStatusOpen] = useState(false);
   const { toast: disabledActionToast, show: showDisabledAction } = useDisabledActionToast();
   const previewFlightPlanEntryRef = useRef(props.onPreviewFlightPlanEntry);
   useEffect(() => {
@@ -8112,6 +8115,7 @@ function FlightPlanPage(props: {
   }
   const guidance = planUiState.guidance ?? null;
   const planControls = planUiState.controls;
+  const altitudePlanner = planUiState.altitude_planner;
   const activeFromRowUid = guidance?.active_from_row_uid ?? null;
   const activeToRowUid = guidance?.active_to_row_uid ?? null;
   const activeGuidanceRowsKey = guidance?.active_leg
@@ -8633,6 +8637,45 @@ function FlightPlanPage(props: {
 
   return (
     <section className="appPage planPage" ref={pageRef}>
+      <div className="altitudePlannerDock">
+        <div className="altitudePlannerControls">
+          {altitudePlanner.controls.map((control) => {
+            const disabled = !control.enabled;
+            const disabledReason = disabledReasonText(control.disabled_reason);
+            const statusOpen = control.id === "status" && altitudePlannerStatusOpen;
+            return (
+              <button
+                key={control.id}
+                type="button"
+                className={`trayButton trayButtonSquare altitudePlannerButton${disabled ? " isDisabled" : ""}${statusOpen ? " isOpen" : ""}`}
+                data-testid={`altitude-planner-control-${control.id}`}
+                aria-expanded={control.id === "status" ? statusOpen : undefined}
+                aria-disabled={disabled ? "true" : undefined}
+                title={disabledReason ?? undefined}
+                onClick={() => {
+                  if (control.id === "status" && control.enabled) {
+                    setAltitudePlannerStatusOpen((open) => !open);
+                    return;
+                  }
+                  if (disabledReason) {
+                    showDisabledAction(disabledReason);
+                  }
+                }}
+              >
+                {control.label}
+              </button>
+            );
+          })}
+        </div>
+        {altitudePlannerStatusOpen ? (
+          <div className="altitudePlannerStatus" data-testid="altitude-planner-status">
+            <strong>{altitudePlanner.estimate_kind === "modeled" ? "MODELED ESTIMATE" : "BASIC ESTIMATE"}</strong>
+            {(altitudePlanner.unavailable_reasons ?? []).map((reason) => (
+              <p key={reason.code}>{reason.message}</p>
+            ))}
+          </div>
+        ) : null}
+      </div>
       <div className="planScrollViewport" ref={planScrollViewportRef}>
         <div className="planScrollContent" ref={planScrollContentRef}>
           {structuredArrow ? (
@@ -8746,6 +8789,7 @@ function FlightPlanPage(props: {
                             "planCell",
                             row.depth > 0 ? "planStructuredDataCell isChildRow" : "",
                             row.rowKind === "summary" ? "planSummaryCell" : "",
+                            cell.estimate_kind === "modeled" ? "isModeled" : "",
                             cell.tone === "passed" ? "isPassed" : "",
                             cell.tone === "active" ? "isActive" : "",
                           ].filter(Boolean).join(" ")}

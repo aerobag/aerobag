@@ -28,6 +28,7 @@
     "flight_data_missing_value": "#ffffff94",
     "flight_data_passed_value": "#8da1b3",
     "flight_data_active_value": "#d45a7a",
+    "flight_data_modeled_value": "#2276ad",
     "cdi_pointer": "#d45a7a",
     "compass_north": "#d83a2e",
     "compass_south": "#aab2b8"

@@ -346,7 +346,7 @@ pub fn gfs_winds_aloft_filter_url(cycle: &GfsWindsAloftCycle, forecast_hour: u32
         "https://nomads.ncep.noaa.gov/cgi-bin/filter_gfs_0p25.pl?dir=%2Fgfs.{}%2F{}%2Fatmos&file=gfs.t{}z.pgrb2.0p25.f{forecast_hour:03}",
         cycle.date, cycle.cycle, cycle.cycle
     );
-    for variable in ["UGRD", "VGRD", "HGT"] {
+    for variable in ["UGRD", "VGRD", "HGT", "TMP"] {
         url.push_str("&var_");
         url.push_str(variable);
         url.push_str("=on");
@@ -1096,11 +1096,11 @@ fn build_winds_aloft_state_from_inputs(
         },
         "forecast_hours": WINDS_ALOFT_FORECAST_HOURS,
         "pressure_levels_mb": WINDS_ALOFT_PRESSURE_LEVELS_MB,
-        "variables": ["UGRD", "VGRD", "HGT"],
+        "variables": ["UGRD", "VGRD", "HGT", "TMP"],
         "files": grib_files,
         "notes": [
             "Raw measuring state; not yet a client rendering wire format.",
-            "UGRD/VGRD are wind vector components. HGT is included to map pressure levels to geometric altitude."
+            "UGRD/VGRD are wind vector components. HGT maps pressure levels to geometric altitude; TMP supplies temperature at each pressure level."
         ],
     });
     write_json_pretty_file(&structured_json_path, &manifest)?;
@@ -1282,6 +1282,7 @@ mod tests {
             "var_UGRD=on",
             "var_VGRD=on",
             "var_HGT=on",
+            "var_TMP=on",
             "lev_1000_mb=on",
             "lev_300_mb=on",
             "toplat=55",

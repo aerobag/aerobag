@@ -10,7 +10,10 @@ use crate::geodesy::initial_course_deg;
 use crate::geometry::LatLon;
 use crate::ids::AirportId;
 use crate::map_overlay::{NavSymbolFeature, WeatherDetailUiView};
-use crate::{FlightDataCell, FlightDataCellTone, FlightDataColumn, MaterializedProcedure};
+use crate::{
+    AltitudePlannerUiInput, AltitudePlannerUiView, FlightDataCell, FlightDataCellTone,
+    FlightDataColumn, MaterializedProcedure,
+};
 
 pub(crate) const OFF_PLAN_DIRECT_TO_EDIT_DISABLED_REASON: &str =
     "Restore FP before editing the flight plan.";
@@ -934,6 +937,8 @@ pub struct FlightPlanUiState {
     pub display_rows: Vec<FlightPlanDisplayRowUiView>,
     #[serde(default)]
     pub controls: Vec<FlightPlanControlUiView>,
+    #[serde(default)]
+    pub altitude_planner: AltitudePlannerUiView,
     pub guidance: Option<GuidanceUiView>,
 }
 
@@ -2158,6 +2163,11 @@ pub fn project_ui_state(plan: &FlightPlan) -> FlightPlanUiState {
         data_columns: crate::flight_data::flight_plan_columns(),
         guidance,
         controls: project_flight_plan_controls(&plan),
+        altitude_planner: crate::project_altitude_planner_ui(AltitudePlannerUiInput {
+            cruise_altitude_ft: plan.cruise_altitude_ft,
+            navigation_active: plan.guidance.is_some(),
+            ..AltitudePlannerUiInput::default()
+        }),
     }
 }
 

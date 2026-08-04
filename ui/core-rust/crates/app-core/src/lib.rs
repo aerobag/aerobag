@@ -4,7 +4,9 @@
 
 use serde::{Deserialize, Serialize};
 
+pub mod aircraft_profiles;
 pub mod airport_info;
+pub mod altitude_planner;
 pub mod chart_page;
 pub mod cloud;
 mod cloud_acs;
@@ -43,8 +45,20 @@ pub mod state;
 pub mod terrain;
 pub mod ui_work_scheduler;
 
+pub use aircraft_profiles::{
+    pa46_310p_climb_points, pa46_310p_profile, Pa46CruiseConfiguration, PA46_310P_AIRCRAFT_LABEL,
+    PA46_310P_AIRCRAFT_MODEL_ID, PA46_310P_PERFORMANCE_SOURCE,
+};
 pub use airport_info::{
     AirportCommunicationUiView, AirportInfoUiView, AirportRunwayUiView, AirportSolarEventUiView,
+};
+pub use altitude_planner::{
+    project_altitude_planner_ui, AircraftPerformanceProfile, AltitudePlannerControlId,
+    AltitudePlannerControlUiView, AltitudePlannerUiInput, AltitudePlannerUiView,
+    AltitudePlannerUnavailableReason, AltitudePlannerUnavailableReasonCode, AtmosphereModel,
+    AtmosphereSample, CruisePerformancePoint, FlightEstimateKind, NoWindIsaAtmosphere,
+    PerformanceAirspeedBasis, TrajectoryLegPrediction, TrajectoryPlanInput, TrajectoryPlanner,
+    TrajectoryPlannerError, TrajectoryPrediction, TrajectoryRouteLeg, VerticalPerformancePoint,
 };
 pub use chart_page::{
     airport_ids_from_plan, chart_page_airport_ids_from_plan, derive_chart_page_state_from_airports,
@@ -78,7 +92,7 @@ pub use debug_log::{
 pub use errors::{AppError, AppErrorKind, AppResult};
 pub use flight_data::{
     FlightDataBannerInput, FlightDataBannerModel, FlightDataCell, FlightDataCellTone,
-    FlightDataColumn, FlightDataComputer,
+    FlightDataColumn, FlightDataComputer, FlightTimeFuelEstimate,
 };
 pub use geodesy::{
     cross_track_left_nm, great_circle_display_path, great_circle_distance_nm,

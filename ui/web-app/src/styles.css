@@ -28,6 +28,7 @@
   --z-modal-scrim: 30;
   --z-modal-content: 31;
   --z-modal-content-raised: 32;
+  --font-mono: ui-monospace, "Cascadia Mono", "SFMono-Regular", "Roboto Mono", "DejaVu Sans Mono", "Liberation Mono", Menlo, Consolas, monospace;
   font-family: "IBM Plex Sans", "Avenir Next", "Segoe UI", sans-serif;
 }
 
@@ -1772,7 +1773,7 @@ button {
   margin: 0;
   overflow: auto;
   color: #111b20;
-  font-family: "JetBrains Mono", "SFMono-Regular", "Consolas", monospace;
+  font-family: var(--font-mono);
   font-size: calc(var(--thumb) * 0.19);
   font-weight: 800;
   line-height: 1.25;
@@ -1827,7 +1828,7 @@ button {
 .airportNotamText {
   margin-top: calc(var(--thumb-gap) * 0.35);
   color: #111b20;
-  font-family: "JetBrains Mono", "SFMono-Regular", "Consolas", monospace;
+  font-family: var(--font-mono);
   font-size: calc(var(--thumb) * 0.17);
   font-weight: 800;
   line-height: 1.25;

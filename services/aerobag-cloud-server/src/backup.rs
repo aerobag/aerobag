@@ -59,11 +59,55 @@ pub struct RestoreReport {
     pub restored_blob_bytes: u64,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "outcome", rename_all = "snake_case")]
+pub enum BackupIfDueReport {
+    Created {
+        backup: BackupReport,
+    },
+    NotDue {
+        last_completed_at_epoch_ms: i64,
+        next_due_at_epoch_ms: i64,
+    },
+}
+
 pub fn create_backup(config: &StoreConfig, now_epoch_ms: i64) -> StoreResult<BackupReport> {
-    let started = Instant::now();
     let layout = StorageLayout::new(config.storage_root.clone());
     layout.ensure()?;
     let _reclamation_lock = layout.acquire_reclamation_lock()?;
+    create_backup_locked(config, &layout, now_epoch_ms)
+}
+
+pub fn create_backup_if_due(
+    config: &StoreConfig,
+    now_epoch_ms: i64,
+) -> StoreResult<BackupIfDueReport> {
+    let layout = StorageLayout::new(config.storage_root.clone());
+    layout.ensure()?;
+    let _reclamation_lock = layout.acquire_reclamation_lock()?;
+    let last_completed_at_epoch_ms = last_completed_backup(&layout)?;
+    if let Some(last_completed_at_epoch_ms) = last_completed_at_epoch_ms {
+        let interval_ms = config.backup_interval_seconds.saturating_mul(1_000);
+        let next_due_at_epoch_ms = last_completed_at_epoch_ms
+            .saturating_add(i64::try_from(interval_ms).unwrap_or(i64::MAX));
+        if now_epoch_ms < next_due_at_epoch_ms {
+            return Ok(BackupIfDueReport::NotDue {
+                last_completed_at_epoch_ms,
+                next_due_at_epoch_ms,
+            });
+        }
+    }
+    Ok(BackupIfDueReport::Created {
+        backup: create_backup_locked(config, &layout, now_epoch_ms)?,
+    })
+}
+
+fn create_backup_locked(
+    config: &StoreConfig,
+    layout: &StorageLayout,
+    now_epoch_ms: i64,
+) -> StoreResult<BackupReport> {
+    let started = Instant::now();
     let snapshot_name = format!("snapshot-{now_epoch_ms}");
     let partial = layout
         .snapshots_root()
@@ -78,7 +122,7 @@ pub fn create_backup(config: &StoreConfig, now_epoch_ms: i64) -> StoreResult<Bac
         .map_err(|error| StoreError::io("create partial cloud backup", error))?;
 
     let result = create_backup_inner(
-        &layout,
+        layout,
         &snapshot_name,
         &partial,
         &completed,
@@ -88,20 +132,31 @@ pub fn create_backup(config: &StoreConfig, now_epoch_ms: i64) -> StoreResult<Bac
     match result {
         Ok(mut report) => {
             if let Err(error) =
-                prune_snapshots(&layout, config.backup_retained_snapshots, &snapshot_name)
+                prune_snapshots(layout, config.backup_retained_snapshots, &snapshot_name)
             {
-                let _ = record_backup_failure(&layout, now_epoch_ms);
+                let _ = record_backup_failure(layout, now_epoch_ms);
                 return Err(error);
             }
             report.elapsed_ms = elapsed_ms(started);
-            record_backup_success(&layout, &report, now_epoch_ms)?;
+            record_backup_success(layout, &report, now_epoch_ms)?;
             Ok(report)
         }
         Err(error) => {
-            let _ = record_backup_failure(&layout, now_epoch_ms);
+            let _ = record_backup_failure(layout, now_epoch_ms);
             Err(error)
         }
     }
+}
+
+fn last_completed_backup(layout: &StorageLayout) -> StoreResult<Option<i64>> {
+    let connection = open_live_database(layout)?;
+    connection
+        .query_row(
+            "SELECT last_completed_at_epoch_ms FROM backup_state WHERE singleton = 1",
+            [],
+            |row| row.get(0),
+        )
+        .map_err(StoreError::sqlite)
 }
 
 fn create_backup_inner(
@@ -624,6 +679,32 @@ mod tests {
         let error = verify_backup(&report.snapshot_path).unwrap_err();
         assert_eq!(error.code, AcsErrorCode::Internal);
         assert!(error.message.contains("failed verification"));
+    }
+
+    #[test]
+    fn scheduled_backup_uses_persisted_due_time_while_backup_now_bypasses_it() {
+        let root = TempDir::new().unwrap();
+        let (config, _store) = store_with_blob(&root);
+        let first = create_backup_if_due(&config, 100).unwrap();
+        assert!(matches!(first, BackupIfDueReport::Created { .. }));
+
+        let next_due = 100 + config.backup_interval_seconds as i64 * 1_000;
+        assert_eq!(
+            create_backup_if_due(&config, 200).unwrap(),
+            BackupIfDueReport::NotDue {
+                last_completed_at_epoch_ms: 100,
+                next_due_at_epoch_ms: next_due,
+            }
+        );
+        let forced = create_backup(&config, 300).unwrap();
+        assert_eq!(forced.snapshot_name, "snapshot-300");
+        assert_eq!(
+            create_backup_if_due(&config, 400).unwrap(),
+            BackupIfDueReport::NotDue {
+                last_completed_at_epoch_ms: 300,
+                next_due_at_epoch_ms: 300 + config.backup_interval_seconds as i64 * 1_000,
+            }
+        );
     }
 
     #[test]

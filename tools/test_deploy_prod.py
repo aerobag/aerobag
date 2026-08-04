@@ -132,11 +132,11 @@ class AerobagCloudProductionTests(unittest.TestCase):
     def test_cloud_backup_is_online_hourly_and_uses_the_storage_root(self) -> None:
         unit = deploy_prod.cloud_backup_unit(self.config)
         self.assertIn("User=aerobag-cloud", unit)
-        self.assertIn("aerobag-cloud-serverd\" backup", unit)
+        self.assertIn("aerobag-cloud-serverd\" backup-if-due", unit)
         self.assertIn(' --storage-root "$AEROBAG_CLOUD_SERVER_STORAGE_ROOT"', unit)
         self.assertIn("ReadWritePaths=/mnt/aerobag-data/cloud-storage", unit)
         timer = deploy_prod.cloud_backup_timer(self.config)
-        self.assertIn("OnUnitActiveSec=3600s", timer)
+        self.assertIn("OnUnitActiveSec=15m", timer)
         self.assertIn("OnBootSec=5m", timer)
 
     def test_health_and_pipeline_service_include_cloud(self) -> None:

@@ -10,8 +10,8 @@ use std::{
 };
 
 use aerobag_cloud_server::{
-    create_backup, restore_backup, run_server, verify_backup, AccountMode, AcsRuntimePolicy,
-    CloudStore, ServerConfig, StorageLayout,
+    create_backup, create_backup_if_due, restore_backup, run_server, verify_backup, AccountMode,
+    AcsRuntimePolicy, CloudStore, ServerConfig, StorageLayout,
 };
 use anyhow::{bail, Context as _};
 
@@ -19,7 +19,8 @@ fn usage() -> &'static str {
     "usage:
   aerobag-cloud-serverd serve --storage-root <path> --policy <path> --server-secret <path> [--listen <addr>]
   aerobag-cloud-serverd gc --storage-root <path> --policy <path> [--grace-seconds <n>]
-  aerobag-cloud-serverd backup --storage-root <path> --policy <path>
+  aerobag-cloud-serverd backup-now --storage-root <path> --policy <path>
+  aerobag-cloud-serverd backup-if-due --storage-root <path> --policy <path>
   aerobag-cloud-serverd verify-backup --storage-root <path> --policy <path> <snapshot-path>
   aerobag-cloud-serverd restore --storage-root <path> --policy <path> <snapshot-path>
   aerobag-cloud-serverd set-mode --storage-root <path> --policy <path> <read-only|suspended>
@@ -80,9 +81,16 @@ async fn main() -> anyhow::Result<()> {
             println!("{}", serde_json::to_string_pretty(&report)?);
             Ok(())
         }
-        "backup" => {
+        "backup-now" => {
             reject_extra(&args)?;
             let report = create_backup(&policy.store_config(storage_root.clone()), now_epoch_ms())?;
+            println!("{}", serde_json::to_string_pretty(&report)?);
+            Ok(())
+        }
+        "backup-if-due" => {
+            reject_extra(&args)?;
+            let report =
+                create_backup_if_due(&policy.store_config(storage_root.clone()), now_epoch_ms())?;
             println!("{}", serde_json::to_string_pretty(&report)?);
             Ok(())
         }

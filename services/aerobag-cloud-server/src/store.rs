@@ -68,6 +68,7 @@ pub struct StoreConfig {
     pub gc_elapsed_ms_critical: u64,
     pub write_resume_headroom_bytes: u64,
     pub write_resume_min_filesystem_free_bytes: u64,
+    pub backup_interval_seconds: u64,
     pub backup_retained_snapshots: u64,
     pub backup_age_seconds_warning: u64,
     pub backup_age_seconds_critical: u64,

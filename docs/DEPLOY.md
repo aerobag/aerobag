@@ -57,7 +57,9 @@ The package list is not host config. It lives in
 
 ## Aerobag Cloud Backups
 
-`aerobag-cloud-backup.timer` creates online snapshots under
+`aerobag-cloud-backup.timer` checks every 15 minutes whether the policy-defined
+backup interval has elapsed. `backup-if-due` serializes the due check and backup
+under the reclamation lock, then creates online snapshots under
 `$AEROBAG_CLOUD_SERVER_STORAGE_ROOT/snapshots/`. The daemon remains available:
 the backup briefly pins a WAL read snapshot while copying SQLite, then releases
 that read transaction before hard-linking the immutable blobs protected by
@@ -67,7 +69,8 @@ that read transaction before hard-linking the immutable blobs protected by
 Operator commands use the deployed release binary and policy:
 
 ```bash
-aerobag-cloud-serverd backup --storage-root "$AEROBAG_CLOUD_SERVER_STORAGE_ROOT" --policy "$AEROBAG_CLOUD_SERVER_POLICY"
+aerobag-cloud-serverd backup-now --storage-root "$AEROBAG_CLOUD_SERVER_STORAGE_ROOT" --policy "$AEROBAG_CLOUD_SERVER_POLICY"
+aerobag-cloud-serverd backup-if-due --storage-root "$AEROBAG_CLOUD_SERVER_STORAGE_ROOT" --policy "$AEROBAG_CLOUD_SERVER_POLICY"
 aerobag-cloud-serverd verify-backup --storage-root "$AEROBAG_CLOUD_SERVER_STORAGE_ROOT" --policy "$AEROBAG_CLOUD_SERVER_POLICY" SNAPSHOT
 systemctl stop aerobag-cloud-server.service
 aerobag-cloud-serverd restore --storage-root "$AEROBAG_CLOUD_SERVER_STORAGE_ROOT" --policy "$AEROBAG_CLOUD_SERVER_POLICY" SNAPSHOT
@@ -79,6 +82,11 @@ entire snapshot first, and retains the replaced `live/` tree under `recovery/`.
 Returning a read-only service to normal operation uses checked
 `resume-writes`; the separately named `force-resume-writes --reason ...`
 records an operator audit event.
+
+Dev-stack performs the same `backup-if-due` check once per minute from a
+supervisor thread. The schedule exists only while dev-stack is running, and an
+active check is terminated with the other children on `Ctrl-C`; persistent ACS
+state still decides whether a backup is due after restart.
 The deploy script installs only a tiny bootstrap set before the checkout exists:
 `ca-certificates`, `git`, and `rsync`.
 

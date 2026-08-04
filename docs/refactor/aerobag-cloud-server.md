@@ -803,6 +803,9 @@ must be added to this plan or discussed; they are not license to expand scope.
   and blob hashes. Offline restore atomically replaces `live/` while preserving
   the previous tree under `recovery/`. GC is the only code allowed to unlink an
   installed blob generation.
+- Production systemd and the dev-stack supervisor both invoke the same
+  `backup-if-due` operation. The persisted due-time decision is serialized with
+  backup creation; `backup-now` is the explicit operator/testing override.
 - Backup age, total duration, SQLite snapshot duration, WAL growth, linked blob
   count, and linked blob bytes are status metrics with explicit warning and
   critical thresholds. Pipeline health evaluates those thresholds without a

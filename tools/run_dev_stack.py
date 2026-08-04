@@ -247,6 +247,9 @@ class DevStack:
         self.config = config
         self.children: list[ManagedProcess] = []
         self.stop = threading.Event()
+        self.background_threads: list[threading.Thread] = []
+        self.cloud_backup_process: ManagedProcess | None = None
+        self.cloud_backup_process_lock = threading.Lock()
 
     def start(self) -> None:
         self.prepare_dirs()
@@ -267,6 +270,13 @@ class DevStack:
             self.start_child("build-watch", self.build_watch_command())
         if not self.config.disable_pipeline_health:
             self.start_child("pipeline-health", self.pipeline_health_command())
+        if not self.config.disable_cloud_server:
+            backup_thread = threading.Thread(
+                target=self.cloud_backup_scheduler,
+                name="aerobag-cloud-backup-scheduler",
+            )
+            backup_thread.start()
+            self.background_threads.append(backup_thread)
 
     def prepare_dirs(self) -> None:
         self.migrate_cloud_storage_layout()
@@ -415,6 +425,69 @@ class DevStack:
         ]
         return command
 
+    def cloud_backup_command(self) -> list[str]:
+        return [
+            str(self.config.cloud_server_binary),
+            "backup-if-due",
+            "--storage-root",
+            str(self.config.cloud_storage_root),
+            "--policy",
+            str(self.config.cloud_runtime_policy),
+        ]
+
+    def cloud_server_is_ready(self) -> bool:
+        host, port = parse_listen(self.config.cloud_server_listen)
+        connection = http.client.HTTPConnection(host, port, timeout=1)
+        try:
+            connection.request("GET", "/cloud/v1/health")
+            return connection.getresponse().status == 200
+        except (ConnectionError, OSError, TimeoutError):
+            return False
+        finally:
+            connection.close()
+
+    def cloud_backup_scheduler(self) -> None:
+        while not self.stop.is_set() and not self.cloud_server_is_ready():
+            if self.stop.wait(1):
+                return
+        while not self.stop.is_set():
+            command = self.cloud_backup_command()
+            print(f"+ check cloud backup: {' '.join(command)}", flush=True)
+            process = ManagedProcess(
+                name="aerobag-cloud-backup",
+                process=subprocess.Popen(
+                    command,
+                    cwd=REPO_ROOT,
+                    env=self.child_env(),
+                    text=True,
+                    preexec_fn=child_preexec,
+                ),
+            )
+            with self.cloud_backup_process_lock:
+                self.cloud_backup_process = process
+            while process.poll() is None and not self.stop.wait(0.2):
+                pass
+            if process.poll() is None:
+                process.terminate_group()
+                try:
+                    process.process.wait(timeout=5)
+                except subprocess.TimeoutExpired:
+                    process.kill_group()
+            returncode = process.poll()
+            with self.cloud_backup_process_lock:
+                self.cloud_backup_process = None
+            if self.stop.is_set():
+                return
+            if returncode != 0:
+                print(
+                    f"cloud backup check failed with status {returncode}; "
+                    "ACS remains running and pipeline-health will report backup health",
+                    file=sys.stderr,
+                    flush=True,
+                )
+            if self.stop.wait(60):
+                return
+
     def build_watch_command(self) -> list[str]:
         return [
             str(WATCH_BUILD_LOG),
@@ -504,9 +577,11 @@ class DevStack:
                 return
 
     def shutdown(self) -> None:
-        if not self.children:
-            return
         print("stopping dev stack children...", flush=True)
+        with self.cloud_backup_process_lock:
+            backup_process = self.cloud_backup_process
+        if backup_process is not None:
+            backup_process.terminate_group()
         for child in self.children:
             child.terminate_group()
         deadline = time.monotonic() + 5
@@ -516,6 +591,12 @@ class DevStack:
             time.sleep(0.1)
         for child in self.children:
             child.kill_group()
+        for thread in self.background_threads:
+            thread.join(timeout=5)
+        with self.cloud_backup_process_lock:
+            backup_process = self.cloud_backup_process
+        if backup_process is not None:
+            backup_process.kill_group()
         self.write_health()
 
 

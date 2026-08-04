@@ -1291,7 +1291,7 @@ Type=oneshot
 User=aerobag-cloud
 Group=aerobag-cloud
 EnvironmentFile=/etc/aerobag/env
-ExecStart=/bin/bash -lc 'source /etc/aerobag/env; exec "$CARGO_TARGET_DIR/release/aerobag-cloud-serverd" backup --storage-root "$AEROBAG_CLOUD_SERVER_STORAGE_ROOT" --policy "$AEROBAG_CLOUD_SERVER_POLICY"'
+ExecStart=/bin/bash -lc 'source /etc/aerobag/env; exec "$CARGO_TARGET_DIR/release/aerobag-cloud-serverd" backup-if-due --storage-root "$AEROBAG_CLOUD_SERVER_STORAGE_ROOT" --policy "$AEROBAG_CLOUD_SERVER_POLICY"'
 UMask=0077
 NoNewPrivileges=true
 PrivateDevices=true
@@ -1308,13 +1308,13 @@ RestrictSUIDSGID=true
 
 
 def cloud_backup_timer(config: dict[str, Any]) -> str:
-    interval_seconds = cloud_policy(config)["backup"]["interval_seconds"]
-    return f"""[Unit]
+    cloud_policy(config)
+    return """[Unit]
 Description=Hourly Aerobag Cloud Server snapshot
 
 [Timer]
 OnBootSec=5m
-OnUnitActiveSec={interval_seconds}s
+OnUnitActiveSec=15m
 RandomizedDelaySec=5m
 Unit=aerobag-cloud-backup.service
 

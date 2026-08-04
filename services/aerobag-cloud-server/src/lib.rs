@@ -10,7 +10,8 @@ mod policy;
 mod store;
 
 pub use backup::{
-    create_backup, restore_backup, verify_backup, BackupManifest, BackupReport, RestoreReport,
+    create_backup, create_backup_if_due, restore_backup, verify_backup, BackupIfDueReport,
+    BackupManifest, BackupReport, RestoreReport,
 };
 pub use http::{run_server, server_router, ServerConfig};
 pub use layout::StorageLayout;

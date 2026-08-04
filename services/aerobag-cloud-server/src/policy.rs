@@ -328,6 +328,7 @@ impl AcsRuntimePolicy {
             write_resume_min_filesystem_free_bytes: self
                 .storage
                 .write_resume_min_filesystem_free_bytes,
+            backup_interval_seconds: self.backup.interval_seconds,
             backup_retained_snapshots: self.backup.retained_snapshots,
             backup_age_seconds_warning: self.monitoring.backup_age_seconds_warning,
             backup_age_seconds_critical: self.monitoring.backup_age_seconds_critical,

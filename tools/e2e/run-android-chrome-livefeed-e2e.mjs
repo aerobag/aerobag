@@ -133,7 +133,7 @@ function makeMetarState(version) {
   };
 }
 
-class ScriptedLiveFeedServer {
+export class ScriptedLiveFeedServer {
   constructor() {
     this.currentVersion = "v1";
     this.versions = new Map();
@@ -183,6 +183,7 @@ class ScriptedLiveFeedServer {
     const entry = this.addVersion(this.currentVersion);
     return {
       schema_version: LIVE_FEED_SCHEMA_VERSION,
+      generated_at_utc: entry.collectedAtUtc,
       products: {
         metars: {
           current: entry.version,
@@ -902,22 +903,24 @@ async function run(args) {
   }
 }
 
-const args = parseArgs(process.argv);
-if (args.help) {
-  usage();
-  process.exit(0);
-}
-
-run(args).then((result) => {
-  if (args.json) {
-    console.log(JSON.stringify(result, null, 2));
-  } else {
-    console.log(`PASS ${result.test}`);
-    console.log(`  METAR versions: ${result.checks.initial_metar_version} -> ${result.checks.sse_metar_version} -> ${result.checks.recovered_metar_version}`);
-    console.log(`  current.json requests: ${result.checks.current_manifest_requests}`);
-    console.log(`  event streams opened: ${result.checks.event_stream_requests}`);
+if (path.resolve(process.argv[1] ?? "") === fileURLToPath(import.meta.url)) {
+  const args = parseArgs(process.argv);
+  if (args.help) {
+    usage();
+    process.exit(0);
   }
-}).catch((error) => {
-  console.error(error instanceof Error ? error.stack ?? error.message : String(error));
-  process.exit(1);
-});
+
+  run(args).then((result) => {
+    if (args.json) {
+      console.log(JSON.stringify(result, null, 2));
+    } else {
+      console.log(`PASS ${result.test}`);
+      console.log(`  METAR versions: ${result.checks.initial_metar_version} -> ${result.checks.sse_metar_version} -> ${result.checks.recovered_metar_version}`);
+      console.log(`  current.json requests: ${result.checks.current_manifest_requests}`);
+      console.log(`  event streams opened: ${result.checks.event_stream_requests}`);
+    }
+  }).catch((error) => {
+    console.error(error instanceof Error ? error.stack ?? error.message : String(error));
+    process.exit(1);
+  });
+}

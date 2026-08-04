@@ -423,31 +423,31 @@ async function activateDestinationLeg(serial, result, route) {
 }
 
 async function ensureChartPage(serial, result) {
-  for (let attempt = 0; attempt < 6; attempt += 1) {
+  for (let attempt = 0; attempt < 10; attempt += 1) {
     const xml = dumpAndroid(serial);
     if (CHART_PAGE_TAGS.some((tag) => findNode(xml, (node) => hasAndroidTag(node, tag)))) {
       recordStep(result, "chart page visible");
       return;
     }
     assertRuntimeIsAvailable(serial);
-    if (findNode(xml, (node) => hasAndroidTag(node, "parity:button:CHART"))) {
-      await tapTag(serial, "parity:button:CHART", 10000);
+    const chartButton = findNode(xml, (node) => hasAndroidTag(node, "parity:button:CHART"));
+    if (chartButton) {
+      await tapNode(serial, chartButton);
       await delay(600);
       continue;
     }
-    if (findNode(xml, (node) => hasAndroidTag(node, "parity:nav-cdi"))) {
-      await tapTag(serial, "parity:nav-cdi", 10000);
-      await delay(600);
-      continue;
-    }
-    if (findNode(xml, (node) => hasAndroidTag(node, "parity:button:HOME"))) {
-      await tapTag(serial, "parity:button:HOME", 10000);
+    const homeButton = findNode(xml, (node) => hasAndroidTag(node, "parity:button:HOME"));
+    if (homeButton) {
+      await tapNode(serial, homeButton);
       await delay(400);
       continue;
     }
-    await tapFirstPresentTag(serial, ["parity:button:FLIGHT\nPLAN", "parity:button:PLAN"], 2000).catch(() => {
-      pressKey(serial, "KEYCODE_BACK");
-    });
+    const planButton = findNode(xml, (node) =>
+      hasAndroidTag(node, "parity:button:FLIGHT\nPLAN") || hasAndroidTag(node, "parity:button:PLAN")
+    );
+    if (planButton) {
+      await tapNode(serial, planButton);
+    }
     await delay(400);
   }
   throwWithUi(serial, "could not navigate to chart page");
@@ -478,12 +478,19 @@ async function centerChartOnDestination(serial, result, route) {
     );
     if (matched) {
       pressKey(serial, "KEYCODE_ENTER");
-      await delay(800);
-      pressKey(serial, "KEYCODE_BACK");
-      await waitFor(() => {
-        const xml = dumpAndroid(serial);
-        return findNode(xml, (node) => hasAndroidTag(node, "parity:map-surface")) !== null;
-      }, 10000, "map semantics visible after destination search");
+      await waitForNode(
+        serial,
+        (node) => hasAndroidTag(node, "parity:map-selection-tray"),
+        15000,
+        "destination inspector opened from chart search",
+      );
+      await dismissMapSelection(serial);
+      await waitForNode(
+        serial,
+        (node) => hasAndroidTag(node, "parity:map-surface"),
+        10000,
+        "map semantics visible after destination search",
+      );
       recordStep(result, "chart centered on destination", destination);
       return;
     }

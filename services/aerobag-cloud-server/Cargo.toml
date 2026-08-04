@@ -8,9 +8,17 @@ edition.workspace = true
 license.workspace = true
 version.workspace = true
 
+[features]
+workload = ["dep:tempfile"]
+
 [[bin]]
 name = "aerobag-cloud-serverd"
 path = "src/main.rs"
+
+[[bin]]
+name = "aerobag-cloud-workload"
+path = "src/bin/aerobag-cloud-workload.rs"
+required-features = ["workload"]
 
 [dependencies]
 anyhow.workspace = true
@@ -28,9 +36,7 @@ rusqlite.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 sha2.workspace = true
+tempfile = { workspace = true, optional = true }
 tokio.workspace = true
 tower.workspace = true
 tower-http.workspace = true
-
-[dev-dependencies]
-tempfile.workspace = true

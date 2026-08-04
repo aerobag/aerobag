@@ -77,6 +77,42 @@ aerobag-cloud-serverd restore --storage-root "$AEROBAG_CLOUD_SERVER_STORAGE_ROOT
 systemctl start aerobag-cloud-server.service
 ```
 
+### Cloud workload validation
+
+The ACS workload harness uses disposable storage and the real Axum protocol
+router. It crosses request signing, middleware, JSON, SQLite and filesystem
+blob placement, root CAS, SSE, online backup, and GC without touching a running
+dev or production daemon. The CI profile shrinks policy thresholds so quota,
+SSE saturation, read-only recovery, filesystem pressure, and pipeline-health
+alarms are exercised cheaply:
+
+```bash
+cargo run --manifest-path services/Cargo.toml -p aerobag-cloud-server \
+  --features workload \
+  --bin aerobag-cloud-workload -- --profile ci \
+  --output /tmp/aerobag-cloud-workload-ci.json
+python3 tools/verify_acs_workload_report.py \
+  /tmp/aerobag-cloud-workload-ci.json
+```
+
+The longer profile retains `deploy/aerobag-cloud-policy.json`, runs optimized,
+and reports per-stage p50/p95/p99 latency, throughput, stage-to-stage p95
+falloff, SSE delivery, backup and GC pauses, and process RSS:
+
+```bash
+cargo run --release --manifest-path services/Cargo.toml \
+  -p aerobag-cloud-server --features workload --bin aerobag-cloud-workload -- \
+  --profile production --output /tmp/aerobag-cloud-workload-production.json
+python3 tools/verify_acs_workload_report.py \
+  /tmp/aerobag-cloud-workload-production.json
+```
+
+`production` describes the policy and workload shape; it still uses an
+isolated temporary store. It never sends traffic to a deployed ACS. CI enforces
+generous catastrophic latency ceilings and a scale-falloff guard, while the
+production report remains a characterization artifact rather than a
+machine-dependent microbenchmark.
+
 Restore refuses to run while the daemon owns `locks/serve.lock`, verifies the
 entire snapshot first, and retains the replaced `live/` tree under `recovery/`.
 Returning a read-only service to normal operation uses checked

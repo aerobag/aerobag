@@ -702,6 +702,9 @@ plans. Both cases now have Android unit coverage.
 
 ### Phase 5: Production Readiness
 
+Status: complete on 2026-08-04, excluding the separately authorized production
+deployment.
+
 - Extend `tools/deploy_prod.py` with the daemon build, systemd unit, persistent
   data/secrets paths, nginx SSE configuration, service reporting, and pipeline
   health wiring.
@@ -814,8 +817,18 @@ must be added to this plan or discussed; they are not license to expand scope.
   `resume-writes` checks SQLite integrity, configured quota headroom, and free
   filesystem space. `force-resume-writes` is separately named, requires a
   reason, and records that reason in the operator audit table.
+- **Production-shaped workload:** `aerobag-cloud-workload` drives the real HTTP
+  router against disposable storage. Its hermetic profile crosses quota, SSE,
+  egress, global-storage, filesystem-pressure, read-only, operator-status,
+  online-backup, and GC boundaries, then feeds the resulting status snapshots
+  through the actual pipeline-health evaluator in CI. Its release-mode
+  production profile retains the deployed policy and reports stage latency and
+  throughput falloff, SSE delivery latency, backup/WAL cost, GC pause time, and
+  RSS. The initial 32-account/1,536-object/128-SSE run completed in 4.6 seconds;
+  object-write p95 grew 1.47x across four stages, reads remained flat, online
+  backup took 351 ms, and GC paused SQLite for 26 ms.
 
-## TODO Before Production
+## Known Limitations And Follow-Up
 
 These are known limitations from the Phase 2 review. They are deliberately
 recorded rather than hidden behind compatibility behavior or guessed policy:
@@ -826,12 +839,13 @@ recorded rather than hidden behind compatibility behavior or guessed policy:
   class is designed; do not force application-level chunking merely to bypass
   this limit.
 - **GC at scale:** the current collector holds SQLite's in-process connection
-  mutex and an immediate write transaction while traversing every account.
-  Observe `gc_database_pause_ms` and `gc_elapsed_ms` under production-shaped
-  data, validate/tune the initial warning and critical thresholds, and prove
-  pipeline-health alarms on bad pauses. If measurements warrant it, refactor marking into bounded
-  read phases and short validated delete transactions rather than merely
-  increasing an alarm threshold.
+  mutex and an immediate write transaction while traversing every account. The
+  repeatable production-shaped baseline currently pauses SQLite for 26 ms over
+  32 accounts and 1,536 objects, and CI proves pipeline-health classifies the
+  configured thresholds. Continue watching `gc_database_pause_ms` and
+  `gc_elapsed_ms` after deployment. If real growth approaches the warning,
+  refactor marking into bounded read phases and short validated delete
+  transactions rather than merely increasing an alarm threshold.
 
 ## Deferred Work
 

@@ -176,7 +176,22 @@ jobs:
           key: rust-services-${{ runner.os }}-${{ env.RUST_TOOLCHAIN }}-${{ hashFiles('services/Cargo.lock') }}
       - name: Run service tests
         working-directory: services
-        run: cargo test --workspace --locked
+        run: cargo test --workspace --all-features --locked
+      - name: Run hermetic ACS workload
+        working-directory: services
+        run: cargo run --locked -p aerobag-cloud-server --features workload --bin aerobag-cloud-workload -- --profile ci --output "$RUNNER_TEMP/aerobag-cloud-workload-ci.json"
+      - name: Verify ACS workload alarms through pipeline-health
+        run: python3 tools/verify_acs_workload_report.py "$RUNNER_TEMP/aerobag-cloud-workload-ci.json" --output "$RUNNER_TEMP/aerobag-cloud-workload-ci-pipeline-health.json"
+      - name: Upload ACS workload report
+        if: ${{ always() }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: aerobag-cloud-workload
+          path: |
+            ${{ runner.temp }}/aerobag-cloud-workload-ci.json
+            ${{ runner.temp }}/aerobag-cloud-workload-ci-pipeline-health.json
+          if-no-files-found: ignore
+          retention-days: 14
 
   rust-preprocessor:
     name: Rust preprocessors
@@ -366,6 +381,7 @@ jobs:
             tools/test_admin_index.py \
             tools/test_chart_cutline_editor.py \
             tools/test_deploy_prod.py \
+            tools/test_verify_acs_workload_report.py \
             tools/ci/test_build_e2e_package_fixture.py \
             tools/ci/test_build_nav_db_advance_fixture.py \
             tools/ci/test_fetch_test_artifacts.py \

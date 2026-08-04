@@ -18,8 +18,8 @@ use product_contracts::{
     AcsCompareAndSwapRootResponse, AcsCreateAccountRequest, AcsCreateAccountResponse,
     AcsCreateObjectRequest, AcsCreateSseTicketRequest, AcsCreateSseTicketResponse,
     AcsCreationChallengeResponse, AcsEncryptedValue, AcsEncryptedValueKind, AcsObjectSnapshot,
-    AcsRootSnapshot, AcsSseEvent, ACS_FIXED_ROOT_ID, ACS_KDF_PAYLOAD_ENCRYPTION_LABEL,
-    ACS_KDF_SALT, AEROBAG_SSE_TRANSPORT_POLICY,
+    AcsRateLimitGate, AcsRootSnapshot, AcsSseEvent, ACS_FIXED_ROOT_ID,
+    ACS_KDF_PAYLOAD_ENCRYPTION_LABEL, ACS_KDF_SALT, AEROBAG_SSE_TRANSPORT_POLICY,
 };
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
@@ -257,6 +257,8 @@ pub(crate) enum CloudProviderResponse {
     Error {
         kind: CloudProviderErrorKind,
         detail: String,
+        retry_after_ms: Option<u64>,
+        rate_limit_gate: Option<AcsRateLimitGate>,
     },
 }
 
@@ -1849,11 +1851,43 @@ impl CloudEngine {
             CloudProviderKind::AerobagCloud => crate::cloud_acs::parse_response(&request, response),
         };
         let provider = self.current_provider()?;
-        if let CloudProviderResponse::Error { kind, detail } = response {
+        if let CloudProviderResponse::Error {
+            kind,
+            detail,
+            retry_after_ms,
+            rate_limit_gate,
+        } = response
+        {
+            let account_creation_rate_limited = matches!(
+                rate_limit_gate,
+                Some(
+                    AcsRateLimitGate::AccountCreationNetwork
+                        | AcsRateLimitGate::AccountCreationGlobal
+                )
+            );
+            let retry_delay_ms = retry_after_ms
+                .and_then(|delay| i64::try_from(delay).ok())
+                .unwrap_or(CLOUD_TRANSIENT_RETRY_MS);
+            let detail = cloud_provider_failure_detail(
+                provider,
+                kind,
+                &detail,
+                rate_limit_gate,
+                retry_after_ms,
+            );
             self.persistent.last_provider_failure = Some(CloudProviderFailure {
                 kind,
                 detail: detail.clone(),
             });
+            if account_creation_rate_limited
+                && matches!(
+                    self.persistent.workflow,
+                    Some(CloudWorkflow::AcsCreateAccount { .. })
+                )
+            {
+                // Creation challenges expire long before a creation bucket refills.
+                self.persistent.workflow = Some(CloudWorkflow::AcsCreateChallenge);
+            }
             match kind {
                 CloudProviderErrorKind::Unauthorized
                     if provider == CloudProviderKind::GoogleDrive =>
@@ -1868,7 +1902,7 @@ impl CloudEngine {
                 }
                 CloudProviderErrorKind::Transient => {
                     self.persistent.next_retry_epoch_ms =
-                        Some(now_epoch_ms.saturating_add(CLOUD_TRANSIENT_RETRY_MS));
+                        Some(now_epoch_ms.saturating_add(retry_delay_ms));
                 }
                 CloudProviderErrorKind::Permanent => {
                     self.authorizations
@@ -2911,12 +2945,14 @@ impl CloudEngine {
                     ),
                 )
             } else {
-                let title = if creating {
-                    "Creating Sync Account..."
-                } else {
-                    "Linking Sync Account..."
+                let failed = self.persistent.last_provider_failure.is_some();
+                let title = match (creating, failed) {
+                    (true, true) => "Could not create Sync Account",
+                    (false, true) => "Could not link Sync Account",
+                    (true, false) => "Creating Sync Account...",
+                    (false, false) => "Linking Sync Account...",
                 };
-                let state = if self.persistent.last_provider_failure.is_some() {
+                let state = if failed {
                     UiCloudPanelState::Error
                 } else {
                     UiCloudPanelState::Working
@@ -4076,6 +4112,58 @@ fn cloud_error(message: impl Into<String>) -> AppError {
     }
 }
 
+fn cloud_provider_failure_detail(
+    provider: CloudProviderKind,
+    _kind: CloudProviderErrorKind,
+    fallback: &str,
+    gate: Option<AcsRateLimitGate>,
+    retry_after_ms: Option<u64>,
+) -> String {
+    if provider != CloudProviderKind::AerobagCloud {
+        return fallback.to_string();
+    }
+    let retry = retry_after_ms.map(compact_retry_duration);
+    match gate {
+        Some(AcsRateLimitGate::AccountCreationNetwork) => format!(
+            "This network has created several Sync Accounts recently. Try again{}.",
+            retry
+                .as_deref()
+                .map(|duration| format!(" in {duration}"))
+                .unwrap_or_default()
+        ),
+        Some(AcsRateLimitGate::AccountCreationGlobal) => format!(
+            "Aerobag Cloud is temporarily limiting new Sync Accounts. Try again{}. Existing accounts are unaffected.",
+            retry
+                .as_deref()
+                .map(|duration| format!(" in {duration}"))
+                .unwrap_or_default()
+        ),
+        _ => fallback.to_string(),
+    }
+}
+
+fn compact_retry_duration(retry_after_ms: u64) -> String {
+    let total_minutes = retry_after_ms.div_ceil(60_000).max(1);
+    let days = total_minutes / (24 * 60);
+    let hours = (total_minutes % (24 * 60)) / 60;
+    let minutes = total_minutes % 60;
+    if days > 0 {
+        if hours > 0 {
+            format!("{days}d {hours}h")
+        } else {
+            format!("{days}d")
+        }
+    } else if hours > 0 {
+        if minutes > 0 {
+            format!("{hours}h {minutes}m")
+        } else {
+            format!("{hours}h")
+        }
+    } else {
+        format!("{minutes}m")
+    }
+}
+
 fn unexpected_response(context: &str, response: CloudProviderResponse) -> AppError {
     cloud_error(format!(
         "unexpected provider response for {context}: {response:?}"
@@ -4210,14 +4298,17 @@ mod tests {
             CloudProviderResponse::Error {
                 kind: CloudProviderErrorKind::Transient,
                 detail,
+                ..
             } => return CloudHttpResponse::TransportError { detail },
             CloudProviderResponse::Error {
                 kind: CloudProviderErrorKind::Unauthorized,
                 detail,
+                ..
             } => (401, detail.into_bytes()),
             CloudProviderResponse::Error {
                 kind: CloudProviderErrorKind::Permanent,
                 detail,
+                ..
             } => (400, detail.into_bytes()),
             CloudProviderResponse::AcsCreationChallenge { .. }
             | CloudProviderResponse::AcsAccountCreated { .. }
@@ -5333,6 +5424,109 @@ mod tests {
                 ("nw".to_string(), OfflinePackageSelection::Unselected),
                 ("future-region".to_string(), OfflinePackageSelection::Pause,),
             ])
+        );
+    }
+
+    #[test]
+    fn account_creation_rate_limit_messages_are_core_owned() {
+        assert_eq!(
+            cloud_provider_failure_detail(
+                CloudProviderKind::AerobagCloud,
+                CloudProviderErrorKind::Transient,
+                "ignored server prose",
+                Some(AcsRateLimitGate::AccountCreationNetwork),
+                Some(28_800_000),
+            ),
+            "This network has created several Sync Accounts recently. Try again in 8h."
+        );
+        assert_eq!(
+            cloud_provider_failure_detail(
+                CloudProviderKind::AerobagCloud,
+                CloudProviderErrorKind::Transient,
+                "ignored server prose",
+                Some(AcsRateLimitGate::AccountCreationGlobal),
+                Some(8_640_000),
+            ),
+            "Aerobag Cloud is temporarily limiting new Sync Accounts. Try again in 2h 24m. Existing accounts are unaffected."
+        );
+    }
+
+    #[test]
+    fn acs_retry_after_suppresses_retries_until_the_bucket_refills() {
+        let initial = plan(&["KPAE"]);
+        let mut engine = CloudEngine::new(CloudPersistentState::default());
+        engine
+            .set_acs_default_base_url(Some("https://cloud.example/cloud/".to_string()))
+            .unwrap();
+        engine
+            .perform_action_at(CloudAction::BeginCreateAccount, &initial, 1_000)
+            .unwrap();
+        engine
+            .perform_action_at(
+                CloudAction::SelectProvider {
+                    provider: CloudProviderKind::AerobagCloud,
+                },
+                &initial,
+                1_000,
+            )
+            .unwrap();
+        engine
+            .perform_action_at(CloudAction::CreateAccount, &initial, 1_000)
+            .unwrap();
+
+        let challenge_request = engine.take_provider_request(1_000).unwrap().unwrap();
+        let challenge = AcsCreationChallengeResponse {
+            contract_id: product_contracts::ACS_CONTRACT_ID.to_string(),
+            challenge: "challenge".to_string(),
+            expires_at_epoch_ms: 301_000,
+            server_time_epoch_ms: 1_000,
+        };
+        engine
+            .complete_provider_request(
+                challenge_request.request_id,
+                CloudHttpResponse::Completed {
+                    status_code: 200,
+                    body_base64: URL_SAFE_NO_PAD.encode(serde_json::to_vec(&challenge).unwrap()),
+                },
+                1_000,
+            )
+            .unwrap();
+
+        let create_request = engine.take_provider_request(1_000).unwrap().unwrap();
+        let error = product_contracts::AcsErrorResponse {
+            contract_id: product_contracts::ACS_CONTRACT_ID.to_string(),
+            request_id: "request".to_string(),
+            code: product_contracts::AcsErrorCode::RateLimited,
+            message: "server prose".to_string(),
+            retry_after_ms: Some(28_800_000),
+            rate_limit_gate: Some(AcsRateLimitGate::AccountCreationNetwork),
+        };
+        engine
+            .complete_provider_request(
+                create_request.request_id,
+                CloudHttpResponse::Completed {
+                    status_code: 429,
+                    body_base64: URL_SAFE_NO_PAD.encode(serde_json::to_vec(&error).unwrap()),
+                },
+                1_000,
+            )
+            .unwrap();
+
+        assert_eq!(engine.persistent.next_retry_epoch_ms, Some(28_801_000));
+        assert!(engine.take_provider_request(28_800_999).unwrap().is_none());
+        assert!(engine.take_provider_request(28_801_000).unwrap().is_some());
+        assert!(matches!(
+            engine
+                .provider_request_in_flight
+                .as_ref()
+                .map(|request| &request.operation),
+            Some(CloudProviderOperation::AcsIssueAccountChallenge)
+        ));
+        let panel = active_panel(&engine);
+        assert_eq!(panel.title, "Could not create Sync Account");
+        assert_eq!(
+            panel.summary.as_deref(),
+            Some("This network has created several Sync Accounts recently. Try again in 8h.")
         );
     }
 

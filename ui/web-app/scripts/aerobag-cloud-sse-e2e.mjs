@@ -20,6 +20,13 @@ import {
 
 const profileRoot = await mkdtemp(path.join(os.tmpdir(), "aerobag-cloud-sse-e2e-"));
 const resources = [];
+const rateLimitMode = process.argv
+  .find((value) => value.startsWith("--rate-limit-ux="))
+  ?.split("=", 2)[1] ?? null;
+if (rateLimitMode !== null && !["network", "global"].includes(rateLimitMode)) {
+  throw new Error(`invalid rate-limit UX mode ${JSON.stringify(rateLimitMode)}`);
+}
+let fixtureCloudStatusUrl = null;
 const requestedUrl = process.argv.find((value) => value.startsWith("http"))
   ?? process.env.AEROBAG_E2E_URL;
 const url = requestedUrl
@@ -28,6 +35,9 @@ const url = requestedUrl
     : "http://127.0.0.1:8083/");
 
 try {
+  if (rateLimitMode) {
+    await runRateLimitUx();
+  } else {
   const first = await launchIsolatedPage("first");
   const second = await launchIsolatedPage("second");
   await Promise.all([openCloud(first.page), openCloud(second.page)]);
@@ -93,6 +103,7 @@ try {
     stream_before_drop: streamBeforeDrop,
     stream_after_reconnect: reconnected.event_stream_id,
   })}\n`);
+  }
 } finally {
   for (const resource of resources.reverse()) {
     await resource.browser?.close();
@@ -101,11 +112,79 @@ try {
   await rm(profileRoot, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
 }
 
+async function runRateLimitUx() {
+  const first = await launchIsolatedPage("rate-first");
+  const second = await launchIsolatedPage("rate-second");
+  await Promise.all([openCloud(first.page), openCloud(second.page)]);
+  await createAerobagCloudAccount(first.page);
+
+  await click(second.page, '[data-testid="cloud-action-begin_create"]');
+  await click(second.page, '[data-testid="cloud-action-select_provider_aerobag_cloud"]');
+  await click(second.page, '[data-testid="cloud-action-create_account"]');
+  const message = await waitFor(
+    () => second.page.evaluate(`(() => {
+      const panel = document.querySelector('[data-testid="cloud-panel-create_account"]');
+      if (!panel?.classList.contains('is-error')) return null;
+      return panel.querySelector('p')?.textContent ?? null;
+    })()`),
+    10_000,
+    "rate-limited account creation did not surface its core-owned message",
+  );
+  const expectedMessage = rateLimitMode === "network"
+    ? "This network has created several Sync Accounts recently. Try again in 1d."
+    : "Aerobag Cloud is temporarily limiting new Sync Accounts. Try again in 1d. Existing accounts are unaffected.";
+  if (message !== expectedMessage) {
+    throw new Error(`unexpected account creation rate-limit message: ${JSON.stringify(message)}`);
+  }
+
+  await second.page.send("Emulation.setDeviceMetricsOverride", {
+    width: 1280,
+    height: 800,
+    deviceScaleFactor: 1,
+    mobile: false,
+  });
+  const screenshot = await second.page.send("Page.captureScreenshot", {
+    format: "png",
+    fromSurface: true,
+  });
+  const screenshotPath = process.env.AEROBAG_E2E_SCREENSHOT
+    ?? path.join(os.tmpdir(), `aerobag-cloud-rate-limit-${rateLimitMode}-ux.png`);
+  await writeFile(screenshotPath, Buffer.from(screenshot.data, "base64"));
+
+  if (!fixtureCloudStatusUrl) {
+    throw new Error("rate-limit UX test requires a fixture ACS status endpoint");
+  }
+  const statusResponse = await fetch(fixtureCloudStatusUrl);
+  if (!statusResponse.ok) {
+    throw new Error(`ACS status failed with ${statusResponse.status}`);
+  }
+  const status = await statusResponse.json();
+  const metrics = new Map(status.metrics.map((metric) => [metric.id, metric.current]));
+  const rejectionMetric = `account_creation_${rateLimitMode}_rate_rejections`;
+  for (const [id, expected] of [
+    ["account_creation_successes", 1],
+    [rejectionMetric, 1],
+    ["account_creation_successes_1m", 1],
+    [`${rejectionMetric}_1m`, 1],
+  ]) {
+    if (metrics.get(id) !== expected) {
+      throw new Error(`ACS metric ${id} was ${metrics.get(id)}; expected ${expected}`);
+    }
+  }
+  process.stdout.write(`${JSON.stringify({
+    result: "passed",
+    rejection_gate: `account_creation_${rateLimitMode}`,
+    message,
+    screenshot: screenshotPath,
+  })}\n`);
+}
+
 async function launchDevStackFixture() {
   const repoRoot = process.env.AEROBAG_REPO_ROOT
     ? path.resolve(process.env.AEROBAG_REPO_ROOT)
     : path.resolve(process.cwd(), "../..");
   const [frontDoorPort, cloudPort] = await Promise.all([allocatePort(), allocatePort()]);
+  fixtureCloudStatusUrl = `http://127.0.0.1:${cloudPort}/cloud/v1/status`;
   const stackRoot = path.join(profileRoot, "stack");
   const secretPath = path.join(profileRoot, "server-secret.bin");
   const configuredPublicationRoot = path.resolve(
@@ -127,11 +206,11 @@ async function launchDevStackFixture() {
     "--cloud-server-listen", `127.0.0.1:${cloudPort}`,
     "--cloud-server-secret", secretPath,
     "--web-dist", path.join(uiTargetRoot, "web", "dist"),
-    "--skip-binary-build",
     "--disable-live-feeds",
     "--disable-build-watch",
     "--disable-pipeline-health",
   ];
+  if (rateLimitMode) args.push("--cloud-tiny-creation-buckets", rateLimitMode);
   const child = spawn("python3", args, {
     cwd: repoRoot,
     stdio: ["ignore", "pipe", "pipe"],

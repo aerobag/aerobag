@@ -2,7 +2,7 @@
 //
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
-use std::{convert::Infallible, fs, net::SocketAddr, path::PathBuf, time::Duration};
+use std::{convert::Infallible, fs, net::IpAddr, net::SocketAddr, path::PathBuf, time::Duration};
 
 use async_stream::stream;
 use axum::{
@@ -15,12 +15,14 @@ use axum::{
     Router,
 };
 use base64::Engine as _;
+use hmac::{Hmac, Mac as _};
 use product_contracts::{
     acs_events_path, AcsCompareAndSwapRootRequest, AcsCompareAndSwapRootResponse,
     AcsCreateAccountRequest, AcsCreateObjectRequest, AcsCreateSseTicketRequest, AcsErrorCode,
-    AcsErrorResponse, AcsHttpMethod, AcsSseEvent, ACS_CONTRACT_ID, ACS_STATUS_PATH,
-    AEROBAG_SSE_TRANSPORT_POLICY,
+    AcsErrorResponse, AcsHttpMethod, AcsSseEvent, ACS_CONTRACT_ID, ACS_HEALTH_PATH,
+    ACS_STATUS_PATH, AEROBAG_SSE_TRANSPORT_POLICY,
 };
+use sha2::Sha256;
 use tower::limit::ConcurrencyLimitLayer;
 use tower_http::cors::{Any, CorsLayer};
 
@@ -30,13 +32,11 @@ use crate::{
         SignedRequest,
     },
     store::{CloudStore, RootEventRecord, StoreError, StoreResult},
+    AcsRuntimePolicy,
 };
 
-const MAX_REQUEST_BODY_BYTES: usize = 2 * 1024 * 1024;
-const MAX_CONCURRENT_REQUESTS: usize = 64;
-const MAX_REQUEST_TARGET_BYTES: usize = 4 * 1024;
-const GC_INTERVAL: Duration = Duration::from_secs(60 * 60);
-const GC_GRACE_MS: i64 = 24 * 60 * 60 * 1_000;
+const CLIENT_ADDRESS_HEADER: &str = "aerobag-client-address";
+const OPERATOR_STATUS_KDF_LABEL: &[u8] = b"aerobag-cloud-operator-status-v1";
 
 const SERVER_SECRET_BYTES: usize = 32;
 
@@ -44,21 +44,28 @@ const SERVER_SECRET_BYTES: usize = 32;
 pub struct ServerConfig {
     pub listen: SocketAddr,
     pub server_secret_path: PathBuf,
+    pub policy: AcsRuntimePolicy,
 }
 
 #[derive(Clone)]
 struct AppState {
     store: CloudStore,
     server_secret: [u8; SERVER_SECRET_BYTES],
+    policy: AcsRuntimePolicy,
 }
 
 #[derive(Clone)]
 struct NetworkPseudonym(String);
 
-pub fn server_router(store: CloudStore, server_secret: [u8; SERVER_SECRET_BYTES]) -> Router {
+pub fn server_router(
+    store: CloudStore,
+    server_secret: [u8; SERVER_SECRET_BYTES],
+    policy: AcsRuntimePolicy,
+) -> Router {
     let state = AppState {
         store,
         server_secret,
+        policy: policy.clone(),
     };
     let cors = CorsLayer::new()
         .allow_origin(Any)
@@ -95,6 +102,7 @@ pub fn server_router(store: CloudStore, server_secret: [u8; SERVER_SECRET_BYTES]
             post(create_sse_ticket),
         )
         .route(acs_events_path(), get(events))
+        .route(ACS_HEALTH_PATH, get(health))
         .route(ACS_STATUS_PATH, get(status))
         .fallback(unknown_route)
         .method_not_allowed_fallback(method_not_allowed)
@@ -106,7 +114,9 @@ pub fn server_router(store: CloudStore, server_secret: [u8; SERVER_SECRET_BYTES]
             state.clone(),
             enforce_network_request_limit,
         ))
-        .layer(ConcurrencyLimitLayer::new(MAX_CONCURRENT_REQUESTS))
+        .layer(ConcurrencyLimitLayer::new(
+            policy.request.max_concurrent_requests as usize,
+        ))
         .layer(cors)
         .with_state(state)
 }
@@ -126,7 +136,7 @@ async fn enforce_network_request_limit(
     mut request: Request,
     next: Next,
 ) -> Response {
-    if request.uri().to_string().len() > MAX_REQUEST_TARGET_BYTES {
+    if request.uri().to_string().len() > state.policy.request.max_target_bytes as usize {
         state.store.increment_malformed_rejection();
         return ApiError::invalid("request target exceeds the ACS limit").into_response();
     }
@@ -137,7 +147,18 @@ async fn enforce_network_request_limit(
     else {
         return ApiError::internal("request source address is unavailable").into_response();
     };
-    let network = source_network_pseudonym(&state.server_secret, source.0.ip());
+    let client_ip = match effective_client_ip(
+        source.0.ip(),
+        request.headers(),
+        &state.policy.trusted_proxy_ips,
+    ) {
+        Ok(client_ip) => client_ip,
+        Err(error) => {
+            state.store.increment_malformed_rejection();
+            return error.into_response();
+        }
+    };
+    let network = source_network_pseudonym(&state.server_secret, client_ip);
     let checked_network = network.clone();
     if let Err(error) = blocking(state.store, move |store| {
         store.check_network_operation(&checked_network, now_epoch_ms())
@@ -156,7 +177,7 @@ async fn bound_request_body(
     next: Next,
 ) -> Response {
     let (parts, body) = request.into_parts();
-    match to_bytes(body, MAX_REQUEST_BODY_BYTES).await {
+    match to_bytes(body, state.policy.request.max_body_bytes as usize).await {
         Ok(bytes) => {
             next.run(Request::from_parts(parts, Body::from(bytes)))
                 .await
@@ -176,12 +197,21 @@ pub async fn run_server(store: CloudStore, config: ServerConfig) -> anyhow::Resu
         listener.local_addr()?
     );
     let gc_store = store.clone();
+    let gc_interval = Duration::from_secs(config.policy.garbage_collection.interval_seconds);
+    let gc_grace_ms = i64::try_from(
+        config
+            .policy
+            .garbage_collection
+            .orphan_grace_seconds
+            .saturating_mul(1_000),
+    )
+    .unwrap_or(i64::MAX);
     let gc_task = tokio::spawn(async move {
-        let mut interval = tokio::time::interval(GC_INTERVAL);
+        let mut interval = tokio::time::interval(gc_interval);
         loop {
             interval.tick().await;
             let store = gc_store.clone();
-            match blocking(store, |store| store.run_gc(now_epoch_ms(), GC_GRACE_MS)).await {
+            match blocking(store, move |store| store.run_gc(now_epoch_ms(), gc_grace_ms)).await {
                 Ok(report) => eprintln!(
                     "ACS garbage collection marked={} deleted_objects={} deleted_blob_files={} deleted_bytes={} database_pause_ms={} elapsed_ms={}",
                     report.marked_objects,
@@ -197,7 +227,8 @@ pub async fn run_server(store: CloudStore, config: ServerConfig) -> anyhow::Resu
     });
     let result = axum::serve(
         listener,
-        server_router(store, server_secret).into_make_service_with_connect_info::<SocketAddr>(),
+        server_router(store, server_secret, config.policy)
+            .into_make_service_with_connect_info::<SocketAddr>(),
     )
     .with_graceful_shutdown(async {
         let _ = tokio::signal::ctrl_c().await;
@@ -206,6 +237,24 @@ pub async fn run_server(store: CloudStore, config: ServerConfig) -> anyhow::Resu
     gc_task.abort();
     result?;
     Ok(())
+}
+
+fn effective_client_ip(
+    peer_ip: IpAddr,
+    headers: &HeaderMap,
+    trusted_proxy_ips: &[IpAddr],
+) -> Result<IpAddr, ApiError> {
+    if !trusted_proxy_ips.contains(&peer_ip) {
+        return Ok(peer_ip);
+    }
+    let Some(value) = headers.get(CLIENT_ADDRESS_HEADER) else {
+        return Ok(peer_ip);
+    };
+    value
+        .to_str()
+        .ok()
+        .and_then(|value| value.parse::<IpAddr>().ok())
+        .ok_or_else(|| ApiError::invalid("trusted proxy supplied an invalid client address"))
 }
 
 fn load_server_secret(path: &PathBuf) -> anyhow::Result<[u8; SERVER_SECRET_BYTES]> {
@@ -587,9 +636,43 @@ async fn events(
     Ok(Sse::new(stream).into_response())
 }
 
-async fn status(State(state): State<AppState>) -> Result<Response, ApiError> {
+async fn status(
+    ConnectInfo(source): ConnectInfo<SocketAddr>,
+    headers: HeaderMap,
+    State(state): State<AppState>,
+) -> Result<Response, ApiError> {
+    if !source.ip().is_loopback() || headers.contains_key(CLIENT_ADDRESS_HEADER) {
+        return Err(ApiError::not_found("ACS resource does not exist"));
+    }
+    verify_operator_status_authorization(&headers, &state.server_secret)?;
     let status = blocking(state.store, |store| store.status(now_epoch_ms())).await?;
     json(StatusCode::OK, &status)
+}
+
+fn verify_operator_status_authorization(
+    headers: &HeaderMap,
+    server_secret: &[u8; SERVER_SECRET_BYTES],
+) -> Result<(), ApiError> {
+    let supplied = headers
+        .get(header::AUTHORIZATION)
+        .and_then(|value| value.to_str().ok())
+        .and_then(|value| value.strip_prefix("Bearer "))
+        .and_then(|value| {
+            base64::engine::general_purpose::URL_SAFE_NO_PAD
+                .decode(value)
+                .ok()
+        })
+        .ok_or_else(|| ApiError::unauthorized("operator authorization is required"))?;
+    let mut mac = Hmac::<Sha256>::new_from_slice(server_secret)
+        .expect("HMAC-SHA256 accepts the fixed ACS server secret size");
+    mac.update(OPERATOR_STATUS_KDF_LABEL);
+    mac.verify_slice(&supplied)
+        .map_err(|_| ApiError::unauthorized("operator authorization is invalid"))
+}
+
+async fn health(State(state): State<AppState>) -> Result<Response, ApiError> {
+    let health = blocking(state.store, |store| store.health(now_epoch_ms())).await?;
+    json(StatusCode::OK, &health)
 }
 
 struct SseConnectionGuard {
@@ -743,6 +826,10 @@ impl ApiError {
         Self::from(StoreError::new(AcsErrorCode::NotFound, message))
     }
 
+    fn unauthorized(message: impl Into<String>) -> Self {
+        Self::from(StoreError::new(AcsErrorCode::Unauthorized, message))
+    }
+
     fn payload_too_large() -> Self {
         Self::from(StoreError::new(
             AcsErrorCode::PayloadTooLarge,
@@ -767,12 +854,14 @@ impl IntoResponse for ApiError {
         let status = StatusCode::from_u16(self.error.code.http_status())
             .unwrap_or(StatusCode::INTERNAL_SERVER_ERROR);
         let retry_after_ms = self.error.retry_after_ms;
+        let rate_limit_gate = self.error.rate_limit_gate;
         let response = AcsErrorResponse {
             contract_id: ACS_CONTRACT_ID.to_string(),
             request_id: self.request_id,
             code: self.error.code,
             message: self.error.message,
             retry_after_ms,
+            rate_limit_gate,
         };
         let mut response = json(status, &response)
             .unwrap_or_else(|_| StatusCode::INTERNAL_SERVER_ERROR.into_response());
@@ -814,10 +903,18 @@ mod tests {
     use tempfile::TempDir;
     use tower::ServiceExt as _;
 
+    fn test_policy() -> AcsRuntimePolicy {
+        crate::policy::checked_in_test_policy()
+    }
+
     fn test_router(store: CloudStore) -> Router {
-        server_router(store, [0x5a; SERVER_SECRET_BYTES]).layer(axum::Extension(ConnectInfo(
-            "192.0.2.10:1234".parse::<SocketAddr>().unwrap(),
-        )))
+        test_router_with_peer(store, "192.0.2.10:1234")
+    }
+
+    fn test_router_with_peer(store: CloudStore, peer: &str) -> Router {
+        server_router(store, [0x5a; SERVER_SECRET_BYTES], test_policy()).layer(axum::Extension(
+            ConnectInfo(peer.parse::<SocketAddr>().unwrap()),
+        ))
     }
 
     fn signed_headers(
@@ -889,12 +986,29 @@ mod tests {
         bytes.iter().map(|byte| format!("{byte:02x}")).collect()
     }
 
+    fn operator_authorization() -> header::HeaderValue {
+        let mut mac = Hmac::<Sha256>::new_from_slice(&[0x5a; SERVER_SECRET_BYTES]).unwrap();
+        mac.update(OPERATOR_STATUS_KDF_LABEL);
+        let token = URL_SAFE_NO_PAD.encode(mac.finalize().into_bytes());
+        header::HeaderValue::from_str(&format!("Bearer {token}")).unwrap()
+    }
+
+    #[test]
+    fn operator_authorization_derivation_matches_pipeline_health() {
+        assert_eq!(
+            operator_authorization(),
+            "Bearer oAvfo7uXmJVexL5TLb2Uwt5nQZ7smFsvuqkN6YXikFg"
+        );
+    }
+
     #[tokio::test]
     async fn status_is_bounded_json_and_challenge_knows_source_without_storing_ip() {
         let root = TempDir::new().unwrap();
-        let store =
-            CloudStore::open(crate::StoreConfig::for_data_root(root.path().to_path_buf())).unwrap();
-        let router = test_router(store);
+        let store = CloudStore::open(crate::StoreConfig::for_test_data_root(
+            root.path().to_path_buf(),
+        ))
+        .unwrap();
+        let router = test_router(store.clone());
         let challenge = router
             .clone()
             .oneshot(
@@ -905,8 +1019,12 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(challenge.status(), StatusCode::OK);
-        let status = router
-            .oneshot(Request::get(ACS_STATUS_PATH).body(Body::empty()).unwrap())
+        let mut status_request = Request::get(ACS_STATUS_PATH).body(Body::empty()).unwrap();
+        status_request
+            .headers_mut()
+            .insert(header::AUTHORIZATION, operator_authorization());
+        let status = test_router_with_peer(store.clone(), "127.0.0.1:1234")
+            .oneshot(status_request)
             .await
             .unwrap();
         assert_eq!(status.status(), StatusCode::OK);
@@ -914,13 +1032,78 @@ mod tests {
         assert!(body.len() < 64 * 1024);
         let text = String::from_utf8(body.to_vec()).unwrap();
         assert!(!text.contains("192.0.2.10"));
+
+        let unauthorized = test_router_with_peer(store.clone(), "127.0.0.1:1234")
+            .oneshot(Request::get(ACS_STATUS_PATH).body(Body::empty()).unwrap())
+            .await
+            .unwrap();
+        assert_eq!(unauthorized.status(), StatusCode::UNAUTHORIZED);
+
+        let mut proxied_status = Request::get(ACS_STATUS_PATH).body(Body::empty()).unwrap();
+        proxied_status
+            .headers_mut()
+            .insert(CLIENT_ADDRESS_HEADER, "198.51.100.24".parse().unwrap());
+        let response = test_router_with_peer(store, "127.0.0.1:1234")
+            .oneshot(proxied_status)
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::NOT_FOUND);
+
+        let health = test_router(
+            CloudStore::open(crate::StoreConfig::for_test_data_root(
+                root.path().join("health"),
+            ))
+            .unwrap(),
+        )
+        .oneshot(Request::get(ACS_HEALTH_PATH).body(Body::empty()).unwrap())
+        .await
+        .unwrap();
+        assert_eq!(health.status(), StatusCode::OK);
+        let health_text = String::from_utf8(
+            health
+                .into_body()
+                .collect()
+                .await
+                .unwrap()
+                .to_bytes()
+                .to_vec(),
+        )
+        .unwrap();
+        assert!(!health_text.contains("top_contributors"));
+        assert!(!health_text.contains("metrics"));
+    }
+
+    #[test]
+    fn client_address_header_is_honored_only_from_a_trusted_proxy() {
+        let trusted: IpAddr = "127.0.0.1".parse().unwrap();
+        let client: IpAddr = "198.51.100.24".parse().unwrap();
+        let attacker: IpAddr = "203.0.113.9".parse().unwrap();
+        let mut headers = HeaderMap::new();
+        headers.insert(CLIENT_ADDRESS_HEADER, "198.51.100.24".parse().unwrap());
+
+        assert_eq!(
+            effective_client_ip(trusted, &headers, &[trusted]).unwrap(),
+            client
+        );
+        assert_eq!(
+            effective_client_ip(attacker, &headers, &[trusted]).unwrap(),
+            attacker
+        );
+        assert_eq!(
+            effective_client_ip(trusted, &HeaderMap::new(), &[trusted]).unwrap(),
+            trusted
+        );
+        headers.insert(CLIENT_ADDRESS_HEADER, "not-an-ip".parse().unwrap());
+        assert!(effective_client_ip(trusted, &headers, &[trusted]).is_err());
     }
 
     #[tokio::test]
     async fn signed_account_creation_and_replay_rejection_cross_the_http_boundary() {
         let root = TempDir::new().unwrap();
-        let store =
-            CloudStore::open(crate::StoreConfig::for_data_root(root.path().to_path_buf())).unwrap();
+        let store = CloudStore::open(crate::StoreConfig::for_test_data_root(
+            root.path().to_path_buf(),
+        ))
+        .unwrap();
         let router = test_router(store);
         let challenge = router
             .clone()
@@ -1063,13 +1246,18 @@ mod tests {
     #[tokio::test]
     async fn malformed_and_oversized_requests_return_typed_errors() {
         let root = TempDir::new().unwrap();
-        let store =
-            CloudStore::open(crate::StoreConfig::for_data_root(root.path().to_path_buf())).unwrap();
+        let store = CloudStore::open(crate::StoreConfig::for_test_data_root(
+            root.path().to_path_buf(),
+        ))
+        .unwrap();
         let router = test_router(store);
         for (body, expected) in [
             (Body::from("{"), StatusCode::BAD_REQUEST),
             (
-                Body::from(vec![0_u8; MAX_REQUEST_BODY_BYTES + 1]),
+                Body::from(vec![
+                    0_u8;
+                    test_policy().request.max_body_bytes as usize + 1
+                ]),
                 StatusCode::PAYLOAD_TOO_LARGE,
             ),
         ] {
@@ -1084,5 +1272,26 @@ mod tests {
                     .unwrap();
             assert_eq!(error.code.http_status(), expected.as_u16());
         }
+    }
+
+    #[tokio::test]
+    async fn rate_limit_response_identifies_gate_and_exact_retry_delay() {
+        let response = ApiError::from(StoreError {
+            code: AcsErrorCode::RateLimited,
+            message: "network creation bucket is empty".to_string(),
+            retry_after_ms: Some(28_800_001),
+            rate_limit_gate: Some(product_contracts::AcsRateLimitGate::AccountCreationNetwork),
+        })
+        .into_response();
+        assert_eq!(response.status(), StatusCode::TOO_MANY_REQUESTS);
+        assert_eq!(response.headers()[header::RETRY_AFTER], "28801");
+        let error: AcsErrorResponse =
+            serde_json::from_slice(&response.into_body().collect().await.unwrap().to_bytes())
+                .unwrap();
+        assert_eq!(error.retry_after_ms, Some(28_800_001));
+        assert_eq!(
+            error.rate_limit_gate,
+            Some(product_contracts::AcsRateLimitGate::AccountCreationNetwork)
+        );
     }
 }

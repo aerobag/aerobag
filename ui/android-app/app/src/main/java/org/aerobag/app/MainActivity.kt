@@ -2462,6 +2462,20 @@ internal fun AerobagApp(
             false
         }
     }
+    suspend fun recordOfflinePackagePreferencesForCloud(
+        preferencesJson: String,
+        nowEpochMs: Long,
+    ) {
+        val failure = withContext(Dispatchers.Default) {
+            try {
+                uiSession.recordOfflinePackagePreferences(preferencesJson, nowEpochMs)
+                null
+            } catch (error: Throwable) {
+                error
+            }
+        }
+        failure?.let(::recoverSessionCommandFailure)
+    }
     val mainExecutor = remember(appContext) { ContextCompat.getMainExecutor(appContext) }
     val sessionSnapshotRefreshRunner = retainedCoreSession.sessionSnapshotRefreshRunner
     DisposableEffect(sessionSnapshotRefreshRunner) {
@@ -3196,14 +3210,8 @@ internal fun AerobagApp(
                         offlinePackagesControllerHandle = offlinePackagesControllerHandle,
                         synchronizedOfflinePackagePreferencesJson =
                             sessionSnapshot.offlinePackagePreferencesJson,
-                        onOfflinePackagePreferencesForCloud = { preferencesJson, nowEpochMs ->
-                            applySessionCommand("recordOfflinePackagePreferences") {
-                                uiSession.recordOfflinePackagePreferences(
-                                    preferencesJson,
-                                    nowEpochMs,
-                                )
-                            }
-                        },
+                        onOfflinePackagePreferencesForCloud =
+                            ::recordOfflinePackagePreferencesForCloud,
                         onOfflinePackageLibraryCacheChanged = { cacheJson ->
                             applySessionCommand("loadOfflinePackageLibraryCache") {
                                 uiSession.loadOfflinePackageLibraryCache(cacheJson)
@@ -3229,14 +3237,8 @@ internal fun AerobagApp(
                         offlinePackagesControllerHandle = offlinePackagesControllerHandle,
                         synchronizedOfflinePackagePreferencesJson =
                             sessionSnapshot.offlinePackagePreferencesJson,
-                        onOfflinePackagePreferencesForCloud = { preferencesJson, nowEpochMs ->
-                            applySessionCommand("recordOfflinePackagePreferences") {
-                                uiSession.recordOfflinePackagePreferences(
-                                    preferencesJson,
-                                    nowEpochMs,
-                                )
-                            }
-                        },
+                        onOfflinePackagePreferencesForCloud =
+                            ::recordOfflinePackagePreferencesForCloud,
                         onOfflinePackageLibraryCacheChanged = { cacheJson ->
                             applySessionCommand("loadOfflinePackageLibraryCache") {
                                 uiSession.loadOfflinePackageLibraryCache(cacheJson)
@@ -3291,7 +3293,7 @@ internal fun AerobagApp(
                                     fields,
                                     System.currentTimeMillis(),
                                 )
-                            }
+                            } != null
                         },
                     )
                 }

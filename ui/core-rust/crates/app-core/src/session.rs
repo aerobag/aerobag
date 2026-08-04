@@ -4,6 +4,7 @@
 
 use std::{
     collections::{BTreeMap, BTreeSet, HashMap, HashSet},
+    ops::{Deref, DerefMut},
     sync::{
         atomic::{AtomicU32, Ordering},
         Arc, Mutex, MutexGuard, OnceLock,
@@ -425,8 +426,13 @@ pub struct UiSessionCreateTiming {
     pub elapsed_ms: f64,
 }
 
-#[derive(Clone)]
 struct UiSession {
+    model: SessionModel,
+    runtime: SessionRuntime,
+}
+
+#[derive(Clone)]
+struct SessionModel {
     session_revision: u64,
     flight_plan_route_revision: u64,
     nav_data_epoch: u64,
@@ -436,12 +442,12 @@ struct UiSession {
     plan_preview: PlanPreviewState,
     bad_autopilot: BadAutopilotState,
     map_follow: MapFollowSessionState,
-    guidance_leg_geometry: HashMap<String, GuidanceLegGeometry>,
-    map_overlay_config: MapOverlayConfig,
+    guidance_leg_geometry: Arc<HashMap<String, GuidanceLegGeometry>>,
+    map_overlay_config: Arc<MapOverlayConfig>,
     vector_manifest_loaded: bool,
     chart_page_state: UiChartPageState,
     nav_kv_store_id: Option<u32>,
-    nav_kv_store: Option<NavKvStore>,
+    nav_kv_store: Option<Arc<NavKvStore>>,
     nav_db_artifact: Option<AttachedNavDbArtifact>,
     map_layer_state: UiMapLayerState,
     data_status_records: BTreeMap<String, DataStatusRecord>,
@@ -454,11 +460,17 @@ struct UiSession {
     debug_state: UiDebugState,
     resource_policy: CoreResourcePolicy,
     installed_package_ids: BTreeSet<String>,
-    publication_resolver: PublicationResolver,
+    publication_resolver: Arc<PublicationResolver>,
     cycle_product_freshness: CycleProductFreshnessState,
-    live_feeds: LiveFeedsState,
+    live_feeds: Arc<LiveFeedsState>,
     live_feed_connection: LiveFeedConnectionSessionState,
-    raster_map_catalog: Option<RasterMapCatalog>,
+    raster_map_catalog: Option<Arc<RasterMapCatalog>>,
+    wall_clock_epoch_ms: i64,
+    live_feed_current_refresh: LiveFeedCurrentRefreshState,
+}
+
+struct SessionRuntime {
+    nav_data_generation: u64,
     vector_tile_cache: HashMap<String, VectorAggregateTilePayload>,
     metar_tile_cache: HashMap<String, MetarTilePayload>,
     metar_payload: Option<MetarProductPayload>,
@@ -477,8 +489,60 @@ struct UiSession {
     terrain_source_tile_cache: HashMap<String, Vec<u8>>,
     agl_terrain_resource_ids_in_flight: HashSet<String>,
     pending_resource_effects: Vec<UiSessionResourceEffect>,
-    wall_clock_epoch_ms: i64,
-    live_feed_current_refresh: LiveFeedCurrentRefreshState,
+}
+
+impl Default for SessionRuntime {
+    fn default() -> Self {
+        Self {
+            nav_data_generation: 0,
+            vector_tile_cache: HashMap::new(),
+            metar_tile_cache: HashMap::new(),
+            metar_payload: None,
+            prepared_metar_tiles: None,
+            important_metar_station_ids: None,
+            metar_station_importance_status: None,
+            weather_station_airport_aliases: None,
+            obstacle_had: None,
+            obstacle_tile_cache: HashMap::new(),
+            taf_payload: None,
+            airport_notam_index: None,
+            airspace_feature_cache: HashMap::new(),
+            tfr_payload: None,
+            nexrad_installed: BTreeMap::new(),
+            nexrad_tile_cache: HashMap::new(),
+            terrain_source_tile_cache: HashMap::new(),
+            agl_terrain_resource_ids_in_flight: HashSet::new(),
+            pending_resource_effects: Vec::new(),
+        }
+    }
+}
+
+impl SessionRuntime {
+    fn invalidate_nav_data(&mut self) {
+        self.nav_data_generation = self.nav_data_generation.saturating_add(1);
+        self.vector_tile_cache.clear();
+        self.airspace_feature_cache.clear();
+        self.important_metar_station_ids = None;
+        self.metar_station_importance_status = None;
+        self.weather_station_airport_aliases = None;
+        self.terrain_source_tile_cache.clear();
+        self.agl_terrain_resource_ids_in_flight.clear();
+        self.pending_resource_effects.clear();
+    }
+}
+
+impl Deref for UiSession {
+    type Target = SessionModel;
+
+    fn deref(&self) -> &Self::Target {
+        &self.model
+    }
+}
+
+impl DerefMut for UiSession {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        &mut self.model
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -978,6 +1042,7 @@ fn enqueue_session_resource_effect(
 ) {
     let mut invalidations = after_success_invalidations.into_iter().collect::<Vec<_>>();
     if let Some(existing) = session
+        .runtime
         .pending_resource_effects
         .iter_mut()
         .find(|effect| effect.resource.id == resource.id)
@@ -990,6 +1055,7 @@ fn enqueue_session_resource_effect(
         return;
     }
     session
+        .runtime
         .pending_resource_effects
         .push(UiSessionResourceEffect {
             resource,
@@ -1000,7 +1066,9 @@ fn enqueue_session_resource_effect(
 pub fn drain_session_resource_effects(handle: u32) -> AppResult<Vec<UiSessionResourceEffect>> {
     let mut sessions = lock_sessions();
     let session = session_mut(&mut sessions, handle)?;
-    Ok(std::mem::take(&mut session.pending_resource_effects))
+    Ok(std::mem::take(
+        &mut session.runtime.pending_resource_effects,
+    ))
 }
 
 fn sync_layer_unavailable_status_record(
@@ -1084,11 +1152,12 @@ fn sync_live_feed_overlay_status_records(session: &mut UiSession) -> Vec<UiInval
     let tfrs_visible = session.map_layer_state.vectors.visible;
     let tfrs_collected_utc = live_feed_status_timestamp(session, "tfrs").or_else(|| {
         session
+            .runtime
             .tfr_payload
             .as_ref()
             .and_then(|payload| payload.generated_at_utc)
     });
-    let tfrs_loaded = session.tfr_payload.is_some();
+    let tfrs_loaded = session.runtime.tfr_payload.is_some();
     invalidations.extend(sync_live_feed_product_status_record(
         session,
         tfrs_visible,
@@ -1106,7 +1175,7 @@ fn sync_live_feed_overlay_status_records(session: &mut UiSession) -> Vec<UiInval
             .product_state_manifest("obstacles")
             .and_then(json_generated_at_utc)
     });
-    let obstacles_loaded = session.obstacle_had.is_some();
+    let obstacles_loaded = session.runtime.obstacle_had.is_some();
     invalidations.extend(sync_live_feed_product_status_record(
         session,
         obstacles_visible,
@@ -1136,7 +1205,7 @@ struct LiveFeedProductStatusSource {
 }
 
 fn metar_live_feed_status_source(session: &UiSession) -> LiveFeedProductStatusSource {
-    if let Some(payload) = session.metar_payload.as_ref() {
+    if let Some(payload) = session.runtime.metar_payload.as_ref() {
         return LiveFeedProductStatusSource {
             loaded: true,
             collected_utc: live_feed_status_timestamp(session, "metars")
@@ -1155,7 +1224,7 @@ fn metar_live_feed_status_source(session: &UiSession) -> LiveFeedProductStatusSo
 }
 
 fn taf_live_feed_status_source(session: &UiSession) -> LiveFeedProductStatusSource {
-    if let Some(payload) = session.taf_payload.as_ref() {
+    if let Some(payload) = session.runtime.taf_payload.as_ref() {
         return LiveFeedProductStatusSource {
             loaded: true,
             collected_utc: live_feed_status_timestamp(session, "tafs").or(payload.generated_at_utc),
@@ -2179,9 +2248,10 @@ fn project_data_status_page_state(session: &UiSession) -> UiDataStatusPageState 
             session,
             "tfrs",
             "TFRs",
-            session.tfr_payload.is_some(),
+            session.runtime.tfr_payload.is_some(),
             live_feed_status_timestamp(session, "tfrs").or_else(|| {
                 session
+                    .runtime
                     .tfr_payload
                     .as_ref()
                     .and_then(|payload| payload.generated_at_utc)
@@ -2196,7 +2266,7 @@ fn project_data_status_page_state(session: &UiSession) -> UiDataStatusPageState 
             session,
             "notams",
             "NOTAMs",
-            session.airport_notam_index.is_some(),
+            session.runtime.airport_notam_index.is_some(),
             live_feed_status_timestamp(session, "notams"),
             DATA_FRESHNESS_POLICIES.live_feeds.notams,
             session
@@ -2227,7 +2297,7 @@ fn project_data_status_page_state(session: &UiSession) -> UiDataStatusPageState 
             session,
             "obstacles",
             "Obstacles",
-            session.obstacle_had.is_some()
+            session.runtime.obstacle_had.is_some()
                 || session
                     .live_feeds
                     .product_state_manifest("obstacles")
@@ -2240,6 +2310,7 @@ fn project_data_status_page_state(session: &UiSession) -> UiDataStatusPageState 
             }),
             DATA_FRESHNESS_POLICIES.live_feeds.obstacles,
             session
+                .runtime
                 .obstacle_had
                 .as_ref()
                 .map(|had| had.version.clone())
@@ -3273,11 +3344,15 @@ fn nexrad_status_manifest(session: &UiSession) -> Option<&serde_json::Value> {
 }
 
 fn latest_installed_nexrad(session: &UiSession) -> Option<&LiveNexradInstalledState> {
-    session.nexrad_installed.values().max_by(|left, right| {
-        json_observed_at_utc(&left.manifest)
-            .cmp(&json_observed_at_utc(&right.manifest))
-            .then_with(|| left.version.cmp(&right.version))
-    })
+    session
+        .runtime
+        .nexrad_installed
+        .values()
+        .max_by(|left, right| {
+            json_observed_at_utc(&left.manifest)
+                .cmp(&json_observed_at_utc(&right.manifest))
+                .then_with(|| left.version.cmp(&right.version))
+        })
 }
 
 fn nexrad_live_feed_status_page_row(session: &UiSession) -> UiDataStatusPageRow {
@@ -3606,64 +3681,49 @@ fn create_ui_session_inner(
     lock_sessions().insert(
         handle,
         UiSession {
-            session_revision: 0,
-            flight_plan_route_revision: 0,
-            nav_data_epoch: 0,
-            nav_db_advance_blocked: false,
-            app_state,
-            playback,
-            plan_preview: PlanPreviewState::default(),
-            bad_autopilot: BadAutopilotState::default(),
-            map_follow,
-            guidance_leg_geometry,
-            map_overlay_config,
-            vector_manifest_loaded: false,
-            chart_page_state,
-            nav_kv_store_id: None,
-            nav_kv_store: None,
-            nav_db_artifact: None,
-            map_layer_state,
-            data_status_records,
-            hushed_status_ids,
-            data_status_state,
-            platform_capabilities,
-            settings_preferences,
-            settings_storage: None,
-            cloud,
-            debug_state,
-            resource_policy: CoreResourcePolicy::InstalledPackage,
-            installed_package_ids: BTreeSet::new(),
-            publication_resolver: PublicationResolver::with_resource_policy(
-                "/packages",
-                CoreResourcePolicy::InstalledPackage,
-            ),
-            cycle_product_freshness: CycleProductFreshnessState {
-                dirty: true,
-                ..CycleProductFreshnessState::default()
+            model: SessionModel {
+                session_revision: 0,
+                flight_plan_route_revision: 0,
+                nav_data_epoch: 0,
+                nav_db_advance_blocked: false,
+                app_state,
+                playback,
+                plan_preview: PlanPreviewState::default(),
+                bad_autopilot: BadAutopilotState::default(),
+                map_follow,
+                guidance_leg_geometry: Arc::new(guidance_leg_geometry),
+                map_overlay_config: Arc::new(map_overlay_config),
+                vector_manifest_loaded: false,
+                chart_page_state,
+                nav_kv_store_id: None,
+                nav_kv_store: None,
+                nav_db_artifact: None,
+                map_layer_state,
+                data_status_records,
+                hushed_status_ids,
+                data_status_state,
+                platform_capabilities,
+                settings_preferences,
+                settings_storage: None,
+                cloud,
+                debug_state,
+                resource_policy: CoreResourcePolicy::InstalledPackage,
+                installed_package_ids: BTreeSet::new(),
+                publication_resolver: Arc::new(PublicationResolver::with_resource_policy(
+                    "/packages",
+                    CoreResourcePolicy::InstalledPackage,
+                )),
+                cycle_product_freshness: CycleProductFreshnessState {
+                    dirty: true,
+                    ..CycleProductFreshnessState::default()
+                },
+                live_feeds: Arc::new(LiveFeedsState::default()),
+                live_feed_connection: LiveFeedConnectionSessionState::default(),
+                raster_map_catalog: None,
+                wall_clock_epoch_ms,
+                live_feed_current_refresh: LiveFeedCurrentRefreshState::Idle,
             },
-            live_feeds: LiveFeedsState::default(),
-            live_feed_connection: LiveFeedConnectionSessionState::default(),
-            raster_map_catalog: None,
-            vector_tile_cache: HashMap::new(),
-            metar_tile_cache: HashMap::new(),
-            metar_payload: None,
-            prepared_metar_tiles: None,
-            important_metar_station_ids: None,
-            metar_station_importance_status: None,
-            weather_station_airport_aliases: None,
-            obstacle_had: None,
-            obstacle_tile_cache: HashMap::new(),
-            nexrad_installed: BTreeMap::new(),
-            nexrad_tile_cache: HashMap::new(),
-            taf_payload: None,
-            airport_notam_index: None,
-            airspace_feature_cache: HashMap::new(),
-            tfr_payload: None,
-            terrain_source_tile_cache: HashMap::new(),
-            agl_terrain_resource_ids_in_flight: HashSet::new(),
-            pending_resource_effects: Vec::new(),
-            wall_clock_epoch_ms,
-            live_feed_current_refresh: LiveFeedCurrentRefreshState::Idle,
+            runtime: SessionRuntime::default(),
         },
     );
     if let Some(mark) = mark.as_deref_mut() {
@@ -3737,7 +3797,7 @@ pub fn load_raster_map_catalog_in_session(handle: u32) -> AppResult<HadOperation
         Ok(catalog) => catalog,
         Err(err) => return had_read_error_to_overlay_outcome(err),
     };
-    session.raster_map_catalog = Some(catalog);
+    session.raster_map_catalog = Some(Arc::new(catalog));
     sync_cycle_product_freshness_status_records(session);
     changed_session_snapshot_outcome(session)
 }
@@ -3866,7 +3926,7 @@ pub fn set_resource_policy_in_session(
     let session = session_mut(&mut sessions, handle)?;
     if session.resource_policy != policy {
         session.resource_policy = policy;
-        session.publication_resolver.set_resource_policy(policy);
+        Arc::make_mut(&mut session.publication_resolver).set_resource_policy(policy);
         session.raster_map_catalog = None;
     }
     changed_session_snapshot_outcome(session)
@@ -3879,8 +3939,7 @@ pub fn load_offline_package_library_cache_in_session(
     let mut sessions = lock_sessions();
     let session = session_mut(&mut sessions, handle)?;
     advance_session_wall_clock(session, cache.fetched_at_epoch_ms);
-    session
-        .publication_resolver
+    Arc::make_mut(&mut session.publication_resolver)
         .load_offline_library_cache(&cache)
         .map_err(|message| AppError {
             kind: AppErrorKind::InvalidManifest,
@@ -3906,13 +3965,14 @@ pub fn configure_platform_capabilities_in_session(
     session.platform_capabilities = capabilities;
     session.settings_storage = settings_storage;
     load_session_persistence_from_storage(session)?;
-    session.cloud.set_acs_default_base_url(
-        session
-            .platform_capabilities
-            .cloud
-            .as_ref()
-            .and_then(|cloud| cloud.aerobag_cloud_base_url.clone()),
-    )?;
+    let acs_default_base_url = session
+        .platform_capabilities
+        .cloud
+        .as_ref()
+        .and_then(|cloud| cloud.aerobag_cloud_base_url.clone());
+    session
+        .cloud
+        .set_acs_default_base_url(acs_default_base_url)?;
     changed_session_snapshot_outcome(session)
 }
 
@@ -3930,12 +3990,13 @@ pub fn complete_cloud_authorization_in_session(
             message: "this platform did not advertise cloud-provider support".to_string(),
         });
     }
-    let mut candidate = session.clone();
-    advance_session_wall_clock(&mut candidate, now_epoch_ms);
-    candidate
-        .cloud
-        .complete_authorization(request_id, response, now_epoch_ms)?;
-    commit_cloud_candidate(session, candidate, vec![UiInvalidation::SessionSnapshot])
+    run_session_model_transaction(session, |session| {
+        advance_session_wall_clock(session, now_epoch_ms);
+        session
+            .cloud
+            .complete_authorization(request_id, response, now_epoch_ms)?;
+        Ok(vec![UiInvalidation::SessionSnapshot])
+    })
 }
 
 pub fn take_cloud_authorization_request_in_session(
@@ -3965,17 +4026,18 @@ pub fn perform_cloud_ui_action_in_session(
             message: "this platform did not advertise cloud-provider support".to_string(),
         });
     }
-    let mut candidate = session.clone();
-    advance_session_wall_clock(&mut candidate, now_epoch_ms);
-    let plan = candidate
-        .app_state
-        .active_plan
-        .clone()
-        .ok_or_else(|| missing_active_plan_error("cloud action"))?;
-    candidate
-        .cloud
-        .perform_ui_action(action_id, &fields, &plan, now_epoch_ms)?;
-    commit_cloud_candidate(session, candidate, vec![UiInvalidation::SessionSnapshot])
+    run_session_model_transaction(session, |session| {
+        advance_session_wall_clock(session, now_epoch_ms);
+        let plan = session
+            .app_state
+            .active_plan
+            .clone()
+            .ok_or_else(|| missing_active_plan_error("cloud action"))?;
+        session
+            .cloud
+            .perform_ui_action(action_id, &fields, &plan, now_epoch_ms)?;
+        Ok(vec![UiInvalidation::SessionSnapshot])
+    })
 }
 
 pub fn record_offline_package_preferences_in_session(
@@ -3990,12 +4052,13 @@ pub fn record_offline_package_preferences_in_session(
         })?;
     let mut sessions = lock_sessions();
     let session = session_mut(&mut sessions, handle)?;
-    let mut candidate = session.clone();
-    advance_session_wall_clock(&mut candidate, now_epoch_ms);
-    candidate
-        .cloud
-        .record_local_offline_package_preferences(&preferences, now_epoch_ms)?;
-    commit_cloud_candidate(session, candidate, vec![UiInvalidation::SessionSnapshot])
+    run_session_model_update(session, |session| {
+        advance_session_wall_clock(session, now_epoch_ms);
+        session
+            .cloud
+            .record_local_offline_package_preferences(&preferences, now_epoch_ms)?;
+        Ok(vec![UiInvalidation::SessionSnapshot])
+    })
 }
 
 pub fn take_cloud_provider_request_in_session(
@@ -4030,12 +4093,13 @@ pub fn report_cloud_event_stream_event_in_session(
 ) -> AppResult<HadOperationOutcome> {
     let mut sessions = lock_sessions();
     let session = session_mut(&mut sessions, handle)?;
-    let mut candidate = session.clone();
-    advance_session_wall_clock(&mut candidate, now_epoch_ms);
-    candidate
-        .cloud
-        .report_event_stream_event(event, now_epoch_ms)?;
-    commit_cloud_candidate(session, candidate, vec![UiInvalidation::SessionSnapshot])
+    run_session_model_transaction(session, |session| {
+        advance_session_wall_clock(session, now_epoch_ms);
+        session
+            .cloud
+            .report_event_stream_event(event, now_epoch_ms)?;
+        Ok(vec![UiInvalidation::SessionSnapshot])
+    })
 }
 
 pub fn complete_cloud_provider_request_in_session(
@@ -4046,78 +4110,110 @@ pub fn complete_cloud_provider_request_in_session(
 ) -> AppResult<HadOperationOutcome> {
     let mut sessions = lock_sessions();
     let session = session_mut(&mut sessions, handle)?;
-    let mut candidate = session.clone();
-    advance_session_wall_clock(&mut candidate, now_epoch_ms);
-    let completion =
-        candidate
-            .cloud
-            .complete_provider_request(request_id, response, now_epoch_ms)?;
-    let mut invalidations = vec![UiInvalidation::SessionSnapshot];
-    if let Some(remote_plan) = completion.remote_flight_plan()? {
-        let navigation_active = candidate
-            .app_state
-            .active_plan
-            .as_ref()
-            .is_some_and(|plan| plan.guidance.is_some());
-        if navigation_active {
-            candidate
+    run_session_model_transaction(session, |session| {
+        advance_session_wall_clock(session, now_epoch_ms);
+        let completion =
+            session
                 .cloud
-                .set_pending_remote_flight_plan(remote_plan)?;
-        } else {
-            replace_session_flight_plan(&mut candidate, remote_plan)?;
-            match sync_guidance_geometry_for_session(
-                &mut candidate,
-                &crate::CoreDebugTimer::start(),
-            ) {
-                Ok(()) => {}
-                Err(HadReadError::NeedPages(pages)) => {
-                    return Ok(HadOperationOutcome::NeedResources {
-                        resources: nav_kv_page_resources(pages),
-                    });
-                }
-                Err(HadReadError::Fatal(message)) => {
-                    return Err(AppError {
-                        kind: AppErrorKind::InvalidFlightPlan,
-                        message,
-                    });
-                }
+                .complete_provider_request(request_id, response, now_epoch_ms)?;
+        let mut invalidations = vec![UiInvalidation::SessionSnapshot];
+        if let Some(remote_plan) = completion.remote_flight_plan()? {
+            let navigation_active = session
+                .app_state
+                .active_plan
+                .as_ref()
+                .is_some_and(|plan| plan.guidance.is_some());
+            if navigation_active {
+                session.cloud.set_pending_remote_flight_plan(remote_plan)?;
+            } else {
+                replace_session_flight_plan(session, remote_plan)?;
+                sync_guidance_geometry_for_session(session, &crate::CoreDebugTimer::start())?;
+                invalidations.extend([UiInvalidation::FlightPlanRoute, UiInvalidation::MapOverlay]);
             }
-            invalidations.extend([UiInvalidation::FlightPlanRoute, UiInvalidation::MapOverlay]);
         }
-    }
-    commit_cloud_candidate(session, candidate, invalidations)
+        Ok(invalidations)
+    })
 }
 
-fn commit_cloud_candidate(
+enum SessionModelTransactionError {
+    App(AppError),
+    Had(HadReadError),
+}
+
+impl From<AppError> for SessionModelTransactionError {
+    fn from(error: AppError) -> Self {
+        Self::App(error)
+    }
+}
+
+impl From<HadReadError> for SessionModelTransactionError {
+    fn from(error: HadReadError) -> Self {
+        Self::Had(error)
+    }
+}
+
+fn run_session_model_transaction(
     session: &mut UiSession,
-    mut candidate: UiSession,
-    invalidations: Vec<UiInvalidation>,
+    mutate: impl FnOnce(&mut UiSession) -> Result<Vec<UiInvalidation>, SessionModelTransactionError>,
 ) -> AppResult<HadOperationOutcome> {
-    advance_session_revision(&mut candidate);
-    let snapshot = match try_snapshot_for_session(&mut candidate) {
-        Ok(snapshot) => snapshot,
-        Err(HadReadError::NeedPages(pages)) => {
-            return Ok(HadOperationOutcome::NeedResources {
-                resources: nav_kv_page_resources(pages),
-            });
+    run_session_model_transaction_projecting(session, mutate, |session| {
+        let snapshot = try_snapshot_for_session(session)?;
+        serde_json::to_value(snapshot).map_err(|error| {
+            SessionModelTransactionError::App(AppError {
+                kind: AppErrorKind::Internal,
+                message: error.to_string(),
+            })
+        })
+    })
+}
+
+fn run_session_model_update(
+    session: &mut UiSession,
+    mutate: impl FnOnce(&mut UiSession) -> Result<Vec<UiInvalidation>, SessionModelTransactionError>,
+) -> AppResult<HadOperationOutcome> {
+    run_session_model_transaction_projecting(session, mutate, |_| Ok(serde_json::Value::Null))
+}
+
+fn run_session_model_transaction_projecting(
+    session: &mut UiSession,
+    mutate: impl FnOnce(&mut UiSession) -> Result<Vec<UiInvalidation>, SessionModelTransactionError>,
+    project: impl FnOnce(&mut UiSession) -> Result<serde_json::Value, SessionModelTransactionError>,
+) -> AppResult<HadOperationOutcome> {
+    let prior_model = session.model.clone();
+    let prior_pending_effect_count = session.runtime.pending_resource_effects.len();
+    let result = (|| {
+        let invalidations = mutate(session)?;
+        advance_session_revision(session);
+        let result = project(session)?;
+        write_session_persistence_to_storage(session)?;
+        Ok::<_, SessionModelTransactionError>(HadOperationOutcome::complete_with_invalidations(
+            result,
+            invalidations,
+        ))
+    })();
+
+    match result {
+        Ok(outcome) => Ok(outcome),
+        Err(error) => {
+            session.model = prior_model;
+            session
+                .runtime
+                .pending_resource_effects
+                .truncate(prior_pending_effect_count);
+            match error {
+                SessionModelTransactionError::App(error) => Err(error),
+                SessionModelTransactionError::Had(HadReadError::NeedPages(pages)) => {
+                    Ok(HadOperationOutcome::NeedResources {
+                        resources: nav_kv_page_resources(pages),
+                    })
+                }
+                SessionModelTransactionError::Had(HadReadError::Fatal(message)) => Err(AppError {
+                    kind: AppErrorKind::InvalidFlightPlan,
+                    message,
+                }),
+            }
         }
-        Err(HadReadError::Fatal(message)) => {
-            return Err(AppError {
-                kind: AppErrorKind::InvalidFlightPlan,
-                message,
-            });
-        }
-    };
-    write_session_persistence_to_storage(&candidate)?;
-    *session = candidate;
-    let snapshot = serde_json::to_value(snapshot).map_err(|err| AppError {
-        kind: AppErrorKind::Internal,
-        message: err.to_string(),
-    })?;
-    Ok(HadOperationOutcome::complete_with_invalidations(
-        snapshot,
-        invalidations,
-    ))
+    }
 }
 
 pub fn perform_settings_action_in_session(
@@ -4213,11 +4309,11 @@ pub fn select_map_family_in_session(
             Ok(catalog) => catalog,
             Err(err) => return had_read_error_to_overlay_outcome(err),
         };
-        session.raster_map_catalog = Some(catalog);
+        session.raster_map_catalog = Some(Arc::new(catalog));
         sync_cycle_product_freshness_status_records(session);
         return changed_session_snapshot_outcome(session);
     };
-    crate::select_map_family_in_catalog(catalog, family_id);
+    crate::select_map_family_in_catalog(Arc::make_mut(catalog), family_id);
     sync_cycle_product_freshness_status_records(session);
     changed_session_snapshot_outcome(session)
 }
@@ -4234,7 +4330,7 @@ pub fn select_raster_map_in_session(
             message: "session missing raster map catalog".to_string(),
         });
     };
-    crate::select_map_in_catalog(catalog, selected_map_id);
+    crate::select_map_in_catalog(Arc::make_mut(catalog), selected_map_id);
     sync_cycle_product_freshness_status_records(session);
     changed_session_snapshot_outcome(session)
 }
@@ -4501,10 +4597,12 @@ fn install_guidance_leg_geometry(
     session: &mut UiSession,
     geometries: Vec<GuidanceLegGeometry>,
 ) -> AppResult<()> {
-    session.guidance_leg_geometry = geometries
-        .into_iter()
-        .map(|geometry| (geometry.leg_id.clone(), geometry))
-        .collect();
+    session.guidance_leg_geometry = Arc::new(
+        geometries
+            .into_iter()
+            .map(|geometry| (geometry.leg_id.clone(), geometry))
+            .collect(),
+    );
     if selected_ownship_source_kind(&session.app_state.ownship)
         == Some(crate::OwnshipSourceKind::FlightPlanSimulator)
         && session.plan_preview.pointer.is_none()
@@ -4584,7 +4682,7 @@ fn sync_guidance_geometry_for_session(
     started: &crate::CoreDebugTimer,
 ) -> Result<(), HadReadError> {
     let Some(plan) = session.app_state.active_plan.clone() else {
-        session.guidance_leg_geometry.clear();
+        Arc::make_mut(&mut session.guidance_leg_geometry).clear();
         crate::core_debug_log(
             "plan.guidance.sync.core_phase",
             &serde_json::json!({
@@ -4615,7 +4713,7 @@ fn sync_guidance_geometry_for_session(
             install_guidance_leg_geometry(session, geometries)
                 .map_err(|err| HadReadError::Fatal(err.message))?;
         } else {
-            session.guidance_leg_geometry.clear();
+            Arc::make_mut(&mut session.guidance_leg_geometry).clear();
         }
         crate::core_debug_log(
             "plan.guidance.sync.core_phase",
@@ -6138,11 +6236,11 @@ pub fn attach_nav_kv_store_to_session_with_open_result(
     let mut sessions = lock_sessions();
     let session = session_mut(&mut sessions, handle)?;
     session.nav_kv_store_id = Some(store_id);
-    session.nav_kv_store = Some(store.clone());
+    session.nav_kv_store = Some(Arc::new(store.clone()));
     session.nav_db_artifact = open_result.map(AttachedNavDbArtifact::from);
-    session.important_metar_station_ids = None;
-    session.metar_station_importance_status = None;
-    session.weather_station_airport_aliases = None;
+    session.runtime.important_metar_station_ids = None;
+    session.runtime.metar_station_importance_status = None;
+    session.runtime.weather_station_airport_aliases = None;
     rebuild_metar_tile_cache(session);
     sync_cycle_product_freshness_status_records(session);
     Ok(())
@@ -6200,22 +6298,19 @@ pub fn advance_nav_kv_store_in_session_with_open_result(
             .map(|family| family.id.clone())
     });
 
-    let mut candidate = live.clone();
+    let mut candidate = UiSession {
+        model: live.model.clone(),
+        runtime: std::mem::take(&mut live.runtime),
+    };
     candidate.nav_kv_store_id = Some(store_id);
-    candidate.nav_kv_store = Some(store.clone());
+    candidate.nav_kv_store = Some(Arc::new(store.clone()));
     candidate.nav_db_artifact = Some(AttachedNavDbArtifact::from(open_result));
     candidate.installed_package_ids = installed_package_ids.into_iter().collect();
     candidate
         .installed_package_ids
         .insert(open_result.selected_package_id.clone());
     candidate.vector_manifest_loaded = false;
-    candidate.vector_tile_cache.clear();
-    candidate.airspace_feature_cache.clear();
-    candidate.important_metar_station_ids = None;
-    candidate.metar_station_importance_status = None;
-    candidate.weather_station_airport_aliases = None;
-    candidate.terrain_source_tile_cache.clear();
-    candidate.agl_terrain_resource_ids_in_flight.clear();
+    candidate.runtime.invalidate_nav_data();
     rebuild_metar_tile_cache(&mut candidate);
     mark_cycle_product_freshness_dirty(&mut candidate);
 
@@ -6225,11 +6320,12 @@ pub fn advance_nav_kv_store_in_session_with_open_result(
             replace_session_flight_plan(&mut candidate, rebuilt_plan)
                 .map_err(HadReadError::from)?;
         }
-        candidate.raster_map_catalog = Some(crate::had_ops::raster_map_catalog_from_nav_kv(
-            store,
-            selected_map_id.as_deref(),
-            selected_family_id.as_deref(),
-        )?);
+        candidate.raster_map_catalog =
+            Some(Arc::new(crate::had_ops::raster_map_catalog_from_nav_kv(
+                store,
+                selected_map_id.as_deref(),
+                selected_family_id.as_deref(),
+            )?));
         ensure_vector_manifest_loaded(&mut candidate)?;
         if !candidate.chart_page_state.selected_chart_id.is_empty() {
             read_chart_asset_by_id(store, &candidate.chart_page_state.selected_chart_id)?;
@@ -6285,9 +6381,14 @@ pub fn advance_nav_kv_store_in_session_with_open_result(
                 invalidations,
             ))
         }
-        Err(HadReadError::NeedPages(pages)) => Ok(HadOperationOutcome::NeedResources {
-            resources: nav_kv_page_resources(pages),
-        }),
+        Err(HadReadError::NeedPages(pages)) => {
+            live.runtime = candidate.runtime;
+            live.runtime.invalidate_nav_data();
+            rebuild_metar_tile_cache(live);
+            Ok(HadOperationOutcome::NeedResources {
+                resources: nav_kv_page_resources(pages),
+            })
+        }
         Err(HadReadError::Fatal(message)) => {
             let candidate_label = open_result
                 .selected_cycle
@@ -6310,11 +6411,18 @@ pub fn advance_nav_kv_store_in_session_with_open_result(
                 style: UiStatusActionStyle::Normal,
             });
             warning.hushable = false;
+            let candidate_installed_package_ids = candidate.installed_package_ids.clone();
+            live.runtime = candidate.runtime;
+            live.runtime.invalidate_nav_data();
+            rebuild_metar_tile_cache(live);
             live.nav_db_advance_blocked = true;
-            live.installed_package_ids = candidate.installed_package_ids.clone();
-            if let Some(active_artifact) = live.nav_db_artifact.as_ref() {
-                live.installed_package_ids
-                    .insert(active_artifact.package_id.clone());
+            live.installed_package_ids = candidate_installed_package_ids;
+            let active_package_id = live
+                .nav_db_artifact
+                .as_ref()
+                .map(|artifact| artifact.package_id.clone());
+            if let Some(active_package_id) = active_package_id {
+                live.installed_package_ids.insert(active_package_id);
             }
             upsert_data_status_record(live, warning);
             advance_session_revision(live);
@@ -6435,7 +6543,7 @@ pub fn insert_nav_kv_page_for_attached_sessions(store_id: u32, page_index: u32, 
     for session in sessions.values_mut() {
         if session.nav_kv_store_id == Some(store_id) {
             if let Some(store) = session.nav_kv_store.as_mut() {
-                store.insert_page(page_index, page_bytes.to_vec());
+                Arc::make_mut(store).insert_page(page_index, page_bytes.to_vec());
             }
             if session
                 .cycle_product_freshness
@@ -6453,7 +6561,7 @@ pub fn debug_drop_nav_kv_pages_for_attached_sessions(store_id: u32) {
     for session in sessions.values_mut() {
         if session.nav_kv_store_id == Some(store_id) {
             if let Some(store) = session.nav_kv_store.as_mut() {
-                store.clear_pages();
+                Arc::make_mut(store).clear_pages();
             }
         }
     }
@@ -6501,12 +6609,10 @@ pub fn sync_map_follow_in_session(
 ) -> AppResult<HadOperationOutcome> {
     let mut sessions = lock_sessions();
     let session = session_mut(&mut sessions, handle)?;
-    session.map_follow.sync_for_viewport(
-        &session.app_state.ownship.render,
-        viewport,
-        width_px,
-        height_px,
-    );
+    let ownship = session.app_state.ownship.render.clone();
+    session
+        .map_follow
+        .sync_for_viewport(&ownship, viewport, width_px, height_px);
     changed_session_snapshot_outcome(session)
 }
 
@@ -6602,7 +6708,7 @@ pub fn get_session_snapshot_at_epoch_ms(
     sync_live_feed_overlay_status_records(session);
     let live_feed_status_ms = elapsed_ms(live_feed_status_started_at);
     let status_record_count = session.data_status_records.len();
-    let pending_resource_effect_count = session.pending_resource_effects.len();
+    let pending_resource_effect_count = session.runtime.pending_resource_effects.len();
     let snapshot_started_at = crate::core_clock_ms();
     let result = session_snapshot_outcome(session);
     let snapshot_ms = elapsed_ms(snapshot_started_at);
@@ -6627,6 +6733,7 @@ pub fn ingest_point_tiles_in_session(handle: u32, tiles: &[PointTilePayload]) ->
     let session = session_mut(&mut sessions, handle)?;
     for tile in tiles {
         let aggregate = session
+            .runtime
             .vector_tile_cache
             .entry(crate::aggregate_vector_tile_cache_key(
                 tile.z, tile.x, tile.y,
@@ -6651,6 +6758,7 @@ pub fn ingest_airspace_ref_tiles_in_session(
     let session = session_mut(&mut sessions, handle)?;
     for tile in tiles {
         session
+            .runtime
             .vector_tile_cache
             .entry(crate::aggregate_vector_tile_cache_key(
                 tile.z, tile.x, tile.y,
@@ -6669,6 +6777,7 @@ pub fn ingest_airspace_features_in_session(
     let session = session_mut(&mut sessions, handle)?;
     for feature in features {
         session
+            .runtime
             .airspace_feature_cache
             .insert(feature.id.clone(), feature.clone());
     }
@@ -6683,6 +6792,7 @@ pub fn ingest_airspace_label_tiles_in_session(
     let session = session_mut(&mut sessions, handle)?;
     for tile in tiles {
         session
+            .runtime
             .vector_tile_cache
             .entry(crate::aggregate_vector_tile_cache_key(
                 tile.z, tile.x, tile.y,
@@ -6710,7 +6820,7 @@ fn empty_vector_aggregate_tile(z: u32, x: u32, y: u32) -> VectorAggregateTilePay
 pub fn ingest_tfrs_in_session(handle: u32, payload: &TfrProductPayload) -> AppResult<()> {
     let mut sessions = lock_sessions();
     let session = session_mut(&mut sessions, handle)?;
-    session.tfr_payload = Some(payload.clone());
+    session.runtime.tfr_payload = Some(payload.clone());
     sync_live_feed_overlay_status_records(session);
     Ok(())
 }
@@ -6718,7 +6828,7 @@ pub fn ingest_tfrs_in_session(handle: u32, payload: &TfrProductPayload) -> AppRe
 pub fn ingest_tafs_in_session(handle: u32, payload: &TafProductPayload) -> AppResult<()> {
     let mut sessions = lock_sessions();
     let session = session_mut(&mut sessions, handle)?;
-    session.taf_payload = Some(payload.clone());
+    session.runtime.taf_payload = Some(payload.clone());
     Ok(())
 }
 
@@ -6746,7 +6856,7 @@ pub fn refresh_live_feed_current_in_session(handle: u32) -> AppResult<HadOperati
 pub fn configure_live_feed_source_in_session(handle: u32, source_root_url: &str) -> AppResult<()> {
     let mut sessions = lock_sessions();
     let session = session_mut(&mut sessions, handle)?;
-    let normalized = session.live_feeds.set_source_root_url(source_root_url)?;
+    let normalized = Arc::make_mut(&mut session.live_feeds).set_source_root_url(source_root_url)?;
     session.live_feed_connection.source_url = Some(normalized.clone());
     session.live_feed_connection.status_url = Some(crate::live_feed_status_url(&normalized)?);
     Ok(())
@@ -6789,7 +6899,7 @@ pub fn ingest_live_feed_sse_event_in_session_at_epoch_ms(
         },
         epoch_ms,
     );
-    session.live_feeds.ingest_sse_event(event.clone())
+    Arc::make_mut(&mut session.live_feeds).ingest_sse_event(event.clone())
 }
 
 pub fn ingest_live_feed_sse_events_in_session(
@@ -6819,18 +6929,19 @@ pub fn ingest_live_feed_sse_events_in_session_at_epoch_ms(
             epoch_ms,
         );
     }
-    let affected = match session.live_feeds.ingest_sse_events(events.iter().cloned()) {
-        Ok(affected) => affected,
-        Err(err) => {
-            record_live_feed_resource_error(
-                session,
-                format!("Failed to ingest live-feed server event: {}", err.message),
-            );
-            return Ok(session
-                .live_feeds
-                .sync_outcome_with_invalidations_at_epoch_ms(session.wall_clock_epoch_ms));
-        }
-    };
+    let affected =
+        match Arc::make_mut(&mut session.live_feeds).ingest_sse_events(events.iter().cloned()) {
+            Ok(affected) => affected,
+            Err(err) => {
+                record_live_feed_resource_error(
+                    session,
+                    format!("Failed to ingest live-feed server event: {}", err.message),
+                );
+                return Ok(session
+                    .live_feeds
+                    .sync_outcome_with_invalidations_at_epoch_ms(session.wall_clock_epoch_ms));
+            }
+        };
     Ok(session
         .live_feeds
         .sync_products_outcome_with_invalidations(affected.iter().map(String::as_str)))
@@ -6857,7 +6968,10 @@ pub fn ingest_resource_in_session_at_epoch_ms(
     if let Some(src) = nexrad_tile_src_from_resource_id(resource_id) {
         let mut sessions = lock_sessions();
         let session = session_mut(&mut sessions, handle)?;
-        session.nexrad_tile_cache.insert(src, bytes.to_vec());
+        session
+            .runtime
+            .nexrad_tile_cache
+            .insert(src, bytes.to_vec());
         return Ok(());
     }
     if LiveFeedsState::handles_resource(resource_id) {
@@ -6876,11 +6990,12 @@ pub fn ingest_resource_in_session_at_epoch_ms(
                 epoch_ms,
             );
         }
-        if let Err(err) = session.live_feeds.ingest_resource(resource_id, bytes) {
+        if let Err(err) = Arc::make_mut(&mut session.live_feeds).ingest_resource(resource_id, bytes)
+        {
             mark_live_feed_current_refresh_ingested(session, resource_id);
-            session
-                .live_feeds
-                .record_resource_failure(resource_id, session.wall_clock_epoch_ms);
+            let wall_clock_epoch_ms = session.wall_clock_epoch_ms;
+            Arc::make_mut(&mut session.live_feeds)
+                .record_resource_failure(resource_id, wall_clock_epoch_ms);
             let detail = live_feed_resource_failure_detail(resource_id, &err.message);
             record_live_feed_resource_error(session, detail);
             record_live_feed_fetch_failure(session, resource_id, &err.message);
@@ -6889,9 +7004,9 @@ pub fn ingest_resource_in_session_at_epoch_ms(
         }
         if let Err(err) = install_live_feed_payloads(session) {
             mark_live_feed_current_refresh_ingested(session, resource_id);
-            session
-                .live_feeds
-                .record_resource_failure(resource_id, session.wall_clock_epoch_ms);
+            let wall_clock_epoch_ms = session.wall_clock_epoch_ms;
+            Arc::make_mut(&mut session.live_feeds)
+                .record_resource_failure(resource_id, wall_clock_epoch_ms);
             let detail = live_feed_resource_failure_detail(resource_id, &err.message);
             record_live_feed_resource_error(session, detail);
             record_live_feed_fetch_failure(session, resource_id, &err.message);
@@ -6913,9 +7028,9 @@ pub fn ingest_resource_in_session_at_epoch_ms(
         let session = session_mut(&mut sessions, handle)?;
         if resource_id == "publication/current_artifacts" {
             advance_session_wall_clock(session, epoch_ms);
-            session
-                .publication_resolver
-                .ingest_resource_at_epoch_ms(resource_id, bytes, session.wall_clock_epoch_ms)
+            let wall_clock_epoch_ms = session.wall_clock_epoch_ms;
+            Arc::make_mut(&mut session.publication_resolver)
+                .ingest_resource_at_epoch_ms(resource_id, bytes, wall_clock_epoch_ms)
                 .map_err(|message| AppError {
                     kind: AppErrorKind::InvalidManifest,
                     message,
@@ -6923,8 +7038,7 @@ pub fn ingest_resource_in_session_at_epoch_ms(
             mark_cycle_product_freshness_dirty(session);
             return Ok(());
         }
-        session
-            .publication_resolver
+        Arc::make_mut(&mut session.publication_resolver)
             .ingest_resource(resource_id, bytes)
             .map_err(|message| AppError {
                 kind: AppErrorKind::InvalidManifest,
@@ -6949,9 +7063,11 @@ pub fn ingest_resource_in_session_at_epoch_ms(
         let mut sessions = lock_sessions();
         let session = session_mut(&mut sessions, handle)?;
         session
+            .runtime
             .agl_terrain_resource_ids_in_flight
             .remove(resource_id);
         session
+            .runtime
             .terrain_source_tile_cache
             .insert(rest.to_string(), abt2_bytes);
         return Ok(());
@@ -6981,7 +7097,7 @@ fn record_live_feed_connection_event(
     advance_session_wall_clock(session, epoch_ms);
     let at = session.wall_clock_epoch_ms;
     if let Some(source_url) = event.source_url {
-        match session.live_feeds.set_source_root_url(&source_url) {
+        match Arc::make_mut(&mut session.live_feeds).set_source_root_url(&source_url) {
             Ok(normalized) => {
                 session.live_feed_connection.source_url = Some(normalized);
             }
@@ -7050,7 +7166,7 @@ pub fn ingest_prepared_live_feed_resource_in_session(
     };
     let mut sessions = lock_sessions();
     let session = session_mut(&mut sessions, handle)?;
-    let mut next_live_feeds = session.live_feeds.clone();
+    let mut next_live_feeds = (*session.live_feeds).clone();
     next_live_feeds.ingest_prepared_live_feed(resource_id, &envelope)?;
     if next_live_feeds.product_staged_version(&envelope_product) != Some(envelope_version.as_str())
     {
@@ -7068,7 +7184,7 @@ pub fn ingest_prepared_live_feed_resource_in_session(
                     "expected_from_state_id": envelope.from_state_sha256,
                     "expected_to_state_id": envelope.state_sha256,
                     "actual_state_id": session
-                        .airport_notam_index
+                        .runtime.airport_notam_index
                         .as_ref()
                         .map(AirportNotamIndex::state_id),
                     "mutation_count": notam_mutation_count,
@@ -7076,12 +7192,12 @@ pub fn ingest_prepared_live_feed_resource_in_session(
                 }),
             );
         }
-        if envelope_product == "notams" && session.airport_notam_index.is_none() {
-            session.live_feeds.mark_product_no_state("notams");
+        if envelope_product == "notams" && session.runtime.airport_notam_index.is_none() {
+            Arc::make_mut(&mut session.live_feeds).mark_product_no_state("notams");
         }
         return Err(error);
     }
-    session.live_feeds = next_live_feeds;
+    session.live_feeds = Arc::new(next_live_feeds);
     clear_live_feed_resource_error(session);
     sync_live_feed_overlay_status_records(session);
     Ok(())
@@ -7139,7 +7255,7 @@ pub fn install_prepared_live_feed_cache_product_in_session(
     let mut sessions = lock_sessions();
     let session = session_mut(&mut sessions, handle)?;
     install_prepared_live_feed(session, envelope.payload)?;
-    session.live_feeds.mark_durable_product_loaded(
+    Arc::make_mut(&mut session.live_feeds).mark_durable_product_loaded(
         installed.product.clone(),
         installed.version.clone(),
         installed.state_sha256.clone(),
@@ -7161,8 +7277,8 @@ fn install_live_feed_installed_state(
                     kind: AppErrorKind::InvalidManifest,
                     message: format!("failed to parse installed METAR live feed: {err}"),
                 })?;
-            session.metar_payload = Some(payload);
-            session.prepared_metar_tiles = None;
+            session.runtime.metar_payload = Some(payload);
+            session.runtime.prepared_metar_tiles = None;
             rebuild_metar_tile_cache(session);
             clear_data_status_record(session, LIVE_FEED_METARS_STATUS_ID);
         }
@@ -7172,7 +7288,7 @@ fn install_live_feed_installed_state(
                     kind: AppErrorKind::InvalidManifest,
                     message: format!("failed to parse installed TAF live feed: {err}"),
                 })?;
-            session.taf_payload = Some(payload);
+            session.runtime.taf_payload = Some(payload);
             let status_id = live_feed_unavailable_status_record("tafs", String::new()).id;
             clear_data_status_record(session, &status_id);
         }
@@ -7182,7 +7298,7 @@ fn install_live_feed_installed_state(
                     kind: AppErrorKind::InvalidManifest,
                     message: format!("failed to parse installed TFR live feed: {err}"),
                 })?;
-            session.tfr_payload = Some(payload);
+            session.runtime.tfr_payload = Some(payload);
             clear_data_status_record(session, LIVE_FEED_TFRS_STATUS_ID);
         }
         ("notams", crate::LiveFeedInstalledPayload::NotamResources { .. }) => {
@@ -7238,10 +7354,12 @@ fn install_live_feed_installed_state(
                 package_blob_sha256,
             )?;
             session
+                .runtime
                 .nexrad_installed
                 .insert(installed.version.clone(), installed);
-            while session.nexrad_installed.len() > NEXRAD_FRAME_WINDOW_SIZE {
+            while session.runtime.nexrad_installed.len() > NEXRAD_FRAME_WINDOW_SIZE {
                 let Some(oldest) = session
+                    .runtime
                     .nexrad_installed
                     .values()
                     .min_by(|left, right| {
@@ -7253,14 +7371,15 @@ fn install_live_feed_installed_state(
                 else {
                     break;
                 };
-                session.nexrad_installed.remove(&oldest);
+                session.runtime.nexrad_installed.remove(&oldest);
             }
             let retained_versions = session
+                .runtime
                 .nexrad_installed
                 .keys()
                 .cloned()
                 .collect::<HashSet<_>>();
-            session.nexrad_tile_cache.retain(|src, _| {
+            session.runtime.nexrad_tile_cache.retain(|src, _| {
                 nexrad_installed_member(src)
                     .is_some_and(|(version, _)| retained_versions.contains(&version))
             });
@@ -7277,7 +7396,7 @@ fn install_live_feed_installed_state(
             });
         }
     }
-    session.live_feeds.mark_durable_product_loaded(
+    Arc::make_mut(&mut session.live_feeds).mark_durable_product_loaded(
         installed.product.clone(),
         installed.version.clone(),
         installed.state_sha256.clone(),
@@ -7294,7 +7413,7 @@ pub fn sync_live_feed_catalog_in_session(
 ) -> AppResult<HadOperationOutcome> {
     let mut sessions = lock_sessions();
     let session = session_mut(&mut sessions, handle)?;
-    session.live_feeds.merge_catalog_from(live_feeds);
+    Arc::make_mut(&mut session.live_feeds).merge_catalog_from(live_feeds);
     sync_live_feed_overlay_status_records(session);
     changed_session_snapshot_outcome(session)
 }
@@ -7326,18 +7445,18 @@ fn install_prepared_live_feed(
                     message: format!("unsupported prepared METAR schema {}", feed.schema_version),
                 });
             }
-            session.metar_payload = Some(feed.payload);
-            session.prepared_metar_tiles = Some(feed.tiles);
+            session.runtime.metar_payload = Some(feed.payload);
+            session.runtime.prepared_metar_tiles = Some(feed.tiles);
             rebuild_metar_tile_cache(session);
             clear_data_status_record(session, LIVE_FEED_METARS_STATUS_ID);
         }
         crate::PreparedLiveFeedPayload::Tafs(payload) => {
-            session.taf_payload = Some(payload);
+            session.runtime.taf_payload = Some(payload);
             let status_id = live_feed_unavailable_status_record("tafs", String::new()).id;
             clear_data_status_record(session, &status_id);
         }
         crate::PreparedLiveFeedPayload::Tfrs(payload) => {
-            session.tfr_payload = Some(payload);
+            session.runtime.tfr_payload = Some(payload);
             clear_data_status_record(session, LIVE_FEED_TFRS_STATUS_ID);
         }
         crate::PreparedLiveFeedPayload::Notams(message) => {
@@ -7349,10 +7468,11 @@ fn install_prepared_live_feed(
                             message: format!("failed to install airport NOTAM projection: {error}"),
                         },
                     )?;
-                    session.airport_notam_index = Some(index);
+                    session.runtime.airport_notam_index = Some(index);
                 }
                 crate::PreparedNotamPayload::ApplyAirportDelta(delta) => {
                     let index = session
+                        .runtime
                         .airport_notam_index
                         .as_mut()
                         .ok_or_else(|| AppError {
@@ -7367,7 +7487,7 @@ fn install_prepared_live_feed(
                                 | notam_state::NotamStateError::BaseStateMismatch { .. }
                         );
                         if !preserve {
-                            session.airport_notam_index = None;
+                            session.runtime.airport_notam_index = None;
                         }
                         return Err(AppError {
                             kind: AppErrorKind::InvalidManifest,
@@ -7440,9 +7560,9 @@ pub fn report_session_resource_failure_in_session_at_epoch_ms(
     let session = session_mut(&mut sessions, handle)?;
     advance_session_wall_clock(session, epoch_ms);
     if LiveFeedsState::handles_resource(resource_id) {
-        session
-            .live_feeds
-            .record_resource_failure(resource_id, session.wall_clock_epoch_ms);
+        let wall_clock_epoch_ms = session.wall_clock_epoch_ms;
+        Arc::make_mut(&mut session.live_feeds)
+            .record_resource_failure(resource_id, wall_clock_epoch_ms);
         record_live_feed_resource_error(
             session,
             live_feed_resource_failure_detail(resource_id, message),
@@ -7481,7 +7601,7 @@ fn ingest_live_obstacle_had_resource(
             message: format!("invalid obstacle HAD resource id: {resource_id}"),
         });
     };
-    let Some(had) = session.obstacle_had.as_mut() else {
+    let Some(had) = session.runtime.obstacle_had.as_mut() else {
         return Ok(());
     };
     if had.version != version {
@@ -7503,7 +7623,7 @@ fn ingest_live_obstacle_had_resource(
             });
         }
         had.store = Some(NavKvStore::new(root));
-        session.obstacle_tile_cache.clear();
+        session.runtime.obstacle_tile_cache.clear();
         clear_data_status_record(session, LIVE_FEED_OBSTACLES_STATUS_ID);
         return Ok(());
     }
@@ -7544,34 +7664,35 @@ fn ingest_live_obstacle_had_resource(
 fn install_live_feed_payloads(session: &mut UiSession) -> AppResult<()> {
     if session.live_feeds.current_loaded() {
         if !session.live_feeds.has_product_current_version("metars") {
-            session.metar_tile_cache.clear();
-            session.metar_payload = None;
-            session.prepared_metar_tiles = None;
+            session.runtime.metar_tile_cache.clear();
+            session.runtime.metar_payload = None;
+            session.runtime.prepared_metar_tiles = None;
             clear_data_status_record(session, LIVE_FEED_METARS_STATUS_ID);
         }
         if !session.live_feeds.has_product_current_version("tafs") {
-            session.taf_payload = None;
+            session.runtime.taf_payload = None;
             let status_id = live_feed_unavailable_status_record("tafs", String::new()).id;
             clear_data_status_record(session, &status_id);
         }
         if !session.live_feeds.has_product_current_version("notams") {
-            session.airport_notam_index = None;
+            session.runtime.airport_notam_index = None;
             let status_id = live_feed_unavailable_status_record("notams", String::new()).id;
             clear_data_status_record(session, &status_id);
         }
         if !session.live_feeds.has_product_current_version("tfrs") {
-            session.tfr_payload = None;
+            session.runtime.tfr_payload = None;
             clear_data_status_record(session, LIVE_FEED_TFRS_STATUS_ID);
         }
         if !session.live_feeds.has_product_current_version("obstacles") {
-            session.obstacle_had = None;
-            session.obstacle_tile_cache.clear();
-            session.map_overlay_config.obstacle_layer = None;
+            session.runtime.obstacle_had = None;
+            session.runtime.obstacle_tile_cache.clear();
+            Arc::make_mut(&mut session.map_overlay_config).obstacle_layer = None;
             clear_data_status_record(session, LIVE_FEED_OBSTACLES_STATUS_ID);
         }
     }
     let loaded_metars_version = session.live_feeds.product_loaded_version("metars");
     let metars_installed = session
+        .runtime
         .metar_payload
         .as_ref()
         .and_then(|payload| loaded_metars_version.map(|version| payload.version_label == version))
@@ -7580,15 +7701,15 @@ fn install_live_feed_payloads(session: &mut UiSession) -> AppResult<()> {
         if let Some(metars_value) = session.live_feeds.product_state_manifest("metars").cloned() {
             match serde_json::from_value::<MetarProductPayload>(metars_value) {
                 Ok(payload) => {
-                    session.metar_payload = Some(payload);
-                    session.prepared_metar_tiles = None;
+                    session.runtime.metar_payload = Some(payload);
+                    session.runtime.prepared_metar_tiles = None;
                     rebuild_metar_tile_cache(session);
                     clear_data_status_record(session, LIVE_FEED_METARS_STATUS_ID);
                 }
                 Err(err) => {
-                    session.metar_tile_cache.clear();
-                    session.metar_payload = None;
-                    session.prepared_metar_tiles = None;
+                    session.runtime.metar_tile_cache.clear();
+                    session.runtime.metar_payload = None;
+                    session.runtime.prepared_metar_tiles = None;
                     upsert_data_status_record(
                         session,
                         live_feed_unavailable_status_record(
@@ -7602,6 +7723,7 @@ fn install_live_feed_payloads(session: &mut UiSession) -> AppResult<()> {
     }
     let loaded_tafs_version = session.live_feeds.product_loaded_version("tafs");
     let tafs_installed = session
+        .runtime
         .taf_payload
         .as_ref()
         .and_then(|payload| loaded_tafs_version.map(|version| payload.version_label == version))
@@ -7610,12 +7732,12 @@ fn install_live_feed_payloads(session: &mut UiSession) -> AppResult<()> {
         if let Some(tafs_value) = session.live_feeds.product_state_manifest("tafs").cloned() {
             match serde_json::from_value::<TafProductPayload>(tafs_value) {
                 Ok(payload) => {
-                    session.taf_payload = Some(payload);
+                    session.runtime.taf_payload = Some(payload);
                     let status_id = live_feed_unavailable_status_record("tafs", String::new()).id;
                     clear_data_status_record(session, &status_id);
                 }
                 Err(err) => {
-                    session.taf_payload = None;
+                    session.runtime.taf_payload = None;
                     upsert_data_status_record(
                         session,
                         live_feed_unavailable_status_record(
@@ -7629,6 +7751,7 @@ fn install_live_feed_payloads(session: &mut UiSession) -> AppResult<()> {
     }
     let loaded_tfrs_version = session.live_feeds.product_loaded_version("tfrs");
     let tfrs_installed = session
+        .runtime
         .tfr_payload
         .as_ref()
         .and_then(|payload| loaded_tfrs_version.map(|version| payload.version_label == version))
@@ -7637,11 +7760,11 @@ fn install_live_feed_payloads(session: &mut UiSession) -> AppResult<()> {
         if let Some(tfrs_value) = session.live_feeds.product_state_manifest("tfrs").cloned() {
             match serde_json::from_value::<TfrProductPayload>(tfrs_value) {
                 Ok(payload) => {
-                    session.tfr_payload = Some(payload);
+                    session.runtime.tfr_payload = Some(payload);
                     clear_data_status_record(session, LIVE_FEED_TFRS_STATUS_ID);
                 }
                 Err(err) => {
-                    session.tfr_payload = None;
+                    session.runtime.tfr_payload = None;
                     upsert_data_status_record(
                         session,
                         live_feed_unavailable_status_record(
@@ -7653,23 +7776,32 @@ fn install_live_feed_payloads(session: &mut UiSession) -> AppResult<()> {
             }
         }
     }
-    let loaded_obstacles_version = session.live_feeds.product_loaded_version("obstacles");
+    let loaded_obstacles_version = session
+        .live_feeds
+        .product_loaded_version("obstacles")
+        .map(str::to_string);
     if let Some(current_obstacles_version) = session.live_feeds.current_product_version("obstacles")
     {
         if session
+            .runtime
             .obstacle_had
             .as_ref()
             .is_some_and(|had| had.version != current_obstacles_version)
         {
-            session.obstacle_had = None;
-            session.obstacle_tile_cache.clear();
-            session.map_overlay_config.obstacle_layer = None;
+            session.runtime.obstacle_had = None;
+            session.runtime.obstacle_tile_cache.clear();
+            Arc::make_mut(&mut session.map_overlay_config).obstacle_layer = None;
         }
     }
     let obstacles_installed = session
+        .runtime
         .obstacle_had
         .as_ref()
-        .and_then(|had| loaded_obstacles_version.map(|version| had.version == version))
+        .and_then(|had| {
+            loaded_obstacles_version
+                .as_deref()
+                .map(|version| had.version == version)
+        })
         .unwrap_or(false);
     if !obstacles_installed {
         if let Some(obstacles_value) = session
@@ -7678,9 +7810,9 @@ fn install_live_feed_payloads(session: &mut UiSession) -> AppResult<()> {
             .cloned()
         {
             if let Err(err) = install_live_obstacle_had(session, obstacles_value) {
-                session.obstacle_had = None;
-                session.obstacle_tile_cache.clear();
-                session.map_overlay_config.obstacle_layer = None;
+                session.runtime.obstacle_had = None;
+                session.runtime.obstacle_tile_cache.clear();
+                Arc::make_mut(&mut session.map_overlay_config).obstacle_layer = None;
                 upsert_data_status_record(
                     session,
                     live_feed_unavailable_status_record(
@@ -7795,17 +7927,22 @@ fn install_live_obstacle_had_with_parsed_manifest(
         });
     }
     let obstacle_layer = obstacle_layer_config_from_live_manifest_value(manifest_value)?;
-    let same_state = session.obstacle_had.as_ref().is_some_and(|existing| {
-        existing.version == version
-            && existing.state_url == state_url
-            && existing.root_member_path == manifest.root
-            && existing.page_path_template == manifest.page_path_template
-            && existing.page_count == manifest.page_count
-            && existing.state_sha256 == manifest.state_sha256
-    });
+    let same_state = session
+        .runtime
+        .obstacle_had
+        .as_ref()
+        .is_some_and(|existing| {
+            existing.version == version
+                && existing.state_url == state_url
+                && existing.root_member_path == manifest.root
+                && existing.page_path_template == manifest.page_path_template
+                && existing.page_count == manifest.page_count
+                && existing.state_sha256 == manifest.state_sha256
+        });
     let preserve_store = store.or_else(|| {
         if same_state {
             session
+                .runtime
                 .obstacle_had
                 .as_ref()
                 .and_then(|existing| existing.store.clone())
@@ -7813,8 +7950,8 @@ fn install_live_obstacle_had_with_parsed_manifest(
             None
         }
     });
-    session.map_overlay_config.obstacle_layer = Some(obstacle_layer);
-    session.obstacle_had = Some(LiveObstacleHadState {
+    Arc::make_mut(&mut session.map_overlay_config).obstacle_layer = Some(obstacle_layer);
+    session.runtime.obstacle_had = Some(LiveObstacleHadState {
         version,
         state_url,
         root_member_path: manifest.root,
@@ -7824,7 +7961,7 @@ fn install_live_obstacle_had_with_parsed_manifest(
         store: preserve_store,
     });
     if !same_state {
-        session.obstacle_tile_cache.clear();
+        session.runtime.obstacle_tile_cache.clear();
     }
     clear_data_status_record(session, LIVE_FEED_OBSTACLES_STATUS_ID);
     Ok(())
@@ -7962,9 +8099,10 @@ fn metar_tile_cache_for_prepared_live_feed(
 }
 
 fn rebuild_metar_tile_cache(session: &mut UiSession) {
-    if let Some(tiles) = session.prepared_metar_tiles.as_ref() {
+    if let Some(tiles) = session.runtime.prepared_metar_tiles.as_ref() {
         let empty = HashSet::new();
         let important_station_ids = session
+            .runtime
             .important_metar_station_ids
             .as_ref()
             .unwrap_or(&empty);
@@ -7973,33 +8111,34 @@ fn rebuild_metar_tile_cache(session: &mut UiSession) {
             session.map_overlay_config.metar_layer.as_ref(),
             important_station_ids,
         ) {
-            session.metar_tile_cache = cache;
+            session.runtime.metar_tile_cache = cache;
             return;
         }
     }
-    if let Some(payload) = session.metar_payload.as_ref() {
+    if let Some(payload) = session.runtime.metar_payload.as_ref() {
         let empty = HashSet::new();
         let important_station_ids = session
+            .runtime
             .important_metar_station_ids
             .as_ref()
             .unwrap_or(&empty);
-        session.metar_tile_cache = metar_tile_cache_for_live_feed(
+        session.runtime.metar_tile_cache = metar_tile_cache_for_live_feed(
             payload,
             session.map_overlay_config.metar_layer.as_ref(),
             important_station_ids,
         );
     } else {
-        session.metar_tile_cache.clear();
+        session.runtime.metar_tile_cache.clear();
     }
 }
 
 fn ensure_metar_station_importance_loaded(session: &mut UiSession) -> Result<(), HadReadError> {
-    if session.important_metar_station_ids.is_some() {
+    if session.runtime.important_metar_station_ids.is_some() {
         return Ok(());
     }
     let Some(store) = session.nav_kv_store.as_ref() else {
-        session.important_metar_station_ids = Some(HashSet::new());
-        session.metar_station_importance_status = Some(metar_station_importance_status_record(
+        session.runtime.important_metar_station_ids = Some(HashSet::new());
+        session.runtime.metar_station_importance_status = Some(metar_station_importance_status_record(
             "Station importance unavailable",
             UiStatusSeverity::Caution,
             "METAR low-zoom station filtering could not load because no nav-db store is attached.",
@@ -8012,8 +8151,8 @@ fn ensure_metar_station_importance_loaded(session: &mut UiSession) -> Result<(),
         NavKvQuery::MetarImportantStations,
     )?
     else {
-        session.important_metar_station_ids = Some(HashSet::new());
-        session.metar_station_importance_status = Some(metar_station_importance_status_record(
+        session.runtime.important_metar_station_ids = Some(HashSet::new());
+        session.runtime.metar_station_importance_status = Some(metar_station_importance_status_record(
             "Station importance missing",
             UiStatusSeverity::Caution,
             "METAR low-zoom station filtering could not find weather/metar-important-stations in nav-db. Low-zoom METARs are hidden until the current nav-db provides that record.",
@@ -8033,8 +8172,8 @@ fn ensure_metar_station_importance_loaded(session: &mut UiSession) -> Result<(),
         .map(|station_id| station_id.trim().to_ascii_uppercase())
         .filter(|station_id| !station_id.is_empty())
         .collect::<HashSet<_>>();
-    session.important_metar_station_ids = Some(station_ids);
-    session.metar_station_importance_status = None;
+    session.runtime.important_metar_station_ids = Some(station_ids);
+    session.runtime.metar_station_importance_status = None;
     rebuild_metar_tile_cache(session);
     Ok(())
 }
@@ -8042,11 +8181,12 @@ fn ensure_metar_station_importance_loaded(session: &mut UiSession) -> Result<(),
 fn ensure_weather_station_airport_aliases_loaded(
     session: &mut UiSession,
 ) -> Result<(), HadReadError> {
-    if session.weather_station_airport_aliases.is_some() {
+    if session.runtime.weather_station_airport_aliases.is_some() {
         return Ok(());
     }
     let Some(store) = session.nav_kv_store.as_ref() else {
-        session.weather_station_airport_aliases = Some(WeatherStationAirportAliases::default());
+        session.runtime.weather_station_airport_aliases =
+            Some(WeatherStationAirportAliases::default());
         return Ok(());
     };
     let Some(payload) = read_attached_json_optional::<WeatherStationAirportAliasesPayload>(
@@ -8054,7 +8194,8 @@ fn ensure_weather_station_airport_aliases_loaded(
         NavKvQuery::WeatherStationAirportAliases,
     )?
     else {
-        session.weather_station_airport_aliases = Some(WeatherStationAirportAliases::default());
+        session.runtime.weather_station_airport_aliases =
+            Some(WeatherStationAirportAliases::default());
         return Ok(());
     };
     if payload.schema_version != 1 {
@@ -8063,7 +8204,7 @@ fn ensure_weather_station_airport_aliases_loaded(
             payload.schema_version
         )));
     }
-    session.weather_station_airport_aliases =
+    session.runtime.weather_station_airport_aliases =
         Some(WeatherStationAirportAliases::from_station_to_airport(
             payload
                 .aliases
@@ -8074,7 +8215,7 @@ fn ensure_weather_station_airport_aliases_loaded(
 }
 
 fn metar_importance_required_for_surface(session: &UiSession, metrics: &MapSurfaceMetrics) -> bool {
-    if !session.map_layer_state.metars.visible || session.metar_payload.is_none() {
+    if !session.map_layer_state.metars.visible || session.runtime.metar_payload.is_none() {
         return false;
     }
     let Some(layer) = session.map_overlay_config.metar_layer.as_ref() else {
@@ -8100,11 +8241,11 @@ fn metar_station_importance_status_record(
 }
 
 fn try_ensure_metar_station_importance_loaded(session: &mut UiSession) -> Option<DataStatusRecord> {
-    if session.important_metar_station_ids.is_some() {
-        return session.metar_station_importance_status.clone();
+    if session.runtime.important_metar_station_ids.is_some() {
+        return session.runtime.metar_station_importance_status.clone();
     }
     match ensure_metar_station_importance_loaded(session) {
-        Ok(()) => session.metar_station_importance_status.clone(),
+        Ok(()) => session.runtime.metar_station_importance_status.clone(),
         Err(HadReadError::NeedPages(pages)) => {
             for resource in nav_kv_page_resources(pages) {
                 enqueue_session_resource_effect(session, resource, [UiInvalidation::MapOverlay]);
@@ -8117,14 +8258,15 @@ fn try_ensure_metar_station_importance_loaded(session: &mut UiSession) -> Option
             ))
         }
         Err(HadReadError::Fatal(message)) => {
-            session.important_metar_station_ids = Some(HashSet::new());
-            session.metar_station_importance_status = Some(metar_station_importance_status_record(
-                "Station importance failed",
-                UiStatusSeverity::Caution,
-                format!("METAR low-zoom station filtering failed: {message}"),
-            ));
+            session.runtime.important_metar_station_ids = Some(HashSet::new());
+            session.runtime.metar_station_importance_status =
+                Some(metar_station_importance_status_record(
+                    "Station importance failed",
+                    UiStatusSeverity::Caution,
+                    format!("METAR low-zoom station filtering failed: {message}"),
+                ));
             rebuild_metar_tile_cache(session);
-            session.metar_station_importance_status.clone()
+            session.runtime.metar_station_importance_status.clone()
         }
     }
 }
@@ -8299,7 +8441,7 @@ fn install_vector_manifest_config(
     let mut config = map_overlay_config_from_vector_manifest_json(&manifest_json)
         .map_err(|err| err.to_string())?;
     config.obstacle_layer = obstacle_layer;
-    session.map_overlay_config = config;
+    session.map_overlay_config = Arc::new(config);
     rebuild_metar_tile_cache(session);
     session.vector_manifest_loaded = true;
     Ok(())
@@ -8377,8 +8519,8 @@ fn ensure_vector_inputs_loaded(
             "needed_pages": stats.needed_pages,
             "loaded_vector_tiles": stats.loaded_vector_tiles,
             "loaded_airspace_features": stats.loaded_airspace_features,
-            "cached_vector_tiles": session.vector_tile_cache.len(),
-            "cached_airspace_features": session.airspace_feature_cache.len(),
+            "cached_vector_tiles": session.runtime.vector_tile_cache.len(),
+            "cached_airspace_features": session.runtime.airspace_feature_cache.len(),
         })
     });
     result
@@ -8398,8 +8540,8 @@ fn ensure_vector_inputs_loaded_impl(
         let inputs = vector_overlay_input_requests(
             metrics,
             &session.map_overlay_config,
-            &session.vector_tile_cache,
-            &session.airspace_feature_cache,
+            &session.runtime.vector_tile_cache,
+            &session.runtime.airspace_feature_cache,
         );
         stats.request_ms += elapsed_ms(request_started_at);
         let needed_vector_inputs =
@@ -8468,7 +8610,7 @@ fn ensure_vector_inputs_loaded_impl(
 
         let insert_started_at = crate::core_clock_ms();
         for tile in vector_tiles {
-            session.vector_tile_cache.insert(
+            session.runtime.vector_tile_cache.insert(
                 crate::aggregate_vector_tile_cache_key(tile.z, tile.x, tile.y),
                 tile,
             );
@@ -8477,6 +8619,7 @@ fn ensure_vector_inputs_loaded_impl(
         }
         for feature in features {
             session
+                .runtime
                 .airspace_feature_cache
                 .insert(feature.id.clone(), feature);
             stats.loaded_airspace_features += 1;
@@ -8550,7 +8693,7 @@ fn ensure_live_obstacle_inputs_loaded(
     session: &mut UiSession,
     metrics: &MapSurfaceMetrics,
 ) -> Vec<DataStatusRecord> {
-    if session.obstacle_had.is_none() {
+    if session.runtime.obstacle_had.is_none() {
         if let HadOperationOutcome::NeedResources { resources } = session
             .live_feeds
             .sync_product_outcome_at_epoch_ms("obstacles", session.wall_clock_epoch_ms)
@@ -8564,7 +8707,7 @@ fn ensure_live_obstacle_inputs_loaded(
     let Some(layer) = session.map_overlay_config.obstacle_layer.clone() else {
         return Vec::new();
     };
-    let Some(had) = session.obstacle_had.clone() else {
+    let Some(had) = session.runtime.obstacle_had.clone() else {
         return Vec::new();
     };
     if had.store.is_none() {
@@ -8625,7 +8768,7 @@ fn ensure_live_obstacle_inputs_loaded(
     let mut loaded_any = false;
     for tile in tiles {
         let cache_key = crate::tile_key("obstacle", tile.z, tile.x, tile.y);
-        if session.obstacle_tile_cache.contains_key(&cache_key) {
+        if session.runtime.obstacle_tile_cache.contains_key(&cache_key) {
             continue;
         }
         let Some(key) = nav_kv_key_for_query(&NavKvQuery::ObstacleTile {
@@ -8639,7 +8782,10 @@ fn ensure_live_obstacle_inputs_loaded(
             Ok(NavKvLookup::Hit(bytes)) => match serde_json::from_slice::<PointTilePayload>(&bytes)
             {
                 Ok(payload) => {
-                    session.obstacle_tile_cache.insert(cache_key, payload);
+                    session
+                        .runtime
+                        .obstacle_tile_cache
+                        .insert(cache_key, payload);
                     loaded_any = true;
                 }
                 Err(err) => {
@@ -8805,12 +8951,12 @@ pub fn get_map_overlay_in_session_with_point_display_scale_at_epoch_ms(
         session.map_layer_state.metars.visible,
         &offline_region_records,
         ownship_overlay_context(session).as_ref(),
-        &session.vector_tile_cache,
-        &session.obstacle_tile_cache,
-        &session.metar_tile_cache,
-        session.metar_payload.as_ref(),
-        &session.airspace_feature_cache,
-        session.tfr_payload.as_ref(),
+        &session.runtime.vector_tile_cache,
+        &session.runtime.obstacle_tile_cache,
+        &session.runtime.metar_tile_cache,
+        session.runtime.metar_payload.as_ref(),
+        &session.runtime.airspace_feature_cache,
+        session.runtime.tfr_payload.as_ref(),
         &flight_plan_features,
         Some(session_wall_clock_utc(session)),
     );
@@ -9119,6 +9265,7 @@ fn materialize_map_selection_in_session(
         return had_read_error_to_map_selection_materialization(err);
     }
     let weather_station_airport_aliases = session
+        .runtime
         .weather_station_airport_aliases
         .as_ref()
         .ok_or_else(|| AppError {
@@ -9171,15 +9318,15 @@ fn materialize_map_selection_in_session(
         &session.map_overlay_config,
         plan,
         click,
-        &session.vector_tile_cache,
-        &session.metar_tile_cache,
-        session.metar_payload.as_ref(),
-        session.taf_payload.as_ref(),
-        session.airport_notam_index.as_ref(),
+        &session.runtime.vector_tile_cache,
+        &session.runtime.metar_tile_cache,
+        session.runtime.metar_payload.as_ref(),
+        session.runtime.taf_payload.as_ref(),
+        session.runtime.airport_notam_index.as_ref(),
         weather_station_airport_aliases,
         &offline_region_records,
-        &session.airspace_feature_cache,
-        session.tfr_payload.as_ref(),
+        &session.runtime.airspace_feature_cache,
+        session.runtime.tfr_payload.as_ref(),
         &flight_plan_points,
         &mut availability,
         Some(session_wall_clock_utc(session)),
@@ -9259,6 +9406,7 @@ fn terrain_elevation_from_cache(session: &UiSession, position: LatLon) -> Option
         .iter()
         .filter_map(|source_tile| {
             session
+                .runtime
                 .terrain_source_tile_cache
                 .get(&terrain_source_tile_cache_key(
                     &source_tile.product_id,
@@ -9298,6 +9446,7 @@ fn enqueue_ownship_agl_terrain_effect(session: &mut UiSession) {
         for resource in resources {
             if resource.id.starts_with("terrain/source/")
                 && !session
+                    .runtime
                     .agl_terrain_resource_ids_in_flight
                     .insert(resource.id.clone())
             {
@@ -9577,7 +9726,7 @@ fn resolve_terrain_source_resources<'a>(
                     };
                 }
                 if fetch_policy == TerrainSourceFetchPolicy::OptionalPayload
-                    && !session.terrain_source_tile_cache.contains_key(&key)
+                    && !session.runtime.terrain_source_tile_cache.contains_key(&key)
                 {
                     pending_resources.push(resource.clone());
                 }
@@ -9734,7 +9883,7 @@ struct NexradFrameCandidate {
 fn nexrad_frame_candidates(session: &UiSession) -> Vec<NexradFrameCandidate> {
     let mut frames = Vec::new();
     let mut identities = HashSet::new();
-    for installed in session.nexrad_installed.values() {
+    for installed in session.runtime.nexrad_installed.values() {
         let identity = nexrad_manifest_identity(&installed.version, &installed.manifest);
         if !identities.insert(identity) {
             continue;
@@ -9874,6 +10023,7 @@ pub fn nexrad_tile_bytes_in_session(handle: u32, src: &str) -> AppResult<Vec<u8>
     let sessions = lock_sessions();
     let session = session_ref(&sessions, handle)?;
     session
+        .runtime
         .nexrad_tile_cache
         .get(src)
         .cloned()
@@ -9914,7 +10064,7 @@ pub fn prepare_nexrad_tile_in_session(handle: u32, src: &str) -> AppResult<HadOp
 }
 
 fn nexrad_tile_bytes_loaded(session: &UiSession, src: &str) -> AppResult<bool> {
-    Ok(session.nexrad_tile_cache.contains_key(src))
+    Ok(session.runtime.nexrad_tile_cache.contains_key(src))
 }
 
 fn nexrad_tile_resource_request(session: &UiSession, src: &str) -> AppResult<CoreResourceRequest> {
@@ -9934,6 +10084,7 @@ fn nexrad_tile_resource_request(session: &UiSession, src: &str) -> AppResult<Cor
                 message: format!("NEXRAD tile URL {src} does not identify a package member"),
             })?;
             let installed = session
+                .runtime
                 .nexrad_installed
                 .get(&version)
                 .ok_or_else(|| AppError {
@@ -10475,6 +10626,7 @@ pub fn render_terrain_overlay_tile_by_key_in_session(
         });
     };
     let tile_bytes = session
+        .runtime
         .terrain_source_tile_cache
         .iter()
         .filter_map(|(source_key, bytes)| source_key.strip_suffix(path).map(|_| bytes.as_slice()))
@@ -10605,7 +10757,7 @@ fn session_plan(session: &UiSession) -> AppResult<FlightPlan> {
 }
 
 fn session_nav_kv_store(session: &UiSession) -> AppResult<&NavKvStore> {
-    session.nav_kv_store.as_ref().ok_or_else(|| AppError {
+    session.nav_kv_store.as_deref().ok_or_else(|| AppError {
         kind: AppErrorKind::Internal,
         message: "session missing nav kv store".to_string(),
     })
@@ -10667,7 +10819,7 @@ fn replace_session_flight_plan(session: &mut UiSession, plan: FlightPlan) -> App
     if let Some(geometries) = self_contained_guidance_leg_geometry_for_plan(&normalized_plan)? {
         install_guidance_leg_geometry(session, geometries)?;
     } else {
-        session.guidance_leg_geometry.clear();
+        Arc::make_mut(&mut session.guidance_leg_geometry).clear();
     }
     session.chart_page_state = derive_compact_chart_page_state_with_reference(
         &normalized_plan,
@@ -10701,60 +10853,31 @@ fn commit_session_flight_plan_with_invalidations_outcome(
         .active_plan
         .clone()
         .ok_or_else(|| missing_active_plan_error("flight-plan mutation"))?;
-    let mut candidate = session.clone();
-    replace_session_flight_plan(&mut candidate, plan)?;
-    let accepted_plan = candidate
-        .app_state
-        .active_plan
-        .clone()
-        .ok_or_else(|| missing_active_plan_error("cloud flight-plan publication"))?;
-    let definition_changed = candidate.cloud.record_local_flight_plan_mutation(
-        &prior_plan,
-        &accepted_plan,
-        candidate.wall_clock_epoch_ms,
-    )?;
-    if !definition_changed && accepted_plan.guidance.is_none() {
-        if let Some(remote_plan) = candidate.cloud.take_pending_remote_flight_plan() {
-            replace_session_flight_plan(&mut candidate, remote_plan)?;
-        }
-    }
-    match sync_guidance_geometry_for_session(&mut candidate, &started) {
-        Ok(()) => {
-            advance_session_revision(&mut candidate);
-            match try_snapshot_for_session(&mut candidate) {
-                Ok(snapshot) => {
-                    write_session_persistence_to_storage(&candidate)?;
-                    *session = candidate;
-                    let snapshot = serde_json::to_value(snapshot).map_err(|err| AppError {
-                        kind: AppErrorKind::Internal,
-                        message: err.to_string(),
-                    })?;
-                    Ok(HadOperationOutcome::complete_with_invalidations(
-                        snapshot,
-                        vec![
-                            UiInvalidation::SessionSnapshot,
-                            UiInvalidation::FlightPlanRoute,
-                            UiInvalidation::MapOverlay,
-                        ],
-                    ))
-                }
-                Err(HadReadError::NeedPages(pages)) => Ok(HadOperationOutcome::NeedResources {
-                    resources: nav_kv_page_resources(pages),
-                }),
-                Err(HadReadError::Fatal(message)) => Err(AppError {
-                    kind: AppErrorKind::InvalidFlightPlan,
-                    message,
-                }),
+    run_session_model_transaction(session, |session| {
+        replace_session_flight_plan(session, plan)?;
+        let accepted_plan = session
+            .app_state
+            .active_plan
+            .clone()
+            .ok_or_else(|| missing_active_plan_error("cloud flight-plan publication"))?;
+        let wall_clock_epoch_ms = session.wall_clock_epoch_ms;
+        let definition_changed = session.cloud.record_local_flight_plan_mutation(
+            &prior_plan,
+            &accepted_plan,
+            wall_clock_epoch_ms,
+        )?;
+        if !definition_changed && accepted_plan.guidance.is_none() {
+            if let Some(remote_plan) = session.cloud.take_pending_remote_flight_plan() {
+                replace_session_flight_plan(session, remote_plan)?;
             }
         }
-        Err(HadReadError::NeedPages(pages)) => Ok(HadOperationOutcome::NeedResources {
-            resources: nav_kv_page_resources(pages),
-        }),
-        Err(HadReadError::Fatal(message)) => Err(AppError {
-            kind: AppErrorKind::InvalidFlightPlan,
-            message,
-        }),
-    }
+        sync_guidance_geometry_for_session(session, &started)?;
+        Ok(vec![
+            UiInvalidation::SessionSnapshot,
+            UiInvalidation::FlightPlanRoute,
+            UiInvalidation::MapOverlay,
+        ])
+    })
 }
 
 fn advance_session_revision(session: &mut UiSession) {
@@ -10847,7 +10970,7 @@ fn session_snapshot_outcome_with_invalidations(
 fn try_snapshot_for_session(session: &mut UiSession) -> Result<UiSessionSnapshot, HadReadError> {
     let total_started_at = crate::core_clock_ms();
     sync_cloud_status_record(session);
-    if session.metar_payload.is_some() || session.taf_payload.is_some() {
+    if session.runtime.metar_payload.is_some() || session.runtime.taf_payload.is_some() {
         ensure_weather_station_airport_aliases_loaded(session)?;
     }
     enqueue_ownship_agl_terrain_effect(session);
@@ -10864,9 +10987,9 @@ fn try_snapshot_for_session(session: &mut UiSession) -> Result<UiSessionSnapshot
     let playback_ui_state = session.playback.ui_state();
     let playback_ms = elapsed_ms(playback_started_at);
     let map_follow_started_at = crate::core_clock_ms();
-    let (map_follow_ui_state, map_follow_target_viewport) = session
-        .map_follow
-        .snapshot_projection(&session.app_state.ownship.render);
+    let ownship = session.app_state.ownship.render.clone();
+    let (map_follow_ui_state, map_follow_target_viewport) =
+        session.map_follow.snapshot_projection(&ownship);
     let map_follow_ms = elapsed_ms(map_follow_started_at);
     let clone_started_at = crate::core_clock_ms();
     let chart_page_state = session.chart_page_state.clone();
@@ -10902,7 +11025,7 @@ fn try_snapshot_for_session(session: &mut UiSession) -> Result<UiSessionSnapshot
     let raster_started_at = crate::core_clock_ms();
     let raster_map = session
         .raster_map_catalog
-        .as_ref()
+        .as_deref()
         .and_then(crate::raster_map_ui_state);
     let raster_ms = elapsed_ms(raster_started_at);
     let total_ms = elapsed_ms(total_started_at);
@@ -11375,7 +11498,7 @@ fn project_session_app_ui_state(session: &UiSession) -> Result<AppUiState, HadRe
             guidance.nav_element = project_materialized_nav_element(
                 materialized,
                 app_ui_state.ownship.render.position,
-                session.nav_kv_store.as_ref(),
+                session.nav_kv_store.as_deref(),
             )?;
         }
     }
@@ -11390,6 +11513,7 @@ fn project_session_app_ui_state(session: &UiSession) -> Result<AppUiState, HadRe
 fn enrich_flight_plan_weather_actions(session: &UiSession, active_plan: &mut FlightPlanUiState) {
     let empty_aliases = WeatherStationAirportAliases::default();
     let aliases = session
+        .runtime
         .weather_station_airport_aliases
         .as_ref()
         .unwrap_or(&empty_aliases);
@@ -11406,9 +11530,9 @@ fn enrich_flight_plan_weather_actions(session: &UiSession, active_plan: &mut Fli
             crate::map_overlay::weather_detail_for_airport(
                 airport_id,
                 aliases,
-                session.metar_payload.as_ref(),
-                session.taf_payload.as_ref(),
-                session.airport_notam_index.as_ref(),
+                session.runtime.metar_payload.as_ref(),
+                session.runtime.taf_payload.as_ref(),
+                session.runtime.airport_notam_index.as_ref(),
                 Some(session_wall_clock_utc(session)),
             )
         });
@@ -11434,7 +11558,7 @@ fn project_flight_data_banner(
 ) -> Result<crate::FlightDataBannerModel, HadReadError> {
     let ownship = &app_ui_state.ownship.render;
     let position = ownship.position;
-    let store = session.nav_kv_store.as_ref();
+    let store = session.nav_kv_store.as_deref();
     let flight_data_computer =
         crate::FlightDataComputer::with_clock(ownship.speed_kt, Some(session.wall_clock_epoch_ms));
 
@@ -12963,6 +13087,141 @@ mod tests {
         store_id
     }
 
+    fn isolated_test_session(nav_kv_store: Option<NavKvStore>) -> UiSession {
+        let nav_kv_store_id = nav_kv_store.as_ref().map(|_| next_test_nav_kv_store_id());
+        UiSession {
+            model: SessionModel {
+                session_revision: 0,
+                flight_plan_route_revision: 0,
+                nav_data_epoch: 0,
+                nav_db_advance_blocked: false,
+                app_state: register_default_situation_sources(AppState::default())
+                    .expect("app state"),
+                playback: PlaybackSessionState::default(),
+                plan_preview: PlanPreviewState::default(),
+                bad_autopilot: BadAutopilotState::default(),
+                map_follow: MapFollowSessionState::default(),
+                guidance_leg_geometry: Arc::new(HashMap::new()),
+                map_overlay_config: Arc::new(
+                    map_overlay_config_from_vector_manifest_json(minimal_vector_manifest_json())
+                        .expect("bootstrap manifest"),
+                ),
+                vector_manifest_loaded: false,
+                chart_page_state: derive_compact_chart_page_state(
+                    &FlightPlan::default(),
+                    &[],
+                    None,
+                    None,
+                    None,
+                ),
+                nav_kv_store_id,
+                nav_kv_store: nav_kv_store.map(Arc::new),
+                nav_db_artifact: None,
+                map_layer_state: default_map_layer_state(),
+                data_status_records: BTreeMap::new(),
+                hushed_status_ids: BTreeSet::new(),
+                data_status_state: default_data_status_state(),
+                platform_capabilities: PlatformCapabilities::default(),
+                settings_preferences: SettingsPreferences::default(),
+                settings_storage: None,
+                cloud: CloudEngine::new(CloudPersistentState::default()),
+                debug_state: default_debug_state(),
+                resource_policy: CoreResourcePolicy::InstalledPackage,
+                installed_package_ids: BTreeSet::new(),
+                publication_resolver: Arc::new(PublicationResolver::with_resource_policy(
+                    "/packages",
+                    CoreResourcePolicy::InstalledPackage,
+                )),
+                cycle_product_freshness: CycleProductFreshnessState::default(),
+                live_feeds: Arc::new(LiveFeedsState::default()),
+                live_feed_connection: LiveFeedConnectionSessionState::default(),
+                raster_map_catalog: None,
+                wall_clock_epoch_ms: 0,
+                live_feed_current_refresh: LiveFeedCurrentRefreshState::Idle,
+            },
+            runtime: SessionRuntime::default(),
+        }
+    }
+
+    #[test]
+    fn model_transaction_does_not_copy_or_replace_runtime_generations() {
+        let mut session = isolated_test_session(None);
+        session
+            .runtime
+            .terrain_source_tile_cache
+            .insert("seed".to_string(), vec![0x5a; 2 * 1024 * 1024]);
+        let runtime_address = std::ptr::addr_of!(session.runtime);
+        let terrain_bytes_address = session.runtime.terrain_source_tile_cache["seed"].as_ptr();
+        let publication_address = Arc::as_ptr(&session.publication_resolver);
+        let live_feeds_address = Arc::as_ptr(&session.live_feeds);
+
+        let outcome = run_session_model_transaction(&mut session, |session| {
+            session
+                .installed_package_ids
+                .insert("test-package".to_string());
+            Ok(vec![UiInvalidation::SessionSnapshot])
+        })
+        .expect("model transaction");
+
+        assert!(matches!(outcome, HadOperationOutcome::Complete { .. }));
+        assert_eq!(std::ptr::addr_of!(session.runtime), runtime_address);
+        assert_eq!(
+            session.runtime.terrain_source_tile_cache["seed"].as_ptr(),
+            terrain_bytes_address
+        );
+        assert_eq!(
+            Arc::as_ptr(&session.publication_resolver),
+            publication_address
+        );
+        assert_eq!(Arc::as_ptr(&session.live_feeds), live_feeds_address);
+    }
+
+    #[test]
+    fn model_transaction_rolls_back_model_without_disturbing_runtime() {
+        let mut session = isolated_test_session(None);
+        session
+            .runtime
+            .terrain_source_tile_cache
+            .insert("seed".to_string(), vec![0x33; 1024]);
+        let terrain_bytes_address = session.runtime.terrain_source_tile_cache["seed"].as_ptr();
+
+        let outcome = run_session_model_transaction(&mut session, |session| {
+            session
+                .installed_package_ids
+                .insert("must-roll-back".to_string());
+            Err(HadReadError::NeedPages(vec![42]).into())
+        })
+        .expect("paging outcome");
+
+        assert!(matches!(outcome, HadOperationOutcome::NeedResources { .. }));
+        assert!(!session.installed_package_ids.contains("must-roll-back"));
+        assert_eq!(
+            session.runtime.terrain_source_tile_cache["seed"].as_ptr(),
+            terrain_bytes_address
+        );
+    }
+
+    #[test]
+    fn nav_data_invalidation_is_generation_scoped_and_centralized() {
+        let mut runtime = SessionRuntime::default();
+        runtime
+            .terrain_source_tile_cache
+            .insert("terrain".to_string(), vec![1, 2, 3]);
+        runtime
+            .agl_terrain_resource_ids_in_flight
+            .insert("terrain/source/1".to_string());
+        runtime.important_metar_station_ids = Some(HashSet::from(["KSEA".to_string()]));
+        runtime.weather_station_airport_aliases = Some(WeatherStationAirportAliases::default());
+
+        runtime.invalidate_nav_data();
+
+        assert_eq!(runtime.nav_data_generation, 1);
+        assert!(runtime.terrain_source_tile_cache.is_empty());
+        assert!(runtime.agl_terrain_resource_ids_in_flight.is_empty());
+        assert!(runtime.important_metar_station_ids.is_none());
+        assert!(runtime.weather_station_airport_aliases.is_none());
+    }
+
     #[test]
     fn restoring_chart_page_state_preserves_chart_reference_selection() {
         let init = create_ui_session(
@@ -13445,10 +13704,19 @@ mod tests {
             "products": {"terrain": "unselected"}
         })
         .to_string();
-        let snapshot = snapshot_from_outcome(
+        let outcome =
             record_offline_package_preferences_in_session(first.handle, &preferences, 100)
-                .expect("record package profile"),
-        );
+                .expect("record package profile");
+        let HadOperationOutcome::Complete {
+            result,
+            invalidations,
+        } = outcome
+        else {
+            panic!("package preference update unexpectedly needed resources");
+        };
+        assert_eq!(result, serde_json::Value::Null);
+        assert!(invalidations.contains(&UiInvalidation::SessionSnapshot));
+        let snapshot = get_session_snapshot(first.handle).expect("snapshot package profile");
         assert_eq!(
             serde_json::from_str::<serde_json::Value>(&snapshot.offline_package_preferences_json)
                 .unwrap(),
@@ -13809,7 +14077,7 @@ mod tests {
             assert!(statuses.is_empty());
             (
                 session.map_overlay_config.clone(),
-                session.obstacle_tile_cache.clone(),
+                session.runtime.obstacle_tile_cache.clone(),
             )
         };
         let overlay = crate::query_map_overlay_for_surface(
@@ -14689,8 +14957,7 @@ mod tests {
         let bytes = serde_json::to_vec(&bundle).expect("bundle json");
         let mut sessions = lock_sessions();
         let session = session_mut(&mut sessions, handle).expect("session");
-        session
-            .publication_resolver
+        Arc::make_mut(&mut session.publication_resolver)
             .ingest_resource("publication/bundle/test.json", &bytes)
             .expect("ingest bundle");
     }
@@ -14968,8 +15235,7 @@ mod tests {
         {
             let mut sessions = lock_sessions();
             let session = session_mut(&mut sessions, init.handle).expect("session");
-            session
-                .live_feeds
+            Arc::make_mut(&mut session.live_feeds)
                 .ingest_resource(
                     "live_feeds/current",
                     br#"{
@@ -15189,10 +15455,10 @@ mod tests {
                     }
                 }"#,
             )
-            .expect("metar layer config");
-            session.important_metar_station_ids = Some(HashSet::from(["KAAA".to_string()]));
-            session
-                .live_feeds
+            .expect("metar layer config")
+            .into();
+            session.runtime.important_metar_station_ids = Some(HashSet::from(["KAAA".to_string()]));
+            Arc::make_mut(&mut session.live_feeds)
                 .ingest_resource(
                     "live_feeds/current",
                     format!(
@@ -15218,8 +15484,8 @@ mod tests {
         {
             let mut sessions = lock_sessions();
             let session = session_mut(&mut sessions, init.handle).expect("session");
-            assert!(session.prepared_metar_tiles.is_some());
-            assert!(!session.metar_tile_cache.is_empty());
+            assert!(session.runtime.prepared_metar_tiles.is_some());
+            assert!(!session.runtime.metar_tile_cache.is_empty());
         }
 
         let outcome = get_map_overlay_in_session(
@@ -15317,6 +15583,7 @@ mod tests {
             match product {
                 "tafs" => assert_eq!(
                     session
+                        .runtime
                         .taf_payload
                         .as_ref()
                         .and_then(|payload| payload.tafs_by_station.get("KSEA"))
@@ -15325,6 +15592,7 @@ mod tests {
                 ),
                 "tfrs" => assert_eq!(
                     session
+                        .runtime
                         .tfr_payload
                         .as_ref()
                         .map(|payload| payload.areas.len()),
@@ -15332,6 +15600,7 @@ mod tests {
                 ),
                 "notams" => assert_eq!(
                     session
+                        .runtime
                         .airport_notam_index
                         .as_ref()
                         .map(|index| index.version_label.as_str()),
@@ -15411,7 +15680,7 @@ mod tests {
 
         let sessions = lock_sessions();
         let session = sessions.get(&init.handle).expect("session");
-        let taf_payload = session.taf_payload.as_ref().expect("TAF payload");
+        let taf_payload = session.runtime.taf_payload.as_ref().expect("TAF payload");
         assert_eq!(taf_payload.version_label, "v1");
         assert_eq!(
             taf_payload.tafs_by_station["KAAA"].raw_text,
@@ -15505,6 +15774,7 @@ mod tests {
         .is_err());
         assert_eq!(
             session
+                .runtime
                 .airport_notam_index
                 .as_ref()
                 .map(AirportNotamIndex::state_id),
@@ -15539,7 +15809,7 @@ mod tests {
             ),),
         )
         .is_err());
-        assert!(session.airport_notam_index.is_none());
+        assert!(session.runtime.airport_notam_index.is_none());
     }
 
     #[test]
@@ -15624,8 +15894,7 @@ mod tests {
         {
             let mut sessions = lock_sessions();
             let session = session_mut(&mut sessions, init.handle).unwrap();
-            session
-                .live_feeds
+            Arc::make_mut(&mut session.live_feeds)
                 .ingest_resource(
                     "live_feeds/current",
                     &serde_json::to_vec(&serde_json::json!({
@@ -15646,8 +15915,7 @@ mod tests {
                     .unwrap(),
                 )
                 .unwrap();
-            session
-                .live_feeds
+            Arc::make_mut(&mut session.live_feeds)
                 .ingest_resource(
                     &format!("live_feeds/version/notams/{head_id}"),
                     &serde_json::to_vec(&serde_json::json!({
@@ -15678,6 +15946,7 @@ mod tests {
             let session = sessions.get(&init.handle).unwrap();
             assert_eq!(
                 session
+                    .runtime
                     .airport_notam_index
                     .as_ref()
                     .map(AirportNotamIndex::state_id),
@@ -15706,6 +15975,7 @@ mod tests {
         let session = sessions.get(&init.handle).unwrap();
         assert_eq!(
             session
+                .runtime
                 .airport_notam_index
                 .as_ref()
                 .map(AirportNotamIndex::state_id),
@@ -15796,8 +16066,7 @@ mod tests {
         {
             let mut sessions = lock_sessions();
             let session = sessions.get_mut(&init.handle).expect("session");
-            session
-                .live_feeds
+            Arc::make_mut(&mut session.live_feeds)
                 .ingest_resource(
                     "live_feeds/current",
                     serde_json::to_string(&serde_json::json!({
@@ -15815,8 +16084,7 @@ mod tests {
                     .as_bytes(),
                 )
                 .expect("install NOTAM current");
-            session
-                .live_feeds
+            Arc::make_mut(&mut session.live_feeds)
                 .ingest_resource(
                     &format!("live_feeds/version/notams/{state_id}"),
                     serde_json::to_string(&serde_json::json!({
@@ -15839,9 +16107,13 @@ mod tests {
         {
             let mut sessions = lock_sessions();
             let session = sessions.get_mut(&init.handle).expect("session");
-            let index = session.airport_notam_index.as_ref().unwrap_or_else(|| {
-                panic!("airport NOTAM index: {:?}", session.data_status_records)
-            });
+            let index = session
+                .runtime
+                .airport_notam_index
+                .as_ref()
+                .unwrap_or_else(|| {
+                    panic!("airport NOTAM index: {:?}", session.data_status_records)
+                });
             assert_eq!(index.version_label, state_id);
             let detail = crate::map_overlay::weather_detail_for_station(
                 "KAAA",
@@ -15898,7 +16170,7 @@ mod tests {
                     latitude: 0.0,
                 },
             );
-            session.metar_payload = Some(MetarProductPayload {
+            session.runtime.metar_payload = Some(MetarProductPayload {
                 schema_version: 3,
                 version_label: "v1".to_string(),
                 generated_at_utc: None,
@@ -15918,14 +16190,14 @@ mod tests {
                     latitude: 0.0,
                 },
             );
-            session.taf_payload = Some(TafProductPayload {
+            session.runtime.taf_payload = Some(TafProductPayload {
                 schema_version: 1,
                 version_label: "v1".to_string(),
                 generated_at_utc: None,
                 taf_count: Some(1),
                 tafs_by_station,
             });
-            session.airport_notam_index = Some(
+            session.runtime.airport_notam_index = Some(
                 AirportNotamIndex::from_payload(NotamProductPayload {
                     schema_version: product_contracts::NOTAM_LIVE_FEED_CONTRACT_VERSION,
                     version_label: "v1".to_string(),
@@ -16233,72 +16505,7 @@ mod tests {
 
     #[test]
     fn live_metar_layer_survives_vector_manifest_without_weather_layers() {
-        let mut session = UiSession {
-            session_revision: 0,
-            flight_plan_route_revision: 0,
-            nav_data_epoch: 0,
-            nav_db_advance_blocked: false,
-            app_state: register_default_situation_sources(AppState::default()).expect("app state"),
-            playback: PlaybackSessionState::default(),
-            plan_preview: PlanPreviewState::default(),
-            bad_autopilot: BadAutopilotState::default(),
-            map_follow: MapFollowSessionState::default(),
-            guidance_leg_geometry: HashMap::new(),
-            map_overlay_config: map_overlay_config_from_vector_manifest_json(
-                minimal_vector_manifest_json(),
-            )
-            .expect("bootstrap manifest"),
-            vector_manifest_loaded: false,
-            chart_page_state: derive_compact_chart_page_state(
-                &FlightPlan::default(),
-                &[],
-                None,
-                None,
-                None,
-            ),
-            nav_kv_store_id: None,
-            nav_kv_store: None,
-            nav_db_artifact: None,
-            map_layer_state: default_map_layer_state(),
-            data_status_records: BTreeMap::new(),
-            hushed_status_ids: BTreeSet::new(),
-            data_status_state: default_data_status_state(),
-            platform_capabilities: PlatformCapabilities::default(),
-            settings_preferences: SettingsPreferences::default(),
-            settings_storage: None,
-            cloud: CloudEngine::new(CloudPersistentState::default()),
-            debug_state: default_debug_state(),
-            resource_policy: CoreResourcePolicy::InstalledPackage,
-            installed_package_ids: BTreeSet::new(),
-            publication_resolver: PublicationResolver::with_resource_policy(
-                "/packages",
-                CoreResourcePolicy::InstalledPackage,
-            ),
-            cycle_product_freshness: CycleProductFreshnessState::default(),
-            live_feeds: LiveFeedsState::default(),
-            live_feed_connection: LiveFeedConnectionSessionState::default(),
-            raster_map_catalog: None,
-            vector_tile_cache: HashMap::new(),
-            metar_tile_cache: HashMap::new(),
-            metar_payload: None,
-            prepared_metar_tiles: None,
-            important_metar_station_ids: None,
-            metar_station_importance_status: None,
-            weather_station_airport_aliases: None,
-            obstacle_had: None,
-            obstacle_tile_cache: HashMap::new(),
-            nexrad_installed: BTreeMap::new(),
-            nexrad_tile_cache: HashMap::new(),
-            taf_payload: None,
-            airport_notam_index: None,
-            airspace_feature_cache: HashMap::new(),
-            tfr_payload: None,
-            terrain_source_tile_cache: HashMap::new(),
-            agl_terrain_resource_ids_in_flight: HashSet::new(),
-            pending_resource_effects: Vec::new(),
-            wall_clock_epoch_ms: 0,
-            live_feed_current_refresh: LiveFeedCurrentRefreshState::Idle,
-        };
+        let mut session = isolated_test_session(None);
         let mut metars_by_station = HashMap::new();
         metars_by_station.insert(
             "KAAA".to_string(),
@@ -16312,7 +16519,7 @@ mod tests {
                 latitude: 0.0,
             },
         );
-        session.metar_payload = Some(MetarProductPayload {
+        session.runtime.metar_payload = Some(MetarProductPayload {
             schema_version: 3,
             version_label: "v1".to_string(),
             generated_at_utc: None,
@@ -16321,7 +16528,7 @@ mod tests {
             metars_by_station,
             pireps: Vec::new(),
         });
-        session.important_metar_station_ids = Some(HashSet::from(["KAAA".to_string()]));
+        session.runtime.important_metar_station_ids = Some(HashSet::from(["KAAA".to_string()]));
         let manifest = serde_json::json!({
             "point_layers": {
                 "airport": {
@@ -16345,7 +16552,7 @@ mod tests {
             .expect("load vector manifest");
 
         assert!(session.map_overlay_config.metar_layer.is_some());
-        assert!(!session.metar_tile_cache.is_empty());
+        assert!(!session.runtime.metar_tile_cache.is_empty());
     }
 
     #[test]
@@ -16435,78 +16642,13 @@ mod tests {
             ],
             1024,
         );
-        let mut session = UiSession {
-            session_revision: 0,
-            flight_plan_route_revision: 0,
-            nav_data_epoch: 0,
-            nav_db_advance_blocked: false,
-            app_state: register_default_situation_sources(AppState::default()).expect("app state"),
-            playback: PlaybackSessionState::default(),
-            plan_preview: PlanPreviewState::default(),
-            bad_autopilot: BadAutopilotState::default(),
-            map_follow: MapFollowSessionState::default(),
-            guidance_leg_geometry: HashMap::new(),
-            map_overlay_config: map_overlay_config_from_vector_manifest_json(
-                minimal_vector_manifest_json(),
-            )
-            .expect("bootstrap manifest"),
-            vector_manifest_loaded: false,
-            chart_page_state: derive_compact_chart_page_state(
-                &FlightPlan::default(),
-                &[],
-                None,
-                None,
-                None,
-            ),
-            nav_kv_store_id: Some(1),
-            nav_kv_store: Some(store),
-            nav_db_artifact: None,
-            map_layer_state: default_map_layer_state(),
-            data_status_records: BTreeMap::new(),
-            hushed_status_ids: BTreeSet::new(),
-            data_status_state: default_data_status_state(),
-            platform_capabilities: PlatformCapabilities::default(),
-            settings_preferences: SettingsPreferences::default(),
-            settings_storage: None,
-            cloud: CloudEngine::new(CloudPersistentState::default()),
-            debug_state: default_debug_state(),
-            resource_policy: CoreResourcePolicy::InstalledPackage,
-            installed_package_ids: BTreeSet::new(),
-            publication_resolver: PublicationResolver::with_resource_policy(
-                "/packages",
-                CoreResourcePolicy::InstalledPackage,
-            ),
-            cycle_product_freshness: CycleProductFreshnessState::default(),
-            live_feeds: LiveFeedsState::default(),
-            live_feed_connection: LiveFeedConnectionSessionState::default(),
-            raster_map_catalog: None,
-            vector_tile_cache: HashMap::new(),
-            metar_tile_cache: HashMap::new(),
-            metar_payload: None,
-            prepared_metar_tiles: None,
-            important_metar_station_ids: None,
-            metar_station_importance_status: None,
-            weather_station_airport_aliases: None,
-            obstacle_had: None,
-            obstacle_tile_cache: HashMap::new(),
-            nexrad_installed: BTreeMap::new(),
-            nexrad_tile_cache: HashMap::new(),
-            taf_payload: None,
-            airport_notam_index: None,
-            airspace_feature_cache: HashMap::new(),
-            tfr_payload: None,
-            terrain_source_tile_cache: HashMap::new(),
-            agl_terrain_resource_ids_in_flight: HashSet::new(),
-            pending_resource_effects: Vec::new(),
-            wall_clock_epoch_ms: 0,
-            live_feed_current_refresh: LiveFeedCurrentRefreshState::Idle,
-        };
+        let mut session = isolated_test_session(Some(store));
 
         ensure_metar_station_importance_loaded(&mut session).expect("important station ids");
         ensure_weather_station_airport_aliases_loaded(&mut session).expect("airport aliases");
 
         assert_eq!(
-            session.important_metar_station_ids,
+            session.runtime.important_metar_station_ids,
             Some(HashSet::from(["KAAA".to_string(), "KBBB".to_string()]))
         );
         let metar = crate::MetarRecord {
@@ -16530,6 +16672,7 @@ mod tests {
         let detail = crate::map_overlay::weather_detail_for_airport(
             "1S5",
             session
+                .runtime
                 .weather_station_airport_aliases
                 .as_ref()
                 .expect("loaded aliases"),
@@ -16578,11 +16721,12 @@ mod tests {
                     }
                 }"#,
             )
-            .expect("overlay config");
+            .expect("overlay config")
+            .into();
             session.vector_manifest_loaded = true;
             session.map_layer_state.vectors.visible = true;
             session.map_layer_state.metars.visible = true;
-            session.vector_tile_cache.insert(
+            session.runtime.vector_tile_cache.insert(
                 crate::aggregate_vector_tile_cache_key(9, 256, 256),
                 VectorAggregateTilePayload {
                     schema_version: 1,
@@ -16617,16 +16761,17 @@ mod tests {
             for x in 255..=256 {
                 for y in 255..=256 {
                     session
+                        .runtime
                         .vector_tile_cache
                         .entry(crate::aggregate_vector_tile_cache_key(9, x, y))
                         .or_insert_with(|| empty_vector_aggregate_tile(9, x, y));
                 }
             }
-            session.vector_tile_cache.insert(
+            session.runtime.vector_tile_cache.insert(
                 crate::aggregate_vector_tile_cache_key(0, 0, 0),
                 empty_vector_aggregate_tile(0, 0, 0),
             );
-            session.metar_payload = Some(MetarProductPayload {
+            session.runtime.metar_payload = Some(MetarProductPayload {
                 schema_version: 3,
                 version_label: "v1".to_string(),
                 generated_at_utc: None,
@@ -16674,10 +16819,10 @@ mod tests {
             let sessions = lock_sessions();
             let session = sessions.get(&init.handle).expect("session");
             assert!(
-                session.important_metar_station_ids.is_none(),
+                session.runtime.important_metar_station_ids.is_none(),
                 "high-zoom METAR rendering must not request the low-zoom importance table"
             );
-            assert!(session.metar_station_importance_status.is_none());
+            assert!(session.runtime.metar_station_importance_status.is_none());
         }
     }
 
@@ -16786,11 +16931,12 @@ mod tests {
                     }
                 }"#,
             )
-            .expect("overlay config");
+            .expect("overlay config")
+            .into();
             session.vector_manifest_loaded = true;
             session.map_layer_state.vectors.visible = false;
             session.map_layer_state.metars.visible = true;
-            session.metar_payload = Some(MetarProductPayload {
+            session.runtime.metar_payload = Some(MetarProductPayload {
                 schema_version: 3,
                 version_label: "v1".to_string(),
                 generated_at_utc: None,
@@ -16845,7 +16991,7 @@ mod tests {
         {
             let sessions = lock_sessions();
             let session = sessions.get(&init.handle).expect("session");
-            assert!(session.important_metar_station_ids.is_none());
+            assert!(session.runtime.important_metar_station_ids.is_none());
             assert!(
                 !session
                     .data_status_records
@@ -16901,7 +17047,7 @@ mod tests {
             let sessions = lock_sessions();
             let session = sessions.get(&init.handle).expect("session");
             assert_eq!(
-                session.important_metar_station_ids,
+                session.runtime.important_metar_station_ids,
                 Some(HashSet::from(["KAAA".to_string()]))
             );
             assert!(!session
@@ -16912,72 +17058,7 @@ mod tests {
 
     #[test]
     fn malformed_live_tfr_state_records_data_status_without_failing_overlay() {
-        let mut session = UiSession {
-            session_revision: 0,
-            flight_plan_route_revision: 0,
-            nav_data_epoch: 0,
-            nav_db_advance_blocked: false,
-            app_state: register_default_situation_sources(AppState::default()).expect("app state"),
-            playback: PlaybackSessionState::default(),
-            plan_preview: PlanPreviewState::default(),
-            bad_autopilot: BadAutopilotState::default(),
-            map_follow: MapFollowSessionState::default(),
-            guidance_leg_geometry: HashMap::new(),
-            map_overlay_config: map_overlay_config_from_vector_manifest_json(
-                minimal_vector_manifest_json(),
-            )
-            .expect("bootstrap manifest"),
-            vector_manifest_loaded: false,
-            chart_page_state: derive_compact_chart_page_state(
-                &FlightPlan::default(),
-                &[],
-                None,
-                None,
-                None,
-            ),
-            nav_kv_store_id: None,
-            nav_kv_store: None,
-            nav_db_artifact: None,
-            map_layer_state: default_map_layer_state(),
-            data_status_records: BTreeMap::new(),
-            hushed_status_ids: BTreeSet::new(),
-            data_status_state: default_data_status_state(),
-            platform_capabilities: PlatformCapabilities::default(),
-            settings_preferences: SettingsPreferences::default(),
-            settings_storage: None,
-            cloud: CloudEngine::new(CloudPersistentState::default()),
-            debug_state: default_debug_state(),
-            resource_policy: CoreResourcePolicy::InstalledPackage,
-            installed_package_ids: BTreeSet::new(),
-            publication_resolver: PublicationResolver::with_resource_policy(
-                "/packages",
-                CoreResourcePolicy::InstalledPackage,
-            ),
-            cycle_product_freshness: CycleProductFreshnessState::default(),
-            live_feeds: LiveFeedsState::default(),
-            live_feed_connection: LiveFeedConnectionSessionState::default(),
-            raster_map_catalog: None,
-            vector_tile_cache: HashMap::new(),
-            metar_tile_cache: HashMap::new(),
-            metar_payload: None,
-            prepared_metar_tiles: None,
-            important_metar_station_ids: None,
-            metar_station_importance_status: None,
-            weather_station_airport_aliases: None,
-            obstacle_had: None,
-            obstacle_tile_cache: HashMap::new(),
-            nexrad_installed: BTreeMap::new(),
-            nexrad_tile_cache: HashMap::new(),
-            taf_payload: None,
-            airport_notam_index: None,
-            airspace_feature_cache: HashMap::new(),
-            tfr_payload: None,
-            terrain_source_tile_cache: HashMap::new(),
-            agl_terrain_resource_ids_in_flight: HashSet::new(),
-            pending_resource_effects: Vec::new(),
-            wall_clock_epoch_ms: 0,
-            live_feed_current_refresh: LiveFeedCurrentRefreshState::Idle,
-        };
+        let mut session = isolated_test_session(None);
         let bad_tfr_state = serde_json::json!({
             "schema_version": 1,
             "version_label": "bad",
@@ -17006,8 +17087,7 @@ mod tests {
             );
             format!("{:x}", hasher.finalize())
         };
-        session
-            .live_feeds
+        Arc::make_mut(&mut session.live_feeds)
             .ingest_resource(
                 "live_feeds/current",
                 format!(
@@ -17027,8 +17107,7 @@ mod tests {
                 .as_bytes(),
             )
             .expect("current manifest");
-        session
-            .live_feeds
+        Arc::make_mut(&mut session.live_feeds)
             .ingest_resource(
                 "live_feeds/version/tfrs/bad",
                 format!(
@@ -17047,8 +17126,7 @@ mod tests {
                 .as_bytes(),
             )
             .expect("version manifest");
-        session
-            .live_feeds
+        Arc::make_mut(&mut session.live_feeds)
             .ingest_resource(
                 "live_feeds/state/tfrs/bad",
                 &serde_json::to_vec(&bad_tfr_state).expect("state json"),
@@ -17057,7 +17135,7 @@ mod tests {
 
         install_live_feed_payloads(&mut session).expect("install should degrade");
 
-        assert!(session.tfr_payload.is_none());
+        assert!(session.runtime.tfr_payload.is_none());
         assert!(session
             .data_status_records
             .values()
@@ -17247,7 +17325,7 @@ mod tests {
             assert!(statuses.is_empty());
             (
                 session.map_overlay_config.clone(),
-                session.obstacle_tile_cache.clone(),
+                session.runtime.obstacle_tile_cache.clone(),
             )
         };
         let overlay = crate::query_map_overlay_for_surface(
@@ -17323,8 +17401,8 @@ mod tests {
         {
             let mut sessions = lock_sessions();
             let session = session_mut(&mut sessions, init.handle).expect("session");
-            assert!(session.obstacle_had.is_none());
-            assert!(session.obstacle_tile_cache.is_empty());
+            assert!(session.runtime.obstacle_had.is_none());
+            assert!(session.runtime.obstacle_tile_cache.is_empty());
             assert!(session.map_overlay_config.obstacle_layer.is_none());
         }
         let feature_ids = query_obstacle_feature_ids(init.handle, &metrics);
@@ -17454,9 +17532,9 @@ mod tests {
             let statuses = ensure_live_obstacle_inputs_loaded(session, &metrics);
             (
                 statuses,
-                std::mem::take(&mut session.pending_resource_effects),
+                std::mem::take(&mut session.runtime.pending_resource_effects),
                 session.map_overlay_config.clone(),
-                session.obstacle_tile_cache.clone(),
+                session.runtime.obstacle_tile_cache.clone(),
             )
         };
         assert!(statuses.is_empty());
@@ -18424,7 +18502,8 @@ mod tests {
                     }
                 }"#,
             )
-            .expect("metar layer config");
+            .expect("metar layer config")
+            .into();
         }
 
         let outcome = get_map_overlay_in_session(
@@ -18510,7 +18589,7 @@ mod tests {
         {
             let mut sessions = lock_sessions();
             let session = session_mut(&mut sessions, init.handle).expect("session");
-            session.metar_payload = Some(MetarProductPayload {
+            session.runtime.metar_payload = Some(MetarProductPayload {
                 schema_version: 3,
                 version_label: "old-metars".to_string(),
                 generated_at_utc: Some(utc("2020-01-01T00:00:00Z")),
@@ -18536,7 +18615,7 @@ mod tests {
         {
             let mut sessions = lock_sessions();
             let session = session_mut(&mut sessions, init.handle).expect("session");
-            session.metar_payload = Some(MetarProductPayload {
+            session.runtime.metar_payload = Some(MetarProductPayload {
                 schema_version: 3,
                 version_label: "loaded-metars".to_string(),
                 generated_at_utc: Some(utc("2026-05-20T11:55:00Z")),
@@ -18582,7 +18661,7 @@ mod tests {
         {
             let mut sessions = lock_sessions();
             let session = session_mut(&mut sessions, init.handle).expect("session");
-            session.metar_payload = Some(MetarProductPayload {
+            session.runtime.metar_payload = Some(MetarProductPayload {
                 schema_version: 3,
                 version_label: "fresh-metars".to_string(),
                 generated_at_utc: Some(utc("2026-05-20T11:55:00Z")),
@@ -18624,7 +18703,7 @@ mod tests {
         {
             let mut sessions = lock_sessions();
             let session = session_mut(&mut sessions, init.handle).expect("session");
-            session.metar_payload = Some(MetarProductPayload {
+            session.runtime.metar_payload = Some(MetarProductPayload {
                 schema_version: 3,
                 version_label: "fresh-then-old-metars".to_string(),
                 generated_at_utc: Some(utc("2026-05-20T11:45:00Z")),
@@ -18681,7 +18760,7 @@ mod tests {
         {
             let mut sessions = lock_sessions();
             let session = session_mut(&mut sessions, init.handle).expect("session");
-            session.tfr_payload = Some(TfrProductPayload {
+            session.runtime.tfr_payload = Some(TfrProductPayload {
                 schema_version: 1,
                 version_label: "old-tfrs".to_string(),
                 generated_at_utc: Some(utc("2020-01-01T00:00:00Z")),
@@ -18835,7 +18914,7 @@ mod tests {
         {
             let mut sessions = lock_sessions();
             let session = session_mut(&mut sessions, init.handle).expect("session");
-            session.raster_map_catalog = Some(expired_raster_catalog("2020-01-01"));
+            session.raster_map_catalog = Some(expired_raster_catalog("2020-01-01").into());
         }
 
         let snapshot = get_session_snapshot(init.handle).expect("snapshot");
@@ -18854,10 +18933,8 @@ mod tests {
         {
             let mut sessions = lock_sessions();
             let session = session_mut(&mut sessions, init.handle).expect("session");
-            session.raster_map_catalog = Some(raster_catalog_with_displayed_maps(
-                tac.clone(),
-                vec![sectional, tac],
-            ));
+            session.raster_map_catalog =
+                Some(raster_catalog_with_displayed_maps(tac.clone(), vec![sectional, tac]).into());
         }
 
         let snapshot = get_session_snapshot(init.handle).expect("snapshot");
@@ -18878,10 +18955,8 @@ mod tests {
         {
             let mut sessions = lock_sessions();
             let session = session_mut(&mut sessions, init.handle).expect("session");
-            session.raster_map_catalog = Some(raster_catalog_with_displayed_maps(
-                option.clone(),
-                vec![option],
-            ));
+            session.raster_map_catalog =
+                Some(raster_catalog_with_displayed_maps(option.clone(), vec![option]).into());
         }
 
         let snapshot = get_session_snapshot(init.handle).expect("snapshot");
@@ -18905,10 +18980,8 @@ mod tests {
         {
             let mut sessions = lock_sessions();
             let session = session_mut(&mut sessions, init.handle).expect("session");
-            session.raster_map_catalog = Some(raster_catalog_with_displayed_maps(
-                tac.clone(),
-                vec![sectional, tac],
-            ));
+            session.raster_map_catalog =
+                Some(raster_catalog_with_displayed_maps(tac.clone(), vec![sectional, tac]).into());
         }
 
         let snapshot = get_session_snapshot(init.handle).expect("snapshot");
@@ -19224,8 +19297,7 @@ mod tests {
         {
             let mut sessions = lock_sessions();
             let session = session_mut(&mut sessions, init.handle).expect("session");
-            session
-                .publication_resolver
+            Arc::make_mut(&mut session.publication_resolver)
                 .ingest_resource_at_epoch_ms(
                     "publication/current_artifacts",
                     format!(
@@ -22102,6 +22174,7 @@ mod tests {
             let sessions = lock_sessions();
             let session = session_ref(&sessions, init.handle).expect("session");
             assert!(session
+                .runtime
                 .terrain_source_tile_cache
                 .get(cache_key)
                 .is_some_and(Vec::is_empty));

@@ -1,0 +1,67 @@
+{
+  "schema_version": 1,
+  "trusted_proxy_ips": [
+    "127.0.0.1",
+    "::1"
+  ],
+  "request": {
+    "max_body_bytes": 2097152,
+    "max_concurrent_requests": 64,
+    "max_target_bytes": 4096
+  },
+  "storage": {
+    "anonymous_account_quota_bytes": 1048576,
+    "anonymous_account_object_limit": 2048,
+    "global_storage_limit_bytes": 10737418240,
+    "inline_ciphertext_threshold_bytes": 131072,
+    "retained_sse_events": 256
+  },
+  "rate_limits": {
+    "account_creation_per_network": {
+      "capacity": 3,
+      "refill_amount": 3,
+      "refill_period_seconds": 86400
+    },
+    "account_creation_global": {
+      "capacity": 50,
+      "refill_amount": 10,
+      "refill_period_seconds": 86400
+    },
+    "operations_per_network": {
+      "capacity": 1200,
+      "refill_amount": 1200,
+      "refill_period_seconds": 60
+    },
+    "operations_per_account": {
+      "capacity": 600,
+      "refill_amount": 600,
+      "refill_period_seconds": 60
+    },
+    "egress_bytes_per_account": {
+      "capacity": 67108864,
+      "refill_amount": 67108864,
+      "refill_period_seconds": 60
+    }
+  },
+  "sse": {
+    "max_connections_global": 128,
+    "max_connections_per_account": 4,
+    "max_connections_per_network": 16
+  },
+  "garbage_collection": {
+    "interval_seconds": 3600,
+    "orphan_grace_seconds": 86400
+  },
+  "monitoring": {
+    "stored_bytes_warning": 8589934592,
+    "stored_bytes_critical": 9663676416,
+    "filesystem_free_bytes_warning": 2147483648,
+    "filesystem_free_bytes_critical": 1073741824,
+    "sse_connections_warning": 96,
+    "sse_connections_critical": 115,
+    "gc_database_pause_ms_warning": 500,
+    "gc_database_pause_ms_critical": 2000,
+    "gc_elapsed_ms_warning": 5000,
+    "gc_elapsed_ms_critical": 30000
+  }
+}

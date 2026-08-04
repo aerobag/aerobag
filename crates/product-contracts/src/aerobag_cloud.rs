@@ -9,6 +9,7 @@ use sha2::{Digest, Sha256};
 pub const ACS_CONTRACT_ID: &str = "ACS1";
 pub const ACS_API_PREFIX: &str = "/cloud/v1";
 pub const ACS_STATUS_PATH: &str = "/cloud/v1/status";
+pub const ACS_HEALTH_PATH: &str = "/cloud/v1/health";
 pub const ACS_SIGNATURE_CLOCK_WINDOW_MS: i64 = 5 * 60 * 1_000;
 pub const ACS_SSE_TICKET_TTL_MS: i64 = 2 * 60 * 1_000;
 pub const ACS_FIXED_ROOT_ID: &str = "root";
@@ -387,6 +388,16 @@ pub struct AcsStatusMetric {
     pub hard_limit: Option<u64>,
     pub window_seconds: Option<u64>,
     pub rejected_in_window: u64,
+    #[serde(default)]
+    pub lower_is_worse: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AcsHealthResponse {
+    pub contract_id: String,
+    pub server_time_epoch_ms: i64,
+    pub mode: AcsServiceMode,
+    pub database_healthy: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -431,6 +442,20 @@ pub enum AcsErrorCode {
     Internal,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum AcsRateLimitGate {
+    AccountCreationNetwork,
+    AccountCreationGlobal,
+    OutstandingCreationChallenges,
+    NetworkOperations,
+    AccountOperations,
+    AccountEgress,
+    GlobalSseConnections,
+    AccountSseConnections,
+    NetworkSseConnections,
+}
+
 impl AcsErrorCode {
     pub const fn http_status(self) -> u16 {
         match self {
@@ -454,6 +479,8 @@ pub struct AcsErrorResponse {
     pub code: AcsErrorCode,
     pub message: String,
     pub retry_after_ms: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub rate_limit_gate: Option<AcsRateLimitGate>,
 }
 
 pub fn acs_account_path(account_locator: &str) -> String {
@@ -645,9 +672,22 @@ mod tests {
                 code: AcsErrorCode::ReplayDetected,
                 message: "request nonce was already used".to_string(),
                 retry_after_ms: None,
+                rate_limit_gate: None,
             })
             .unwrap(),
             r#"{"contract_id":"ACS1","request_id":"request-1","code":"replay_detected","message":"request nonce was already used","retry_after_ms":null}"#
+        );
+        assert_eq!(
+            serde_json::to_string(&AcsErrorResponse {
+                contract_id: ACS_CONTRACT_ID.to_string(),
+                request_id: "request-2".to_string(),
+                code: AcsErrorCode::RateLimited,
+                message: "network bucket is empty".to_string(),
+                retry_after_ms: Some(28_800_000),
+                rate_limit_gate: Some(AcsRateLimitGate::AccountCreationNetwork),
+            })
+            .unwrap(),
+            r#"{"contract_id":"ACS1","request_id":"request-2","code":"rate_limited","message":"network bucket is empty","retry_after_ms":28800000,"rate_limit_gate":"account_creation_network"}"#
         );
     }
 }

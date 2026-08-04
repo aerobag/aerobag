@@ -535,9 +535,9 @@ ACS reports this shape where applicable for:
 GC additionally reports run count, last and peak SQLite write-lock pause,
 cumulative write-lock pause, and last and peak total elapsed time. Every GC run
 emits one low-frequency structured log line containing those timings and its
-mark/delete counts. Warning thresholds remain unset until production-shaped
-measurements exist; adding pipeline-health alarms for sustained or excessive
-GC pauses is an explicit TODO below.
+mark/delete counts. The checked-in policy supplies conservative initial
+warning/critical thresholds; production-shaped measurement and threshold
+validation remain an explicit TODO below.
 
 The status response also includes bounded operator-only summaries of the
 accounts and network pseudonyms currently responsible for the largest storage,
@@ -759,28 +759,48 @@ must be added to this plan or discussed; they are not license to expand scope.
   offline-package preferences in each direction, and verifies prompt adoption
   without a poll.
 
+## Completed Production-Readiness Slices
+
+- **Rate limiting:** fixed process-local minute windows have been replaced with
+  configurable, continuously refilling token buckets. Anonymous account
+  creation atomically requires a durable per-network bucket (capacity `3`,
+  refill `3/day`) and durable service-wide bucket (capacity `50`, refill
+  `10/day`); only a genuinely new account commit consumes them. ACS reports a
+  typed rejection gate and exact millisecond retry delay, while core owns the
+  user-facing retry message shared by web and Android. Status reports
+  daemon-lifetime and rolling one-, five-, and sixty-minute creation outcomes,
+  including rejections by gate, without exposing network identities.
+- A deterministic dev-stack fixture can exhaust either creation gate. The web
+  E2E test verifies each message and status metric and emits screenshots at
+  `/tmp/aerobag-cloud-rate-limit-network-ux.png` and
+  `/tmp/aerobag-cloud-rate-limit-global-ux.png`.
+- **Deployment wiring:** production source now builds the release ACS daemon,
+  installs a hardened `aerobag-cloud-server.service`, keeps state under
+  `/mnt/aerobag-data/cloud`, installs the daemon secret outside that tree, and
+  routes `/cloud/` through the host-local nginx with SSE buffering disabled.
+  ACS is included in deploy health, pipeline-health dependencies, service
+  lifecycle, and deployment config tests. This prepares deployment but does
+  not authorize or perform it.
+- **Proxy and operator boundary:** the public edge must overwrite
+  `Aerobag-Client-Address`; host nginx accepts it only from the checked-in outer
+  proxy address and overwrites it again for ACS. ACS honors that header only
+  from its explicit loopback proxy allowlist. `/cloud/v1/health` is bounded and
+  public; detailed `/cloud/v1/status` is hidden by nginx and independently
+  restricted by ACS to direct loopback callers without a forwarded client and
+  a bearer credential derived from the root-owned server secret. Detailed
+  status and containment commands therefore share the existing host-login/root
+  authorization boundary rather than adding a public admin API.
+- **Runtime policy:** quotas, storage and body ceilings, concurrency, all token
+  buckets, SSE limits, retained event count, GC schedule/retention, trusted
+  proxies, and monitoring thresholds now come from one strict, versioned JSON
+  policy consumed by both dev-stack and production. Unknown fields, invalid
+  threshold ordering, and inconsistent ceilings fail startup.
+
 ## TODO Before Production
 
 These are known limitations from the Phase 2 review. They are deliberately
 recorded rather than hidden behind compatibility behavior or guessed policy:
 
-- **Trusted proxy identity:** nginx must overwrite the forwarded-client header
-  with the socket peer it observed. ACS must accept that header only when the
-  immediate peer belongs to an explicit trusted-proxy allowlist; direct or
-  untrusted peers are identified by their socket address. Never trust arbitrary
-  client-supplied `Forwarded` or `X-Forwarded-For`, because that would let an
-  attacker choose the identity used by account-creation and rate limits.
-- **Operator authentication and status privacy:** split a minimal public health
-  response from detailed operator status. Top account locators and network
-  pseudonyms are privacy-sensitive even though they are opaque, and must be
-  available only through the same administrator-authentication mechanism used
-  for containment commands. Choose that administrator-authentication contract
-  before exposing detailed status through nginx.
-- **Rate limiting:** replace the current fixed one-minute, process-local windows
-  with configurable token buckets or equivalent bounded rolling limits. Report
-  maintained one-, five-, and sixty-minute observations, rejected counts, and
-  configured thresholds. Current Rust defaults are not yet daemon/deploy
-  configuration.
 - **Large transfers:** the current 2 MiB HTTP body ceiling is correct for
   anonymous MVP accounts but is not a transport for future large GPS traces.
   Add a resumable large-object transport when the blessed large-object quota
@@ -789,8 +809,8 @@ recorded rather than hidden behind compatibility behavior or guessed policy:
 - **GC at scale:** the current collector holds SQLite's in-process connection
   mutex and an immediate write transaction while traversing every account.
   Observe `gc_database_pause_ms` and `gc_elapsed_ms` under production-shaped
-  data, establish warning/critical thresholds, and make pipeline-health alarm
-  on bad pauses. If measurements warrant it, refactor marking into bounded
+  data, validate/tune the initial warning and critical thresholds, and prove
+  pipeline-health alarms on bad pauses. If measurements warrant it, refactor marking into bounded
   read phases and short validated delete transactions rather than merely
   increasing an alarm threshold.
 - **Global read-only recovery:** exhausting the configured global storage
@@ -798,9 +818,6 @@ recorded rather than hidden behind compatibility behavior or guessed policy:
   `set-mode normal` recovery path with a `resume-writes` operation that verifies
   current usage and required headroom after GC, deletion, or a raised ceiling.
   Keep any forced override explicit and separately named.
-- **Policy configuration:** move quotas, rate limits, body limits, SSE limits,
-  retention, and warning thresholds from compile-time Rust defaults into a
-  validated daemon configuration installed by dev-stack/deploy tooling.
 
 ## Deferred Work
 

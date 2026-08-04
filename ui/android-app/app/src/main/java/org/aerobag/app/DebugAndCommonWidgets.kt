@@ -41,7 +41,6 @@ import androidx.compose.foundation.border
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.focusable
-import androidx.compose.foundation.gestures.awaitEachGesture
 import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.gestures.detectTransformGestures
 import androidx.compose.foundation.horizontalScroll
@@ -135,10 +134,7 @@ import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.focus.onFocusChanged
 import androidx.compose.ui.input.key.onPreviewKeyEvent
-import androidx.compose.ui.input.pointer.PointerId
-import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.input.pointer.pointerInteropFilter
-import androidx.compose.ui.input.pointer.positionChanged
 import androidx.compose.ui.layout.boundsInWindow
 import androidx.compose.ui.layout.onGloballyPositioned
 import androidx.compose.ui.layout.onSizeChanged
@@ -153,6 +149,7 @@ import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.selected
 import androidx.compose.ui.semantics.testTagsAsResourceId
 import androidx.compose.ui.semantics.disabled
+import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.SpanStyle
@@ -774,6 +771,17 @@ internal fun CompactSquareButton(
     Surface(
         modifier = modifier
             .testTag(testTag ?: "parity:button:$label")
+            .clickable(
+                enabled = enabled || onDisabledClick != null,
+                role = Role.Button,
+                onClick = {
+                    if (enabled) {
+                        onClick()
+                    } else {
+                        onDisabledClick?.invoke()
+                    }
+                },
+            )
             .semantics {
                 if (!showLabel) {
                     contentDescription = renderedLabel
@@ -781,67 +789,7 @@ internal fun CompactSquareButton(
                 if (!enabled) {
                     disabled()
                 }
-            }
-            .then(
-                if (enabled) {
-                    Modifier.pointerInput(onClick) {
-                        awaitEachGesture {
-                            var activePointer: PointerId? = null
-                            var moved = false
-                            while (true) {
-                                val event = awaitPointerEvent()
-                                if (activePointer == null) {
-                                    val downChange = event.changes.firstOrNull { it.pressed } ?: continue
-                                    activePointer = downChange.id
-                                    downChange.consume()
-                                    continue
-                                }
-                                val change = event.changes.firstOrNull { it.id == activePointer } ?: break
-                                if (change.positionChanged()) {
-                                    moved = true
-                                }
-                                change.consume()
-                                if (!change.pressed) {
-                                    if (!moved) {
-                                        onClick()
-                                    }
-                                    break
-                                }
-                            }
-                        }
-                    }
-                } else {
-                    Modifier.pointerInput(onDisabledClick) {
-                        if (onDisabledClick == null) {
-                            return@pointerInput
-                        }
-                        awaitEachGesture {
-                            var activePointer: PointerId? = null
-                            var moved = false
-                            while (true) {
-                                val event = awaitPointerEvent()
-                                if (activePointer == null) {
-                                    val downChange = event.changes.firstOrNull { it.pressed } ?: continue
-                                    activePointer = downChange.id
-                                    downChange.consume()
-                                    continue
-                                }
-                                val change = event.changes.firstOrNull { it.id == activePointer } ?: break
-                                if (change.positionChanged()) {
-                                    moved = true
-                                }
-                                change.consume()
-                                if (!change.pressed) {
-                                    if (!moved) {
-                                        onDisabledClick()
-                                    }
-                                    break
-                                }
-                            }
-                        }
-                    }
-                },
-            ),
+            },
         shape = iconShape,
         color = resolvedContainerColor,
         contentColor = resolvedContentColor,

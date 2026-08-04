@@ -4,7 +4,9 @@
 
 mod auth;
 mod http;
+mod policy;
 mod store;
 
 pub use http::{run_server, server_router, ServerConfig};
-pub use store::{AccountMode, CloudStore, StoreConfig, StoreError, StoreResult};
+pub use policy::{AcsRuntimePolicy, ACS_POLICY_SCHEMA_VERSION};
+pub use store::{AccountMode, CloudStore, StoreConfig, StoreError, StoreResult, TokenBucketConfig};

@@ -71,7 +71,7 @@ internal fun CloudPage(
     onOpenPlan: () -> Unit,
     onOpenRecentChartOrPlate: () -> Unit,
     onSelectPage: (AppPage) -> Unit,
-    onAction: (CloudUiActionId, List<CloudUiFieldValue>) -> Unit,
+    onAction: (CloudUiActionId, List<CloudUiFieldValue>) -> Boolean,
 ) {
     val uiTheme = LocalAerobagUiTheme.current
     val context = LocalContext.current
@@ -93,7 +93,7 @@ internal fun CloudPage(
 
     fun invoke(action: UiCloudAction) {
         val values = fields.map { CloudUiFieldValue(it.key, it.value) }
-        onAction(action.id, values)
+        if (!onAction(action.id, values)) return
         when (val effect = action.platformEffect) {
             is CloudPlatformEffect.BeginAuthorization -> Unit
             is CloudPlatformEffect.ScanQrCode -> {
@@ -101,10 +101,10 @@ internal fun CloudPage(
                     .addOnSuccessListener { barcode ->
                         val setupCode = barcode.rawValue?.trim().orEmpty()
                         if (setupCode.isNotEmpty()) {
-                            onAction(
-                                effect.completionAction,
-                                listOf(CloudUiFieldValue(effect.fieldId, setupCode)),
-                            )
+                        onAction(
+                            effect.completionAction,
+                            listOf(CloudUiFieldValue(effect.fieldId, setupCode)),
+                        )
                         } else {
                             Toast.makeText(
                                 context,

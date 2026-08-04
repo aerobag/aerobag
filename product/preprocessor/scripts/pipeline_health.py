@@ -7,6 +7,9 @@
 from __future__ import annotations
 
 import argparse
+import base64
+import hashlib
+import hmac
 import json
 import os
 import threading
@@ -18,7 +21,7 @@ from pathlib import Path
 from typing import Any
 from urllib.error import URLError
 from urllib.parse import parse_qs, urlparse
-from urllib.request import urlopen
+from urllib.request import Request, urlopen
 
 
 SCHEMA_VERSION = 1
@@ -30,6 +33,7 @@ HISTORY_LOOKBACK_DAYS = 14
 HISTORY_TAIL_CHUNK_BYTES = 64 * 1024
 HISTORY_TAIL_MAX_BYTES = 16 * 1024 * 1024
 LIVE_FEED_FAILURE_WINDOW_SECONDS = 2 * 60 * 60
+ACS_OPERATOR_STATUS_KDF_LABEL = b"aerobag-cloud-operator-status-v1"
 
 LIVE_FEED_STALE_THRESHOLDS: dict[str, tuple[int, int]] = {
     "tafs": (60 * 60, 3 * 60 * 60),
@@ -131,12 +135,28 @@ def read_json_file(path: Path) -> tuple[Any | None, str | None]:
         return None, f"{path}: {exc}"
 
 
-def fetch_json_url(url: str, timeout: float = 5.0) -> tuple[Any | None, str | None]:
+def fetch_json_url(
+    url: str,
+    timeout: float = 5.0,
+    headers: dict[str, str] | None = None,
+) -> tuple[Any | None, str | None]:
     try:
-        with urlopen(url, timeout=timeout) as response:
+        with urlopen(Request(url, headers=headers or {}), timeout=timeout) as response:
             return json.loads(response.read().decode("utf-8")), None
     except (OSError, URLError, json.JSONDecodeError) as exc:
         return None, f"{url}: {exc}"
+
+
+def cloud_status_authorization(secret_path: Path) -> tuple[str, str | None]:
+    try:
+        secret = secret_path.read_bytes()
+    except OSError as exc:
+        return "", f"ACS operator credential {secret_path}: {exc}"
+    if len(secret) != 32:
+        return "", f"ACS operator credential {secret_path} is not 32 bytes"
+    digest = hmac.new(secret, ACS_OPERATOR_STATUS_KDF_LABEL, hashlib.sha256).digest()
+    token = base64.urlsafe_b64encode(digest).decode("ascii").rstrip("=")
+    return f"Bearer {token}", None
 
 
 def safe_join(root: Path, relative: str) -> Path | None:
@@ -155,6 +175,7 @@ class MonitorConfig:
     deploy_health_path: Path
     live_feeds_status_url: str
     cloud_status_url: str
+    cloud_status_secret_path: Path
     build_watch_url: str
     calendar_path: Path
     listen: str
@@ -183,6 +204,15 @@ def default_config_from_env() -> MonitorConfig:
         "AEROBAG_CLOUD_SERVER_LISTEN",
         env.get("AEROBAG_CLOUD_SERVER_LISTEN", "127.0.0.1:8096"),
     )
+    cloud_secret = Path(
+        os.environ.get(
+            "AEROBAG_CLOUD_SERVER_SECRET",
+            env.get(
+                "AEROBAG_CLOUD_SERVER_SECRET",
+                "/etc/aerobag/secrets/aerobag-cloud-server.bin",
+            ),
+        )
+    )
     return MonitorConfig(
         artifact_root=artifact_root,
         data_root=data_root,
@@ -191,6 +221,7 @@ def default_config_from_env() -> MonitorConfig:
         deploy_health_path=data_root / "health" / "status.json",
         live_feeds_status_url=f"http://{live_listen}/live-feeds/status.json",
         cloud_status_url=f"http://{cloud_listen}/cloud/v1/status",
+        cloud_status_secret_path=cloud_secret,
         build_watch_url=f"http://{build_watch_listen}/api/state",
         calendar_path=Path("/etc/aerobag/faa-cycle-calendar.json"),
         listen=os.environ.get(
@@ -211,7 +242,16 @@ def collect_facts(config: MonitorConfig, now: datetime) -> dict[str, Any]:
     product_facts = collect_product_facts(config.artifact_root, current_artifacts)
     deploy_health, deploy_health_error = read_json_file(config.deploy_health_path)
     live_status, live_error = fetch_json_url(config.live_feeds_status_url)
-    cloud_status, cloud_error = fetch_json_url(config.cloud_status_url)
+    cloud_authorization, cloud_auth_error = cloud_status_authorization(
+        config.cloud_status_secret_path
+    )
+    if cloud_auth_error is None:
+        cloud_status, cloud_error = fetch_json_url(
+            config.cloud_status_url,
+            headers={"Authorization": cloud_authorization},
+        )
+    else:
+        cloud_status, cloud_error = None, cloud_auth_error
     if isinstance(cloud_status, dict):
         # Pipeline-health is broadly visible; opaque account/network rankings are operator-only.
         cloud_status = dict(cloud_status)
@@ -493,13 +533,22 @@ def add_aerobag_cloud_metrics(metrics: list[dict[str, Any]], facts: dict[str, An
         warning = status_metric.get("warning_at")
         critical = status_metric.get("critical_at")
         hard_limit = status_metric.get("hard_limit")
+        lower_is_worse = status_metric.get("lower_is_worse") is True
         severity = "ok"
-        if isinstance(hard_limit, (int, float)) and current >= hard_limit:
-            severity = "critical"
-        elif isinstance(critical, (int, float)) and current >= critical:
-            severity = "critical"
-        elif isinstance(warning, (int, float)) and current >= warning:
-            severity = "warning"
+        if lower_is_worse:
+            if isinstance(hard_limit, (int, float)) and current <= hard_limit:
+                severity = "critical"
+            elif isinstance(critical, (int, float)) and current <= critical:
+                severity = "critical"
+            elif isinstance(warning, (int, float)) and current <= warning:
+                severity = "warning"
+        else:
+            if isinstance(hard_limit, (int, float)) and current >= hard_limit:
+                severity = "critical"
+            elif isinstance(critical, (int, float)) and current >= critical:
+                severity = "critical"
+            elif isinstance(warning, (int, float)) and current >= warning:
+                severity = "warning"
         metric_id = status_metric["id"]
         add_metric(
             metrics,
@@ -515,6 +564,7 @@ def add_aerobag_cloud_metrics(metrics: list[dict[str, Any]], facts: dict[str, An
                 "hard_limit": hard_limit,
                 "window_seconds": status_metric.get("window_seconds"),
                 "rejected_in_window": status_metric.get("rejected_in_window"),
+                "lower_is_worse": lower_is_worse,
             },
         )
 def add_live_feed_metrics(
@@ -1526,6 +1576,11 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--deploy-health", type=Path, default=defaults.deploy_health_path)
     parser.add_argument("--live-feeds-status-url", default=defaults.live_feeds_status_url)
     parser.add_argument("--cloud-status-url", default=defaults.cloud_status_url)
+    parser.add_argument(
+        "--cloud-status-secret",
+        type=Path,
+        default=defaults.cloud_status_secret_path,
+    )
     parser.add_argument("--build-watch-url", default=defaults.build_watch_url)
     parser.add_argument("--calendar", type=Path, default=defaults.calendar_path)
     parser.add_argument("--listen", default=defaults.listen)
@@ -1543,6 +1598,7 @@ def config_from_args(args: argparse.Namespace) -> MonitorConfig:
         deploy_health_path=args.deploy_health,
         live_feeds_status_url=args.live_feeds_status_url,
         cloud_status_url=args.cloud_status_url,
+        cloud_status_secret_path=args.cloud_status_secret,
         build_watch_url=args.build_watch_url,
         calendar_path=args.calendar,
         listen=args.listen,

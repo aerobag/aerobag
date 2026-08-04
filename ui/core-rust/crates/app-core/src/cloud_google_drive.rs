@@ -305,7 +305,12 @@ fn invalid_json(context: &str, error: serde_json::Error) -> CloudProviderRespons
 }
 
 fn provider_error(kind: CloudProviderErrorKind, detail: String) -> CloudProviderResponse {
-    CloudProviderResponse::Error { kind, detail }
+    CloudProviderResponse::Error {
+        kind,
+        detail,
+        retry_after_ms: None,
+        rate_limit_gate: None,
+    }
 }
 
 fn operation_label(operation: &CloudProviderOperation) -> &'static str {

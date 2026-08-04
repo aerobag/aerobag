@@ -217,6 +217,7 @@ fn error(code: AcsErrorCode, message: impl Into<String>) -> AcsErrorResponse {
         code,
         message: message.into(),
         retry_after_ms: None,
+        rate_limit_gate: None,
     }
 }
 

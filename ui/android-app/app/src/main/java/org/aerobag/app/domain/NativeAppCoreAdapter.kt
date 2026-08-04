@@ -718,7 +718,22 @@ class NativeUiSession internal constructor(
     }
 
     private fun executePagedSnapshot(commandName: String, operation: () -> String): UiSessionSnapshot {
-        val outcome = navKvStore?.runPagedSessionOperation(
+        val outcome = executePagedOperation(operation)
+        updateSnapshot(json.decodeFromJsonElement<WireUiSessionSnapshot>(outcome.result).toUi())
+        publishPagedInvalidations(commandName, outcome, snapshotAlreadyReturned = true)
+        return snapshot
+    }
+
+    private fun executePagedInvalidationCommand(commandName: String, operation: () -> String) {
+        val outcome = executePagedOperation(operation)
+        require(outcome.result is JsonNull) {
+            "$commandName unexpectedly returned a projected session result"
+        }
+        publishPagedInvalidations(commandName, outcome)
+    }
+
+    private fun executePagedOperation(operation: () -> String): PagedSessionOperationResult =
+        navKvStore?.runPagedSessionOperation(
             operation = operation,
             resumeSnapshot = { bridge.getSessionSnapshotPagedJson(handle) },
         )
@@ -737,10 +752,6 @@ class NativeUiSession internal constructor(
                     else -> error("unknown HAD session operation state: $state")
                 }
             }
-        updateSnapshot(json.decodeFromJsonElement<WireUiSessionSnapshot>(outcome.result).toUi())
-        publishPagedInvalidations(commandName, outcome, snapshotAlreadyReturned = true)
-        return snapshot
-    }
 
     private fun publishPagedInvalidations(
         commandName: String,
@@ -1259,12 +1270,16 @@ class NativeUiSession internal constructor(
     fun recordOfflinePackagePreferences(
         preferencesJson: String,
         nowEpochMs: Long,
-    ): UiSessionSnapshot = runPagedSnapshot("recordOfflinePackagePreferences") {
-        bridge.recordOfflinePackagePreferencesInSessionJson(
-            handle,
-            preferencesJson,
-            nowEpochMs,
-        )
+    ) {
+        runNativeSessionCommand("recordOfflinePackagePreferences") {
+            executePagedInvalidationCommand("recordOfflinePackagePreferences") {
+                bridge.recordOfflinePackagePreferencesInSessionJson(
+                    handle,
+                    preferencesJson,
+                    nowEpochMs,
+                )
+            }
+        }
     }
 
     fun takeCloudProviderRequest(nowEpochMs: Long): CloudHttpRequest? =

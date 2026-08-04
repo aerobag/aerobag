@@ -19,35 +19,23 @@ use product_contracts::{
     acs_events_path, AcsCompareAndSwapRootRequest, AcsCompareAndSwapRootResponse,
     AcsCreateAccountRequest, AcsCreateAccountResponse, AcsCreateObjectOutcome,
     AcsCreateSseTicketResponse, AcsCreationChallengeResponse, AcsEncryptedValue,
-    AcsEncryptedValueKind, AcsErrorCode, AcsListObjectsResponse, AcsObjectSnapshot,
-    AcsObjectSummary, AcsRootSnapshot, AcsServiceMode, AcsSseEvent, AcsStatusMetric,
-    AcsStatusResponse, AcsStatusTopContributor, ACS_CONTRACT_ID, ACS_FIXED_ROOT_ID,
-    ACS_SSE_TICKET_TTL_MS,
+    AcsEncryptedValueKind, AcsErrorCode, AcsHealthResponse, AcsListObjectsResponse,
+    AcsObjectSnapshot, AcsObjectSummary, AcsRateLimitGate, AcsRootSnapshot, AcsServiceMode,
+    AcsSseEvent, AcsStatusMetric, AcsStatusResponse, AcsStatusTopContributor, ACS_CONTRACT_ID,
+    ACS_FIXED_ROOT_ID, ACS_SSE_TICKET_TTL_MS,
 };
 use rusqlite::{params, Connection, OptionalExtension, Transaction, TransactionBehavior};
 use serde::Serialize;
 use sha2::{Digest, Sha256};
 use tokio::sync::broadcast;
 
-const SCHEMA_VERSION: u32 = 1;
+const SCHEMA_VERSION: u32 = 2;
 const CHALLENGE_TTL_MS: i64 = 5 * 60 * 1_000;
-const ACCOUNT_CREATION_WINDOW_MS: i64 = 24 * 60 * 60 * 1_000;
-const ACCOUNT_CREATIONS_PER_NETWORK: u64 = 3;
 const OUTSTANDING_CHALLENGES_PER_NETWORK: u64 = 8;
-const DEFAULT_ANONYMOUS_QUOTA_BYTES: u64 = 1_048_576;
-const DEFAULT_ANONYMOUS_OBJECT_LIMIT: u64 = 2_048;
-const DEFAULT_GLOBAL_STORAGE_LIMIT_BYTES: u64 = 10 * 1_024 * 1_024 * 1_024;
-const DEFAULT_INLINE_THRESHOLD_BYTES: u64 = 128 * 1_024;
-const DEFAULT_EVENT_RETENTION: u64 = 256;
 const DEFAULT_LIST_LIMIT: u32 = 100;
 const MAX_LIST_LIMIT: u32 = 500;
 const RATE_WINDOW_MS: i64 = 60_000;
-const DEFAULT_NETWORK_OPERATIONS_PER_WINDOW: u64 = 1_200;
-const DEFAULT_ACCOUNT_OPERATIONS_PER_WINDOW: u64 = 600;
-const DEFAULT_ACCOUNT_EGRESS_BYTES_PER_WINDOW: u64 = 64 * 1024 * 1024;
-const DEFAULT_GLOBAL_SSE_LIMIT: u64 = 128;
-const DEFAULT_ACCOUNT_SSE_LIMIT: u64 = 4;
-const DEFAULT_NETWORK_SSE_LIMIT: u64 = 16;
+const DAY_MS: u64 = 24 * 60 * 60 * 1_000;
 const MAX_TRACKED_NETWORK_WINDOWS: usize = 4_096;
 
 #[derive(Debug, Clone)]
@@ -58,30 +46,68 @@ pub struct StoreConfig {
     pub global_storage_limit_bytes: u64,
     pub inline_threshold_bytes: u64,
     pub event_retention: u64,
-    pub network_operations_per_minute: u64,
-    pub account_operations_per_minute: u64,
-    pub account_egress_bytes_per_minute: u64,
+    pub network_operation_bucket: TokenBucketConfig,
+    pub account_operation_bucket: TokenBucketConfig,
+    pub account_egress_bucket: TokenBucketConfig,
     pub global_sse_limit: u64,
     pub account_sse_limit: u64,
     pub network_sse_limit: u64,
+    pub creation_network_bucket: TokenBucketConfig,
+    pub creation_global_bucket: TokenBucketConfig,
+    pub stored_bytes_warning: u64,
+    pub stored_bytes_critical: u64,
+    pub filesystem_free_bytes_warning: u64,
+    pub filesystem_free_bytes_critical: u64,
+    pub sse_connections_warning: u64,
+    pub sse_connections_critical: u64,
+    pub gc_database_pause_ms_warning: u64,
+    pub gc_database_pause_ms_critical: u64,
+    pub gc_elapsed_ms_warning: u64,
+    pub gc_elapsed_ms_critical: u64,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct TokenBucketConfig {
+    pub capacity: u64,
+    pub refill_amount: u64,
+    pub refill_period_ms: u64,
+}
+
+impl TokenBucketConfig {
+    pub const fn per_minute(capacity: u64, refill_amount: u64) -> Self {
+        Self {
+            capacity,
+            refill_amount,
+            refill_period_ms: RATE_WINDOW_MS as u64,
+        }
+    }
+
+    pub const fn per_day(capacity: u64, refill_amount: u64) -> Self {
+        Self {
+            capacity,
+            refill_amount,
+            refill_period_ms: DAY_MS,
+        }
+    }
+
+    fn validate(self, label: &str) -> StoreResult<()> {
+        if self.capacity == 0 || self.refill_amount == 0 || self.refill_period_ms == 0 {
+            return Err(StoreError::internal(format!(
+                "{label} token bucket values must be positive"
+            )));
+        }
+        let _ = self
+            .capacity
+            .checked_mul(self.refill_period_ms)
+            .ok_or_else(|| StoreError::internal(format!("{label} token bucket is too large")))?;
+        Ok(())
+    }
 }
 
 impl StoreConfig {
-    pub fn for_data_root(data_root: PathBuf) -> Self {
-        Self {
-            data_root,
-            anonymous_quota_bytes: DEFAULT_ANONYMOUS_QUOTA_BYTES,
-            anonymous_object_limit: DEFAULT_ANONYMOUS_OBJECT_LIMIT,
-            global_storage_limit_bytes: DEFAULT_GLOBAL_STORAGE_LIMIT_BYTES,
-            inline_threshold_bytes: DEFAULT_INLINE_THRESHOLD_BYTES,
-            event_retention: DEFAULT_EVENT_RETENTION,
-            network_operations_per_minute: DEFAULT_NETWORK_OPERATIONS_PER_WINDOW,
-            account_operations_per_minute: DEFAULT_ACCOUNT_OPERATIONS_PER_WINDOW,
-            account_egress_bytes_per_minute: DEFAULT_ACCOUNT_EGRESS_BYTES_PER_WINDOW,
-            global_sse_limit: DEFAULT_GLOBAL_SSE_LIMIT,
-            account_sse_limit: DEFAULT_ACCOUNT_SSE_LIMIT,
-            network_sse_limit: DEFAULT_NETWORK_SSE_LIMIT,
-        }
+    #[cfg(test)]
+    pub(crate) fn for_test_data_root(data_root: PathBuf) -> Self {
+        crate::policy::checked_in_test_policy().store_config(data_root)
     }
 }
 
@@ -152,6 +178,7 @@ pub struct StoreError {
     pub code: AcsErrorCode,
     pub message: String,
     pub retry_after_ms: Option<u64>,
+    pub rate_limit_gate: Option<AcsRateLimitGate>,
 }
 
 impl StoreError {
@@ -160,6 +187,7 @@ impl StoreError {
             code,
             message: message.into(),
             retry_after_ms: None,
+            rate_limit_gate: None,
         }
     }
 
@@ -203,6 +231,10 @@ struct OperationCounters {
     account_creation_attempts: AtomicU64,
     account_creation_successes: AtomicU64,
     account_creation_rejections: AtomicU64,
+    account_creation_network_rate_rejections: AtomicU64,
+    account_creation_global_rate_rejections: AtomicU64,
+    account_creation_other_rejections: AtomicU64,
+    account_creation_idempotent_successes: AtomicU64,
     current_sse_connections: AtomicU64,
     peak_sse_connections: AtomicU64,
     gc_runs: AtomicU64,
@@ -213,41 +245,123 @@ struct OperationCounters {
     gc_peak_elapsed_ms: AtomicU64,
 }
 
-#[derive(Debug, Clone, Copy, Default)]
-struct FixedWindow {
-    started_at_epoch_ms: i64,
-    value: u64,
+#[derive(Debug, Clone, Copy)]
+enum CreationMetric {
+    Attempt = 0,
+    Success = 1,
+    NetworkRateRejection = 2,
+    GlobalRateRejection = 3,
+    OtherRejection = 4,
 }
 
-impl FixedWindow {
-    fn current(&self, now_epoch_ms: i64) -> u64 {
-        if now_epoch_ms.saturating_sub(self.started_at_epoch_ms) >= RATE_WINDOW_MS {
-            0
-        } else {
-            self.value
+const CREATION_METRIC_COUNT: usize = 5;
+
+#[derive(Debug, Clone)]
+struct CreationMinuteBucket {
+    minute: i64,
+    counts: [u64; CREATION_METRIC_COUNT],
+}
+
+#[derive(Default)]
+struct RollingCreationMetrics {
+    buckets: VecDeque<CreationMinuteBucket>,
+}
+
+impl RollingCreationMetrics {
+    fn record(&mut self, metric: CreationMetric, now_epoch_ms: i64) {
+        let minute = now_epoch_ms.div_euclid(60_000);
+        if self
+            .buckets
+            .back()
+            .is_none_or(|bucket| bucket.minute != minute)
+        {
+            self.buckets.push_back(CreationMinuteBucket {
+                minute,
+                counts: [0; CREATION_METRIC_COUNT],
+            });
+        }
+        if let Some(bucket) = self.buckets.back_mut() {
+            bucket.counts[metric as usize] += 1;
+        }
+        while self
+            .buckets
+            .front()
+            .is_some_and(|bucket| minute.saturating_sub(bucket.minute) >= 60)
+        {
+            self.buckets.pop_front();
         }
     }
 
-    fn reserve(&mut self, amount: u64, limit: u64, now_epoch_ms: i64) -> bool {
-        if self.started_at_epoch_ms == 0
-            || now_epoch_ms.saturating_sub(self.started_at_epoch_ms) >= RATE_WINDOW_MS
-        {
-            self.started_at_epoch_ms = now_epoch_ms;
-            self.value = 0;
+    fn count(&self, metric: CreationMetric, now_epoch_ms: i64, minutes: i64) -> u64 {
+        let current_minute = now_epoch_ms.div_euclid(60_000);
+        self.buckets
+            .iter()
+            .filter(|bucket| current_minute.saturating_sub(bucket.minute) < minutes)
+            .map(|bucket| bucket.counts[metric as usize])
+            .sum()
+    }
+}
+
+#[derive(Debug, Clone, Copy, Default)]
+struct TokenBucket {
+    available_quanta: u128,
+    updated_at_epoch_ms: i64,
+    initialized: bool,
+}
+
+impl TokenBucket {
+    fn refill(&mut self, config: TokenBucketConfig, now_epoch_ms: i64) {
+        let full = u128::from(config.capacity) * u128::from(config.refill_period_ms);
+        if !self.initialized {
+            self.available_quanta = full;
+            self.updated_at_epoch_ms = now_epoch_ms;
+            self.initialized = true;
+            return;
         }
-        if self.value.saturating_add(amount) > limit {
-            return false;
+        let elapsed_ms = now_epoch_ms.saturating_sub(self.updated_at_epoch_ms).max(0) as u128;
+        self.available_quanta = self
+            .available_quanta
+            .saturating_add(elapsed_ms * u128::from(config.refill_amount))
+            .min(full);
+        self.updated_at_epoch_ms = now_epoch_ms;
+    }
+
+    fn reserve(
+        &mut self,
+        amount: u64,
+        config: TokenBucketConfig,
+        now_epoch_ms: i64,
+    ) -> Result<(), u64> {
+        self.refill(config, now_epoch_ms);
+        let required = u128::from(amount) * u128::from(config.refill_period_ms);
+        if self.available_quanta < required {
+            let deficit = required - self.available_quanta;
+            let retry_after_ms = deficit.div_ceil(u128::from(config.refill_amount));
+            return Err(retry_after_ms.try_into().unwrap_or(u64::MAX));
         }
-        self.value += amount;
-        true
+        self.available_quanta -= required;
+        Ok(())
+    }
+
+    fn consumed(&self, config: TokenBucketConfig, now_epoch_ms: i64) -> u64 {
+        let mut current = *self;
+        current.refill(config, now_epoch_ms);
+        let full = u128::from(config.capacity) * u128::from(config.refill_period_ms);
+        ((full - current.available_quanta) / u128::from(config.refill_period_ms))
+            .try_into()
+            .unwrap_or(u64::MAX)
+    }
+
+    fn is_full(&self, config: TokenBucketConfig, now_epoch_ms: i64) -> bool {
+        self.consumed(config, now_epoch_ms) == 0
     }
 }
 
 #[derive(Default)]
 struct RuntimeLimits {
-    network_operations: HashMap<String, FixedWindow>,
-    account_operations: HashMap<String, FixedWindow>,
-    account_egress_bytes: HashMap<String, FixedWindow>,
+    network_operations: HashMap<String, TokenBucket>,
+    account_operations: HashMap<String, TokenBucket>,
+    account_egress_bytes: HashMap<String, TokenBucket>,
     account_sse: HashMap<String, u64>,
     network_sse: HashMap<String, u64>,
 }
@@ -262,6 +376,7 @@ struct StoreInner {
     last_durable_write_epoch_ms: AtomicI64,
     events: broadcast::Sender<RootEventRecord>,
     counters: OperationCounters,
+    creation_metrics: Mutex<RollingCreationMetrics>,
     limits: Mutex<RuntimeLimits>,
 }
 
@@ -272,6 +387,19 @@ pub struct CloudStore {
 
 impl CloudStore {
     pub fn open(config: StoreConfig) -> StoreResult<Self> {
+        config
+            .network_operation_bucket
+            .validate("network operation")?;
+        config
+            .account_operation_bucket
+            .validate("account operation")?;
+        config.account_egress_bucket.validate("account egress")?;
+        config
+            .creation_network_bucket
+            .validate("network account creation")?;
+        config
+            .creation_global_bucket
+            .validate("global account creation")?;
         fs::create_dir_all(&config.data_root)
             .map_err(|error| StoreError::io("create cloud data root", error))?;
         let blob_root = config.data_root.join("blobs");
@@ -293,6 +421,7 @@ impl CloudStore {
                 last_durable_write_epoch_ms: AtomicI64::new(0),
                 events,
                 counters: OperationCounters::default(),
+                creation_metrics: Mutex::new(RollingCreationMetrics::default()),
                 limits: Mutex::new(RuntimeLimits::default()),
             }),
         };
@@ -327,6 +456,24 @@ impl CloudStore {
             .fetch_add(1, Ordering::Relaxed);
     }
 
+    fn record_creation_metric(&self, metric: CreationMetric, now_epoch_ms: i64) {
+        if let Ok(mut metrics) = self.inner.creation_metrics.lock() {
+            metrics.record(metric, now_epoch_ms);
+        }
+    }
+
+    fn record_other_creation_rejection(&self, now_epoch_ms: i64) {
+        self.inner
+            .counters
+            .account_creation_rejections
+            .fetch_add(1, Ordering::Relaxed);
+        self.inner
+            .counters
+            .account_creation_other_rejections
+            .fetch_add(1, Ordering::Relaxed);
+        self.record_creation_metric(CreationMetric::OtherRejection, now_epoch_ms);
+    }
+
     pub(crate) fn check_network_operation(
         &self,
         network_pseudonym: &str,
@@ -340,28 +487,31 @@ impl CloudStore {
         if limits.network_operations.len() >= MAX_TRACKED_NETWORK_WINDOWS
             && !limits.network_operations.contains_key(network_pseudonym)
         {
+            let config = self.inner.config.network_operation_bucket;
             limits
                 .network_operations
-                .retain(|_, window| window.current(now_epoch_ms) > 0);
+                .retain(|_, bucket| !bucket.is_full(config, now_epoch_ms));
         }
         if limits.network_operations.len() >= MAX_TRACKED_NETWORK_WINDOWS
             && !limits.network_operations.contains_key(network_pseudonym)
         {
-            return self.rate_limited("too many distinct source networks", RATE_WINDOW_MS as u64);
+            return self.rate_limited(
+                AcsRateLimitGate::NetworkOperations,
+                "too many distinct source networks",
+                RATE_WINDOW_MS as u64,
+            );
         }
-        if !limits
+        let config = self.inner.config.network_operation_bucket;
+        if let Err(retry_after_ms) = limits
             .network_operations
             .entry(network_pseudonym.to_string())
             .or_default()
-            .reserve(
-                1,
-                self.inner.config.network_operations_per_minute,
-                now_epoch_ms,
-            )
+            .reserve(1, config, now_epoch_ms)
         {
             return self.rate_limited(
+                AcsRateLimitGate::NetworkOperations,
                 "source network request rate is exceeded",
-                RATE_WINDOW_MS as u64,
+                retry_after_ms,
             );
         }
         Ok(())
@@ -377,19 +527,17 @@ impl CloudStore {
             .limits
             .lock()
             .map_err(|_| StoreError::internal("cloud limit mutex is poisoned"))?;
-        if !limits
+        let config = self.inner.config.account_operation_bucket;
+        if let Err(retry_after_ms) = limits
             .account_operations
             .entry(account_locator.to_string())
             .or_default()
-            .reserve(
-                1,
-                self.inner.config.account_operations_per_minute,
-                now_epoch_ms,
-            )
+            .reserve(1, config, now_epoch_ms)
         {
             return self.rate_limited(
+                AcsRateLimitGate::AccountOperations,
                 "cloud account request rate is exceeded",
-                RATE_WINDOW_MS as u64,
+                retry_after_ms,
             );
         }
         Ok(())
@@ -406,25 +554,28 @@ impl CloudStore {
             .limits
             .lock()
             .map_err(|_| StoreError::internal("cloud limit mutex is poisoned"))?;
-        if !limits
+        let config = self.inner.config.account_egress_bucket;
+        if let Err(retry_after_ms) = limits
             .account_egress_bytes
             .entry(account_locator.to_string())
             .or_default()
-            .reserve(
-                bytes,
-                self.inner.config.account_egress_bytes_per_minute,
-                now_epoch_ms,
-            )
+            .reserve(bytes, config, now_epoch_ms)
         {
             return self.rate_limited(
+                AcsRateLimitGate::AccountEgress,
                 "cloud account egress rate is exceeded",
-                RATE_WINDOW_MS as u64,
+                retry_after_ms,
             );
         }
         Ok(())
     }
 
-    fn rate_limited<T>(&self, message: &str, retry_after_ms: u64) -> StoreResult<T> {
+    fn rate_limited<T>(
+        &self,
+        gate: AcsRateLimitGate,
+        message: &str,
+        retry_after_ms: u64,
+    ) -> StoreResult<T> {
         self.inner
             .counters
             .rate_limit_rejections
@@ -433,6 +584,7 @@ impl CloudStore {
             code: AcsErrorCode::RateLimited,
             message: message.to_string(),
             retry_after_ms: Some(retry_after_ms),
+            rate_limit_gate: Some(gate),
         })
     }
 
@@ -463,11 +615,11 @@ impl CloudStore {
                 .counters
                 .rate_limit_rejections
                 .fetch_add(1, Ordering::Relaxed);
-            return Err(StoreError {
-                code: AcsErrorCode::RateLimited,
-                message: "too many outstanding account challenges".to_string(),
-                retry_after_ms: Some(60_000),
-            });
+            return self.rate_limited(
+                AcsRateLimitGate::OutstandingCreationChallenges,
+                "too many outstanding account challenges",
+                60_000,
+            );
         }
         let challenge = random_token(32)?;
         let expires_at_epoch_ms = now_epoch_ms + CHALLENGE_TTL_MS;
@@ -498,6 +650,7 @@ impl CloudStore {
             .counters
             .account_creation_attempts
             .fetch_add(1, Ordering::Relaxed);
+        self.record_creation_metric(CreationMetric::Attempt, now_epoch_ms);
         let mut connection = self.connection()?;
         let transaction = connection
             .transaction_with_behavior(TransactionBehavior::Immediate)
@@ -509,13 +662,16 @@ impl CloudStore {
                 |row| Ok((row.get::<_, String>(0)?, row.get::<_, i64>(1)?, row.get::<_, bool>(2)?)),
             )
             .optional()
-            .map_err(StoreError::sqlite)?
-            .ok_or_else(|| StoreError::new(AcsErrorCode::Unauthorized, "account challenge is unknown"))?;
+            .map_err(StoreError::sqlite)?;
+        let Some(challenge) = challenge else {
+            self.record_other_creation_rejection(now_epoch_ms);
+            return Err(StoreError::new(
+                AcsErrorCode::Unauthorized,
+                "account challenge is unknown",
+            ));
+        };
         if challenge.0 != network_pseudonym || challenge.1 < now_epoch_ms || challenge.2 {
-            self.inner
-                .counters
-                .account_creation_rejections
-                .fetch_add(1, Ordering::Relaxed);
+            self.record_other_creation_rejection(now_epoch_ms);
             return Err(StoreError::new(
                 AcsErrorCode::Unauthorized,
                 "account challenge is expired, used, or belongs to another network",
@@ -531,6 +687,7 @@ impl CloudStore {
             .map_err(StoreError::sqlite)?;
         if let Some((key_id, public_key, quota_class, quota_bytes)) = existing {
             if key_id != request.signing_key_id || public_key != signing_public_key {
+                self.record_other_creation_rejection(now_epoch_ms);
                 return Err(StoreError::new(
                     AcsErrorCode::Conflict,
                     "account locator is already registered to another key",
@@ -543,6 +700,10 @@ impl CloudStore {
                 )
                 .map_err(StoreError::sqlite)?;
             transaction.commit().map_err(StoreError::sqlite)?;
+            self.inner
+                .counters
+                .account_creation_idempotent_successes
+                .fetch_add(1, Ordering::Relaxed);
             return Ok(AcsCreateAccountResponse {
                 contract_id: ACS_CONTRACT_ID.to_string(),
                 account_locator: request.account_locator.clone(),
@@ -551,23 +712,56 @@ impl CloudStore {
                 quota_bytes,
             });
         }
-        let cutoff = now_epoch_ms - ACCOUNT_CREATION_WINDOW_MS;
-        let recent_creations: u64 = transaction
-            .query_row(
-                "SELECT COUNT(*) FROM accounts WHERE creation_network_pseudonym = ?1 AND created_at_epoch_ms >= ?2",
-                params![network_pseudonym, cutoff],
-                |row| row.get(0),
-            )
-            .map_err(StoreError::sqlite)?;
-        if recent_creations >= ACCOUNT_CREATIONS_PER_NETWORK {
+        if let Err(retry_after_ms) = reserve_durable_token_bucket(
+            &transaction,
+            &format!("account_creation_network:{network_pseudonym}"),
+            self.inner.config.creation_network_bucket,
+            now_epoch_ms,
+        )? {
             self.inner
                 .counters
                 .account_creation_rejections
                 .fetch_add(1, Ordering::Relaxed);
+            self.inner
+                .counters
+                .account_creation_network_rate_rejections
+                .fetch_add(1, Ordering::Relaxed);
+            self.inner
+                .counters
+                .rate_limit_rejections
+                .fetch_add(1, Ordering::Relaxed);
+            self.record_creation_metric(CreationMetric::NetworkRateRejection, now_epoch_ms);
             return Err(StoreError {
                 code: AcsErrorCode::RateLimited,
-                message: "anonymous account creation allowance is exhausted".to_string(),
-                retry_after_ms: Some(ACCOUNT_CREATION_WINDOW_MS as u64),
+                message: "source network account creation rate is exceeded".to_string(),
+                retry_after_ms: Some(retry_after_ms),
+                rate_limit_gate: Some(AcsRateLimitGate::AccountCreationNetwork),
+            });
+        }
+        if let Err(retry_after_ms) = reserve_durable_token_bucket(
+            &transaction,
+            "account_creation_global",
+            self.inner.config.creation_global_bucket,
+            now_epoch_ms,
+        )? {
+            self.inner
+                .counters
+                .account_creation_rejections
+                .fetch_add(1, Ordering::Relaxed);
+            self.inner
+                .counters
+                .account_creation_global_rate_rejections
+                .fetch_add(1, Ordering::Relaxed);
+            self.inner
+                .counters
+                .rate_limit_rejections
+                .fetch_add(1, Ordering::Relaxed);
+            self.record_creation_metric(CreationMetric::GlobalRateRejection, now_epoch_ms);
+            return Err(StoreError {
+                code: AcsErrorCode::RateLimited,
+                message: "global account creation rate is exceeded".to_string(),
+                retry_after_ms: Some(retry_after_ms),
+                rate_limit_gate: Some(AcsRateLimitGate::AccountCreationGlobal),
             });
         }
         transaction
@@ -587,6 +781,7 @@ impl CloudStore {
             .counters
             .account_creation_successes
             .fetch_add(1, Ordering::Relaxed);
+        self.record_creation_metric(CreationMetric::Success, now_epoch_ms);
         self.note_durable_write(now_epoch_ms);
         Ok(AcsCreateAccountResponse {
             contract_id: ACS_CONTRACT_ID.to_string(),
@@ -1225,12 +1420,18 @@ impl CloudStore {
             .get(network_pseudonym)
             .copied()
             .unwrap_or(0);
-        if current_global >= self.inner.config.global_sse_limit
-            || current_account >= self.inner.config.account_sse_limit
-            || current_network >= self.inner.config.network_sse_limit
-        {
+        let rejected_gate = if current_global >= self.inner.config.global_sse_limit {
+            Some(AcsRateLimitGate::GlobalSseConnections)
+        } else if current_account >= self.inner.config.account_sse_limit {
+            Some(AcsRateLimitGate::AccountSseConnections)
+        } else if current_network >= self.inner.config.network_sse_limit {
+            Some(AcsRateLimitGate::NetworkSseConnections)
+        } else {
+            None
+        };
+        if let Some(gate) = rejected_gate {
             drop(limits);
-            return self.rate_limited("SSE connection limit is exceeded", 30_000);
+            return self.rate_limited(gate, "SSE connection limit is exceeded", 30_000);
         }
         *limits
             .account_sse
@@ -1531,6 +1732,41 @@ impl CloudStore {
                 row.get::<_, u64>(0)
             })
             .map_err(StoreError::sqlite)?;
+        let creation_bucket_rows = {
+            let mut statement = connection
+                .prepare(
+                    "SELECT bucket_key, available_quanta, updated_at_epoch_ms FROM durable_token_buckets",
+                )
+                .map_err(StoreError::sqlite)?;
+            let rows = statement
+                .query_map([], |row| {
+                    Ok((
+                        row.get::<_, String>(0)?,
+                        row.get::<_, u64>(1)?,
+                        row.get::<_, i64>(2)?,
+                    ))
+                })
+                .map_err(StoreError::sqlite)?
+                .collect::<Result<Vec<_>, _>>()
+                .map_err(StoreError::sqlite)?;
+            rows
+        };
+        let mut global_creation_consumed = 0;
+        let mut network_creation_peak_consumed = 0;
+        for (key, available_quanta, updated_at_epoch_ms) in creation_bucket_rows {
+            let bucket = TokenBucket {
+                available_quanta: u128::from(available_quanta),
+                updated_at_epoch_ms,
+                initialized: true,
+            };
+            if key == "account_creation_global" {
+                global_creation_consumed =
+                    bucket.consumed(self.inner.config.creation_global_bucket, now_epoch_ms);
+            } else if key.starts_with("account_creation_network:") {
+                network_creation_peak_consumed = network_creation_peak_consumed
+                    .max(bucket.consumed(self.inner.config.creation_network_bucket, now_epoch_ms));
+            }
+        }
         let database_bytes = file_size(&self.inner.database_path);
         let wal_bytes = file_size(&self.inner.database_path.with_extension("sqlite3-wal"));
         let filesystem_free_bytes = fs2::available_space(&self.inner.config.data_root).unwrap_or(0);
@@ -1543,19 +1779,19 @@ impl CloudStore {
         let current_network_operation_peak = limits
             .network_operations
             .values()
-            .map(|window| window.current(now_epoch_ms))
+            .map(|bucket| bucket.consumed(self.inner.config.network_operation_bucket, now_epoch_ms))
             .max()
             .unwrap_or(0);
         let current_account_operation_peak = limits
             .account_operations
             .values()
-            .map(|window| window.current(now_epoch_ms))
+            .map(|bucket| bucket.consumed(self.inner.config.account_operation_bucket, now_epoch_ms))
             .max()
             .unwrap_or(0);
         let current_account_egress_peak = limits
             .account_egress_bytes
             .values()
-            .map(|window| window.current(now_epoch_ms))
+            .map(|bucket| bucket.consumed(self.inner.config.account_egress_bucket, now_epoch_ms))
             .max()
             .unwrap_or(0);
         let mut metrics = vec![
@@ -1563,8 +1799,8 @@ impl CloudStore {
             gauge(
                 "stored_bytes",
                 gauges.1,
-                Some(self.inner.config.global_storage_limit_bytes * 8 / 10),
-                Some(self.inner.config.global_storage_limit_bytes * 9 / 10),
+                Some(self.inner.config.stored_bytes_warning),
+                Some(self.inner.config.stored_bytes_critical),
                 Some(self.inner.config.global_storage_limit_bytes),
             ),
             gauge("object_count", gauges.2, None, None, None),
@@ -1576,18 +1812,18 @@ impl CloudStore {
             gauge("retained_sse_events", retained_events, None, None, None),
             gauge("sqlite_bytes", database_bytes, None, None, None),
             gauge("wal_bytes", wal_bytes, None, None, None),
-            gauge(
+            low_gauge(
                 "filesystem_free_bytes",
                 filesystem_free_bytes,
-                None,
-                None,
-                None,
+                Some(self.inner.config.filesystem_free_bytes_warning),
+                Some(self.inner.config.filesystem_free_bytes_critical),
+                Some(0),
             ),
             gauge(
                 "current_sse_connections",
                 counters.current_sse_connections.load(Ordering::Relaxed),
-                None,
-                None,
+                Some(self.inner.config.sse_connections_warning),
+                Some(self.inner.config.sse_connections_critical),
                 Some(self.inner.config.global_sse_limit),
             ),
             gauge(
@@ -1608,6 +1844,8 @@ impl CloudStore {
                 "gc_database_pause_ms",
                 counters.gc_last_database_pause_ms.load(Ordering::Relaxed),
                 counters.gc_peak_database_pause_ms.load(Ordering::Relaxed),
+                self.inner.config.gc_database_pause_ms_warning,
+                self.inner.config.gc_database_pause_ms_critical,
             ),
             gauge(
                 "gc_database_pause_ms_total",
@@ -1620,21 +1858,33 @@ impl CloudStore {
                 "gc_elapsed_ms",
                 counters.gc_last_elapsed_ms.load(Ordering::Relaxed),
                 counters.gc_peak_elapsed_ms.load(Ordering::Relaxed),
+                self.inner.config.gc_elapsed_ms_warning,
+                self.inner.config.gc_elapsed_ms_critical,
             ),
-            rate_gauge(
+            bucket_gauge(
                 "max_network_operations_per_minute",
                 current_network_operation_peak,
-                self.inner.config.network_operations_per_minute,
+                self.inner.config.network_operation_bucket,
             ),
-            rate_gauge(
+            bucket_gauge(
                 "max_account_operations_per_minute",
                 current_account_operation_peak,
-                self.inner.config.account_operations_per_minute,
+                self.inner.config.account_operation_bucket,
             ),
-            rate_gauge(
+            bucket_gauge(
                 "max_account_egress_bytes_per_minute",
                 current_account_egress_peak,
-                self.inner.config.account_egress_bytes_per_minute,
+                self.inner.config.account_egress_bucket,
+            ),
+            bucket_gauge(
+                "max_network_account_creation_tokens_consumed",
+                network_creation_peak_consumed,
+                self.inner.config.creation_network_bucket,
+            ),
+            bucket_gauge(
+                "global_account_creation_tokens_consumed",
+                global_creation_consumed,
+                self.inner.config.creation_global_bucket,
             ),
         ];
         for (id, counter) in [
@@ -1665,8 +1915,58 @@ impl CloudStore {
                 "account_creation_rejections",
                 &counters.account_creation_rejections,
             ),
+            (
+                "account_creation_network_rate_rejections",
+                &counters.account_creation_network_rate_rejections,
+            ),
+            (
+                "account_creation_global_rate_rejections",
+                &counters.account_creation_global_rate_rejections,
+            ),
+            (
+                "account_creation_other_rejections",
+                &counters.account_creation_other_rejections,
+            ),
+            (
+                "account_creation_idempotent_successes",
+                &counters.account_creation_idempotent_successes,
+            ),
         ] {
             metrics.push(gauge(id, counter.load(Ordering::Relaxed), None, None, None));
+        }
+        let creation_metrics = self
+            .inner
+            .creation_metrics
+            .lock()
+            .map_err(|_| StoreError::internal("cloud creation metric mutex is poisoned"))?;
+        for (minutes, suffix) in [(1, "1m"), (5, "5m"), (60, "60m")] {
+            for (id, metric, rejected) in [
+                ("account_creation_attempts", CreationMetric::Attempt, false),
+                ("account_creation_successes", CreationMetric::Success, false),
+                (
+                    "account_creation_network_rate_rejections",
+                    CreationMetric::NetworkRateRejection,
+                    true,
+                ),
+                (
+                    "account_creation_global_rate_rejections",
+                    CreationMetric::GlobalRateRejection,
+                    true,
+                ),
+                (
+                    "account_creation_other_rejections",
+                    CreationMetric::OtherRejection,
+                    true,
+                ),
+            ] {
+                let current = creation_metrics.count(metric, now_epoch_ms, minutes);
+                metrics.push(window_counter(
+                    &format!("{id}_{suffix}"),
+                    current,
+                    (minutes * 60) as u64,
+                    rejected,
+                ));
+            }
         }
         let mut statement = connection
             .prepare("SELECT account_locator, stored_bytes FROM accounts ORDER BY stored_bytes DESC, account_locator LIMIT 10")
@@ -1694,6 +1994,25 @@ impl CloudStore {
             last_durable_write_epoch_ms: atomic_epoch(&self.inner.last_durable_write_epoch_ms),
             metrics,
             top_contributors,
+        })
+    }
+
+    pub(crate) fn health(&self, now_epoch_ms: i64) -> StoreResult<AcsHealthResponse> {
+        let connection = self.connection()?;
+        let mode = AccountMode::parse(
+            &connection
+                .query_row(
+                    "SELECT mode FROM service_state WHERE singleton = 1",
+                    [],
+                    |row| row.get::<_, String>(0),
+                )
+                .map_err(StoreError::sqlite)?,
+        )?;
+        Ok(AcsHealthResponse {
+            contract_id: ACS_CONTRACT_ID.to_string(),
+            server_time_epoch_ms: now_epoch_ms,
+            mode: mode.service_mode(),
+            database_healthy: true,
         })
     }
 
@@ -1920,6 +2239,11 @@ fn initialize_schema(connection: &Connection) -> StoreResult<()> {
                  network_pseudonym TEXT NOT NULL,
                  last_event_sequence INTEGER,
                  expires_at_epoch_ms INTEGER NOT NULL
+             );
+             CREATE TABLE IF NOT EXISTS durable_token_buckets(
+                 bucket_key TEXT PRIMARY KEY,
+                 available_quanta INTEGER NOT NULL,
+                 updated_at_epoch_ms INTEGER NOT NULL
              );",
         )
         .map_err(StoreError::sqlite)?;
@@ -1936,6 +2260,11 @@ fn initialize_schema(connection: &Connection) -> StoreResult<()> {
                     "INSERT INTO metadata(schema_version) VALUES (?1)",
                     [SCHEMA_VERSION],
                 )
+                .map_err(StoreError::sqlite)?;
+        }
+        Some(1) => {
+            connection
+                .execute("UPDATE metadata SET schema_version = ?1", [SCHEMA_VERSION])
                 .map_err(StoreError::sqlite)?;
         }
         Some(version) if version == SCHEMA_VERSION => {}
@@ -2338,6 +2667,43 @@ fn query_strings<P: rusqlite::Params>(
     Ok(rows)
 }
 
+fn reserve_durable_token_bucket(
+    transaction: &Transaction<'_>,
+    bucket_key: &str,
+    config: TokenBucketConfig,
+    now_epoch_ms: i64,
+) -> StoreResult<Result<(), u64>> {
+    let persisted = transaction
+        .query_row(
+            "SELECT available_quanta, updated_at_epoch_ms FROM durable_token_buckets WHERE bucket_key = ?1",
+            [bucket_key],
+            |row| Ok((row.get::<_, u64>(0)?, row.get::<_, i64>(1)?)),
+        )
+        .optional()
+        .map_err(StoreError::sqlite)?;
+    let mut bucket = match persisted {
+        Some((available_quanta, updated_at_epoch_ms)) => TokenBucket {
+            available_quanta: u128::from(available_quanta),
+            updated_at_epoch_ms,
+            initialized: true,
+        },
+        None => TokenBucket::default(),
+    };
+    if let Err(retry_after_ms) = bucket.reserve(1, config, now_epoch_ms) {
+        return Ok(Err(retry_after_ms));
+    }
+    let available_quanta = u64::try_from(bucket.available_quanta)
+        .map_err(|_| StoreError::internal("durable token bucket exceeds SQLite range"))?;
+    transaction
+        .execute(
+            "INSERT INTO durable_token_buckets(bucket_key, available_quanta, updated_at_epoch_ms) VALUES (?1, ?2, ?3)
+             ON CONFLICT(bucket_key) DO UPDATE SET available_quanta = excluded.available_quanta, updated_at_epoch_ms = excluded.updated_at_epoch_ms",
+            params![bucket_key, available_quanta, bucket.updated_at_epoch_ms],
+        )
+        .map_err(StoreError::sqlite)?;
+    Ok(Ok(()))
+}
+
 fn gauge(
     id: &str,
     current: u64,
@@ -2354,32 +2720,76 @@ fn gauge(
         hard_limit,
         window_seconds: None,
         rejected_in_window: 0,
+        lower_is_worse: false,
     }
 }
 
-fn rate_gauge(id: &str, current: u64, hard_limit: u64) -> AcsStatusMetric {
+fn low_gauge(
+    id: &str,
+    current: u64,
+    warning_at: Option<u64>,
+    critical_at: Option<u64>,
+    hard_limit: Option<u64>,
+) -> AcsStatusMetric {
     AcsStatusMetric {
         id: id.to_string(),
         current,
         peak: current,
-        warning_at: Some(hard_limit * 8 / 10),
-        critical_at: Some(hard_limit * 9 / 10),
-        hard_limit: Some(hard_limit),
-        window_seconds: Some((RATE_WINDOW_MS / 1_000) as u64),
+        warning_at,
+        critical_at,
+        hard_limit,
+        window_seconds: None,
         rejected_in_window: 0,
+        lower_is_worse: true,
     }
 }
 
-fn observation_metric(id: &str, current: u64, peak: u64) -> AcsStatusMetric {
+fn bucket_gauge(id: &str, current: u64, config: TokenBucketConfig) -> AcsStatusMetric {
+    let hard_limit = config.capacity;
+    AcsStatusMetric {
+        id: id.to_string(),
+        current,
+        peak: current,
+        warning_at: Some(hard_limit.saturating_mul(8).div_ceil(10).max(1)),
+        critical_at: Some(hard_limit.saturating_mul(9).div_ceil(10).max(1)),
+        hard_limit: Some(hard_limit),
+        window_seconds: Some(config.refill_period_ms / 1_000),
+        rejected_in_window: 0,
+        lower_is_worse: false,
+    }
+}
+
+fn observation_metric(
+    id: &str,
+    current: u64,
+    peak: u64,
+    warning_at: u64,
+    critical_at: u64,
+) -> AcsStatusMetric {
     AcsStatusMetric {
         id: id.to_string(),
         current,
         peak,
-        warning_at: None,
-        critical_at: None,
+        warning_at: Some(warning_at),
+        critical_at: Some(critical_at),
         hard_limit: None,
         window_seconds: None,
         rejected_in_window: 0,
+        lower_is_worse: false,
+    }
+}
+
+fn window_counter(id: &str, current: u64, window_seconds: u64, rejected: bool) -> AcsStatusMetric {
+    AcsStatusMetric {
+        id: id.to_string(),
+        current,
+        peak: current,
+        warning_at: None,
+        critical_at: None,
+        hard_limit: None,
+        window_seconds: Some(window_seconds),
+        rejected_in_window: if rejected { current } else { 0 },
+        lower_is_worse: false,
     }
 }
 
@@ -2506,31 +2916,146 @@ mod tests {
 
     fn store_with_inline_threshold(threshold: u64) -> (TempDir, CloudStore) {
         let root = TempDir::new().unwrap();
-        let mut config = StoreConfig::for_data_root(root.path().to_path_buf());
+        let mut config = StoreConfig::for_test_data_root(root.path().to_path_buf());
         config.inline_threshold_bytes = threshold;
         (root, CloudStore::open(config).unwrap())
     }
 
     fn create_account(store: &CloudStore, account: &str, now: i64) {
-        let challenge = store.issue_creation_challenge("network", now).unwrap();
-        store
-            .create_account(
-                &AcsCreateAccountRequest {
-                    contract_id: ACS_CONTRACT_ID.to_string(),
-                    account_locator: account.to_string(),
-                    signing_key_id: "key".to_string(),
-                    signing_public_key_base64url: URL_SAFE_NO_PAD.encode([7_u8; 32]),
-                    creation_challenge: challenge.challenge,
-                },
-                &[7_u8; 32],
-                "network",
-                now,
-            )
-            .unwrap();
+        create_account_for_network(store, account, "network", now).unwrap();
+    }
+
+    fn create_account_for_network(
+        store: &CloudStore,
+        account: &str,
+        network: &str,
+        now: i64,
+    ) -> StoreResult<AcsCreateAccountResponse> {
+        let challenge = store.issue_creation_challenge(network, now).unwrap();
+        store.create_account(
+            &AcsCreateAccountRequest {
+                contract_id: ACS_CONTRACT_ID.to_string(),
+                account_locator: account.to_string(),
+                signing_key_id: "key".to_string(),
+                signing_public_key_base64url: URL_SAFE_NO_PAD.encode([7_u8; 32]),
+                creation_challenge: challenge.challenge,
+            },
+            &[7_u8; 32],
+            network,
+            now,
+        )
     }
 
     fn value(bytes: &[u8], children: Vec<String>) -> AcsEncryptedValue {
         AcsEncryptedValue::from_ciphertext(bytes, children)
+    }
+
+    #[test]
+    fn token_bucket_refills_continuously_without_fixed_window_cliffs() {
+        let config = TokenBucketConfig::per_minute(2, 2);
+        let mut bucket = TokenBucket::default();
+        assert_eq!(bucket.reserve(1, config, 1_000), Ok(()));
+        assert_eq!(bucket.reserve(1, config, 1_000), Ok(()));
+        assert_eq!(bucket.reserve(1, config, 1_000), Err(30_000));
+        assert_eq!(bucket.reserve(1, config, 30_999), Err(1));
+        assert_eq!(bucket.reserve(1, config, 31_000), Ok(()));
+    }
+
+    #[test]
+    fn schema_one_database_is_upgraded_with_durable_creation_buckets() {
+        let root = TempDir::new().unwrap();
+        let database_path = root.path().join("cloud.sqlite3");
+        let connection = Connection::open(&database_path).unwrap();
+        connection
+            .execute_batch("CREATE TABLE metadata(schema_version INTEGER NOT NULL); INSERT INTO metadata(schema_version) VALUES (1);")
+            .unwrap();
+        drop(connection);
+
+        let store =
+            CloudStore::open(StoreConfig::for_test_data_root(root.path().to_path_buf())).unwrap();
+        let connection = store.connection().unwrap();
+        assert_eq!(
+            connection
+                .query_row("SELECT schema_version FROM metadata", [], |row| row
+                    .get::<_, u32>(0))
+                .unwrap(),
+            SCHEMA_VERSION
+        );
+        assert_eq!(
+            connection
+                .query_row(
+                    "SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = 'durable_token_buckets'",
+                    [],
+                    |row| row.get::<_, u64>(0),
+                )
+                .unwrap(),
+            1
+        );
+    }
+
+    #[test]
+    fn account_creation_network_bucket_refills_and_survives_restart() {
+        let root = TempDir::new().unwrap();
+        let config = StoreConfig::for_test_data_root(root.path().to_path_buf());
+        let store = CloudStore::open(config.clone()).unwrap();
+        for index in 0..3 {
+            create_account_for_network(&store, &format!("account-{index}"), "network", 1_000)
+                .unwrap();
+        }
+        drop(store);
+
+        let reopened = CloudStore::open(config).unwrap();
+        let error =
+            create_account_for_network(&reopened, "account-3", "network", 1_001).unwrap_err();
+        assert_eq!(
+            error.rate_limit_gate,
+            Some(AcsRateLimitGate::AccountCreationNetwork)
+        );
+        assert_eq!(error.retry_after_ms, Some(8 * 60 * 60 * 1_000 - 1));
+        create_account_for_network(
+            &reopened,
+            "account-3",
+            "network",
+            8 * 60 * 60 * 1_000 + 1_000,
+        )
+        .unwrap();
+    }
+
+    #[test]
+    fn idempotent_account_creation_does_not_consume_a_refilled_token() {
+        let root = TempDir::new().unwrap();
+        let mut config = StoreConfig::for_test_data_root(root.path().to_path_buf());
+        config.creation_network_bucket = TokenBucketConfig::per_day(1, 1);
+        let store = CloudStore::open(config).unwrap();
+        create_account_for_network(&store, "account", "network", 1_000).unwrap();
+        let next_day = 1_000 + DAY_MS as i64;
+        create_account_for_network(&store, "account", "network", next_day).unwrap();
+        create_account_for_network(&store, "other", "network", next_day).unwrap();
+    }
+
+    #[test]
+    fn global_creation_rejection_rolls_back_network_reservation() {
+        let root = TempDir::new().unwrap();
+        let mut config = StoreConfig::for_test_data_root(root.path().to_path_buf());
+        config.creation_network_bucket = TokenBucketConfig::per_day(1, 1);
+        config.creation_global_bucket = TokenBucketConfig::per_day(1, 1);
+        let store = CloudStore::open(config).unwrap();
+        create_account_for_network(&store, "account-a", "network-a", 1_000).unwrap();
+        let error =
+            create_account_for_network(&store, "account-b", "network-b", 1_000).unwrap_err();
+        assert_eq!(
+            error.rate_limit_gate,
+            Some(AcsRateLimitGate::AccountCreationGlobal)
+        );
+        let connection = store.connection().unwrap();
+        let network_b_bucket: u64 = connection
+            .query_row(
+                "SELECT COUNT(*) FROM durable_token_buckets WHERE bucket_key = 'account_creation_network:network-b'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(network_b_bucket, 0);
     }
 
     #[test]
@@ -2564,7 +3089,7 @@ mod tests {
         );
         drop(store);
 
-        let mut config = StoreConfig::for_data_root(root.path().to_path_buf());
+        let mut config = StoreConfig::for_test_data_root(root.path().to_path_buf());
         config.inline_threshold_bytes = 4;
         let reopened = CloudStore::open(config).unwrap();
         assert_eq!(
@@ -2776,7 +3301,7 @@ mod tests {
         fs::remove_file(path).unwrap();
         drop(store);
 
-        let mut config = StoreConfig::for_data_root(root.path().to_path_buf());
+        let mut config = StoreConfig::for_test_data_root(root.path().to_path_buf());
         config.inline_threshold_bytes = 1;
         let reopened = CloudStore::open(config).unwrap();
         assert_eq!(
@@ -2807,7 +3332,7 @@ mod tests {
             .unwrap();
         drop(store);
 
-        let mut config = StoreConfig::for_data_root(root.path().to_path_buf());
+        let mut config = StoreConfig::for_test_data_root(root.path().to_path_buf());
         config.inline_threshold_bytes = 1;
         let reopened = CloudStore::open(config).unwrap();
         assert_eq!(
@@ -2837,7 +3362,7 @@ mod tests {
         drop(store);
 
         let reopened =
-            CloudStore::open(StoreConfig::for_data_root(root.path().to_path_buf())).unwrap();
+            CloudStore::open(StoreConfig::for_test_data_root(root.path().to_path_buf())).unwrap();
         assert_eq!(reopened.read_root("account").unwrap().revision, 1);
         assert!(matches!(
             reopened
@@ -2913,10 +3438,10 @@ mod tests {
     #[test]
     fn operation_egress_and_sse_limits_are_enforced_and_reported() {
         let root = TempDir::new().unwrap();
-        let mut config = StoreConfig::for_data_root(root.path().to_path_buf());
-        config.network_operations_per_minute = 1;
-        config.account_operations_per_minute = 1;
-        config.account_egress_bytes_per_minute = 4;
+        let mut config = StoreConfig::for_test_data_root(root.path().to_path_buf());
+        config.network_operation_bucket = TokenBucketConfig::per_minute(1, 1);
+        config.account_operation_bucket = TokenBucketConfig::per_minute(1, 1);
+        config.account_egress_bucket = TokenBucketConfig::per_minute(4, 4);
         config.global_sse_limit = 1;
         config.account_sse_limit = 1;
         config.network_sse_limit = 1;
@@ -2974,7 +3499,7 @@ mod tests {
     #[test]
     fn crossing_global_storage_ceiling_persists_read_only_mode() {
         let root = TempDir::new().unwrap();
-        let mut config = StoreConfig::for_data_root(root.path().to_path_buf());
+        let mut config = StoreConfig::for_test_data_root(root.path().to_path_buf());
         config.global_storage_limit_bytes = 4;
         let store = CloudStore::open(config).unwrap();
         create_account(&store, "account", 10);
@@ -2994,7 +3519,7 @@ mod tests {
             AcsErrorCode::ReadOnly
         );
         drop(store);
-        let mut config = StoreConfig::for_data_root(root.path().to_path_buf());
+        let mut config = StoreConfig::for_test_data_root(root.path().to_path_buf());
         config.global_storage_limit_bytes = 4;
         assert_eq!(
             CloudStore::open(config).unwrap().status(23).unwrap().mode,
@@ -3042,7 +3567,7 @@ mod tests {
     #[test]
     fn sse_cursor_outside_retained_history_resets_to_current_state() {
         let root = TempDir::new().unwrap();
-        let mut config = StoreConfig::for_data_root(root.path().to_path_buf());
+        let mut config = StoreConfig::for_test_data_root(root.path().to_path_buf());
         config.event_retention = 2;
         let store = CloudStore::open(config).unwrap();
         create_account(&store, "account", 10);

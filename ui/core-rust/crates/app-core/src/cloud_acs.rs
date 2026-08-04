@@ -371,11 +371,21 @@ fn parse_http_error(status: u16, body: &[u8]) -> CloudProviderResponse {
         }
         _ => CloudProviderErrorKind::Permanent,
     };
-    provider_error(kind, detail)
+    CloudProviderResponse::Error {
+        kind,
+        detail,
+        retry_after_ms: parsed.as_ref().and_then(|error| error.retry_after_ms),
+        rate_limit_gate: parsed.and_then(|error| error.rate_limit_gate),
+    }
 }
 
 fn provider_error(kind: CloudProviderErrorKind, detail: String) -> CloudProviderResponse {
-    CloudProviderResponse::Error { kind, detail }
+    CloudProviderResponse::Error {
+        kind,
+        detail,
+        retry_after_ms: None,
+        rate_limit_gate: None,
+    }
 }
 
 fn protocol_error(message: impl Into<String>) -> AppError {
@@ -422,5 +432,27 @@ mod tests {
             "https://aerobag.org/cloud/"
         );
         assert!(validate_base_url("https://aerobag.org/").is_err());
+    }
+
+    #[test]
+    fn typed_rate_limit_survives_the_http_boundary() {
+        let body = serde_json::to_vec(&AcsErrorResponse {
+            contract_id: ACS_CONTRACT_ID.to_string(),
+            request_id: "request".to_string(),
+            code: AcsErrorCode::RateLimited,
+            message: "server wording is not the UI contract".to_string(),
+            retry_after_ms: Some(28_800_000),
+            rate_limit_gate: Some(product_contracts::AcsRateLimitGate::AccountCreationNetwork),
+        })
+        .unwrap();
+        assert!(matches!(
+            parse_http_error(429, &body),
+            CloudProviderResponse::Error {
+                kind: CloudProviderErrorKind::Transient,
+                retry_after_ms: Some(28_800_000),
+                rate_limit_gate: Some(product_contracts::AcsRateLimitGate::AccountCreationNetwork),
+                ..
+            }
+        ));
     }
 }

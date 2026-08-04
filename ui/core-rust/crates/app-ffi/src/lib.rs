@@ -2140,12 +2140,15 @@ pub fn dispatch_offline_packages_controller_json(
 ) -> Result<String, String> {
     let input: OfflinePackagesControllerInputWire =
         serde_json::from_str(input_json).map_err(|err| err.to_string())?;
+    let library_cache_changed = matches!(
+        &input.event,
+        OfflinePackagesControllerEventWire::LibraryRefreshSucceeded(_)
+    );
     let mut controllers = offline_packages_controllers()
         .lock()
         .map_err(|_| "offline packages controller store poisoned".to_string())?;
     let state = controllers
-        .get(&(handle as u32))
-        .cloned()
+        .remove(&(handle as u32))
         .ok_or_else(|| format!("invalid offline packages controller handle: {handle}"))?;
     let event = match input.event {
         OfflinePackagesControllerEventWire::EnsureLibrary => {
@@ -2198,8 +2201,8 @@ pub fn dispatch_offline_packages_controller_json(
             app_core::OfflinePackagesControllerEvent::SyncFinished { summary }
         }
     };
-    let result =
-        app_core::reduce_offline_packages_controller(&app_core::OfflinePackagesControllerInput {
+    let result = app_core::reduce_offline_packages_controller_owned(
+        app_core::OfflinePackagesControllerInput {
             state: Some(state),
             package_source_base_url: input.package_source_base_url,
             discovery_filenames: input.discovery_filenames,
@@ -2207,33 +2210,41 @@ pub fn dispatch_offline_packages_controller_json(
             installed: input.installed,
             storage: input.storage,
             event,
-        });
-    controllers.insert(handle as u32, result.state.clone());
-    serde_json::to_string(&OfflinePackagesControllerResultWire {
-        packages_state_json: result
-            .state
-            .packages_state
-            .as_ref()
-            .map(|state| serde_json::to_string(state))
-            .transpose()
-            .map_err(|err| err.to_string())?,
-        library_cache_json: result
+        },
+    );
+    let packages_state_json = result
+        .state
+        .packages_state
+        .as_ref()
+        .map(|state| serde_json::to_string(state))
+        .transpose()
+        .map_err(|err| err.to_string())?;
+    let library_cache_json = if library_cache_changed {
+        result
             .state
             .library_cache
             .as_ref()
             .map(|cache| serde_json::to_string(cache))
             .transpose()
-            .map_err(|err| err.to_string())?,
+            .map_err(|err| err.to_string())?
+    } else {
+        None
+    };
+    let preferences_for_cloud_json = result
+        .preferences_for_cloud
+        .as_ref()
+        .map(serde_json::to_string)
+        .transpose()
+        .map_err(|err| err.to_string())?;
+    let wire = OfflinePackagesControllerResultWire {
+        packages_state_json,
+        library_cache_json,
         ui_state: result.ui_state,
         command: result.command,
-        preferences_for_cloud_json: result
-            .preferences_for_cloud
-            .as_ref()
-            .map(serde_json::to_string)
-            .transpose()
-            .map_err(|err| err.to_string())?,
-    })
-    .map_err(|err| err.to_string())
+        preferences_for_cloud_json,
+    };
+    controllers.insert(handle as u32, result.state);
+    serde_json::to_string(&wire).map_err(|err| err.to_string())
 }
 
 fn get_java_string(env: &mut JNIEnv, value: JString) -> Result<String, String> {

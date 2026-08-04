@@ -7,6 +7,7 @@
 from __future__ import annotations
 
 import argparse
+import ipaddress
 import json
 import os
 import shlex
@@ -60,8 +61,6 @@ DEFAULT_NMS_NOTAMS_CREDENTIAL_FILE = Path(
 DEFAULT_NMS_NOTAMS_PROD_CONFIG = "/etc/aerobag/secrets/nms-notams.json"
 NMS_PRODUCTION_API_BASE_URL = "https://api-nms.aim.faa.gov/nmsapi/v1"
 NMS_PRODUCTION_TOKEN_URL = "https://api-nms.aim.faa.gov/v1/auth/token"
-
-
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description=(
@@ -193,6 +192,13 @@ def load_config(path: Path) -> dict[str, Any]:
         "web_dist",
         "checkout_ref",
         "live_feeds_listen",
+        "cloud_server_listen",
+        "cloud_server_data_root",
+        "cloud_server_secret_source",
+        "cloud_server_secret_target",
+        "cloud_server_policy_source",
+        "cloud_server_policy_target",
+        "nginx_trusted_upstream_proxies",
         "nginx_server_name",
     ]
     missing = [key for key in required if key not in config]
@@ -222,7 +228,39 @@ def load_config(path: Path) -> dict[str, Any]:
         os.fspath(DEFAULT_NMS_NOTAMS_CREDENTIAL_FILE),
     )
     config.setdefault("nms_notams_prod_config", DEFAULT_NMS_NOTAMS_PROD_CONFIG)
+    validate_cloud_deploy_config(config)
     return config
+
+
+def repo_path(value: str | os.PathLike[str]) -> Path:
+    path = Path(value).expanduser()
+    return path if path.is_absolute() else REPO_ROOT / path
+
+
+def cloud_policy(config: dict[str, Any]) -> dict[str, Any]:
+    path = repo_path(config["cloud_server_policy_source"])
+    try:
+        policy = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as error:
+        raise SystemExit(f"invalid ACS runtime policy {path}: {error}") from error
+    if not isinstance(policy, dict) or policy.get("schema_version") != 1:
+        raise SystemExit(f"ACS runtime policy {path} must use schema_version 1")
+    return policy
+
+
+def validate_cloud_deploy_config(config: dict[str, Any]) -> None:
+    policy = cloud_policy(config)
+    request = policy.get("request")
+    if not isinstance(request, dict) or not isinstance(request.get("max_body_bytes"), int):
+        raise SystemExit("ACS runtime policy is missing request.max_body_bytes")
+    proxies = config["nginx_trusted_upstream_proxies"]
+    if not isinstance(proxies, list) or not proxies:
+        raise SystemExit("nginx_trusted_upstream_proxies must be a non-empty list")
+    try:
+        for proxy in proxies:
+            ipaddress.ip_address(proxy)
+    except ValueError as error:
+        raise SystemExit(f"invalid nginx trusted upstream proxy: {error}") from error
 
 
 def publication_refs(config: dict[str, Any]) -> list[str]:
@@ -445,6 +483,43 @@ def install_nms_notams_credential(config: dict[str, Any], *, dry_run: bool) -> N
     )
 
 
+def install_cloud_server_secret(config: dict[str, Any], *, dry_run: bool) -> None:
+    source = Path(config["cloud_server_secret_source"]).expanduser()
+    target = config["cloud_server_secret_target"]
+    if source.is_file():
+        size = source.stat().st_size
+        if size != 32:
+            raise SystemExit(f"ACS server secret {source} must be exactly 32 bytes, got {size}")
+    elif not dry_run:
+        raise SystemExit(f"missing ACS production server secret: {source}")
+    run_ssh(
+        config,
+        f"install -d -m 0750 -o root -g aerobag-cloud {shell_quote(os.path.dirname(target))}",
+        dry_run=dry_run,
+    )
+    run_local(
+        ["rsync", "-az", "--chmod=F640", source, f"{ssh_target(config)}:{target}"],
+        cwd=REPO_ROOT,
+        dry_run=dry_run,
+    )
+    run_ssh(
+        config,
+        f"chown root:aerobag-cloud {shell_quote(target)} && chmod 0640 {shell_quote(target)}",
+        dry_run=dry_run,
+    )
+
+
+def install_cloud_server_policy(config: dict[str, Any], *, dry_run: bool) -> None:
+    policy = cloud_policy(config)
+    write_remote_file(
+        config,
+        config["cloud_server_policy_target"],
+        json.dumps(policy, indent=2, sort_keys=True) + "\n",
+        mode="0644",
+        dry_run=dry_run,
+    )
+
+
 def install_bootstrap_packages(config: dict[str, Any], *, dry_run: bool) -> None:
     packages = " ".join(shell_quote(package) for package in BOOTSTRAP_PACKAGES)
     command = textwrap.dedent(
@@ -485,6 +560,7 @@ def stop_stale_units(config: dict[str, Any], *, dry_run: bool) -> None:
         "aerobag-build-product.timer",
         "aerobag-build-product.service",
         "aerobag-live-feeds.service",
+        "aerobag-cloud-server.service",
         "aerobag-client-debug-log.service",
         "aerobag-build-watch.service",
         "aerobag-health.timer",
@@ -576,6 +652,10 @@ def env_file(config: dict[str, Any]) -> str:
         "AEROBAG_ARTIFACT_READ_PATH": f"{artifact_root}/published",
         "AEROBAG_WEB_DIST": config["web_dist"],
         "AEROBAG_LIVE_FEEDS_LISTEN": config["live_feeds_listen"],
+        "AEROBAG_CLOUD_SERVER_LISTEN": config["cloud_server_listen"],
+        "AEROBAG_CLOUD_SERVER_DATA_ROOT": config["cloud_server_data_root"],
+        "AEROBAG_CLOUD_SERVER_SECRET": config["cloud_server_secret_target"],
+        "AEROBAG_CLOUD_SERVER_POLICY": config["cloud_server_policy_target"],
         "AEROBAG_CLIENT_DEBUG_LISTEN": CLIENT_DEBUG_LISTEN,
         "AEROBAG_CLIENT_DEBUG_ROOT": f"{config['data_root']}/client-debug",
         "AEROBAG_BUILD_WATCH_LISTEN": BUILD_WATCH_LISTEN,
@@ -629,6 +709,9 @@ rustup target add \
 
 cd "$SOURCE_ROOT/product/preprocessor"
 cargo build --release -p preprocessor-cli -p live-feeds-daemon
+
+cd "$SOURCE_ROOT/services"
+cargo build --release -p aerobag-cloud-server
 
 WASM_BINDGEN_VERSION="$(python3 - "$SOURCE_ROOT/ui/core-rust/Cargo.lock" <<'PY'
 from pathlib import Path
@@ -860,6 +943,7 @@ def main() -> int:
         "deploy_config": deploy_config,
         "services": {
             "aerobag-live-feeds.service": service_state("aerobag-live-feeds.service"),
+            "aerobag-cloud-server.service": service_state("aerobag-cloud-server.service"),
             "aerobag-client-debug-log.service": service_state("aerobag-client-debug-log.service"),
             "aerobag-build-watch.service": service_state("aerobag-build-watch.service"),
             "aerobag-pipeline-health.service": service_state("aerobag-pipeline-health.service"),
@@ -1004,9 +1088,17 @@ def nginx_config(config: dict[str, Any]) -> str:
     admin_root = f"{config['data_root']}/admin"
     server_name = config["nginx_server_name"]
     icons_root = f"{config['source_root']}/ui/icons"
+    trusted_proxies = "\n".join(
+        f"    set_real_ip_from {proxy};" for proxy in config["nginx_trusted_upstream_proxies"]
+    )
+    cloud_body_limit = cloud_policy(config)["request"]["max_body_bytes"]
     return f"""server {{
     listen 80 default_server;
     server_name {server_name};
+
+{trusted_proxies}
+    real_ip_header Aerobag-Client-Address;
+    real_ip_recursive off;
 
     root {web_dist};
     index index.html;
@@ -1079,6 +1171,20 @@ def nginx_config(config: dict[str, Any]) -> str:
         proxy_read_timeout 1h;
     }}
 
+    location = /cloud/v1/status {{
+        return 404;
+    }}
+
+    location /cloud/ {{
+        proxy_pass http://{config['cloud_server_listen']};
+        proxy_http_version 1.1;
+        proxy_set_header Aerobag-Client-Address $remote_addr;
+        proxy_buffering off;
+        proxy_cache off;
+        proxy_read_timeout 5m;
+        client_max_body_size {cloud_body_limit};
+    }}
+
     location / {{
         try_files $uri $uri/ /index.html;
     }}
@@ -1139,6 +1245,38 @@ WantedBy=multi-user.target
 """
 
 
+def cloud_server_unit(config: dict[str, Any]) -> str:
+    return f"""[Unit]
+Description=Aerobag Cloud Server
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=aerobag-cloud
+Group=aerobag-cloud
+EnvironmentFile=/etc/aerobag/env
+ExecStart=/bin/bash -lc 'source /etc/aerobag/env; exec "$CARGO_TARGET_DIR/release/aerobag-cloud-serverd" serve --data-root "$AEROBAG_CLOUD_SERVER_DATA_ROOT" --policy "$AEROBAG_CLOUD_SERVER_POLICY" --server-secret "$AEROBAG_CLOUD_SERVER_SECRET" --listen "$AEROBAG_CLOUD_SERVER_LISTEN"'
+Restart=always
+RestartSec=10
+UMask=0077
+NoNewPrivileges=true
+PrivateDevices=true
+PrivateTmp=true
+ProtectControlGroups=true
+ProtectHome=true
+ProtectKernelModules=true
+ProtectKernelTunables=true
+ProtectSystem=strict
+ReadWritePaths={config['cloud_server_data_root']}
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+RestrictSUIDSGID=true
+
+[Install]
+WantedBy=multi-user.target
+"""
+
+
 def client_debug_log_unit() -> str:
     return """[Unit]
 Description=Aerobag client debug log receiver
@@ -1176,8 +1314,8 @@ WantedBy=multi-user.target
 def pipeline_health_unit() -> str:
     return """[Unit]
 Description=Aerobag preprocessing pipeline health monitor
-After=network.target aerobag-live-feeds.service aerobag-build-watch.service
-Wants=aerobag-live-feeds.service aerobag-build-watch.service
+After=network.target aerobag-live-feeds.service aerobag-cloud-server.service aerobag-build-watch.service
+Wants=aerobag-live-feeds.service aerobag-cloud-server.service aerobag-build-watch.service
 
 [Service]
 Type=simple
@@ -1315,6 +1453,12 @@ def write_remote_config(
     )
     write_remote_file(
         config,
+        f"{SYSTEMD_DIR}/aerobag-cloud-server.service",
+        cloud_server_unit(config),
+        dry_run=dry_run,
+    )
+    write_remote_file(
+        config,
         f"{SYSTEMD_DIR}/aerobag-client-debug-log.service",
         client_debug_log_unit(),
         dry_run=dry_run,
@@ -1365,8 +1509,13 @@ def prepare_remote_paths(config: dict[str, Any], *, dry_run: bool) -> None:
         f"{config['data_root']}/health/pipeline-health",
         f"{config['data_root']}/client-debug",
     ]
-    command = "set -euo pipefail\n" + "\n".join(
-        f"install -d -m 0755 {shell_quote(path)}" for path in paths
+    command = (
+        "set -euo pipefail\n"
+        "if ! id -u aerobag-cloud >/dev/null 2>&1; then "
+        "useradd --system --home-dir /nonexistent --shell /usr/sbin/nologin aerobag-cloud; fi\n"
+        + "\n".join(f"install -d -m 0755 {shell_quote(path)}" for path in paths)
+        + "\n"
+        + f"install -d -m 0700 -o aerobag-cloud -g aerobag-cloud {shell_quote(config['cloud_server_data_root'])}"
     )
     run_ssh(config, command, dry_run=dry_run)
 
@@ -1381,7 +1530,7 @@ def reload_services(config: dict[str, Any], *, dry_run: bool) -> None:
         systemctl daemon-reload
         systemctl enable nginx.service
         systemctl restart nginx.service
-        systemctl enable aerobag-live-feeds.service aerobag-client-debug-log.service aerobag-build-watch.service aerobag-pipeline-health.service aerobag-build-product.timer aerobag-health.timer
+        systemctl enable aerobag-live-feeds.service aerobag-cloud-server.service aerobag-client-debug-log.service aerobag-build-watch.service aerobag-pipeline-health.service aerobag-build-product.timer aerobag-health.timer
         """
     ).strip()
     run_ssh(config, command, dry_run=dry_run)
@@ -1393,6 +1542,7 @@ def start_runtime(config: dict[str, Any], *, skip_build: bool, dry_run: bool) ->
             """
             set -euo pipefail
             systemctl restart aerobag-live-feeds.service
+            systemctl restart aerobag-cloud-server.service
             systemctl restart aerobag-client-debug-log.service
             systemctl restart aerobag-build-watch.service
             systemctl restart aerobag-pipeline-health.service
@@ -1408,6 +1558,7 @@ def start_runtime(config: dict[str, Any], *, skip_build: bool, dry_run: bool) ->
         """
         set -euo pipefail
         systemctl restart aerobag-live-feeds.service
+        systemctl restart aerobag-cloud-server.service
         systemctl restart aerobag-client-debug-log.service
         systemctl restart aerobag-build-watch.service
         systemctl restart aerobag-pipeline-health.service
@@ -1456,6 +1607,8 @@ def deploy(config: dict[str, Any], args: argparse.Namespace) -> None:
         deployed_rev = remote_deployed_rev(config, dry_run=args.dry_run)
         prepare_remote_paths(config, dry_run=args.dry_run)
         install_nms_notams_credential(config, dry_run=args.dry_run)
+        install_cloud_server_secret(config, dry_run=args.dry_run)
+        install_cloud_server_policy(config, dry_run=args.dry_run)
         write_remote_config(
             config,
             deployed_rev=deployed_rev,
@@ -1489,6 +1642,8 @@ def deploy(config: dict[str, Any], args: argparse.Namespace) -> None:
     install_repo_packages(config, dry_run=args.dry_run)
     install_android_signing_key(config, dry_run=args.dry_run)
     install_nms_notams_credential(config, dry_run=args.dry_run)
+    install_cloud_server_secret(config, dry_run=args.dry_run)
+    install_cloud_server_policy(config, dry_run=args.dry_run)
     write_remote_file(
         config,
         DEPLOY_CONFIG_FILE,

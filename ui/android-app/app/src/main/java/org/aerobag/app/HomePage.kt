@@ -426,7 +426,7 @@ internal fun HomePage(
     onOpenRecentChartOrPlate: () -> Unit = {},
     offlinePackagesControllerHandle: Long,
     synchronizedOfflinePackagePreferencesJson: String = "{\"regions\":{},\"products\":{}}",
-    onOfflinePackagePreferencesForCloud: (String, Long) -> Unit = { _, _ -> },
+    onOfflinePackagePreferencesForCloud: suspend (String, Long) -> Unit = { _, _ -> },
     onOfflinePackagesClosed: (() -> Unit)? = null,
     onOfflinePackageLibraryCacheChanged: (String?) -> Unit = {},
     onOfflinePackageArtifactsChanged: suspend (String, Set<String>) -> Set<String> = { _, _ -> emptySet() },
@@ -534,10 +534,11 @@ internal fun HomePage(
                 "status=${result.uiState.libraryStatusMessage?.lineSequence()?.firstOrNull()} " +
                 "error=${result.uiState.libraryErrorMessage?.lineSequence()?.firstOrNull()}",
         )
-        writeOfflinePackagesStateJson(prefs, result.packagesStateJson)
-        writeOfflinePackagesLibraryCacheJson(prefs, result.libraryCacheJson)
+        result.packagesStateJson?.let { writeOfflinePackagesStateJson(prefs, it) }
+        result.libraryCacheJson?.let { writeOfflinePackagesLibraryCacheJson(prefs, it) }
         offlinePackagesControllerResult = result
         result.preferencesForCloudJson?.let { preferencesJson ->
+            appliedSynchronizedOfflinePackagePreferencesJson = preferencesJson
             onOfflinePackagePreferencesForCloud(preferencesJson, input.nowEpochMs)
         }
         if (event is OfflinePackagesControllerEventWire.LibraryRefreshSucceeded) {

@@ -31,6 +31,18 @@ class NativeUiSessionBoundaryTest {
             "NativeUiSession must expose core invalidations from paged mutations.",
             sessionBody.contains("fun subscribeInvalidations(listener: (List<String>) -> Unit)"),
         )
+        val packagePreferenceMutation = balancedBlockAfterMarker(
+            sessionBody,
+            "fun recordOfflinePackagePreferences(",
+        )
+        assertTrue(
+            "Package preferences must use the invalidation-only session boundary.",
+            packagePreferenceMutation.contains("executePagedInvalidationCommand"),
+        )
+        assertFalse(
+            "Package preferences must not synchronously project a complete UI snapshot.",
+            packagePreferenceMutation.contains("runPagedSnapshot"),
+        )
         assertTrue(
             "Paged session mutations must publish core invalidations instead of dropping them.",
             sessionBody.contains(
@@ -238,12 +250,35 @@ class NativeUiSessionBoundaryTest {
         val mapPage = sourceFile("src/main/java/org/aerobag/app/MapExplorerPage.kt").readText()
         val chartsPage = sourceFile("src/main/java/org/aerobag/app/ChartsPage.kt").readText()
         val playbackWidget = sourceFile("src/main/java/org/aerobag/app/PlaybackWidget.kt").readText()
+        val homePage = sourceFile("src/main/java/org/aerobag/app/HomePage.kt").readText()
 
         assertTrue(
             "MainActivity should own the central recoverable session-command UI boundary.",
             mainActivity.contains("fun recoverSessionCommandFailure(error: Throwable") &&
                 mainActivity.contains("fun applySessionCommand(") &&
                 mainActivity.contains("Action failed; app state was refreshed."),
+        )
+        val packagePreferenceHandoff = balancedBlockAfterMarker(
+            mainActivity,
+            "suspend fun recordOfflinePackagePreferencesForCloud(",
+        )
+        assertTrue(
+            "Package preference persistence must not block Android's main thread.",
+            packagePreferenceHandoff.contains("withContext(Dispatchers.Default)") &&
+                packagePreferenceHandoff.contains("uiSession.recordOfflinePackagePreferences"),
+        )
+        assertTrue(
+            "Background package preference failures must return to the central recovery boundary.",
+            packagePreferenceHandoff.contains("recoverSessionCommandFailure"),
+        )
+        val localPackagePreferencePublish = balancedBlockAfterMarker(
+            homePage,
+            "result.preferencesForCloudJson?.let",
+        )
+        assertTrue(
+            "Locally published package preferences must be marked observed before cloud handoff to prevent an echo.",
+            localPackagePreferencePublish.indexOf("appliedSynchronizedOfflinePackagePreferencesJson") in
+                0 until localPackagePreferencePublish.indexOf("onOfflinePackagePreferencesForCloud"),
         )
         for ((name, source) in listOf(
             "FlightPlanPage.kt" to flightPlanPage,

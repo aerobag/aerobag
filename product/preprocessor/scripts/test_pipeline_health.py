@@ -19,6 +19,17 @@ import pipeline_health
 
 
 class PipelineHealthTests(unittest.TestCase):
+    def test_cloud_operator_authorization_is_derived_without_sending_master_secret(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            secret = Path(temp_dir) / "cloud.bin"
+            secret.write_bytes(bytes([0x5A]) * 32)
+            authorization, error = pipeline_health.cloud_status_authorization(secret)
+        self.assertIsNone(error)
+        self.assertEqual(
+            authorization,
+            "Bearer oAvfo7uXmJVexL5TLb2Uwt5nQZ7smFsvuqkN6YXikFg",
+        )
+
     def test_dashboard_disposes_plots_and_serializes_refreshes(self) -> None:
         html = pipeline_health.dashboard_html()
 
@@ -62,6 +73,27 @@ class PipelineHealthTests(unittest.TestCase):
                                 "window_seconds": None,
                                 "rejected_in_window": 1,
                             },
+                            {
+                                "id": "account_creation_network_rate_rejections_5m",
+                                "current": 3,
+                                "peak": 3,
+                                "warning_at": None,
+                                "critical_at": None,
+                                "hard_limit": None,
+                                "window_seconds": 300,
+                                "rejected_in_window": 3,
+                            },
+                            {
+                                "id": "filesystem_free_bytes",
+                                "current": 15,
+                                "peak": 30,
+                                "warning_at": 20,
+                                "critical_at": 10,
+                                "hard_limit": 0,
+                                "window_seconds": None,
+                                "rejected_in_window": 0,
+                                "lower_is_worse": True,
+                            },
                         ],
                     },
                 },
@@ -81,6 +113,16 @@ class PipelineHealthTests(unittest.TestCase):
         connections = metric(evaluation, "aerobag_cloud.current_sse_connections")
         self.assertEqual(connections["severity"], "critical")
         self.assertEqual(connections["critical_threshold"], 20)
+        creation_rejections = metric(
+            evaluation,
+            "aerobag_cloud.account_creation_network_rate_rejections_5m",
+        )
+        self.assertEqual(creation_rejections["value"], 3)
+        self.assertEqual(creation_rejections["details"]["window_seconds"], 300)
+        self.assertEqual(creation_rejections["details"]["rejected_in_window"], 3)
+        filesystem_free = metric(evaluation, "aerobag_cloud.filesystem_free_bytes")
+        self.assertEqual(filesystem_free["severity"], "warning")
+        self.assertTrue(filesystem_free["details"]["lower_is_worse"])
 
     def test_live_feed_staleness_uses_monitor_thresholds(self) -> None:
         now = datetime(2026, 6, 19, 12, 10, 0, tzinfo=timezone.utc)

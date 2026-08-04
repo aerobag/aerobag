@@ -324,8 +324,10 @@ mod tests {
     #[test]
     fn registered_signature_is_verified_and_nonce_cannot_replay() {
         let root = TempDir::new().unwrap();
-        let store =
-            CloudStore::open(crate::StoreConfig::for_data_root(root.path().to_path_buf())).unwrap();
+        let store = CloudStore::open(crate::StoreConfig::for_test_data_root(
+            root.path().to_path_buf(),
+        ))
+        .unwrap();
         let signing_key = SigningKey::from_bytes(&[9_u8; 32]);
         let account_locator = URL_SAFE_NO_PAD.encode([5_u8; ACS_ACCOUNT_LOCATOR_BYTES]);
         let challenge = store.issue_creation_challenge("network", 1).unwrap();

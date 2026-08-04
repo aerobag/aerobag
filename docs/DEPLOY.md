@@ -39,6 +39,17 @@ Important fields:
   `worktrees/`.
 - `ui_target_root`: persistent web build workspace and final static output.
 - `cargo_target_dir`: persistent Rust target dir shared across deploys.
+- `cloud_server_listen`: localhost ACS listener. Production uses `127.0.0.1:8099`
+  because `8096` is already the client-debug receiver.
+- `cloud_server_data_root`: persistent ACS SQLite/blob state, outside published
+  artifacts.
+- `cloud_server_policy_source` and `cloud_server_policy_target`: the versioned,
+  validated runtime policy and its installed location.
+- `cloud_server_secret_source` and `cloud_server_secret_target`: the
+  operator-owned 32-byte service secret and its service-readable installed
+  location.
+- `nginx_trusted_upstream_proxies`: exact addresses of public-edge proxies whose
+  client-address assertion host nginx may trust.
 
 The package list is not host config. It lives in
 `deploy/prod-packages.txt` and is installed from the checked-out repo on prod.
@@ -142,6 +153,9 @@ The deploy installs these systemd units:
   cache GC.
 - `aerobag-build-product.timer`: runs the product build every 2 hours.
 - `aerobag-live-feeds.service`: continuous live-feeds daemon.
+- `aerobag-cloud-server.service`: localhost-only Aerobag Cloud daemon running as
+  the dedicated `aerobag-cloud` user with state under
+  `/mnt/aerobag-data/cloud`.
 - `aerobag-client-debug-log.service`: localhost-only receiver for browser
   `POST /__debug_log` batches.
 - `aerobag-build-watch.service`: localhost-only web dashboard and JSON endpoint
@@ -261,6 +275,7 @@ Prod serves:
 - `/downloads/`: Android APK metadata and versioned APK from the static web app
 - `/packages/`: `/mnt/aerobag-data/artifacts/published/`
 - `/live-feeds/`: proxied to `aerobag-live-feedsd`
+- `/cloud/`: proxied to the localhost ACS daemon with SSE buffering disabled
 - `/icons/`: source-tree icon assets
 - `/health.json`: machine-readable deploy/build/live-feed status
 - `/__debug_log`: proxied to the client debug log receiver
@@ -269,6 +284,33 @@ Prod serves:
 The nginx config blocks internal `/packages/cache/`, `/packages/logs/`,
 `/packages/locks/`, `/packages/scratch/`, `/packages/state/`, and
 `/packages/worktrees/` paths.
+
+Production has two proxy layers:
+
+```text
+client -> public aerobag.org proxy -> aerobag-prod nginx -> ACS
+```
+
+Before deploying ACS, configure the public proxy to overwrite, rather than
+forward, any client-supplied identity:
+
+```nginx
+proxy_set_header Aerobag-Client-Address $remote_addr;
+```
+
+Do this before deploying the inner nginx configuration. Host nginx accepts the
+header only from `nginx_trusted_upstream_proxies`, derives its trusted
+`$remote_addr`, and overwrites the header again when calling ACS. ACS accepts
+that assertion only from its policy allowlist. Direct clients cannot choose
+their rate-limit identity.
+
+`/cloud/v1/health` is the bounded public health response. Detailed
+`/cloud/v1/status`, including opaque top contributors, is deliberately blocked
+by nginx and accepted by ACS only from a direct loopback caller presenting a
+bearer credential derived from the root-owned ACS server secret. Pipeline
+health derives that credential locally; it never sends the master secret.
+Pipeline health and root-operated containment commands use that host-local
+operator boundary; there is no public ACS administration API.
 
 ## Health
 
@@ -316,4 +358,5 @@ curl -I http://aerobag-prod.iac.jonh.net/
 curl -I http://aerobag-prod.iac.jonh.net/packages/current_artifacts.json
 curl -s http://aerobag-prod.iac.jonh.net/health.json
 curl -s http://aerobag-prod.iac.jonh.net/live-feeds/status.json
+curl -s http://aerobag-prod.iac.jonh.net/cloud/v1/health
 ```

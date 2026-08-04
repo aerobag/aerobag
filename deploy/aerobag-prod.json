@@ -11,6 +11,15 @@
   "additional_publication_refs": [
   ],
   "live_feeds_listen": "127.0.0.1:8095",
+  "cloud_server_listen": "127.0.0.1:8099",
+  "cloud_server_data_root": "/mnt/aerobag-data/cloud",
+  "cloud_server_secret_source": "/root/aerobag-credentials/aerobag-cloud-server-production.bin",
+  "cloud_server_secret_target": "/etc/aerobag/secrets/aerobag-cloud-server.bin",
+  "cloud_server_policy_source": "deploy/aerobag-cloud-policy.json",
+  "cloud_server_policy_target": "/etc/aerobag/aerobag-cloud-policy.json",
+  "nginx_trusted_upstream_proxies": [
+    "10.53.0.3"
+  ],
   "nms_notams_enabled": true,
   "nms_notams_credential_file": "/root/aerobag-credentials/nms-notams-production.json",
   "nms_notams_prod_config": "/etc/aerobag/secrets/nms-notams.json",

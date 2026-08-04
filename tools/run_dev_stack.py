@@ -43,6 +43,7 @@ DEFAULT_NMS_NOTAMS_CONFIG = Path(
 DEFAULT_CLOUD_SERVER_SECRET = Path(
     "/root/aerobag-credentials/dev-stack/aerobag-cloud-server.bin"
 )
+DEFAULT_CLOUD_SERVER_POLICY = REPO_ROOT / "deploy" / "aerobag-cloud-policy.json"
 
 
 def utc_now_text() -> str:
@@ -153,6 +154,8 @@ class DevStackConfig:
     nms_notams_config: Path
     nms_notams_state_root: Path
     cloud_server_secret: Path
+    cloud_server_policy: Path
+    cloud_tiny_creation_buckets: str | None
     skip_binary_build: bool
     disable_live_feeds: bool
     disable_cloud_server: bool
@@ -186,6 +189,10 @@ class DevStackConfig:
     @property
     def cloud_data_root(self) -> Path:
         return self.stack_root / "state" / "aerobag-cloud-server"
+
+    @property
+    def cloud_runtime_policy(self) -> Path:
+        return self.stack_root / "state" / "aerobag-cloud-policy.json"
 
     @property
     def deploy_health_path(self) -> Path:
@@ -254,6 +261,7 @@ class DevStack:
                 raise RuntimeError(
                     f"ACS server secret is missing: {self.config.cloud_server_secret}"
                 )
+            self.write_cloud_policy()
             self.start_child("aerobag-cloud-server", self.cloud_server_command())
         if not self.config.disable_build_watch:
             self.start_child("build-watch", self.build_watch_command())
@@ -274,6 +282,28 @@ class DevStack:
         ]:
             path.mkdir(parents=True, exist_ok=True)
         self.write_health()
+
+    def write_cloud_policy(self) -> None:
+        policy = json.loads(self.config.cloud_server_policy.read_text(encoding="utf-8"))
+        if self.config.cloud_tiny_creation_buckets:
+            limits = policy["rate_limits"]
+            network_capacity, global_capacity = (
+                (1, 100)
+                if self.config.cloud_tiny_creation_buckets == "network"
+                else (100, 1)
+            )
+            limits["account_creation_per_network"].update(
+                capacity=network_capacity,
+                refill_amount=1,
+            )
+            limits["account_creation_global"].update(
+                capacity=global_capacity,
+                refill_amount=1,
+            )
+        self.config.cloud_runtime_policy.write_text(
+            json.dumps(policy, indent=2, sort_keys=True) + "\n",
+            encoding="utf-8",
+        )
 
     def build_binaries(self) -> None:
         env = self.child_env()
@@ -349,16 +379,19 @@ class DevStack:
         return command
 
     def cloud_server_command(self) -> list[str]:
-        return [
+        command = [
             str(self.config.cloud_server_binary),
             "serve",
             "--data-root",
             str(self.config.cloud_data_root),
             "--server-secret",
             str(self.config.cloud_server_secret),
+            "--policy",
+            str(self.config.cloud_runtime_policy),
             "--listen",
             self.config.cloud_server_listen,
         ]
+        return command
 
     def build_watch_command(self) -> list[str]:
         return [
@@ -387,6 +420,8 @@ class DevStack:
             f"http://{self.config.live_feeds_listen}/live-feeds/status.json",
             "--cloud-status-url",
             f"http://{self.config.cloud_server_listen}/cloud/v1/status",
+            "--cloud-status-secret",
+            str(self.config.cloud_server_secret),
             "--build-watch-url",
             f"http://{self.config.build_watch_listen}/api/state",
             "--calendar",
@@ -608,6 +643,7 @@ def make_handler(stack: DevStack):
                     or header.lower() in {"content-type", "last-event-id"}
                 }
                 forwarded_headers["Host"] = listen
+                forwarded_headers["Aerobag-Client-Address"] = self.client_address[0]
                 connection.request(
                     "HEAD" if not send_body else self.command,
                     target,
@@ -731,6 +767,12 @@ def parse_args() -> argparse.Namespace:
         help="operator-owned 32-byte ACS daemon secret",
     )
     parser.add_argument(
+        "--cloud-server-policy",
+        type=Path,
+        default=DEFAULT_CLOUD_SERVER_POLICY,
+        help="versioned ACS runtime policy JSON",
+    )
+    parser.add_argument(
         "--nms-notams-state-root",
         type=Path,
         default=None,
@@ -745,6 +787,11 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--skip-binary-build", action="store_true")
     parser.add_argument("--disable-live-feeds", action="store_true")
     parser.add_argument("--disable-cloud-server", action="store_true")
+    parser.add_argument(
+        "--cloud-tiny-creation-buckets",
+        choices=["network", "global"],
+        help="use a tiny network or global account-creation bucket for UX testing",
+    )
     parser.add_argument("--disable-nms-notams", action="store_true")
     parser.add_argument("--disable-build-watch", action="store_true")
     parser.add_argument("--disable-pipeline-health", action="store_true")
@@ -787,6 +834,8 @@ def config_from_args(args: argparse.Namespace) -> DevStackConfig:
             args.nms_notams_state_root or stack_root / "state" / "nms-notams"
         ).resolve(),
         cloud_server_secret=args.cloud_server_secret.resolve(),
+        cloud_server_policy=args.cloud_server_policy.resolve(),
+        cloud_tiny_creation_buckets=args.cloud_tiny_creation_buckets,
         skip_binary_build=args.skip_binary_build,
         disable_live_feeds=args.disable_live_feeds,
         disable_cloud_server=args.disable_cloud_server,
@@ -810,6 +859,9 @@ def print_config(config: DevStackConfig) -> None:
                 "cloud_server_listen": config.cloud_server_listen,
                 "cloud_data_root": str(config.cloud_data_root),
                 "cloud_server_secret": str(config.cloud_server_secret),
+                "cloud_server_policy": str(config.cloud_server_policy),
+                "cloud_runtime_policy": str(config.cloud_runtime_policy),
+                "cloud_tiny_creation_buckets": config.cloud_tiny_creation_buckets,
                 "nms_notams_enabled": config.nms_notams_enabled,
                 "nms_notams_config": str(config.nms_notams_config),
                 "nms_notams_state_root": str(config.nms_notams_state_root),

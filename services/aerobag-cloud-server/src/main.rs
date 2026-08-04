@@ -10,18 +10,18 @@ use std::{
     str::FromStr,
 };
 
-use aerobag_cloud_server::{run_server, AccountMode, CloudStore, ServerConfig, StoreConfig};
+use aerobag_cloud_server::{run_server, AccountMode, AcsRuntimePolicy, CloudStore, ServerConfig};
 use anyhow::{bail, Context as _};
 use fs2::FileExt as _;
 
 fn usage() -> &'static str {
     "usage:
-  aerobag-cloud-serverd serve --data-root <path> --server-secret <path> [--listen <addr>]
-  aerobag-cloud-serverd gc --data-root <path> [--grace-seconds <n>]
-  aerobag-cloud-serverd set-mode --data-root <path> <normal|read-only|suspended>
-  aerobag-cloud-serverd set-account-mode --data-root <path> <account> <normal|read-only|suspended>
-  aerobag-cloud-serverd set-account-quota --data-root <path> <account> <bytes>
-  aerobag-cloud-serverd delete-account --data-root <path> <account>"
+  aerobag-cloud-serverd serve --data-root <path> --policy <path> --server-secret <path> [--listen <addr>]
+  aerobag-cloud-serverd gc --data-root <path> --policy <path> [--grace-seconds <n>]
+  aerobag-cloud-serverd set-mode --data-root <path> --policy <path> <normal|read-only|suspended>
+  aerobag-cloud-serverd set-account-mode --data-root <path> --policy <path> <account> <normal|read-only|suspended>
+  aerobag-cloud-serverd set-account-quota --data-root <path> --policy <path> <account> <bytes>
+  aerobag-cloud-serverd delete-account --data-root <path> --policy <path> <account>"
 }
 
 #[tokio::main]
@@ -34,6 +34,10 @@ async fn main() -> anyhow::Result<()> {
     let data_root = take_option(&mut args, "--data-root")
         .map(PathBuf::from)
         .context("--data-root is required")?;
+    let policy_path = take_option(&mut args, "--policy")
+        .map(PathBuf::from)
+        .context("--policy is required")?;
+    let policy = AcsRuntimePolicy::load(&policy_path)?;
     match command.as_str() {
         "serve" => {
             let server_secret_path = take_option(&mut args, "--server-secret")
@@ -43,12 +47,13 @@ async fn main() -> anyhow::Result<()> {
                 take_option(&mut args, "--listen").unwrap_or_else(|| "127.0.0.1:18096".to_string());
             reject_extra(&args)?;
             let _serve_lock = acquire_serve_lock(&data_root)?;
-            let store = open_store(&data_root)?;
+            let store = CloudStore::open(policy.store_config(data_root.clone()))?;
             run_server(
                 store,
                 ServerConfig {
                     listen: SocketAddr::from_str(&listen).context("invalid --listen address")?,
                     server_secret_path,
+                    policy,
                 },
             )
             .await
@@ -62,7 +67,7 @@ async fn main() -> anyhow::Result<()> {
                 bail!("--grace-seconds must not be negative");
             }
             reject_extra(&args)?;
-            let store = open_store(&data_root)?;
+            let store = open_store(&data_root, &policy)?;
             let report = store.run_gc(now_epoch_ms(), grace_seconds * 1_000)?;
             println!("{}", serde_json::to_string_pretty(&report)?);
             Ok(())
@@ -70,7 +75,7 @@ async fn main() -> anyhow::Result<()> {
         "set-mode" => {
             let mode = parse_mode(required_arg(&mut args, "mode")?)?;
             reject_extra(&args)?;
-            let store = open_store(&data_root)?;
+            let store = open_store(&data_root, &policy)?;
             store.set_service_mode(mode, now_epoch_ms())?;
             Ok(())
         }
@@ -78,7 +83,7 @@ async fn main() -> anyhow::Result<()> {
             let account = required_arg(&mut args, "account")?;
             let mode = parse_mode(required_arg(&mut args, "mode")?)?;
             reject_extra(&args)?;
-            let store = open_store(&data_root)?;
+            let store = open_store(&data_root, &policy)?;
             store.set_account_mode(&account, mode, now_epoch_ms())?;
             Ok(())
         }
@@ -88,14 +93,14 @@ async fn main() -> anyhow::Result<()> {
                 .parse::<u64>()
                 .context("invalid quota bytes")?;
             reject_extra(&args)?;
-            let store = open_store(&data_root)?;
+            let store = open_store(&data_root, &policy)?;
             store.set_account_quota(&account, quota, now_epoch_ms())?;
             Ok(())
         }
         "delete-account" => {
             let account = required_arg(&mut args, "account")?;
             reject_extra(&args)?;
-            let store = open_store(&data_root)?;
+            let store = open_store(&data_root, &policy)?;
             store.delete_account(&account)?;
             Ok(())
         }
@@ -103,10 +108,10 @@ async fn main() -> anyhow::Result<()> {
     }
 }
 
-fn open_store(data_root: &Path) -> anyhow::Result<CloudStore> {
-    Ok(CloudStore::open(StoreConfig::for_data_root(
-        data_root.to_path_buf(),
-    ))?)
+fn open_store(data_root: &Path, policy: &AcsRuntimePolicy) -> anyhow::Result<CloudStore> {
+    Ok(CloudStore::open(
+        policy.store_config(data_root.to_path_buf()),
+    )?)
 }
 
 fn acquire_serve_lock(data_root: &Path) -> anyhow::Result<File> {

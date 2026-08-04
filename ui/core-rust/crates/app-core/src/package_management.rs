@@ -689,23 +689,46 @@ pub fn initialize_offline_packages(
 }
 
 pub fn reduce_offline_packages(input: &OfflinePackagesReduceInput) -> OfflinePackagesReduceResult {
-    let initial_now_epoch_ms = effective_now_epoch_ms(&input.state, input.now_epoch_ms);
-    let (initial_region_ids, initial_product_ids) = offline_package_catalog_dimensions(
+    reduce_offline_packages_from_catalog(
+        input.state.clone(),
+        &input.event,
+        input.now_epoch_ms,
         &input.discovery_manifests,
         &input.bundle_manifests_by_filename,
+        &input.installed,
+        &input.forced_gc_installed_filenames,
+        &input.suppressed_fetch_filenames,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+fn reduce_offline_packages_from_catalog(
+    prior_state: OfflinePackagesState,
+    event: &OfflinePackagesEvent,
+    now_epoch_ms: i64,
+    discovery_manifests: &[CurrentArtifactsManifest],
+    bundle_manifests_by_filename: &BTreeMap<String, BundleManifest>,
+    installed: &[InstalledArtifact],
+    forced_gc_installed_filenames: &[String],
+    suppressed_fetch_filenames: &[String],
+) -> OfflinePackagesReduceResult {
+    let initial_now_epoch_ms = effective_now_epoch_ms(&prior_state, now_epoch_ms);
+    let (initial_region_ids, initial_product_ids) = offline_package_catalog_dimensions(
+        discovery_manifests,
+        bundle_manifests_by_filename,
         initial_now_epoch_ms,
         None,
     );
     let mut state = OfflinePackagesState {
         preferences: normalize_preferences(
-            Some(&input.state.preferences),
+            Some(&prior_state.preferences),
             &initial_region_ids,
             &initial_product_ids,
         ),
-        now_override_epoch_ms: input.state.now_override_epoch_ms,
+        now_override_epoch_ms: prior_state.now_override_epoch_ms,
     };
 
-    match &input.event {
+    match event {
         OfflinePackagesEvent::CycleRegion { id } => {
             cycle_selection(&mut state.preferences.regions, id);
         }
@@ -720,39 +743,41 @@ pub fn reduce_offline_packages(input: &OfflinePackagesReduceInput) -> OfflinePac
         }
     }
 
-    let effective_now_epoch_ms = effective_now_epoch_ms(&state, input.now_epoch_ms);
+    let effective_now_epoch_ms = effective_now_epoch_ms(&state, now_epoch_ms);
     let (region_ids, product_ids) = offline_package_catalog_dimensions(
-        &input.discovery_manifests,
-        &input.bundle_manifests_by_filename,
+        discovery_manifests,
+        bundle_manifests_by_filename,
         effective_now_epoch_ms,
         None,
     );
     state.preferences = normalize_preferences(Some(&state.preferences), &region_ids, &product_ids);
     let bundle = resolve_cycle_bundle_manifest(
-        &input.discovery_manifests,
-        &input.bundle_manifests_by_filename,
+        discovery_manifests,
+        bundle_manifests_by_filename,
         effective_now_epoch_ms,
     );
-    let plan = plan_offline_packages(&PackageManagementInput {
+    let plan_input = PackageManagementInput {
         now_epoch_ms: effective_now_epoch_ms,
         preferences: state.preferences.clone(),
-        bundle: bundle.clone(),
-        installed: input.installed.clone(),
-        forced_gc_installed_filenames: input.forced_gc_installed_filenames.clone(),
-        suppressed_fetch_filenames: input.suppressed_fetch_filenames.clone(),
-    });
+        bundle,
+        installed: installed.to_vec(),
+        forced_gc_installed_filenames: forced_gc_installed_filenames.to_vec(),
+        suppressed_fetch_filenames: suppressed_fetch_filenames.to_vec(),
+    };
+    let plan = plan_offline_packages(&plan_input);
+    let ui_state = project_offline_packages_ui_state_with_plan(
+        &state,
+        effective_now_epoch_ms,
+        bundle_manifests_by_filename,
+        discovery_manifests,
+        None,
+        &plan_input,
+        &plan,
+    );
+    let bundle = plan_input.bundle;
 
     OfflinePackagesReduceResult {
-        ui_state: project_offline_packages_ui_state(
-            &state,
-            effective_now_epoch_ms,
-            &input.discovery_manifests,
-            &input.bundle_manifests_by_filename,
-            &input.installed,
-            &input.forced_gc_installed_filenames,
-            &input.suppressed_fetch_filenames,
-            None,
-        ),
+        ui_state,
         effective_now_epoch_ms,
         plan,
         bundle,
@@ -763,7 +788,13 @@ pub fn reduce_offline_packages(input: &OfflinePackagesReduceInput) -> OfflinePac
 pub fn reduce_offline_packages_controller(
     input: &OfflinePackagesControllerInput,
 ) -> OfflinePackagesControllerResult {
-    let mut state = input.state.clone().unwrap_or_default();
+    reduce_offline_packages_controller_owned(input.clone())
+}
+
+pub fn reduce_offline_packages_controller_owned(
+    mut input: OfflinePackagesControllerInput,
+) -> OfflinePackagesControllerResult {
+    let mut state = input.state.take().unwrap_or_default();
     let package_source_base_url = input
         .package_source_base_url
         .trim()
@@ -810,7 +841,7 @@ pub fn reduce_offline_packages_controller(
             state.library_error_message = None;
             if state.sync_after_library_refresh {
                 state.sync_after_library_refresh = false;
-                return start_offline_packages_sync(state, &package_source_base_url, input);
+                return start_offline_packages_sync(state, &package_source_base_url, &input);
             }
         }
         OfflinePackagesControllerEvent::LibraryRefreshFailed { message } => {
@@ -819,7 +850,7 @@ pub fn reduce_offline_packages_controller(
             state.sync_after_library_refresh = false;
         }
         OfflinePackagesControllerEvent::PackagesEvent { event } => {
-            let Some(library_cache) = state.library_cache.as_ref() else {
+            if state.library_cache.is_none() {
                 state.library_error_message =
                     Some("offline packages library is not loaded".to_string());
                 return OfflinePackagesControllerResult {
@@ -833,25 +864,32 @@ pub fn reduce_offline_packages_controller(
                     command,
                     preferences_for_cloud: None,
                 };
-            };
-            let reduced = reduce_offline_packages(&OfflinePackagesReduceInput {
-                state: state.packages_state.clone().unwrap_or_default(),
-                event: event.clone(),
-                now_epoch_ms: input.now_epoch_ms,
-                discovery_manifests: library_cache.discovery_manifests.clone(),
-                bundle_manifests_by_filename: library_cache.bundle_manifests_by_filename.clone(),
-                installed: effective_installed_artifacts(&state, &input.installed),
-                forced_gc_installed_filenames: forced_gc_installed_filenames(
-                    &state,
-                    &input.installed,
-                ),
-                suppressed_fetch_filenames: state
-                    .suppressed_fetch_filename_messages
-                    .keys()
-                    .cloned()
-                    .collect(),
-            });
-            state.packages_state = Some(reduced.state.clone());
+            }
+            let installed = effective_installed_artifacts(&state, &input.installed);
+            let forced_gc_installed_filenames =
+                forced_gc_installed_filenames(&state, &input.installed);
+            let suppressed_fetch_filenames = state
+                .suppressed_fetch_filename_messages
+                .keys()
+                .cloned()
+                .collect::<Vec<_>>();
+            let packages_state = state.packages_state.take().unwrap_or_default();
+            let library_cache = state
+                .library_cache
+                .as_ref()
+                .expect("library cache checked above");
+            let reduced = reduce_offline_packages_from_catalog(
+                packages_state,
+                event,
+                input.now_epoch_ms,
+                &library_cache.discovery_manifests,
+                &library_cache.bundle_manifests_by_filename,
+                &installed,
+                &forced_gc_installed_filenames,
+                &suppressed_fetch_filenames,
+            );
+            let preferences_for_cloud = reduced.state.preferences.clone();
+            state.packages_state = Some(reduced.state);
             return OfflinePackagesControllerResult {
                 ui_state: project_offline_packages_controller_ui_state(
                     &state,
@@ -861,7 +899,7 @@ pub fn reduce_offline_packages_controller(
                 ),
                 state,
                 command,
-                preferences_for_cloud: Some(reduced.state.preferences),
+                preferences_for_cloud: Some(preferences_for_cloud),
             };
         }
         OfflinePackagesControllerEvent::ApplySynchronizedPreferences { preferences } => {
@@ -1463,24 +1501,39 @@ fn project_offline_packages_ui_state(
         bundle_manifests_by_filename,
         now_epoch_ms,
     );
-    let plan = plan_offline_packages(&PackageManagementInput {
+    let plan_input = PackageManagementInput {
         now_epoch_ms,
         preferences: state.preferences.clone(),
-        bundle: active_bundle.clone(),
+        bundle: active_bundle,
         installed: installed.to_vec(),
         forced_gc_installed_filenames: forced_gc_installed_filenames.to_vec(),
         suppressed_fetch_filenames: suppressed_fetch_filenames.to_vec(),
-    });
-    let rows = plan_rows_by_dimension(
-        &PackageManagementInput {
-            now_epoch_ms,
-            preferences: state.preferences.clone(),
-            bundle: active_bundle.clone(),
-            installed: installed.to_vec(),
-            forced_gc_installed_filenames: forced_gc_installed_filenames.to_vec(),
-            suppressed_fetch_filenames: suppressed_fetch_filenames.to_vec(),
-        },
+    };
+    let plan = plan_offline_packages(&plan_input);
+    project_offline_packages_ui_state_with_plan(
+        state,
+        now_epoch_ms,
+        bundle_manifests_by_filename,
+        discovery_manifests,
+        sync_progress,
+        &plan_input,
         &plan,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+fn project_offline_packages_ui_state_with_plan(
+    state: &OfflinePackagesState,
+    now_epoch_ms: i64,
+    bundle_manifests_by_filename: &BTreeMap<String, BundleManifest>,
+    discovery_manifests: &[CurrentArtifactsManifest],
+    sync_progress: Option<&OfflinePackagesSyncProgress>,
+    plan_input: &PackageManagementInput,
+    plan: &PackageManagementPlan,
+) -> OfflinePackagesUiState {
+    let rows = plan_rows_by_dimension(
+        plan_input,
+        plan,
         bundle_manifests_by_filename,
         sync_progress,
     );
@@ -1490,6 +1543,7 @@ fn project_offline_packages_ui_state(
         now_epoch_ms,
         Some(&rows),
     );
+    let active_bundle = &plan_input.bundle;
 
     OfflinePackagesUiState {
         clock_label: clock_label(now_epoch_ms, state.now_override_epoch_ms),

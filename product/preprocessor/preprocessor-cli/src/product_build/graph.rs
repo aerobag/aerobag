@@ -554,16 +554,19 @@ where
             let task_weight = task.weight;
             running_task_kinds.insert(task_id.clone(), task.kind.clone());
             launched_tasks += 1;
-            log(format!(
-                "{graph_name}-launch {} launched={}/{} completed={}/{} weight={} running_units={}/{}",
-                task_id,
-                launched_tasks,
-                total_tasks,
-                completed_tasks,
-                total_tasks,
-                task_weight,
-                running_units + task_weight,
-                work_unit_budget,
+            log(task_log_record(
+                TaskLogEvent::Start,
+                &task_id,
+                graph_name,
+                [
+                    ("launched", launched_tasks.to_string()),
+                    ("total", total_tasks.to_string()),
+                    ("completed", completed_tasks.to_string()),
+                    ("weight", task_weight.to_string()),
+                    ("running_units", (running_units + task_weight).to_string()),
+                    ("work_unit_budget", work_unit_budget.to_string()),
+                ],
+                None,
             ))?;
             let tx = tx.clone();
             let task_values_snapshot = GraphReadMap::new(Arc::clone(&task_values));
@@ -698,20 +701,35 @@ where
                             )?;
                         }
                     }
-                    log(format!(
-                        "{graph_name}-complete {} completed={}/{} running_units={}/{} {}",
-                        task_id,
-                        completed_tasks,
-                        total_tasks,
-                        running_units,
-                        work_unit_budget,
-                        completion.completion_detail,
+                    log(task_log_record(
+                        TaskLogEvent::Complete,
+                        &task_id,
+                        graph_name,
+                        [
+                            ("status", "PASS".to_string()),
+                            ("completed", completed_tasks.to_string()),
+                            ("total", total_tasks.to_string()),
+                            ("running_units", running_units.to_string()),
+                            ("work_unit_budget", work_unit_budget.to_string()),
+                        ],
+                        Some(&completion.completion_detail),
                     ))?;
                 }
                 Err(err) => {
                     let error_text = log_error_chain(&err);
-                    log(format!(
-                        "{graph_name}-complete {task_id} FAIL error={error_text}"
+                    let detail = format!("error={error_text}");
+                    log(task_log_record(
+                        TaskLogEvent::Complete,
+                        &task_id,
+                        graph_name,
+                        [
+                            ("status", "FAIL".to_string()),
+                            ("completed", completed_tasks.to_string()),
+                            ("total", total_tasks.to_string()),
+                            ("running_units", running_units.to_string()),
+                            ("work_unit_budget", work_unit_budget.to_string()),
+                        ],
+                        Some(&detail),
                     ))?;
                     if matches!(failure_policy, GraphFailurePolicy::FailFast) {
                         return Err(err);

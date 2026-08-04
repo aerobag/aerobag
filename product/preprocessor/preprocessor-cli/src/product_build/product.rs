@@ -2388,9 +2388,15 @@ fn validate_publication_integrity(
 ) -> anyhow::Result<()> {
     let work = publication_integrity_work(&config.packaged_dir, product_artifacts_path)?;
     let stats_before = artifact_verification_stats()?;
-    master_log.log(format!(
-        "activity-start publication-integrity artifacts={} bytes={}",
-        work.artifacts, work.bytes
+    master_log.log(task_log_record(
+        TaskLogEvent::Start,
+        "publication-integrity",
+        "finalization",
+        [
+            ("artifacts", work.artifacts.to_string()),
+            ("bytes", work.bytes.to_string()),
+        ],
+        None,
     ))?;
 
     let packaged_root = config.packaged_dir.clone();
@@ -2421,13 +2427,18 @@ fn validate_publication_integrity(
                 };
                 if stats != last_stats {
                     let progress = stats.since(stats_before);
-                    if let Err(error) = master_log.log(format!(
-                        "activity-progress publication-integrity hashed_files={} hashed_bytes={} reused_checks={} artifacts={} bytes={}",
-                        progress.hashed_files,
-                        progress.hashed_bytes,
-                        progress.reused_checks,
-                        work.artifacts,
-                        work.bytes,
+                    if let Err(error) = master_log.log(task_log_record(
+                        TaskLogEvent::Progress,
+                        "publication-integrity",
+                        "finalization",
+                        [
+                            ("hashed_files", progress.hashed_files.to_string()),
+                            ("hashed_bytes", progress.hashed_bytes.to_string()),
+                            ("reused_checks", progress.reused_checks.to_string()),
+                            ("artifacts", work.artifacts.to_string()),
+                            ("bytes", work.bytes.to_string()),
+                        ],
+                        None,
                     )) {
                         monitoring_error = Some(error);
                         break;
@@ -2442,23 +2453,29 @@ fn validate_publication_integrity(
         .join()
         .map_err(|_| anyhow::anyhow!("publication integrity worker panicked"))?;
     let final_stats = artifact_verification_stats()?.since(stats_before);
-    let completion = format!(
-        "hashed_files={} hashed_bytes={} reused_checks={} artifacts={} bytes={}",
-        final_stats.hashed_files,
-        final_stats.hashed_bytes,
-        final_stats.reused_checks,
-        work.artifacts,
-        work.bytes,
-    );
-    match &validation_result {
-        Ok(()) => master_log.log(format!(
-            "activity-complete publication-integrity {completion}"
-        ))?,
-        Err(error) => master_log.log(format!(
-            "activity-complete publication-integrity FAIL error={} {completion}",
-            log_error_chain(error)
-        ))?,
-    }
+    let status = if validation_result.is_ok() {
+        "PASS"
+    } else {
+        "FAIL"
+    };
+    let detail = validation_result
+        .as_ref()
+        .err()
+        .map(|error| format!("error={}", log_error_chain(error)));
+    master_log.log(task_log_record(
+        TaskLogEvent::Complete,
+        "publication-integrity",
+        "finalization",
+        [
+            ("status", status.to_string()),
+            ("hashed_files", final_stats.hashed_files.to_string()),
+            ("hashed_bytes", final_stats.hashed_bytes.to_string()),
+            ("reused_checks", final_stats.reused_checks.to_string()),
+            ("artifacts", work.artifacts.to_string()),
+            ("bytes", work.bytes.to_string()),
+        ],
+        detail.as_deref(),
+    ))?;
     validation_result?;
     if let Some(error) = monitoring_error {
         return Err(error);

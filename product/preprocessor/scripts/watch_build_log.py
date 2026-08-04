@@ -19,17 +19,8 @@ from pathlib import Path
 from urllib.parse import urlparse
 
 
-LAUNCH_RE = re.compile(
-    r"^(?:(?P<wall>\S+)\s+)?(?P<ts>\+\d+:\d+(?::\d+)?)\s+(?:product-scheduler-)?launch\s+(?P<task>\S+)\s+"
-    r"launched=(?P<launched>\d+)/(?P<total>\d+)\s+"
-    r"completed=(?P<completed>\d+)/(?P=total)\s+"
-    r"weight=(?P<weight>\d+)\s+running_units=(?P<running>\d+)/(?P<budget>\d+)"
-)
-
-COMPLETE_RE = re.compile(
-    r"^(?:(?P<wall>\S+)\s+)?(?P<ts>\+\d+(?::\d+){1,2})\s+(?:product-scheduler-)?complete\s+(?P<task>\S+)\s+"
-    r"completed=(?P<completed>\d+)/(?P<total>\d+)\s+"
-    r"running_units=(?P<running>\d+)/(?P<budget>\d+)(?P<rest>.*)$"
+TASK_RE = re.compile(
+    r"^(?:(?P<wall>\S+)\s+)?(?P<ts>\+\d+(?::\d+){1,2})\s+task\s+(?P<payload>.*)$"
 )
 
 FINAL_RE = re.compile(
@@ -48,29 +39,52 @@ CYCLE_RE = re.compile(
     r"^(?:(?P<wall>\S+)\s+)?(?P<ts>\+\d+:\d+(?::\d+)?)\s+cycle\s+bundle=(?P<bundle>\S+)\s+(?P<rest>.*)$"
 )
 
-ACTIVITY_START_RE = re.compile(
-    r"^(?:(?P<wall>\S+)\s+)?(?P<ts>\+\d+:\d+(?::\d+)?)\s+activity-start\s+"
-    r"(?P<task>\S+)(?P<rest>.*)$"
-)
+TASK_DISPLAY_FIELDS = {
+    "event",
+    "id",
+    "source",
+    "launched",
+    "total",
+    "completed",
+    "weight",
+    "running_units",
+    "work_unit_budget",
+    "status",
+}
 
-ACTIVITY_PROGRESS_RE = re.compile(
-    r"^(?:(?P<wall>\S+)\s+)?(?P<ts>\+\d+:\d+(?::\d+)?)\s+activity-progress\s+"
-    r"(?P<task>\S+)(?P<rest>.*)$"
-)
 
-ACTIVITY_COMPLETE_RE = re.compile(
-    r"^(?:(?P<wall>\S+)\s+)?(?P<ts>\+\d+:\d+(?::\d+)?)\s+activity-complete\s+"
-    r"(?P<task>\S+)(?P<rest>.*)$"
-)
+def parse_task_payload(payload: str) -> tuple[dict[str, str], str]:
+    field_text, separator, explicit_detail = payload.partition(" -- ")
+    fields: dict[str, str] = {}
+    for token in field_text.split():
+        key, delimiter, value = token.partition("=")
+        if delimiter and key and value:
+            fields[key] = value
+    detail_parts = [
+        f"{key}={value}"
+        for key, value in fields.items()
+        if key not in TASK_DISPLAY_FIELDS
+    ]
+    if separator and explicit_detail:
+        detail_parts.append(explicit_detail)
+    return fields, " ".join(detail_parts)
+
+
+def parse_int(value: str | None, default: int) -> int:
+    try:
+        return int(value) if value is not None else default
+    except ValueError:
+        return default
 
 
 @dataclass
 class TaskState:
     task: str
     launched_at: str
-    launched_wall: str
+    launched_wall: str | None
     weight: int
     status: str
+    source: str = ""
     details: str = ""
     completed_at: str | None = None
     completed_wall: str | None = None
@@ -130,104 +144,22 @@ class BuildState:
             self.cycle_summary = match.group("rest")
             return
 
-        match = ACTIVITY_START_RE.match(line)
+        match = TASK_RE.match(line)
         if match:
             self.last_timestamp = match.group("ts")
-            task = match.group("task")
-            self.tasks[task] = TaskState(
-                task=task,
-                launched_at=match.group("ts"),
-                launched_wall=match.group("wall"),
-                weight=0,
-                status="active",
-                details=match.group("rest").strip(),
+            fields, details = parse_task_payload(match.group("payload"))
+            self._apply_task_event(
+                fields,
+                details,
+                match.group("ts"),
+                match.group("wall"),
             )
-            return
-
-        match = ACTIVITY_PROGRESS_RE.match(line)
-        if match:
-            self.last_timestamp = match.group("ts")
-            task = self.tasks.get(match.group("task"))
-            if task is not None:
-                task.details = match.group("rest").strip()
-            return
-
-        match = ACTIVITY_COMPLETE_RE.match(line)
-        if match:
-            self.last_timestamp = match.group("ts")
-            task_name = match.group("task")
-            task = self.tasks.get(task_name)
-            if task is None:
-                task = TaskState(
-                    task=task_name,
-                    launched_at="?",
-                    launched_wall=match.group("wall"),
-                    weight=0,
-                    status="done",
-                )
-                self.tasks[task_name] = task
-            task.status = "done"
-            task.completed_at = match.group("ts")
-            task.completed_wall = match.group("wall")
-            task.details = match.group("rest").strip()
-            if task_name not in self.completed_task_names:
-                self.completed_task_names.add(task_name)
-                self.completion_order.append(task_name)
             return
 
         match = READY_RE.match(line)
         if match:
             self.total_tasks = int(match.group("total"))
             self.work_unit_budget = int(match.group("budget"))
-            return
-
-        match = LAUNCH_RE.match(line)
-        if match:
-            self.last_timestamp = match.group("ts")
-            task = match.group("task")
-            self.total_tasks = int(match.group("total"))
-            self.launched = int(match.group("launched"))
-            self.completed = int(match.group("completed"))
-            self.running_units = int(match.group("running"))
-            self.work_unit_budget = int(match.group("budget"))
-            self.tasks[task] = TaskState(
-                task=task,
-                launched_at=match.group("ts"),
-                launched_wall=match.group("wall"),
-                weight=int(match.group("weight")),
-                status="active",
-            )
-            return
-
-        match = COMPLETE_RE.match(line)
-        if match:
-            self.last_timestamp = match.group("ts")
-            task = match.group("task")
-            self.total_tasks = int(match.group("total"))
-            self.completed = int(match.group("completed"))
-            self.running_units = int(match.group("running"))
-            self.work_unit_budget = int(match.group("budget"))
-            task_state = self.tasks.get(task)
-            if task_state is None:
-                task_state = TaskState(
-                    task=task,
-                    launched_at="?",
-                    launched_wall=match.group("wall"),
-                    weight=0,
-                    status="done",
-                )
-                self.tasks[task] = task_state
-            task_state.status = "done"
-            task_state.completed_at = match.group("ts")
-            task_state.completed_wall = match.group("wall")
-            task_state.details = match.group("rest").strip()
-            if task == "current-artifacts":
-                self.diagnostic_error_count = parse_diagnostic_error_count(
-                    task_state.details
-                )
-            if task not in self.completed_task_names:
-                self.completed_task_names.add(task)
-                self.completion_order.append(task)
             return
 
         match = FINAL_RE.match(line)
@@ -237,6 +169,67 @@ class BuildState:
             self.final_details = match.group("rest").strip()
             self.final_at = match.group("ts")
             return
+
+    def _apply_task_event(
+        self,
+        fields: dict[str, str],
+        details: str,
+        timestamp: str,
+        wall: str | None,
+    ) -> None:
+        event = fields.get("event")
+        task_name = fields.get("id")
+        if event not in {"start", "progress", "complete"} or not task_name:
+            return
+        self._apply_task_progress_fields(fields)
+        source = fields.get("source", "")
+        if event == "start":
+            self.tasks[task_name] = TaskState(
+                task=task_name,
+                launched_at=timestamp,
+                launched_wall=wall,
+                weight=parse_int(fields.get("weight"), 0),
+                status="active",
+                source=source,
+                details=details,
+            )
+            return
+        task = self.tasks.get(task_name)
+        if event == "progress":
+            if task is not None:
+                task.details = details
+            return
+        if task is None:
+            task = TaskState(
+                task=task_name,
+                launched_at="?",
+                launched_wall=wall,
+                weight=parse_int(fields.get("weight"), 0),
+                status="done",
+                source=source,
+            )
+            self.tasks[task_name] = task
+        status = fields.get("status", "PASS")
+        task.status = "failed" if status == "FAIL" else "done"
+        task.completed_at = timestamp
+        task.completed_wall = wall
+        task.details = f"status=FAIL {details}".strip() if status == "FAIL" else details
+        if task_name == "current-artifacts":
+            self.diagnostic_error_count = parse_diagnostic_error_count(task.details)
+        if task_name not in self.completed_task_names:
+            self.completed_task_names.add(task_name)
+            self.completion_order.append(task_name)
+
+    def _apply_task_progress_fields(self, fields: dict[str, str]) -> None:
+        for field, attribute in [
+            ("total", "total_tasks"),
+            ("launched", "launched"),
+            ("completed", "completed"),
+            ("running_units", "running_units"),
+            ("work_unit_budget", "work_unit_budget"),
+        ]:
+            if field in fields:
+                setattr(self, attribute, parse_int(fields[field], getattr(self, attribute)))
 
     def _reset_for_new_run(self) -> None:
         self.total_tasks = 0
@@ -452,6 +445,7 @@ def task_snapshot(task: TaskState, now_wall: datetime) -> dict:
         "launched_wall": task.launched_wall,
         "weight": task.weight,
         "status": task.status,
+        "source": task.source,
         "details": task.details,
         "completed_at": task.completed_at,
         "completed_wall": task.completed_wall,

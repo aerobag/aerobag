@@ -125,12 +125,14 @@ class WatchBuildLogTests(unittest.TestCase):
             "2026-06-09T21:00:01+00:00 +0:01 scheduler-ready tasks=2 work_unit_budget=4"
         )
         state.apply_line(
-            "2026-06-09T21:00:02+00:00 +0:02 product-scheduler-launch nav-db "
-            "launched=1/2 completed=0/2 weight=1 running_units=1/4"
+            "2026-06-09T21:00:02+00:00 +0:02 task event=start id=nav-db "
+            "source=product-scheduler launched=1 total=2 completed=0 weight=1 "
+            "running_units=1 work_unit_budget=4"
         )
         state.apply_line(
-            "2026-06-09T21:00:03+00:00 +0:03 product-scheduler-complete nav-db "
-            "completed=1/2 running_units=0/4 published"
+            "2026-06-09T21:00:03+00:00 +0:03 task event=complete id=nav-db "
+            "source=product-scheduler status=PASS completed=1 total=2 "
+            "running_units=0 work_unit_budget=4 -- published"
         )
 
         snapshot = watch_build_log.state_snapshot(state, Path("/tmp/build.log"))
@@ -141,6 +143,9 @@ class WatchBuildLogTests(unittest.TestCase):
         self.assertEqual(snapshot["progress"]["completed"], 1)
         self.assertEqual(snapshot["progress"]["pending"], 1)
         self.assertEqual(snapshot["tasks"]["completed"][0]["task"], "nav-db")
+        self.assertEqual(
+            snapshot["tasks"]["completed"][0]["source"], "product-scheduler"
+        )
         self.assertEqual(snapshot["process"]["alive"], True)
 
     def test_completed_task_runtime_uses_completion_time_not_now(self) -> None:
@@ -150,12 +155,14 @@ class WatchBuildLogTests(unittest.TestCase):
             "build_root=/tmp/build publish_dir=/tmp/build/published/master/20260609T210000Z"
         )
         state.apply_line(
-            "2026-06-09T21:00:02+00:00 +0:02 product-scheduler-launch nav-db "
-            "launched=1/1 completed=0/1 weight=1 running_units=1/4"
+            "2026-06-09T21:00:02+00:00 +0:02 task event=start id=nav-db "
+            "source=product-scheduler launched=1 total=1 completed=0 weight=1 "
+            "running_units=1 work_unit_budget=4"
         )
         state.apply_line(
-            "2026-06-09T21:00:05+00:00 +0:05 product-scheduler-complete nav-db "
-            "completed=1/1 running_units=0/4 published"
+            "2026-06-09T21:00:05+00:00 +0:05 task event=complete id=nav-db "
+            "source=product-scheduler status=PASS completed=1 total=1 "
+            "running_units=0 work_unit_budget=4 -- published"
         )
 
         snapshot = watch_build_log.state_snapshot(
@@ -168,40 +175,61 @@ class WatchBuildLogTests(unittest.TestCase):
         self.assertEqual(completed["runtime_seconds"], 3)
         self.assertEqual(completed["runtime"], "0:03")
 
-    def test_named_activity_is_visible_without_changing_scheduler_counts(self) -> None:
+    def test_any_named_task_is_visible_without_changing_scheduler_counts(self) -> None:
         state = watch_build_log.BuildState()
         state.apply_line(
             "2026-08-04T01:00:00+00:00 +10:00 product-scheduler-ready "
             "tasks=154 work_unit_budget=152"
         )
         state.apply_line(
-            "2026-08-04T01:00:01+00:00 +10:01 activity-start "
-            "publication-integrity artifacts=126 bytes=11497139397"
+            "2026-08-04T01:00:01+00:00 +10:01 task event=start "
+            "id=publication-integrity source=finalization artifacts=126 bytes=11497139397"
         )
 
         self.assertEqual(state.total_tasks, 154)
         self.assertEqual(len(state.active_tasks()), 1)
         self.assertEqual(state.active_tasks()[0].task, "publication-integrity")
+        self.assertEqual(state.active_tasks()[0].source, "finalization")
         self.assertEqual(
             state.active_tasks()[0].details,
             "artifacts=126 bytes=11497139397",
         )
 
         state.apply_line(
-            "2026-08-04T01:00:03+00:00 +10:03 activity-progress "
-            "publication-integrity hashed_files=2 hashed_bytes=4096 reused_checks=5"
+            "2026-08-04T01:00:03+00:00 +10:03 task event=progress "
+            "id=publication-integrity source=finalization hashed_files=2 "
+            "hashed_bytes=4096 reused_checks=5"
         )
         self.assertIn("hashed_files=2", state.active_tasks()[0].details)
 
         state.apply_line(
-            "2026-08-04T01:00:05+00:00 +10:05 activity-complete "
-            "publication-integrity hashed_files=2 hashed_bytes=4096 reused_checks=250"
+            "2026-08-04T01:00:05+00:00 +10:05 task event=complete "
+            "id=publication-integrity source=finalization status=PASS hashed_files=2 "
+            "hashed_bytes=4096 reused_checks=250"
         )
         self.assertEqual(state.active_tasks(), [])
         completed = state.recent_completed(1)[0]
         self.assertEqual(completed.task, "publication-integrity")
         self.assertIn("reused_checks=250", completed.details)
         self.assertEqual(state.total_tasks, 154)
+
+    def test_failed_generic_task_becomes_terminal(self) -> None:
+        state = watch_build_log.BuildState()
+        state.apply_line(
+            "2026-08-04T01:00:01+00:00 +1:00 task event=start id=future-task "
+            "source=future-subsystem weight=3"
+        )
+        state.apply_line(
+            "2026-08-04T01:00:02+00:00 +1:01 task event=complete id=future-task "
+            "source=future-subsystem status=FAIL -- error=deliberate failure"
+        )
+
+        self.assertEqual(state.active_tasks(), [])
+        completed = state.recent_completed(1)[0]
+        self.assertEqual(completed.task, "future-task")
+        self.assertEqual(completed.source, "future-subsystem")
+        self.assertEqual(completed.status, "failed")
+        self.assertEqual(completed.details, "status=FAIL error=deliberate failure")
 
     def test_incremental_snapshot_reads_only_appended_log_lines(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -212,10 +240,12 @@ class WatchBuildLogTests(unittest.TestCase):
                         "2026-06-09T21:00:00+00:00 +0:00 begin pid=1 "
                         "build_root=/tmp/build publish_dir=/tmp/build/published/master/20260609T210000Z",
                         "2026-06-09T21:00:01+00:00 +0:01 scheduler-ready tasks=3 work_unit_budget=4",
-                        "2026-06-09T21:00:02+00:00 +0:02 product-scheduler-launch a "
-                        "launched=1/3 completed=0/3 weight=1 running_units=1/4",
-                        "2026-06-09T21:00:03+00:00 +0:03 product-scheduler-complete a "
-                        "completed=1/3 running_units=0/4 ok",
+                        "2026-06-09T21:00:02+00:00 +0:02 task event=start id=a "
+                        "source=product-scheduler launched=1 total=3 completed=0 weight=1 "
+                        "running_units=1 work_unit_budget=4",
+                        "2026-06-09T21:00:03+00:00 +0:03 task event=complete id=a "
+                        "source=product-scheduler status=PASS completed=1 total=3 "
+                        "running_units=0 work_unit_budget=4 -- ok",
                     ]
                 )
                 + "\n",
@@ -229,12 +259,14 @@ class WatchBuildLogTests(unittest.TestCase):
 
             with log_path.open("a", encoding="utf-8") as handle:
                 handle.write(
-                    "2026-06-09T21:00:04+00:00 +0:04 product-scheduler-launch b "
-                    "launched=2/3 completed=1/3 weight=1 running_units=1/4\n"
+                    "2026-06-09T21:00:04+00:00 +0:04 task event=start id=b "
+                    "source=product-scheduler launched=2 total=3 completed=1 weight=1 "
+                    "running_units=1 work_unit_budget=4\n"
                 )
                 handle.write(
-                    "2026-06-09T21:00:05+00:00 +0:05 product-scheduler-complete b "
-                    "completed=2/3 running_units=0/4 ok\n"
+                    "2026-06-09T21:00:05+00:00 +0:05 task event=complete id=b "
+                    "source=product-scheduler status=PASS completed=2 total=3 "
+                    "running_units=0 work_unit_budget=4 -- ok\n"
                 )
 
             second = snapshotter.snapshot(completed_limit=1)

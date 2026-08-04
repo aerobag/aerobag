@@ -15,6 +15,46 @@ pub(super) fn format_elapsed(elapsed_secs: u64) -> String {
     }
 }
 
+#[derive(Debug, Clone, Copy)]
+pub(super) enum TaskLogEvent {
+    Start,
+    Progress,
+    Complete,
+}
+
+impl TaskLogEvent {
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::Start => "start",
+            Self::Progress => "progress",
+            Self::Complete => "complete",
+        }
+    }
+}
+
+pub(super) fn task_log_record<'a>(
+    event: TaskLogEvent,
+    id: &str,
+    source: &str,
+    fields: impl IntoIterator<Item = (&'a str, String)>,
+    detail: Option<&str>,
+) -> String {
+    // Task identity and lifecycle are the stable machine-readable contract.
+    // Sources may add arbitrary key=value fields without changing consumers.
+    let mut record = format!("task event={} id={id} source={source}", event.as_str());
+    for (key, value) in fields {
+        record.push(' ');
+        record.push_str(key);
+        record.push('=');
+        record.push_str(&value);
+    }
+    if let Some(detail) = detail.filter(|value| !value.is_empty()) {
+        record.push_str(" -- ");
+        record.push_str(detail);
+    }
+    record
+}
+
 pub(super) struct MasterLog {
     start: Instant,
     file: File,
@@ -122,6 +162,23 @@ mod tests {
         assert_eq!(
             fs::read_to_string(rotated).expect("read rotated log"),
             "old log\n"
+        );
+    }
+
+    #[test]
+    fn task_log_record_has_one_generic_lifecycle_shape() {
+        assert_eq!(
+            task_log_record(
+                TaskLogEvent::Complete,
+                "2608:nav-db",
+                "product-scheduler",
+                [
+                    ("status", "PASS".to_string()),
+                    ("completed", "42".to_string()),
+                ],
+                Some("cache_hit=true"),
+            ),
+            "task event=complete id=2608:nav-db source=product-scheduler status=PASS completed=42 -- cache_hit=true"
         );
     }
 }

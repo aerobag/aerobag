@@ -1216,20 +1216,8 @@ data class WireFlightPlanRowNavigationAction(
     val target: String? = null,
 )
 
-@Serializable
-data class WireFlightDataCell(
-    val id: String,
-    val label: String,
-    val value: String? = null,
-    val tone: String = "planned",
-    val estimate_kind: String = "basic",
-)
-
-@Serializable
-data class WireFlightDataColumn(
-    val id: String,
-    val label: String,
-)
+typealias WireFlightDataCell = org.aerobag.app.generated.FlightDataCell
+typealias WireFlightDataColumn = org.aerobag.app.generated.FlightDataColumn
 
 @Serializable
 data class WireFlightDataBannerModel(

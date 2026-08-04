@@ -6,6 +6,8 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use serde::{Deserialize, Serialize};
 
+use product_contracts::{publication::v1 as publication_v1, versioned_json};
+
 pub const CHART_HIGH_RESOLUTION_PRODUCT_ID: &str = "chart-high-resolution";
 const WIDE_COVERAGE_REGION_ID: &str = "wide";
 
@@ -29,6 +31,9 @@ pub struct OfflinePackagePreferences {
     pub products: BTreeMap<String, OfflinePackageSelection>,
 }
 
+/// Core's package-planning projection of a publication package artifact.
+///
+/// External JSON must first be decoded through `product_contracts::publication`.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct BundlePackageArtifact {
     pub id: String,
@@ -76,11 +81,13 @@ pub fn current_artifacts_manifest_is_supported(manifest: &CurrentArtifactsManife
         })
 }
 
+/// Core's package-planning projection of a publication bundle.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct BundleManifest {
     pub packages: Vec<BundlePackageArtifact>,
 }
 
+/// Core's discovery projection after strict versioned wire decoding.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct CurrentArtifactsManifest {
     pub schema_version: Option<u32>,
@@ -149,12 +156,154 @@ pub struct CurrentArtifactsDiscoveryPlan {
 pub fn decode_current_artifacts_manifest_list(
     payload: &str,
 ) -> Result<Vec<CurrentArtifactsManifest>, String> {
-    let manifests = serde_json::from_str::<Vec<CurrentArtifactsManifest>>(payload)
-        .map_err(|err| format!("failed to decode current_artifacts.json list: {err}"))?;
-    if manifests.is_empty() {
-        return Err("current_artifacts.json list is empty".to_string());
+    versioned_json::decode_offered_list::<publication_v1::CurrentArtifactsManifest>(
+        "current_artifacts.json",
+        payload.as_bytes(),
+        publication_v1::SCHEMA_VERSION,
+    )
+    .map_err(|error| error.to_string())?
+    .into_iter()
+    .map(CurrentArtifactsManifest::try_from)
+    .collect()
+}
+
+pub fn decode_current_artifacts_manifest(
+    payload: &str,
+) -> Result<CurrentArtifactsManifest, String> {
+    let manifest = versioned_json::decode_exact::<publication_v1::CurrentArtifactsManifest>(
+        "current_artifacts.json manifest",
+        payload.as_bytes(),
+        publication_v1::SCHEMA_VERSION,
+    )
+    .map_err(|error| error.to_string())?;
+    CurrentArtifactsManifest::try_from(manifest)
+}
+
+pub fn decode_bundle_manifest(payload: &str) -> Result<BundleManifest, String> {
+    let manifest = versioned_json::decode_exact::<publication_v1::BundleManifest>(
+        "bundle manifest",
+        payload.as_bytes(),
+        publication_v1::SCHEMA_VERSION,
+    )
+    .map_err(|error| error.to_string())?;
+    BundleManifest::try_from(manifest)
+}
+
+impl TryFrom<publication_v1::BundlePackageArtifact> for BundlePackageArtifact {
+    type Error = String;
+
+    fn try_from(wire: publication_v1::BundlePackageArtifact) -> Result<Self, Self::Error> {
+        let metadata = if wire.metadata.is_empty() {
+            None
+        } else {
+            Some(
+                serde_json::from_value::<BundlePackageMetadata>(serde_json::Value::Object(
+                    wire.metadata.into_iter().collect(),
+                ))
+                .map_err(|error| {
+                    format!("package {} has invalid typed metadata: {error}", wire.id)
+                })?,
+            )
+        };
+        Ok(Self {
+            id: wire.id,
+            family_id: wire.family_id,
+            contract_id: wire.contract_id,
+            region_id: wire.region_id,
+            filename: wire.filename,
+            relative_path: wire.relative_path,
+            cycle: wire.cycle,
+            cycle_version: wire.cycle_version,
+            checksum_sha256: Some(wire.checksum_sha256),
+            size_bytes: Some(wire.size_bytes),
+            effective_date: wire.effective_date,
+            expiration_date: wire.expiration_date,
+            warning_text: wire.warning_text,
+            metadata,
+        })
     }
-    Ok(manifests)
+}
+
+impl TryFrom<publication_v1::BundleManifest> for BundleManifest {
+    type Error = String;
+
+    fn try_from(wire: publication_v1::BundleManifest) -> Result<Self, Self::Error> {
+        if wire.schema_version != publication_v1::SCHEMA_VERSION {
+            return Err(format!(
+                "bundle manifest schema {} reached v1 conversion",
+                wire.schema_version
+            ));
+        }
+        Ok(Self {
+            packages: wire
+                .packages
+                .into_iter()
+                .map(BundlePackageArtifact::try_from)
+                .collect::<Result<Vec<_>, _>>()?,
+        })
+    }
+}
+
+impl TryFrom<publication_v1::CurrentArtifactsManifest> for CurrentArtifactsManifest {
+    type Error = String;
+
+    fn try_from(wire: publication_v1::CurrentArtifactsManifest) -> Result<Self, Self::Error> {
+        if wire.schema_version != publication_v1::SCHEMA_VERSION {
+            return Err(format!(
+                "current_artifacts.json schema {} reached v1 conversion",
+                wire.schema_version
+            ));
+        }
+        Ok(Self {
+            schema_version: Some(wire.schema_version),
+            contracts: wire.contracts,
+            artifact_roots: CurrentArtifactsArtifactRoots {
+                packaged: wire.artifact_roots.packaged,
+                unpacked: wire.artifact_roots.unpacked,
+            },
+            as_of_date: Some(wire.as_of_date),
+            as_of_utc: Some(wire.as_of_utc),
+            bundles: wire
+                .bundles
+                .into_iter()
+                .map(|entry| CurrentArtifactsBundleRef {
+                    filename: entry.filename,
+                    relative_path: entry.relative_path,
+                    id: entry.id,
+                    bundle_type: entry.bundle_type,
+                    cycle: Some(entry.cycle),
+                    cycle_version: Some(entry.cycle_version),
+                    start_valid: Some(entry.start_valid),
+                    end_valid: Some(entry.end_valid),
+                    checksum_sha256: Some(entry.checksum_sha256),
+                    size_bytes: Some(entry.size_bytes),
+                })
+                .collect(),
+            startup_prefetch: wire.startup_prefetch.map(|prefetch| {
+                CurrentStartupPrefetchManifest {
+                    schema_version: prefetch.schema_version,
+                    cycle_resources: prefetch
+                        .cycle_resources
+                        .into_iter()
+                        .map(|cycle| CurrentStartupPrefetchCycleResources {
+                            bundle_id: cycle.bundle_id,
+                            cycle: cycle.cycle,
+                            cycle_version: cycle.cycle_version,
+                            start_valid: cycle.start_valid,
+                            end_valid: cycle.end_valid,
+                            resources: cycle
+                                .resources
+                                .into_iter()
+                                .map(|resource| CurrentStartupPrefetchResource {
+                                    url: resource.url,
+                                })
+                                .collect(),
+                        })
+                        .collect(),
+                }
+            }),
+        })
+    }
 }
 
 pub fn select_supported_current_artifacts_manifests(
@@ -3688,10 +3837,10 @@ mod tests {
                 bundle_type: "cycle".to_string(),
                 cycle: Some("2605".to_string()),
                 cycle_version: Some("01".to_string()),
-                start_valid: None,
-                end_valid: None,
-                checksum_sha256: None,
-                size_bytes: None,
+                start_valid: Some("2026-05-20T00:00:00Z".to_string()),
+                end_valid: Some("2026-06-17T00:00:00Z".to_string()),
+                checksum_sha256: Some("test-bundle-sha256".to_string()),
+                size_bytes: Some(1234),
             }],
             startup_prefetch: None,
         }

@@ -1,0 +1,5 @@
+{
+  "kind": "begin_authorization",
+  "provider": "google_drive",
+  "scopes": ["scope-a", "scope-b"]
+}

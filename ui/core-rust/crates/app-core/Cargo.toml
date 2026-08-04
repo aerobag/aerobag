@@ -5,6 +5,7 @@ license.workspace = true
 version.workspace = true
 
 [dependencies]
+app-ui-contracts = { path = "../app-ui-contracts" }
 airspace-geometry = { path = "../../../../crates/airspace-geometry" }
 had-key = { path = "../../../../crates/had-key" }
 had-nav-kv = { path = "../../../../crates/had-nav-kv" }

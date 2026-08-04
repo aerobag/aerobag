@@ -575,8 +575,9 @@ pub fn set_map_layer_visibility_in_session_paged_json(
     layer_id_json: &str,
     visible: bool,
 ) -> Result<String, String> {
-    let layer_id: String = serde_json::from_str(layer_id_json).map_err(|err| err.to_string())?;
-    let outcome = app_core::set_map_layer_visibility_in_session(handle as u32, &layer_id, visible)
+    let layer_id: app_core::MapLayerId =
+        serde_json::from_str(layer_id_json).map_err(|err| err.to_string())?;
+    let outcome = app_core::set_map_layer_visibility_in_session(handle as u32, layer_id, visible)
         .map_err(|err| err.to_string())?;
     serde_json::to_string(&outcome).map_err(|err| err.to_string())
 }
@@ -586,8 +587,9 @@ pub fn set_map_layer_enabled_in_session_paged_json(
     layer_id_json: &str,
     enabled: bool,
 ) -> Result<String, String> {
-    let layer_id: String = serde_json::from_str(layer_id_json).map_err(|err| err.to_string())?;
-    let outcome = app_core::set_map_layer_enabled_in_session(handle as u32, &layer_id, enabled)
+    let layer_id: app_core::MapLayerId =
+        serde_json::from_str(layer_id_json).map_err(|err| err.to_string())?;
+    let outcome = app_core::set_map_layer_enabled_in_session(handle as u32, layer_id, enabled)
         .map_err(|err| err.to_string())?;
     serde_json::to_string(&outcome).map_err(|err| err.to_string())
 }
@@ -597,8 +599,9 @@ pub fn set_debug_flag_in_session_json(
     flag_id_json: &str,
     enabled: bool,
 ) -> Result<String, String> {
-    let flag_id: String = serde_json::from_str(flag_id_json).map_err(|err| err.to_string())?;
-    let snapshot = app_core::set_debug_flag_in_session(handle as u32, &flag_id, enabled)
+    let flag_id: app_core::DebugFlagId =
+        serde_json::from_str(flag_id_json).map_err(|err| err.to_string())?;
+    let snapshot = app_core::set_debug_flag_in_session(handle as u32, flag_id, enabled)
         .map_err(|err| err.to_string())?;
     serde_json::to_string(&snapshot).map_err(|err| err.to_string())
 }
@@ -2050,8 +2053,7 @@ struct CurrentArtifactsDiscoveryInputWire {
 pub fn plan_offline_packages_from_bundle_json(input_json: &str) -> Result<String, String> {
     let input: BundlePackageManagementInputWire =
         serde_json::from_str(input_json).map_err(|err| err.to_string())?;
-    let bundle: app_core::BundleManifest =
-        serde_json::from_str(&input.bundle_json).map_err(|err| err.to_string())?;
+    let bundle = app_core::decode_bundle_manifest(&input.bundle_json)?;
     let plan = app_core::plan_offline_packages(&app_core::PackageManagementInput {
         now_epoch_ms: input.now_epoch_ms,
         preferences: input.preferences,
@@ -2079,18 +2081,15 @@ pub fn initialize_offline_packages_json(input_json: &str) -> Result<String, Stri
     let discovery_manifests = input
         .discovery_jsons
         .into_iter()
-        .map(|payload| serde_json::from_str::<app_core::CurrentArtifactsManifest>(&payload))
-        .collect::<Result<Vec<_>, _>>()
-        .map_err(|err| err.to_string())?;
+        .map(|payload| app_core::decode_current_artifacts_manifest(&payload))
+        .collect::<Result<Vec<_>, _>>()?;
     let bundle_manifests_by_filename = input
         .bundle_jsons_by_filename
         .into_iter()
         .map(|(filename, payload)| {
-            serde_json::from_str::<app_core::BundleManifest>(&payload)
-                .map(|bundle| (filename, bundle))
+            app_core::decode_bundle_manifest(&payload).map(|bundle| (filename, bundle))
         })
-        .collect::<Result<BTreeMap<_, _>, _>>()
-        .map_err(|err| err.to_string())?;
+        .collect::<Result<BTreeMap<_, _>, _>>()?;
     let result = app_core::initialize_offline_packages(&app_core::OfflinePackagesInitInput {
         state: input.state,
         now_epoch_ms: input.now_epoch_ms,
@@ -2109,18 +2108,15 @@ pub fn reduce_offline_packages_json(input_json: &str) -> Result<String, String> 
     let discovery_manifests = input
         .discovery_jsons
         .into_iter()
-        .map(|payload| serde_json::from_str::<app_core::CurrentArtifactsManifest>(&payload))
-        .collect::<Result<Vec<_>, _>>()
-        .map_err(|err| err.to_string())?;
+        .map(|payload| app_core::decode_current_artifacts_manifest(&payload))
+        .collect::<Result<Vec<_>, _>>()?;
     let bundle_manifests_by_filename = input
         .bundle_jsons_by_filename
         .into_iter()
         .map(|(filename, payload)| {
-            serde_json::from_str::<app_core::BundleManifest>(&payload)
-                .map(|bundle| (filename, bundle))
+            app_core::decode_bundle_manifest(&payload).map(|bundle| (filename, bundle))
         })
-        .collect::<Result<BTreeMap<_, _>, _>>()
-        .map_err(|err| err.to_string())?;
+        .collect::<Result<BTreeMap<_, _>, _>>()?;
     let result = app_core::reduce_offline_packages(&app_core::OfflinePackagesReduceInput {
         state: input.state,
         event: input.event,
@@ -2161,18 +2157,15 @@ pub fn dispatch_offline_packages_controller_json(
             let discovery_manifests = payload
                 .discovery_jsons
                 .into_iter()
-                .map(|json| serde_json::from_str::<app_core::CurrentArtifactsManifest>(&json))
-                .collect::<Result<Vec<_>, _>>()
-                .map_err(|err| err.to_string())?;
+                .map(|json| app_core::decode_current_artifacts_manifest(&json))
+                .collect::<Result<Vec<_>, _>>()?;
             let bundle_manifests_by_filename = payload
                 .bundle_jsons_by_filename
                 .into_iter()
                 .map(|(filename, json)| {
-                    serde_json::from_str::<app_core::BundleManifest>(&json)
-                        .map(|bundle| (filename, bundle))
+                    app_core::decode_bundle_manifest(&json).map(|bundle| (filename, bundle))
                 })
-                .collect::<Result<BTreeMap<_, _>, _>>()
-                .map_err(|err| err.to_string())?;
+                .collect::<Result<BTreeMap<_, _>, _>>()?;
             app_core::OfflinePackagesControllerEvent::LibraryRefreshSucceeded {
                 fetched_at_epoch_ms: payload.fetched_at_epoch_ms,
                 discovery_manifests,

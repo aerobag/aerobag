@@ -5,6 +5,8 @@
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
+pub use app_ui_contracts::session::FlightEstimateKind;
+
 use crate::{
     great_circle_distance_nm, great_circle_intermediate, initial_course_deg, FlightDataCell,
     FlightPlanRowId, LatLon,
@@ -13,20 +15,6 @@ use crate::{
 const MAX_INTEGRATION_STEP_NM: f64 = 1.0;
 const MAX_INTEGRATION_STEP_SECONDS: f64 = 30.0;
 const ALTITUDE_CAPTURE_FT: f64 = 10.0;
-
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum FlightEstimateKind {
-    #[default]
-    Basic,
-    Modeled,
-}
-
-impl FlightEstimateKind {
-    pub(crate) fn is_basic(&self) -> bool {
-        matches!(self, Self::Basic)
-    }
-}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]

@@ -1,0 +1,926 @@
+{
+  "$defs": {
+    "ClientBuildInfo": {
+      "additionalProperties": false,
+      "properties": {
+        "built_at_utc": {
+          "default": null,
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "commit": {
+          "default": null,
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "dirty": {
+          "default": false,
+          "type": "boolean"
+        },
+        "platform": {
+          "type": "string"
+        },
+        "version": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "platform",
+        "version"
+      ],
+      "type": "object"
+    },
+    "DebugFlagId": {
+      "enum": [
+        "tile_labels",
+        "nexrad_tile_labels",
+        "fast_tiles",
+        "offline_simulated_clock_buttons",
+        "sequencing_finish_lines",
+        "plate_flight_plan",
+        "bad_autopilot",
+        "gps_capture",
+        "debug_log_to_developer_server"
+      ],
+      "title": "DebugFlagId",
+      "type": "string"
+    },
+    "FlightDataBannerModel": {
+      "additionalProperties": false,
+      "properties": {
+        "cells": {
+          "items": {
+            "$ref": "#/$defs/FlightDataCell"
+          },
+          "type": "array"
+        }
+      },
+      "required": [
+        "cells"
+      ],
+      "title": "FlightDataBannerModel",
+      "type": "object"
+    },
+    "FlightDataCell": {
+      "additionalProperties": false,
+      "properties": {
+        "estimate_kind": {
+          "$ref": "#/$defs/FlightEstimateKind"
+        },
+        "id": {
+          "type": "string"
+        },
+        "label": {
+          "type": "string"
+        },
+        "tone": {
+          "$ref": "#/$defs/FlightDataCellTone"
+        },
+        "value": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "id",
+        "label"
+      ],
+      "type": "object"
+    },
+    "FlightDataCellTone": {
+      "enum": [
+        "planned",
+        "passed",
+        "active"
+      ],
+      "type": "string"
+    },
+    "FlightDataColumn": {
+      "additionalProperties": false,
+      "properties": {
+        "id": {
+          "type": "string"
+        },
+        "label": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "id",
+        "label"
+      ],
+      "title": "FlightDataColumn",
+      "type": "object"
+    },
+    "FlightEstimateKind": {
+      "enum": [
+        "basic",
+        "modeled"
+      ],
+      "type": "string"
+    },
+    "LiveFeedAcquisitionPolicy": {
+      "enum": [
+        "jit_public_resources",
+        "durable_complete_states"
+      ],
+      "type": "string"
+    },
+    "MapLayerId": {
+      "enum": [
+        "world_basemap",
+        "vectors",
+        "metars",
+        "nexrad",
+        "terrain_warning",
+        "offline_regions"
+      ],
+      "title": "MapLayerId",
+      "type": "string"
+    },
+    "PlatformCapabilities": {
+      "additionalProperties": false,
+      "properties": {
+        "client_build": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/ClientBuildInfo"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "cloud": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/PlatformCloudCapability"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "display_policy": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/PlatformDisplayPolicyCapability"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "live_feeds": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/PlatformLiveFeedsCapability"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "local_time_zone": {
+          "default": null,
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "offline_packages": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/PlatformOfflinePackagesCapability"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        }
+      },
+      "type": "object"
+    },
+    "PlatformCloudCapability": {
+      "additionalProperties": false,
+      "properties": {
+        "aerobag_cloud_base_url": {
+          "default": null,
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "qr_scan": {
+          "default": false,
+          "type": "boolean"
+        }
+      },
+      "type": "object"
+    },
+    "PlatformDisplayPolicyCapability": {
+      "additionalProperties": false,
+      "type": "object"
+    },
+    "PlatformLiveFeedsCapability": {
+      "additionalProperties": false,
+      "properties": {
+        "acquisition_policy": {
+          "$ref": "#/$defs/LiveFeedAcquisitionPolicy"
+        }
+      },
+      "required": [
+        "acquisition_policy"
+      ],
+      "type": "object"
+    },
+    "PlatformOfflinePackagesCapability": {
+      "additionalProperties": false,
+      "type": "object"
+    },
+    "UiChartPageState": {
+      "additionalProperties": false,
+      "properties": {
+        "ordered_airport_ids": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "plate_target_airport_id": {
+          "default": null,
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "recent_airport_ids": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "selected_airport_id": {
+          "type": "string"
+        },
+        "selected_chart_id": {
+          "type": "string"
+        },
+        "selected_reference_family_id": {
+          "default": null,
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "suggested_chart_ids": {
+          "default": [],
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        }
+      },
+      "required": [
+        "ordered_airport_ids",
+        "recent_airport_ids",
+        "selected_airport_id",
+        "selected_chart_id"
+      ],
+      "type": "object"
+    },
+    "UiDataStatusBox": {
+      "additionalProperties": false,
+      "properties": {
+        "actions": {
+          "items": {
+            "$ref": "#/$defs/UiStatusAction"
+          },
+          "type": "array"
+        },
+        "detail": {
+          "type": "string"
+        },
+        "drives_caution": {
+          "type": "boolean"
+        },
+        "hushed": {
+          "type": "boolean"
+        },
+        "id": {
+          "type": "string"
+        },
+        "label": {
+          "type": "string"
+        },
+        "severity": {
+          "$ref": "#/$defs/UiStatusSeverity"
+        },
+        "value": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "id",
+        "label",
+        "severity",
+        "drives_caution",
+        "detail",
+        "actions",
+        "hushed"
+      ],
+      "type": "object"
+    },
+    "UiDataStatusPageFact": {
+      "additionalProperties": false,
+      "properties": {
+        "label": {
+          "type": "string"
+        },
+        "link_url": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "time_display": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/UiDataStatusPageTimeDisplay"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "time_utc": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "value": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "label",
+        "value"
+      ],
+      "type": "object"
+    },
+    "UiDataStatusPageRow": {
+      "additionalProperties": false,
+      "properties": {
+        "detail": {
+          "type": "string"
+        },
+        "facts": {
+          "default": [],
+          "items": {
+            "$ref": "#/$defs/UiDataStatusPageFact"
+          },
+          "type": "array"
+        },
+        "id": {
+          "type": "string"
+        },
+        "label": {
+          "type": "string"
+        },
+        "severity": {
+          "$ref": "#/$defs/UiStatusSeverity"
+        },
+        "value": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "id",
+        "label",
+        "value",
+        "severity",
+        "detail"
+      ],
+      "type": "object"
+    },
+    "UiDataStatusPageState": {
+      "additionalProperties": false,
+      "properties": {
+        "rows": {
+          "items": {
+            "$ref": "#/$defs/UiDataStatusPageRow"
+          },
+          "type": "array"
+        },
+        "summary": {
+          "type": "string"
+        },
+        "title": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "title",
+        "summary",
+        "rows"
+      ],
+      "type": "object"
+    },
+    "UiDataStatusPageTimeDisplay": {
+      "enum": [
+        "ago",
+        "old",
+        "until"
+      ],
+      "type": "string"
+    },
+    "UiDataStatusState": {
+      "additionalProperties": false,
+      "properties": {
+        "boxes": {
+          "items": {
+            "$ref": "#/$defs/UiDataStatusBox"
+          },
+          "type": "array"
+        },
+        "launcher_count": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "launcher_severity": {
+          "$ref": "#/$defs/UiStatusSeverity"
+        }
+      },
+      "required": [
+        "boxes",
+        "launcher_severity"
+      ],
+      "type": "object"
+    },
+    "UiDebugState": {
+      "additionalProperties": false,
+      "properties": {
+        "bad_autopilot": {
+          "default": false,
+          "type": "boolean"
+        },
+        "debug_log_to_developer_server": {
+          "default": false,
+          "type": "boolean"
+        },
+        "fast_tiles": {
+          "type": "boolean"
+        },
+        "gps_capture": {
+          "default": false,
+          "type": "boolean"
+        },
+        "nexrad_tile_labels": {
+          "default": false,
+          "type": "boolean"
+        },
+        "offline_simulated_clock_buttons": {
+          "type": "boolean"
+        },
+        "plate_flight_plan": {
+          "default": false,
+          "type": "boolean"
+        },
+        "sequencing_finish_lines": {
+          "default": false,
+          "type": "boolean"
+        },
+        "tile_labels": {
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "tile_labels",
+        "fast_tiles",
+        "offline_simulated_clock_buttons"
+      ],
+      "type": "object"
+    },
+    "UiDisclaimerState": {
+      "additionalProperties": false,
+      "properties": {
+        "accept_label": {
+          "type": "string"
+        },
+        "agreement_id": {
+          "type": "string"
+        },
+        "html": {
+          "type": "string"
+        },
+        "required": {
+          "type": "boolean"
+        },
+        "text": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "agreement_id",
+        "required",
+        "html",
+        "text",
+        "accept_label"
+      ],
+      "type": "object"
+    },
+    "UiDisplayPolicy": {
+      "additionalProperties": false,
+      "properties": {
+        "dim_after_ms": {
+          "format": "uint64",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "dim_brightness": {
+          "format": "float",
+          "type": "number"
+        },
+        "keep_screen_on": {
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "keep_screen_on",
+        "dim_brightness"
+      ],
+      "type": "object"
+    },
+    "UiMapLayerState": {
+      "additionalProperties": false,
+      "properties": {
+        "metars": {
+          "$ref": "#/$defs/UiMapLayerToggleState"
+        },
+        "nexrad": {
+          "$ref": "#/$defs/UiMapLayerToggleState"
+        },
+        "offline_regions": {
+          "$ref": "#/$defs/UiMapLayerToggleState"
+        },
+        "terrain_warning": {
+          "$ref": "#/$defs/UiMapLayerToggleState"
+        },
+        "vectors": {
+          "$ref": "#/$defs/UiMapLayerToggleState"
+        },
+        "world_basemap": {
+          "$ref": "#/$defs/UiMapLayerToggleState"
+        }
+      },
+      "required": [
+        "world_basemap",
+        "vectors",
+        "metars",
+        "nexrad",
+        "terrain_warning",
+        "offline_regions"
+      ],
+      "type": "object"
+    },
+    "UiMapLayerToggleState": {
+      "additionalProperties": false,
+      "properties": {
+        "disabled_reason": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "enabled": {
+          "type": "boolean"
+        },
+        "visible": {
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "visible",
+        "enabled"
+      ],
+      "type": "object"
+    },
+    "UiNavDbIdentity": {
+      "additionalProperties": false,
+      "properties": {
+        "contract_id": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "cycle": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "cycle_version": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "filename": {
+          "type": "string"
+        },
+        "package_id": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "package_id",
+        "filename"
+      ],
+      "type": "object"
+    },
+    "UiPlaybackPanelState": {
+      "additionalProperties": false,
+      "properties": {
+        "visible": {
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "visible"
+      ],
+      "type": "object"
+    },
+    "UiSettingsAction": {
+      "additionalProperties": false,
+      "properties": {
+        "action_id": {
+          "type": "string"
+        },
+        "value_id": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "action_id",
+        "value_id"
+      ],
+      "type": "object"
+    },
+    "UiSettingsGridItem": {
+      "additionalProperties": false,
+      "properties": {
+        "cell": {
+          "$ref": "#/$defs/FlightDataCell"
+        },
+        "enabled": {
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "cell",
+        "enabled"
+      ],
+      "type": "object"
+    },
+    "UiSettingsPageRow": {
+      "additionalProperties": false,
+      "properties": {
+        "action_id": {
+          "type": "string"
+        },
+        "id": {
+          "type": "string"
+        },
+        "items": {
+          "default": [],
+          "items": {
+            "$ref": "#/$defs/UiSettingsGridItem"
+          },
+          "type": "array"
+        },
+        "kind": {
+          "type": "string"
+        },
+        "stops": {
+          "items": {
+            "$ref": "#/$defs/UiSettingsSliderStop"
+          },
+          "type": "array"
+        },
+        "title": {
+          "type": "string"
+        },
+        "value_id": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "kind",
+        "id",
+        "title",
+        "value_id",
+        "stops",
+        "action_id"
+      ],
+      "type": "object"
+    },
+    "UiSettingsPageState": {
+      "additionalProperties": false,
+      "properties": {
+        "rows": {
+          "items": {
+            "$ref": "#/$defs/UiSettingsPageRow"
+          },
+          "type": "array"
+        },
+        "summary": {
+          "type": "string"
+        },
+        "title": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "title",
+        "summary",
+        "rows"
+      ],
+      "type": "object"
+    },
+    "UiSettingsSliderStop": {
+      "additionalProperties": false,
+      "properties": {
+        "id": {
+          "type": "string"
+        },
+        "label": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "id",
+        "label"
+      ],
+      "type": "object"
+    },
+    "UiStatusAction": {
+      "additionalProperties": false,
+      "properties": {
+        "enabled": {
+          "type": "boolean"
+        },
+        "id": {
+          "type": "string"
+        },
+        "label": {
+          "type": "string"
+        },
+        "style": {
+          "$ref": "#/$defs/UiStatusActionStyle"
+        }
+      },
+      "required": [
+        "id",
+        "label",
+        "enabled",
+        "style"
+      ],
+      "type": "object"
+    },
+    "UiStatusActionStyle": {
+      "enum": [
+        "normal",
+        "hush"
+      ],
+      "type": "string"
+    },
+    "UiStatusSeverity": {
+      "enum": [
+        "ok",
+        "info",
+        "caution",
+        "warning",
+        "unavailable"
+      ],
+      "type": "string"
+    }
+  },
+  "$id": "org.aerobag.ui-wire.session-page",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "description": "Core-owned session page, platform capability, and settings-action wire contract.",
+  "properties": {
+    "capabilities": {
+      "$ref": "#/$defs/PlatformCapabilities"
+    },
+    "chart": {
+      "$ref": "#/$defs/UiChartPageState"
+    },
+    "debug": {
+      "$ref": "#/$defs/UiDebugState"
+    },
+    "disclaimer": {
+      "$ref": "#/$defs/UiDisclaimerState"
+    },
+    "display_policy": {
+      "$ref": "#/$defs/UiDisplayPolicy"
+    },
+    "map_layers": {
+      "$ref": "#/$defs/UiMapLayerState"
+    },
+    "nav_db": {
+      "$ref": "#/$defs/UiNavDbIdentity"
+    },
+    "playback_panel": {
+      "$ref": "#/$defs/UiPlaybackPanelState"
+    },
+    "settings": {
+      "$ref": "#/$defs/UiSettingsPageState"
+    },
+    "settings_action": {
+      "$ref": "#/$defs/UiSettingsAction"
+    },
+    "status": {
+      "$ref": "#/$defs/UiDataStatusState"
+    },
+    "status_page": {
+      "$ref": "#/$defs/UiDataStatusPageState"
+    }
+  },
+  "required": [
+    "chart",
+    "map_layers",
+    "status",
+    "status_page",
+    "settings",
+    "display_policy",
+    "disclaimer",
+    "debug",
+    "playback_panel",
+    "nav_db",
+    "capabilities",
+    "settings_action"
+  ],
+  "title": "UiSessionPageContracts",
+  "type": "object",
+  "x-contract-version": 1,
+  "x-export-order": [
+    "FlightDataCellTone",
+    "FlightEstimateKind",
+    "FlightDataCell",
+    "FlightDataColumn",
+    "FlightDataBannerModel",
+    "UiStatusSeverity",
+    "UiStatusActionStyle",
+    "UiStatusAction",
+    "UiDataStatusBox",
+    "UiDataStatusState",
+    "UiDataStatusPageTimeDisplay",
+    "UiDataStatusPageFact",
+    "UiDataStatusPageRow",
+    "UiDataStatusPageState",
+    "UiChartPageState",
+    "UiMapLayerToggleState",
+    "UiMapLayerState",
+    "MapLayerId",
+    "DebugFlagId",
+    "UiDebugState",
+    "UiSettingsSliderStop",
+    "UiSettingsGridItem",
+    "UiSettingsPageRow",
+    "UiSettingsPageState",
+    "UiDisplayPolicy",
+    "UiDisclaimerState",
+    "UiSettingsAction",
+    "UiPlaybackPanelState",
+    "UiNavDbIdentity",
+    "PlatformDisplayPolicyCapability",
+    "PlatformOfflinePackagesCapability",
+    "PlatformCloudCapability",
+    "LiveFeedAcquisitionPolicy",
+    "PlatformLiveFeedsCapability",
+    "ClientBuildInfo",
+    "PlatformCapabilities"
+  ]
+}

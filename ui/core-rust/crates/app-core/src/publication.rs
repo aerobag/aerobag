@@ -183,7 +183,7 @@ impl PublicationResolver {
         let filename = resource_id
             .strip_prefix("publication/bundle/")
             .ok_or_else(|| format!("unsupported publication resource id: {resource_id}"))?;
-        let bundle = serde_json::from_str::<BundleManifest>(payload)
+        let bundle = crate::decode_bundle_manifest(payload)
             .map_err(|err| format!("failed to decode bundle {filename}: {err}"))?;
         self.bundle_manifests_by_filename
             .insert(filename.to_string(), bundle);
@@ -505,19 +505,19 @@ mod tests {
                 packaged: "published_packaged".to_string(),
                 unpacked: "published_unpacked".to_string(),
             },
-            as_of_date: None,
-            as_of_utc: None,
+            as_of_date: Some("2026-05-20".to_string()),
+            as_of_utc: Some("2026-05-20T12:00:00Z".to_string()),
             bundles: vec![CurrentArtifactsBundleRef {
                 filename: "bundle_cycle.json".to_string(),
                 relative_path: "bundles/bundle_cycle.json".to_string(),
                 id: "cycle".to_string(),
                 bundle_type: "cycle".to_string(),
-                cycle: None,
-                cycle_version: None,
-                start_valid: None,
-                end_valid: None,
-                checksum_sha256: None,
-                size_bytes: None,
+                cycle: Some("2605".to_string()),
+                cycle_version: Some("01".to_string()),
+                start_valid: Some("2026-05-20T00:00:00Z".to_string()),
+                end_valid: Some("2026-06-17T00:00:00Z".to_string()),
+                checksum_sha256: Some("test-bundle-sha256".to_string()),
+                size_bytes: Some(1234),
             }],
             startup_prefetch: None,
         }
@@ -527,34 +527,41 @@ mod tests {
         serde_json::to_string(&vec![current_artifacts()]).unwrap()
     }
 
-    fn bundle() -> BundleManifest {
-        BundleManifest {
-            packages: vec![BundlePackageArtifact {
+    fn bundle_json() -> String {
+        serde_json::to_string(&product_contracts::publication::v1::BundleManifest {
+            schema_version: product_contracts::publication::v1::SCHEMA_VERSION,
+            bundle_id: "cycle".to_string(),
+            bundle_type: "cycle".to_string(),
+            cycle: "2605".to_string(),
+            cycle_version: "01".to_string(),
+            generated_at_utc: "2026-05-20T12:00:00Z".to_string(),
+            effective_date: "2026-05-20".to_string(),
+            expiration_date: "2026-06-17".to_string(),
+            start_valid: "2026-05-20T00:00:00Z".to_string(),
+            end_valid: "2026-06-17T00:00:00Z".to_string(),
+            packages: vec![product_contracts::publication::v1::BundlePackageArtifact {
                 id: "nav-db".to_string(),
                 family_id: "nav-db".to_string(),
                 contract_id: crate::REQUIRED_NAV_DB_CONTRACT_ID.to_string(),
                 region_id: None,
                 filename: "nav_db_hash.zip".to_string(),
                 relative_path: "nav_db_hash.zip".to_string(),
-                cycle: None,
-                cycle_version: None,
-                checksum_sha256: None,
-                size_bytes: None,
-                effective_date: None,
-                expiration_date: None,
+                cycle: Some("2605".to_string()),
+                cycle_version: Some("01".to_string()),
+                checksum_sha256: "test-package-sha256".to_string(),
+                size_bytes: 1234,
+                published_at_utc: None,
+                source_generated_at_utc: None,
+                source_version: None,
+                source_fetched_at_utc: None,
+                effective_date: Some("2026-05-20".to_string()),
+                expiration_date: Some("2026-06-17".to_string()),
                 warning_text: None,
-                metadata: Some(crate::package_management::BundlePackageMetadata {
-                    chart_package_tier: None,
-                    full_coverage_zoom: None,
-                    wide_angle_region_id: None,
-                    wide_angle_max_zoom: None,
-                    wide_angle: None,
-                    min_source_zoom: None,
-                    max_source_zoom: None,
-                    tile_count: None,
-                }),
+                metadata: BTreeMap::new(),
             }],
-        }
+            ancillary: Vec::new(),
+        })
+        .unwrap()
     }
 
     #[test]
@@ -612,7 +619,7 @@ mod tests {
         resolver
             .ingest_resource(
                 "publication/bundle/bundle_cycle.json",
-                serde_json::to_string(&bundle()).unwrap().as_bytes(),
+                bundle_json().as_bytes(),
             )
             .unwrap();
         assert_eq!(resolver.loaded_bundle_manifest_count(), 1);
@@ -642,7 +649,7 @@ mod tests {
         resolver
             .ingest_resource(
                 "publication/bundle/bundle_cycle.json",
-                serde_json::to_string(&bundle()).unwrap().as_bytes(),
+                bundle_json().as_bytes(),
             )
             .unwrap();
         let outcome = resolver
@@ -672,7 +679,7 @@ mod tests {
         resolver
             .ingest_resource(
                 "publication/bundle/bundle_cycle.json",
-                serde_json::to_string(&bundle()).unwrap().as_bytes(),
+                bundle_json().as_bytes(),
             )
             .unwrap();
         assert_eq!(
@@ -695,7 +702,7 @@ mod tests {
         resolver
             .ingest_resource(
                 "publication/bundle/bundle_cycle.json",
-                serde_json::to_string(&bundle()).unwrap().as_bytes(),
+                bundle_json().as_bytes(),
             )
             .unwrap();
         let resources = resolver
@@ -726,7 +733,7 @@ mod tests {
         resolver
             .ingest_resource(
                 "publication/bundle/bundle_cycle.json",
-                serde_json::to_string(&bundle()).unwrap().as_bytes(),
+                bundle_json().as_bytes(),
             )
             .unwrap();
         let resources = resolver

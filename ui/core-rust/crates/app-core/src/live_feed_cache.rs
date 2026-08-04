@@ -11,6 +11,7 @@ use had_nav_kv::{
 #[cfg(test)]
 use notam_state::NotamState;
 use notam_state::{NotamApplyWork, NotamCheckpoint, NotamDelta};
+use product_contracts::{live_feeds::v3 as live_feeds_v3, versioned_json};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use sha2::{Digest, Sha256};
@@ -137,38 +138,8 @@ pub enum LiveFeedProductDriver {
     },
 }
 
-#[derive(Debug, Clone, PartialEq, Deserialize)]
-struct LiveFeedRecordDelta {
-    schema_version: u32,
-    product: String,
-    from_version: String,
-    to_version: String,
-    #[serde(default)]
-    top_level_changed: serde_json::Map<String, Value>,
-    #[serde(default)]
-    top_level_removed: Vec<String>,
-    #[serde(default)]
-    changed: serde_json::Map<String, Value>,
-    #[serde(default)]
-    removed: Vec<String>,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
-struct LiveFeedNavKvDelta {
-    schema_version: u32,
-    product: String,
-    from_version: String,
-    to_version: String,
-    from_state_sha256: String,
-    to_state_sha256: String,
-    entries: Vec<LiveFeedNavKvDeltaEntry>,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
-struct LiveFeedNavKvDeltaEntry {
-    key: String,
-    value: Option<Vec<u8>>,
-}
+type LiveFeedRecordDelta = live_feeds_v3::RecordDelta;
+type LiveFeedNavKvDelta = live_feeds_v3::NavKvDelta;
 
 #[derive(Debug, Deserialize)]
 struct NavKvInstallManifest {
@@ -586,12 +557,7 @@ impl LiveFeedCache {
                 let LiveFeedFetchedPayload::Bytes(bytes) = payload else {
                     return Err(cache_error("delta payload must be bytes".to_string()));
                 };
-                let expected_blob_sha256 = delta.blob_sha256.as_ref().ok_or_else(|| {
-                    cache_error(format!(
-                        "delta {product}/{from_version}/{to_version} missing blob_sha256"
-                    ))
-                })?;
-                verify_blob_sha256("delta", &bytes, expected_blob_sha256)?;
+                verify_blob_sha256("delta", &bytes, &delta.blob_sha256)?;
                 let current = self.installed(product).ok_or_else(|| {
                     cache_error(format!(
                         "cannot apply {product} delta without installed state"
@@ -1230,8 +1196,8 @@ impl LiveFeedProductDriver {
                 let payload_ref = LiveFeedPayloadRef {
                     kind: Some("nav_kv_package".to_string()),
                     url: String::new(),
-                    bytes: Some(bytes.len() as u64),
-                    blob_sha256: Some(sha256_hex(bytes)),
+                    bytes: bytes.len() as u64,
+                    blob_sha256: sha256_hex(bytes),
                     state_sha256: summary.state_sha256.clone(),
                 };
                 let mut installed = verify_nav_kv_state(
@@ -1368,9 +1334,12 @@ impl LiveFeedProductDriver {
                     serde_json::from_slice(state_bytes).map_err(cache_json_error)?;
                 let decoded_bytes =
                     decode_live_feed_cache_payload(delta_ref.kind.as_deref(), bytes)?;
-                let delta: LiveFeedRecordDelta =
-                    serde_json::from_slice(decoded_bytes.as_ref()).map_err(cache_json_error)?;
-                validate_live_feeds_schema("record delta", delta.schema_version)?;
+                let delta = versioned_json::decode_exact::<LiveFeedRecordDelta>(
+                    "live-feed record delta",
+                    decoded_bytes.as_ref(),
+                    product_contracts::LIVE_FEEDS_SCHEMA_VERSION,
+                )
+                .map_err(|error| cache_error(error.to_string()))?;
                 let next = apply_record_json_delta(
                     records_key,
                     count_key.as_deref(),
@@ -1420,9 +1389,12 @@ impl LiveFeedProductDriver {
                     .ok_or_else(|| cache_error(format!("failed to read {product} nav_kv pairs")))?;
                 let decoded_bytes =
                     decode_live_feed_cache_payload(delta_ref.kind.as_deref(), bytes)?;
-                let delta: LiveFeedNavKvDelta =
-                    serde_json::from_slice(decoded_bytes.as_ref()).map_err(cache_json_error)?;
-                validate_live_feeds_schema("nav_kv delta", delta.schema_version)?;
+                let delta = versioned_json::decode_exact::<LiveFeedNavKvDelta>(
+                    "live-feed nav_kv delta",
+                    decoded_bytes.as_ref(),
+                    product_contracts::LIVE_FEEDS_SCHEMA_VERSION,
+                )
+                .map_err(|error| cache_error(error.to_string()))?;
                 if delta.product != *product
                     || delta.from_version != delta_ref.from_version
                     || delta.to_version != delta_ref.to_version
@@ -1633,14 +1605,11 @@ fn verify_nav_kv_state(
 }
 
 fn required_blob_sha256<'a>(
-    label: &str,
-    product: &str,
+    _label: &str,
+    _product: &str,
     payload_ref: &'a LiveFeedPayloadRef,
 ) -> AppResult<&'a str> {
-    payload_ref
-        .blob_sha256
-        .as_deref()
-        .ok_or_else(|| cache_error(format!("{product} {label} payload is missing blob_sha256")))
+    Ok(payload_ref.blob_sha256.as_str())
 }
 
 fn updated_nav_kv_manifest_bytes(
@@ -1768,16 +1737,6 @@ fn canonical_json_sha256(value: &Value) -> AppResult<String> {
     Ok(sha256_hex(&bytes))
 }
 
-fn validate_live_feeds_schema(label: &str, schema_version: u32) -> AppResult<()> {
-    if schema_version == crate::live_feeds::LIVE_FEEDS_SCHEMA_VERSION {
-        return Ok(());
-    }
-    Err(cache_error(format!(
-        "{label} has schema_version {schema_version}; client requires schema_version {}",
-        crate::live_feeds::LIVE_FEEDS_SCHEMA_VERSION
-    )))
-}
-
 fn decode_live_feed_cache_payload<'a>(
     payload_kind: Option<&str>,
     bytes: &'a [u8],
@@ -1880,6 +1839,7 @@ mod tests {
     ) -> Vec<u8> {
         serde_json::to_vec(&serde_json::json!({
             "schema_version": crate::live_feeds::LIVE_FEEDS_SCHEMA_VERSION,
+            "generated_at_utc": "2026-08-04T00:00:00Z",
             "products": {
                 product: {
                     "current": version,
@@ -1896,10 +1856,12 @@ mod tests {
     fn nexrad_current_manifest(current: &str, history: &[&str]) -> Vec<u8> {
         serde_json::to_vec(&serde_json::json!({
             "schema_version": crate::live_feeds::LIVE_FEEDS_SCHEMA_VERSION,
+            "generated_at_utc": "2026-08-04T00:00:00Z",
             "products": {
                 "nexrad": {
                     "current": current,
                     "version_manifest_url": format!("versions/nexrad/{current}.json"),
+                    "state_url": format!("states/nexrad/{current}.json"),
                     "state_sha256": nexrad_state_sha256(current),
                     "history": history.iter().map(|version| serde_json::json!({
                         "version": version,
@@ -1947,6 +1909,8 @@ mod tests {
             "state": {
                 "kind": "json",
                 "url": format!("states/nexrad/{version}/manifest.json"),
+                "bytes": state_manifest_bytes.len(),
+                "blob_sha256": sha256_hex(&state_manifest_bytes),
                 "state_sha256": state_sha256
             },
             "install_state": {
@@ -2002,8 +1966,8 @@ mod tests {
         let checkpoint_ref = LiveFeedPayloadRef {
             kind: Some("notam_checkpoint_xz".to_string()),
             url: format!("states/notams/{checkpoint_id}.json.xz"),
-            bytes: Some(checkpoint_bytes.len() as u64),
-            blob_sha256: Some(sha256_hex(&checkpoint_bytes)),
+            bytes: checkpoint_bytes.len() as u64,
+            blob_sha256: sha256_hex(&checkpoint_bytes),
             state_sha256: checkpoint_id.clone(),
         };
         let installed = driver
@@ -2040,8 +2004,8 @@ mod tests {
         let checkpoint_ref = LiveFeedPayloadRef {
             kind: Some("notam_checkpoint_xz".to_string()),
             url: format!("states/notams/{checkpoint_id}.json.xz"),
-            bytes: Some(checkpoint_bytes.len() as u64),
-            blob_sha256: Some(sha256_hex(&checkpoint_bytes)),
+            bytes: checkpoint_bytes.len() as u64,
+            blob_sha256: sha256_hex(&checkpoint_bytes),
             state_sha256: checkpoint_id.clone(),
         };
         let installed = driver
@@ -2102,8 +2066,8 @@ mod tests {
             to_version: head_id.clone(),
             to_state_sha256: head_id.clone(),
             url: format!("deltas/notams/{checkpoint_id}__{head_id}.json.xz"),
-            bytes: Some(delta_bytes.len() as u64),
-            blob_sha256: Some(sha256_hex(&delta_bytes)),
+            bytes: delta_bytes.len() as u64,
+            blob_sha256: sha256_hex(&delta_bytes),
             mutation_count: Some(1),
         };
         let installed_checkpoint = match &cache.installed("notams").unwrap().payload {
@@ -2492,8 +2456,8 @@ mod tests {
             to_version: "v2".to_string(),
             to_state_sha256: v2_sha.clone(),
             url: "deltas/metars/v1__v2.json.xz".to_string(),
-            bytes: Some(delta_bytes.len() as u64),
-            blob_sha256: Some(sha256_hex(&delta_bytes)),
+            bytes: delta_bytes.len() as u64,
+            blob_sha256: sha256_hex(&delta_bytes),
             mutation_count: None,
         };
         let (v2_manifest, _, _) =
@@ -2614,8 +2578,8 @@ mod tests {
             to_version: "v2".to_string(),
             to_state_sha256: v2_sha.clone(),
             url: "deltas/metars/v1__v2.json.xz".to_string(),
-            bytes: Some(10_000_000),
-            blob_sha256: Some(sha256_hex(&delta_bytes)),
+            bytes: 10_000_000,
+            blob_sha256: sha256_hex(&delta_bytes),
             mutation_count: None,
         };
         let (v2_manifest, _, _) =
@@ -2689,8 +2653,8 @@ mod tests {
             to_version: "v2".to_string(),
             to_state_sha256: v2_sha.clone(),
             url: "deltas/tafs/v1__v2.json.xz".to_string(),
-            bytes: Some(delta_bytes.len() as u64),
-            blob_sha256: Some(sha256_hex(&delta_bytes)),
+            bytes: delta_bytes.len() as u64,
+            blob_sha256: sha256_hex(&delta_bytes),
             mutation_count: None,
         };
         let (v2_manifest, _, _) = json_version_manifest("tafs", "v2", &v2, Some(delta_ref));

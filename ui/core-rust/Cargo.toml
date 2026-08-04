@@ -1,5 +1,6 @@
 [workspace]
 members = [
+    "crates/app-ui-contracts",
     "crates/app-core",
     "crates/app-ffi",
     "crates/app-wasm",
@@ -26,6 +27,7 @@ prost = "0.14.4"
 rusqlite = { version = "0.36", features = ["bundled"] }
 serde = { version = "1", features = ["derive", "rc"] }
 serde_json = "1"
+schemars = { version = "1", features = ["chrono04"] }
 sha2 = "0.10"
 sunrise = "3.0"
 thiserror = "1"

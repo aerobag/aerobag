@@ -12,7 +12,6 @@ import type {
   FlightPlanEntryPreview,
   FlightPlanRouteProjection,
   ChartFamilyId,
-  FlightDataCell,
   LatLon,
   MapFollowUiState,
   NavRef,
@@ -45,6 +44,22 @@ import type {
   UiCloudPageState,
 } from "../generated/cloudWire";
 import type { UiHomePageState } from "../generated/homePageWire";
+import type {
+  ClientBuildInfo,
+  DebugFlagId,
+  MapLayerId,
+  UiChartPageState,
+  UiDataStatusPageState,
+  UiDataStatusState,
+  UiDebugState,
+  UiDisclaimerState,
+  UiDisplayPolicy,
+  UiMapLayerState,
+  UiPlaybackPanelState,
+  UiSettingsPageState,
+} from "../generated/sessionPageWire";
+import { UI_SESSION_PAGE_CONTRACTS_WIRE_VERSION } from "../generated/sessionPageWire";
+export { UI_SESSION_PAGE_CONTRACTS_WIRE_VERSION } from "../generated/sessionPageWire";
 export type {
   CloudAuthorizationMode,
   CloudAuthorizationRequest,
@@ -66,6 +81,31 @@ export type {
   UiQrCode,
 } from "../generated/cloudWire";
 export type { UiHomeDestination, UiHomePageButton, UiHomePageState } from "../generated/homePageWire";
+export type {
+  ClientBuildInfo,
+  DebugFlagId,
+  MapLayerId,
+  UiChartPageState,
+  UiDataStatusBox,
+  UiDataStatusPageFact,
+  UiDataStatusPageRow,
+  UiDataStatusPageState,
+  UiDataStatusPageTimeDisplay,
+  UiDataStatusState,
+  UiDebugState,
+  UiDisclaimerState,
+  UiDisplayPolicy,
+  UiMapLayerState,
+  UiMapLayerToggleState,
+  UiPlaybackPanelState,
+  UiSettingsGridItem,
+  UiSettingsPageRow,
+  UiSettingsPageState,
+  UiSettingsSliderStop,
+  UiStatusAction,
+  UiStatusActionStyle,
+  UiStatusSeverity,
+} from "../generated/sessionPageWire";
 import { viewportCenterLatLon, type MapViewportState } from "./mapViewport";
 import { advanceSharedNavKvStore, attachNavKvStoreToSession, resolveChartAssetUrl, runCoreHadOperation, runCoreHadSessionOperation, type UiInvalidation, type UiInvalidationListener } from "./navKv";
 import { debugLog, debugTiming, installRustDebugLogBridge, perfDebugLog } from "./debugLog";
@@ -110,7 +150,6 @@ export type {
   NexradOverlayQueryResult,
   NexradOverlayStats,
   NexradOverlayStatus,
-  NexradOverlayStatusState,
   NexradOverlayTile,
   NexradOverlayTileCorners,
 } from "../generated/nexradOverlayWire";
@@ -157,6 +196,7 @@ export type RasterMapUiState = {
 };
 
 export type UiSessionSnapshot = {
+  ui_contract_version: number;
   session_revision: number;
   flight_plan_route_revision: number;
   nav_data_epoch: number;
@@ -193,155 +233,15 @@ export type UiSessionSnapshot = {
   next_cycle_product_freshness_check_epoch_ms?: number | null;
 };
 
-export type UiDisclaimerState = {
-  agreement_id: string;
-  required: boolean;
-  html: string;
-  text: string;
-  accept_label: string;
-};
+function assertUiContractVersion(snapshot: UiSessionSnapshot): UiSessionSnapshot {
+  if (snapshot.ui_contract_version !== UI_SESSION_PAGE_CONTRACTS_WIRE_VERSION) {
+    throw new Error(
+      `UI wire contract ${snapshot.ui_contract_version} is unsupported; client requires ${UI_SESSION_PAGE_CONTRACTS_WIRE_VERSION}`,
+    );
+  }
+  return snapshot;
+}
 
-export type DebugFlagId = "tile_labels" | "nexrad_tile_labels" | "fast_tiles" | "offline_simulated_clock_buttons" | "sequencing_finish_lines" | "plate_flight_plan" | "bad_autopilot" | "gps_capture" | "debug_log_to_developer_server";
-
-export type UiDebugState = {
-  tile_labels: boolean;
-  nexrad_tile_labels: boolean;
-  fast_tiles: boolean;
-  offline_simulated_clock_buttons: boolean;
-  sequencing_finish_lines: boolean;
-  plate_flight_plan: boolean;
-  bad_autopilot: boolean;
-  gps_capture: boolean;
-  debug_log_to_developer_server: boolean;
-};
-
-export type UiPlaybackPanelState = {
-  visible: boolean;
-};
-
-export type UiStatusSeverity = "ok" | "info" | "caution" | "warning" | "unavailable";
-
-export type UiStatusActionStyle = "normal" | "hush";
-
-export type UiStatusAction = {
-  id: string;
-  label: string;
-  enabled: boolean;
-  style: UiStatusActionStyle;
-};
-
-export type UiDataStatusBox = {
-  id: string;
-  label: string;
-  value: string | null;
-  severity: UiStatusSeverity;
-  drives_caution: boolean;
-  detail: string;
-  actions: UiStatusAction[];
-  hushed: boolean;
-};
-
-export type UiDataStatusState = {
-  boxes: UiDataStatusBox[];
-  launcher_count: string | null;
-  launcher_severity: UiStatusSeverity;
-};
-
-export type UiDataStatusPageFact = {
-  label: string;
-  value: string;
-  link_url?: string | null;
-  time_utc?: string | null;
-  time_display?: "ago" | "old" | "until" | null;
-};
-
-export type UiDataStatusPageRow = {
-  id: string;
-  label: string;
-  value: string;
-  severity: UiStatusSeverity;
-  detail: string;
-  facts: UiDataStatusPageFact[];
-};
-
-export type UiDataStatusPageState = {
-  title: string;
-  summary: string;
-  rows: UiDataStatusPageRow[];
-};
-
-export type UiSettingsSliderStop = {
-  id: string;
-  label: string;
-};
-
-export type UiSettingsGridItem = {
-  cell: FlightDataCell;
-  enabled: boolean;
-};
-
-export type UiSettingsPageRow = {
-  kind: string;
-  id: string;
-  title: string;
-  value_id: string;
-  stops: UiSettingsSliderStop[];
-  items: UiSettingsGridItem[];
-  action_id: string;
-};
-
-export type UiSettingsPageState = {
-  title: string;
-  summary: string;
-  rows: UiSettingsPageRow[];
-};
-
-export type UiDisplayPolicy = {
-  keep_screen_on: boolean;
-  dim_after_ms: number | null;
-  dim_brightness: number;
-};
-
-export type ClientBuildInfo = {
-  platform: string;
-  version: string;
-  built_at_utc?: string | null;
-  commit?: string | null;
-  dirty: boolean;
-};
-
-export type MapLayerId =
-  | "world_basemap"
-  | "vectors"
-  | "metars"
-  | "nexrad"
-  | "terrain_warning"
-  | "offline_regions";
-
-export type UiMapLayerToggleState = {
-  visible: boolean;
-  enabled: boolean;
-  disabled_reason?: string | null;
-};
-
-export type UiMapLayerState = {
-  world_basemap: UiMapLayerToggleState;
-  vectors: UiMapLayerToggleState;
-  metars: UiMapLayerToggleState;
-  nexrad: UiMapLayerToggleState;
-  terrain_warning: UiMapLayerToggleState;
-  offline_regions: UiMapLayerToggleState;
-};
-
-export type UiChartPageState = {
-  ordered_airport_ids: string[];
-  recent_airport_ids: string[];
-  plate_target_airport_id?: string | null;
-  selected_airport_id: string;
-  selected_reference_family_id?: string | null;
-  selected_chart_id: string;
-  suggested_chart_ids?: string[];
-};
 
 export type PointTilePayload = {
   schema_version: number;
@@ -1151,6 +1051,7 @@ export class WasmAppCoreAdapter implements AppCoreAdapter {
         debugLog("startup.session.core_profile", { timings: createdEnvelope.timings });
       }
       const created = createdEnvelope.result ?? createdEnvelope;
+      assertUiContractVersion(created.snapshot);
       await debugTiming("startup.session.reset_live_feed_prep", () => resetLiveFeedPrep());
       await debugTiming("startup.session.set_resource_policy", () =>
         module.set_resource_policy_in_session(created.handle, JSON.stringify("public_unpacked")),
@@ -1175,11 +1076,11 @@ export class WasmAppCoreAdapter implements AppCoreAdapter {
         ),
       );
       await debugTiming("startup.session.attach_nav_kv", () => attachNavKvStoreToSession(created.handle));
-      const catalogedSnapshot = await debugTiming("startup.session.load_raster_catalog", () =>
+      const catalogedSnapshot = assertUiContractVersion(await debugTiming("startup.session.load_raster_catalog", () =>
         runSessionOperationForHandle<UiSessionSnapshot>(created.handle, () =>
           module.load_raster_map_catalog_in_session(created.handle),
         ),
-      );
+      ));
       return {
         ...created,
         snapshot: catalogedSnapshot,

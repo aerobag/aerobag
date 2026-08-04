@@ -95,6 +95,7 @@ import {
   type UiDataStatusState,
   type UiSession,
   type UiSessionSnapshot,
+  UI_SESSION_PAGE_CONTRACTS_WIRE_VERSION,
   type CloudPlatformEffect,
   type CloudUiActionId,
   type CloudUiFieldId,
@@ -1971,6 +1972,7 @@ export default function App() {
   const navDbMaintenanceTimerRef = useRef<number | null>(null);
   const cloudRefreshTimerRef = useRef<number | null>(null);
   const [sessionSnapshot, setSessionSnapshot] = useState<UiSessionSnapshot>({
+    ui_contract_version: UI_SESSION_PAGE_CONTRACTS_WIRE_VERSION,
     session_revision: 0,
     flight_plan_route_revision: 0,
     nav_data_epoch: 0,
@@ -2018,7 +2020,9 @@ export default function App() {
       recent_airport_ids: initialChartPageState.recent_airport_ids,
       plate_target_airport_id: null,
       selected_airport_id: initialChartPageState.selected_airport_id,
+      selected_reference_family_id: null,
       selected_chart_id: initialChartPageState.selected_chart_id,
+      suggested_chart_ids: [],
     },
     map_layer_state: defaultUiMapLayerState(),
     data_status_state: {
@@ -2673,7 +2677,7 @@ export default function App() {
       cloudRefreshTimerRef.current = null;
     }
     const deadline = sessionSnapshot.cloud_page_state.next_refresh_epoch_ms;
-    if (deadline === null) {
+    if (deadline == null) {
       return;
     }
     const delayMs = Math.max(0, Math.min(deadline - Date.now(), 2_147_000_000));
@@ -4479,10 +4483,10 @@ function MapPage(props: {
                   paintedAtMs: paintedAt,
                   requestId: request.id,
                   phase: query.animation.phase,
-                  selectedFrameIndex: query.animation.selected_frame_index,
+                  selectedFrameIndex: query.animation.selected_frame_index ?? null,
                   frameCount: query.animation.frame_count,
-                  nextUpdateDelayMs: query.animation.next_update_delay_ms,
-                  nextUpdateEpochMs: query.animation.next_update_epoch_ms,
+                  nextUpdateDelayMs: query.animation.next_update_delay_ms ?? null,
+                  nextUpdateEpochMs: query.animation.next_update_epoch_ms ?? null,
                   status: query.status.state,
                 };
                 nexradLastPaintTimingRef.current = currentPaint;

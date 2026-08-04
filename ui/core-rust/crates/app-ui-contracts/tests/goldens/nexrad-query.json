@@ -1,0 +1,24 @@
+{
+  "status": { "state": "ready", "count": 1 },
+  "tiles": [],
+  "stats": {
+    "source_tile_count": 0,
+    "render_piece_count": 0,
+    "split_count": 0,
+    "max_affine_error_px": 0.0,
+    "level_pixel_span_px": 0.0,
+    "max_level_pixel_stretch_px": 0.0,
+    "max_stack_depth": 0,
+    "res": null,
+    "observed_at_utc": null
+  },
+  "animation": {
+    "phase": "idle",
+    "selected_frame_index": null,
+    "frame_count": 0,
+    "age_labels": [],
+    "age_summary": "---",
+    "next_update_delay_ms": null,
+    "next_update_epoch_ms": null
+  }
+}

@@ -71,6 +71,12 @@ use preprocessor_vectors::{
 use preprocessor_zip::{write_deterministic_zip, ZipSource};
 use procedure_geometry_types as pgt;
 use product_contracts::{
+    publication::v1::{
+        BundleArtifact, BundleManifest, BundlePackageArtifact, CurrentArtifactRoots,
+        CurrentArtifactsManifest, CurrentBundleEntry, CurrentDiagnosticsEntry,
+        CurrentStartupPrefetchCycleResources, CurrentStartupPrefetchManifest,
+        CurrentStartupPrefetchResource,
+    },
     ChartPackageTier, WaypointSearchMatchKind, WaypointSearchRecord,
     CHART_PACKAGE_TIER_METADATA_KEY, NAV_DB_CONTRACT_ID, SHADED_RELIEF_CONTRACT_ID,
     TERRAIN_CONTRACT_ID, TERRAIN_TER2_HEIGHT_QUANTIZATION_FT, TERRAIN_TER2_MAX_ZOOM,
@@ -299,76 +305,6 @@ pub enum FetchCacheGcCandidateKind {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-struct BundleManifest {
-    schema_version: u32,
-    #[serde(default, skip_serializing_if = "String::is_empty")]
-    bundle_id: String,
-    #[serde(default, skip_serializing_if = "String::is_empty")]
-    bundle_type: String,
-    cycle: String,
-    #[serde(default, skip_serializing_if = "String::is_empty")]
-    cycle_version: String,
-    generated_at_utc: String,
-    #[serde(default, skip_serializing_if = "String::is_empty")]
-    effective_date: String,
-    #[serde(default, skip_serializing_if = "String::is_empty")]
-    expiration_date: String,
-    start_valid: String,
-    end_valid: String,
-    packages: Vec<BundlePackageArtifact>,
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    ancillary: Vec<BundleArtifact>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-struct CurrentArtifactsManifest {
-    schema_version: u32,
-    contracts: BTreeMap<String, String>,
-    artifact_roots: CurrentArtifactRoots,
-    as_of_date: String,
-    #[serde(default, skip_serializing_if = "String::is_empty")]
-    as_of_utc: String,
-    bundles: Vec<CurrentBundleEntry>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    startup_prefetch: Option<CurrentStartupPrefetchManifest>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    diagnostics: Option<CurrentDiagnosticsEntry>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-struct CurrentArtifactRoots {
-    packaged: String,
-    unpacked: String,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-struct CurrentStartupPrefetchManifest {
-    schema_version: u32,
-    cycle_resources: Vec<CurrentStartupPrefetchCycleResources>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-struct CurrentStartupPrefetchCycleResources {
-    bundle_id: String,
-    cycle: String,
-    cycle_version: String,
-    start_valid: String,
-    end_valid: String,
-    resources: Vec<CurrentStartupPrefetchResource>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-struct CurrentStartupPrefetchResource {
-    url: String,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-struct CurrentDiagnosticsEntry {
-    filename: String,
-    error_count: usize,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
 struct BuildDiagnosticsManifest {
     schema_version: u32,
     generated_at_utc: String,
@@ -387,66 +323,6 @@ struct BuildDiagnosticEntry {
     expected: Option<usize>,
     #[serde(skip_serializing_if = "Option::is_none")]
     actual: Option<usize>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-struct CurrentBundleEntry {
-    filename: String,
-    #[serde(default)]
-    relative_path: String,
-    #[serde(default, skip_serializing_if = "String::is_empty")]
-    id: String,
-    #[serde(default, skip_serializing_if = "String::is_empty")]
-    bundle_type: String,
-    #[serde(default, skip_serializing_if = "String::is_empty")]
-    cycle: String,
-    #[serde(default, skip_serializing_if = "String::is_empty")]
-    cycle_version: String,
-    #[serde(default, skip_serializing_if = "String::is_empty")]
-    start_valid: String,
-    #[serde(default, skip_serializing_if = "String::is_empty")]
-    end_valid: String,
-    checksum_sha256: String,
-    size_bytes: u64,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-struct BundleArtifact {
-    filename: String,
-    relative_path: String,
-    checksum_sha256: String,
-    size_bytes: u64,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-struct BundlePackageArtifact {
-    id: String,
-    family_id: String,
-    contract_id: String,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    region_id: Option<String>,
-    filename: String,
-    relative_path: String,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    cycle: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    cycle_version: Option<String>,
-    checksum_sha256: String,
-    size_bytes: u64,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    published_at_utc: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    source_generated_at_utc: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    source_version: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    source_fetched_at_utc: Option<String>,
-    effective_date: Option<String>,
-    expiration_date: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    warning_text: Option<String>,
-    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
-    metadata: BTreeMap<String, serde_json::Value>,
 }
 
 #[derive(Debug, Clone, Serialize)]

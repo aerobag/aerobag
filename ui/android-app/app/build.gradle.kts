@@ -290,15 +290,40 @@ val generateSharedNavSymbols by tasks.registering(Exec::class) {
     )
 }
 
+val generateCoreUiContractSchemas by tasks.registering(Exec::class) {
+    workingDir = rustProjectDir
+    environment("CARGO_HOME", cargoHome)
+    environment("RUSTUP_HOME", rustupHome)
+    environment("RUSTC", rustcBinary)
+    environment("CARGO_TARGET_DIR", rustTargetDir.absolutePath)
+    inputs.dir(rustProjectDir.resolve("crates/app-ui-contracts/src"))
+    inputs.file(rustProjectDir.resolve("crates/app-ui-contracts/Cargo.toml"))
+    outputs.dir(rustProjectDir.resolve("schemas"))
+    commandLine(
+        cargoBinary,
+        "run",
+        "-p",
+        "app-ui-contracts",
+        "--features",
+        "schema",
+        "--bin",
+        "generate-ui-contract-schemas",
+    )
+}
+
 val generateSharedWireTypes by tasks.registering(Exec::class) {
+    dependsOn(generateCoreUiContractSchemas)
     workingDir = repoRoot
     inputs.file(repoRoot.resolve("ui/core-rust/schemas/nexrad-overlay-wire.schema.json"))
     inputs.file(repoRoot.resolve("ui/core-rust/schemas/cloud-wire.schema.json"))
     inputs.file(repoRoot.resolve("tools/generate-ui-wire-types.mjs"))
     inputs.file(repoRoot.resolve("ui/core-rust/schemas/home-page-wire.schema.json"))
+    inputs.file(repoRoot.resolve("ui/core-rust/schemas/session-page-wire.schema.json"))
     outputs.dir(generatedWireSourceDir)
     outputs.file(repoRoot.resolve("ui/web-app/src/generated/nexradOverlayWire.ts"))
     outputs.file(repoRoot.resolve("ui/web-app/src/generated/cloudWire.ts"))
+    outputs.file(repoRoot.resolve("ui/web-app/src/generated/homePageWire.ts"))
+    outputs.file(repoRoot.resolve("ui/web-app/src/generated/sessionPageWire.ts"))
     commandLine(
         "node",
         repoRoot.resolve("tools/generate-ui-wire-types.mjs").absolutePath,

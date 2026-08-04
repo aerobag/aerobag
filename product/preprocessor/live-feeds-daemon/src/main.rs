@@ -48,7 +48,10 @@ use preprocessor_live_feeds::{
     },
     tfr_detail_backfill::TfrDetailBackfillStore,
 };
-use product_contracts::AEROBAG_SSE_TRANSPORT_POLICY;
+use product_contracts::{
+    live_feeds::v3::CurrentEvent as LiveFeedCurrentEvent, versioned_json,
+    AEROBAG_SSE_TRANSPORT_POLICY,
+};
 use serde::Serialize;
 
 const STATUS_HISTORY_LIMIT: usize = 256;
@@ -116,20 +119,10 @@ struct NmsNotamsConfig {
     overlap_seconds: u64,
 }
 
-#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 struct LiveFeedSseEvent {
     id: String,
-    product: String,
-    version: String,
-    version_manifest_url: String,
-    state_url: String,
-    state_sha256: String,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    published_at_utc: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    collected_at_utc: Option<String>,
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    history: Vec<LiveFeedCurrentHistoryEntry>,
+    payload: LiveFeedCurrentEvent,
 }
 
 #[derive(Clone)]
@@ -1218,9 +1211,12 @@ fn retain_current_manifest_refs(
     if !current_path.is_file() {
         return Ok(());
     }
-    let current: LiveFeedsCurrentManifest = serde_json::from_slice(
-        &fs::read(&current_path)
-            .with_context(|| format!("failed to read {}", current_path.display()))?,
+    let current_bytes = fs::read(&current_path)
+        .with_context(|| format!("failed to read {}", current_path.display()))?;
+    let current = versioned_json::decode_exact::<LiveFeedsCurrentManifest>(
+        "live-feed current manifest",
+        &current_bytes,
+        LIVE_FEEDS_SCHEMA_VERSION,
     )
     .with_context(|| format!("failed to parse {}", current_path.display()))?;
     for entry in current.products.values() {
@@ -1250,9 +1246,12 @@ fn retain_version_manifest(
     retained: &mut BTreeSet<PathBuf>,
 ) -> anyhow::Result<()> {
     retained.insert(version_manifest_path.to_path_buf());
-    let manifest: LiveFeedVersionManifest = serde_json::from_slice(
-        &fs::read(version_manifest_path)
-            .with_context(|| format!("failed to read {}", version_manifest_path.display()))?,
+    let manifest_bytes = fs::read(version_manifest_path)
+        .with_context(|| format!("failed to read {}", version_manifest_path.display()))?;
+    let manifest = versioned_json::decode_exact::<LiveFeedVersionManifest>(
+        "live-feed version manifest",
+        &manifest_bytes,
+        LIVE_FEEDS_SCHEMA_VERSION,
     )
     .with_context(|| format!("failed to parse {}", version_manifest_path.display()))?;
     retain_live_relative_path(live_root, retained, &manifest.state.url)?;
@@ -1993,33 +1992,26 @@ fn write_sse_event(writer: &mut impl Write, event: &LiveFeedSseEvent) -> anyhow:
     writeln!(
         writer,
         "data: {}\n",
-        serde_json::to_string(&serde_json::json!({
-            "schema_version": LIVE_FEEDS_SCHEMA_VERSION,
-            "product": event.product,
-            "version": event.version,
-            "version_manifest_url": event.version_manifest_url,
-            "state_url": event.state_url,
-            "state_sha256": event.state_sha256,
-            "published_at_utc": event.published_at_utc,
-            "collected_at_utc": event.collected_at_utc,
-            "history": event.history,
-        }))
-        .context("failed to encode SSE payload")?
+        serde_json::to_string(&event.payload).context("failed to encode SSE payload")?
     )
     .context("failed to write SSE data")
 }
 
 fn live_feed_sse_event_from_invalidation(invalidation: LiveFeedInvalidation) -> LiveFeedSseEvent {
+    let id = format!("{}:{}", invalidation.product, invalidation.version);
     LiveFeedSseEvent {
-        id: format!("{}:{}", invalidation.product, invalidation.version),
-        product: invalidation.product,
-        version: invalidation.version,
-        version_manifest_url: invalidation.version_manifest_url,
-        state_url: invalidation.state_url,
-        state_sha256: invalidation.state_sha256,
-        published_at_utc: invalidation.published_at_utc,
-        collected_at_utc: invalidation.collected_at_utc,
-        history: invalidation.history,
+        id,
+        payload: LiveFeedCurrentEvent {
+            schema_version: LIVE_FEEDS_SCHEMA_VERSION,
+            product: invalidation.product,
+            version: invalidation.version,
+            version_manifest_url: invalidation.version_manifest_url,
+            state_url: invalidation.state_url,
+            state_sha256: invalidation.state_sha256,
+            published_at_utc: invalidation.published_at_utc,
+            collected_at_utc: invalidation.collected_at_utc,
+            history: invalidation.history,
+        },
     }
 }
 
@@ -2065,60 +2057,32 @@ fn list_live_feed_event_frames(root: &Path) -> anyhow::Result<Vec<Vec<LiveFeedSs
     if !current.is_file() {
         return Ok(Vec::new());
     }
-    let current: serde_json::Value = serde_json::from_slice(
-        &fs::read(&current).with_context(|| format!("failed to read {}", current.display()))?,
+    let current_bytes =
+        fs::read(&current).with_context(|| format!("failed to read {}", current.display()))?;
+    let current = versioned_json::decode_exact::<LiveFeedsCurrentManifest>(
+        "live-feed current manifest",
+        &current_bytes,
+        LIVE_FEEDS_SCHEMA_VERSION,
     )
     .with_context(|| format!("failed to parse {}", current.display()))?;
-    let mut events = Vec::new();
-    if let Some(products) = current
-        .get("products")
-        .and_then(serde_json::Value::as_object)
-    {
-        for (product, entry) in products {
-            let Some(version) = entry.get("current").and_then(serde_json::Value::as_str) else {
-                continue;
-            };
-            let Some(version_manifest_url) = entry
-                .get("version_manifest_url")
-                .and_then(serde_json::Value::as_str)
-            else {
-                continue;
-            };
-            let Some(state_url) = entry.get("state_url").and_then(serde_json::Value::as_str) else {
-                continue;
-            };
-            let Some(state_sha256) = entry
-                .get("state_sha256")
-                .and_then(serde_json::Value::as_str)
-            else {
-                continue;
-            };
-            let history = entry
-                .get("history")
-                .cloned()
-                .map(serde_json::from_value)
-                .transpose()
-                .with_context(|| format!("failed to parse {product} current history"))?
-                .unwrap_or_default();
-            events.push(LiveFeedSseEvent {
-                id: format!("{product}:{version}"),
-                product: product.clone(),
-                version: version.to_string(),
-                version_manifest_url: version_manifest_url.to_string(),
-                state_url: state_url.to_string(),
-                state_sha256: state_sha256.to_string(),
-                published_at_utc: entry
-                    .get("published_at_utc")
-                    .and_then(serde_json::Value::as_str)
-                    .map(str::to_string),
-                collected_at_utc: entry
-                    .get("collected_at_utc")
-                    .and_then(serde_json::Value::as_str)
-                    .map(str::to_string),
-                history,
-            });
-        }
-    }
+    let mut events = current
+        .products
+        .into_iter()
+        .map(|(product, entry)| LiveFeedSseEvent {
+            id: format!("{product}:{}", entry.current),
+            payload: LiveFeedCurrentEvent {
+                schema_version: LIVE_FEEDS_SCHEMA_VERSION,
+                product,
+                version: entry.current,
+                version_manifest_url: entry.version_manifest_url,
+                state_url: entry.state_url,
+                state_sha256: entry.state_sha256,
+                published_at_utc: entry.published_at_utc,
+                collected_at_utc: entry.collected_at_utc,
+                history: entry.history,
+            },
+        })
+        .collect::<Vec<_>>();
     events.sort_by(|left, right| left.id.cmp(&right.id));
     Ok((!events.is_empty()).then_some(events).into_iter().collect())
 }
@@ -2704,8 +2668,8 @@ mod tests {
             .iter()
             .find(|event| event.id == "metars:m2")
             .expect("metars event");
-        assert_eq!(metars.history.len(), 1);
-        assert_eq!(metars.history[0].version, "m1");
+        assert_eq!(metars.payload.history.len(), 1);
+        assert_eq!(metars.payload.history[0].version, "m1");
         Ok(())
     }
 
@@ -2713,19 +2677,22 @@ mod tests {
     fn sse_frame_contains_core_ingestible_live_feed_event() -> anyhow::Result<()> {
         let frame = vec![LiveFeedSseEvent {
             id: "metars:m1".to_string(),
-            product: "metars".to_string(),
-            version: "m1".to_string(),
-            version_manifest_url: "versions/metars/m1.json".to_string(),
-            state_url: "states/metars/m1.json".to_string(),
-            state_sha256: "a".repeat(64),
-            published_at_utc: None,
-            collected_at_utc: None,
-            history: vec![LiveFeedCurrentHistoryEntry {
-                version: "m0".to_string(),
-                version_manifest_url: "versions/metars/m0.json".to_string(),
-                state_url: Some("states/metars/m0.json".to_string()),
-                state_sha256: Some("b".repeat(64)),
-            }],
+            payload: LiveFeedCurrentEvent {
+                schema_version: LIVE_FEEDS_SCHEMA_VERSION,
+                product: "metars".to_string(),
+                version: "m1".to_string(),
+                version_manifest_url: "versions/metars/m1.json".to_string(),
+                state_url: "states/metars/m1.json".to_string(),
+                state_sha256: "a".repeat(64),
+                published_at_utc: None,
+                collected_at_utc: None,
+                history: vec![LiveFeedCurrentHistoryEntry {
+                    version: "m0".to_string(),
+                    version_manifest_url: "versions/metars/m0.json".to_string(),
+                    state_url: Some("states/metars/m0.json".to_string()),
+                    state_sha256: Some("b".repeat(64)),
+                }],
+            },
         }];
         let mut bytes = Vec::new();
         write_sse_frame(&mut bytes, &frame)?;

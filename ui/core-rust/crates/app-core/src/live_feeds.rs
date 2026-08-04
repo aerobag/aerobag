@@ -5,6 +5,7 @@
 use std::collections::HashMap;
 
 use notam_state::{NotamApplyWork, NotamCheckpoint, NotamDelta, NotamState};
+use product_contracts::{live_feeds::v3 as live_feeds_v3, versioned_json};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use sha2::{Digest, Sha256};
@@ -98,84 +99,19 @@ pub struct LiveFeedProductSnapshot {
     pub state_manifest_loaded: bool,
 }
 
-#[derive(Debug, Deserialize)]
-struct CurrentManifest {
-    schema_version: u32,
-    products: HashMap<String, CurrentProduct>,
-}
-
-#[derive(Debug, Deserialize)]
-struct CurrentProduct {
-    current: String,
-    version_manifest_url: String,
-    #[serde(default)]
-    state_url: Option<String>,
-    #[serde(default)]
-    state_sha256: Option<String>,
-    #[serde(default)]
-    published_at_utc: Option<String>,
-    #[serde(default)]
-    collected_at_utc: Option<String>,
-    #[serde(default)]
-    history: Vec<CurrentProductHistoryEntry>,
-}
-
-#[derive(Debug, Clone, PartialEq, Deserialize)]
+#[derive(Debug, Clone, PartialEq)]
 struct CurrentProductHistoryEntry {
     version: String,
     version_manifest_url: String,
-    #[serde(default)]
     state_url: Option<String>,
-    #[serde(default)]
     state_sha256: Option<String>,
-    #[serde(default)]
     published_at_utc: Option<String>,
-    #[serde(default)]
     collected_at_utc: Option<String>,
 }
 
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub struct LiveFeedPayloadRef {
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub kind: Option<String>,
-    pub url: String,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub bytes: Option<u64>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub blob_sha256: Option<String>,
-    pub state_sha256: String,
-}
-
-#[derive(Debug, Deserialize)]
-struct VersionManifest {
-    schema_version: u32,
-    product: String,
-    version: String,
-    #[serde(default)]
-    install_state: Option<LiveFeedPayloadRef>,
-    #[serde(default)]
-    delta_from_previous: Option<LiveFeedDeltaRef>,
-    #[serde(default)]
-    recent_deltas: Vec<LiveFeedDeltaRef>,
-    state: LiveFeedPayloadRef,
-}
-
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub struct LiveFeedDeltaRef {
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub kind: Option<String>,
-    pub from_version: String,
-    pub from_state_sha256: String,
-    pub to_version: String,
-    pub to_state_sha256: String,
-    pub url: String,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub bytes: Option<u64>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub blob_sha256: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub mutation_count: Option<u64>,
-}
+pub type LiveFeedPayloadRef = live_feeds_v3::PayloadRef;
+pub type LiveFeedDeltaRef = live_feeds_v3::DeltaRef;
+type VersionManifest = live_feeds_v3::VersionManifest;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct LiveFeedDurableInstalledProduct {
@@ -212,17 +148,7 @@ pub enum LiveFeedCacheRequestKind {
     },
 }
 
-#[derive(Debug, Clone, PartialEq, Deserialize)]
-struct LiveFeedRecordDelta {
-    schema_version: u32,
-    product: String,
-    from_version: String,
-    to_version: String,
-    top_level_changed: serde_json::Map<String, Value>,
-    top_level_removed: Vec<String>,
-    changed: serde_json::Map<String, Value>,
-    removed: Vec<String>,
-}
+type LiveFeedRecordDelta = live_feeds_v3::RecordDelta;
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct PreparedLiveFeedEnvelope {
@@ -348,24 +274,6 @@ impl PreparedLiveFeedPayload {
             Self::Notams(PreparedNotamPayload::ApplyAirportDelta(delta)) => &delta.to_state_id,
         }
     }
-}
-
-#[derive(Debug, Deserialize)]
-struct LiveFeedCurrentEvent {
-    schema_version: u32,
-    product: String,
-    version: String,
-    version_manifest_url: String,
-    #[serde(default)]
-    state_url: Option<String>,
-    #[serde(default)]
-    state_sha256: Option<String>,
-    #[serde(default)]
-    published_at_utc: Option<String>,
-    #[serde(default)]
-    collected_at_utc: Option<String>,
-    #[serde(default)]
-    history: Vec<CurrentProductHistoryEntry>,
 }
 
 impl LiveFeedsState {
@@ -517,7 +425,7 @@ impl LiveFeedsState {
                 payload.state_sha256,
                 payload.published_at_utc,
                 payload.collected_at_utc,
-                payload.history,
+                project_current_history(payload.history),
             )?;
         }
         Ok(affected)
@@ -525,9 +433,12 @@ impl LiveFeedsState {
 
     pub fn ingest_resource(&mut self, resource_id: &str, bytes: &[u8]) -> AppResult<()> {
         if resource_id == CURRENT_RESOURCE_ID {
-            let current: CurrentManifest =
-                serde_json::from_slice(bytes).map_err(invalid_live_feed_json)?;
-            validate_live_feeds_schema("current manifest", current.schema_version)?;
+            let current = versioned_json::decode_exact::<live_feeds_v3::CurrentManifest>(
+                "live-feed current manifest",
+                bytes,
+                LIVE_FEEDS_SCHEMA_VERSION,
+            )
+            .map_err(|error| invalid_live_feed(error.to_string()))?;
             self.current_loaded = true;
             self.resource_failure_retry_after_epoch_ms
                 .remove(resource_id);
@@ -543,16 +454,20 @@ impl LiveFeedsState {
                     entry.state_sha256,
                     entry.published_at_utc,
                     entry.collected_at_utc,
-                    entry.history,
+                    project_current_history(entry.history),
                 )?;
             }
             return Ok(());
         }
         if let Some(rest) = resource_id.strip_prefix("live_feeds/version/") {
             let (product, version) = split_product_version(resource_id, rest)?;
-            let manifest: VersionManifest =
-                serde_json::from_slice(bytes).map_err(invalid_live_feed_json)?;
-            validate_live_feeds_schema("version manifest", manifest.schema_version)?;
+            let manifest = versioned_json::decode_exact::<live_feeds_v3::VersionManifest>(
+                "live-feed version manifest",
+                bytes,
+                LIVE_FEEDS_SCHEMA_VERSION,
+            )
+            .map_err(|error| invalid_live_feed(error.to_string()))?;
+            let manifest_json = serde_json::to_value(&manifest).map_err(invalid_live_feed_json)?;
             if manifest.product != product || manifest.version != version {
                 return Err(invalid_live_feed(format!(
                     "version resource {resource_id} contained {}:{}",
@@ -617,8 +532,7 @@ impl LiveFeedsState {
                 history.state_kind = manifest.state.kind.clone();
                 history.state_ref = Some(manifest.state);
                 history.install_state_ref = manifest.install_state;
-                history.version_manifest =
-                    Some(serde_json::from_slice(bytes).map_err(invalid_live_feed_json)?);
+                history.version_manifest = Some(manifest_json);
                 self.resource_failure_retry_after_epoch_ms
                     .remove(resource_id);
                 return Ok(());
@@ -632,8 +546,7 @@ impl LiveFeedsState {
             entry.install_state_ref = manifest.install_state;
             entry.delta_from_previous = manifest.delta_from_previous;
             entry.recent_deltas = manifest.recent_deltas;
-            entry.version_manifest =
-                Some(serde_json::from_slice(bytes).map_err(invalid_live_feed_json)?);
+            entry.version_manifest = Some(manifest_json);
             self.resource_failure_retry_after_epoch_ms
                 .remove(resource_id);
             return Ok(());
@@ -717,13 +630,12 @@ impl LiveFeedsState {
                     "delta resource {resource_id} does not match version manifest"
                 )));
             }
-            if let Some(expected_blob_sha256) = &delta_ref.blob_sha256 {
-                let actual_blob_sha256 = sha256_hex(bytes);
-                if &actual_blob_sha256 != expected_blob_sha256 {
-                    return Err(invalid_live_feed(format!(
-                        "delta blob hash mismatch for {resource_id}: expected {expected_blob_sha256}, got {actual_blob_sha256}"
-                    )));
-                }
+            let actual_blob_sha256 = sha256_hex(bytes);
+            if actual_blob_sha256 != delta_ref.blob_sha256 {
+                return Err(invalid_live_feed(format!(
+                    "delta blob hash mismatch for {resource_id}: expected {}, got {actual_blob_sha256}",
+                    delta_ref.blob_sha256
+                )));
             }
             let current_state = entry.state_manifest.as_ref().ok_or_else(|| {
                 invalid_live_feed(format!(
@@ -744,9 +656,12 @@ impl LiveFeedsState {
                 )));
             }
             let decoded_bytes = decode_live_feed_payload(delta_ref.kind.as_deref(), bytes)?;
-            let delta: LiveFeedRecordDelta =
-                serde_json::from_slice(decoded_bytes.as_ref()).map_err(invalid_live_feed_json)?;
-            validate_live_feeds_schema("record delta", delta.schema_version)?;
+            let delta = versioned_json::decode_exact::<LiveFeedRecordDelta>(
+                "live-feed record delta",
+                decoded_bytes.as_ref(),
+                LIVE_FEEDS_SCHEMA_VERSION,
+            )
+            .map_err(|error| invalid_live_feed(error.to_string()))?;
             let next_state = apply_live_feed_record_delta(current_state, &delta)?;
             let next_state_sha256 = canonical_json_sha256(&next_state)?;
             if next_state_sha256 != delta_ref.to_state_sha256 {
@@ -829,14 +744,11 @@ impl LiveFeedsState {
                         envelope.state_sha256
                     )));
                 }
-                if let Some(expected_blob_sha256) = &state_ref.blob_sha256 {
-                    if envelope.delta_blob_sha256.as_deref() != Some(expected_blob_sha256.as_str())
-                    {
-                        return Err(invalid_live_feed(format!(
-                            "prepared NOTAM checkpoint {resource_id} blob hash mismatch: expected {expected_blob_sha256}, got {:?}",
-                            envelope.delta_blob_sha256
-                        )));
-                    }
+                if envelope.delta_blob_sha256.as_deref() != Some(state_ref.blob_sha256.as_str()) {
+                    return Err(invalid_live_feed(format!(
+                        "prepared NOTAM checkpoint {resource_id} blob hash mismatch: expected {}, got {:?}",
+                        state_ref.blob_sha256, envelope.delta_blob_sha256
+                    )));
                 }
                 entry.state_manifest = None;
                 entry.loaded_version = Some(version);
@@ -919,13 +831,11 @@ impl LiveFeedsState {
                     delta_ref.to_state_sha256, envelope.state_sha256
                 )));
             }
-            if let Some(expected_blob_sha256) = &delta_ref.blob_sha256 {
-                if envelope.delta_blob_sha256.as_deref() != Some(expected_blob_sha256.as_str()) {
-                    return Err(invalid_live_feed(format!(
-                        "prepared delta {resource_id} blob hash mismatch: expected {expected_blob_sha256}, got {:?}",
-                        envelope.delta_blob_sha256
-                    )));
-                }
+            if envelope.delta_blob_sha256.as_deref() != Some(delta_ref.blob_sha256.as_str()) {
+                return Err(invalid_live_feed(format!(
+                    "prepared delta {resource_id} blob hash mismatch: expected {}, got {:?}",
+                    delta_ref.blob_sha256, envelope.delta_blob_sha256
+                )));
             }
             entry.state_manifest = None;
             entry.loaded_version = Some(to_version);
@@ -1106,26 +1016,20 @@ impl LiveFeedsState {
         product: String,
         version: String,
         version_manifest_url: String,
-        state_url: Option<String>,
-        state_sha256: Option<String>,
+        state_url: String,
+        state_sha256: String,
         published_at_utc: Option<String>,
         collected_at_utc: Option<String>,
         history: Vec<CurrentProductHistoryEntry>,
     ) -> AppResult<()> {
         validate_relative_url(&version_manifest_url)?;
-        if let Some(url) = &state_url {
-            validate_relative_url(url)?;
-        }
+        validate_relative_url(&state_url)?;
         let history = normalize_product_history(&product, history)?;
         let entry = self.products.entry(product).or_default();
         if entry.current_version.as_deref() == Some(version.as_str()) {
             entry.version_manifest_url = Some(version_manifest_url);
-            if state_url.is_some() {
-                entry.state_url = state_url;
-            }
-            if state_sha256.is_some() {
-                entry.expected_state_sha256 = state_sha256;
-            }
+            entry.state_url = Some(state_url);
+            entry.expected_state_sha256 = Some(state_sha256);
             entry.published_at_utc = published_at_utc;
             entry.collected_at_utc = collected_at_utc;
             entry.sync_history(history);
@@ -1136,8 +1040,8 @@ impl LiveFeedsState {
         }
         entry.current_version = Some(version);
         entry.version_manifest_url = Some(version_manifest_url);
-        entry.state_url = state_url;
-        entry.expected_state_sha256 = state_sha256;
+        entry.state_url = Some(state_url);
+        entry.expected_state_sha256 = Some(state_sha256);
         entry.published_at_utc = published_at_utc;
         entry.collected_at_utc = collected_at_utc;
         entry.state_kind = None;
@@ -1905,10 +1809,7 @@ fn durable_delta_is_preferred(
     let Some(full_ref) = full_ref else {
         return true;
     };
-    match (delta.bytes, full_ref.bytes) {
-        (Some(delta_bytes), Some(full_bytes)) => delta_bytes <= full_bytes,
-        _ => false,
-    }
+    delta.bytes <= full_ref.bytes
 }
 
 fn supports_durable_delta(product: &str) -> bool {
@@ -1980,26 +1881,38 @@ fn normalize_product_history(
     Ok(normalized)
 }
 
-fn parse_sse_current_event(event: LiveFeedSseEvent) -> AppResult<Option<LiveFeedCurrentEvent>> {
+fn project_current_history(
+    history: Vec<live_feeds_v3::CurrentHistoryEntry>,
+) -> Vec<CurrentProductHistoryEntry> {
+    history
+        .into_iter()
+        .map(|entry| CurrentProductHistoryEntry {
+            version: entry.version,
+            version_manifest_url: entry.version_manifest_url,
+            state_url: entry.state_url,
+            state_sha256: entry.state_sha256,
+            published_at_utc: None,
+            collected_at_utc: None,
+        })
+        .collect()
+}
+
+fn parse_sse_current_event(
+    event: LiveFeedSseEvent,
+) -> AppResult<Option<live_feeds_v3::CurrentEvent>> {
     let event_name = event.event.as_deref().unwrap_or("message");
     match event_name {
         "live-feed-current" | "message" => {
-            let payload: LiveFeedCurrentEvent =
-                serde_json::from_str(&event.data).map_err(invalid_live_feed_json)?;
-            validate_live_feeds_schema("live-feed SSE event", payload.schema_version)?;
+            let payload = versioned_json::decode_exact::<live_feeds_v3::CurrentEvent>(
+                "live-feed SSE event",
+                event.data.as_bytes(),
+                LIVE_FEEDS_SCHEMA_VERSION,
+            )
+            .map_err(|error| invalid_live_feed(error.to_string()))?;
             Ok(Some(payload))
         }
         _ => Ok(None),
     }
-}
-
-fn validate_live_feeds_schema(label: &str, schema_version: u32) -> AppResult<()> {
-    if schema_version == LIVE_FEEDS_SCHEMA_VERSION {
-        return Ok(());
-    }
-    Err(invalid_live_feed(format!(
-        "{label} has schema_version {schema_version}; client requires schema_version {LIVE_FEEDS_SCHEMA_VERSION}"
-    )))
 }
 
 fn decode_live_feed_payload<'a>(
@@ -2343,9 +2256,12 @@ pub fn prepare_live_feed_delta_resource(
     let delta_blob_sha256 = sha256_hex(bytes);
     let decoded = nav_kv_package::decode_xz_if_needed(bytes).map_err(invalid_live_feed)?;
     let from_state_sha256 = canonical_json_sha256(current_state)?;
-    let delta: LiveFeedRecordDelta =
-        serde_json::from_slice(decoded.as_ref()).map_err(invalid_live_feed_json)?;
-    validate_live_feeds_schema("record delta", delta.schema_version)?;
+    let delta = versioned_json::decode_exact::<LiveFeedRecordDelta>(
+        "live-feed record delta",
+        decoded.as_ref(),
+        LIVE_FEEDS_SCHEMA_VERSION,
+    )
+    .map_err(|error| invalid_live_feed(error.to_string()))?;
     if delta.product != product
         || delta.from_version != from_version
         || delta.to_version != to_version
@@ -2562,6 +2478,8 @@ fn invalid_live_feed(message: String) -> AppError {
 
 #[cfg(test)]
 mod tests {
+    use std::collections::BTreeMap;
+
     use super::*;
 
     const TEST_LIVE_FEED_ROOT: &str = "http://live.test";
@@ -2682,8 +2600,8 @@ mod tests {
             to_version: to.to_string(),
             to_state_sha256: to.to_string(),
             url: format!("deltas/notams/{from}__{to}.json.xz"),
-            bytes: Some(1),
-            blob_sha256: Some("a".repeat(64)),
+            bytes: 1,
+            blob_sha256: "a".repeat(64),
             mutation_count: Some(1),
         }
     }
@@ -2711,14 +2629,15 @@ mod tests {
             schema_version: LIVE_FEEDS_SCHEMA_VERSION,
             product: "notams".to_string(),
             version: "s2".to_string(),
+            previous: None,
             install_state: None,
             delta_from_previous: Some(latest.clone()),
             recent_deltas: vec![test_notam_delta_ref("s0", "s1"), latest],
             state: LiveFeedPayloadRef {
                 kind: Some("notam_checkpoint_xz".to_string()),
                 url: "states/notams/s1.json.xz".to_string(),
-                bytes: Some(1),
-                blob_sha256: Some("b".repeat(64)),
+                bytes: 1,
+                blob_sha256: "b".repeat(64),
                 state_sha256: "s1".to_string(),
             },
         };
@@ -2840,6 +2759,7 @@ mod tests {
                 "live_feeds/current",
                 &serde_json::to_vec(&serde_json::json!({
                     "schema_version": LIVE_FEEDS_SCHEMA_VERSION,
+                    "generated_at_utc": "2026-08-04T00:00:00Z",
                     "products": {
                         "notams": {
                             "current": head_id,
@@ -2988,6 +2908,7 @@ mod tests {
                 format!(
                     r#"{{
                         "schema_version": {LIVE_FEEDS_SCHEMA_VERSION},
+                        "generated_at_utc": "2026-08-04T00:00:00Z",
                         "products": {{
                             "tafs": {{
                                 "current": "v1",
@@ -3017,8 +2938,11 @@ mod tests {
                         "schema_version": {LIVE_FEEDS_SCHEMA_VERSION},
                         "product": "tafs",
                         "version": "v2",
-                        "version_manifest_url": "versions/tafs/v2.json"
-                    }}"#
+                        "version_manifest_url": "versions/tafs/v2.json",
+                        "state_url": "states/tafs/v2.json.xz",
+                        "state_sha256": "{}"
+                    }}"#,
+                    canonical_json_sha256(&second).unwrap()
                 ),
             })
             .unwrap();
@@ -3033,6 +2957,8 @@ mod tests {
                         "state": {{
                             "kind": "json_xz",
                             "url": "states/tafs/v2.json.xz",
+                            "bytes": 1,
+                            "blob_sha256": "unused",
                             "state_sha256": "{}"
                         }},
                         "delta_from_previous": {{
@@ -3042,6 +2968,7 @@ mod tests {
                             "to_version": "v2",
                             "to_state_sha256": "{}",
                             "url": "deltas/tafs/v1__v2.json.xz",
+                            "bytes": 1,
                             "blob_sha256": "{}"
                         }}
                     }}"#,
@@ -3079,6 +3006,7 @@ mod tests {
                 format!(
                     r#"{{
                     "schema_version": {LIVE_FEEDS_SCHEMA_VERSION},
+                    "generated_at_utc": "2026-08-04T00:00:00Z",
                     "products": {{
                         "{product}": {{
                             "current": "v1",
@@ -3104,6 +3032,8 @@ mod tests {
                     "state": {{
                         "kind": "json_xz",
                         "url": "states/{product}/v1.json.xz",
+                        "bytes": 1,
+                        "blob_sha256": "unused",
                         "state_sha256": "{}"
                     }}
                 }}"#,
@@ -3125,8 +3055,11 @@ mod tests {
                     "schema_version": {LIVE_FEEDS_SCHEMA_VERSION},
                     "product": "{product}",
                     "version": "v2",
-                    "version_manifest_url": "versions/{product}/v2.json"
-                }}"#
+                    "version_manifest_url": "versions/{product}/v2.json",
+                    "state_url": "states/{product}/v2.json.xz",
+                    "state_sha256": "{}"
+                }}"#,
+                    canonical_json_sha256(&v2).unwrap()
                 ),
             })
             .unwrap();
@@ -3147,6 +3080,8 @@ mod tests {
                     "state": {{
                         "kind": "json_xz",
                         "url": "states/{product}/v2.json.xz",
+                        "bytes": 1,
+                        "blob_sha256": "unused",
                         "state_sha256": "{}"
                     }},
                     "delta_from_previous": {{
@@ -3156,6 +3091,7 @@ mod tests {
                         "to_version": "v2",
                         "to_state_sha256": "{}",
                         "url": "deltas/{product}/v1__v2.json.xz",
+                        "bytes": 1,
                         "blob_sha256": "{}"
                     }}
                 }}"#,
@@ -3239,6 +3175,7 @@ mod tests {
                 "live_feeds/current",
                 br#"{
                     "schema_version": 3,
+                    "generated_at_utc": "2026-08-04T00:00:00Z",
                     "products": {}
                 }"#,
             )
@@ -3279,6 +3216,7 @@ mod tests {
                 "live_feeds/current",
                 br#"{
                     "schema_version": 3,
+                    "generated_at_utc": "2026-08-04T00:00:00Z",
                     "products": {
                         "nexrad": {
                             "current": "v1",
@@ -3321,10 +3259,13 @@ mod tests {
                 format!(
                     r#"{{
                     "schema_version": 3,
+                    "generated_at_utc": "2026-08-04T00:00:00Z",
                     "products": {{
                         "nexrad": {{
                             "current": "v2",
                             "version_manifest_url": "versions/nexrad/v2.json",
+                            "state_url": "states/nexrad/v2/manifest.json",
+                            "state_sha256": "current-unused",
                             "history": [{{
                                 "version": "v1",
                                 "version_manifest_url": "versions/nexrad/v1.json",
@@ -3355,6 +3296,8 @@ mod tests {
                     "state": {{
                         "kind": "json",
                         "url": "states/nexrad/v1/manifest.json",
+                        "bytes": 1,
+                        "blob_sha256": "history-unused",
                         "state_sha256": "{history_sha}"
                     }}
                 }}"#
@@ -3399,10 +3342,13 @@ mod tests {
                 format!(
                     r#"{{
                     "schema_version": 3,
+                    "generated_at_utc": "2026-08-04T00:00:00Z",
                     "products": {{
                         "nexrad": {{
                             "current": "v-current",
                             "version_manifest_url": "versions/nexrad/v-current.json",
+                            "state_url": "states/nexrad/v-current/manifest.json",
+                            "state_sha256": "current-unused",
                             "history": [{history}]
                         }}
                     }}
@@ -3422,6 +3368,7 @@ mod tests {
                 "live_feeds/current",
                 br#"{
                     "schema_version": 3,
+                    "generated_at_utc": "2026-08-04T00:00:00Z",
                     "products": {
                         "metars": {
                             "current": "v1",
@@ -3447,6 +3394,7 @@ mod tests {
                 "live_feeds/current",
                 br#"{
                     "schema_version": 3,
+                    "generated_at_utc": "2026-08-04T00:00:00Z",
                     "products": {
                         "metars": {
                             "current": "v2",
@@ -3471,6 +3419,7 @@ mod tests {
                 "live_feeds/current",
                 br#"{
                     "schema_version": 3,
+                    "generated_at_utc": "2026-08-04T00:00:00Z",
                     "products": {
                         "tafs": {
                             "current": "v1",
@@ -3501,7 +3450,11 @@ mod tests {
         state
             .ingest_resource(
                 "live_feeds/current",
-                br#"{"schema_version": 3, "products": {}}"#,
+                br#"{
+                    "schema_version": 3,
+                    "generated_at_utc": "2026-08-04T00:00:00Z",
+                    "products": {}
+                }"#,
             )
             .unwrap();
 
@@ -3533,6 +3486,7 @@ mod tests {
                 format!(
                     r#"{{
                     "schema_version": {LIVE_FEEDS_SCHEMA_VERSION},
+                    "generated_at_utc": "2026-08-04T00:00:00Z",
                     "products": {{
                         "tfrs": {{
                             "current": "v1",
@@ -3562,6 +3516,8 @@ mod tests {
                     "state": {{
                         "kind": "json_xz",
                         "url": "states/tfrs/v1.json",
+                        "bytes": 1,
+                        "blob_sha256": "unused",
                         "state_sha256": "{state_sha256}"
                     }}
                 }}"#
@@ -3618,7 +3574,7 @@ mod tests {
             product: "metars".to_string(),
             from_version: "from".to_string(),
             to_version: "to".to_string(),
-            top_level_changed: serde_json::Map::from_iter([
+            top_level_changed: BTreeMap::from([
                 (
                     "generated_at_utc".to_string(),
                     serde_json::json!("2026-05-18T20:05:00Z"),
@@ -3629,7 +3585,7 @@ mod tests {
                 ),
             ]),
             top_level_removed: Vec::new(),
-            changed: serde_json::Map::new(),
+            changed: BTreeMap::new(),
             removed: Vec::new(),
         };
 
@@ -3646,6 +3602,7 @@ mod tests {
                 "live_feeds/current",
                 br#"{
                     "schema_version": 3,
+                    "generated_at_utc": "2026-08-04T00:00:00Z",
                     "products": {
                         "obstacles": {
                             "current": "v1",
@@ -3667,6 +3624,8 @@ mod tests {
                     "state": {
                         "kind": "nav_kv",
                         "url": "states/obstacles/v1/manifest.json",
+                        "bytes": 1,
+                        "blob_sha256": "unused",
                         "state_sha256": "had-hash"
                     }
                 }"#,
@@ -3707,7 +3666,9 @@ mod tests {
                     "schema_version": 3,
                     "product": "nexrad",
                     "version": "v2",
-                    "version_manifest_url": "versions/nexrad/v2.json"
+                    "version_manifest_url": "versions/nexrad/v2.json",
+                    "state_url": "states/nexrad/v2/manifest.json",
+                    "state_sha256": "nexrad-v2"
                 }"#
                 .to_string(),
             })
@@ -3733,7 +3694,9 @@ mod tests {
                         "schema_version": 3,
                         "product": "metars",
                         "version": "v1",
-                        "version_manifest_url": "versions/metars/v1.json"
+                        "version_manifest_url": "versions/metars/v1.json",
+                        "state_url": "states/metars/v1.json",
+                        "state_sha256": "metars-v1"
                     }"#
                     .to_string(),
                 },
@@ -3744,7 +3707,9 @@ mod tests {
                         "schema_version": 3,
                         "product": "metars",
                         "version": "v2",
-                        "version_manifest_url": "versions/metars/v2.json"
+                        "version_manifest_url": "versions/metars/v2.json",
+                        "state_url": "states/metars/v2.json",
+                        "state_sha256": "metars-v2"
                     }"#
                     .to_string(),
                 },
@@ -3755,7 +3720,9 @@ mod tests {
                         "schema_version": 3,
                         "product": "nexrad",
                         "version": "v7",
-                        "version_manifest_url": "versions/nexrad/v7.json"
+                        "version_manifest_url": "versions/nexrad/v7.json",
+                        "state_url": "states/nexrad/v7/manifest.json",
+                        "state_sha256": "nexrad-v7"
                     }"#
                     .to_string(),
                 },
@@ -3794,7 +3761,9 @@ mod tests {
                     "schema_version": 3,
                     "product": "metars",
                     "version": "v1",
-                    "version_manifest_url": "versions/metars/v1.json"
+                    "version_manifest_url": "versions/metars/v1.json",
+                    "state_url": "states/metars/v1.json",
+                    "state_sha256": "metars-v1"
                 }"#
                 .to_string(),
             },
@@ -3805,7 +3774,9 @@ mod tests {
                     "schema_version": 3,
                     "product": "metars",
                     "version": "v2",
-                    "version_manifest_url": "versions/metars/v2.json"
+                    "version_manifest_url": "versions/metars/v2.json",
+                    "state_url": "states/metars/v2.json",
+                    "state_sha256": "metars-v2"
                 }"#
                 .to_string(),
             },
@@ -3821,6 +3792,8 @@ mod tests {
                     "state": {
                         "kind": "json_xz",
                         "url": "states/metars/v2.json",
+                        "bytes": 1,
+                        "blob_sha256": "unused",
                         "state_sha256": "abc123"
                     }
                 }"#,

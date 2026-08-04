@@ -30,6 +30,28 @@ import org.aerobag.app.generated.CloudUiActionId
 import org.aerobag.app.generated.CloudUiFieldValue
 import org.aerobag.app.generated.UiCloudPageState
 import org.aerobag.app.generated.UiHomePageState
+import org.aerobag.app.generated.UiChartPageState as WireUiChartPageState
+import org.aerobag.app.generated.UiDataStatusBox as WireUiDataStatusBox
+import org.aerobag.app.generated.UiDataStatusPageFact as WireUiDataStatusPageFact
+import org.aerobag.app.generated.UiDataStatusPageRow as WireUiDataStatusPageRow
+import org.aerobag.app.generated.UiDataStatusPageState as WireUiDataStatusPageState
+import org.aerobag.app.generated.UiDataStatusPageTimeDisplay as WireUiDataStatusPageTimeDisplay
+import org.aerobag.app.generated.UiDataStatusState as WireUiDataStatusState
+import org.aerobag.app.generated.UiDebugState as WireUiDebugState
+import org.aerobag.app.generated.UiDisclaimerState as WireUiDisclaimerState
+import org.aerobag.app.generated.UiDisplayPolicy as WireUiDisplayPolicy
+import org.aerobag.app.generated.UiMapLayerState as WireUiMapLayerState
+import org.aerobag.app.generated.UiMapLayerToggleState as WireUiMapLayerToggleState
+import org.aerobag.app.generated.UiNavDbIdentity as WireUiNavDbIdentity
+import org.aerobag.app.generated.UiPlaybackPanelState as WireUiPlaybackPanelState
+import org.aerobag.app.generated.UiSettingsGridItem as WireUiSettingsGridItem
+import org.aerobag.app.generated.UiSettingsPageRow as WireUiSettingsPageRow
+import org.aerobag.app.generated.UiSettingsPageState as WireUiSettingsPageState
+import org.aerobag.app.generated.UiSettingsSliderStop as WireUiSettingsSliderStop
+import org.aerobag.app.generated.UiStatusAction as WireUiStatusAction
+import org.aerobag.app.generated.UiStatusActionStyle as WireUiStatusActionStyle
+import org.aerobag.app.generated.UiStatusSeverity as WireUiStatusSeverity
+import org.aerobag.app.generated.UI_SESSION_PAGE_CONTRACTS_WIRE_VERSION
 import java.time.ZoneId
 import java.util.concurrent.Executors
 
@@ -206,14 +228,8 @@ data class NavSymbolFeature(
     val longestRunwayHeadingTrueDeg: Double?,
 )
 
-enum class MapLayerId {
-    WorldBasemap,
-    Vectors,
-    Metars,
-    Nexrad,
-    TerrainWarning,
-    OfflineRegions,
-}
+typealias MapLayerId = org.aerobag.app.generated.MapLayerId
+typealias DebugFlagId = org.aerobag.app.generated.DebugFlagId
 
 data class UiMapLayerToggleState(
     val visible: Boolean,
@@ -1151,17 +1167,17 @@ class NativeUiSession internal constructor(
 
     fun setMapLayerVisibility(layerId: MapLayerId, visible: Boolean): UiSessionSnapshot {
         return runPagedSnapshot("setMapLayerVisibility") {
-            bridge.setMapLayerVisibilityInSessionPagedJson(handle, json.encodeToString(layerId.toWire()), visible)
+            bridge.setMapLayerVisibilityInSessionPagedJson(handle, json.encodeToString(layerId), visible)
         }
     }
 
     fun setMapLayerEnabled(layerId: MapLayerId, enabled: Boolean): UiSessionSnapshot {
         return runPagedSnapshot("setMapLayerEnabled") {
-            bridge.setMapLayerEnabledInSessionPagedJson(handle, json.encodeToString(layerId.toWire()), enabled)
+            bridge.setMapLayerEnabledInSessionPagedJson(handle, json.encodeToString(layerId), enabled)
         }
     }
 
-    fun setDebugFlag(flagId: String, enabled: Boolean): UiSessionSnapshot {
+    fun setDebugFlag(flagId: DebugFlagId, enabled: Boolean): UiSessionSnapshot {
         return runPagedSnapshot("setDebugFlag") {
             bridge.setDebugFlagInSessionJson(handle, json.encodeToString(flagId), enabled)
         }
@@ -2068,190 +2084,8 @@ private data class WireDerivedChartPageState(
 )
 
 @kotlinx.serialization.Serializable
-private data class WireUiChartPageState(
-    val ordered_airport_ids: List<String>,
-    val recent_airport_ids: List<String>,
-    val plate_target_airport_id: String? = null,
-    val selected_airport_id: String,
-    val selected_reference_family_id: String? = null,
-    val selected_chart_id: String,
-    val suggested_chart_ids: List<String> = emptyList(),
-)
-
-@kotlinx.serialization.Serializable
-private data class WireUiMapLayerToggleState(
-    val visible: Boolean = false,
-    val enabled: Boolean = false,
-    val disabled_reason: String? = null,
-)
-
-@kotlinx.serialization.Serializable
-private data class WireUiMapLayerState(
-    val world_basemap: WireUiMapLayerToggleState = WireUiMapLayerToggleState(),
-    val vectors: WireUiMapLayerToggleState = WireUiMapLayerToggleState(),
-    val metars: WireUiMapLayerToggleState = WireUiMapLayerToggleState(),
-    val nexrad: WireUiMapLayerToggleState = WireUiMapLayerToggleState(),
-    val terrain_warning: WireUiMapLayerToggleState = WireUiMapLayerToggleState(),
-    val offline_regions: WireUiMapLayerToggleState = WireUiMapLayerToggleState(),
-)
-
-@kotlinx.serialization.Serializable
-private enum class WireUiStatusSeverity {
-    @kotlinx.serialization.SerialName("ok")
-    Ok,
-
-    @kotlinx.serialization.SerialName("info")
-    Info,
-
-    @kotlinx.serialization.SerialName("caution")
-    Caution,
-
-    @kotlinx.serialization.SerialName("warning")
-    Warning,
-
-    @kotlinx.serialization.SerialName("unavailable")
-    Unavailable,
-}
-
-@kotlinx.serialization.Serializable
-private enum class WireUiStatusActionStyle {
-    @kotlinx.serialization.SerialName("normal")
-    Normal,
-
-    @kotlinx.serialization.SerialName("hush")
-    Hush,
-}
-
-@kotlinx.serialization.Serializable
-private data class WireUiStatusAction(
-    val id: String,
-    val label: String,
-    val enabled: Boolean,
-    val style: WireUiStatusActionStyle,
-)
-
-@kotlinx.serialization.Serializable
-private data class WireUiDataStatusBox(
-    val id: String,
-    val label: String,
-    val value: String? = null,
-    val severity: WireUiStatusSeverity,
-    val drives_caution: Boolean,
-    val detail: String,
-    val actions: List<WireUiStatusAction>,
-    val hushed: Boolean,
-)
-
-@kotlinx.serialization.Serializable
-private data class WireUiDataStatusState(
-    val boxes: List<WireUiDataStatusBox>,
-    val launcher_count: String? = null,
-    val launcher_severity: WireUiStatusSeverity = WireUiStatusSeverity.Info,
-)
-
-@kotlinx.serialization.Serializable
-private enum class WireUiDataStatusPageTimeDisplay {
-    @kotlinx.serialization.SerialName("ago")
-    Ago,
-
-    @kotlinx.serialization.SerialName("old")
-    Old,
-
-    @kotlinx.serialization.SerialName("until")
-    Until,
-}
-
-@kotlinx.serialization.Serializable
-private data class WireUiDataStatusPageFact(
-    val label: String,
-    val value: String,
-    val link_url: String? = null,
-    val time_utc: String? = null,
-    val time_display: WireUiDataStatusPageTimeDisplay? = null,
-)
-
-@kotlinx.serialization.Serializable
-private data class WireUiDataStatusPageRow(
-    val id: String,
-    val label: String,
-    val value: String,
-    val severity: WireUiStatusSeverity,
-    val detail: String,
-    val facts: List<WireUiDataStatusPageFact> = emptyList(),
-)
-
-@kotlinx.serialization.Serializable
-private data class WireUiDataStatusPageState(
-    val title: String,
-    val summary: String,
-    val rows: List<WireUiDataStatusPageRow> = emptyList(),
-)
-
-@kotlinx.serialization.Serializable
-private data class WireUiSettingsSliderStop(
-    val id: String,
-    val label: String,
-)
-
-@kotlinx.serialization.Serializable
-private data class WireUiSettingsGridItem(
-    val cell: WireFlightDataCell,
-    val enabled: Boolean,
-)
-
-@kotlinx.serialization.Serializable
-private data class WireUiSettingsPageRow(
-    val kind: String,
-    val id: String,
-    val title: String,
-    val value_id: String,
-    val stops: List<WireUiSettingsSliderStop> = emptyList(),
-    val items: List<WireUiSettingsGridItem> = emptyList(),
-    val action_id: String,
-)
-
-@kotlinx.serialization.Serializable
-private data class WireUiSettingsPageState(
-    val title: String = "Settings",
-    val summary: String = "",
-    val rows: List<WireUiSettingsPageRow> = emptyList(),
-)
-
-@kotlinx.serialization.Serializable
-private data class WireUiDisplayPolicy(
-    val keep_screen_on: Boolean,
-    val dim_after_ms: Long? = null,
-    val dim_brightness: Float,
-)
-
-@kotlinx.serialization.Serializable
-private data class WireUiDisclaimerState(
-    val agreement_id: String = "no-warranty-v1",
-    val required: Boolean = true,
-    val html: String = "",
-    val text: String = "",
-    val accept_label: String = "I understand and agree",
-)
-
-@kotlinx.serialization.Serializable
-private data class WireUiDebugState(
-    val tile_labels: Boolean = false,
-    val nexrad_tile_labels: Boolean = false,
-    val fast_tiles: Boolean = false,
-    val offline_simulated_clock_buttons: Boolean = false,
-    val plate_flight_plan: Boolean = false,
-    val bad_autopilot: Boolean = false,
-    val gps_capture: Boolean = false,
-    val debug_log_to_developer_server: Boolean = false,
-)
-
-@kotlinx.serialization.Serializable
-private data class WireUiPlaybackPanelState(
-    val visible: Boolean = false,
-)
-
-@kotlinx.serialization.Serializable
 private data class WireUiSessionSnapshot(
+    val ui_contract_version: Int,
     val session_revision: Long = 0,
     val flight_plan_route_revision: Long = 0,
     val nav_data_epoch: Long = 0,
@@ -2259,31 +2093,22 @@ private data class WireUiSessionSnapshot(
     val next_nav_db_maintenance_epoch_ms: Long? = null,
     val app_ui_state: WireAppUiState = WireAppUiState(),
     val playback_ui_state: WirePlaybackUiState = WirePlaybackUiState(),
-    val playback_panel_state: WireUiPlaybackPanelState = WireUiPlaybackPanelState(),
+    val playback_panel_state: WireUiPlaybackPanelState,
     val map_follow_ui_state: WireMapFollowUiState = WireMapFollowUiState(),
     val map_follow_target_viewport: WireMapViewport? = null,
     val chart_page_state: WireUiChartPageState,
-    val map_layer_state: WireUiMapLayerState = WireUiMapLayerState(),
+    val map_layer_state: WireUiMapLayerState,
     val data_status_state: WireUiDataStatusState,
     val data_status_page_state: WireUiDataStatusPageState,
-    val settings_page_state: WireUiSettingsPageState = WireUiSettingsPageState(),
+    val settings_page_state: WireUiSettingsPageState,
     val cloud_page_state: UiCloudPageState,
     val offline_package_preferences_json: String = "{\"regions\":{},\"products\":{}}",
     val home_page_state: UiHomePageState,
     val display_policy: WireUiDisplayPolicy? = null,
-    val disclaimer_state: WireUiDisclaimerState = WireUiDisclaimerState(),
-    val debug_state: WireUiDebugState = WireUiDebugState(),
+    val disclaimer_state: WireUiDisclaimerState,
+    val debug_state: WireUiDebugState,
     val raster_map: WireRasterMapUiState? = null,
     val next_cycle_product_freshness_check_epoch_ms: Long? = null,
-)
-
-@kotlinx.serialization.Serializable
-private data class WireUiNavDbIdentity(
-    val package_id: String,
-    val filename: String,
-    val contract_id: String? = null,
-    val cycle: String? = null,
-    val cycle_version: String? = null,
 )
 
 @kotlinx.serialization.Serializable
@@ -2695,28 +2520,28 @@ private fun WireDerivedChartPageState.toUi() = DerivedChartPageState(
 )
 
 private fun WireUiChartPageState.toUi() = UiChartPageState(
-    orderedAirportIds = ordered_airport_ids,
-    recentAirportIds = recent_airport_ids,
-    plateTargetAirportId = plate_target_airport_id,
-    selectedAirportId = selected_airport_id,
-    selectedReferenceFamilyId = selected_reference_family_id,
-    selectedChartId = selected_chart_id,
-    suggestedChartIds = suggested_chart_ids,
+    orderedAirportIds = orderedAirportIds,
+    recentAirportIds = recentAirportIds,
+    plateTargetAirportId = plateTargetAirportId,
+    selectedAirportId = selectedAirportId,
+    selectedReferenceFamilyId = selectedReferenceFamilyId,
+    selectedChartId = selectedChartId,
+    suggestedChartIds = suggestedChartIds,
 )
 
 private fun WireUiMapLayerToggleState.toUi() = UiMapLayerToggleState(
     visible = visible,
     enabled = enabled,
-    disabledReason = disabled_reason,
+    disabledReason = disabledReason,
 )
 
 private fun WireUiMapLayerState.toUi() = UiMapLayerState(
-    worldBasemap = world_basemap.toUi(),
+    worldBasemap = worldBasemap.toUi(),
     vectors = vectors.toUi(),
     metars = metars.toUi(),
     nexrad = nexrad.toUi(),
-    terrainWarning = terrain_warning.toUi(),
-    offlineRegions = offline_regions.toUi(),
+    terrainWarning = terrainWarning.toUi(),
+    offlineRegions = offlineRegions.toUi(),
 )
 
 private fun WireUiStatusSeverity.toUi() = when (this) {
@@ -2744,7 +2569,7 @@ private fun WireUiDataStatusBox.toUi() = UiDataStatusBox(
     label = label,
     value = value,
     severity = severity.toUi(),
-    drivesCaution = drives_caution,
+    drivesCaution = drivesCaution,
     detail = detail,
     actions = actions.map { it.toUi() },
     hushed = hushed,
@@ -2752,8 +2577,8 @@ private fun WireUiDataStatusBox.toUi() = UiDataStatusBox(
 
 private fun WireUiDataStatusState.toUi() = UiDataStatusState(
     boxes = boxes.map { it.toUi() },
-    launcherCount = launcher_count,
-    launcherSeverity = launcher_severity.toUi(),
+    launcherCount = launcherCount,
+    launcherSeverity = launcherSeverity.toUi(),
 )
 
 private fun WireUiDataStatusPageTimeDisplay.toUi() = when (this) {
@@ -2765,9 +2590,9 @@ private fun WireUiDataStatusPageTimeDisplay.toUi() = when (this) {
 private fun WireUiDataStatusPageFact.toUi() = UiDataStatusPageFact(
     label = label,
     value = value,
-    linkUrl = link_url,
-    timeUtc = time_utc,
-    timeDisplay = time_display?.toUi(),
+    linkUrl = linkUrl,
+    timeUtc = timeUtc,
+    timeDisplay = timeDisplay?.toUi(),
 )
 
 private fun WireUiDataStatusPageRow.toUi() = UiDataStatusPageRow(
@@ -2799,10 +2624,10 @@ private fun WireUiSettingsPageRow.toUi() = UiSettingsPageRow(
     kind = kind,
     id = id,
     title = title,
-    valueId = value_id,
+    valueId = valueId,
     stops = stops.map { it.toUi() },
     items = items.map { it.toUi() },
-    actionId = action_id,
+    actionId = actionId,
 )
 
 private fun WireUiSettingsPageState.toUi() = UiSettingsPageState(
@@ -2812,45 +2637,49 @@ private fun WireUiSettingsPageState.toUi() = UiSettingsPageState(
 )
 
 private fun WireUiDisplayPolicy.toUi() = UiDisplayPolicy(
-    keepScreenOn = keep_screen_on,
-    dimAfterMs = dim_after_ms,
-    dimBrightness = dim_brightness,
+    keepScreenOn = keepScreenOn,
+    dimAfterMs = dimAfterMs,
+    dimBrightness = dimBrightness.toFloat(),
 )
 
 private fun WireUiDisclaimerState.toUi() = UiDisclaimerState(
-    agreementId = agreement_id,
+    agreementId = agreementId,
     required = required,
     html = html,
     text = text,
-    acceptLabel = accept_label,
+    acceptLabel = acceptLabel,
 )
 
 private fun WireUiDebugState.toUi() = UiDebugState(
-    tileLabels = tile_labels,
-    nexradTileLabels = nexrad_tile_labels,
-    fastTiles = fast_tiles,
-    offlineSimulatedClockButtons = offline_simulated_clock_buttons,
-    plateFlightPlan = plate_flight_plan,
-    badAutopilot = bad_autopilot,
-    gpsCapture = gps_capture,
-    debugLogToDeveloperServer = debug_log_to_developer_server,
+    tileLabels = tileLabels,
+    nexradTileLabels = nexradTileLabels,
+    fastTiles = fastTiles,
+    offlineSimulatedClockButtons = offlineSimulatedClockButtons,
+    plateFlightPlan = plateFlightPlan,
+    badAutopilot = badAutopilot,
+    gpsCapture = gpsCapture,
+    debugLogToDeveloperServer = debugLogToDeveloperServer,
 )
 
 private fun WireUiPlaybackPanelState.toUi() = UiPlaybackPanelState(
     visible = visible,
 )
 
-private fun WireUiSessionSnapshot.toUi() = UiSessionSnapshot(
+private fun WireUiSessionSnapshot.toUi(): UiSessionSnapshot {
+    require(ui_contract_version == UI_SESSION_PAGE_CONTRACTS_WIRE_VERSION) {
+        "UI wire contract $ui_contract_version is unsupported; client requires $UI_SESSION_PAGE_CONTRACTS_WIRE_VERSION"
+    }
+    return UiSessionSnapshot(
     sessionRevision = session_revision,
     flightPlanRouteRevision = flight_plan_route_revision,
     navDataEpoch = nav_data_epoch,
     activeNavDb = active_nav_db?.let {
         UiNavDbIdentity(
-            packageId = it.package_id,
+            packageId = it.packageId,
             filename = it.filename,
-            contractId = it.contract_id,
+            contractId = it.contractId,
             cycle = it.cycle,
-            cycleVersion = it.cycle_version,
+            cycleVersion = it.cycleVersion,
         )
     },
     nextNavDbMaintenanceEpochMs = next_nav_db_maintenance_epoch_ms,
@@ -2871,8 +2700,9 @@ private fun WireUiSessionSnapshot.toUi() = UiSessionSnapshot(
     disclaimerState = disclaimer_state.toUi(),
     debugState = debug_state.toUi(),
     rasterMap = raster_map?.toUi(),
-    nextCycleProductFreshnessCheckEpochMs = next_cycle_product_freshness_check_epoch_ms,
-)
+        nextCycleProductFreshnessCheckEpochMs = next_cycle_product_freshness_check_epoch_ms,
+    )
+}
 
 internal fun WireDerivedChartAirport.toUi() = ChartAirport(
     id = id,
@@ -3530,15 +3360,6 @@ private fun SequencingMode.toWire() = when (this) {
     SequencingMode.DirectTo -> WireSequencingMode.DirectTo
 }
 
-private fun MapLayerId.toWire() = when (this) {
-    MapLayerId.WorldBasemap -> "world_basemap"
-    MapLayerId.Vectors -> "vectors"
-    MapLayerId.Metars -> "metars"
-    MapLayerId.Nexrad -> "nexrad"
-    MapLayerId.TerrainWarning -> "terrain_warning"
-    MapLayerId.OfflineRegions -> "offline_regions"
-}
-
 private fun WireFlightPlanRouteSegment.toUi() = FlightPlanRouteSegment(
     id = id,
     legId = legId,
@@ -3630,16 +3451,25 @@ private fun WireFlightDataCell.toUi() = FlightDataCell(
     id = id,
     label = label,
     value = value,
-    tone = tone,
-    estimateKind = estimate_kind,
+    tone = tone?.name?.lowercase() ?: "planned",
+    estimateKind = estimateKind?.name?.lowercase() ?: "basic",
 )
 
 private fun FlightDataCell.toWire() = WireFlightDataCell(
     id = id,
     label = label,
     value = value,
-    tone = tone,
-    estimate_kind = estimateKind,
+    tone = when (tone) {
+        "planned" -> org.aerobag.app.generated.FlightDataCellTone.Planned
+        "passed" -> org.aerobag.app.generated.FlightDataCellTone.Passed
+        "active" -> org.aerobag.app.generated.FlightDataCellTone.Active
+        else -> error("unknown flight-data tone: $tone")
+    },
+    estimateKind = when (estimateKind) {
+        "basic" -> org.aerobag.app.generated.FlightEstimateKind.Basic
+        "modeled" -> org.aerobag.app.generated.FlightEstimateKind.Modeled
+        else -> error("unknown flight estimate kind: $estimateKind")
+    },
 )
 
 private fun WireFlightDataColumn.toUi() = FlightDataColumn(

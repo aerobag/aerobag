@@ -2,47 +2,10 @@
 //
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
+pub use app_ui_contracts::session::{
+    FlightDataBannerModel, FlightDataCell, FlightDataCellTone, FlightDataColumn, FlightEstimateKind,
+};
 use chrono::{DateTime, Utc};
-use serde::{Deserialize, Serialize};
-
-use crate::FlightEstimateKind;
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
-#[serde(rename_all = "snake_case")]
-pub enum FlightDataCellTone {
-    #[default]
-    Planned,
-    Passed,
-    Active,
-}
-
-impl FlightDataCellTone {
-    fn is_planned(&self) -> bool {
-        matches!(self, Self::Planned)
-    }
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct FlightDataCell {
-    pub id: String,
-    pub label: String,
-    pub value: Option<String>,
-    #[serde(default, skip_serializing_if = "FlightDataCellTone::is_planned")]
-    pub tone: FlightDataCellTone,
-    #[serde(default, skip_serializing_if = "FlightEstimateKind::is_basic")]
-    pub estimate_kind: FlightEstimateKind,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct FlightDataColumn {
-    pub id: String,
-    pub label: String,
-}
-
-#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
-pub struct FlightDataBannerModel {
-    pub cells: Vec<FlightDataCell>,
-}
 
 #[derive(Debug, Clone, Copy, Default)]
 pub struct FlightDataComputer {

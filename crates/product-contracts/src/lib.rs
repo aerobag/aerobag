@@ -5,6 +5,9 @@
 use serde::{Deserialize, Serialize};
 
 mod aerobag_cloud;
+pub mod live_feeds;
+pub mod publication;
+pub mod versioned_json;
 
 pub use aerobag_cloud::*;
 
@@ -85,7 +88,7 @@ pub const TERRAIN_TER2_HEIGHT_QUANTIZATION_FT: i16 = 64;
 pub const SHADED_RELIEF_CONTRACT_ID: &str = "SHD1";
 pub const WORLD_BASEMAP_CONTRACT_ID: &str = "WBM1";
 pub const GEO_CONTRACT_ID: &str = "GEO1";
-pub const LIVE_FEEDS_SCHEMA_VERSION: u32 = 3;
+pub const LIVE_FEEDS_SCHEMA_VERSION: u32 = live_feeds::v3::SCHEMA_VERSION;
 pub const NOTAM_LIVE_FEED_CONTRACT_VERSION: u32 = 3;
 
 /// Transport timing shared by every Aerobag SSE producer and consumer.

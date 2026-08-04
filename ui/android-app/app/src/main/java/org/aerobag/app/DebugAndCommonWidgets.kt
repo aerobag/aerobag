@@ -201,6 +201,7 @@ import org.aerobag.app.domain.AirwayPresentationPlan
 import org.aerobag.app.domain.AirwaySuggestion
 import org.aerobag.app.domain.WaypointIdentifierSuggestion
 import org.aerobag.app.domain.CoreMapViewport
+import org.aerobag.app.domain.DebugFlagId
 import org.aerobag.app.domain.DerivedChartPageState
 import org.aerobag.app.domain.FlightPlanEntryPreview
 import org.aerobag.app.domain.FlightPlanDisplayRowKind
@@ -348,22 +349,22 @@ internal fun showDisabledActionToast(context: Context, reason: String?) {
 internal fun CommonDebugPanel(
     uptimeLabel: String,
     debugState: UiDebugState,
-    onDebugFlagChange: (String, Boolean) -> Unit,
+    onDebugFlagChange: (DebugFlagId, Boolean) -> Unit,
 ) {
     Text("up $uptimeLabel", style = MaterialTheme.typography.labelSmall, color = Color(0xFF52656D))
-    DebugCheckbox("tile labels", debugState.tileLabels) { onDebugFlagChange("tile_labels", it) }
-    DebugCheckbox("NEXRAD tile labels", debugState.nexradTileLabels) { onDebugFlagChange("nexrad_tile_labels", it) }
-    DebugCheckbox("fast tiles", debugState.fastTiles) { onDebugFlagChange("fast_tiles", it) }
+    DebugCheckbox("tile labels", debugState.tileLabels) { onDebugFlagChange(DebugFlagId.TileLabels, it) }
+    DebugCheckbox("NEXRAD tile labels", debugState.nexradTileLabels) { onDebugFlagChange(DebugFlagId.NexradTileLabels, it) }
+    DebugCheckbox("fast tiles", debugState.fastTiles) { onDebugFlagChange(DebugFlagId.FastTiles, it) }
     DebugCheckbox("offline simulated clock buttons", debugState.offlineSimulatedClockButtons) {
-        onDebugFlagChange("offline_simulated_clock_buttons", it)
+        onDebugFlagChange(DebugFlagId.OfflineSimulatedClockButtons, it)
     }
     DebugCheckbox("flight plan on plates", debugState.plateFlightPlan) {
-        onDebugFlagChange("plate_flight_plan", it)
+        onDebugFlagChange(DebugFlagId.PlateFlightPlan, it)
     }
     DebugCheckbox("Bad Autopilot", debugState.badAutopilot, testTag = "parity:debug-flag:bad_autopilot") {
-        onDebugFlagChange("bad_autopilot", it)
+        onDebugFlagChange(DebugFlagId.BadAutopilot, it)
     }
-    DebugCheckbox("capture GPS samples", debugState.gpsCapture) { onDebugFlagChange("gps_capture", it) }
+    DebugCheckbox("capture GPS samples", debugState.gpsCapture) { onDebugFlagChange(DebugFlagId.GpsCapture, it) }
 }
 
 @Composable

@@ -4,89 +4,11 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
-use serde::{Deserialize, Serialize};
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum UiStatusSeverity {
-    Ok,
-    Info,
-    Caution,
-    Warning,
-    Unavailable,
-}
-
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum UiStatusActionStyle {
-    Normal,
-    Hush,
-}
-
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub struct UiStatusAction {
-    pub id: String,
-    pub label: String,
-    pub enabled: bool,
-    pub style: UiStatusActionStyle,
-}
-
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub struct UiDataStatusBox {
-    pub id: String,
-    pub label: String,
-    pub value: Option<String>,
-    pub severity: UiStatusSeverity,
-    pub drives_caution: bool,
-    pub detail: String,
-    pub actions: Vec<UiStatusAction>,
-    pub hushed: bool,
-}
-
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub struct UiDataStatusState {
-    pub boxes: Vec<UiDataStatusBox>,
-    pub launcher_count: Option<String>,
-    pub launcher_severity: UiStatusSeverity,
-}
-
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum UiDataStatusPageTimeDisplay {
-    Ago,
-    Old,
-    Until,
-}
-
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub struct UiDataStatusPageFact {
-    pub label: String,
-    pub value: String,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub link_url: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub time_utc: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub time_display: Option<UiDataStatusPageTimeDisplay>,
-}
-
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub struct UiDataStatusPageRow {
-    pub id: String,
-    pub label: String,
-    pub value: String,
-    pub severity: UiStatusSeverity,
-    pub detail: String,
-    #[serde(default)]
-    pub facts: Vec<UiDataStatusPageFact>,
-}
-
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub struct UiDataStatusPageState {
-    pub title: String,
-    pub summary: String,
-    pub rows: Vec<UiDataStatusPageRow>,
-}
+pub use app_ui_contracts::session::{
+    UiDataStatusBox, UiDataStatusPageFact, UiDataStatusPageRow, UiDataStatusPageState,
+    UiDataStatusPageTimeDisplay, UiDataStatusState, UiStatusAction, UiStatusActionStyle,
+    UiStatusSeverity,
+};
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct DataStatusRecord {

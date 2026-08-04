@@ -25,6 +25,14 @@ use notam_state::{
 };
 use preprocessor_core::xz_compress_bytes_with_system_xz;
 use preprocessor_zip::{write_deterministic_zip, ZipSource};
+pub use product_contracts::live_feeds::v3::{
+    CurrentHistoryEntry as LiveFeedCurrentHistoryEntry,
+    CurrentManifest as LiveFeedsCurrentManifest, CurrentProduct as LiveFeedCurrentEntry,
+    DeltaRef as LiveDeltaRef, NavKvDelta as LiveFeedNavKvDelta,
+    NavKvDeltaEntry as LiveFeedNavKvDeltaEntry, PayloadRef as LivePayloadRef,
+    RecordDelta as LiveFeedRecordDelta, VersionManifest as LiveFeedVersionManifest,
+};
+use product_contracts::versioned_json;
 use serde::{de::DeserializeOwned, Deserialize, Serialize};
 use serde_json::Value;
 use sha2::{Digest, Sha256};
@@ -260,107 +268,6 @@ pub enum DeltaPolicy {
     NavKv {
         pairs: Vec<NavKvPair>,
     },
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct LiveFeedsCurrentManifest {
-    pub schema_version: u32,
-    pub generated_at_utc: String,
-    pub products: BTreeMap<String, LiveFeedCurrentEntry>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-pub struct LiveFeedCurrentEntry {
-    pub current: String,
-    pub version_manifest_url: String,
-    pub state_url: String,
-    pub state_sha256: String,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub published_at_utc: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub collected_at_utc: Option<String>,
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub history: Vec<LiveFeedCurrentHistoryEntry>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-pub struct LiveFeedCurrentHistoryEntry {
-    pub version: String,
-    pub version_manifest_url: String,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub state_url: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub state_sha256: Option<String>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct LiveFeedVersionManifest {
-    pub schema_version: u32,
-    pub product: String,
-    pub version: String,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub previous: Option<String>,
-    pub state: LivePayloadRef,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub install_state: Option<LivePayloadRef>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub delta_from_previous: Option<LiveDeltaRef>,
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub recent_deltas: Vec<LiveDeltaRef>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct LivePayloadRef {
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub kind: Option<String>,
-    pub url: String,
-    pub bytes: u64,
-    pub blob_sha256: String,
-    pub state_sha256: String,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-pub struct LiveDeltaRef {
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub kind: Option<String>,
-    pub from_version: String,
-    pub from_state_sha256: String,
-    pub to_version: String,
-    pub to_state_sha256: String,
-    pub url: String,
-    pub bytes: u64,
-    pub blob_sha256: String,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub mutation_count: Option<u64>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-pub struct LiveFeedRecordDelta {
-    pub schema_version: u32,
-    pub product: String,
-    pub from_version: String,
-    pub to_version: String,
-    pub top_level_changed: BTreeMap<String, Value>,
-    pub top_level_removed: Vec<String>,
-    pub changed: BTreeMap<String, Value>,
-    pub removed: Vec<String>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-pub struct LiveFeedNavKvDelta {
-    pub schema_version: u32,
-    pub product: String,
-    pub from_version: String,
-    pub to_version: String,
-    pub from_state_sha256: String,
-    pub to_state_sha256: String,
-    pub entries: Vec<LiveFeedNavKvDeltaEntry>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-pub struct LiveFeedNavKvDeltaEntry {
-    pub key: String,
-    pub value: Option<Vec<u8>>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -2196,11 +2103,13 @@ fn read_notam_version_manifest(
     entry: &LiveFeedCurrentEntry,
 ) -> anyhow::Result<LiveFeedVersionManifest> {
     let path = live_root.join(safe_relative_path(&entry.version_manifest_url)?);
-    let manifest: LiveFeedVersionManifest = serde_json::from_slice(
-        &fs::read(&path).with_context(|| format!("failed to read {}", path.display()))?,
+    let bytes = fs::read(&path).with_context(|| format!("failed to read {}", path.display()))?;
+    let manifest = versioned_json::decode_exact::<LiveFeedVersionManifest>(
+        "NOTAM version manifest",
+        &bytes,
+        LIVE_FEEDS_SCHEMA_VERSION,
     )
     .with_context(|| format!("failed to parse {}", path.display()))?;
-    validate_live_feeds_schema("NOTAM version manifest", manifest.schema_version)?;
     if manifest.product != NOTAM_PRODUCT_ID || manifest.version != entry.current {
         bail!(
             "NOTAM version manifest declares {}/{}, expected {}/{}",
@@ -2492,11 +2401,13 @@ pub fn read_live_feeds_current(root: &Path) -> anyhow::Result<Option<LiveFeedsCu
     if !path.is_file() {
         return Ok(None);
     }
-    let current: LiveFeedsCurrentManifest = serde_json::from_slice(
-        &fs::read(&path).with_context(|| format!("failed to read {}", path.display()))?,
+    let bytes = fs::read(&path).with_context(|| format!("failed to read {}", path.display()))?;
+    let current = versioned_json::decode_exact::<LiveFeedsCurrentManifest>(
+        "live-feed current manifest",
+        &bytes,
+        LIVE_FEEDS_SCHEMA_VERSION,
     )
     .with_context(|| format!("failed to parse {}", path.display()))?;
-    validate_live_feeds_schema("current manifest", current.schema_version)?;
     Ok(Some(current))
 }
 
@@ -2692,9 +2603,12 @@ fn retain_version_manifest(
     retained: &mut BTreeSet<PathBuf>,
 ) -> anyhow::Result<LiveFeedVersionManifest> {
     retained.insert(version_manifest_path.to_path_buf());
-    let manifest: LiveFeedVersionManifest = serde_json::from_slice(
-        &fs::read(version_manifest_path)
-            .with_context(|| format!("failed to read {}", version_manifest_path.display()))?,
+    let bytes = fs::read(version_manifest_path)
+        .with_context(|| format!("failed to read {}", version_manifest_path.display()))?;
+    let manifest = versioned_json::decode_exact::<LiveFeedVersionManifest>(
+        "live-feed version manifest",
+        &bytes,
+        LIVE_FEEDS_SCHEMA_VERSION,
     )
     .with_context(|| format!("failed to parse {}", version_manifest_path.display()))?;
     retain_live_relative_path(live_root, retained, &manifest.state.url)?;
@@ -2807,13 +2721,6 @@ fn prune_version_children(root: &Path, retained: &BTreeSet<PathBuf>) -> anyhow::
 
 fn path_is_retained(path: &Path, retained: &BTreeSet<PathBuf>) -> bool {
     retained.contains(path) || retained.iter().any(|retained| retained.starts_with(path))
-}
-
-fn validate_live_feeds_schema(label: &str, schema_version: u32) -> anyhow::Result<()> {
-    if schema_version == LIVE_FEEDS_SCHEMA_VERSION {
-        return Ok(());
-    }
-    bail!("unsupported {label} schema {schema_version}; required {LIVE_FEEDS_SCHEMA_VERSION}")
 }
 
 pub fn canonical_json_sha256(value: &Value) -> anyhow::Result<String> {

@@ -1,0 +1,23 @@
+# SPDX-FileCopyrightText: 2026 Aerobag contributors
+#
+# SPDX-License-Identifier: AGPL-3.0-or-later
+
+[package]
+name = "app-ui-contracts"
+edition.workspace = true
+license.workspace = true
+version.workspace = true
+
+[features]
+schema = ["dep:schemars"]
+
+[dependencies]
+chrono.workspace = true
+schemars = { workspace = true, optional = true }
+serde.workspace = true
+serde_json.workspace = true
+
+[[bin]]
+name = "generate-ui-contract-schemas"
+path = "src/bin/generate_ui_contract_schemas.rs"
+required-features = ["schema"]

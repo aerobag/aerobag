@@ -1,25 +1,6 @@
 {
-  "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "org.aerobag.ui-wire.home-page",
-  "title": "UiHomePageState",
-  "description": "Core-owned Home-page navigation contract.",
-  "type": "object",
-  "additionalProperties": false,
-  "required": ["buttons"],
-  "properties": {
-    "buttons": {
-      "type": "array",
-      "items": { "$ref": "#/$defs/UiHomePageButton" }
-    }
-  },
-  "x-export-order": [
-    "UiHomeDestination",
-    "UiHomePageButton",
-    "UiHomePageState"
-  ],
   "$defs": {
     "UiHomeDestination": {
-      "type": "string",
       "enum": [
         "chart",
         "plate",
@@ -29,18 +10,57 @@
         "cloud",
         "offline_packages",
         "about"
-      ]
+      ],
+      "type": "string"
     },
     "UiHomePageButton": {
-      "type": "object",
       "additionalProperties": false,
-      "required": ["destination", "label", "enabled", "disabled_reason"],
       "properties": {
-        "destination": { "$ref": "#/$defs/UiHomeDestination" },
-        "label": { "type": "string" },
-        "enabled": { "type": "boolean" },
-        "disabled_reason": { "type": ["string", "null"] }
-      }
+        "destination": {
+          "$ref": "#/$defs/UiHomeDestination"
+        },
+        "disabled_reason": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "enabled": {
+          "type": "boolean"
+        },
+        "label": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "destination",
+        "label",
+        "enabled"
+      ],
+      "type": "object"
     }
-  }
+  },
+  "$id": "org.aerobag.ui-wire.home-page",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "description": "Core-owned Home-page navigation contract.",
+  "properties": {
+    "buttons": {
+      "items": {
+        "$ref": "#/$defs/UiHomePageButton"
+      },
+      "type": "array"
+    }
+  },
+  "required": [
+    "buttons"
+  ],
+  "title": "UiHomePageState",
+  "type": "object",
+  "x-contract-version": 1,
+  "x-export-order": [
+    "UiHomeDestination",
+    "UiHomePageButton",
+    "UiHomePageState"
+  ]
 }

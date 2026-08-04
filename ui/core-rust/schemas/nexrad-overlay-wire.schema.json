@@ -1,131 +1,270 @@
 {
-  "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "org.aerobag.ui-wire.nexrad-overlay",
-  "title": "NexradOverlayQueryResult",
-  "description": "Core-owned wire contract for NEXRAD overlay queries emitted by app-core.",
-  "type": "object",
-  "additionalProperties": false,
-  "required": ["status", "tiles", "stats", "animation"],
-  "properties": {
-    "status": { "$ref": "#/$defs/NexradOverlayStatus" },
-    "tiles": {
-      "type": "array",
-      "items": { "$ref": "#/$defs/NexradOverlayTile" },
-      "default": []
-    },
-    "stats": {
-      "$ref": "#/$defs/NexradOverlayStats",
-      "default": {}
-    },
-    "animation": {
-      "$ref": "#/$defs/NexradOverlayAnimation",
-      "default": {}
-    }
-  },
-  "x-export-order": [
-    "NexradOverlayStatusState",
-    "NexradOverlayStatus",
-    "NexradOverlayAnimationPhase",
-    "NexradOverlayAnimation",
-    "NexradOverlayScreenPoint",
-    "NexradOverlayTileCorners",
-    "NexradOverlayTile",
-    "NexradOverlayStats",
-    "NexradOverlayQueryResult"
-  ],
   "$defs": {
-    "NexradOverlayStatusState": {
-      "type": "string",
-      "enum": ["hidden", "loading", "unavailable", "ready"]
-    },
-    "NexradOverlayStatus": {
-      "type": "object",
-      "additionalProperties": false,
-      "required": ["state"],
-      "properties": {
-        "state": { "$ref": "#/$defs/NexradOverlayStatusState" },
-        "reason": {
-          "type": ["string", "null"],
-          "default": null
-        },
-        "count": {
-          "type": ["integer", "null"],
-          "default": null
-        }
-      }
-    },
-    "NexradOverlayAnimationPhase": {
-      "type": "string",
-      "enum": ["idle", "frame", "blank"]
-    },
     "NexradOverlayAnimation": {
-      "type": "object",
       "additionalProperties": false,
-      "required": [
-        "phase",
-        "selected_frame_index",
-        "frame_count",
-        "age_labels",
-        "age_summary",
-        "next_update_delay_ms",
-        "next_update_epoch_ms"
-      ],
       "properties": {
-        "phase": {
-          "$ref": "#/$defs/NexradOverlayAnimationPhase",
-          "default": "idle"
-        },
-        "selected_frame_index": {
-          "type": ["integer", "null"],
-          "default": null
-        },
-        "frame_count": {
-          "type": "integer",
-          "default": 0
-        },
         "age_labels": {
-          "type": "array",
-          "items": { "type": "string" },
-          "default": []
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
         },
         "age_summary": {
-          "type": "string",
-          "default": "---"
+          "type": "string"
+        },
+        "frame_count": {
+          "format": "uint",
+          "minimum": 0,
+          "type": "integer"
         },
         "next_update_delay_ms": {
-          "type": ["integer", "null"],
-          "default": null
+          "format": "uint32",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
         },
         "next_update_epoch_ms": {
-          "type": ["integer", "null"],
           "format": "int64",
-          "default": null
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "phase": {
+          "$ref": "#/$defs/NexradOverlayAnimationPhase"
+        },
+        "selected_frame_index": {
+          "format": "uint",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
         }
-      }
+      },
+      "required": [
+        "phase",
+        "frame_count",
+        "age_labels",
+        "age_summary"
+      ],
+      "type": "object"
+    },
+    "NexradOverlayAnimationPhase": {
+      "enum": [
+        "idle",
+        "frame",
+        "blank"
+      ],
+      "type": "string"
     },
     "NexradOverlayScreenPoint": {
-      "type": "object",
       "additionalProperties": false,
-      "required": ["x", "y"],
       "properties": {
-        "x": { "type": "number" },
-        "y": { "type": "number" }
-      }
+        "x": {
+          "format": "double",
+          "type": "number"
+        },
+        "y": {
+          "format": "double",
+          "type": "number"
+        }
+      },
+      "required": [
+        "x",
+        "y"
+      ],
+      "type": "object"
     },
-    "NexradOverlayTileCorners": {
-      "type": "object",
+    "NexradOverlayStats": {
       "additionalProperties": false,
-      "required": ["nw", "ne", "se", "sw"],
       "properties": {
-        "nw": { "$ref": "#/$defs/NexradOverlayScreenPoint" },
-        "ne": { "$ref": "#/$defs/NexradOverlayScreenPoint" },
-        "se": { "$ref": "#/$defs/NexradOverlayScreenPoint" },
-        "sw": { "$ref": "#/$defs/NexradOverlayScreenPoint" }
-      }
+        "level_pixel_span_px": {
+          "format": "double",
+          "type": "number"
+        },
+        "max_affine_error_px": {
+          "format": "double",
+          "type": "number"
+        },
+        "max_level_pixel_stretch_px": {
+          "format": "double",
+          "type": "number"
+        },
+        "max_stack_depth": {
+          "format": "uint",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "observed_at_utc": {
+          "format": "date-time",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "render_piece_count": {
+          "format": "uint",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "res": {
+          "format": "uint32",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "source_tile_count": {
+          "format": "uint",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "split_count": {
+          "format": "uint",
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "source_tile_count",
+        "render_piece_count",
+        "split_count",
+        "max_affine_error_px",
+        "level_pixel_span_px",
+        "max_level_pixel_stretch_px",
+        "max_stack_depth"
+      ],
+      "type": "object"
+    },
+    "NexradOverlayStatus": {
+      "oneOf": [
+        {
+          "additionalProperties": false,
+          "properties": {
+            "state": {
+              "const": "hidden",
+              "type": "string"
+            }
+          },
+          "required": [
+            "state"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "state": {
+              "const": "loading",
+              "type": "string"
+            }
+          },
+          "required": [
+            "state"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "reason": {
+              "type": "string"
+            },
+            "state": {
+              "const": "unavailable",
+              "type": "string"
+            }
+          },
+          "required": [
+            "state",
+            "reason"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "count": {
+              "format": "uint",
+              "minimum": 0,
+              "type": "integer"
+            },
+            "state": {
+              "const": "ready",
+              "type": "string"
+            }
+          },
+          "required": [
+            "state",
+            "count"
+          ],
+          "type": "object"
+        }
+      ],
+      "x-discriminator": "state"
     },
     "NexradOverlayTile": {
-      "type": "object",
       "additionalProperties": false,
+      "properties": {
+        "corners": {
+          "$ref": "#/$defs/NexradOverlayTileCorners"
+        },
+        "image_height": {
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "image_width": {
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "key": {
+          "type": "string"
+        },
+        "res": {
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "source_height": {
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "source_width": {
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "source_x": {
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "source_y": {
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "src": {
+          "type": "string"
+        },
+        "x": {
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "y": {
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
       "required": [
         "key",
         "src",
@@ -140,73 +279,71 @@
         "image_height",
         "corners"
       ],
-      "properties": {
-        "key": { "type": "string" },
-        "src": { "type": "string" },
-        "res": { "type": "integer" },
-        "x": { "type": "integer" },
-        "y": { "type": "integer" },
-        "source_x": { "type": "integer" },
-        "source_y": { "type": "integer" },
-        "source_width": { "type": "integer" },
-        "source_height": { "type": "integer" },
-        "image_width": { "type": "integer" },
-        "image_height": { "type": "integer" },
-        "corners": { "$ref": "#/$defs/NexradOverlayTileCorners" }
-      }
+      "type": "object"
     },
-    "NexradOverlayStats": {
-      "type": "object",
+    "NexradOverlayTileCorners": {
       "additionalProperties": false,
-      "required": [
-        "source_tile_count",
-        "render_piece_count",
-        "split_count",
-        "max_affine_error_px",
-        "level_pixel_span_px",
-        "max_level_pixel_stretch_px",
-        "max_stack_depth",
-        "res",
-        "observed_at_utc"
-      ],
       "properties": {
-        "source_tile_count": {
-          "type": "integer",
-          "default": 0
+        "ne": {
+          "$ref": "#/$defs/NexradOverlayScreenPoint"
         },
-        "render_piece_count": {
-          "type": "integer",
-          "default": 0
+        "nw": {
+          "$ref": "#/$defs/NexradOverlayScreenPoint"
         },
-        "split_count": {
-          "type": "integer",
-          "default": 0
+        "se": {
+          "$ref": "#/$defs/NexradOverlayScreenPoint"
         },
-        "max_affine_error_px": {
-          "type": "number",
-          "default": 0.0
-        },
-        "level_pixel_span_px": {
-          "type": "number",
-          "default": 0.0
-        },
-        "max_level_pixel_stretch_px": {
-          "type": "number",
-          "default": 0.0
-        },
-        "max_stack_depth": {
-          "type": "integer",
-          "default": 0
-        },
-        "res": {
-          "type": ["integer", "null"],
-          "default": null
-        },
-        "observed_at_utc": {
-          "type": ["string", "null"],
-          "default": null
+        "sw": {
+          "$ref": "#/$defs/NexradOverlayScreenPoint"
         }
-      }
+      },
+      "required": [
+        "nw",
+        "ne",
+        "se",
+        "sw"
+      ],
+      "type": "object"
     }
-  }
+  },
+  "$id": "org.aerobag.ui-wire.nexrad-overlay",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "description": "Core-owned wire contract for NEXRAD overlay queries emitted by app-core.",
+  "properties": {
+    "animation": {
+      "$ref": "#/$defs/NexradOverlayAnimation"
+    },
+    "stats": {
+      "$ref": "#/$defs/NexradOverlayStats"
+    },
+    "status": {
+      "$ref": "#/$defs/NexradOverlayStatus"
+    },
+    "tiles": {
+      "items": {
+        "$ref": "#/$defs/NexradOverlayTile"
+      },
+      "type": "array"
+    }
+  },
+  "required": [
+    "status",
+    "tiles",
+    "stats",
+    "animation"
+  ],
+  "title": "NexradOverlayQueryResult",
+  "type": "object",
+  "x-contract-version": 1,
+  "x-export-order": [
+    "NexradOverlayStatus",
+    "NexradOverlayAnimationPhase",
+    "NexradOverlayAnimation",
+    "NexradOverlayScreenPoint",
+    "NexradOverlayTileCorners",
+    "NexradOverlayTile",
+    "NexradOverlayStats",
+    "NexradOverlayQueryResult"
+  ]
 }

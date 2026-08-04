@@ -1994,7 +1994,7 @@ internal fun MapExplorerPage(
                     scheduleNexradAnimation(overlay.animation.nextUpdateEpochMs)
                     nexradFrame = null
                     perfLogInfo(MapLayerLogTag) {
-                        "nexrad empty status=${overlay.status.state} animation=${overlay.animation.phase} nextMs=${overlay.animation.nextUpdateDelayMs} elapsedMs=${SystemClock.elapsedRealtime() - effectStartMs}"
+                        "nexrad empty status=${overlay.status} animation=${overlay.animation.phase} nextMs=${overlay.animation.nextUpdateDelayMs} elapsedMs=${SystemClock.elapsedRealtime() - effectStartMs}"
                     }
                     continue
                 }

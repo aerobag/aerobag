@@ -6,7 +6,7 @@
   "type": "module",
   "scripts": {
     "generate:symbols": "node ${AEROBAG_REPO_ROOT:-../..}/tools/generate-nav-symbols.mjs",
-    "generate:wire": "node ${AEROBAG_REPO_ROOT:-../..}/tools/generate-ui-wire-types.mjs",
+    "generate:wire": "${AEROBAG_REPO_ROOT:-../..}/tools/generate-ui-contract-schemas.sh && node ${AEROBAG_REPO_ROOT:-../..}/tools/generate-ui-wire-types.mjs",
     "prepare:dev-assets": "./scripts/stage-dev-assets.sh",
     "build:wasm": "./scripts/build-wasm.sh",
     "install:wasm-opt": "./scripts/install-binaryen-wasm-opt.sh",

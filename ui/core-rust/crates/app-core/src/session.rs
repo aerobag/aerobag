@@ -16,6 +16,23 @@ use chrono_tz::Tz;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
+pub use app_ui_contracts::{
+    home::{UiHomeDestination, UiHomePageButton, UiHomePageState},
+    nexrad::{
+        NexradOverlayAnimation, NexradOverlayAnimationPhase, NexradOverlayQueryResult,
+        NexradOverlayScreenPoint as ScreenPoint, NexradOverlayStats, NexradOverlayStatus,
+        NexradOverlayTile, NexradOverlayTileCorners,
+    },
+    session::{
+        ClientBuildInfo, DebugFlagId, LiveFeedAcquisitionPolicy, MapLayerId, PlatformCapabilities,
+        PlatformCloudCapability, PlatformDisplayPolicyCapability, PlatformLiveFeedsCapability,
+        PlatformOfflinePackagesCapability, UiChartPageState, UiDebugState, UiDisclaimerState,
+        UiDisplayPolicy, UiMapLayerState, UiMapLayerToggleState, UiNavDbIdentity,
+        UiPlaybackPanelState, UiSettingsAction, UiSettingsGridItem, UiSettingsPageRow,
+        UiSettingsPageState, UiSettingsSliderStop,
+    },
+};
+
 use crate::CoreResourcePolicy;
 use crate::{
     chart_ident_label_for_nav_ref_symbol,
@@ -148,111 +165,6 @@ impl DisplayDimTimeout {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub struct UiChartPageState {
-    pub ordered_airport_ids: Vec<String>,
-    pub recent_airport_ids: Vec<String>,
-    #[serde(default)]
-    pub plate_target_airport_id: Option<String>,
-    pub selected_airport_id: String,
-    #[serde(default)]
-    pub selected_reference_family_id: Option<String>,
-    pub selected_chart_id: String,
-    #[serde(default)]
-    pub suggested_chart_ids: Vec<String>,
-}
-
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub struct UiMapLayerToggleState {
-    pub visible: bool,
-    pub enabled: bool,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub disabled_reason: Option<String>,
-}
-
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub struct UiMapLayerState {
-    pub world_basemap: UiMapLayerToggleState,
-    pub vectors: UiMapLayerToggleState,
-    pub metars: UiMapLayerToggleState,
-    pub nexrad: UiMapLayerToggleState,
-    pub terrain_warning: UiMapLayerToggleState,
-    pub offline_regions: UiMapLayerToggleState,
-}
-
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub struct UiDebugState {
-    pub tile_labels: bool,
-    #[serde(default)]
-    pub nexrad_tile_labels: bool,
-    pub fast_tiles: bool,
-    pub offline_simulated_clock_buttons: bool,
-    #[serde(default)]
-    pub sequencing_finish_lines: bool,
-    #[serde(default)]
-    pub plate_flight_plan: bool,
-    #[serde(default)]
-    pub bad_autopilot: bool,
-    #[serde(default)]
-    pub gps_capture: bool,
-    #[serde(default)]
-    pub debug_log_to_developer_server: bool,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
-pub struct PlatformDisplayPolicyCapability {}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
-pub struct PlatformOfflinePackagesCapability {}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
-pub struct PlatformCloudCapability {
-    #[serde(default)]
-    pub qr_scan: bool,
-    #[serde(default)]
-    pub aerobag_cloud_base_url: Option<String>,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum LiveFeedAcquisitionPolicy {
-    JitPublicResources,
-    DurableCompleteStates,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct PlatformLiveFeedsCapability {
-    pub acquisition_policy: LiveFeedAcquisitionPolicy,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct ClientBuildInfo {
-    pub platform: String,
-    pub version: String,
-    #[serde(default)]
-    pub built_at_utc: Option<String>,
-    #[serde(default)]
-    pub commit: Option<String>,
-    #[serde(default)]
-    pub dirty: bool,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
-pub struct PlatformCapabilities {
-    #[serde(default)]
-    pub display_policy: Option<PlatformDisplayPolicyCapability>,
-    #[serde(default)]
-    pub offline_packages: Option<PlatformOfflinePackagesCapability>,
-    #[serde(default)]
-    pub cloud: Option<PlatformCloudCapability>,
-    #[serde(default)]
-    pub live_feeds: Option<PlatformLiveFeedsCapability>,
-    #[serde(default)]
-    pub client_build: Option<ClientBuildInfo>,
-    #[serde(default)]
-    pub local_time_zone: Option<String>,
-}
-
 pub trait SettingsStorage: Send + Sync {
     fn read_settings(&self) -> AppResult<Option<Vec<u8>>>;
     fn write_settings(&self, bytes: &[u8]) -> AppResult<()>;
@@ -293,85 +205,6 @@ pub struct SettingsPreferences {
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub struct UiSettingsSliderStop {
-    pub id: String,
-    pub label: String,
-}
-
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub struct UiSettingsGridItem {
-    pub cell: crate::FlightDataCell,
-    pub enabled: bool,
-}
-
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub struct UiSettingsPageRow {
-    pub kind: String,
-    pub id: String,
-    pub title: String,
-    pub value_id: String,
-    pub stops: Vec<UiSettingsSliderStop>,
-    #[serde(default)]
-    pub items: Vec<UiSettingsGridItem>,
-    pub action_id: String,
-}
-
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub struct UiSettingsPageState {
-    pub title: String,
-    pub summary: String,
-    pub rows: Vec<UiSettingsPageRow>,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum UiHomeDestination {
-    Chart,
-    Plate,
-    FlightPlan,
-    DataStatus,
-    Settings,
-    Cloud,
-    OfflinePackages,
-    About,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct UiHomePageButton {
-    pub destination: UiHomeDestination,
-    pub label: String,
-    pub enabled: bool,
-    pub disabled_reason: Option<String>,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct UiHomePageState {
-    pub buttons: Vec<UiHomePageButton>,
-}
-
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub struct UiDisplayPolicy {
-    pub keep_screen_on: bool,
-    pub dim_after_ms: Option<u64>,
-    pub dim_brightness: f32,
-}
-
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub struct UiDisclaimerState {
-    pub agreement_id: String,
-    pub required: bool,
-    pub html: String,
-    pub text: String,
-    pub accept_label: String,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct UiSettingsAction {
-    pub action_id: String,
-    pub value_id: String,
-}
-
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 struct SettingsPersistenceDocument {
     version: u32,
     preferences: SettingsPreferences,
@@ -380,12 +213,8 @@ struct SettingsPersistenceDocument {
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub struct UiPlaybackPanelState {
-    pub visible: bool,
-}
-
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct UiSessionSnapshot {
+    pub ui_contract_version: u32,
     pub session_revision: u64,
     pub flight_plan_route_revision: u64,
     pub nav_data_epoch: u64,
@@ -566,15 +395,6 @@ struct AttachedNavDbArtifact {
     warning_text: Option<String>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct UiNavDbIdentity {
-    pub package_id: String,
-    pub filename: String,
-    pub contract_id: Option<String>,
-    pub cycle: Option<String>,
-    pub cycle_version: Option<String>,
-}
-
 impl From<&AttachedNavDbArtifact> for UiNavDbIdentity {
     fn from(artifact: &AttachedNavDbArtifact) -> Self {
         Self {
@@ -687,108 +507,6 @@ pub struct UiSessionResourceEffect {
     pub after_success_invalidations: Vec<UiInvalidation>,
 }
 
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub struct NexradOverlayQueryResult {
-    pub status: NexradOverlayStatus,
-    #[serde(default)]
-    pub tiles: Vec<NexradOverlayTile>,
-    #[serde(default)]
-    pub stats: NexradOverlayStats,
-    #[serde(default)]
-    pub animation: NexradOverlayAnimation,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct NexradOverlayAnimation {
-    pub phase: NexradOverlayAnimationPhase,
-    pub selected_frame_index: Option<usize>,
-    pub frame_count: usize,
-    pub age_labels: Vec<String>,
-    pub age_summary: String,
-    pub next_update_delay_ms: Option<u32>,
-    pub next_update_epoch_ms: Option<i64>,
-}
-
-impl Default for NexradOverlayAnimation {
-    fn default() -> Self {
-        Self::idle()
-    }
-}
-
-impl NexradOverlayAnimation {
-    fn idle() -> Self {
-        Self {
-            phase: NexradOverlayAnimationPhase::Idle,
-            selected_frame_index: None,
-            frame_count: 0,
-            age_labels: Vec::new(),
-            age_summary: "---".to_string(),
-            next_update_delay_ms: None,
-            next_update_epoch_ms: None,
-        }
-    }
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum NexradOverlayAnimationPhase {
-    Idle,
-    Frame,
-    Blank,
-}
-
-#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
-pub struct NexradOverlayStats {
-    pub source_tile_count: usize,
-    pub render_piece_count: usize,
-    pub split_count: usize,
-    pub max_affine_error_px: f64,
-    pub level_pixel_span_px: f64,
-    pub max_level_pixel_stretch_px: f64,
-    pub max_stack_depth: usize,
-    pub res: Option<u32>,
-    pub observed_at_utc: Option<DateTime<Utc>>,
-}
-
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-#[serde(tag = "state", rename_all = "snake_case")]
-pub enum NexradOverlayStatus {
-    Hidden,
-    Loading,
-    Unavailable { reason: String },
-    Ready { count: usize },
-}
-
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub struct NexradOverlayTile {
-    pub key: String,
-    pub src: String,
-    pub res: u32,
-    pub x: u32,
-    pub y: u32,
-    pub source_x: u32,
-    pub source_y: u32,
-    pub source_width: u32,
-    pub source_height: u32,
-    pub image_width: u32,
-    pub image_height: u32,
-    pub corners: NexradOverlayTileCorners,
-}
-
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub struct NexradOverlayTileCorners {
-    pub nw: ScreenPoint,
-    pub ne: ScreenPoint,
-    pub se: ScreenPoint,
-    pub sw: ScreenPoint,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
-pub struct ScreenPoint {
-    pub x: f64,
-    pub y: f64,
-}
-
 #[derive(Debug, Clone, PartialEq, Default)]
 struct BadAutopilotState {
     running: bool,
@@ -820,17 +538,6 @@ const BAD_AUTOPILOT_REPORTED_SPEED_SCALE: f64 = 0.1;
 const BAD_AUTOPILOT_MAX_DT_SECONDS: f64 = 1.0;
 const BAD_AUTOPILOT_WANDER_NM: f64 = 0.125;
 const BAD_AUTOPILOT_OVERRUN_NM: f64 = 0.5;
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum MapLayerId {
-    WorldBasemap,
-    Vectors,
-    Metars,
-    Nexrad,
-    TerrainWarning,
-    OfflineRegions,
-}
 
 fn raster_catalog_for_layer_state(
     catalog: &RasterMapCatalog,
@@ -3654,6 +3361,7 @@ fn create_ui_session_inner(
     let platform_capabilities = PlatformCapabilities::default();
     let home_page_state = project_home_page_state(&platform_capabilities);
     let snapshot = UiSessionSnapshot {
+        ui_contract_version: app_ui_contracts::UI_WIRE_CONTRACT_VERSION,
         session_revision: 0,
         flight_plan_route_revision: 0,
         nav_data_epoch: 0,
@@ -3756,12 +3464,11 @@ fn uninitialized_map_overlay_config() -> MapOverlayConfig {
 
 pub fn set_map_layer_visibility_in_session(
     handle: u32,
-    layer_id: &str,
+    layer: MapLayerId,
     visible: bool,
 ) -> AppResult<HadOperationOutcome> {
     let mut sessions = lock_sessions();
     let session = session_mut(&mut sessions, handle)?;
-    let layer = parse_map_layer_id(layer_id)?;
     if let Some(outcome) = preflight_session_snapshot_resources(session)? {
         return Ok(outcome);
     }
@@ -4566,12 +4273,11 @@ fn elapsed_ms(started_at: Option<f64>) -> u64 {
 
 pub fn set_map_layer_enabled_in_session(
     handle: u32,
-    layer_id: &str,
+    layer: MapLayerId,
     enabled: bool,
 ) -> AppResult<HadOperationOutcome> {
     let mut sessions = lock_sessions();
     let session = session_mut(&mut sessions, handle)?;
-    let layer = parse_map_layer_id(layer_id)?;
     if let Some(outcome) = preflight_session_snapshot_resources(session)? {
         return Ok(outcome);
     }
@@ -6721,25 +6427,25 @@ pub fn restore_chart_page_state_in_session(
 
 pub fn set_debug_flag_in_session(
     handle: u32,
-    flag_id: &str,
+    flag_id: DebugFlagId,
     enabled: bool,
 ) -> AppResult<HadOperationOutcome> {
     let mut sessions = lock_sessions();
     let session = session_mut(&mut sessions, handle)?;
     match flag_id {
-        "tile_labels" => session.debug_state.tile_labels = enabled,
-        "nexrad_tile_labels" => session.debug_state.nexrad_tile_labels = enabled,
-        "fast_tiles" => session.debug_state.fast_tiles = enabled,
-        "offline_simulated_clock_buttons" => {
+        DebugFlagId::TileLabels => session.debug_state.tile_labels = enabled,
+        DebugFlagId::NexradTileLabels => session.debug_state.nexrad_tile_labels = enabled,
+        DebugFlagId::FastTiles => session.debug_state.fast_tiles = enabled,
+        DebugFlagId::OfflineSimulatedClockButtons => {
             session.debug_state.offline_simulated_clock_buttons = enabled
         }
-        "sequencing_finish_lines" => session.debug_state.sequencing_finish_lines = enabled,
-        "plate_flight_plan" => session.debug_state.plate_flight_plan = enabled,
-        "gps_capture" => session.debug_state.gps_capture = enabled,
-        "debug_log_to_developer_server" => {
+        DebugFlagId::SequencingFinishLines => session.debug_state.sequencing_finish_lines = enabled,
+        DebugFlagId::PlateFlightPlan => session.debug_state.plate_flight_plan = enabled,
+        DebugFlagId::GpsCapture => session.debug_state.gps_capture = enabled,
+        DebugFlagId::DebugLogToDeveloperServer => {
             session.debug_state.debug_log_to_developer_server = enabled
         }
-        "bad_autopilot" => {
+        DebugFlagId::BadAutopilot => {
             session.debug_state.bad_autopilot = enabled;
             if !enabled {
                 session.bad_autopilot = BadAutopilotState::default();
@@ -6752,12 +6458,6 @@ pub fn set_debug_flag_in_session(
                     )?;
                 }
             }
-        }
-        _ => {
-            return Err(AppError {
-                kind: AppErrorKind::Internal,
-                message: format!("unknown debug flag id: {flag_id}"),
-            });
         }
     }
     changed_session_snapshot_outcome(session)
@@ -11125,6 +10825,7 @@ fn try_snapshot_for_session(session: &mut UiSession) -> Result<UiSessionSnapshot
         })
     });
     Ok(UiSessionSnapshot {
+        ui_contract_version: app_ui_contracts::UI_WIRE_CONTRACT_VERSION,
         session_revision: session.session_revision,
         flight_plan_route_revision: session.flight_plan_route_revision,
         nav_data_epoch: session.nav_data_epoch,
@@ -11476,21 +11177,6 @@ fn default_debug_state() -> UiDebugState {
         bad_autopilot: false,
         gps_capture: false,
         debug_log_to_developer_server: false,
-    }
-}
-
-fn parse_map_layer_id(layer_id: &str) -> AppResult<MapLayerId> {
-    match layer_id {
-        "vectors" => Ok(MapLayerId::Vectors),
-        "world_basemap" => Ok(MapLayerId::WorldBasemap),
-        "metars" => Ok(MapLayerId::Metars),
-        "nexrad" => Ok(MapLayerId::Nexrad),
-        "terrain_warning" => Ok(MapLayerId::TerrainWarning),
-        "offline_regions" => Ok(MapLayerId::OfflineRegions),
-        _ => Err(AppError {
-            kind: AppErrorKind::Internal,
-            message: format!("unknown map layer id: {layer_id}"),
-        }),
     }
 }
 
@@ -13146,6 +12832,61 @@ mod tests {
         NEXT_TEST_NAV_KV_STORE_ID.fetch_add(1, Ordering::Relaxed)
     }
 
+    fn live_current_manifest_for_test(
+        products: BTreeMap<String, product_contracts::live_feeds::v3::CurrentProduct>,
+    ) -> Vec<u8> {
+        serde_json::to_vec(&product_contracts::live_feeds::v3::CurrentManifest {
+            schema_version: product_contracts::live_feeds::v3::SCHEMA_VERSION,
+            generated_at_utc: "2026-05-20T12:00:00Z".to_string(),
+            products,
+        })
+        .expect("current live-feed manifest")
+    }
+
+    fn live_current_product_for_test(
+        product: &str,
+        version: &str,
+        state_url: &str,
+        state_sha256: &str,
+        history: Vec<product_contracts::live_feeds::v3::CurrentHistoryEntry>,
+    ) -> product_contracts::live_feeds::v3::CurrentProduct {
+        product_contracts::live_feeds::v3::CurrentProduct {
+            current: version.to_string(),
+            version_manifest_url: format!("versions/{product}/{version}.json"),
+            state_url: state_url.to_string(),
+            state_sha256: state_sha256.to_string(),
+            published_at_utc: None,
+            collected_at_utc: None,
+            history,
+        }
+    }
+
+    fn live_version_manifest_for_test(
+        product: &str,
+        version: &str,
+        kind: &str,
+        state_url: &str,
+        state_sha256: &str,
+    ) -> Vec<u8> {
+        serde_json::to_vec(&product_contracts::live_feeds::v3::VersionManifest {
+            schema_version: product_contracts::live_feeds::v3::SCHEMA_VERSION,
+            product: product.to_string(),
+            version: version.to_string(),
+            previous: None,
+            state: product_contracts::live_feeds::v3::PayloadRef {
+                kind: Some(kind.to_string()),
+                url: state_url.to_string(),
+                bytes: 1,
+                blob_sha256: "test-state-blob-sha256".to_string(),
+                state_sha256: state_sha256.to_string(),
+            },
+            install_state: None,
+            delta_from_previous: None,
+            recent_deltas: Vec::new(),
+        })
+        .expect("version live-feed manifest")
+    }
+
     fn attach_isolated_test_nav_kv_store(handle: u32, store: &NavKvStore) -> u32 {
         let store_id = next_test_nav_kv_store_id();
         attach_nav_kv_store_to_session(handle, store_id, store).expect("attach test nav kv");
@@ -13406,7 +13147,7 @@ mod tests {
 
     snapshot_wrapper!(set_map_layer_visibility_in_session(
         handle: u32,
-        layer_id: &str,
+        layer: MapLayerId,
         visible: bool,
     ));
     snapshot_wrapper!(set_guidance_leg_geometry_in_session(
@@ -13541,7 +13282,7 @@ mod tests {
     ));
     snapshot_wrapper!(set_debug_flag_in_session(
         handle: u32,
-        flag_id: &str,
+        flag_id: DebugFlagId,
         enabled: bool,
     ));
     snapshot_wrapper!(report_live_feed_connection_event_in_session(
@@ -14031,43 +13772,32 @@ mod tests {
     }
 
     fn ingest_test_live_obstacle_state(handle: u32, version: &str, obstacle_had: &TestObstacleHad) {
+        let state_url = format!("states/obstacles/{version}/manifest.json");
         ingest_resource_in_session(
             handle,
             "live_feeds/current",
-            format!(
-                r#"{{
-                    "schema_version": 3,
-                    "products": {{
-                        "obstacles": {{
-                            "current": "{version}",
-                            "version_manifest_url": "versions/obstacles/{version}.json",
-                            "state_url": "states/obstacles/{version}/manifest.json",
-                            "state_sha256": "{}"
-                        }}
-                    }}
-                }}"#,
-                obstacle_had.state_sha256
-            )
-            .as_bytes(),
+            &live_current_manifest_for_test(BTreeMap::from([(
+                "obstacles".to_string(),
+                live_current_product_for_test(
+                    "obstacles",
+                    version,
+                    &state_url,
+                    &obstacle_had.state_sha256,
+                    Vec::new(),
+                ),
+            )])),
         )
         .expect("current manifest");
         ingest_resource_in_session(
             handle,
             &format!("live_feeds/version/obstacles/{version}"),
-            format!(
-                r#"{{
-                    "schema_version": 3,
-                    "product": "obstacles",
-                    "version": "{version}",
-                    "state": {{
-                        "kind": "nav_kv",
-                        "url": "states/obstacles/{version}/manifest.json",
-                        "state_sha256": "{}"
-                    }}
-                }}"#,
-                obstacle_had.state_sha256
-            )
-            .as_bytes(),
+            &live_version_manifest_for_test(
+                "obstacles",
+                version,
+                "nav_kv",
+                &state_url,
+                &obstacle_had.state_sha256,
+            ),
         )
         .expect("version manifest");
         ingest_resource_in_session(
@@ -14468,7 +14198,7 @@ mod tests {
         set_resource_policy_in_session(init.handle, CoreResourcePolicy::PublicUnpacked)
             .expect("set web resource policy");
         let current_artifacts = format!(
-            r#"[{{"schema_version":1,"contracts":{{"nav-db":"{}"}},"as_of_utc":"2026-07-15T12:00:00Z","artifact_roots":{{"packaged":"packaged","unpacked":"unpacked"}},"bundles":[]}}]"#,
+            r#"[{{"schema_version":1,"contracts":{{"nav-db":"{}"}},"as_of_date":"2026-07-15","as_of_utc":"2026-07-15T12:00:00Z","artifact_roots":{{"packaged":"packaged","unpacked":"unpacked"}},"bundles":[]}}]"#,
             crate::REQUIRED_NAV_DB_CONTRACT_ID
         );
         ingest_resource_in_session_at_epoch_ms(
@@ -14514,7 +14244,7 @@ mod tests {
         let old_open = nav_db_open_result_for_test("NAV_DB_2607", None);
         attach_isolated_test_nav_kv_store_with_open_result(init.handle, &old_store, &old_open);
         let initial = format!(
-            r#"[{{"schema_version":1,"contracts":{{"nav-db":"{}"}},"as_of_utc":"2026-07-15T12:00:00Z","artifact_roots":{{"packaged":"packaged","unpacked":"unpacked"}},"bundles":[]}}]"#,
+            r#"[{{"schema_version":1,"contracts":{{"nav-db":"{}"}},"as_of_date":"2026-07-15","as_of_utc":"2026-07-15T12:00:00Z","artifact_roots":{{"packaged":"packaged","unpacked":"unpacked"}},"bundles":[]}}]"#,
             crate::REQUIRED_NAV_DB_CONTRACT_ID
         );
         ingest_resource_in_session_at_epoch_ms(
@@ -14531,7 +14261,7 @@ mod tests {
         ));
 
         let refreshed = format!(
-            r#"[{{"schema_version":1,"contracts":{{"nav-db":"{}"}},"as_of_utc":"2026-07-15T16:00:00Z","artifact_roots":{{"packaged":"packaged","unpacked":"unpacked"}},"bundles":[{{"filename":"bundle-2608.json","relative_path":"bundle-2608.json","id":"bundle-2608","bundle_type":"cycle"}}]}}]"#,
+            r#"[{{"schema_version":1,"contracts":{{"nav-db":"{}"}},"as_of_date":"2026-07-15","as_of_utc":"2026-07-15T16:00:00Z","artifact_roots":{{"packaged":"packaged","unpacked":"unpacked"}},"bundles":[{{"filename":"bundle-2608.json","relative_path":"bundle-2608.json","id":"bundle-2608","bundle_type":"cycle","cycle":"2608","cycle_version":"01","start_valid":"2026-07-15T16:01:00Z","end_valid":"2026-08-13T00:00:00Z","checksum_sha256":"test-bundle-sha256","size_bytes":1234}}]}}]"#,
             crate::REQUIRED_NAV_DB_CONTRACT_ID
         );
         ingest_resource_in_session_at_epoch_ms(
@@ -14549,6 +14279,16 @@ mod tests {
         assert_eq!(resources[0].id, "publication/bundle/bundle-2608.json");
 
         let bundle = serde_json::json!({
+            "schema_version": 1,
+            "bundle_id": "bundle-2608",
+            "bundle_type": "cycle",
+            "cycle": "2608",
+            "cycle_version": "01",
+            "generated_at_utc": "2026-07-15T16:00:00Z",
+            "effective_date": "2026-07-15",
+            "expiration_date": "2026-08-13",
+            "start_valid": "2026-07-15T16:01:00Z",
+            "end_valid": "2026-08-13T00:00:00Z",
             "packages": [{
                 "id": "NAV_DB_2608",
                 "family_id": "nav-db",
@@ -14557,6 +14297,8 @@ mod tests {
                 "relative_path": "NAV_DB_2608.zip",
                 "cycle": "2608",
                 "cycle_version": "01",
+                "checksum_sha256": "test-package-sha256",
+                "size_bytes": 1234,
                 "effective_date": "2026-07-15T16:01:00Z",
                 "expiration_date": "2026-08-13T00:00:00Z"
             }]
@@ -15075,7 +14817,32 @@ mod tests {
     }
 
     fn ingest_bundle_packages_for_test(handle: u32, packages: Vec<serde_json::Value>) {
-        let bundle = serde_json::json!({ "packages": packages });
+        let packages = packages
+            .into_iter()
+            .map(|mut package| {
+                let package = package.as_object_mut().expect("package object");
+                package
+                    .entry("checksum_sha256")
+                    .or_insert_with(|| serde_json::json!("test-package-sha256"));
+                package
+                    .entry("size_bytes")
+                    .or_insert_with(|| serde_json::json!(1234));
+                serde_json::Value::Object(package.clone())
+            })
+            .collect::<Vec<_>>();
+        let bundle = serde_json::json!({
+            "schema_version": 1,
+            "bundle_id": "test",
+            "bundle_type": "cycle",
+            "cycle": "2605",
+            "cycle_version": "01",
+            "generated_at_utc": "2026-05-20T12:00:00Z",
+            "effective_date": "2026-05-20",
+            "expiration_date": "2026-06-17",
+            "start_valid": "2026-05-20T00:00:00Z",
+            "end_valid": "2026-06-17T00:00:00Z",
+            "packages": packages,
+        });
         let bytes = serde_json::to_vec(&bundle).expect("bundle json");
         let mut sessions = lock_sessions();
         let session = session_mut(&mut sessions, handle).expect("session");
@@ -15316,6 +15083,8 @@ mod tests {
                     "packaged": "published_packaged",
                     "unpacked": "published_unpacked"
                 }},
+                "as_of_date": "2026-08-04",
+                "as_of_utc": "2026-08-04T00:00:00Z",
                 "bundles": []
             }}]"#,
             crate::REQUIRED_NAV_DB_CONTRACT_ID
@@ -15362,6 +15131,7 @@ mod tests {
                     "live_feeds/current",
                     br#"{
                         "schema_version": 3,
+                        "generated_at_utc": "2026-08-04T00:00:00Z",
                         "products": {
                             "metars": {
                                 "current": "v1",
@@ -15416,6 +15186,7 @@ mod tests {
             "live_feeds/current",
             br#"{
                 "schema_version": 3,
+                "generated_at_utc": "2026-08-04T00:00:00Z",
                 "products": {
                     "metars": {
                         "current": "v1",
@@ -15586,6 +15357,7 @@ mod tests {
                     format!(
                         r#"{{
                             "schema_version": 3,
+                            "generated_at_utc": "2026-08-04T00:00:00Z",
                             "products": {{
                                 "metars": {{
                                     "current": "v1",
@@ -15679,6 +15451,7 @@ mod tests {
                 format!(
                     r#"{{
                         "schema_version": 3,
+                        "generated_at_utc": "2026-08-04T00:00:00Z",
                         "products": {{
                             "{product}": {{
                                 "current": "v1",
@@ -15762,6 +15535,7 @@ mod tests {
             format!(
                 r#"{{
                     "schema_version": 3,
+                    "generated_at_utc": "2026-08-04T00:00:00Z",
                     "products": {{
                         "tafs": {{
                             "current": "v1",
@@ -16010,6 +15784,8 @@ mod tests {
             "to_version": head_id,
             "to_state_sha256": head_id,
             "url": format!("deltas/notams/{checkpoint_id}__{head_id}.json.xz"),
+            "bytes": delta_bytes.len(),
+            "blob_sha256": format!("{:x}", Sha256::digest(&delta_bytes)),
             "mutation_count": 1
         });
 
@@ -16021,6 +15797,7 @@ mod tests {
                     "live_feeds/current",
                     &serde_json::to_vec(&serde_json::json!({
                         "schema_version": crate::live_feeds::LIVE_FEEDS_SCHEMA_VERSION,
+                        "generated_at_utc": "2026-08-04T00:00:00Z",
                         "products": {
                             "notams": {
                                 "current": head_id,
@@ -16047,6 +15824,8 @@ mod tests {
                         "state": {
                             "kind": "notam_checkpoint_xz",
                             "url": format!("states/notams/{checkpoint_id}.json.xz"),
+                            "bytes": checkpoint_bytes.len(),
+                            "blob_sha256": format!("{:x}", Sha256::digest(&checkpoint_bytes)),
                             "state_sha256": checkpoint_id
                         },
                         "delta_from_previous": delta_ref,
@@ -16193,6 +15972,7 @@ mod tests {
                     "live_feeds/current",
                     serde_json::to_string(&serde_json::json!({
                         "schema_version": crate::live_feeds::LIVE_FEEDS_SCHEMA_VERSION,
+                        "generated_at_utc": "2026-08-04T00:00:00Z",
                         "products": {
                             "notams": {
                                 "current": state_id,
@@ -16216,6 +15996,8 @@ mod tests {
                         "state": {
                             "kind": "notam_checkpoint_xz",
                             "url": format!("states/notams/{state_id}.json.xz"),
+                            "bytes": checkpoint_bytes.len(),
+                            "blob_sha256": format!("{:x}", Sha256::digest(&checkpoint_bytes)),
                             "state_sha256": state_id,
                         }
                     }))
@@ -16418,6 +16200,7 @@ mod tests {
             format!(
                 r#"{{
                     "schema_version": 3,
+                    "generated_at_utc": "2026-08-04T00:00:00Z",
                     "products": {{
                         "tafs": {{
                             "current": "v1",
@@ -16574,6 +16357,7 @@ mod tests {
                 format!(
                     r#"{{
                         "schema_version": {live_feeds_schema_version},
+                        "generated_at_utc": "2026-08-04T00:00:00Z",
                         "products": {{
                             "tafs": {{
                                 "current": "taf-v1",
@@ -17212,40 +16996,28 @@ mod tests {
         Arc::make_mut(&mut session.live_feeds)
             .ingest_resource(
                 "live_feeds/current",
-                format!(
-                    r#"{{
-                    "schema_version": 3,
-                    "products": {{
-                        "tfrs": {{
-                            "current": "bad",
-                            "version_manifest_url": "versions/tfrs/bad.json",
-                            "state_url": "states/tfrs/bad.json",
-                            "state_sha256": "{}"
-                        }}
-                    }}
-                }}"#,
-                    bad_tfr_state_sha
-                )
-                .as_bytes(),
+                &live_current_manifest_for_test(BTreeMap::from([(
+                    "tfrs".to_string(),
+                    live_current_product_for_test(
+                        "tfrs",
+                        "bad",
+                        "states/tfrs/bad.json",
+                        &bad_tfr_state_sha,
+                        Vec::new(),
+                    ),
+                )])),
             )
             .expect("current manifest");
         Arc::make_mut(&mut session.live_feeds)
             .ingest_resource(
                 "live_feeds/version/tfrs/bad",
-                format!(
-                    r#"{{
-                    "schema_version": 3,
-                    "product": "tfrs",
-                    "version": "bad",
-                    "state": {{
-                        "kind": "json",
-                        "url": "states/tfrs/bad.json",
-                        "state_sha256": "{}"
-                    }}
-                }}"#,
-                    bad_tfr_state_sha
-                )
-                .as_bytes(),
+                &live_version_manifest_for_test(
+                    "tfrs",
+                    "bad",
+                    "json",
+                    "states/tfrs/bad.json",
+                    &bad_tfr_state_sha,
+                ),
             )
             .expect("version manifest");
         Arc::make_mut(&mut session.live_feeds)
@@ -17361,38 +17133,28 @@ mod tests {
         ingest_resource_in_session(
             init.handle,
             "live_feeds/current",
-            format!(
-                r#"{{
-                    "schema_version": 3,
-                    "products": {{
-                        "obstacles": {{
-                            "current": "v1",
-                            "version_manifest_url": "versions/obstacles/v1.json",
-                            "state_url": "states/obstacles/v1/manifest.json",
-                            "state_sha256": "{state_sha256}"
-                        }}
-                    }}
-                }}"#
-            )
-            .as_bytes(),
+            &live_current_manifest_for_test(BTreeMap::from([(
+                "obstacles".to_string(),
+                live_current_product_for_test(
+                    "obstacles",
+                    "v1",
+                    "states/obstacles/v1/manifest.json",
+                    &state_sha256,
+                    Vec::new(),
+                ),
+            )])),
         )
         .expect("current manifest");
         ingest_resource_in_session(
             init.handle,
             "live_feeds/version/obstacles/v1",
-            format!(
-                r#"{{
-                    "schema_version": 3,
-                    "product": "obstacles",
-                    "version": "v1",
-                    "state": {{
-                        "kind": "nav_kv",
-                        "url": "states/obstacles/v1/manifest.json",
-                        "state_sha256": "{state_sha256}"
-                    }}
-                }}"#
-            )
-            .as_bytes(),
+            &live_version_manifest_for_test(
+                "obstacles",
+                "v1",
+                "nav_kv",
+                "states/obstacles/v1/manifest.json",
+                &state_sha256,
+            ),
         )
         .expect("version manifest");
         ingest_resource_in_session(
@@ -17502,21 +17264,16 @@ mod tests {
         ingest_resource_in_session(
             init.handle,
             "live_feeds/current",
-            format!(
-                r#"{{
-                    "schema_version": 3,
-                    "products": {{
-                        "obstacles": {{
-                            "current": "v2",
-                            "version_manifest_url": "versions/obstacles/v2.json",
-                            "state_url": "states/obstacles/v2/manifest.json",
-                            "state_sha256": "{}"
-                        }}
-                    }}
-                }}"#,
-                v2.state_sha256
-            )
-            .as_bytes(),
+            &live_current_manifest_for_test(BTreeMap::from([(
+                "obstacles".to_string(),
+                live_current_product_for_test(
+                    "obstacles",
+                    "v2",
+                    "states/obstacles/v2/manifest.json",
+                    &v2.state_sha256,
+                    Vec::new(),
+                ),
+            )])),
         )
         .expect("v2 current manifest");
 
@@ -17691,7 +17448,8 @@ mod tests {
             init.handle,
             LiveFeedAcquisitionPolicy::DurableCompleteStates,
         );
-        set_map_layer_visibility_in_session(init.handle, "nexrad", true).expect("show nexrad");
+        set_map_layer_visibility_in_session(init.handle, MapLayerId::Nexrad, true)
+            .expect("show nexrad");
 
         let snapshot = report_session_resource_failure_in_session(
             init.handle,
@@ -17745,8 +17503,9 @@ mod tests {
             session.session_revision
         };
 
-        let outcome = super::set_map_layer_visibility_in_session(init.handle, "nexrad", true)
-            .expect("request layer visibility");
+        let outcome =
+            super::set_map_layer_visibility_in_session(init.handle, MapLayerId::Nexrad, true)
+                .expect("request layer visibility");
         let HadOperationOutcome::NeedResources { resources } = outcome else {
             panic!("missing snapshot pages must suspend the layer command: {outcome:?}");
         };
@@ -17761,7 +17520,7 @@ mod tests {
         for (page_index, page) in pages.iter().enumerate() {
             insert_nav_kv_page_for_attached_sessions(store_id, page_index as u32, page);
         }
-        let snapshot = set_map_layer_visibility_in_session(init.handle, "nexrad", true)
+        let snapshot = set_map_layer_visibility_in_session(init.handle, MapLayerId::Nexrad, true)
             .expect("retry layer visibility");
         assert!(snapshot.map_layer_state.nexrad.visible);
         assert_eq!(snapshot.session_revision, revision_before + 1);
@@ -17838,12 +17597,13 @@ mod tests {
             init.handle,
             LiveFeedAcquisitionPolicy::DurableCompleteStates,
         );
-        set_map_layer_visibility_in_session(init.handle, "nexrad", true).expect("show nexrad");
+        set_map_layer_visibility_in_session(init.handle, MapLayerId::Nexrad, true)
+            .expect("show nexrad");
         report_session_resource_failure_in_session(init.handle, "live_feeds/current", "404")
             .expect("report failure");
 
-        let snapshot =
-            set_map_layer_visibility_in_session(init.handle, "nexrad", false).expect("hide nexrad");
+        let snapshot = set_map_layer_visibility_in_session(init.handle, MapLayerId::Nexrad, false)
+            .expect("hide nexrad");
 
         assert!(!snapshot
             .data_status_state
@@ -17882,7 +17642,8 @@ mod tests {
             init.handle,
             LiveFeedAcquisitionPolicy::DurableCompleteStates,
         );
-        set_map_layer_visibility_in_session(init.handle, "nexrad", true).expect("show nexrad");
+        set_map_layer_visibility_in_session(init.handle, MapLayerId::Nexrad, true)
+            .expect("show nexrad");
         install_live_feed_installed_state_in_session(
             init.handle,
             &crate::LiveFeedInstalledState {
@@ -17957,7 +17718,8 @@ mod tests {
             init.handle,
             LiveFeedAcquisitionPolicy::DurableCompleteStates,
         );
-        set_map_layer_visibility_in_session(init.handle, "nexrad", true).expect("show nexrad");
+        set_map_layer_visibility_in_session(init.handle, MapLayerId::Nexrad, true)
+            .expect("show nexrad");
         for (version, observed_at_utc) in [
             ("nexrad-installed-v1", "2026-05-20T12:00:00Z"),
             ("nexrad-installed-v2", "2026-05-20T12:05:00Z"),
@@ -18058,20 +17820,11 @@ mod tests {
 
     fn ingest_nexrad_live_test_state(handle: u32, version: &str, manifest: &serde_json::Value) {
         let state_sha256 = canonical_json_sha256_value(manifest).expect("state hash");
-        let version_manifest = serde_json::json!({
-            "schema_version": 3,
-            "product": "nexrad",
-            "version": version,
-            "state": {
-                "kind": "json",
-                "url": format!("states/nexrad/{version}/manifest.json"),
-                "state_sha256": state_sha256,
-            }
-        });
+        let state_url = format!("states/nexrad/{version}/manifest.json");
         ingest_resource_in_session(
             handle,
             &format!("live_feeds/version/nexrad/{version}"),
-            &serde_json::to_vec(&version_manifest).expect("version manifest json"),
+            &live_version_manifest_for_test("nexrad", version, "json", &state_url, &state_sha256),
         )
         .expect("ingest nexrad version");
         ingest_resource_in_session(
@@ -18097,7 +17850,8 @@ mod tests {
             .expect("initial nexrad age cell");
         assert_eq!(nexrad_age_cell.value.as_deref(), Some("off"));
 
-        set_map_layer_visibility_in_session(init.handle, "nexrad", true).expect("show nexrad");
+        set_map_layer_visibility_in_session(init.handle, MapLayerId::Nexrad, true)
+            .expect("show nexrad");
         let snapshot = get_session_snapshot(init.handle).expect("empty nexrad snapshot");
         let nexrad_age_cell = snapshot
             .app_ui_state
@@ -18125,30 +17879,29 @@ mod tests {
             .iter()
             .map(|(version, manifest)| {
                 let state_sha256 = canonical_json_sha256_value(manifest).expect("state hash");
-                serde_json::json!({
-                    "version": version,
-                    "version_manifest_url": format!("versions/nexrad/{version}.json"),
-                    "state_url": format!("states/nexrad/{version}/manifest.json"),
-                    "state_sha256": state_sha256,
-                })
+                product_contracts::live_feeds::v3::CurrentHistoryEntry {
+                    version: (*version).to_string(),
+                    version_manifest_url: format!("versions/nexrad/{version}.json"),
+                    state_url: Some(format!("states/nexrad/{version}/manifest.json")),
+                    state_sha256: Some(state_sha256),
+                }
             })
             .collect::<Vec<_>>();
-        let current = serde_json::json!({
-            "schema_version": 3,
-            "products": {
-                "nexrad": {
-                    "current": "nexrad-v7",
-                    "version_manifest_url": "versions/nexrad/nexrad-v7.json",
-                    "history": history,
-                }
-            }
-        });
-        ingest_resource_in_session(
-            init.handle,
-            "live_feeds/current",
-            &serde_json::to_vec(&current).expect("current json"),
-        )
-        .expect("ingest current");
+        let current_manifest = manifests.last().expect("current NEXRAD manifest").1.clone();
+        let current_state_sha256 =
+            canonical_json_sha256_value(&current_manifest).expect("current state hash");
+        let current = live_current_manifest_for_test(BTreeMap::from([(
+            "nexrad".to_string(),
+            live_current_product_for_test(
+                "nexrad",
+                "nexrad-v7",
+                "states/nexrad/nexrad-v7/manifest.json",
+                &current_state_sha256,
+                history,
+            ),
+        )]));
+        ingest_resource_in_session(init.handle, "live_feeds/current", &current)
+            .expect("ingest current");
         for (version, manifest) in &manifests {
             ingest_nexrad_live_test_state(init.handle, version, manifest);
         }
@@ -18369,7 +18122,8 @@ mod tests {
             .expect("blank nexrad age cell");
         assert_eq!(nexrad_age_cell.value.as_deref(), Some("---"));
 
-        set_map_layer_visibility_in_session(init.handle, "nexrad", false).expect("hide nexrad");
+        set_map_layer_visibility_in_session(init.handle, MapLayerId::Nexrad, false)
+            .expect("hide nexrad");
         let snapshot = get_session_snapshot(init.handle).expect("hidden snapshot");
         let nexrad_age_cell = snapshot
             .app_ui_state
@@ -18386,7 +18140,8 @@ mod tests {
         let init =
             create_ui_session(FlightPlan::default(), &[], None, None).expect("create session");
         configure_test_live_feed_policy(init.handle, LiveFeedAcquisitionPolicy::JitPublicResources);
-        set_map_layer_visibility_in_session(init.handle, "nexrad", true).expect("show nexrad");
+        set_map_layer_visibility_in_session(init.handle, MapLayerId::Nexrad, true)
+            .expect("show nexrad");
 
         let frame_ages_min = [43_i64, 38, 33, 28, 23, 18, 13];
         let cycle_ms = nexrad_animation_cycle_ms(frame_ages_min.len());
@@ -18406,34 +18161,33 @@ mod tests {
             .iter()
             .map(|(version, manifest)| {
                 let state_sha256 = canonical_json_sha256_value(manifest).expect("state hash");
-                serde_json::json!({
-                    "version": version,
-                    "version_manifest_url": format!("versions/nexrad/{version}.json"),
-                    "state_url": format!("states/nexrad/{version}/manifest.json"),
-                    "state_sha256": state_sha256,
-                })
+                product_contracts::live_feeds::v3::CurrentHistoryEntry {
+                    version: version.clone(),
+                    version_manifest_url: format!("versions/nexrad/{version}.json"),
+                    state_url: Some(format!("states/nexrad/{version}/manifest.json")),
+                    state_sha256: Some(state_sha256),
+                }
             })
             .collect::<Vec<_>>();
         let current_version = manifests
             .last()
             .map(|(version, _)| version.as_str())
             .expect("current version");
-        let current = serde_json::json!({
-            "schema_version": 3,
-            "products": {
-                "nexrad": {
-                    "current": current_version,
-                    "version_manifest_url": format!("versions/nexrad/{current_version}.json"),
-                    "history": history,
-                }
-            }
-        });
-        ingest_resource_in_session(
-            init.handle,
-            "live_feeds/current",
-            &serde_json::to_vec(&current).expect("current json"),
-        )
-        .expect("ingest current");
+        let current_state_sha256 =
+            canonical_json_sha256_value(&manifests.last().expect("current NEXRAD manifest").1)
+                .expect("current state hash");
+        let current = live_current_manifest_for_test(BTreeMap::from([(
+            "nexrad".to_string(),
+            live_current_product_for_test(
+                "nexrad",
+                current_version,
+                &format!("states/nexrad/{current_version}/manifest.json"),
+                &current_state_sha256,
+                history,
+            ),
+        )]));
+        ingest_resource_in_session(init.handle, "live_feeds/current", &current)
+            .expect("ingest current");
         for (version, manifest) in &manifests {
             ingest_nexrad_live_test_state(init.handle, version, manifest);
         }
@@ -18535,11 +18289,12 @@ mod tests {
         let init =
             create_ui_session(FlightPlan::default(), &[], None, None).expect("create session");
         configure_test_live_feed_policy(init.handle, LiveFeedAcquisitionPolicy::JitPublicResources);
-        set_map_layer_visibility_in_session(init.handle, "nexrad", true).expect("show nexrad");
+        set_map_layer_visibility_in_session(init.handle, MapLayerId::Nexrad, true)
+            .expect("show nexrad");
         ingest_resource_in_session(
             init.handle,
             "live_feeds/current",
-            br#"{"schema_version":3,"products":{}}"#,
+            &live_current_manifest_for_test(BTreeMap::new()),
         )
         .expect("ingest empty current manifest");
 
@@ -18599,7 +18354,8 @@ mod tests {
     fn visible_metars_without_product_state_records_caution() {
         let init =
             create_ui_session(FlightPlan::default(), &[], None, None).expect("create session");
-        set_map_layer_visibility_in_session(init.handle, "vectors", false).expect("hide vectors");
+        set_map_layer_visibility_in_session(init.handle, MapLayerId::Vectors, false)
+            .expect("hide vectors");
         {
             let mut sessions = lock_sessions();
             let session = session_mut(&mut sessions, init.handle).expect("session");
@@ -18707,7 +18463,8 @@ mod tests {
     #[test]
     fn loaded_metar_feed_older_than_policy_records_warning() {
         let init = create_current_test_session();
-        set_map_layer_visibility_in_session(init.handle, "metars", true).expect("show metars");
+        set_map_layer_visibility_in_session(init.handle, MapLayerId::Metars, true)
+            .expect("show metars");
         {
             let mut sessions = lock_sessions();
             let session = session_mut(&mut sessions, init.handle).expect("session");
@@ -18733,7 +18490,8 @@ mod tests {
     #[test]
     fn metar_fetch_failure_does_not_override_loaded_payload_status() {
         let init = create_current_test_session();
-        set_map_layer_visibility_in_session(init.handle, "metars", true).expect("show metars");
+        set_map_layer_visibility_in_session(init.handle, MapLayerId::Metars, true)
+            .expect("show metars");
         {
             let mut sessions = lock_sessions();
             let session = session_mut(&mut sessions, init.handle).expect("session");
@@ -18779,7 +18537,8 @@ mod tests {
             utc("2026-05-20T12:00:00Z").timestamp_millis(),
         )
         .expect("create session");
-        set_map_layer_visibility_in_session(init.handle, "metars", true).expect("show metars");
+        set_map_layer_visibility_in_session(init.handle, MapLayerId::Metars, true)
+            .expect("show metars");
         {
             let mut sessions = lock_sessions();
             let session = session_mut(&mut sessions, init.handle).expect("session");
@@ -18820,8 +18579,10 @@ mod tests {
             utc("2026-05-20T12:00:00Z").timestamp_millis(),
         )
         .expect("create session");
-        set_map_layer_visibility_in_session(init.handle, "metars", true).expect("show metars");
-        set_map_layer_visibility_in_session(init.handle, "vectors", false).expect("hide vectors");
+        set_map_layer_visibility_in_session(init.handle, MapLayerId::Metars, true)
+            .expect("show metars");
+        set_map_layer_visibility_in_session(init.handle, MapLayerId::Vectors, false)
+            .expect("hide vectors");
         {
             let mut sessions = lock_sessions();
             let session = session_mut(&mut sessions, init.handle).expect("session");
@@ -18878,7 +18639,8 @@ mod tests {
     #[test]
     fn loaded_tfr_feed_older_than_policy_records_warning() {
         let init = create_current_test_session();
-        set_map_layer_visibility_in_session(init.handle, "vectors", true).expect("show vectors");
+        set_map_layer_visibility_in_session(init.handle, MapLayerId::Vectors, true)
+            .expect("show vectors");
         {
             let mut sessions = lock_sessions();
             let session = session_mut(&mut sessions, init.handle).expect("session");
@@ -18903,7 +18665,8 @@ mod tests {
     #[test]
     fn loaded_obstacle_feed_older_than_policy_records_warning() {
         let init = create_current_test_session();
-        set_map_layer_visibility_in_session(init.handle, "vectors", true).expect("show vectors");
+        set_map_layer_visibility_in_session(init.handle, MapLayerId::Vectors, true)
+            .expect("show vectors");
         let pairs = vec![had_nav_kv::NavKvPair {
             key: "obstacle/8/0/0".to_string(),
             value: b"{}".to_vec(),
@@ -18914,38 +18677,28 @@ mod tests {
         ingest_resource_in_session(
             init.handle,
             "live_feeds/current",
-            format!(
-                r#"{{
-                    "schema_version": 3,
-                    "products": {{
-                        "obstacles": {{
-                            "current": "v1",
-                            "version_manifest_url": "versions/obstacles/v1.json",
-                            "state_url": "states/obstacles/v1/manifest.json",
-                            "state_sha256": "{state_sha256}"
-                        }}
-                    }}
-                }}"#
-            )
-            .as_bytes(),
+            &live_current_manifest_for_test(BTreeMap::from([(
+                "obstacles".to_string(),
+                live_current_product_for_test(
+                    "obstacles",
+                    "v1",
+                    "states/obstacles/v1/manifest.json",
+                    &state_sha256,
+                    Vec::new(),
+                ),
+            )])),
         )
         .expect("ingest current");
         ingest_resource_in_session(
             init.handle,
             "live_feeds/version/obstacles/v1",
-            format!(
-                r#"{{
-                    "schema_version": 3,
-                    "product": "obstacles",
-                    "version": "v1",
-                    "state": {{
-                        "kind": "nav_kv",
-                        "url": "states/obstacles/v1/manifest.json",
-                        "state_sha256": "{state_sha256}"
-                    }}
-                }}"#
-            )
-            .as_bytes(),
+            &live_version_manifest_for_test(
+                "obstacles",
+                "v1",
+                "nav_kv",
+                "states/obstacles/v1/manifest.json",
+                &state_sha256,
+            ),
         )
         .expect("ingest version");
         ingest_resource_in_session(
@@ -18991,13 +18744,24 @@ mod tests {
     fn loaded_nexrad_feed_older_than_policy_records_warning() {
         let init = create_current_test_session();
         configure_test_live_feed_policy(init.handle, LiveFeedAcquisitionPolicy::JitPublicResources);
-        set_map_layer_visibility_in_session(init.handle, "nexrad", true).expect("show nexrad");
+        set_map_layer_visibility_in_session(init.handle, MapLayerId::Nexrad, true)
+            .expect("show nexrad");
         let version = "nexrad-old";
         let manifest = nexrad_live_test_manifest(version, "2020-01-01T00:00:00Z");
+        let state_sha256 = canonical_json_sha256_value(&manifest).expect("state hash");
         ingest_resource_in_session(
             init.handle,
             "live_feeds/current",
-            br#"{"schema_version":3,"products":{"nexrad":{"current":"nexrad-old","version_manifest_url":"versions/nexrad/nexrad-old.json"}}}"#,
+            &live_current_manifest_for_test(BTreeMap::from([(
+                "nexrad".to_string(),
+                live_current_product_for_test(
+                    "nexrad",
+                    version,
+                    "states/nexrad/nexrad-old/manifest.json",
+                    &state_sha256,
+                    Vec::new(),
+                ),
+            )])),
         )
         .expect("ingest current");
         ingest_nexrad_live_test_state(init.handle, version, &manifest);
@@ -19423,7 +19187,7 @@ mod tests {
                 .ingest_resource_at_epoch_ms(
                     "publication/current_artifacts",
                     format!(
-                        r#"[{{"schema_version":1,"contracts":{{"nav-db":"{}"}},"as_of_utc":"2026-05-20T12:00:00Z","artifact_roots":{{"packaged":"published_packaged","unpacked":"published_unpacked"}},"bundles":[]}}]"#,
+                        r#"[{{"schema_version":1,"contracts":{{"nav-db":"{}"}},"as_of_date":"2026-05-20","as_of_utc":"2026-05-20T12:00:00Z","artifact_roots":{{"packaged":"published_packaged","unpacked":"published_unpacked"}},"bundles":[]}}]"#,
                         crate::REQUIRED_NAV_DB_CONTRACT_ID
                     )
                     .as_bytes(),
@@ -19699,13 +19463,13 @@ mod tests {
         assert!(row.detail.contains(
             "The live-feed event stream is connected, but live-feed data is unavailable"
         ));
-        assert!(row
-            .detail
-            .contains("current manifest has schema_version 1; client requires schema_version 3"));
+        assert!(row.detail.contains(
+            "live-feed current manifest offers schema version 1; client requires schema version 3"
+        ));
         assert!(row.facts.iter().any(|fact| {
             fact.label == "Error"
                 && fact.value.contains(
-                    "current manifest has schema_version 1; client requires schema_version 3",
+                    "live-feed current manifest offers schema version 1; client requires schema version 3",
                 )
         }));
     }
@@ -21113,7 +20877,8 @@ mod tests {
     }
 
     fn enable_bad_autopilot(handle: u32) -> UiSessionSnapshot {
-        set_debug_flag_in_session(handle, "bad_autopilot", true).expect("enable Bad Autopilot")
+        set_debug_flag_in_session(handle, DebugFlagId::BadAutopilot, true)
+            .expect("enable Bad Autopilot")
     }
 
     fn ownship_position(snapshot: &UiSessionSnapshot) -> LatLon {
@@ -22100,8 +21865,8 @@ mod tests {
         let initial_read = get_session_snapshot(init.handle).expect("read snapshot");
         assert_eq!(initial_read.session_revision, 0);
 
-        let first_mutation =
-            set_debug_flag_in_session(init.handle, "tile_labels", true).expect("set debug flag");
+        let first_mutation = set_debug_flag_in_session(init.handle, DebugFlagId::TileLabels, true)
+            .expect("set debug flag");
         assert_eq!(first_mutation.session_revision, 1);
 
         let post_mutation_read = get_session_snapshot(init.handle).expect("read snapshot again");
@@ -22111,7 +21876,8 @@ mod tests {
         );
 
         let second_mutation =
-            set_debug_flag_in_session(init.handle, "tile_labels", false).expect("clear debug flag");
+            set_debug_flag_in_session(init.handle, DebugFlagId::TileLabels, false)
+                .expect("clear debug flag");
         assert_eq!(second_mutation.session_revision, 2);
     }
 
@@ -22493,12 +22259,13 @@ mod tests {
             create_ui_session(lat_lon_preview_plan(), &[], None, None).expect("create session");
         assert!(!init.snapshot.debug_state.debug_log_to_developer_server);
 
-        let enabled = set_debug_flag_in_session(init.handle, "debug_log_to_developer_server", true)
-            .expect("enable developer-server debug log");
+        let enabled =
+            set_debug_flag_in_session(init.handle, DebugFlagId::DebugLogToDeveloperServer, true)
+                .expect("enable developer-server debug log");
         assert!(enabled.debug_state.debug_log_to_developer_server);
 
         let disabled =
-            set_debug_flag_in_session(init.handle, "debug_log_to_developer_server", false)
+            set_debug_flag_in_session(init.handle, DebugFlagId::DebugLogToDeveloperServer, false)
                 .expect("disable developer-server debug log");
         assert!(!disabled.debug_state.debug_log_to_developer_server);
     }
@@ -22509,11 +22276,11 @@ mod tests {
             create_ui_session(lat_lon_preview_plan(), &[], None, None).expect("create session");
         assert!(!init.snapshot.debug_state.plate_flight_plan);
 
-        let enabled = set_debug_flag_in_session(init.handle, "plate_flight_plan", true)
+        let enabled = set_debug_flag_in_session(init.handle, DebugFlagId::PlateFlightPlan, true)
             .expect("enable plate flight plan");
         assert!(enabled.debug_state.plate_flight_plan);
 
-        let disabled = set_debug_flag_in_session(init.handle, "plate_flight_plan", false)
+        let disabled = set_debug_flag_in_session(init.handle, DebugFlagId::PlateFlightPlan, false)
             .expect("disable plate flight plan");
         assert!(!disabled.debug_state.plate_flight_plan);
     }
@@ -22579,8 +22346,8 @@ mod tests {
                 if source_id.0 == BAD_AUTOPILOT_SOURCE_ID
         ));
 
-        let disabled =
-            set_debug_flag_in_session(init.handle, "bad_autopilot", false).expect("disable flag");
+        let disabled = set_debug_flag_in_session(init.handle, DebugFlagId::BadAutopilot, false)
+            .expect("disable flag");
         assert!(!disabled.debug_state.bad_autopilot);
         assert!(matches!(
             disabled.app_ui_state.ownship.controls.selection,

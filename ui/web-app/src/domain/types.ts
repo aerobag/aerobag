@@ -228,8 +228,6 @@ export type FlightPlanUiState = {
   guidance: GuidanceUiView | null;
 };
 
-export type FlightEstimateKind = "basic" | "modeled";
-
 export type AltitudePlannerControlUiView = {
   id: "aircraft_profile" | "cruise_altitude" | "wind_model" | "status";
   label: string;
@@ -537,22 +535,18 @@ export type AppUiState = {
   last_content_report: ContentReport | null;
 };
 
-export type FlightDataCell = {
-  id: string;
-  label: string;
-  value: string | null;
-  tone?: "planned" | "passed" | "active";
-  estimate_kind?: FlightEstimateKind;
-};
-
-export type FlightDataColumn = {
-  id: string;
-  label: string;
-};
-
-export type FlightDataBannerModel = {
-  cells: FlightDataCell[];
-};
+export type {
+  FlightDataBannerModel,
+  FlightDataCell,
+  FlightDataColumn,
+  FlightEstimateKind,
+} from "../generated/sessionPageWire";
+import type {
+  FlightDataBannerModel,
+  FlightDataCell,
+  FlightDataColumn,
+  FlightEstimateKind,
+} from "../generated/sessionPageWire";
 
 export type OwnshipMode = "none" | "live" | "replay" | "simulated";
 

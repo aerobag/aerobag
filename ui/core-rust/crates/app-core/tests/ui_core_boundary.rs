@@ -102,6 +102,8 @@ fn platform_session_adapters_have_no_plain_snapshot_escape_hatch() {
     let android = read_repo_file(
         "ui/android-app/app/src/main/java/org/aerobag/app/domain/NativeAppCoreAdapter.kt",
     );
+    let android_wire =
+        read_repo_file("ui/android-app/app/src/main/java/org/aerobag/app/domain/WireModels.kt");
 
     assert!(
         !web.contains("const parseSessionSnapshot ="),
@@ -243,13 +245,11 @@ fn bulk_notam_state_cannot_cross_into_the_ui_session() {
     let session = strip_rust_tests(&session_text);
     let overlay = read_repo_file("ui/core-rust/crates/app-core/src/map_overlay.rs");
     let airport_index = balanced_block_after_marker(&overlay, "pub struct AirportNotamIndex");
-    let android_main =
-        read_repo_file("ui/android-app/app/src/main/java/org/aerobag/app/MainActivity.kt");
-    let promote = balanced_block_after_marker(&android_main, "suspend fun promoteLiveFeed");
-    let restore = balanced_block_after_marker(
-        &android_main,
-        "LaunchedEffect(uiSession, liveFeedCache, context, prefs)",
+    let android_runtime = read_repo_file(
+        "ui/android-app/app/src/main/java/org/aerobag/app/RetainedLiveFeedRuntime.kt",
     );
+    let promote = balanced_block_after_marker(&android_runtime, "private suspend fun promote(");
+    let restore = balanced_block_after_marker(&android_runtime, "fun start()");
 
     assert!(
         !session.contains("NotamState::from_checkpoint")
@@ -626,12 +626,184 @@ fn production_session_snapshot_wire_omits_authoritative_flight_plan_state() {
         wire.get("app_state").is_none(),
         "production session snapshots must not serialize authoritative AppState"
     );
+    assert_eq!(
+        wire["ui_contract_version"],
+        app_ui_contracts::UI_WIRE_CONTRACT_VERSION,
+        "platform snapshots must identify the exact generated UI contract"
+    );
     let plan_ui = &wire["app_ui_state"]["active_plan"];
     assert!(plan_ui.get("plan_id").is_some());
     assert!(plan_ui.get("plan_version").is_some());
     assert!(plan_ui.get("route_components").is_none());
     assert!(plan_ui.get("resolved_legs").is_none());
     assert!(plan_ui.get("guidance").is_some());
+}
+
+#[test]
+fn generated_ui_contract_types_are_not_hand_copied_at_platform_boundaries() {
+    let session = read_repo_file("ui/core-rust/crates/app-core/src/session.rs");
+    let cloud = read_repo_file("ui/core-rust/crates/app-core/src/cloud.rs");
+    let data_status = read_repo_file("ui/core-rust/crates/app-core/src/data_status.rs");
+    let flight_data = read_repo_file("ui/core-rust/crates/app-core/src/flight_data.rs");
+    let web = read_repo_file("ui/web-app/src/domain/appCoreAdapter.ts");
+    let web_types = read_repo_file("ui/web-app/src/domain/types.ts");
+    let android = read_repo_file(
+        "ui/android-app/app/src/main/java/org/aerobag/app/domain/NativeAppCoreAdapter.kt",
+    );
+
+    for (source_name, source, declarations) in [
+        (
+            "app-core session",
+            session.as_str(),
+            vec![
+                "pub struct UiHomePageState",
+                "pub struct NexradOverlayQueryResult",
+                "pub struct UiChartPageState",
+                "pub struct UiMapLayerState",
+                "pub enum MapLayerId",
+                "pub enum DebugFlagId",
+                "pub struct UiDebugState",
+                "pub struct UiSettingsPageState",
+            ],
+        ),
+        (
+            "app-core cloud",
+            cloud.as_str(),
+            vec![
+                "pub enum CloudUiActionId",
+                "pub enum CloudPlatformEffect",
+                "pub struct UiCloudPageState",
+                "pub struct CloudHttpRequest",
+            ],
+        ),
+        (
+            "app-core data status",
+            data_status.as_str(),
+            vec![
+                "pub enum UiStatusSeverity",
+                "pub struct UiDataStatusPageState",
+            ],
+        ),
+        (
+            "app-core flight data",
+            flight_data.as_str(),
+            vec![
+                "pub struct FlightDataCell",
+                "pub struct FlightDataBannerModel",
+            ],
+        ),
+        (
+            "Android adapter",
+            android.as_str(),
+            vec![
+                "private data class WireUiChartPageState",
+                "private data class WireUiMapLayerState",
+                "private data class WireUiDataStatusState",
+                "private data class WireUiSettingsPageState",
+                "enum class MapLayerId",
+                "enum class DebugFlagId",
+            ],
+        ),
+        (
+            "Android wire models",
+            android_wire.as_str(),
+            vec![
+                "data class WireFlightDataCell",
+                "data class WireFlightDataColumn",
+            ],
+        ),
+        (
+            "web adapter",
+            web.as_str(),
+            vec![
+                "export type UiDataStatusState =",
+                "export type UiSettingsPageState =",
+                "export type UiMapLayerState =",
+                "export type UiChartPageState =",
+                "export type MapLayerId =",
+                "export type DebugFlagId =",
+            ],
+        ),
+        (
+            "web domain types",
+            web_types.as_str(),
+            vec![
+                "export type FlightDataCell =",
+                "export type FlightDataBannerModel =",
+                "export type FlightEstimateKind =",
+            ],
+        ),
+    ] {
+        for declaration in declarations {
+            assert!(
+                !source.contains(declaration),
+                "{source_name} redeclares generated UI contract type: {declaration}"
+            );
+        }
+    }
+}
+
+#[test]
+fn external_product_contract_dtos_are_not_redeclared_by_producers_or_consumers() {
+    let publication_producer =
+        read_repo_file("product/preprocessor/preprocessor-cli/src/product_build.rs");
+    let live_feed_producer =
+        read_repo_file("product/preprocessor/preprocessor-live-feeds/src/engine.rs");
+    let live_feed_daemon = read_repo_file("product/preprocessor/live-feeds-daemon/src/main.rs");
+    let live_feed_consumer = read_repo_file("ui/core-rust/crates/app-core/src/live_feeds.rs");
+    let live_feed_cache = read_repo_file("ui/core-rust/crates/app-core/src/live_feed_cache.rs");
+
+    for (source_name, source, declarations) in [
+        (
+            "publication producer",
+            publication_producer.as_str(),
+            vec![
+                "struct BundleManifest",
+                "struct CurrentArtifactsManifest",
+                "struct BundlePackageArtifact",
+            ],
+        ),
+        (
+            "live-feed producer",
+            live_feed_producer.as_str(),
+            vec![
+                "struct LiveFeedsCurrentManifest",
+                "struct LiveFeedVersionManifest",
+                "struct LivePayloadRef",
+                "struct LiveDeltaRef",
+            ],
+        ),
+        (
+            "live-feed daemon",
+            live_feed_daemon.as_str(),
+            vec![
+                "struct LiveFeedCurrentEvent",
+                "struct LiveFeedVersionManifest",
+            ],
+        ),
+        (
+            "live-feed app consumer",
+            live_feed_consumer.as_str(),
+            vec![
+                "struct CurrentManifest",
+                "struct VersionManifest",
+                "struct LiveFeedCurrentEvent",
+                "struct LiveFeedRecordDelta",
+            ],
+        ),
+        (
+            "live-feed durable cache",
+            live_feed_cache.as_str(),
+            vec!["struct LiveFeedRecordDelta", "struct LiveFeedNavKvDelta"],
+        ),
+    ] {
+        for declaration in declarations {
+            assert!(
+                !source.contains(declaration),
+                "{source_name} redeclares canonical product contract type: {declaration}"
+            );
+        }
+    }
 }
 
 #[test]

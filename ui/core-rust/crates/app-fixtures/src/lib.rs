@@ -200,16 +200,14 @@ fn current_nav_db_artifact_paths() -> (PathBuf, PathBuf) {
         cycle_bundle.relative_path.as_str()
     };
     let bundle_path = unpacked_root.join(bundle_relative_path);
-    let bundle: app_core::BundleManifest =
-        serde_json::from_slice(&fs::read(&bundle_path).unwrap_or_else(|err| {
-            panic!("read current cycle bundle {}: {err}", bundle_path.display())
-        }))
-        .unwrap_or_else(|err| {
-            panic!(
-                "parse current cycle bundle {}: {err}",
-                bundle_path.display()
-            )
-        });
+    let bundle_json = fs::read_to_string(&bundle_path)
+        .unwrap_or_else(|err| panic!("read current cycle bundle {}: {err}", bundle_path.display()));
+    let bundle = app_core::decode_bundle_manifest(&bundle_json).unwrap_or_else(|err| {
+        panic!(
+            "parse current cycle bundle {}: {err}",
+            bundle_path.display()
+        )
+    });
     let nav_db = bundle
         .packages
         .iter()

@@ -89,7 +89,7 @@ export async function executeCloudHttpRequest(
     const response = await fetch(request.url, {
       method: request.method.toUpperCase(),
       headers,
-      body: request.body_base64 === null ? undefined : decodeBase64Url(request.body_base64),
+      body: request.body_base64 == null ? undefined : decodeBase64Url(request.body_base64),
     });
     const declaredLength = Number(response.headers.get("content-length"));
     if (Number.isFinite(declaredLength) && declaredLength > request.max_response_bytes) {

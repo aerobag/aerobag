@@ -7,8 +7,9 @@ package org.aerobag.app.domain
 import kotlinx.serialization.decodeFromString
 import kotlinx.serialization.json.Json
 import org.aerobag.app.generated.NexradOverlayQueryResult
-import org.aerobag.app.generated.NexradOverlayStatusState
+import org.aerobag.app.generated.NexradOverlayStatus
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertTrue
 import org.junit.Test
 
 class NexradOverlayWireTest {
@@ -23,13 +24,29 @@ class NexradOverlayWireTest {
             {
               "status": { "state": "ready", "count": 96 },
               "tiles": [],
-              "stats": { "res": 4 }
+              "stats": {
+                "source_tile_count": 0,
+                "render_piece_count": 0,
+                "split_count": 0,
+                "max_affine_error_px": 0.0,
+                "level_pixel_span_px": 0.0,
+                "max_level_pixel_stretch_px": 0.0,
+                "max_stack_depth": 0,
+                "res": 4
+              },
+              "animation": {
+                "phase": "idle",
+                "frame_count": 0,
+                "age_labels": [],
+                "age_summary": "---"
+              }
             }
             """.trimIndent(),
         )
 
-        assertEquals(NexradOverlayStatusState.Ready, result.status.state)
-        assertEquals(96, result.status.count)
+        assertTrue(result.status is NexradOverlayStatus.Ready)
+        val status = result.status as NexradOverlayStatus.Ready
+        assertEquals(96, status.count)
         assertEquals(4, result.stats.res)
     }
 
@@ -41,8 +58,20 @@ class NexradOverlayWireTest {
             {
               "status": { "state": "ready", "count": 1 },
               "tiles": [],
-              "stats": {},
+              "stats": {
+                "source_tile_count": 0,
+                "render_piece_count": 0,
+                "split_count": 0,
+                "max_affine_error_px": 0.0,
+                "level_pixel_span_px": 0.0,
+                "max_level_pixel_stretch_px": 0.0,
+                "max_stack_depth": 0
+              },
               "animation": {
+                "phase": "idle",
+                "frame_count": 0,
+                "age_labels": [],
+                "age_summary": "---",
                 "next_update_epoch_ms": $deadline
               }
             }
@@ -59,12 +88,27 @@ class NexradOverlayWireTest {
             {
               "status": { "state": "unavailable", "reason": "missing product" },
               "tiles": [],
-              "stats": {}
+              "stats": {
+                "source_tile_count": 0,
+                "render_piece_count": 0,
+                "split_count": 0,
+                "max_affine_error_px": 0.0,
+                "level_pixel_span_px": 0.0,
+                "max_level_pixel_stretch_px": 0.0,
+                "max_stack_depth": 0
+              },
+              "animation": {
+                "phase": "idle",
+                "frame_count": 0,
+                "age_labels": [],
+                "age_summary": "---"
+              }
             }
             """.trimIndent(),
         )
 
-        assertEquals(NexradOverlayStatusState.Unavailable, result.status.state)
-        assertEquals("missing product", result.status.reason)
+        assertTrue(result.status is NexradOverlayStatus.Unavailable)
+        val status = result.status as NexradOverlayStatus.Unavailable
+        assertEquals("missing product", status.reason)
     }
 }

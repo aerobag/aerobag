@@ -179,7 +179,8 @@ pub use ownship::{
     SituationRingCandidate, SituationSample, SourceConnectionState,
 };
 pub use package_management::{
-    current_artifacts_manifest_is_supported, decode_current_artifacts_manifest_list,
+    current_artifacts_manifest_is_supported, decode_bundle_manifest,
+    decode_current_artifacts_manifest, decode_current_artifacts_manifest_list,
     default_offline_package_preferences, initialize_offline_packages,
     plan_current_artifacts_discovery, plan_offline_packages, reduce_offline_packages,
     reduce_offline_packages_controller, reduce_offline_packages_controller_owned,
@@ -297,10 +298,10 @@ pub use session::{
     sync_live_feeds_in_session, sync_map_follow_in_session,
     take_cloud_authorization_request_in_session, take_cloud_provider_request_in_session,
     tick_bad_autopilot_in_session, tick_playback_in_session,
-    update_ownship_source_status_in_session, ClientBuildInfo, DisplayDimTimeout,
+    update_ownship_source_status_in_session, ClientBuildInfo, DebugFlagId, DisplayDimTimeout,
     FlightPlanSessionCommand, FlightPlanSessionQuery, GuidanceLegGeometry,
-    LiveFeedAcquisitionPolicy, NavDbAdvanceDisposition, NavDbAdvanceResult, NavDbMaintenanceAction,
-    NavDbMaintenanceResult, PlatformCapabilities, PlatformCloudCapability,
+    LiveFeedAcquisitionPolicy, MapLayerId, NavDbAdvanceDisposition, NavDbAdvanceResult,
+    NavDbMaintenanceAction, NavDbMaintenanceResult, PlatformCapabilities, PlatformCloudCapability,
     PlatformDisplayPolicyCapability, PlatformLiveFeedsCapability,
     PlatformOfflinePackagesCapability, SettingsPreferences, SettingsStorage, SettingsStorageHandle,
     UiChartPageState, UiDebugState, UiDisclaimerState, UiDisplayPolicy, UiHomeDestination,

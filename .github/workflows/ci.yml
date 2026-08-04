@@ -295,7 +295,7 @@ jobs:
       - name: Test browser E2E harness contracts
         run: node --test tools/e2e/*.test.mjs
       - name: Verify generated sources are current
-        run: git diff --exit-code -- ui/web-app/src/generated
+        run: git diff --exit-code -- ui/core-rust/schemas ui/web-app/src/generated
       - name: Report individual tests
         if: ${{ always() }}
         run: python3 tools/ci/junit_summary.py --title "Web unit tests" "test-results/web/junit.xml"

@@ -12,6 +12,7 @@ const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), ".."
 const nexradSchemaPath = path.join(repoRoot, "ui/core-rust/schemas/nexrad-overlay-wire.schema.json");
 const cloudSchemaPath = path.join(repoRoot, "ui/core-rust/schemas/cloud-wire.schema.json");
 const homePageSchemaPath = path.join(repoRoot, "ui/core-rust/schemas/home-page-wire.schema.json");
+const sessionPageSchemaPath = path.join(repoRoot, "ui/core-rust/schemas/session-page-wire.schema.json");
 
 const args = new Map();
 const flags = new Set();
@@ -38,6 +39,8 @@ const cloudWebOut =
   args.get("--cloud-web-out") ?? path.join(repoRoot, "ui/web-app/src/generated/cloudWire.ts");
 const homePageWebOut =
   args.get("--home-page-web-out") ?? path.join(repoRoot, "ui/web-app/src/generated/homePageWire.ts");
+const sessionPageWebOut =
+  args.get("--session-page-web-out") ?? path.join(repoRoot, "ui/web-app/src/generated/sessionPageWire.ts");
 
 let schemaPath;
 let schema;
@@ -75,6 +78,12 @@ function resolveRef(ref) {
 }
 
 function baseSchema(fieldSchema) {
+  if (Array.isArray(fieldSchema.anyOf)) {
+    const nonNull = fieldSchema.anyOf.filter((entry) => entry.type !== "null");
+    if (nonNull.length === 1 && nonNull.length !== fieldSchema.anyOf.length) {
+      return nonNull[0];
+    }
+  }
   if (fieldSchema.$ref) {
     return fieldSchema;
   }
@@ -88,7 +97,8 @@ function baseSchema(fieldSchema) {
 }
 
 function isNullable(fieldSchema) {
-  return Array.isArray(fieldSchema.type) && fieldSchema.type.includes("null");
+  return (Array.isArray(fieldSchema.type) && fieldSchema.type.includes("null"))
+    || (Array.isArray(fieldSchema.anyOf) && fieldSchema.anyOf.some((entry) => entry.type === "null"));
 }
 
 function snakeToCamel(name) {
@@ -100,6 +110,11 @@ function enumMemberName(value) {
     .split("_")
     .map((part) => part.charAt(0).toUpperCase() + part.slice(1))
     .join("");
+}
+
+function contractVersionName() {
+  const screaming = schema.title.replaceAll(/([a-z0-9])([A-Z])/g, "$1_$2").toUpperCase();
+  return `${screaming}_WIRE_VERSION`;
 }
 
 function ktDefault(fieldSchema, ktType) {
@@ -122,10 +137,11 @@ function ktDefault(fieldSchema, ktType) {
 }
 
 function ktType(fieldSchema) {
-  if (fieldSchema.$ref) {
-    return resolveRef(fieldSchema.$ref).name;
-  }
   const schemaBase = baseSchema(fieldSchema);
+  if (schemaBase.$ref) {
+    const type = resolveRef(schemaBase.$ref).name;
+    return isNullable(fieldSchema) ? `${type}?` : type;
+  }
   const nullable = isNullable(fieldSchema);
   let type;
   switch (schemaBase.type) {
@@ -133,7 +149,7 @@ function ktType(fieldSchema) {
       type = `List<${ktType(schemaBase.items)}>`;
       break;
     case "integer":
-      type = schemaBase.format === "int64" ? "Long" : "Int";
+      type = schemaBase.format?.endsWith("64") ? "Long" : "Int";
       break;
     case "number":
       type = "Double";
@@ -156,10 +172,11 @@ function tsType(fieldSchema) {
   if (Object.hasOwn(fieldSchema, "const")) {
     return JSON.stringify(fieldSchema.const);
   }
-  if (fieldSchema.$ref) {
-    return resolveRef(fieldSchema.$ref).name;
-  }
   const schemaBase = baseSchema(fieldSchema);
+  if (schemaBase.$ref) {
+    const type = resolveRef(schemaBase.$ref).name;
+    return isNullable(fieldSchema) ? `${type} | null` : type;
+  }
   const nullable = isNullable(fieldSchema);
   if (fieldSchema.oneOf) {
     return fieldSchema.oneOf.map(tsInlineObjectType).join(" | ");
@@ -190,7 +207,7 @@ function tsType(fieldSchema) {
 function tsInlineObjectType(objectSchema) {
   const required = new Set(objectSchema.required ?? []);
   const fields = Object.entries(objectSchema.properties ?? {}).map(([wireName, propertySchema]) => {
-    const optional = required.has(wireName) ? "" : "?";
+    const optional = required.has(wireName) || Object.hasOwn(propertySchema, "default") ? "" : "?";
     return `${wireName}${optional}: ${tsType(propertySchema)}`;
   });
   return `{ ${fields.join("; ")} }`;
@@ -199,10 +216,14 @@ function tsInlineObjectType(objectSchema) {
 function ktObjectSource(name, objectSchema) {
   const required = new Set(objectSchema.required ?? []);
   const properties = Object.entries(objectSchema.properties ?? {});
+  if (properties.length === 0) {
+    return `@Serializable\nclass ${name}\n`;
+  }
   const fields = properties.map(([wireName, propertySchema]) => {
     const propertyName = snakeToCamel(wireName);
     const baseType = ktType(propertySchema);
-    const type = required.has(wireName) || baseType.endsWith("?") ? baseType : `${baseType}?`;
+    const hasDefault = Object.hasOwn(propertySchema, "default");
+    const type = required.has(wireName) || hasDefault || baseType.endsWith("?") ? baseType : `${baseType}?`;
     const serialName = propertyName === wireName ? "" : `    @SerialName("${wireName}")\n`;
     const defaultValue = required.has(wireName) ? ktDefault(propertySchema, type) : ktDefault(propertySchema, type) || " = null";
     return `${serialName}    val ${propertyName}: ${type}${defaultValue}`;
@@ -220,7 +241,7 @@ function tsObjectSource(name, objectSchema) {
   const required = new Set(objectSchema.required ?? []);
   const properties = Object.entries(objectSchema.properties ?? {});
   const fields = properties.map(([wireName, propertySchema]) => {
-    const optional = required.has(wireName) ? "" : "?";
+    const optional = required.has(wireName) || Object.hasOwn(propertySchema, "default") ? "" : "?";
     return `  ${wireName}${optional}: ${tsType(propertySchema)};`;
   });
   return `export type ${name} = {\n${fields.join("\n")}\n};\n`;
@@ -237,10 +258,10 @@ function taggedUnionInfo(unionSchema) {
   }
   const variants = unionSchema.oneOf.map((variant) => {
     const tag = variant.properties?.[discriminator]?.const;
-    if (typeof tag !== "string" || !variant.title) {
-      throw new Error(`tagged union variants require title and ${discriminator} const`);
+    if (typeof tag !== "string") {
+      throw new Error(`tagged union variants require a ${discriminator} const`);
     }
-    return { tag, title: variant.title, schema: variant };
+    return { tag, title: variant.title ?? enumMemberName(tag), schema: variant };
   });
   return { discriminator, variants };
 }
@@ -288,7 +309,9 @@ function androidSource() {
       throw new Error(`unsupported top-level Kotlin schema for ${name}`);
     }
   }
-  return `${generatedBanner}package org.aerobag.app.generated\n\nimport kotlinx.serialization.ExperimentalSerializationApi\nimport kotlinx.serialization.SerialName\nimport kotlinx.serialization.Serializable\nimport kotlinx.serialization.json.JsonClassDiscriminator\n\n${chunks.join("\n")}`;
+  const version = schema["x-contract-version"];
+  const versionSource = Number.isInteger(version) ? `const val ${contractVersionName()}: Int = ${version}\n\n` : "";
+  return `${generatedBanner}package org.aerobag.app.generated\n\nimport kotlinx.serialization.ExperimentalSerializationApi\nimport kotlinx.serialization.SerialName\nimport kotlinx.serialization.Serializable\nimport kotlinx.serialization.json.JsonClassDiscriminator\n\n${versionSource}${chunks.join("\n")}`;
 }
 
 function webSource() {
@@ -306,7 +329,9 @@ function webSource() {
       throw new Error(`unsupported top-level TypeScript schema for ${name}`);
     }
   }
-  return `${generatedBanner}\n${chunks.join("\n")}`;
+  const version = schema["x-contract-version"];
+  const versionSource = Number.isInteger(version) ? `export const ${contractVersionName()} = ${version} as const;\n\n` : "";
+  return `${generatedBanner}\n${versionSource}${chunks.join("\n")}`;
 }
 
 function writeOrCheck(filePath, content) {
@@ -333,3 +358,7 @@ writeOrCheck(cloudWebOut, webSource());
 loadSchema(homePageSchemaPath);
 writeOrCheck(path.join(androidOut, "HomePageWire.kt"), androidSource());
 writeOrCheck(homePageWebOut, webSource());
+
+loadSchema(sessionPageSchemaPath);
+writeOrCheck(path.join(androidOut, "SessionPageWire.kt"), androidSource());
+writeOrCheck(sessionPageWebOut, webSource());

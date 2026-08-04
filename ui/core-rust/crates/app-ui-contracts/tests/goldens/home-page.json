@@ -1,0 +1,10 @@
+{
+  "buttons": [
+    {
+      "destination": "offline_packages",
+      "label": "Offline Packages",
+      "enabled": false,
+      "disabled_reason": "Downloads are unavailable on this platform."
+    }
+  ]
+}

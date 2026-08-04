@@ -1980,8 +1980,9 @@ fn set_map_layer_visibility_in_session_paged_json(
     layer_id_json: &str,
     visible: bool,
 ) -> Result<String, String> {
-    let layer_id: String = serde_json::from_str(layer_id_json).map_err(|err| err.to_string())?;
-    let outcome = app_core::set_map_layer_visibility_in_session(handle, &layer_id, visible)
+    let layer_id: app_core::MapLayerId =
+        serde_json::from_str(layer_id_json).map_err(|err| err.to_string())?;
+    let outcome = app_core::set_map_layer_visibility_in_session(handle, layer_id, visible)
         .map_err(|err| err.to_string())?;
     serde_json::to_string(&outcome).map_err(|err| err.to_string())
 }
@@ -1991,8 +1992,9 @@ fn set_map_layer_enabled_in_session_paged_json(
     layer_id_json: &str,
     enabled: bool,
 ) -> Result<String, String> {
-    let layer_id: String = serde_json::from_str(layer_id_json).map_err(|err| err.to_string())?;
-    let outcome = app_core::set_map_layer_enabled_in_session(handle, &layer_id, enabled)
+    let layer_id: app_core::MapLayerId =
+        serde_json::from_str(layer_id_json).map_err(|err| err.to_string())?;
+    let outcome = app_core::set_map_layer_enabled_in_session(handle, layer_id, enabled)
         .map_err(|err| err.to_string())?;
     serde_json::to_string(&outcome).map_err(|err| err.to_string())
 }
@@ -2002,8 +2004,9 @@ fn set_debug_flag_in_session_json(
     flag_id_json: &str,
     enabled: bool,
 ) -> Result<String, String> {
-    let flag_id: String = serde_json::from_str(flag_id_json).map_err(|err| err.to_string())?;
-    let snapshot = app_core::set_debug_flag_in_session(handle, &flag_id, enabled)
+    let flag_id: app_core::DebugFlagId =
+        serde_json::from_str(flag_id_json).map_err(|err| err.to_string())?;
+    let snapshot = app_core::set_debug_flag_in_session(handle, flag_id, enabled)
         .map_err(|err| err.to_string())?;
     serde_json::to_string(&snapshot).map_err(|err| err.to_string())
 }

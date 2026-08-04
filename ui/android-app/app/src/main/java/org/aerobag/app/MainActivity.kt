@@ -210,6 +210,7 @@ import org.aerobag.app.domain.AirwaySuggestion
 import org.aerobag.app.domain.AirportInfoUiView
 import org.aerobag.app.domain.WaypointIdentifierSuggestion
 import org.aerobag.app.domain.CoreMapViewport
+import org.aerobag.app.domain.DebugFlagId
 import org.aerobag.app.domain.DerivedChartPageState
 import org.aerobag.app.domain.FlightPlanEntryPreview
 import org.aerobag.app.domain.FlightDataCell
@@ -2711,7 +2712,7 @@ internal fun AerobagApp(
     LaunchedEffect(uiSession) {
         if (readStoredGpsCaptureDebugFlag(prefs)) {
             applyBackgroundSessionCommand("setDebugFlag", "AerobagDebug") {
-                uiSession.setDebugFlag("gps_capture", true)
+                uiSession.setDebugFlag(DebugFlagId.GpsCapture, true)
             }
         }
         applyBackgroundSessionCommand("registerOwnshipSource", "AerobagOwnship") {
@@ -2876,9 +2877,9 @@ internal fun AerobagApp(
         }
     }
 
-    fun setDebugFlag(flagId: String, enabled: Boolean) {
+    fun setDebugFlag(flagId: DebugFlagId, enabled: Boolean) {
         if (applySessionCommand("setDebugFlag") { uiSession.setDebugFlag(flagId, enabled) } != null) {
-            if (flagId == "gps_capture") {
+            if (flagId == DebugFlagId.GpsCapture) {
                 writeStoredGpsCaptureDebugFlag(prefs, enabled)
             }
         }

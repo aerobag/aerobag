@@ -66,10 +66,10 @@ The 0.25 degree value is the horizontal sample density: roughly one sample every
 latitude. This is appropriate for route-scale planning, not airport-scale local
 effects.
 
-GFS runs four cycles per day: 00, 06, 12, and 18 UTC. The current preprocessor
-prototype selects a conservative cycle by subtracting nine hours from build time
-and rounding down to the previous six-hour model cycle. This avoids asking
-NOMADS for a cycle or early forecast file that has not landed yet.
+GFS runs four cycles per day: 00, 06, 12, and 18 UTC. Live-feeds examines those
+cycle boundaries newest-first and selects the newest cycle whose complete
+0-through-24-hour forecast window is available. An incomplete new cycle cannot
+replace the previously published state.
 
 References:
 

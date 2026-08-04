@@ -46,7 +46,10 @@ const OBSTACLE_DOF_URL: &str = "https://aeronav.faa.gov/Obst_Data/DAILY_DOF_DAT.
 const OBSTACLE_STATE_LAYOUT_VERSION: u32 = 2;
 const NEXRAD_INDEX_URL: &str = "https://mrms.ncep.noaa.gov/data/RIDGEII/L2/CONUS/CREF_QCD/";
 
-pub const WINDS_ALOFT_FORECAST_HOURS: &[u32] = &[0, 3, 6, 9, 12];
+const GFS_CYCLE_HOURS: i64 = 6;
+const GFS_CYCLE_CANDIDATE_COUNT: usize = 5;
+
+pub const WINDS_ALOFT_FORECAST_HOURS: &[u32] = &[0, 3, 6, 9, 12, 15, 18, 21, 24];
 pub const WINDS_ALOFT_PRESSURE_LEVELS_MB: &[u32] = &[1000, 925, 850, 700, 600, 500, 400, 300];
 
 #[derive(Debug, Clone)]
@@ -355,19 +358,47 @@ pub struct GfsWindsAloftCycle {
     pub cycle_time_utc: DateTime<Utc>,
 }
 
-pub fn selected_gfs_winds_aloft_cycle(now: DateTime<Utc>) -> GfsWindsAloftCycle {
-    let candidate = now - chrono::Duration::hours(9);
-    let cycle_hour = (candidate.hour() / 6) * 6;
-    let cycle_time_utc = candidate
+fn gfs_winds_aloft_cycle(cycle_time_utc: DateTime<Utc>) -> GfsWindsAloftCycle {
+    GfsWindsAloftCycle {
+        date: cycle_time_utc.format("%Y%m%d").to_string(),
+        cycle: cycle_time_utc.format("%H").to_string(),
+        cycle_time_utc,
+    }
+}
+
+pub fn gfs_winds_aloft_candidate_cycles(now: DateTime<Utc>) -> Vec<GfsWindsAloftCycle> {
+    let cycle_hour = (now.hour() / GFS_CYCLE_HOURS as u32) * GFS_CYCLE_HOURS as u32;
+    let newest_cycle = now
         .date_naive()
         .and_hms_opt(cycle_hour, 0, 0)
         .expect("rounded GFS cycle time should be valid")
         .and_utc();
-    GfsWindsAloftCycle {
-        date: cycle_time_utc.format("%Y%m%d").to_string(),
-        cycle: format!("{cycle_hour:02}"),
-        cycle_time_utc,
+
+    (0..GFS_CYCLE_CANDIDATE_COUNT)
+        .map(|offset| {
+            gfs_winds_aloft_cycle(
+                newest_cycle - chrono::Duration::hours(GFS_CYCLE_HOURS * offset as i64),
+            )
+        })
+        .collect()
+}
+
+fn acquire_newest_complete_gfs_cycle<T>(
+    now: DateTime<Utc>,
+    mut acquire: impl FnMut(&GfsWindsAloftCycle) -> anyhow::Result<T>,
+) -> anyhow::Result<(GfsWindsAloftCycle, T)> {
+    let mut failures = Vec::new();
+    for cycle in gfs_winds_aloft_candidate_cycles(now) {
+        match acquire(&cycle) {
+            Ok(value) => return Ok((cycle, value)),
+            Err(error) => failures.push(format!("{} {}Z: {error:#}", cycle.date, cycle.cycle)),
+        }
     }
+    bail!(
+        "no complete GFS cycle was available among the newest {} candidates: {}",
+        GFS_CYCLE_CANDIDATE_COUNT,
+        failures.join("; ")
+    )
 }
 
 pub fn gfs_winds_aloft_filter_url(cycle: &GfsWindsAloftCycle, forecast_hour: u32) -> String {
@@ -766,14 +797,39 @@ impl ProductBuilder for WindsAloftLiveFeedBuilder {
         event: &UpstreamEvent,
         scratch_dir: &Path,
     ) -> anyhow::Result<BuiltLiveFeedState> {
-        let cycle = selected_gfs_winds_aloft_cycle(event.observed_at_utc);
-        let input_dir = fresh_dir(&scratch_dir.join("input"))?;
         let output_dir = fresh_dir(&scratch_dir.join("output"))?;
         let decode_dir = fresh_dir(&scratch_dir.join("decoded"))?;
         let provenance_dir = scratch_dir
             .join("meta")
             .join("provenance")
             .join("winds-aloft");
+        let input_path = scratch_dir.join("input");
+        let final_forecast_hour = *WINDS_ALOFT_FORECAST_HOURS
+            .last()
+            .expect("winds-aloft forecast hours should not be empty");
+        let (cycle, input_dir) =
+            acquire_newest_complete_gfs_cycle(event.observed_at_utc, |candidate| {
+                let candidate_dir = fresh_dir(&input_path)?;
+                let readiness_request = PrefetchRequest::new(gfs_winds_aloft_filter_url(
+                    candidate,
+                    final_forecast_hour,
+                ))
+                .with_logical_file_name(format!(
+                    "gfs_{}_{}_f{final_forecast_hour:03}.grib2",
+                    candidate.date, candidate.cycle
+                ));
+                // GFS publishes forecast hours in order. Fetching the final required
+                // hour both proves readiness and seeds that time slice for the full fetch.
+                prefetch_requests_with_provenance(
+                    &[readiness_request],
+                    &candidate_dir,
+                    1,
+                    self.fetch.fetch_cache.as_ref(),
+                    &provenance_dir,
+                    "winds-aloft-cycle-readiness",
+                )?;
+                Ok(candidate_dir)
+            })?;
         let requests = WINDS_ALOFT_FORECAST_HOURS
             .iter()
             .map(|forecast_hour| {
@@ -1152,7 +1208,7 @@ mod tests {
         LiveFeedPublisher, LiveFeedVersionManifest,
     };
     use crate::StructuredNotamRecord;
-    use chrono::{SecondsFormat, TimeZone};
+    use chrono::TimeZone;
     use serde::Deserialize;
     use tempfile::tempdir;
 
@@ -1186,20 +1242,56 @@ mod tests {
     }
 
     #[test]
-    fn winds_aloft_cycle_selection_uses_conservative_gfs_lag() {
-        let now = DateTime::parse_from_rfc3339("2026-05-09T15:10:00Z")
+    fn winds_aloft_cycle_candidates_are_newest_first_across_midnight() {
+        let now = DateTime::parse_from_rfc3339("2026-05-10T01:10:00Z")
             .expect("valid test timestamp")
             .with_timezone(&Utc);
 
-        let cycle = selected_gfs_winds_aloft_cycle(now);
+        let cycles = gfs_winds_aloft_candidate_cycles(now)
+            .into_iter()
+            .map(|cycle| format!("{}-{}", cycle.date, cycle.cycle))
+            .collect::<Vec<_>>();
 
-        assert_eq!(cycle.date, "20260509");
-        assert_eq!(cycle.cycle, "06");
         assert_eq!(
-            cycle
-                .cycle_time_utc
-                .to_rfc3339_opts(SecondsFormat::Secs, true),
-            "2026-05-09T06:00:00Z"
+            cycles,
+            [
+                "20260510-00",
+                "20260509-18",
+                "20260509-12",
+                "20260509-06",
+                "20260509-00",
+            ]
+        );
+    }
+
+    #[test]
+    fn winds_aloft_selects_newest_cycle_with_complete_horizon() {
+        let now = DateTime::parse_from_rfc3339("2026-05-09T19:10:00Z")
+            .expect("valid test timestamp")
+            .with_timezone(&Utc);
+        let mut attempted = Vec::new();
+
+        let (cycle, value) = acquire_newest_complete_gfs_cycle(now, |candidate| {
+            attempted.push(candidate.cycle.clone());
+            if candidate.cycle == "12" {
+                Ok("available")
+            } else {
+                bail!("forecast horizon is incomplete")
+            }
+        })
+        .expect("older complete cycle should be selected");
+
+        assert_eq!(attempted, ["18", "12"]);
+        assert_eq!(cycle.date, "20260509");
+        assert_eq!(cycle.cycle, "12");
+        assert_eq!(value, "available");
+    }
+
+    #[test]
+    fn winds_aloft_publishes_a_full_day_at_three_hour_spacing() {
+        assert_eq!(
+            WINDS_ALOFT_FORECAST_HOURS,
+            &[0, 3, 6, 9, 12, 15, 18, 21, 24]
         );
     }
 

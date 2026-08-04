@@ -310,6 +310,7 @@ struct SessionRuntime {
     metar_station_importance_status: Option<DataStatusRecord>,
     weather_station_airport_aliases: Option<WeatherStationAirportAliases>,
     obstacle_had: Option<LiveObstacleHadState>,
+    forecast_atmosphere_state: Option<LiveForecastAtmosphereState>,
     forecast_atmosphere: Option<crate::InstalledForecastAtmosphere>,
     obstacle_tile_cache: HashMap<String, PointTilePayload>,
     taf_payload: Option<TafProductPayload>,
@@ -335,6 +336,7 @@ impl Default for SessionRuntime {
             metar_station_importance_status: None,
             weather_station_airport_aliases: None,
             obstacle_had: None,
+            forecast_atmosphere_state: None,
             forecast_atmosphere: None,
             obstacle_tile_cache: HashMap::new(),
             taf_payload: None,
@@ -641,6 +643,7 @@ const PACKAGE_UI_WARNING_STATUS_PREFIX: &str = "package_ui_warning:";
 const METAR_STATION_IMPORTANCE_STATUS_ID: &str = "map_overlay:metar_station_importance_unavailable";
 const TERRAIN_STATUS_ID: &str = "terrain:warning_unavailable";
 const LIVE_OBSTACLE_HAD_RESOURCE_PREFIX: &str = "live_obstacle_had/";
+const LIVE_NAV_KV_RESOURCE_PREFIX: &str = "live_nav_kv/";
 
 #[derive(Debug, Deserialize)]
 struct MetarImportantStationsPayload {
@@ -696,14 +699,26 @@ struct CycleWindow {
 }
 
 #[derive(Debug, Clone)]
-struct LiveObstacleHadState {
+struct LiveNavKvSource {
+    product: String,
     version: String,
     state_url: String,
     root_member_path: String,
     page_path_template: String,
     page_count: u32,
     state_sha256: String,
+}
+
+#[derive(Debug, Clone)]
+struct LiveObstacleHadState {
+    source: LiveNavKvSource,
     store: Option<NavKvStore>,
+}
+
+#[derive(Debug, Clone)]
+struct LiveForecastAtmosphereState {
+    source: LiveNavKvSource,
+    manifest: product_contracts::AtmosphereManifest,
 }
 
 #[derive(Debug, Deserialize)]
@@ -1174,6 +1189,14 @@ fn live_feed_unavailable_status_record(product: &str, detail: String) -> DataSta
         "obstacles" => DataStatusRecord::new(
             LIVE_FEED_OBSTACLES_STATUS_ID,
             "OBSTACLES",
+            Some("UNAVAIL".to_string()),
+            UiStatusSeverity::Unavailable,
+            true,
+            detail,
+        ),
+        "winds-aloft" => DataStatusRecord::new(
+            "live_feed:winds-aloft_unavailable",
+            "WINDS ALOFT",
             Some("UNAVAIL".to_string()),
             UiStatusSeverity::Unavailable,
             true,
@@ -2032,7 +2055,7 @@ fn project_data_status_page_state(session: &UiSession) -> UiDataStatusPageState 
                 .runtime
                 .obstacle_had
                 .as_ref()
-                .map(|had| had.version.clone())
+                .map(|had| had.source.version.clone())
                 .or_else(|| {
                     session
                         .live_feeds
@@ -2040,6 +2063,7 @@ fn project_data_status_page_state(session: &UiSession) -> UiDataStatusPageState 
                         .map(str::to_string)
                 }),
         ),
+        winds_aloft_status_page_row(session),
     ];
     if session.platform_capabilities.cloud.is_some() {
         rows.insert(3, cloud_status_page_row(session));
@@ -3052,6 +3076,74 @@ fn live_feed_product_status_page_row(
         "OK",
         UiStatusSeverity::Ok,
         format!("{label} is loaded."),
+        facts,
+    )
+}
+
+fn winds_aloft_status_page_row(session: &UiSession) -> UiDataStatusPageRow {
+    let manifest = session
+        .runtime
+        .forecast_atmosphere
+        .as_ref()
+        .map(crate::InstalledForecastAtmosphere::manifest)
+        .or_else(|| {
+            session
+                .runtime
+                .forecast_atmosphere_state
+                .as_ref()
+                .map(|state| &state.manifest)
+        });
+    let mut facts = Vec::new();
+    if let Some(manifest) = manifest {
+        facts.push(status_fact("Version", manifest.version_label.clone()));
+        facts.push(status_fact("Model", manifest.model_id.clone()));
+        if let Some(cycle) = DateTime::<Utc>::from_timestamp_millis(manifest.cycle_time_epoch_ms) {
+            facts.push(status_time_fact(
+                "Model Cycle",
+                cycle,
+                UiDataStatusPageTimeDisplay::Old,
+            ));
+        }
+        if let Some(valid_through) = manifest
+            .valid_times_epoch_ms
+            .last()
+            .and_then(|epoch_ms| DateTime::<Utc>::from_timestamp_millis(*epoch_ms))
+        {
+            facts.push(status_time_fact(
+                "Valid Through",
+                valid_through,
+                UiDataStatusPageTimeDisplay::Until,
+            ));
+        }
+    }
+    if session.runtime.forecast_atmosphere.is_some() {
+        return status_page_row(
+            "live_feed:winds-aloft",
+            "Winds aloft",
+            "OK",
+            UiStatusSeverity::Ok,
+            "NOAA forecast atmosphere is loaded.",
+            facts,
+        );
+    }
+    let detail = if session.live_feeds.current_loaded() {
+        if session
+            .live_feeds
+            .has_product_current_version("winds-aloft")
+        {
+            "Winds aloft is listed in the live-feed index but its current NavKv state is not loaded."
+        } else {
+            "Winds aloft is not listed in the live-feed index."
+        }
+    } else {
+        "The live-feed index has not loaded."
+    };
+    status_page_row(
+        "live_feed:winds-aloft",
+        "Winds aloft",
+        "MISSING",
+        UiStatusSeverity::Unavailable,
+        detail,
         facts,
     )
 }
@@ -6880,6 +6972,12 @@ pub fn ingest_resource_in_session_at_epoch_ms(
         clear_live_feed_resource_error(session);
         return Ok(());
     }
+    if resource_id.starts_with(LIVE_NAV_KV_RESOURCE_PREFIX) {
+        let mut sessions = lock_sessions();
+        let session = session_mut(&mut sessions, handle)?;
+        ingest_live_forecast_atmosphere_resource(session, resource_id, bytes)?;
+        return Ok(());
+    }
     if resource_id.starts_with(LIVE_OBSTACLE_HAD_RESOURCE_PREFIX) {
         let mut sessions = lock_sessions();
         let session = session_mut(&mut sessions, handle)?;
@@ -7290,6 +7388,7 @@ fn install_live_feed_installed_state(
                     }
                 })?,
             );
+            session.runtime.forecast_atmosphere_state = None;
         }
         (product, payload) => {
             return Err(AppError {
@@ -7483,6 +7582,19 @@ pub fn report_session_resource_failure_in_session_at_epoch_ms(
                 "Terrain warning unavailable: failed to load terrain source {resource_id}: {message}"
             )),
         );
+    } else if resource_id.starts_with(LIVE_NAV_KV_RESOURCE_PREFIX) {
+        let product = live_nav_kv_resource_parts(resource_id)
+            .map(|(product, _, _)| product)
+            .unwrap_or("live NavKv");
+        upsert_data_status_record(
+            session,
+            live_feed_unavailable_status_record(
+                product,
+                format!(
+                    "{product} live feed unavailable: failed to fetch NavKv resource: {message}"
+                ),
+            ),
+        );
     } else if resource_id.starts_with(LIVE_OBSTACLE_HAD_RESOURCE_PREFIX) {
         upsert_data_status_record(
             session,
@@ -7509,7 +7621,7 @@ fn ingest_live_obstacle_had_resource(
     let Some(had) = session.runtime.obstacle_had.as_mut() else {
         return Ok(());
     };
-    if had.version != version {
+    if had.source.version != version {
         return Ok(());
     }
     if member == "root" {
@@ -7517,13 +7629,13 @@ fn ingest_live_obstacle_had_resource(
             kind: AppErrorKind::InvalidManifest,
             message: format!("failed to parse obstacle HAD root: {message}"),
         })?;
-        if root.page_count() != had.page_count {
+        if root.page_count() != had.source.page_count {
             return Err(AppError {
                 kind: AppErrorKind::InvalidManifest,
                 message: format!(
                     "obstacle HAD root page_count {} did not match manifest page_count {}",
                     root.page_count(),
-                    had.page_count
+                    had.source.page_count
                 ),
             });
         }
@@ -7542,12 +7654,12 @@ fn ingest_live_obstacle_had_resource(
         kind: AppErrorKind::InvalidManifest,
         message: format!("invalid obstacle HAD page resource id {resource_id}: {err}"),
     })?;
-    if page_index >= had.page_count {
+    if page_index >= had.source.page_count {
         return Err(AppError {
             kind: AppErrorKind::InvalidManifest,
             message: format!(
                 "obstacle HAD page {page_index} exceeds page_count {}",
-                had.page_count
+                had.source.page_count
             ),
         });
     }
@@ -7563,6 +7675,90 @@ fn ingest_live_obstacle_had_resource(
     })?;
     store.insert_page(page_index, page_bytes.into_owned());
     clear_data_status_record(session, LIVE_FEED_OBSTACLES_STATUS_ID);
+    Ok(())
+}
+
+fn ingest_live_forecast_atmosphere_resource(
+    session: &mut UiSession,
+    resource_id: &str,
+    bytes: &[u8],
+) -> AppResult<()> {
+    let Some((product, version, member)) = live_nav_kv_resource_parts(resource_id) else {
+        return Err(AppError {
+            kind: AppErrorKind::InvalidManifest,
+            message: format!("invalid live NavKv resource id: {resource_id}"),
+        });
+    };
+    if product != "winds-aloft" {
+        return Err(AppError {
+            kind: AppErrorKind::UnsupportedOperation,
+            message: format!("unsupported live NavKv product: {product}"),
+        });
+    }
+    let Some(state) = session.runtime.forecast_atmosphere_state.as_ref() else {
+        return Ok(());
+    };
+    if state.source.version != version {
+        return Ok(());
+    }
+    if member == "root" {
+        let root = NavKvRoot::parse(bytes).map_err(|message| AppError {
+            kind: AppErrorKind::InvalidManifest,
+            message: format!("failed to parse winds-aloft NavKv root: {message}"),
+        })?;
+        if root.page_count() != state.source.page_count {
+            return Err(AppError {
+                kind: AppErrorKind::InvalidManifest,
+                message: format!(
+                    "winds-aloft NavKv root page_count {} did not match manifest page_count {}",
+                    root.page_count(),
+                    state.source.page_count
+                ),
+            });
+        }
+        session.runtime.forecast_atmosphere = Some(
+            crate::InstalledForecastAtmosphere::new(state.manifest.clone(), NavKvStore::new(root))
+                .map_err(|message| AppError {
+                    kind: AppErrorKind::InvalidManifest,
+                    message,
+                })?,
+        );
+        let status_id = live_feed_unavailable_status_record("winds-aloft", String::new()).id;
+        clear_data_status_record(session, &status_id);
+        return Ok(());
+    }
+    let Some(page_text) = member.strip_prefix("page/") else {
+        return Err(AppError {
+            kind: AppErrorKind::InvalidManifest,
+            message: format!("invalid winds-aloft NavKv resource id: {resource_id}"),
+        });
+    };
+    let page_index = page_text.parse::<u32>().map_err(|error| AppError {
+        kind: AppErrorKind::InvalidManifest,
+        message: format!("invalid winds-aloft NavKv page resource id {resource_id}: {error}"),
+    })?;
+    if page_index >= state.source.page_count {
+        return Err(AppError {
+            kind: AppErrorKind::InvalidManifest,
+            message: format!(
+                "winds-aloft NavKv page {page_index} exceeds page_count {}",
+                state.source.page_count
+            ),
+        });
+    }
+    let Some(atmosphere) = session.runtime.forecast_atmosphere.as_mut() else {
+        return Err(AppError {
+            kind: AppErrorKind::InvalidManifest,
+            message: format!("winds-aloft NavKv page arrived before root: {resource_id}"),
+        });
+    };
+    let page_bytes = nav_kv_package::decode_xz_if_needed(bytes).map_err(|message| AppError {
+        kind: AppErrorKind::InvalidManifest,
+        message: format!("failed to decode winds-aloft NavKv page {resource_id}: {message}"),
+    })?;
+    atmosphere.insert_page(page_index, page_bytes.into_owned());
+    let status_id = live_feed_unavailable_status_record("winds-aloft", String::new()).id;
+    clear_data_status_record(session, &status_id);
     Ok(())
 }
 
@@ -7593,6 +7789,15 @@ fn install_live_feed_payloads(session: &mut UiSession) -> AppResult<()> {
             session.runtime.obstacle_tile_cache.clear();
             Arc::make_mut(&mut session.map_overlay_config).obstacle_layer = None;
             clear_data_status_record(session, LIVE_FEED_OBSTACLES_STATUS_ID);
+        }
+        if !session
+            .live_feeds
+            .has_product_current_version("winds-aloft")
+        {
+            session.runtime.forecast_atmosphere_state = None;
+            session.runtime.forecast_atmosphere = None;
+            let status_id = live_feed_unavailable_status_record("winds-aloft", String::new()).id;
+            clear_data_status_record(session, &status_id);
         }
     }
     let loaded_metars_version = session.live_feeds.product_loaded_version("metars");
@@ -7691,7 +7896,7 @@ fn install_live_feed_payloads(session: &mut UiSession) -> AppResult<()> {
             .runtime
             .obstacle_had
             .as_ref()
-            .is_some_and(|had| had.version != current_obstacles_version)
+            .is_some_and(|had| had.source.version != current_obstacles_version)
         {
             session.runtime.obstacle_had = None;
             session.runtime.obstacle_tile_cache.clear();
@@ -7705,7 +7910,7 @@ fn install_live_feed_payloads(session: &mut UiSession) -> AppResult<()> {
         .and_then(|had| {
             loaded_obstacles_version
                 .as_deref()
-                .map(|version| had.version == version)
+                .map(|version| had.source.version == version)
         })
         .unwrap_or(false);
     if !obstacles_installed {
@@ -7728,7 +7933,114 @@ fn install_live_feed_payloads(session: &mut UiSession) -> AppResult<()> {
             }
         }
     }
+    let loaded_forecast_version = session
+        .live_feeds
+        .product_loaded_version("winds-aloft")
+        .map(str::to_string);
+    if let Some(current_forecast_version) =
+        session.live_feeds.current_product_version("winds-aloft")
+    {
+        let pending_is_stale = session
+            .runtime
+            .forecast_atmosphere_state
+            .as_ref()
+            .is_some_and(|state| state.source.version != current_forecast_version);
+        let installed_is_stale = session
+            .runtime
+            .forecast_atmosphere
+            .as_ref()
+            .is_some_and(|atmosphere| atmosphere.version_label() != current_forecast_version);
+        if pending_is_stale || installed_is_stale {
+            session.runtime.forecast_atmosphere_state = None;
+            session.runtime.forecast_atmosphere = None;
+        }
+    }
+    let forecast_installed = session
+        .runtime
+        .forecast_atmosphere
+        .as_ref()
+        .and_then(|atmosphere| {
+            loaded_forecast_version
+                .as_deref()
+                .map(|version| atmosphere.version_label() == version)
+        })
+        .unwrap_or(false);
+    let forecast_pending = session
+        .runtime
+        .forecast_atmosphere_state
+        .as_ref()
+        .and_then(|state| {
+            loaded_forecast_version
+                .as_deref()
+                .map(|version| state.source.version == version)
+        })
+        .unwrap_or(false);
+    if !forecast_installed && !forecast_pending {
+        if let Some(forecast_value) = session
+            .live_feeds
+            .product_state_manifest("winds-aloft")
+            .cloned()
+        {
+            let manifest =
+                serde_json::from_value::<product_contracts::AtmosphereManifest>(forecast_value)
+                    .map_err(|error| AppError {
+                        kind: AppErrorKind::InvalidManifest,
+                        message: format!("failed to parse winds-aloft live feed manifest: {error}"),
+                    })?;
+            install_live_forecast_atmosphere_state(session, manifest)?;
+        }
+    }
     sync_live_feed_overlay_status_records(session);
+    Ok(())
+}
+
+fn install_live_forecast_atmosphere_state(
+    session: &mut UiSession,
+    manifest: product_contracts::AtmosphereManifest,
+) -> AppResult<()> {
+    manifest
+        .validate(&format!("had-nav-kv-v{}", had_nav_kv::VERSION))
+        .map_err(|message| AppError {
+            kind: AppErrorKind::InvalidManifest,
+            message: format!("invalid winds-aloft live feed manifest: {message}"),
+        })?;
+    let version = session
+        .live_feeds
+        .product_loaded_version("winds-aloft")
+        .ok_or_else(|| AppError {
+            kind: AppErrorKind::InvalidManifest,
+            message: "winds-aloft state manifest has no loaded version".to_string(),
+        })?
+        .to_string();
+    let state_url = session
+        .live_feeds
+        .product_state_url("winds-aloft")
+        .ok_or_else(|| AppError {
+            kind: AppErrorKind::InvalidManifest,
+            message: "winds-aloft state manifest has no state URL".to_string(),
+        })?
+        .to_string();
+    if manifest.product_id != "winds-aloft" || manifest.version_label != version {
+        return Err(AppError {
+            kind: AppErrorKind::InvalidManifest,
+            message: format!(
+                "winds-aloft manifest identified {}/{} instead of winds-aloft/{version}",
+                manifest.product_id, manifest.version_label
+            ),
+        });
+    }
+    let source = LiveNavKvSource {
+        product: "winds-aloft".to_string(),
+        version,
+        state_url,
+        root_member_path: manifest.root.clone(),
+        page_path_template: manifest.page_path_template.clone(),
+        page_count: manifest.page_count,
+        state_sha256: manifest.state_sha256.clone(),
+    };
+    session.runtime.forecast_atmosphere_state =
+        Some(LiveForecastAtmosphereState { source, manifest });
+    session.runtime.forecast_atmosphere = None;
     Ok(())
 }
 
@@ -7832,17 +8144,27 @@ fn install_live_obstacle_had_with_parsed_manifest(
         });
     }
     let obstacle_layer = obstacle_layer_config_from_live_manifest_value(manifest_value)?;
+    let source = LiveNavKvSource {
+        product: "obstacles".to_string(),
+        version,
+        state_url,
+        root_member_path: manifest.root,
+        page_path_template: manifest.page_path_template,
+        page_count: manifest.page_count,
+        state_sha256: manifest.state_sha256,
+    };
     let same_state = session
         .runtime
         .obstacle_had
         .as_ref()
         .is_some_and(|existing| {
-            existing.version == version
-                && existing.state_url == state_url
-                && existing.root_member_path == manifest.root
-                && existing.page_path_template == manifest.page_path_template
-                && existing.page_count == manifest.page_count
-                && existing.state_sha256 == manifest.state_sha256
+            existing.source.product == source.product
+                && existing.source.version == source.version
+                && existing.source.state_url == source.state_url
+                && existing.source.root_member_path == source.root_member_path
+                && existing.source.page_path_template == source.page_path_template
+                && existing.source.page_count == source.page_count
+                && existing.source.state_sha256 == source.state_sha256
         });
     let preserve_store = store.or_else(|| {
         if same_state {
@@ -7857,12 +8179,7 @@ fn install_live_obstacle_had_with_parsed_manifest(
     });
     Arc::make_mut(&mut session.map_overlay_config).obstacle_layer = Some(obstacle_layer);
     session.runtime.obstacle_had = Some(LiveObstacleHadState {
-        version,
-        state_url,
-        root_member_path: manifest.root,
-        page_path_template: manifest.page_path_template,
-        page_count: manifest.page_count,
-        state_sha256: manifest.state_sha256,
+        source,
         store: preserve_store,
     });
     if !same_state {
@@ -8222,37 +8539,43 @@ fn live_feed_state_member_address(state_url: &str, member_path: &str) -> String 
     }
 }
 
-fn live_obstacle_had_root_resource(had: &LiveObstacleHadState) -> CoreResourceRequest {
-    CoreResourceRequest::public_url(
+fn live_nav_kv_resource_id_prefix(source: &LiveNavKvSource) -> String {
+    if source.product == "obstacles" {
+        format!("{LIVE_OBSTACLE_HAD_RESOURCE_PREFIX}{}", source.version)
+    } else {
         format!(
-            "{}{}{}",
-            LIVE_OBSTACLE_HAD_RESOURCE_PREFIX, had.version, "/root"
-        ),
-        live_feed_state_member_address(&had.state_url, &had.root_member_path),
+            "{LIVE_NAV_KV_RESOURCE_PREFIX}{}/{}",
+            source.product, source.version
+        )
+    }
+}
+
+fn live_nav_kv_root_resource(source: &LiveNavKvSource) -> CoreResourceRequest {
+    CoreResourceRequest::public_url(
+        format!("{}/root", live_nav_kv_resource_id_prefix(source)),
+        live_feed_state_member_address(&source.state_url, &source.root_member_path),
         false,
     )
 }
 
-fn live_obstacle_had_page_member_path(had: &LiveObstacleHadState, page: u32) -> String {
-    had.page_path_template
+fn live_nav_kv_page_member_path(source: &LiveNavKvSource, page: u32) -> String {
+    source
+        .page_path_template
         .replace("{page:04}", &format!("{page:04}"))
         .replace("{page}", &page.to_string())
 }
 
-fn live_obstacle_had_page_resource(had: &LiveObstacleHadState, page: u32) -> CoreResourceRequest {
-    let member_path = live_obstacle_had_page_member_path(had, page);
+fn live_nav_kv_page_resource(source: &LiveNavKvSource, page: u32) -> CoreResourceRequest {
+    let member_path = live_nav_kv_page_member_path(source, page);
     CoreResourceRequest::public_url(
-        format!(
-            "{}{}/page/{page:04}",
-            LIVE_OBSTACLE_HAD_RESOURCE_PREFIX, had.version
-        ),
-        live_feed_state_member_address(&had.state_url, &member_path),
+        format!("{}/page/{page:04}", live_nav_kv_resource_id_prefix(source)),
+        live_feed_state_member_address(&source.state_url, &member_path),
         false,
     )
 }
 
-fn live_obstacle_had_page_resources(
-    had: &LiveObstacleHadState,
+fn live_nav_kv_page_resources(
+    source: &LiveNavKvSource,
     pages: Vec<u32>,
 ) -> Vec<CoreResourceRequest> {
     let mut pages = pages;
@@ -8260,13 +8583,31 @@ fn live_obstacle_had_page_resources(
     pages.dedup();
     pages
         .into_iter()
-        .map(|page| live_obstacle_had_page_resource(had, page))
+        .map(|page| live_nav_kv_page_resource(source, page))
         .collect()
+}
+
+fn live_obstacle_had_root_resource(had: &LiveObstacleHadState) -> CoreResourceRequest {
+    live_nav_kv_root_resource(&had.source)
+}
+
+fn live_obstacle_had_page_resources(
+    had: &LiveObstacleHadState,
+    pages: Vec<u32>,
+) -> Vec<CoreResourceRequest> {
+    live_nav_kv_page_resources(&had.source, pages)
 }
 
 fn live_obstacle_had_resource_parts(resource_id: &str) -> Option<(&str, &str)> {
     let rest = resource_id.strip_prefix(LIVE_OBSTACLE_HAD_RESOURCE_PREFIX)?;
     rest.split_once('/')
+}
+
+fn live_nav_kv_resource_parts(resource_id: &str) -> Option<(&str, &str, &str)> {
+    let rest = resource_id.strip_prefix(LIVE_NAV_KV_RESOURCE_PREFIX)?;
+    let (product, rest) = rest.split_once('/')?;
+    let (version, member) = rest.split_once('/')?;
+    Some((product, version, member))
 }
 
 fn had_read_error_to_overlay_outcome(err: HadReadError) -> AppResult<HadOperationOutcome> {
@@ -8722,6 +9063,82 @@ fn ensure_live_obstacle_inputs_loaded(
         clear_data_status_record(session, LIVE_FEED_OBSTACLES_STATUS_ID);
     }
     Vec::new()
+}
+
+fn ensure_forecast_atmosphere_inputs_loaded(session: &mut UiSession) {
+    if session.runtime.forecast_atmosphere_state.is_none() {
+        if !session.live_feeds.current_loaded()
+            || !session
+                .live_feeds
+                .has_product_current_version("winds-aloft")
+        {
+            return;
+        }
+        if let HadOperationOutcome::NeedResources { resources } = session
+            .live_feeds
+            .sync_product_outcome_at_epoch_ms("winds-aloft", session.wall_clock_epoch_ms)
+        {
+            for resource in resources {
+                enqueue_session_resource_effect(
+                    session,
+                    resource,
+                    [UiInvalidation::SessionSnapshot],
+                );
+            }
+        }
+        return;
+    }
+
+    let Some(source) = session
+        .runtime
+        .forecast_atmosphere_state
+        .as_ref()
+        .map(|state| state.source.clone())
+    else {
+        return;
+    };
+    if session.runtime.forecast_atmosphere.is_none() {
+        enqueue_session_resource_effect(
+            session,
+            live_nav_kv_root_resource(&source),
+            [UiInvalidation::SessionSnapshot],
+        );
+        return;
+    }
+    if session.altitude_planner_wind_selection != AltitudePlannerWindSelection::Gfs {
+        return;
+    }
+
+    let paths = session
+        .guidance_leg_geometry
+        .values()
+        .map(crate::flight_plan_materialization::geometry_points)
+        .filter(|path| path.len() >= 2)
+        .collect::<Vec<_>>();
+    let Some(atmosphere) = session.runtime.forecast_atmosphere.as_ref() else {
+        return;
+    };
+    let missing_pages = match atmosphere.missing_pages_for_paths(&paths) {
+        Ok(pages) => pages,
+        Err(message) => {
+            upsert_data_status_record(
+                session,
+                live_feed_unavailable_status_record(
+                    "winds-aloft",
+                    format!("Winds-aloft forecast unavailable for this route: {message}"),
+                ),
+            );
+            return;
+        }
+    };
+    if missing_pages.is_empty() {
+        let status_id = live_feed_unavailable_status_record("winds-aloft", String::new()).id;
+        clear_data_status_record(session, &status_id);
+        return;
+    }
+    for resource in live_nav_kv_page_resources(&source, missing_pages) {
+        enqueue_session_resource_effect(session, resource, [UiInvalidation::SessionSnapshot]);
+    }
 }
 
 pub fn get_map_overlay_in_session(
@@ -10915,6 +11332,7 @@ fn try_snapshot_for_session(session: &mut UiSession) -> Result<UiSessionSnapshot
         ensure_weather_station_airport_aliases_loaded(session)?;
     }
     enqueue_ownship_agl_terrain_effect(session);
+    ensure_forecast_atmosphere_inputs_loaded(session);
     let app_ui_started_at = crate::core_clock_ms();
     let mut app_ui_state = project_session_app_ui_state(session)?;
     let app_ui_ms = elapsed_ms(app_ui_started_at);
@@ -17472,6 +17890,82 @@ mod tests {
         let feature_ids = query_obstacle_feature_ids(init.handle, &metrics);
         assert!(!feature_ids.iter().any(|id| id == "obstacle:old"));
         assert!(feature_ids.iter().any(|id| id == "obstacle:new"));
+    }
+
+    #[test]
+    fn jit_winds_aloft_faults_nav_kv_root_and_enables_forecast_selection() {
+        let (manifest, root, _pages, state_sha256) =
+            crate::forecast_atmosphere::tests::test_forecast_payload();
+        let version = manifest.version_label.clone();
+        let state_url = format!("states/winds-aloft/{version}/manifest.json");
+        let init =
+            create_ui_session(FlightPlan::default(), &[], None, None).expect("create session");
+        configure_test_live_feed_policy(init.handle, LiveFeedAcquisitionPolicy::JitPublicResources);
+        configure_live_feed_source_in_session(init.handle, "https://feeds.example.test")
+            .expect("configure live-feed source");
+
+        ingest_resource_in_session(
+            init.handle,
+            "live_feeds/current",
+            &live_current_manifest_for_test(BTreeMap::from([(
+                "winds-aloft".to_string(),
+                live_current_product_for_test(
+                    "winds-aloft",
+                    &version,
+                    &state_url,
+                    &state_sha256,
+                    Vec::new(),
+                ),
+            )])),
+        )
+        .expect("current manifest");
+        ingest_resource_in_session(
+            init.handle,
+            &format!("live_feeds/version/winds-aloft/{version}"),
+            &live_version_manifest_for_test(
+                "winds-aloft",
+                &version,
+                "nav_kv",
+                &state_url,
+                &state_sha256,
+            ),
+        )
+        .expect("version manifest");
+        ingest_resource_in_session(
+            init.handle,
+            &format!("live_feeds/state/winds-aloft/{version}"),
+            &serde_json::to_vec(&manifest).expect("atmosphere manifest json"),
+        )
+        .expect("state manifest");
+
+        get_session_snapshot(init.handle).expect("snapshot before atmosphere root");
+        let effects = drain_session_resource_effects(init.handle).expect("root resource effects");
+        let root_effect = effects
+            .iter()
+            .find(|effect| effect.resource.id == format!("live_nav_kv/winds-aloft/{version}/root"))
+            .expect("winds-aloft NavKv root request");
+        assert_eq!(
+            root_effect.resource.source,
+            crate::CoreResourceSource::PublicUrl {
+                url: format!("/live-feeds/v3/states/winds-aloft/{version}/root"),
+            }
+        );
+
+        ingest_resource_in_session(init.handle, &root_effect.resource.id, &root)
+            .expect("atmosphere root");
+        let snapshot = get_session_snapshot(init.handle).expect("snapshot with atmosphere root");
+        let winds_status = snapshot
+            .data_status_page_state
+            .rows
+            .iter()
+            .find(|row| row.id == "live_feed:winds-aloft")
+            .expect("winds-aloft status row");
+        assert_eq!(winds_status.value, "OK");
+        perform_altitude_planner_action_in_session(
+            init.handle,
+            crate::had_ops::SELECT_GFS_WIND_ACTION_UID.to_string(),
+        )
+        .expect("select JIT forecast");
     }
 
     #[test]

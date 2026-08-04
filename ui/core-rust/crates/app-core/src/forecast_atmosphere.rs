@@ -2,7 +2,11 @@
 //
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
-use std::{cell::RefCell, collections::HashMap, sync::Arc};
+use std::{
+    cell::RefCell,
+    collections::{BTreeSet, HashMap},
+    sync::Arc,
+};
 
 use product_contracts::{
     atmosphere_tile_key, unpack_i16_le, AtmosphereManifest, AtmosphereTileV1,
@@ -29,6 +33,65 @@ impl InstalledForecastAtmosphere {
             store,
             decoded_tiles: RefCell::new(HashMap::new()),
         })
+    }
+
+    pub(crate) fn version_label(&self) -> &str {
+        &self.manifest.version_label
+    }
+
+    pub(crate) fn manifest(&self) -> &AtmosphereManifest {
+        &self.manifest
+    }
+
+    pub(crate) fn insert_page(&mut self, page_index: u32, bytes: Vec<u8>) {
+        self.store.insert_page(page_index, bytes);
+    }
+
+    pub(crate) fn missing_pages_for_paths(
+        &self,
+        paths: &[Vec<LatLon>],
+    ) -> Result<Vec<u32>, String> {
+        const PREFETCH_STEP_NM: f64 = 25.0;
+
+        let mut keys = BTreeSet::new();
+        for path in paths {
+            for edge in path.windows(2) {
+                let step_count = (crate::geodesy::great_circle_distance_nm(edge[0], edge[1])
+                    / PREFETCH_STEP_NM)
+                    .ceil()
+                    .max(1.0) as usize;
+                for step in 0..=step_count {
+                    let position = crate::geodesy::great_circle_intermediate(
+                        edge[0],
+                        edge[1],
+                        step as f64 / step_count as f64,
+                    );
+                    keys.extend(self.tile_keys_for_position(position)?);
+                }
+            }
+        }
+        self.store
+            .missing_pages_for_keys(&keys.into_iter().collect::<Vec<_>>())
+    }
+
+    fn tile_keys_for_position(&self, position: LatLon) -> Result<[String; 4], String> {
+        let grid = &self.manifest.grid;
+        let row_coordinate = (position.lat - grid.latitude_origin_deg) / grid.latitude_step_deg;
+        let column_coordinate =
+            (position.lon - grid.longitude_origin_deg) / grid.longitude_step_deg;
+        let (row_lower, row_upper, _) =
+            interpolation_indices(row_coordinate, grid.row_count, "latitude")?;
+        let (column_lower, column_upper, _) =
+            interpolation_indices(column_coordinate, grid.column_count, "longitude")?;
+        let key = |row: u32, column: u32| {
+            atmosphere_tile_key(row / grid.tile_row_count, column / grid.tile_column_count)
+        };
+        Ok([
+            key(row_lower, column_lower),
+            key(row_lower, column_upper),
+            key(row_upper, column_lower),
+            key(row_upper, column_upper),
+        ])
     }
 
     fn tile(&self, tile_row: u32, tile_column: u32) -> Result<Arc<AtmosphereTileV1>, String> {
@@ -391,6 +454,47 @@ pub(crate) mod tests {
             .unwrap();
         assert!((sample.wind_east_kt - 65.5 * KNOTS_PER_MPS).abs() < 1.0e-9);
         assert!((sample.temperature_c - 30.5).abs() < 1.0e-9);
+    }
+
+    #[test]
+    fn route_prefetch_identifies_and_accepts_only_needed_nav_kv_pages() {
+        let (manifest, root, pages, _) = test_forecast_payload();
+        let store = NavKvStore::new(NavKvRoot::parse(&root).unwrap());
+        let mut forecast = InstalledForecastAtmosphere::new(manifest, store).unwrap();
+        let paths = vec![vec![
+            LatLon {
+                lat: 1.0,
+                lon: 10.0,
+            },
+            LatLon {
+                lat: 0.0,
+                lon: 11.0,
+            },
+        ]];
+
+        let mut fault_rounds = 0;
+        loop {
+            let needed = forecast.missing_pages_for_paths(&paths).unwrap();
+            if needed.is_empty() {
+                break;
+            }
+            fault_rounds += 1;
+            assert!(fault_rounds <= 4, "route page faults must converge");
+            for page in needed {
+                forecast.insert_page(page, pages[page as usize].clone());
+            }
+        }
+        assert!(fault_rounds > 0);
+        forecast
+            .sample(
+                LatLon {
+                    lat: 0.5,
+                    lon: 10.5,
+                },
+                500.0 / METERS_PER_FOOT,
+                500,
+            )
+            .expect("route pages make forecast sampleable");
     }
 
     #[test]

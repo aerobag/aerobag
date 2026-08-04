@@ -73,8 +73,8 @@ use crate::{
     map_follow::{MapFollowSessionState, MapFollowUiState},
     map_overlay::{
         obstacle_layer_config_from_live_manifest_value, vector_overlay_input_requests,
-        visible_obstacle_tile_window, FlightPlanSelectionPoint, MetarTileRecord,
-        PointTileLayerConfig, VectorOverlayInputRequests, WeatherStationAirportAliases,
+        visible_obstacle_tile_window, MetarTileRecord, NavRefSelectionPoint, PointTileLayerConfig,
+        VectorOverlayInputRequests, WeatherStationAirportAliases,
         MAP_SELECTION_NAV_REF_MIN_FOCUS_ZOOM,
     },
     map_overlay_config_from_vector_manifest_json, nav_kv_key_for_query,
@@ -8897,7 +8897,7 @@ fn flight_plan_overlay_features(
                 VectorIdentLabelStyle::FlightPlan
             };
             project_nav_symbol_feature(
-                format!("flight-plan:{}", nav_ref_overlay_key(&point.nav_ref)),
+                point.feature_id,
                 symbol,
                 point.position,
                 viewport,
@@ -8911,7 +8911,7 @@ fn flight_plan_overlay_features(
 
 fn flight_plan_selection_points(
     session: &UiSession,
-) -> Result<Vec<FlightPlanSelectionPoint>, HadReadError> {
+) -> Result<Vec<NavRefSelectionPoint>, HadReadError> {
     let Some(plan) = session.app_state.active_plan.as_ref() else {
         return Ok(Vec::new());
     };
@@ -8944,7 +8944,8 @@ fn flight_plan_selection_points(
             continue;
         };
         let position = nav_ref_position(store, &nav_ref, procedure_airport_id.as_deref())?;
-        features.push(FlightPlanSelectionPoint {
+        features.push(NavRefSelectionPoint {
+            feature_id: format!("flight-plan:{}", nav_ref_overlay_key(&nav_ref)),
             nav_ref,
             symbol,
             position,
@@ -9042,7 +9043,7 @@ pub fn get_map_selection_in_session_with_point_display_scale_at_epoch_ms(
     let session = session_mut(&mut sessions, handle)?;
     advance_session_wall_clock(session, epoch_ms);
     let metrics = MapSurfaceMetrics::new(viewport, width_px, height_px, point_display_scale);
-    let selection = match materialize_map_selection_in_session(session, &metrics, click)? {
+    let selection = match materialize_map_selection_in_session(session, &metrics, click, None)? {
         MapSelectionMaterialization::Complete(selection) => selection,
         MapSelectionMaterialization::NeedResources(resources) => {
             return Ok(HadOperationOutcome::NeedResources { resources });
@@ -9073,6 +9074,26 @@ pub fn get_map_selection_for_nav_ref_in_session_with_point_display_scale_at_epoc
         Ok(position) => position,
         Err(err) => return had_read_error_to_overlay_outcome(err),
     };
+    let requested_nav_ref_point = if matches!(nav_ref, NavRef::LatLon(_) | NavRef::Spot(_)) {
+        None
+    } else {
+        let symbol = match nav_symbol_feature(store, &nav_ref) {
+            Ok(Some(symbol)) => symbol,
+            Ok(None) => {
+                return Err(AppError {
+                    kind: AppErrorKind::InvalidCatalog,
+                    message: format!("NAVDB is missing the symbol for {nav_ref:?}"),
+                });
+            }
+            Err(err) => return had_read_error_to_overlay_outcome(err),
+        };
+        Some(NavRefSelectionPoint {
+            feature_id: format!("nav-ref:{}", nav_ref_overlay_key(&nav_ref)),
+            nav_ref: nav_ref.clone(),
+            position,
+            symbol,
+        })
+    };
     let surface_metrics =
         MapSurfaceMetrics::new(viewport, width_px, height_px, point_display_scale);
     let target_zoom =
@@ -9084,7 +9105,12 @@ pub fn get_map_selection_for_nav_ref_in_session_with_point_display_scale_at_epoc
     };
     let metrics =
         MapSurfaceMetrics::new(selection_viewport, width_px, height_px, point_display_scale);
-    let selection = match materialize_map_selection_in_session(session, &metrics, position)? {
+    let selection = match materialize_map_selection_in_session(
+        session,
+        &metrics,
+        position,
+        requested_nav_ref_point.as_ref(),
+    )? {
         MapSelectionMaterialization::Complete(selection) => selection,
         MapSelectionMaterialization::NeedResources(resources) => {
             return Ok(HadOperationOutcome::NeedResources { resources });
@@ -9128,6 +9154,7 @@ fn materialize_map_selection_in_session(
     session: &mut UiSession,
     metrics: &MapSurfaceMetrics,
     click: LatLon,
+    requested_nav_ref_point: Option<&NavRefSelectionPoint>,
 ) -> AppResult<MapSelectionMaterialization> {
     if let Err(err) = ensure_vector_inputs_loaded(session, &metrics) {
         return had_read_error_to_map_selection_materialization(err);
@@ -9168,12 +9195,20 @@ fn materialize_map_selection_in_session(
     } else {
         Vec::new()
     };
-    let flight_plan_points = match flight_plan_selection_points(session) {
+    let mut supplemental_nav_ref_points = match flight_plan_selection_points(session) {
         Ok(points) => points,
         Err(err) => {
             return had_read_error_to_map_selection_materialization(err);
         }
     };
+    if let Some(point) = requested_nav_ref_point {
+        if !supplemental_nav_ref_points
+            .iter()
+            .any(|existing| existing.nav_ref == point.nav_ref)
+        {
+            supplemental_nav_ref_points.push(point.clone());
+        }
+    }
     let local_time_zone = session
         .platform_capabilities
         .local_time_zone
@@ -9198,7 +9233,7 @@ fn materialize_map_selection_in_session(
         &offline_region_records,
         &session.runtime.airspace_feature_cache,
         session.runtime.tfr_payload.as_ref(),
-        &flight_plan_points,
+        &supplemental_nav_ref_points,
         &mut availability,
         Some(session_wall_clock_utc(session)),
         local_time_zone,
@@ -22122,6 +22157,78 @@ mod tests {
         assert!(action.enabled);
         assert_eq!(action.session_action.as_deref(), Some("direct-to-action"));
         assert!(action.flight_plan_row_action.is_none());
+    }
+
+    #[test]
+    fn map_selection_for_nav_ref_includes_target_omitted_from_vector_tiles() {
+        let nav_ref = NavRef::Fix("AYINU".to_string());
+        let position = LatLon {
+            lat: 47.5,
+            lon: -122.0,
+        };
+        let position_json = serde_json::to_vec(&position).expect("position json");
+        let symbol_json = serde_json::to_vec(&crate::NavSymbolFeature {
+            kind: "rnav-wp".to_string(),
+            label: "AYINU".to_string(),
+            symbol_kind: "fix".to_string(),
+            style_class: "fix".to_string(),
+            obstacle_variant: None,
+            obstacle_tone: None,
+            towered: false,
+            fuel_available: false,
+            has_paved_runway: None,
+            heliport: None,
+            has_water_runway: None,
+            runway_length_ratio: 0.0,
+            longest_runway_heading_true_deg: None,
+        })
+        .expect("symbol json");
+        let store = crate::navkv::nav_kv_store_for_test(
+            &[
+                ("vector/manifest", minimal_vector_manifest_json().as_bytes()),
+                ("navref/position/fix/AYINU", position_json.as_slice()),
+                ("navref/symbol/fix/AYINU", symbol_json.as_slice()),
+            ],
+            1024,
+        );
+        let init =
+            create_ui_session(FlightPlan::default(), &[], None, None).expect("create session");
+        attach_isolated_test_nav_kv_store(init.handle, &store);
+
+        let outcome =
+            get_map_selection_for_nav_ref_in_session_with_point_display_scale_at_epoch_ms(
+                init.handle,
+                MapViewport {
+                    center: LatLon { lat: 0.0, lon: 0.0 },
+                    zoom: 5.0,
+                    rotation_deg: 0.0,
+                    pitch_deg: 0.0,
+                },
+                800.0,
+                600.0,
+                nav_ref.clone(),
+                1.0,
+                0,
+            )
+            .expect("selection outcome");
+        let HadOperationOutcome::Complete { result, .. } = outcome else {
+            panic!("selection unexpectedly needed resources: {outcome:?}");
+        };
+        let result: MapSelectionForNavRefResult =
+            serde_json::from_value(result).expect("selection result");
+        let selected_item_id = result
+            .selected_item_id
+            .as_deref()
+            .expect("searched NavRef must be selected");
+        let selected = result
+            .selection
+            .categories
+            .iter()
+            .flat_map(|category| &category.items)
+            .find(|item| item.id == selected_item_id)
+            .expect("selected item must be present");
+        assert_eq!(selected.nav_ref.as_ref(), Some(&nav_ref));
+        assert_eq!(selected.label, "AYINU");
     }
 
     fn test_map_selection_item(

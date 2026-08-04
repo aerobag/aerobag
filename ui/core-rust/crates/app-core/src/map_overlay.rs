@@ -1239,10 +1239,11 @@ pub struct MapSelectionForNavRefResult {
 }
 
 #[derive(Debug, Clone, PartialEq)]
-pub struct FlightPlanSelectionPoint {
+pub struct NavRefSelectionPoint {
     pub nav_ref: NavRef,
     pub position: LatLon,
     pub symbol: NavSymbolFeature,
+    pub feature_id: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -2920,7 +2921,7 @@ pub fn query_map_selection(
     offline_region_records: &[OfflineRegionRecord],
     airspace_feature_cache: &HashMap<String, AirspaceFeaturePayload>,
     tfr_payload: Option<&TfrProductPayload>,
-    flight_plan_points: &[FlightPlanSelectionPoint],
+    supplemental_nav_ref_points: &[NavRefSelectionPoint],
     airport_plate_availability: &mut dyn FnMut(&str) -> AirportPlateAvailability,
 ) -> MapSelectionQueryResult {
     query_map_selection_with_point_display_scale(
@@ -2938,7 +2939,7 @@ pub fn query_map_selection(
         offline_region_records,
         airspace_feature_cache,
         tfr_payload,
-        flight_plan_points,
+        supplemental_nav_ref_points,
         airport_plate_availability,
         1.0,
     )
@@ -2959,7 +2960,7 @@ pub fn query_map_selection_with_point_display_scale(
     offline_region_records: &[OfflineRegionRecord],
     airspace_feature_cache: &HashMap<String, AirspaceFeaturePayload>,
     tfr_payload: Option<&TfrProductPayload>,
-    flight_plan_points: &[FlightPlanSelectionPoint],
+    supplemental_nav_ref_points: &[NavRefSelectionPoint],
     airport_plate_availability: &mut dyn FnMut(&str) -> AirportPlateAvailability,
     point_display_scale: f64,
 ) -> MapSelectionQueryResult {
@@ -2977,7 +2978,7 @@ pub fn query_map_selection_with_point_display_scale(
         offline_region_records,
         airspace_feature_cache,
         tfr_payload,
-        flight_plan_points,
+        supplemental_nav_ref_points,
         airport_plate_availability,
         None,
     )
@@ -2996,7 +2997,7 @@ pub fn query_map_selection_for_surface(
     offline_region_records: &[OfflineRegionRecord],
     airspace_feature_cache: &HashMap<String, AirspaceFeaturePayload>,
     tfr_payload: Option<&TfrProductPayload>,
-    flight_plan_points: &[FlightPlanSelectionPoint],
+    supplemental_nav_ref_points: &[NavRefSelectionPoint],
     airport_plate_availability: &mut dyn FnMut(&str) -> AirportPlateAvailability,
     weather_age_reference_utc: Option<DateTime<Utc>>,
 ) -> MapSelectionQueryResult {
@@ -3014,7 +3015,7 @@ pub fn query_map_selection_for_surface(
         offline_region_records,
         airspace_feature_cache,
         tfr_payload,
-        flight_plan_points,
+        supplemental_nav_ref_points,
         airport_plate_availability,
         weather_age_reference_utc,
         chrono_tz::UTC,
@@ -3035,7 +3036,7 @@ pub fn query_map_selection_for_surface_in_time_zone(
     offline_region_records: &[OfflineRegionRecord],
     airspace_feature_cache: &HashMap<String, AirspaceFeaturePayload>,
     tfr_payload: Option<&TfrProductPayload>,
-    flight_plan_points: &[FlightPlanSelectionPoint],
+    supplemental_nav_ref_points: &[NavRefSelectionPoint],
     airport_plate_availability: &mut dyn FnMut(&str) -> AirportPlateAvailability,
     weather_age_reference_utc: Option<DateTime<Utc>>,
     local_time_zone: Tz,
@@ -3151,7 +3152,7 @@ pub fn query_map_selection_for_surface_in_time_zone(
         }
     }
 
-    for matched in query_flight_plan_selection_matches(
+    for matched in query_supplemental_nav_ref_selection_matches(
         width_px,
         height_px,
         plan,
@@ -3159,7 +3160,7 @@ pub fn query_map_selection_for_surface_in_time_zone(
         scale,
         click_screen,
         hit_radius_px,
-        flight_plan_points,
+        supplemental_nav_ref_points,
         &matched_nav_refs,
         metar_payload,
         taf_payload,
@@ -3548,7 +3549,7 @@ fn selection_item_for_point(
     }
 }
 
-fn query_flight_plan_selection_matches(
+fn query_supplemental_nav_ref_selection_matches(
     width_px: f64,
     height_px: f64,
     plan: Option<&FlightPlan>,
@@ -3556,7 +3557,7 @@ fn query_flight_plan_selection_matches(
     scale: f64,
     click_screen: WorldPoint,
     hit_radius_px: f64,
-    points: &[FlightPlanSelectionPoint],
+    points: &[NavRefSelectionPoint],
     matched_nav_refs: &BTreeSet<String>,
     metar_payload: Option<&MetarProductPayload>,
     taf_payload: Option<&TafProductPayload>,
@@ -3582,7 +3583,7 @@ fn query_flight_plan_selection_matches(
             continue;
         }
         matches.push(MapSelectionPointMatch {
-            item: selection_item_for_flight_plan_point(
+            item: selection_item_for_nav_ref_point(
                 point,
                 plan,
                 metar_payload,
@@ -3598,8 +3599,8 @@ fn query_flight_plan_selection_matches(
     matches
 }
 
-fn selection_item_for_flight_plan_point(
-    point: &FlightPlanSelectionPoint,
+fn selection_item_for_nav_ref_point(
+    point: &NavRefSelectionPoint,
     plan: Option<&FlightPlan>,
     metar_payload: Option<&MetarProductPayload>,
     taf_payload: Option<&TafProductPayload>,
@@ -3671,7 +3672,7 @@ fn selection_item_for_flight_plan_point(
         ]
     };
     MapSelectionItem {
-        id: format!("flight-plan:{}", nav_ref_overlay_key(nav_ref)),
+        id: point.feature_id.clone(),
         label,
         sublabel: point.symbol.kind.trim().to_ascii_uppercase(),
         description: None,
@@ -3680,7 +3681,7 @@ fn selection_item_for_flight_plan_point(
         elevation_msl_ft: None,
         detail_text: None,
         highlight: MapSelectionHighlight::FeatureRef {
-            id: format!("flight-plan:{}", nav_ref_overlay_key(nav_ref)),
+            id: point.feature_id.clone(),
         },
         nav_ref: Some(nav_ref.clone()),
         symbol_feature: Some(symbol_feature),
@@ -3712,10 +3713,6 @@ pub fn selected_map_selection_item_id_for_nav_ref(
             })
             .map(|item| item.id.clone())
     })
-}
-
-fn nav_ref_overlay_key(nav_ref: &NavRef) -> String {
-    serde_json::to_string(nav_ref).unwrap_or_else(|_| format!("{nav_ref:?}"))
 }
 
 fn insert_best_position_action(plan: Option<&FlightPlan>, nav_ref: &NavRef) -> MapSelectionAction {
@@ -10973,7 +10970,11 @@ mod tests {
             &[],
             &HashMap::new(),
             None,
-            &[FlightPlanSelectionPoint {
+            &[NavRefSelectionPoint {
+                feature_id: format!(
+                    "flight-plan:{}",
+                    serde_json::to_string(&nav_ref).expect("serialize NavRef")
+                ),
                 nav_ref: nav_ref.clone(),
                 position: viewport.center,
                 symbol: NavSymbolFeature {

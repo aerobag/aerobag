@@ -5,6 +5,7 @@
 import { Fragment, Profiler, useCallback, useEffect, useId, useLayoutEffect, useMemo, useRef, useState, type CSSProperties, type Dispatch, type MouseEvent, type PointerEvent, type ProfilerOnRenderCallback, type ReactNode, type SetStateAction } from "react";
 import { createPortal } from "react-dom";
 import type {
+  AltitudeComparisonPanelUiView,
   AirwayPresentationPlan,
   AirwaySuggestion,
   ChartPageData,
@@ -3760,6 +3761,17 @@ export default function App() {
           onAppendFlightPlanEntry={async (input) => {
             if (!uiSession) return;
             applySessionSnapshot(await uiSession.appendFlightPlanEntry(input), "append_flight_plan_entry");
+          }}
+          onQueryAltitudeComparisons={async () => {
+            if (!uiSession) throw new Error("altitude comparison requires live core session");
+            return uiSession.altitudeComparisons();
+          }}
+          onPerformAltitudePlannerAction={async (actionUid) => {
+            if (!uiSession) return;
+            applySessionSnapshot(
+              await uiSession.performAltitudePlannerAction(actionUid),
+              "altitude_planner_action",
+            );
           }}
           onPerformFlightPlanControl={async (controlId) => {
             if (!uiSession) return;
@@ -8042,6 +8054,8 @@ function FlightPlanPage(props: {
   onInsertAirportWaypointAtRow: (rowUid: string, before: boolean, airportId: string) => void | Promise<void>;
   onPreviewFlightPlanEntry: (input: string) => Promise<FlightPlanEntryPreview>;
   onAppendFlightPlanEntry: (input: string) => void | Promise<void>;
+  onQueryAltitudeComparisons: () => Promise<AltitudeComparisonPanelUiView>;
+  onPerformAltitudePlannerAction: (actionUid: string) => void | Promise<void>;
   onPerformFlightPlanControl: (controlId: FlightPlanControlId) => void | Promise<void>;
   onPerformFlightPlanRowAction: (rowUid: string, actionUid: string) => void | Promise<void>;
   onInsertAirwayAtRow: (
@@ -8099,6 +8113,10 @@ function FlightPlanPage(props: {
   const [routeEntryError, setRouteEntryError] = useState<string | null>(null);
   const [routeEntrySubmitting, setRouteEntrySubmitting] = useState(false);
   const [altitudePlannerStatusOpen, setAltitudePlannerStatusOpen] = useState(false);
+  const [altitudeComparisonOpen, setAltitudeComparisonOpen] = useState(false);
+  const [altitudeComparisonLoading, setAltitudeComparisonLoading] = useState(false);
+  const [altitudeComparisonError, setAltitudeComparisonError] = useState<string | null>(null);
+  const [altitudeComparisonPanel, setAltitudeComparisonPanel] = useState<AltitudeComparisonPanelUiView | null>(null);
   const { toast: disabledActionToast, show: showDisabledAction } = useDisabledActionToast();
   const previewFlightPlanEntryRef = useRef(props.onPreviewFlightPlanEntry);
   useEffect(() => {
@@ -8643,18 +8661,38 @@ function FlightPlanPage(props: {
             const disabled = !control.enabled;
             const disabledReason = disabledReasonText(control.disabled_reason);
             const statusOpen = control.id === "status" && altitudePlannerStatusOpen;
+            const comparisonOpen = control.id === "cruise_altitude" && altitudeComparisonOpen;
             return (
               <button
                 key={control.id}
                 type="button"
-                className={`trayButton trayButtonSquare altitudePlannerButton${disabled ? " isDisabled" : ""}${statusOpen ? " isOpen" : ""}`}
+                className={`trayButton trayButtonSquare altitudePlannerButton${disabled ? " isDisabled" : ""}${statusOpen || comparisonOpen ? " isOpen" : ""}`}
                 data-testid={`altitude-planner-control-${control.id}`}
-                aria-expanded={control.id === "status" ? statusOpen : undefined}
+                aria-expanded={control.id === "status" ? statusOpen : control.id === "cruise_altitude" ? comparisonOpen : undefined}
                 aria-disabled={disabled ? "true" : undefined}
                 title={disabledReason ?? undefined}
                 onClick={() => {
                   if (control.id === "status" && control.enabled) {
+                    setAltitudeComparisonOpen(false);
                     setAltitudePlannerStatusOpen((open) => !open);
+                    return;
+                  }
+                  if (control.id === "cruise_altitude" && control.enabled) {
+                    if (altitudeComparisonOpen) {
+                      setAltitudeComparisonOpen(false);
+                      return;
+                    }
+                    setAltitudePlannerStatusOpen(false);
+                    setAltitudeComparisonOpen(true);
+                    setAltitudeComparisonLoading(true);
+                    setAltitudeComparisonError(null);
+                    void props.onQueryAltitudeComparisons()
+                      .then(setAltitudeComparisonPanel)
+                      .catch((error: unknown) => {
+                        setAltitudeComparisonPanel(null);
+                        setAltitudeComparisonError(errorMessage(error));
+                      })
+                      .finally(() => setAltitudeComparisonLoading(false));
                     return;
                   }
                   if (disabledReason) {
@@ -8673,6 +8711,41 @@ function FlightPlanPage(props: {
             {(altitudePlanner.unavailable_reasons ?? []).map((reason) => (
               <p key={reason.code}>{reason.message}</p>
             ))}
+          </div>
+        ) : null}
+        {altitudeComparisonOpen ? (
+          <div className="altitudeComparisonPanel" data-testid="altitude-comparison-panel">
+            <strong>MODELED ALTITUDE COMPARISON</strong>
+            {altitudeComparisonLoading ? <p>Calculating…</p> : null}
+            {altitudeComparisonError ? <p>{altitudeComparisonError}</p> : null}
+            {altitudeComparisonPanel ? (
+              <div className="altitudeComparisonTable">
+                <div className="altitudeComparisonHeader">
+                  {altitudeComparisonPanel.columns.map((column) => <span key={column.id}>{column.label}</span>)}
+                </div>
+                {altitudeComparisonPanel.rows.map((row, index) => (
+                  <button
+                    key={row.action_uid ?? `disabled-${index}`}
+                    type="button"
+                    className={`altitudeComparisonRow${row.selected ? " isSelected" : ""}${row.enabled ? "" : " isDisabled"}`}
+                    aria-disabled={row.enabled ? undefined : "true"}
+                    title={row.disabled_reason ?? undefined}
+                    onClick={() => {
+                      if (!row.enabled || !row.action_uid) {
+                        if (row.disabled_reason) showDisabledAction(row.disabled_reason);
+                        return;
+                      }
+                      setAltitudeComparisonError(null);
+                      void Promise.resolve(props.onPerformAltitudePlannerAction(row.action_uid))
+                        .then(() => setAltitudeComparisonOpen(false))
+                        .catch((error: unknown) => setAltitudeComparisonError(errorMessage(error)));
+                    }}
+                  >
+                    {row.cells.map((cell) => <span key={cell.id}>{cell.value ?? "—"}</span>)}
+                  </button>
+                ))}
+              </div>
+            ) : null}
           </div>
         ) : null}
       </div>

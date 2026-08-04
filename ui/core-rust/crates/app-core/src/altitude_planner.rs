@@ -6,8 +6,8 @@ use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
 use crate::{
-    great_circle_distance_nm, great_circle_intermediate, initial_course_deg, FlightPlanRowId,
-    LatLon,
+    great_circle_distance_nm, great_circle_intermediate, initial_course_deg, FlightDataCell,
+    FlightPlanRowId, LatLon,
 };
 
 const MAX_INTEGRATION_STEP_NM: f64 = 1.0;
@@ -65,6 +65,23 @@ pub struct AltitudePlannerControlUiView {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AltitudeComparisonUiView {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub action_uid: Option<String>,
+    pub selected: bool,
+    pub enabled: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub disabled_reason: Option<String>,
+    pub cells: Vec<FlightDataCell>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AltitudeComparisonPanelUiView {
+    pub columns: Vec<crate::FlightDataColumn>,
+    pub rows: Vec<AltitudeComparisonUiView>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct AltitudePlannerUiView {
     pub estimate_kind: FlightEstimateKind,
     pub controls: Vec<AltitudePlannerControlUiView>,
@@ -93,6 +110,7 @@ pub struct AltitudePlannerUiInput {
     pub wind_model_selectable: bool,
     pub performance_regime_available: bool,
     pub live_ground_speed_estimate_active: bool,
+    pub altitude_comparison_available: bool,
 }
 
 impl Default for AltitudePlannerUiInput {
@@ -111,6 +129,7 @@ impl Default for AltitudePlannerUiInput {
             wind_model_selectable: false,
             performance_regime_available: true,
             live_ground_speed_estimate_active: false,
+            altitude_comparison_available: false,
         }
     }
 }
@@ -178,7 +197,6 @@ pub fn project_altitude_planner_ui(input: AltitudePlannerUiInput) -> AltitudePla
             FlightEstimateKind::Modeled => "MODE\nMODELED".to_string(),
         }
     };
-
     AltitudePlannerUiView {
         estimate_kind,
         controls: vec![
@@ -195,10 +213,11 @@ pub fn project_altitude_planner_ui(input: AltitudePlannerUiInput) -> AltitudePla
                     .cruise_altitude_ft
                     .map(|altitude| format!("ALT\n{altitude}"))
                     .unwrap_or_else(|| "ALT\n—".to_string()),
-                enabled: false,
-                disabled_reason: Some(
-                    "Cruise altitude selection is not available in this first pass.".to_string(),
-                ),
+                enabled: input.altitude_comparison_available,
+                disabled_reason: (!input.altitude_comparison_available).then(|| {
+                    "Altitude comparison needs a flyable route and known start and destination altitudes."
+                        .to_string()
+                }),
             },
             AltitudePlannerControlUiView {
                 id: AltitudePlannerControlId::WindModel,

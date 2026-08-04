@@ -3,6 +3,7 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
 import type {
+  AltitudeComparisonPanelUiView,
   AppUiState,
   AirwayPresentationPlan,
   AirwaySuggestion,
@@ -811,6 +812,8 @@ export interface UiSession {
   loadPlateProcedure(loadId: string): Promise<UiSessionSnapshot>;
   restoreDirectTo(): Promise<UiSessionSnapshot>;
   performFlightPlanRowAction(rowUid: string, actionUid: string): Promise<UiSessionSnapshot>;
+  altitudeComparisons(): Promise<AltitudeComparisonPanelUiView>;
+  performAltitudePlannerAction(actionUid: string): Promise<UiSessionSnapshot>;
   performStatusAction(actionId: string): Promise<UiSessionSnapshot>;
   performMapSelectionAction(action: string): Promise<UiSessionSnapshot>;
   activateNextLeg(): Promise<UiSessionSnapshot>;
@@ -1455,6 +1458,15 @@ export class WasmAppCoreAdapter implements AppCoreAdapter {
         return performFlightPlanCommand({
           kind: "perform_row_action",
           row_uid: rowUid,
+          action_uid: actionUid,
+        });
+      },
+      altitudeComparisons: async () => {
+        return queryFlightPlan<AltitudeComparisonPanelUiView>({ kind: "altitude_comparisons" });
+      },
+      performAltitudePlannerAction: async (actionUid) => {
+        return performFlightPlanCommand({
+          kind: "perform_altitude_planner_action",
           action_uid: actionUid,
         });
       },

@@ -380,6 +380,46 @@ pub fn possible_columns() -> Vec<FlightDataColumn> {
     columns
 }
 
+pub fn altitude_comparison_cells(
+    altitude_ft: i32,
+    estimate: Option<FlightTimeFuelEstimate>,
+) -> Vec<FlightDataCell> {
+    let estimate_kind = estimate
+        .map(|estimate| estimate.estimate_kind)
+        .unwrap_or(FlightEstimateKind::Basic);
+    vec![
+        cell(
+            "cruise_altitude",
+            "ALT ft",
+            Some(format_feet(altitude_ft as f64)),
+        ),
+        cell_with_estimate(
+            "waypoint_ete",
+            "ETE",
+            estimate
+                .and_then(|estimate| estimate.cumulative_ete_seconds)
+                .map(|seconds| format_ete_seconds(seconds.round().max(0.0) as i64)),
+            estimate_kind,
+        ),
+        cell_with_estimate(
+            "fuel",
+            "FUEL gal",
+            estimate
+                .and_then(|estimate| estimate.cumulative_fuel_gal)
+                .map(format_fuel_gal),
+            estimate_kind,
+        ),
+    ]
+}
+
+pub fn altitude_comparison_columns() -> Vec<FlightDataColumn> {
+    vec![
+        column("cruise_altitude", "ALT ft"),
+        column("waypoint_ete", "ETE"),
+        column("fuel", "FUEL gal"),
+    ]
+}
+
 pub fn is_flight_data_banner_cell_id(id: &str) -> bool {
     FLIGHT_DATA_BANNER_CELLS
         .iter()

@@ -1114,6 +1114,21 @@ data class WireAltitudePlannerUnavailableReason(
 )
 
 @Serializable
+data class WireAltitudeComparisonUiView(
+    val action_uid: String? = null,
+    val selected: Boolean,
+    val enabled: Boolean,
+    val disabled_reason: String? = null,
+    val cells: List<WireFlightDataCell>,
+)
+
+@Serializable
+data class WireAltitudeComparisonPanelUiView(
+    val columns: List<WireFlightDataColumn>,
+    val rows: List<WireAltitudeComparisonUiView>,
+)
+
+@Serializable
 data class WireAltitudePlannerUiView(
     val estimate_kind: String,
     val controls: List<WireAltitudePlannerControlUiView>,

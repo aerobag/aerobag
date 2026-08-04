@@ -226,6 +226,19 @@ data class AltitudePlannerUnavailableReason(
     val message: String,
 )
 
+data class AltitudeComparisonUiView(
+    val actionUid: String?,
+    val selected: Boolean,
+    val enabled: Boolean,
+    val disabledReason: String?,
+    val cells: List<FlightDataCell>,
+)
+
+data class AltitudeComparisonPanelUiView(
+    val columns: List<FlightDataColumn>,
+    val rows: List<AltitudeComparisonUiView>,
+)
+
 data class AltitudePlannerUiView(
     val estimateKind: String,
     val controls: List<AltitudePlannerControlUiView>,

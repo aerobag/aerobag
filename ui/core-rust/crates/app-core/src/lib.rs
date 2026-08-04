@@ -53,12 +53,13 @@ pub use airport_info::{
     AirportCommunicationUiView, AirportInfoUiView, AirportRunwayUiView, AirportSolarEventUiView,
 };
 pub use altitude_planner::{
-    project_altitude_planner_ui, AircraftPerformanceProfile, AltitudePlannerControlId,
-    AltitudePlannerControlUiView, AltitudePlannerUiInput, AltitudePlannerUiView,
-    AltitudePlannerUnavailableReason, AltitudePlannerUnavailableReasonCode, AtmosphereModel,
-    AtmosphereSample, CruisePerformancePoint, FlightEstimateKind, NoWindIsaAtmosphere,
-    PerformanceAirspeedBasis, TrajectoryLegPrediction, TrajectoryPlanInput, TrajectoryPlanner,
-    TrajectoryPlannerError, TrajectoryPrediction, TrajectoryRouteLeg, VerticalPerformancePoint,
+    project_altitude_planner_ui, AircraftPerformanceProfile, AltitudeComparisonPanelUiView,
+    AltitudeComparisonUiView, AltitudePlannerControlId, AltitudePlannerControlUiView,
+    AltitudePlannerUiInput, AltitudePlannerUiView, AltitudePlannerUnavailableReason,
+    AltitudePlannerUnavailableReasonCode, AtmosphereModel, AtmosphereSample,
+    CruisePerformancePoint, FlightEstimateKind, NoWindIsaAtmosphere, PerformanceAirspeedBasis,
+    TrajectoryLegPrediction, TrajectoryPlanInput, TrajectoryPlanner, TrajectoryPlannerError,
+    TrajectoryPrediction, TrajectoryRouteLeg, VerticalPerformancePoint,
 };
 pub use chart_page::{
     airport_ids_from_plan, chart_page_airport_ids_from_plan, derive_chart_page_state_from_airports,
@@ -91,8 +92,9 @@ pub use debug_log::{
 };
 pub use errors::{AppError, AppErrorKind, AppResult};
 pub use flight_data::{
-    FlightDataBannerInput, FlightDataBannerModel, FlightDataCell, FlightDataCellTone,
-    FlightDataColumn, FlightDataComputer, FlightTimeFuelEstimate,
+    altitude_comparison_cells, altitude_comparison_columns, FlightDataBannerInput,
+    FlightDataBannerModel, FlightDataCell, FlightDataCellTone, FlightDataColumn,
+    FlightDataComputer, FlightTimeFuelEstimate,
 };
 pub use geodesy::{
     cross_track_left_nm, great_circle_display_path, great_circle_distance_nm,

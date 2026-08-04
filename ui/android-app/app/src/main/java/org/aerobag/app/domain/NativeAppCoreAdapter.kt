@@ -1218,6 +1218,21 @@ class NativeUiSession internal constructor(
         )
     }
 
+    fun altitudeComparisons(): AltitudeComparisonPanelUiView {
+        val result = queryFlightPlan(buildJsonObject { put("kind", "altitude_comparisons") })
+        return json.decodeFromJsonElement<WireAltitudeComparisonPanelUiView>(result).toUi()
+    }
+
+    fun performAltitudePlannerAction(actionUid: String): UiSessionSnapshot {
+        return performFlightPlanCommand(
+            "performAltitudePlannerAction",
+            buildJsonObject {
+                put("kind", "perform_altitude_planner_action")
+                put("action_uid", actionUid)
+            },
+        )
+    }
+
     fun performStatusAction(actionId: String): UiSessionSnapshot {
         return runPagedSnapshot("performStatusAction") {
             bridge.performStatusActionInSessionJson(handle, actionId)
@@ -3580,6 +3595,19 @@ private fun WireAltitudePlannerUiView.toUi() = AltitudePlannerUiView(
     },
     unavailableReasons = unavailable_reasons.map {
         AltitudePlannerUnavailableReason(code = it.code, message = it.message)
+    },
+)
+
+private fun WireAltitudeComparisonPanelUiView.toUi() = AltitudeComparisonPanelUiView(
+    columns = columns.map { it.toUi() },
+    rows = rows.map { row ->
+        AltitudeComparisonUiView(
+            actionUid = row.action_uid,
+            selected = row.selected,
+            enabled = row.enabled,
+            disabledReason = row.disabled_reason,
+            cells = row.cells.map { it.toUi() },
+        )
     },
 )
 

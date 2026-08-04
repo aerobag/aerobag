@@ -3111,7 +3111,8 @@ button {
   border-color: color-mix(in srgb, var(--theme-button-checked) 78%, black);
 }
 
-.altitudePlannerStatus {
+.altitudePlannerStatus,
+.altitudeComparisonPanel {
   position: absolute;
   top: calc(100% + var(--thumb-gap));
   left: 50%;
@@ -3126,13 +3127,59 @@ button {
   font-size: calc(var(--thumb) * 0.2);
 }
 
-.altitudePlannerStatus strong {
+.altitudePlannerStatus strong,
+.altitudeComparisonPanel strong {
   display: block;
   margin-bottom: calc(var(--thumb-gap) * 0.6);
 }
 
-.altitudePlannerStatus p {
+.altitudePlannerStatus p,
+.altitudeComparisonPanel p {
   margin: calc(var(--thumb-gap) * 0.5) 0 0;
+}
+
+.altitudeComparisonPanel {
+  max-height: min(calc(var(--thumb) * 10), calc(100vh - (var(--thumb) * 2)));
+  overflow: auto;
+}
+
+.altitudeComparisonTable {
+  display: grid;
+  gap: var(--thumb-gap);
+}
+
+.altitudeComparisonHeader,
+.altitudeComparisonRow {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: var(--thumb-gap);
+  align-items: center;
+  text-align: center;
+}
+
+.altitudeComparisonHeader {
+  color: var(--theme-panel-fg);
+  font-weight: 700;
+}
+
+.altitudeComparisonRow {
+  min-height: calc(var(--thumb) * 0.58);
+  padding: calc(var(--thumb-gap) * 0.5);
+  border: 1px solid color-mix(in srgb, var(--theme-button-unchecked) 78%, black);
+  border-radius: calc(var(--thumb-radius) * 0.7);
+  background: var(--theme-button-unchecked);
+  color: var(--theme-button-fg);
+  font: inherit;
+}
+
+.altitudeComparisonRow.isSelected {
+  background: var(--theme-button-checked);
+}
+
+.altitudeComparisonRow.isDisabled {
+  border-color: var(--theme-button-disabled);
+  background: var(--theme-button-disabled);
+  opacity: 0.75;
 }
 
 .dataStatusPage {

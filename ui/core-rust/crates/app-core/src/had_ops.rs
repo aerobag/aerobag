@@ -1273,6 +1273,27 @@ pub(crate) struct FlightPlanUiProjection {
 const PROTOTYPE_PA46_CRUISE_ALTITUDE_FT: i32 = 12_000;
 const PROTOTYPE_PA46_CONFIGURATION: crate::Pa46CruiseConfiguration =
     crate::Pa46CruiseConfiguration::Economy65;
+const PROTOTYPE_PA46_MIN_CRUISE_ALTITUDE_FT: i32 = 2_000;
+const PROTOTYPE_PA46_MAX_CRUISE_ALTITUDE_FT: i32 = 24_000;
+const PROTOTYPE_PA46_CRUISE_ALTITUDE_STEP_FT: i32 = 2_000;
+const PROTOTYPE_PA46_ALTITUDE_ACTION_PREFIX: &str = "altitude-planner:select:";
+
+fn prototype_pa46_cruise_altitudes() -> impl Iterator<Item = i32> {
+    (PROTOTYPE_PA46_MIN_CRUISE_ALTITUDE_FT..=PROTOTYPE_PA46_MAX_CRUISE_ALTITUDE_FT)
+        .step_by(PROTOTYPE_PA46_CRUISE_ALTITUDE_STEP_FT as usize)
+}
+
+pub(crate) fn prototype_pa46_altitude_action_uid(altitude_ft: i32) -> Option<String> {
+    prototype_pa46_cruise_altitudes()
+        .any(|candidate| candidate == altitude_ft)
+        .then(|| format!("{PROTOTYPE_PA46_ALTITUDE_ACTION_PREFIX}{altitude_ft}"))
+}
+
+pub(crate) fn prototype_pa46_altitude_from_action_uid(action_uid: &str) -> Option<i32> {
+    prototype_pa46_cruise_altitudes().find(|altitude_ft| {
+        prototype_pa46_altitude_action_uid(*altitude_ft).as_deref() == Some(action_uid)
+    })
+}
 
 fn endpoint_airport_id(
     plan: &FlightPlan,
@@ -1299,35 +1320,144 @@ fn endpoint_airport_id(
     })
 }
 
-fn prototype_pa46_prediction(
+fn prototype_pa46_route_legs(
     materialized: &crate::flight_plan_materialization::MaterializedFlightPlan,
+    active_start: Option<LatLon>,
+) -> Vec<crate::TrajectoryRouteLeg> {
+    let active_row_id = active_start
+        .zip(materialized.active.as_ref())
+        .map(|(_, active)| &active.row_id);
+    let active_index = active_row_id.and_then(|row_id| {
+        materialized
+            .order
+            .iter()
+            .position(|candidate| candidate == row_id)
+    });
+
+    materialized
+        .order
+        .iter()
+        .enumerate()
+        .filter_map(|(index, row_id)| {
+            if active_index.is_some_and(|active_index| index < active_index) {
+                return None;
+            }
+            let row = materialized.rows.get(row_id)?;
+            let geometry = row.geometry.as_ref()?;
+            let mut path = crate::flight_plan_materialization::geometry_points(geometry);
+            if active_index == Some(index) {
+                let start = active_start?;
+                let end = path.last().copied()?;
+                path = vec![start, end];
+            }
+            Some(crate::TrajectoryRouteLeg {
+                row_id: row_id.clone(),
+                path,
+            })
+        })
+        .collect()
+}
+
+fn prototype_pa46_prediction(
+    legs: &[crate::TrajectoryRouteLeg],
     start_altitude_ft: f64,
     cruise_altitude_ft: f64,
     destination_altitude_ft: f64,
     departure_epoch_ms: i64,
 ) -> Result<crate::TrajectoryPrediction, crate::TrajectoryPlannerError> {
-    let legs = materialized
-        .order
-        .iter()
-        .filter_map(|row_id| {
-            let row = materialized.rows.get(row_id)?;
-            let geometry = row.geometry.as_ref()?;
-            Some(crate::TrajectoryRouteLeg {
-                row_id: row_id.clone(),
-                path: crate::flight_plan_materialization::geometry_points(geometry),
-            })
-        })
-        .collect();
     let profile = crate::pa46_310p_profile(PROTOTYPE_PA46_CONFIGURATION);
     crate::TrajectoryPlanner::new(&profile, &crate::NoWindIsaAtmosphere).predict(
         &crate::TrajectoryPlanInput {
-            legs,
+            legs: legs.to_vec(),
             start_pressure_altitude_ft: start_altitude_ft,
             cruise_pressure_altitude_ft: cruise_altitude_ft,
             destination_pressure_altitude_ft: destination_altitude_ft,
             departure_epoch_ms,
         },
     )
+}
+
+fn prototype_pa46_altitude_comparisons(
+    materialized: &crate::flight_plan_materialization::MaterializedFlightPlan,
+    live_data: FlightPlanLiveData,
+    origin_altitude_ft: Option<f64>,
+    destination_altitude_ft: Option<f64>,
+    selected_altitude_ft: i32,
+) -> Vec<crate::AltitudeComparisonUiView> {
+    let navigation_active = materialized.active.is_some();
+    let start_altitude_ft = if navigation_active {
+        live_data.ownship_altitude_ft
+    } else {
+        origin_altitude_ft
+    };
+    let active_start = navigation_active
+        .then_some(live_data.ownship_position)
+        .flatten();
+    let legs = if navigation_active && active_start.is_none() {
+        Vec::new()
+    } else {
+        prototype_pa46_route_legs(materialized, active_start)
+    };
+
+    prototype_pa46_cruise_altitudes()
+        .map(|altitude_ft| {
+            let selected = altitude_ft == selected_altitude_ft;
+            let unavailable = if start_altitude_ft.is_none() {
+                Some(if navigation_active {
+                    "Active navigation has no ownship altitude."
+                } else {
+                    "The flight plan origin has no known elevation."
+                })
+            } else if navigation_active && live_data.ownship_position.is_none() {
+                Some("Active navigation has no ownship position.")
+            } else if destination_altitude_ft.is_none() {
+                Some("The flight plan destination has no known elevation.")
+            } else if legs.is_empty() {
+                Some("The flight plan has no flyable route geometry.")
+            } else if !navigation_active
+                && start_altitude_ft.is_some_and(|start| altitude_ft as f64 <= start)
+            {
+                Some("Cruise altitude must be above the departure elevation.")
+            } else if destination_altitude_ft
+                .is_some_and(|destination| altitude_ft as f64 <= destination)
+            {
+                Some("Cruise altitude must be above the destination elevation.")
+            } else {
+                None
+            };
+            let prediction = unavailable.is_none().then(|| {
+                prototype_pa46_prediction(
+                    &legs,
+                    start_altitude_ft.expect("availability checked above"),
+                    altitude_ft as f64,
+                    destination_altitude_ft.expect("availability checked above"),
+                    live_data.now_epoch_ms.unwrap_or_default(),
+                )
+            });
+            let (prediction, disabled_reason) = match prediction {
+                Some(Ok(prediction)) => (Some(prediction), None),
+                Some(Err(error)) => (None, Some(error.to_string())),
+                None => (None, unavailable.map(str::to_string)),
+            };
+            let enabled = prediction.is_some();
+            let estimate = prediction
+                .as_ref()
+                .map(|prediction| crate::FlightTimeFuelEstimate {
+                    cumulative_ete_seconds: Some(prediction.total_ete_seconds),
+                    cumulative_fuel_gal: Some(prediction.total_fuel_gal),
+                    estimate_kind: crate::FlightEstimateKind::Modeled,
+                });
+            crate::AltitudeComparisonUiView {
+                action_uid: enabled
+                    .then(|| prototype_pa46_altitude_action_uid(altitude_ft))
+                    .flatten(),
+                selected,
+                enabled,
+                disabled_reason,
+                cells: crate::altitude_comparison_cells(altitude_ft, estimate),
+            }
+        })
+        .collect()
 }
 
 pub(crate) fn flight_plan_ui_projection(
@@ -1375,11 +1505,12 @@ pub(crate) fn flight_plan_ui_projection(
             .flatten(),
         None => None,
     };
+    let full_route_legs = prototype_pa46_route_legs(&materialized, None);
     let mut performance_regime_available = true;
     let modeled_prediction = if !use_live_eta && materialized.active.is_none() {
         match (origin_altitude_ft, destination_altitude_ft) {
             (Some(origin), Some(destination)) => match prototype_pa46_prediction(
-                &materialized,
+                &full_route_legs,
                 origin,
                 cruise_altitude_ft as f64,
                 destination,
@@ -1396,6 +1527,14 @@ pub(crate) fn flight_plan_ui_projection(
     } else {
         None
     };
+    let altitude_comparison_available = destination_altitude_ft.is_some()
+        && if materialized.active.is_some() {
+            live_data.ownship_position.is_some()
+                && live_data.ownship_altitude_ft.is_some()
+                && !prototype_pa46_route_legs(&materialized, live_data.ownship_position).is_empty()
+        } else {
+            origin_altitude_ft.is_some() && !full_route_legs.is_empty()
+        };
     ui_state.altitude_planner = crate::project_altitude_planner_ui(crate::AltitudePlannerUiInput {
         aircraft_profile_label: Some(PROTOTYPE_PA46_CONFIGURATION.label().to_string()),
         cruise_altitude_ft: Some(cruise_altitude_ft),
@@ -1405,6 +1544,7 @@ pub(crate) fn flight_plan_ui_projection(
         plan_destination_altitude_available: destination_altitude_ft.is_some(),
         performance_regime_available,
         live_ground_speed_estimate_active: use_live_eta,
+        altitude_comparison_available,
         ..crate::AltitudePlannerUiInput::default()
     });
     let modeled_by_row_id = modeled_prediction
@@ -1533,6 +1673,59 @@ pub(crate) fn flight_plan_ui_projection(
     Ok(FlightPlanUiProjection {
         ui_state,
         materialized,
+    })
+}
+
+pub(crate) fn altitude_comparison_panel(
+    store: &NavKvStore,
+    plan: FlightPlan,
+    live_data: FlightPlanLiveData,
+) -> Result<crate::AltitudeComparisonPanelUiView, HadReadError> {
+    let plan = crate::build_flight_plan(plan)?;
+    let mut missing_pages = HadReadPageCollector::default();
+    let route = missing_pages
+        .collect(project_flight_plan_route(store, &plan))?
+        .unwrap_or_default();
+    let geometry_by_id = crate::flight_plan_materialization::geometry_map_from_route(&route);
+    let materialized = crate::flight_plan_materialization::MaterializedFlightPlan::build(
+        &plan,
+        &geometry_by_id,
+        live_data.ownship_position,
+    )
+    .map_err(|error| HadReadError::Fatal(error.message))?;
+    let origin_airport_id = endpoint_airport_id(&plan, &materialized, true);
+    let destination_airport_id = endpoint_airport_id(&plan, &materialized, false);
+    let origin_altitude_ft = match origin_airport_id.as_deref() {
+        Some(airport_id) => missing_pages
+            .collect(crate::airport_info::airport_elevation_msl_ft(
+                store, airport_id,
+            ))?
+            .flatten(),
+        None => None,
+    };
+    let destination_altitude_ft = match destination_airport_id.as_deref() {
+        Some(airport_id) => missing_pages
+            .collect(crate::airport_info::airport_elevation_msl_ft(
+                store, airport_id,
+            ))?
+            .flatten(),
+        None => None,
+    };
+    let missing_pages = missing_pages.into_pages();
+    if !missing_pages.is_empty() {
+        return Err(HadReadError::NeedPages(missing_pages));
+    }
+
+    Ok(crate::AltitudeComparisonPanelUiView {
+        columns: crate::altitude_comparison_columns(),
+        rows: prototype_pa46_altitude_comparisons(
+            &materialized,
+            live_data,
+            origin_altitude_ft,
+            destination_altitude_ft,
+            plan.cruise_altitude_ft
+                .unwrap_or(PROTOTYPE_PA46_CRUISE_ALTITUDE_FT),
+        ),
     })
 }
 
@@ -4794,6 +4987,8 @@ mod tests {
 
     fn three_airport_nav_store(aaa: LatLon, bbb: LatLon, ccc: LatLon) -> NavKvStore {
         test_nav_kv_store(&[
+            ("airport/info/KAAA", airport_info_value("KAAA", aaa, 100.0)),
+            ("airport/info/KCCC", airport_info_value("KCCC", ccc, 200.0)),
             (
                 "navref/position/airport/KAAA",
                 serde_json::json!({"lat": aaa.lat, "lon": aaa.lon}),
@@ -4875,6 +5070,7 @@ mod tests {
             .any(
                 |control| control.id == crate::AltitudePlannerControlId::CruiseAltitude
                     && control.label == "ALT\n12000"
+                    && control.enabled
             ));
 
         for label in ["KBBB", "KCCC", "TOTAL"] {
@@ -4889,6 +5085,64 @@ mod tests {
                 assert_eq!(cell.estimate_kind, crate::FlightEstimateKind::Modeled);
             }
         }
+        let baseline_total_fuel = ui_state
+            .display_rows
+            .iter()
+            .find(|row| row.label == "TOTAL")
+            .map(|row| row_cell(row, "fuel").value.clone())
+            .expect("baseline total fuel");
+
+        let panel = altitude_comparison_panel(
+            &store,
+            plan.clone(),
+            FlightPlanLiveData {
+                now_epoch_ms: Some(12 * 60 * 60 * 1000),
+                ..FlightPlanLiveData::default()
+            },
+        )
+        .expect("altitude comparison panel");
+        assert_eq!(panel.columns, crate::altitude_comparison_columns());
+        assert_eq!(panel.rows.len(), 12);
+        let selected = panel
+            .rows
+            .iter()
+            .find(|row| row.selected)
+            .expect("selected altitude");
+        assert!(selected.enabled);
+        assert_eq!(
+            selected.action_uid.as_deref(),
+            Some("altitude-planner:select:12000")
+        );
+        for cell_id in ["cruise_altitude", "waypoint_ete", "fuel"] {
+            let cell = selected
+                .cells
+                .iter()
+                .find(|cell| cell.id == cell_id)
+                .expect("comparison cell");
+            assert!(cell.value.as_ref().is_some_and(|value| !value.is_empty()));
+        }
+
+        let mut higher_plan = plan;
+        higher_plan.cruise_altitude_ft = Some(16_000);
+        let higher_ui_state = default_flight_plan_ui_state_for_test(&store, &higher_plan);
+        assert!(higher_ui_state
+            .altitude_planner
+            .controls
+            .iter()
+            .any(
+                |control| control.id == crate::AltitudePlannerControlId::CruiseAltitude
+                    && control.label == "ALT\n16000"
+            ));
+        let higher_total = higher_ui_state
+            .display_rows
+            .iter()
+            .find(|row| row.label == "TOTAL")
+            .expect("higher-altitude total");
+        assert_ne!(row_cell(higher_total, "fuel").value, baseline_total_fuel);
+        assert_eq!(
+            row_cell(higher_total, "fuel").estimate_kind,
+            crate::FlightEstimateKind::Modeled
+        );
     }
 
     #[test]
@@ -5372,6 +5626,44 @@ mod tests {
             .iter()
             .any(|reason| reason.code
                 == crate::AltitudePlannerUnavailableReasonCode::OwnshipAltitudeUnavailable));
+    }
+
+    #[test]
+    fn active_altitude_comparison_starts_at_ownship_and_ignores_passed_legs() {
+        let aaa = LatLon { lat: 0.0, lon: 0.0 };
+        let bbb = LatLon { lat: 0.0, lon: 1.0 };
+        let ccc = LatLon { lat: 0.0, lon: 2.0 };
+        let ownship = LatLon { lat: 0.0, lon: 1.5 };
+        let store = three_airport_nav_store(aaa, bbb, ccc);
+        let inactive_plan = three_airport_test_plan();
+        let active_plan = crate::activate_leg(&inactive_plan, 1).expect("activate KBBB-KCCC leg");
+        let selected_fuel = |panel: &crate::AltitudeComparisonPanelUiView| {
+            panel
+                .rows
+                .iter()
+                .find(|row| row.selected)
+                .and_then(|row| row.cells.iter().find(|cell| cell.id == "fuel"))
+                .and_then(|cell| cell.value.as_deref())
+                .expect("selected fuel")
+                .parse::<f64>()
+                .expect("numeric fuel")
+        };
+        let inactive =
+            altitude_comparison_panel(&store, inactive_plan, FlightPlanLiveData::default())
+                .expect("inactive comparison");
+        let active = altitude_comparison_panel(
+            &store,
+            active_plan,
+            FlightPlanLiveData {
+                ownship_position: Some(ownship),
+                ownship_altitude_ft: Some(4_000.0),
+                now_epoch_ms: Some(12 * 60 * 60 * 1000),
+            },
+        )
+        .expect("active comparison");
+
+        assert!(selected_fuel(&active) < selected_fuel(&inactive) * 0.5);
+        assert!(active.rows.iter().all(|row| row.enabled));
     }
 
     #[test]

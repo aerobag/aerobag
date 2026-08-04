@@ -249,6 +249,19 @@ export type AltitudePlannerUnavailableReason = {
   message: string;
 };
 
+export type AltitudeComparisonUiView = {
+  action_uid?: string | null;
+  selected: boolean;
+  enabled: boolean;
+  disabled_reason?: string | null;
+  cells: FlightDataCell[];
+};
+
+export type AltitudeComparisonPanelUiView = {
+  columns: FlightDataColumn[];
+  rows: AltitudeComparisonUiView[];
+};
+
 export type AltitudePlannerUiView = {
   estimate_kind: FlightEstimateKind;
   controls: AltitudePlannerControlUiView[];

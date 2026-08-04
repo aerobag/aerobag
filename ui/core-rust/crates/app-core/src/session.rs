@@ -5169,6 +5169,9 @@ pub enum FlightPlanSessionCommand {
         row_uid: String,
         action_uid: String,
     },
+    PerformAltitudePlannerAction {
+        action_uid: String,
+    },
     ActivateNextLeg,
     StopNavigation,
     SuspendSequencing,
@@ -5200,6 +5203,7 @@ pub enum FlightPlanSessionQuery {
     DescribePlateProcedureLoads {
         plate_id: String,
     },
+    AltitudeComparisons,
 }
 
 pub fn perform_flight_plan_command_in_session(
@@ -5247,6 +5251,9 @@ pub fn perform_flight_plan_command_in_session(
             row_uid,
             action_uid,
         } => perform_flight_plan_row_action_in_session(handle, row_uid, action_uid),
+        FlightPlanSessionCommand::PerformAltitudePlannerAction { action_uid } => {
+            perform_altitude_planner_action_in_session(handle, action_uid)
+        }
         FlightPlanSessionCommand::ActivateNextLeg => activate_next_leg_in_session(handle),
         FlightPlanSessionCommand::StopNavigation => stop_navigation_in_session(handle),
         FlightPlanSessionCommand::SuspendSequencing => suspend_sequencing_in_session(handle),
@@ -5285,6 +5292,7 @@ pub fn query_flight_plan_in_session(
         FlightPlanSessionQuery::DescribePlateProcedureLoads { plate_id } => {
             describe_plate_procedure_loads_in_session(handle, plate_id)
         }
+        FlightPlanSessionQuery::AltitudeComparisons => altitude_comparisons_in_session(handle),
     }
 }
 
@@ -5352,6 +5360,57 @@ fn chart_page_state_in_session(handle: u32) -> AppResult<HadOperationOutcome> {
             message: err.to_string(),
         })?,
     ))
+}
+
+fn flight_plan_live_data_for_session(session: &UiSession) -> crate::had_ops::FlightPlanLiveData {
+    let ownship = &session.app_state.ownship.render;
+    crate::had_ops::FlightPlanLiveData {
+        ownship_position: ownship.position,
+        ownship_altitude_ft: ownship.pressure_altitude_ft.or(ownship.altitude_msl_ft),
+        now_epoch_ms: Some(session.wall_clock_epoch_ms),
+    }
+}
+
+fn altitude_comparisons_in_session(handle: u32) -> AppResult<HadOperationOutcome> {
+    let sessions = lock_sessions();
+    let session = session_ref(&sessions, handle)?;
+    let panel = match crate::had_ops::altitude_comparison_panel(
+        session_nav_kv_store(session)?,
+        session_plan(session)?,
+        flight_plan_live_data_for_session(session),
+    ) {
+        Ok(panel) => panel,
+        Err(HadReadError::NeedPages(pages)) => {
+            return Ok(HadOperationOutcome::NeedResources {
+                resources: nav_kv_page_resources(pages),
+            })
+        }
+        Err(HadReadError::Fatal(message)) => {
+            return Err(AppError {
+                kind: AppErrorKind::InvalidFlightPlan,
+                message,
+            })
+        }
+    };
+    Ok(HadOperationOutcome::complete(
+        serde_json::to_value(panel).map_err(internal_json_error)?,
+    ))
+}
+
+fn perform_altitude_planner_action_in_session(
+    handle: u32,
+    action_uid: String,
+) -> AppResult<HadOperationOutcome> {
+    let altitude_ft = crate::had_ops::prototype_pa46_altitude_from_action_uid(&action_uid)
+        .ok_or_else(|| AppError {
+            kind: AppErrorKind::UnsupportedOperation,
+            message: format!("unknown altitude-planner action: {action_uid}"),
+        })?;
+    mutate_session_flight_plan(handle, |plan| {
+        let mut next = plan.clone();
+        next.cruise_altitude_ft = Some(altitude_ft);
+        Ok(next)
+    })
 }
 
 pub(crate) fn activate_next_leg_in_session(handle: u32) -> AppResult<HadOperationOutcome> {
@@ -11493,15 +11552,7 @@ fn project_session_app_ui_state(session: &UiSession) -> Result<AppUiState, HadRe
                 app_ui_state.ownship.render.speed_kt,
                 Some(session.wall_clock_epoch_ms),
             ),
-            crate::had_ops::FlightPlanLiveData {
-                ownship_position: app_ui_state.ownship.render.position,
-                ownship_altitude_ft: app_ui_state
-                    .ownship
-                    .render
-                    .pressure_altitude_ft
-                    .or(app_ui_state.ownship.render.altitude_msl_ft),
-                now_epoch_ms: Some(session.wall_clock_epoch_ms),
-            },
+            flight_plan_live_data_for_session(session),
         )?;
         app_ui_state.active_plan = Some(projection.ui_state);
         materialized_plan = Some(projection.materialized);
@@ -14136,6 +14187,52 @@ mod tests {
             utc("2026-05-20T12:00:00Z").timestamp_millis(),
         )
         .expect("create session")
+    }
+
+    #[test]
+    fn altitude_planner_command_accepts_only_core_issued_candidate_actions() {
+        let init = create_current_test_session();
+
+        perform_flight_plan_command_in_session(
+            init.handle,
+            FlightPlanSessionCommand::PerformAltitudePlannerAction {
+                action_uid: "altitude-planner:select:16000".to_string(),
+            },
+            utc("2026-05-20T12:01:00Z").timestamp_millis(),
+        )
+        .expect("select candidate altitude");
+        {
+            let sessions = lock_sessions();
+            assert_eq!(
+                session_ref(&sessions, init.handle)
+                    .expect("session")
+                    .app_state
+                    .active_plan
+                    .as_ref()
+                    .and_then(|plan| plan.cruise_altitude_ft),
+                Some(16_000)
+            );
+        }
+
+        let error = perform_flight_plan_command_in_session(
+            init.handle,
+            FlightPlanSessionCommand::PerformAltitudePlannerAction {
+                action_uid: "altitude-planner:select:15500".to_string(),
+            },
+            utc("2026-05-20T12:02:00Z").timestamp_millis(),
+        )
+        .expect_err("reject non-candidate altitude action");
+        assert_eq!(error.kind, AppErrorKind::UnsupportedOperation);
+        let sessions = lock_sessions();
+        assert_eq!(
+            session_ref(&sessions, init.handle)
+                .expect("session")
+                .app_state
+                .active_plan
+                .as_ref()
+                .and_then(|plan| plan.cruise_altitude_ft),
+            Some(16_000)
+        );
     }
 
     fn data_status_box<'a>(

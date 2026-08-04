@@ -125,6 +125,7 @@ export type DerivedChartPageState = {
   selected_reference_family_id?: string | null;
   selected_chart_id: string;
   suggested_chart_ids: string[];
+  procedure_geometry_status: UiDataStatusState;
 };
 
 export type RasterMapUiState = {

@@ -84,6 +84,16 @@ pub struct ProcedureSegment {
     pub data_quality: Vec<String>,
 }
 
+impl ProcedureSegment {
+    pub fn pilot_facing_label(&self) -> &str {
+        self.display_label
+            .as_deref()
+            .map(str::trim)
+            .filter(|label| !label.is_empty())
+            .unwrap_or(self.procedure_id.as_str())
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum PathTermination {
@@ -5071,13 +5081,7 @@ fn component_summary(component: &RouteComponent) -> String {
     match component {
         RouteComponent::Waypoint { waypoint } => nav_ref_label(waypoint),
         RouteComponent::Airway { airway } => airway.name.clone(),
-        RouteComponent::Procedure { procedure } => procedure
-            .display_label
-            .as_deref()
-            .map(str::trim)
-            .filter(|label| !label.is_empty())
-            .unwrap_or(procedure.procedure_id.as_str())
-            .to_string(),
+        RouteComponent::Procedure { procedure } => procedure.pilot_facing_label().to_string(),
     }
 }
 

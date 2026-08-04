@@ -26,10 +26,10 @@ use crate::{
         UiCloudPageState, CLOUD_STATUS_ID,
     },
     data_status::{
-        parse_status_action_id, project_data_status_state, DataStatusRecord, UiDataStatusPageFact,
-        UiDataStatusPageRow, UiDataStatusPageState, UiDataStatusPageTimeDisplay, UiDataStatusState,
-        UiStatusAction, UiStatusActionCommand, UiStatusActionStyle, UiStatusSeverity,
-        RELOAD_APPLICATION_ACTION_ID,
+        loaded_procedure_geometry_warning_detail, parse_status_action_id,
+        project_data_status_state, DataStatusRecord, UiDataStatusPageFact, UiDataStatusPageRow,
+        UiDataStatusPageState, UiDataStatusPageTimeDisplay, UiDataStatusState, UiStatusAction,
+        UiStatusActionCommand, UiStatusActionStyle, UiStatusSeverity, RELOAD_APPLICATION_ACTION_ID,
     },
     first_guidance_detail_index_for_leg,
     freshness::{
@@ -1298,28 +1298,16 @@ fn procedure_geometry_status_records_for_plan(plan: &FlightPlan) -> Vec<DataStat
                         procedure.airport_id.0, procedure.procedure_id
                     )
                 });
-            let transition = procedure
-                .enroute_transition
-                .as_deref()
-                .or(procedure.runway_transition.as_deref())
-                .map(|value| format!(" {value}"))
-                .unwrap_or_default();
-            let detail = format!(
-                "Procedure geometry warning for {} {}{}:\n{}",
-                procedure.airport_id.0,
-                procedure.procedure_id,
-                transition,
-                procedure
-                    .data_quality
-                    .iter()
-                    .map(|message| format!("- {message}"))
-                    .collect::<Vec<_>>()
-                    .join("\n")
+            let procedure_label = procedure.pilot_facing_label();
+            let detail = loaded_procedure_geometry_warning_detail(
+                &procedure.airport_id.0,
+                procedure_label,
+                &procedure.data_quality,
             );
             Some(DataStatusRecord::new(
                 format!("{PROCEDURE_GEOMETRY_STATUS_PREFIX}{component_id}"),
                 "PROC",
-                Some(procedure.procedure_id.clone()),
+                Some(procedure_label.to_string()),
                 UiStatusSeverity::Caution,
                 true,
                 detail,
@@ -20054,12 +20042,12 @@ mod tests {
             name: "Procedure quality".to_string(),
             route_components: vec![RouteComponent::Procedure {
                 procedure: crate::ProcedureSegment {
-                    airport_id: AirportId("KAAA".to_string()),
-                    procedure_id: "RNAV-A".to_string(),
-                    display_label: None,
+                    airport_id: AirportId("KOMA".to_string()),
+                    procedure_id: "L32R".to_string(),
+                    display_label: Some("ILS or LOC 32R".to_string()),
                     kind: ProcedureKind::Approach,
                     runway_transition: None,
-                    enroute_transition: Some("TRANS".to_string()),
+                    enroute_transition: Some("OVR".to_string()),
                     terminal_discontinuity: None,
                     data_quality: vec!["Procedure encoding is suspicious; read plate.".to_string()],
                 },
@@ -20086,10 +20074,12 @@ mod tests {
             .find(|box_| box_.id == "procedure_geometry:row-proc")
             .expect("procedure geometry caution");
         assert_eq!(warning.label, "PROC");
-        assert_eq!(warning.value.as_deref(), Some("RNAV-A"));
+        assert_eq!(warning.value.as_deref(), Some("ILS or LOC 32R"));
         assert!(warning.drives_caution);
-        assert!(warning.detail.contains("KAAA RNAV-A TRANS"));
-        assert!(warning.detail.contains("Procedure encoding is suspicious"));
+        assert_eq!(
+            warning.detail,
+            "Loaded procedure KOMA ILS or LOC 32R:\n- Procedure encoding is suspicious; read plate."
+        );
 
         plan.route_components.clear();
         plan.route_component_uids.clear();

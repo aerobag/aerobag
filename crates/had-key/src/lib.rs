@@ -10,6 +10,24 @@ pub fn upper_component(value: &str) -> String {
     component(&value.to_ascii_uppercase())
 }
 
+pub fn decode_component(value: &str) -> Result<String, String> {
+    let bytes = value.as_bytes();
+    let mut decoded = Vec::with_capacity(bytes.len());
+    let mut index = 0;
+    while index < bytes.len() {
+        if bytes[index] == b'%' {
+            let high = bytes.get(index + 1).copied().ok_or("truncated escape")?;
+            let low = bytes.get(index + 2).copied().ok_or("truncated escape")?;
+            decoded.push((hex_value(high)? << 4) | hex_value(low)?);
+            index += 3;
+        } else {
+            decoded.push(bytes[index]);
+            index += 1;
+        }
+    }
+    String::from_utf8(decoded).map_err(|error| error.to_string())
+}
+
 pub fn search_terms(value: &str) -> Vec<String> {
     let mut normalized = String::with_capacity(value.len());
     for ch in value.chars() {
@@ -51,6 +69,15 @@ fn hex_digit(value: u8) -> char {
     }
 }
 
+fn hex_value(value: u8) -> Result<u8, String> {
+    match value {
+        b'0'..=b'9' => Ok(value - b'0'),
+        b'a'..=b'f' => Ok(value - b'a' + 10),
+        b'A'..=b'F' => Ok(value - b'A' + 10),
+        _ => Err(format!("invalid hex digit {}", value as char)),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -73,6 +100,13 @@ mod tests {
     #[test]
     fn upper_component_trims_and_uppercases_before_escaping() {
         assert_eq!(upper_component(" kgrk/vor-a "), "KGRK%2FVOR-A");
+    }
+
+    #[test]
+    fn decode_component_reverses_percent_escaping() {
+        assert_eq!(decode_component("KGRK%2FVOR-A").unwrap(), "KGRK/VOR-A");
+        assert_eq!(decode_component("caf%C3%A9").unwrap(), "café");
+        assert!(decode_component("bad%2").is_err());
     }
 
     #[test]

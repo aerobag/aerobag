@@ -1930,6 +1930,11 @@ export default function App() {
       selected_reference_family_id: null,
       selected_chart_id: persistedUiState.selectedChartId ?? "",
       suggested_chart_ids: [],
+      procedure_geometry_status: {
+        boxes: [],
+        launcher_count: null,
+        launcher_severity: "ok",
+      },
     }),
     [initialRecentAirportIds, persistedUiState.selectedAirportId, persistedUiState.selectedChartId],
   );
@@ -3664,6 +3669,7 @@ export default function App() {
           selectedCollection={selectedChartCollection}
           selectedChart={selectedChart}
           suggestedChartIds={derivedChartPageState.suggested_chart_ids}
+          procedureGeometryStatus={derivedChartPageState.procedure_geometry_status}
           folderOpen={chartFolderOpen}
           viewport={chartViewport}
           onViewportChange={setChartViewport}
@@ -10120,6 +10126,17 @@ function MapSelectionItemIcon(props: { item: MapSelectionItem }) {
   return <span className="mapSelectionItemTextIcon">{item.sublabel || item.label}</span>;
 }
 
+function DataStatusWarningFace(props: { count?: string | null }) {
+  return (
+    <>
+      <svg className="dataStatusLauncherSymbol" viewBox="-50 -50 100 100" aria-hidden="true" focusable="false">
+        <RenderNavSymbolLayers layers={dataStatusWarningSymbol} />
+      </svg>
+      {props.count ? <span className="dataStatusLauncherCount">{props.count}</span> : null}
+    </>
+  );
+}
+
 function ChartsPage(props: {
   appCoreAdapter: AppCoreAdapter | null;
   page: AppPage;
@@ -10129,6 +10146,7 @@ function ChartsPage(props: {
   selectedCollection: ChartPageData["airports"][number] | null;
   selectedChart: ChartAsset | null;
   suggestedChartIds: string[];
+  procedureGeometryStatus: UiDataStatusState;
   folderOpen: boolean;
   viewport: ImageViewportState | null;
   onViewportChange: (next: ImageViewportState | null) => void;
@@ -10151,7 +10169,7 @@ function ChartsPage(props: {
   debugWarningActive: boolean;
   onFirstVisualReady: () => void;
 }) {
-  const { appCoreAdapter, page, planUiState, airportMenuEntries, selectedCollection, selectedChart, suggestedChartIds, folderOpen, viewport, onViewportChange, onFolderOpenChange, onSelectPage, onOpenPlan, onSelectAirport, onSelectReference, onSelectChart, uiSession, ownship, ownshipControls, onFirstVisualReady } = props;
+  const { appCoreAdapter, page, planUiState, airportMenuEntries, selectedCollection, selectedChart, suggestedChartIds, procedureGeometryStatus, folderOpen, viewport, onViewportChange, onFolderOpenChange, onSelectPage, onOpenPlan, onSelectAirport, onSelectReference, onSelectChart, uiSession, ownship, ownshipControls, onFirstVisualReady } = props;
   const containerRef = useRef<HTMLDivElement | null>(null);
   const imageRef = useRef<HTMLImageElement | null>(null);
   const [surfaceSize, setSurfaceSize] = useState<SurfaceSize>({ width: 0, height: 0 });
@@ -10165,7 +10183,7 @@ function ChartsPage(props: {
   const statusControlDockLowered = shouldLowerStatusControlDock(surfaceSize.width, false);
   const lastChartLayoutKeyRef = useRef("");
   const firstVisualReadyRef = useRef(false);
-  const trayGroup = useModalTrayGroup(["airport", "chart", "load", "ownship"] as const);
+  const trayGroup = useModalTrayGroup(["airport", "chart", "load", "procedureWarning", "ownship"] as const);
   const [plateProcedureLoads, setPlateProcedureLoads] = useState<ProcedureLoadOption[]>([]);
   const [plateFlightPlanRouteProjection, setPlateFlightPlanRouteProjection] = useState<FlightPlanRouteProjection>({
     flight_plan_route_revision: -1,
@@ -10704,9 +10722,13 @@ function ChartsPage(props: {
         <div className="mapBackdrop" />
         <StatusControlDock
           controls={ownshipControls}
+          dataStatusState={procedureGeometryStatus}
           lowered={statusControlDockLowered}
           ownshipOpen={trayGroup.isOpen("ownship")}
+          statusOpen={trayGroup.isOpen("procedureWarning")}
           onOwnshipToggle={() => trayGroup.toggle("ownship")}
+          onStatusToggle={() => trayGroup.toggle("procedureWarning")}
+          onAction={() => {}}
           options={ownshipSourceOptions}
           onDisabledAction={showDisabledAction}
           transportControls={<SituationTransportRow controls={ownshipControls.situation_controls} onInput={props.onSituationControlInput} onDisabledAction={showDisabledAction} />}
@@ -10738,11 +10760,11 @@ function ChartsPage(props: {
                   ) : null}
                   {chart.procedure_geometry_warning_count > 0 ? (
                     <span
-                      className="plateThumbWarning"
+                      className="plateProcedureWarningMini"
                       aria-label={`${chart.procedure_geometry_warning_count} procedure geometry warning${chart.procedure_geometry_warning_count === 1 ? "" : "s"}; verify against the published plate`}
                       title="Computed procedure geometry requires verification against the published plate"
                     >
-                      !
+                      <DataStatusWarningFace count={chart.procedure_geometry_warning_count.toString()} />
                     </span>
                   ) : null}
                   <div className="plateThumbLabel" style={{ backgroundColor: plateFolderColor(chart.folder_category) }}>
@@ -11973,10 +11995,7 @@ function DataStatusDock(props: {
         onDoubleClick={stopDoubleClick}
         onClick={props.onToggle}
       >
-        <svg className="dataStatusLauncherSymbol" viewBox="-50 -50 100 100" aria-hidden="true" focusable="false">
-          <RenderNavSymbolLayers layers={dataStatusWarningSymbol} />
-        </svg>
-        {hasLauncherCount ? <span className="dataStatusLauncherCount">{launcherCount}</span> : null}
+        <DataStatusWarningFace count={launcherCount} />
       </button>
       {props.open && typeof document !== "undefined" ? createPortal(
         <section

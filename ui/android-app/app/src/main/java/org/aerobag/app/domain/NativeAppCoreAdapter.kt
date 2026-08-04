@@ -1981,6 +1981,7 @@ private data class WireDerivedChartPageState(
     val selected_reference_family_id: String? = null,
     val selected_chart_id: String,
     val suggested_chart_ids: List<String> = emptyList(),
+    val procedure_geometry_status: WireUiDataStatusState,
 )
 
 @kotlinx.serialization.Serializable
@@ -2368,6 +2369,7 @@ data class DerivedChartPageState(
     val selectedReferenceFamilyId: String?,
     val selectedChartId: String,
     val suggestedChartIds: List<String>,
+    val procedureGeometryStatus: UiDataStatusState,
 )
 
 data class UiSessionSnapshot(
@@ -2590,6 +2592,7 @@ private fun WireDerivedChartPageState.toUi() = DerivedChartPageState(
     selectedReferenceFamilyId = selected_reference_family_id,
     selectedChartId = selected_chart_id,
     suggestedChartIds = suggested_chart_ids,
+    procedureGeometryStatus = procedure_geometry_status.toUi(),
 )
 
 private fun WireUiChartPageState.toUi() = UiChartPageState(

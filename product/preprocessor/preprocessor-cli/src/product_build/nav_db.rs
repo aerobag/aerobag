@@ -1323,7 +1323,7 @@ pub(super) fn attach_procedure_geometry_warnings_to_plate_pairs(
         }
     }
 
-    let mut warning_counts_by_plate = BTreeMap::<String, usize>::new();
+    let mut warnings_by_plate = BTreeMap::<String, Vec<serde_json::Value>>::new();
     for pair in pairs
         .iter()
         .filter(|pair| pair.key.starts_with("procedure/geometry/"))
@@ -1334,17 +1334,44 @@ pub(super) fn attach_procedure_geometry_warnings_to_plate_pairs(
         }
         let value: serde_json::Value = serde_json::from_slice(&pair.value)
             .with_context(|| format!("failed to decode {}", pair.key))?;
-        let warning_count = value
+        let messages = value
             .get("data_quality")
             .and_then(|value| value.as_array())
-            .map(Vec::len)
+            .map(|annotations| {
+                annotations
+                    .iter()
+                    .map(|annotation| {
+                        annotation
+                            .get("message")
+                            .and_then(|value| value.as_str())
+                            .unwrap_or("Unspecified procedure geometry validation warning")
+                            .to_string()
+                    })
+                    .collect::<Vec<_>>()
+            })
             .unwrap_or_default();
-        if warning_count == 0 {
+        if messages.is_empty() {
             continue;
         }
+        let warning = serde_json::json!({
+            "airport_id": had_key::decode_component(components[2])
+                .map_err(anyhow::Error::msg)
+                .with_context(|| format!("failed to decode airport in {}", pair.key))?,
+            "procedure_id": had_key::decode_component(components[4])
+                .map_err(anyhow::Error::msg)
+                .with_context(|| format!("failed to decode procedure in {}", pair.key))?,
+            "runway_transition": decode_optional_geometry_key_component(components[5])
+                .with_context(|| format!("failed to decode runway transition in {}", pair.key))?,
+            "enroute_transition": decode_optional_geometry_key_component(components[6])
+                .with_context(|| format!("failed to decode enroute transition in {}", pair.key))?,
+            "messages": messages,
+        });
         let match_key = format!("plate/cifp/{}/{}", components[2], components[4]);
         for plate_id in plate_ids_by_match_key.get(&match_key).into_iter().flatten() {
-            *warning_counts_by_plate.entry(plate_id.clone()).or_default() += warning_count;
+            warnings_by_plate
+                .entry(plate_id.clone())
+                .or_default()
+                .push(warning.clone());
         }
     }
 
@@ -1357,14 +1384,25 @@ pub(super) fn attach_procedure_geometry_warnings_to_plate_pairs(
         let Some(plate_id) = value.get("id").and_then(|value| value.as_str()) else {
             continue;
         };
-        let Some(warning_count) = warning_counts_by_plate.get(plate_id).copied() else {
+        let Some(warnings) = warnings_by_plate.get(plate_id) else {
             continue;
         };
-        value["procedure_geometry_warning_count"] = serde_json::json!(warning_count);
+        value["procedure_geometry_warning_count"] = serde_json::json!(warnings.len());
+        value["procedure_geometry_warnings"] = serde_json::json!(warnings);
         pair.value =
             serde_json::to_vec(&value).with_context(|| format!("failed to encode {}", pair.key))?;
     }
     Ok(())
+}
+
+fn decode_optional_geometry_key_component(component: &str) -> anyhow::Result<Option<String>> {
+    if component == "_" {
+        Ok(None)
+    } else {
+        had_key::decode_component(component)
+            .map(Some)
+            .map_err(anyhow::Error::msg)
+    }
 }
 
 fn nav_db_startup_prefetch_members(nav_db_zip_path: &Path) -> anyhow::Result<Vec<String>> {

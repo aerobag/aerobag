@@ -4,6 +4,10 @@
 
 use serde::{Deserialize, Serialize};
 
+use crate::data_status::{
+    published_procedure_geometry_warning_detail, UiDataStatusBox, UiDataStatusState,
+    UiStatusSeverity,
+};
 use crate::planning::{FlightPlan, RouteComponent};
 
 pub const FAA_CHART_USERS_GUIDE_LABEL: &str = "🔗 Chart User's Guide";
@@ -28,6 +32,7 @@ pub struct DerivedChartPageState {
     pub selected_chart_id: String,
     #[serde(default)]
     pub suggested_chart_ids: Vec<String>,
+    pub procedure_geometry_status: UiDataStatusState,
 }
 
 pub type DerivedChartCatalog = DerivedChartPage;
@@ -101,6 +106,8 @@ pub struct DerivedChartAsset {
     pub has_thumbnail: bool,
     #[serde(default)]
     pub procedure_geometry_warning_count: usize,
+    #[serde(default, skip_serializing)]
+    pub procedure_geometry_warnings: Vec<PlateProcedureGeometryWarning>,
     #[serde(default)]
     pub georef: Option<PlateGeoref>,
 }
@@ -123,7 +130,21 @@ pub struct ChartAssetRecord {
     #[serde(default)]
     pub procedure_geometry_warning_count: usize,
     #[serde(default)]
+    pub procedure_geometry_warnings: Vec<PlateProcedureGeometryWarning>,
+    #[serde(default)]
     pub georef: Option<PlateGeoref>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct PlateProcedureGeometryWarning {
+    pub airport_id: String,
+    pub procedure_id: String,
+    #[serde(default)]
+    pub runway_transition: Option<String>,
+    #[serde(default)]
+    pub enroute_transition: Option<String>,
+    #[serde(default)]
+    pub messages: Vec<String>,
 }
 
 impl From<ChartAssetRecord> for DerivedChartAsset {
@@ -137,6 +158,7 @@ impl From<ChartAssetRecord> for DerivedChartAsset {
             folder_category: record.folder_category,
             has_thumbnail: record.thumbnail_path.is_some(),
             procedure_geometry_warning_count: record.procedure_geometry_warning_count,
+            procedure_geometry_warnings: record.procedure_geometry_warnings,
             georef: record.georef,
         }
     }
@@ -216,6 +238,31 @@ pub fn derive_chart_page_state_from_collections(
                 .and_then(|family| resolve_chart_in_assets(&family.charts, candidate_chart_id))
         })
         .unwrap_or_else(|| resolve_chart_id(&airports, &selected_airport_id, candidate_chart_id));
+    let selected_chart = selected_reference_family_id
+        .as_deref()
+        .and_then(|family_id| {
+            reference_families
+                .iter()
+                .find(|family| family.id == family_id)
+        })
+        .and_then(|family| {
+            family
+                .charts
+                .iter()
+                .find(|chart| chart.id == selected_chart_id)
+        })
+        .or_else(|| {
+            airports
+                .iter()
+                .find(|airport| airport.id == selected_airport_id)
+                .and_then(|airport| {
+                    airport
+                        .charts
+                        .iter()
+                        .find(|chart| chart.id == selected_chart_id)
+                })
+        });
+    let procedure_geometry_status = procedure_geometry_status(selected_chart);
     let mut airport_menu_entries = derive_airport_menu_entries(
         &airports,
         plan,
@@ -246,6 +293,71 @@ pub fn derive_chart_page_state_from_collections(
         selected_reference_family_id,
         selected_chart_id,
         suggested_chart_ids: suggested_chart_ids.to_vec(),
+        procedure_geometry_status,
+    }
+}
+
+fn procedure_geometry_status(chart: Option<&DerivedChartAsset>) -> UiDataStatusState {
+    let Some(chart) = chart else {
+        return empty_procedure_geometry_status();
+    };
+    if chart.procedure_geometry_warnings.is_empty() {
+        if chart.procedure_geometry_warning_count == 0 {
+            return empty_procedure_geometry_status();
+        }
+        return UiDataStatusState {
+            boxes: vec![UiDataStatusBox {
+                id: "plate:procedure_geometry:aggregate".to_string(),
+                label: "PROCEDURE GEOMETRY".to_string(),
+                value: None,
+                severity: UiStatusSeverity::Caution,
+                drives_caution: true,
+                detail: format!(
+                    "This publication reports {} procedure geometry warning{} for this plate but does not include the underlying details. Verify the geometry against the published plate.",
+                    chart.procedure_geometry_warning_count,
+                    if chart.procedure_geometry_warning_count == 1 { "" } else { "s" },
+                ),
+                actions: Vec::new(),
+                hushed: false,
+            }],
+            launcher_count: Some(chart.procedure_geometry_warning_count.to_string()),
+            launcher_severity: UiStatusSeverity::Caution,
+        };
+    }
+    let boxes = chart
+        .procedure_geometry_warnings
+        .iter()
+        .enumerate()
+        .map(|(index, warning)| UiDataStatusBox {
+            id: format!("plate:procedure_geometry:{index}"),
+            label: "PROC".to_string(),
+            value: Some(warning.procedure_id.clone()),
+            severity: UiStatusSeverity::Caution,
+            drives_caution: true,
+            detail: published_procedure_geometry_warning_detail(
+                &warning.airport_id,
+                &warning.procedure_id,
+                warning.runway_transition.as_deref(),
+                warning.enroute_transition.as_deref(),
+                &warning.messages,
+            ),
+            actions: Vec::new(),
+            hushed: false,
+        })
+        .collect::<Vec<_>>();
+    let warning_count = boxes.len();
+    UiDataStatusState {
+        boxes,
+        launcher_count: Some(warning_count.to_string()),
+        launcher_severity: UiStatusSeverity::Caution,
+    }
+}
+
+fn empty_procedure_geometry_status() -> UiDataStatusState {
+    UiDataStatusState {
+        boxes: Vec::new(),
+        launcher_count: None,
+        launcher_severity: UiStatusSeverity::Ok,
     }
 }
 
@@ -588,12 +700,13 @@ mod tests {
             folder_category: folder_category.to_string(),
             has_thumbnail: false,
             procedure_geometry_warning_count: 0,
+            procedure_geometry_warnings: Vec::new(),
             georef: None,
         }
     }
 
     #[test]
-    fn chart_asset_preserves_procedure_geometry_warning_count() {
+    fn chart_asset_preserves_procedure_geometry_warnings() {
         let record: ChartAssetRecord = serde_json::from_value(serde_json::json!({
             "id": "plate:KAAA:IAP-AA-VOR RWY 01.png",
             "airport_id": "KAAA",
@@ -604,13 +717,84 @@ mod tests {
             "folder_category": "approach",
             "asset_path": "plates/AAA/IAP-AA-VOR RWY 01.png",
             "thumbnail_path": "thumbnails/plates/AAA/IAP-AA-VOR RWY 01.png",
-            "procedure_geometry_warning_count": 3
+            "procedure_geometry_warning_count": 2,
+            "procedure_geometry_warnings": [
+                {
+                    "airport_id": "KAAA",
+                    "procedure_id": "V01",
+                    "runway_transition": null,
+                    "enroute_transition": "TRANS",
+                    "messages": ["first warning", "second warning"]
+                }
+            ]
         }))
         .unwrap();
 
         let chart = DerivedChartAsset::from(record);
 
-        assert_eq!(chart.procedure_geometry_warning_count, 3);
+        assert_eq!(chart.procedure_geometry_warning_count, 2);
+        assert_eq!(chart.procedure_geometry_warnings.len(), 1);
+        assert_eq!(chart.procedure_geometry_warnings[0].procedure_id, "V01");
+        assert_eq!(
+            chart.procedure_geometry_warnings[0].messages,
+            vec!["first warning".to_string(), "second warning".to_string()],
+        );
+    }
+
+    #[test]
+    fn procedure_geometry_warnings_become_contextual_status_boxes() {
+        let mut selected = chart("KAAA", "plate:KAAA:approach.png", "plate", "approach");
+        selected.procedure_geometry_warning_count = 2;
+        selected.procedure_geometry_warnings = vec![
+            PlateProcedureGeometryWarning {
+                airport_id: "KAAA".to_string(),
+                procedure_id: "V01".to_string(),
+                runway_transition: None,
+                enroute_transition: Some("FIRST".to_string()),
+                messages: vec!["first validation gripe".to_string()],
+            },
+            PlateProcedureGeometryWarning {
+                airport_id: "KAAA".to_string(),
+                procedure_id: "V01".to_string(),
+                runway_transition: Some("SECOND".to_string()),
+                enroute_transition: None,
+                messages: vec!["second validation gripe".to_string()],
+            },
+        ];
+
+        let status = procedure_geometry_status(Some(&selected));
+
+        assert_eq!(status.launcher_count.as_deref(), Some("2"));
+        assert_eq!(status.launcher_severity, UiStatusSeverity::Caution);
+        assert_eq!(status.boxes.len(), 2);
+        assert_eq!(status.boxes[0].label, "PROC");
+        assert_eq!(status.boxes[0].value.as_deref(), Some("V01"));
+        assert_eq!(
+            status.boxes[0].detail,
+            "This publication reports a procedure geometry warning for KAAA V01 FIRST:\n- first validation gripe",
+        );
+        assert_eq!(status.boxes[1].label, "PROC");
+        assert_eq!(status.boxes[1].value.as_deref(), Some("V01"));
+        assert_eq!(
+            status.boxes[1].detail,
+            "This publication reports a procedure geometry warning for KAAA V01 SECOND:\n- second validation gripe",
+        );
+    }
+
+    #[test]
+    fn count_only_publication_gets_one_unfractioned_explanation() {
+        let mut selected = chart("KAAA", "plate:KAAA:approach.png", "plate", "approach");
+        selected.procedure_geometry_warning_count = 2;
+
+        let status = procedure_geometry_status(Some(&selected));
+
+        assert_eq!(status.launcher_count.as_deref(), Some("2"));
+        assert_eq!(status.boxes.len(), 1);
+        assert_eq!(status.boxes[0].value, None);
+        assert_eq!(
+            status.boxes[0].detail,
+            "This publication reports 2 procedure geometry warnings for this plate but does not include the underlying details. Verify the geometry against the published plate."
+        );
     }
 
     fn airport() -> DerivedChartAirport {
@@ -749,6 +933,7 @@ mod tests {
                     folder_category: "legend".to_string(),
                     has_thumbnail: true,
                     procedure_geometry_warning_count: 0,
+                    procedure_geometry_warnings: Vec::new(),
                     georef: None,
                 },
                 DerivedChartAsset {
@@ -760,6 +945,7 @@ mod tests {
                     folder_category: "inset".to_string(),
                     has_thumbnail: true,
                     procedure_geometry_warning_count: 0,
+                    procedure_geometry_warnings: Vec::new(),
                     georef: None,
                 },
             ],

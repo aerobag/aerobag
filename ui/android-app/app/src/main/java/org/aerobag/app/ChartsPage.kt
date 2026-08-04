@@ -258,6 +258,7 @@ import org.aerobag.app.domain.SituationControlInput
 import org.aerobag.app.domain.SituationRingCandidate
 import org.aerobag.app.domain.TileStorageKind
 import org.aerobag.app.domain.UiDataStatusState
+import org.aerobag.app.domain.UiStatusSeverity
 import org.aerobag.app.domain.UiDebugState
 import org.aerobag.app.domain.UiMapLayerToggleState
 import org.aerobag.app.domain.UiTheme
@@ -369,6 +370,7 @@ internal fun ChartsPage(
     ownship: OwnshipRenderState,
     ownshipControls: OwnshipControlModel,
     dataStatusState: UiDataStatusState,
+    procedureGeometryStatus: UiDataStatusState,
     flightDataBanner: FlightDataBannerModel,
     uiSession: NativeUiSession,
     navElement: NavElementUiView?,
@@ -396,6 +398,7 @@ internal fun ChartsPage(
     var chartTrayOpen by remember { mutableStateOf(false) }
     var loadTrayOpen by remember { mutableStateOf(false) }
     var dataStatusTrayOpen by remember { mutableStateOf(false) }
+    var procedureWarningTrayOpen by remember { mutableStateOf(false) }
     var situationTrayOpen by remember { mutableStateOf(false) }
     var surfaceSize by remember { mutableStateOf(IntSize.Zero) }
     fun applySessionCommand(operation: () -> UiSessionSnapshot) {
@@ -460,7 +463,8 @@ internal fun ChartsPage(
     val viewportState = rememberUpdatedState(viewport)
     val imageWidthPx = bitmap?.width?.toFloat() ?: 0f
     val imageHeightPx = bitmap?.height?.toFloat() ?: 0f
-    val trayOpen = airportTrayOpen || chartTrayOpen || loadTrayOpen || dataStatusTrayOpen || situationTrayOpen
+    val trayOpen = airportTrayOpen || chartTrayOpen || loadTrayOpen || dataStatusTrayOpen ||
+        procedureWarningTrayOpen || situationTrayOpen
     val plateProcedureLoads by produceState<List<ProcedureLoadOption>>(initialValue = emptyList(), flightPlanVersion, selectedChart?.id) {
         val chart = selectedChart
         value = if (chart == null || chart.kind != "plate") {
@@ -775,6 +779,26 @@ internal fun ChartsPage(
         }
 
         DataStatusBadge(
+            dataStatusState = procedureGeometryStatus,
+            modifier = Modifier
+                .align(Alignment.TopEnd)
+                .padding(
+                    top = situationDockTopPadding,
+                    end = ThumbGap + MenuDockStyle.Situation.buttonWidth +
+                        (ThumbGap * 2f) + (ThumbSize * 0.5f),
+                ),
+            open = procedureWarningTrayOpen,
+            onToggle = {
+                procedureWarningTrayOpen = !procedureWarningTrayOpen
+                airportTrayOpen = false
+                chartTrayOpen = false
+                loadTrayOpen = false
+                dataStatusTrayOpen = false
+                situationTrayOpen = false
+            },
+        )
+
+        DataStatusBadge(
             dataStatusState = dataStatusState,
             modifier = Modifier
                 .align(Alignment.TopEnd)
@@ -788,6 +812,7 @@ internal fun ChartsPage(
                 airportTrayOpen = false
                 chartTrayOpen = false
                 loadTrayOpen = false
+                procedureWarningTrayOpen = false
                 situationTrayOpen = false
             },
             onAction = onStatusAction,
@@ -805,6 +830,7 @@ internal fun ChartsPage(
                 chartTrayOpen = false
                 loadTrayOpen = false
                 dataStatusTrayOpen = false
+                procedureWarningTrayOpen = false
             },
             onSelectSource = { sourceId ->
                 situationTrayOpen = false
@@ -832,6 +858,7 @@ internal fun ChartsPage(
                 chartTrayOpen = false
                 loadTrayOpen = false
                 dataStatusTrayOpen = false
+                procedureWarningTrayOpen = false
                 situationTrayOpen = false
             },
             onToggleChartTray = {
@@ -839,6 +866,7 @@ internal fun ChartsPage(
                 airportTrayOpen = false
                 loadTrayOpen = false
                 dataStatusTrayOpen = false
+                procedureWarningTrayOpen = false
                 situationTrayOpen = false
             },
             onToggleLoadTray = {
@@ -846,6 +874,7 @@ internal fun ChartsPage(
                 airportTrayOpen = false
                 chartTrayOpen = false
                 dataStatusTrayOpen = false
+                procedureWarningTrayOpen = false
                 situationTrayOpen = false
             },
             onToggleFolder = {
@@ -854,6 +883,7 @@ internal fun ChartsPage(
                 chartTrayOpen = false
                 loadTrayOpen = false
                 dataStatusTrayOpen = false
+                procedureWarningTrayOpen = false
                 situationTrayOpen = false
             },
             onSelectAirport = {
@@ -861,6 +891,7 @@ internal fun ChartsPage(
                 airportTrayOpen = false
                 loadTrayOpen = false
                 dataStatusTrayOpen = false
+                procedureWarningTrayOpen = false
                 situationTrayOpen = false
             },
             onSelectReference = {
@@ -868,6 +899,7 @@ internal fun ChartsPage(
                 airportTrayOpen = false
                 loadTrayOpen = false
                 dataStatusTrayOpen = false
+                procedureWarningTrayOpen = false
                 situationTrayOpen = false
             },
             onSelectChart = {
@@ -875,6 +907,7 @@ internal fun ChartsPage(
                 chartTrayOpen = false
                 loadTrayOpen = false
                 dataStatusTrayOpen = false
+                procedureWarningTrayOpen = false
                 situationTrayOpen = false
             },
             onSelectProcedureLoad = { loadId ->
@@ -889,6 +922,7 @@ internal fun ChartsPage(
                     }
                 loadTrayOpen = false
                 dataStatusTrayOpen = false
+                procedureWarningTrayOpen = false
             },
         )
 
@@ -898,6 +932,7 @@ internal fun ChartsPage(
                 chartTrayOpen = false
                 loadTrayOpen = false
                 dataStatusTrayOpen = false
+                procedureWarningTrayOpen = false
                 situationTrayOpen = false
             }
         }
@@ -1695,30 +1730,21 @@ internal fun PlateFolderGrid(
                         )
                     }
                     if (chart.procedureGeometryWarningCount > 0) {
-                        Surface(
+                        DataStatusBadgeFace(
+                            count = chart.procedureGeometryWarningCount.toString(),
+                            severity = UiStatusSeverity.Caution,
+                            open = false,
+                            badgeSize = 22.dp,
                             modifier = Modifier
                                 .align(Alignment.TopEnd)
                                 .padding(4.dp)
-                                .size(24.dp)
                                 .semantics {
                                     contentDescription =
                                         "${chart.procedureGeometryWarningCount} procedure geometry " +
                                         "warning${if (chart.procedureGeometryWarningCount == 1) "" else "s"}; " +
                                         "verify against the published plate"
                                 },
-                            shape = CircleShape,
-                            color = uiTheme.controls.dataStatusWarningBg,
-                            border = BorderStroke(2.dp, uiTheme.controls.dataStatusWarningStroke),
-                        ) {
-                            Box(contentAlignment = Alignment.Center) {
-                                Text(
-                                    text = "!",
-                                    color = uiTheme.controls.dataStatusWarningStroke,
-                                    style = MaterialTheme.typography.labelLarge,
-                                    fontWeight = FontWeight.Black,
-                                )
-                            }
-                        }
+                        )
                     }
                     Box(
                         modifier = Modifier

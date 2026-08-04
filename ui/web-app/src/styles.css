@@ -846,7 +846,7 @@ button {
   font-size: calc(var(--thumb) * 0.2);
   font-weight: 900;
   line-height: 1;
-  letter-spacing: -0.03em;
+  letter-spacing: 0;
 }
 
 .dataStatusPanel {
@@ -4351,22 +4351,31 @@ button {
   object-position: center center;
 }
 
-.plateThumbWarning {
+.plateProcedureWarningMini {
+  --data-status-symbol-ink: var(--theme-data-status-warning-stroke);
+
   position: absolute;
   top: calc(var(--thumb) * 0.08);
   right: calc(var(--thumb) * 0.08);
   z-index: 1;
-  display: grid;
-  place-items: center;
-  width: calc(var(--thumb) * 0.42);
-  height: calc(var(--thumb) * 0.42);
-  border: 2px solid var(--theme-data-status-warning-stroke);
-  border-radius: 50%;
+  width: calc(var(--thumb) * 0.36);
+  height: calc(var(--thumb) * 0.36);
+  border: 1px solid var(--theme-data-status-warning-stroke);
+  border-radius: calc(var(--thumb-radius) * 0.62);
   background: var(--theme-data-status-warning-bg);
-  color: var(--theme-data-status-warning-stroke);
-  font-size: calc(var(--thumb) * 0.27);
-  font-weight: 900;
-  line-height: 1;
+  box-shadow: var(--shadow);
+  pointer-events: none;
+}
+
+.plateProcedureWarningMini .dataStatusLauncherSymbol {
+  width: 82.8%;
+  height: 82.8%;
+}
+
+.plateProcedureWarningMini .dataStatusLauncherCount {
+  right: calc(var(--thumb) * 0.025);
+  bottom: calc(var(--thumb) * 0.018);
+  font-size: calc(var(--thumb) * 0.14);
 }
 
 .plateThumbLabel {

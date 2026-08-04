@@ -100,6 +100,47 @@ pub struct DataStatusRecord {
     pub actions: Vec<UiStatusAction>,
 }
 
+pub fn loaded_procedure_geometry_warning_detail(
+    airport_id: &str,
+    procedure_label: &str,
+    messages: &[String],
+) -> String {
+    procedure_geometry_warning_detail(
+        &format!("Loaded procedure {airport_id} {procedure_label}"),
+        messages,
+    )
+}
+
+pub fn published_procedure_geometry_warning_detail(
+    airport_id: &str,
+    procedure_id: &str,
+    runway_transition: Option<&str>,
+    enroute_transition: Option<&str>,
+    messages: &[String],
+) -> String {
+    let transition = enroute_transition
+        .or(runway_transition)
+        .map(|value| format!(" {value}"))
+        .unwrap_or_default();
+    procedure_geometry_warning_detail(
+        &format!(
+            "This publication reports a procedure geometry warning for {airport_id} {procedure_id}{transition}"
+        ),
+        messages,
+    )
+}
+
+fn procedure_geometry_warning_detail(prefix: &str, messages: &[String]) -> String {
+    format!(
+        "{prefix}:\n{}",
+        messages
+            .iter()
+            .map(|message| format!("- {message}"))
+            .collect::<Vec<_>>()
+            .join("\n")
+    )
+}
+
 impl DataStatusRecord {
     pub fn new(
         id: impl Into<String>,

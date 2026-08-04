@@ -2638,6 +2638,11 @@ internal fun AerobagApp(
                 selectedReferenceFamilyId = sessionSnapshot.chartPageState.selectedReferenceFamilyId,
                 selectedChartId = sessionSnapshot.chartPageState.selectedChartId,
                 suggestedChartIds = sessionSnapshot.chartPageState.suggestedChartIds,
+                procedureGeometryStatus = UiDataStatusState(
+                    boxes = emptyList(),
+                    launcherCount = null,
+                    launcherSeverity = UiStatusSeverity.Ok,
+                ),
             ),
         )
     }
@@ -3166,6 +3171,7 @@ internal fun AerobagApp(
                         ownship = appUiState.ownship.render,
                         ownshipControls = appUiState.ownship.controls,
                         dataStatusState = sessionSnapshot.dataStatusState,
+                        procedureGeometryStatus = derivedChartPageState.procedureGeometryStatus,
                         flightDataBanner = appUiState.flightDataBanner,
                         uiSession = uiSession,
                         navElement = navElement,

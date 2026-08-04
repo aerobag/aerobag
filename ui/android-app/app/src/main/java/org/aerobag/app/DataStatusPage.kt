@@ -89,15 +89,6 @@ internal fun DataStatusBadge(
     val density = LocalDensity.current
     val launcherSize = ThumbSize * 0.5f
     val panelWidth = ThumbSize * 4.25f
-    val hasLauncherCount = dataStatusState.launcherCount != null
-    val warningLauncher = dataStatusState.launcherSeverity == UiStatusSeverity.Warning
-    val launcherBg = when {
-        !hasLauncherCount -> uiTheme.controls.dataStatusQuietBg
-        warningLauncher -> lerp(uiTheme.controls.dataStatusWarningBg, Color(0xFFD55B18), 0.22f)
-        else -> uiTheme.controls.dataStatusWarningBg
-    }
-    val launcherStroke = if (hasLauncherCount) uiTheme.controls.dataStatusWarningStroke else uiTheme.controls.dataStatusQuietStroke
-    val resolvedLauncherBg = if (open) lerp(launcherBg, Color.White, 0.18f) else launcherBg
     val popupOffset = with(density) {
         IntOffset(
             x = (launcherSize - panelWidth).toPx().roundToInt(),
@@ -109,56 +100,18 @@ internal fun DataStatusBadge(
             .size(launcherSize)
             .wrapContentSize(unbounded = true, align = Alignment.TopEnd),
     ) {
-        Box(
+        DataStatusBadgeFace(
+            count = dataStatusState.launcherCount,
+            severity = dataStatusState.launcherSeverity,
+            open = open,
+            badgeSize = launcherSize,
             modifier = Modifier
-                .size(launcherSize)
-                .clip(RoundedCornerShape(ThumbRadius * 0.78f))
-                .background(resolvedLauncherBg)
-                .border(1.dp, launcherStroke, RoundedCornerShape(ThumbRadius * 0.78f))
                 .clickable(
                     indication = null,
                     interactionSource = remember { MutableInteractionSource() },
                     onClick = onToggle,
                 ),
-            contentAlignment = Alignment.Center,
-        ) {
-            Canvas(modifier = Modifier.size(ThumbSize * 0.414f)) {
-                val symbol = Path().apply {
-                    moveTo(size.width * 0.50f, size.height * 0.08f)
-                    lineTo(size.width * 0.92f, size.height * 0.84f)
-                    lineTo(size.width * 0.08f, size.height * 0.84f)
-                    close()
-                }
-                drawPath(symbol, launcherStroke)
-                drawLine(
-                    color = Color(0xFF111111),
-                    start = Offset(size.width * 0.50f, size.height * 0.32f),
-                    end = Offset(size.width * 0.50f, size.height * 0.58f),
-                    strokeWidth = size.width * 0.10f,
-                    cap = StrokeCap.Round,
-                )
-                drawCircle(
-                    color = Color(0xFF111111),
-                    radius = size.width * 0.045f,
-                    center = Offset(size.width * 0.50f, size.height * 0.71f),
-                )
-            }
-            dataStatusState.launcherCount?.let { count ->
-                Text(
-                    text = count,
-                    modifier = Modifier
-                        .align(Alignment.BottomEnd)
-                        .padding(end = ThumbSize * 0.055f, bottom = ThumbSize * 0.035f),
-                    style = MaterialTheme.typography.labelSmall.copy(
-                        fontSize = 10.sp,
-                        fontWeight = FontWeight.Black,
-                        letterSpacing = (-0.3).sp,
-                    ),
-                    color = Color(0xFF111111),
-                    maxLines = 1,
-                )
-            }
-        }
+        )
         if (open) {
             Popup(
                 offset = popupOffset,
@@ -193,6 +146,75 @@ internal fun DataStatusBadge(
                     }
                 }
             }
+        }
+    }
+}
+
+@Composable
+internal fun DataStatusBadgeFace(
+    count: String?,
+    severity: UiStatusSeverity,
+    open: Boolean,
+    badgeSize: androidx.compose.ui.unit.Dp,
+    modifier: Modifier = Modifier,
+) {
+    val uiTheme = LocalAerobagUiTheme.current
+    val hasCount = count != null
+    val background = when {
+        !hasCount -> uiTheme.controls.dataStatusQuietBg
+        severity == UiStatusSeverity.Warning ->
+            lerp(uiTheme.controls.dataStatusWarningBg, Color(0xFFD55B18), 0.22f)
+        else -> uiTheme.controls.dataStatusWarningBg
+    }
+    val stroke = if (hasCount) {
+        uiTheme.controls.dataStatusWarningStroke
+    } else {
+        uiTheme.controls.dataStatusQuietStroke
+    }
+    val resolvedBackground = if (open) lerp(background, Color.White, 0.18f) else background
+    Box(
+        modifier = modifier
+            .size(badgeSize)
+            .clip(RoundedCornerShape(ThumbRadius * 0.78f))
+            .background(resolvedBackground)
+            .border(1.dp, stroke, RoundedCornerShape(ThumbRadius * 0.78f)),
+        contentAlignment = Alignment.Center,
+    ) {
+        Canvas(modifier = Modifier.size(badgeSize * 0.828f)) {
+            val symbol = Path().apply {
+                moveTo(size.width * 0.50f, size.height * 0.08f)
+                lineTo(size.width * 0.92f, size.height * 0.84f)
+                lineTo(size.width * 0.08f, size.height * 0.84f)
+                close()
+            }
+            drawPath(symbol, stroke)
+            drawLine(
+                color = Color(0xFF111111),
+                start = Offset(this.size.width * 0.50f, this.size.height * 0.32f),
+                end = Offset(this.size.width * 0.50f, this.size.height * 0.58f),
+                strokeWidth = this.size.width * 0.10f,
+                cap = StrokeCap.Round,
+            )
+            drawCircle(
+                color = Color(0xFF111111),
+                radius = this.size.width * 0.045f,
+                center = Offset(this.size.width * 0.50f, this.size.height * 0.71f),
+            )
+        }
+        count?.let {
+            Text(
+                text = it,
+                modifier = Modifier
+                    .align(Alignment.BottomEnd)
+                    .padding(end = badgeSize * 0.11f, bottom = badgeSize * 0.07f),
+                style = MaterialTheme.typography.labelSmall.copy(
+                    fontSize = (badgeSize.value / 3f).sp,
+                    fontWeight = FontWeight.Black,
+                    letterSpacing = 0.sp,
+                ),
+                color = Color(0xFF111111),
+                maxLines = 1,
+            )
         }
     }
 }

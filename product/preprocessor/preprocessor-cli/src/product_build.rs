@@ -3971,7 +3971,7 @@ mod tests {
     }
 
     #[test]
-    fn nav_kv_plate_assets_receive_aggregate_procedure_geometry_warning_count() {
+    fn nav_kv_plate_assets_receive_aggregate_procedure_geometry_warnings() {
         let plate_id = "plate:KAAA:IAP-AA-VOR RWY 01.png";
         let mut pairs = vec![
             nav_db::json_pair(
@@ -4002,6 +4002,16 @@ mod tests {
                 "test geometry",
             )
             .unwrap(),
+            nav_db::json_pair(
+                "procedure/geometry/KAAA/APPROACH/V01/RWY/_".to_string(),
+                &serde_json::json!({
+                    "data_quality": [
+                        {"message": "runway warning"}
+                    ]
+                }),
+                "test runway geometry",
+            )
+            .unwrap(),
         ];
 
         nav_db::attach_procedure_geometry_warnings_to_plate_pairs(&mut pairs).unwrap();
@@ -4015,6 +4025,25 @@ mod tests {
         )
         .unwrap();
         assert_eq!(plate["procedure_geometry_warning_count"], 2);
+        assert_eq!(
+            plate["procedure_geometry_warnings"],
+            serde_json::json!([
+                {
+                    "airport_id": "KAAA",
+                    "procedure_id": "V01",
+                    "runway_transition": null,
+                    "enroute_transition": "TRANS",
+                    "messages": ["first warning", "second warning"]
+                },
+                {
+                    "airport_id": "KAAA",
+                    "procedure_id": "V01",
+                    "runway_transition": "RWY",
+                    "enroute_transition": null,
+                    "messages": ["runway warning"]
+                }
+            ]),
+        );
     }
 
     fn clear_omitted_procedure_geometry_fields(

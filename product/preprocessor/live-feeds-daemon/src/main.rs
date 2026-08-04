@@ -29,11 +29,10 @@ use preprocessor_live_feeds::{
     engine::{
         default_poll_interval, prune_live_feed_scratch_root, run_upstream_live_feed_publish_tick,
         write_live_feeds_current_manifest, CompiledFixtureCache, FileLiveFeedPublisher, FixedClock,
-        FixtureCacheKeyPart, LiveFeedCurrentHistoryEntry, LiveFeedInvalidation,
-        LiveFeedPollingTask, LiveFeedSourceAndBuilder, LiveFeedTaskPhase, LiveFeedTickResult,
-        LiveFeedVersionManifest, LiveFeedsCurrentManifest, ProductBuilder, PublishedLiveFeedUpdate,
-        QueuedLiveFeedSource, SseBroker, SystemClock, UpstreamEvent, LIVE_FEEDS_SCHEMA_VERSION,
-        LIVE_FEED_FAILED_SCRATCH_RETAIN_COUNT,
+        FixtureCacheKeyPart, LiveFeedInvalidation, LiveFeedPollingTask, LiveFeedSourceAndBuilder,
+        LiveFeedTaskPhase, LiveFeedTickResult, LiveFeedVersionManifest, LiveFeedsCurrentManifest,
+        ProductBuilder, PublishedLiveFeedUpdate, QueuedLiveFeedSource, SseBroker, SystemClock,
+        UpstreamEvent, LIVE_FEEDS_SCHEMA_VERSION, LIVE_FEED_FAILED_SCRATCH_RETAIN_COUNT,
     },
     notam_store::NotamPersistentStore,
     products::{
@@ -2574,7 +2573,8 @@ mod tests {
 
     use preprocessor_live_feeds::engine::{
         run_live_feed_publish_tick, write_json_pretty_file, BuiltLiveFeedState, DeltaPolicy,
-        FileLiveFeedPublisher, LiveFeedProductTask, LiveFeedPublisher, LiveFeedStatePayload,
+        FileLiveFeedPublisher, LiveFeedCurrentHistoryEntry, LiveFeedProductTask, LiveFeedPublisher,
+        LiveFeedStatePayload,
     };
     use tempfile::tempdir;
 

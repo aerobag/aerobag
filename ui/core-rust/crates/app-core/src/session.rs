@@ -27,10 +27,11 @@ use crate::{
         UiCloudPageState, CLOUD_STATUS_ID,
     },
     data_status::{
-        loaded_procedure_geometry_warning_detail, parse_status_action_id,
-        project_data_status_state, DataStatusRecord, UiDataStatusPageFact, UiDataStatusPageRow,
-        UiDataStatusPageState, UiDataStatusPageTimeDisplay, UiDataStatusState, UiStatusAction,
-        UiStatusActionCommand, UiStatusActionStyle, UiStatusSeverity, RELOAD_APPLICATION_ACTION_ID,
+        parse_status_action_id, procedure_geometry_warning_presentation, project_data_status_state,
+        DataStatusRecord, ProcedureGeometryWarningContext, UiDataStatusPageFact,
+        UiDataStatusPageRow, UiDataStatusPageState, UiDataStatusPageTimeDisplay, UiDataStatusState,
+        UiStatusAction, UiStatusActionCommand, UiStatusActionStyle, UiStatusSeverity,
+        RELOAD_APPLICATION_ACTION_ID,
     },
     first_guidance_detail_index_for_leg,
     freshness::{
@@ -1370,18 +1371,19 @@ fn procedure_geometry_status_records_for_plan(plan: &FlightPlan) -> Vec<DataStat
                     )
                 });
             let procedure_label = procedure.pilot_facing_label();
-            let detail = loaded_procedure_geometry_warning_detail(
+            let presentation = procedure_geometry_warning_presentation(
                 &procedure.airport_id.0,
                 procedure_label,
+                ProcedureGeometryWarningContext::LoadedProcedure,
                 &procedure.data_quality,
             );
             Some(DataStatusRecord::new(
                 format!("{PROCEDURE_GEOMETRY_STATUS_PREFIX}{component_id}"),
                 "PROC",
-                Some(procedure_label.to_string()),
+                Some(presentation.value),
                 UiStatusSeverity::Caution,
                 true,
-                detail,
+                presentation.detail,
             ))
         })
         .collect()
@@ -20200,7 +20202,7 @@ mod tests {
         assert!(warning.drives_caution);
         assert_eq!(
             warning.detail,
-            "Loaded procedure KOMA ILS or LOC 32R:\n- Procedure encoding is suspicious; read plate."
+            "Loaded procedure KOMA ILS or LOC 32R:\nProcedure encoding is suspicious; read plate."
         );
 
         plan.route_components.clear();

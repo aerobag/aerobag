@@ -5,8 +5,8 @@
 use serde::{Deserialize, Serialize};
 
 use crate::data_status::{
-    published_procedure_geometry_warning_detail, UiDataStatusBox, UiDataStatusState,
-    UiStatusSeverity,
+    procedure_geometry_warning_presentation, ProcedureGeometryWarningContext, UiDataStatusBox,
+    UiDataStatusState, UiStatusSeverity,
 };
 use crate::planning::{FlightPlan, RouteComponent};
 
@@ -328,21 +328,28 @@ fn procedure_geometry_status(chart: Option<&DerivedChartAsset>) -> UiDataStatusS
         .procedure_geometry_warnings
         .iter()
         .enumerate()
-        .map(|(index, warning)| UiDataStatusBox {
-            id: format!("plate:procedure_geometry:{index}"),
-            label: "PROC".to_string(),
-            value: Some(warning.procedure_id.clone()),
-            severity: UiStatusSeverity::Caution,
-            drives_caution: true,
-            detail: published_procedure_geometry_warning_detail(
+        .map(|(index, warning)| {
+            let presentation = procedure_geometry_warning_presentation(
                 &warning.airport_id,
-                &warning.procedure_id,
-                warning.runway_transition.as_deref(),
-                warning.enroute_transition.as_deref(),
+                &chart.label,
+                ProcedureGeometryWarningContext::PublishedPlate {
+                    transition: warning
+                        .enroute_transition
+                        .as_deref()
+                        .or(warning.runway_transition.as_deref()),
+                },
                 &warning.messages,
-            ),
-            actions: Vec::new(),
-            hushed: false,
+            );
+            UiDataStatusBox {
+                id: format!("plate:procedure_geometry:{index}"),
+                label: "PROC".to_string(),
+                value: Some(presentation.value),
+                severity: UiStatusSeverity::Caution,
+                drives_caution: true,
+                detail: presentation.detail,
+                actions: Vec::new(),
+                hushed: false,
+            }
         })
         .collect::<Vec<_>>();
     let warning_count = boxes.len();
@@ -743,19 +750,20 @@ mod tests {
 
     #[test]
     fn procedure_geometry_warnings_become_contextual_status_boxes() {
-        let mut selected = chart("KAAA", "plate:KAAA:approach.png", "plate", "approach");
+        let mut selected = chart("KOMA", "plate:KOMA:approach.png", "plate", "approach");
+        selected.label = "ILS or LOC 32R".to_string();
         selected.procedure_geometry_warning_count = 2;
         selected.procedure_geometry_warnings = vec![
             PlateProcedureGeometryWarning {
-                airport_id: "KAAA".to_string(),
-                procedure_id: "V01".to_string(),
+                airport_id: "KOMA".to_string(),
+                procedure_id: "I32R".to_string(),
                 runway_transition: None,
                 enroute_transition: Some("FIRST".to_string()),
                 messages: vec!["first validation gripe".to_string()],
             },
             PlateProcedureGeometryWarning {
-                airport_id: "KAAA".to_string(),
-                procedure_id: "V01".to_string(),
+                airport_id: "KOMA".to_string(),
+                procedure_id: "I32R".to_string(),
                 runway_transition: Some("SECOND".to_string()),
                 enroute_transition: None,
                 messages: vec!["second validation gripe".to_string()],
@@ -768,16 +776,16 @@ mod tests {
         assert_eq!(status.launcher_severity, UiStatusSeverity::Caution);
         assert_eq!(status.boxes.len(), 2);
         assert_eq!(status.boxes[0].label, "PROC");
-        assert_eq!(status.boxes[0].value.as_deref(), Some("V01"));
+        assert_eq!(status.boxes[0].value.as_deref(), Some("ILS or LOC 32R"));
         assert_eq!(
             status.boxes[0].detail,
-            "This publication reports a procedure geometry warning for KAAA V01 FIRST:\n- first validation gripe",
+            "This publication reports a procedure geometry warning for KOMA ILS or LOC 32R from FIRST:\nfirst validation gripe",
         );
         assert_eq!(status.boxes[1].label, "PROC");
-        assert_eq!(status.boxes[1].value.as_deref(), Some("V01"));
+        assert_eq!(status.boxes[1].value.as_deref(), Some("ILS or LOC 32R"));
         assert_eq!(
             status.boxes[1].detail,
-            "This publication reports a procedure geometry warning for KAAA V01 SECOND:\n- second validation gripe",
+            "This publication reports a procedure geometry warning for KOMA ILS or LOC 32R from SECOND:\nsecond validation gripe",
         );
     }
 

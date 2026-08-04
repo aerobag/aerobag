@@ -100,45 +100,42 @@ pub struct DataStatusRecord {
     pub actions: Vec<UiStatusAction>,
 }
 
-pub fn loaded_procedure_geometry_warning_detail(
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ProcedureGeometryWarningContext<'a> {
+    LoadedProcedure,
+    PublishedPlate { transition: Option<&'a str> },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ProcedureGeometryWarningPresentation {
+    pub value: String,
+    pub detail: String,
+}
+
+pub fn procedure_geometry_warning_presentation(
     airport_id: &str,
     procedure_label: &str,
+    context: ProcedureGeometryWarningContext<'_>,
     messages: &[String],
-) -> String {
-    procedure_geometry_warning_detail(
-        &format!("Loaded procedure {airport_id} {procedure_label}"),
-        messages,
-    )
-}
-
-pub fn published_procedure_geometry_warning_detail(
-    airport_id: &str,
-    procedure_id: &str,
-    runway_transition: Option<&str>,
-    enroute_transition: Option<&str>,
-    messages: &[String],
-) -> String {
-    let transition = enroute_transition
-        .or(runway_transition)
-        .map(|value| format!(" {value}"))
-        .unwrap_or_default();
-    procedure_geometry_warning_detail(
-        &format!(
-            "This publication reports a procedure geometry warning for {airport_id} {procedure_id}{transition}"
-        ),
-        messages,
-    )
-}
-
-fn procedure_geometry_warning_detail(prefix: &str, messages: &[String]) -> String {
-    format!(
-        "{prefix}:\n{}",
-        messages
-            .iter()
-            .map(|message| format!("- {message}"))
-            .collect::<Vec<_>>()
-            .join("\n")
-    )
+) -> ProcedureGeometryWarningPresentation {
+    let value = procedure_label.trim().to_string();
+    let prefix = match context {
+        ProcedureGeometryWarningContext::LoadedProcedure => {
+            format!("Loaded procedure {airport_id} {value}")
+        }
+        ProcedureGeometryWarningContext::PublishedPlate { transition } => {
+            let transition = transition
+                .map(str::trim)
+                .filter(|transition| !transition.is_empty())
+                .map(|transition| format!(" from {transition}"))
+                .unwrap_or_default();
+            format!(
+                "This publication reports a procedure geometry warning for {airport_id} {value}{transition}"
+            )
+        }
+    };
+    let detail = format!("{prefix}:\n{}", messages.join("\n"));
+    ProcedureGeometryWarningPresentation { value, detail }
 }
 
 impl DataStatusRecord {

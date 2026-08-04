@@ -60,6 +60,18 @@ Hosted-runner invariants and failure diagnostics are documented in
   - Opens the chart Layers tray against the installed NAVDB.
   - Disables terrain and enables NEXRAD.
   - Verifies both commands are accepted and the projected layer state changes.
+- `android.rotation-session-retention-regression`
+  - Creates `KRNT KPWT KPLU`, activates its destination leg, and records the
+    rendered row order, labels, count, and core-projected active-leg identity.
+  - Alternates real portrait and landscape bounds six times while requiring a
+    stable process, responsive navigation, the same active plan, and a painted
+    chart route after every recreation.
+  - Seeds a generated persisted NOTAM cache and uses a debug-only private-file
+    gate to rotate before one-shot promotion, then verifies the product reaches
+    Data Status and rotates again after promotion.
+  - Fails on an Aerobag ANR, fatal exception, process death, or consumed
+    prepared-projection error and retains its transcript, signatures, logcat,
+    screenshots, and window diagnostics.
 - `android.chrome.live-feed-network-recovery`
   - Starts a strict local live-feed v3 server with a METAR product.
   - Starts Vite with `AEROBAG_LIVE_FEEDS_ORIGIN` pointed at that server.
@@ -83,6 +95,7 @@ The Android UI now exposes stable `parity:` tags for the smoke test:
 - debug Bad Autopilot flag and ownship source controls
 - flight-plan route overlay semantic probe
 - map-follow semantic probe
+- rendered flight-plan state and Data Status row semantic probes
 
 Painted canvas content is not directly visible to `uiautomator`, so the E2E
 checks use semantic probe tags for map overlays and screenshot analysis for
@@ -124,6 +137,11 @@ publication contains only the packages needed by the suite, CI syncs every
 available package and skips searching for absent regional toggles; tests
 against a full publication retain the NW-only selection flow.
 
+The rotation job additionally sparse-checks out
+`e2e/android-rotation-live-feed`, a generated canonical empty NOTAM checkpoint
+in Android's persisted cache layout. It contains no operational records and
+does not contact a live-feed server.
+
 ## Known Gaps
 
 - General web UI parity journeys beyond NAVDB rollover still need to be added.
@@ -139,6 +157,14 @@ Run:
 ```
 
 Use `--headless` to reproduce the hosted-runner display mode.
+
+Run only the rotation/session-retention regression with:
+
+```sh
+./ui/android-app/scripts/run_e2e_ci.sh \
+  --headless \
+  --test android.rotation-session-retention-regression
+```
 
 For the Android Chrome live-feed recovery suite:
 

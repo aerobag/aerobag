@@ -106,7 +106,6 @@ import androidx.compose.runtime.mutableStateMapOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.foundation.rememberScrollState
-import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.setValue
 import androidx.compose.runtime.staticCompositionLocalOf
 import androidx.compose.runtime.withFrameNanos
@@ -267,10 +266,6 @@ import org.aerobag.app.domain.RuntimeContent
 import org.aerobag.app.domain.ScreenPoint
 import org.aerobag.app.domain.SectionalPackages
 import org.aerobag.app.domain.AndroidRuntimeContent
-import org.aerobag.app.domain.AndroidLiveFeedClient
-import org.aerobag.app.domain.LiveFeedCacheStore
-import org.aerobag.app.domain.LiveFeedConnectionEvent
-import org.aerobag.app.domain.LiveFeedInstalledSummary
 import org.aerobag.app.domain.MapDisplayFrame
 import org.aerobag.app.domain.SequencingMode
 import org.aerobag.app.domain.SituationControlInput
@@ -353,7 +348,6 @@ import java.io.File
 import java.nio.ByteBuffer
 import java.net.URL
 import java.security.MessageDigest
-import java.util.concurrent.Executors
 import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicInteger
 import java.util.concurrent.atomic.AtomicLong
@@ -2468,30 +2462,44 @@ internal fun AerobagApp(
             false
         }
     }
+    val mainExecutor = remember(appContext) { ContextCompat.getMainExecutor(appContext) }
+    val sessionSnapshotRefreshRunner = retainedCoreSession.sessionSnapshotRefreshRunner
+    DisposableEffect(sessionSnapshotRefreshRunner) {
+        sessionSnapshotRefreshRunner.setListeners(
+            onSnapshot = null,
+            onFailure = { error ->
+                Log.w("AerobagInvalidation", "session snapshot refresh failed", error)
+            },
+        )
+        onDispose { sessionSnapshotRefreshRunner.setListeners(null, null) }
+    }
     var uiInvalidationRevisions by remember(uiSession) { mutableStateOf(UiInvalidationRevisions()) }
     fun publishUiInvalidations(invalidations: List<String>) {
         if (invalidations.isEmpty()) return
         uiInvalidationRevisions = uiInvalidationRevisions.bumped(invalidations)
+        if ("session_snapshot" in invalidations) {
+            sessionSnapshotRefreshRunner.request(
+                priority = if ("flight_plan_route" in invalidations) {
+                    SessionSnapshotRefreshPriority.Timely
+                } else {
+                    SessionSnapshotRefreshPriority.LowPriority
+                },
+                reason = "invalidation",
+            )
+        }
+    }
+    fun enqueueUiInvalidations(invalidations: List<String>) {
+        if (invalidations.isEmpty()) return
+        mainExecutor.execute { publishUiInvalidations(invalidations) }
     }
     DisposableEffect(uiSession) {
-        uiSession.setInvalidationListener(::publishUiInvalidations)
+        val snapshotDelivery = LatestValueExecutor(mainExecutor, ::applySessionSnapshot)
+        val snapshotSubscription = uiSession.subscribeSnapshots(snapshotDelivery::submit)
+        val invalidationSubscription = uiSession.subscribeInvalidations(::enqueueUiInvalidations)
         onDispose {
-            uiSession.setInvalidationListener(null)
-        }
-    }
-    LaunchedEffect(uiSession, uiInvalidationRevisions.sessionSnapshot) {
-        if (uiInvalidationRevisions.sessionSnapshot == 0) {
-            return@LaunchedEffect
-        }
-        try {
-            val refreshedSnapshot = withContext(Dispatchers.IO) {
-                uiSession.refreshSnapshot()
-            }
-            applySessionSnapshot(refreshedSnapshot)
-        } catch (error: CancellationException) {
-            throw error
-        } catch (error: Throwable) {
-            Log.w("AerobagInvalidation", "session snapshot refresh failed", error)
+            snapshotSubscription.close()
+            invalidationSubscription.close()
+            snapshotDelivery.close()
         }
     }
     LaunchedEffect(context, sessionSnapshot.displayPolicy) {
@@ -2522,93 +2530,13 @@ internal fun AerobagApp(
             uiSession.refreshSnapshot()
         }
     }
-    val liveFeedSourceRootUrl = remember(context, prefs) {
-        configuredLiveFeedSourceRootUrl(
-            context.applicationContext,
-            prefs,
-            loadAndroidDevServerBaseUrl(context.applicationContext),
-        )
-    }
-    val liveFeedCache = remember(uiSession, context, liveFeedSourceRootUrl) {
-        LiveFeedCacheStore.create(liveFeedSourceRootUrl)
-    }
-    DisposableEffect(liveFeedCache) {
-        onDispose { liveFeedCache.close() }
-    }
-    var liveFeedGeneration by remember(uiSession) { mutableIntStateOf(0) }
-    suspend fun promoteLiveFeed(summary: LiveFeedInstalledSummary): Boolean {
-        val preparedBytes = withContext(Dispatchers.IO) {
-            liveFeedCache.preparedInstallCandidate(summary.product, summary.version)
+    val liveFeedRuntime = retainedCoreSession.liveFeedRuntime
+    var liveFeedGeneration by remember(liveFeedRuntime) { mutableIntStateOf(0) }
+    DisposableEffect(liveFeedRuntime) {
+        val subscription = liveFeedRuntime.subscribeGeneration { generation ->
+            liveFeedGeneration = generation
         }
-        val promoted = withContext(Dispatchers.Main.immediate) {
-            applyBackgroundSessionCommand(
-                "installLiveFeedCacheProduct",
-                "AndroidLiveFeeds",
-            ) {
-                if (preparedBytes != null) {
-                    uiSession.installPreparedLiveFeedCacheProduct(
-                        liveFeedCache,
-                        summary.product,
-                        summary.version,
-                        preparedBytes,
-                    )
-                } else {
-                    uiSession.installLiveFeedCacheProduct(
-                        liveFeedCache,
-                        summary.product,
-                        summary.version,
-                    )
-                }
-            }
-        }
-        if (promoted) {
-            liveFeedGeneration += 1
-            diagnosticLogInfo("AndroidLiveFeeds") {
-                "promoted product=${summary.product} version=${summary.version} generation=$liveFeedGeneration"
-            }
-        }
-        return promoted
-    }
-    fun reportLiveFeedConnection(event: LiveFeedConnectionEvent) {
-        applyBackgroundSessionCommand("reportLiveFeedConnectionEvent", "AndroidLiveFeeds") {
-            uiSession.reportLiveFeedConnectionEvent(event)
-        }
-    }
-    fun syncLiveFeedCatalog() {
-        applyBackgroundSessionCommand("syncLiveFeedCacheCatalog", "AndroidLiveFeeds") {
-            uiSession.syncLiveFeedCacheCatalog(liveFeedCache)
-        }
-    }
-    LaunchedEffect(uiSession, liveFeedCache, context, prefs) {
-        val appContext = context.applicationContext
-        val installed = withContext(Dispatchers.IO) {
-            LiveFeedCacheStore.restore(appContext, liveFeedCache)
-            LiveFeedCacheStore.listInstalledSummaries(appContext)
-        }
-        installed.forEach {
-            promoteLiveFeed(it)
-        }
-        AndroidLiveFeedClient(
-            context = appContext,
-            cache = liveFeedCache,
-            sourceRootUrl = liveFeedSourceRootUrl,
-        ).bootstrapAndRun(
-            promote = { summary ->
-                check(promoteLiveFeed(summary)) {
-                    "failed to promote ${summary.product}/${summary.version}"
-                }
-            },
-            onChanged = {
-                withContext(Dispatchers.Main) {
-                    syncLiveFeedCatalog()
-                }
-            },
-            onConnectionEvent = { event ->
-                withContext(Dispatchers.Main) {
-                    reportLiveFeedConnection(event)
-                }
-            },
-        )
+        onDispose(subscription::close)
     }
     DisposableEffect(uiSession, context) {
         val activity = context as? MainActivity

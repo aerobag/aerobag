@@ -4,7 +4,14 @@
 
 import assert from "node:assert/strict";
 import test from "node:test";
-import { findSystemUiAnrWaitButton } from "./android-harness.mjs";
+import {
+  assertNoAerobagAnr,
+  classifyAerobagLogcat,
+  displayBoundsFromXml,
+  findAerobagAnrDialog,
+  findSystemUiAnrWaitButton,
+  renderedFlightPlanSignature,
+} from "./android-harness.mjs";
 
 function anrDialogXml(title, { waitEnabled = true } = {}) {
   return `<hierarchy>
@@ -36,4 +43,58 @@ test("does not select a disabled System UI wait action", () => {
     findSystemUiAnrWaitButton(anrDialogXml("System UI isn't responding", { waitEnabled: false })),
     null,
   );
+});
+
+test("recognizes an Aerobag ANR without dismissing it", () => {
+  assert.equal(
+    findAerobagAnrDialog(anrDialogXml("Aerobag isn't responding"))?.text,
+    "Aerobag isn't responding",
+  );
+  assert.equal(findAerobagAnrDialog(anrDialogXml("Another app isn't responding")), null);
+});
+
+test("fails a journey when Aerobag has an ANR dialog even if its UI remains visible", () => {
+  const xml = `${anrDialogXml("Aerobag isn't responding")}<node package="org.aerobag.app" />`;
+  assert.throws(() => assertNoAerobagAnr(xml), /Aerobag ANR detected/);
+});
+
+test("classifies only Aerobag fatal, ANR, death, and consumed projection evidence", () => {
+  assert.deepEqual(classifyAerobagLogcat(`
+08-03 AndroidRuntime E FATAL EXCEPTION: main
+08-03 AndroidRuntime E Process: com.android.systemui, PID: 50
+08-03 ActivityManager E ANR in com.android.systemui
+`), []);
+  const evidence = classifyAerobagLogcat(`
+08-03 AndroidRuntime E FATAL EXCEPTION: main
+08-03 AndroidRuntime E Process: org.aerobag.app, PID: 123
+08-03 ActivityManager E ANR in org.aerobag.app (org.aerobag.app/.MainActivity)
+08-03 ActivityTaskManager W Force finishing activity org.aerobag.app/.MainActivity
+08-03 AndroidLiveFeeds E prepared notams/v1 projection is unavailable
+`);
+  assert.equal(evidence.length, 4);
+  assert.match(evidence.join("\n"), /FATAL EXCEPTION/);
+  assert.match(evidence.join("\n"), /ANR in org\.aerobag\.app/);
+  assert.match(evidence.join("\n"), /Force finishing/);
+  assert.match(evidence.join("\n"), /projection is unavailable/);
+});
+
+test("extracts real bounds and an ordered rendered plan signature", () => {
+  const xml = `<hierarchy>
+    <node package="org.aerobag.app" bounds="[0,24][1920,1080]" content-desc="parity:plan-state:rows:3:active:row-b:from:row-a:to:row-b" />
+    <node package="org.aerobag.app" bounds="[20,100][400,180]" content-desc="parity:plan-row:row-a" />
+    <node package="org.aerobag.app" bounds="[30,110][200,160]" text="KRNT" />
+    <node package="org.aerobag.app" bounds="[20,200][400,280]" content-desc="parity:plan-row:row-b" />
+    <node package="org.aerobag.app" bounds="[30,210][200,260]" text="KPWT" />
+  </hierarchy>`;
+  assert.deepEqual(displayBoundsFromXml(xml), {
+    left: 0, top: 24, right: 1920, bottom: 1080, width: 1920, height: 1056,
+  });
+  assert.deepEqual(renderedFlightPlanSignature(xml), {
+    rowCount: 3,
+    stateTag: "parity:plan-state:rows:3:active:row-b:from:row-a:to:row-b",
+    rows: [
+      { tag: "parity:plan-row:row-a", label: "KRNT" },
+      { tag: "parity:plan-row:row-b", label: "KPWT" },
+    ],
+  });
 });

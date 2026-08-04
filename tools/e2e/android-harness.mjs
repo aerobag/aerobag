@@ -136,6 +136,19 @@ export function findSystemUiAnrWaitButton(xml) {
   );
 }
 
+export function findAerobagAnrDialog(xml) {
+  return findNode(xml, (node) =>
+    node.package === "android" &&
+    node["resource-id"] === "android:id/alertTitle" &&
+    /^(?:Aerobag|org\.aerobag\.app) (?:isn't|isn’t) responding$/.test(node.text ?? "")
+  );
+}
+
+export function assertNoAerobagAnr(xml) {
+  const anr = findAerobagAnrDialog(xml);
+  if (anr) throw new Error(`Aerobag ANR detected: ${anr.text}`);
+}
+
 export function androidTag(node) {
   const contentDescription = node["content-desc"] ?? "";
   if (contentDescription.startsWith("parity:")) return contentDescription;
@@ -166,6 +179,147 @@ export function rectOfBounds(bounds) {
   if (!match) throw new Error(`invalid Android bounds: ${bounds}`);
   const [, left, top, right, bottom] = match.map(Number);
   return { left, top, right, bottom, width: right - left, height: bottom - top };
+}
+
+export function displayBoundsFromXml(xml) {
+  const rects = findNodes(xml, (node) => Boolean(node.bounds)).map((node) => {
+    try {
+      return rectOfBounds(node.bounds);
+    } catch (_error) {
+      return null;
+    }
+  }).filter(Boolean);
+  if (rects.length === 0) throw new Error("Android UI dump contains no display bounds");
+  return {
+    left: Math.min(...rects.map((rect) => rect.left)),
+    top: Math.min(...rects.map((rect) => rect.top)),
+    right: Math.max(...rects.map((rect) => rect.right)),
+    bottom: Math.max(...rects.map((rect) => rect.bottom)),
+    width: Math.max(...rects.map((rect) => rect.right)) - Math.min(...rects.map((rect) => rect.left)),
+    height: Math.max(...rects.map((rect) => rect.bottom)) - Math.min(...rects.map((rect) => rect.top)),
+  };
+}
+
+export function renderedFlightPlanSignature(xml) {
+  const stateNode = findNode(xml, (node) => androidTag(node).startsWith("parity:plan-state:"));
+  if (!stateNode) throw new Error("rendered flight-plan state semantics are unavailable");
+  const stateTag = androidTag(stateNode);
+  const countMatch = /^parity:plan-state:rows:(\d+):/.exec(stateTag);
+  if (!countMatch) throw new Error(`invalid flight-plan state tag: ${stateTag}`);
+  const rows = findNodes(xml, (node) => androidTag(node).startsWith("parity:plan-row:"))
+    .map((node) => ({ tag: androidTag(node), label: androidNodeLabel(xml, node) }));
+  return {
+    rowCount: Number(countMatch[1]),
+    stateTag,
+    rows,
+  };
+}
+
+export function classifyAerobagLogcat(logcat) {
+  const lines = logcat.split(/\r?\n/);
+  const evidence = [];
+  for (let index = 0; index < lines.length; index += 1) {
+    const line = lines[index];
+    if (/ANR in org\.aerobag\.app\b/.test(line)) evidence.push(line.trim());
+    if (/Force finishing .*org\.aerobag\.app\/\.MainActivity/.test(line)) evidence.push(line.trim());
+    if (/(?:Process org\.aerobag\.app .* has died|Killing \d+:org\.aerobag\.app\b)/.test(line)) {
+      evidence.push(line.trim());
+    }
+    if (/prepared .* projection is unavailable/i.test(line)) evidence.push(line.trim());
+    if (/FATAL EXCEPTION/.test(line)) {
+      const block = lines.slice(index, index + 40);
+      const processLine = block.find((candidate) => /Process: org\.aerobag\.app\b/.test(candidate));
+      if (processLine) evidence.push(`${line.trim()} | ${processLine.trim()}`);
+    }
+  }
+  return [...new Set(evidence)];
+}
+
+export function currentAerobagPid(serial) {
+  const output = adbBestEffort(serial, ["shell", "pidof", ANDROID_PACKAGE]);
+  if (output.status !== 0) return null;
+  const pid = output.stdout.trim().split(/\s+/)[0];
+  return /^\d+$/.test(pid) ? Number(pid) : null;
+}
+
+export function saveAndroidRotationState(serial) {
+  const get = (key) => adb(serial, ["shell", "settings", "get", "system", key]).trim();
+  return {
+    accelerometerRotation: get("accelerometer_rotation"),
+    userRotation: get("user_rotation"),
+  };
+}
+
+export function lockAndroidRotation(serial) {
+  adb(serial, ["shell", "settings", "put", "system", "accelerometer_rotation", "0"]);
+}
+
+export function setAndroidRotation(serial, orientation) {
+  const rotation = orientation === "portrait" ? "0" : orientation === "landscape" ? "1" : null;
+  if (rotation === null) throw new Error(`unsupported Android orientation: ${orientation}`);
+  lockAndroidRotation(serial);
+  adb(serial, ["shell", "settings", "put", "system", "user_rotation", rotation]);
+}
+
+export function restoreAndroidRotationState(serial, state) {
+  adbBestEffort(serial, [
+    "shell", "settings", "put", "system", "user_rotation", state.userRotation,
+  ]);
+  adbBestEffort(serial, [
+    "shell", "settings", "put", "system", "accelerometer_rotation", state.accelerometerRotation,
+  ]);
+}
+
+export async function waitForAndroidOrientation(serial, orientation, timeoutMs = 15000) {
+  let observed = null;
+  await waitFor(() => {
+    const xml = dumpAndroid(serial);
+    assertNoAerobagAnr(xml);
+    if (!findNode(xml, (node) => node.package === ANDROID_PACKAGE)) return false;
+    observed = displayBoundsFromXml(xml);
+    return orientation === "portrait"
+      ? observed.height > observed.width
+      : observed.width > observed.height;
+  }, timeoutMs, `actual Android ${orientation} display bounds`);
+  return observed;
+}
+
+export function scanAerobagLogcat(serial) {
+  const logcat = adb(serial, ["logcat", "-d", "-v", "threadtime"], {
+    maxBuffer: 16 * 1024 * 1024,
+  });
+  return { logcat, evidence: classifyAerobagLogcat(logcat) };
+}
+
+export function seedAerobagPrivateFiles(serial, fixtureFilesRoot) {
+  const staging = "/data/local/tmp/aerobag-e2e-private-files";
+  adb(serial, ["shell", "am", "force-stop", ANDROID_PACKAGE]);
+  adbBestEffort(serial, ["shell", "rm", "-rf", staging]);
+  adb(serial, ["push", `${fixtureFilesRoot}/.`, staging]);
+  adb(serial, ["shell", "run-as", ANDROID_PACKAGE, "rm", "-rf", "files/live-feeds"]);
+  adb(serial, ["shell", "run-as", ANDROID_PACKAGE, "mkdir", "-p", "files"]);
+  adb(serial, ["shell", "run-as", ANDROID_PACKAGE, "cp", "-R", `${staging}/live-feeds`, "files/"]);
+  adbBestEffort(serial, ["shell", "rm", "-rf", staging]);
+}
+
+export function clearAerobagPersistedLiveFeeds(serial) {
+  adb(serial, ["shell", "am", "force-stop", ANDROID_PACKAGE]);
+  adbBestEffort(serial, ["shell", "run-as", ANDROID_PACKAGE, "rm", "-rf", "files/live-feeds"]);
+  adbBestEffort(serial, [
+    "shell", "run-as", ANDROID_PACKAGE, "rm", "-f", "files/e2e-live-feed-promotion.pause",
+  ]);
+}
+
+export function setAerobagPrivateSentinel(serial, relativePath, present) {
+  if (!/^[a-zA-Z0-9._-]+$/.test(relativePath)) {
+    throw new Error(`unsafe Aerobag sentinel path: ${relativePath}`);
+  }
+  const path = `files/${relativePath}`;
+  if (present) {
+    adb(serial, ["shell", "run-as", ANDROID_PACKAGE, "touch", path]);
+  } else {
+    adb(serial, ["shell", "run-as", ANDROID_PACKAGE, "rm", "-f", path]);
+  }
 }
 
 export function centerOfBounds(bounds) {

@@ -1102,6 +1102,10 @@ static LIVE_FEED_CACHES: OnceLock<Mutex<HashMap<u32, app_core::LiveFeedCache>>> 
 static NEXT_UI_SESSION_WORK_SCHEDULER_HANDLE: AtomicU32 = AtomicU32::new(1);
 static UI_SESSION_WORK_SCHEDULERS: OnceLock<Mutex<HashMap<u32, app_core::UiSessionWorkScheduler>>> =
     OnceLock::new();
+static NEXT_SESSION_SNAPSHOT_REFRESH_SCHEDULER_HANDLE: AtomicU32 = AtomicU32::new(1);
+static SESSION_SNAPSHOT_REFRESH_SCHEDULERS: OnceLock<
+    Mutex<HashMap<u32, app_core::SessionSnapshotRefreshScheduler>>,
+> = OnceLock::new();
 
 struct StoredNavKvStore {
     store: app_core::NavKvStore,
@@ -1127,6 +1131,11 @@ fn live_feed_caches() -> &'static Mutex<HashMap<u32, app_core::LiveFeedCache>> {
 
 fn ui_session_work_schedulers() -> &'static Mutex<HashMap<u32, app_core::UiSessionWorkScheduler>> {
     UI_SESSION_WORK_SCHEDULERS.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+fn session_snapshot_refresh_schedulers(
+) -> &'static Mutex<HashMap<u32, app_core::SessionSnapshotRefreshScheduler>> {
+    SESSION_SNAPSHOT_REFRESH_SCHEDULERS.get_or_init(|| Mutex::new(HashMap::new()))
 }
 
 pub fn create_offline_packages_controller_json(
@@ -1263,6 +1272,67 @@ pub fn destroy_ui_session_work_scheduler(handle: u64) -> Result<(), String> {
     ui_session_work_schedulers()
         .lock()
         .map_err(|_| "ui session work scheduler store poisoned".to_string())?
+        .remove(&(handle as u32));
+    Ok(())
+}
+
+pub fn create_session_snapshot_refresh_scheduler() -> Result<u64, String> {
+    let handle = NEXT_SESSION_SNAPSHOT_REFRESH_SCHEDULER_HANDLE.fetch_add(1, Ordering::Relaxed);
+    session_snapshot_refresh_schedulers()
+        .lock()
+        .map_err(|_| "session snapshot refresh scheduler store poisoned".to_string())?
+        .insert(handle, app_core::SessionSnapshotRefreshScheduler::default());
+    Ok(handle as u64)
+}
+
+fn session_snapshot_refresh_scheduler_decision_json(
+    handle: u64,
+    work: impl FnOnce(
+        &mut app_core::SessionSnapshotRefreshScheduler,
+    ) -> app_core::SessionSnapshotRefreshDecision,
+) -> Result<String, String> {
+    let mut schedulers = session_snapshot_refresh_schedulers()
+        .lock()
+        .map_err(|_| "session snapshot refresh scheduler store poisoned".to_string())?;
+    let scheduler = schedulers
+        .get_mut(&(handle as u32))
+        .ok_or_else(|| format!("invalid session snapshot refresh scheduler handle: {handle}"))?;
+    serde_json::to_string(&work(scheduler)).map_err(|err| err.to_string())
+}
+
+pub fn session_snapshot_refresh_scheduler_request_json(
+    handle: u64,
+    now_ms: u64,
+    priority_json: &str,
+    reason: &str,
+) -> Result<String, String> {
+    let priority: app_core::SessionSnapshotRefreshPriority =
+        serde_json::from_str(priority_json).map_err(|err| err.to_string())?;
+    session_snapshot_refresh_scheduler_decision_json(handle, |scheduler| {
+        scheduler.request(now_ms, priority, reason)
+    })
+}
+
+pub fn session_snapshot_refresh_scheduler_refresh_completed_json(
+    handle: u64,
+    now_ms: u64,
+) -> Result<String, String> {
+    session_snapshot_refresh_scheduler_decision_json(handle, |scheduler| {
+        scheduler.refresh_completed(now_ms)
+    })
+}
+
+pub fn session_snapshot_refresh_scheduler_poll_json(
+    handle: u64,
+    now_ms: u64,
+) -> Result<String, String> {
+    session_snapshot_refresh_scheduler_decision_json(handle, |scheduler| scheduler.poll(now_ms))
+}
+
+pub fn destroy_session_snapshot_refresh_scheduler(handle: u64) -> Result<(), String> {
+    session_snapshot_refresh_schedulers()
+        .lock()
+        .map_err(|_| "session snapshot refresh scheduler store poisoned".to_string())?
         .remove(&(handle as u32));
     Ok(())
 }
@@ -2441,6 +2511,82 @@ pub extern "system" fn Java_org_aerobag_app_domain_NativeBindings_destroyUiSessi
     handle: i64,
 ) {
     if let Err(message) = destroy_ui_session_work_scheduler(handle as u64) {
+        let _ = env.throw_new("java/lang/RuntimeException", message);
+    }
+}
+
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_org_aerobag_app_domain_NativeBindings_createSessionSnapshotRefreshScheduler(
+    mut env: JNIEnv,
+    _class: JClass,
+) -> i64 {
+    match create_session_snapshot_refresh_scheduler() {
+        Ok(handle) => handle as i64,
+        Err(message) => {
+            let _ = env.throw_new("java/lang/RuntimeException", message);
+            0
+        }
+    }
+}
+
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_org_aerobag_app_domain_NativeBindings_sessionSnapshotRefreshSchedulerRequestJson(
+    mut env: JNIEnv,
+    _class: JClass,
+    handle: i64,
+    now_ms: i64,
+    priority_json: JString,
+    reason: JString,
+) -> jstring {
+    let result = (|| {
+        let priority_json = get_java_string(&mut env, priority_json)?;
+        let reason = get_java_string(&mut env, reason)?;
+        session_snapshot_refresh_scheduler_request_json(
+            handle as u64,
+            now_ms.max(0) as u64,
+            &priority_json,
+            &reason,
+        )
+    })();
+    return_string(&mut env, result)
+}
+
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_org_aerobag_app_domain_NativeBindings_sessionSnapshotRefreshSchedulerRefreshCompletedJson(
+    mut env: JNIEnv,
+    _class: JClass,
+    handle: i64,
+    now_ms: i64,
+) -> jstring {
+    return_string(
+        &mut env,
+        session_snapshot_refresh_scheduler_refresh_completed_json(
+            handle as u64,
+            now_ms.max(0) as u64,
+        ),
+    )
+}
+
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_org_aerobag_app_domain_NativeBindings_sessionSnapshotRefreshSchedulerPollJson(
+    mut env: JNIEnv,
+    _class: JClass,
+    handle: i64,
+    now_ms: i64,
+) -> jstring {
+    return_string(
+        &mut env,
+        session_snapshot_refresh_scheduler_poll_json(handle as u64, now_ms.max(0) as u64),
+    )
+}
+
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_org_aerobag_app_domain_NativeBindings_destroySessionSnapshotRefreshScheduler(
+    mut env: JNIEnv,
+    _class: JClass,
+    handle: i64,
+) {
+    if let Err(message) = destroy_session_snapshot_refresh_scheduler(handle as u64) {
         let _ = env.throw_new("java/lang/RuntimeException", message);
     }
 }
@@ -4259,5 +4405,39 @@ mod tests {
         let error = ui_session_work_scheduler_request_json(handle, &request_json)
             .expect_err("requesting work after destroy should remain an error");
         assert!(error.contains("invalid ui session work scheduler handle"));
+    }
+
+    #[test]
+    fn session_snapshot_refresh_ffi_uses_shared_core_scheduler_policy() {
+        let handle = create_session_snapshot_refresh_scheduler().unwrap();
+        let requested: app_core::SessionSnapshotRefreshDecision = serde_json::from_str(
+            &session_snapshot_refresh_scheduler_request_json(
+                handle,
+                1_000,
+                r#""low_priority""#,
+                "invalidation",
+            )
+            .unwrap(),
+        )
+        .unwrap();
+        assert_eq!(
+            requested,
+            app_core::SessionSnapshotRefreshDecision::Schedule {
+                delay_ms: 250,
+                reason: "invalidation".to_string(),
+            }
+        );
+
+        let started: app_core::SessionSnapshotRefreshDecision = serde_json::from_str(
+            &session_snapshot_refresh_scheduler_poll_json(handle, 1_250).unwrap(),
+        )
+        .unwrap();
+        assert_eq!(
+            started,
+            app_core::SessionSnapshotRefreshDecision::Start {
+                reason: "invalidation".to_string(),
+            }
+        );
+        destroy_session_snapshot_refresh_scheduler(handle).unwrap();
     }
 }

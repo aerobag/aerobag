@@ -591,11 +591,15 @@ class NativeUiSession internal constructor(
     private val sessionResourceFetcher: ((CoreResourceRequest) -> ByteArray)?,
     initialSnapshot: UiSessionSnapshot,
 ) {
+    @Volatile
     var snapshot: UiSessionSnapshot = initialSnapshot
         private set
 
     @Volatile
     private var invalidationListener: ((List<String>) -> Unit)? = null
+    @Volatile
+    private var snapshotListener: ((UiSessionSnapshot) -> Unit)? = null
+    private val listenerLock = Any()
     private val sessionResourceEffectPump = navKvStore?.let { store ->
         AsyncSessionResourceEffectPump(
             executor = Executors.newSingleThreadExecutor { runnable ->
@@ -618,8 +622,28 @@ class NativeUiSession internal constructor(
         )
     }
 
-    fun setInvalidationListener(listener: ((List<String>) -> Unit)?) {
-        invalidationListener = listener
+    fun subscribeInvalidations(listener: (List<String>) -> Unit): AutoCloseable {
+        synchronized(listenerLock) {
+            invalidationListener = listener
+        }
+        return AutoCloseable {
+            synchronized(listenerLock) {
+                if (invalidationListener === listener) invalidationListener = null
+            }
+        }
+    }
+
+    fun subscribeSnapshots(listener: (UiSessionSnapshot) -> Unit): AutoCloseable {
+        val currentSnapshot = synchronized(listenerLock) {
+            snapshotListener = listener
+            snapshot
+        }
+        listener(currentSnapshot)
+        return AutoCloseable {
+            synchronized(listenerLock) {
+                if (snapshotListener === listener) snapshotListener = null
+            }
+        }
     }
 
     fun advanceInstalledArtifacts(
@@ -635,8 +659,8 @@ class NativeUiSession internal constructor(
             plannedGcFilenames,
         )
         val result = json.decodeFromJsonElement<WireNavDbAdvanceResult>(outcome.result)
-        snapshot = result.snapshot.toUi()
-        publishPagedInvalidations("navDbAdvance", outcome)
+        updateSnapshot(result.snapshot.toUi())
+        publishPagedInvalidations("navDbAdvance", outcome, snapshotAlreadyReturned = true)
         return NavDbAdvanceUiResult(
             adopted = result.disposition == "adopted",
             snapshot = snapshot,
@@ -653,8 +677,8 @@ class NativeUiSession internal constructor(
             resumeSnapshot = { bridge.getSessionSnapshotPagedJson(handle) },
         ) ?: error("NAVDB maintenance requires a nav kv store")
         val result = json.decodeFromJsonElement<WireNavDbMaintenanceResult>(outcome.result)
-        snapshot = result.snapshot.toUi()
-        publishPagedInvalidations("navDbMaintenance", outcome)
+        updateSnapshot(result.snapshot.toUi())
+        publishPagedInvalidations("navDbMaintenance", outcome, snapshotAlreadyReturned = true)
         return NavDbMaintenanceUiResult(
             shouldAttemptAdvance = result.action == "attempt_advance",
             snapshot = snapshot,
@@ -709,17 +733,23 @@ class NativeUiSession internal constructor(
                     else -> error("unknown HAD session operation state: $state")
                 }
             }
-        snapshot = json.decodeFromJsonElement<WireUiSessionSnapshot>(outcome.result).toUi()
-        publishPagedInvalidations(commandName, outcome)
+        updateSnapshot(json.decodeFromJsonElement<WireUiSessionSnapshot>(outcome.result).toUi())
+        publishPagedInvalidations(commandName, outcome, snapshotAlreadyReturned = true)
         return snapshot
     }
 
     private fun publishPagedInvalidations(
         commandName: String,
         outcome: PagedSessionOperationResult,
+        snapshotAlreadyReturned: Boolean = false,
     ): List<String> {
         val invalidations = outcome.invalidations.distinct()
-        publishInvalidations(commandName, invalidations)
+        val publishedInvalidations = if (snapshotAlreadyReturned) {
+            invalidations - "session_snapshot"
+        } else {
+            invalidations
+        }
+        publishInvalidations(commandName, publishedInvalidations)
         sessionResourceEffectPump?.request()
         return invalidations
     }
@@ -730,6 +760,11 @@ class NativeUiSession internal constructor(
             "source=$commandName invalidations=${invalidations.joinToString(",")}"
         }
         invalidationListener?.invoke(invalidations)
+    }
+
+    private fun updateSnapshot(nextSnapshot: UiSessionSnapshot) {
+        snapshot = nextSnapshot
+        snapshotListener?.invoke(nextSnapshot)
     }
 
     private fun <T> runNativeSessionCommand(commandName: String, operation: () -> T): T? =

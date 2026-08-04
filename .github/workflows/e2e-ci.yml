@@ -34,6 +34,7 @@ jobs:
           - android.plate-first-render-smoke
           - android.map-follow-ctr-gesture-smoke
           - android.layer-toggle-navdb-regression
+          - android.rotation-session-retention-regression
     env:
       AEROBAG_TEST_ARTIFACTS_ROOT: ${{ github.workspace }}/.ci/test-artifacts
       AEROBAG_UI_TARGET_ROOT: ${{ github.workspace }}/.ci/ui-target
@@ -48,8 +49,12 @@ jobs:
       - uses: actions/checkout@v5
       - name: Fetch and verify compact package publication
         run: |
+          fixtures=(--fixture android-smoke-publication)
+          if [[ "${{ matrix.test }}" == "android.rotation-session-retention-regression" ]]; then
+            fixtures+=(--fixture android-rotation-live-feed)
+          fi
           python3 tools/ci/fetch_test_artifacts.py \
-            --fixture android-smoke-publication \
+            "${fixtures[@]}" \
             --destination "$AEROBAG_TEST_ARTIFACTS_ROOT"
           python3 tools/ci/verify_nav_db_fixture_contracts.py \
             --fixture-root "$AEROBAG_TEST_ARTIFACTS_ROOT" \

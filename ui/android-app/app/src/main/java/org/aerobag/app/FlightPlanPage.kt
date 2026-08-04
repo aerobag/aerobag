@@ -375,6 +375,17 @@ internal fun FlightPlanPage(
             null
     }
     val projectedPlanUiState = requireNotNull(planUiState) { "FlightPlanPage requires core-projected FlightPlanUiState" }
+    val planStateTestTag = remember(projectedPlanUiState) {
+        val activeRows = projectedPlanUiState.displayRows
+            .filter { it.active }
+            .joinToString(",") { it.uid }
+            .ifEmpty { "none" }
+        val guidance = projectedPlanUiState.guidance
+        "parity:plan-state:rows:${projectedPlanUiState.displayRows.size}" +
+            ":active:$activeRows" +
+            ":from:${guidance?.activeFromRowUid ?: "none"}" +
+            ":to:${guidance?.activeToRowUid ?: "none"}"
+    }
     val guidance = projectedPlanUiState.guidance
     val planControls = projectedPlanUiState.controls
     fun performFlightPlanControl(controlId: FlightPlanControlId) {
@@ -747,7 +758,8 @@ internal fun FlightPlanPage(
                 Column(
                     modifier = Modifier
                         .fillMaxSize()
-                        .padding(start = PlanArrowLane),
+                        .padding(start = PlanArrowLane)
+                        .testTag(planStateTestTag),
                     verticalArrangement = Arrangement.spacedBy(PlanGridGap),
                 ) {
                     PlanHeaderRow(planUiState.dataColumns)

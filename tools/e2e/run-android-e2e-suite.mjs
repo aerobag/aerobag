@@ -9,6 +9,7 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
+  assertNoAerobagAnr,
   ANDROID_PACKAGE,
   acceptDisclaimerIfPresent,
   adb,
@@ -17,7 +18,9 @@ import {
   androidTag,
   assertRuntimeIsAvailable,
   captureAndroidFailureDiagnostics,
+  clearAerobagPersistedLiveFeeds,
   clearFocusedText,
+  currentAerobagPid,
   delay,
   dumpAndroid,
   findNode,
@@ -26,19 +29,29 @@ import {
   hasAndroidText,
   inputText,
   launchFreshAndroidApp,
+  lockAndroidRotation,
   pressKey,
   rectOfBounds,
+  renderedFlightPlanSignature,
+  restoreAndroidRotationState,
+  saveAndroidRotationState,
+  scanAerobagLogcat,
   screencapPng,
+  seedAerobagPrivateFiles,
+  setAerobagPrivateSentinel,
   scrollUntilTag,
   swipe,
+  setAndroidRotation,
   tapFirstPresentTag,
   tapNode,
   tapTag,
   waitFor,
+  waitForAndroidOrientation,
   waitForNode,
 } from "./android-harness.mjs";
 
 const DEFAULT_ROUTE = "KRNT KPWT";
+const ROTATION_ROUTE = "KRNT KPWT KPLU";
 const DEFAULT_PACKAGE_SOURCE_PORT = process.env.PACKAGE_SOURCE_PORT ?? "8083";
 const OFFLINE_REGION_IDS = ["ak", "ec", "nc", "ne", "nw", "pac", "sc", "se", "sw"];
 const PLAN_PAGE_TAGS = ["parity:plan-append-route-input"];
@@ -51,6 +64,12 @@ const BAD_AUTOPILOT_DEBUG_TAG = "parity:debug-flag:bad_autopilot";
 const PLATE_SURFACE_TAG = "parity:plate-surface";
 const PLATE_FOLDER_TILE_PREFIX = "parity:plate-folder-tile:";
 const E2E_ARTIFACT_DIR = process.env.AEROBAG_E2E_ARTIFACT_DIR ?? join(tmpdir(), "aerobag-e2e-artifacts");
+const ROTATION_LIVE_FEED_FIXTURE = process.env.AEROBAG_ROTATION_LIVE_FEED_FIXTURE ??
+  (process.env.AEROBAG_TEST_ARTIFACTS_ROOT
+    ? join(process.env.AEROBAG_TEST_ARTIFACTS_ROOT, "e2e/android-rotation-live-feed")
+    : "");
+const LIVE_FEED_PROMOTION_SENTINEL = "e2e-live-feed-promotion.pause";
+const LIVE_FEED_PROMOTION_PAUSE_MARKER = "E2E live-feed promotion paused";
 
 function usage() {
   console.log(`Usage:
@@ -291,7 +310,10 @@ async function waitForRuntime(serial, result) {
 async function ensurePlanPage(serial, result) {
   for (let attempt = 0; attempt < 6; attempt += 1) {
     const xml = dumpAndroid(serial);
-    if (PLAN_PAGE_TAGS.some((tag) => findNode(xml, (node) => hasAndroidTag(node, tag)))) {
+    if (
+      PLAN_PAGE_TAGS.some((tag) => findNode(xml, (node) => hasAndroidTag(node, tag))) ||
+      findNode(xml, (node) => androidTag(node).startsWith("parity:plan-state:"))
+    ) {
       recordStep(result, "plan page visible");
       return;
     }
@@ -303,6 +325,11 @@ async function ensurePlanPage(serial, result) {
     }
     if (findNode(xml, (node) => hasAndroidTag(node, "parity:button:FLIGHT\nPLAN"))) {
       await tapTag(serial, "parity:button:FLIGHT\nPLAN", 10000);
+      await delay(500);
+      continue;
+    }
+    if (findNode(xml, (node) => hasAndroidTag(node, "parity:home-button:FlightPlan"))) {
+      await tapTag(serial, "parity:home-button:FlightPlan", 10000);
       await delay(500);
       continue;
     }
@@ -976,6 +1003,262 @@ async function runFlightPlanRouteSmoke(args) {
   return result;
 }
 
+function signaturesEqual(left, right) {
+  return JSON.stringify(left) === JSON.stringify(right);
+}
+
+function planContentsEqual(left, right) {
+  return left.rowCount === right.rowCount && JSON.stringify(left.rows) === JSON.stringify(right.rows);
+}
+
+async function waitForPlanSignature(serial, expected = null, timeoutMs = 15000) {
+  let signature = null;
+  await waitFor(() => {
+    const xml = dumpAndroid(serial);
+    assertNoAerobagAnr(xml);
+    try {
+      signature = renderedFlightPlanSignature(xml);
+    } catch (_error) {
+      return false;
+    }
+    return expected === null || signaturesEqual(signature, expected);
+  }, timeoutMs, expected === null ? "rendered flight-plan signature" : "preserved flight-plan signature");
+  return signature;
+}
+
+function writeRotationArtifacts(result, transcript, beforeSignature, afterSignature, label) {
+  mkdirSync(E2E_ARTIFACT_DIR, { recursive: true });
+  const transcriptPath = join(E2E_ARTIFACT_DIR, `android-rotation-${label}-transcript.json`);
+  const signaturesPath = join(E2E_ARTIFACT_DIR, `android-rotation-${label}-plan-signatures.json`);
+  writeFileSync(transcriptPath, `${JSON.stringify(transcript, null, 2)}\n`);
+  writeFileSync(signaturesPath, `${JSON.stringify({ before: beforeSignature, after: afterSignature }, null, 2)}\n`);
+  result.diagnostics[`${label}RotationTranscript`] = transcriptPath;
+  result.diagnostics[`${label}PlanSignatures`] = signaturesPath;
+}
+
+async function exerciseRetainedPlanAcrossRotations(
+  serial,
+  result,
+  baselineSignature,
+  transitionCount,
+  transcript,
+  label,
+) {
+  const originalRotation = saveAndroidRotationState(serial);
+  const initialPid = currentAerobagPid(serial);
+  recordCheck(result, "rotation.initialPidAvailable", initialPid !== null, String(initialPid));
+  let finalSignature = baselineSignature;
+  try {
+    lockAndroidRotation(serial);
+    for (let transition = 0; transition < transitionCount; transition += 1) {
+      const orientation = transition % 2 === 0 ? "landscape" : "portrait";
+      setAndroidRotation(serial, orientation);
+      const bounds = await waitForAndroidOrientation(serial, orientation, 15000);
+      const signature = await waitForPlanSignature(serial, baselineSignature, 15000);
+      const pid = currentAerobagPid(serial);
+      recordCheck(result, `rotation.${transition + 1}.pidStable`, pid === initialPid, `${initialPid} -> ${pid}`);
+      await ensureChartPage(serial, result);
+      await waitForRouteOverlay(serial, result);
+      await ensurePlanPage(serial, result);
+      finalSignature = await waitForPlanSignature(serial, baselineSignature, 15000);
+      transcript.push({
+        transition: transition + 1,
+        orientation,
+        bounds,
+        pid,
+        signature,
+        navigationResponsive: true,
+      });
+      recordStep(result, "rotation retained active plan", `${transition + 1}/${transitionCount} ${orientation} ${bounds.width}x${bounds.height}`);
+    }
+  } finally {
+    restoreAndroidRotationState(serial, originalRotation);
+    writeRotationArtifacts(result, transcript, baselineSignature, finalSignature, label);
+  }
+  return finalSignature;
+}
+
+async function waitForLogcatMarker(serial, marker, timeoutMs = 30000) {
+  await waitFor(() => {
+    const logcat = adb(serial, ["logcat", "-d", "-v", "brief"], { maxBuffer: 8 * 1024 * 1024 });
+    return logcat.includes(marker);
+  }, timeoutMs, `logcat marker ${marker}`);
+}
+
+function logcatMarkerCount(serial, marker) {
+  const logcat = adb(serial, ["logcat", "-d", "-v", "brief"], { maxBuffer: 8 * 1024 * 1024 });
+  return logcat.split(marker).length - 1;
+}
+
+async function verifyNotamsLoadedInUi(serial, result) {
+  for (let attempt = 0; attempt < 60; attempt += 1) {
+    const xml = dumpAndroid(serial);
+    const loadedNode = findNode(xml, (node) => {
+      const tag = androidTag(node);
+      return tag.startsWith("parity:data-status-row:live_feed:notams:") && !tag.endsWith(":MISSING");
+    });
+    if (loadedNode) {
+      recordStep(result, "persisted NOTAM visible in core status UI", androidTag(loadedNode));
+      return;
+    }
+    const statusRows = findNodes(xml, (node) => androidTag(node).startsWith("parity:data-status-row:"));
+    if (statusRows.length > 0) {
+      const scrollSurface = findNode(xml, (node) => node.scrollable === "true" && node.package === ANDROID_PACKAGE);
+      const bounds = rectOfBounds(scrollSurface?.bounds ?? "[20,180][1060,2100]");
+      swipe(
+        serial,
+        Math.round((bounds.left + bounds.right) / 2),
+        Math.round(bounds.bottom - 100),
+        Math.round((bounds.left + bounds.right) / 2),
+        Math.round(bounds.top + 100),
+        450,
+      );
+      await delay(350);
+      continue;
+    }
+    if (findNode(xml, (node) => hasAndroidTag(node, "parity:home-button:DataStatus"))) {
+      await tapTag(serial, "parity:home-button:DataStatus", 10000);
+      await delay(500);
+      continue;
+    }
+    if (findNode(xml, (node) => hasAndroidTag(node, "parity:button:HOME"))) {
+      await tapTag(serial, "parity:button:HOME", 10000);
+      await delay(500);
+      continue;
+    }
+    pressKey(serial, "KEYCODE_BACK");
+    await delay(400);
+  }
+  throwWithUi(serial, "persisted NOTAM did not appear loaded in Data Status");
+}
+
+async function runPersistedLiveFeedRotationPhase(args, result, baselineSignature) {
+  const { serial } = args;
+  if (!ROTATION_LIVE_FEED_FIXTURE) {
+    throw new Error("AEROBAG_ROTATION_LIVE_FEED_FIXTURE or AEROBAG_TEST_ARTIFACTS_ROOT is required");
+  }
+  seedAerobagPrivateFiles(serial, join(ROTATION_LIVE_FEED_FIXTURE, "files"));
+  setAerobagPrivateSentinel(serial, LIVE_FEED_PROMOTION_SENTINEL, true);
+  adb(serial, ["logcat", "-c"]);
+  const pausedTranscript = [];
+  const promotedTranscript = [];
+  try {
+    await launchFreshAndroidApp(serial, { clearUiPrefs: false, clearCoreSettings: false });
+    await waitForLogcatMarker(serial, LIVE_FEED_PROMOTION_PAUSE_MARKER);
+    recordStep(result, "persisted live-feed promotion paused at deterministic gate");
+    await ensurePlanPage(serial, result);
+    const restoredSignature = await waitForPlanSignature(serial, null, 15000);
+    recordCheck(
+      result,
+      "rotation.liveFeedPhaseRouteRestored",
+      planContentsEqual(restoredSignature, baselineSignature),
+      JSON.stringify(restoredSignature),
+    );
+    await activateDestinationLeg(serial, result, ROTATION_ROUTE);
+    const liveFeedBaselineSignature = await waitForPlanSignature(serial, null, 15000);
+    recordCheck(
+      result,
+      "rotation.liveFeedPhaseActiveLegProjected",
+      !liveFeedBaselineSignature.stateTag.includes(":from:none:to:") &&
+        !liveFeedBaselineSignature.stateTag.endsWith(":to:none"),
+      liveFeedBaselineSignature.stateTag,
+    );
+    await exerciseRetainedPlanAcrossRotations(
+      serial,
+      result,
+      liveFeedBaselineSignature,
+      2,
+      pausedTranscript,
+      "live-feed-paused",
+    );
+    setAerobagPrivateSentinel(serial, LIVE_FEED_PROMOTION_SENTINEL, false);
+    await verifyNotamsLoadedInUi(serial, result);
+    await ensurePlanPage(serial, result);
+    await waitForPlanSignature(serial, liveFeedBaselineSignature, 15000);
+    await exerciseRetainedPlanAcrossRotations(
+      serial,
+      result,
+      liveFeedBaselineSignature,
+      2,
+      promotedTranscript,
+      "live-feed-promoted",
+    );
+  } finally {
+    setAerobagPrivateSentinel(serial, LIVE_FEED_PROMOTION_SENTINEL, false);
+  }
+  recordCheck(
+    result,
+    "rotation.liveFeedPipelineStartedOnce",
+    logcatMarkerCount(serial, LIVE_FEED_PROMOTION_PAUSE_MARKER) === 1,
+    `marker count=${logcatMarkerCount(serial, LIVE_FEED_PROMOTION_PAUSE_MARKER)}`,
+  );
+  await ensureChartPage(serial, result);
+  await waitForRouteOverlay(serial, result);
+  const { logcat, evidence } = scanAerobagLogcat(serial);
+  const logcatPath = join(E2E_ARTIFACT_DIR, "android-rotation-live-feed-logcat.txt");
+  writeFileSync(logcatPath, logcat);
+  result.diagnostics.liveFeedRotationLogcat = logcatPath;
+  recordCheck(result, "rotation.liveFeedNoAerobagFatalEvidence", evidence.length === 0, evidence.join("\n"));
+}
+
+async function runRotationSessionRetentionRegression(args) {
+  const { serial } = args;
+  const route = ROTATION_ROUTE;
+  const result = createTestResult("android.rotation-session-retention-regression");
+  const transcript = [];
+  clearAerobagPersistedLiveFeeds(serial);
+  adb(serial, ["logcat", "-c"]);
+  await launchFreshAndroidApp(serial, { clearUiPrefs: true, clearCoreSettings: true });
+  recordStep(result, "app launched", serial || "default adb device");
+  if (await acceptDisclaimerIfPresent(serial)) recordStep(result, "disclaimer accepted");
+  await ensureOfflinePackagesReady(serial, result, args);
+  await waitForRuntime(serial, result);
+  await ensurePlanPage(serial, result);
+  await appendRoute(serial, result, route);
+  await ensurePlanPage(serial, result);
+  await activateDestinationLeg(serial, result, route);
+  await ensureChartPage(serial, result);
+  await centerChartOnDestination(serial, result, route);
+  await waitForRouteOverlay(serial, result);
+  await ensurePlanPage(serial, result);
+  const baselineSignature = await waitForPlanSignature(serial);
+  recordCheck(
+    result,
+    "rotation.planHasExactRoute",
+    baselineSignature.rowCount === 4 &&
+      baselineSignature.rows.map((row) => row.label).join(" ") === ROTATION_ROUTE,
+    JSON.stringify(baselineSignature),
+  );
+  recordCheck(
+    result,
+    "rotation.activeLegProjected",
+    !baselineSignature.stateTag.includes(":from:none:to:") &&
+      !baselineSignature.stateTag.endsWith(":to:none"),
+    baselineSignature.stateTag,
+  );
+
+  adb(serial, ["logcat", "-c"]);
+  await exerciseRetainedPlanAcrossRotations(
+    serial,
+    result,
+    baselineSignature,
+    6,
+    transcript,
+    "plan",
+  );
+  await ensureChartPage(serial, result);
+  await waitForRouteOverlay(serial, result);
+  const { logcat, evidence } = scanAerobagLogcat(serial);
+  const logcatPath = join(E2E_ARTIFACT_DIR, "android-rotation-logcat.txt");
+  writeFileSync(logcatPath, logcat);
+  result.diagnostics.rotationLogcat = logcatPath;
+  recordCheck(result, "rotation.noAerobagFatalEvidence", evidence.length === 0, evidence.join("\n"));
+  await runPersistedLiveFeedRotationPhase(args, result, baselineSignature);
+  result.status = "pass";
+  result.finished_at = new Date().toISOString();
+  return result;
+}
+
 async function runMapFollowCtrGestureSmoke(args) {
   const { serial, route } = args;
   const result = createTestResult("android.map-follow-ctr-gesture-smoke");
@@ -1069,6 +1352,10 @@ const tests = [
   {
     id: "android.layer-toggle-navdb-regression",
     run: runLayerToggleNavDbRegression,
+  },
+  {
+    id: "android.rotation-session-retention-regression",
+    run: runRotationSessionRetentionRegression,
   },
 ];
 

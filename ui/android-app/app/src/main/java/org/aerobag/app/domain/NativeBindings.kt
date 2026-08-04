@@ -24,6 +24,21 @@ interface NativeBridge {
 
     fun destroyUiSessionWorkScheduler(handle: Long)
 
+    fun createSessionSnapshotRefreshScheduler(): Long
+
+    fun sessionSnapshotRefreshSchedulerRequestJson(
+        handle: Long,
+        nowMs: Long,
+        priorityJson: String,
+        reason: String,
+    ): String
+
+    fun sessionSnapshotRefreshSchedulerRefreshCompletedJson(handle: Long, nowMs: Long): String
+
+    fun sessionSnapshotRefreshSchedulerPollJson(handle: Long, nowMs: Long): String
+
+    fun destroySessionSnapshotRefreshScheduler(handle: Long)
+
     fun createLiveFeedCache(sourceRootUrl: String, installedStatesJson: String): Long
 
     fun liveFeedEventsUrl(sourceRootUrl: String): String
@@ -559,6 +574,24 @@ object NativeBindings : NativeBridge {
     external override fun uiSessionWorkSchedulerCompleteJson(handle: Long, requestId: Long): String
 
     external override fun destroyUiSessionWorkScheduler(handle: Long)
+
+    external override fun createSessionSnapshotRefreshScheduler(): Long
+
+    external override fun sessionSnapshotRefreshSchedulerRequestJson(
+        handle: Long,
+        nowMs: Long,
+        priorityJson: String,
+        reason: String,
+    ): String
+
+    external override fun sessionSnapshotRefreshSchedulerRefreshCompletedJson(
+        handle: Long,
+        nowMs: Long,
+    ): String
+
+    external override fun sessionSnapshotRefreshSchedulerPollJson(handle: Long, nowMs: Long): String
+
+    external override fun destroySessionSnapshotRefreshScheduler(handle: Long)
 
     external override fun createLiveFeedCache(sourceRootUrl: String, installedStatesJson: String): Long
 

@@ -6,13 +6,16 @@ package org.aerobag.app
 
 import android.content.Context
 import android.util.Log
+import androidx.core.content.ContextCompat
 import androidx.lifecycle.ViewModel
-import org.aerobag.app.domain.MapViewportState
 import org.aerobag.app.domain.ClientBuildInfo
+import org.aerobag.app.domain.LiveFeedCacheStore
+import org.aerobag.app.domain.MapViewportState
 import org.aerobag.app.domain.NativeAppCoreAdapter
 import org.aerobag.app.domain.NativeUiSession
 import org.aerobag.app.domain.RuntimeContent
 import org.aerobag.app.domain.SituationRingCandidate
+import org.aerobag.app.domain.UiSessionSnapshot
 
 internal class AerobagRetainedCoreSession(
     val runtimeContent: RuntimeContent,
@@ -20,12 +23,18 @@ internal class AerobagRetainedCoreSession(
     val uiSession: NativeUiSession,
     val situationRingCandidates: List<SituationRingCandidate>,
     val decodedTileBitmapCache: DecodedTileBitmapCache,
+    val liveFeedRuntime: RetainedLiveFeedRuntime,
+    val sessionSnapshotRefreshRunner: SessionSnapshotRefreshRunner<UiSessionSnapshot>,
 ) {
     private var closed = false
 
     fun close() {
         if (closed) return
         closed = true
+        runCatching { liveFeedRuntime.close() }
+            .onFailure { Log.w("AerobagRetainedState", "failed to close live-feed runtime", it) }
+        runCatching { sessionSnapshotRefreshRunner.close() }
+            .onFailure { Log.w("AerobagRetainedState", "failed to close snapshot refresh runner", it) }
         runCatching { uiSession.destroy() }
             .onFailure { Log.w("AerobagRetainedState", "failed to destroy retained UI session", it) }
         runCatching { runtimeContent.navKvStore.close() }
@@ -89,13 +98,35 @@ internal class AerobagRetainedModel : ViewModel() {
         )
         val prefs = context.applicationContext.getSharedPreferences(UiPrefsName, Context.MODE_PRIVATE)
         uiSession.loadOfflinePackageLibraryCache(readOfflinePackagesLibraryCacheJson(prefs))
+        val liveFeedSourceRootUrl = configuredLiveFeedSourceRootUrl(
+            context.applicationContext,
+            prefs,
+            loadAndroidDevServerBaseUrl(context.applicationContext),
+        )
+        val liveFeedCache = LiveFeedCacheStore.create(liveFeedSourceRootUrl)
+        val resultExecutor = ContextCompat.getMainExecutor(context.applicationContext)
         return AerobagRetainedCoreSession(
             runtimeContent = runtimeContent,
             appCore = appCore,
             uiSession = uiSession,
             situationRingCandidates = appCore.situationRingCandidates(),
             decodedTileBitmapCache = DecodedTileBitmapCache(DecodedTileCacheMaxBytes),
-        ).also { coreSession = it }
+            liveFeedRuntime = RetainedLiveFeedRuntime(
+                context = context.applicationContext,
+                uiSession = uiSession,
+                cache = liveFeedCache,
+                sourceRootUrl = liveFeedSourceRootUrl,
+                resultExecutor = resultExecutor,
+                initialPromotionGate = createInitialLiveFeedPromotionGate(context.applicationContext),
+            ),
+            sessionSnapshotRefreshRunner = SessionSnapshotRefreshRunner(
+                refresh = uiSession::refreshSnapshot,
+                resultExecutor = resultExecutor,
+            ),
+        ).also {
+            coreSession = it
+            it.liveFeedRuntime.start()
+        }
     }
 
     override fun onCleared() {

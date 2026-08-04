@@ -149,6 +149,12 @@ class LiveFeedCache(
     },
 ) : AutoCloseable {
     private val handle = bridge.createLiveFeedCache(sourceRootUrl, installedStatesJson)
+    private val lifecycleLock = Any()
+    private val operationLock = Any()
+    private val persistedRestoreLock = Any()
+    private var activeCalls = 0
+    private var destroyed = false
+    private var persistedRestoreComplete = false
     @Volatile
     private var closed = false
 
@@ -294,21 +300,56 @@ class LiveFeedCache(
         return installs
     }
 
+    internal fun restorePersistedOnce(restore: () -> Unit) {
+        synchronized(persistedRestoreLock) {
+            if (persistedRestoreComplete) return
+            restore()
+            persistedRestoreComplete = true
+        }
+    }
+
     override fun close() {
-        synchronized(this) {
+        val destroyNow = synchronized(lifecycleLock) {
             if (closed) return
             closed = true
+            if (activeCalls == 0 && !destroyed) {
+                destroyed = true
+                true
+            } else {
+                false
+            }
+        }
+        if (destroyNow) {
             bridge.destroyLiveFeedCache(handle)
         }
     }
 
-    private inline fun <T> withOpenHandle(block: (Long) -> T): T =
-        synchronized(this) {
+    private inline fun <T> withOpenHandle(block: (Long) -> T): T {
+        synchronized(lifecycleLock) {
             if (closed) {
                 throw LiveFeedCacheClosedException()
             }
-            block(handle)
+            activeCalls += 1
         }
+        try {
+            return synchronized(operationLock) {
+                block(handle)
+            }
+        } finally {
+            val destroyNow = synchronized(lifecycleLock) {
+                activeCalls -= 1
+                if (closed && activeCalls == 0 && !destroyed) {
+                    destroyed = true
+                    true
+                } else {
+                    false
+                }
+            }
+            if (destroyNow) {
+                bridge.destroyLiveFeedCache(handle)
+            }
+        }
+    }
 
     class LiveFeedCacheClosedException :
         CancellationException("live-feed cache is closed")
@@ -764,24 +805,28 @@ object LiveFeedCacheStore {
         context: Context,
         cache: LiveFeedCache,
     ) {
-        for (stored in listInstalledResourceManifests(context)) {
-            runCatching {
-                cache.restoreInstalledResources(stored.manifest) { resource ->
-                    stored.resourceFile(resource).readBytes()
+        cache.restorePersistedOnce {
+            for (stored in listInstalledResourceManifests(context)) {
+                runCatching {
+                    cache.restoreInstalledResources(stored.manifest) { resource ->
+                        stored.resourceFile(resource).readBytes()
+                    }
+                }.onFailure { error ->
+                    if (error is CancellationException) throw error
+                    stored.manifestFile.delete()
                 }
-            }.onFailure {
-                stored.manifestFile.delete()
             }
-        }
-        for (entry in listInstalled(context)) {
-            runCatching {
-                cache.ingestInstalledPayload(entry.summary, entry.payloadFile.readBytes())
-                cache.releasePersistedPayloadBytes(
-                    entry.summary.product,
-                    entry.summary.version,
-                )
-            }.onFailure {
-                entry.payloadFile.parentFile?.deleteRecursively()
+            for (entry in listInstalled(context)) {
+                runCatching {
+                    cache.ingestInstalledPayload(entry.summary, entry.payloadFile.readBytes())
+                    cache.releasePersistedPayloadBytes(
+                        entry.summary.product,
+                        entry.summary.version,
+                    )
+                }.onFailure { error ->
+                    if (error is CancellationException) throw error
+                    entry.payloadFile.parentFile?.deleteRecursively()
+                }
             }
         }
     }

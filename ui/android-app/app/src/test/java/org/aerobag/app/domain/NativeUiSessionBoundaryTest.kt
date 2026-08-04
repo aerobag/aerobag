@@ -29,11 +29,13 @@ class NativeUiSessionBoundaryTest {
         )
         assertTrue(
             "NativeUiSession must expose core invalidations from paged mutations.",
-            sessionBody.contains("fun setInvalidationListener(listener: ((List<String>) -> Unit)?)"),
+            sessionBody.contains("fun subscribeInvalidations(listener: (List<String>) -> Unit)"),
         )
         assertTrue(
             "Paged session mutations must publish core invalidations instead of dropping them.",
-            sessionBody.contains("publishPagedInvalidations(commandName, outcome)"),
+            sessionBody.contains(
+                "publishPagedInvalidations(commandName, outcome, snapshotAlreadyReturned = true)",
+            ),
         )
         assertTrue(
             "Paged operations must publish direct invalidations and then launch background resource effects.",
@@ -85,6 +87,17 @@ class NativeUiSessionBoundaryTest {
             "Durable live-feed catalog synchronization must use the same paged snapshot runner.",
             sessionBody.contains("return runPagedSnapshot(\"syncLiveFeedCacheCatalog\")"),
         )
+        assertTrue(
+            "Commands that return their new snapshot must not also request a redundant snapshot refresh.",
+            sessionBody.contains(
+                "publishPagedInvalidations(commandName, outcome, snapshotAlreadyReturned = true)",
+            ) && sessionBody.contains("invalidations - \"session_snapshot\""),
+        )
+        assertTrue(
+            "Command snapshots must be delivered through the retained session boundary.",
+            sessionBody.contains("fun subscribeSnapshots(") &&
+                sessionBody.contains("snapshotListener?.invoke(nextSnapshot)"),
+        )
     }
 
     @Test
@@ -121,22 +134,50 @@ class NativeUiSessionBoundaryTest {
     fun mapPageUsesCoreInvalidationAndProjectionRevisions() {
         val mainActivity = sourceFile("src/main/java/org/aerobag/app/MainActivity.kt").readText()
         val mapPage = sourceFile("src/main/java/org/aerobag/app/MapExplorerPage.kt").readText()
+        val retainedSession = sourceFile("src/main/java/org/aerobag/app/RetainedSession.kt").readText()
+        val retainedLiveFeeds =
+            sourceFile("src/main/java/org/aerobag/app/RetainedLiveFeedRuntime.kt").readText()
 
         assertTrue(
             "Android app shell should subscribe to NativeUiSession invalidations.",
-            mainActivity.contains("uiSession.setInvalidationListener(::publishUiInvalidations)"),
+            mainActivity.contains("uiSession.subscribeInvalidations(::enqueueUiInvalidations)"),
         )
         assertTrue(
             "Android app shell should preserve core invalidation names from the shared contract.",
             mainActivity.contains("\"map_overlay\"") && mainActivity.contains("\"flight_plan_route\""),
         )
         assertTrue(
-            "Android app shell should refresh the shared snapshot when core invalidates it.",
-            mainActivity.contains(
-                "LaunchedEffect(uiSession, uiInvalidationRevisions.sessionSnapshot)",
-            ) &&
-                mainActivity.contains("withContext(Dispatchers.IO)") &&
-                mainActivity.contains("uiSession.refreshSnapshot()"),
+            "Android app shell should route snapshot invalidations through core's shared refresh scheduler.",
+            mainActivity.contains("retainedCoreSession.sessionSnapshotRefreshRunner") &&
+                mainActivity.contains("sessionSnapshotRefreshRunner.request(") &&
+                mainActivity.contains("SessionSnapshotRefreshPriority.LowPriority"),
+        )
+        assertFalse(
+            "Snapshot invalidations must not cancel and restart refresh work until it starves.",
+            mainActivity.contains("LaunchedEffect(uiSession, uiInvalidationRevisions.sessionSnapshot)"),
+        )
+        assertTrue(
+            "Activity snapshot delivery must collapse stale queued snapshots to the latest value.",
+            mainActivity.contains("LatestValueExecutor(mainExecutor, ::applySessionSnapshot)") &&
+                mainActivity.contains("uiSession.subscribeSnapshots(snapshotDelivery::submit)"),
+        )
+        assertTrue(
+            "Snapshot scheduling and the complete live-feed runtime must survive activity recreation.",
+            retainedSession.contains("val sessionSnapshotRefreshRunner:") &&
+                retainedSession.contains("val liveFeedRuntime: RetainedLiveFeedRuntime") &&
+                retainedSession.contains("it.liveFeedRuntime.start()") &&
+                mainActivity.contains("retainedCoreSession.liveFeedRuntime"),
+        )
+        assertTrue(
+            "The retained live-feed runtime must own one idempotent restore and connection pipeline.",
+            retainedLiveFeeds.contains("if (started) return") &&
+                retainedLiveFeeds.contains("LiveFeedCacheStore.restore(appContext, cache)") &&
+                retainedLiveFeeds.contains("client.bootstrapAndRun("),
+        )
+        assertFalse(
+            "Compose activity lifecycle must not restart live-feed restore or connection work.",
+            mainActivity.contains("LiveFeedCacheStore.restore") ||
+                mainActivity.contains("AndroidLiveFeedClient("),
         )
         assertFalse(
             "Map overlay must not own a second one-off session snapshot refresh path.",

@@ -715,6 +715,7 @@ internal fun HomePage(
                         enabled = button.enabled,
                         iconResId = button.iconResId,
                         wide = true,
+                        testTag = "parity:home-button:${button.key}",
                         onDisabledClick = button.disabledReason?.let { reason ->
                             { showDisabledActionToast(context, reason) }
                         },

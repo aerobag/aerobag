@@ -50,6 +50,7 @@ import androidx.compose.ui.graphics.Path
 import androidx.compose.ui.graphics.StrokeCap
 import androidx.compose.ui.graphics.lerp
 import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.platform.LocalUriHandler
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
@@ -454,6 +455,7 @@ private fun DataStatusPageRowCard(
     Column(
         modifier = Modifier
             .fillMaxWidth()
+            .testTag("parity:data-status-row:${row.id}:${row.value}")
             .clip(RoundedCornerShape(ThumbRadius))
             .background(Color.White.copy(alpha = 0.90f))
             .border(

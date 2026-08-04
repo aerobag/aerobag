@@ -73,7 +73,7 @@ class LiveFeedCacheTest {
     }
 
     @Test
-    fun cacheCloseWaitsForInFlightNativeUseBeforeDestroyingHandle() {
+    fun cacheCloseReturnsWithoutDestroyingHandleStillInUse() {
         val enteredMissingRequests = CountDownLatch(1)
         val releaseMissingRequests = CountDownLatch(1)
         val inMissingRequests = AtomicBoolean(false)
@@ -103,16 +103,45 @@ class LiveFeedCacheTest {
             cache.close()
         }
         closer.start()
-        Thread.sleep(50)
+        closer.join(2_000)
 
+        assertFalse("close must not wait for an in-flight native call", closer.isAlive)
         assertEquals("close must not destroy native handle while it is in use", 0, destroyCount.get())
 
         releaseMissingRequests.countDown()
         reader.join(2_000)
-        closer.join(2_000)
 
         assertEquals(1, destroyCount.get())
         assertFalse(destroyedDuringMissingRequests.get())
+    }
+
+    @Test
+    fun persistedRestoreRunsOnlyOnceForRetainedCache() {
+        val cache = LiveFeedCache(sourceRootUrl = "http://live.test", bridge = liveFeedBridge())
+        val restoreCount = AtomicInteger(0)
+
+        cache.restorePersistedOnce { restoreCount.incrementAndGet() }
+        cache.restorePersistedOnce { restoreCount.incrementAndGet() }
+
+        assertEquals(1, restoreCount.get())
+        cache.close()
+    }
+
+    @Test
+    fun failedPersistedRestoreCanBeRetried() {
+        val cache = LiveFeedCache(sourceRootUrl = "http://live.test", bridge = liveFeedBridge())
+        val restoreCount = AtomicInteger(0)
+
+        runCatching {
+            cache.restorePersistedOnce {
+                restoreCount.incrementAndGet()
+                error("interrupted")
+            }
+        }
+        cache.restorePersistedOnce { restoreCount.incrementAndGet() }
+
+        assertEquals(2, restoreCount.get())
+        cache.close()
     }
 
     private fun liveFeedBridge(

@@ -327,6 +327,8 @@ import kotlin.math.min
 import kotlin.math.pow
 import kotlin.math.sin
 
+private fun Modifier.offlinePackagesActionButtonSize(): Modifier =
+    width(ThumbSize * 2f).height(ThumbSize)
 
 @Composable
 internal fun OfflinePackagesErrorPanel(
@@ -435,31 +437,34 @@ internal fun OfflinePackagesLibraryPanel(
                     fontWeight = FontWeight.ExtraBold,
                     color = uiTheme.controls.panelFg,
                 )
-                CompactSquareButton(
-                    label = if (refreshInFlight) {
-                        if (cancelRequested) "CANCELING..." else "REFRESHING\n(cancel)"
-                    } else {
-                        "REFRESH"
-                    },
-                    modifier = Modifier
-                        .width(if (refreshInFlight) ThumbSize * 2.24f else ThumbSize * 1.8f)
-                        .height(ThumbSize * 0.72f),
-                    maxLines = if (refreshInFlight) 2 else 1,
-                    enabled = !cancelRequested && if (refreshInFlight) refreshCancelEnabled else refreshEnabled,
-                    testTag = "parity:offline-refresh-button",
-                    onDisabledClick = refreshButtonDisabledReason?.let { reason ->
-                        { showDisabledActionToast(context, reason) }
-                    },
-                    onClick = if (refreshInFlight) onCancelRefresh else onRefresh,
-                )
-                if (showCloseButton) {
+                Row(
+                    horizontalArrangement = Arrangement.spacedBy(ThumbGap),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
                     CompactSquareButton(
-                        label = "X",
-                        modifier = Modifier.size(ThumbSize * 0.72f),
-                        enabled = closeEnabled,
-                        testTag = "parity:offline-close-button",
-                        onClick = onClose,
+                        label = if (refreshInFlight) {
+                            if (cancelRequested) "⇣ CANCELING..." else "⇣ REFRESHING\n(cancel)"
+                        } else {
+                            "⇣ REFRESH\nCATALOG"
+                        },
+                        modifier = Modifier.offlinePackagesActionButtonSize(),
+                        maxLines = 2,
+                        enabled = !cancelRequested && if (refreshInFlight) refreshCancelEnabled else refreshEnabled,
+                        testTag = "parity:offline-refresh-button",
+                        onDisabledClick = refreshButtonDisabledReason?.let { reason ->
+                            { showDisabledActionToast(context, reason) }
+                        },
+                        onClick = if (refreshInFlight) onCancelRefresh else onRefresh,
                     )
+                    if (showCloseButton) {
+                        CompactSquareButton(
+                            label = "X",
+                            modifier = Modifier.size(ThumbSize * 0.72f),
+                            enabled = closeEnabled,
+                            testTag = "parity:offline-close-button",
+                            onClick = onClose,
+                        )
+                    }
                 }
             }
             Text(
@@ -593,48 +598,49 @@ internal fun OfflinePackagesPanel(
                         color = uiTheme.controls.panelFg,
                     )
                 }
-                CompactSquareButton(
-                    label = if (libraryRefreshInFlight) {
-                        if (cancelRequested) "CANCELING..." else "REFRESHING\n(cancel)"
-                    } else {
-                        "REFRESH"
-                    },
-                    modifier = Modifier
-                        .width(if (libraryRefreshInFlight) ThumbSize * 2.24f else ThumbSize * 1.8f)
-                        .height(ThumbSize * 0.72f),
-                    maxLines = if (libraryRefreshInFlight) 2 else 1,
-                    enabled = !cancelRequested && if (libraryRefreshInFlight) refreshCancelEnabled else refreshEnabled,
-                    testTag = "parity:offline-refresh-button",
-                    onDisabledClick = refreshButtonDisabledReason?.let { reason ->
-                        { showDisabledActionToast(context, reason) }
-                    },
-                    onClick = if (libraryRefreshInFlight) onCancelRefresh else onRefreshLibrary,
-                )
-                CompactSquareButton(
-                    label = if (syncInFlight) {
-                        if (cancelRequested) "CANCELING..." else "SYNCING\n(cancel)"
-                    } else {
-                        "SYNC"
-                    },
-                    modifier = Modifier
-                        .width(if (syncInFlight) ThumbSize * 2.05f else ThumbSize * 1.4f)
-                        .height(ThumbSize * 0.72f),
-                    maxLines = if (syncInFlight) 2 else 1,
-                    enabled = !cancelRequested && if (syncInFlight) syncCancelEnabled else syncEnabled,
-                    testTag = "parity:offline-sync-button",
-                    onDisabledClick = syncButtonDisabledReason?.let { reason ->
-                        { showDisabledActionToast(context, reason) }
-                    },
-                    onClick = if (syncInFlight) onCancelOperation else onSync,
-                )
-                if (showCloseButton) {
+                Row(
+                    horizontalArrangement = Arrangement.spacedBy(ThumbGap),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
                     CompactSquareButton(
-                        label = "X",
-                        modifier = Modifier.size(ThumbSize * 0.72f),
-                        enabled = closeEnabled,
-                        testTag = "parity:offline-close-button",
-                        onClick = onClose,
+                        label = if (libraryRefreshInFlight) {
+                            if (cancelRequested) "⇣ CANCELING..." else "⇣ REFRESHING\n(cancel)"
+                        } else {
+                            "⇣ REFRESH\nCATALOG"
+                        },
+                        modifier = Modifier.offlinePackagesActionButtonSize(),
+                        maxLines = 2,
+                        enabled = !cancelRequested && if (libraryRefreshInFlight) refreshCancelEnabled else refreshEnabled,
+                        testTag = "parity:offline-refresh-button",
+                        onDisabledClick = refreshButtonDisabledReason?.let { reason ->
+                            { showDisabledActionToast(context, reason) }
+                        },
+                        onClick = if (libraryRefreshInFlight) onCancelRefresh else onRefreshLibrary,
                     )
+                    CompactSquareButton(
+                        label = if (syncInFlight) {
+                            if (cancelRequested) "⇊ CANCELING..." else "⇊ APPLYING\n(cancel)"
+                        } else {
+                            "⇊ APPLY\nCHANGES"
+                        },
+                        modifier = Modifier.offlinePackagesActionButtonSize(),
+                        maxLines = 2,
+                        enabled = !cancelRequested && if (syncInFlight) syncCancelEnabled else syncEnabled,
+                        testTag = "parity:offline-sync-button",
+                        onDisabledClick = syncButtonDisabledReason?.let { reason ->
+                            { showDisabledActionToast(context, reason) }
+                        },
+                        onClick = if (syncInFlight) onCancelOperation else onSync,
+                    )
+                    if (showCloseButton) {
+                        CompactSquareButton(
+                            label = "X",
+                            modifier = Modifier.size(ThumbSize * 0.72f),
+                            enabled = closeEnabled,
+                            testTag = "parity:offline-close-button",
+                            onClick = onClose,
+                        )
+                    }
                 }
             }
 

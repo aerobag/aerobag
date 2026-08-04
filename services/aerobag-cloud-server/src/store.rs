@@ -29,7 +29,9 @@ use serde::Serialize;
 use sha2::{Digest, Sha256};
 use tokio::sync::broadcast;
 
-const SCHEMA_VERSION: u32 = 2;
+use crate::StorageLayout;
+
+pub(crate) const SCHEMA_VERSION: u32 = 3;
 const CHALLENGE_TTL_MS: i64 = 5 * 60 * 1_000;
 const OUTSTANDING_CHALLENGES_PER_NETWORK: u64 = 8;
 const DEFAULT_LIST_LIMIT: u32 = 100;
@@ -40,7 +42,7 @@ const MAX_TRACKED_NETWORK_WINDOWS: usize = 4_096;
 
 #[derive(Debug, Clone)]
 pub struct StoreConfig {
-    pub data_root: PathBuf,
+    pub storage_root: PathBuf,
     pub anonymous_quota_bytes: u64,
     pub anonymous_object_limit: u64,
     pub global_storage_limit_bytes: u64,
@@ -64,6 +66,21 @@ pub struct StoreConfig {
     pub gc_database_pause_ms_critical: u64,
     pub gc_elapsed_ms_warning: u64,
     pub gc_elapsed_ms_critical: u64,
+    pub write_resume_headroom_bytes: u64,
+    pub write_resume_min_filesystem_free_bytes: u64,
+    pub backup_retained_snapshots: u64,
+    pub backup_age_seconds_warning: u64,
+    pub backup_age_seconds_critical: u64,
+    pub backup_elapsed_ms_warning: u64,
+    pub backup_elapsed_ms_critical: u64,
+    pub backup_sqlite_snapshot_ms_warning: u64,
+    pub backup_sqlite_snapshot_ms_critical: u64,
+    pub backup_wal_growth_bytes_warning: u64,
+    pub backup_wal_growth_bytes_critical: u64,
+    pub backup_linked_blob_count_warning: u64,
+    pub backup_linked_blob_count_critical: u64,
+    pub backup_linked_blob_bytes_warning: u64,
+    pub backup_linked_blob_bytes_critical: u64,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -106,8 +123,8 @@ impl TokenBucketConfig {
 
 impl StoreConfig {
     #[cfg(test)]
-    pub(crate) fn for_test_data_root(data_root: PathBuf) -> Self {
-        crate::policy::checked_in_test_policy().store_config(data_root)
+    pub(crate) fn for_test_data_root(storage_root: PathBuf) -> Self {
+        crate::policy::checked_in_test_policy().store_config(storage_root)
     }
 }
 
@@ -173,6 +190,33 @@ pub struct GcReport {
     pub total_elapsed_ms: u64,
 }
 
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+pub struct ResumeWritesReport {
+    pub resumed: bool,
+    pub forced: bool,
+    pub stored_bytes: u64,
+    pub storage_headroom_bytes: u64,
+    pub filesystem_free_bytes: u64,
+}
+
+#[derive(Debug, Clone, Copy)]
+struct BackupStatus {
+    runs: u64,
+    failures: u64,
+    first_required_at_epoch_ms: i64,
+    last_completed_at_epoch_ms: Option<i64>,
+    last_elapsed_ms: u64,
+    peak_elapsed_ms: u64,
+    last_sqlite_snapshot_ms: u64,
+    peak_sqlite_snapshot_ms: u64,
+    last_wal_growth_bytes: u64,
+    peak_wal_growth_bytes: u64,
+    last_linked_blob_count: u64,
+    peak_linked_blob_count: u64,
+    last_linked_blob_bytes: u64,
+    peak_linked_blob_bytes: u64,
+}
+
 #[derive(Debug, Clone)]
 pub struct StoreError {
     pub code: AcsErrorCode,
@@ -195,11 +239,11 @@ impl StoreError {
         Self::new(AcsErrorCode::Internal, message)
     }
 
-    fn sqlite(error: rusqlite::Error) -> Self {
+    pub(crate) fn sqlite(error: rusqlite::Error) -> Self {
         Self::internal(format!("cloud database failure: {error}"))
     }
 
-    fn io(context: &str, error: std::io::Error) -> Self {
+    pub(crate) fn io(context: &str, error: std::io::Error) -> Self {
         Self::internal(format!("{context}: {error}"))
     }
 }
@@ -368,6 +412,7 @@ struct RuntimeLimits {
 
 struct StoreInner {
     config: StoreConfig,
+    layout: StorageLayout,
     database_path: PathBuf,
     blob_root: PathBuf,
     connection: Mutex<Connection>,
@@ -400,12 +445,10 @@ impl CloudStore {
         config
             .creation_global_bucket
             .validate("global account creation")?;
-        fs::create_dir_all(&config.data_root)
-            .map_err(|error| StoreError::io("create cloud data root", error))?;
-        let blob_root = config.data_root.join("blobs");
-        fs::create_dir_all(&blob_root)
-            .map_err(|error| StoreError::io("create cloud blob root", error))?;
-        let database_path = config.data_root.join("cloud.sqlite3");
+        let layout = StorageLayout::new(config.storage_root.clone());
+        layout.ensure()?;
+        let blob_root = layout.blob_root();
+        let database_path = layout.database_path();
         let connection = Connection::open(&database_path).map_err(StoreError::sqlite)?;
         configure_database(&connection)?;
         initialize_schema(&connection)?;
@@ -413,6 +456,7 @@ impl CloudStore {
         let store = Self {
             inner: Arc::new(StoreInner {
                 config,
+                layout,
                 database_path,
                 blob_root,
                 connection: Mutex::new(connection),
@@ -935,7 +979,8 @@ impl CloudStore {
                 .map_err(StoreError::sqlite)?;
             transaction.commit().map_err(StoreError::sqlite)?;
         } else {
-            let blob_storage_key = blob_storage_key(account_locator, object_id);
+            let blob_storage_key =
+                blob_storage_key(account_locator, object_id, &value.ciphertext_sha256);
             transaction
                 .execute(
                     "INSERT INTO objects(account_locator, object_id, authenticated_hash, ciphertext_sha256, ciphertext_bytes, children_json, state, inline_ciphertext, blob_storage_key, created_at_epoch_ms) VALUES (?1, ?2, ?3, ?4, ?5, ?6, 'pending', NULL, ?7, ?8)",
@@ -1086,13 +1131,13 @@ impl CloudStore {
         }
         let row = transaction
             .query_row(
-                "SELECT ciphertext_bytes, blob_storage_key FROM objects WHERE account_locator = ?1 AND object_id = ?2",
+                "SELECT ciphertext_bytes FROM objects WHERE account_locator = ?1 AND object_id = ?2",
                 params![account_locator, object_id],
-                |row| Ok((row.get::<_, u64>(0)?, row.get::<_, Option<String>>(1)?)),
+                |row| row.get::<_, u64>(0),
             )
             .optional()
             .map_err(StoreError::sqlite)?;
-        let Some((ciphertext_bytes, blob_storage_key)) = row else {
+        let Some(ciphertext_bytes) = row else {
             return Ok(false);
         };
         transaction
@@ -1103,9 +1148,6 @@ impl CloudStore {
             .map_err(StoreError::sqlite)?;
         release_account_usage(&transaction, account_locator, ciphertext_bytes, 1)?;
         transaction.commit().map_err(StoreError::sqlite)?;
-        if let Some(key) = blob_storage_key {
-            remove_file_if_present(&self.blob_path(&key))?;
-        }
         self.inner.counters.deletes.fetch_add(1, Ordering::Relaxed);
         self.note_durable_write(now_epoch_ms);
         Ok(true)
@@ -1477,6 +1519,111 @@ impl CloudStore {
         Ok(())
     }
 
+    pub fn resume_writes(&self, now_epoch_ms: i64) -> StoreResult<ResumeWritesReport> {
+        self.resume_writes_inner(false, "checked operator write resume", now_epoch_ms)
+    }
+
+    pub fn force_resume_writes(
+        &self,
+        reason: &str,
+        now_epoch_ms: i64,
+    ) -> StoreResult<ResumeWritesReport> {
+        let reason = reason.trim();
+        if reason.is_empty() {
+            return Err(StoreError::internal(
+                "forced write resume requires a non-empty operator reason",
+            ));
+        }
+        self.resume_writes_inner(true, reason, now_epoch_ms)
+    }
+
+    fn resume_writes_inner(
+        &self,
+        forced: bool,
+        reason: &str,
+        now_epoch_ms: i64,
+    ) -> StoreResult<ResumeWritesReport> {
+        let connection = self.connection()?;
+        let mode = AccountMode::parse(
+            &connection
+                .query_row(
+                    "SELECT mode FROM service_state WHERE singleton = 1",
+                    [],
+                    |row| row.get::<_, String>(0),
+                )
+                .map_err(StoreError::sqlite)?,
+        )?;
+        if mode == AccountMode::Suspended {
+            return Err(StoreError::internal(
+                "suspended service cannot resume writes; set it read-only first",
+            ));
+        }
+        let stored_bytes = connection
+            .query_row(
+                "SELECT COALESCE(SUM(stored_bytes), 0) FROM accounts",
+                [],
+                |row| row.get::<_, u64>(0),
+            )
+            .map_err(StoreError::sqlite)?;
+        let storage_headroom_bytes = self
+            .inner
+            .config
+            .global_storage_limit_bytes
+            .saturating_sub(stored_bytes);
+        let filesystem_free_bytes = fs2::available_space(self.inner.layout.root()).unwrap_or(0);
+        if !forced {
+            let integrity: String = connection
+                .query_row("PRAGMA integrity_check", [], |row| row.get(0))
+                .map_err(StoreError::sqlite)?;
+            if integrity != "ok" {
+                return Err(StoreError::internal(format!(
+                    "write resume refused: SQLite integrity check failed: {integrity}"
+                )));
+            }
+            if storage_headroom_bytes < self.inner.config.write_resume_headroom_bytes {
+                return Err(StoreError::internal(format!(
+                    "write resume refused: {storage_headroom_bytes} bytes of ACS quota headroom is below required {}",
+                    self.inner.config.write_resume_headroom_bytes
+                )));
+            }
+            if filesystem_free_bytes < self.inner.config.write_resume_min_filesystem_free_bytes {
+                return Err(StoreError::internal(format!(
+                    "write resume refused: {filesystem_free_bytes} filesystem bytes free is below required {}",
+                    self.inner.config.write_resume_min_filesystem_free_bytes
+                )));
+            }
+        }
+        let resumed = mode != AccountMode::Normal;
+        connection
+            .execute(
+                "UPDATE service_state SET mode = 'normal' WHERE singleton = 1",
+                [],
+            )
+            .map_err(StoreError::sqlite)?;
+        connection
+            .execute(
+                "INSERT INTO operator_audit(action, reason, created_at_epoch_ms) VALUES (?1, ?2, ?3)",
+                params![
+                    if forced {
+                        "force_resume_writes"
+                    } else {
+                        "resume_writes"
+                    },
+                    reason,
+                    now_epoch_ms
+                ],
+            )
+            .map_err(StoreError::sqlite)?;
+        self.note_durable_write(now_epoch_ms);
+        Ok(ResumeWritesReport {
+            resumed,
+            forced,
+            stored_bytes,
+            storage_headroom_bytes,
+            filesystem_free_bytes,
+        })
+    }
+
     pub fn set_account_mode(
         &self,
         account_locator: &str,
@@ -1528,7 +1675,6 @@ impl CloudStore {
         let transaction = connection
             .transaction_with_behavior(TransactionBehavior::Immediate)
             .map_err(StoreError::sqlite)?;
-        let blob_keys = blob_keys_for_account(&transaction, account_locator)?;
         let changed = transaction
             .execute(
                 "DELETE FROM accounts WHERE account_locator = ?1",
@@ -1542,13 +1688,11 @@ impl CloudStore {
             ));
         }
         transaction.commit().map_err(StoreError::sqlite)?;
-        for key in blob_keys {
-            remove_file_if_present(&self.blob_path(&key))?;
-        }
         Ok(())
     }
 
     pub fn run_gc(&self, now_epoch_ms: i64, grace_ms: i64) -> StoreResult<GcReport> {
+        let _reclamation_lock = self.inner.layout.acquire_reclamation_lock()?;
         let started = Instant::now();
         let mut report = self.run_gc_inner(now_epoch_ms, grace_ms)?;
         report.total_elapsed_ms = elapsed_ms(started);
@@ -1732,6 +1876,30 @@ impl CloudStore {
                 row.get::<_, u64>(0)
             })
             .map_err(StoreError::sqlite)?;
+        let backup = connection
+            .query_row(
+                "SELECT runs, failures, first_required_at_epoch_ms, last_completed_at_epoch_ms, last_elapsed_ms, peak_elapsed_ms, last_sqlite_snapshot_ms, peak_sqlite_snapshot_ms, last_wal_growth_bytes, peak_wal_growth_bytes, last_linked_blob_count, peak_linked_blob_count, last_linked_blob_bytes, peak_linked_blob_bytes FROM backup_state WHERE singleton = 1",
+                [],
+                |row| {
+                    Ok(BackupStatus {
+                        runs: row.get(0)?,
+                        failures: row.get(1)?,
+                        first_required_at_epoch_ms: row.get(2)?,
+                        last_completed_at_epoch_ms: row.get(3)?,
+                        last_elapsed_ms: row.get(4)?,
+                        peak_elapsed_ms: row.get(5)?,
+                        last_sqlite_snapshot_ms: row.get(6)?,
+                        peak_sqlite_snapshot_ms: row.get(7)?,
+                        last_wal_growth_bytes: row.get(8)?,
+                        peak_wal_growth_bytes: row.get(9)?,
+                        last_linked_blob_count: row.get(10)?,
+                        peak_linked_blob_count: row.get(11)?,
+                        last_linked_blob_bytes: row.get(12)?,
+                        peak_linked_blob_bytes: row.get(13)?,
+                    })
+                },
+            )
+            .map_err(StoreError::sqlite)?;
         let creation_bucket_rows = {
             let mut statement = connection
                 .prepare(
@@ -1769,7 +1937,7 @@ impl CloudStore {
         }
         let database_bytes = file_size(&self.inner.database_path);
         let wal_bytes = file_size(&self.inner.database_path.with_extension("sqlite3-wal"));
-        let filesystem_free_bytes = fs2::available_space(&self.inner.config.data_root).unwrap_or(0);
+        let filesystem_free_bytes = fs2::available_space(self.inner.layout.root()).unwrap_or(0);
         let counters = &self.inner.counters;
         let limits = self
             .inner
@@ -1794,6 +1962,14 @@ impl CloudStore {
             .map(|bucket| bucket.consumed(self.inner.config.account_egress_bucket, now_epoch_ms))
             .max()
             .unwrap_or(0);
+        let backup_age_seconds = now_epoch_ms
+            .saturating_sub(
+                backup
+                    .last_completed_at_epoch_ms
+                    .unwrap_or(backup.first_required_at_epoch_ms),
+            )
+            .max(0) as u64
+            / 1_000;
         let mut metrics = vec![
             gauge("account_count", gauges.0, None, None, None),
             gauge(
@@ -1860,6 +2036,50 @@ impl CloudStore {
                 counters.gc_peak_elapsed_ms.load(Ordering::Relaxed),
                 self.inner.config.gc_elapsed_ms_warning,
                 self.inner.config.gc_elapsed_ms_critical,
+            ),
+            gauge("backup_runs", backup.runs, None, None, None),
+            gauge("backup_failures", backup.failures, None, None, None),
+            observation_metric(
+                "backup_age_seconds",
+                backup_age_seconds,
+                backup_age_seconds,
+                self.inner.config.backup_age_seconds_warning,
+                self.inner.config.backup_age_seconds_critical,
+            ),
+            observation_metric(
+                "backup_elapsed_ms",
+                backup.last_elapsed_ms,
+                backup.peak_elapsed_ms,
+                self.inner.config.backup_elapsed_ms_warning,
+                self.inner.config.backup_elapsed_ms_critical,
+            ),
+            observation_metric(
+                "backup_sqlite_snapshot_ms",
+                backup.last_sqlite_snapshot_ms,
+                backup.peak_sqlite_snapshot_ms,
+                self.inner.config.backup_sqlite_snapshot_ms_warning,
+                self.inner.config.backup_sqlite_snapshot_ms_critical,
+            ),
+            observation_metric(
+                "backup_wal_growth_bytes",
+                backup.last_wal_growth_bytes,
+                backup.peak_wal_growth_bytes,
+                self.inner.config.backup_wal_growth_bytes_warning,
+                self.inner.config.backup_wal_growth_bytes_critical,
+            ),
+            observation_metric(
+                "backup_linked_blob_count",
+                backup.last_linked_blob_count,
+                backup.peak_linked_blob_count,
+                self.inner.config.backup_linked_blob_count_warning,
+                self.inner.config.backup_linked_blob_count_critical,
+            ),
+            observation_metric(
+                "backup_linked_blob_bytes",
+                backup.last_linked_blob_bytes,
+                backup.peak_linked_blob_bytes,
+                self.inner.config.backup_linked_blob_bytes_warning,
+                self.inner.config.backup_linked_blob_bytes_critical,
             ),
             bucket_gauge(
                 "max_network_operations_per_minute",
@@ -2062,7 +2282,6 @@ impl CloudStore {
                         params![account, expected_bytes],
                     )
                     .map_err(StoreError::sqlite)?;
-                remove_file_if_present(&path)?;
             }
         }
         Ok(())
@@ -2244,6 +2463,30 @@ fn initialize_schema(connection: &Connection) -> StoreResult<()> {
                  bucket_key TEXT PRIMARY KEY,
                  available_quanta INTEGER NOT NULL,
                  updated_at_epoch_ms INTEGER NOT NULL
+             );
+             CREATE TABLE IF NOT EXISTS backup_state(
+                 singleton INTEGER PRIMARY KEY CHECK(singleton = 1),
+                 runs INTEGER NOT NULL,
+                 failures INTEGER NOT NULL,
+                 first_required_at_epoch_ms INTEGER NOT NULL,
+                 last_completed_at_epoch_ms INTEGER,
+                 last_elapsed_ms INTEGER NOT NULL,
+                 peak_elapsed_ms INTEGER NOT NULL,
+                 last_sqlite_snapshot_ms INTEGER NOT NULL,
+                 peak_sqlite_snapshot_ms INTEGER NOT NULL,
+                 last_wal_growth_bytes INTEGER NOT NULL,
+                 peak_wal_growth_bytes INTEGER NOT NULL,
+                 last_linked_blob_count INTEGER NOT NULL,
+                 peak_linked_blob_count INTEGER NOT NULL,
+                 last_linked_blob_bytes INTEGER NOT NULL,
+                 peak_linked_blob_bytes INTEGER NOT NULL,
+                 last_snapshot_name TEXT
+             );
+             CREATE TABLE IF NOT EXISTS operator_audit(
+                 id INTEGER PRIMARY KEY AUTOINCREMENT,
+                 action TEXT NOT NULL,
+                 reason TEXT NOT NULL,
+                 created_at_epoch_ms INTEGER NOT NULL
              );",
         )
         .map_err(StoreError::sqlite)?;
@@ -2262,7 +2505,7 @@ fn initialize_schema(connection: &Connection) -> StoreResult<()> {
                 )
                 .map_err(StoreError::sqlite)?;
         }
-        Some(1) => {
+        Some(1 | 2) => {
             connection
                 .execute("UPDATE metadata SET schema_version = ?1", [SCHEMA_VERSION])
                 .map_err(StoreError::sqlite)?;
@@ -2277,6 +2520,12 @@ fn initialize_schema(connection: &Connection) -> StoreResult<()> {
     connection
         .execute(
             "INSERT OR IGNORE INTO service_state(singleton, mode) VALUES (1, 'normal')",
+            [],
+        )
+        .map_err(StoreError::sqlite)?;
+    connection
+        .execute(
+            "INSERT OR IGNORE INTO backup_state(singleton, runs, failures, first_required_at_epoch_ms, last_elapsed_ms, peak_elapsed_ms, last_sqlite_snapshot_ms, peak_sqlite_snapshot_ms, last_wal_growth_bytes, peak_wal_growth_bytes, last_linked_blob_count, peak_linked_blob_count, last_linked_blob_bytes, peak_linked_blob_bytes) VALUES (1, 0, 0, unixepoch('subsec') * 1000, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0)",
             [],
         )
         .map_err(StoreError::sqlite)?;
@@ -2638,21 +2887,6 @@ fn decode_children(json: &str) -> StoreResult<Vec<String>> {
         .map_err(|error| StoreError::internal(format!("decode visible object edges: {error}")))
 }
 
-fn blob_keys_for_account(
-    connection: &Connection,
-    account_locator: &str,
-) -> StoreResult<Vec<String>> {
-    let mut statement = connection
-        .prepare("SELECT blob_storage_key FROM objects WHERE account_locator = ?1 AND blob_storage_key IS NOT NULL")
-        .map_err(StoreError::sqlite)?;
-    let rows = statement
-        .query_map([account_locator], |row| row.get::<_, String>(0))
-        .map_err(StoreError::sqlite)?
-        .collect::<Result<Vec<_>, _>>()
-        .map_err(StoreError::sqlite)?;
-    Ok(rows)
-}
-
 fn query_strings<P: rusqlite::Params>(
     connection: &Connection,
     sql: &str,
@@ -2821,12 +3055,14 @@ fn validate_opaque_id(value: &str, label: &str) -> StoreResult<()> {
     Ok(())
 }
 
-fn blob_storage_key(account_locator: &str, object_id: &str) -> String {
+fn blob_storage_key(account_locator: &str, object_id: &str, ciphertext_sha256: &str) -> String {
     let mut hash = Sha256::new();
-    hash.update(b"aerobag-cloud-blob-v1\0");
+    hash.update(b"aerobag-cloud-blob-v2\0");
     hash.update(account_locator.as_bytes());
     hash.update([0]);
     hash.update(object_id.as_bytes());
+    hash.update([0]);
+    hash.update(ciphertext_sha256.as_bytes());
     hex_bytes(&hash.finalize())
 }
 
@@ -2964,7 +3200,8 @@ mod tests {
     #[test]
     fn schema_one_database_is_upgraded_with_durable_creation_buckets() {
         let root = TempDir::new().unwrap();
-        let database_path = root.path().join("cloud.sqlite3");
+        let database_path = StorageLayout::new(root.path().to_path_buf()).database_path();
+        fs::create_dir_all(database_path.parent().unwrap()).unwrap();
         let connection = Connection::open(&database_path).unwrap();
         connection
             .execute_batch("CREATE TABLE metadata(schema_version INTEGER NOT NULL); INSERT INTO metadata(schema_version) VALUES (1);")
@@ -3231,6 +3468,45 @@ mod tests {
     }
 
     #[test]
+    fn write_resume_is_checked_and_forced_resume_is_explicitly_audited() {
+        let root = TempDir::new().unwrap();
+        let mut config = StoreConfig::for_test_data_root(root.path().to_path_buf());
+        config.global_storage_limit_bytes = 100;
+        config.write_resume_headroom_bytes = 90;
+        config.write_resume_min_filesystem_free_bytes = 1;
+        let store = CloudStore::open(config).unwrap();
+        create_account(&store, "account", 10);
+        store
+            .create_object(
+                "account",
+                "page",
+                &value(b"twenty bytes payload", vec![]),
+                20,
+            )
+            .unwrap();
+        store.set_service_mode(AccountMode::ReadOnly, 30).unwrap();
+
+        let error = store.resume_writes(40).unwrap_err();
+        assert!(error.message.contains("quota headroom"));
+        let report = store
+            .force_resume_writes("operator reviewed disk pressure", 50)
+            .unwrap();
+        assert!(report.resumed);
+        assert!(report.forced);
+        let audit: (String, String) = store
+            .connection()
+            .unwrap()
+            .query_row(
+                "SELECT action, reason FROM operator_audit ORDER BY id DESC LIMIT 1",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .unwrap();
+        assert_eq!(audit.0, "force_resume_writes");
+        assert_eq!(audit.1, "operator reviewed disk pressure");
+    }
+
+    #[test]
     fn concurrent_root_compare_and_swap_has_one_winner_and_one_event() {
         let (_root, store) = store_with_inline_threshold(1024);
         create_account(&store, "account", 10);
@@ -3288,7 +3564,15 @@ mod tests {
         store
             .create_object("account", "blob", &value(b"large", vec![]), 20)
             .unwrap();
-        let key = blob_storage_key("account", "blob");
+        let key = store
+            .connection()
+            .unwrap()
+            .query_row(
+                "SELECT blob_storage_key FROM objects WHERE account_locator = 'account' AND object_id = 'blob'",
+                [],
+                |row| row.get::<_, String>(0),
+            )
+            .unwrap();
         let path = store.blob_path(&key);
         store
             .connection()

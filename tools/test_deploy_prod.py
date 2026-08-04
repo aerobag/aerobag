@@ -114,17 +114,30 @@ class AerobagCloudProductionTests(unittest.TestCase):
     def test_cloud_service_uses_external_policy_secret_and_persistent_data(self) -> None:
         unit = deploy_prod.cloud_server_unit(self.config)
         self.assertIn("User=aerobag-cloud", unit)
-        self.assertIn(' --data-root "$AEROBAG_CLOUD_SERVER_DATA_ROOT"', unit)
+        self.assertIn(' --storage-root "$AEROBAG_CLOUD_SERVER_STORAGE_ROOT"', unit)
         self.assertIn(' --policy "$AEROBAG_CLOUD_SERVER_POLICY"', unit)
         self.assertIn(' --server-secret "$AEROBAG_CLOUD_SERVER_SECRET"', unit)
-        self.assertIn("ReadWritePaths=/mnt/aerobag-data/cloud", unit)
+        self.assertIn("ReadWritePaths=/mnt/aerobag-data/cloud-storage", unit)
         env = deploy_prod.env_file(self.config)
         self.assertIn("AEROBAG_CLOUD_SERVER_LISTEN=127.0.0.1:8099\n", env)
-        self.assertIn("AEROBAG_CLOUD_SERVER_DATA_ROOT=/mnt/aerobag-data/cloud\n", env)
+        self.assertIn(
+            "AEROBAG_CLOUD_SERVER_STORAGE_ROOT=/mnt/aerobag-data/cloud-storage\n",
+            env,
+        )
         self.assertIn(
             "AEROBAG_CLOUD_SERVER_POLICY=/etc/aerobag/aerobag-cloud-policy.json\n",
             env,
         )
+
+    def test_cloud_backup_is_online_hourly_and_uses_the_storage_root(self) -> None:
+        unit = deploy_prod.cloud_backup_unit(self.config)
+        self.assertIn("User=aerobag-cloud", unit)
+        self.assertIn("aerobag-cloud-serverd\" backup", unit)
+        self.assertIn(' --storage-root "$AEROBAG_CLOUD_SERVER_STORAGE_ROOT"', unit)
+        self.assertIn("ReadWritePaths=/mnt/aerobag-data/cloud-storage", unit)
+        timer = deploy_prod.cloud_backup_timer(self.config)
+        self.assertIn("OnUnitActiveSec=3600s", timer)
+        self.assertIn("OnBootSec=5m", timer)
 
     def test_health_and_pipeline_service_include_cloud(self) -> None:
         self.assertIn("aerobag-cloud-server.service", deploy_prod.health_script())
@@ -140,12 +153,15 @@ class AerobagCloudProductionTests(unittest.TestCase):
 
     def test_cloud_policy_is_explicit_and_complete(self) -> None:
         policy = deploy_prod.cloud_policy(self.config)
-        self.assertEqual(policy["schema_version"], 1)
+        self.assertEqual(policy["schema_version"], 2)
         self.assertEqual(policy["storage"]["anonymous_account_quota_bytes"], 1_048_576)
         self.assertEqual(policy["storage"]["global_storage_limit_bytes"], 10 * 1024**3)
         self.assertEqual(policy["sse"]["max_connections_global"], 128)
         self.assertEqual(policy["garbage_collection"]["interval_seconds"], 3600)
+        self.assertEqual(policy["backup"]["interval_seconds"], 3600)
         self.assertIn("gc_database_pause_ms_critical", policy["monitoring"])
+        self.assertIn("backup_age_seconds_critical", policy["monitoring"])
+        self.assertIn("backup_wal_growth_bytes_critical", policy["monitoring"])
 
     def test_cloud_secret_must_be_exactly_32_bytes(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:

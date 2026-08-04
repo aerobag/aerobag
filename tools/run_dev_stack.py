@@ -187,8 +187,8 @@ class DevStackConfig:
         return self.stack_root / "health"
 
     @property
-    def cloud_data_root(self) -> Path:
-        return self.stack_root / "state" / "aerobag-cloud-server"
+    def cloud_storage_root(self) -> Path:
+        return self.stack_root / "state" / "cloud-storage"
 
     @property
     def cloud_runtime_policy(self) -> Path:
@@ -269,6 +269,7 @@ class DevStack:
             self.start_child("pipeline-health", self.pipeline_health_command())
 
     def prepare_dirs(self) -> None:
+        self.migrate_cloud_storage_layout()
         for path in [
             self.config.stack_root,
             self.config.live_root,
@@ -278,10 +279,31 @@ class DevStack:
             self.config.health_root,
             self.config.target_dir,
             self.config.nms_notams_state_root.parent,
-            self.config.cloud_data_root,
+            self.config.cloud_storage_root,
         ]:
             path.mkdir(parents=True, exist_ok=True)
         self.write_health()
+
+    def migrate_cloud_storage_layout(self) -> None:
+        legacy = self.config.stack_root / "state" / "aerobag-cloud-server"
+        legacy_database = legacy / "cloud.sqlite3"
+        if not legacy_database.is_file():
+            return
+        live = self.config.cloud_storage_root / "live"
+        database = live / "cloud.sqlite3"
+        if database.exists():
+            raise RuntimeError(
+                f"both legacy and current ACS databases exist: {legacy_database} and {database}"
+            )
+        live.mkdir(parents=True, exist_ok=True)
+        legacy_database.rename(database)
+        for suffix in ["-wal", "-shm"]:
+            source = legacy / f"cloud.sqlite3{suffix}"
+            if source.exists():
+                source.rename(live / source.name)
+        legacy_blobs = legacy / "blobs"
+        if legacy_blobs.exists():
+            legacy_blobs.rename(live / "blobs")
 
     def write_cloud_policy(self) -> None:
         policy = json.loads(self.config.cloud_server_policy.read_text(encoding="utf-8"))
@@ -382,8 +404,8 @@ class DevStack:
         command = [
             str(self.config.cloud_server_binary),
             "serve",
-            "--data-root",
-            str(self.config.cloud_data_root),
+            "--storage-root",
+            str(self.config.cloud_storage_root),
             "--server-secret",
             str(self.config.cloud_server_secret),
             "--policy",
@@ -857,7 +879,7 @@ def print_config(config: DevStackConfig) -> None:
                 "target_dir": str(config.target_dir),
                 "live_feeds_listen": config.live_feeds_listen,
                 "cloud_server_listen": config.cloud_server_listen,
-                "cloud_data_root": str(config.cloud_data_root),
+                "cloud_storage_root": str(config.cloud_storage_root),
                 "cloud_server_secret": str(config.cloud_server_secret),
                 "cloud_server_policy": str(config.cloud_server_policy),
                 "cloud_runtime_policy": str(config.cloud_runtime_policy),

@@ -1,5 +1,5 @@
 {
-  "schema_version": 1,
+  "schema_version": 2,
   "trusted_proxy_ips": [
     "127.0.0.1",
     "::1"
@@ -14,7 +14,9 @@
     "anonymous_account_object_limit": 2048,
     "global_storage_limit_bytes": 10737418240,
     "inline_ciphertext_threshold_bytes": 131072,
-    "retained_sse_events": 256
+    "retained_sse_events": 256,
+    "write_resume_headroom_bytes": 1073741824,
+    "write_resume_min_filesystem_free_bytes": 2147483648
   },
   "rate_limits": {
     "account_creation_per_network": {
@@ -52,6 +54,10 @@
     "interval_seconds": 3600,
     "orphan_grace_seconds": 86400
   },
+  "backup": {
+    "interval_seconds": 3600,
+    "retained_snapshots": 48
+  },
   "monitoring": {
     "stored_bytes_warning": 8589934592,
     "stored_bytes_critical": 9663676416,
@@ -62,6 +68,18 @@
     "gc_database_pause_ms_warning": 500,
     "gc_database_pause_ms_critical": 2000,
     "gc_elapsed_ms_warning": 5000,
-    "gc_elapsed_ms_critical": 30000
+    "gc_elapsed_ms_critical": 30000,
+    "backup_age_seconds_warning": 7200,
+    "backup_age_seconds_critical": 14400,
+    "backup_elapsed_ms_warning": 30000,
+    "backup_elapsed_ms_critical": 120000,
+    "backup_sqlite_snapshot_ms_warning": 5000,
+    "backup_sqlite_snapshot_ms_critical": 20000,
+    "backup_wal_growth_bytes_warning": 67108864,
+    "backup_wal_growth_bytes_critical": 268435456,
+    "backup_linked_blob_count_warning": 100000,
+    "backup_linked_blob_count_critical": 500000,
+    "backup_linked_blob_bytes_warning": 8589934592,
+    "backup_linked_blob_bytes_critical": 9663676416
   }
 }

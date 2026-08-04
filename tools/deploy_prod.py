@@ -193,7 +193,7 @@ def load_config(path: Path) -> dict[str, Any]:
         "checkout_ref",
         "live_feeds_listen",
         "cloud_server_listen",
-        "cloud_server_data_root",
+        "cloud_server_storage_root",
         "cloud_server_secret_source",
         "cloud_server_secret_target",
         "cloud_server_policy_source",
@@ -243,8 +243,8 @@ def cloud_policy(config: dict[str, Any]) -> dict[str, Any]:
         policy = json.loads(path.read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError) as error:
         raise SystemExit(f"invalid ACS runtime policy {path}: {error}") from error
-    if not isinstance(policy, dict) or policy.get("schema_version") != 1:
-        raise SystemExit(f"ACS runtime policy {path} must use schema_version 1")
+    if not isinstance(policy, dict) or policy.get("schema_version") != 2:
+        raise SystemExit(f"ACS runtime policy {path} must use schema_version 2")
     return policy
 
 
@@ -561,6 +561,8 @@ def stop_stale_units(config: dict[str, Any], *, dry_run: bool) -> None:
         "aerobag-build-product.service",
         "aerobag-live-feeds.service",
         "aerobag-cloud-server.service",
+        "aerobag-cloud-backup.timer",
+        "aerobag-cloud-backup.service",
         "aerobag-client-debug-log.service",
         "aerobag-build-watch.service",
         "aerobag-health.timer",
@@ -653,7 +655,7 @@ def env_file(config: dict[str, Any]) -> str:
         "AEROBAG_WEB_DIST": config["web_dist"],
         "AEROBAG_LIVE_FEEDS_LISTEN": config["live_feeds_listen"],
         "AEROBAG_CLOUD_SERVER_LISTEN": config["cloud_server_listen"],
-        "AEROBAG_CLOUD_SERVER_DATA_ROOT": config["cloud_server_data_root"],
+        "AEROBAG_CLOUD_SERVER_STORAGE_ROOT": config["cloud_server_storage_root"],
         "AEROBAG_CLOUD_SERVER_SECRET": config["cloud_server_secret_target"],
         "AEROBAG_CLOUD_SERVER_POLICY": config["cloud_server_policy_target"],
         "AEROBAG_CLIENT_DEBUG_LISTEN": CLIENT_DEBUG_LISTEN,
@@ -944,6 +946,8 @@ def main() -> int:
         "services": {
             "aerobag-live-feeds.service": service_state("aerobag-live-feeds.service"),
             "aerobag-cloud-server.service": service_state("aerobag-cloud-server.service"),
+            "aerobag-cloud-backup.service": service_state("aerobag-cloud-backup.service"),
+            "aerobag-cloud-backup.timer": service_state("aerobag-cloud-backup.timer"),
             "aerobag-client-debug-log.service": service_state("aerobag-client-debug-log.service"),
             "aerobag-build-watch.service": service_state("aerobag-build-watch.service"),
             "aerobag-pipeline-health.service": service_state("aerobag-pipeline-health.service"),
@@ -1256,7 +1260,7 @@ Type=simple
 User=aerobag-cloud
 Group=aerobag-cloud
 EnvironmentFile=/etc/aerobag/env
-ExecStart=/bin/bash -lc 'source /etc/aerobag/env; exec "$CARGO_TARGET_DIR/release/aerobag-cloud-serverd" serve --data-root "$AEROBAG_CLOUD_SERVER_DATA_ROOT" --policy "$AEROBAG_CLOUD_SERVER_POLICY" --server-secret "$AEROBAG_CLOUD_SERVER_SECRET" --listen "$AEROBAG_CLOUD_SERVER_LISTEN"'
+ExecStart=/bin/bash -lc 'source /etc/aerobag/env; exec "$CARGO_TARGET_DIR/release/aerobag-cloud-serverd" serve --storage-root "$AEROBAG_CLOUD_SERVER_STORAGE_ROOT" --policy "$AEROBAG_CLOUD_SERVER_POLICY" --server-secret "$AEROBAG_CLOUD_SERVER_SECRET" --listen "$AEROBAG_CLOUD_SERVER_LISTEN"'
 Restart=always
 RestartSec=10
 UMask=0077
@@ -1268,12 +1272,54 @@ ProtectHome=true
 ProtectKernelModules=true
 ProtectKernelTunables=true
 ProtectSystem=strict
-ReadWritePaths={config['cloud_server_data_root']}
+ReadWritePaths={config['cloud_server_storage_root']}
 RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
 RestrictSUIDSGID=true
 
 [Install]
 WantedBy=multi-user.target
+"""
+
+
+def cloud_backup_unit(config: dict[str, Any]) -> str:
+    return f"""[Unit]
+Description=Snapshot Aerobag Cloud Server storage
+After=local-fs.target
+
+[Service]
+Type=oneshot
+User=aerobag-cloud
+Group=aerobag-cloud
+EnvironmentFile=/etc/aerobag/env
+ExecStart=/bin/bash -lc 'source /etc/aerobag/env; exec "$CARGO_TARGET_DIR/release/aerobag-cloud-serverd" backup --storage-root "$AEROBAG_CLOUD_SERVER_STORAGE_ROOT" --policy "$AEROBAG_CLOUD_SERVER_POLICY"'
+UMask=0077
+NoNewPrivileges=true
+PrivateDevices=true
+PrivateTmp=true
+ProtectControlGroups=true
+ProtectHome=true
+ProtectKernelModules=true
+ProtectKernelTunables=true
+ProtectSystem=strict
+ReadWritePaths={config['cloud_server_storage_root']}
+RestrictAddressFamilies=AF_UNIX
+RestrictSUIDSGID=true
+"""
+
+
+def cloud_backup_timer(config: dict[str, Any]) -> str:
+    interval_seconds = cloud_policy(config)["backup"]["interval_seconds"]
+    return f"""[Unit]
+Description=Hourly Aerobag Cloud Server snapshot
+
+[Timer]
+OnBootSec=5m
+OnUnitActiveSec={interval_seconds}s
+RandomizedDelaySec=5m
+Unit=aerobag-cloud-backup.service
+
+[Install]
+WantedBy=timers.target
 """
 
 
@@ -1459,6 +1505,18 @@ def write_remote_config(
     )
     write_remote_file(
         config,
+        f"{SYSTEMD_DIR}/aerobag-cloud-backup.service",
+        cloud_backup_unit(config),
+        dry_run=dry_run,
+    )
+    write_remote_file(
+        config,
+        f"{SYSTEMD_DIR}/aerobag-cloud-backup.timer",
+        cloud_backup_timer(config),
+        dry_run=dry_run,
+    )
+    write_remote_file(
+        config,
         f"{SYSTEMD_DIR}/aerobag-client-debug-log.service",
         client_debug_log_unit(),
         dry_run=dry_run,
@@ -1515,8 +1573,39 @@ def prepare_remote_paths(config: dict[str, Any], *, dry_run: bool) -> None:
         "useradd --system --home-dir /nonexistent --shell /usr/sbin/nologin aerobag-cloud; fi\n"
         + "\n".join(f"install -d -m 0755 {shell_quote(path)}" for path in paths)
         + "\n"
-        + f"install -d -m 0700 -o aerobag-cloud -g aerobag-cloud {shell_quote(config['cloud_server_data_root'])}"
+        + f"install -d -m 0700 -o aerobag-cloud -g aerobag-cloud {shell_quote(config['cloud_server_storage_root'])}"
     )
+    run_ssh(config, command, dry_run=dry_run)
+
+
+def migrate_cloud_storage_layout(config: dict[str, Any], *, dry_run: bool) -> None:
+    legacy_root = f"{config['data_root']}/cloud"
+    storage_root = config["cloud_server_storage_root"]
+    command = textwrap.dedent(
+        f"""
+        set -euo pipefail
+        legacy={shell_quote(legacy_root)}
+        storage={shell_quote(storage_root)}
+        if [ -f "$legacy/cloud.sqlite3" ]; then
+          if [ -e "$storage/live/cloud.sqlite3" ]; then
+            echo "both legacy and current ACS databases exist" >&2
+            exit 1
+          fi
+          systemctl stop aerobag-cloud-server.service 2>/dev/null || true
+          install -d -m 0700 -o aerobag-cloud -g aerobag-cloud "$storage/live"
+          mv "$legacy/cloud.sqlite3" "$storage/live/cloud.sqlite3"
+          for suffix in -wal -shm; do
+            if [ -e "$legacy/cloud.sqlite3$suffix" ]; then
+              mv "$legacy/cloud.sqlite3$suffix" "$storage/live/cloud.sqlite3$suffix"
+            fi
+          done
+          if [ -d "$legacy/blobs" ]; then
+            mv "$legacy/blobs" "$storage/live/blobs"
+          fi
+          chown -R aerobag-cloud:aerobag-cloud "$storage"
+        fi
+        """
+    ).strip()
     run_ssh(config, command, dry_run=dry_run)
 
 
@@ -1530,7 +1619,7 @@ def reload_services(config: dict[str, Any], *, dry_run: bool) -> None:
         systemctl daemon-reload
         systemctl enable nginx.service
         systemctl restart nginx.service
-        systemctl enable aerobag-live-feeds.service aerobag-cloud-server.service aerobag-client-debug-log.service aerobag-build-watch.service aerobag-pipeline-health.service aerobag-build-product.timer aerobag-health.timer
+        systemctl enable aerobag-live-feeds.service aerobag-cloud-server.service aerobag-cloud-backup.timer aerobag-client-debug-log.service aerobag-build-watch.service aerobag-pipeline-health.service aerobag-build-product.timer aerobag-health.timer
         """
     ).strip()
     run_ssh(config, command, dry_run=dry_run)
@@ -1549,6 +1638,7 @@ def start_runtime(config: dict[str, Any], *, skip_build: bool, dry_run: bool) ->
             systemctl start aerobag-health.service || true
             systemctl start aerobag-build-product.timer
             systemctl start aerobag-health.timer
+            systemctl start aerobag-cloud-backup.timer
             """
         ).strip()
         run_ssh(config, command, dry_run=dry_run)
@@ -1565,6 +1655,7 @@ def start_runtime(config: dict[str, Any], *, skip_build: bool, dry_run: bool) ->
         systemctl start --no-block aerobag-build-product.service
         systemctl start aerobag-build-product.timer
         systemctl start aerobag-health.timer
+        systemctl start aerobag-cloud-backup.timer
         systemctl start aerobag-health.service || true
         """
     ).strip()
@@ -1606,6 +1697,7 @@ def deploy(config: dict[str, Any], args: argparse.Namespace) -> None:
     if args.runtime_config_only:
         deployed_rev = remote_deployed_rev(config, dry_run=args.dry_run)
         prepare_remote_paths(config, dry_run=args.dry_run)
+        migrate_cloud_storage_layout(config, dry_run=args.dry_run)
         install_nms_notams_credential(config, dry_run=args.dry_run)
         install_cloud_server_secret(config, dry_run=args.dry_run)
         install_cloud_server_policy(config, dry_run=args.dry_run)
@@ -1626,6 +1718,7 @@ def deploy(config: dict[str, Any], args: argparse.Namespace) -> None:
     install_bootstrap_packages(config, dry_run=args.dry_run)
     stop_stale_units(config, dry_run=args.dry_run)
     prepare_remote_paths(config, dry_run=args.dry_run)
+    migrate_cloud_storage_layout(config, dry_run=args.dry_run)
 
     timestamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
     remote_bundle_path = f"/tmp/aerobag-deploy-{timestamp}.bundle"

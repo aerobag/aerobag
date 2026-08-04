@@ -12,7 +12,7 @@
   ],
   "live_feeds_listen": "127.0.0.1:8095",
   "cloud_server_listen": "127.0.0.1:8099",
-  "cloud_server_data_root": "/mnt/aerobag-data/cloud",
+  "cloud_server_storage_root": "/mnt/aerobag-data/cloud-storage",
   "cloud_server_secret_source": "/root/aerobag-credentials/aerobag-cloud-server-production.bin",
   "cloud_server_secret_target": "/etc/aerobag/secrets/aerobag-cloud-server.bin",
   "cloud_server_policy_source": "deploy/aerobag-cloud-policy.json",

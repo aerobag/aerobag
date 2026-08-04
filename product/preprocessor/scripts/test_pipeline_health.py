@@ -94,6 +94,16 @@ class PipelineHealthTests(unittest.TestCase):
                                 "rejected_in_window": 0,
                                 "lower_is_worse": True,
                             },
+                            {
+                                "id": "backup_elapsed_ms",
+                                "current": 120000,
+                                "peak": 120000,
+                                "warning_at": 30000,
+                                "critical_at": 120000,
+                                "hard_limit": None,
+                                "window_seconds": None,
+                                "rejected_in_window": 0,
+                            },
                         ],
                     },
                 },
@@ -113,6 +123,10 @@ class PipelineHealthTests(unittest.TestCase):
         connections = metric(evaluation, "aerobag_cloud.current_sse_connections")
         self.assertEqual(connections["severity"], "critical")
         self.assertEqual(connections["critical_threshold"], 20)
+        backup = metric(evaluation, "aerobag_cloud.backup_elapsed_ms")
+        self.assertEqual(backup["severity"], "critical")
+        self.assertEqual(backup["warning_threshold"], 30000)
+        self.assertEqual(backup["critical_threshold"], 120000)
         creation_rejections = metric(
             evaluation,
             "aerobag_cloud.account_creation_network_rate_rejections_5m",

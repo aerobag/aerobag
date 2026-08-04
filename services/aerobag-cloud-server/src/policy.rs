@@ -9,7 +9,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::{StoreConfig, TokenBucketConfig};
 
-pub const ACS_POLICY_SCHEMA_VERSION: u32 = 1;
+pub const ACS_POLICY_SCHEMA_VERSION: u32 = 2;
 
 #[cfg(test)]
 pub(crate) fn checked_in_test_policy() -> AcsRuntimePolicy {
@@ -29,6 +29,7 @@ pub struct AcsRuntimePolicy {
     pub rate_limits: RateLimitPolicy,
     pub sse: SsePolicy,
     pub garbage_collection: GarbageCollectionPolicy,
+    pub backup: BackupPolicy,
     pub monitoring: MonitoringPolicy,
 }
 
@@ -48,6 +49,8 @@ pub struct StoragePolicy {
     pub global_storage_limit_bytes: u64,
     pub inline_ciphertext_threshold_bytes: u64,
     pub retained_sse_events: u64,
+    pub write_resume_headroom_bytes: u64,
+    pub write_resume_min_filesystem_free_bytes: u64,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -85,6 +88,13 @@ pub struct GarbageCollectionPolicy {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
+pub struct BackupPolicy {
+    pub interval_seconds: u64,
+    pub retained_snapshots: u64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct MonitoringPolicy {
     pub stored_bytes_warning: u64,
     pub stored_bytes_critical: u64,
@@ -96,6 +106,18 @@ pub struct MonitoringPolicy {
     pub gc_database_pause_ms_critical: u64,
     pub gc_elapsed_ms_warning: u64,
     pub gc_elapsed_ms_critical: u64,
+    pub backup_age_seconds_warning: u64,
+    pub backup_age_seconds_critical: u64,
+    pub backup_elapsed_ms_warning: u64,
+    pub backup_elapsed_ms_critical: u64,
+    pub backup_sqlite_snapshot_ms_warning: u64,
+    pub backup_sqlite_snapshot_ms_critical: u64,
+    pub backup_wal_growth_bytes_warning: u64,
+    pub backup_wal_growth_bytes_critical: u64,
+    pub backup_linked_blob_count_warning: u64,
+    pub backup_linked_blob_count_critical: u64,
+    pub backup_linked_blob_bytes_warning: u64,
+    pub backup_linked_blob_bytes_critical: u64,
 }
 
 impl AcsRuntimePolicy {
@@ -148,8 +170,19 @@ impl AcsRuntimePolicy {
             "storage.retained_sse_events",
             self.storage.retained_sse_events,
         )?;
+        positive(
+            "storage.write_resume_headroom_bytes",
+            self.storage.write_resume_headroom_bytes,
+        )?;
+        positive(
+            "storage.write_resume_min_filesystem_free_bytes",
+            self.storage.write_resume_min_filesystem_free_bytes,
+        )?;
         if self.storage.anonymous_account_quota_bytes > self.storage.global_storage_limit_bytes {
             bail!("anonymous account quota exceeds the global storage limit");
+        }
+        if self.storage.write_resume_headroom_bytes >= self.storage.global_storage_limit_bytes {
+            bail!("write resume headroom must be below the global storage limit");
         }
         for (label, bucket) in [
             (
@@ -196,6 +229,11 @@ impl AcsRuntimePolicy {
             "garbage_collection.interval_seconds",
             self.garbage_collection.interval_seconds,
         )?;
+        positive("backup.interval_seconds", self.backup.interval_seconds)?;
+        positive("backup.retained_snapshots", self.backup.retained_snapshots)?;
+        if self.monitoring.backup_age_seconds_warning < self.backup.interval_seconds {
+            bail!("backup age warning must not be shorter than the backup interval");
+        }
         validate_thresholds(
             "monitoring.stored_bytes",
             self.monitoring.stored_bytes_warning,
@@ -223,12 +261,46 @@ impl AcsRuntimePolicy {
             self.monitoring.gc_elapsed_ms_warning,
             self.monitoring.gc_elapsed_ms_critical,
         )?;
+        for (label, warning, critical) in [
+            (
+                "monitoring.backup_age_seconds",
+                self.monitoring.backup_age_seconds_warning,
+                self.monitoring.backup_age_seconds_critical,
+            ),
+            (
+                "monitoring.backup_elapsed_ms",
+                self.monitoring.backup_elapsed_ms_warning,
+                self.monitoring.backup_elapsed_ms_critical,
+            ),
+            (
+                "monitoring.backup_sqlite_snapshot_ms",
+                self.monitoring.backup_sqlite_snapshot_ms_warning,
+                self.monitoring.backup_sqlite_snapshot_ms_critical,
+            ),
+            (
+                "monitoring.backup_wal_growth_bytes",
+                self.monitoring.backup_wal_growth_bytes_warning,
+                self.monitoring.backup_wal_growth_bytes_critical,
+            ),
+            (
+                "monitoring.backup_linked_blob_count",
+                self.monitoring.backup_linked_blob_count_warning,
+                self.monitoring.backup_linked_blob_count_critical,
+            ),
+            (
+                "monitoring.backup_linked_blob_bytes",
+                self.monitoring.backup_linked_blob_bytes_warning,
+                self.monitoring.backup_linked_blob_bytes_critical,
+            ),
+        ] {
+            validate_pair(label, warning, critical)?;
+        }
         Ok(())
     }
 
-    pub fn store_config(&self, data_root: std::path::PathBuf) -> StoreConfig {
+    pub fn store_config(&self, storage_root: std::path::PathBuf) -> StoreConfig {
         StoreConfig {
-            data_root,
+            storage_root,
             anonymous_quota_bytes: self.storage.anonymous_account_quota_bytes,
             anonymous_object_limit: self.storage.anonymous_account_object_limit,
             global_storage_limit_bytes: self.storage.global_storage_limit_bytes,
@@ -252,6 +324,23 @@ impl AcsRuntimePolicy {
             gc_database_pause_ms_critical: self.monitoring.gc_database_pause_ms_critical,
             gc_elapsed_ms_warning: self.monitoring.gc_elapsed_ms_warning,
             gc_elapsed_ms_critical: self.monitoring.gc_elapsed_ms_critical,
+            write_resume_headroom_bytes: self.storage.write_resume_headroom_bytes,
+            write_resume_min_filesystem_free_bytes: self
+                .storage
+                .write_resume_min_filesystem_free_bytes,
+            backup_retained_snapshots: self.backup.retained_snapshots,
+            backup_age_seconds_warning: self.monitoring.backup_age_seconds_warning,
+            backup_age_seconds_critical: self.monitoring.backup_age_seconds_critical,
+            backup_elapsed_ms_warning: self.monitoring.backup_elapsed_ms_warning,
+            backup_elapsed_ms_critical: self.monitoring.backup_elapsed_ms_critical,
+            backup_sqlite_snapshot_ms_warning: self.monitoring.backup_sqlite_snapshot_ms_warning,
+            backup_sqlite_snapshot_ms_critical: self.monitoring.backup_sqlite_snapshot_ms_critical,
+            backup_wal_growth_bytes_warning: self.monitoring.backup_wal_growth_bytes_warning,
+            backup_wal_growth_bytes_critical: self.monitoring.backup_wal_growth_bytes_critical,
+            backup_linked_blob_count_warning: self.monitoring.backup_linked_blob_count_warning,
+            backup_linked_blob_count_critical: self.monitoring.backup_linked_blob_count_critical,
+            backup_linked_blob_bytes_warning: self.monitoring.backup_linked_blob_bytes_warning,
+            backup_linked_blob_bytes_critical: self.monitoring.backup_linked_blob_bytes_critical,
         }
     }
 }
@@ -339,8 +428,8 @@ mod tests {
     #[test]
     fn unknown_fields_are_rejected() {
         let text = include_str!("../../../deploy/aerobag-cloud-policy.json").replace(
-            "\"schema_version\": 1,",
-            "\"schema_version\": 1, \"surprise\": true,",
+            "\"schema_version\": 2,",
+            "\"schema_version\": 2, \"surprise\": true,",
         );
         assert!(serde_json::from_str::<AcsRuntimePolicy>(&text).is_err());
     }

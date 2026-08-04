@@ -41,8 +41,9 @@ Important fields:
 - `cargo_target_dir`: persistent Rust target dir shared across deploys.
 - `cloud_server_listen`: localhost ACS listener. Production uses `127.0.0.1:8099`
   because `8096` is already the client-debug receiver.
-- `cloud_server_data_root`: persistent ACS SQLite/blob state, outside published
-  artifacts.
+- `cloud_server_storage_root`: persistent ACS storage, outside published
+  artifacts. It contains `live/`, hourly hard-linked `snapshots/`, preserved
+  pre-restore trees under `recovery/`, and stable process locks under `locks/`.
 - `cloud_server_policy_source` and `cloud_server_policy_target`: the versioned,
   validated runtime policy and its installed location.
 - `cloud_server_secret_source` and `cloud_server_secret_target`: the
@@ -53,6 +54,31 @@ Important fields:
 
 The package list is not host config. It lives in
 `deploy/prod-packages.txt` and is installed from the checked-out repo on prod.
+
+## Aerobag Cloud Backups
+
+`aerobag-cloud-backup.timer` creates online snapshots under
+`$AEROBAG_CLOUD_SERVER_STORAGE_ROOT/snapshots/`. The daemon remains available:
+the backup briefly pins a WAL read snapshot while copying SQLite, then releases
+that read transaction before hard-linking the immutable blobs protected by
+`locks/blob-reclamation.lock`. External backup software should archive complete
+`snapshot-*` directories, never `live/` directly.
+
+Operator commands use the deployed release binary and policy:
+
+```bash
+aerobag-cloud-serverd backup --storage-root "$AEROBAG_CLOUD_SERVER_STORAGE_ROOT" --policy "$AEROBAG_CLOUD_SERVER_POLICY"
+aerobag-cloud-serverd verify-backup --storage-root "$AEROBAG_CLOUD_SERVER_STORAGE_ROOT" --policy "$AEROBAG_CLOUD_SERVER_POLICY" SNAPSHOT
+systemctl stop aerobag-cloud-server.service
+aerobag-cloud-serverd restore --storage-root "$AEROBAG_CLOUD_SERVER_STORAGE_ROOT" --policy "$AEROBAG_CLOUD_SERVER_POLICY" SNAPSHOT
+systemctl start aerobag-cloud-server.service
+```
+
+Restore refuses to run while the daemon owns `locks/serve.lock`, verifies the
+entire snapshot first, and retains the replaced `live/` tree under `recovery/`.
+Returning a read-only service to normal operation uses checked
+`resume-writes`; the separately named `force-resume-writes --reason ...`
+records an operator audit event.
 The deploy script installs only a tiny bootstrap set before the checkout exists:
 `ca-certificates`, `git`, and `rsync`.
 
@@ -155,7 +181,9 @@ The deploy installs these systemd units:
 - `aerobag-live-feeds.service`: continuous live-feeds daemon.
 - `aerobag-cloud-server.service`: localhost-only Aerobag Cloud daemon running as
   the dedicated `aerobag-cloud` user with state under
-  `/mnt/aerobag-data/cloud`.
+  `/mnt/aerobag-data/cloud-storage`.
+- `aerobag-cloud-backup.service` and `.timer`: online ACS snapshots on the
+  policy-defined interval.
 - `aerobag-client-debug-log.service`: localhost-only receiver for browser
   `POST /__debug_log` batches.
 - `aerobag-build-watch.service`: localhost-only web dashboard and JSON endpoint

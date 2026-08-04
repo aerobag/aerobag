@@ -4,24 +4,30 @@
 
 use std::{
     env,
-    fs::{self, File, OpenOptions},
     net::SocketAddr,
     path::{Path, PathBuf},
     str::FromStr,
 };
 
-use aerobag_cloud_server::{run_server, AccountMode, AcsRuntimePolicy, CloudStore, ServerConfig};
+use aerobag_cloud_server::{
+    create_backup, restore_backup, run_server, verify_backup, AccountMode, AcsRuntimePolicy,
+    CloudStore, ServerConfig, StorageLayout,
+};
 use anyhow::{bail, Context as _};
-use fs2::FileExt as _;
 
 fn usage() -> &'static str {
     "usage:
-  aerobag-cloud-serverd serve --data-root <path> --policy <path> --server-secret <path> [--listen <addr>]
-  aerobag-cloud-serverd gc --data-root <path> --policy <path> [--grace-seconds <n>]
-  aerobag-cloud-serverd set-mode --data-root <path> --policy <path> <normal|read-only|suspended>
-  aerobag-cloud-serverd set-account-mode --data-root <path> --policy <path> <account> <normal|read-only|suspended>
-  aerobag-cloud-serverd set-account-quota --data-root <path> --policy <path> <account> <bytes>
-  aerobag-cloud-serverd delete-account --data-root <path> --policy <path> <account>"
+  aerobag-cloud-serverd serve --storage-root <path> --policy <path> --server-secret <path> [--listen <addr>]
+  aerobag-cloud-serverd gc --storage-root <path> --policy <path> [--grace-seconds <n>]
+  aerobag-cloud-serverd backup --storage-root <path> --policy <path>
+  aerobag-cloud-serverd verify-backup --storage-root <path> --policy <path> <snapshot-path>
+  aerobag-cloud-serverd restore --storage-root <path> --policy <path> <snapshot-path>
+  aerobag-cloud-serverd set-mode --storage-root <path> --policy <path> <read-only|suspended>
+  aerobag-cloud-serverd resume-writes --storage-root <path> --policy <path>
+  aerobag-cloud-serverd force-resume-writes --storage-root <path> --policy <path> --reason <text>
+  aerobag-cloud-serverd set-account-mode --storage-root <path> --policy <path> <account> <normal|read-only|suspended>
+  aerobag-cloud-serverd set-account-quota --storage-root <path> --policy <path> <account> <bytes>
+  aerobag-cloud-serverd delete-account --storage-root <path> --policy <path> <account>"
 }
 
 #[tokio::main]
@@ -31,9 +37,9 @@ async fn main() -> anyhow::Result<()> {
         bail!(usage());
     }
     let command = args.remove(0);
-    let data_root = take_option(&mut args, "--data-root")
+    let storage_root = take_option(&mut args, "--storage-root")
         .map(PathBuf::from)
-        .context("--data-root is required")?;
+        .context("--storage-root is required")?;
     let policy_path = take_option(&mut args, "--policy")
         .map(PathBuf::from)
         .context("--policy is required")?;
@@ -46,8 +52,10 @@ async fn main() -> anyhow::Result<()> {
             let listen =
                 take_option(&mut args, "--listen").unwrap_or_else(|| "127.0.0.1:18096".to_string());
             reject_extra(&args)?;
-            let _serve_lock = acquire_serve_lock(&data_root)?;
-            let store = CloudStore::open(policy.store_config(data_root.clone()))?;
+            let layout = StorageLayout::new(storage_root.clone());
+            layout.ensure()?;
+            let _serve_lock = layout.acquire_serve_lock()?;
+            let store = CloudStore::open(policy.store_config(storage_root.clone()))?;
             run_server(
                 store,
                 ServerConfig {
@@ -67,23 +75,58 @@ async fn main() -> anyhow::Result<()> {
                 bail!("--grace-seconds must not be negative");
             }
             reject_extra(&args)?;
-            let store = open_store(&data_root, &policy)?;
+            let store = open_store(&storage_root, &policy)?;
             let report = store.run_gc(now_epoch_ms(), grace_seconds * 1_000)?;
             println!("{}", serde_json::to_string_pretty(&report)?);
             Ok(())
         }
-        "set-mode" => {
-            let mode = parse_mode(required_arg(&mut args, "mode")?)?;
+        "backup" => {
             reject_extra(&args)?;
-            let store = open_store(&data_root, &policy)?;
+            let report = create_backup(&policy.store_config(storage_root.clone()), now_epoch_ms())?;
+            println!("{}", serde_json::to_string_pretty(&report)?);
+            Ok(())
+        }
+        "verify-backup" => {
+            let snapshot = PathBuf::from(required_arg(&mut args, "snapshot path")?);
+            reject_extra(&args)?;
+            let manifest = verify_backup(&snapshot)?;
+            println!("{}", serde_json::to_string_pretty(&manifest)?);
+            Ok(())
+        }
+        "restore" => {
+            let snapshot = PathBuf::from(required_arg(&mut args, "snapshot path")?);
+            reject_extra(&args)?;
+            let report = restore_backup(&storage_root, &snapshot, now_epoch_ms())?;
+            println!("{}", serde_json::to_string_pretty(&report)?);
+            Ok(())
+        }
+        "set-mode" => {
+            let mode = parse_read_only_mode(required_arg(&mut args, "mode")?)?;
+            reject_extra(&args)?;
+            let store = open_store(&storage_root, &policy)?;
             store.set_service_mode(mode, now_epoch_ms())?;
+            Ok(())
+        }
+        "resume-writes" => {
+            reject_extra(&args)?;
+            let store = open_store(&storage_root, &policy)?;
+            let report = store.resume_writes(now_epoch_ms())?;
+            println!("{}", serde_json::to_string_pretty(&report)?);
+            Ok(())
+        }
+        "force-resume-writes" => {
+            let reason = take_option(&mut args, "--reason").context("--reason is required")?;
+            reject_extra(&args)?;
+            let store = open_store(&storage_root, &policy)?;
+            let report = store.force_resume_writes(&reason, now_epoch_ms())?;
+            println!("{}", serde_json::to_string_pretty(&report)?);
             Ok(())
         }
         "set-account-mode" => {
             let account = required_arg(&mut args, "account")?;
             let mode = parse_mode(required_arg(&mut args, "mode")?)?;
             reject_extra(&args)?;
-            let store = open_store(&data_root, &policy)?;
+            let store = open_store(&storage_root, &policy)?;
             store.set_account_mode(&account, mode, now_epoch_ms())?;
             Ok(())
         }
@@ -93,14 +136,14 @@ async fn main() -> anyhow::Result<()> {
                 .parse::<u64>()
                 .context("invalid quota bytes")?;
             reject_extra(&args)?;
-            let store = open_store(&data_root, &policy)?;
+            let store = open_store(&storage_root, &policy)?;
             store.set_account_quota(&account, quota, now_epoch_ms())?;
             Ok(())
         }
         "delete-account" => {
             let account = required_arg(&mut args, "account")?;
             reject_extra(&args)?;
-            let store = open_store(&data_root, &policy)?;
+            let store = open_store(&storage_root, &policy)?;
             store.delete_account(&account)?;
             Ok(())
         }
@@ -108,29 +151,10 @@ async fn main() -> anyhow::Result<()> {
     }
 }
 
-fn open_store(data_root: &Path, policy: &AcsRuntimePolicy) -> anyhow::Result<CloudStore> {
+fn open_store(storage_root: &Path, policy: &AcsRuntimePolicy) -> anyhow::Result<CloudStore> {
     Ok(CloudStore::open(
-        policy.store_config(data_root.to_path_buf()),
+        policy.store_config(storage_root.to_path_buf()),
     )?)
-}
-
-fn acquire_serve_lock(data_root: &Path) -> anyhow::Result<File> {
-    fs::create_dir_all(data_root).context("create cloud data root for daemon lock")?;
-    let path = data_root.join("serve.lock");
-    let file = OpenOptions::new()
-        .create(true)
-        .truncate(false)
-        .read(true)
-        .write(true)
-        .open(&path)
-        .with_context(|| format!("open ACS daemon lock {}", path.display()))?;
-    file.try_lock_exclusive().with_context(|| {
-        format!(
-            "another Aerobag Cloud Server daemon already owns {}",
-            path.display()
-        )
-    })?;
-    Ok(file)
 }
 
 fn take_option(args: &mut Vec<String>, name: &str) -> Option<String> {
@@ -165,6 +189,14 @@ fn parse_mode(value: String) -> anyhow::Result<AccountMode> {
     }
 }
 
+fn parse_read_only_mode(value: String) -> anyhow::Result<AccountMode> {
+    match value.as_str() {
+        "read-only" => Ok(AccountMode::ReadOnly),
+        "suspended" => Ok(AccountMode::Suspended),
+        _ => bail!("invalid service mode {value:?}; use resume-writes to return to normal"),
+    }
+}
+
 fn now_epoch_ms() -> i64 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
@@ -180,9 +212,10 @@ mod tests {
     #[test]
     fn serve_lock_rejects_a_second_daemon_and_releases_on_drop() {
         let root = TempDir::new().unwrap();
-        let first = acquire_serve_lock(root.path()).unwrap();
-        assert!(acquire_serve_lock(root.path()).is_err());
+        let layout = StorageLayout::new(root.path().to_path_buf());
+        let first = layout.acquire_serve_lock().unwrap();
+        assert!(layout.acquire_serve_lock().is_err());
         drop(first);
-        acquire_serve_lock(root.path()).unwrap();
+        layout.acquire_serve_lock().unwrap();
     }
 }

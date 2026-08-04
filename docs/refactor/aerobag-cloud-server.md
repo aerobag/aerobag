@@ -488,7 +488,7 @@ root.
 
 - build and install the release daemon;
 - install and maintain `aerobag-cloud-server.service`;
-- persist state under `/mnt/aerobag-data/cloud`, never under the artifact tree;
+- persist state under `/mnt/aerobag-data/cloud-storage`, never under the artifact tree;
 - install server-only secrets under `/etc/aerobag/secrets`;
 - expose `https://aerobag.org/cloud/` through nginx with SSE buffering disabled
   and an appropriate streaming timeout;
@@ -776,7 +776,7 @@ must be added to this plan or discussed; they are not license to expand scope.
   `/tmp/aerobag-cloud-rate-limit-global-ux.png`.
 - **Deployment wiring:** production source now builds the release ACS daemon,
   installs a hardened `aerobag-cloud-server.service`, keeps state under
-  `/mnt/aerobag-data/cloud`, installs the daemon secret outside that tree, and
+  `/mnt/aerobag-data/cloud-storage`, installs the daemon secret outside that tree, and
   routes `/cloud/` through the host-local nginx with SSE buffering disabled.
   ACS is included in deploy health, pipeline-health dependencies, service
   lifecycle, and deployment config tests. This prepares deployment but does
@@ -795,6 +795,22 @@ must be added to this plan or discussed; they are not license to expand scope.
   proxies, and monitoring thresholds now come from one strict, versioned JSON
   policy consumed by both dev-stack and production. Unknown fields, invalid
   threshold ordering, and inconsistent ceilings fail startup.
+- **Online backup and recovery:** ACS storage has an explicit
+  `live/`, `snapshots/`, `recovery/`, and `locks/` layout. An hourly service
+  holds a cross-process blob-reclamation lock, uses SQLite's online backup API
+  from a short pinned WAL snapshot, then hard-links that snapshot's exact set
+  of immutable ready blobs. Verification checks SQLite integrity plus database
+  and blob hashes. Offline restore atomically replaces `live/` while preserving
+  the previous tree under `recovery/`. GC is the only code allowed to unlink an
+  installed blob generation.
+- Backup age, total duration, SQLite snapshot duration, WAL growth, linked blob
+  count, and linked blob bytes are status metrics with explicit warning and
+  critical thresholds. Pipeline health evaluates those thresholds without a
+  backup-specific side channel.
+- **Global read-only recovery:** `set-mode normal` is not an operator command.
+  `resume-writes` checks SQLite integrity, configured quota headroom, and free
+  filesystem space. `force-resume-writes` is separately named, requires a
+  reason, and records that reason in the operator audit table.
 
 ## TODO Before Production
 
@@ -813,11 +829,6 @@ recorded rather than hidden behind compatibility behavior or guessed policy:
   pipeline-health alarms on bad pauses. If measurements warrant it, refactor marking into bounded
   read phases and short validated delete transactions rather than merely
   increasing an alarm threshold.
-- **Global read-only recovery:** exhausting the configured global storage
-  ceiling persistently latches the service read-only. Replace the unrestricted
-  `set-mode normal` recovery path with a `resume-writes` operation that verifies
-  current usage and required headroom after GC, deletion, or a raised ceiling.
-  Keep any forced override explicit and separately named.
 
 ## Deferred Work
 

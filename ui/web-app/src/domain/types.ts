@@ -330,6 +330,12 @@ export type ProcedureLoadOption = {
   label: string;
 };
 
+export type ProcedureLoadMenu = {
+  header: string;
+  header_tone: "normal" | "destructive";
+  options: ProcedureLoadOption[];
+};
+
 export type FlightPlanEntryTokenState = "neutral" | "recognized" | "invalid";
 
 export type FlightPlanEntryToken = {

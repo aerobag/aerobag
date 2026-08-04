@@ -2223,6 +2223,22 @@ button {
   display: contents;
 }
 
+.trayHeader {
+  width: calc(var(--thumb) * 4);
+  min-width: calc(var(--thumb) * 4);
+  padding: calc(var(--thumb) * 0.08) calc(var(--thumb) * 0.14);
+  box-sizing: border-box;
+  color: var(--theme-button-normal-fg);
+  font-size: calc(var(--thumb) * 0.18);
+  font-weight: 800;
+  line-height: 1.25;
+  letter-spacing: 0;
+}
+
+.trayHeader.isDestructive {
+  color: var(--theme-situation-status-unavailable-fg);
+}
+
 .traySeparator {
   width: calc(var(--thumb) * 4);
   min-width: calc(var(--thumb) * 4);

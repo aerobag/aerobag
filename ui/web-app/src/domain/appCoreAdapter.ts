@@ -20,7 +20,7 @@ import type {
   OwnshipSourceRegistration,
   OwnshipSourceStatusUpdate,
   PlaybackUiState,
-  ProcedureLoadOption,
+  ProcedureLoadMenu,
   ProcedureKind,
   ProcedureOptions,
   ProcedureSummary,
@@ -807,7 +807,7 @@ export interface UiSession {
   prepareAirwayPresentationAtFlightPlanRow(rowUid: string, airwayName: string): Promise<AirwayPresentationPlan>;
   insertAirwayAtFlightPlanRow(rowUid: string, presentation: AirwayPresentationPlan, entryPointUid: string, exitPointUid: string): Promise<UiSessionSnapshot>;
   selectProcedureAtFlightPlanRow(rowUid: string, airportId: string, procedureId: string, kind: ProcedureKind, runwayTransition: string | null, enrouteTransition: string | null): Promise<UiSessionSnapshot>;
-  describePlateProcedureLoads(plateId: string): Promise<ProcedureLoadOption[]>;
+  describePlateProcedureLoads(plateId: string): Promise<ProcedureLoadMenu>;
   loadPlateProcedure(loadId: string): Promise<UiSessionSnapshot>;
   restoreDirectTo(): Promise<UiSessionSnapshot>;
   performFlightPlanRowAction(rowUid: string, actionUid: string): Promise<UiSessionSnapshot>;
@@ -1440,7 +1440,7 @@ export class WasmAppCoreAdapter implements AppCoreAdapter {
           trace);
       },
       describePlateProcedureLoads: async (plateId) => {
-        return queryFlightPlan<ProcedureLoadOption[]>({
+        return queryFlightPlan<ProcedureLoadMenu>({
           kind: "describe_plate_procedure_loads",
           plate_id: plateId,
         });

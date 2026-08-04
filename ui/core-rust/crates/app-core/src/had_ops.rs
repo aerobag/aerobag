@@ -25,19 +25,18 @@ use crate::{
         chart_page_airport_ids_from_plan, derive_chart_page_state_from_collections,
         ChartReferenceFamilyRecord, ChartReferenceFamilySummary, PlateAirportRecord,
     },
-    describe_plate_procedure_load_options, describe_show_plate_for_procedure,
-    flight_leg_distance_nm, flight_plan_contains_nav_ref, flight_plan_has_direct_to_overlay,
-    insert_airway_after_airway, insert_airway_after_waypoint, insert_waypoint,
-    prepare_airway_presentation, project_flight_plan_route_with_resolver, AirportId,
-    AirwayPresentationPlan, AirwayPresentationSelection, AirwaySegment, AirwaySuggestion, AppError,
-    AppErrorKind, AppResult, CifpTppMatchRow, FlightPlan, FlightPlanRouteSegment,
-    FlightPlanUiState, LatLon, LegDisplayElement, LegDisplayPath, LegDisplayPathStyle,
-    MaterializedProcedure, NavKvLookup, NavKvQuery, NavKvRoot, NavKvStore, NavRef,
-    NavSymbolFeature, PathTermination, PlateProcedureLoadCandidateInput, PolygonRecord,
-    ProcedureDiscontinuity, ProcedureKind, ProcedureLegProvenance, ProcedureLoadOption,
-    ProcedureOptions, ProcedureSegment, ProcedureSegmentRole, ProcedureSummary, ResolvedLeg,
-    ResolvedLegSource, RouteComponent, SequencingMode, WaypointIdentifierSuggestion,
-    REQUIRED_NAV_DB_CONTRACT_ID,
+    describe_plate_procedure_load_menu, describe_show_plate_for_procedure, flight_leg_distance_nm,
+    flight_plan_contains_nav_ref, flight_plan_has_direct_to_overlay, insert_airway_after_airway,
+    insert_airway_after_waypoint, insert_waypoint, prepare_airway_presentation,
+    project_flight_plan_route_with_resolver, AirportId, AirwayPresentationPlan,
+    AirwayPresentationSelection, AirwaySegment, AirwaySuggestion, AppError, AppErrorKind,
+    AppResult, CifpTppMatchRow, FlightPlan, FlightPlanRouteSegment, FlightPlanUiState, LatLon,
+    LegDisplayElement, LegDisplayPath, LegDisplayPathStyle, MaterializedProcedure, NavKvLookup,
+    NavKvQuery, NavKvRoot, NavKvStore, NavRef, NavSymbolFeature, PathTermination,
+    PlateProcedureLoadCandidateInput, PolygonRecord, ProcedureDiscontinuity, ProcedureKind,
+    ProcedureLegProvenance, ProcedureLoadMenu, ProcedureOptions, ProcedureSegment,
+    ProcedureSegmentRole, ProcedureSummary, ResolvedLeg, ResolvedLegSource, RouteComponent,
+    SequencingMode, WaypointIdentifierSuggestion, REQUIRED_NAV_DB_CONTRACT_ID,
 };
 
 #[derive(Debug, Clone, Copy, Default)]
@@ -3809,7 +3808,7 @@ pub(crate) fn describe_plate_loads(
     store: &NavKvStore,
     plan: &FlightPlan,
     plate_id: &str,
-) -> Result<Vec<ProcedureLoadOption>, HadReadError> {
+) -> Result<ProcedureLoadMenu, HadReadError> {
     let Some(rows) = read_optional::<Vec<CifpTppMatchRow>>(
         store,
         NavKvQuery::PlateProcedureCandidates {
@@ -3817,7 +3816,11 @@ pub(crate) fn describe_plate_loads(
         },
     )?
     else {
-        return Ok(Vec::new());
+        return Ok(ProcedureLoadMenu {
+            header: "Load approach".to_string(),
+            header_tone: crate::ProcedureLoadHeaderTone::Normal,
+            options: Vec::new(),
+        });
     };
     let mut grouped = HashMap::<String, Vec<CifpTppMatchRow>>::new();
     for row in rows {
@@ -3847,7 +3850,7 @@ pub(crate) fn describe_plate_loads(
             options,
         });
     }
-    describe_plate_procedure_load_options(plan, candidates).map_err(Into::into)
+    describe_plate_procedure_load_menu(plan, candidates).map_err(Into::into)
 }
 
 impl From<serde_json::Error> for HadReadError {

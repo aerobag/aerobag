@@ -74,10 +74,10 @@ use crate::{
     MetarProductPayload, MetarTilePayload, NavDbArtifactCandidate, NavDbOpenResult, NavKvLookup,
     NavKvPageProbeStats, NavKvQuery, NavKvRoot, NavKvStore, NavRef, OfflinePackagesLibraryCache,
     PlaybackUiState, PointTilePayload, ProcedureDiscontinuity, ProcedureKind, ProcedureLoadCommand,
-    RasterMapCatalog, RasterResourceMode, RasterTilePlan, ResolvedLeg, ResolvedLegSource,
-    RouteComponentViewKind, SequencingMode, SituationControlInput, SituationControlMenuItem,
-    TafProductPayload, TerrainOverlayQueryResult, TfrProductPayload, VectorAggregateTilePayload,
-    VectorIdentLabelStyle,
+    ProcedureLoadPlanTarget, RasterMapCatalog, RasterResourceMode, RasterTilePlan, ResolvedLeg,
+    ResolvedLegSource, RouteComponentViewKind, SequencingMode, SituationControlInput,
+    SituationControlMenuItem, TafProductPayload, TerrainOverlayQueryResult, TfrProductPayload,
+    VectorAggregateTilePayload, VectorIdentLabelStyle,
 };
 const WORLD_MERCATOR_MAX_LATITUDE: f64 = 85.051_128_78;
 const SETTINGS_PERSISTENCE_VERSION: u32 = 1;
@@ -5905,40 +5905,58 @@ pub(crate) fn load_plate_procedure_in_session(
     let mut sessions = lock_sessions();
     let session = session_mut(&mut sessions, handle)?;
     let mut plan = session_plan(session)?;
-    let ui = crate::project_ui_state(&plan);
-    let row = ui
-        .display_rows
-        .iter()
-        .find(|row| row.uid == command.row_uid)
-        .ok_or_else(|| AppError {
-            kind: AppErrorKind::InvalidFlightPlan,
-            message: format!("procedure load target row is stale: {}", command.row_uid),
-        })?;
-    let row_airport_id = row.chart_airport_id.as_deref().ok_or_else(|| AppError {
-        kind: AppErrorKind::InvalidFlightPlan,
-        message: "procedure load target row has no airport".to_string(),
-    })?;
-    if row_airport_id != command.airport_id {
-        return Err(AppError {
-            kind: AppErrorKind::InvalidFlightPlan,
-            message: format!(
-                "procedure load airport mismatch: row has {row_airport_id}, requested {}",
-                command.airport_id
-            ),
-        });
-    }
-    let component_uid = row.component_uid.as_deref().ok_or_else(|| AppError {
-        kind: AppErrorKind::InvalidFlightPlan,
-        message: "procedure load target row has no route component uid".to_string(),
-    })?;
-    let airport_component_index = plan
-        .route_component_uids
-        .iter()
-        .position(|uid| uid == component_uid)
-        .ok_or_else(|| AppError {
-            kind: AppErrorKind::InvalidFlightPlan,
-            message: format!("procedure load target component is stale: {component_uid}"),
-        })?;
+    let airport_component_index = match &command.target {
+        ProcedureLoadPlanTarget::ExistingDestination { row_uid } => {
+            let ui = crate::project_ui_state(&plan);
+            let row = ui
+                .display_rows
+                .iter()
+                .find(|row| row.uid == *row_uid)
+                .ok_or_else(|| AppError {
+                    kind: AppErrorKind::InvalidFlightPlan,
+                    message: format!("procedure load target row is stale: {row_uid}"),
+                })?;
+            let row_airport_id = row.chart_airport_id.as_deref().ok_or_else(|| AppError {
+                kind: AppErrorKind::InvalidFlightPlan,
+                message: "procedure load target row has no airport".to_string(),
+            })?;
+            if row_airport_id != command.airport_id {
+                return Err(AppError {
+                    kind: AppErrorKind::InvalidFlightPlan,
+                    message: format!(
+                        "procedure load airport mismatch: row has {row_airport_id}, requested {}",
+                        command.airport_id
+                    ),
+                });
+            }
+            let component_uid = row.component_uid.as_deref().ok_or_else(|| AppError {
+                kind: AppErrorKind::InvalidFlightPlan,
+                message: "procedure load target row has no route component uid".to_string(),
+            })?;
+            let component_index = plan
+                .route_component_uids
+                .iter()
+                .position(|uid| uid == component_uid)
+                .ok_or_else(|| AppError {
+                    kind: AppErrorKind::InvalidFlightPlan,
+                    message: format!("procedure load target component is stale: {component_uid}"),
+                })?;
+            if component_index + 1 != plan.route_components.len() {
+                return Err(AppError {
+                    kind: AppErrorKind::InvalidFlightPlan,
+                    message: format!(
+                        "procedure load target is no longer the destination: {}",
+                        command.airport_id
+                    ),
+                });
+            }
+            component_index
+        }
+        ProcedureLoadPlanTarget::AppendDestination => {
+            plan = crate::append_plate_destination(&plan, &command.airport_id)?;
+            plan.route_components.len() - 1
+        }
+    };
     let replace_component_index =
         airport_component_index.checked_sub(1).and_then(|index| {
             match plan.route_components.get(index) {

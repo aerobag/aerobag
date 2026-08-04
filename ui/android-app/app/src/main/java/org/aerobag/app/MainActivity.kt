@@ -3106,7 +3106,6 @@ internal fun AerobagApp(
                         selectedChart = selectedChart,
                         suggestedChartIds = derivedChartPageState.suggestedChartIds,
                         chartAssetDataRevision = chartAssetDataRevision,
-                        flightPlanVersion = sessionPlanUiState.planVersion,
                         flightPlanRouteRevision = sessionSnapshot.flightPlanRouteRevision,
                         debugState = sessionSnapshot.debugState,
                         uiTheme = uiTheme,

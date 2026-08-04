@@ -245,7 +245,8 @@ import org.aerobag.app.domain.PackageZipStore
 import org.aerobag.app.domain.PlaybackStatus
 import org.aerobag.app.domain.PlaybackUiState
 import org.aerobag.app.domain.ProcedureKind
-import org.aerobag.app.domain.ProcedureLoadOption
+import org.aerobag.app.domain.ProcedureLoadHeaderTone
+import org.aerobag.app.domain.ProcedureLoadMenu
 import org.aerobag.app.domain.ProcedureOptions
 import org.aerobag.app.domain.ProcedureSummary
 import org.aerobag.app.domain.RenderTile
@@ -363,7 +364,6 @@ internal fun ChartsPage(
     selectedChart: ChartAsset?,
     suggestedChartIds: List<String>,
     chartAssetDataRevision: Int,
-    flightPlanVersion: Long,
     flightPlanRouteRevision: Long,
     debugState: UiDebugState,
     uiTheme: UiTheme,
@@ -465,15 +465,24 @@ internal fun ChartsPage(
     val imageHeightPx = bitmap?.height?.toFloat() ?: 0f
     val trayOpen = airportTrayOpen || chartTrayOpen || loadTrayOpen || dataStatusTrayOpen ||
         procedureWarningTrayOpen || situationTrayOpen
-    val plateProcedureLoads by produceState<List<ProcedureLoadOption>>(initialValue = emptyList(), flightPlanVersion, selectedChart?.id) {
+    val emptyProcedureLoadMenu = ProcedureLoadMenu(
+        header = "Load approach",
+        headerTone = ProcedureLoadHeaderTone.Normal,
+        options = emptyList(),
+    )
+    val plateProcedureLoadMenu by produceState(
+        initialValue = emptyProcedureLoadMenu,
+        flightPlanRouteRevision,
+        selectedChart?.id,
+    ) {
         val chart = selectedChart
         value = if (chart == null || chart.kind != "plate") {
-            emptyList()
+            emptyProcedureLoadMenu
         } else {
             withContext(Dispatchers.IO) {
                 runCatching { uiSession.describePlateProcedureLoads(chart.id) }
                     .onFailure { Log.w("AerobagCharts", "plate procedure loads unavailable chart=${chart.id}", it) }
-                    .getOrDefault(emptyList())
+                    .getOrDefault(emptyProcedureLoadMenu)
             }
         }
     }
@@ -852,7 +861,7 @@ internal fun ChartsPage(
             airportTrayOpen = airportTrayOpen,
             chartTrayOpen = chartTrayOpen,
             loadTrayOpen = loadTrayOpen,
-            plateProcedureLoads = plateProcedureLoads,
+            plateProcedureLoadMenu = plateProcedureLoadMenu,
             onToggleAirportTray = {
                 airportTrayOpen = !airportTrayOpen
                 chartTrayOpen = false
@@ -1547,7 +1556,7 @@ internal fun ChartViewerSelectors(
     airportTrayOpen: Boolean,
     chartTrayOpen: Boolean,
     loadTrayOpen: Boolean,
-    plateProcedureLoads: List<ProcedureLoadOption>,
+    plateProcedureLoadMenu: ProcedureLoadMenu,
     onToggleAirportTray: () -> Unit,
     onToggleChartTray: () -> Unit,
     onToggleLoadTray: () -> Unit,
@@ -1632,9 +1641,12 @@ internal fun ChartViewerSelectors(
                 open = loadTrayOpen,
                 onToggle = onToggleLoadTray,
                 style = MenuDockStyle.Compact,
-                disabled = plateProcedureLoads.isEmpty(),
+                trayWidthOverride = PlatePageTrayWidth,
+                headerLabel = plateProcedureLoadMenu.header,
+                headerDestructive = plateProcedureLoadMenu.headerTone == ProcedureLoadHeaderTone.Destructive,
+                disabled = plateProcedureLoadMenu.options.isEmpty(),
                 disabledReason = "No loadable procedure is available for this plate.",
-                options = plateProcedureLoads.map { load ->
+                options = plateProcedureLoadMenu.options.map { load ->
                     MenuDockOption(load.loadId, load.label) { onSelectProcedureLoad(load.loadId) }
                 },
             )
@@ -1780,6 +1792,8 @@ internal fun MenuDock(
     style: MenuDockStyle,
     buttonWidthOverride: Dp? = null,
     trayWidthOverride: Dp? = null,
+    headerLabel: String? = null,
+    headerDestructive: Boolean = false,
     launcherForegroundColor: Color? = null,
     disabled: Boolean = false,
     disabledReason: String? = null,
@@ -1844,6 +1858,13 @@ internal fun MenuDock(
                         .width(trayWidth)
                         .heightIn(max = trayMaxHeight),
                 ) {
+                    headerLabel?.let { label ->
+                        MenuPanelHeader(
+                            label = label,
+                            destructive = headerDestructive,
+                            width = trayWidth,
+                        )
+                    }
                     if (body != null) {
                         body()
                     } else {
@@ -1889,6 +1910,30 @@ internal fun MenuDock(
             }
         }
     }
+}
+
+@Composable
+internal fun MenuPanelHeader(
+    label: String,
+    destructive: Boolean,
+    width: Dp,
+) {
+    val uiTheme = LocalAerobagUiTheme.current
+    Text(
+        text = label,
+        modifier = Modifier
+            .width(width)
+            .padding(horizontal = 8.dp, vertical = 5.dp),
+        style = MaterialTheme.typography.labelMedium.copy(
+            fontWeight = FontWeight.Bold,
+            letterSpacing = 0.sp,
+        ),
+        color = if (destructive) {
+            uiTheme.controls.situationStatusUnavailableFg
+        } else {
+            uiTheme.controls.panelFg
+        },
+    )
 }
 
 @Composable

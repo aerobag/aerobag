@@ -26,7 +26,7 @@ import type {
   OwnshipRenderState,
   PlateGeoref,
   ProcedureOptions,
-  ProcedureLoadOption,
+  ProcedureLoadMenu,
   ProcedureSummary,
   SituationControlInput,
   SituationSample,
@@ -9459,10 +9459,12 @@ function TrayDock(props: {
   launcherClassName?: string;
   launcherAccentColor?: string;
   options: TrayOption[];
+  header?: string;
+  headerTone?: "normal" | "destructive";
   footer?: ReactNode;
   testId?: string;
 }) {
-  const { launcherLabel, launcherImageSrc, launcherStyle, open, onToggle, ariaLabel, disabled = false, disabledReason, onDisabledAction, style = "compact", launcherClassName, launcherAccentColor, options, footer, testId } = props;
+  const { launcherLabel, launcherImageSrc, launcherStyle, open, onToggle, ariaLabel, disabled = false, disabledReason, onDisabledAction, style = "compact", launcherClassName, launcherAccentColor, options, header, headerTone = "normal", footer, testId } = props;
   const launcherRef = useRef<HTMLButtonElement | null>(null);
   const trayRef = useRef<HTMLElement | null>(null);
   const [trayPosition, setTrayPosition] = useState<{ left: number; top: number } | null>(null);
@@ -9501,6 +9503,7 @@ function TrayDock(props: {
         ["--theme-button-disabled-icon-saturation" as string]: launcherStyle.getPropertyValue("--theme-button-disabled-icon-saturation"),
         ["--theme-button-disabled-icon-opacity" as string]: launcherStyle.getPropertyValue("--theme-button-disabled-icon-opacity"),
         ["--theme-button-fg" as string]: launcherStyle.getPropertyValue("--theme-button-fg"),
+        ["--theme-situation-status-unavailable-fg" as string]: launcherStyle.getPropertyValue("--theme-situation-status-unavailable-fg"),
       });
     }
 
@@ -9511,7 +9514,7 @@ function TrayDock(props: {
       window.removeEventListener("resize", updatePosition);
       window.removeEventListener("scroll", updatePosition, true);
     };
-  }, [open, options.length, style]);
+  }, [header, open, options.length, style]);
 
   return (
     <div className="chartDockColumn">
@@ -9561,6 +9564,11 @@ function TrayDock(props: {
               onPointerDown={stopPointer}
               onPointerUp={stopPointer}
             >
+              {header ? (
+                <div className={`trayHeader${headerTone === "destructive" ? " isDestructive" : ""}`}>
+                  {header}
+                </div>
+              ) : null}
               <div className={style === "situation" ? "situationSourceRow" : "trayOptions"}>
                 {options.map((option) => {
                   if (option.kind === "separator") {
@@ -10343,7 +10351,11 @@ function ChartsPage(props: {
   const lastChartLayoutKeyRef = useRef("");
   const firstVisualReadyRef = useRef(false);
   const trayGroup = useModalTrayGroup(["airport", "chart", "load", "procedureWarning", "ownship"] as const);
-  const [plateProcedureLoads, setPlateProcedureLoads] = useState<ProcedureLoadOption[]>([]);
+  const [plateProcedureLoadMenu, setPlateProcedureLoadMenu] = useState<ProcedureLoadMenu>({
+    header: "Load approach",
+    header_tone: "normal",
+    options: [],
+  });
   const [plateFlightPlanRouteProjection, setPlateFlightPlanRouteProjection] = useState<FlightPlanRouteProjection>({
     flight_plan_route_revision: -1,
     segments: [],
@@ -10352,9 +10364,7 @@ function ChartsPage(props: {
   const { toast: disabledActionToast, show: showDisabledAction } = useDisabledActionToast();
   const trayOpen = trayGroup.scrimOpen;
   const sortedCharts = selectedCollection?.charts ?? [];
-  const planProcedureLoadKey = planUiState
-    ? `${planUiState.plan_id}:${planUiState.plan_version}`
-    : "no-plan";
+  const planProcedureLoadKey = props.flightPlanRouteRevision;
   const selectedImageSize = imageSize && imageSize.chartId === (selectedChart?.id ?? "") ? imageSize : null;
   const selectedChartAssetUrl = selectedChart ? resolvedChartUrls[selectedChart.id]?.assetUrl ?? null : null;
   const fallbackViewport = useMemo(() => {
@@ -10640,19 +10650,19 @@ function ChartsPage(props: {
       return;
     }
     if (!props.uiSession || !selectedChart || selectedChart.kind !== "plate") {
-      setPlateProcedureLoads([]);
+      setPlateProcedureLoadMenu({ header: "Load approach", header_tone: "normal", options: [] });
       return;
     }
     let cancelled = false;
     debugLog("charts.load_procedure.query", { plate_id: selectedChart.id });
-    void props.uiSession.describePlateProcedureLoads(selectedChart.id).then((loads) => {
+    void props.uiSession.describePlateProcedureLoads(selectedChart.id).then((menu) => {
       debugLog("charts.load_procedure.result", {
         plate_id: selectedChart.id,
-        load_count: loads.length,
-        loads,
+        load_count: menu.options.length,
+        menu,
       });
       if (!cancelled) {
-        setPlateProcedureLoads(loads);
+        setPlateProcedureLoadMenu(menu);
       }
     }).catch((error: unknown) => {
       debugLog("charts.load_procedure.unavailable", {
@@ -10660,7 +10670,7 @@ function ChartsPage(props: {
         error: errorMessage(error),
       });
       if (!cancelled) {
-        setPlateProcedureLoads([]);
+        setPlateProcedureLoadMenu({ header: "Load approach", header_tone: "normal", options: [] });
       }
     });
     return () => {
@@ -10669,7 +10679,7 @@ function ChartsPage(props: {
   }, [appCoreAdapter, page, planProcedureLoadKey, selectedChart?.id]);
 
   const loadProcedureOptions = useMemo(() => {
-    return plateProcedureLoads.map((load, index) => ({
+    return plateProcedureLoadMenu.options.map((load, index) => ({
         id: `${load.load_id}:${index}`,
         label: load.label,
         active: false,
@@ -10683,7 +10693,7 @@ function ChartsPage(props: {
           }).catch(() => {});
         },
       }));
-  }, [plateProcedureLoads, props, trayGroup]);
+  }, [plateProcedureLoadMenu.options, props, trayGroup]);
   const ownshipSourceOptions: TrayOption[] = ownshipControls.sources.map((source) => ({
     id: sourceIdString(source.source_id),
     label: source.label,
@@ -11084,6 +11094,8 @@ function ChartsPage(props: {
             ariaLabel="Load procedure"
             testId="plate-load-button"
             onDisabledAction={showDisabledAction}
+            header={plateProcedureLoadMenu.header}
+            headerTone={plateProcedureLoadMenu.header_tone}
             options={loadProcedureOptions}
           />
           <button

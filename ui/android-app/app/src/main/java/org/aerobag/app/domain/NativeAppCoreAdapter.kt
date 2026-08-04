@@ -877,14 +877,14 @@ class NativeUiSession internal constructor(
         }
     }
 
-    fun describePlateProcedureLoads(plateId: String): List<ProcedureLoadOption> {
+    fun describePlateProcedureLoads(plateId: String): ProcedureLoadMenu {
         val result = queryFlightPlan(
             buildJsonObject {
                 put("kind", "describe_plate_procedure_loads")
                 put("plate_id", plateId)
             },
         )
-        return json.decodeFromJsonElement<List<WireProcedureLoadOption>>(result).map { it.toUi() }
+        return json.decodeFromJsonElement<WireProcedureLoadMenu>(result).toUi()
     }
 
     fun deriveChartPageState(): DerivedChartPageState {
@@ -2322,6 +2322,22 @@ private data class WireProcedureLoadOption(
 )
 
 @kotlinx.serialization.Serializable
+private enum class WireProcedureLoadHeaderTone {
+    @kotlinx.serialization.SerialName("normal")
+    Normal,
+
+    @kotlinx.serialization.SerialName("destructive")
+    Destructive,
+}
+
+@kotlinx.serialization.Serializable
+private data class WireProcedureLoadMenu(
+    val header: String,
+    val header_tone: WireProcedureLoadHeaderTone,
+    val options: List<WireProcedureLoadOption>,
+)
+
+@kotlinx.serialization.Serializable
 internal data class WireDerivedChartAirport(
     val id: String,
     val label: String,
@@ -3365,6 +3381,15 @@ private fun WireProcedureSummary.toUi() = ProcedureSummary(
 private fun WireProcedureLoadOption.toUi() = ProcedureLoadOption(
     loadId = load_id,
     label = label,
+)
+
+private fun WireProcedureLoadMenu.toUi() = ProcedureLoadMenu(
+    header = header,
+    headerTone = when (header_tone) {
+        WireProcedureLoadHeaderTone.Normal -> ProcedureLoadHeaderTone.Normal
+        WireProcedureLoadHeaderTone.Destructive -> ProcedureLoadHeaderTone.Destructive
+    },
+    options = options.map { it.toUi() },
 )
 
 private fun WireProcedureSpecChoice.toUi() = ProcedureSpecChoice(

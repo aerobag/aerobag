@@ -84,6 +84,17 @@ data class ProcedureLoadOption(
     val label: String,
 )
 
+enum class ProcedureLoadHeaderTone {
+    Normal,
+    Destructive,
+}
+
+data class ProcedureLoadMenu(
+    val header: String,
+    val headerTone: ProcedureLoadHeaderTone,
+    val options: List<ProcedureLoadOption>,
+)
+
 data class ProcedureDistinctRow(
     val routeType: String,
     val transitionId: String,

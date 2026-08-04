@@ -590,8 +590,9 @@ Implementation sequence:
    through a common schema check before product-specific decoding. Unsupported
    schemas must fail before a stale client tries to interpret compressed bytes.
 6. Under the new live-feeds contract, xz-compress remaining large live-feed
-   payloads: METAR/TAF/TFR/winds-aloft full JSON, their deltas, obstacle
-   nav-kv deltas, and obstacle nav-kv pages.
+   payloads: METAR/TAF/TFR full JSON and their deltas, plus atmospheric and
+   obstacle nav-kv pages and obstacle nav-kv deltas. Atmospheric model cycles
+   use full snapshots because essentially every tile changes.
 
 Required tests:
 

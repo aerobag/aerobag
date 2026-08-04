@@ -20,6 +20,7 @@ mod device_setup_code;
 pub mod errors;
 pub mod flight_data;
 mod flight_plan_materialization;
+mod forecast_atmosphere;
 pub mod freshness;
 pub mod geodesy;
 pub mod geometry;
@@ -96,6 +97,7 @@ pub use flight_data::{
     FlightDataBannerModel, FlightDataCell, FlightDataCellTone, FlightDataColumn,
     FlightDataComputer, FlightTimeFuelEstimate,
 };
+pub(crate) use forecast_atmosphere::InstalledForecastAtmosphere;
 pub use geodesy::{
     cross_track_left_nm, great_circle_display_path, great_circle_distance_nm,
     great_circle_intermediate, initial_course_deg,

@@ -431,6 +431,11 @@ impl ProductBuilder for CompiledFixtureStateBuilder {
                 count,
             ));
         }
+        if event.product == "winds-aloft" {
+            anyhow::bail!(
+                "compiled JSON winds-aloft fixtures are obsolete; publish the atmospheric NavKv contract"
+            );
+        }
         let state_path = write_simulated_json_state(
             &state_value,
             scratch_dir,
@@ -456,13 +461,6 @@ impl ProductBuilder for CompiledFixtureStateBuilder {
                 DeltaPolicy::None,
                 state_value
                     .get("areas")
-                    .and_then(serde_json::Value::as_array)
-                    .map_or(0, Vec::len),
-            ),
-            "winds-aloft" => (
-                DeltaPolicy::None,
-                state_value
-                    .get("files")
                     .and_then(serde_json::Value::as_array)
                     .map_or(0, Vec::len),
             ),

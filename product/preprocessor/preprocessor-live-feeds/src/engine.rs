@@ -3466,30 +3466,24 @@ mod tests {
     }
 
     #[test]
-    fn file_publisher_writes_json_state_without_delta() -> anyhow::Result<()> {
+    fn file_publisher_writes_full_json_state_without_delta() -> anyhow::Result<()> {
         let temp = tempdir()?;
         let root = temp.path().join("live-feeds");
         let publisher = FileLiveFeedPublisher::new(
             root.clone(),
             FixedClock::new(Utc.with_ymd_and_hms(2026, 5, 18, 1, 2, 3).unwrap()),
         );
-        let state_path = temp.path().join("winds-aloft.json");
+        let state_path = temp.path().join("tfrs.json");
         let state_value = serde_json::json!({
             "schema_version": 1,
-            "product_id": "winds-aloft",
+            "product_id": "tfrs",
             "generated_at_utc": "2026-05-09T06:00:00Z",
-            "files": [
-                {
-                    "forecast_hour": 3,
-                    "path": "grib2/gfs_20260509_06_f003.grib2",
-                    "size_bytes": 123
-                }
-            ]
+            "areas": []
         });
         write_json_pretty_file(&state_path, &state_value)?;
 
         let result = publisher.publish(BuiltLiveFeedState {
-            product: "winds-aloft".to_string(),
+            product: "tfrs".to_string(),
             version: "v1".to_string(),
             payload: LiveFeedStatePayload::JsonFile {
                 path: state_path,
@@ -3503,25 +3497,22 @@ mod tests {
             changed_count_if_no_delta: 1,
         })?;
 
-        assert_eq!(result.product, "winds-aloft");
+        assert_eq!(result.product, "tfrs");
         assert_eq!(result.version, "v1");
         assert_eq!(result.changed_count, 1);
         assert_eq!(result.delta_path, None);
 
         let current = read_live_feeds_current(&root)?.expect("current manifest");
-        let entry = current
-            .products
-            .get("winds-aloft")
-            .expect("winds-aloft current entry");
+        let entry = current.products.get("tfrs").expect("tfrs current entry");
         assert_eq!(entry.current, "v1");
-        assert_eq!(entry.state_url, "states/winds-aloft/v1.json.xz");
+        assert_eq!(entry.state_url, "states/tfrs/v1.json.xz");
         assert_eq!(entry.state_sha256, canonical_json_sha256(&state_value)?);
 
-        let version_manifest_path = root.join("versions").join("winds-aloft").join("v1.json");
+        let version_manifest_path = root.join("versions").join("tfrs").join("v1.json");
         let version_manifest: LiveFeedVersionManifest =
             serde_json::from_slice(&fs::read(version_manifest_path)?)?;
         assert_eq!(version_manifest.schema_version, LIVE_FEEDS_SCHEMA_VERSION);
-        assert_eq!(version_manifest.product, "winds-aloft");
+        assert_eq!(version_manifest.product, "tfrs");
         assert_eq!(version_manifest.previous, None);
         assert_eq!(version_manifest.state.kind.as_deref(), Some("json_xz"));
         assert!(version_manifest.delta_from_previous.is_none());

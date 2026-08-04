@@ -309,6 +309,7 @@ struct SessionRuntime {
     metar_station_importance_status: Option<DataStatusRecord>,
     weather_station_airport_aliases: Option<WeatherStationAirportAliases>,
     obstacle_had: Option<LiveObstacleHadState>,
+    forecast_atmosphere: Option<crate::InstalledForecastAtmosphere>,
     obstacle_tile_cache: HashMap<String, PointTilePayload>,
     taf_payload: Option<TafProductPayload>,
     airport_notam_index: Option<AirportNotamIndex>,
@@ -333,6 +334,7 @@ impl Default for SessionRuntime {
             metar_station_importance_status: None,
             weather_station_airport_aliases: None,
             obstacle_had: None,
+            forecast_atmosphere: None,
             obstacle_tile_cache: HashMap::new(),
             taf_payload: None,
             airport_notam_index: None,
@@ -7164,7 +7166,49 @@ fn install_live_feed_installed_state(
             });
             clear_data_status_record(session, LIVE_FEED_NEXRAD_STATUS_ID);
         }
-        ("winds-aloft", crate::LiveFeedInstalledPayload::Json { .. }) => {}
+        (
+            "winds-aloft",
+            crate::LiveFeedInstalledPayload::NavKv {
+                manifest,
+                root,
+                pages,
+            },
+        ) => {
+            let manifest: product_contracts::AtmosphereManifest = serde_json::from_slice(manifest)
+                .map_err(|error| AppError {
+                    kind: AppErrorKind::InvalidManifest,
+                    message: format!("failed to parse installed atmosphere manifest: {error}"),
+                })?;
+            if manifest.version_label != installed.version
+                || manifest.state_sha256 != installed.state_sha256
+            {
+                return Err(AppError {
+                    kind: AppErrorKind::InvalidManifest,
+                    message: format!(
+                        "atmosphere manifest {}/{} did not match installed {}/{}",
+                        manifest.version_label,
+                        manifest.state_sha256,
+                        installed.version,
+                        installed.state_sha256
+                    ),
+                });
+            }
+            let store = nav_kv_store_from_installed_live_feed(
+                "winds-aloft",
+                &installed.version,
+                &installed.state_sha256,
+                root,
+                pages,
+            )?;
+            session.runtime.forecast_atmosphere = Some(
+                crate::InstalledForecastAtmosphere::new(manifest, store).map_err(|message| {
+                    AppError {
+                        kind: AppErrorKind::InvalidManifest,
+                        message,
+                    }
+                })?,
+            );
+        }
         (product, payload) => {
             return Err(AppError {
                 kind: AppErrorKind::InvalidManifest,
@@ -17292,6 +17336,49 @@ mod tests {
         let feature_ids = query_obstacle_feature_ids(init.handle, &metrics);
         assert!(!feature_ids.iter().any(|id| id == "obstacle:old"));
         assert!(feature_ids.iter().any(|id| id == "obstacle:new"));
+    }
+
+    #[test]
+    fn installed_winds_aloft_nav_kv_becomes_a_sampleable_core_model() {
+        let (manifest, root, pages, state_sha256) =
+            crate::forecast_atmosphere::tests::test_forecast_payload();
+        let init =
+            create_ui_session(FlightPlan::default(), &[], None, None).expect("create session");
+
+        install_live_feed_installed_state_in_session(
+            init.handle,
+            &crate::LiveFeedInstalledState {
+                product: "winds-aloft".to_string(),
+                version: manifest.version_label.clone(),
+                state_sha256,
+                collected_at_utc: None,
+                payload: crate::LiveFeedInstalledPayload::NavKv {
+                    manifest: serde_json::to_vec(&manifest).expect("manifest json"),
+                    root,
+                    pages,
+                },
+            },
+        )
+        .expect("install winds aloft");
+
+        let sessions = lock_sessions();
+        let forecast = session_ref(&sessions, init.handle)
+            .expect("session")
+            .runtime
+            .forecast_atmosphere
+            .as_ref()
+            .expect("installed forecast atmosphere");
+        let sample = crate::AtmosphereModel::sample(
+            forecast,
+            LatLon {
+                lat: 0.5,
+                lon: 10.5,
+            },
+            500.0 / 0.3048,
+            500,
+        )
+        .expect("sample installed forecast");
+        assert!(sample.wind_east_kt > 100.0);
     }
 
     #[test]

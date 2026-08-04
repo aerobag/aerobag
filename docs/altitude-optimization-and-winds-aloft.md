@@ -5,7 +5,7 @@
 Altitude optimization needs an aircraft model and a weather model that can
 answer wind and temperature at latitude, longitude, altitude, and forecast
 time. This note records the first core planning engine and the current
-winds-aloft data source and packaging experiment.
+winds-aloft data contract.
 
 ## Core Planner
 
@@ -75,19 +75,15 @@ References:
 - https://nomads.ncep.noaa.gov/
 - https://nomads.ncep.noaa.gov/gribfilter.php?ds=gfs_0p25
 
-## Current Measuring Package
+## Atmospheric NavKv Package
 
-The first package is intentionally a raw measuring artifact, not a client wire
-format. It is published as the live-feed product `winds-aloft`.
-
-Contents:
+Live-feeds decodes GRIB2 with GDAL and publishes `winds-aloft` as a NavKv
+package. GRIB2 and temporary decoded rasters remain build inputs; they are not
+copied into the published state. Its durable members are only:
 
 - `manifest.json`
-- `grib2/gfs_<date>_<cycle>_f000.grib2`
-- `grib2/gfs_<date>_<cycle>_f003.grib2`
-- `grib2/gfs_<date>_<cycle>_f006.grib2`
-- `grib2/gfs_<date>_<cycle>_f009.grib2`
-- `grib2/gfs_<date>_<cycle>_f012.grib2`
+- `root`
+- `page_####`
 
 Each GRIB2 file is filtered to:
 
@@ -100,36 +96,24 @@ UGRD and VGRD are the wind vector components. HGT is included so pressure levels
 can be mapped to geometric altitude. TMP supplies temperature at each pressure
 level for performance and density calculations.
 
-The first altitude-planner implementation uses a no-wind ISA atmosphere until
-the compact forecast decoder is connected. Airport elevation supplies the
-starting geometric altitude; the planner does not require a forecast pressure
-surface below terrain to begin a climb. Forecast samples remain unavailable
-where a requested pressure level is masked by terrain, and that must degrade the
-whole modeled estimate rather than silently mixing modeled and basic legs.
+The 0.25-degree source grid is split into 8-by-8 spatial tiles addressed as
+`atmosphere/tile/r#####/c#####`. Every tile contains all five forecast times and
+all eight pressure levels in `valid_time,pressure_level,row,column` order. Wind
+is quantized to 0.1 m/s, temperature to 0.01 C, and geopotential height to one
+meter. The packed little-endian integer arrays and validity mask are wrapped in
+a versioned protobuf message. The package manifest owns the axes, units, grid
+origin and spacing, tile dimensions, and protobuf contract identifier.
+
+Core validates and retains the installed NavKv state and samples it with
+bilinear spatial interpolation, linear interpolation between geopotential
+heights, and linear interpolation between forecast times. The Flight Plan
+still explicitly selects the no-wind ISA model; selecting GFS in the planner UI
+is a separate feature slice.
 
 ## Size Measurement
 
-The first successful build produced:
-
-- Packaged ZIP: 9.8 MiB
-- Unpacked directory: 11 MiB
-- Five GRIB2 slices, about 2.1 MiB each
-
-ZIP only saved about 10 percent because GRIB2 is already a packed meteorological
-binary format. Future size wins should come from decoding, quantizing, and
-chunking the data into an Aerobag-specific wire format, not from stronger outer
-compression.
-
-## Next Shape
-
-The current artifact proves the fetch-cache, node-cache, live-feed publishing,
-and client transport path. It is not intended for direct client consumption.
-
-Likely next work:
-
-- Decode GRIB2 into an internal structured representation.
-- Quantize wind vector and height values to aviation-useful precision.
-- Decide whether the client wants route-corridor fetches, tiles, or a compact
-  grid bundle.
-- Decide forecast horizon and vertical levels based on measured package size and
-  altitude optimizer needs.
+A build from current NOAA inputs produced 903 spatial tiles, 275 64-KiB NavKv
+pages, and 17,754,086 uncompressed value bytes. The live-feed package transport
+xz-compresses NavKv pages. Forecast cycles intentionally publish full snapshots:
+nearly every atmospheric tile changes, so a NavKv delta would approximate the
+full state while adding mutation overhead.

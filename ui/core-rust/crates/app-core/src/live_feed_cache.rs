@@ -984,7 +984,7 @@ pub fn live_feed_product_registry() -> LiveFeedProductRegistry {
         LiveFeedProductDriver::FullJson {
             product: "tfrs".to_string(),
         },
-        LiveFeedProductDriver::FullJson {
+        LiveFeedProductDriver::NavKv {
             product: "winds-aloft".to_string(),
         },
         LiveFeedProductDriver::NavKv {
@@ -2239,6 +2239,10 @@ mod tests {
         );
         assert_eq!(registry.record_json_delta_schema("notams"), None);
         assert_eq!(registry.record_json_delta_schema("tfrs"), None);
+        assert!(matches!(
+            registry.driver("winds-aloft"),
+            Some(LiveFeedProductDriver::NavKv { .. })
+        ));
     }
 
     #[test]

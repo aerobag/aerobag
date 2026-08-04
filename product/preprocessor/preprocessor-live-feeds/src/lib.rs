@@ -23,6 +23,7 @@ pub mod notam_store;
 pub mod products;
 pub mod simulation;
 pub mod tfr_detail_backfill;
+mod winds_aloft;
 
 const METAR_PRODUCT_CONTRACT_VERSION: u32 = 9;
 const TAF_PRODUCT_CONTRACT_VERSION: u32 = 1;

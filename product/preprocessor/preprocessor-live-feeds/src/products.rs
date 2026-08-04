@@ -10,16 +10,16 @@ use std::{
 };
 
 use anyhow::{bail, Context};
-use chrono::{DateTime, SecondsFormat, Timelike, Utc};
+use chrono::{DateTime, Timelike, Utc};
 use preprocessor_fetch::{
     hash_file, prefetch_archives_with_provenance, prefetch_requests_with_provenance,
     FetchCacheConfig, FetchCacheMode, PrefetchRequest,
 };
 use preprocessor_vectors::{build_obstacle_dataset, BuildObstacleDatasetRequest};
-use preprocessor_zip::{write_deterministic_zip, ZipSource};
 use serde_json::Value;
 use sha2::{Digest, Sha256};
 
+use crate::winds_aloft::{build_atmosphere_dataset, BuildAtmosphereDatasetRequest};
 use crate::{
     build_metar_dataset, build_taf_dataset, build_tfr_dataset,
     engine::{
@@ -228,6 +228,35 @@ pub fn nav_kv_live_feed_state(
         state_payload_kind: Some("nav_kv".to_string()),
         status_timestamps: Default::default(),
         delta_policy: DeltaPolicy::NavKv { pairs },
+        precomputed_delta: None,
+        changed_count_if_no_delta,
+    }
+}
+
+/// Publish a NavKv snapshot without generating a delta that would replace
+/// essentially every value. Forecast model cycles have no stable records to
+/// preserve between versions.
+pub fn nav_kv_snapshot_live_feed_state(
+    product: &str,
+    version: String,
+    state_source_dir: PathBuf,
+    manifest_source_path: PathBuf,
+    manifest_value: Value,
+    state_sha256: String,
+    changed_count_if_no_delta: usize,
+) -> BuiltLiveFeedState {
+    BuiltLiveFeedState {
+        product: product.to_string(),
+        version,
+        payload: LiveFeedStatePayload::Directory {
+            root: state_source_dir,
+            manifest_path: manifest_source_path,
+            manifest_value,
+        },
+        state_sha256: Some(state_sha256),
+        state_payload_kind: Some("nav_kv".to_string()),
+        status_timestamps: Default::default(),
+        delta_policy: DeltaPolicy::None,
         precomputed_delta: None,
         changed_count_if_no_delta,
     }
@@ -740,6 +769,7 @@ impl ProductBuilder for WindsAloftLiveFeedBuilder {
         let cycle = selected_gfs_winds_aloft_cycle(event.observed_at_utc);
         let input_dir = fresh_dir(&scratch_dir.join("input"))?;
         let output_dir = fresh_dir(&scratch_dir.join("output"))?;
+        let decode_dir = fresh_dir(&scratch_dir.join("decoded"))?;
         let provenance_dir = scratch_dir
             .join("meta")
             .join("provenance")
@@ -764,20 +794,23 @@ impl ProductBuilder for WindsAloftLiveFeedBuilder {
         )?;
         let fingerprint = hash_tree(&input_dir)?;
         let version = content_version_label(&fingerprint);
-        let state_path =
-            build_winds_aloft_state_from_inputs(&input_dir, &output_dir, &cycle, &version)?;
-        let state_value = read_json_value(&state_path)?;
-        let file_count = state_value
-            .get("files")
-            .and_then(Value::as_array)
-            .map_or(0, Vec::len);
-        Ok(json_live_feed_state(
+        let built = build_atmosphere_dataset(&BuildAtmosphereDatasetRequest {
+            input_dir,
+            output_dir,
+            decode_dir,
+            version_label: version.clone(),
+            cycle_time_utc: cycle.cycle_time_utc,
+            forecast_hours: WINDS_ALOFT_FORECAST_HOURS.to_vec(),
+            pressure_levels_mb: WINDS_ALOFT_PRESSURE_LEVELS_MB.to_vec(),
+        })?;
+        Ok(nav_kv_snapshot_live_feed_state(
             "winds-aloft",
             version,
-            state_path,
-            state_value,
-            DeltaPolicy::None,
-            file_count,
+            built.state_dir,
+            built.manifest_path,
+            serde_json::to_value(&built.manifest)?,
+            built.state_sha256,
+            built.tile_count,
         ))
     }
 }
@@ -1036,80 +1069,6 @@ pub fn parse_latest_nexrad_listing(index_path: &Path) -> anyhow::Result<String> 
     })
 }
 
-fn build_winds_aloft_state_from_inputs(
-    input_dir: &Path,
-    output_dir: &Path,
-    cycle: &GfsWindsAloftCycle,
-    version: &str,
-) -> anyhow::Result<PathBuf> {
-    fs::create_dir_all(output_dir)
-        .with_context(|| format!("failed to create {}", output_dir.display()))?;
-    let structured_json_path = output_dir.join("winds-aloft.json");
-    let manifest_path = output_dir.join(format!("winds-aloft_{version}.manifest.json"));
-    let zip_path = output_dir.join(format!("winds-aloft_{version}.zip"));
-    let grib_output_dir = output_dir.join("grib2");
-    fs::create_dir_all(&grib_output_dir)
-        .with_context(|| format!("failed to create {}", grib_output_dir.display()))?;
-    let mut members = Vec::new();
-    let grib_files = WINDS_ALOFT_FORECAST_HOURS
-        .iter()
-        .map(|forecast_hour| {
-            let file_name = format!(
-                "gfs_{}_{}_f{forecast_hour:03}.grib2",
-                cycle.date, cycle.cycle
-            );
-            let source_path = input_dir.join(&file_name);
-            let size_bytes = fs::metadata(&source_path)
-                .with_context(|| format!("failed to stat {}", source_path.display()))?
-                .len();
-            let staged_path = grib_output_dir.join(&file_name);
-            copy_or_link(&source_path, &staged_path)?;
-            members.push(ZipSource::new(format!("grib2/{file_name}"), &staged_path));
-            Ok(serde_json::json!({
-                "forecast_hour": forecast_hour,
-                "path": format!("grib2/{file_name}"),
-                "size_bytes": size_bytes,
-            }))
-        })
-        .collect::<anyhow::Result<Vec<_>>>()?;
-    let generated_at_utc = cycle
-        .cycle_time_utc
-        .to_rfc3339_opts(SecondsFormat::Secs, true);
-    let manifest = serde_json::json!({
-        "schema_version": 1,
-        "product_id": "winds-aloft",
-        "source": "NOAA/NCEP GFS 0.25 degree via NOMADS filtered GRIB2",
-        "version_label": version,
-        "generated_at_utc": generated_at_utc,
-        "model": {
-            "id": "gfs",
-            "grid": "0.25-degree",
-            "cycle_date": cycle.date,
-            "cycle": cycle.cycle,
-            "cycle_time_utc": generated_at_utc,
-        },
-        "domain": {
-            "lat_min": 15.0,
-            "lat_max": 55.0,
-            "lon_min": -135.0,
-            "lon_max": -50.0,
-        },
-        "forecast_hours": WINDS_ALOFT_FORECAST_HOURS,
-        "pressure_levels_mb": WINDS_ALOFT_PRESSURE_LEVELS_MB,
-        "variables": ["UGRD", "VGRD", "HGT", "TMP"],
-        "files": grib_files,
-        "notes": [
-            "Raw measuring state; not yet a client rendering wire format.",
-            "UGRD/VGRD are wind vector components. HGT maps pressure levels to geometric altitude; TMP supplies temperature at each pressure level."
-        ],
-    });
-    write_json_pretty_file(&structured_json_path, &manifest)?;
-    write_json_pretty_file(&manifest_path, &manifest)?;
-    members.push(ZipSource::new("manifest.json", &structured_json_path));
-    write_deterministic_zip(&zip_path, &members)?;
-    Ok(structured_json_path)
-}
-
 fn normalized_event_time(time: DateTime<Utc>) -> DateTime<Utc> {
     time.with_second(0)
         .expect("zero seconds should be valid")
@@ -1137,27 +1096,6 @@ fn run_gzip_decompress(path: &Path) -> anyhow::Result<()> {
             bail!("gzip failed for {}", path.display());
         }
         bail!("gzip failed for {}: {}", path.display(), stderr);
-    }
-    Ok(())
-}
-
-fn copy_or_link(source: &Path, target: &Path) -> anyhow::Result<()> {
-    if let Some(parent) = target.parent() {
-        fs::create_dir_all(parent)
-            .with_context(|| format!("failed to create {}", parent.display()))?;
-    }
-    if target.exists() {
-        fs::remove_file(target)
-            .with_context(|| format!("failed to remove {}", target.display()))?;
-    }
-    if let Err(link_error) = fs::hard_link(source, target) {
-        fs::copy(source, target).with_context(|| {
-            format!(
-                "failed to copy {} to {} after hard-link error: {link_error}",
-                source.display(),
-                target.display()
-            )
-        })?;
     }
     Ok(())
 }
@@ -1214,7 +1152,7 @@ mod tests {
         LiveFeedPublisher, LiveFeedVersionManifest,
     };
     use crate::StructuredNotamRecord;
-    use chrono::TimeZone;
+    use chrono::{SecondsFormat, TimeZone};
     use serde::Deserialize;
     use tempfile::tempdir;
 

@@ -1277,6 +1277,43 @@ const PROTOTYPE_PA46_MIN_CRUISE_ALTITUDE_FT: i32 = 2_000;
 const PROTOTYPE_PA46_MAX_CRUISE_ALTITUDE_FT: i32 = 24_000;
 const PROTOTYPE_PA46_CRUISE_ALTITUDE_STEP_FT: i32 = 2_000;
 const PROTOTYPE_PA46_ALTITUDE_ACTION_PREFIX: &str = "altitude-planner:select:";
+pub(crate) const SELECT_NO_WIND_ACTION_UID: &str = "altitude-planner:wind:no-wind";
+pub(crate) const SELECT_GFS_WIND_ACTION_UID: &str = "altitude-planner:wind:gfs";
+static NO_WIND_ATMOSPHERE: crate::NoWindIsaAtmosphere = crate::NoWindIsaAtmosphere;
+
+#[derive(Clone, Copy)]
+pub(crate) struct PlannerAtmosphereSelection<'a> {
+    model: Option<&'a dyn crate::AtmosphereModel>,
+    label: &'static str,
+    forecast_selected: bool,
+    alternate_available: bool,
+    action_uid: Option<&'static str>,
+}
+
+impl PlannerAtmosphereSelection<'static> {
+    pub(crate) fn no_wind(forecast_available: bool) -> Self {
+        Self {
+            model: Some(&NO_WIND_ATMOSPHERE),
+            label: "NO WIND",
+            forecast_selected: false,
+            alternate_available: forecast_available,
+            action_uid: forecast_available.then_some(SELECT_GFS_WIND_ACTION_UID),
+        }
+    }
+}
+
+impl<'a> PlannerAtmosphereSelection<'a> {
+    pub(crate) fn gfs(model: Option<&'a dyn crate::AtmosphereModel>) -> Self {
+        Self {
+            model,
+            label: "FORECAST",
+            forecast_selected: true,
+            // Even an unavailable selected model must allow returning to no-wind.
+            alternate_available: true,
+            action_uid: Some(SELECT_NO_WIND_ACTION_UID),
+        }
+    }
+}
 
 fn prototype_pa46_cruise_altitudes() -> impl Iterator<Item = i32> {
     (PROTOTYPE_PA46_MIN_CRUISE_ALTITUDE_FT..=PROTOTYPE_PA46_MAX_CRUISE_ALTITUDE_FT)
@@ -1364,17 +1401,16 @@ fn prototype_pa46_prediction(
     cruise_altitude_ft: f64,
     destination_altitude_ft: f64,
     departure_epoch_ms: i64,
+    atmosphere: &dyn crate::AtmosphereModel,
 ) -> Result<crate::TrajectoryPrediction, crate::TrajectoryPlannerError> {
     let profile = crate::pa46_310p_profile(PROTOTYPE_PA46_CONFIGURATION);
-    crate::TrajectoryPlanner::new(&profile, &crate::NoWindIsaAtmosphere).predict(
-        &crate::TrajectoryPlanInput {
-            legs: legs.to_vec(),
-            start_pressure_altitude_ft: start_altitude_ft,
-            cruise_pressure_altitude_ft: cruise_altitude_ft,
-            destination_pressure_altitude_ft: destination_altitude_ft,
-            departure_epoch_ms,
-        },
-    )
+    crate::TrajectoryPlanner::new(&profile, atmosphere).predict(&crate::TrajectoryPlanInput {
+        legs: legs.to_vec(),
+        start_pressure_altitude_ft: start_altitude_ft,
+        cruise_pressure_altitude_ft: cruise_altitude_ft,
+        destination_pressure_altitude_ft: destination_altitude_ft,
+        departure_epoch_ms,
+    })
 }
 
 fn prototype_pa46_altitude_comparisons(
@@ -1383,6 +1419,7 @@ fn prototype_pa46_altitude_comparisons(
     origin_altitude_ft: Option<f64>,
     destination_altitude_ft: Option<f64>,
     selected_altitude_ft: i32,
+    atmosphere: PlannerAtmosphereSelection<'_>,
 ) -> Vec<crate::AltitudeComparisonUiView> {
     let navigation_active = materialized.active.is_some();
     let start_altitude_ft = if navigation_active {
@@ -1414,6 +1451,8 @@ fn prototype_pa46_altitude_comparisons(
                 Some("The flight plan destination has no known elevation.")
             } else if legs.is_empty() {
                 Some("The flight plan has no flyable route geometry.")
+            } else if atmosphere.model.is_none() {
+                Some("The selected wind model is unavailable.")
             } else if !navigation_active
                 && start_altitude_ft.is_some_and(|start| altitude_ft as f64 <= start)
             {
@@ -1432,6 +1471,7 @@ fn prototype_pa46_altitude_comparisons(
                     altitude_ft as f64,
                     destination_altitude_ft.expect("availability checked above"),
                     live_data.now_epoch_ms.unwrap_or_default(),
+                    atmosphere.model.expect("availability checked above"),
                 )
             });
             let (prediction, disabled_reason) = match prediction {
@@ -1466,6 +1506,7 @@ pub(crate) fn flight_plan_ui_projection(
     current_ui_state: FlightPlanUiState,
     computer: crate::FlightDataComputer,
     live_data: FlightPlanLiveData,
+    atmosphere: PlannerAtmosphereSelection<'_>,
 ) -> Result<FlightPlanUiProjection, HadReadError> {
     let plan = crate::build_flight_plan(plan)?;
     let mut ui_state = current_ui_state;
@@ -1507,21 +1548,33 @@ pub(crate) fn flight_plan_ui_projection(
     };
     let full_route_legs = prototype_pa46_route_legs(&materialized, None);
     let mut performance_regime_available = true;
+    let mut wind_model_available = atmosphere.model.is_some();
     let modeled_prediction = if !use_live_eta && materialized.active.is_none() {
-        match (origin_altitude_ft, destination_altitude_ft) {
-            (Some(origin), Some(destination)) => match prototype_pa46_prediction(
-                &full_route_legs,
-                origin,
-                cruise_altitude_ft as f64,
-                destination,
-                live_data.now_epoch_ms.unwrap_or_default(),
-            ) {
-                Ok(prediction) => Some(prediction),
-                Err(_) => {
-                    performance_regime_available = false;
-                    None
+        match (
+            origin_altitude_ft,
+            destination_altitude_ft,
+            atmosphere.model,
+        ) {
+            (Some(origin), Some(destination), Some(atmosphere_model)) => {
+                match prototype_pa46_prediction(
+                    &full_route_legs,
+                    origin,
+                    cruise_altitude_ft as f64,
+                    destination,
+                    live_data.now_epoch_ms.unwrap_or_default(),
+                    atmosphere_model,
+                ) {
+                    Ok(prediction) => Some(prediction),
+                    Err(crate::TrajectoryPlannerError::AtmosphereUnavailable(_)) => {
+                        wind_model_available = false;
+                        None
+                    }
+                    Err(_) => {
+                        performance_regime_available = false;
+                        None
+                    }
                 }
-            },
+            }
             _ => None,
         }
     } else {
@@ -1542,6 +1595,11 @@ pub(crate) fn flight_plan_ui_projection(
         ownship_altitude_available: live_data.ownship_altitude_ft.is_some(),
         plan_origin_altitude_available: origin_altitude_ft.is_some(),
         plan_destination_altitude_available: destination_altitude_ft.is_some(),
+        wind_model_label: atmosphere.label.to_string(),
+        wind_model_selected: atmosphere.forecast_selected,
+        wind_model_available,
+        wind_model_selectable: atmosphere.alternate_available,
+        wind_model_action_uid: atmosphere.action_uid.map(str::to_string),
         performance_regime_available,
         live_ground_speed_estimate_active: use_live_eta,
         altitude_comparison_available,
@@ -1680,6 +1738,7 @@ pub(crate) fn altitude_comparison_panel(
     store: &NavKvStore,
     plan: FlightPlan,
     live_data: FlightPlanLiveData,
+    atmosphere: PlannerAtmosphereSelection<'_>,
 ) -> Result<crate::AltitudeComparisonPanelUiView, HadReadError> {
     let plan = crate::build_flight_plan(plan)?;
     let mut missing_pages = HadReadPageCollector::default();
@@ -1725,6 +1784,7 @@ pub(crate) fn altitude_comparison_panel(
             destination_altitude_ft,
             plan.cruise_altitude_ft
                 .unwrap_or(PROTOTYPE_PA46_CRUISE_ALTITUDE_FT),
+            atmosphere,
         ),
     })
 }
@@ -4223,7 +4283,15 @@ mod tests {
         computer: crate::FlightDataComputer,
         live_data: FlightPlanLiveData,
     ) -> Result<FlightPlanUiState, HadReadError> {
-        Ok(flight_plan_ui_projection(store, plan, current_ui_state, computer, live_data)?.ui_state)
+        Ok(flight_plan_ui_projection(
+            store,
+            plan,
+            current_ui_state,
+            computer,
+            live_data,
+            PlannerAtmosphereSelection::no_wind(false),
+        )?
+        .ui_state)
     }
 
     fn default_flight_plan_ui_state_for_test(
@@ -5014,6 +5082,33 @@ mod tests {
             .expect("cell")
     }
 
+    #[derive(Debug, Clone, Copy)]
+    struct ConstantForecastAtmosphere;
+
+    impl crate::AtmosphereModel for ConstantForecastAtmosphere {
+        fn sample(
+            &self,
+            _position: LatLon,
+            pressure_altitude_ft: f64,
+            _epoch_ms: i64,
+        ) -> Result<crate::AtmosphereSample, String> {
+            Ok(crate::AtmosphereSample {
+                wind_east_kt: 50.0,
+                wind_north_kt: 0.0,
+                temperature_c: 15.0 - pressure_altitude_ft * 0.001_981_2,
+            })
+        }
+    }
+
+    fn wind_control(state: &FlightPlanUiState) -> &crate::AltitudePlannerControlUiView {
+        state
+            .altitude_planner
+            .controls
+            .iter()
+            .find(|control| control.id == crate::AltitudePlannerControlId::WindModel)
+            .expect("wind-model control")
+    }
+
     fn airport_info_value(id: &str, position: LatLon, elevation_msl_ft: f64) -> serde_json::Value {
         serde_json::json!({
             "schema_version": 1,
@@ -5099,6 +5194,7 @@ mod tests {
                 now_epoch_ms: Some(12 * 60 * 60 * 1000),
                 ..FlightPlanLiveData::default()
             },
+            PlannerAtmosphereSelection::no_wind(false),
         )
         .expect("altitude comparison panel");
         assert_eq!(panel.columns, crate::altitude_comparison_columns());
@@ -5142,6 +5238,93 @@ mod tests {
         assert_eq!(
             row_cell(higher_total, "fuel").estimate_kind,
             crate::FlightEstimateKind::Modeled
+        );
+    }
+
+    #[test]
+    fn installed_forecast_is_a_core_selected_planner_alternative() {
+        let aaa = LatLon { lat: 0.0, lon: 0.0 };
+        let bbb = LatLon { lat: 0.0, lon: 1.5 };
+        let ccc = LatLon { lat: 0.0, lon: 3.0 };
+        let store = three_airport_nav_store(aaa, bbb, ccc);
+        let plan = three_airport_test_plan();
+        let project = |atmosphere| {
+            flight_plan_ui_projection(
+                &store,
+                plan.clone(),
+                crate::project_ui_state(&plan),
+                crate::FlightDataComputer::default(),
+                FlightPlanLiveData::default(),
+                atmosphere,
+            )
+            .expect("project planner")
+            .ui_state
+        };
+
+        let no_wind = project(PlannerAtmosphereSelection::no_wind(true));
+        assert_eq!(wind_control(&no_wind).label, "WIND\nNO WIND");
+        assert!(wind_control(&no_wind).enabled);
+        assert_eq!(
+            wind_control(&no_wind).action_uid.as_deref(),
+            Some(SELECT_GFS_WIND_ACTION_UID)
+        );
+
+        let gfs = project(PlannerAtmosphereSelection::gfs(Some(
+            &ConstantForecastAtmosphere,
+        )));
+        assert_eq!(wind_control(&gfs).label, "WIND\nFORECAST");
+        assert_eq!(
+            wind_control(&gfs).action_uid.as_deref(),
+            Some(SELECT_NO_WIND_ACTION_UID)
+        );
+        let total_ete = |state: &FlightPlanUiState| {
+            state
+                .display_rows
+                .iter()
+                .find(|row| row.label == "TOTAL")
+                .map(|row| row_cell(row, "waypoint_ete").value.clone())
+                .expect("total ETE")
+        };
+        assert_ne!(total_ete(&gfs), total_ete(&no_wind));
+    }
+
+    #[test]
+    fn selected_missing_forecast_reports_wind_not_performance_failure() {
+        let aaa = LatLon { lat: 0.0, lon: 0.0 };
+        let bbb = LatLon { lat: 0.0, lon: 1.5 };
+        let ccc = LatLon { lat: 0.0, lon: 3.0 };
+        let store = three_airport_nav_store(aaa, bbb, ccc);
+        let plan = three_airport_test_plan();
+        let state = flight_plan_ui_projection(
+            &store,
+            plan.clone(),
+            crate::project_ui_state(&plan),
+            crate::FlightDataComputer::default(),
+            FlightPlanLiveData::default(),
+            PlannerAtmosphereSelection::gfs(None),
+        )
+        .expect("project unavailable forecast")
+        .ui_state;
+
+        assert!(state
+            .altitude_planner
+            .unavailable_reasons
+            .iter()
+            .any(|reason| {
+                reason.code == crate::AltitudePlannerUnavailableReasonCode::WindModelUnavailable
+            }));
+        assert!(!state
+            .altitude_planner
+            .unavailable_reasons
+            .iter()
+            .any(|reason| {
+                reason.code
+                    == crate::AltitudePlannerUnavailableReasonCode::PerformanceRegimeUnavailable
+            }));
+        assert!(wind_control(&state).enabled);
+        assert_eq!(
+            wind_control(&state).action_uid.as_deref(),
+            Some(SELECT_NO_WIND_ACTION_UID)
         );
     }
 
@@ -5648,9 +5831,13 @@ mod tests {
                 .parse::<f64>()
                 .expect("numeric fuel")
         };
-        let inactive =
-            altitude_comparison_panel(&store, inactive_plan, FlightPlanLiveData::default())
-                .expect("inactive comparison");
+        let inactive = altitude_comparison_panel(
+            &store,
+            inactive_plan,
+            FlightPlanLiveData::default(),
+            PlannerAtmosphereSelection::no_wind(false),
+        )
+        .expect("inactive comparison");
         let active = altitude_comparison_panel(
             &store,
             active_plan,
@@ -5659,6 +5846,7 @@ mod tests {
                 ownship_altitude_ft: Some(4_000.0),
                 now_epoch_ms: Some(12 * 60 * 60 * 1000),
             },
+            PlannerAtmosphereSelection::no_wind(false),
         )
         .expect("active comparison");
 
@@ -6086,6 +6274,7 @@ mod tests {
             crate::project_ui_state(&mutation),
             crate::FlightDataComputer::default(),
             FlightPlanLiveData::default(),
+            PlannerAtmosphereSelection::no_wind(false),
         )
         .expect("project flight plan ui state")
         .ui_state;

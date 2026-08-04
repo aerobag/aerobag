@@ -232,6 +232,7 @@ export type AltitudePlannerControlUiView = {
   id: "aircraft_profile" | "cruise_altitude" | "wind_model" | "status";
   label: string;
   enabled: boolean;
+  action_uid?: string | null;
   disabled_reason?: string | null;
 };
 

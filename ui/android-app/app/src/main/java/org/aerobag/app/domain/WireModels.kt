@@ -1104,6 +1104,7 @@ data class WireAltitudePlannerControlUiView(
     val id: String,
     val label: String,
     val enabled: Boolean,
+    val action_uid: String? = null,
     val disabled_reason: String? = null,
 )
 

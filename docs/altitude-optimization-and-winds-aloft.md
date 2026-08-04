@@ -47,13 +47,15 @@ PA46 profiles, but their source metadata preserves which values are POH-derived
 and which are rough planning choices.
 
 The first end-to-end UI slice intentionally fixes the selected profile to 65
-percent economy, uses 12,000 feet when the plan has no cruise altitude, and uses
-the no-wind ISA atmosphere. For an inactive plan whose first and last rows are
-airports, core reads their published elevations, predicts along the materialized
-route geometry, and supplies modeled ETE and fuel to the existing Flight Plan
-cells. The controls display these fixed choices but do not yet modify them.
-Active navigation with ownship groundspeed continues to use the familiar
-groundspeed extrapolation instead and reports `MODE GS`.
+percent economy and uses 12,000 feet when the plan has no cruise altitude. The
+wind control starts at no-wind ISA and, when an atmospheric package is
+installed, cycles between `NO WIND` and `FORECAST` through core-issued actions. For
+an inactive plan whose first and last rows are airports, core reads their
+published elevations, predicts along the materialized route geometry, and
+supplies modeled ETE and fuel to the existing Flight Plan cells. Active
+navigation with ownship groundspeed continues to use the familiar groundspeed
+extrapolation instead and reports `MODE GS`; altitude comparison always uses the
+selected planning atmosphere.
 
 ## Source Chosen
 
@@ -106,9 +108,12 @@ origin and spacing, tile dimensions, and protobuf contract identifier.
 
 Core validates and retains the installed NavKv state and samples it with
 bilinear spatial interpolation, linear interpolation between geopotential
-heights, and linear interpolation between forecast times. The Flight Plan
-still explicitly selects the no-wind ISA model; selecting GFS in the planner UI
-is a separate feature slice.
+heights, and linear interpolation between forecast times. Masked pressure
+surfaces below terrain are skipped, while altitudes beyond the remaining valid
+surfaces retain the nearest edge value rather than extrapolating. If selected
+GFS data does not cover the route, altitude, or forecast time, core retains the
+basic estimate and reports a wind-model availability reason; the wind control
+remains available so the user can return to no-wind planning.
 
 ## Size Measurement
 

@@ -793,6 +793,10 @@ internal fun FlightPlanPage(
                                         }
                                     }
                                 }
+                            } else if (control.actionUid != null) {
+                                applySessionCommand("performAltitudePlannerAction") {
+                                    uiSession.performAltitudePlannerAction(control.actionUid)
+                                }
                             }
                         },
                     )

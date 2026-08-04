@@ -218,6 +218,7 @@ data class AltitudePlannerControlUiView(
     val id: String,
     val label: String,
     val enabled: Boolean,
+    val actionUid: String?,
     val disabledReason: String?,
 )
 

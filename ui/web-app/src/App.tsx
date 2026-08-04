@@ -8699,6 +8699,13 @@ function FlightPlanPage(props: {
                       .finally(() => setAltitudeComparisonLoading(false));
                     return;
                   }
+                  if (control.action_uid) {
+                    setAltitudePlannerStatusOpen(false);
+                    setAltitudeComparisonOpen(false);
+                    void Promise.resolve(props.onPerformAltitudePlannerAction(control.action_uid))
+                      .catch((error: unknown) => showDisabledAction(errorMessage(error)));
+                    return;
+                  }
                   if (disabledReason) {
                     showDisabledAction(disabledReason);
                   }

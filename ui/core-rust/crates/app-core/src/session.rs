@@ -297,6 +297,7 @@ struct SessionModel {
     raster_map_catalog: Option<Arc<RasterMapCatalog>>,
     wall_clock_epoch_ms: i64,
     live_feed_current_refresh: LiveFeedCurrentRefreshState,
+    altitude_planner_wind_selection: AltitudePlannerWindSelection,
 }
 
 struct SessionRuntime {
@@ -347,6 +348,13 @@ impl Default for SessionRuntime {
             pending_resource_effects: Vec::new(),
         }
     }
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+enum AltitudePlannerWindSelection {
+    #[default]
+    NoWind,
+    Gfs,
 }
 
 impl SessionRuntime {
@@ -3434,6 +3442,7 @@ fn create_ui_session_inner(
                 raster_map_catalog: None,
                 wall_clock_epoch_ms,
                 live_feed_current_refresh: LiveFeedCurrentRefreshState::Idle,
+                altitude_planner_wind_selection: AltitudePlannerWindSelection::NoWind,
             },
             runtime: SessionRuntime::default(),
         },
@@ -5079,6 +5088,25 @@ fn flight_plan_live_data_for_session(session: &UiSession) -> crate::had_ops::Fli
     }
 }
 
+fn planner_atmosphere_for_session(
+    session: &UiSession,
+) -> crate::had_ops::PlannerAtmosphereSelection<'_> {
+    match session.altitude_planner_wind_selection {
+        AltitudePlannerWindSelection::NoWind => {
+            crate::had_ops::PlannerAtmosphereSelection::no_wind(
+                session.runtime.forecast_atmosphere.is_some(),
+            )
+        }
+        AltitudePlannerWindSelection::Gfs => crate::had_ops::PlannerAtmosphereSelection::gfs(
+            session
+                .runtime
+                .forecast_atmosphere
+                .as_ref()
+                .map(|forecast| forecast as &dyn crate::AtmosphereModel),
+        ),
+    }
+}
+
 fn altitude_comparisons_in_session(handle: u32) -> AppResult<HadOperationOutcome> {
     let sessions = lock_sessions();
     let session = session_ref(&sessions, handle)?;
@@ -5086,6 +5114,7 @@ fn altitude_comparisons_in_session(handle: u32) -> AppResult<HadOperationOutcome
         session_nav_kv_store(session)?,
         session_plan(session)?,
         flight_plan_live_data_for_session(session),
+        planner_atmosphere_for_session(session),
     ) {
         Ok(panel) => panel,
         Err(HadReadError::NeedPages(pages)) => {
@@ -5109,16 +5138,35 @@ fn perform_altitude_planner_action_in_session(
     handle: u32,
     action_uid: String,
 ) -> AppResult<HadOperationOutcome> {
-    let altitude_ft = crate::had_ops::prototype_pa46_altitude_from_action_uid(&action_uid)
-        .ok_or_else(|| AppError {
-            kind: AppErrorKind::UnsupportedOperation,
-            message: format!("unknown altitude-planner action: {action_uid}"),
-        })?;
-    mutate_session_flight_plan(handle, |plan| {
-        let mut next = plan.clone();
-        next.cruise_altitude_ft = Some(altitude_ft);
-        Ok(next)
-    })
+    if let Some(altitude_ft) = crate::had_ops::prototype_pa46_altitude_from_action_uid(&action_uid)
+    {
+        return mutate_session_flight_plan(handle, |plan| {
+            let mut next = plan.clone();
+            next.cruise_altitude_ft = Some(altitude_ft);
+            Ok(next)
+        });
+    }
+
+    let mut sessions = lock_sessions();
+    let session = session_mut(&mut sessions, handle)?;
+    if let Some(outcome) = preflight_session_snapshot_resources(session)? {
+        return Ok(outcome);
+    }
+    session.altitude_planner_wind_selection = match action_uid.as_str() {
+        crate::had_ops::SELECT_NO_WIND_ACTION_UID => AltitudePlannerWindSelection::NoWind,
+        crate::had_ops::SELECT_GFS_WIND_ACTION_UID
+            if session.runtime.forecast_atmosphere.is_some() =>
+        {
+            AltitudePlannerWindSelection::Gfs
+        }
+        _ => {
+            return Err(AppError {
+                kind: AppErrorKind::UnsupportedOperation,
+                message: format!("unknown or unavailable altitude-planner action: {action_uid}"),
+            })
+        }
+    };
+    changed_session_snapshot_outcome(session)
 }
 
 pub(crate) fn activate_next_leg_in_session(handle: u32) -> AppResult<HadOperationOutcome> {
@@ -11283,6 +11331,7 @@ fn project_session_app_ui_state(session: &UiSession) -> Result<AppUiState, HadRe
                 Some(session.wall_clock_epoch_ms),
             ),
             flight_plan_live_data_for_session(session),
+            planner_atmosphere_for_session(session),
         )?;
         app_ui_state.active_plan = Some(projection.ui_state);
         materialized_plan = Some(projection.materialized);
@@ -12999,6 +13048,7 @@ mod tests {
                 raster_map_catalog: None,
                 wall_clock_epoch_ms: 0,
                 live_feed_current_refresh: LiveFeedCurrentRefreshState::Idle,
+                altitude_planner_wind_selection: AltitudePlannerWindSelection::NoWind,
             },
             runtime: SessionRuntime::default(),
         }
@@ -13966,6 +14016,19 @@ mod tests {
     #[test]
     fn altitude_planner_command_accepts_only_core_issued_candidate_actions() {
         let init = create_current_test_session();
+
+        let unavailable_wind_error = perform_flight_plan_command_in_session(
+            init.handle,
+            FlightPlanSessionCommand::PerformAltitudePlannerAction {
+                action_uid: crate::had_ops::SELECT_GFS_WIND_ACTION_UID.to_string(),
+            },
+            utc("2026-05-20T12:00:30Z").timestamp_millis(),
+        )
+        .expect_err("cannot select an uninstalled forecast");
+        assert_eq!(
+            unavailable_wind_error.kind,
+            AppErrorKind::UnsupportedOperation
+        );
 
         perform_flight_plan_command_in_session(
             init.handle,
@@ -17379,6 +17442,34 @@ mod tests {
         )
         .expect("sample installed forecast");
         assert!(sample.wind_east_kt > 100.0);
+        drop(sessions);
+
+        perform_altitude_planner_action_in_session(
+            init.handle,
+            crate::had_ops::SELECT_GFS_WIND_ACTION_UID.to_string(),
+        )
+        .expect("select installed GFS forecast");
+        {
+            let sessions = lock_sessions();
+            assert_eq!(
+                session_ref(&sessions, init.handle)
+                    .expect("session")
+                    .altitude_planner_wind_selection,
+                AltitudePlannerWindSelection::Gfs
+            );
+        }
+        perform_altitude_planner_action_in_session(
+            init.handle,
+            crate::had_ops::SELECT_NO_WIND_ACTION_UID.to_string(),
+        )
+        .expect("return to no-wind model");
+        let sessions = lock_sessions();
+        assert_eq!(
+            session_ref(&sessions, init.handle)
+                .expect("session")
+                .altitude_planner_wind_selection,
+            AltitudePlannerWindSelection::NoWind
+        );
     }
 
     #[test]

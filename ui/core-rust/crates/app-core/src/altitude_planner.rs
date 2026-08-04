@@ -49,6 +49,8 @@ pub struct AltitudePlannerControlUiView {
     pub label: String,
     pub enabled: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub action_uid: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub disabled_reason: Option<String>,
 }
 
@@ -96,6 +98,7 @@ pub struct AltitudePlannerUiInput {
     pub wind_model_selected: bool,
     pub wind_model_available: bool,
     pub wind_model_selectable: bool,
+    pub wind_model_action_uid: Option<String>,
     pub performance_regime_available: bool,
     pub live_ground_speed_estimate_active: bool,
     pub altitude_comparison_available: bool,
@@ -115,6 +118,7 @@ impl Default for AltitudePlannerUiInput {
             wind_model_selected: false,
             wind_model_available: true,
             wind_model_selectable: false,
+            wind_model_action_uid: None,
             performance_regime_available: true,
             live_ground_speed_estimate_active: false,
             altitude_comparison_available: false,
@@ -192,6 +196,7 @@ pub fn project_altitude_planner_ui(input: AltitudePlannerUiInput) -> AltitudePla
                 id: AltitudePlannerControlId::AircraftProfile,
                 label: format!("AIRCRAFT\n{aircraft_label}"),
                 enabled: input.aircraft_profile_selectable,
+                action_uid: None,
                 disabled_reason: (!input.aircraft_profile_selectable)
                     .then(|| "Aircraft profile selection is not available yet.".to_string()),
             },
@@ -202,6 +207,7 @@ pub fn project_altitude_planner_ui(input: AltitudePlannerUiInput) -> AltitudePla
                     .map(|altitude| format!("ALT\n{altitude}"))
                     .unwrap_or_else(|| "ALT\n—".to_string()),
                 enabled: input.altitude_comparison_available,
+                action_uid: None,
                 disabled_reason: (!input.altitude_comparison_available).then(|| {
                     "Altitude comparison needs a flyable route and known start and destination altitudes."
                         .to_string()
@@ -211,6 +217,7 @@ pub fn project_altitude_planner_ui(input: AltitudePlannerUiInput) -> AltitudePla
                 id: AltitudePlannerControlId::WindModel,
                 label: format!("WIND\n{}", input.wind_model_label),
                 enabled: input.wind_model_selectable,
+                action_uid: input.wind_model_action_uid,
                 disabled_reason: (!input.wind_model_selectable)
                     .then(|| "No alternate wind models are available.".to_string()),
             },
@@ -218,6 +225,7 @@ pub fn project_altitude_planner_ui(input: AltitudePlannerUiInput) -> AltitudePla
                 id: AltitudePlannerControlId::Status,
                 label: status_label,
                 enabled: !reasons.is_empty(),
+                action_uid: None,
                 disabled_reason: if input.live_ground_speed_estimate_active {
                     Some("ETE uses live groundspeed while navigation is active.".to_string())
                 } else {
@@ -384,12 +392,12 @@ enum FlightPhase {
     Descent { target_altitude_ft: f64 },
 }
 
-pub struct TrajectoryPlanner<'a, A: AtmosphereModel> {
+pub struct TrajectoryPlanner<'a, A: AtmosphereModel + ?Sized> {
     profile: &'a AircraftPerformanceProfile,
     atmosphere: &'a A,
 }
 
-impl<'a, A: AtmosphereModel> TrajectoryPlanner<'a, A> {
+impl<'a, A: AtmosphereModel + ?Sized> TrajectoryPlanner<'a, A> {
     pub fn new(profile: &'a AircraftPerformanceProfile, atmosphere: &'a A) -> Self {
         Self {
             profile,

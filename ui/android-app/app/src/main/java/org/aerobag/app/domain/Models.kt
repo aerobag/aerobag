@@ -90,6 +90,8 @@ enum class ProcedureLoadHeaderTone {
 }
 
 data class ProcedureLoadMenu(
+    val procedureKind: ProcedureKind?,
+    val launcherLabel: String,
     val header: String,
     val headerTone: ProcedureLoadHeaderTone,
     val options: List<ProcedureLoadOption>,
@@ -264,6 +266,7 @@ data class FlightPlanRowActionUiView(
     val navigation: FlightPlanRowNavigationAction? = null,
     val weatherDetail: WeatherDetailUiView? = null,
     val airportInfoAirportId: String? = null,
+    val procedureKind: ProcedureKind? = null,
 )
 
 data class AirportInfoUiView(

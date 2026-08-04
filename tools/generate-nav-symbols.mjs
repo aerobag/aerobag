@@ -226,6 +226,8 @@ export const obstacleTallDotY = ${JSON.stringify(spec.obstacle_dot.tall_y)};
 export const obstacleDotRadius = ${JSON.stringify(spec.obstacle_dot.radius)};
 export const mapSelectionSpotPegPath = ${JSON.stringify(spec.paths.map_selection_spot_peg)};
 export const mapSelectionSpotDotPath = ${JSON.stringify(spec.paths.map_selection_spot_dot)};
+export const manualSequenceChevronPath = ${JSON.stringify(spec.paths.manual_sequence_chevron)};
+export const manualSequenceChevronSpacing = ${JSON.stringify(spec.manual_sequence.spacing)};
 export const dataStatusWarningSymbol = ${JSON.stringify(symbolSource("data_status_warning"), null, 2)} satisfies readonly NavSymbolLayer[];
 export const airportOpenMarkerSymbol = ${JSON.stringify(symbolSource("airport_open_marker"), null, 2)} satisfies readonly NavSymbolLayer[];
 export const mapSelectionSpotSymbol = ${JSON.stringify(symbolSource("map_selection_spot"), null, 2)} satisfies readonly NavSymbolLayer[];
@@ -287,6 +289,10 @@ private val obstacleShortCommands = listOf(
 
 private val obstacleTallCommands = listOf(
     ${ktPathCommands(spec.paths.obstacle_tall)}
+)
+
+private val manualSequenceChevronCommands = listOf(
+    ${ktPathCommands(spec.paths.manual_sequence_chevron)}
 )
 
 private val vorOuterHexPoints = listOf(
@@ -361,6 +367,9 @@ private fun symbolPath(commands: List<SymbolPathCommand>, center: Offset, scale:
 
 fun airportCircleMarkerPath(center: Offset, scale: Float): Path =
     symbolPath(airportCircleCommands, center, scale)
+
+fun manualSequenceChevronPath(center: Offset, scale: Float): Path =
+    symbolPath(manualSequenceChevronCommands, center, scale)
 
 fun airportFuelMarkerPath(center: Offset, scale: Float): Path {
     val circleRadius = ${ktFloat(fuel.circle_radius)} * scale
@@ -488,6 +497,7 @@ fun pirepSevereIcingSymbol(center: Offset, scale: Float): List<NavSymbolLayer> =
 const val obstacleShortDotY: Float = ${ktFloat(spec.obstacle_dot.short_y)}
 const val obstacleTallDotY: Float = ${ktFloat(spec.obstacle_dot.tall_y)}
 const val obstacleDotRadius: Float = ${ktFloat(spec.obstacle_dot.radius)}
+const val manualSequenceChevronSpacing: Float = ${ktFloat(spec.manual_sequence.spacing)}
 
 fun vorOuterHexPath(center: Offset, radius: Float): Path =
     polygonPath(vorOuterHexPoints, center, radius / 8f)

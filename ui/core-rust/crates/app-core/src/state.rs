@@ -113,7 +113,10 @@ pub fn project_app_ui_state(state: &AppState) -> AppUiState {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{AirportId, AirwaySegment, AppErrorKind, NavRef, RouteComponent};
+    use crate::{
+        AirportId, AirwaySegment, AppErrorKind, NavRef, ProcedureKind, ProcedureSegment,
+        RouteComponent,
+    };
 
     fn sample_plan() -> FlightPlan {
         FlightPlan {
@@ -249,6 +252,31 @@ mod tests {
         );
 
         assert_eq!(result.unwrap_err().kind, AppErrorKind::InvalidFlightPlan);
+    }
+
+    #[test]
+    fn reducer_rejects_imported_plan_with_detached_departure() {
+        let mut plan = sample_plan();
+        plan.route_components.push(RouteComponent::Procedure {
+            procedure: ProcedureSegment {
+                airport_id: AirportId("KBOS".to_string()),
+                procedure_id: "TEST1".to_string(),
+                display_label: None,
+                kind: ProcedureKind::Sid,
+                runway_transition: None,
+                enroute_transition: None,
+                terminal_discontinuity: None,
+                data_quality: Vec::new(),
+            },
+        });
+
+        let error = reduce(&AppState::default(), AppEvent::ReplaceFlightPlan(plan)).unwrap_err();
+
+        assert_eq!(error.kind, AppErrorKind::InvalidFlightPlan);
+        assert_eq!(
+            error.message,
+            "A departure procedure is attached to the origin airport."
+        );
     }
 
     #[test]

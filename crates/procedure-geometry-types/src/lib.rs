@@ -199,6 +199,8 @@ pub struct ProcedureGeometryLegBundle {
     pub waypoints: Vec<ProcedureGeometryWaypoint>,
     #[serde(default, skip_serializing_if = "is_default")]
     pub sequencing_after: ProcedureSequencingRule,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub discontinuity_after: Option<ProcedureDiscontinuity>,
     #[serde(default, skip_serializing)]
     pub source_row_sequences: Vec<i32>,
 }
@@ -437,6 +439,7 @@ mod tests {
                 name: None,
             }],
             sequencing_after: ProcedureSequencingRule::Continue,
+            discontinuity_after: None,
             source_row_sequences: Vec::new(),
         });
 
@@ -478,6 +481,7 @@ mod tests {
                     name: None,
                 }],
                 sequencing_after: ProcedureSequencingRule::Continue,
+                discontinuity_after: None,
                 source_row_sequences: Vec::new(),
             }],
             data_quality: Vec::new(),

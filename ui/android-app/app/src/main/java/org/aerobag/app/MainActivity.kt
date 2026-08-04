@@ -655,6 +655,7 @@ internal data class AndroidProcedurePickerState(
     val error: String?,
     val rowUid: String,
     val airportId: String,
+    val kind: ProcedureKind,
     val procedures: List<ProcedureSummary>,
     val selectedProcedureId: String?,
     val options: ProcedureOptions?,

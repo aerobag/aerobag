@@ -112,6 +112,7 @@ pub struct ProcedureSummary {
 pub struct CifpTppMatchRow {
     pub airport_id: String,
     pub cifp_id: String,
+    pub procedure_kind: ProcedureKind,
     pub plate_id: String,
     pub plate_label: String,
     pub package_id: String,
@@ -125,6 +126,7 @@ pub struct CifpTppMatchRow {
 pub struct CifpTppMatch {
     pub airport_id: String,
     pub cifp_id: String,
+    pub procedure_kind: ProcedureKind,
     pub plate_id: String,
     pub plate_label: String,
     pub package_id: String,

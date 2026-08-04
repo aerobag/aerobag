@@ -27,6 +27,7 @@ import type {
   OwnshipRenderState,
   PlateGeoref,
   ProcedureOptions,
+  ProcedureKind,
   ProcedureLoadMenu,
   ProcedureSummary,
   SituationControlInput,
@@ -47,6 +48,8 @@ import {
   dataStatusWarningSymbol,
   heliportHPath,
   mapSelectionSpotSymbol,
+  manualSequenceChevronPath,
+  manualSequenceChevronSpacing,
   metarBknSymbol,
   metarClearSymbol,
   metarFewSymbol,
@@ -136,7 +139,10 @@ import {
   type MapViewportState,
   type ScreenPoint,
 } from "./domain/mapViewport";
-import { flightPlanRouteSegmentRenderKey } from "./domain/flightPlanRouteRender";
+import {
+  flightPlanRouteSegmentRenderKey,
+  spacedRouteChevronPlacements,
+} from "./domain/flightPlanRouteRender";
 import { plateImagePoint, projectPlateFlightPlanSegments } from "./domain/plateOverlay";
 import { MapFollowTargetGate } from "./domain/mapFollowTargetGate";
 import {
@@ -3818,15 +3824,15 @@ export default function App() {
               "insert_airway_at_row",
             );
           }}
-          onSelectProcedureAtRow={async (rowUid, airportId, procedureId, enrouteTransition) => {
+          onSelectProcedureAtRow={async (rowUid, airportId, procedureId, kind, runwayTransition, enrouteTransition) => {
             if (!uiSession) return;
             applySessionSnapshot(
               await uiSession.selectProcedureAtFlightPlanRow(
                 rowUid,
                 airportId,
                 procedureId,
-                "approach",
-                null,
+                kind,
+                runwayTransition,
                 enrouteTransition,
               ),
               "select_procedure_at_row",
@@ -6988,22 +6994,7 @@ function MapPage(props: {
                               />
                             ))
                           : null}
-                        <polyline
-                          points={segment.path.map((point) => `${point.x},${point.y}`).join(" ")}
-                          fill="none"
-                          stroke="rgba(0, 0, 0, 0.55)"
-                          strokeWidth="7"
-                          strokeLinecap="round"
-                          strokeLinejoin="round"
-                        />
-                        <polyline
-                          points={segment.path.map((point) => `${point.x},${point.y}`).join(" ")}
-                          fill="none"
-                          stroke={routeSegmentColor(segment.status)}
-                          strokeWidth="3.5"
-                          strokeLinecap="round"
-                          strokeLinejoin="round"
-                        />
+                        <FlightPlanRoutePath segment={segment} />
                       </Fragment>
                     ))}
                   </svg>
@@ -8068,7 +8059,7 @@ function FlightPlanPage(props: {
     exitPointUid: string,
     presentation: AirwayPresentationPlan,
   ) => void | Promise<void>;
-  onSelectProcedureAtRow: (rowUid: string, airportId: string, procedureId: string, enrouteTransition: string | null) => void | Promise<void>;
+  onSelectProcedureAtRow: (rowUid: string, airportId: string, procedureId: string, kind: ProcedureKind, runwayTransition: string | null, enrouteTransition: string | null) => void | Promise<void>;
   debugWarningActive: boolean;
 }) {
   const [selectedWaypointUid, setSelectedWaypointUid] = useState<string | null>(null);
@@ -8095,6 +8086,7 @@ function FlightPlanPage(props: {
     error: string | null;
     rowUid: string;
     airportId: string;
+    kind: ProcedureKind;
     procedures: ProcedureSummary[];
     selectedProcedureId: string | null;
     options: ProcedureOptions | null;
@@ -8289,7 +8281,7 @@ function FlightPlanPage(props: {
       setAirportInsert(null);
     };
 
-    const actionForUi = (action: { id: string; uid: string; label: string; enabled: boolean; disabled_reason?: string | null; execution?: string; dismiss_tray_on_success?: boolean; navigation?: FlightPlanRowNavigationAction | null; weather_detail?: WeatherDetailUiView | null; airport_info_airport_id?: string | null }) => {
+    const actionForUi = (action: { id: string; uid: string; label: string; enabled: boolean; disabled_reason?: string | null; execution?: string; dismiss_tray_on_success?: boolean; navigation?: FlightPlanRowNavigationAction | null; weather_detail?: WeatherDetailUiView | null; airport_info_airport_id?: string | null; procedure_kind?: ProcedureKind | null }) => {
       return {
         id: action.id,
         uid: action.uid,
@@ -8384,13 +8376,14 @@ function FlightPlanPage(props: {
             });
             return;
           }
-          if (action.id === "select_procedure") {
+          if (action.procedure_kind) {
             if (!selectedRow.chartAirportId) {
               return;
             }
             const trace = {
               row_uid: selectedRow.rowUid,
               airport_id: selectedRow.chartAirportId,
+              procedure_kind: action.procedure_kind,
             };
             debugLog("plan.procedure_picker.open.start", trace);
             setProcedurePicker({
@@ -8398,6 +8391,7 @@ function FlightPlanPage(props: {
               error: null,
               rowUid: selectedRow.rowUid,
               airportId: selectedRow.chartAirportId,
+              kind: action.procedure_kind,
               procedures: [],
               selectedProcedureId: null,
               options: null,
@@ -8405,7 +8399,7 @@ function FlightPlanPage(props: {
             window.requestAnimationFrame(() => {
               void debugTiming(
                 "plan.procedure_picker.list_procedures",
-                () => props.appCoreAdapter!.listProcedures(selectedRow.chartAirportId!, "approach"),
+                () => props.appCoreAdapter!.listProcedures(selectedRow.chartAirportId!, action.procedure_kind!),
                 trace,
               ).then((procedures) => {
                 debugLog("plan.procedure_picker.open.done", { ...trace, procedure_count: procedures.length });
@@ -8428,7 +8422,7 @@ function FlightPlanPage(props: {
         },
       };
     };
-    return (selectedRow.actionMatrix as Array<Array<{ id: string; uid: string; label: string; enabled: boolean; disabled_reason?: string | null; execution?: string; dismiss_tray_on_success?: boolean; navigation?: FlightPlanRowNavigationAction | null; weather_detail?: WeatherDetailUiView | null; airport_info_airport_id?: string | null }>>).map((row) => row.map(actionForUi));
+    return (selectedRow.actionMatrix as Array<Array<{ id: string; uid: string; label: string; enabled: boolean; disabled_reason?: string | null; execution?: string; dismiss_tray_on_success?: boolean; navigation?: FlightPlanRowNavigationAction | null; weather_detail?: WeatherDetailUiView | null; airport_info_airport_id?: string | null; procedure_kind?: ProcedureKind | null }>>).map((row) => row.map(actionForUi));
   }, [props, selectedRow]);
   const rowActions = useMemo(() => rowActionRows.flat(), [rowActionRows]);
 
@@ -9111,18 +9105,19 @@ function FlightPlanPage(props: {
               </form>
             ) : procedurePicker ? (
               <div className="waypointActionTray procedureChoiceTray">
-                <div className="planGuidanceSummary">
-                  APPROACH {procedurePicker.airportId}
+                <div className="trayHeader">
+                  {procedureKindTitle(procedurePicker.kind).toUpperCase()} {procedurePicker.airportId}
                 </div>
-                {procedurePicker.error ? <div className="planGuidanceSummary">{procedurePicker.error}</div> : null}
+                {procedurePicker.error ? <div className="trayHeader isDestructive">{procedurePicker.error}</div> : null}
                 {procedurePicker.loading ? (
                   <div className="airwayLoadingPanel" aria-live="polite">
                     <div className="spinner" aria-hidden="true" />
                     <div className="planGuidanceSummary">Loading…</div>
                   </div>
                 ) : procedurePicker.selectedProcedureId === null ? (
-                  <div className="procedureChoiceGrid">
-                    {procedurePicker.procedures.map((procedure) => (
+                  procedurePicker.procedures.length > 0 ? (
+                    <div className="procedureChoiceGrid">
+                      {procedurePicker.procedures.map((procedure) => (
                       <button
                         key={procedure.procedure_id}
                         type="button"
@@ -9147,7 +9142,7 @@ function FlightPlanPage(props: {
                               () => props.appCoreAdapter!.describeProcedureOptions(
                                 procedurePicker.airportId,
                                 procedure.procedure_id,
-                                "approach",
+                                procedurePicker.kind,
                               ),
                               trace,
                             );
@@ -9169,13 +9164,16 @@ function FlightPlanPage(props: {
                       >
                         {procedure.display_label}
                       </button>
-                    ))}
-                  </div>
+                      ))}
+                    </div>
+                  ) : (
+                    <div className="trayHeader">{noPublishedProceduresLabel(procedurePicker.kind)}</div>
+                  )
                 ) : procedurePicker.options ? (
                   <>
-                    {procedurePicker.options.valid_choices.map((choice, index) => (
+                    {procedurePicker.options.valid_choices.length > 0 ? procedurePicker.options.valid_choices.map((choice, index) => (
                       <button
-                        key={`${procedurePicker.selectedProcedureId}:${choice.enroute_transition ?? "none"}:${index}`}
+                        key={`${procedurePicker.selectedProcedureId}:${choice.runway_transition ?? "none"}:${choice.enroute_transition ?? "none"}:${index}`}
                         type="button"
                         className="trayButton airwayChoiceButton"
                         data-testid={`plan-procedure-transition-${choice.enroute_transition ?? "none"}`}
@@ -9186,6 +9184,7 @@ function FlightPlanPage(props: {
                             row_uid: procedurePicker.rowUid,
                             airport_id: procedurePicker.airportId,
                             procedure_id: procedurePicker.selectedProcedureId,
+                            runway_transition: choice.runway_transition,
                             enroute_transition: choice.enroute_transition,
                           };
                           setProcedurePicker((current) => current ? {
@@ -9200,6 +9199,8 @@ function FlightPlanPage(props: {
                                 procedurePicker.rowUid,
                                 procedurePicker.airportId,
                                 procedurePicker.selectedProcedureId!,
+                                procedurePicker.kind,
+                                choice.runway_transition,
                                 choice.enroute_transition,
                               ),
                               trace,
@@ -9216,9 +9217,9 @@ function FlightPlanPage(props: {
                           }
                         }}
                       >
-                        {choice.enroute_transition ?? "No Transition"}
+                        {procedureChoiceLabel(procedurePicker.kind, choice.runway_transition, choice.enroute_transition)}
                       </button>
-                    ))}
+                    )) : <div className="trayHeader">No published routes are available.</div>}
                     <button
                       type="button"
                       className="trayButton airwayChoiceButton"
@@ -10480,7 +10481,9 @@ function ChartsPage(props: {
   const firstVisualReadyRef = useRef(false);
   const trayGroup = useModalTrayGroup(["airport", "chart", "load", "procedureWarning", "ownship"] as const);
   const [plateProcedureLoadMenu, setPlateProcedureLoadMenu] = useState<ProcedureLoadMenu>({
-    header: "Load approach",
+    procedure_kind: null,
+    launcher_label: "LOAD\nPROC",
+    header: "No loadable procedure",
     header_tone: "normal",
     options: [],
   });
@@ -10778,7 +10781,7 @@ function ChartsPage(props: {
       return;
     }
     if (!props.uiSession || !selectedChart || selectedChart.kind !== "plate") {
-      setPlateProcedureLoadMenu({ header: "Load approach", header_tone: "normal", options: [] });
+      setPlateProcedureLoadMenu({ procedure_kind: null, launcher_label: "LOAD\nPROC", header: "No loadable procedure", header_tone: "normal", options: [] });
       return;
     }
     let cancelled = false;
@@ -10798,7 +10801,7 @@ function ChartsPage(props: {
         error: errorMessage(error),
       });
       if (!cancelled) {
-        setPlateProcedureLoadMenu({ header: "Load approach", header_tone: "normal", options: [] });
+        setPlateProcedureLoadMenu({ procedure_kind: null, launcher_label: "LOAD\nPROC", header: "No loadable procedure", header_tone: "normal", options: [] });
       }
     });
     return () => {
@@ -10838,7 +10841,7 @@ function ChartsPage(props: {
         .finally(() => trayGroup.close("ownship"));
     },
   }));
-  const loadApproachEnabled = loadProcedureOptions.length > 0;
+  const loadProcedureEnabled = loadProcedureOptions.length > 0;
   const folderDisabledReason = trayOpen ? "Close the open tray first." : null;
 
   function localPointFromPointerEvent(
@@ -11107,22 +11110,7 @@ function ChartsPage(props: {
               >
                 {plateFlightPlanScreenSegments.map((segment, segmentIndex) => (
                   <Fragment key={`${segment.id}:${segmentIndex}`}>
-                    <polyline
-                      points={segment.path.map((point) => `${point.x},${point.y}`).join(" ")}
-                      fill="none"
-                      stroke="rgba(0, 0, 0, 0.55)"
-                      strokeWidth="7"
-                      strokeLinecap="round"
-                      strokeLinejoin="round"
-                    />
-                    <polyline
-                      points={segment.path.map((point) => `${point.x},${point.y}`).join(" ")}
-                      fill="none"
-                      stroke={routeSegmentColor(segment.status)}
-                      strokeWidth="3.5"
-                      strokeLinecap="round"
-                      strokeLinejoin="round"
-                    />
+                    <FlightPlanRoutePath segment={segment} />
                   </Fragment>
                 ))}
               </svg>
@@ -11214,9 +11202,9 @@ function ChartsPage(props: {
             }))}
           />
           <TrayDock
-            launcherLabel={"LOAD\nAPPCH"}
+            launcherLabel={plateProcedureLoadMenu.launcher_label}
             open={trayGroup.isOpen("load")}
-            disabled={!loadApproachEnabled}
+            disabled={!loadProcedureEnabled}
             disabledReason="No loadable procedure is available for this plate."
             onToggle={() => trayGroup.toggle("load")}
             ariaLabel="Load procedure"
@@ -12697,6 +12685,42 @@ function flightPlanEntryPreviewSegments(
   return segments;
 }
 
+function procedureKindTitle(kind: ProcedureKind): string {
+  switch (kind) {
+    case "sid": return "Departure";
+    case "star": return "Arrival";
+    case "approach": return "Approach";
+  }
+}
+
+function noPublishedProceduresLabel(kind: ProcedureKind): string {
+  switch (kind) {
+    case "sid": return "No published departures are available.";
+    case "star": return "No published arrivals are available.";
+    case "approach": return "No published approaches are available.";
+  }
+}
+
+function procedureChoiceLabel(
+  kind: ProcedureKind,
+  runwayTransition: string | null,
+  enrouteTransition: string | null,
+): string {
+  if (kind === "sid") {
+    if (runwayTransition && enrouteTransition) return `via ${runwayTransition} to ${enrouteTransition}`;
+    if (runwayTransition) return `via ${runwayTransition}`;
+    if (enrouteTransition) return `to ${enrouteTransition}`;
+  } else if (kind === "star") {
+    if (runwayTransition && enrouteTransition) return `from ${enrouteTransition} to ${runwayTransition}`;
+    if (runwayTransition) return `to ${runwayTransition}`;
+    if (enrouteTransition) return `from ${enrouteTransition}`;
+  } else {
+    if (enrouteTransition) return `from ${enrouteTransition}`;
+    if (runwayTransition) return `from ${runwayTransition}`;
+  }
+  return "Published route";
+}
+
 function navRefLabel(value: NavRef) {
   if ("Airport" in value) return value.Airport;
   if ("Navaid" in value) return value.Navaid;
@@ -12718,6 +12742,67 @@ function routeSegmentColor(status: FlightPlanRouteSegment["status"]) {
     return loadedUiTheme.flight_plan_route.active_leg_remaining;
   }
   return loadedUiTheme.flight_plan_route.remaining;
+}
+
+function FlightPlanRoutePath(props: {
+  segment: Pick<FlightPlanRouteSegment, "status" | "style"> & { path: readonly ScreenPoint[] };
+}) {
+  const { segment } = props;
+  const color = routeSegmentColor(segment.status);
+  if (segment.style === "vectors") {
+    return spacedRouteChevronPlacements(segment.path, manualSequenceChevronSpacing).map(
+      (placement, index) => {
+        const transform = `translate(${placement.x} ${placement.y}) rotate(${placement.angleDegrees})`;
+        return (
+          <Fragment key={`vectors-chevron:${index}`}>
+            <path
+              d={manualSequenceChevronPath}
+              transform={transform}
+              fill="none"
+              stroke="rgba(0, 0, 0, 0.55)"
+              strokeWidth="7"
+              strokeLinecap="round"
+              strokeLinejoin="round"
+            />
+            <path
+              d={manualSequenceChevronPath}
+              transform={transform}
+              fill="none"
+              stroke={color}
+              strokeWidth="3.5"
+              strokeLinecap="round"
+              strokeLinejoin="round"
+            />
+          </Fragment>
+        );
+      },
+    );
+  }
+
+  const points = segment.path.map((point) => `${point.x},${point.y}`).join(" ");
+  const strokeDasharray = segment.style === "dashed" ? "10 8" : undefined;
+  return (
+    <>
+      <polyline
+        points={points}
+        fill="none"
+        stroke="rgba(0, 0, 0, 0.55)"
+        strokeWidth="7"
+        strokeLinecap="round"
+        strokeLinejoin="round"
+        strokeDasharray={strokeDasharray}
+      />
+      <polyline
+        points={points}
+        fill="none"
+        stroke={color}
+        strokeWidth="3.5"
+        strokeLinecap="round"
+        strokeLinejoin="round"
+        strokeDasharray={strokeDasharray}
+      />
+    </>
+  );
 }
 
 function distanceBetween(first: ScreenPoint, second: ScreenPoint) {

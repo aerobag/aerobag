@@ -200,16 +200,18 @@ pub use package_management::{
 };
 pub use planning::{
     activate_direct_to, activate_direct_to_row, activate_leg, activate_leg_at_detail_index,
-    activate_next_leg, active_guidance_leg, at_fix_requirement, basic_terminal_state,
-    change_airway_entry, change_airway_exit, change_procedure_enroute_transition,
-    change_procedure_runway_transition, common_resume_candidate_decision, delete_component,
-    delete_waypoint_component, direct_to_fix_with_course_continuation_requirement,
-    enter_hold_requirement, established_on_course_requirement, first_guidance_detail_index_for_leg,
+    activate_next_leg, active_guidance_leg, at_fix_requirement, attached_procedure_component_index,
+    basic_terminal_state, change_airway_entry, change_airway_exit,
+    change_procedure_enroute_transition, change_procedure_runway_transition,
+    common_resume_candidate_decision, delete_component, delete_waypoint_component,
+    direct_to_fix_with_course_continuation_requirement, enter_hold_requirement,
+    established_on_course_requirement, first_guidance_detail_index_for_leg,
     flatten_component_to_waypoints, flight_plan_contains_nav_ref,
     flight_plan_has_direct_to_overlay, insert_airport_waypoint, insert_airway_after_airway,
-    insert_airway_after_waypoint, insert_airway_between_waypoints,
-    insert_initial_procedure_before_airport, insert_procedure_between_waypoints, insert_waypoint,
-    intercept_course_requirement, materialize_airway_exit_before_component, move_component,
+    insert_airway_after_waypoint, insert_airway_between_waypoints, insert_departure_after_airport,
+    insert_initial_procedure_before_airport, insert_procedure_between_waypoints,
+    insert_terminal_procedure_before_airport, insert_waypoint, intercept_course_requirement,
+    materialize_airway_exit_before_component, move_component, procedure_component_index_for_load,
     project_ui_state, reconcile_handoff, reentry_to_anchor_requirement,
     remove_airway_child_waypoint, remove_all_above, remove_all_above_airway_child_waypoint,
     replace_airway_component, replace_procedure_component, restore_direct_to,
@@ -344,6 +346,8 @@ pub struct ProcedureLoadOption {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ProcedureLoadMenu {
+    pub procedure_kind: Option<ProcedureKind>,
+    pub launcher_label: String,
     pub header: String,
     pub header_tone: ProcedureLoadHeaderTone,
     pub options: Vec<ProcedureLoadOption>,
@@ -359,6 +363,8 @@ pub enum ProcedureLoadHeaderTone {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum ProcedureLoadPlanTarget {
+    ExistingOrigin { row_uid: String },
+    PrependOrigin,
     ExistingDestination { row_uid: String },
     AppendDestination,
 }
@@ -645,8 +651,10 @@ where
         .map(|segment| segment.geometry.clone())
         .collect::<Vec<_>>();
     for index in 0..route.len() {
-        route[index].finish_lines =
-            sequencing_finish_lines(&route_geometries[index], route_geometries.get(index + 1));
+        if route[index].style != LegDisplayPathStyle::Vectors {
+            route[index].finish_lines =
+                sequencing_finish_lines(&route_geometries[index], route_geometries.get(index + 1));
+        }
     }
     if let Some(direct_to) = plan
         .guidance
@@ -725,6 +733,7 @@ where
         .as_ref()
         .and_then(|provenance| provenance.display_path.as_ref())
     {
+        let ends_in_vectors = planning::resolved_leg_ends_in_manual_sequence(leg);
         for (element_index, element) in display_path.elements.iter().enumerate() {
             let geometry = guidance_route_geometry_from_display_element(element);
             let (from, to) = guidance_route_endpoints(&geometry);
@@ -734,7 +743,11 @@ where
                 from,
                 to,
                 path: guidance_route_path_from_geometry(&geometry),
-                style: display_path.style.clone(),
+                style: if ends_in_vectors && element_index + 1 == display_path.elements.len() {
+                    LegDisplayPathStyle::Vectors
+                } else {
+                    display_path.style.clone()
+                },
                 geometry: geometry.clone(),
                 distance_nm: guidance_route_distance_nm(&geometry),
                 course_deg: guidance_route_course_deg(&geometry),
@@ -775,6 +788,8 @@ pub fn load_geometry(geometry_json: &str) -> AppResult<GeometryBundle> {
 
 pub fn build_flight_plan(plan: FlightPlan) -> AppResult<FlightPlan> {
     let plan = plan.normalized();
+
+    planning::validate_procedure_attachments(&plan.route_components)?;
 
     if plan.resolved_legs.is_empty() && plan.route_components.len() > 1 {
         return Err(AppError {
@@ -929,6 +944,7 @@ pub fn select_preferred_cifp_tpp_match(rows: Vec<CifpTppMatchRow>) -> Option<Cif
         .map(|row| CifpTppMatch {
             airport_id: row.airport_id,
             cifp_id: row.cifp_id,
+            procedure_kind: row.procedure_kind,
             plate_id: row.plate_id,
             plate_label: row.plate_label,
             package_id: row.package_id,
@@ -953,10 +969,9 @@ pub fn list_approach_procedures_from_match_rows(
     rows: Vec<CifpTppMatchRow>,
 ) -> AppResult<Vec<ProcedureSummary>> {
     let mut rows_by_procedure = std::collections::BTreeMap::<String, Vec<CifpTppMatchRow>>::new();
-    for row in rows
-        .into_iter()
-        .filter(|row| row.airport_id.trim() == airport_id.trim())
-    {
+    for row in rows.into_iter().filter(|row| {
+        row.airport_id.trim() == airport_id.trim() && row.procedure_kind == ProcedureKind::Approach
+    }) {
         let procedure_id = row.cifp_id.trim();
         if !procedure_id.is_empty() {
             rows_by_procedure
@@ -1062,7 +1077,28 @@ pub fn describe_plate_procedure_load_menu(
         .first()
         .map(|candidate| candidate.airport_id.trim().to_string())
         .unwrap_or_default();
-    let (header, header_tone, target) = plate_procedure_load_context(&plan, &airport_id)?;
+    let procedure_kind = candidates
+        .iter()
+        .flat_map(|candidate| candidate.match_rows.iter())
+        .map(|row| row.procedure_kind.clone())
+        .next();
+    let Some(procedure_kind) = procedure_kind else {
+        return Ok(empty_procedure_load_menu());
+    };
+    if candidates.iter().any(|candidate| {
+        candidate
+            .match_rows
+            .iter()
+            .any(|row| row.procedure_kind != procedure_kind)
+            || candidate.options.kind != procedure_kind
+    }) {
+        return Err(AppError {
+            kind: AppErrorKind::InvalidCatalog,
+            message: format!("plate procedure candidates mix procedure kinds for {airport_id}"),
+        });
+    }
+    let (header, header_tone, target) =
+        plate_procedure_load_context(&plan, &airport_id, &procedure_kind)?;
     let mut choices = std::collections::BTreeMap::<
         (Option<String>, Option<String>),
         (CifpTppMatch, ProcedureSpecChoice),
@@ -1107,7 +1143,7 @@ pub fn describe_plate_procedure_load_menu(
                 airport_id: preferred.airport_id.trim().to_string(),
                 procedure_id: preferred.cifp_id.trim().to_string(),
                 display_label: Some(preferred.plate_label.trim().to_string()),
-                kind: ProcedureKind::Approach,
+                kind: procedure_kind.clone(),
                 runway_transition: choice.runway_transition.clone(),
                 enroute_transition: choice.enroute_transition.clone(),
             };
@@ -1116,11 +1152,13 @@ pub fn describe_plate_procedure_load_menu(
                     kind: AppErrorKind::Internal,
                     message: err.to_string(),
                 })?,
-                label: procedure_load_entry_label(&choice),
+                label: procedure_load_entry_label(&procedure_kind, &choice),
             })
         })
         .collect::<AppResult<Vec<_>>>()?;
     Ok(ProcedureLoadMenu {
+        procedure_kind: Some(procedure_kind.clone()),
+        launcher_label: procedure_load_launcher_label(&procedure_kind).to_string(),
         header,
         header_tone,
         options,
@@ -1130,7 +1168,11 @@ pub fn describe_plate_procedure_load_menu(
 fn plate_procedure_load_context(
     plan: &FlightPlan,
     airport_id: &str,
+    procedure_kind: &ProcedureKind,
 ) -> AppResult<(String, ProcedureLoadHeaderTone, ProcedureLoadPlanTarget)> {
+    if *procedure_kind == ProcedureKind::Sid {
+        return plate_departure_load_context(plan, airport_id);
+    }
     let destination_index = plan.route_components.len().checked_sub(1).filter(|index| {
         matches!(
             plan.route_components.get(*index),
@@ -1140,7 +1182,10 @@ fn plate_procedure_load_context(
     });
     let Some(destination_index) = destination_index else {
         return Ok((
-            format!("Append {airport_id} to plan and load approach"),
+            format!(
+                "Append {airport_id} to plan and load {}",
+                procedure_kind_noun(procedure_kind)
+            ),
             ProcedureLoadHeaderTone::Normal,
             ProcedureLoadPlanTarget::AppendDestination,
         ));
@@ -1160,12 +1205,12 @@ fn plate_procedure_load_context(
             kind: AppErrorKind::InvalidFlightPlan,
             message: format!("procedure load target row missing for airport {airport_id}"),
         })?;
-    let has_current_approach = match destination_index
+    let has_current_procedure = match destination_index
         .checked_sub(1)
         .and_then(|index| plan.route_components.get(index))
     {
         Some(RouteComponent::Procedure { procedure })
-            if procedure.kind == ProcedureKind::Approach
+            if procedure.kind == *procedure_kind
                 && procedure.airport_id.0.trim() == airport_id.trim() =>
         {
             true
@@ -1173,12 +1218,12 @@ fn plate_procedure_load_context(
         _ => false,
     };
     Ok((
-        if has_current_approach {
-            "Replace current approach".to_string()
+        if has_current_procedure {
+            format!("Replace current {}", procedure_kind_noun(procedure_kind))
         } else {
-            "Load approach".to_string()
+            format!("Load {}", procedure_kind_noun(procedure_kind))
         },
-        if has_current_approach {
+        if has_current_procedure {
             ProcedureLoadHeaderTone::Destructive
         } else {
             ProcedureLoadHeaderTone::Normal
@@ -1187,6 +1232,82 @@ fn plate_procedure_load_context(
             row_uid: destination_row_uid,
         },
     ))
+}
+
+fn plate_departure_load_context(
+    plan: &FlightPlan,
+    airport_id: &str,
+) -> AppResult<(String, ProcedureLoadHeaderTone, ProcedureLoadPlanTarget)> {
+    let origin_index = (!plan.route_components.is_empty()
+        && matches!(
+            plan.route_components.first(),
+            Some(RouteComponent::Waypoint { waypoint: NavRef::Airport(code) })
+                if code.trim() == airport_id.trim()
+        ))
+    .then_some(0usize);
+    let Some(origin_index) = origin_index else {
+        return Ok((
+            format!("Prepend {airport_id} to plan and load departure"),
+            ProcedureLoadHeaderTone::Normal,
+            ProcedureLoadPlanTarget::PrependOrigin,
+        ));
+    };
+    let origin_row_uid = project_ui_state(plan)
+        .display_rows
+        .into_iter()
+        .find(|row| row.depth == 0 && row.component_index == Some(origin_index))
+        .map(|row| row.uid)
+        .ok_or_else(|| AppError {
+            kind: AppErrorKind::InvalidFlightPlan,
+            message: format!("departure load target row missing for airport {airport_id}"),
+        })?;
+    let has_current_departure = matches!(
+        plan.route_components.get(origin_index + 1),
+        Some(RouteComponent::Procedure { procedure })
+            if procedure.kind == ProcedureKind::Sid
+                && procedure.airport_id.0.trim() == airport_id.trim()
+    );
+    Ok((
+        if has_current_departure {
+            "Replace current departure".to_string()
+        } else {
+            "Load departure".to_string()
+        },
+        if has_current_departure {
+            ProcedureLoadHeaderTone::Destructive
+        } else {
+            ProcedureLoadHeaderTone::Normal
+        },
+        ProcedureLoadPlanTarget::ExistingOrigin {
+            row_uid: origin_row_uid,
+        },
+    ))
+}
+
+fn empty_procedure_load_menu() -> ProcedureLoadMenu {
+    ProcedureLoadMenu {
+        procedure_kind: None,
+        launcher_label: "LOAD\nPROC".to_string(),
+        header: "No loadable procedure".to_string(),
+        header_tone: ProcedureLoadHeaderTone::Normal,
+        options: Vec::new(),
+    }
+}
+
+fn procedure_kind_noun(kind: &ProcedureKind) -> &'static str {
+    match kind {
+        ProcedureKind::Sid => "departure",
+        ProcedureKind::Star => "arrival",
+        ProcedureKind::Approach => "approach",
+    }
+}
+
+fn procedure_load_launcher_label(kind: &ProcedureKind) -> &'static str {
+    match kind {
+        ProcedureKind::Sid => "LOAD\nDEP",
+        ProcedureKind::Star => "LOAD\nARR",
+        ProcedureKind::Approach => "LOAD\nAPPCH",
+    }
 }
 
 fn plate_procedure_preference(procedure: &CifpTppMatch) -> (u8, &str) {
@@ -1198,15 +1319,23 @@ fn plate_procedure_preference(procedure: &CifpTppMatch) -> (u8, &str) {
     (rank, procedure.cifp_id.trim())
 }
 
-fn procedure_load_entry_label(choice: &ProcedureSpecChoice) -> String {
-    choice
-        .enroute_transition
-        .as_deref()
-        .or(choice.runway_transition.as_deref())
-        .map(str::trim)
-        .filter(|transition| !transition.is_empty())
-        .map(|transition| format!("from {transition}"))
-        .unwrap_or_else(|| "from published start".to_string())
+fn procedure_load_entry_label(kind: &ProcedureKind, choice: &ProcedureSpecChoice) -> String {
+    let runway = choice.runway_transition.as_deref().map(str::trim);
+    let enroute = choice.enroute_transition.as_deref().map(str::trim);
+    match (kind, runway, enroute) {
+        (ProcedureKind::Sid, Some(runway), Some(enroute)) => {
+            format!("via {runway} to {enroute}")
+        }
+        (ProcedureKind::Sid, Some(runway), None) => format!("via {runway}"),
+        (ProcedureKind::Sid, None, Some(enroute)) => format!("to {enroute}"),
+        (ProcedureKind::Star, Some(runway), Some(enroute)) => {
+            format!("from {enroute} to {runway}")
+        }
+        (ProcedureKind::Star, Some(runway), None) => format!("to {runway}"),
+        (_, _, Some(enroute)) => format!("from {enroute}"),
+        (_, Some(runway), None) => format!("from {runway}"),
+        _ => "published route".to_string(),
+    }
 }
 
 pub fn flight_leg_distance_nm(first: LatLon, second: LatLon) -> f64 {
@@ -1275,14 +1404,32 @@ pub(crate) fn insert_airway_materialized(
 
 pub(crate) fn insert_procedure_materialized(
     plan: &FlightPlan,
-    start_component_index: usize,
+    _start_component_index: usize,
     end_component_index: usize,
     built: MaterializedProcedure,
 ) -> AppResult<FlightPlan> {
-    insert_procedure_between_waypoints(
+    match built.procedure.kind.clone() {
+        ProcedureKind::Sid => Err(AppError {
+            kind: AppErrorKind::InvalidFlightPlan,
+            message: "departures must be inserted through the origin attachment path".to_string(),
+        }),
+        ProcedureKind::Star | ProcedureKind::Approach => insert_terminal_procedure_before_airport(
+            plan,
+            end_component_index,
+            built.procedure,
+            built.resolved_legs,
+        ),
+    }
+}
+
+pub(crate) fn insert_departure_materialized(
+    plan: &FlightPlan,
+    airport_component_index: usize,
+    built: MaterializedProcedure,
+) -> AppResult<FlightPlan> {
+    insert_departure_after_airport(
         plan,
-        start_component_index,
-        end_component_index,
+        airport_component_index,
         built.procedure,
         built.resolved_legs,
     )
@@ -1298,7 +1445,7 @@ pub(crate) fn append_plate_destination(
         appended.route_components.push(RouteComponent::Waypoint {
             waypoint: NavRef::Airport(airport_id.to_string()),
         });
-        appended.normalized()
+        build_flight_plan(appended)?
     } else {
         planning::insert_waypoint(
             plan,
@@ -1311,17 +1458,18 @@ pub(crate) fn append_plate_destination(
     Ok(appended)
 }
 
-pub(crate) fn insert_initial_procedure_materialized(
-    plan: &FlightPlan,
-    airport_component_index: usize,
-    built: MaterializedProcedure,
-) -> AppResult<FlightPlan> {
-    insert_initial_procedure_before_airport(
-        plan,
-        airport_component_index,
-        built.procedure,
-        built.resolved_legs,
-    )
+pub(crate) fn prepend_plate_origin(plan: &FlightPlan, airport_id: &str) -> AppResult<FlightPlan> {
+    let airport_id = airport_id.trim();
+    let prepended = if plan.route_components.is_empty() {
+        let mut prepended = plan.clone();
+        prepended.route_components.push(RouteComponent::Waypoint {
+            waypoint: NavRef::Airport(airport_id.to_string()),
+        });
+        build_flight_plan(prepended)?
+    } else {
+        planning::insert_waypoint(plan, 0, true, NavRef::Airport(airport_id.to_string()))?
+    };
+    Ok(prepended)
 }
 
 pub(crate) fn replace_procedure_materialized(
@@ -1394,6 +1542,7 @@ mod tests {
             match_rows: vec![CifpTppMatchRow {
                 airport_id: "KOMA".to_string(),
                 cifp_id: procedure_id.to_string(),
+                procedure_kind: ProcedureKind::Approach,
                 plate_id: "plate:KOMA:ILS OR LOC 32R".to_string(),
                 plate_label: "ILS or LOC 32R".to_string(),
                 package_id: "tpp".to_string(),
@@ -1415,6 +1564,70 @@ mod tests {
                 }],
             },
         }
+    }
+
+    fn ksea_bangr_sid_candidate() -> PlateProcedureLoadCandidateInput {
+        PlateProcedureLoadCandidateInput {
+            airport_id: "KSEA".to_string(),
+            cifp_id: "BANGR9".to_string(),
+            match_rows: vec![CifpTppMatchRow {
+                airport_id: "KSEA".to_string(),
+                cifp_id: "BANGR9".to_string(),
+                procedure_kind: ProcedureKind::Sid,
+                plate_id: "plate:KSEA:DP-WA-BANGR NINE (RNAV).png".to_string(),
+                plate_label: "BANGR NINE (RNAV)".to_string(),
+                package_id: "tpp".to_string(),
+                public: 1,
+                priority: 1,
+                match_kind: "terminal-name".to_string(),
+                is_primary: 1,
+            }],
+            options: ProcedureOptions {
+                airport_id: "KSEA".to_string(),
+                procedure_id: "BANGR9".to_string(),
+                kind: ProcedureKind::Sid,
+                runway_transitions: vec!["RW16L".to_string()],
+                enroute_transitions: vec!["BANGR".to_string()],
+                has_common_segment: true,
+                valid_choices: vec![ProcedureSpecChoice {
+                    runway_transition: Some("RW16L".to_string()),
+                    enroute_transition: Some("BANGR".to_string()),
+                }],
+            },
+        }
+    }
+
+    #[test]
+    fn sid_plate_loads_target_the_origin_and_use_departure_language() {
+        let plan = FlightPlan {
+            route_components: vec![
+                RouteComponent::Waypoint {
+                    waypoint: NavRef::Airport("KSEA".to_string()),
+                },
+                RouteComponent::Waypoint {
+                    waypoint: NavRef::Airport("KPAE".to_string()),
+                },
+            ],
+            destination: Some(AirportId("KPAE".to_string())),
+            ..FlightPlan::default()
+        };
+
+        let menu = describe_plate_procedure_load_menu(&plan, vec![ksea_bangr_sid_candidate()])
+            .expect("describe SID plate loads");
+
+        assert_eq!(menu.procedure_kind, Some(ProcedureKind::Sid));
+        assert_eq!(menu.launcher_label, "LOAD\nDEP");
+        assert_eq!(menu.header, "Load departure");
+        assert_eq!(menu.header_tone, ProcedureLoadHeaderTone::Normal);
+        assert_eq!(menu.options.len(), 1);
+        assert_eq!(menu.options[0].label, "via RW16L to BANGR");
+        let command: ProcedureLoadCommand =
+            serde_json::from_str(&menu.options[0].load_id).expect("decode SID load command");
+        assert_eq!(command.kind, ProcedureKind::Sid);
+        assert!(matches!(
+            command.target,
+            ProcedureLoadPlanTarget::ExistingOrigin { .. }
+        ));
     }
 
     #[test]
@@ -1583,6 +1796,7 @@ mod tests {
                     role: ProcedureSegmentRole::EnrouteTransition,
                     path_termination: PathTermination::TrackToFix,
                     leg_sequence: 20,
+                    discontinuity_after: None,
                     display_path: Some(LegDisplayPath {
                         style: LegDisplayPathStyle::Solid,
                         elements: vec![LegDisplayElement::Segment { start, end }],
@@ -1606,6 +1820,76 @@ mod tests {
         assert_eq!(route.len(), 1);
         assert_eq!(route[0].from, start);
         assert_eq!(route[0].to, end);
+    }
+
+    #[test]
+    fn route_projection_marks_only_the_manual_heading_before_vectors() {
+        fn fail_resolver(_: &NavRef, _: Option<&str>) -> Result<LatLon, &'static str> {
+            Err("display path should not require navref resolution")
+        }
+
+        let points = [
+            LatLon {
+                lat: 47.49,
+                lon: -122.22,
+            },
+            LatLon {
+                lat: 47.48,
+                lon: -122.21,
+            },
+            LatLon {
+                lat: 47.47,
+                lon: -122.22,
+            },
+            LatLon {
+                lat: 47.46,
+                lon: -122.24,
+            },
+        ];
+        let leg = ResolvedLeg {
+            id: "rentn3-rw16-vectors".to_string(),
+            from: NavRef::LatLon(points[0]),
+            to: NavRef::LatLon(points[3]),
+            source: ResolvedLegSource::RouteComponent { component_index: 0 },
+            procedure_provenance: Some(ProcedureLegProvenance {
+                airport_id: "KRNT".to_string(),
+                procedure_id: "RENTN3".to_string(),
+                kind: ProcedureKind::Sid,
+                role: ProcedureSegmentRole::RunwayTransition,
+                path_termination: PathTermination::HeadingToAltitude,
+                leg_sequence: 20,
+                discontinuity_after: Some(ProcedureDiscontinuity::Vectors),
+                display_path: Some(LegDisplayPath {
+                    style: LegDisplayPathStyle::Solid,
+                    elements: points
+                        .windows(2)
+                        .map(|pair| LegDisplayElement::Segment {
+                            start: pair[0],
+                            end: pair[1],
+                        })
+                        .collect(),
+                    effective_terminal_course_deg: Some(130.0),
+                    debug_element_sources: Vec::new(),
+                    debug_element_roles: Vec::new(),
+                }),
+            }),
+        };
+        let plan = FlightPlan {
+            resolved_legs: vec![leg],
+            ..FlightPlan::default()
+        };
+        let route = project_flight_plan_route_with_resolver(&plan, fail_resolver)
+            .expect("project vectors route");
+        let styles = route
+            .iter()
+            .map(|segment| serde_json::to_value(&segment.style).expect("serialize route style"))
+            .collect::<Vec<_>>();
+
+        assert_eq!(styles, vec!["solid", "solid", "vectors"]);
+        assert!(
+            route[2].finish_lines.is_empty(),
+            "display-only vectors geometry must not expose a sequencing finish line"
+        );
     }
 
     #[test]

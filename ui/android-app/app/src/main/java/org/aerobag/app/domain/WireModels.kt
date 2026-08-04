@@ -1163,6 +1163,7 @@ data class WireFlightPlanRowActionUiView(
     val navigation: WireFlightPlanRowNavigationAction? = null,
     val weather_detail: WireWeatherDetailUiView? = null,
     val airport_info_airport_id: String? = null,
+    val procedure_kind: WireProcedureKind? = null,
 )
 
 @Serializable

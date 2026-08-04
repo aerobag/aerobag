@@ -5560,7 +5560,7 @@ pub(crate) fn select_procedure_at_flight_plan_row_in_session(
     );
     let mut sessions = lock_sessions();
     let session = session_mut(&mut sessions, handle)?;
-    let mut plan = session_plan(session)?;
+    let plan = session_plan(session)?;
     let ui = crate::project_ui_state(&plan);
     crate::core_debug_log(
         "plan.procedure.select.core_phase",
@@ -5601,24 +5601,15 @@ pub(crate) fn select_procedure_at_flight_plan_row_in_session(
             kind: AppErrorKind::InvalidFlightPlan,
             message: format!("procedure target component is stale: {component_uid}"),
         })?;
-    let replace_component_index =
-        airport_component_index.checked_sub(1).and_then(|index| {
-            match plan.route_components.get(index) {
-                Some(crate::RouteComponent::Procedure { procedure })
-                    if procedure.kind == kind && procedure.airport_id.0 == airport_id =>
-                {
-                    Some(index)
-                }
-                _ => None,
-            }
+    let is_departure = kind == ProcedureKind::Sid;
+    if is_departure && airport_component_index != 0 {
+        return Err(AppError {
+            kind: AppErrorKind::InvalidFlightPlan,
+            message: "departures can be selected at the flight-plan origin only".to_string(),
         });
-    let mut airport_component_index = airport_component_index;
-    if replace_component_index.is_none() && airport_component_index > 0 {
-        let repaired =
-            crate::materialize_airway_exit_before_component(&plan, airport_component_index)?;
-        plan = repaired.0;
-        airport_component_index = repaired.1;
     }
+    let replace_component_index =
+        crate::attached_procedure_component_index(&plan, airport_component_index, kind.clone());
     crate::core_debug_log(
         "plan.procedure.select.core_phase",
         &serde_json::json!({
@@ -5628,17 +5619,15 @@ pub(crate) fn select_procedure_at_flight_plan_row_in_session(
             "elapsed_ms": started.elapsed_ms(),
         }),
     );
-    let start_component_index = airport_component_index.checked_sub(1);
     let store = session_nav_kv_store(session)?;
-    let procedure_component_index = replace_component_index
-        .or(start_component_index)
-        .unwrap_or(airport_component_index);
+    let procedure_component_index =
+        crate::procedure_component_index_for_load(&plan, airport_component_index, kind.clone())?;
     let materialize_started = crate::CoreDebugTimer::start();
     let built = match materialize_procedure(
         store,
         &airport_id,
         &procedure_id,
-        kind,
+        kind.clone(),
         runway_transition.as_deref(),
         enroute_transition.as_deref(),
         procedure_component_index,
@@ -5679,15 +5668,15 @@ pub(crate) fn select_procedure_at_flight_plan_row_in_session(
     let mutation_started = crate::CoreDebugTimer::start();
     let mutation = if let Some(replace_component_index) = replace_component_index {
         crate::replace_procedure_materialized(&plan, replace_component_index, built)?
-    } else if let Some(start_component_index) = start_component_index {
+    } else if is_departure {
+        crate::insert_departure_materialized(&plan, airport_component_index, built)?
+    } else {
         crate::insert_procedure_materialized(
             &plan,
-            start_component_index,
+            airport_component_index.saturating_sub(1),
             airport_component_index,
             built,
         )?
-    } else {
-        crate::insert_initial_procedure_materialized(&plan, airport_component_index, built)?
     };
     crate::core_debug_log(
         "plan.procedure.select.core_phase",
@@ -5722,8 +5711,54 @@ pub(crate) fn load_plate_procedure_in_session(
     let mut sessions = lock_sessions();
     let session = session_mut(&mut sessions, handle)?;
     let mut plan = session_plan(session)?;
+    let is_departure = command.kind == ProcedureKind::Sid;
     let airport_component_index = match &command.target {
+        ProcedureLoadPlanTarget::ExistingOrigin { row_uid } => {
+            if !is_departure {
+                return Err(AppError {
+                    kind: AppErrorKind::InvalidFlightPlan,
+                    message: "only a departure may use an origin load target".to_string(),
+                });
+            }
+            let ui = crate::project_ui_state(&plan);
+            let row = ui
+                .display_rows
+                .iter()
+                .find(|row| row.uid == *row_uid)
+                .ok_or_else(|| AppError {
+                    kind: AppErrorKind::InvalidFlightPlan,
+                    message: format!("procedure load target row is stale: {row_uid}"),
+                })?;
+            if row.chart_airport_id.as_deref() != Some(command.airport_id.as_str())
+                || row.component_index != Some(0)
+            {
+                return Err(AppError {
+                    kind: AppErrorKind::InvalidFlightPlan,
+                    message: format!(
+                        "departure load target is no longer the origin: {}",
+                        command.airport_id
+                    ),
+                });
+            }
+            0
+        }
+        ProcedureLoadPlanTarget::PrependOrigin => {
+            if !is_departure {
+                return Err(AppError {
+                    kind: AppErrorKind::InvalidFlightPlan,
+                    message: "only a departure may prepend a flight-plan origin".to_string(),
+                });
+            }
+            plan = crate::prepend_plate_origin(&plan, &command.airport_id)?;
+            0
+        }
         ProcedureLoadPlanTarget::ExistingDestination { row_uid } => {
+            if is_departure {
+                return Err(AppError {
+                    kind: AppErrorKind::InvalidFlightPlan,
+                    message: "a departure may not use a destination load target".to_string(),
+                });
+            }
             let ui = crate::project_ui_state(&plan);
             let row = ui
                 .display_rows
@@ -5770,39 +5805,32 @@ pub(crate) fn load_plate_procedure_in_session(
             component_index
         }
         ProcedureLoadPlanTarget::AppendDestination => {
+            if is_departure {
+                return Err(AppError {
+                    kind: AppErrorKind::InvalidFlightPlan,
+                    message: "a departure may not append a flight-plan destination".to_string(),
+                });
+            }
             plan = crate::append_plate_destination(&plan, &command.airport_id)?;
             plan.route_components.len() - 1
         }
     };
-    let replace_component_index =
-        airport_component_index.checked_sub(1).and_then(|index| {
-            match plan.route_components.get(index) {
-                Some(crate::RouteComponent::Procedure { procedure })
-                    if procedure.kind == command.kind
-                        && procedure.airport_id.0.trim() == command.airport_id.trim() =>
-                {
-                    Some(index)
-                }
-                _ => None,
-            }
-        });
-    let mut airport_component_index = airport_component_index;
-    if replace_component_index.is_none() && airport_component_index > 0 {
-        let repaired =
-            crate::materialize_airway_exit_before_component(&plan, airport_component_index)?;
-        plan = repaired.0;
-        airport_component_index = repaired.1;
-    }
-    let start_component_index = airport_component_index.checked_sub(1);
+    let replace_component_index = crate::attached_procedure_component_index(
+        &plan,
+        airport_component_index,
+        command.kind.clone(),
+    );
     let store = session_nav_kv_store(session)?;
-    let procedure_component_index = replace_component_index
-        .or(start_component_index)
-        .unwrap_or(airport_component_index);
+    let procedure_component_index = crate::procedure_component_index_for_load(
+        &plan,
+        airport_component_index,
+        command.kind.clone(),
+    )?;
     let mut built = match materialize_procedure(
         store,
         &command.airport_id,
         &command.procedure_id,
-        command.kind,
+        command.kind.clone(),
         command.runway_transition.as_deref(),
         command.enroute_transition.as_deref(),
         procedure_component_index,
@@ -5830,15 +5858,15 @@ pub(crate) fn load_plate_procedure_in_session(
     }
     let mutation = if let Some(replace_component_index) = replace_component_index {
         crate::replace_procedure_materialized(&plan, replace_component_index, built)?
-    } else if let Some(start_component_index) = start_component_index {
+    } else if is_departure {
+        crate::insert_departure_materialized(&plan, airport_component_index, built)?
+    } else {
         crate::insert_procedure_materialized(
             &plan,
-            start_component_index,
+            airport_component_index.saturating_sub(1),
             airport_component_index,
             built,
         )?
-    } else {
-        crate::insert_initial_procedure_materialized(&plan, airport_component_index, built)?
     };
     commit_session_flight_plan_with_invalidations_outcome(session, mutation)
 }
@@ -12670,6 +12698,9 @@ fn active_detail_finish_criterion(
     geometry_by_leg_id: &HashMap<String, GuidanceLegGeometry>,
     wrap_terminal_hold: bool,
 ) -> Option<crate::sequencing::SequencingFinishCriterion> {
+    if crate::planning::guidance_detail_is_manual_sequence(plan, active_detail_index) {
+        return None;
+    }
     let (_, current) =
         active_guidance_detail_geometry_for_index(plan, active_detail_index, geometry_by_leg_id)?;
     if let Some(arc_criterion) = active_detail_arc_finish_criterion(plan, active_detail_index) {
@@ -20243,24 +20274,37 @@ mod tests {
         let mut plan = FlightPlan {
             id: "procedure-quality".to_string(),
             name: "Procedure quality".to_string(),
-            route_components: vec![RouteComponent::Procedure {
-                procedure: crate::ProcedureSegment {
-                    airport_id: AirportId("KOMA".to_string()),
-                    procedure_id: "L32R".to_string(),
-                    display_label: Some("ILS or LOC 32R".to_string()),
-                    kind: ProcedureKind::Approach,
-                    runway_transition: None,
-                    enroute_transition: Some("OVR".to_string()),
-                    terminal_discontinuity: None,
-                    data_quality: vec!["Procedure encoding is suspicious; read plate.".to_string()],
+            route_components: vec![
+                RouteComponent::Procedure {
+                    procedure: crate::ProcedureSegment {
+                        airport_id: AirportId("KOMA".to_string()),
+                        procedure_id: "L32R".to_string(),
+                        display_label: Some("ILS or LOC 32R".to_string()),
+                        kind: ProcedureKind::Approach,
+                        runway_transition: None,
+                        enroute_transition: Some("OVR".to_string()),
+                        terminal_discontinuity: None,
+                        data_quality: vec![
+                            "Procedure encoding is suspicious; read plate.".to_string()
+                        ],
+                    },
                 },
+                RouteComponent::Waypoint {
+                    waypoint: NavRef::Airport("KOMA".to_string()),
+                },
+            ],
+            route_component_uids: vec!["row-proc".to_string(), "row-airport".to_string()],
+            route_component_uid_counter: 2,
+            resolved_legs: vec![ResolvedLeg {
+                id: "procedure-quality-leg".to_string(),
+                from: NavRef::Fix("OVR".to_string()),
+                to: NavRef::Airport("KOMA".to_string()),
+                source: ResolvedLegSource::RouteComponent { component_index: 0 },
+                procedure_provenance: None,
             }],
-            route_component_uids: vec!["row-proc".to_string()],
-            route_component_uid_counter: 1,
-            resolved_legs: Vec::new(),
             guidance: None,
             departure: None,
-            destination: Some(AirportId("KAAA".to_string())),
+            destination: Some(AirportId("KOMA".to_string())),
             alternate: None,
             cruise_altitude_ft: None,
             notes: None,
@@ -20286,6 +20330,7 @@ mod tests {
 
         plan.route_components.clear();
         plan.route_component_uids.clear();
+        plan.resolved_legs.clear();
         let snapshot =
             replace_flight_plan_in_session(init.handle, plan).expect("replace procedure plan");
 
@@ -20953,20 +20998,25 @@ mod tests {
         FlightPlan {
             id: "short-procedure-display-path".to_string(),
             name: "Synthetic Procedure".to_string(),
-            route_components: vec![RouteComponent::Procedure {
-                procedure: crate::ProcedureSegment {
-                    airport_id: crate::AirportId("KAAA".to_string()),
-                    procedure_id: "TEST".to_string(),
-                    display_label: None,
-                    kind: ProcedureKind::Approach,
-                    runway_transition: None,
-                    enroute_transition: None,
-                    terminal_discontinuity: None,
-                    data_quality: Vec::new(),
+            route_components: vec![
+                RouteComponent::Procedure {
+                    procedure: crate::ProcedureSegment {
+                        airport_id: crate::AirportId("KAAA".to_string()),
+                        procedure_id: "TEST".to_string(),
+                        display_label: None,
+                        kind: ProcedureKind::Approach,
+                        runway_transition: None,
+                        enroute_transition: None,
+                        terminal_discontinuity: None,
+                        data_quality: Vec::new(),
+                    },
                 },
-            }],
-            route_component_uids: vec!["row-procedure".to_string()],
-            route_component_uid_counter: 1,
+                RouteComponent::Waypoint {
+                    waypoint: NavRef::Airport("KAAA".to_string()),
+                },
+            ],
+            route_component_uids: vec!["row-procedure".to_string(), "row-airport".to_string()],
+            route_component_uid_counter: 2,
             resolved_legs: vec![ResolvedLeg {
                 id: "procedure-leg".to_string(),
                 from: NavRef::Fix("FIXA".to_string()),
@@ -20979,6 +21029,7 @@ mod tests {
                     role: crate::ProcedureSegmentRole::Common,
                     path_termination: crate::PathTermination::TrackToFix,
                     leg_sequence: 10,
+                    discontinuity_after: None,
                     display_path: Some(crate::LegDisplayPath {
                         style: crate::LegDisplayPathStyle::Solid,
                         elements: vec![
@@ -21000,7 +21051,7 @@ mod tests {
                 suspend_reason: None,
             }),
             departure: None,
-            destination: None,
+            destination: Some(AirportId("KAAA".to_string())),
             alternate: None,
             cruise_altitude_ft: None,
             notes: None,
@@ -22066,6 +22117,33 @@ mod tests {
             rendered_active_leg_ids,
             vec![expected_active_leg_id.as_str()],
             "the rendered magenta route must identify the FP snapshot's active leg"
+        );
+    }
+
+    #[test]
+    fn manual_sequence_display_endpoint_is_not_a_sequencing_finish_line() {
+        let mut plan = short_procedure_display_path_plan();
+        let provenance = plan.resolved_legs[0]
+            .procedure_provenance
+            .as_mut()
+            .expect("procedure provenance");
+        provenance.kind = ProcedureKind::Sid;
+        provenance.path_termination = PathTermination::HeadingToAltitude;
+        provenance.discontinuity_after = Some(ProcedureDiscontinuity::Vectors);
+        let guidance = plan.guidance.as_mut().expect("guidance");
+        guidance.active_detail_index = Some(1);
+        guidance.sequencing_mode = SequencingMode::Suspended;
+        guidance.suspend_reason = Some(crate::planning::SuspendReason::Boundary);
+
+        let route = crate::project_flight_plan_route_with_resolver(&plan, |_, _| {
+            Err("manual-sequence fixture is self-contained")
+        })
+        .expect("project manual-sequence display path");
+        let geometry_by_id = crate::flight_plan_materialization::geometry_map_from_route(&route);
+
+        assert!(
+            active_detail_finish_criterion(&plan, 1, &geometry_by_id, false).is_none(),
+            "the finite chevron extension is display geometry, not a sequencing target"
         );
     }
 
@@ -24364,6 +24442,7 @@ mod tests {
                 role: ProcedureSegmentRole::Common,
                 path_termination: PathTermination::TrackToFix,
                 leg_sequence: 10,
+                discontinuity_after: None,
                 display_path: Some(LegDisplayPath {
                     style: LegDisplayPathStyle::Solid,
                     elements: vec![
@@ -24380,20 +24459,25 @@ mod tests {
         let plan = FlightPlan {
             id: "multi-element-procedure-preview".to_string(),
             name: "multi-element procedure preview".to_string(),
-            route_components: vec![RouteComponent::Procedure {
-                procedure: crate::ProcedureSegment {
-                    airport_id: AirportId("KAAA".to_string()),
-                    procedure_id: "TEST".to_string(),
-                    display_label: None,
-                    kind: ProcedureKind::Approach,
-                    runway_transition: None,
-                    enroute_transition: None,
-                    terminal_discontinuity: None,
-                    data_quality: Vec::new(),
+            route_components: vec![
+                RouteComponent::Procedure {
+                    procedure: crate::ProcedureSegment {
+                        airport_id: AirportId("KAAA".to_string()),
+                        procedure_id: "TEST".to_string(),
+                        display_label: None,
+                        kind: ProcedureKind::Approach,
+                        runway_transition: None,
+                        enroute_transition: None,
+                        terminal_discontinuity: None,
+                        data_quality: Vec::new(),
+                    },
                 },
-            }],
-            route_component_uids: vec!["row-proc".to_string()],
-            route_component_uid_counter: 1,
+                RouteComponent::Waypoint {
+                    waypoint: NavRef::Airport("KAAA".to_string()),
+                },
+            ],
+            route_component_uids: vec!["row-proc".to_string(), "row-airport".to_string()],
+            route_component_uid_counter: 2,
             resolved_legs: vec![leg.clone()],
             guidance: Some(GuidanceState {
                 active_leg_index: 0,
@@ -24404,7 +24488,7 @@ mod tests {
                 suspend_reason: None,
             }),
             departure: None,
-            destination: None,
+            destination: Some(AirportId("KAAA".to_string())),
             alternate: None,
             cruise_altitude_ft: None,
             notes: None,
@@ -24480,6 +24564,7 @@ mod tests {
                 role: ProcedureSegmentRole::Common,
                 path_termination: PathTermination::TrackToFix,
                 leg_sequence: 10,
+                discontinuity_after: None,
                 display_path: Some(LegDisplayPath {
                     style: LegDisplayPathStyle::Solid,
                     elements: vec![
@@ -24496,20 +24581,25 @@ mod tests {
         let plan = FlightPlan {
             id: "multi-element-procedure-preview-live".to_string(),
             name: "multi-element procedure preview live".to_string(),
-            route_components: vec![RouteComponent::Procedure {
-                procedure: crate::ProcedureSegment {
-                    airport_id: AirportId("KAAA".to_string()),
-                    procedure_id: "TEST".to_string(),
-                    display_label: None,
-                    kind: ProcedureKind::Approach,
-                    runway_transition: None,
-                    enroute_transition: None,
-                    terminal_discontinuity: None,
-                    data_quality: Vec::new(),
+            route_components: vec![
+                RouteComponent::Procedure {
+                    procedure: crate::ProcedureSegment {
+                        airport_id: AirportId("KAAA".to_string()),
+                        procedure_id: "TEST".to_string(),
+                        display_label: None,
+                        kind: ProcedureKind::Approach,
+                        runway_transition: None,
+                        enroute_transition: None,
+                        terminal_discontinuity: None,
+                        data_quality: Vec::new(),
+                    },
                 },
-            }],
-            route_component_uids: vec!["row-proc".to_string()],
-            route_component_uid_counter: 1,
+                RouteComponent::Waypoint {
+                    waypoint: NavRef::Airport("KAAA".to_string()),
+                },
+            ],
+            route_component_uids: vec!["row-proc".to_string(), "row-airport".to_string()],
+            route_component_uid_counter: 2,
             resolved_legs: vec![leg.clone()],
             guidance: Some(GuidanceState {
                 active_leg_index: 0,
@@ -24520,7 +24610,7 @@ mod tests {
                 suspend_reason: None,
             }),
             departure: None,
-            destination: None,
+            destination: Some(AirportId("KAAA".to_string())),
             alternate: None,
             cruise_altitude_ft: None,
             notes: None,
@@ -24695,6 +24785,7 @@ mod tests {
                 role: ProcedureSegmentRole::Common,
                 path_termination: PathTermination::TrackToFix,
                 leg_sequence: 10,
+                discontinuity_after: None,
                 display_path: Some(LegDisplayPath {
                     style: LegDisplayPathStyle::Solid,
                     elements: vec![
@@ -24724,20 +24815,25 @@ mod tests {
         let plan = FlightPlan {
             id: "large-hold-entry-arc".to_string(),
             name: "large hold entry arc".to_string(),
-            route_components: vec![RouteComponent::Procedure {
-                procedure: crate::ProcedureSegment {
-                    airport_id: AirportId("KAAA".to_string()),
-                    procedure_id: "TEST".to_string(),
-                    display_label: None,
-                    kind: ProcedureKind::Approach,
-                    runway_transition: None,
-                    enroute_transition: None,
-                    terminal_discontinuity: None,
-                    data_quality: Vec::new(),
+            route_components: vec![
+                RouteComponent::Procedure {
+                    procedure: crate::ProcedureSegment {
+                        airport_id: AirportId("KAAA".to_string()),
+                        procedure_id: "TEST".to_string(),
+                        display_label: None,
+                        kind: ProcedureKind::Approach,
+                        runway_transition: None,
+                        enroute_transition: None,
+                        terminal_discontinuity: None,
+                        data_quality: Vec::new(),
+                    },
                 },
-            }],
-            route_component_uids: vec!["row-proc".to_string()],
-            route_component_uid_counter: 1,
+                RouteComponent::Waypoint {
+                    waypoint: NavRef::Airport("KAAA".to_string()),
+                },
+            ],
+            route_component_uids: vec!["row-proc".to_string(), "row-airport".to_string()],
+            route_component_uid_counter: 2,
             resolved_legs: vec![leg.clone()],
             guidance: Some(GuidanceState {
                 active_leg_index: 0,
@@ -24748,7 +24844,7 @@ mod tests {
                 suspend_reason: None,
             }),
             departure: None,
-            destination: None,
+            destination: Some(AirportId("KAAA".to_string())),
             alternate: None,
             cruise_altitude_ft: None,
             notes: None,
@@ -24857,14 +24953,15 @@ mod tests {
             id: "proc-terminal-hold".to_string(),
             from: NavRef::LatLon(a),
             to: NavRef::LatLon(b),
-            source: ResolvedLegSource::RouteComponent { component_index: 0 },
+            source: ResolvedLegSource::RouteComponent { component_index: 1 },
             procedure_provenance: Some(ProcedureLegProvenance {
                 airport_id: "KAAA".to_string(),
                 procedure_id: "TEST".to_string(),
-                kind: ProcedureKind::Approach,
+                kind: ProcedureKind::Sid,
                 role: ProcedureSegmentRole::Common,
                 path_termination: PathTermination::TrackToFix,
                 leg_sequence: 10,
+                discontinuity_after: None,
                 display_path: Some(LegDisplayPath {
                     style: LegDisplayPathStyle::Solid,
                     elements: vec![
@@ -24884,19 +24981,22 @@ mod tests {
             id: "after-hold".to_string(),
             from: NavRef::LatLon(b),
             to: NavRef::LatLon(f),
-            source: ResolvedLegSource::RouteComponent { component_index: 1 },
+            source: ResolvedLegSource::RouteComponent { component_index: 2 },
             procedure_provenance: None,
         };
         let plan = FlightPlan {
             id: "bad-ap-terminal-hold".to_string(),
             name: "bad ap terminal hold".to_string(),
             route_components: vec![
+                RouteComponent::Waypoint {
+                    waypoint: NavRef::Airport("KAAA".to_string()),
+                },
                 RouteComponent::Procedure {
                     procedure: crate::ProcedureSegment {
                         airport_id: AirportId("KAAA".to_string()),
                         procedure_id: "TEST".to_string(),
                         display_label: None,
-                        kind: ProcedureKind::Approach,
+                        kind: ProcedureKind::Sid,
                         runway_transition: None,
                         enroute_transition: None,
                         terminal_discontinuity: Some(ProcedureDiscontinuity::Hold),
@@ -24911,11 +25011,12 @@ mod tests {
                 },
             ],
             route_component_uids: vec![
+                "row-origin".to_string(),
                 "row-proc".to_string(),
                 "row-hold".to_string(),
                 "row-exit".to_string(),
             ],
-            route_component_uid_counter: 3,
+            route_component_uid_counter: 4,
             resolved_legs: vec![hold_leg.clone(), exit_leg.clone()],
             guidance: Some(GuidanceState {
                 active_leg_index: 0,
@@ -24925,7 +25026,7 @@ mod tests {
                 direct_to: None,
                 suspend_reason: None,
             }),
-            departure: None,
+            departure: Some(AirportId("KAAA".to_string())),
             destination: None,
             alternate: None,
             cruise_altitude_ft: None,

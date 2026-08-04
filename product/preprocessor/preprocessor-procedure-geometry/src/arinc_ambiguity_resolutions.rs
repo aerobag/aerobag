@@ -36,6 +36,19 @@ pub const UNSPECIFIED_MISSED_TURN_PLATE_EXCEPTION_WARNING: &str =
     "Missed-approach encoding omits an explicit turn direction where geometry is ambiguous; applied a plate-read exception for the published turn direction.";
 pub const KNOWN_BAD_COURSE_FIELD_WARNING: &str =
     "Procedure encoding contains a known-bad course field contradicted by adjacent procedure geometry; repaired the course before constructing geometry.";
+pub const KNOWN_MISSING_TURN_DIRECTION_WARNING: &str =
+    "Procedure encoding omits a turn direction that is explicit on the published plate; applied the published turn direction before constructing geometry.";
+
+pub fn sid_segment_boundary_requires_unspecified_course_reversal(
+    airport_id: &str,
+    procedure_id: &str,
+    boundary_fix: &str,
+) -> bool {
+    matches!(
+        (airport_id.trim(), procedure_id.trim(), boundary_fix.trim()),
+        ("KSBA", "FLOUT5", "FLOUT") | ("KSBA", "KWANG6", "KWANG")
+    )
+}
 
 pub fn invent_pi_entry_course_reversal_when_no_hold_is_available(
     airport_id: &str,
@@ -165,7 +178,7 @@ pub fn handle_unspecified_missed_turn_to_same_fix_hold(
     }
 }
 
-pub fn repair_known_bad_course_fields(
+pub fn repair_known_bad_procedure_fields(
     airport_id: &str,
     procedure_id: &str,
     records: &mut [ProcedureLegMaterializationRecord],
@@ -175,7 +188,65 @@ pub fn repair_known_bad_course_fields(
     {
         warnings.push(KNOWN_BAD_COURSE_FIELD_WARNING.to_string());
     }
+    if repair_khio_scapo7_rw20_missing_left_turn(airport_id, procedure_id, records) {
+        warnings.push(KNOWN_MISSING_TURN_DIRECTION_WARNING.to_string());
+    }
+    if repair_ktrm_mecca1_missing_left_turn_at_mecca(airport_id, procedure_id, records) {
+        warnings.push(KNOWN_MISSING_TURN_DIRECTION_WARNING.to_string());
+    }
     warnings
+}
+
+fn repair_ktrm_mecca1_missing_left_turn_at_mecca(
+    airport_id: &str,
+    procedure_id: &str,
+    records: &mut [ProcedureLegMaterializationRecord],
+) -> bool {
+    if airport_id.trim() != "KTRM" || procedure_id.trim() != "MECCA1" {
+        return false;
+    }
+    let mut repaired = false;
+    for record in records.iter_mut().filter(|record| {
+        record.key.route_type.trim() == "1"
+            && record.sequence == 40
+            && record.path_termination.trim() == "DF"
+            && record_anchor_name(record) == Some("TRM")
+            && record
+                .turn_direction
+                .as_deref()
+                .is_none_or(|value| value.trim().is_empty())
+    }) {
+        record.turn_direction = Some("L".to_string());
+        repaired = true;
+    }
+    repaired
+}
+
+fn repair_khio_scapo7_rw20_missing_left_turn(
+    airport_id: &str,
+    procedure_id: &str,
+    records: &mut [ProcedureLegMaterializationRecord],
+) -> bool {
+    if airport_id.trim() != "KHIO" || procedure_id.trim() != "SCAPO7" {
+        return false;
+    }
+    let Some(turn) = records.iter_mut().find(|record| {
+        record.key.route_type.trim() == "1"
+            && record.key.transition_id.trim() == "RW20"
+            && record.sequence == 20
+            && record.path_termination.trim() == "VI"
+            && record
+                .turn_direction
+                .as_deref()
+                .is_none_or(|value| value.trim().is_empty())
+            && record
+                .magnetic_course_deg
+                .is_some_and(|course| (course - 270.0).abs() <= 0.1)
+    }) else {
+        return false;
+    };
+    turn.turn_direction = Some("L".to_string());
+    true
 }
 
 fn repair_kjst_rnav_rwy_33_ca_true_course_encoded_as_magnetic(
@@ -285,6 +356,56 @@ fn record_anchor_name(record: &ProcedureLegMaterializationRecord) -> Option<&str
         crate::NavRef::ArincNavaid { identifier, .. }
         | crate::NavRef::TerminalNavaid { identifier, .. } => Some(identifier.as_str()),
         crate::NavRef::LatLon(_) | crate::NavRef::Spot(_) => None,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn repairs_scapo7_rw20_missing_published_left_turn() {
+        let mut records =
+            serde_json::from_value::<Vec<ProcedureLegMaterializationRecord>>(serde_json::json!([{
+                "key": {
+                    "airport_id": "KHIO",
+                    "procedure_id": "SCAPO7",
+                    "route_type": "1",
+                    "transition_id": "RW20",
+                },
+                "sequence": 20,
+                "nav_ref": null,
+                "path_termination": "VI",
+                "magnetic_course_deg": 270.0,
+            }]))
+            .expect("test VI row should decode");
+
+        let warnings = repair_known_bad_procedure_fields("KHIO", "SCAPO7", &mut records);
+
+        assert_eq!(records[0].turn_direction.as_deref(), Some("L"));
+        assert!(!warnings.is_empty());
+    }
+
+    #[test]
+    fn repairs_mecca1_missing_published_left_turn_at_mecca() {
+        let mut records =
+            serde_json::from_value::<Vec<ProcedureLegMaterializationRecord>>(serde_json::json!([{
+                "key": {
+                    "airport_id": "KTRM",
+                    "procedure_id": "MECCA1",
+                    "route_type": "1",
+                    "transition_id": "RW12",
+                },
+                "sequence": 40,
+                "nav_ref": { "Navaid": "TRM" },
+                "path_termination": "DF",
+            }]))
+            .expect("test DF row should decode");
+
+        let warnings = repair_known_bad_procedure_fields("KTRM", "MECCA1", &mut records);
+
+        assert_eq!(records[0].turn_direction.as_deref(), Some("L"));
+        assert_eq!(warnings, [KNOWN_MISSING_TURN_DIRECTION_WARNING]);
     }
 }
 

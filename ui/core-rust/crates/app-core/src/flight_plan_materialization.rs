@@ -190,8 +190,16 @@ impl MaterializedFlightPlan {
         let mut has_contributing_row = false;
         for row_id in &order {
             let row = rows.get_mut(row_id).expect("row order and map agree");
-            let static_distance_nm = row.geometry.as_ref().map(geometry_distance_nm);
-            row.distance_remaining_nm = if row.tone == FlightDataCellTone::Active {
+            let distance_is_indeterminate = row
+                .leg_index
+                .and_then(|leg_index| plan.resolved_legs.get(leg_index))
+                .is_some_and(crate::planning::resolved_leg_ends_in_manual_sequence);
+            let static_distance_nm = (!distance_is_indeterminate)
+                .then(|| row.geometry.as_ref().map(geometry_distance_nm))
+                .flatten();
+            row.distance_remaining_nm = if distance_is_indeterminate {
+                None
+            } else if row.tone == FlightDataCellTone::Active {
                 match (ownship_position, row.geometry.as_ref()) {
                     (Some(position), Some(geometry)) => {
                         Some(crate::great_circle_distance_nm(position, geometry.to))
@@ -637,6 +645,55 @@ mod tests {
                 .expect("second distance"),
             crate::great_circle_distance_nm(second_position, target),
         );
+    }
+
+    #[test]
+    fn vectors_manual_sequence_makes_route_distance_indeterminate() {
+        let mut plan = three_point_plan();
+        let start = point(40.0, -120.0);
+        let turn = point(40.0, -119.5);
+        let display_end = point(40.0, -119.0);
+        plan.resolved_legs[0].procedure_provenance =
+            Some(crate::planning::ProcedureLegProvenance {
+                airport_id: "KRNT".to_string(),
+                procedure_id: "RENTN3".to_string(),
+                kind: crate::planning::ProcedureKind::Sid,
+                role: crate::planning::ProcedureSegmentRole::RunwayTransition,
+                path_termination: crate::planning::PathTermination::HeadingToAltitude,
+                leg_sequence: 20,
+                discontinuity_after: Some(crate::planning::ProcedureDiscontinuity::Vectors),
+                display_path: Some(crate::planning::LegDisplayPath {
+                    style: crate::planning::LegDisplayPathStyle::Solid,
+                    elements: vec![
+                        crate::planning::LegDisplayElement::Segment { start, end: turn },
+                        crate::planning::LegDisplayElement::Segment {
+                            start: turn,
+                            end: display_end,
+                        },
+                    ],
+                    effective_terminal_course_deg: Some(90.0),
+                    debug_element_sources: Vec::new(),
+                    debug_element_roles: Vec::new(),
+                }),
+            });
+        let route = crate::project_flight_plan_route_with_resolver(&plan, |nav_ref, _| {
+            if let NavRef::LatLon(position) = nav_ref {
+                Ok(*position)
+            } else {
+                Err("fixture uses only lat/lon nav refs")
+            }
+        })
+        .expect("project manual-sequence route");
+        let materialized =
+            MaterializedFlightPlan::build(&plan, &geometry_map_from_route(&route), None)
+                .expect("materialize manual-sequence route");
+        let manual_sequence_row = row_id_for_location(&plan, &NavRef::LatLon(display_end));
+
+        assert_eq!(
+            materialized.rows[&manual_sequence_row].distance_remaining_nm, None,
+            "the finite chevron extension is not a published route distance"
+        );
+        assert_eq!(materialized.total_distance_remaining_nm, None);
     }
 
     #[test]

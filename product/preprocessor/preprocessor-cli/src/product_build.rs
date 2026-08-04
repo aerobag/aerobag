@@ -3983,6 +3983,7 @@ mod tests {
                 name: None,
             }],
             sequencing_after: pgt::ProcedureSequencingRule::Continue,
+            discontinuity_after: None,
             source_row_sequences: vec![leg_sequence],
         }
     }
@@ -4250,7 +4251,8 @@ mod tests {
                     LocationID TEXT,
                     ARPLatitude REAL,
                     ARPLongitude REAL,
-                    MagneticVariation TEXT
+                    MagneticVariation TEXT,
+                    ARPElevation TEXT
                 );
                 CREATE TABLE nav (
                     LocationID TEXT,
@@ -4474,7 +4476,8 @@ mod tests {
                     LocationID TEXT,
                     ARPLatitude REAL,
                     ARPLongitude REAL,
-                    MagneticVariation TEXT
+                    MagneticVariation TEXT,
+                    ARPElevation TEXT
                 );
                 CREATE TABLE nav (
                     LocationID TEXT,
@@ -4509,6 +4512,7 @@ mod tests {
                 CREATE TABLE cifp_sid_star_app (
                     airport_identifier TEXT,
                     sid_star_approach_identifier TEXT,
+                    subsection_code TEXT,
                     route_type TEXT,
                     transition_identifier TEXT,
                     sequence_number TEXT,
@@ -4528,13 +4532,16 @@ mod tests {
                     magnetic_course TEXT,
                     route_distance_holding_distance_or_time TEXT
                 );
-                INSERT INTO airports VALUES ('44C', 42.4978, -88.9676, 'W0030');
+                INSERT INTO airports VALUES ('44C', 42.4978, -88.9676, 'W0030', '823');
+                INSERT INTO airports VALUES ('KPAE', 47.9063, -122.2816, 'E0150', '606');
+                INSERT INTO airportrunways VALUES ('KPAE', '16L', 47.9218, -122.2855, '34R', 47.8908, -122.2768);
                 INSERT INTO nav VALUES ('JVL', 42.6151230555556, -89.0412775, '3.0');
                 INSERT INTO nav VALUES ('JVL', 42.5580080555556, -89.1052575, '3.0');
                 INSERT INTO arinc_navaids VALUES ('JVL', 'K5', 'D', '', '', 42.5580083333333, -89.1052583333333, '3.0');
                 INSERT INTO fix VALUES ('MADMY', 42.5000, -89.0000);
-                INSERT INTO cifp_sid_star_app VALUES ('44C', 'VOR-A', 'A', 'JVL', '010', 'JVL', 'K5', 'D', '', '', '', '', '', '', '', 'IF', '', '', '', '');
-                INSERT INTO cifp_sid_star_app VALUES ('44C', 'VOR-A', 'A', 'JVL', '020', 'JVL', 'K5', 'D', '', 'JVL', 'K5', 'D', '', '', '', 'PI', '', '', '', '');
+                INSERT INTO cifp_sid_star_app VALUES ('44C', 'VOR-A', 'F', 'A', 'JVL', '010', 'JVL', 'K5', 'D', '', '', '', '', '', '', '', 'IF', '', '', '', '');
+                INSERT INTO cifp_sid_star_app VALUES ('44C', 'VOR-A', 'F', 'A', 'JVL', '020', 'JVL', 'K5', 'D', '', 'JVL', 'K5', 'D', '', '', '', 'PI', '', '', '', '');
+                INSERT INTO cifp_sid_star_app VALUES ('KPAE', 'PAINE6', 'D', 'T', 'RW16L', '010', '', '', '', '', '', '', '', '', '', '', 'VM', '', '', '1636', '');
                 ",
             )
             .unwrap();
@@ -4580,6 +4587,18 @@ mod tests {
                     "subsection_code": ""
                 }
             })
+        );
+
+        let paine = materialization_by_procedure
+            .get(&("KPAE".to_string(), "PAINE6".to_string()))
+            .expect("KPAE PAINE6 materialization rows");
+        assert_eq!(
+            paine[0]["departure_anchor_ref"],
+            serde_json::json!({ "Fix": "RW16L" })
+        );
+        assert_eq!(
+            paine[0]["departure_anchor_position"],
+            serde_json::json!({ "lat": 47.9218, "lon": -122.2855 })
         );
     }
 
@@ -5361,6 +5380,7 @@ mod tests {
             arinc_navaid_variation: BTreeMap::new(),
             terminal_navaid_variation: BTreeMap::new(),
             airport_variation: BTreeMap::new(),
+            airport_elevation_ft: BTreeMap::new(),
         };
 
         assert_eq!(
@@ -5414,6 +5434,7 @@ mod tests {
             arinc_navaid_variation: BTreeMap::from([(key, Some(-9.0))]),
             terminal_navaid_variation: BTreeMap::from([(procedure_key, Some(5.0))]),
             airport_variation: BTreeMap::new(),
+            airport_elevation_ft: BTreeMap::new(),
         };
 
         let nav_ref = context.classify_cifp_reference_json("JN", "K7", "D", "B", "KJNX");

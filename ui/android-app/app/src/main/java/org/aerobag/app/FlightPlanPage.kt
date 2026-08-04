@@ -1182,50 +1182,62 @@ internal fun FlightPlanPage(
                         .zIndex(5f),
                     width = if (picker.selectedProcedureId == null) procedureTrayWidth else waypointTrayWidth,
                 ) {
-                    MenuPanelRow(label = "APPROACH ${picker.airportId}", active = false, enabled = false, onSelect = {})
+                    MenuPanelRow(label = "${picker.kind.title().uppercase()} ${picker.airportId}", active = false, enabled = false, onSelect = {})
                     if (picker.error != null) {
                         MenuPanelRow(label = picker.error, active = false, enabled = false, onSelect = {})
                     }
                     if (picker.loading) {
                         MenuPanelRow(label = "Loading…", active = false, enabled = false, onSelect = {})
                     } else if (picker.selectedProcedureId == null) {
-                        picker.procedures.chunked(2).forEach { rowProcedures ->
-                            Row(horizontalArrangement = Arrangement.spacedBy(waypointActionGap)) {
-                                rowProcedures.forEach { procedure ->
-                                    MenuPanelRow(
-                                        label = procedure.displayLabel,
-                                        active = false,
-                                        enabled = true,
-                                        width = procedureChoiceButtonWidth,
-                                        maxLines = 1,
-                                        onSelect = {
-                                            procedurePicker = picker.copy(loading = true, error = null)
-                                            runCatching {
-                                                appCore.describeProcedureOptions(
-                                                    picker.airportId,
-                                                    procedure.procedureId,
-                                                    ProcedureKind.Approach,
-                                                )
-                                            }.onSuccess { options ->
-                                                procedurePicker =
-                                                    picker.copy(
-                                                        loading = false,
-                                                        selectedProcedureId = procedure.procedureId,
-                                                        options = options,
+                        if (picker.procedures.isEmpty()) {
+                            MenuPanelRow(label = picker.kind.noPublishedProceduresLabel(), active = false, enabled = false, onSelect = {})
+                        } else {
+                            picker.procedures.chunked(2).forEach { rowProcedures ->
+                                Row(horizontalArrangement = Arrangement.spacedBy(waypointActionGap)) {
+                                    rowProcedures.forEach { procedure ->
+                                        MenuPanelRow(
+                                            label = procedure.displayLabel,
+                                            active = false,
+                                            enabled = true,
+                                            width = procedureChoiceButtonWidth,
+                                            maxLines = 1,
+                                            onSelect = {
+                                                procedurePicker = picker.copy(loading = true, error = null)
+                                                runCatching {
+                                                    appCore.describeProcedureOptions(
+                                                        picker.airportId,
+                                                        procedure.procedureId,
+                                                        picker.kind,
                                                     )
-                                            }.onFailure { error ->
-                                                Log.e("AerobagProcedure", "describeProcedureOptions failed airport=${picker.airportId} procedure=${procedure.procedureId}", error)
-                                                procedurePicker = picker.copy(loading = false, error = error.message ?: error.toString())
-                                            }
-                                        },
-                                    )
+                                                }.onSuccess { options ->
+                                                    procedurePicker =
+                                                        picker.copy(
+                                                            loading = false,
+                                                            selectedProcedureId = procedure.procedureId,
+                                                            options = options,
+                                                        )
+                                                }.onFailure { error ->
+                                                    Log.e("AerobagProcedure", "describeProcedureOptions failed airport=${picker.airportId} procedure=${procedure.procedureId}", error)
+                                                    procedurePicker = picker.copy(loading = false, error = error.message ?: error.toString())
+                                                }
+                                            },
+                                        )
+                                    }
                                 }
                             }
                         }
                     } else {
-                        picker.options?.validChoices?.forEach { choice ->
+                        val choices = picker.options?.validChoices.orEmpty()
+                        if (choices.isEmpty()) {
+                            MenuPanelRow(label = "No published routes are available.", active = false, enabled = false, onSelect = {})
+                        }
+                        choices.forEach { choice ->
                             MenuPanelRow(
-                                label = choice.enrouteTransition ?: "No Transition",
+                                label = procedureChoiceLabel(
+                                    picker.kind,
+                                    choice.runwayTransition,
+                                    choice.enrouteTransition,
+                                ),
                                 active = false,
                                 enabled = true,
                                 onSelect = {
@@ -1235,8 +1247,8 @@ internal fun FlightPlanPage(
                                             picker.rowUid,
                                             picker.airportId,
                                             picker.selectedProcedureId,
-                                            ProcedureKind.Approach,
-                                            null,
+                                            picker.kind,
+                                            choice.runwayTransition,
                                             choice.enrouteTransition,
                                         )
                                     }
@@ -1501,20 +1513,25 @@ internal fun FlightPlanPage(
                                                     airwayPicker = airwayPicker?.copy(loading = false, error = error.message ?: error.toString())
                                                 }
                                             }
-                                            "select_procedure" -> {
+                                            "select_departure",
+                                            "select_arrival",
+                                            "select_approach",
+                                            -> {
                                                 val airportId = selectedRow.chartAirportId ?: return@MenuPanelRow
+                                                val procedureKind = action.procedureKind ?: return@MenuPanelRow
                                                 procedurePicker =
                                                     AndroidProcedurePickerState(
                                                         loading = true,
                                                         error = null,
                                                         rowUid = selectedRow.id,
                                                         airportId = airportId,
+                                                        kind = procedureKind,
                                                         procedures = emptyList(),
                                                         selectedProcedureId = null,
                                                         options = null,
                                                     )
                                                 runCatching {
-                                                    appCore.listProcedures(airportId, ProcedureKind.Approach)
+                                                    appCore.listProcedures(airportId, procedureKind)
                                                 }.onSuccess { procedures ->
                                                     procedurePicker = procedurePicker?.copy(loading = false, procedures = procedures)
                                                 }.onFailure { error ->
@@ -1542,6 +1559,44 @@ internal fun emptyFlightPlanEntryPreview(): FlightPlanEntryPreview =
         tokens = emptyList(),
         issues = emptyList(),
     )
+
+private fun ProcedureKind.title() = when (this) {
+    ProcedureKind.Sid -> "Departure"
+    ProcedureKind.Star -> "Arrival"
+    ProcedureKind.Approach -> "Approach"
+}
+
+private fun ProcedureKind.noPublishedProceduresLabel() = when (this) {
+    ProcedureKind.Sid -> "No published departures are available."
+    ProcedureKind.Star -> "No published arrivals are available."
+    ProcedureKind.Approach -> "No published approaches are available."
+}
+
+private fun procedureChoiceLabel(
+    kind: ProcedureKind,
+    runwayTransition: String?,
+    enrouteTransition: String?,
+): String = when (kind) {
+    ProcedureKind.Sid -> when {
+        runwayTransition != null && enrouteTransition != null ->
+            "via $runwayTransition to $enrouteTransition"
+        runwayTransition != null -> "via $runwayTransition"
+        enrouteTransition != null -> "to $enrouteTransition"
+        else -> "Published route"
+    }
+    ProcedureKind.Star -> when {
+        runwayTransition != null && enrouteTransition != null ->
+            "from $enrouteTransition to $runwayTransition"
+        runwayTransition != null -> "to $runwayTransition"
+        enrouteTransition != null -> "from $enrouteTransition"
+        else -> "Published route"
+    }
+    ProcedureKind.Approach -> when {
+        enrouteTransition != null -> "from $enrouteTransition"
+        runwayTransition != null -> "from $runwayTransition"
+        else -> "Published route"
+    }
+}
 
 private fun FlightPlanControlId.coreId() = when (this) {
     FlightPlanControlId.ActivateNextLeg -> "activate_next_leg"

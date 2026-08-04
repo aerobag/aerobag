@@ -2172,6 +2172,8 @@ private enum class WireProcedureLoadHeaderTone {
 
 @kotlinx.serialization.Serializable
 private data class WireProcedureLoadMenu(
+    val procedure_kind: WireProcedureKind? = null,
+    val launcher_label: String,
     val header: String,
     val header_tone: WireProcedureLoadHeaderTone,
     val options: List<WireProcedureLoadOption>,
@@ -3229,6 +3231,8 @@ private fun WireProcedureLoadOption.toUi() = ProcedureLoadOption(
 )
 
 private fun WireProcedureLoadMenu.toUi() = ProcedureLoadMenu(
+    procedureKind = procedure_kind?.toUi(),
+    launcherLabel = launcher_label,
     header = header,
     headerTone = when (header_tone) {
         WireProcedureLoadHeaderTone.Normal -> ProcedureLoadHeaderTone.Normal
@@ -3575,6 +3579,7 @@ private fun WireFlightPlanRowActionUiView.toUi() = FlightPlanRowActionUiView(
     navigation = navigation?.toUi(),
     weatherDetail = weather_detail?.toUi(),
     airportInfoAirportId = airport_info_airport_id,
+    procedureKind = procedure_kind?.toUi(),
 )
 
 private fun FlightPlanRowActionUiView.toWire() = WireFlightPlanRowActionUiView(
@@ -3588,6 +3593,7 @@ private fun FlightPlanRowActionUiView.toWire() = WireFlightPlanRowActionUiView(
     navigation = navigation?.toWire(),
     weather_detail = weatherDetail?.toWire(),
     airport_info_airport_id = airportInfoAirportId,
+    procedure_kind = procedureKind?.toWire(),
 )
 
 private fun WireAirportInfoUiView.toUi() = AirportInfoUiView(

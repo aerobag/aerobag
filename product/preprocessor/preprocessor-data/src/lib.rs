@@ -17,8 +17,8 @@ mod tpp_cifp_matching;
 
 pub use tpp_cifp_matching::{
     audit_tpp_cifp_matching, build_data_package_with_tpp_matches,
-    choose_bundle as choose_matching_bundle, is_suppressed_cifp_procedure,
-    load_bundle as load_matching_bundle, publish_tpp_cifp_matches,
+    choose_bundle as choose_matching_bundle, cifp_procedure_kind_from_subsection,
+    is_suppressed_cifp_procedure, load_bundle as load_matching_bundle, publish_tpp_cifp_matches,
     resolve_db_path as resolve_matching_db_path, tpp_zip_paths_from_bundle, DataTppMatchRequest,
     DataTppMatchResult, PublishedMatchSummary, TppCifpAuditReport,
 };

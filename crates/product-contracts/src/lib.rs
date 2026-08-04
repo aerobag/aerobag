@@ -77,7 +77,7 @@ pub enum AirportNotamEffect {
     Other,
 }
 
-pub const NAV_DB_CONTRACT_ID: &str = "NAV16";
+pub const NAV_DB_CONTRACT_ID: &str = "NAV17";
 pub const SEC_CONTRACT_ID: &str = "SEC1";
 pub const TAC_CONTRACT_ID: &str = "TAC1";
 pub const ENR_L_CONTRACT_ID: &str = "ENL1";

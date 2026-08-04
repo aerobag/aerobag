@@ -3277,22 +3277,28 @@ pub(crate) fn procedure_display_label(
     procedure_id: &str,
     kind: &ProcedureKind,
 ) -> Result<String, HadReadError> {
-    if *kind != ProcedureKind::Approach {
-        return Ok(procedure_id.trim().to_string());
-    }
-    let rows = read_required::<Vec<CifpTppMatchRow>>(
+    let rows = read_optional::<Vec<CifpTppMatchRow>>(
         store,
         NavKvQuery::PlateCifpMatch {
             airport_id: airport_id.to_string(),
             cifp_id: procedure_id.to_string(),
         },
-        "approach plate match",
     )?;
-    let matched = crate::select_preferred_cifp_tpp_match(rows).ok_or_else(|| {
-        HadReadError::Fatal(format!(
+    let matched = rows.and_then(|rows| {
+        crate::select_preferred_cifp_tpp_match(
+            rows.into_iter()
+                .filter(|row| row.procedure_kind == *kind)
+                .collect(),
+        )
+    });
+    let Some(matched) = matched else {
+        if *kind != ProcedureKind::Approach {
+            return Ok(procedure_id.trim().to_string());
+        }
+        return Err(HadReadError::Fatal(format!(
             "approach {airport_id} {procedure_id} has no preferred plate label"
-        ))
-    })?;
+        )));
+    };
     let label = matched.plate_label.trim();
     if label.is_empty() {
         return Err(HadReadError::Fatal(format!(
@@ -3469,6 +3475,10 @@ fn resolved_leg_from_geometry_bundle(
             role: procedure_segment_role_from_geometry(bundle.role.clone()),
             path_termination: path_termination_from_geometry(bundle.path_termination.clone()),
             leg_sequence: bundle.leg_sequence,
+            discontinuity_after: bundle
+                .discontinuity_after
+                .clone()
+                .map(procedure_discontinuity_from_geometry),
             display_path: Some(display_path_from_geometry(bundle.path.clone())),
         }),
     })
@@ -4228,7 +4238,9 @@ pub(crate) fn describe_plate_loads(
     )?
     else {
         return Ok(ProcedureLoadMenu {
-            header: "Load approach".to_string(),
+            procedure_kind: None,
+            launcher_label: "LOAD\nPROC".to_string(),
+            header: "No loadable procedure".to_string(),
             header_tone: crate::ProcedureLoadHeaderTone::Normal,
             options: Vec::new(),
         });
@@ -4249,7 +4261,7 @@ pub(crate) fn describe_plate_loads(
             store,
             &preferred.airport_id,
             &preferred.cifp_id,
-            ProcedureKind::Approach,
+            preferred.procedure_kind.clone(),
         )?;
         if options.valid_choices.is_empty() {
             continue;
@@ -5384,6 +5396,7 @@ mod tests {
         serde_json::json!([{
             "airport_id": airport_id,
             "cifp_id": procedure_id,
+            "procedure_kind": "approach",
             "plate_id": format!("Plate:{airport_id}:IAP-{procedure_id}.png"),
             "plate_label": plate_label,
             "package_id": "tpp-test",
@@ -7046,6 +7059,7 @@ mod tests {
                     br#"[{
                         "airport_id": "KSEA",
                         "cifp_id": "H34LZ",
+                        "procedure_kind": "approach",
                         "plate_id": "Plate:KSEA:IAP-RNAV-RNP-Z-34L.png",
                         "plate_label": "RNAV (RNP) Z 34L",
                         "package_id": "tpp-nw",
@@ -7088,6 +7102,66 @@ mod tests {
     }
 
     #[test]
+    fn sid_match_drives_pilot_label_and_plate_departure_menu() {
+        let plate_id = "plate:KSEA:DP-WA-BANGR NINE (RNAV).png";
+        let match_rows = serde_json::json!([{
+            "airport_id": "KSEA",
+            "cifp_id": "BANGR9",
+            "procedure_kind": "sid",
+            "plate_id": plate_id,
+            "plate_label": "BANGR NINE (RNAV)",
+            "package_id": "tpp-nw",
+            "public": 1,
+            "priority": 0,
+            "match_kind": "unique",
+            "is_primary": 1
+        }]);
+        let store = test_nav_kv_store(&[
+            ("plate/cifp/KSEA/BANGR9", match_rows.clone()),
+            (
+                "plate/procedure-candidates/plate%3AKSEA%3ADP-WA-BANGR%20NINE%20%28RNAV%29.png",
+                match_rows,
+            ),
+            (
+                "procedure/geometry/KSEA/SID/BANGR9/RW16L/BANGR",
+                serde_json::json!({}),
+            ),
+        ]);
+
+        let outcome = run_had_operation(
+            &store,
+            HadOperation::ListProcedures {
+                airport_id: "KSEA".to_string(),
+                procedure_kind: ProcedureKind::Sid,
+            },
+        )
+        .expect("list KSEA departures");
+        let HadOperationOutcome::Complete { result, .. } = outcome else {
+            panic!("expected complete departure list");
+        };
+        let procedures =
+            serde_json::from_value::<Vec<ProcedureSummary>>(result).expect("decode departures");
+        assert_eq!(procedures[0].procedure_id, "BANGR9");
+        assert_eq!(procedures[0].display_label, "BANGR NINE (RNAV)");
+
+        let plan = FlightPlan {
+            route_components: vec![
+                RouteComponent::Waypoint {
+                    waypoint: NavRef::Airport("KSEA".to_string()),
+                },
+                RouteComponent::Waypoint {
+                    waypoint: NavRef::Airport("KPAE".to_string()),
+                },
+            ],
+            ..FlightPlan::default()
+        };
+        let menu = describe_plate_loads(&store, &plan, plate_id).expect("describe SID plate");
+        assert_eq!(menu.procedure_kind, Some(ProcedureKind::Sid));
+        assert_eq!(menu.launcher_label, "LOAD\nDEP");
+        assert_eq!(menu.options[0].label, "via RW16L to BANGR");
+    }
+
+    #[test]
     fn list_approaches_disambiguates_procedures_sharing_a_plate_label() {
         let (root, pages) = fixture(
             &[
@@ -7096,6 +7170,7 @@ mod tests {
                     br#"[{
                         "airport_id": "KAMA",
                         "cifp_id": "I04",
+                        "procedure_kind": "approach",
                         "plate_id": "plate:KAMA:IAP-TX-ILS OR LOC RWY 04.png",
                         "plate_label": "ILS or LOC 04",
                         "package_id": "tpp-sc",
@@ -7111,6 +7186,7 @@ mod tests {
                     br#"[{
                         "airport_id": "KAMA",
                         "cifp_id": "L04",
+                        "procedure_kind": "approach",
                         "plate_id": "plate:KAMA:IAP-TX-ILS OR LOC RWY 04.png",
                         "plate_label": "ILS or LOC 04",
                         "package_id": "tpp-sc",
@@ -7182,7 +7258,7 @@ mod tests {
         .expect_err("approach list should require plate/cifp label data");
         assert!(
             err.message
-                .contains("HAD missing required approach plate match"),
+                .contains("approach KSEA H34LZ has no preferred plate label"),
             "unexpected error: {err:?}"
         );
     }
@@ -7912,8 +7988,8 @@ mod tests {
         );
         assert!(
             crate::planning::flight_plan_row_actions(keug_row)
-                .any(|action| action.id == FlightPlanRowActionId::SelectProcedure && action.enabled),
-            "final airport after airway exit should offer Select Procedure"
+                .any(|action| action.id == FlightPlanRowActionId::SelectApproach && action.enabled),
+            "final airport after airway exit should offer Select Approach"
         );
     }
 

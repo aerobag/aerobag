@@ -164,7 +164,7 @@ export type FlightPlanRouteSegment = {
   from: LatLon;
   to: LatLon;
   path: LatLon[];
-  style: "solid" | "dashed";
+  style: "solid" | "dashed" | "vectors";
   distance_nm: number;
   course_deg: number;
   status: "completed" | "active" | "active_leg_remaining" | "remaining";
@@ -298,6 +298,7 @@ export type FlightPlanRowActionUiView = {
   navigation?: FlightPlanRowNavigationAction | null;
   weather_detail?: WeatherDetailUiView | null;
   airport_info_airport_id?: string | null;
+  procedure_kind?: ProcedureKind | null;
 };
 
 export type FlightPlanRowNavigationAction =
@@ -371,6 +372,8 @@ export type ProcedureLoadOption = {
 };
 
 export type ProcedureLoadMenu = {
+  procedure_kind: ProcedureKind | null;
+  launcher_label: string;
   header: string;
   header_tone: "normal" | "destructive";
   options: ProcedureLoadOption[];

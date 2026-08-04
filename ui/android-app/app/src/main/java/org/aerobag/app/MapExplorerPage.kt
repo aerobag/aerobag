@@ -3621,28 +3621,11 @@ private fun RouteOverlayLayer(
             val path = segment.path.ifEmpty { listOf(segment.from, segment.to) }.map { point ->
                 latLonToScreen(point.lat, point.lon, viewport, surfaceWidthPx, surfaceHeightPx)
             }
-            val first = path.firstOrNull() ?: return@forEach
-            val routePath = Path().apply {
-                moveTo(first.x, first.y)
-                path.drop(1).forEach { point -> lineTo(point.x, point.y) }
-            }
-            drawPath(
-                path = routePath,
-                color = Color(0x8C000000),
-                style = Stroke(
-                    width = 7f * densityScale,
-                    cap = StrokeCap.Round,
-                    join = StrokeJoin.Round,
-                ),
-            )
-            drawPath(
-                path = routePath,
+            drawFlightPlanRoutePath(
+                screenPath = path,
+                style = segment.style,
                 color = routeSegmentColor(uiTheme, segment.status),
-                style = Stroke(
-                    width = 3.5f * densityScale,
-                    cap = StrokeCap.Round,
-                    join = StrokeJoin.Round,
-                ),
+                densityScale = densityScale,
             )
         }
     }

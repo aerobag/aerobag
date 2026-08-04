@@ -8,6 +8,7 @@ import type { FlightPlanRouteSegment, LatLon, PlateGeoref } from "./types";
 export type PlateFlightPlanScreenSegment = {
   id: string;
   status: FlightPlanRouteSegment["status"];
+  style: FlightPlanRouteSegment["style"];
   path: { x: number; y: number }[];
 };
 
@@ -69,7 +70,7 @@ export function projectPlateFlightPlanSegments(args: {
     if (screenPath.length < 2 || !pathBoundsIntersectSurface(screenPath, surfaceSize)) {
       return [];
     }
-    return [{ id: segment.id, status: segment.status, path: screenPath }];
+    return [{ id: segment.id, status: segment.status, style: segment.style, path: screenPath }];
   });
 }
 

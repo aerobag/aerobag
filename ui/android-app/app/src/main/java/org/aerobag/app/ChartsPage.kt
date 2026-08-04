@@ -466,7 +466,9 @@ internal fun ChartsPage(
     val trayOpen = airportTrayOpen || chartTrayOpen || loadTrayOpen || dataStatusTrayOpen ||
         procedureWarningTrayOpen || situationTrayOpen
     val emptyProcedureLoadMenu = ProcedureLoadMenu(
-        header = "Load approach",
+        procedureKind = null,
+        launcherLabel = "LOAD\nPROC",
+        header = "No loadable procedure",
         headerTone = ProcedureLoadHeaderTone.Normal,
         options = emptyList(),
     )
@@ -1095,28 +1097,11 @@ private fun androidx.compose.ui.graphics.drawscope.DrawScope.drawPlateFlightPlan
     uiTheme: UiTheme,
 ) {
     segments.forEach { projected ->
-        val first = projected.path.firstOrNull() ?: return@forEach
-        val routePath = Path().apply {
-            moveTo(first.x, first.y)
-            projected.path.drop(1).forEach { point -> lineTo(point.x, point.y) }
-        }
-        drawPath(
-            path = routePath,
-            color = Color(0x8C000000),
-            style = Stroke(
-                width = 7f * densityScale,
-                cap = StrokeCap.Round,
-                join = StrokeJoin.Round,
-            ),
-        )
-        drawPath(
-            path = routePath,
+        drawFlightPlanRoutePath(
+            screenPath = projected.path,
+            style = projected.segment.style,
             color = routeSegmentColor(uiTheme, projected.segment.status),
-            style = Stroke(
-                width = 3.5f * densityScale,
-                cap = StrokeCap.Round,
-                join = StrokeJoin.Round,
-            ),
+            densityScale = densityScale,
         )
     }
 }
@@ -1635,7 +1620,7 @@ internal fun ChartViewerSelectors(
             )
 
             MenuDock(
-                launcherLabel = "LOAD\nAPPCH",
+                launcherLabel = plateProcedureLoadMenu.launcherLabel,
                 launcherTestTag = "parity:plate-load-button",
                 optionTestTagPrefix = "parity:tray-option",
                 open = loadTrayOpen,

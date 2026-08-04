@@ -25,6 +25,12 @@ const PROCEDURE_REMOVE_DISABLED_REASON: &str =
     "This procedure cannot be removed from the flight plan.";
 const REMOVE_ALL_ABOVE_DISABLED_REASON: &str =
     "This row cannot be used as a Remove All Above target.";
+const DEPARTURE_ATTACHMENT_MESSAGE: &str =
+    "A departure procedure is attached to the origin airport.";
+const ARRIVAL_ATTACHMENT_MESSAGE: &str =
+    "An arrival procedure is attached to the destination airport.";
+const APPROACH_ATTACHMENT_MESSAGE: &str =
+    "An approach procedure is attached to the destination airport.";
 const MAX_INSTANTANEOUS_PROCEDURE_TURN_DEG: f64 = 150.0;
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -208,6 +214,7 @@ impl<'de> Deserialize<'de> for ResolvedLeg {
                         role: ProcedureSegmentRole::Common,
                         path_termination: PathTermination::Other(String::new()),
                         leg_sequence: 0,
+                        discontinuity_after: None,
                         display_path: None,
                     })
             }),
@@ -243,6 +250,8 @@ pub struct ProcedureLegProvenance {
     pub role: ProcedureSegmentRole,
     pub path_termination: PathTermination,
     pub leg_sequence: i32,
+    #[serde(default)]
+    pub discontinuity_after: Option<ProcedureDiscontinuity>,
     #[serde(default)]
     pub display_path: Option<LegDisplayPath>,
 }
@@ -842,6 +851,7 @@ pub enum LegDisplayPathStyle {
     #[default]
     Solid,
     Dashed,
+    Vectors,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -985,7 +995,9 @@ pub enum FlightPlanRowActionId {
     WaypointInfo,
     Weather,
     AddAirway,
-    SelectProcedure,
+    SelectDeparture,
+    SelectArrival,
+    SelectApproach,
     Plates,
     ShowPlate,
     RemoveAirway,
@@ -1033,6 +1045,8 @@ pub struct FlightPlanRowActionUiView {
     pub weather_detail: Option<WeatherDetailUiView>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub airport_info_airport_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub procedure_kind: Option<ProcedureKind>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -1473,27 +1487,25 @@ pub fn restore_direct_to(plan: &FlightPlan) -> AppResult<FlightPlan> {
     } else {
         0
     };
-    Ok(FlightPlan {
-        guidance: Some(GuidanceState {
+    let next_guidance = if has_route {
+        guidance_state_for_activated_detail(
+            &plan,
             active_leg_index,
-            active_detail_index: if has_route {
-                first_guidance_detail_index_for_leg(&plan, active_leg_index)
-            } else {
-                None
-            },
+            first_guidance_detail_index_for_leg(&plan, active_leg_index),
+            None,
+        )
+    } else {
+        GuidanceState {
+            active_leg_index,
+            active_detail_index: None,
             display_split_leg_id: None,
-            sequencing_mode: if has_route {
-                SequencingMode::FollowPlan
-            } else {
-                SequencingMode::Suspended
-            },
+            sequencing_mode: SequencingMode::Suspended,
             direct_to: None,
-            suspend_reason: if has_route {
-                None
-            } else {
-                Some(SuspendReason::RouteEnd)
-            },
-        }),
+            suspend_reason: Some(SuspendReason::RouteEnd),
+        }
+    };
+    Ok(FlightPlan {
+        guidance: Some(next_guidance),
         ..plan
     })
 }
@@ -1507,15 +1519,14 @@ pub fn activate_leg(plan: &FlightPlan, leg_index: usize) -> AppResult<FlightPlan
         });
     }
 
+    let next_guidance = guidance_state_for_activated_detail(
+        &plan,
+        leg_index,
+        first_guidance_detail_index_for_leg(&plan, leg_index),
+        plan.resolved_legs.get(leg_index).map(|leg| leg.id.clone()),
+    );
     Ok(FlightPlan {
-        guidance: Some(GuidanceState {
-            active_leg_index: leg_index,
-            active_detail_index: first_guidance_detail_index_for_leg(&plan, leg_index),
-            display_split_leg_id: plan.resolved_legs.get(leg_index).map(|leg| leg.id.clone()),
-            sequencing_mode: SequencingMode::FollowPlan,
-            direct_to: None,
-            suspend_reason: None,
-        }),
+        guidance: Some(next_guidance),
         ..plan
     })
 }
@@ -1540,15 +1551,14 @@ pub fn activate_leg_at_detail_index(
         });
     }
 
+    let next_guidance = guidance_state_for_activated_detail(
+        &plan,
+        leg_index,
+        Some(detail_index),
+        plan.resolved_legs.get(leg_index).map(|leg| leg.id.clone()),
+    );
     Ok(FlightPlan {
-        guidance: Some(GuidanceState {
-            active_leg_index: leg_index,
-            active_detail_index: Some(detail_index),
-            display_split_leg_id: plan.resolved_legs.get(leg_index).map(|leg| leg.id.clone()),
-            sequencing_mode: SequencingMode::FollowPlan,
-            direct_to: None,
-            suspend_reason: None,
-        }),
+        guidance: Some(next_guidance),
         ..plan
     })
 }
@@ -1568,20 +1578,40 @@ pub fn activate_next_leg(plan: &FlightPlan) -> AppResult<FlightPlan> {
             message: "no next leg is available".to_string(),
         })?;
 
+    let next_guidance = guidance_state_for_activated_detail(
+        &plan,
+        next_leg_index,
+        first_guidance_detail_index_for_leg(&plan, next_leg_index),
+        plan.resolved_legs
+            .get(next_leg_index)
+            .map(|leg| leg.id.clone()),
+    );
     Ok(FlightPlan {
-        guidance: Some(GuidanceState {
-            active_leg_index: next_leg_index,
-            active_detail_index: first_guidance_detail_index_for_leg(&plan, next_leg_index),
-            display_split_leg_id: plan
-                .resolved_legs
-                .get(next_leg_index)
-                .map(|leg| leg.id.clone()),
-            sequencing_mode: SequencingMode::FollowPlan,
-            direct_to: None,
-            suspend_reason: None,
-        }),
+        guidance: Some(next_guidance),
         ..plan
     })
+}
+
+fn guidance_state_for_activated_detail(
+    plan: &FlightPlan,
+    active_leg_index: usize,
+    active_detail_index: Option<usize>,
+    display_split_leg_id: Option<String>,
+) -> GuidanceState {
+    let manual_sequence = active_detail_index
+        .is_some_and(|detail_index| guidance_detail_is_manual_sequence(plan, detail_index));
+    GuidanceState {
+        active_leg_index,
+        active_detail_index,
+        display_split_leg_id,
+        sequencing_mode: if manual_sequence {
+            SequencingMode::Suspended
+        } else {
+            SequencingMode::FollowPlan
+        },
+        direct_to: None,
+        suspend_reason: manual_sequence.then_some(SuspendReason::Boundary),
+    }
 }
 
 pub fn stop_navigation(plan: &FlightPlan) -> AppResult<FlightPlan> {
@@ -1654,7 +1684,9 @@ pub fn unsuspend_sequencing(plan: &FlightPlan) -> AppResult<FlightPlan> {
         }
     }
 
-    if should_suspend_after_active_leg(&plan, guidance.active_leg_index) {
+    if guidance.suspend_reason == Some(SuspendReason::Boundary)
+        && should_suspend_after_active_leg(&plan, guidance.active_leg_index)
+    {
         return activate_next_leg(&plan);
     }
 
@@ -1688,20 +1720,14 @@ pub fn sequence_active_leg(plan: &FlightPlan) -> AppResult<FlightPlan> {
             match direct_to_resume_leg_index(&plan, &direct_to)
                 .filter(|index| plan.resolved_legs[*index].from == direct_to.target)
             {
-                Some(resume_leg_index) => GuidanceState {
-                    active_leg_index: resume_leg_index,
-                    active_detail_index: first_guidance_detail_index_for_leg(
-                        &plan,
-                        resume_leg_index,
-                    ),
-                    display_split_leg_id: plan
-                        .resolved_legs
+                Some(resume_leg_index) => guidance_state_for_activated_detail(
+                    &plan,
+                    resume_leg_index,
+                    first_guidance_detail_index_for_leg(&plan, resume_leg_index),
+                    plan.resolved_legs
                         .get(resume_leg_index)
                         .map(|leg| leg.id.clone()),
-                    sequencing_mode: SequencingMode::FollowPlan,
-                    direct_to: None,
-                    suspend_reason: None,
-                },
+                ),
                 None => GuidanceState {
                     active_leg_index: direct_to_target_leg_index(&plan, &direct_to)
                         .unwrap_or(guidance.active_leg_index),
@@ -1747,20 +1773,14 @@ pub fn sequence_active_leg(plan: &FlightPlan) -> AppResult<FlightPlan> {
                         suspend_reason: Some(SuspendReason::Boundary),
                     }
                 } else {
-                    GuidanceState {
-                        active_leg_index: next_leg_index,
-                        active_detail_index: first_guidance_detail_index_for_leg(
-                            &plan,
-                            next_leg_index,
-                        ),
-                        display_split_leg_id: plan
-                            .resolved_legs
+                    guidance_state_for_activated_detail(
+                        &plan,
+                        next_leg_index,
+                        first_guidance_detail_index_for_leg(&plan, next_leg_index),
+                        plan.resolved_legs
                             .get(next_leg_index)
                             .map(|leg| leg.id.clone()),
-                        sequencing_mode: SequencingMode::FollowPlan,
-                        direct_to: None,
-                        suspend_reason: None,
-                    }
+                    )
                 }
             } else if should_suspend_after_active_leg(&plan, guidance.active_leg_index) {
                 GuidanceState {
@@ -1838,15 +1858,14 @@ pub fn sequence_active_detail(plan: &FlightPlan) -> AppResult<FlightPlan> {
         });
     }
 
+    let next_guidance = guidance_state_for_activated_detail(
+        &plan,
+        guidance.active_leg_index,
+        Some(next_detail_index),
+        guidance.display_split_leg_id.clone(),
+    );
     Ok(FlightPlan {
-        guidance: Some(GuidanceState {
-            active_leg_index: guidance.active_leg_index,
-            active_detail_index: Some(next_detail_index),
-            display_split_leg_id: guidance.display_split_leg_id.clone(),
-            sequencing_mode: SequencingMode::FollowPlan,
-            direct_to: None,
-            suspend_reason: None,
-        }),
+        guidance: Some(next_guidance),
         ..plan
     })
 }
@@ -1923,7 +1942,10 @@ pub(crate) fn guidance_projects_active_leg(plan: &FlightPlan, guidance: &Guidanc
         SequencingMode::Suspended => {
             let preserve_active_leg = match guidance.suspend_reason {
                 Some(SuspendReason::Manual) => true,
-                Some(SuspendReason::Boundary) if guidance_is_in_terminal_hold(plan, guidance) => {
+                Some(SuspendReason::Boundary)
+                    if guidance_is_in_terminal_hold(plan, guidance)
+                        || guidance_is_at_manual_sequence(plan, guidance) =>
+                {
                     true
                 }
                 Some(
@@ -1947,6 +1969,12 @@ fn guidance_is_in_terminal_hold(plan: &FlightPlan, guidance: &GuidanceState) -> 
         terminal_hold_start_detail_index_for_leg(plan, guidance.active_leg_index)
             .is_some_and(|hold_start| detail_index >= hold_start)
     })
+}
+
+fn guidance_is_at_manual_sequence(plan: &FlightPlan, guidance: &GuidanceState) -> bool {
+    guidance
+        .active_detail_index
+        .is_some_and(|detail_index| guidance_detail_is_manual_sequence(plan, detail_index))
 }
 
 fn flight_plan_control(
@@ -2099,10 +2127,9 @@ fn project_component_ui_views(
                     RouteComponent::Waypoint {
                         waypoint: NavRef::Airport(_)
                     }
-                ) && (can_insert_procedure_before_component(
-                    &plan,
-                    component_index,
-                ) || replace_procedure_component_index.is_some()),
+                ) && (component_index + 1 == plan.route_components.len()
+                    || can_insert_procedure_before_component(&plan, component_index)
+                    || replace_procedure_component_index.is_some()),
                 can_remove: can_remove_component(&plan, component_index),
                 can_reorder: can_reorder_component(&plan, component_index),
                 can_reorder_up: can_reorder_component_in_direction(&plan, component_index, -1),
@@ -2250,6 +2277,31 @@ pub fn guidance_detail_ref_by_index(
         .find(|detail| detail.detail_index == detail_index)
 }
 
+pub(crate) fn resolved_leg_ends_in_manual_sequence(leg: &ResolvedLeg) -> bool {
+    leg.procedure_provenance.as_ref().is_some_and(|provenance| {
+        provenance.discontinuity_after == Some(ProcedureDiscontinuity::Vectors)
+            && provenance
+                .display_path
+                .as_ref()
+                .is_some_and(|path| !path.elements.is_empty())
+    })
+}
+
+pub(crate) fn guidance_detail_is_manual_sequence(plan: &FlightPlan, detail_index: usize) -> bool {
+    let Some(detail) = guidance_detail_ref_by_index(plan, detail_index) else {
+        return false;
+    };
+    let Some(leg) = plan.resolved_legs.get(detail.leg_index) else {
+        return false;
+    };
+    resolved_leg_ends_in_manual_sequence(leg)
+        && leg
+            .procedure_provenance
+            .as_ref()
+            .and_then(|provenance| provenance.display_path.as_ref())
+            .is_some_and(|path| detail.element_index + 1 == path.elements.len())
+}
+
 fn project_display_rows(
     plan: &FlightPlan,
     components: &[RouteComponentUiView],
@@ -2274,19 +2326,26 @@ fn project_display_rows(
             let uid = top_level_waypoint_row_uid(component, leg_index);
             let actions = assign_action_uids(
                 &uid,
-                waypoint_actions_for_row(
-                    FlightPlanDisplayRowKind::Waypoint,
-                    0,
-                    leg_index,
-                    projected_nav_ref.as_ref(),
-                    component.can_add_airway_after,
-                    component.can_add_procedure_before,
-                    component.can_remove,
-                    component.can_reorder_up,
-                    component.can_reorder_down,
-                    component.component_index.into(),
-                    chart_airport_id.as_ref(),
-                    origin_anchor.as_ref(),
+                apply_component_mutation_action_availability(
+                    plan,
+                    component.component_index,
+                    waypoint_actions_for_row(
+                        FlightPlanDisplayRowKind::Waypoint,
+                        0,
+                        leg_index,
+                        projected_nav_ref.as_ref(),
+                        component.can_add_airway_after,
+                        component.can_add_procedure_before,
+                        component.component_index == 0 && chart_airport_id.is_some(),
+                        component.component_index + 1 == plan.route_components.len()
+                            && chart_airport_id.is_some(),
+                        component.can_remove,
+                        component.can_reorder_up,
+                        component.can_reorder_down,
+                        component.component_index.into(),
+                        chart_airport_id.as_ref(),
+                        origin_anchor.as_ref(),
+                    ),
                 ),
             );
             rows.push(FlightPlanDisplayRowUiView {
@@ -2328,7 +2387,14 @@ fn project_display_rows(
             let origin_anchor = component.preceding_waypoint.clone();
             let destination_anchor = component.following_waypoint.clone();
             let uid = format!("component:{}:{:?}:group", component.uid, component.kind);
-            let actions = assign_action_uids(&uid, group_row_actions(component));
+            let actions = assign_action_uids(
+                &uid,
+                apply_component_mutation_action_availability(
+                    plan,
+                    component.component_index,
+                    group_row_actions(component),
+                ),
+            );
             rows.push(FlightPlanDisplayRowUiView {
                 uid: uid.clone(),
                 label: structured_component_label(component),
@@ -2732,6 +2798,96 @@ fn replaceable_procedure_component_before(
     }
 }
 
+pub fn attached_procedure_component_index(
+    plan: &FlightPlan,
+    airport_component_index: usize,
+    kind: ProcedureKind,
+) -> Option<usize> {
+    let RouteComponent::Waypoint {
+        waypoint: NavRef::Airport(airport_id),
+    } = plan.route_components.get(airport_component_index)?
+    else {
+        return None;
+    };
+    let candidate_index = match kind {
+        ProcedureKind::Sid => {
+            (airport_component_index == 0).then_some(airport_component_index + 1)?
+        }
+        ProcedureKind::Approach => airport_component_index.checked_sub(1)?,
+        ProcedureKind::Star => {
+            let previous_index = airport_component_index.checked_sub(1)?;
+            if matches!(
+                plan.route_components.get(previous_index),
+                Some(RouteComponent::Procedure { procedure })
+                    if procedure.kind == ProcedureKind::Approach
+            ) {
+                previous_index.checked_sub(1)?
+            } else {
+                previous_index
+            }
+        }
+    };
+    matches!(
+        plan.route_components.get(candidate_index),
+        Some(RouteComponent::Procedure { procedure })
+            if procedure.kind == kind && procedure.airport_id.0.trim() == airport_id.trim()
+    )
+    .then_some(candidate_index)
+}
+
+pub fn procedure_component_index_for_load(
+    plan: &FlightPlan,
+    airport_component_index: usize,
+    kind: ProcedureKind,
+) -> AppResult<usize> {
+    if !matches!(
+        plan.route_components.get(airport_component_index),
+        Some(RouteComponent::Waypoint {
+            waypoint: NavRef::Airport(_)
+        })
+    ) {
+        return Err(AppError {
+            kind: AppErrorKind::UnsupportedOperation,
+            message: "procedure load target must be an airport waypoint".to_string(),
+        });
+    }
+    if let Some(index) =
+        attached_procedure_component_index(plan, airport_component_index, kind.clone())
+    {
+        return Ok(index);
+    }
+    match kind {
+        ProcedureKind::Sid => {
+            if airport_component_index == 0 {
+                Ok(1)
+            } else {
+                Err(procedure_attachment_error(DEPARTURE_ATTACHMENT_MESSAGE))
+            }
+        }
+        ProcedureKind::Approach => {
+            if airport_component_index + 1 == plan.route_components.len() {
+                Ok(airport_component_index)
+            } else {
+                Err(procedure_attachment_error(APPROACH_ATTACHMENT_MESSAGE))
+            }
+        }
+        ProcedureKind::Star => {
+            if airport_component_index + 1 != plan.route_components.len() {
+                return Err(procedure_attachment_error(ARRIVAL_ATTACHMENT_MESSAGE));
+            }
+            Ok(airport_component_index
+                - usize::from(
+                    attached_procedure_component_index(
+                        plan,
+                        airport_component_index,
+                        ProcedureKind::Approach,
+                    )
+                    .is_some(),
+                ))
+        }
+    }
+}
+
 fn can_insert_procedure_before_component(plan: &FlightPlan, component_index: usize) -> bool {
     if component_index == 0 {
         return true;
@@ -2769,6 +2925,139 @@ fn group_row_actions(component: &RouteComponentUiView) -> Vec<FlightPlanRowActio
     }
 }
 
+fn apply_component_mutation_action_availability(
+    plan: &FlightPlan,
+    component_index: usize,
+    mut actions: Vec<FlightPlanRowActionUiView>,
+) -> Vec<FlightPlanRowActionUiView> {
+    for action in &mut actions {
+        let result =
+            match action.id {
+                FlightPlanRowActionId::Remove
+                | FlightPlanRowActionId::RemoveAirway
+                | FlightPlanRowActionId::RemoveProcedure => Some(
+                    validate_component_removal_attachments(plan, component_index),
+                ),
+                FlightPlanRowActionId::RemoveAllAbove => {
+                    Some(validate_remove_all_above_attachments(plan, component_index))
+                }
+                FlightPlanRowActionId::MoveUp => Some(validate_component_move_attachments(
+                    plan,
+                    component_index,
+                    -1,
+                )),
+                FlightPlanRowActionId::MoveDown => Some(validate_component_move_attachments(
+                    plan,
+                    component_index,
+                    1,
+                )),
+                FlightPlanRowActionId::InsertBefore => Some(
+                    validate_waypoint_insertion_attachments(plan, component_index, true),
+                ),
+                FlightPlanRowActionId::InsertAfter => Some(
+                    validate_waypoint_insertion_attachments(plan, component_index, false),
+                ),
+                _ => None,
+            };
+        let Some(Err(error)) = result else {
+            continue;
+        };
+        if action.enabled || is_procedure_attachment_message(&error.message) {
+            action.enabled = false;
+            action.disabled_reason = Some(error.message);
+        }
+    }
+    actions
+}
+
+fn validate_component_removal_attachments(
+    plan: &FlightPlan,
+    component_index: usize,
+) -> AppResult<()> {
+    if component_index >= plan.route_components.len() {
+        return Err(AppError {
+            kind: AppErrorKind::UnsupportedOperation,
+            message: format!("component index out of bounds: {component_index}"),
+        });
+    }
+    let delete_range = endpoint_with_attached_procedures_range(plan, component_index);
+    let route_components = plan
+        .route_components
+        .iter()
+        .enumerate()
+        .filter_map(|(index, component)| {
+            (!delete_range.contains(&index)).then_some(component.clone())
+        })
+        .collect::<Vec<_>>();
+    validate_procedure_attachments(&route_components)
+}
+
+fn validate_remove_all_above_attachments(
+    plan: &FlightPlan,
+    component_index: usize,
+) -> AppResult<()> {
+    if component_index >= plan.route_components.len() {
+        return Err(AppError {
+            kind: AppErrorKind::UnsupportedOperation,
+            message: format!("component index out of bounds: {component_index}"),
+        });
+    }
+    validate_procedure_attachments(&plan.route_components[component_index.saturating_add(1)..])
+}
+
+fn validate_component_move_attachments(
+    plan: &FlightPlan,
+    component_index: usize,
+    delta: isize,
+) -> AppResult<()> {
+    if component_index >= plan.route_components.len() {
+        return Err(AppError {
+            kind: AppErrorKind::UnsupportedOperation,
+            message: format!("component index out of bounds: {component_index}"),
+        });
+    }
+    let target_index = component_index as isize + delta;
+    if target_index < 0 || target_index >= plan.route_components.len() as isize {
+        return Err(AppError {
+            kind: AppErrorKind::UnsupportedOperation,
+            message: format!("component move out of bounds: {component_index} -> {target_index}"),
+        });
+    }
+    let mut route_components = plan.route_components.clone();
+    let component = route_components.remove(component_index);
+    route_components.insert(target_index as usize, component);
+    validate_procedure_attachments(&route_components)
+}
+
+fn validate_waypoint_insertion_attachments(
+    plan: &FlightPlan,
+    component_index: usize,
+    before: bool,
+) -> AppResult<()> {
+    if component_index >= plan.route_components.len() {
+        return Err(AppError {
+            kind: AppErrorKind::UnsupportedOperation,
+            message: format!("component index out of bounds: {component_index}"),
+        });
+    }
+    let mut route_components = plan.route_components.clone();
+    let insertion_index = component_index + usize::from(!before);
+    route_components.insert(
+        insertion_index,
+        RouteComponent::Waypoint {
+            waypoint: NavRef::Spot(LatLon { lat: 0.0, lon: 0.0 }),
+        },
+    );
+    validate_procedure_attachments(&route_components)
+}
+
+fn is_procedure_attachment_message(message: &str) -> bool {
+    matches!(
+        message,
+        DEPARTURE_ATTACHMENT_MESSAGE | ARRIVAL_ATTACHMENT_MESSAGE | APPROACH_ATTACHMENT_MESSAGE
+    )
+}
+
 #[allow(clippy::too_many_arguments)]
 fn waypoint_actions_for_row(
     row_kind: FlightPlanDisplayRowKind,
@@ -2777,6 +3066,8 @@ fn waypoint_actions_for_row(
     nav_ref: Option<&NavRef>,
     can_add_airway_after: bool,
     can_add_procedure_before: bool,
+    can_select_departure: bool,
+    is_destination_airport: bool,
     can_remove_component: bool,
     can_reorder_up: bool,
     can_reorder_down: bool,
@@ -2816,9 +3107,20 @@ fn waypoint_actions_for_row(
                 FlightPlanRowActionId::AddAirway,
                 can_add_airway_after && origin_anchor.is_some(),
             ),
-            action(
-                FlightPlanRowActionId::SelectProcedure,
-                can_add_procedure_before && component_index.is_some() && chart_airport_id.is_some(),
+            procedure_action(
+                FlightPlanRowActionId::SelectDeparture,
+                ProcedureKind::Sid,
+                can_select_departure && component_index.is_some(),
+            ),
+            procedure_action(
+                FlightPlanRowActionId::SelectArrival,
+                ProcedureKind::Star,
+                can_add_procedure_before && is_destination_airport && component_index.is_some(),
+            ),
+            procedure_action(
+                FlightPlanRowActionId::SelectApproach,
+                ProcedureKind::Approach,
+                can_add_procedure_before && is_destination_airport && component_index.is_some(),
             ),
             action(FlightPlanRowActionId::Plates, chart_airport_id.is_some()),
         ]
@@ -2973,6 +3275,7 @@ fn action(id: FlightPlanRowActionId, enabled: bool) -> FlightPlanRowActionUiView
         navigation: None,
         weather_detail: None,
         airport_info_airport_id: None,
+        procedure_kind: None,
     }
 }
 
@@ -2989,6 +3292,7 @@ fn core_session_action(id: FlightPlanRowActionId, enabled: bool) -> FlightPlanRo
         navigation: None,
         weather_detail: None,
         airport_info_airport_id: None,
+        procedure_kind: None,
     }
 }
 
@@ -3001,6 +3305,16 @@ fn core_session_action_with_disabled_reason(
     if !enabled {
         action.disabled_reason = Some(disabled_reason.to_string());
     }
+    action
+}
+
+fn procedure_action(
+    id: FlightPlanRowActionId,
+    procedure_kind: ProcedureKind,
+    enabled: bool,
+) -> FlightPlanRowActionUiView {
+    let mut action = action(id, enabled);
+    action.procedure_kind = Some(procedure_kind);
     action
 }
 
@@ -3017,6 +3331,7 @@ fn move_action(id: FlightPlanRowActionId, enabled: bool) -> FlightPlanRowActionU
         navigation: None,
         weather_detail: None,
         airport_info_airport_id: None,
+        procedure_kind: None,
     }
 }
 
@@ -3040,7 +3355,15 @@ fn row_action_disabled_reason(id: &FlightPlanRowActionId, enabled: bool) -> Opti
             FlightPlanRowActionId::AddAirway => {
                 "Airway insertion requires a named waypoint with airway connections."
             }
-            FlightPlanRowActionId::SelectProcedure => "Procedures can be added at airports only.",
+            FlightPlanRowActionId::SelectDeparture => {
+                "Departures can be selected at the flight-plan origin only."
+            }
+            FlightPlanRowActionId::SelectArrival => {
+                "Arrivals can be selected at the flight-plan destination only."
+            }
+            FlightPlanRowActionId::SelectApproach => {
+                "Approaches can be selected at the flight-plan destination only."
+            }
             FlightPlanRowActionId::Plates => "No airport plates are associated with this row.",
             FlightPlanRowActionId::ShowPlate => "This procedure has no plate to show.",
             FlightPlanRowActionId::RemoveAirway => AIRWAY_REMOVE_DISABLED_REASON,
@@ -3082,10 +3405,12 @@ fn action_matrix_from_actions(
             FlightPlanRowActionId::Remove,
             FlightPlanRowActionId::RemoveAllAbove,
         ],
+        vec![FlightPlanRowActionId::AddAirway],
         vec![
-            FlightPlanRowActionId::AddAirway,
-            FlightPlanRowActionId::SelectProcedure,
+            FlightPlanRowActionId::SelectDeparture,
+            FlightPlanRowActionId::SelectArrival,
         ],
+        vec![FlightPlanRowActionId::SelectApproach],
         vec![
             FlightPlanRowActionId::WaypointInfo,
             FlightPlanRowActionId::Plates,
@@ -3192,7 +3517,9 @@ fn action_label(id: &FlightPlanRowActionId) -> &'static str {
         FlightPlanRowActionId::WaypointInfo => "Airport Info",
         FlightPlanRowActionId::Weather => "WX",
         FlightPlanRowActionId::AddAirway => "Add Airway",
-        FlightPlanRowActionId::SelectProcedure => "Select Procedure",
+        FlightPlanRowActionId::SelectDeparture => "Select Departure",
+        FlightPlanRowActionId::SelectArrival => "Select Arrival",
+        FlightPlanRowActionId::SelectApproach => "Select Approach",
         FlightPlanRowActionId::Plates => "Plates",
         FlightPlanRowActionId::ShowPlate => "Show Plate",
         FlightPlanRowActionId::RemoveAirway => "Remove Airway",
@@ -3261,7 +3588,8 @@ fn can_remove_component(plan: &FlightPlan, component_index: usize) -> bool {
 }
 
 fn can_reorder_component(plan: &FlightPlan, component_index: usize) -> bool {
-    component_index < plan.route_components.len() && plan.route_components.len() > 1
+    can_reorder_component_in_direction(plan, component_index, -1)
+        || can_reorder_component_in_direction(plan, component_index, 1)
 }
 
 fn can_reorder_component_in_direction(
@@ -3269,7 +3597,7 @@ fn can_reorder_component_in_direction(
     component_index: usize,
     direction: isize,
 ) -> bool {
-    if !can_reorder_component(plan, component_index) {
+    if component_index >= plan.route_components.len() || plan.route_components.len() <= 1 {
         return false;
     }
     let target_index = if direction < 0 {
@@ -3278,6 +3606,7 @@ fn can_reorder_component_in_direction(
         component_index.checked_add(direction as usize)
     };
     target_index.is_some_and(|index| index < plan.route_components.len())
+        && validate_component_move_attachments(plan, component_index, direction).is_ok()
 }
 
 #[derive(Debug, Clone)]
@@ -3338,6 +3667,7 @@ fn rebuild_plan_from_uid_components(
         .flatten();
     let (route_components, route_component_uids, route_component_uid_counter, grouped_legs) =
         materialize_rebuilt_components(&old_plan, rebuilt_components);
+    validate_procedure_attachments(&route_components)?;
     let resolved_legs =
         rebuild_resolved_legs_with_grouped_components(&route_components, &grouped_legs);
     validate_final_procedure_geometry(&resolved_legs)?;
@@ -3359,6 +3689,104 @@ fn rebuild_plan_from_uid_components(
         GuidanceRebuildPolicy::Clear => None,
     };
     Ok(plan)
+}
+
+pub(crate) fn validate_procedure_attachments(route_components: &[RouteComponent]) -> AppResult<()> {
+    let procedure_indices = |kind: ProcedureKind| {
+        route_components
+            .iter()
+            .enumerate()
+            .filter_map(|(index, component)| match component {
+                RouteComponent::Procedure { procedure } if procedure.kind == kind => Some(index),
+                _ => None,
+            })
+            .collect::<Vec<_>>()
+    };
+    let departure_indices = procedure_indices(ProcedureKind::Sid);
+    let arrival_indices = procedure_indices(ProcedureKind::Star);
+    let approach_indices = procedure_indices(ProcedureKind::Approach);
+
+    if departure_indices.len() > 1 {
+        return Err(procedure_attachment_error(DEPARTURE_ATTACHMENT_MESSAGE));
+    }
+    if arrival_indices.len() > 1 {
+        return Err(procedure_attachment_error(ARRIVAL_ATTACHMENT_MESSAGE));
+    }
+    if approach_indices.len() > 1 {
+        return Err(procedure_attachment_error(APPROACH_ATTACHMENT_MESSAGE));
+    }
+
+    if let Some(&departure_index) = departure_indices.first() {
+        let valid = match (
+            route_components.first(),
+            route_components.get(departure_index),
+        ) {
+            (
+                Some(RouteComponent::Waypoint {
+                    waypoint: NavRef::Airport(origin_airport_id),
+                }),
+                Some(RouteComponent::Procedure { procedure }),
+            ) => departure_index == 1 && origin_airport_id.trim() == procedure.airport_id.0.trim(),
+            _ => false,
+        };
+        if !valid {
+            return Err(procedure_attachment_error(DEPARTURE_ATTACHMENT_MESSAGE));
+        }
+    }
+
+    if let Some(&approach_index) = approach_indices.first() {
+        let valid = terminal_procedure_matches_destination(
+            route_components,
+            approach_index,
+            route_components.len().checked_sub(2),
+        );
+        if !valid {
+            return Err(procedure_attachment_error(APPROACH_ATTACHMENT_MESSAGE));
+        }
+    }
+
+    if let Some(&arrival_index) = arrival_indices.first() {
+        let expected_index = route_components
+            .len()
+            .checked_sub(if approach_indices.is_empty() { 2 } else { 3 });
+        if !terminal_procedure_matches_destination(route_components, arrival_index, expected_index)
+        {
+            return Err(procedure_attachment_error(ARRIVAL_ATTACHMENT_MESSAGE));
+        }
+    }
+
+    Ok(())
+}
+
+fn terminal_procedure_matches_destination(
+    route_components: &[RouteComponent],
+    procedure_index: usize,
+    expected_index: Option<usize>,
+) -> bool {
+    let Some(expected_index) = expected_index else {
+        return false;
+    };
+    let (
+        Some(RouteComponent::Procedure { procedure }),
+        Some(RouteComponent::Waypoint {
+            waypoint: NavRef::Airport(destination_airport_id),
+        }),
+    ) = (
+        route_components.get(procedure_index),
+        route_components.last(),
+    )
+    else {
+        return false;
+    };
+    procedure_index == expected_index
+        && procedure.airport_id.0.trim() == destination_airport_id.trim()
+}
+
+fn procedure_attachment_error(message: &str) -> AppError {
+    AppError {
+        kind: AppErrorKind::InvalidFlightPlan,
+        message: message.to_string(),
+    }
 }
 
 pub fn validate_final_procedure_geometry(resolved_legs: &[ResolvedLeg]) -> AppResult<()> {
@@ -3389,6 +3817,7 @@ pub fn validate_final_procedure_geometry(resolved_legs: &[ResolvedLeg]) -> AppRe
         if incoming_provenance.airport_id != outgoing_provenance.airport_id
             || incoming_provenance.procedure_id != outgoing_provenance.procedure_id
             || incoming_provenance.kind != outgoing_provenance.kind
+            || incoming_provenance.discontinuity_after.is_some()
         {
             continue;
         }
@@ -3429,13 +3858,24 @@ pub fn validate_materialized_procedure_final_route(
     let component = RouteComponent::Procedure {
         procedure: materialized.procedure.clone(),
     };
+    let airport = RouteComponent::Waypoint {
+        waypoint: NavRef::Airport(materialized.procedure.airport_id.0.clone()),
+    };
+    let (route_components, procedure_index) = match materialized.procedure.kind {
+        ProcedureKind::Sid => (vec![airport, component.clone()], 1),
+        ProcedureKind::Star | ProcedureKind::Approach => (vec![component.clone(), airport], 0),
+    };
     let plan = FlightPlan {
-        route_components: vec![component.clone()],
+        route_components,
         ..FlightPlan::empty()
     };
     rebuild_plan_with_nav_materializations(
         &plan,
-        vec![(0, component, materialized.resolved_legs.clone())],
+        vec![(
+            procedure_index,
+            component,
+            materialized.resolved_legs.clone(),
+        )],
     )
     .map(|_| ())
 }
@@ -3695,9 +4135,10 @@ pub fn delete_component(plan: &FlightPlan, component_index: usize) -> AppResult<
     }
 
     let old_grouped_legs = grouped_component_legs(&plan);
+    let delete_range = endpoint_with_attached_procedures_range(&plan, component_index);
     let mut rebuilt_components = Vec::new();
     for old_index in 0..plan.route_components.len() {
-        if old_index == component_index {
+        if delete_range.contains(&old_index) {
             continue;
         }
         rebuilt_components.push(rebuilt_existing_component(
@@ -3712,6 +4153,53 @@ pub fn delete_component(plan: &FlightPlan, component_index: usize) -> AppResult<
         rebuilt_components,
         GuidanceRebuildPolicy::PreserveByRowUid,
     )
+}
+
+fn endpoint_with_attached_procedures_range(
+    plan: &FlightPlan,
+    component_index: usize,
+) -> std::ops::RangeInclusive<usize> {
+    if component_index == 0
+        && matches!(
+            plan.route_components.get(1),
+            Some(RouteComponent::Procedure { procedure })
+                if procedure.kind == ProcedureKind::Sid
+        )
+    {
+        return 0..=1;
+    }
+
+    if component_index + 1 == plan.route_components.len()
+        && matches!(
+            plan.route_components.get(component_index),
+            Some(RouteComponent::Waypoint {
+                waypoint: NavRef::Airport(_)
+            })
+        )
+    {
+        let mut first_attached_index = component_index;
+        if first_attached_index > 0
+            && matches!(
+                plan.route_components.get(first_attached_index - 1),
+                Some(RouteComponent::Procedure { procedure })
+                    if procedure.kind == ProcedureKind::Approach
+            )
+        {
+            first_attached_index -= 1;
+        }
+        if first_attached_index > 0
+            && matches!(
+                plan.route_components.get(first_attached_index - 1),
+                Some(RouteComponent::Procedure { procedure })
+                    if procedure.kind == ProcedureKind::Star
+            )
+        {
+            first_attached_index -= 1;
+        }
+        return first_attached_index..=component_index;
+    }
+
+    component_index..=component_index
 }
 
 fn airway_points_and_legs(
@@ -4509,52 +4997,84 @@ pub fn insert_procedure_between_waypoints(
     Ok(rebuilt)
 }
 
-pub fn insert_initial_procedure_before_airport(
+pub fn insert_terminal_procedure_before_airport(
     plan: &FlightPlan,
     airport_component_index: usize,
     procedure: ProcedureSegment,
     procedure_legs: Vec<ResolvedLeg>,
 ) -> AppResult<FlightPlan> {
-    if airport_component_index != 0 {
+    if !matches!(
+        procedure.kind,
+        ProcedureKind::Star | ProcedureKind::Approach
+    ) {
         return Err(AppError {
-            kind: AppErrorKind::UnsupportedOperation,
-            message: format!(
-                "initial procedure insertion requires the first component, got {airport_component_index}"
-            ),
+            kind: AppErrorKind::InvalidFlightPlan,
+            message: "terminal procedure insertion requires a STAR or approach".to_string(),
+        });
+    }
+    if procedure_legs.is_empty() {
+        return Err(AppError {
+            kind: AppErrorKind::InvalidFlightPlan,
+            message: "terminal procedure must contain at least one resolved leg".to_string(),
         });
     }
 
     let plan = plan.clone().normalized();
-    match plan.route_components.get(airport_component_index) {
+    let airport_id = match plan.route_components.get(airport_component_index) {
         Some(RouteComponent::Waypoint {
-            waypoint: NavRef::Airport(_),
-        }) => {}
+            waypoint: NavRef::Airport(airport_id),
+        }) => airport_id,
         Some(_) => {
             return Err(AppError {
                 kind: AppErrorKind::UnsupportedOperation,
-                message: "initial procedure insertion target must be an airport waypoint"
-                    .to_string(),
+                message: "terminal procedure target must be an airport waypoint".to_string(),
             })
         }
         None => {
             return Err(AppError {
                 kind: AppErrorKind::UnsupportedOperation,
-                message: "component index out of bounds: 0".to_string(),
+                message: format!("component index out of bounds: {airport_component_index}"),
             })
         }
+    };
+    if airport_component_index + 1 != plan.route_components.len()
+        || airport_id.trim() != procedure.airport_id.0.trim()
+    {
+        return Err(procedure_attachment_error(match procedure.kind {
+            ProcedureKind::Star => ARRIVAL_ATTACHMENT_MESSAGE,
+            ProcedureKind::Approach => APPROACH_ATTACHMENT_MESSAGE,
+            ProcedureKind::Sid => unreachable!(),
+        }));
+    }
+    if attached_procedure_component_index(&plan, airport_component_index, procedure.kind.clone())
+        .is_some()
+    {
+        return Err(AppError {
+            kind: AppErrorKind::UnsupportedOperation,
+            message: format!(
+                "replace the existing {} instead of inserting another",
+                match procedure.kind {
+                    ProcedureKind::Star => "arrival",
+                    ProcedureKind::Approach => "approach",
+                    ProcedureKind::Sid => unreachable!(),
+                }
+            ),
+        });
     }
 
+    let insertion_index =
+        procedure_component_index_for_load(&plan, airport_component_index, procedure.kind.clone())?;
     let old_grouped_legs = grouped_component_legs(&plan);
-    let mut rebuilt_components = Vec::<RebuiltRouteComponent>::new();
-
-    rebuilt_components.push(rebuilt_new_component(
-        RouteComponent::Procedure {
-            procedure: procedure.clone(),
-        },
-        Some(procedure_legs),
-    ));
-
+    let mut rebuilt_components = Vec::with_capacity(plan.route_components.len() + 1);
     for old_index in 0..plan.route_components.len() {
+        if old_index == insertion_index {
+            rebuilt_components.push(rebuilt_new_component(
+                RouteComponent::Procedure {
+                    procedure: procedure.clone(),
+                },
+                Some(procedure_legs.clone()),
+            ));
+        }
         rebuilt_components.push(rebuilt_existing_component(
             &plan,
             &old_grouped_legs,
@@ -4570,7 +5090,123 @@ pub fn insert_initial_procedure_before_airport(
     if rebuilt.resolved_legs.is_empty() {
         return Err(AppError {
             kind: AppErrorKind::InvalidFlightPlan,
-            message: "flight plan must contain at least one flyable leg after procedure insertion"
+            message: "flight plan must contain at least one flyable leg after terminal procedure insertion"
+                .to_string(),
+        });
+    }
+    Ok(rebuilt)
+}
+
+pub fn insert_initial_procedure_before_airport(
+    plan: &FlightPlan,
+    airport_component_index: usize,
+    procedure: ProcedureSegment,
+    procedure_legs: Vec<ResolvedLeg>,
+) -> AppResult<FlightPlan> {
+    if airport_component_index != 0 {
+        return Err(AppError {
+            kind: AppErrorKind::UnsupportedOperation,
+            message: format!(
+                "initial procedure insertion requires the first component, got {airport_component_index}"
+            ),
+        });
+    }
+
+    insert_terminal_procedure_before_airport(
+        plan,
+        airport_component_index,
+        procedure,
+        procedure_legs,
+    )
+}
+
+pub fn insert_departure_after_airport(
+    plan: &FlightPlan,
+    airport_component_index: usize,
+    procedure: ProcedureSegment,
+    procedure_legs: Vec<ResolvedLeg>,
+) -> AppResult<FlightPlan> {
+    if airport_component_index != 0 {
+        return Err(AppError {
+            kind: AppErrorKind::UnsupportedOperation,
+            message: format!(
+                "departure insertion requires the first component, got {airport_component_index}"
+            ),
+        });
+    }
+    if procedure.kind != ProcedureKind::Sid {
+        return Err(AppError {
+            kind: AppErrorKind::InvalidFlightPlan,
+            message: "departure insertion requires a SID procedure".to_string(),
+        });
+    }
+    if procedure_legs.is_empty() {
+        return Err(AppError {
+            kind: AppErrorKind::InvalidFlightPlan,
+            message: "departure procedure must contain at least one resolved leg".to_string(),
+        });
+    }
+
+    let plan = plan.clone().normalized();
+    match plan.route_components.first() {
+        Some(RouteComponent::Waypoint {
+            waypoint: NavRef::Airport(airport_id),
+        }) if airport_id.trim() == procedure.airport_id.0.trim() => {}
+        Some(RouteComponent::Waypoint { .. }) => {
+            return Err(AppError {
+                kind: AppErrorKind::InvalidFlightPlan,
+                message: "departure airport does not match the flight-plan origin".to_string(),
+            })
+        }
+        Some(_) => {
+            return Err(AppError {
+                kind: AppErrorKind::UnsupportedOperation,
+                message: "departure insertion target must be an airport waypoint".to_string(),
+            })
+        }
+        None => {
+            return Err(AppError {
+                kind: AppErrorKind::UnsupportedOperation,
+                message: "departure insertion requires a flight-plan origin".to_string(),
+            })
+        }
+    }
+    if matches!(
+        plan.route_components.get(1),
+        Some(RouteComponent::Procedure { procedure }) if procedure.kind == ProcedureKind::Sid
+    ) {
+        return Err(AppError {
+            kind: AppErrorKind::UnsupportedOperation,
+            message: "replace the existing departure instead of inserting another".to_string(),
+        });
+    }
+
+    let old_grouped_legs = grouped_component_legs(&plan);
+    let mut rebuilt_components = Vec::<RebuiltRouteComponent>::new();
+    rebuilt_components.push(rebuilt_existing_component(&plan, &old_grouped_legs, 0));
+    rebuilt_components.push(rebuilt_new_component(
+        RouteComponent::Procedure {
+            procedure: procedure.clone(),
+        },
+        Some(procedure_legs),
+    ));
+    for old_index in 1..plan.route_components.len() {
+        rebuilt_components.push(rebuilt_existing_component(
+            &plan,
+            &old_grouped_legs,
+            old_index,
+        ));
+    }
+
+    let rebuilt = rebuild_plan_from_uid_components(
+        &plan,
+        rebuilt_components,
+        GuidanceRebuildPolicy::PreserveByRowUid,
+    )?;
+    if rebuilt.resolved_legs.is_empty() {
+        return Err(AppError {
+            kind: AppErrorKind::InvalidFlightPlan,
+            message: "flight plan must contain at least one flyable leg after departure insertion"
                 .to_string(),
         });
     }
@@ -4924,13 +5560,22 @@ fn rebuild_resolved_legs_with_grouped_components(
             .filter(|legs| !legs.is_empty())
         {
             let first = grouped_legs.first().expect("nonempty grouped legs");
-            push_synthetic_bridge_if_needed(
-                &mut resolved,
-                &mut synthetic_leg_index,
-                previous_waypoint.as_ref(),
-                component_index,
-                &first.from,
+            let sid_starts_at_matching_origin = matches!(
+                (component, previous_waypoint.as_ref()),
+                (
+                    RouteComponent::Procedure { procedure },
+                    Some((_, NavRef::Airport(origin)))
+                ) if procedure.kind == ProcedureKind::Sid && procedure.airport_id.0 == *origin
             );
+            if !sid_starts_at_matching_origin {
+                push_synthetic_bridge_if_needed(
+                    &mut resolved,
+                    &mut synthetic_leg_index,
+                    previous_waypoint.as_ref(),
+                    component_index,
+                    &first.from,
+                );
+            }
             resolved.extend(grouped_legs.iter().cloned());
 
             let has_terminal_discontinuity = matches!(
@@ -5129,6 +5774,7 @@ fn raw_component_ui_items(
         }
         RouteComponent::Procedure { procedure } => {
             let mut items = Vec::new();
+            let mut last_leg_had_discontinuity = false;
             if let Some(first) = grouped_legs.first() {
                 items.push(ConcretizedNavItem::Waypoint {
                     nav_ref: first.from.clone(),
@@ -5137,14 +5783,28 @@ fn raw_component_ui_items(
                     items.push(ConcretizedNavItem::Waypoint {
                         nav_ref: leg.to.clone(),
                     });
+                    last_leg_had_discontinuity = false;
+                    if let Some(discontinuity) = leg
+                        .procedure_provenance
+                        .as_ref()
+                        .and_then(|provenance| provenance.discontinuity_after.clone())
+                    {
+                        items.push(ConcretizedNavItem::Discontinuity {
+                            label: discontinuity.display_label().to_string(),
+                            discontinuity,
+                        });
+                        last_leg_had_discontinuity = true;
+                    }
                 }
             }
 
-            if let Some(discontinuity) = procedure.terminal_discontinuity.clone() {
-                items.push(ConcretizedNavItem::Discontinuity {
-                    label: discontinuity.display_label().to_string(),
-                    discontinuity,
-                });
+            if !last_leg_had_discontinuity {
+                if let Some(discontinuity) = procedure.terminal_discontinuity.clone() {
+                    items.push(ConcretizedNavItem::Discontinuity {
+                        label: discontinuity.display_label().to_string(),
+                        discontinuity,
+                    });
+                }
             }
 
             items
@@ -5386,6 +6046,13 @@ fn should_suspend_after_active_leg(plan: &FlightPlan, active_leg_index: usize) -
     let Some(active_leg) = plan.resolved_legs.get(active_leg_index) else {
         return false;
     };
+    if active_leg
+        .procedure_provenance
+        .as_ref()
+        .is_some_and(|provenance| provenance.discontinuity_after.is_some())
+    {
+        return true;
+    }
     let ResolvedLegSource::RouteComponent { component_index } = active_leg.source else {
         return false;
     };
@@ -5444,6 +6111,7 @@ mod tests {
                 role,
                 path_termination,
                 leg_sequence: 0,
+                discontinuity_after: None,
                 display_path: Some(LegDisplayPath {
                     style: LegDisplayPathStyle::Solid,
                     elements,
@@ -5493,18 +6161,23 @@ mod tests {
         ];
 
         let err = crate::build_flight_plan(FlightPlan {
-            route_components: vec![RouteComponent::Procedure {
-                procedure: ProcedureSegment {
-                    airport_id: AirportId("KCEC".to_string()),
-                    procedure_id: "I12".to_string(),
-                    display_label: None,
-                    kind: ProcedureKind::Approach,
-                    runway_transition: None,
-                    enroute_transition: Some("CEC".to_string()),
-                    terminal_discontinuity: None,
-                    data_quality: Vec::new(),
+            route_components: vec![
+                RouteComponent::Procedure {
+                    procedure: ProcedureSegment {
+                        airport_id: AirportId("KCEC".to_string()),
+                        procedure_id: "I12".to_string(),
+                        display_label: None,
+                        kind: ProcedureKind::Approach,
+                        runway_transition: None,
+                        enroute_transition: Some("CEC".to_string()),
+                        terminal_discontinuity: None,
+                        data_quality: Vec::new(),
+                    },
                 },
-            }],
+                RouteComponent::Waypoint {
+                    waypoint: NavRef::Airport("KCEC".to_string()),
+                },
+            ],
             resolved_legs: legs,
             ..FlightPlan::empty()
         })
@@ -5700,6 +6373,238 @@ mod tests {
             .as_ref()
             .and_then(|guidance| active_component_index_for_guidance(&plan, guidance));
         project_component_ui_views(&plan, active_component_index)
+    }
+
+    fn airport_component(airport_id: &str) -> RouteComponent {
+        RouteComponent::Waypoint {
+            waypoint: NavRef::Airport(airport_id.to_string()),
+        }
+    }
+
+    fn procedure_component(kind: ProcedureKind, airport_id: &str) -> RouteComponent {
+        RouteComponent::Procedure {
+            procedure: ProcedureSegment {
+                airport_id: AirportId(airport_id.to_string()),
+                procedure_id: match kind {
+                    ProcedureKind::Sid => "TEST1",
+                    ProcedureKind::Star => "TEST2",
+                    ProcedureKind::Approach => "TEST3",
+                }
+                .to_string(),
+                display_label: None,
+                kind,
+                runway_transition: None,
+                enroute_transition: None,
+                terminal_discontinuity: None,
+                data_quality: Vec::new(),
+            },
+        }
+    }
+
+    fn plan_with_all_attached_procedures() -> FlightPlan {
+        FlightPlan {
+            route_components: vec![
+                airport_component("KSEA"),
+                procedure_component(ProcedureKind::Sid, "KSEA"),
+                RouteComponent::Waypoint {
+                    waypoint: NavRef::Fix("ENRTE".to_string()),
+                },
+                procedure_component(ProcedureKind::Star, "KPAE"),
+                procedure_component(ProcedureKind::Approach, "KPAE"),
+                airport_component("KPAE"),
+            ],
+            ..FlightPlan::default()
+        }
+        .normalized()
+    }
+
+    fn row_action_for_component(
+        plan: &FlightPlan,
+        component_index: usize,
+        action_id: FlightPlanRowActionId,
+    ) -> FlightPlanRowActionUiView {
+        project_ui_state(plan)
+            .display_rows
+            .iter()
+            .find(|row| row.component_index == Some(component_index) && row.depth == 0)
+            .and_then(|row| flight_plan_row_actions(row).find(|action| action.id == action_id))
+            .cloned()
+            .expect("flight-plan row action")
+    }
+
+    #[test]
+    fn procedure_attachment_invariants_accept_the_canonical_route_shape() {
+        validate_procedure_attachments(&plan_with_all_attached_procedures().route_components)
+            .expect("canonical SID/STAR/approach attachments");
+    }
+
+    #[test]
+    fn terminal_procedure_insertion_orders_and_finds_star_and_approach_independently() {
+        let plan = sample_waypoint_only_plan();
+        let (mut arrival, arrival_legs) = sample_inserted_procedure();
+        arrival.kind = ProcedureKind::Star;
+        arrival.airport_id = AirportId("KHIO".to_string());
+        arrival.terminal_discontinuity = None;
+        let with_arrival =
+            insert_terminal_procedure_before_airport(&plan, 2, arrival, arrival_legs)
+                .expect("insert arrival");
+
+        let (mut approach, approach_legs) = sample_replaced_procedure();
+        approach.kind = ProcedureKind::Approach;
+        approach.airport_id = AirportId("KHIO".to_string());
+        approach.terminal_discontinuity = None;
+        let complete =
+            insert_terminal_procedure_before_airport(&with_arrival, 3, approach, approach_legs)
+                .expect("insert approach after arrival");
+
+        assert!(matches!(
+            complete.route_components[2],
+            RouteComponent::Procedure { ref procedure } if procedure.kind == ProcedureKind::Star
+        ));
+        assert!(matches!(
+            complete.route_components[3],
+            RouteComponent::Procedure { ref procedure }
+                if procedure.kind == ProcedureKind::Approach
+        ));
+        assert_eq!(
+            attached_procedure_component_index(&complete, 4, ProcedureKind::Star),
+            Some(2)
+        );
+        assert_eq!(
+            attached_procedure_component_index(&complete, 4, ProcedureKind::Approach),
+            Some(3)
+        );
+        assert!(
+            row_action_for_component(&complete, 4, FlightPlanRowActionId::SelectArrival).enabled
+        );
+        assert!(
+            row_action_for_component(&complete, 4, FlightPlanRowActionId::SelectApproach).enabled
+        );
+    }
+
+    #[test]
+    fn procedure_attachment_invariants_reject_detached_and_duplicate_procedures() {
+        let valid = plan_with_all_attached_procedures();
+        let mut cases = Vec::new();
+
+        let mut detached_departure = valid.route_components.clone();
+        detached_departure.swap(1, 2);
+        cases.push((detached_departure, DEPARTURE_ATTACHMENT_MESSAGE));
+
+        let mut duplicate_departure = valid.route_components.clone();
+        duplicate_departure.insert(2, procedure_component(ProcedureKind::Sid, "KSEA"));
+        cases.push((duplicate_departure, DEPARTURE_ATTACHMENT_MESSAGE));
+
+        let mut detached_arrival = valid.route_components.clone();
+        detached_arrival.swap(2, 3);
+        cases.push((detached_arrival, ARRIVAL_ATTACHMENT_MESSAGE));
+
+        let mut duplicate_arrival = valid.route_components.clone();
+        duplicate_arrival.insert(3, procedure_component(ProcedureKind::Star, "KPAE"));
+        cases.push((duplicate_arrival, ARRIVAL_ATTACHMENT_MESSAGE));
+
+        let mut detached_approach = valid.route_components.clone();
+        detached_approach.swap(4, 5);
+        cases.push((detached_approach, APPROACH_ATTACHMENT_MESSAGE));
+
+        let mut duplicate_approach = valid.route_components.clone();
+        duplicate_approach.insert(
+            valid.route_components.len() - 1,
+            procedure_component(ProcedureKind::Approach, "KPAE"),
+        );
+        cases.push((duplicate_approach, APPROACH_ATTACHMENT_MESSAGE));
+
+        for (components, expected_message) in cases {
+            let error = validate_procedure_attachments(&components).unwrap_err();
+            assert_eq!(error.kind, AppErrorKind::InvalidFlightPlan);
+            assert_eq!(error.message, expected_message);
+        }
+    }
+
+    #[test]
+    fn deleting_an_endpoint_also_deletes_its_attached_procedures() {
+        let plan = plan_with_all_attached_procedures();
+
+        let without_origin = delete_waypoint_component(&plan, 0).expect("delete origin");
+        assert!(without_origin.route_components.iter().all(|component| {
+            !matches!(
+                component,
+                RouteComponent::Procedure { procedure } if procedure.kind == ProcedureKind::Sid
+            )
+        }));
+
+        let without_destination = delete_waypoint_component(&plan, 5).expect("delete destination");
+        assert!(without_destination
+            .route_components
+            .iter()
+            .all(|component| {
+                !matches!(
+                    component,
+                    RouteComponent::Procedure { procedure }
+                        if matches!(procedure.kind, ProcedureKind::Star | ProcedureKind::Approach)
+                )
+            }));
+    }
+
+    #[test]
+    fn attached_procedures_disable_component_moves_with_the_invariant_message() {
+        let plan = plan_with_all_attached_procedures();
+
+        let origin_down = row_action_for_component(&plan, 0, FlightPlanRowActionId::MoveDown);
+        assert!(!origin_down.enabled);
+        assert_eq!(
+            origin_down.disabled_reason.as_deref(),
+            Some(DEPARTURE_ATTACHMENT_MESSAGE)
+        );
+
+        let enroute_up = row_action_for_component(&plan, 2, FlightPlanRowActionId::MoveUp);
+        assert!(!enroute_up.enabled);
+        assert_eq!(
+            enroute_up.disabled_reason.as_deref(),
+            Some(DEPARTURE_ATTACHMENT_MESSAGE)
+        );
+
+        let enroute_down = row_action_for_component(&plan, 2, FlightPlanRowActionId::MoveDown);
+        assert!(!enroute_down.enabled);
+        assert_eq!(
+            enroute_down.disabled_reason.as_deref(),
+            Some(ARRIVAL_ATTACHMENT_MESSAGE)
+        );
+    }
+
+    #[test]
+    fn attached_procedures_explain_insertions_but_leave_endpoint_removal_enabled() {
+        let plan = plan_with_all_attached_procedures();
+
+        for action_id in [
+            FlightPlanRowActionId::InsertBefore,
+            FlightPlanRowActionId::InsertAfter,
+        ] {
+            let action = row_action_for_component(&plan, 0, action_id);
+            assert!(!action.enabled);
+            assert_eq!(
+                action.disabled_reason.as_deref(),
+                Some(DEPARTURE_ATTACHMENT_MESSAGE)
+            );
+        }
+
+        let destination_insert_before =
+            row_action_for_component(&plan, 5, FlightPlanRowActionId::InsertBefore);
+        assert!(!destination_insert_before.enabled);
+        assert_eq!(
+            destination_insert_before.disabled_reason.as_deref(),
+            Some(APPROACH_ATTACHMENT_MESSAGE)
+        );
+        let destination_insert_after =
+            row_action_for_component(&plan, 5, FlightPlanRowActionId::InsertAfter);
+        assert!(!destination_insert_after.enabled);
+        assert_eq!(
+            destination_insert_after.disabled_reason.as_deref(),
+            Some(APPROACH_ATTACHMENT_MESSAGE)
+        );
+
+        assert!(row_action_for_component(&plan, 0, FlightPlanRowActionId::Remove).enabled);
+        assert!(row_action_for_component(&plan, 5, FlightPlanRowActionId::Remove).enabled);
     }
 
     fn activate_direct_to_test_leg(
@@ -6310,7 +7215,7 @@ mod tests {
     fn sample_inserted_procedure() -> (ProcedureSegment, Vec<ResolvedLeg>) {
         (
             ProcedureSegment {
-                airport_id: AirportId("CYQG".to_string()),
+                airport_id: AirportId("KRNT".to_string()),
                 procedure_id: "AUTTO1".to_string(),
                 display_label: None,
                 kind: ProcedureKind::Sid,
@@ -6354,7 +7259,7 @@ mod tests {
     fn sample_replaced_procedure() -> (ProcedureSegment, Vec<ResolvedLeg>) {
         (
             ProcedureSegment {
-                airport_id: AirportId("CYQG".to_string()),
+                airport_id: AirportId("KRNT".to_string()),
                 procedure_id: "AUTTO1".to_string(),
                 display_label: None,
                 kind: ProcedureKind::Sid,
@@ -6942,17 +7847,17 @@ mod tests {
             inserted.route_components[1],
             RouteComponent::Procedure { .. }
         ));
-        assert_eq!(inserted.resolved_legs.len(), 5);
+        assert_eq!(inserted.resolved_legs.len(), 4);
         assert_eq!(
             inserted.resolved_legs[0].from,
-            NavRef::Airport("KRNT".to_string())
-        );
-        assert_eq!(
-            inserted.resolved_legs[0].to,
             NavRef::Fix("COLTS".to_string())
         );
         assert_eq!(
-            inserted.resolved_legs[3].to,
+            inserted.resolved_legs[0].to,
+            NavRef::Fix("BOREK".to_string())
+        );
+        assert_eq!(
+            inserted.resolved_legs[2].to,
             NavRef::Fix("GIGGY".to_string())
         );
         assert!(inserted
@@ -6972,10 +7877,13 @@ mod tests {
             direct_to: None,
             suspend_reason: None,
         });
-        let (procedure, procedure_legs) = sample_inserted_procedure();
+        let (mut procedure, procedure_legs) = sample_inserted_procedure();
+        procedure.kind = ProcedureKind::Approach;
+        procedure.airport_id = AirportId("KPDX".to_string());
+        procedure.terminal_discontinuity = None;
 
         let inserted =
-            insert_procedure_between_waypoints(&plan, 1, 2, procedure, procedure_legs).unwrap();
+            insert_procedure_between_waypoints(&plan, 2, 3, procedure, procedure_legs).unwrap();
 
         let guidance = inserted
             .guidance
@@ -7030,11 +7938,11 @@ mod tests {
             RouteComponent::Procedure { .. }
         ));
         assert_eq!(
-            replaced.resolved_legs[0].to,
+            replaced.resolved_legs[0].from,
             NavRef::Fix("PICUP".to_string())
         );
         assert_eq!(
-            replaced.resolved_legs[2].to,
+            replaced.resolved_legs[1].to,
             NavRef::Fix("GIGGY".to_string())
         );
         assert!(replaced
@@ -7070,7 +7978,7 @@ mod tests {
         assert_eq!(procedure.procedure_id, "AUTTO1");
         assert_eq!(procedure.enroute_transition.as_deref(), Some("PICUP"));
         assert_eq!(
-            changed.resolved_legs[0].to,
+            changed.resolved_legs[0].from,
             NavRef::Fix("PICUP".to_string())
         );
     }
@@ -7384,8 +8292,8 @@ mod tests {
         .unwrap();
         let plan = FlightPlan {
             guidance: Some(GuidanceState {
-                active_leg_index: 3,
-                active_detail_index: Some(3),
+                active_leg_index: 2,
+                active_detail_index: Some(2),
                 display_split_leg_id: None,
                 sequencing_mode: SequencingMode::FollowPlan,
                 direct_to: None,
@@ -7397,8 +8305,77 @@ mod tests {
         let sequenced = sequence_active_leg(&plan).unwrap();
 
         let guidance = sequenced.guidance.as_ref().unwrap();
-        assert_eq!(guidance.active_leg_index, 3);
+        assert_eq!(guidance.active_leg_index, 2);
         assert_eq!(guidance.sequencing_mode, SequencingMode::Suspended);
+    }
+
+    #[test]
+    fn entering_vectors_manual_sequence_suspends_on_the_drawn_heading() {
+        let mut plan = sample_guided_waypoint_plan();
+        let points = [
+            LatLon {
+                lat: 47.50,
+                lon: -122.22,
+            },
+            LatLon {
+                lat: 47.49,
+                lon: -122.21,
+            },
+            LatLon {
+                lat: 47.48,
+                lon: -122.22,
+            },
+        ];
+        plan.resolved_legs[0].procedure_provenance = Some(ProcedureLegProvenance {
+            airport_id: "KRNT".to_string(),
+            procedure_id: "RENTN3".to_string(),
+            kind: ProcedureKind::Sid,
+            role: ProcedureSegmentRole::RunwayTransition,
+            path_termination: PathTermination::HeadingToAltitude,
+            leg_sequence: 20,
+            discontinuity_after: Some(ProcedureDiscontinuity::Vectors),
+            display_path: Some(LegDisplayPath {
+                style: LegDisplayPathStyle::Solid,
+                elements: points
+                    .windows(2)
+                    .map(|pair| LegDisplayElement::Segment {
+                        start: pair[0],
+                        end: pair[1],
+                    })
+                    .collect(),
+                effective_terminal_course_deg: Some(130.0),
+                debug_element_sources: Vec::new(),
+                debug_element_roles: Vec::new(),
+            }),
+        });
+        plan.guidance = Some(GuidanceState {
+            active_leg_index: 0,
+            active_detail_index: Some(0),
+            display_split_leg_id: None,
+            sequencing_mode: SequencingMode::FollowPlan,
+            direct_to: None,
+            suspend_reason: None,
+        });
+
+        let manual_sequence = sequence_active_detail(&plan).expect("enter vectors detail");
+        let guidance = manual_sequence
+            .guidance
+            .as_ref()
+            .expect("manual sequence guidance");
+
+        assert_eq!(guidance.active_leg_index, 0);
+        assert_eq!(guidance.active_detail_index, Some(1));
+        assert_eq!(guidance.sequencing_mode, SequencingMode::Suspended);
+        assert_eq!(guidance.suspend_reason, Some(SuspendReason::Boundary));
+        assert!(
+            guidance_projects_active_leg(&manual_sequence, guidance),
+            "the drawn heading must remain active while awaiting radar vectors"
+        );
+
+        let resumed = unsuspend_sequencing(&manual_sequence).expect("explicitly cross vectors");
+        let resumed_guidance = resumed.guidance.as_ref().expect("resumed guidance");
+        assert_eq!(resumed_guidance.active_leg_index, 1);
+        assert_eq!(resumed_guidance.sequencing_mode, SequencingMode::FollowPlan);
     }
 
     #[test]
@@ -7415,6 +8392,7 @@ mod tests {
                 role: ProcedureSegmentRole::Common,
                 path_termination: PathTermination::TrackToFix,
                 leg_sequence: 10,
+                discontinuity_after: None,
                 display_path: Some(LegDisplayPath {
                     style: LegDisplayPathStyle::Solid,
                     elements: vec![
@@ -7668,7 +8646,7 @@ mod tests {
         let unsuspended = unsuspend_sequencing(&suspended).unwrap();
 
         let guidance = unsuspended.guidance.as_ref().unwrap();
-        assert_eq!(guidance.active_leg_index, 4);
+        assert_eq!(guidance.active_leg_index, 3);
         assert_eq!(guidance.sequencing_mode, SequencingMode::FollowPlan);
     }
 
@@ -7684,8 +8662,8 @@ mod tests {
         .unwrap();
         let suspended = FlightPlan {
             guidance: Some(GuidanceState {
-                active_leg_index: 3,
-                active_detail_index: Some(3),
+                active_leg_index: 2,
+                active_detail_index: Some(2),
                 display_split_leg_id: None,
                 sequencing_mode: SequencingMode::Suspended,
                 direct_to: None,
@@ -7697,7 +8675,7 @@ mod tests {
         let next = activate_next_leg(&suspended).unwrap();
 
         let guidance = next.guidance.as_ref().unwrap();
-        assert_eq!(guidance.active_leg_index, 4);
+        assert_eq!(guidance.active_leg_index, 3);
         assert_eq!(guidance.sequencing_mode, SequencingMode::FollowPlan);
     }
 
@@ -8487,10 +9465,12 @@ mod tests {
                     FlightPlanRowActionId::Remove,
                     FlightPlanRowActionId::RemoveAllAbove,
                 ],
+                vec![FlightPlanRowActionId::AddAirway],
                 vec![
-                    FlightPlanRowActionId::AddAirway,
-                    FlightPlanRowActionId::SelectProcedure,
+                    FlightPlanRowActionId::SelectDeparture,
+                    FlightPlanRowActionId::SelectArrival,
                 ],
+                vec![FlightPlanRowActionId::SelectApproach],
                 vec![
                     FlightPlanRowActionId::WaypointInfo,
                     FlightPlanRowActionId::Plates
@@ -8575,10 +9555,65 @@ mod tests {
             .iter()
             .find(|row| row.component_index == Some(0))
             .expect("single airport row");
-        assert!(
-            flight_plan_row_actions(airport_row)
-                .any(|action| action.id == FlightPlanRowActionId::SelectProcedure && action.enabled),
-            "single airport row should offer Select Procedure"
+        let enabled_procedure_actions = flight_plan_row_actions(airport_row)
+            .filter(|action| action.enabled)
+            .filter_map(|action| action.procedure_kind.clone())
+            .collect::<Vec<_>>();
+        assert_eq!(
+            enabled_procedure_actions,
+            vec![
+                ProcedureKind::Sid,
+                ProcedureKind::Star,
+                ProcedureKind::Approach
+            ]
+        );
+    }
+
+    #[test]
+    fn airport_rows_offer_procedure_classes_for_their_route_role() {
+        let plan = FlightPlan {
+            route_components: vec![
+                RouteComponent::Waypoint {
+                    waypoint: NavRef::Airport("KSEA".to_string()),
+                },
+                RouteComponent::Waypoint {
+                    waypoint: NavRef::Airport("KPAE".to_string()),
+                },
+            ],
+            ..FlightPlan::default()
+        };
+        let ui = project_ui_state(&plan);
+        let procedure_actions = |component_index| {
+            let row = ui
+                .display_rows
+                .iter()
+                .find(|row| row.component_index == Some(component_index))
+                .unwrap();
+            flight_plan_row_actions(row)
+                .filter_map(|action| {
+                    action
+                        .procedure_kind
+                        .clone()
+                        .map(|kind| (kind, action.enabled))
+                })
+                .collect::<Vec<_>>()
+        };
+
+        assert_eq!(
+            procedure_actions(0),
+            vec![
+                (ProcedureKind::Sid, true),
+                (ProcedureKind::Star, false),
+                (ProcedureKind::Approach, false),
+            ]
+        );
+        assert_eq!(
+            procedure_actions(1),
+            vec![
+                (ProcedureKind::Sid, false),
+                (ProcedureKind::Star, true),
+                (ProcedureKind::Approach, true),
+            ]
         );
     }
 
@@ -8634,6 +9669,71 @@ mod tests {
             .resolved_legs
             .iter()
             .all(|leg| { leg.source == ResolvedLegSource::RouteComponent { component_index: 0 } }));
+    }
+
+    #[test]
+    fn insert_departure_after_origin_preserves_the_origin_and_remaining_route() {
+        let plan = FlightPlan {
+            route_components: vec![
+                RouteComponent::Waypoint {
+                    waypoint: NavRef::Airport("KSEA".to_string()),
+                },
+                RouteComponent::Waypoint {
+                    waypoint: NavRef::Fix("BANGR".to_string()),
+                },
+                RouteComponent::Waypoint {
+                    waypoint: NavRef::Airport("KPAE".to_string()),
+                },
+            ],
+            ..FlightPlan::default()
+        };
+        let procedure = ProcedureSegment {
+            airport_id: AirportId("KSEA".to_string()),
+            procedure_id: "BANGR9".to_string(),
+            display_label: Some("BANGR NINE (RNAV)".to_string()),
+            kind: ProcedureKind::Sid,
+            runway_transition: Some("RW16L".to_string()),
+            enroute_transition: Some("BANGR".to_string()),
+            terminal_discontinuity: None,
+            data_quality: Vec::new(),
+        };
+        let procedure_legs = vec![ResolvedLeg {
+            id: "procedure-BANGR9-10".to_string(),
+            from: NavRef::Fix("RW16L".to_string()),
+            to: NavRef::Fix("BANGR".to_string()),
+            source: ResolvedLegSource::RouteComponent {
+                component_index: 99,
+            },
+            procedure_provenance: None,
+        }];
+
+        let inserted = insert_departure_after_airport(&plan, 0, procedure, procedure_legs).unwrap();
+
+        assert!(matches!(
+            inserted.route_components.as_slice(),
+            [
+                RouteComponent::Waypoint { waypoint: NavRef::Airport(origin) },
+                RouteComponent::Procedure { procedure },
+                RouteComponent::Waypoint { waypoint: NavRef::Fix(exit) },
+                RouteComponent::Waypoint { waypoint: NavRef::Airport(destination) },
+            ] if origin == "KSEA"
+                && procedure.kind == ProcedureKind::Sid
+                && exit == "BANGR"
+                && destination == "KPAE"
+        ));
+        assert_eq!(
+            inserted.resolved_legs[0].from,
+            NavRef::Fix("RW16L".to_string())
+        );
+        assert_eq!(inserted.resolved_legs.len(), 2);
+        assert!(matches!(
+            inserted.resolved_legs[0].source,
+            ResolvedLegSource::RouteComponent { component_index: 1 }
+        ));
+        assert_eq!(
+            inserted.resolved_legs[0].to,
+            NavRef::Fix("BANGR".to_string())
+        );
     }
 
     #[test]
@@ -8694,7 +9794,7 @@ mod tests {
             })
             .expect("airport row");
         assert!(flight_plan_row_actions(airport_row).any(|action| {
-            action.id == FlightPlanRowActionId::SelectProcedure && action.enabled
+            action.id == FlightPlanRowActionId::SelectApproach && action.enabled
         }));
     }
 
@@ -9580,7 +10680,7 @@ mod tests {
         let guidance = activated.guidance.as_ref().unwrap();
         let direct_to = guidance.direct_to.as_ref().unwrap();
         assert!(direct_to.target_row.is_planned());
-        assert_eq!(direct_to_target_leg_index(&activated, direct_to), Some(3));
+        assert_eq!(direct_to_target_leg_index(&activated, direct_to), Some(2));
         assert!(direct_to.resume_row_id.is_none());
 
         let sequenced = sequence_active_leg(&activated).unwrap();
@@ -9613,13 +10713,13 @@ mod tests {
         let guidance = activated.guidance.as_ref().unwrap();
         let direct_to = guidance.direct_to.as_ref().unwrap();
         assert!(direct_to.target_row.is_planned());
-        assert_eq!(direct_to_target_leg_index(&activated, direct_to), Some(2));
-        assert_eq!(direct_to_resume_leg_index(&activated, direct_to), Some(3));
+        assert_eq!(direct_to_target_leg_index(&activated, direct_to), Some(1));
+        assert_eq!(direct_to_resume_leg_index(&activated, direct_to), Some(2));
 
         let sequenced = sequence_active_leg(&activated).unwrap();
         let guidance = sequenced.guidance.as_ref().unwrap();
         assert_eq!(guidance.sequencing_mode, SequencingMode::FollowPlan);
-        assert_eq!(guidance.active_leg_index, 3);
+        assert_eq!(guidance.active_leg_index, 2);
     }
 
     #[test]

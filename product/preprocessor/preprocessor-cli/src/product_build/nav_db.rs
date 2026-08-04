@@ -7,7 +7,7 @@ use preprocessor_core::runway::{
     parse_airport_magnetic_variation, parse_optional_position, resolve_true_heading,
     RunwayHeadingInput,
 };
-use preprocessor_data::is_suppressed_cifp_procedure;
+use preprocessor_data::{cifp_procedure_kind_from_subsection, is_suppressed_cifp_procedure};
 
 pub(super) fn nav_db_warning_text() -> Option<String> {
     None
@@ -1329,7 +1329,7 @@ pub(super) fn attach_procedure_geometry_warnings_to_plate_pairs(
         .filter(|pair| pair.key.starts_with("procedure/geometry/"))
     {
         let components = pair.key.split('/').collect::<Vec<_>>();
-        if components.len() != 7 || components[3] != "APPROACH" {
+        if components.len() != 7 {
             continue;
         }
         let value: serde_json::Value = serde_json::from_slice(&pair.value)
@@ -4188,6 +4188,10 @@ pub(super) fn build_nav_kv_procedure_pairs(
             .and_then(|value| value.as_str())
             .unwrap_or_default()
             .to_string();
+        let procedure_kind = row
+            .get("procedure_kind")
+            .and_then(|value| value.as_str())
+            .unwrap_or_default();
         let plate_id = row
             .get("plate_id")
             .and_then(|value| value.as_str())
@@ -4198,10 +4202,12 @@ pub(super) fn build_nav_kv_procedure_pairs(
                 .entry((airport_id.clone(), cifp_id.clone()))
                 .or_default()
                 .push(row.clone());
-            approach_lists
-                .entry(airport_id)
-                .or_default()
-                .insert(cifp_id);
+            if procedure_kind == "approach" {
+                approach_lists
+                    .entry(airport_id)
+                    .or_default()
+                    .insert(cifp_id);
+            }
         }
         if !plate_id.is_empty() {
             matches_by_plate.entry(plate_id).or_default().push(row);
@@ -4474,9 +4480,9 @@ pub(super) fn load_nav_kv_cifp_tpp_matches(
 ) -> anyhow::Result<Vec<serde_json::Value>> {
     let mut stmt = connection.prepare(
         "
-        SELECT trim(airport_id), trim(cifp_id), trim(plate_id), trim(plate_label),
-               trim(package_id), CAST(public AS INTEGER), CAST(priority AS INTEGER),
-               trim(match_kind), CAST(is_primary AS INTEGER)
+        SELECT trim(airport_id), trim(cifp_id), trim(procedure_kind), trim(plate_id),
+               trim(plate_label), trim(package_id), CAST(public AS INTEGER),
+               CAST(priority AS INTEGER), trim(match_kind), CAST(is_primary AS INTEGER)
         FROM cifp_tpp_matches
         ORDER BY trim(cifp_id), CAST(is_primary AS INTEGER) DESC, CAST(priority AS INTEGER), trim(plate_label)
         ",
@@ -4485,13 +4491,14 @@ pub(super) fn load_nav_kv_cifp_tpp_matches(
         Ok(serde_json::json!({
             "airport_id": row.get::<_, String>(0)?,
             "cifp_id": row.get::<_, String>(1)?,
-            "plate_id": row.get::<_, String>(2)?,
-            "plate_label": row.get::<_, String>(3)?,
-            "package_id": row.get::<_, String>(4)?,
-            "public": row.get::<_, i64>(5)?,
-            "priority": row.get::<_, i64>(6)?,
-            "match_kind": row.get::<_, String>(7)?,
-            "is_primary": row.get::<_, i64>(8)?,
+            "procedure_kind": row.get::<_, String>(2)?,
+            "plate_id": row.get::<_, String>(3)?,
+            "plate_label": row.get::<_, String>(4)?,
+            "package_id": row.get::<_, String>(5)?,
+            "public": row.get::<_, i64>(6)?,
+            "priority": row.get::<_, i64>(7)?,
+            "match_kind": row.get::<_, String>(8)?,
+            "is_primary": row.get::<_, i64>(9)?,
         }))
     })?;
     let mut matches = Vec::new();
@@ -4526,6 +4533,7 @@ pub(super) fn load_nav_kv_procedure_rows(
         SELECT
           trim(airport_identifier),
           trim(sid_star_approach_identifier),
+          trim(subsection_code),
           trim(route_type),
           trim(transition_identifier),
           CAST(sequence_number AS INTEGER),
@@ -4556,8 +4564,8 @@ pub(super) fn load_nav_kv_procedure_rows(
             row.get::<_, String>(1)?,
             row.get::<_, String>(2)?,
             row.get::<_, String>(3)?,
-            row.get::<_, i32>(4)?,
-            row.get::<_, String>(5)?,
+            row.get::<_, String>(4)?,
+            row.get::<_, i32>(5)?,
             row.get::<_, String>(6)?,
             row.get::<_, String>(7)?,
             row.get::<_, String>(8)?,
@@ -4572,12 +4580,14 @@ pub(super) fn load_nav_kv_procedure_rows(
             row.get::<_, String>(17)?,
             row.get::<_, String>(18)?,
             row.get::<_, String>(19)?,
+            row.get::<_, String>(20)?,
         ))
     })?;
     for row in rows {
         let (
             airport_id,
             procedure_id,
+            subsection_code,
             route_type,
             transition_id,
             sequence,
@@ -4597,14 +4607,14 @@ pub(super) fn load_nav_kv_procedure_rows(
             magnetic_course,
             route_distance_or_time,
         ) = row?;
-        match infer_nav_kv_procedure_kind(&route_type) {
-            "sid" => {
+        match cifp_procedure_kind_from_subsection(&subsection_code) {
+            Some("sid") => {
                 sid_lists
                     .entry(airport_id.clone())
                     .or_default()
                     .insert(procedure_id.clone());
             }
-            "star" => {
+            Some("star") => {
                 star_lists
                     .entry(airport_id.clone())
                     .or_default()
@@ -4646,6 +4656,41 @@ pub(super) fn load_nav_kv_procedure_rows(
         let nav_position = nav_context.resolve_position_json(&nav_ref, Some(&airport_id));
         let defining_nav_position =
             nav_context.resolve_position_json(&defining_nav_ref, Some(&airport_id));
+        let (departure_anchor_ref, departure_anchor_position) =
+            if cifp_procedure_kind_from_subsection(&subsection_code) == Some("sid")
+                && matches!(route_type.trim(), "1" | "4" | "T")
+            {
+                let airport_key = airport_id.trim().to_ascii_uppercase();
+                let runway_key = transition_id.trim().to_ascii_uppercase();
+                if is_runway_identifier(&runway_key) {
+                    if let Some(position) = nav_context
+                        .runway_positions
+                        .get(&(airport_key.clone(), runway_key.clone()))
+                    {
+                        (serde_json::json!({ "Fix": runway_key }), position.clone())
+                    } else {
+                        (
+                            serde_json::json!({ "Airport": airport_key.clone() }),
+                            nav_context
+                                .airport_positions
+                                .get(&airport_key)
+                                .cloned()
+                                .unwrap_or(serde_json::Value::Null),
+                        )
+                    }
+                } else {
+                    (
+                        serde_json::json!({ "Airport": airport_key.clone() }),
+                        nav_context
+                            .airport_positions
+                            .get(&airport_key)
+                            .cloned()
+                            .unwrap_or(serde_json::Value::Null),
+                    )
+                }
+            } else {
+                (serde_json::Value::Null, serde_json::Value::Null)
+            };
         materialization_by_procedure
             .entry((airport_id.clone(), procedure_id.clone()))
             .or_default()
@@ -4671,17 +4716,12 @@ pub(super) fn load_nav_kv_procedure_rows(
                 "theta_deg": parse_nav_kv_cifp_tenths_value(&theta),
                 "magnetic_course_deg": parse_nav_kv_cifp_tenths_value(&magnetic_course),
                 "route_distance_or_time": non_empty_json_string(route_distance_or_time),
+                "departure_anchor_ref": departure_anchor_ref,
+                "departure_anchor_position": departure_anchor_position,
+                "departure_anchor_altitude_ft": nav_context.airport_elevation_ft.get(&airport_id.trim().to_ascii_uppercase()).copied().flatten(),
             }));
     }
     Ok(())
-}
-
-pub(super) fn infer_nav_kv_procedure_kind(route_type: &str) -> &'static str {
-    match route_type.trim() {
-        "1" | "2" | "3" => "star",
-        "4" | "5" | "6" => "sid",
-        _ => "approach",
-    }
 }
 
 pub(super) struct NavLookupContext {
@@ -4699,6 +4739,7 @@ pub(super) struct NavLookupContext {
     pub(super) arinc_navaid_variation: BTreeMap<ArincNavaidKey, Option<f64>>,
     pub(super) terminal_navaid_variation: BTreeMap<TerminalNavaidKey, Option<f64>>,
     pub(super) airport_variation: BTreeMap<String, Option<f64>>,
+    pub(super) airport_elevation_ft: BTreeMap<String, Option<f64>>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
@@ -4814,6 +4855,12 @@ impl NavLookupContext {
                 "airports",
                 "MagneticVariation",
                 true,
+            )?,
+            airport_elevation_ft: load_variation_map(
+                connection,
+                "airports",
+                "ARPElevation",
+                false,
             )?,
         })
     }

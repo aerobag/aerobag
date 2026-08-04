@@ -10,7 +10,7 @@ pub fn interpret_path_termination(code: &str) -> PathTermination {
         "TF" => PathTermination::TrackToFix,
         "CF" => PathTermination::CourseToFix,
         "DF" => PathTermination::DirectToFix,
-        "FM" | "HF" | "HM" => PathTermination::HeadingToManual,
+        "FM" | "HA" | "HF" | "HM" => PathTermination::HeadingToManual,
         "VA" | "VI" => PathTermination::HeadingToAltitude,
         other => PathTermination::Other(other.to_string()),
     }
@@ -68,8 +68,8 @@ pub fn terminal_procedure_discontinuity(
     leg: &ProcedureLegMaterializationRecord,
 ) -> Option<ProcedureDiscontinuity> {
     match leg.path_termination.trim() {
-        "FM" => Some(ProcedureDiscontinuity::Vectors),
-        "HF" | "HM" => Some(ProcedureDiscontinuity::Hold),
+        "FM" | "VM" => Some(ProcedureDiscontinuity::Vectors),
+        "HA" | "HF" | "HM" => Some(ProcedureDiscontinuity::Hold),
         "VA" | "VI" if leg.nav_ref.is_none() => Some(ProcedureDiscontinuity::Vectors),
         _ => None,
     }
@@ -79,8 +79,8 @@ pub fn leading_procedure_discontinuity(
     leg: &ProcedureLegMaterializationRecord,
 ) -> Option<ProcedureDiscontinuity> {
     match leg.path_termination.trim() {
-        "FM" => Some(ProcedureDiscontinuity::Vectors),
-        "HF" | "HM" => Some(ProcedureDiscontinuity::Hold),
+        "FM" | "VM" => Some(ProcedureDiscontinuity::Vectors),
+        "HA" | "HF" | "HM" => Some(ProcedureDiscontinuity::Hold),
         "VA" | "VI" if leg.nav_ref.is_none() => Some(ProcedureDiscontinuity::Vectors),
         _ => None,
     }

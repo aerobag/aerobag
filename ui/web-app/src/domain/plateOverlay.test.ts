@@ -46,6 +46,7 @@ describe("plate flight-plan projection", () => {
       {
         id: "route-1",
         status: "active",
+        style: "solid",
         path: [
           { x: 110, y: 120 },
           { x: 210, y: 220 },
@@ -63,6 +64,15 @@ describe("plate flight-plan projection", () => {
       { x: 110, y: 120 },
       { x: 210, y: 220 },
     ]);
+  });
+
+  it("preserves vectors styling for the debug plate overlay", () => {
+    const projected = projectPlateFlightPlanSegments({
+      ...display,
+      segments: [segment({ style: "vectors" })],
+    });
+
+    expect(projected[0]?.style).toBe("vectors");
   });
 
   it("omits route geometry wholly outside the visible plate surface", () => {

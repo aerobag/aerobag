@@ -101,6 +101,7 @@ pub struct TppCifpAuditReport {
 pub struct PublishedMatchRow {
     pub airport_id: String,
     pub cifp_id: String,
+    pub procedure_kind: String,
     pub plate_id: String,
     pub plate_label: String,
     pub package_id: String,
@@ -141,6 +142,11 @@ struct MatchAnalysis {
     examples: Vec<MatchExample>,
 }
 
+struct CifpProcedureCatalog {
+    by_airport: BTreeMap<String, BTreeSet<String>>,
+    kind_by_airport_and_id: BTreeMap<(String, String), String>,
+}
+
 #[derive(Debug, Clone)]
 struct RelationAnalysis {
     summary: RelationSummary,
@@ -152,6 +158,8 @@ static IAP_PREFIX_RE: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r"^IAP-[A-Z]{2}-(.+)$").expect("valid iap prefix regex"));
 static CAT_SUFFIX_RE: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r" \((?:SA )?CAT[^)]*\)$").expect("valid cat suffix regex"));
+static TERMINAL_QUALIFIER_RE: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"\s*\([^)]*\)").expect("valid terminal qualifier regex"));
 static RUNWAY_PAIR_RE: LazyLock<Regex> = LazyLock::new(|| {
     Regex::new(r"^([0-9]{1,2})([LRC]?)(?: AND )([LRC])$").expect("valid runway pair regex")
 });
@@ -372,6 +380,9 @@ fn runway_pair_groups(
 }
 
 fn heuristic_candidate_groups(label: &str) -> Vec<BTreeSet<String>> {
+    if let Some(candidate) = named_terminal_procedure_candidate(label) {
+        return singleton_group(candidate);
+    }
     let mut body = strip_iap_prefix(&label.to_ascii_uppercase());
     body = CAT_SUFFIX_RE.replace(&body, "").to_string();
     let body = body.trim().to_string();
@@ -708,6 +719,35 @@ fn heuristic_candidate_groups(label: &str) -> Vec<BTreeSet<String>> {
     Vec::new()
 }
 
+fn named_terminal_procedure_candidate(label: &str) -> Option<String> {
+    let uppercase = label.trim().to_ascii_uppercase();
+    let (prefix, remainder) = split_non_iap_tpp_prefix(&uppercase)?;
+    if !matches!(prefix, "DP" | "ODP" | "STAR") {
+        return None;
+    }
+    let body = TERMINAL_QUALIFIER_RE.replace_all(remainder, "");
+    let mut words = body.split_whitespace().collect::<Vec<_>>();
+    let revision = match words.last().copied()? {
+        "ONE" => "1",
+        "TWO" => "2",
+        "THREE" => "3",
+        "FOUR" => "4",
+        "FIVE" => "5",
+        "SIX" => "6",
+        "SEVEN" => "7",
+        "EIGHT" => "8",
+        "NINE" => "9",
+        _ => return None,
+    };
+    words.pop();
+    let name = words
+        .into_iter()
+        .flat_map(str::chars)
+        .filter(char::is_ascii_alphanumeric)
+        .collect::<String>();
+    (!name.is_empty()).then(|| format!("{name}{revision}"))
+}
+
 fn heuristic_candidate_groups_for_copter_plate(label: &str) -> Vec<BTreeSet<String>> {
     let stripped = Regex::new(r"^(IAP-[A-Z]{2}-)COPTER ")
         .expect("valid copter regex")
@@ -843,6 +883,19 @@ pub fn tpp_zip_paths_from_bundle(
 }
 
 pub fn load_tpp_approach_plates(package_zips: &[PathBuf]) -> Result<Vec<PlateRecord>> {
+    load_tpp_plates_matching(package_zips, |document_type| document_type == "approach")
+}
+
+fn load_tpp_procedure_plates(package_zips: &[PathBuf]) -> Result<Vec<PlateRecord>> {
+    load_tpp_plates_matching(package_zips, |document_type| {
+        matches!(document_type, "approach" | "departure" | "star")
+    })
+}
+
+fn load_tpp_plates_matching(
+    package_zips: &[PathBuf],
+    include: impl Fn(&str) -> bool,
+) -> Result<Vec<PlateRecord>> {
     let mut plates = Vec::new();
     for zip_path in package_zips {
         let zip_file = fs::File::open(zip_path)
@@ -863,7 +916,7 @@ pub fn load_tpp_approach_plates(package_zips: &[PathBuf]) -> Result<Vec<PlateRec
         let manifest: PackageAssetManifest =
             serde_json::from_slice(&bytes).context("failed to parse package asset manifest")?;
         for asset in manifest.assets {
-            if asset.document_type != "approach" {
+            if !include(&asset.document_type) {
                 continue;
             }
             let canonical_airport_id = asset
@@ -887,7 +940,7 @@ pub fn load_cifp_approaches(db_path: &Path) -> Result<BTreeMap<String, BTreeSet<
     let mut stmt = conn.prepare(
         "SELECT DISTINCT trim(airport_identifier), trim(sid_star_approach_identifier)
          FROM cifp_sid_star_app
-         WHERE trim(route_type) NOT IN ('1','2','3','4','5','6','T')",
+         WHERE trim(subsection_code) = 'F'",
     )?;
     let mut rows = stmt.query([])?;
     let mut by_airport = BTreeMap::<String, BTreeSet<String>>::new();
@@ -906,6 +959,63 @@ pub fn load_cifp_approaches(db_path: &Path) -> Result<BTreeMap<String, BTreeSet<
             .insert(procedure_id);
     }
     Ok(by_airport)
+}
+
+pub fn cifp_procedure_kind_from_subsection(subsection_code: &str) -> Option<&'static str> {
+    match subsection_code.trim() {
+        "D" => Some("sid"),
+        "E" => Some("star"),
+        "F" => Some("approach"),
+        _ => None,
+    }
+}
+
+fn load_cifp_procedures(db_path: &Path) -> Result<CifpProcedureCatalog> {
+    let conn = Connection::open(db_path)
+        .with_context(|| format!("failed to open {}", db_path.display()))?;
+    let mut stmt = conn.prepare(
+        "SELECT DISTINCT trim(airport_identifier), trim(sid_star_approach_identifier), trim(subsection_code)
+         FROM cifp_sid_star_app",
+    )?;
+    let mut rows = stmt.query([])?;
+    let mut by_airport = BTreeMap::<String, BTreeSet<String>>::new();
+    let mut kind_by_airport_and_id = BTreeMap::<(String, String), String>::new();
+    while let Some(row) = rows.next()? {
+        let airport_id: String = row.get(0)?;
+        let procedure_id: String = row.get(1)?;
+        let subsection_code: String = row.get(2)?;
+        if airport_id.is_empty() || procedure_id.is_empty() {
+            continue;
+        }
+        if is_suppressed_cifp_procedure(&airport_id, &procedure_id) {
+            continue;
+        }
+        let Some(kind) = cifp_procedure_kind_from_subsection(&subsection_code) else {
+            continue;
+        };
+        let key = (airport_id.clone(), procedure_id.clone());
+        if let Some(existing) = kind_by_airport_and_id.get(&key) {
+            if existing != kind {
+                anyhow::bail!(
+                    "CIFP procedure {} {} appears in both {} and {} subsections",
+                    airport_id,
+                    procedure_id,
+                    existing,
+                    kind
+                );
+            }
+        } else {
+            kind_by_airport_and_id.insert(key, kind.to_string());
+        }
+        by_airport
+            .entry(airport_id)
+            .or_default()
+            .insert(procedure_id);
+    }
+    Ok(CifpProcedureCatalog {
+        by_airport,
+        kind_by_airport_and_id,
+    })
 }
 
 pub fn is_suppressed_cifp_procedure(airport_id: &str, procedure_id: &str) -> bool {
@@ -1036,6 +1146,7 @@ fn classify_relation(
     plates: &[PlateRecord],
     cifp: &BTreeMap<String, BTreeSet<String>>,
     aliases: &BTreeMap<String, String>,
+    procedure_kinds: Option<&BTreeMap<(String, String), String>>,
 ) -> RelationAnalysis {
     let mut plates_by_airport = BTreeMap::<String, Vec<PlateRecord>>::new();
     for plate in plates {
@@ -1154,6 +1265,10 @@ fn classify_relation(
             published_rows.push(PublishedMatchRow {
                 airport_id: airport_id.clone(),
                 cifp_id: cid.clone(),
+                procedure_kind: procedure_kinds
+                    .and_then(|kinds| kinds.get(&(airport_id.clone(), cid.clone())))
+                    .cloned()
+                    .unwrap_or_else(|| "approach".to_string()),
                 plate_id: claimer.plate_id.clone(),
                 plate_label: pretty_match_plate_label(&claimer.plate_label),
                 package_id: claimer.package_id.clone(),
@@ -1177,6 +1292,10 @@ fn classify_relation(
                 published_rows.push(PublishedMatchRow {
                     airport_id: airport_id.clone(),
                     cifp_id: cid.clone(),
+                    procedure_kind: procedure_kinds
+                        .and_then(|kinds| kinds.get(&(airport_id.clone(), cid.clone())))
+                        .cloned()
+                        .unwrap_or_else(|| "approach".to_string()),
                     plate_id: claimer.plate_id.clone(),
                     plate_label: pretty_match_plate_label(&claimer.plate_label),
                     package_id: claimer.package_id.clone(),
@@ -1282,7 +1401,7 @@ pub fn audit_tpp_cifp_matching(
         .count();
     let count_mismatch = count_rows.len() - exact_count_match;
     let match_analysis = analyze_matches(&plates, &cifp, &aliases);
-    let relation = classify_relation(&plates, &cifp, &aliases);
+    let relation = classify_relation(&plates, &cifp, &aliases, None);
     Ok(TppCifpAuditReport {
         approach_plate_count: plates.len(),
         airports_with_approach_plates: count_rows.iter().filter(|(_, count, _)| *count > 0).count(),
@@ -1301,10 +1420,15 @@ pub fn publish_tpp_cifp_matches(
     main_db: &Path,
     tpp_package_zips: &[PathBuf],
 ) -> Result<PublishedMatchSummary> {
-    let plates = load_tpp_approach_plates(tpp_package_zips)?;
-    let cifp = load_cifp_approaches(main_db)?;
+    let plates = load_tpp_procedure_plates(tpp_package_zips)?;
+    let cifp = load_cifp_procedures(main_db)?;
     let aliases = load_airport_aliases(main_db)?;
-    let relation = classify_relation(&plates, &cifp, &aliases);
+    let relation = classify_relation(
+        &plates,
+        &cifp.by_airport,
+        &aliases,
+        Some(&cifp.kind_by_airport_and_id),
+    );
     let conn = Connection::open(main_db)
         .with_context(|| format!("failed to open {}", main_db.display()))?;
     conn.execute_batch(
@@ -1312,6 +1436,7 @@ pub fn publish_tpp_cifp_matches(
          CREATE TABLE cifp_tpp_matches(
            airport_id TEXT NOT NULL,
            cifp_id TEXT NOT NULL,
+           procedure_kind TEXT NOT NULL,
            plate_id TEXT NOT NULL,
            plate_label TEXT NOT NULL,
            package_id TEXT NOT NULL,
@@ -1330,13 +1455,14 @@ pub fn publish_tpp_cifp_matches(
     {
         let mut stmt = tx.prepare(
             "INSERT INTO cifp_tpp_matches
-             (airport_id, cifp_id, plate_id, plate_label, package_id, public, priority, match_kind, is_primary)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
+             (airport_id, cifp_id, procedure_kind, plate_id, plate_label, package_id, public, priority, match_kind, is_primary)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
         )?;
         for row in &relation.published_rows {
             stmt.execute(rusqlite::params![
                 row.airport_id,
                 row.cifp_id,
+                row.procedure_kind,
                 row.plate_id,
                 row.plate_label,
                 row.package_id,
@@ -1430,6 +1556,7 @@ pub fn build_data_package_with_tpp_matches(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use preprocessor_core::PackageAssetRecord;
     use tempfile::tempdir;
 
     #[test]
@@ -1437,6 +1564,89 @@ mod tests {
         assert_eq!(
             heuristic_candidate_groups("IAP-CA-GPS RWY 27"),
             vec![BTreeSet::from([String::from("P27")])]
+        );
+    }
+
+    #[test]
+    fn recognizes_named_departure_revision_as_cifp_sid() {
+        assert_eq!(
+            heuristic_candidate_groups("DP-WA-BANGR NINE (RNAV)"),
+            vec![BTreeSet::from([String::from("BANGR9")])]
+        );
+    }
+
+    #[test]
+    fn publishes_named_departure_plate_as_sid_match() {
+        let dir = tempdir().unwrap();
+        let db_path = dir.path().join("cifp.db");
+        let connection = Connection::open(&db_path).unwrap();
+        connection
+            .execute_batch(
+                "CREATE TABLE cifp_sid_star_app (
+                    airport_identifier TEXT,
+                    sid_star_approach_identifier TEXT,
+                    route_type TEXT,
+                    subsection_code TEXT
+                );
+                CREATE TABLE airport_aliases (alias_id TEXT, airport_id TEXT);
+                INSERT INTO cifp_sid_star_app VALUES ('KSEA', 'BANGR9', '4', 'D');
+                INSERT INTO cifp_sid_star_app VALUES ('KSEA', 'BANGR9', '6', 'D');",
+            )
+            .unwrap();
+        drop(connection);
+
+        let manifest_path = dir.path().join(PACKAGE_ASSET_MANIFEST_NAME);
+        let manifest = PackageAssetManifest {
+            schema_version: 1,
+            family_id: "tpp".to_string(),
+            package_id: "tpp-nw".to_string(),
+            assets: vec![PackageAssetRecord {
+                id: "plate:KSEA:DP-WA-BANGR NINE (RNAV).png".to_string(),
+                airport_id: "KSEA".to_string(),
+                icao_airport_id: Some("KSEA".to_string()),
+                label: "DP-WA-BANGR NINE (RNAV)".to_string(),
+                asset_kind: "plate".to_string(),
+                document_type: "departure".to_string(),
+                asset_path: "plates/KSEA/BANGR9.png".to_string(),
+                thumbnail_path: "thumbnails/KSEA/BANGR9.png".to_string(),
+                procedure_uid: None,
+                georef: None,
+            }],
+        };
+        fs::write(&manifest_path, serde_json::to_vec(&manifest).unwrap()).unwrap();
+        let zip_path = dir.path().join("tpp-nw.zip");
+        write_deterministic_zip(
+            &zip_path,
+            &[ZipSource::new(PACKAGE_ASSET_MANIFEST_NAME, &manifest_path)],
+        )
+        .unwrap();
+
+        let summary = publish_tpp_cifp_matches(&db_path, &[zip_path]).unwrap();
+        assert_eq!(summary.unique_rows, 1);
+        let connection = Connection::open(&db_path).unwrap();
+        let row = connection
+            .query_row(
+                "SELECT airport_id, cifp_id, procedure_kind, plate_label
+                 FROM cifp_tpp_matches",
+                [],
+                |row| {
+                    Ok((
+                        row.get::<_, String>(0)?,
+                        row.get::<_, String>(1)?,
+                        row.get::<_, String>(2)?,
+                        row.get::<_, String>(3)?,
+                    ))
+                },
+            )
+            .unwrap();
+        assert_eq!(
+            row,
+            (
+                "KSEA".to_string(),
+                "BANGR9".to_string(),
+                "sid".to_string(),
+                "BANGR NINE (RNAV)".to_string(),
+            )
         );
     }
 
@@ -1469,10 +1679,11 @@ mod tests {
                 "CREATE TABLE cifp_sid_star_app (
                     airport_identifier TEXT,
                     sid_star_approach_identifier TEXT,
-                    route_type TEXT
+                    route_type TEXT,
+                    subsection_code TEXT
                 );
-                INSERT INTO cifp_sid_star_app VALUES ('KPNS', 'S08', 'S');
-                INSERT INTO cifp_sid_star_app VALUES ('KPNS', 'V08', 'V');",
+                INSERT INTO cifp_sid_star_app VALUES ('KPNS', 'S08', 'S', 'F');
+                INSERT INTO cifp_sid_star_app VALUES ('KPNS', 'V08', 'V', 'F');",
             )
             .unwrap();
         drop(connection);
@@ -1482,6 +1693,62 @@ mod tests {
         assert_eq!(
             approaches.get("KPNS"),
             Some(&BTreeSet::from(["V08".to_string()]))
+        );
+    }
+
+    #[test]
+    fn classifies_terminal_procedures_from_cifp_subsections() {
+        let dir = tempdir().unwrap();
+        let db_path = dir.path().join("cifp.db");
+        let connection = Connection::open(&db_path).unwrap();
+        connection
+            .execute_batch(
+                "CREATE TABLE cifp_sid_star_app (
+                    airport_identifier TEXT,
+                    sid_star_approach_identifier TEXT,
+                    route_type TEXT,
+                    subsection_code TEXT
+                );
+                INSERT INTO cifp_sid_star_app VALUES ('KSEA', 'BANGR9', '4', 'D');
+                INSERT INTO cifp_sid_star_app VALUES ('KSEA', 'BANGR9', '6', 'D');
+                INSERT INTO cifp_sid_star_app VALUES ('KSEA', 'ELMAA5', '1', 'E');
+                INSERT INTO cifp_sid_star_app VALUES ('KSEA', 'ELMAA5', '3', 'E');
+                INSERT INTO cifp_sid_star_app VALUES ('KMSP', 'KASPR8', '1', 'E');
+                INSERT INTO cifp_sid_star_app VALUES ('KMSP', 'KASPR8', '6', 'E');
+                INSERT INTO cifp_sid_star_app VALUES ('KSEA', 'I16L', 'I', 'F');",
+            )
+            .unwrap();
+        drop(connection);
+
+        let procedures = load_cifp_procedures(&db_path).unwrap();
+
+        assert_eq!(
+            procedures
+                .kind_by_airport_and_id
+                .get(&("KSEA".to_string(), "BANGR9".to_string()))
+                .map(String::as_str),
+            Some("sid")
+        );
+        assert_eq!(
+            procedures
+                .kind_by_airport_and_id
+                .get(&("KSEA".to_string(), "ELMAA5".to_string()))
+                .map(String::as_str),
+            Some("star")
+        );
+        assert_eq!(
+            procedures
+                .kind_by_airport_and_id
+                .get(&("KSEA".to_string(), "I16L".to_string()))
+                .map(String::as_str),
+            Some("approach")
+        );
+        assert_eq!(
+            procedures
+                .kind_by_airport_and_id
+                .get(&("KMSP".to_string(), "KASPR8".to_string()))
+                .map(String::as_str),
+            Some("star")
         );
     }
 }

@@ -14,6 +14,7 @@
     "compass_north_needle": "M 0 -15 L 3.2 0 L -3.2 0 Z",
     "compass_south_needle": "M 0 15 L -3.2 0 L 3.2 0 Z",
     "compass_hub": "M 0 -2.4 C 1.325 -2.4 2.4 -1.325 2.4 0 C 2.4 1.325 1.325 2.4 0 2.4 C -1.325 2.4 -2.4 1.325 -2.4 0 C -2.4 -1.325 -1.325 -2.4 0 -2.4 Z",
+    "manual_sequence_chevron": "M -5 -7 L 4 0 L -5 7",
     "metar_circle": "M 0 -8 C 4.418 -8 8 -4.418 8 0 C 8 4.418 4.418 8 0 8 C -4.418 8 -8 4.418 -8 0 C -8 -4.418 -4.418 -8 0 -8 Z",
     "metar_few_bar": "M 0 -6.5 L 0 6.5",
     "metar_sct_fill": "M 0 0 L 0 -8 C 4.418 -8 8 -4.418 8 0 Z",
@@ -162,6 +163,9 @@
     "short_y": 4.8,
     "tall_y": 6.0,
     "radius": 2.05
+  },
+  "manual_sequence": {
+    "spacing": 24
   },
   "airport_fuel_marker": {
     "circle_radius": 12,

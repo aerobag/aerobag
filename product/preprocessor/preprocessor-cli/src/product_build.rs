@@ -71,11 +71,17 @@ use preprocessor_vectors::{
 use preprocessor_zip::{write_deterministic_zip, ZipSource};
 use procedure_geometry_types as pgt;
 use product_contracts::{
-    publication::v1::{
-        BundleArtifact, BundleManifest, BundlePackageArtifact, CurrentArtifactRoots,
-        CurrentArtifactsManifest, CurrentBundleEntry, CurrentDiagnosticsEntry,
-        CurrentStartupPrefetchCycleResources, CurrentStartupPrefetchManifest,
-        CurrentStartupPrefetchResource,
+    publication::{
+        bundle::v2::{
+            BundleArtifact, BundleManifest, BundlePackageArtifact,
+            SCHEMA_VERSION as BUNDLE_SCHEMA_VERSION,
+        },
+        current::v1::{
+            CurrentArtifactRoots, CurrentArtifactsManifest, CurrentBundleEntry,
+            CurrentDiagnosticsEntry, CurrentStartupPrefetchCycleResources,
+            CurrentStartupPrefetchManifest, CurrentStartupPrefetchResource,
+            SCHEMA_VERSION as CURRENT_SCHEMA_VERSION,
+        },
     },
     ChartPackageTier, WaypointSearchMatchKind, WaypointSearchRecord,
     CHART_PACKAGE_TIER_METADATA_KEY, NAV_DB_CONTRACT_ID, SHADED_RELIEF_CONTRACT_ID,
@@ -2973,7 +2979,7 @@ mod tests {
             ChartPackageTier::Detail,
         );
         let bundle = BundleManifest {
-            schema_version: 2,
+            schema_version: BUNDLE_SCHEMA_VERSION,
             bundle_id: "cycle_2607_01".to_string(),
             bundle_type: "cycle".to_string(),
             cycle: "2607".to_string(),
@@ -4582,7 +4588,7 @@ mod tests {
         let temp = tempdir().unwrap();
         let root = temp.path();
         let cycle_bundle = BundleManifest {
-            schema_version: 1,
+            schema_version: BUNDLE_SCHEMA_VERSION,
             bundle_id: "cycle_2604_01".to_string(),
             bundle_type: "cycle".to_string(),
             cycle: "2604".to_string(),
@@ -4623,7 +4629,7 @@ mod tests {
         )
         .unwrap();
         let current = CurrentArtifactsManifest {
-            schema_version: 1,
+            schema_version: CURRENT_SCHEMA_VERSION,
             contracts: test_contracts(&[("nav-db", NAV_DB_CONTRACT_ID)]),
             artifact_roots: CurrentArtifactRoots {
                 packaged: "packaged/".to_string(),
@@ -4777,7 +4783,7 @@ mod tests {
         let nav_db_sha = sha256_hex(&[]);
         let nav_db_filename = format!("nav_db_{NAV_DB_CONTRACT_ID}_2605_01_{nav_db_sha}.zip");
         let bundle = BundleManifest {
-            schema_version: 2,
+            schema_version: BUNDLE_SCHEMA_VERSION,
             bundle_id: "cycle_2605_01".to_string(),
             bundle_type: "cycle".to_string(),
             cycle: "2605".to_string(),
@@ -4865,7 +4871,7 @@ mod tests {
         let nav_db_filename = format!("nav_db_{NAV_DB_CONTRACT_ID}_2605_01_{nav_db_sha}.zip");
         fs::write(packaged_root.join(&nav_db_filename), []).unwrap();
         let bundle = BundleManifest {
-            schema_version: 2,
+            schema_version: BUNDLE_SCHEMA_VERSION,
             bundle_id: "cycle_2605_01".to_string(),
             bundle_type: "cycle".to_string(),
             cycle: "2605".to_string(),
@@ -4899,7 +4905,7 @@ mod tests {
         };
         let bundle_path = write_hashed_bundle_manifest(&packaged_root, &bundle).unwrap();
         let product_manifest = CurrentArtifactsManifest {
-            schema_version: 1,
+            schema_version: CURRENT_SCHEMA_VERSION,
             contracts: test_contracts(&[("nav-db", NAV_DB_CONTRACT_ID)]),
             artifact_roots: current_artifact_roots_for_packaged_root(&packaged_root).unwrap(),
             as_of_date: "2026-05-14".to_string(),
@@ -4956,7 +4962,7 @@ mod tests {
             let nav_db_filename = format!("nav_db_{contract_id}_2605_01_{nav_db_sha}.zip");
             fs::write(packaged_root.join(&nav_db_filename), []).unwrap();
             let bundle = BundleManifest {
-                schema_version: 2,
+                schema_version: BUNDLE_SCHEMA_VERSION,
                 bundle_id: format!("cycle_2605_01_{label}"),
                 bundle_type: "cycle".to_string(),
                 cycle: "2605".to_string(),
@@ -4990,7 +4996,7 @@ mod tests {
             };
             let bundle_path = write_hashed_bundle_manifest(&packaged_root, &bundle).unwrap();
             let product_manifest = CurrentArtifactsManifest {
-                schema_version: 1,
+                schema_version: CURRENT_SCHEMA_VERSION,
                 contracts: test_contracts(&[("nav-db", contract_id)]),
                 artifact_roots: current_artifact_roots_for_packaged_root(&packaged_root).unwrap(),
                 as_of_date: "2026-05-14".to_string(),
@@ -5091,7 +5097,7 @@ mod tests {
         let root = publish_dir.join("packaged");
         fs::create_dir_all(&root).unwrap();
         let current_cycle_bundle = BundleManifest {
-            schema_version: 1,
+            schema_version: BUNDLE_SCHEMA_VERSION,
             bundle_id: "cycle_2604_01".to_string(),
             bundle_type: "cycle".to_string(),
             cycle: "2604".to_string(),
@@ -5107,7 +5113,7 @@ mod tests {
         let current_cycle_bundle_path =
             write_hashed_bundle_manifest(&root, &current_cycle_bundle).unwrap();
         let current = CurrentArtifactsManifest {
-            schema_version: 1,
+            schema_version: CURRENT_SCHEMA_VERSION,
             contracts: test_contracts(&[]),
             artifact_roots: current_artifact_roots_for_packaged_root(&root).unwrap(),
             as_of_date: "2026-05-04".to_string(),
@@ -5120,7 +5126,7 @@ mod tests {
         fs::write(&current_path, serde_json::to_vec_pretty(&current).unwrap()).unwrap();
 
         let stale_cycle_bundle = BundleManifest {
-            schema_version: 1,
+            schema_version: BUNDLE_SCHEMA_VERSION,
             bundle_id: "cycle_2604_01".to_string(),
             bundle_type: "cycle".to_string(),
             cycle: "2604".to_string(),
@@ -5181,7 +5187,7 @@ mod tests {
         fs::create_dir_all(&package_dir).unwrap();
         fs::write(package_dir.join("manifest.json"), "{}\n").unwrap();
         let bundle = BundleManifest {
-            schema_version: 1,
+            schema_version: BUNDLE_SCHEMA_VERSION,
             bundle_id: "cycle_2604_01".to_string(),
             bundle_type: "cycle".to_string(),
             cycle: "2604".to_string(),
@@ -5216,7 +5222,7 @@ mod tests {
         let bundle_path = write_hashed_bundle_manifest(&packaged_root, &bundle).unwrap();
         sync_unpacked_file(&bundle_path, &unpacked_root).unwrap();
         let current = CurrentArtifactsManifest {
-            schema_version: 1,
+            schema_version: CURRENT_SCHEMA_VERSION,
             contracts: test_contracts(&[("csup", CSUP_CONTRACT_ID)]),
             artifact_roots: current_artifact_roots_for_packaged_root(&packaged_root).unwrap(),
             as_of_date: "2026-05-04".to_string(),

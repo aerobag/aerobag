@@ -14279,7 +14279,7 @@ mod tests {
         assert_eq!(resources[0].id, "publication/bundle/bundle-2608.json");
 
         let bundle = serde_json::json!({
-            "schema_version": 1,
+            "schema_version": product_contracts::publication::bundle::v2::SCHEMA_VERSION,
             "bundle_id": "bundle-2608",
             "bundle_type": "cycle",
             "cycle": "2608",
@@ -14831,7 +14831,7 @@ mod tests {
             })
             .collect::<Vec<_>>();
         let bundle = serde_json::json!({
-            "schema_version": 1,
+            "schema_version": product_contracts::publication::bundle::v2::SCHEMA_VERSION,
             "bundle_id": "test",
             "bundle_type": "cycle",
             "cycle": "2605",

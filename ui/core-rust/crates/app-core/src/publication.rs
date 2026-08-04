@@ -528,39 +528,43 @@ mod tests {
     }
 
     fn bundle_json() -> String {
-        serde_json::to_string(&product_contracts::publication::v1::BundleManifest {
-            schema_version: product_contracts::publication::v1::SCHEMA_VERSION,
-            bundle_id: "cycle".to_string(),
-            bundle_type: "cycle".to_string(),
-            cycle: "2605".to_string(),
-            cycle_version: "01".to_string(),
-            generated_at_utc: "2026-05-20T12:00:00Z".to_string(),
-            effective_date: "2026-05-20".to_string(),
-            expiration_date: "2026-06-17".to_string(),
-            start_valid: "2026-05-20T00:00:00Z".to_string(),
-            end_valid: "2026-06-17T00:00:00Z".to_string(),
-            packages: vec![product_contracts::publication::v1::BundlePackageArtifact {
-                id: "nav-db".to_string(),
-                family_id: "nav-db".to_string(),
-                contract_id: crate::REQUIRED_NAV_DB_CONTRACT_ID.to_string(),
-                region_id: None,
-                filename: "nav_db_hash.zip".to_string(),
-                relative_path: "nav_db_hash.zip".to_string(),
-                cycle: Some("2605".to_string()),
-                cycle_version: Some("01".to_string()),
-                checksum_sha256: "test-package-sha256".to_string(),
-                size_bytes: 1234,
-                published_at_utc: None,
-                source_generated_at_utc: None,
-                source_version: None,
-                source_fetched_at_utc: None,
-                effective_date: Some("2026-05-20".to_string()),
-                expiration_date: Some("2026-06-17".to_string()),
-                warning_text: None,
-                metadata: BTreeMap::new(),
-            }],
-            ancillary: Vec::new(),
-        })
+        serde_json::to_string(
+            &product_contracts::publication::bundle::v2::BundleManifest {
+                schema_version: product_contracts::publication::bundle::v2::SCHEMA_VERSION,
+                bundle_id: "cycle".to_string(),
+                bundle_type: "cycle".to_string(),
+                cycle: "2605".to_string(),
+                cycle_version: "01".to_string(),
+                generated_at_utc: "2026-05-20T12:00:00Z".to_string(),
+                effective_date: "2026-05-20".to_string(),
+                expiration_date: "2026-06-17".to_string(),
+                start_valid: "2026-05-20T00:00:00Z".to_string(),
+                end_valid: "2026-06-17T00:00:00Z".to_string(),
+                packages: vec![
+                    product_contracts::publication::bundle::v2::BundlePackageArtifact {
+                        id: "nav-db".to_string(),
+                        family_id: "nav-db".to_string(),
+                        contract_id: crate::REQUIRED_NAV_DB_CONTRACT_ID.to_string(),
+                        region_id: None,
+                        filename: "nav_db_hash.zip".to_string(),
+                        relative_path: "nav_db_hash.zip".to_string(),
+                        cycle: Some("2605".to_string()),
+                        cycle_version: Some("01".to_string()),
+                        checksum_sha256: "test-package-sha256".to_string(),
+                        size_bytes: 1234,
+                        published_at_utc: None,
+                        source_generated_at_utc: None,
+                        source_version: None,
+                        source_fetched_at_utc: None,
+                        effective_date: Some("2026-05-20".to_string()),
+                        expiration_date: Some("2026-06-17".to_string()),
+                        warning_text: None,
+                        metadata: BTreeMap::new(),
+                    },
+                ],
+                ancillary: Vec::new(),
+            },
+        )
         .unwrap()
     }
 

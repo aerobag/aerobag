@@ -3,15 +3,23 @@ use chrono::{DateTime, Duration, Utc};
 use preprocessor_core::nav_kv::{
     build_nav_kv_sorted, NavKvLookup, NavKvPair, NavKvRoot, NavKvStore,
 };
+use product_contracts::publication::{
+    bundle::v2::{BundleManifest, BundlePackageArtifact, SCHEMA_VERSION as BUNDLE_SCHEMA_VERSION},
+    current::v1::{
+        CurrentArtifactRoots, CurrentArtifactsManifest, CurrentBundleEntry,
+        SCHEMA_VERSION as CURRENT_SCHEMA_VERSION,
+    },
+};
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
 use std::{
+    collections::BTreeMap,
     env, fs,
     fs::File,
     io::{Read, Write},
     path::{Path, PathBuf},
 };
-use zip::ZipArchive;
+use zip::{write::SimpleFileOptions, ZipArchive, ZipWriter};
 
 const REJECTED_NAV_KEY: &str = "navref/position/navaid/SEA";
 
@@ -167,20 +175,19 @@ fn generate_lab_publication(args: &Args) -> anyhow::Result<()> {
     )?;
 
     let as_of = Utc::now();
-    let current_artifacts = json!([{
-        "schema_version": 1,
-        "contracts": {"nav-db": nav_db_contract},
-        "artifact_roots": {
-            "packaged": "packaged",
-            "unpacked": "unpacked"
+    let current_artifacts = [CurrentArtifactsManifest {
+        schema_version: CURRENT_SCHEMA_VERSION,
+        contracts: BTreeMap::from([("nav-db".to_string(), nav_db_contract.to_string())]),
+        artifact_roots: CurrentArtifactRoots {
+            packaged: "packaged".to_string(),
+            unpacked: "unpacked".to_string(),
         },
-        "as_of_date": as_of.format("%Y-%m-%d").to_string(),
-        "as_of_utc": rfc3339(as_of),
-        "bundles": [
-            prepared_2607.bundle_ref,
-            prepared_2608.bundle_ref
-        ]
-    }]);
+        as_of_date: as_of.format("%Y-%m-%d").to_string(),
+        as_of_utc: rfc3339(as_of),
+        bundles: vec![prepared_2607.bundle_ref, prepared_2608.bundle_ref],
+        startup_prefetch: None,
+        diagnostics: None,
+    }];
     write_json(
         &args.output_root.join("current_artifacts.json"),
         &current_artifacts,
@@ -204,7 +211,7 @@ fn generate_lab_publication(args: &Args) -> anyhow::Result<()> {
 }
 
 struct PreparedCycle {
-    bundle_ref: Value,
+    bundle_ref: CurrentBundleEntry,
     summary: Value,
 }
 
@@ -252,11 +259,6 @@ fn materialize_cycle(
     package["id"] = json!(package_id);
     package["filename"] = json!(filename);
     package["relative_path"] = json!(filename);
-    package["checksum_sha256"] = Value::Null;
-    if remove_required_nav_key {
-        package["size_bytes"] = Value::Null;
-    }
-
     let package_dir_name = filename
         .strip_suffix(".zip")
         .context("generated nav-db filename must end in .zip")?;
@@ -266,6 +268,22 @@ fn materialize_cycle(
     } else {
         extract_nav_db_package(&source_nav_db, &package_dir)?;
     }
+    let packaged_path = args.output_root.join("packaged").join(&filename);
+    if remove_required_nav_key {
+        write_nav_db_package(&package_dir, &packaged_path)?;
+    } else {
+        fs::copy(&source_nav_db, &packaged_path).with_context(|| {
+            format!(
+                "copy fixture package {} to {}",
+                source_nav_db.display(),
+                packaged_path.display()
+            )
+        })?;
+    }
+    let packaged_bytes = fs::read(&packaged_path)
+        .with_context(|| format!("read generated package {}", packaged_path.display()))?;
+    package["checksum_sha256"] = json!(hex_sha256(&packaged_bytes));
+    package["size_bytes"] = json!(packaged_bytes.len());
 
     Ok(MaterializedCycle {
         cycle: cycle.to_string(),
@@ -287,25 +305,41 @@ fn prepare_cycle(
     package["expiration_date"] = json!(rfc3339(expiration));
 
     let bundle_filename = format!("bundle_cycle_{cycle}_nav_db_rollover_lab.json");
-    let bundle = json!({"packages": [package]});
+    let effective_text = rfc3339(effective);
+    let expiration_text = rfc3339(expiration);
+    let bundle_id = format!("cycle_{cycle}_nav_db_rollover_lab");
+    let package = serde_json::from_value::<BundlePackageArtifact>(package)
+        .with_context(|| format!("decode generated cycle {cycle} package"))?;
+    let bundle = BundleManifest {
+        schema_version: BUNDLE_SCHEMA_VERSION,
+        bundle_id: bundle_id.clone(),
+        bundle_type: "cycle".to_string(),
+        cycle: cycle.to_string(),
+        cycle_version: "01".to_string(),
+        generated_at_utc: rfc3339(Utc::now()),
+        effective_date: effective_text.clone(),
+        expiration_date: expiration_text.clone(),
+        start_valid: effective_text.clone(),
+        end_valid: expiration_text.clone(),
+        packages: vec![package],
+        ancillary: Vec::new(),
+    };
     let bundle_bytes = serde_json::to_vec_pretty(&bundle)?;
     fs::write(packaged_root.join(&bundle_filename), &bundle_bytes)?;
     let bundle_sha = hex_sha256(&bundle_bytes);
-    let effective_text = rfc3339(effective);
-    let expiration_text = rfc3339(expiration);
     Ok(PreparedCycle {
-        bundle_ref: json!({
-            "filename": bundle_filename,
-            "relative_path": bundle_filename,
-            "id": format!("cycle_{cycle}_nav_db_rollover_lab"),
-            "bundle_type": "cycle",
-            "cycle": cycle,
-            "cycle_version": "01",
-            "start_valid": effective_text,
-            "end_valid": expiration_text,
-            "checksum_sha256": bundle_sha,
-            "size_bytes": bundle_bytes.len(),
-        }),
+        bundle_ref: CurrentBundleEntry {
+            filename: bundle_filename.clone(),
+            relative_path: bundle_filename,
+            id: bundle_id,
+            bundle_type: "cycle".to_string(),
+            cycle: cycle.to_string(),
+            cycle_version: "01".to_string(),
+            start_valid: effective_text.clone(),
+            end_valid: expiration_text.clone(),
+            checksum_sha256: bundle_sha,
+            size_bytes: bundle_bytes.len() as u64,
+        },
         summary: json!({
             "cycle": cycle,
             "package_id": materialized.package_id,
@@ -314,6 +348,30 @@ fn prepare_cycle(
             "expiration_at": expiration_text,
         }),
     })
+}
+
+fn write_nav_db_package(source_dir: &Path, output_path: &Path) -> anyhow::Result<()> {
+    let mut entries = fs::read_dir(source_dir)?
+        .map(|entry| entry.map(|value| value.path()))
+        .collect::<Result<Vec<_>, _>>()?;
+    entries.retain(|path| path.is_file());
+    entries.sort();
+
+    let file = File::create(output_path)
+        .with_context(|| format!("create generated package {}", output_path.display()))?;
+    let mut archive = ZipWriter::new(file);
+    let options = SimpleFileOptions::default().compression_method(zip::CompressionMethod::Deflated);
+    for path in entries {
+        let name = path
+            .file_name()
+            .and_then(|value| value.to_str())
+            .context("generated nav-db member name is not UTF-8")?;
+        archive.start_file(name, options)?;
+        let mut input = File::open(&path)?;
+        std::io::copy(&mut input, &mut archive)?;
+    }
+    archive.finish()?;
+    Ok(())
 }
 
 fn extract_nav_db_package(source_zip: &Path, output_dir: &Path) -> anyhow::Result<()> {
@@ -440,7 +498,7 @@ fn read_json(path: &Path) -> anyhow::Result<Value> {
         .with_context(|| format!("parse {}", path.display()))
 }
 
-fn write_json(path: &Path, value: &Value) -> anyhow::Result<()> {
+fn write_json(path: &Path, value: &impl serde::Serialize) -> anyhow::Result<()> {
     let mut bytes = serde_json::to_vec_pretty(value)?;
     bytes.push(b'\n');
     let mut file = File::create(path).with_context(|| format!("create {}", path.display()))?;
@@ -454,4 +512,54 @@ fn hex_sha256(bytes: &[u8]) -> String {
 
 fn rfc3339(value: DateTime<Utc>) -> String {
     value.to_rfc3339_opts(chrono::SecondsFormat::Millis, true)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn generated_bundle_uses_the_canonical_versioned_contract() {
+        let temp = tempfile::tempdir().unwrap();
+        let materialized = MaterializedCycle {
+            cycle: "2607".to_string(),
+            package: json!({
+                "id": "nav-db-cycle-2607",
+                "family_id": "nav-db",
+                "contract_id": product_contracts::NAV_DB_CONTRACT_ID,
+                "filename": "nav-db-cycle-2607.zip",
+                "relative_path": "nav-db-cycle-2607.zip",
+                "cycle": "2607",
+                "cycle_version": "01",
+                "checksum_sha256": "fixture-checksum",
+                "size_bytes": 42,
+                "effective_date": null,
+                "expiration_date": null
+            }),
+            package_id: "nav-db-cycle-2607".to_string(),
+            filename: "nav-db-cycle-2607.zip".to_string(),
+        };
+        let effective = Utc::now();
+        let prepared = prepare_cycle(
+            &materialized,
+            effective,
+            effective + Duration::days(28),
+            temp.path(),
+        )
+        .unwrap();
+        let bundle_bytes = fs::read(temp.path().join(prepared.bundle_ref.filename)).unwrap();
+        let bundle = product_contracts::versioned_json::decode_exact::<BundleManifest>(
+            "generated rollover bundle",
+            &bundle_bytes,
+            BUNDLE_SCHEMA_VERSION,
+        )
+        .unwrap();
+
+        assert_eq!(bundle.schema_version, BUNDLE_SCHEMA_VERSION);
+        assert_eq!(bundle.packages.len(), 1);
+        assert_eq!(
+            bundle.packages[0].contract_id,
+            product_contracts::NAV_DB_CONTRACT_ID
+        );
+    }
 }

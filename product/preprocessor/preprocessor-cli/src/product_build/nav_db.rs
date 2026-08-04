@@ -227,7 +227,7 @@ pub(super) fn build_bundle_manifest(
     let ancillary = vec![];
 
     Ok(BundleManifest {
-        schema_version: 2,
+        schema_version: BUNDLE_SCHEMA_VERSION,
         bundle_id: format!("cycle_{cycle}_{PACKAGE_CYCLE_VERSION}"),
         bundle_type: "cycle".to_string(),
         cycle: cycle.clone(),

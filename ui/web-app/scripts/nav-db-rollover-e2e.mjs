@@ -184,7 +184,7 @@ async function runScenario(scenario) {
 
 async function buildRichFlightPlan(page) {
   await click(page, '.pageLayer.isActive [data-testid="page-button-home"]');
-  await click(page, '.pageLayer.isActive [data-testid="home-button-flight-plan"]');
+  await click(page, '.pageLayer.isActive [data-testid="home-button-flight_plan"]');
   await waitFor(
     () => page.evalValue("Boolean(document.querySelector('.pageLayer.isActive [data-testid=\"plan-append-route-input\"]'))"),
     10_000,
@@ -416,24 +416,30 @@ async function waitForProbe(page, predicate, timeoutMs, description) {
 }
 
 async function click(page, selector) {
-  const clicked = await page.evalValue(`(() => {
-    const element = document.querySelector(${JSON.stringify(selector)});
-    if (!(element instanceof HTMLElement)) return false;
-    element.click();
-    return true;
-  })()`);
-  assert(clicked, `could not click ${selector}`);
+  await waitFor(
+    () => page.evalValue(`(() => {
+      const element = document.querySelector(${JSON.stringify(selector)});
+      if (!(element instanceof HTMLElement)) return false;
+      element.click();
+      return true;
+    })()`),
+    10_000,
+    `clickable ${selector}`,
+  );
 }
 
 async function clickButtonByText(page, selector, text) {
-  const clicked = await page.evalValue(`(() => {
-    const element = Array.from(document.querySelectorAll(${JSON.stringify(selector)}))
-      .find((candidate) => candidate.textContent?.trim() === ${JSON.stringify(text)});
-    if (!(element instanceof HTMLElement)) return false;
-    element.click();
-    return true;
-  })()`);
-  assert(clicked, `could not find ${selector} with text ${text}`);
+  await waitFor(
+    () => page.evalValue(`(() => {
+      const element = Array.from(document.querySelectorAll(${JSON.stringify(selector)}))
+        .find((candidate) => candidate.textContent?.trim() === ${JSON.stringify(text)});
+      if (!(element instanceof HTMLElement)) return false;
+      element.click();
+      return true;
+    })()`),
+    10_000,
+    `${selector} with text ${text}`,
+  );
 }
 
 function generatePublication(scenario, transitionEpochMs) {

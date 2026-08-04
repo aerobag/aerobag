@@ -6,7 +6,8 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use serde::{Deserialize, Serialize};
 
-use product_contracts::{publication::v1 as publication_v1, versioned_json};
+use product_contracts::publication::{bundle::v2 as bundle_v2, current::v1 as current_v1};
+use product_contracts::versioned_json;
 
 pub const CHART_HIGH_RESOLUTION_PRODUCT_ID: &str = "chart-high-resolution";
 const WIDE_COVERAGE_REGION_ID: &str = "wide";
@@ -156,10 +157,10 @@ pub struct CurrentArtifactsDiscoveryPlan {
 pub fn decode_current_artifacts_manifest_list(
     payload: &str,
 ) -> Result<Vec<CurrentArtifactsManifest>, String> {
-    versioned_json::decode_offered_list::<publication_v1::CurrentArtifactsManifest>(
+    versioned_json::decode_offered_list::<current_v1::CurrentArtifactsManifest>(
         "current_artifacts.json",
         payload.as_bytes(),
-        publication_v1::SCHEMA_VERSION,
+        current_v1::SCHEMA_VERSION,
     )
     .map_err(|error| error.to_string())?
     .into_iter()
@@ -170,29 +171,29 @@ pub fn decode_current_artifacts_manifest_list(
 pub fn decode_current_artifacts_manifest(
     payload: &str,
 ) -> Result<CurrentArtifactsManifest, String> {
-    let manifest = versioned_json::decode_exact::<publication_v1::CurrentArtifactsManifest>(
+    let manifest = versioned_json::decode_exact::<current_v1::CurrentArtifactsManifest>(
         "current_artifacts.json manifest",
         payload.as_bytes(),
-        publication_v1::SCHEMA_VERSION,
+        current_v1::SCHEMA_VERSION,
     )
     .map_err(|error| error.to_string())?;
     CurrentArtifactsManifest::try_from(manifest)
 }
 
 pub fn decode_bundle_manifest(payload: &str) -> Result<BundleManifest, String> {
-    let manifest = versioned_json::decode_exact::<publication_v1::BundleManifest>(
+    let manifest = versioned_json::decode_exact::<bundle_v2::BundleManifest>(
         "bundle manifest",
         payload.as_bytes(),
-        publication_v1::SCHEMA_VERSION,
+        bundle_v2::SCHEMA_VERSION,
     )
     .map_err(|error| error.to_string())?;
     BundleManifest::try_from(manifest)
 }
 
-impl TryFrom<publication_v1::BundlePackageArtifact> for BundlePackageArtifact {
+impl TryFrom<bundle_v2::BundlePackageArtifact> for BundlePackageArtifact {
     type Error = String;
 
-    fn try_from(wire: publication_v1::BundlePackageArtifact) -> Result<Self, Self::Error> {
+    fn try_from(wire: bundle_v2::BundlePackageArtifact) -> Result<Self, Self::Error> {
         let metadata = if wire.metadata.is_empty() {
             None
         } else {
@@ -224,13 +225,13 @@ impl TryFrom<publication_v1::BundlePackageArtifact> for BundlePackageArtifact {
     }
 }
 
-impl TryFrom<publication_v1::BundleManifest> for BundleManifest {
+impl TryFrom<bundle_v2::BundleManifest> for BundleManifest {
     type Error = String;
 
-    fn try_from(wire: publication_v1::BundleManifest) -> Result<Self, Self::Error> {
-        if wire.schema_version != publication_v1::SCHEMA_VERSION {
+    fn try_from(wire: bundle_v2::BundleManifest) -> Result<Self, Self::Error> {
+        if wire.schema_version != bundle_v2::SCHEMA_VERSION {
             return Err(format!(
-                "bundle manifest schema {} reached v1 conversion",
+                "bundle manifest schema {} reached v2 conversion",
                 wire.schema_version
             ));
         }
@@ -244,11 +245,11 @@ impl TryFrom<publication_v1::BundleManifest> for BundleManifest {
     }
 }
 
-impl TryFrom<publication_v1::CurrentArtifactsManifest> for CurrentArtifactsManifest {
+impl TryFrom<current_v1::CurrentArtifactsManifest> for CurrentArtifactsManifest {
     type Error = String;
 
-    fn try_from(wire: publication_v1::CurrentArtifactsManifest) -> Result<Self, Self::Error> {
-        if wire.schema_version != publication_v1::SCHEMA_VERSION {
+    fn try_from(wire: current_v1::CurrentArtifactsManifest) -> Result<Self, Self::Error> {
+        if wire.schema_version != current_v1::SCHEMA_VERSION {
             return Err(format!(
                 "current_artifacts.json schema {} reached v1 conversion",
                 wire.schema_version

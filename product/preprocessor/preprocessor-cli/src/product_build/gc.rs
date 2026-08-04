@@ -760,7 +760,7 @@ mod tests {
         nav_contract: &str,
     ) -> CurrentArtifactsManifest {
         CurrentArtifactsManifest {
-            schema_version: 1,
+            schema_version: CURRENT_SCHEMA_VERSION,
             contracts: BTreeMap::from([("nav-db".to_string(), nav_contract.to_string())]),
             artifact_roots: CurrentArtifactRoots {
                 packaged: format!("{label}/{timestamp}/packaged/"),

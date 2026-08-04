@@ -2,5 +2,4 @@
 //
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
-pub mod bundle;
-pub mod current;
+pub mod v2;

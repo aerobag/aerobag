@@ -27,7 +27,7 @@ pub fn publish_discovery_manifest(
         current_startup_prefetch_manifest(&config.packaged_dir, &artifact_roots, &bundles)?;
     let contracts = current_artifacts_contracts(&config.packaged_dir, &bundles)?;
     let manifest = CurrentArtifactsManifest {
-        schema_version: 1,
+        schema_version: CURRENT_SCHEMA_VERSION,
         contracts,
         artifact_roots,
         as_of_date: as_of_utc.date_naive().format("%Y-%m-%d").to_string(),
@@ -425,7 +425,7 @@ pub(super) fn write_current_artifacts_manifest(
         current_startup_prefetch_manifest(packaged_dir, &artifact_roots, &bundles)?;
     let contracts = current_artifacts_contracts(packaged_dir, &bundles)?;
     let manifest = CurrentArtifactsManifest {
-        schema_version: 1,
+        schema_version: CURRENT_SCHEMA_VERSION,
         contracts,
         artifact_roots,
         as_of_date: as_of_date.format("%Y-%m-%d").to_string(),

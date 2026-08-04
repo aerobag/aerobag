@@ -102,9 +102,6 @@ fn platform_session_adapters_have_no_plain_snapshot_escape_hatch() {
     let android = read_repo_file(
         "ui/android-app/app/src/main/java/org/aerobag/app/domain/NativeAppCoreAdapter.kt",
     );
-    let android_wire =
-        read_repo_file("ui/android-app/app/src/main/java/org/aerobag/app/domain/WireModels.kt");
-
     assert!(
         !web.contains("const parseSessionSnapshot ="),
         "web snapshot-producing commands must use the paged session runner"
@@ -650,6 +647,8 @@ fn generated_ui_contract_types_are_not_hand_copied_at_platform_boundaries() {
     let android = read_repo_file(
         "ui/android-app/app/src/main/java/org/aerobag/app/domain/NativeAppCoreAdapter.kt",
     );
+    let android_wire =
+        read_repo_file("ui/android-app/app/src/main/java/org/aerobag/app/domain/WireModels.kt");
 
     for (source_name, source, declarations) in [
         (

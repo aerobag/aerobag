@@ -168,6 +168,7 @@ ensure_package_server() {
     --listen "$PACKAGE_SERVER_LISTEN" \
     --skip-binary-build \
     --disable-live-feeds \
+    --disable-cloud-server \
     --disable-build-watch \
     --disable-pipeline-health &
   PACKAGE_SERVER_PID="$!"

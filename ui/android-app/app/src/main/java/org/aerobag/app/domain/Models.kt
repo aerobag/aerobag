@@ -245,12 +245,30 @@ data class AltitudeComparisonUiView(
     val selected: Boolean,
     val enabled: Boolean,
     val disabledReason: String?,
+    val advisory: String?,
     val cells: List<FlightDataCell>,
 )
 
 data class AltitudeComparisonPanelUiView(
     val columns: List<FlightDataColumn>,
     val rows: List<AltitudeComparisonUiView>,
+    val advisories: List<String>,
+)
+
+data class AltitudePlannerForecastUiView(
+    val summary: String,
+)
+
+data class AltitudePlannerDepartureEditorUiView(
+    val title: String,
+    val timeLabel: String,
+    val timeValue: String,
+    val basisLabel: String,
+    val whenLabel: String,
+    val whenValue: String,
+    val whenSuffix: String,
+    val enabled: Boolean,
+    val disabledReason: String?,
 )
 
 data class AltitudePlannerUiView(
@@ -258,6 +276,9 @@ data class AltitudePlannerUiView(
     val estimateKind: String,
     val estimateSummary: FlightPlanEstimateModeUiView,
     val controls: List<AltitudePlannerControlUiView>,
+    val departure: AltitudePlannerDepartureEditorUiView,
+    val forecast: AltitudePlannerForecastUiView?,
+    val advisories: List<String>,
     val unavailableReasons: List<AltitudePlannerUnavailableReason>,
 )
 

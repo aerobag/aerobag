@@ -4973,7 +4973,9 @@ mod tests {
     #[test]
     fn two_independent_clients_crossfill_flight_plan_through_provider_protocol() {
         let initial = plan(&["KRNT", "KPAE"]);
-        let changed = plan(&["KRNT", "KSEA", "KPAE"]);
+        let mut changed = plan(&["KRNT", "KSEA", "KPAE"]);
+        changed.cruise_altitude_ft = Some(12_000);
+        changed.planned_departure_time_epoch_ms = Some(1_786_032_000_000);
         let mut provider = MemoryProvider::default();
         let mut first = CloudEngine::new(CloudPersistentState::default());
         first

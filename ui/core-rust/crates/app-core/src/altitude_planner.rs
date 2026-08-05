@@ -2,6 +2,8 @@
 //
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
+use chrono::{DateTime, LocalResult, NaiveTime, TimeZone, Timelike, Utc};
+use chrono_tz::Tz;
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
@@ -41,6 +43,35 @@ pub enum AltitudePlannerControlId {
     WindModel,
 }
 
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum AltitudePlannerDepartureTimeBasis {
+    #[default]
+    Local,
+    Utc,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum AltitudePlannerDepartureInputField {
+    Time,
+    When,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AltitudePlannerDepartureEditorUiView {
+    pub title: String,
+    pub time_label: String,
+    pub time_value: String,
+    pub basis_label: String,
+    pub when_label: String,
+    pub when_value: String,
+    pub when_suffix: String,
+    pub enabled: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub disabled_reason: Option<String>,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct AltitudePlannerControlUiView {
     pub id: AltitudePlannerControlId,
@@ -60,6 +91,8 @@ pub struct AltitudeComparisonUiView {
     pub enabled: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub disabled_reason: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub advisory: Option<String>,
     pub cells: Vec<FlightDataCell>,
 }
 
@@ -67,6 +100,13 @@ pub struct AltitudeComparisonUiView {
 pub struct AltitudeComparisonPanelUiView {
     pub columns: Vec<crate::FlightDataColumn>,
     pub rows: Vec<AltitudeComparisonUiView>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub advisories: Vec<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AltitudePlannerForecastUiView {
+    pub summary: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -75,6 +115,11 @@ pub struct AltitudePlannerUiView {
     pub estimate_kind: FlightEstimateKind,
     pub estimate_summary: FlightPlanEstimateModeUiView,
     pub controls: Vec<AltitudePlannerControlUiView>,
+    pub departure: AltitudePlannerDepartureEditorUiView,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub forecast: Option<AltitudePlannerForecastUiView>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub advisories: Vec<String>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub unavailable_reasons: Vec<AltitudePlannerUnavailableReason>,
 }
@@ -107,6 +152,24 @@ pub struct AltitudePlannerUiInput {
     pub wind_model_action_uid: Option<String>,
     pub performance_regime_available: bool,
     pub live_ground_speed_estimate_active: bool,
+    pub departure_time_epoch_ms: Option<i64>,
+    pub effective_departure_time_epoch_ms: i64,
+    pub now_epoch_ms: i64,
+    pub departure_time_basis: AltitudePlannerDepartureTimeBasis,
+    pub local_time_zone: Tz,
+    pub forecast: Option<AltitudePlannerForecastUiView>,
+    pub wind_fallback: Option<AltitudePlannerWindFallback>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum AltitudePlannerWindFallback {
+    ForecastCoverage {
+        valid_through_epoch_ms: i64,
+        flight_end_epoch_ms: i64,
+    },
+    Other {
+        reason: String,
+    },
 }
 
 impl Default for AltitudePlannerUiInput {
@@ -126,6 +189,13 @@ impl Default for AltitudePlannerUiInput {
             wind_model_action_uid: None,
             performance_regime_available: true,
             live_ground_speed_estimate_active: false,
+            departure_time_epoch_ms: None,
+            effective_departure_time_epoch_ms: 0,
+            now_epoch_ms: 0,
+            departure_time_basis: AltitudePlannerDepartureTimeBasis::Local,
+            local_time_zone: chrono_tz::UTC,
+            forecast: None,
+            wind_fallback: None,
         }
     }
 }
@@ -182,16 +252,21 @@ pub fn project_altitude_planner_ui(input: AltitudePlannerUiInput) -> AltitudePla
     } else {
         FlightEstimateKind::Basic
     };
+    let departure = project_departure_editor(&input);
     let aircraft_label = input
         .aircraft_profile_label
         .unwrap_or_else(|| "BASIC".to_string());
     let estimate_summary_label = if input.live_ground_speed_estimate_active {
         "Estimate basis:\nGS extrapolated".to_string()
     } else if estimate_kind == FlightEstimateKind::Modeled {
-        let wind_basis = match input.wind_model_label.as_str() {
-            "FORECAST" => "Forecast winds",
-            "NO WIND" => "No wind",
-            label => label,
+        let wind_basis = if input.wind_fallback.is_some() {
+            "No-wind fallback"
+        } else {
+            match input.wind_model_label.as_str() {
+                "FORECAST" => "Forecast winds",
+                "NO WIND" => "No wind",
+                label => label,
+            }
         };
         format!(
             "Estimate basis:\n{}\n{} cruise",
@@ -203,6 +278,35 @@ pub fn project_altitude_planner_ui(input: AltitudePlannerUiInput) -> AltitudePla
         )
     } else {
         "Estimate basis:\nBasic estimate".to_string()
+    };
+    let forecast = match input.wind_fallback.as_ref() {
+        Some(AltitudePlannerWindFallback::ForecastCoverage {
+            valid_through_epoch_ms,
+            flight_end_epoch_ms,
+        }) => Some(AltitudePlannerForecastUiView {
+            summary: format!(
+                "Currently available forecast product valid until {}, flight extends until {}. Using NO-WIND model.",
+                format_planner_clock(
+                    *valid_through_epoch_ms,
+                    input.departure_time_basis,
+                    input.local_time_zone,
+                ),
+                format_planner_clock(
+                    *flight_end_epoch_ms,
+                    input.departure_time_basis,
+                    input.local_time_zone,
+                ),
+            ),
+        }),
+        _ => input.forecast,
+    };
+    let advisories = match input.wind_fallback.as_ref() {
+        Some(AltitudePlannerWindFallback::Other { reason }) => {
+            vec![format!(
+                "Forecast winds do not cover the complete trajectory ({reason}); showing no-wind/ISA estimates."
+            )]
+        }
+        _ => Vec::new(),
     };
     AltitudePlannerUiView {
         title: "Altitude Planner".to_string(),
@@ -229,8 +333,304 @@ pub fn project_altitude_planner_ui(input: AltitudePlannerUiInput) -> AltitudePla
                     .then(|| "No alternate wind models are available.".to_string()),
             },
         ],
+        departure,
+        forecast,
+        advisories,
         unavailable_reasons: reasons,
     }
+}
+
+fn format_planner_clock(
+    epoch_ms: i64,
+    basis: AltitudePlannerDepartureTimeBasis,
+    local_time_zone: Tz,
+) -> String {
+    let time =
+        DateTime::<Utc>::from_timestamp_millis(epoch_ms).unwrap_or(DateTime::<Utc>::UNIX_EPOCH);
+    match basis {
+        AltitudePlannerDepartureTimeBasis::Local => time
+            .with_timezone(&local_time_zone)
+            .format("%H%M %Z")
+            .to_string(),
+        AltitudePlannerDepartureTimeBasis::Utc => time.format("%H%MZ").to_string(),
+    }
+}
+
+fn project_departure_editor(
+    input: &AltitudePlannerUiInput,
+) -> AltitudePlannerDepartureEditorUiView {
+    let effective = DateTime::<Utc>::from_timestamp_millis(input.effective_departure_time_epoch_ms)
+        .unwrap_or(DateTime::<Utc>::UNIX_EPOCH);
+    let time_value = match input.departure_time_basis {
+        AltitudePlannerDepartureTimeBasis::Local => effective
+            .with_timezone(&input.local_time_zone)
+            .format("%H%M")
+            .to_string(),
+        AltitudePlannerDepartureTimeBasis::Utc => effective.format("%H%M").to_string(),
+    };
+    let basis_label = match input.departure_time_basis {
+        AltitudePlannerDepartureTimeBasis::Local => format!(
+            "Local ({})",
+            effective.with_timezone(&input.local_time_zone).format("%Z")
+        ),
+        AltitudePlannerDepartureTimeBasis::Utc => "Z".to_string(),
+    };
+    let when_value = input
+        .departure_time_epoch_ms
+        .map(|epoch_ms| format_departure_offset(epoch_ms - input.now_epoch_ms))
+        .unwrap_or_else(|| "now".to_string());
+    let disabled_reason = input
+        .navigation_active
+        .then(|| "Active navigation always models from ownship at the current time.".to_string());
+    AltitudePlannerDepartureEditorUiView {
+        title: "Depart:".to_string(),
+        time_label: String::new(),
+        time_value,
+        basis_label,
+        when_label: "=".to_string(),
+        when_value,
+        when_suffix: "from now".to_string(),
+        enabled: !input.navigation_active,
+        disabled_reason,
+    }
+}
+
+fn format_departure_offset(offset_ms: i64) -> String {
+    let negative = offset_ms < 0;
+    let total_minutes = (offset_ms.unsigned_abs().saturating_add(30_000) / 60_000) as u64;
+    if total_minutes == 0 {
+        return "now".to_string();
+    }
+    let days = total_minutes / (24 * 60);
+    let hours = (total_minutes % (24 * 60)) / 60;
+    let minutes = total_minutes % 60;
+    let mut parts = Vec::new();
+    if days > 0 {
+        parts.push(format!("{days}d"));
+    }
+    if hours > 0 {
+        parts.push(format!("{hours}h"));
+    }
+    if minutes > 0 {
+        parts.push(format!("{minutes}m"));
+    }
+    let value = parts.join(" ");
+    if negative {
+        format!("−{value}")
+    } else {
+        value
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ParsedAltitudePlannerDeparture {
+    pub departure_time_epoch_ms: Option<i64>,
+    pub basis: AltitudePlannerDepartureTimeBasis,
+}
+
+pub fn parse_altitude_planner_departure_input(
+    field: AltitudePlannerDepartureInputField,
+    raw_input: &str,
+    now_epoch_ms: i64,
+    current_basis: AltitudePlannerDepartureTimeBasis,
+    local_time_zone: Tz,
+) -> Result<ParsedAltitudePlannerDeparture, String> {
+    match field {
+        AltitudePlannerDepartureInputField::Time => {
+            parse_departure_clock_time(raw_input, now_epoch_ms, current_basis, local_time_zone)
+        }
+        AltitudePlannerDepartureInputField::When => Ok(ParsedAltitudePlannerDeparture {
+            departure_time_epoch_ms: parse_departure_offset(raw_input, now_epoch_ms)?,
+            basis: current_basis,
+        }),
+    }
+}
+
+fn parse_departure_clock_time(
+    raw_input: &str,
+    now_epoch_ms: i64,
+    current_basis: AltitudePlannerDepartureTimeBasis,
+    local_time_zone: Tz,
+) -> Result<ParsedAltitudePlannerDeparture, String> {
+    let mut value = raw_input.trim().to_ascii_lowercase();
+    if value == "now" {
+        return Ok(ParsedAltitudePlannerDeparture {
+            departure_time_epoch_ms: None,
+            basis: current_basis,
+        });
+    }
+    let basis = if let Some(stripped) = value.strip_suffix("local") {
+        value = stripped.trim_end().to_string();
+        AltitudePlannerDepartureTimeBasis::Local
+    } else if let Some(stripped) = value.strip_suffix("lcl") {
+        value = stripped.trim_end().to_string();
+        AltitudePlannerDepartureTimeBasis::Local
+    } else if let Some(stripped) = value.strip_suffix('z') {
+        value = stripped.trim_end().to_string();
+        AltitudePlannerDepartureTimeBasis::Utc
+    } else {
+        current_basis
+    };
+    let time = parse_clock_value(&value)?;
+    let now = DateTime::<Utc>::from_timestamp_millis(now_epoch_ms)
+        .ok_or_else(|| "current time is outside the supported UTC range".to_string())?;
+    let candidate = match basis {
+        AltitudePlannerDepartureTimeBasis::Utc => {
+            next_utc_clock_occurrence(now, time).map(|value| value.timestamp_millis())?
+        }
+        AltitudePlannerDepartureTimeBasis::Local => {
+            next_local_clock_occurrence(now, time, local_time_zone)
+                .map(|value| value.timestamp_millis())?
+        }
+    };
+    Ok(ParsedAltitudePlannerDeparture {
+        departure_time_epoch_ms: Some(candidate),
+        basis,
+    })
+}
+
+fn parse_clock_value(value: &str) -> Result<NaiveTime, String> {
+    let (hours, minutes) = if let Some((hours, minutes)) = value.split_once(':') {
+        if minutes.contains(':') {
+            return Err("enter departure time as HHMM or HH:MM".to_string());
+        }
+        (hours, minutes)
+    } else {
+        if value.len() < 3 || value.len() > 4 {
+            return Err("enter departure time as HHMM or HH:MM".to_string());
+        }
+        value.split_at(value.len() - 2)
+    };
+    let hours = hours
+        .parse::<u32>()
+        .map_err(|_| "departure hour is not a number".to_string())?;
+    let minutes = minutes
+        .parse::<u32>()
+        .map_err(|_| "departure minute is not a number".to_string())?;
+    NaiveTime::from_hms_opt(hours, minutes, 0)
+        .ok_or_else(|| "departure time must be between 0000 and 2359".to_string())
+}
+
+fn next_utc_clock_occurrence(now: DateTime<Utc>, time: NaiveTime) -> Result<DateTime<Utc>, String> {
+    let minute_floor = now
+        .with_second(0)
+        .and_then(|value| value.with_nanosecond(0))
+        .ok_or_else(|| "current UTC time is invalid".to_string())?;
+    let mut date = now.date_naive();
+    for _ in 0..2 {
+        let candidate = Utc.from_utc_datetime(&date.and_time(time));
+        if candidate >= minute_floor {
+            return Ok(candidate);
+        }
+        date = date
+            .succ_opt()
+            .ok_or_else(|| "departure date is outside the supported range".to_string())?;
+    }
+    Err("departure date is outside the supported range".to_string())
+}
+
+fn next_local_clock_occurrence(
+    now: DateTime<Utc>,
+    time: NaiveTime,
+    time_zone: Tz,
+) -> Result<DateTime<Utc>, String> {
+    let local_now = now.with_timezone(&time_zone);
+    let minute_floor = now
+        .with_second(0)
+        .and_then(|value| value.with_nanosecond(0))
+        .ok_or_else(|| "current UTC time is invalid".to_string())?;
+    let mut date = local_now.date_naive();
+    for attempt in 0..2 {
+        let naive = date.and_time(time);
+        let candidates = match time_zone.from_local_datetime(&naive) {
+            LocalResult::Single(candidate) => vec![candidate.with_timezone(&Utc)],
+            LocalResult::Ambiguous(first, second) => {
+                let mut candidates = vec![first.with_timezone(&Utc), second.with_timezone(&Utc)];
+                candidates.sort();
+                candidates
+            }
+            LocalResult::None if attempt == 0 => {
+                return Err(format!(
+                    "{} does not exist in {} because of a local clock change",
+                    time.format("%H%M"),
+                    time_zone
+                ));
+            }
+            LocalResult::None => Vec::new(),
+        };
+        if let Some(candidate) = candidates
+            .into_iter()
+            .find(|candidate| *candidate >= minute_floor)
+        {
+            return Ok(candidate);
+        }
+        date = date
+            .succ_opt()
+            .ok_or_else(|| "departure date is outside the supported range".to_string())?;
+    }
+    Err("departure date is outside the supported range".to_string())
+}
+
+fn parse_departure_offset(raw_input: &str, now_epoch_ms: i64) -> Result<Option<i64>, String> {
+    let input = raw_input.trim().to_ascii_lowercase();
+    if input == "now" || input == "0" || input == "0m" || input == "0h" {
+        return Ok(None);
+    }
+    let input = input.strip_prefix('+').unwrap_or(&input);
+    if input.starts_with('-') || input.starts_with('−') {
+        return Err("departure offset must not be in the past".to_string());
+    }
+    let bytes = input.as_bytes();
+    let mut cursor = 0;
+    let mut total_seconds = 0.0;
+    let mut terms = 0;
+    while cursor < bytes.len() {
+        while cursor < bytes.len() && bytes[cursor].is_ascii_whitespace() {
+            cursor += 1;
+        }
+        let number_start = cursor;
+        while cursor < bytes.len() && (bytes[cursor].is_ascii_digit() || bytes[cursor] == b'.') {
+            cursor += 1;
+        }
+        if number_start == cursor {
+            return Err("enter a departure offset such as 3h or 1h 30m".to_string());
+        }
+        let amount = input[number_start..cursor]
+            .parse::<f64>()
+            .map_err(|_| "departure offset contains an invalid number".to_string())?;
+        if !amount.is_finite() || amount < 0.0 {
+            return Err("departure offset must be a nonnegative duration".to_string());
+        }
+        while cursor < bytes.len() && bytes[cursor].is_ascii_whitespace() {
+            cursor += 1;
+        }
+        let unit_start = cursor;
+        while cursor < bytes.len() && bytes[cursor].is_ascii_alphabetic() {
+            cursor += 1;
+        }
+        let unit = &input[unit_start..cursor];
+        let multiplier = match unit {
+            "m" | "min" | "mins" | "minute" | "minutes" => 60.0,
+            "h" | "hr" | "hrs" | "hour" | "hours" => 3_600.0,
+            "d" | "day" | "days" => 86_400.0,
+            _ => return Err("departure offset units must be minutes, hours, or days".to_string()),
+        };
+        total_seconds += amount * multiplier;
+        terms += 1;
+    }
+    if terms == 0 || !total_seconds.is_finite() {
+        return Err("enter a departure offset such as 3h or 1h 30m".to_string());
+    }
+    let offset_ms = (total_seconds * 1_000.0).round();
+    if offset_ms > i64::MAX as f64 {
+        return Err("departure offset is too large".to_string());
+    }
+    let departure = now_epoch_ms
+        .checked_add(offset_ms as i64)
+        .ok_or_else(|| "departure time is outside the supported UTC range".to_string())?;
+    DateTime::<Utc>::from_timestamp_millis(departure)
+        .ok_or_else(|| "departure time is outside the supported UTC range".to_string())?;
+    Ok((offset_ms > 0.0).then_some(departure))
 }
 
 fn format_altitude_ft(altitude_ft: i32) -> String {
@@ -831,6 +1231,137 @@ fn advance_altitude(
 mod tests {
     use super::*;
 
+    fn utc(value: &str) -> DateTime<Utc> {
+        DateTime::parse_from_rfc3339(value)
+            .expect("RFC3339 test time")
+            .with_timezone(&Utc)
+    }
+
+    #[test]
+    fn departure_clock_parser_uses_next_local_occurrence_and_accepts_local_suffixes() {
+        let now = utc("2026-08-05T19:00:00Z").timestamp_millis();
+        let parsed = parse_altitude_planner_departure_input(
+            AltitudePlannerDepartureInputField::Time,
+            "1400 lcl",
+            now,
+            AltitudePlannerDepartureTimeBasis::Utc,
+            chrono_tz::America::Los_Angeles,
+        )
+        .expect("local clock time");
+
+        assert_eq!(parsed.basis, AltitudePlannerDepartureTimeBasis::Local);
+        assert_eq!(
+            parsed.departure_time_epoch_ms,
+            Some(utc("2026-08-05T21:00:00Z").timestamp_millis())
+        );
+
+        let tomorrow = parse_altitude_planner_departure_input(
+            AltitudePlannerDepartureInputField::Time,
+            "1100 local",
+            now,
+            AltitudePlannerDepartureTimeBasis::Utc,
+            chrono_tz::America::Los_Angeles,
+        )
+        .expect("tomorrow's local clock time");
+        assert_eq!(
+            tomorrow.departure_time_epoch_ms,
+            Some(utc("2026-08-06T18:00:00Z").timestamp_millis())
+        );
+    }
+
+    #[test]
+    fn departure_clock_parser_honors_z_suffix_and_current_basis() {
+        let now = utc("2026-08-05T09:00:00Z").timestamp_millis();
+        let explicit_z = parse_altitude_planner_departure_input(
+            AltitudePlannerDepartureInputField::Time,
+            "1100Z",
+            now,
+            AltitudePlannerDepartureTimeBasis::Local,
+            chrono_tz::America::Los_Angeles,
+        )
+        .expect("Zulu clock time");
+        assert_eq!(explicit_z.basis, AltitudePlannerDepartureTimeBasis::Utc);
+        assert_eq!(
+            explicit_z.departure_time_epoch_ms,
+            Some(utc("2026-08-05T11:00:00Z").timestamp_millis())
+        );
+
+        let bare_z = parse_altitude_planner_departure_input(
+            AltitudePlannerDepartureInputField::Time,
+            "0800",
+            now,
+            AltitudePlannerDepartureTimeBasis::Utc,
+            chrono_tz::America::Los_Angeles,
+        )
+        .expect("bare time in current Z basis");
+        assert_eq!(
+            bare_z.departure_time_epoch_ms,
+            Some(utc("2026-08-06T08:00:00Z").timestamp_millis())
+        );
+    }
+
+    #[test]
+    fn departure_offset_parser_accepts_compound_durations_and_preserves_basis() {
+        let now = utc("2026-08-05T19:15:30Z").timestamp_millis();
+        let parsed = parse_altitude_planner_departure_input(
+            AltitudePlannerDepartureInputField::When,
+            "1h 30m",
+            now,
+            AltitudePlannerDepartureTimeBasis::Local,
+            chrono_tz::America::Los_Angeles,
+        )
+        .expect("relative departure");
+
+        assert_eq!(parsed.basis, AltitudePlannerDepartureTimeBasis::Local);
+        assert_eq!(
+            parsed.departure_time_epoch_ms,
+            Some(utc("2026-08-05T20:45:30Z").timestamp_millis())
+        );
+        assert_eq!(
+            parse_altitude_planner_departure_input(
+                AltitudePlannerDepartureInputField::When,
+                "now",
+                now,
+                AltitudePlannerDepartureTimeBasis::Local,
+                chrono_tz::America::Los_Angeles,
+            )
+            .expect("dynamic now")
+            .departure_time_epoch_ms,
+            None
+        );
+    }
+
+    #[test]
+    fn departure_editor_is_entirely_projected_by_core() {
+        let now = utc("2026-08-05T19:00:00Z").timestamp_millis();
+        let departure = utc("2026-08-05T22:15:00Z").timestamp_millis();
+        let local = project_altitude_planner_ui(AltitudePlannerUiInput {
+            now_epoch_ms: now,
+            departure_time_epoch_ms: Some(departure),
+            effective_departure_time_epoch_ms: departure,
+            departure_time_basis: AltitudePlannerDepartureTimeBasis::Local,
+            local_time_zone: chrono_tz::America::Los_Angeles,
+            ..AltitudePlannerUiInput::default()
+        });
+        assert_eq!(local.departure.time_value, "1515");
+        assert_eq!(local.departure.time_label, "");
+        assert_eq!(local.departure.basis_label, "Local (PDT)");
+        assert_eq!(local.departure.when_label, "=");
+        assert_eq!(local.departure.when_value, "3h 15m");
+
+        let zulu = project_altitude_planner_ui(AltitudePlannerUiInput {
+            now_epoch_ms: now,
+            departure_time_epoch_ms: Some(departure),
+            effective_departure_time_epoch_ms: departure,
+            departure_time_basis: AltitudePlannerDepartureTimeBasis::Utc,
+            local_time_zone: chrono_tz::America::Los_Angeles,
+            ..AltitudePlannerUiInput::default()
+        });
+        assert_eq!(zulu.departure.time_value, "2215");
+        assert_eq!(zulu.departure.basis_label, "Z");
+        assert_eq!(zulu.departure.when_value, "3h 15m");
+    }
+
     struct ConstantAtmosphere {
         wind_east_kt: f64,
         wind_north_kt: f64,
@@ -1073,6 +1604,46 @@ mod tests {
         assert_eq!(
             view.unavailable_reasons[0].code,
             AltitudePlannerUnavailableReasonCode::OwnshipAltitudeUnavailable
+        );
+    }
+
+    #[test]
+    fn forecast_coverage_fallback_replaces_provenance_with_zulu_status() {
+        let view = project_altitude_planner_ui(AltitudePlannerUiInput {
+            aircraft_profile_label: Some("65% ECONOMY".to_string()),
+            cruise_altitude_ft: Some(12_000),
+            plan_origin_altitude_available: true,
+            plan_destination_altitude_available: true,
+            wind_model_label: "FORECAST".to_string(),
+            wind_model_selected: true,
+            departure_time_basis: AltitudePlannerDepartureTimeBasis::Utc,
+            forecast: Some(AltitudePlannerForecastUiView {
+                summary: "ordinary provenance".to_string(),
+            }),
+            wind_fallback: Some(AltitudePlannerWindFallback::ForecastCoverage {
+                valid_through_epoch_ms: 12 * 60 * 60 * 1_000,
+                flight_end_epoch_ms: (15 * 60 + 35) * 60 * 1_000,
+            }),
+            ..AltitudePlannerUiInput::default()
+        });
+
+        assert_eq!(
+            view.forecast.expect("fallback status").summary,
+            "Currently available forecast product valid until 1200Z, flight extends until 1535Z. Using NO-WIND model."
+        );
+        assert!(view.advisories.is_empty());
+    }
+
+    #[test]
+    fn forecast_coverage_fallback_uses_local_display_basis() {
+        let epoch_ms = DateTime::parse_from_rfc3339("2026-08-05T12:00:00Z")
+            .expect("timestamp")
+            .timestamp_millis();
+        let pacific = "America/Los_Angeles".parse::<Tz>().expect("time zone");
+
+        assert_eq!(
+            format_planner_clock(epoch_ms, AltitudePlannerDepartureTimeBasis::Local, pacific),
+            "0500 PDT"
         );
     }
 

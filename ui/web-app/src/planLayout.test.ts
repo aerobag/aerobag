@@ -50,11 +50,36 @@ describe("flight plan layout CSS", () => {
     expect(appSource).toContain('onClick={() => props.onSelectPage("altitude")}');
     expect(plannerPage).toContain("props.onQueryAltitudeComparisons()");
     expect(plannerPage).toContain("props.onPerformAltitudePlannerAction(actionUid)");
+    expect(plannerPage).toContain('props.onSetDepartureInput(field, input)');
+    expect(plannerPage).toContain('submitDepartureInput("time", departureTimeInput)');
+    expect(plannerPage).toContain('submitDepartureInput("when", departureWhenInput)');
+    expect(plannerPage).toContain("props.onToggleDepartureTimeBasis()");
+    expect(plannerPage).not.toContain('type="datetime-local"');
+    expect(plannerPage).not.toContain("new Date(");
+    expect(plannerPage).toContain("planner.forecast.summary");
+    expect(plannerPage).toContain("panel?.advisories");
     expect(plannerPage).not.toMatch(/onPerformAltitudePlannerAction\(actionUid\)[\s\S]*?\.then\(reload\)/);
     expect(plannerPage).toContain("panel.columns.map");
     expect(plannerPage).toContain("row.cells.map");
     expect(plannerPage).toContain('className="altitudeComparisonRegion"');
     expect(plannerPage).toContain('className="altitudeComparisonLoading"');
+    const controlTray = plannerPage.slice(
+      plannerPage.indexOf('data-testid="altitude-planner-control-tray"'),
+      plannerPage.indexOf("</header>"),
+    );
+    expect(controlTray).toContain("planner.controls.map");
+    expect(controlTray).toContain("altitudePlannerDeparture");
+    const departureStyles = [...styles.matchAll(/\.altitudePlannerDeparture\s*\{([^}]*)\}/g)]
+      .map((match) => match[1] ?? "")
+      .join("\n");
+    expect(departureStyles).toContain("display: flex");
+    expect(departureStyles).toContain("height: var(--thumb)");
+    expect(departureStyles).toContain("white-space: nowrap");
+    const departureBasisStyles = [...styles.matchAll(/\.altitudePlannerDepartureBasis\s*\{([^}]*)\}/g)]
+      .map((match) => match[1] ?? "")
+      .join("\n");
+    expect(departureBasisStyles).toContain("min-width: calc(var(--thumb) * 1.45)");
+    expect(departureBasisStyles).toContain("height: calc(var(--thumb) * 0.58)");
     expect(plannerPage).not.toContain('{loading ? <p>Calculating…</p> : null}');
     expect(plannerPage).not.toMatch(/tailwind|headwind|average_wind|toFixed/);
 

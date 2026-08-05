@@ -315,6 +315,7 @@ struct SessionModel {
     cycle_product_freshness: CycleProductFreshnessState,
     wall_clock_epoch_ms: i64,
     altitude_planner_wind_selection: AltitudePlannerWindSelection,
+    altitude_planner_departure_time_basis: crate::AltitudePlannerDepartureTimeBasis,
 }
 
 struct SessionRuntime {
@@ -3579,6 +3580,7 @@ fn create_ui_session_inner(
             },
             wall_clock_epoch_ms,
             altitude_planner_wind_selection: AltitudePlannerWindSelection::NoWind,
+            altitude_planner_departure_time_basis: crate::AltitudePlannerDepartureTimeBasis::Local,
         },
         flight_plan,
         nav_data: NavDataController::default(),
@@ -5130,6 +5132,11 @@ pub enum FlightPlanSessionCommand {
     PerformAltitudePlannerAction {
         action_uid: String,
     },
+    SetAltitudePlannerDepartureInput {
+        field: crate::AltitudePlannerDepartureInputField,
+        input: String,
+    },
+    ToggleAltitudePlannerDepartureTimeBasis,
     ActivateNextLeg,
     StopNavigation,
     SuspendSequencing,
@@ -5212,6 +5219,12 @@ pub fn perform_flight_plan_command_in_session(
         } => perform_flight_plan_row_action_in_session(handle, row_uid, action_uid),
         FlightPlanSessionCommand::PerformAltitudePlannerAction { action_uid } => {
             perform_altitude_planner_action_in_session(handle, action_uid)
+        }
+        FlightPlanSessionCommand::SetAltitudePlannerDepartureInput { field, input } => {
+            set_altitude_planner_departure_input_in_session(handle, field, input)
+        }
+        FlightPlanSessionCommand::ToggleAltitudePlannerDepartureTimeBasis => {
+            toggle_altitude_planner_departure_time_basis_in_session(handle)
         }
         FlightPlanSessionCommand::ActivateNextLeg => activate_next_leg_in_session(handle),
         FlightPlanSessionCommand::StopNavigation => stop_navigation_in_session(handle),
@@ -5329,6 +5342,8 @@ fn flight_plan_live_data_for_session(session: &UiSession) -> crate::had_ops::Fli
         ownship_position: ownship.position,
         ownship_altitude_ft: ownship.pressure_altitude_ft.or(ownship.altitude_msl_ft),
         now_epoch_ms: Some(session.wall_clock_epoch_ms),
+        local_time_zone: session_local_time_zone(session).unwrap_or(chrono_tz::UTC),
+        departure_time_basis: session.altitude_planner_departure_time_basis,
     }
 }
 
@@ -5348,13 +5363,13 @@ fn planner_atmosphere_for_selection(
                 weather.runtime().forecast_atmosphere.is_some(),
             )
         }
-        AltitudePlannerWindSelection::Gfs => crate::had_ops::PlannerAtmosphereSelection::gfs(
-            weather
-                .runtime()
-                .forecast_atmosphere
-                .as_ref()
-                .map(|forecast| forecast as &dyn crate::AtmosphereModel),
-        ),
+        AltitudePlannerWindSelection::Gfs => {
+            let forecast = weather.runtime().forecast_atmosphere.as_ref();
+            crate::had_ops::PlannerAtmosphereSelection::gfs(
+                forecast.map(|forecast| forecast as &dyn crate::AtmosphereModel),
+                forecast.map(crate::InstalledForecastAtmosphere::manifest),
+            )
+        }
     }
 }
 
@@ -5417,6 +5432,82 @@ fn perform_altitude_planner_action_in_session(
             })
         }
     };
+    changed_session_snapshot_outcome(session)
+}
+
+fn session_local_time_zone(session: &UiSession) -> AppResult<Tz> {
+    session
+        .platform_capabilities
+        .local_time_zone
+        .as_deref()
+        .unwrap_or("UTC")
+        .parse::<Tz>()
+        .map_err(|_| AppError {
+            kind: AppErrorKind::InvalidCatalog,
+            message: "configured platform local time zone is invalid".to_string(),
+        })
+}
+
+fn set_altitude_planner_departure_input_in_session(
+    handle: u32,
+    field: crate::AltitudePlannerDepartureInputField,
+    input: String,
+) -> AppResult<HadOperationOutcome> {
+    let slot = session_slot(handle)?;
+    let mut session_guard = slot.lock_running()?;
+    let session = &mut *session_guard;
+    let plan = session_plan(session)?;
+    if plan.guidance.is_some() {
+        return Err(AppError {
+            kind: AppErrorKind::UnsupportedOperation,
+            message: "active navigation always models departure from ownship now".to_string(),
+        });
+    }
+    let parsed = crate::parse_altitude_planner_departure_input(
+        field,
+        &input,
+        session.wall_clock_epoch_ms,
+        session.altitude_planner_departure_time_basis,
+        session_local_time_zone(session)?,
+    )
+    .map_err(|message| AppError {
+        kind: AppErrorKind::InvalidFlightPlan,
+        message,
+    })?;
+    let mut next = plan;
+    next.planned_departure_time_epoch_ms = parsed.departure_time_epoch_ms;
+    let previous_basis = session.altitude_planner_departure_time_basis;
+    session.altitude_planner_departure_time_basis = parsed.basis;
+    match commit_session_flight_plan_with_invalidations_outcome(session, next) {
+        Ok(outcome) => Ok(outcome),
+        Err(error) => {
+            session.altitude_planner_departure_time_basis = previous_basis;
+            Err(error)
+        }
+    }
+}
+
+fn toggle_altitude_planner_departure_time_basis_in_session(
+    handle: u32,
+) -> AppResult<HadOperationOutcome> {
+    let slot = session_slot(handle)?;
+    let mut session_guard = slot.lock_running()?;
+    let session = &mut *session_guard;
+    if session_plan(session)?.guidance.is_some() {
+        return Err(AppError {
+            kind: AppErrorKind::UnsupportedOperation,
+            message: "active navigation always models departure from ownship now".to_string(),
+        });
+    }
+    session.altitude_planner_departure_time_basis =
+        match session.altitude_planner_departure_time_basis {
+            crate::AltitudePlannerDepartureTimeBasis::Local => {
+                crate::AltitudePlannerDepartureTimeBasis::Utc
+            }
+            crate::AltitudePlannerDepartureTimeBasis::Utc => {
+                crate::AltitudePlannerDepartureTimeBasis::Local
+            }
+        };
     changed_session_snapshot_outcome(session)
 }
 
@@ -13534,6 +13625,8 @@ mod tests {
                 cycle_product_freshness: CycleProductFreshnessState::default(),
                 wall_clock_epoch_ms: 0,
                 altitude_planner_wind_selection: AltitudePlannerWindSelection::NoWind,
+                altitude_planner_departure_time_basis:
+                    crate::AltitudePlannerDepartureTimeBasis::Local,
             },
             flight_plan,
             nav_data,
@@ -15339,6 +15432,81 @@ mod tests {
         );
     }
 
+    #[test]
+    fn altitude_planner_departure_editor_parses_text_and_is_clearable_to_now() {
+        let init = create_current_test_session();
+        let departure = utc("2026-05-21T15:30:00Z").timestamp_millis();
+
+        perform_flight_plan_command_in_session(
+            init.handle,
+            FlightPlanSessionCommand::SetAltitudePlannerDepartureInput {
+                field: crate::AltitudePlannerDepartureInputField::Time,
+                input: "1530Z".to_string(),
+            },
+            utc("2026-05-21T12:00:30Z").timestamp_millis(),
+        )
+        .expect("set planned departure");
+        {
+            let sessions = lock_sessions();
+            let session = session_ref(&sessions, init.handle).expect("session");
+            assert_eq!(
+                session
+                    .app_state
+                    .active_plan
+                    .as_ref()
+                    .and_then(|plan| plan.planned_departure_time_epoch_ms),
+                Some(departure),
+            );
+            assert_eq!(
+                session.altitude_planner_departure_time_basis,
+                crate::AltitudePlannerDepartureTimeBasis::Utc,
+            );
+        }
+
+        perform_flight_plan_command_in_session(
+            init.handle,
+            FlightPlanSessionCommand::ToggleAltitudePlannerDepartureTimeBasis,
+            utc("2026-05-21T12:00:45Z").timestamp_millis(),
+        )
+        .expect("toggle departure display to local time");
+        {
+            let sessions = lock_sessions();
+            let session = session_ref(&sessions, init.handle).expect("session");
+            assert_eq!(
+                session.altitude_planner_departure_time_basis,
+                crate::AltitudePlannerDepartureTimeBasis::Local,
+            );
+            assert_eq!(
+                session
+                    .app_state
+                    .active_plan
+                    .as_ref()
+                    .and_then(|plan| plan.planned_departure_time_epoch_ms),
+                Some(departure),
+            );
+        }
+
+        perform_flight_plan_command_in_session(
+            init.handle,
+            FlightPlanSessionCommand::SetAltitudePlannerDepartureInput {
+                field: crate::AltitudePlannerDepartureInputField::When,
+                input: "now".to_string(),
+            },
+            utc("2026-05-21T12:01:00Z").timestamp_millis(),
+        )
+        .expect("restore depart-now mode");
+        let sessions = lock_sessions();
+        assert_eq!(
+            session_ref(&sessions, init.handle)
+                .expect("session")
+                .app_state
+                .active_plan
+                .as_ref()
+                .and_then(|plan| plan.planned_departure_time_epoch_ms),
+            None
+        );
+    }
+
     fn data_status_box<'a>(
         snapshot: &'a UiSessionSnapshot,
         id: &str,
@@ -15406,6 +15574,7 @@ mod tests {
             destination: Some(AirportId("KBBB".to_string())),
             alternate: None,
             cruise_altitude_ft: None,
+            planned_departure_time_epoch_ms: None,
             notes: None,
             updated_at_epoch_ms: 0,
             version: 1,
@@ -16080,6 +16249,7 @@ mod tests {
             destination: Some(AirportId("KPAE".to_string())),
             alternate: None,
             cruise_altitude_ft: Some(6_000),
+            planned_departure_time_epoch_ms: None,
             notes: Some("NAVDB advance regression".to_string()),
             updated_at_epoch_ms: 0,
             version: 1,
@@ -16431,6 +16601,7 @@ mod tests {
             destination: None,
             alternate: None,
             cruise_altitude_ft: None,
+            planned_departure_time_epoch_ms: None,
             notes: None,
             updated_at_epoch_ms: 0,
             version: 1,
@@ -21757,6 +21928,7 @@ mod tests {
             destination: Some(AirportId("KOMA".to_string())),
             alternate: None,
             cruise_altitude_ft: None,
+            planned_departure_time_epoch_ms: None,
             notes: None,
             updated_at_epoch_ms: 0,
             version: 1,
@@ -21850,6 +22022,7 @@ mod tests {
             destination: Some(AirportId("KVCB".to_string())),
             alternate: None,
             cruise_altitude_ft: Some(3000),
+            planned_departure_time_epoch_ms: None,
             notes: None,
             updated_at_epoch_ms: 0,
             version: 1,
@@ -21911,6 +22084,7 @@ mod tests {
             destination: Some(AirportId("KRNT".to_string())),
             alternate: None,
             cruise_altitude_ft: Some(3000),
+            planned_departure_time_epoch_ms: None,
             notes: None,
             updated_at_epoch_ms: 0,
             version: 1,
@@ -21978,6 +22152,7 @@ mod tests {
             destination: None,
             alternate: None,
             cruise_altitude_ft: None,
+            planned_departure_time_epoch_ms: None,
             notes: None,
             updated_at_epoch_ms: 0,
             version: 1,
@@ -22045,6 +22220,7 @@ mod tests {
             destination: None,
             alternate: None,
             cruise_altitude_ft: None,
+            planned_departure_time_epoch_ms: None,
             notes: None,
             updated_at_epoch_ms: 0,
             version: 1,
@@ -22100,6 +22276,7 @@ mod tests {
             destination: None,
             alternate: None,
             cruise_altitude_ft: None,
+            planned_departure_time_epoch_ms: None,
             notes: None,
             updated_at_epoch_ms: 0,
             version: 1,
@@ -22236,6 +22413,7 @@ mod tests {
             destination: Some(AirportId("KPAE".to_string())),
             alternate: None,
             cruise_altitude_ft: Some(8000),
+            planned_departure_time_epoch_ms: None,
             notes: None,
             updated_at_epoch_ms: 0,
             version: 1,
@@ -22504,6 +22682,7 @@ mod tests {
             destination: Some(AirportId("KAAA".to_string())),
             alternate: None,
             cruise_altitude_ft: None,
+            planned_departure_time_epoch_ms: None,
             notes: None,
             updated_at_epoch_ms: 0,
             version: 1,
@@ -22804,6 +22983,7 @@ mod tests {
             destination: None,
             alternate: None,
             cruise_altitude_ft: None,
+            planned_departure_time_epoch_ms: None,
             notes: None,
             updated_at_epoch_ms: 0,
             version: 1,
@@ -25436,6 +25616,7 @@ mod tests {
             destination: None,
             alternate: None,
             cruise_altitude_ft: None,
+            planned_departure_time_epoch_ms: None,
             notes: None,
             updated_at_epoch_ms: 0,
             version: 1,
@@ -25738,6 +25919,7 @@ mod tests {
             destination: None,
             alternate: None,
             cruise_altitude_ft: None,
+            planned_departure_time_epoch_ms: None,
             notes: None,
             updated_at_epoch_ms: 0,
             version: 1,
@@ -25844,6 +26026,7 @@ mod tests {
             destination: None,
             alternate: None,
             cruise_altitude_ft: None,
+            planned_departure_time_epoch_ms: None,
             notes: None,
             updated_at_epoch_ms: 0,
             version: 1,
@@ -25948,6 +26131,7 @@ mod tests {
             destination: Some(AirportId("KAAA".to_string())),
             alternate: None,
             cruise_altitude_ft: None,
+            planned_departure_time_epoch_ms: None,
             notes: None,
             updated_at_epoch_ms: 0,
             version: 1,
@@ -26070,6 +26254,7 @@ mod tests {
             destination: Some(AirportId("KAAA".to_string())),
             alternate: None,
             cruise_altitude_ft: None,
+            planned_departure_time_epoch_ms: None,
             notes: None,
             updated_at_epoch_ms: 0,
             version: 1,
@@ -26304,6 +26489,7 @@ mod tests {
             destination: Some(AirportId("KAAA".to_string())),
             alternate: None,
             cruise_altitude_ft: None,
+            planned_departure_time_epoch_ms: None,
             notes: None,
             updated_at_epoch_ms: 0,
             version: 1,
@@ -26487,6 +26673,7 @@ mod tests {
             destination: None,
             alternate: None,
             cruise_altitude_ft: None,
+            planned_departure_time_epoch_ms: None,
             notes: None,
             updated_at_epoch_ms: 0,
             version: 1,

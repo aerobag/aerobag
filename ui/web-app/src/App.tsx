@@ -3968,6 +3968,20 @@ export default function App() {
               "altitude_planner_action",
             );
           }}
+          onSetDepartureInput={async (field, input) => {
+            if (!uiSession) return;
+            applySessionSnapshot(
+              await uiSession.setAltitudePlannerDepartureInput(field, input),
+              "altitude_planner_departure_input",
+            );
+          }}
+          onToggleDepartureTimeBasis={async () => {
+            if (!uiSession) return;
+            applySessionSnapshot(
+              await uiSession.toggleAltitudePlannerDepartureTimeBasis(),
+              "altitude_planner_departure_basis",
+            );
+          }}
         />
       </div>
 
@@ -8288,11 +8302,18 @@ function AltitudePlannerPage(props: {
   onSelectPage: (page: AppPage) => void;
   onQueryAltitudeComparisons: () => Promise<AltitudeComparisonPanelUiView>;
   onPerformAltitudePlannerAction: (actionUid: string) => void | Promise<void>;
+  onSetDepartureInput: (field: "time" | "when", input: string) => void | Promise<void>;
+  onToggleDepartureTimeBasis: () => void | Promise<void>;
 }) {
   const planner = props.planUiState.altitude_planner;
   const [panel, setPanel] = useState<AltitudeComparisonPanelUiView | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [departureTimeInput, setDepartureTimeInput] = useState(planner.departure.time_value);
+  const [departureWhenInput, setDepartureWhenInput] = useState(planner.departure.when_value);
+  const departureTimeFocused = useRef(false);
+  const departureWhenFocused = useRef(false);
+  const suppressDepartureBlurSubmit = useRef(false);
   const { toast: disabledActionToast, show: showDisabledAction } = useDisabledActionToast();
 
   const reload = () => {
@@ -8311,17 +8332,47 @@ function AltitudePlannerPage(props: {
     if (props.page === "altitude") reload();
   }, [props.page, props.planUiState.plan_version, planner.estimate_summary.label]);
 
+  useEffect(() => {
+    if (!departureTimeFocused.current) setDepartureTimeInput(planner.departure.time_value);
+    if (!departureWhenFocused.current) setDepartureWhenInput(planner.departure.when_value);
+  }, [planner.departure.time_value, planner.departure.when_value]);
+
   const performAction = (actionUid: string) => {
     setError(null);
     void Promise.resolve(props.onPerformAltitudePlannerAction(actionUid))
       .catch((reason: unknown) => setError(errorMessage(reason)));
   };
 
+  const submitDepartureInput = (field: "time" | "when", input: string) => {
+    setError(null);
+    void Promise.resolve(props.onSetDepartureInput(field, input))
+      .catch((reason: unknown) => setError(errorMessage(reason)));
+  };
+
+  const toggleDepartureTimeBasis = () => {
+    setError(null);
+    void (async () => {
+      try {
+        if (departureTimeInput !== planner.departure.time_value) {
+          await props.onSetDepartureInput("time", departureTimeInput);
+        }
+        if (departureWhenInput !== planner.departure.when_value) {
+          await props.onSetDepartureInput("when", departureWhenInput);
+        }
+        await props.onToggleDepartureTimeBasis();
+      } catch (reason: unknown) {
+        setError(errorMessage(reason));
+      } finally {
+        suppressDepartureBlurSubmit.current = false;
+      }
+    })();
+  };
+
   return (
     <section className="appPage altitudePlannerPage">
       <header className="altitudePlannerPageHeader">
         <h1>{planner.title}</h1>
-        <div className="altitudePlannerControls">
+        <div className="altitudePlannerControls" data-testid="altitude-planner-control-tray">
           {planner.controls.map((control) => {
             const disabledReason = disabledReasonText(control.disabled_reason);
             return (
@@ -8344,10 +8395,74 @@ function AltitudePlannerPage(props: {
               </button>
             );
           })}
+          <section
+            className={`altitudePlannerDeparture${planner.departure.enabled ? "" : " isDisabled"}`}
+            aria-label={planner.departure.title}
+            title={planner.departure.disabled_reason ?? undefined}
+          >
+            <h2>{planner.departure.title}</h2>
+            <label>
+              {planner.departure.time_label ? <span>{planner.departure.time_label}</span> : null}
+              <input
+                type="text"
+                inputMode="text"
+                value={departureTimeInput}
+                disabled={!planner.departure.enabled}
+                aria-label="Departure time"
+                onChange={(event) => setDepartureTimeInput(event.currentTarget.value)}
+                onFocus={() => { departureTimeFocused.current = true; }}
+                onBlur={() => {
+                  departureTimeFocused.current = false;
+                  if (suppressDepartureBlurSubmit.current) return;
+                  if (departureTimeInput !== planner.departure.time_value) {
+                    submitDepartureInput("time", departureTimeInput);
+                  }
+                }}
+                onKeyDown={(event) => {
+                  if (event.key === "Enter") event.currentTarget.blur();
+                }}
+              />
+              <button
+                type="button"
+                className="trayButton altitudePlannerDepartureBasis"
+                disabled={!planner.departure.enabled}
+                onMouseDown={() => { suppressDepartureBlurSubmit.current = true; }}
+                onClick={toggleDepartureTimeBasis}
+              >
+                {planner.departure.basis_label}
+              </button>
+            </label>
+            <label>
+              <span>{planner.departure.when_label}</span>
+              <input
+                type="text"
+                inputMode="text"
+                value={departureWhenInput}
+                disabled={!planner.departure.enabled}
+                aria-label="Departure offset"
+                onChange={(event) => setDepartureWhenInput(event.currentTarget.value)}
+                onFocus={() => { departureWhenFocused.current = true; }}
+                onBlur={() => {
+                  departureWhenFocused.current = false;
+                  if (suppressDepartureBlurSubmit.current) return;
+                  if (departureWhenInput !== planner.departure.when_value) {
+                    submitDepartureInput("when", departureWhenInput);
+                  }
+                }}
+                onKeyDown={(event) => {
+                  if (event.key === "Enter") event.currentTarget.blur();
+                }}
+              />
+              <span>{planner.departure.when_suffix}</span>
+            </label>
+          </section>
         </div>
       </header>
 
       <div className="altitudePlannerPageBody">
+        {planner.forecast ? (
+          <div className="altitudePlannerProvenance">{planner.forecast.summary}</div>
+        ) : null}
         {(planner.unavailable_reasons ?? []).length > 0 ? (
           <div className="altitudePlannerReasons" data-testid="altitude-planner-status">
             {(planner.unavailable_reasons ?? []).map((reason) => (
@@ -8357,6 +8472,11 @@ function AltitudePlannerPage(props: {
         ) : null}
         {error ? <p className="altitudePlannerError">{error}</p> : null}
         <div className="altitudeComparisonRegion" aria-busy={loading}>
+          {(panel?.advisories ?? []).length > 0 ? (
+            <div className="altitudePlannerAdvisories">
+              {(panel?.advisories ?? []).map((message) => <p key={message}>{message}</p>)}
+            </div>
+          ) : null}
           {panel ? (
             <div className="altitudeComparisonTable" data-testid="altitude-comparison-panel">
               <div className="altitudeComparisonHeader">

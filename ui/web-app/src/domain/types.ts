@@ -247,6 +247,18 @@ export type AltitudePlannerControlUiView = {
   disabled_reason?: string | null;
 };
 
+export type AltitudePlannerDepartureEditorUiView = {
+  title: string;
+  time_label: string;
+  time_value: string;
+  basis_label: string;
+  when_label: string;
+  when_value: string;
+  when_suffix: string;
+  enabled: boolean;
+  disabled_reason?: string | null;
+};
+
 export type AltitudePlannerUnavailableReason = {
   code:
     | "aircraft_profile_unavailable"
@@ -264,12 +276,14 @@ export type AltitudeComparisonUiView = {
   selected: boolean;
   enabled: boolean;
   disabled_reason?: string | null;
+  advisory?: string | null;
   cells: FlightDataCell[];
 };
 
 export type AltitudeComparisonPanelUiView = {
   columns: FlightDataColumn[];
   rows: AltitudeComparisonUiView[];
+  advisories?: string[];
 };
 
 export type AltitudePlannerUiView = {
@@ -280,6 +294,9 @@ export type AltitudePlannerUiView = {
     estimate_kind: FlightEstimateKind;
   };
   controls: AltitudePlannerControlUiView[];
+  departure: AltitudePlannerDepartureEditorUiView;
+  forecast?: { summary: string } | null;
+  advisories?: string[];
   unavailable_reasons?: AltitudePlannerUnavailableReason[];
 };
 

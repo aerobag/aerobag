@@ -724,6 +724,8 @@ export interface UiSession {
   performFlightPlanRowAction(rowUid: string, actionUid: string): Promise<UiSessionSnapshot>;
   altitudeComparisons(): Promise<AltitudeComparisonPanelUiView>;
   performAltitudePlannerAction(actionUid: string): Promise<UiSessionSnapshot>;
+  setAltitudePlannerDepartureInput(field: "time" | "when", input: string): Promise<UiSessionSnapshot>;
+  toggleAltitudePlannerDepartureTimeBasis(): Promise<UiSessionSnapshot>;
   performStatusAction(actionId: string): Promise<UiSessionSnapshot>;
   performMapSelectionAction(action: string): Promise<UiSessionSnapshot>;
   activateNextLeg(): Promise<UiSessionSnapshot>;
@@ -1383,6 +1385,16 @@ export class WasmAppCoreAdapter implements AppCoreAdapter {
           kind: "perform_altitude_planner_action",
           action_uid: actionUid,
         });
+      },
+      setAltitudePlannerDepartureInput: async (field, input) => {
+        return performFlightPlanCommand({
+          kind: "set_altitude_planner_departure_input",
+          field,
+          input,
+        });
+      },
+      toggleAltitudePlannerDepartureTimeBasis: async () => {
+        return performFlightPlanCommand({ kind: "toggle_altitude_planner_departure_time_basis" });
       },
       performStatusAction: async (actionId) => {
         snapshot = await runSessionOperation<UiSessionSnapshot>(() =>

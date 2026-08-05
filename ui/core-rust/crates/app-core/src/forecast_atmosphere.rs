@@ -18,6 +18,7 @@ use crate::{AtmosphereModel, AtmosphereSample, LatLon, NavKvLookup, NavKvStore};
 
 const METERS_PER_FOOT: f64 = 0.3048;
 const KNOTS_PER_MPS: f64 = 1.943_844_492_440_6;
+pub(crate) const TIME_OUTSIDE_FORECAST_COVERAGE: &str = "time falls outside forecast coverage";
 
 pub(crate) struct InstalledForecastAtmosphere {
     manifest: AtmosphereManifest,
@@ -293,7 +294,7 @@ fn interpolation_indices(
 
 fn time_interpolation_indices(times: &[i64], epoch_ms: i64) -> Result<(usize, usize, f64), String> {
     if epoch_ms < times[0] || epoch_ms > *times.last().unwrap() {
-        return Err("time falls outside forecast coverage".to_string());
+        return Err(TIME_OUTSIDE_FORECAST_COVERAGE.to_string());
     }
     for (lower, pair) in times.windows(2).enumerate() {
         if epoch_ms <= pair[1] {

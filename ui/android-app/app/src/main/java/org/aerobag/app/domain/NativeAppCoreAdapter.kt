@@ -1296,6 +1296,24 @@ class NativeUiSession internal constructor(
         )
     }
 
+    fun setAltitudePlannerDepartureInput(field: String, input: String): UiSessionSnapshot {
+        return performFlightPlanCommand(
+            "setAltitudePlannerDepartureInput",
+            buildJsonObject {
+                put("kind", "set_altitude_planner_departure_input")
+                put("field", field)
+                put("input", input)
+            },
+        )
+    }
+
+    fun toggleAltitudePlannerDepartureTimeBasis(): UiSessionSnapshot {
+        return performFlightPlanCommand(
+            "toggleAltitudePlannerDepartureTimeBasis",
+            buildJsonObject { put("kind", "toggle_altitude_planner_departure_time_basis") },
+        )
+    }
+
     fun performStatusAction(actionId: String): UiSessionSnapshot {
         return runPagedSnapshot("performStatusAction") {
             bridge.performStatusActionInSessionJson(handle, actionId)
@@ -3529,6 +3547,19 @@ private fun WireAltitudePlannerUiView.toUi() = AltitudePlannerUiView(
             disabledReason = it.disabled_reason,
         )
     },
+    departure = AltitudePlannerDepartureEditorUiView(
+        title = departure.title,
+        timeLabel = departure.time_label,
+        timeValue = departure.time_value,
+        basisLabel = departure.basis_label,
+        whenLabel = departure.when_label,
+        whenValue = departure.when_value,
+        whenSuffix = departure.when_suffix,
+        enabled = departure.enabled,
+        disabledReason = departure.disabled_reason,
+    ),
+    forecast = forecast?.let { AltitudePlannerForecastUiView(summary = it.summary) },
+    advisories = advisories,
     unavailableReasons = unavailable_reasons.map {
         AltitudePlannerUnavailableReason(code = it.code, message = it.message)
     },
@@ -3542,9 +3573,11 @@ private fun WireAltitudeComparisonPanelUiView.toUi() = AltitudeComparisonPanelUi
             selected = row.selected,
             enabled = row.enabled,
             disabledReason = row.disabled_reason,
+            advisory = row.advisory,
             cells = row.cells.map { it.toUi() },
         )
     },
+    advisories = advisories,
 )
 
 private fun AltitudePlannerUiView.toWire() = WireAltitudePlannerUiView(
@@ -3563,6 +3596,19 @@ private fun AltitudePlannerUiView.toWire() = WireAltitudePlannerUiView(
             disabled_reason = it.disabledReason,
         )
     },
+    departure = WireAltitudePlannerDepartureEditorUiView(
+        title = departure.title,
+        time_label = departure.timeLabel,
+        time_value = departure.timeValue,
+        basis_label = departure.basisLabel,
+        when_label = departure.whenLabel,
+        when_value = departure.whenValue,
+        when_suffix = departure.whenSuffix,
+        enabled = departure.enabled,
+        disabled_reason = departure.disabledReason,
+    ),
+    forecast = forecast?.let { WireAltitudePlannerForecastUiView(summary = it.summary) },
+    advisories = advisories,
     unavailable_reasons = unavailableReasons.map {
         WireAltitudePlannerUnavailableReason(code = it.code, message = it.message)
     },

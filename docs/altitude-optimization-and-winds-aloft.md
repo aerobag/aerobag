@@ -57,6 +57,22 @@ navigation with ownship groundspeed continues to use the familiar groundspeed
 extrapolation instead and reports `MODE GS`; altitude comparison always uses the
 selected planning atmosphere.
 
+Flight plans may carry a fixed proposed departure epoch; an absent value means
+"depart now" and advances with core's wall clock. Active navigation always
+starts trajectory comparison from current ownship position, altitude, and time,
+regardless of a stored preflight departure. Core parses the altitude planner's
+raw `Time` and `When` text, interprets local time using the platform's declared
+IANA timezone, owns the Local/Z display basis, and projects normalized values
+for both platforms. Web and Android provide text input and no date arithmetic.
+
+Forecast use is never extrapolated in time. If the selected forecast cannot
+cover the complete trajectory in time, space, or altitude, core recomputes the
+entire result with the same aircraft profile under no-wind/ISA rather than
+holding an edge forecast or mixing forecast and no-wind segments. The estimate
+basis and altitude-comparison advisory explicitly report that substitution.
+The planner also reports the NOAA model cycle, its age, and the forecast valid
+window from the atmosphere manifest.
+
 ## Source Chosen
 
 Use NOAA/NCEP GFS 0.25 degree forecast data through the NOMADS GRIB filter.

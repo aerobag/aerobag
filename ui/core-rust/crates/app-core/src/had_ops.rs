@@ -9,6 +9,7 @@ use std::{
 };
 
 use chrono::{DateTime, Utc};
+use chrono_tz::Tz;
 use procedure_geometry_types as pgt;
 #[cfg(test)]
 use product_contracts::WaypointSearchMatchKind;
@@ -39,11 +40,25 @@ use crate::{
     SequencingMode, WaypointIdentifierSuggestion, REQUIRED_NAV_DB_CONTRACT_ID,
 };
 
-#[derive(Debug, Clone, Copy, Default)]
+#[derive(Debug, Clone, Copy)]
 pub(crate) struct FlightPlanLiveData {
     pub ownship_position: Option<LatLon>,
     pub ownship_altitude_ft: Option<f64>,
     pub now_epoch_ms: Option<i64>,
+    pub local_time_zone: Tz,
+    pub departure_time_basis: crate::AltitudePlannerDepartureTimeBasis,
+}
+
+impl Default for FlightPlanLiveData {
+    fn default() -> Self {
+        Self {
+            ownship_position: None,
+            ownship_altitude_ft: None,
+            now_epoch_ms: None,
+            local_time_zone: chrono_tz::UTC,
+            departure_time_basis: crate::AltitudePlannerDepartureTimeBasis::Local,
+        }
+    }
 }
 
 const NAV_DB_ROOT_MEMBER_PATH: &str = "root";
@@ -1294,6 +1309,7 @@ static NO_WIND_ATMOSPHERE: crate::NoWindIsaAtmosphere = crate::NoWindIsaAtmosphe
 #[derive(Clone, Copy)]
 pub(crate) struct PlannerAtmosphereSelection<'a> {
     model: Option<&'a dyn crate::AtmosphereModel>,
+    manifest: Option<&'a product_contracts::AtmosphereManifest>,
     label: &'static str,
     forecast_selected: bool,
     alternate_available: bool,
@@ -1304,6 +1320,7 @@ impl PlannerAtmosphereSelection<'static> {
     pub(crate) fn no_wind(forecast_available: bool) -> Self {
         Self {
             model: Some(&NO_WIND_ATMOSPHERE),
+            manifest: None,
             label: "NO WIND",
             forecast_selected: false,
             alternate_available: forecast_available,
@@ -1313,9 +1330,13 @@ impl PlannerAtmosphereSelection<'static> {
 }
 
 impl<'a> PlannerAtmosphereSelection<'a> {
-    pub(crate) fn gfs(model: Option<&'a dyn crate::AtmosphereModel>) -> Self {
+    pub(crate) fn gfs(
+        model: Option<&'a dyn crate::AtmosphereModel>,
+        manifest: Option<&'a product_contracts::AtmosphereManifest>,
+    ) -> Self {
         Self {
             model,
+            manifest,
             label: "FORECAST",
             forecast_selected: true,
             // Even an unavailable selected model must allow returning to no-wind.
@@ -1427,12 +1448,141 @@ fn prototype_pa46_prediction(
     })
 }
 
+#[derive(Debug)]
+struct PlannerPrediction {
+    prediction: crate::TrajectoryPrediction,
+    fallback_reason: Option<String>,
+}
+
+fn planner_wind_fallback(
+    prediction: &PlannerPrediction,
+    atmosphere: PlannerAtmosphereSelection<'_>,
+    departure_epoch_ms: i64,
+) -> Option<crate::AltitudePlannerWindFallback> {
+    let reason = prediction.fallback_reason.as_ref()?;
+    if reason == crate::forecast_atmosphere::TIME_OUTSIDE_FORECAST_COVERAGE {
+        if let Some(valid_through_epoch_ms) = atmosphere
+            .manifest
+            .and_then(|manifest| manifest.valid_times_epoch_ms.last())
+            .copied()
+        {
+            return Some(crate::AltitudePlannerWindFallback::ForecastCoverage {
+                valid_through_epoch_ms,
+                flight_end_epoch_ms: departure_epoch_ms.saturating_add(
+                    (prediction.prediction.total_ete_seconds * 1_000.0).round() as i64,
+                ),
+            });
+        }
+    }
+    Some(crate::AltitudePlannerWindFallback::Other {
+        reason: reason.clone(),
+    })
+}
+
+fn prototype_pa46_prediction_for_selection(
+    legs: &[crate::TrajectoryRouteLeg],
+    start_altitude_ft: f64,
+    cruise_altitude_ft: f64,
+    destination_altitude_ft: f64,
+    departure_epoch_ms: i64,
+    atmosphere: PlannerAtmosphereSelection<'_>,
+) -> Result<PlannerPrediction, crate::TrajectoryPlannerError> {
+    if !atmosphere.forecast_selected {
+        return prototype_pa46_prediction(
+            legs,
+            start_altitude_ft,
+            cruise_altitude_ft,
+            destination_altitude_ft,
+            departure_epoch_ms,
+            atmosphere.model.unwrap_or(&NO_WIND_ATMOSPHERE),
+        )
+        .map(|prediction| PlannerPrediction {
+            prediction,
+            fallback_reason: None,
+        });
+    }
+
+    let forecast_result = atmosphere.model.map_or_else(
+        || {
+            Err(crate::TrajectoryPlannerError::AtmosphereUnavailable(
+                "the forecast product is unavailable".to_string(),
+            ))
+        },
+        |model| {
+            prototype_pa46_prediction(
+                legs,
+                start_altitude_ft,
+                cruise_altitude_ft,
+                destination_altitude_ft,
+                departure_epoch_ms,
+                model,
+            )
+        },
+    );
+    match forecast_result {
+        Ok(prediction) => Ok(PlannerPrediction {
+            prediction,
+            fallback_reason: None,
+        }),
+        Err(crate::TrajectoryPlannerError::AtmosphereUnavailable(reason)) => {
+            prototype_pa46_prediction(
+                legs,
+                start_altitude_ft,
+                cruise_altitude_ft,
+                destination_altitude_ft,
+                departure_epoch_ms,
+                &NO_WIND_ATMOSPHERE,
+            )
+            .map(|prediction| PlannerPrediction {
+                prediction,
+                fallback_reason: Some(reason),
+            })
+        }
+        Err(error) => Err(error),
+    }
+}
+
+fn planner_forecast_ui(
+    atmosphere: PlannerAtmosphereSelection<'_>,
+    now_epoch_ms: i64,
+) -> Option<crate::AltitudePlannerForecastUiView> {
+    let manifest = atmosphere.manifest?;
+    let cycle = DateTime::<Utc>::from_timestamp_millis(manifest.cycle_time_epoch_ms)?;
+    let valid_from = manifest
+        .valid_times_epoch_ms
+        .first()
+        .and_then(|epoch_ms| DateTime::<Utc>::from_timestamp_millis(*epoch_ms))?;
+    let valid_through = manifest
+        .valid_times_epoch_ms
+        .last()
+        .and_then(|epoch_ms| DateTime::<Utc>::from_timestamp_millis(*epoch_ms))?;
+    let age_ms = now_epoch_ms
+        .saturating_sub(manifest.cycle_time_epoch_ms)
+        .max(0);
+    let age_hours = age_ms as f64 / 3_600_000.0;
+    let age = if age_hours < 1.0 {
+        format!("{}m old", (age_ms / 60_000).max(0))
+    } else {
+        format!("{age_hours:.1}h old")
+    };
+    Some(crate::AltitudePlannerForecastUiView {
+        summary: format!(
+            "NOAA {} cycle {} ({age}); valid {} through {}.",
+            manifest.model_id.to_uppercase(),
+            cycle.format("%m/%d %H:%MZ"),
+            valid_from.format("%m/%d %H:%MZ"),
+            valid_through.format("%m/%d %H:%MZ"),
+        ),
+    })
+}
+
 fn prototype_pa46_altitude_comparisons(
     materialized: &crate::flight_plan_materialization::MaterializedFlightPlan,
     live_data: FlightPlanLiveData,
     origin_altitude_ft: Option<f64>,
     destination_altitude_ft: Option<f64>,
     selected_altitude_ft: i32,
+    departure_epoch_ms: i64,
     atmosphere: PlannerAtmosphereSelection<'_>,
 ) -> Vec<crate::AltitudeComparisonUiView> {
     let navigation_active = materialized.active.is_some();
@@ -1465,8 +1615,6 @@ fn prototype_pa46_altitude_comparisons(
                 Some("The flight plan destination has no known elevation.")
             } else if legs.is_empty() {
                 Some("The flight plan has no flyable route geometry.")
-            } else if atmosphere.model.is_none() {
-                Some("The selected wind model is unavailable.")
             } else if !navigation_active
                 && start_altitude_ft.is_some_and(|start| altitude_ft as f64 <= start)
             {
@@ -1479,19 +1627,19 @@ fn prototype_pa46_altitude_comparisons(
                 None
             };
             let prediction = unavailable.is_none().then(|| {
-                prototype_pa46_prediction(
+                prototype_pa46_prediction_for_selection(
                     &legs,
                     start_altitude_ft.expect("availability checked above"),
                     altitude_ft as f64,
                     destination_altitude_ft.expect("availability checked above"),
-                    live_data.now_epoch_ms.unwrap_or_default(),
-                    atmosphere.model.expect("availability checked above"),
+                    departure_epoch_ms,
+                    atmosphere,
                 )
             });
-            let (prediction, disabled_reason) = match prediction {
-                Some(Ok(prediction)) => (Some(prediction), None),
-                Some(Err(error)) => (None, Some(error.to_string())),
-                None => (None, unavailable.map(str::to_string)),
+            let (prediction, fallback_reason, disabled_reason) = match prediction {
+                Some(Ok(outcome)) => (Some(outcome.prediction), outcome.fallback_reason, None),
+                Some(Err(error)) => (None, None, Some(error.to_string())),
+                None => (None, None, unavailable.map(str::to_string)),
             };
             let enabled = prediction.is_some();
             let estimate = prediction
@@ -1509,6 +1657,15 @@ fn prototype_pa46_altitude_comparisons(
                 selected,
                 enabled,
                 disabled_reason,
+                advisory: fallback_reason
+                    .filter(|reason| {
+                        reason != crate::forecast_atmosphere::TIME_OUTSIDE_FORECAST_COVERAGE
+                    })
+                    .map(|reason| {
+                        format!(
+                            "Forecast unavailable for this comparison ({reason}); using no-wind/ISA."
+                        )
+                    }),
                 cells: crate::altitude_comparison_cells(altitude_ft, estimate, wind),
             }
         })
@@ -1548,6 +1705,12 @@ pub(crate) fn flight_plan_ui_projection(
         )
         .map_err(|err| HadReadError::Fatal(err.message))?;
     let use_live_eta = live_data.ownship_position.is_some() && materialized.active.is_some();
+    let now_epoch_ms = live_data.now_epoch_ms.unwrap_or_default();
+    let departure_epoch_ms = if materialized.active.is_some() {
+        now_epoch_ms
+    } else {
+        plan.planned_departure_time_epoch_ms.unwrap_or(now_epoch_ms)
+    };
     let cruise_altitude_ft = plan
         .cruise_altitude_ft
         .unwrap_or(PROTOTYPE_PA46_CRUISE_ALTITUDE_FT);
@@ -1571,27 +1734,19 @@ pub(crate) fn flight_plan_ui_projection(
     };
     let full_route_legs = prototype_pa46_route_legs(&materialized, None);
     let mut performance_regime_available = true;
-    let mut wind_model_available = atmosphere.model.is_some();
+    let wind_model_available = true;
     let modeled_prediction = if !use_live_eta && materialized.active.is_none() {
-        match (
-            origin_altitude_ft,
-            destination_altitude_ft,
-            atmosphere.model,
-        ) {
-            (Some(origin), Some(destination), Some(atmosphere_model)) => {
-                match prototype_pa46_prediction(
+        match (origin_altitude_ft, destination_altitude_ft) {
+            (Some(origin), Some(destination)) => {
+                match prototype_pa46_prediction_for_selection(
                     &full_route_legs,
                     origin,
                     cruise_altitude_ft as f64,
                     destination,
-                    live_data.now_epoch_ms.unwrap_or_default(),
-                    atmosphere_model,
+                    departure_epoch_ms,
+                    atmosphere,
                 ) {
                     Ok(prediction) => Some(prediction),
-                    Err(crate::TrajectoryPlannerError::AtmosphereUnavailable(_)) => {
-                        wind_model_available = false;
-                        None
-                    }
                     Err(_) => {
                         performance_regime_available = false;
                         None
@@ -1617,12 +1772,22 @@ pub(crate) fn flight_plan_ui_projection(
         wind_model_action_uid: atmosphere.action_uid.map(str::to_string),
         performance_regime_available,
         live_ground_speed_estimate_active: use_live_eta,
+        departure_time_epoch_ms: plan.planned_departure_time_epoch_ms,
+        effective_departure_time_epoch_ms: departure_epoch_ms,
+        now_epoch_ms,
+        departure_time_basis: live_data.departure_time_basis,
+        local_time_zone: live_data.local_time_zone,
+        forecast: planner_forecast_ui(atmosphere, now_epoch_ms),
+        wind_fallback: modeled_prediction.as_ref().and_then(|prediction| {
+            planner_wind_fallback(prediction, atmosphere, departure_epoch_ms)
+        }),
         ..crate::AltitudePlannerUiInput::default()
     });
     let modeled_by_row_id = modeled_prediction
         .as_ref()
         .map(|prediction| {
             prediction
+                .prediction
                 .legs
                 .iter()
                 .map(|leg| (leg.row_id.clone(), leg))
@@ -1734,8 +1899,8 @@ pub(crate) fn flight_plan_ui_projection(
             modeled_prediction
                 .as_ref()
                 .map(|prediction| crate::FlightTimeFuelEstimate {
-                    cumulative_ete_seconds: Some(prediction.total_ete_seconds),
-                    cumulative_fuel_gal: Some(prediction.total_fuel_gal),
+                    cumulative_ete_seconds: Some(prediction.prediction.total_ete_seconds),
+                    cumulative_fuel_gal: Some(prediction.prediction.total_fuel_gal),
                     estimate_kind: crate::FlightEstimateKind::Modeled,
                 }),
         ));
@@ -1800,17 +1965,33 @@ pub(crate) fn altitude_comparison_panel(
         return Err(HadReadError::NeedPages(missing_pages));
     }
 
+    let departure_epoch_ms = if materialized.active.is_some() {
+        live_data.now_epoch_ms.unwrap_or_default()
+    } else {
+        plan.planned_departure_time_epoch_ms
+            .unwrap_or_else(|| live_data.now_epoch_ms.unwrap_or_default())
+    };
+    let rows = prototype_pa46_altitude_comparisons(
+        &materialized,
+        live_data,
+        origin_altitude_ft,
+        destination_altitude_ft,
+        plan.cruise_altitude_ft
+            .unwrap_or(PROTOTYPE_PA46_CRUISE_ALTITUDE_FT),
+        departure_epoch_ms,
+        atmosphere,
+    );
+    let advisories = rows
+        .iter()
+        .filter_map(|row| row.advisory.clone())
+        .map(|message| (message, ()))
+        .collect::<BTreeMap<_, ()>>()
+        .into_keys()
+        .collect();
     Ok(crate::AltitudeComparisonPanelUiView {
         columns: crate::altitude_comparison_columns(),
-        rows: prototype_pa46_altitude_comparisons(
-            &materialized,
-            live_data,
-            origin_altitude_ft,
-            destination_altitude_ft,
-            plan.cruise_altitude_ft
-                .unwrap_or(PROTOTYPE_PA46_CRUISE_ALTITUDE_FT),
-            atmosphere,
-        ),
+        rows,
+        advisories,
     })
 }
 
@@ -5095,6 +5276,7 @@ mod tests {
             destination: Some(AirportId("KCCC".to_string())),
             alternate: None,
             cruise_altitude_ft: None,
+            planned_departure_time_epoch_ms: None,
             notes: None,
             updated_at_epoch_ms: 0,
             version: 1,
@@ -5141,6 +5323,29 @@ mod tests {
             pressure_altitude_ft: f64,
             _epoch_ms: i64,
         ) -> Result<crate::AtmosphereSample, String> {
+            Ok(crate::AtmosphereSample {
+                wind_east_kt: 50.0,
+                wind_north_kt: 0.0,
+                temperature_c: 15.0 - pressure_altitude_ft * 0.001_981_2,
+            })
+        }
+    }
+
+    #[derive(Debug, Clone, Copy)]
+    struct ForecastUntilAtmosphere {
+        valid_through_epoch_ms: i64,
+    }
+
+    impl crate::AtmosphereModel for ForecastUntilAtmosphere {
+        fn sample(
+            &self,
+            _position: LatLon,
+            pressure_altitude_ft: f64,
+            epoch_ms: i64,
+        ) -> Result<crate::AtmosphereSample, String> {
+            if epoch_ms > self.valid_through_epoch_ms {
+                return Err(crate::forecast_atmosphere::TIME_OUTSIDE_FORECAST_COVERAGE.to_string());
+            }
             Ok(crate::AtmosphereSample {
                 wind_east_kt: 50.0,
                 wind_north_kt: 0.0,
@@ -5375,9 +5580,10 @@ mod tests {
             Some(SELECT_GFS_WIND_ACTION_UID)
         );
 
-        let gfs = project(PlannerAtmosphereSelection::gfs(Some(
-            &ConstantForecastAtmosphere,
-        )));
+        let gfs = project(PlannerAtmosphereSelection::gfs(
+            Some(&ConstantForecastAtmosphere),
+            None,
+        ));
         assert_eq!(wind_control(&gfs).label, "WIND\nFORECAST");
         assert_eq!(
             wind_control(&gfs).action_uid.as_deref(),
@@ -5395,7 +5601,7 @@ mod tests {
     }
 
     #[test]
-    fn selected_missing_forecast_reports_wind_not_performance_failure() {
+    fn selected_missing_forecast_visibly_falls_back_to_no_wind_model() {
         let aaa = LatLon { lat: 0.0, lon: 0.0 };
         let bbb = LatLon { lat: 0.0, lon: 1.5 };
         let ccc = LatLon { lat: 0.0, lon: 3.0 };
@@ -5407,31 +5613,149 @@ mod tests {
             crate::project_ui_state(&plan),
             crate::FlightDataComputer::default(),
             FlightPlanLiveData::default(),
-            PlannerAtmosphereSelection::gfs(None),
+            PlannerAtmosphereSelection::gfs(None, None),
         )
         .expect("project unavailable forecast")
         .ui_state;
 
-        assert!(state
+        assert!(!state
             .altitude_planner
             .unavailable_reasons
             .iter()
             .any(|reason| {
                 reason.code == crate::AltitudePlannerUnavailableReasonCode::WindModelUnavailable
             }));
-        assert!(!state
-            .altitude_planner
-            .unavailable_reasons
-            .iter()
-            .any(|reason| {
-                reason.code
-                    == crate::AltitudePlannerUnavailableReasonCode::PerformanceRegimeUnavailable
-            }));
+        assert_eq!(
+            state.altitude_planner.estimate_summary.label,
+            "Estimate basis:\nNo-wind fallback\n12,000 cruise"
+        );
+        assert!(state.altitude_planner.advisories.iter().any(|message| {
+            message.contains("forecast product is unavailable")
+                && message.contains("showing no-wind/ISA estimates")
+        }));
         assert!(wind_control(&state).enabled);
         assert_eq!(
             wind_control(&state).action_uid.as_deref(),
             Some(SELECT_NO_WIND_ACTION_UID)
         );
+    }
+
+    #[test]
+    fn planned_departure_beyond_forecast_coverage_uses_visible_no_wind_fallback() {
+        let aaa = LatLon { lat: 0.0, lon: 0.0 };
+        let bbb = LatLon { lat: 0.0, lon: 1.5 };
+        let ccc = LatLon { lat: 0.0, lon: 3.0 };
+        let store = three_airport_nav_store(aaa, bbb, ccc);
+        let mut plan = three_airport_test_plan();
+        plan.planned_departure_time_epoch_ms = Some(48 * 60 * 60 * 1_000);
+        let forecast = ForecastUntilAtmosphere {
+            valid_through_epoch_ms: 24 * 60 * 60 * 1_000,
+        };
+        let (mut manifest, _, _, _) = crate::forecast_atmosphere::tests::test_forecast_payload();
+        manifest.valid_times_epoch_ms = vec![0, forecast.valid_through_epoch_ms];
+
+        let state = flight_plan_ui_projection(
+            &store,
+            plan.clone(),
+            crate::project_ui_state(&plan),
+            crate::FlightDataComputer::default(),
+            FlightPlanLiveData {
+                now_epoch_ms: Some(0),
+                departure_time_basis: crate::AltitudePlannerDepartureTimeBasis::Utc,
+                ..FlightPlanLiveData::default()
+            },
+            PlannerAtmosphereSelection::gfs(Some(&forecast), Some(&manifest)),
+        )
+        .expect("project scheduled departure")
+        .ui_state;
+
+        assert_eq!(state.altitude_planner.departure.when_value, "2d");
+        assert_eq!(
+            state.altitude_planner.estimate_summary.label,
+            "Estimate basis:\nNo-wind fallback\n12,000 cruise"
+        );
+        assert!(state.altitude_planner.advisories.is_empty());
+        let forecast_status = state
+            .altitude_planner
+            .forecast
+            .expect("coverage fallback status");
+        assert!(forecast_status.summary.starts_with(
+            "Currently available forecast product valid until 0000Z, flight extends until "
+        ));
+        assert!(forecast_status.summary.ends_with(". Using NO-WIND model."));
+
+        let panel = altitude_comparison_panel(
+            &store,
+            plan,
+            FlightPlanLiveData {
+                now_epoch_ms: Some(0),
+                departure_time_basis: crate::AltitudePlannerDepartureTimeBasis::Utc,
+                ..FlightPlanLiveData::default()
+            },
+            PlannerAtmosphereSelection::gfs(Some(&forecast), Some(&manifest)),
+        )
+        .expect("project comparison panel");
+        assert!(
+            panel.advisories.is_empty(),
+            "coverage fallback must not also produce a comparison advisory"
+        );
+    }
+
+    #[test]
+    fn forecast_provenance_reports_cycle_age_and_valid_window() {
+        let (mut manifest, _, _, _) = crate::forecast_atmosphere::tests::test_forecast_payload();
+        manifest.model_id = "gfs-0p25".to_string();
+        manifest.cycle_time_epoch_ms = 3_600_000;
+        manifest.valid_times_epoch_ms = vec![3_600_000, 7_200_000];
+
+        let view = planner_forecast_ui(
+            PlannerAtmosphereSelection::gfs(Some(&ConstantForecastAtmosphere), Some(&manifest)),
+            5_400_000,
+        )
+        .expect("forecast provenance");
+
+        assert_eq!(
+            view.summary,
+            "NOAA GFS-0P25 cycle 01/01 01:00Z (30m old); valid 01/01 01:00Z through 01/01 02:00Z."
+        );
+    }
+
+    #[test]
+    fn active_navigation_ignores_stored_departure_and_models_from_now() {
+        let aaa = LatLon { lat: 0.0, lon: 0.0 };
+        let bbb = LatLon { lat: 0.0, lon: 1.5 };
+        let ccc = LatLon { lat: 0.0, lon: 3.0 };
+        let store = three_airport_nav_store(aaa, bbb, ccc);
+        let mut plan = three_airport_test_plan();
+        plan.planned_departure_time_epoch_ms = Some(48 * 60 * 60 * 1_000);
+        let plan = crate::activate_leg(&plan, 0).expect("activate first leg");
+        let forecast = ForecastUntilAtmosphere {
+            valid_through_epoch_ms: 24 * 60 * 60 * 1_000,
+        };
+
+        let panel = altitude_comparison_panel(
+            &store,
+            plan,
+            FlightPlanLiveData {
+                ownship_position: Some(aaa),
+                ownship_altitude_ft: Some(100.0),
+                now_epoch_ms: Some(0),
+                ..FlightPlanLiveData::default()
+            },
+            PlannerAtmosphereSelection::gfs(Some(&forecast), None),
+        )
+        .expect("active altitude comparisons");
+
+        assert!(panel.advisories.is_empty());
+        assert!(panel.rows.iter().filter(|row| row.enabled).all(|row| {
+            row.advisory.is_none()
+                && row
+                    .cells
+                    .iter()
+                    .find(|cell| cell.id == "wind")
+                    .and_then(|cell| cell.value.as_deref())
+                    != Some("·")
+        }));
     }
 
     #[test]
@@ -5673,6 +5997,7 @@ mod tests {
             destination: Some(AirportId("KBBB".to_string())),
             alternate: None,
             cruise_altitude_ft: None,
+            planned_departure_time_epoch_ms: None,
             notes: None,
             updated_at_epoch_ms: 0,
             version: 1,
@@ -5756,6 +6081,7 @@ mod tests {
             destination: Some(AirportId("KDDD".to_string())),
             alternate: None,
             cruise_altitude_ft: None,
+            planned_departure_time_epoch_ms: None,
             notes: None,
             updated_at_epoch_ms: 0,
             version: 1,
@@ -5773,6 +6099,7 @@ mod tests {
                 ownship_position: Some(ownship),
                 ownship_altitude_ft: Some(4_000.0),
                 now_epoch_ms: Some(now_epoch_ms),
+                ..FlightPlanLiveData::default()
             },
         )
         .expect("project live flight plan ui state");
@@ -5861,6 +6188,7 @@ mod tests {
                 ownship_position: None,
                 ownship_altitude_ft: None,
                 now_epoch_ms: Some(12 * 60 * 60 * 1000),
+                ..FlightPlanLiveData::default()
             },
         )
         .expect("project active flight plan without ownship");
@@ -5952,6 +6280,7 @@ mod tests {
                 ownship_position: Some(ownship),
                 ownship_altitude_ft: Some(4_000.0),
                 now_epoch_ms: Some(12 * 60 * 60 * 1000),
+                ..FlightPlanLiveData::default()
             },
             PlannerAtmosphereSelection::no_wind(false),
         )
@@ -5981,6 +6310,7 @@ mod tests {
                 ownship_position: Some(ownship),
                 ownship_altitude_ft: Some(4_000.0),
                 now_epoch_ms: Some(12 * 60 * 60 * 1000),
+                ..FlightPlanLiveData::default()
             },
         )
         .expect("project inactive flight plan with ownship");
@@ -6061,6 +6391,7 @@ mod tests {
                 ownship_position: Some(ownship),
                 ownship_altitude_ft: Some(4_000.0),
                 now_epoch_ms: Some(12 * 60 * 60 * 1000),
+                ..FlightPlanLiveData::default()
             },
         )
         .expect("project direct-to flight plan ui state");
@@ -6126,6 +6457,7 @@ mod tests {
             destination: Some(AirportId("KCCC".to_string())),
             alternate: None,
             cruise_altitude_ft: None,
+            planned_departure_time_epoch_ms: None,
             notes: None,
             updated_at_epoch_ms: 0,
             version: 1,
@@ -6213,6 +6545,7 @@ mod tests {
             destination: Some(AirportId("KBBB".to_string())),
             alternate: None,
             cruise_altitude_ft: None,
+            planned_departure_time_epoch_ms: None,
             notes: None,
             updated_at_epoch_ms: 0,
             version: 1,
@@ -6292,6 +6625,7 @@ mod tests {
             destination: Some(AirportId("KCCC".to_string())),
             alternate: None,
             cruise_altitude_ft: None,
+            planned_departure_time_epoch_ms: None,
             notes: None,
             updated_at_epoch_ms: 0,
             version: 1,
@@ -6346,6 +6680,7 @@ mod tests {
             destination: Some(AirportId("KPAE".to_string())),
             alternate: None,
             cruise_altitude_ft: None,
+            planned_departure_time_epoch_ms: None,
             notes: None,
             updated_at_epoch_ms: 0,
             version: 1,
@@ -6665,6 +7000,7 @@ mod tests {
             destination: Some(AirportId("KWLW".to_string())),
             alternate: None,
             cruise_altitude_ft: None,
+            planned_departure_time_epoch_ms: None,
             notes: None,
             updated_at_epoch_ms: 0,
             version: 1,
@@ -6765,6 +7101,7 @@ mod tests {
             destination: Some(AirportId("KPAE".to_string())),
             alternate: None,
             cruise_altitude_ft: None,
+            planned_departure_time_epoch_ms: None,
             notes: None,
             updated_at_epoch_ms: 0,
             version: 1,
@@ -6989,6 +7326,7 @@ mod tests {
             destination: Some(AirportId(airport_id.to_string())),
             alternate: None,
             cruise_altitude_ft: None,
+            planned_departure_time_epoch_ms: None,
             notes: None,
             updated_at_epoch_ms: 0,
             version: 1,
@@ -7863,6 +8201,7 @@ mod tests {
             destination: Some(AirportId("KRNT".to_string())),
             alternate: None,
             cruise_altitude_ft: None,
+            planned_departure_time_epoch_ms: None,
             notes: None,
             updated_at_epoch_ms: 0,
             version: 1,
@@ -7909,6 +8248,7 @@ mod tests {
             destination: Some(AirportId("KRNT".to_string())),
             alternate: None,
             cruise_altitude_ft: None,
+            planned_departure_time_epoch_ms: None,
             notes: None,
             updated_at_epoch_ms: 0,
             version: 1,
@@ -8019,6 +8359,7 @@ mod tests {
             destination: None,
             alternate: None,
             cruise_altitude_ft: None,
+            planned_departure_time_epoch_ms: None,
             notes: None,
             updated_at_epoch_ms: 0,
             version: 1,
@@ -8047,6 +8388,7 @@ mod tests {
             destination: None,
             alternate: None,
             cruise_altitude_ft: None,
+            planned_departure_time_epoch_ms: None,
             notes: None,
             updated_at_epoch_ms: 0,
             version: 1,
@@ -8103,6 +8445,7 @@ mod tests {
             destination: None,
             alternate: None,
             cruise_altitude_ft: None,
+            planned_departure_time_epoch_ms: None,
             notes: None,
             updated_at_epoch_ms: 0,
             version: 1,
@@ -8195,6 +8538,7 @@ mod tests {
             destination: None,
             alternate: None,
             cruise_altitude_ft: None,
+            planned_departure_time_epoch_ms: None,
             notes: None,
             updated_at_epoch_ms: 0,
             version: 1,
@@ -8330,6 +8674,7 @@ mod tests {
             destination: None,
             alternate: None,
             cruise_altitude_ft: None,
+            planned_departure_time_epoch_ms: None,
             notes: None,
             updated_at_epoch_ms: 0,
             version: 1,
@@ -8354,6 +8699,7 @@ mod tests {
             destination: None,
             alternate: None,
             cruise_altitude_ft: None,
+            planned_departure_time_epoch_ms: None,
             notes: None,
             updated_at_epoch_ms: 0,
             version: 1,
@@ -8429,6 +8775,7 @@ mod tests {
             destination: Some(AirportId("KUAO".to_string())),
             alternate: None,
             cruise_altitude_ft: None,
+            planned_departure_time_epoch_ms: None,
             notes: None,
             updated_at_epoch_ms: 0,
             version: 1,
@@ -8465,6 +8812,7 @@ mod tests {
             destination: None,
             alternate: None,
             cruise_altitude_ft: None,
+            planned_departure_time_epoch_ms: None,
             notes: None,
             updated_at_epoch_ms: 0,
             version: 1,
@@ -8497,6 +8845,7 @@ mod tests {
             destination: None,
             alternate: None,
             cruise_altitude_ft: None,
+            planned_departure_time_epoch_ms: None,
             notes: None,
             updated_at_epoch_ms: 0,
             version: 1,

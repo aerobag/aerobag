@@ -5,6 +5,11 @@
 package org.aerobag.app
 
 import androidx.compose.foundation.BorderStroke
+import androidx.compose.foundation.horizontalScroll
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.text.BasicTextField
+import androidx.compose.foundation.text.KeyboardActions
+import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
@@ -32,10 +37,14 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.focus.onFocusChanged
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalFocusManager
 import androidx.compose.ui.platform.testTag
+import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
@@ -43,6 +52,7 @@ import androidx.compose.ui.unit.sp
 import androidx.compose.ui.zIndex
 import kotlinx.coroutines.CancellationException
 import org.aerobag.app.domain.AltitudeComparisonPanelUiView
+import org.aerobag.app.domain.AltitudePlannerDepartureEditorUiView
 import org.aerobag.app.domain.AltitudePlannerUiView
 import org.aerobag.app.domain.NativeUiSession
 import org.aerobag.app.domain.NavElementUiView
@@ -63,11 +73,21 @@ internal fun AltitudePlannerPage(
     onSessionCommandFailure: (Throwable) -> Unit,
 ) {
     val context = LocalContext.current
+    val focusManager = LocalFocusManager.current
     val uiTheme = LocalAerobagUiTheme.current
     var comparisonPanel by remember { mutableStateOf<AltitudeComparisonPanelUiView?>(null) }
     var loading by remember { mutableStateOf(false) }
     var errorMessage by remember { mutableStateOf<String?>(null) }
     var refreshRevision by remember { mutableStateOf(0) }
+    var departureTimeInput by remember { mutableStateOf(planner.departure.timeValue) }
+    var departureWhenInput by remember { mutableStateOf(planner.departure.whenValue) }
+    var departureTimeFocused by remember { mutableStateOf(false) }
+    var departureWhenFocused by remember { mutableStateOf(false) }
+
+    LaunchedEffect(planner.departure.timeValue, planner.departure.whenValue) {
+        if (!departureTimeFocused) departureTimeInput = planner.departure.timeValue
+        if (!departureWhenFocused) departureWhenInput = planner.departure.whenValue
+    }
 
     LaunchedEffect(page, planVersion, planner.estimateSummary.label, refreshRevision) {
         loading = true
@@ -95,6 +115,28 @@ internal fun AltitudePlannerPage(
         }
     }
 
+    fun setDepartureInput(field: String, input: String) {
+        try {
+            onApplySessionSnapshot(uiSession.setAltitudePlannerDepartureInput(field, input))
+            refreshRevision += 1
+        } catch (error: CancellationException) {
+            throw error
+        } catch (error: Throwable) {
+            errorMessage = error.message ?: "Invalid departure time"
+        }
+    }
+
+    fun toggleDepartureTimeBasis() {
+        try {
+            onApplySessionSnapshot(uiSession.toggleAltitudePlannerDepartureTimeBasis())
+            refreshRevision += 1
+        } catch (error: CancellationException) {
+            throw error
+        } catch (error: Throwable) {
+            onSessionCommandFailure(error)
+        }
+    }
+
     Box(
         modifier = Modifier
             .fillMaxSize()
@@ -111,14 +153,12 @@ internal fun AltitudePlannerPage(
                 ),
             verticalArrangement = Arrangement.spacedBy(ThumbSize * 0.2f),
         ) {
-            Row(
+            Column(
                 modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.spacedBy(ThumbGap),
-                verticalAlignment = Alignment.CenterVertically,
+                verticalArrangement = Arrangement.spacedBy(ThumbGap),
             ) {
                 Text(
                     text = planner.title.uppercase(),
-                    modifier = Modifier.weight(1f),
                     color = uiTheme.controls.panelFg,
                     style = MaterialTheme.typography.headlineSmall.copy(
                         fontSize = 16.sp,
@@ -128,25 +168,71 @@ internal fun AltitudePlannerPage(
                     maxLines = 1,
                     overflow = TextOverflow.Ellipsis,
                 )
-                planner.controls.forEach { control ->
-                    CompactSquareButton(
-                        label = control.label,
-                        modifier = Modifier
-                            .width(ThumbSize * 2.2f)
-                            .height(ThumbSize),
-                        maxLines = 2,
-                        enabled = control.enabled,
-                        testTag = "parity:altitude-planner-control:${control.id}",
-                        onDisabledClick = control.disabledReason?.let { reason ->
-                            { showDisabledActionToast(context, reason) }
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .horizontalScroll(rememberScrollState()),
+                    horizontalArrangement = Arrangement.spacedBy(ThumbGap),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    planner.controls.forEach { control ->
+                        CompactSquareButton(
+                            label = control.label,
+                            modifier = Modifier
+                                .width(ThumbSize * 2.2f)
+                                .height(ThumbSize),
+                            maxLines = 2,
+                            enabled = control.enabled,
+                            testTag = "parity:altitude-planner-control:${control.id}",
+                            onDisabledClick = control.disabledReason?.let { reason ->
+                                { showDisabledActionToast(context, reason) }
+                            },
+                            onClick = {
+                                control.actionUid?.let(::performAction)
+                            },
+                        )
+                    }
+                    DepartureEditorRow(
+                        departure = planner.departure,
+                        timeValue = departureTimeInput,
+                        whenValue = departureWhenInput,
+                        onTimeValueChange = { departureTimeInput = it },
+                        onWhenValueChange = { departureWhenInput = it },
+                        onTimeFocusChange = { focused ->
+                            if (departureTimeFocused && !focused &&
+                                departureTimeInput != planner.departure.timeValue
+                            ) {
+                                setDepartureInput("time", departureTimeInput)
+                            }
+                            departureTimeFocused = focused
                         },
-                        onClick = {
-                            control.actionUid?.let(::performAction)
+                        onWhenFocusChange = { focused ->
+                            if (departureWhenFocused && !focused &&
+                                departureWhenInput != planner.departure.whenValue
+                            ) {
+                                setDepartureInput("when", departureWhenInput)
+                            }
+                            departureWhenFocused = focused
+                        },
+                        onDone = { focusManager.clearFocus() },
+                        onToggleBasis = {
+                            focusManager.clearFocus()
+                            toggleDepartureTimeBasis()
+                        },
+                        onDisabledClick = planner.departure.disabledReason?.let { reason ->
+                            { showDisabledActionToast(context, reason) }
                         },
                     )
                 }
             }
 
+            planner.forecast?.let { forecast ->
+                PlannerMessagePanel(
+                    messages = listOf(forecast.summary),
+                    foreground = uiTheme.controls.panelFg,
+                    background = uiTheme.controls.panelBg,
+                )
+            }
             if (planner.unavailableReasons.isNotEmpty()) {
                 PlannerMessagePanel(
                     messages = planner.unavailableReasons.map { it.message },
@@ -168,6 +254,13 @@ internal fun AltitudePlannerPage(
             ) {
                 comparisonPanel?.let { panel ->
                     Column(modifier = Modifier.fillMaxSize()) {
+                        if (panel.advisories.isNotEmpty()) {
+                            PlannerMessagePanel(
+                                messages = panel.advisories,
+                                foreground = uiTheme.controls.dataStatusWarningStroke,
+                                background = uiTheme.controls.dataStatusWarningBg,
+                            )
+                        }
                         Row(modifier = Modifier.fillMaxWidth()) {
                             panel.columns.forEach { column ->
                                 Text(
@@ -269,6 +362,125 @@ internal fun AltitudePlannerPage(
                 .align(Alignment.BottomCenter)
                 .padding(bottom = ThumbGap)
                 .zIndex(OverlayPlaneControls),
+        )
+
+    }
+}
+
+@Composable
+private fun DepartureEditorRow(
+    departure: AltitudePlannerDepartureEditorUiView,
+    timeValue: String,
+    whenValue: String,
+    onTimeValueChange: (String) -> Unit,
+    onWhenValueChange: (String) -> Unit,
+    onTimeFocusChange: (Boolean) -> Unit,
+    onWhenFocusChange: (Boolean) -> Unit,
+    onDone: () -> Unit,
+    onToggleBasis: () -> Unit,
+    onDisabledClick: (() -> Unit)?,
+) {
+    val uiTheme = LocalAerobagUiTheme.current
+    Surface(
+        modifier = Modifier
+            .width(ThumbSize * 6.2f)
+            .height(ThumbSize),
+        color = uiTheme.controls.panelBg,
+        shape = RoundedCornerShape(ThumbRadius),
+        border = BorderStroke(1.dp, uiTheme.controls.panelBorder),
+    ) {
+        Row(
+            modifier = Modifier.padding(horizontal = ThumbSize * 0.12f),
+            horizontalArrangement = Arrangement.spacedBy(ThumbGap),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            DepartureLabel(departure.title)
+            DepartureLabel(departure.timeLabel)
+            DepartureTextField(
+                value = timeValue,
+                enabled = departure.enabled,
+                onValueChange = onTimeValueChange,
+                onFocusChange = onTimeFocusChange,
+                onDone = onDone,
+            )
+            CompactSquareButton(
+                label = departure.basisLabel,
+                modifier = Modifier
+                    .width(ThumbSize * 1.45f)
+                    .height(ThumbSize * 0.58f),
+                maxLines = 1,
+                enabled = departure.enabled,
+                onDisabledClick = onDisabledClick,
+                onClick = onToggleBasis,
+            )
+            DepartureLabel(departure.whenLabel)
+            DepartureTextField(
+                value = whenValue,
+                enabled = departure.enabled,
+                onValueChange = onWhenValueChange,
+                onFocusChange = onWhenFocusChange,
+                onDone = onDone,
+            )
+            DepartureLabel(departure.whenSuffix)
+        }
+    }
+}
+
+@Composable
+private fun DepartureLabel(label: String) {
+    if (label.isEmpty()) return
+    val uiTheme = LocalAerobagUiTheme.current
+    Text(
+        text = label,
+        color = uiTheme.controls.panelFg,
+        style = MaterialTheme.typography.labelSmall.copy(
+            fontSize = 10.sp,
+            lineHeight = 10.sp,
+            fontWeight = FontWeight.Bold,
+        ),
+        maxLines = 1,
+    )
+}
+
+@Composable
+private fun DepartureTextField(
+    value: String,
+    enabled: Boolean,
+    onValueChange: (String) -> Unit,
+    onFocusChange: (Boolean) -> Unit,
+    onDone: () -> Unit,
+) {
+    val uiTheme = LocalAerobagUiTheme.current
+    Surface(
+        modifier = Modifier
+            .width(ThumbSize * 0.9f)
+            .height(ThumbSize * 0.58f),
+        color = uiTheme.controls.chartSurfaceBg,
+        shape = RoundedCornerShape(ThumbRadius),
+        border = BorderStroke(1.dp, uiTheme.controls.panelBorder),
+    ) {
+        BasicTextField(
+            value = value,
+            onValueChange = onValueChange,
+            modifier = Modifier
+                .fillMaxSize()
+                .onFocusChanged { onFocusChange(it.isFocused) }
+                .padding(horizontal = ThumbSize * 0.1f),
+            enabled = enabled,
+            singleLine = true,
+            textStyle = TextStyle(
+                color = uiTheme.controls.panelFg,
+                fontSize = 12.sp,
+                fontWeight = FontWeight.Bold,
+                textAlign = TextAlign.Center,
+            ),
+            keyboardOptions = KeyboardOptions(imeAction = ImeAction.Done),
+            keyboardActions = KeyboardActions(onDone = { onDone() }),
+            decorationBox = { inner ->
+                Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+                    inner()
+                }
+            },
         )
     }
 }

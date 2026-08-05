@@ -3188,7 +3188,8 @@ button {
 .altitudePlannerControls {
   display: flex;
   flex-wrap: wrap;
-  justify-content: center;
+  align-items: center;
+  justify-content: flex-end;
   gap: var(--thumb-gap);
 }
 
@@ -3212,6 +3213,7 @@ button {
 
 .altitudePlannerPageHeader {
   display: flex;
+  flex-wrap: wrap;
   flex: 0 0 auto;
   align-items: center;
   justify-content: space-between;
@@ -3237,7 +3239,9 @@ button {
 }
 
 .altitudePlannerReasons,
-.altitudePlannerError {
+.altitudePlannerError,
+.altitudePlannerProvenance,
+.altitudePlannerAdvisories {
   margin-bottom: calc(var(--thumb) * 0.18);
   padding: calc(var(--thumb) * 0.2);
   border: 1px solid var(--theme-panel-border);
@@ -3245,6 +3249,76 @@ button {
   background: var(--theme-panel-bg);
   color: var(--theme-panel-fg);
   font-size: calc(var(--thumb) * 0.21);
+}
+
+.altitudePlannerProvenance {
+  background: color-mix(in srgb, var(--theme-panel-bg) 82%, white);
+}
+
+.altitudePlannerAdvisories {
+  border-color: var(--theme-data-status-warning-stroke);
+  color: color-mix(in srgb, var(--theme-data-status-warning-stroke) 30%, black);
+  background: var(--theme-data-status-warning-bg);
+}
+
+.altitudePlannerAdvisories p {
+  margin: 0;
+}
+
+.altitudePlannerDeparture {
+  box-sizing: border-box;
+  display: flex;
+  flex: 0 0 auto;
+  align-items: center;
+  height: var(--thumb);
+  gap: var(--thumb-gap);
+  padding: calc(var(--thumb) * 0.1) calc(var(--thumb) * 0.14);
+  border: 1px solid var(--theme-panel-border);
+  border-radius: var(--thumb-radius);
+  background: var(--theme-panel-bg);
+  color: var(--theme-panel-fg);
+  white-space: nowrap;
+}
+
+.altitudePlannerDeparture h2 {
+  margin: 0;
+  font-size: calc(var(--thumb) * 0.2);
+}
+
+.altitudePlannerDeparture label {
+  display: flex;
+  align-items: center;
+  gap: var(--thumb-gap);
+  min-width: 0;
+  font-size: calc(var(--thumb) * 0.18);
+  font-weight: 700;
+}
+
+.altitudePlannerDeparture input {
+  box-sizing: border-box;
+  width: calc(var(--thumb) * 0.9);
+  height: calc(var(--thumb) * 0.58);
+  padding: 0 calc(var(--thumb) * 0.08);
+  border: 1px solid var(--theme-panel-border);
+  border-radius: var(--thumb-radius);
+  background: var(--theme-chart-surface-bg);
+  color: var(--theme-panel-fg);
+  font: inherit;
+  font-variant-numeric: tabular-nums;
+  text-align: center;
+}
+
+.altitudePlannerDepartureBasis {
+  width: calc(var(--thumb) * 1.45);
+  min-width: calc(var(--thumb) * 1.45);
+  height: calc(var(--thumb) * 0.58);
+  min-height: calc(var(--thumb) * 0.58);
+  padding: 0 calc(var(--thumb) * 0.08);
+  font-size: calc(var(--thumb) * 0.17);
+}
+
+.altitudePlannerDeparture.isDisabled {
+  opacity: 0.72;
 }
 
 .altitudePlannerReasons p {

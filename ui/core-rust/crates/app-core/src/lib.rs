@@ -62,14 +62,17 @@ pub use airport_info::{
     AirportCommunicationUiView, AirportInfoUiView, AirportRunwayUiView, AirportSolarEventUiView,
 };
 pub use altitude_planner::{
-    format_trajectory_wind, project_altitude_planner_ui, AircraftPerformanceProfile,
-    AltitudeComparisonPanelUiView, AltitudeComparisonUiView, AltitudePlannerControlId,
-    AltitudePlannerControlUiView, AltitudePlannerUiInput, AltitudePlannerUiView,
-    AltitudePlannerUnavailableReason, AltitudePlannerUnavailableReasonCode, AtmosphereModel,
-    AtmosphereSample, CruisePerformancePoint, FlightEstimateKind, FlightPlanEstimateModeUiView,
-    NoWindIsaAtmosphere, PerformanceAirspeedBasis, TrajectoryLegPrediction, TrajectoryPlanInput,
-    TrajectoryPlanner, TrajectoryPlannerError, TrajectoryPrediction, TrajectoryRouteLeg,
-    VerticalPerformancePoint,
+    format_trajectory_wind, parse_altitude_planner_departure_input, project_altitude_planner_ui,
+    AircraftPerformanceProfile, AltitudeComparisonPanelUiView, AltitudeComparisonUiView,
+    AltitudePlannerControlId, AltitudePlannerControlUiView, AltitudePlannerDepartureEditorUiView,
+    AltitudePlannerDepartureInputField, AltitudePlannerDepartureTimeBasis,
+    AltitudePlannerForecastUiView, AltitudePlannerUiInput, AltitudePlannerUiView,
+    AltitudePlannerUnavailableReason, AltitudePlannerUnavailableReasonCode,
+    AltitudePlannerWindFallback, AtmosphereModel, AtmosphereSample, CruisePerformancePoint,
+    FlightEstimateKind, FlightPlanEstimateModeUiView, NoWindIsaAtmosphere,
+    ParsedAltitudePlannerDeparture, PerformanceAirspeedBasis, TrajectoryLegPrediction,
+    TrajectoryPlanInput, TrajectoryPlanner, TrajectoryPlannerError, TrajectoryPrediction,
+    TrajectoryRouteLeg, VerticalPerformancePoint,
 };
 pub use chart_page::{
     airport_ids_from_plan, chart_page_airport_ids_from_plan, derive_chart_page_state_from_airports,

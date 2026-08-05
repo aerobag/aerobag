@@ -1168,6 +1168,7 @@ data class WireAltitudeComparisonUiView(
     val selected: Boolean,
     val enabled: Boolean,
     val disabled_reason: String? = null,
+    val advisory: String? = null,
     val cells: List<WireFlightDataCell>,
 )
 
@@ -1175,6 +1176,25 @@ data class WireAltitudeComparisonUiView(
 data class WireAltitudeComparisonPanelUiView(
     val columns: List<WireFlightDataColumn>,
     val rows: List<WireAltitudeComparisonUiView>,
+    val advisories: List<String> = emptyList(),
+)
+
+@Serializable
+data class WireAltitudePlannerForecastUiView(
+    val summary: String,
+)
+
+@Serializable
+data class WireAltitudePlannerDepartureEditorUiView(
+    val title: String,
+    val time_label: String,
+    val time_value: String,
+    val basis_label: String,
+    val when_label: String,
+    val when_value: String,
+    val when_suffix: String,
+    val enabled: Boolean,
+    val disabled_reason: String? = null,
 )
 
 @Serializable
@@ -1183,6 +1203,9 @@ data class WireAltitudePlannerUiView(
     val estimate_kind: String,
     val estimate_summary: WireFlightPlanEstimateModeUiView,
     val controls: List<WireAltitudePlannerControlUiView>,
+    val departure: WireAltitudePlannerDepartureEditorUiView,
+    val forecast: WireAltitudePlannerForecastUiView? = null,
+    val advisories: List<String> = emptyList(),
     val unavailable_reasons: List<WireAltitudePlannerUnavailableReason> = emptyList(),
 )
 

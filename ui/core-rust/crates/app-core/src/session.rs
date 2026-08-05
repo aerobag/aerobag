@@ -31,8 +31,9 @@ pub use app_ui_contracts::{
         ClientBuildInfo, DebugFlagId, LiveFeedAcquisitionPolicy, MapLayerId, PlatformCapabilities,
         PlatformCloudCapability, PlatformDisplayPolicyCapability, PlatformLiveFeedsCapability,
         PlatformOfflinePackagesCapability, UiChartPageState, UiDebugState, UiDisclaimerState,
-        UiDisplayPolicy, UiMapLayerState, UiNavDbIdentity, UiPlaybackPanelState, UiSettingsAction,
-        UiSettingsGridItem, UiSettingsPageRow, UiSettingsPageState, UiSettingsSliderStop,
+        UiDisplayPolicy, UiMapLayerState, UiMapLayerToggleState, UiNavDbIdentity,
+        UiPlaybackPanelState, UiSettingsAction, UiSettingsGridItem, UiSettingsPageRow,
+        UiSettingsPageState, UiSettingsSliderStop,
     },
 };
 

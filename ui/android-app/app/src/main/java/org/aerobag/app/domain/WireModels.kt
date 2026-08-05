@@ -1004,9 +1004,21 @@ data class WireFlightPlanRouteSegment(
 )
 
 @Serializable
+data class WireFlightPlanRouteDistanceAnnotation(
+    val id: String,
+    val segment_indexes: List<Int>,
+    val text: String,
+    val distance_nm: Double,
+    val status: WireRouteSegmentStatus,
+    val required_feature_ids: List<String>,
+    val minimum_path_to_pill_width_ratio: Double,
+)
+
+@Serializable
 data class WireFlightPlanRouteProjection(
     val flight_plan_route_revision: Long,
     val segments: List<WireFlightPlanRouteSegment>,
+    val distance_annotations: List<WireFlightPlanRouteDistanceAnnotation> = emptyList(),
 )
 
 @Serializable

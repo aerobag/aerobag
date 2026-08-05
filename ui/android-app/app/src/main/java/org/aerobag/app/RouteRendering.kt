@@ -24,6 +24,12 @@ internal data class RouteChevronPlacement(
     val angleDegrees: Float,
 )
 
+internal enum class RouteRenderLayer {
+    Contrast,
+    Color,
+    Both,
+}
+
 private data class RoutePathSection(
     val start: Offset,
     val end: Offset,
@@ -84,7 +90,9 @@ internal fun DrawScope.drawFlightPlanRoutePath(
     screenPath: List<Offset>,
     style: String,
     color: Color,
+    contrastColor: Color,
     densityScale: Float,
+    layer: RouteRenderLayer = RouteRenderLayer.Both,
 ) {
     if (screenPath.size < 2) return
     if (style == "vectors") {
@@ -94,24 +102,28 @@ internal fun DrawScope.drawFlightPlanRoutePath(
         ).forEach { placement ->
             rotate(placement.angleDegrees, placement.center) {
                 val chevron = manualSequenceChevronPath(placement.center, densityScale)
-                drawPath(
-                    path = chevron,
-                    color = Color(0x8C000000),
-                    style = Stroke(
-                        width = 7f * densityScale,
-                        cap = StrokeCap.Round,
-                        join = StrokeJoin.Round,
-                    ),
-                )
-                drawPath(
-                    path = chevron,
-                    color = color,
-                    style = Stroke(
-                        width = 3.5f * densityScale,
-                        cap = StrokeCap.Round,
-                        join = StrokeJoin.Round,
-                    ),
-                )
+                if (layer != RouteRenderLayer.Color) {
+                    drawPath(
+                        path = chevron,
+                        color = contrastColor,
+                        style = Stroke(
+                            width = 7f * densityScale,
+                            cap = StrokeCap.Round,
+                            join = StrokeJoin.Round,
+                        ),
+                    )
+                }
+                if (layer != RouteRenderLayer.Contrast) {
+                    drawPath(
+                        path = chevron,
+                        color = color,
+                        style = Stroke(
+                            width = 3.5f * densityScale,
+                            cap = StrokeCap.Round,
+                            join = StrokeJoin.Round,
+                        ),
+                    )
+                }
             }
         }
         return
@@ -126,24 +138,28 @@ internal fun DrawScope.drawFlightPlanRoutePath(
     } else {
         null
     }
-    drawPath(
-        path = routePath,
-        color = Color(0x8C000000),
-        style = Stroke(
-            width = 7f * densityScale,
-            cap = StrokeCap.Round,
-            join = StrokeJoin.Round,
-            pathEffect = pathEffect,
-        ),
-    )
-    drawPath(
-        path = routePath,
-        color = color,
-        style = Stroke(
-            width = 3.5f * densityScale,
-            cap = StrokeCap.Round,
-            join = StrokeJoin.Round,
-            pathEffect = pathEffect,
-        ),
-    )
+    if (layer != RouteRenderLayer.Color) {
+        drawPath(
+            path = routePath,
+            color = contrastColor,
+            style = Stroke(
+                width = 7f * densityScale,
+                cap = StrokeCap.Round,
+                join = StrokeJoin.Round,
+                pathEffect = pathEffect,
+            ),
+        )
+    }
+    if (layer != RouteRenderLayer.Contrast) {
+        drawPath(
+            path = routePath,
+            color = color,
+            style = Stroke(
+                width = 3.5f * densityScale,
+                cap = StrokeCap.Round,
+                join = StrokeJoin.Round,
+                pathEffect = pathEffect,
+            ),
+        )
+    }
 }

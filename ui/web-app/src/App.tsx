@@ -140,7 +140,11 @@ import {
   type ScreenPoint,
 } from "./domain/mapViewport";
 import {
+  FLIGHT_PLAN_ROUTE_DISTANCE_PILL_FONT_PX,
+  FLIGHT_PLAN_ROUTE_DISTANCE_PILL_HEIGHT_PX,
   flightPlanRouteSegmentRenderKey,
+  layoutFlightPlanRouteDistancePills,
+  measureFlightPlanRouteDistancePillWidth,
   spacedRouteChevronPlacements,
 } from "./domain/flightPlanRouteRender";
 import { plateImagePoint, projectPlateFlightPlanSegments } from "./domain/plateOverlay";
@@ -926,10 +930,13 @@ type UiThemeJson = {
     airport_runway_inactive: string;
   };
   flight_plan_route: {
+    contrast: string;
     completed: string;
     active: string;
     active_leg_remaining: string;
     remaining: string;
+    distance_pill_bg: string;
+    distance_pill_fg: string;
   };
   plate_folder: {
     thumbnail_bg: string;
@@ -4169,10 +4176,15 @@ function MapPage(props: {
   const [flightPlanRouteProjection, setFlightPlanRouteProjection] = useState<FlightPlanRouteProjection>({
     flight_plan_route_revision: -1,
     segments: [],
+    distance_annotations: [],
   });
   const flightPlanRoute =
     flightPlanRouteProjection.flight_plan_route_revision === flightPlanRouteRevision
       ? flightPlanRouteProjection.segments
+      : [];
+  const flightPlanRouteDistanceAnnotations =
+    flightPlanRouteProjection.flight_plan_route_revision === flightPlanRouteRevision
+      ? flightPlanRouteProjection.distance_annotations
       : [];
   const [mapOverlayFrame, setMapOverlayFrame] = useState<MapDisplayFrame | null>(null);
   const mapOverlayQueryRequestRef = useRef<{
@@ -5280,6 +5292,12 @@ function MapPage(props: {
       ),
     }));
   }, [flightPlanRoute, surfaceSize.height, surfaceSize.width, viewport]);
+  const routeDistancePillLayouts = useMemo(() => layoutFlightPlanRouteDistancePills(
+    flightPlanRouteDistanceAnnotations,
+    routeScreenSegments,
+    new Set((mapOverlay.flight_plan_features ?? []).map((feature) => feature.id)),
+    measureFlightPlanRouteDistancePillWidth,
+  ), [flightPlanRouteDistanceAnnotations, mapOverlay.flight_plan_features, routeScreenSegments]);
 
   useEffect(() => {
     terrainRendererRef.current = new TerrainOverlayRenderer();
@@ -5501,6 +5519,7 @@ function MapPage(props: {
       setFlightPlanRouteProjection({
         flight_plan_route_revision: -1,
         segments: [],
+        distance_annotations: [],
       });
       return;
     }
@@ -5539,6 +5558,7 @@ function MapPage(props: {
         setFlightPlanRouteProjection({
           flight_plan_route_revision: flightPlanRouteRevision,
           segments: [],
+          distance_annotations: [],
         });
       }
     });
@@ -6978,24 +6998,90 @@ function MapPage(props: {
                 {mapIsVisible && routeScreenSegments.length > 0 ? (
                   <svg className="flightPlanOverlay" viewBox={`0 0 ${surfaceSize.width} ${surfaceSize.height}`} preserveAspectRatio="none">
                     {routeScreenSegments.map((segment, segmentIndex) => (
-                      <Fragment key={flightPlanRouteSegmentRenderKey(segment, segmentIndex)}>
-                        {debugState.sequencing_finish_lines && segment.status === "active"
-                          ? segment.finishLinePaths.map((finishLinePath, index) => (
-                              <line
-                                key={`finish-${index}`}
-                                x1={finishLinePath[0].x}
-                                y1={finishLinePath[0].y}
-                                x2={finishLinePath[1].x}
-                                y2={finishLinePath[1].y}
-                                stroke="#b100ff"
-                                strokeWidth="1.5"
-                                strokeLinecap="round"
-                                opacity="0.9"
-                              />
-                            ))
-                          : null}
-                        <FlightPlanRoutePath segment={segment} />
-                      </Fragment>
+                      <FlightPlanRoutePath
+                        key={`contrast:${flightPlanRouteSegmentRenderKey(segment, segmentIndex)}`}
+                        segment={segment}
+                        layer="contrast"
+                      />
+                    ))}
+                    {routeDistancePillLayouts.map((layout, index) => (
+                      <rect
+                        key={`contrast:${index}:${layout.annotation.id}`}
+                        transform={`translate(${layout.center.x} ${layout.center.y}) rotate(${layout.rotationDegrees})`}
+                        x={-layout.width / 2}
+                        y={-FLIGHT_PLAN_ROUTE_DISTANCE_PILL_HEIGHT_PX / 2}
+                        width={layout.width}
+                        height={FLIGHT_PLAN_ROUTE_DISTANCE_PILL_HEIGHT_PX}
+                        rx={FLIGHT_PLAN_ROUTE_DISTANCE_PILL_HEIGHT_PX / 2}
+                        fill="none"
+                        stroke={loadedUiTheme.flight_plan_route.contrast}
+                        strokeWidth="6"
+                      />
+                    ))}
+                    {routeScreenSegments.map((segment, segmentIndex) => (
+                      <FlightPlanRoutePath
+                        key={`route:${flightPlanRouteSegmentRenderKey(segment, segmentIndex)}`}
+                        segment={segment}
+                        layer="color"
+                      />
+                    ))}
+                    {routeScreenSegments.flatMap((segment, segmentIndex) =>
+                      debugState.sequencing_finish_lines && segment.status === "active"
+                        ? segment.finishLinePaths.map((finishLinePath, index) => (
+                            <line
+                              key={`finish:${segmentIndex}:${index}`}
+                              x1={finishLinePath[0].x}
+                              y1={finishLinePath[0].y}
+                              x2={finishLinePath[1].x}
+                              y2={finishLinePath[1].y}
+                              stroke="#b100ff"
+                              strokeWidth="1.5"
+                              strokeLinecap="round"
+                              opacity="0.9"
+                            />
+                          ))
+                        : [],
+                    )}
+                    {routeDistancePillLayouts.map((layout, index) => (
+                      <rect
+                        key={`fill:${index}:${layout.annotation.id}`}
+                        transform={`translate(${layout.center.x} ${layout.center.y}) rotate(${layout.rotationDegrees})`}
+                        x={-layout.width / 2}
+                        y={-FLIGHT_PLAN_ROUTE_DISTANCE_PILL_HEIGHT_PX / 2}
+                        width={layout.width}
+                        height={FLIGHT_PLAN_ROUTE_DISTANCE_PILL_HEIGHT_PX}
+                        rx={FLIGHT_PLAN_ROUTE_DISTANCE_PILL_HEIGHT_PX / 2}
+                        fill={loadedUiTheme.flight_plan_route.distance_pill_bg}
+                      />
+                    ))}
+                    {routeDistancePillLayouts.map((layout, index) => (
+                      <g
+                        key={`stroke:${index}:${layout.annotation.id}`}
+                        transform={`translate(${layout.center.x} ${layout.center.y}) rotate(${layout.rotationDegrees})`}
+                        data-testid={`flight-plan-distance:${layout.annotation.id}`}
+                      >
+                        <rect
+                          x={-layout.width / 2}
+                          y={-FLIGHT_PLAN_ROUTE_DISTANCE_PILL_HEIGHT_PX / 2}
+                          width={layout.width}
+                          height={FLIGHT_PLAN_ROUTE_DISTANCE_PILL_HEIGHT_PX}
+                          rx={FLIGHT_PLAN_ROUTE_DISTANCE_PILL_HEIGHT_PX / 2}
+                          fill="none"
+                          stroke={routeSegmentColor(layout.annotation.status)}
+                          strokeWidth="2"
+                        />
+                        <text
+                          x="0"
+                          y="0"
+                          textAnchor="middle"
+                          dominantBaseline="central"
+                          fill={loadedUiTheme.flight_plan_route.distance_pill_fg}
+                          fontSize={FLIGHT_PLAN_ROUTE_DISTANCE_PILL_FONT_PX}
+                          fontWeight="800"
+                        >
+                          {layout.annotation.text}
+                        </text>
+                      </g>
                     ))}
                   </svg>
                 ) : null}
@@ -10490,6 +10576,7 @@ function ChartsPage(props: {
   const [plateFlightPlanRouteProjection, setPlateFlightPlanRouteProjection] = useState<FlightPlanRouteProjection>({
     flight_plan_route_revision: -1,
     segments: [],
+    distance_annotations: [],
   });
   const [resolvedChartUrls, setResolvedChartUrls] = useState<Record<string, ResolvedChartUrls>>({});
   const { toast: disabledActionToast, show: showDisabledAction } = useDisabledActionToast();
@@ -10558,6 +10645,7 @@ function ChartsPage(props: {
       setPlateFlightPlanRouteProjection({
         flight_plan_route_revision: props.flightPlanRouteRevision,
         segments: [],
+        distance_annotations: [],
       });
       return;
     }
@@ -10575,6 +10663,7 @@ function ChartsPage(props: {
         setPlateFlightPlanRouteProjection({
           flight_plan_route_revision: props.flightPlanRouteRevision,
           segments: [],
+          distance_annotations: [],
         });
       }
     });
@@ -12746,61 +12835,60 @@ function routeSegmentColor(status: FlightPlanRouteSegment["status"]) {
 
 function FlightPlanRoutePath(props: {
   segment: Pick<FlightPlanRouteSegment, "status" | "style"> & { path: readonly ScreenPoint[] };
+  layer?: "contrast" | "color" | "both";
 }) {
-  const { segment } = props;
-  const color = routeSegmentColor(segment.status);
+  const { segment, layer = "both" } = props;
+  const strokeForLayer = (renderLayer: "contrast" | "color") =>
+    renderLayer === "contrast"
+      ? {
+          color: loadedUiTheme.flight_plan_route.contrast,
+          width: 7,
+        }
+      : {
+          color: routeSegmentColor(segment.status),
+          width: 3.5,
+        };
+  const renderLayers: Array<"contrast" | "color"> =
+    layer === "both" ? ["contrast", "color"] : [layer];
   if (segment.style === "vectors") {
-    return spacedRouteChevronPlacements(segment.path, manualSequenceChevronSpacing).map(
-      (placement, index) => {
-        const transform = `translate(${placement.x} ${placement.y}) rotate(${placement.angleDegrees})`;
-        return (
-          <Fragment key={`vectors-chevron:${index}`}>
+    return renderLayers.flatMap((renderLayer) => {
+      const stroke = strokeForLayer(renderLayer);
+      return spacedRouteChevronPlacements(segment.path, manualSequenceChevronSpacing).map(
+        (placement, index) => (
             <path
+              key={`${renderLayer}:vectors-chevron:${index}`}
               d={manualSequenceChevronPath}
-              transform={transform}
+              transform={`translate(${placement.x} ${placement.y}) rotate(${placement.angleDegrees})`}
               fill="none"
-              stroke="rgba(0, 0, 0, 0.55)"
-              strokeWidth="7"
+              stroke={stroke.color}
+              strokeWidth={stroke.width}
               strokeLinecap="round"
               strokeLinejoin="round"
             />
-            <path
-              d={manualSequenceChevronPath}
-              transform={transform}
-              fill="none"
-              stroke={color}
-              strokeWidth="3.5"
-              strokeLinecap="round"
-              strokeLinejoin="round"
-            />
-          </Fragment>
-        );
-      },
-    );
+        ),
+      );
+    });
   }
 
   const points = segment.path.map((point) => `${point.x},${point.y}`).join(" ");
   const strokeDasharray = segment.style === "dashed" ? "10 8" : undefined;
   return (
     <>
-      <polyline
-        points={points}
-        fill="none"
-        stroke="rgba(0, 0, 0, 0.55)"
-        strokeWidth="7"
-        strokeLinecap="round"
-        strokeLinejoin="round"
-        strokeDasharray={strokeDasharray}
-      />
-      <polyline
-        points={points}
-        fill="none"
-        stroke={color}
-        strokeWidth="3.5"
-        strokeLinecap="round"
-        strokeLinejoin="round"
-        strokeDasharray={strokeDasharray}
-      />
+      {renderLayers.map((renderLayer) => {
+        const stroke = strokeForLayer(renderLayer);
+        return (
+          <polyline
+            key={renderLayer}
+            points={points}
+            fill="none"
+            stroke={stroke.color}
+            strokeWidth={stroke.width}
+            strokeLinecap="round"
+            strokeLinejoin="round"
+            strokeDasharray={strokeDasharray}
+          />
+        );
+      })}
     </>
   );
 }

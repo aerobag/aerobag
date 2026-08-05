@@ -51,10 +51,13 @@
     "airport_runway_inactive": "#b8bdc1"
   },
   "flight_plan_route": {
+    "contrast": "#0000008c",
     "completed": "#8c9dad",
     "active": "#ff4fcf",
     "active_leg_remaining": "#ff9fe6",
-    "remaining": "#ffffff"
+    "remaining": "#ffffff",
+    "distance_pill_bg": "#ffffff",
+    "distance_pill_fg": "#111111"
   },
   "plate_folder": {
     "thumbnail_bg": "#303030",

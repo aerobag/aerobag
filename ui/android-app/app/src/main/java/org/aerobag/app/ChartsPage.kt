@@ -1101,6 +1101,7 @@ private fun androidx.compose.ui.graphics.drawscope.DrawScope.drawPlateFlightPlan
             screenPath = projected.path,
             style = projected.segment.style,
             color = routeSegmentColor(uiTheme, projected.segment.status),
+            contrastColor = uiTheme.flightPlanRoute.contrast,
             densityScale = densityScale,
         )
     }

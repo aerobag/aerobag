@@ -214,6 +214,7 @@ import org.aerobag.app.domain.FlightPlanEntryPreview
 import org.aerobag.app.domain.FlightPlanDisplayRowKind
 import org.aerobag.app.domain.FlightPlanDisplayRowUiView
 import org.aerobag.app.domain.FlightPlanRowActionUiView
+import org.aerobag.app.domain.FlightPlanRouteDistanceAnnotation
 import org.aerobag.app.domain.FlightPlanRouteSegment
 import org.aerobag.app.domain.FlightPlanRouteProjection
 import org.aerobag.app.domain.FlightPlanUiState
@@ -728,6 +729,12 @@ internal fun MapExplorerPage(
     val flightPlanRoute =
         if (flightPlanRouteProjection.flightPlanRouteRevision == sessionSnapshot.flightPlanRouteRevision) {
             flightPlanRouteProjection.segments
+        } else {
+            emptyList()
+        }
+    val flightPlanRouteDistanceAnnotations =
+        if (flightPlanRouteProjection.flightPlanRouteRevision == sessionSnapshot.flightPlanRouteRevision) {
+            flightPlanRouteProjection.distanceAnnotations
         } else {
             emptyList()
         }
@@ -2589,6 +2596,8 @@ internal fun MapExplorerPage(
         OfflineRegionsOverlayLayer(displayedMapOverlay, density.density, uiTheme)
         RouteOverlayLayer(
             flightPlanRoute = flightPlanRoute,
+            distanceAnnotations = flightPlanRouteDistanceAnnotations,
+            visibleFeatureIds = displayedMapOverlay.flightPlanFeatures.mapTo(mutableSetOf()) { it.id },
             viewport = displayViewport,
             surfaceWidthPx = surfaceWidthPx,
             surfaceHeightPx = surfaceHeightPx,
@@ -3597,6 +3606,8 @@ private fun androidx.compose.ui.graphics.drawscope.DrawScope.drawOfflineRegion(
 @Composable
 private fun RouteOverlayLayer(
     flightPlanRoute: List<FlightPlanRouteSegment>,
+    distanceAnnotations: List<FlightPlanRouteDistanceAnnotation>,
+    visibleFeatureIds: Set<String>,
     viewport: MapViewportState,
     surfaceWidthPx: Float,
     surfaceHeightPx: Float,
@@ -3604,6 +3615,37 @@ private fun RouteOverlayLayer(
     uiTheme: UiTheme,
 ) {
     if (flightPlanRoute.isEmpty() || surfaceWidthPx <= 0f || surfaceHeightPx <= 0f) return
+    val distanceTextPaint = remember(densityScale, uiTheme.flightPlanRoute.distancePillFg) {
+        Paint().apply {
+            isAntiAlias = true
+            color = uiTheme.flightPlanRoute.distancePillFg.toArgb()
+            textAlign = Paint.Align.CENTER
+            textSize = 12f * densityScale
+            typeface = Typeface.DEFAULT_BOLD
+        }
+    }
+    val distanceBackgroundPaint = remember(uiTheme.flightPlanRoute.distancePillBg) {
+        Paint().apply {
+            isAntiAlias = true
+            color = uiTheme.flightPlanRoute.distancePillBg.toArgb()
+            style = Paint.Style.FILL
+        }
+    }
+    val distanceBorderPaint = remember(densityScale) {
+        Paint().apply {
+            isAntiAlias = true
+            style = Paint.Style.STROKE
+            strokeWidth = 2f * densityScale
+        }
+    }
+    val distanceContrastPaint = remember(densityScale, uiTheme.flightPlanRoute.contrast) {
+        Paint().apply {
+            isAntiAlias = true
+            color = uiTheme.flightPlanRoute.contrast.toArgb()
+            style = Paint.Style.STROKE
+            strokeWidth = 6f * densityScale
+        }
+    }
     val visibleSegmentCount = remember(flightPlanRoute, viewport, surfaceWidthPx, surfaceHeightPx) {
         countVisibleRouteSegments(
             flightPlanRoute = flightPlanRoute,
@@ -3617,16 +3659,75 @@ private fun RouteOverlayLayer(
             .fillMaxSize()
             .testTag("parity:flight-plan-route-overlay:segments:${flightPlanRoute.size}:visible:$visibleSegmentCount"),
     ) {
-        flightPlanRoute.forEach { segment ->
-            val path = segment.path.ifEmpty { listOf(segment.from, segment.to) }.map { point ->
+        val screenPaths = flightPlanRoute.map { segment ->
+            segment.path.ifEmpty { listOf(segment.from, segment.to) }.map { point ->
                 latLonToScreen(point.lat, point.lon, viewport, surfaceWidthPx, surfaceHeightPx)
             }
+        }
+        flightPlanRoute.forEachIndexed { index, segment ->
             drawFlightPlanRoutePath(
-                screenPath = path,
+                screenPath = screenPaths[index],
                 style = segment.style,
                 color = routeSegmentColor(uiTheme, segment.status),
+                contrastColor = uiTheme.flightPlanRoute.contrast,
                 densityScale = densityScale,
+                layer = RouteRenderLayer.Contrast,
             )
+        }
+        val distanceLayouts = layoutRouteDistancePills(
+            annotations = distanceAnnotations,
+            screenPaths = screenPaths,
+            visibleFeatureIds = visibleFeatureIds,
+            measurePillWidth = { text ->
+                maxOf(26f * densityScale, distanceTextPaint.measureText(text) + 12f * densityScale)
+            },
+        )
+        val pillHeight = 20f * densityScale
+        val pillRects = distanceLayouts.map { layout ->
+            layout to RectF(
+                layout.center.x - layout.widthPx / 2f,
+                layout.center.y - pillHeight / 2f,
+                layout.center.x + layout.widthPx / 2f,
+                layout.center.y + pillHeight / 2f,
+            )
+        }
+        pillRects.forEach { (layout, rect) ->
+            drawContext.canvas.nativeCanvas.apply {
+                save()
+                rotate(layout.rotationDegrees, layout.center.x, layout.center.y)
+                drawRoundRect(rect, pillHeight / 2f, pillHeight / 2f, distanceContrastPaint)
+                restore()
+            }
+        }
+        flightPlanRoute.forEachIndexed { index, segment ->
+            drawFlightPlanRoutePath(
+                screenPath = screenPaths[index],
+                style = segment.style,
+                color = routeSegmentColor(uiTheme, segment.status),
+                contrastColor = uiTheme.flightPlanRoute.contrast,
+                densityScale = densityScale,
+                layer = RouteRenderLayer.Color,
+            )
+        }
+        pillRects.forEach { (layout, rect) ->
+            drawContext.canvas.nativeCanvas.apply {
+                save()
+                rotate(layout.rotationDegrees, layout.center.x, layout.center.y)
+                drawRoundRect(rect, pillHeight / 2f, pillHeight / 2f, distanceBackgroundPaint)
+                restore()
+            }
+        }
+        pillRects.forEach { (layout, rect) ->
+            distanceBorderPaint.color = routeSegmentColor(uiTheme, layout.annotation.status).toArgb()
+            val baseline = layout.center.y -
+                (distanceTextPaint.fontMetrics.ascent + distanceTextPaint.fontMetrics.descent) / 2f
+            drawContext.canvas.nativeCanvas.apply {
+                save()
+                rotate(layout.rotationDegrees, layout.center.x, layout.center.y)
+                drawRoundRect(rect, pillHeight / 2f, pillHeight / 2f, distanceBorderPaint)
+                drawText(layout.annotation.text, layout.center.x, baseline, distanceTextPaint)
+                restore()
+            }
         }
     }
 }

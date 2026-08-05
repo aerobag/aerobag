@@ -4484,6 +4484,7 @@ pub fn project_flight_plan_route_in_session(handle: u32) -> AppResult<HadOperati
             serde_json::to_value(crate::FlightPlanRouteProjection {
                 flight_plan_route_revision: session.flight_plan_route_revision,
                 segments: Vec::new(),
+                distance_annotations: Vec::new(),
             })
             .map_err(|err| AppError {
                 kind: AppErrorKind::Internal,
@@ -4492,16 +4493,21 @@ pub fn project_flight_plan_route_in_session(handle: u32) -> AppResult<HadOperati
         ));
     };
     match crate::had_ops::project_flight_plan_route(session_nav_kv_store(session)?, &plan) {
-        Ok(segments) => Ok(HadOperationOutcome::complete(
-            serde_json::to_value(crate::FlightPlanRouteProjection {
-                flight_plan_route_revision: session.flight_plan_route_revision,
-                segments,
-            })
-            .map_err(|err| AppError {
-                kind: AppErrorKind::Internal,
-                message: err.to_string(),
-            })?,
-        )),
+        Ok(segments) => {
+            let distance_annotations =
+                crate::project_flight_plan_route_distance_annotations(&plan, &segments)?;
+            Ok(HadOperationOutcome::complete(
+                serde_json::to_value(crate::FlightPlanRouteProjection {
+                    flight_plan_route_revision: session.flight_plan_route_revision,
+                    segments,
+                    distance_annotations,
+                })
+                .map_err(|err| AppError {
+                    kind: AppErrorKind::Internal,
+                    message: err.to_string(),
+                })?,
+            ))
+        }
         Err(HadReadError::NeedPages(pages)) => Ok(HadOperationOutcome::NeedResources {
             resources: nav_kv_page_resources(pages),
         }),
@@ -8973,7 +8979,8 @@ fn flight_plan_selection_points(
         };
         let position = nav_ref_position(store, &nav_ref, procedure_airport_id.as_deref())?;
         features.push(NavRefSelectionPoint {
-            feature_id: format!("flight-plan:{}", nav_ref_overlay_key(&nav_ref)),
+            feature_id: crate::flight_plan_waypoint_feature_id(&nav_ref)
+                .expect("flight-plan selection points exclude spatial NavRefs"),
             nav_ref,
             symbol,
             position,

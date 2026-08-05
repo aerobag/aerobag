@@ -75,10 +75,13 @@ data class AviationTheme(
 )
 
 data class FlightPlanRouteTheme(
+    val contrast: Color,
     val completed: Color,
     val active: Color,
     val activeLegRemaining: Color,
     val remaining: Color,
+    val distancePillBg: Color,
+    val distancePillFg: Color,
 )
 
 @Serializable
@@ -152,10 +155,13 @@ private data class WireAviationTheme(
 
 @Serializable
 private data class WireFlightPlanRouteTheme(
+    val contrast: String,
     val completed: String,
     val active: String,
     val active_leg_remaining: String,
     val remaining: String,
+    val distance_pill_bg: String,
+    val distance_pill_fg: String,
 )
 
 object UiThemeLoader {
@@ -221,10 +227,13 @@ object UiThemeLoader {
                 airportRunwayInactive = wire.aviation.airport_runway_inactive.toColor(),
             ),
             flightPlanRoute = FlightPlanRouteTheme(
+                contrast = wire.flight_plan_route.contrast.toColor(),
                 completed = wire.flight_plan_route.completed.toColor(),
                 active = wire.flight_plan_route.active.toColor(),
                 activeLegRemaining = wire.flight_plan_route.active_leg_remaining.toColor(),
                 remaining = wire.flight_plan_route.remaining.toColor(),
+                distancePillBg = wire.flight_plan_route.distance_pill_bg.toColor(),
+                distancePillFg = wire.flight_plan_route.distance_pill_fg.toColor(),
             ),
             plateFolder = PlateFolderTheme(
                 thumbnailBg = wire.plate_folder.thumbnail_bg.toColor(),

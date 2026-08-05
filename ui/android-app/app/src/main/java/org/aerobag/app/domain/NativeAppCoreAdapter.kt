@@ -3379,6 +3379,17 @@ private fun WireFlightPlanRouteSegment.toUi() = FlightPlanRouteSegment(
 private fun WireFlightPlanRouteProjection.toUi() = FlightPlanRouteProjection(
     flightPlanRouteRevision = flight_plan_route_revision,
     segments = segments.map { it.toUi() },
+    distanceAnnotations = distance_annotations.map { annotation ->
+        FlightPlanRouteDistanceAnnotation(
+            id = annotation.id,
+            segmentIndexes = annotation.segment_indexes,
+            text = annotation.text,
+            distanceNm = annotation.distance_nm,
+            status = annotation.status.toUi(),
+            requiredFeatureIds = annotation.required_feature_ids,
+            minimumPathToPillWidthRatio = annotation.minimum_path_to_pill_width_ratio,
+        )
+    },
 )
 
 private fun WireRouteSegmentStatus.toUi() = when (this) {

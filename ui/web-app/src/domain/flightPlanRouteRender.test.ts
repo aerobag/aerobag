@@ -6,8 +6,10 @@ import { describe, expect, it } from "vitest";
 
 import {
   flightPlanRouteSegmentRenderKey,
+  layoutFlightPlanRouteDistancePills,
   spacedRouteChevronPlacements,
 } from "./flightPlanRouteRender";
+import type { FlightPlanRouteDistanceAnnotation } from "./types";
 
 describe("flight plan route rendering", () => {
   it("does not use canonical guidance ids as globally unique React keys", () => {
@@ -40,5 +42,86 @@ describe("flight plan route rendering", () => {
     expect(spacedRouteChevronPlacements([{ x: 2, y: 4 }, { x: 10, y: 4 }], 24)).toEqual([
       { x: 6, y: 4, angleDegrees: 0 },
     ]);
+  });
+
+  it("shows a pill only when all endpoint labels are visible and the path is long enough", () => {
+    const annotation: FlightPlanRouteDistanceAnnotation = {
+      id: "leg-1",
+      segment_indexes: [0],
+      text: "53nm",
+      distance_nm: 53,
+      status: "remaining",
+      required_feature_ids: ["flight-plan:start", "flight-plan:end"],
+      minimum_path_to_pill_width_ratio: 1.6,
+    };
+    const segment = { status: "remaining" as const, path: [{ x: 0, y: 0 }, { x: 160, y: 0 }] };
+
+    expect(layoutFlightPlanRouteDistancePills(
+      [annotation],
+      [segment],
+      new Set(["flight-plan:start"]),
+      () => 100,
+    )).toEqual([]);
+    expect(layoutFlightPlanRouteDistancePills(
+      [annotation],
+      [segment],
+      new Set(annotation.required_feature_ids),
+      () => 101,
+    )).toEqual([]);
+    expect(layoutFlightPlanRouteDistancePills(
+      [annotation],
+      [segment],
+      new Set(annotation.required_feature_ids),
+      () => 100,
+    )).toEqual([{ annotation, center: { x: 80, y: 0 }, width: 100, rotationDegrees: 0 }]);
+  });
+
+  it("places and rotates one logical-leg pill along its aggregated drawable path", () => {
+    const annotation: FlightPlanRouteDistanceAnnotation = {
+      id: "procedure-leg",
+      segment_indexes: [0, 1],
+      text: "20nm",
+      distance_nm: 20,
+      status: "active",
+      required_feature_ids: [],
+      minimum_path_to_pill_width_ratio: 1.6,
+    };
+    const layouts = layoutFlightPlanRouteDistancePills(
+      [annotation],
+      [
+        { status: "active", path: [{ x: 0, y: 0 }, { x: 20, y: 0 }] },
+        { status: "active_leg_remaining", path: [{ x: 20, y: 0 }, { x: 20, y: 100 }] },
+      ],
+      new Set(),
+      () => 50,
+    );
+
+    expect(layouts).toEqual([{
+      annotation,
+      center: { x: 20, y: 20 },
+      width: 50,
+      rotationDegrees: 90,
+    }]);
+  });
+
+  it("reverses an upward baseline so the text reads in the downish direction", () => {
+    const annotation: FlightPlanRouteDistanceAnnotation = {
+      id: "northbound-leg",
+      segment_indexes: [0],
+      text: "53nm",
+      distance_nm: 53,
+      status: "remaining",
+      required_feature_ids: [],
+      minimum_path_to_pill_width_ratio: 1.6,
+    };
+    const [layout] = layoutFlightPlanRouteDistancePills(
+      [annotation],
+      [{ status: "remaining", path: [{ x: 0, y: 100 }, { x: 0, y: -100 }] }],
+      new Set(),
+      () => 50,
+    );
+
+    expect(layout.center).toEqual({ x: 0, y: 60 });
+    expect(layout.rotationDegrees).toBe(90);
   });
 });

@@ -150,9 +150,20 @@ data class FlightPlanRouteSegment(
     val status: RouteSegmentStatus,
 )
 
+data class FlightPlanRouteDistanceAnnotation(
+    val id: String,
+    val segmentIndexes: List<Int>,
+    val text: String,
+    val distanceNm: Double,
+    val status: RouteSegmentStatus,
+    val requiredFeatureIds: List<String>,
+    val minimumPathToPillWidthRatio: Double,
+)
+
 data class FlightPlanRouteProjection(
     val flightPlanRouteRevision: Long,
     val segments: List<FlightPlanRouteSegment>,
+    val distanceAnnotations: List<FlightPlanRouteDistanceAnnotation> = emptyList(),
 )
 
 enum class SequencingMode {

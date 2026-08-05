@@ -408,9 +408,22 @@ pub struct FlightPlanRouteSegment {
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct FlightPlanRouteDistanceAnnotation {
+    pub id: String,
+    pub segment_indexes: Vec<usize>,
+    pub text: String,
+    pub distance_nm: f64,
+    pub status: FlightPlanRouteSegmentStatus,
+    pub required_feature_ids: Vec<String>,
+    pub minimum_path_to_pill_width_ratio: f64,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct FlightPlanRouteProjection {
     pub flight_plan_route_revision: u64,
     pub segments: Vec<FlightPlanRouteSegment>,
+    #[serde(default)]
+    pub distance_annotations: Vec<FlightPlanRouteDistanceAnnotation>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -695,6 +708,152 @@ where
         });
     }
     Ok(route)
+}
+
+const MINIMUM_ROUTE_PATH_TO_DISTANCE_PILL_WIDTH_RATIO: f64 = 1.6;
+
+pub(crate) fn project_flight_plan_route_distance_annotations(
+    plan: &FlightPlan,
+    route: &[FlightPlanRouteSegment],
+) -> AppResult<Vec<FlightPlanRouteDistanceAnnotation>> {
+    let mut annotations = Vec::new();
+    let mut segment_index = 0;
+
+    for leg in &plan.resolved_legs {
+        let segment_count = guidance_detail_count_for_leg(leg);
+        let end_index = segment_index + segment_count;
+        let segments = route
+            .get(segment_index..end_index)
+            .ok_or_else(|| AppError {
+                kind: AppErrorKind::Internal,
+                message: format!(
+                    "route projection omitted segments for resolved leg {}",
+                    leg.id
+                ),
+            })?;
+        if segments.iter().any(|segment| segment.leg_id != leg.id) {
+            return Err(AppError {
+                kind: AppErrorKind::Internal,
+                message: format!(
+                    "route projection segment order does not match resolved leg {}",
+                    leg.id
+                ),
+            });
+        }
+
+        let eligible_procedure_leg = leg.procedure_provenance.as_ref().is_none_or(|provenance| {
+            !matches!(
+                provenance.path_termination,
+                PathTermination::HeadingToManual | PathTermination::HeadingToAltitude
+            ) && !matches!(
+                &provenance.path_termination,
+                PathTermination::Other(code) if matches!(code.trim(), "HA" | "HF" | "HM")
+            )
+        });
+        if eligible_procedure_leg {
+            let from_feature_id = flight_plan_waypoint_feature_id(&leg.from);
+            let to_feature_id = flight_plan_waypoint_feature_id(&leg.to);
+            if let (Some(from_feature_id), Some(to_feature_id)) = (from_feature_id, to_feature_id) {
+                if from_feature_id != to_feature_id {
+                    push_route_distance_annotation(
+                        &mut annotations,
+                        leg.id.clone(),
+                        (segment_index..end_index).collect(),
+                        segments,
+                        vec![from_feature_id, to_feature_id],
+                    );
+                }
+            }
+        }
+        segment_index = end_index;
+    }
+
+    if let Some(direct_to) = plan
+        .guidance
+        .as_ref()
+        .filter(|guidance| guidance.sequencing_mode == SequencingMode::DirectTo)
+        .and_then(|guidance| guidance.direct_to.as_ref())
+    {
+        let segment = route.get(segment_index).ok_or_else(|| AppError {
+            kind: AppErrorKind::Internal,
+            message: "route projection omitted active direct-to segment".to_string(),
+        })?;
+        if segment.leg_id != "direct-to" || route.len() != segment_index + 1 {
+            return Err(AppError {
+                kind: AppErrorKind::Internal,
+                message: "route projection direct-to segment order is invalid".to_string(),
+            });
+        }
+        if let Some(target_feature_id) = flight_plan_waypoint_feature_id(&direct_to.target) {
+            push_route_distance_annotation(
+                &mut annotations,
+                "direct-to".to_string(),
+                vec![segment_index],
+                std::slice::from_ref(segment),
+                vec![target_feature_id],
+            );
+        }
+        segment_index += 1;
+    }
+
+    if segment_index != route.len() {
+        return Err(AppError {
+            kind: AppErrorKind::Internal,
+            message: "route projection contains segments without a resolved flight-plan leg"
+                .to_string(),
+        });
+    }
+    Ok(annotations)
+}
+
+fn push_route_distance_annotation(
+    annotations: &mut Vec<FlightPlanRouteDistanceAnnotation>,
+    id: String,
+    segment_indexes: Vec<usize>,
+    segments: &[FlightPlanRouteSegment],
+    required_feature_ids: Vec<String>,
+) {
+    let distance_nm = segments
+        .iter()
+        .map(|segment| segment.distance_nm)
+        .sum::<f64>();
+    if !distance_nm.is_finite() || distance_nm <= 0.0 {
+        return;
+    }
+    let status = if segments.iter().any(|segment| {
+        matches!(
+            segment.status,
+            FlightPlanRouteSegmentStatus::Active | FlightPlanRouteSegmentStatus::ActiveLegRemaining
+        )
+    }) {
+        FlightPlanRouteSegmentStatus::Active
+    } else if segments
+        .iter()
+        .all(|segment| segment.status == FlightPlanRouteSegmentStatus::Completed)
+    {
+        FlightPlanRouteSegmentStatus::Completed
+    } else {
+        FlightPlanRouteSegmentStatus::Remaining
+    };
+    annotations.push(FlightPlanRouteDistanceAnnotation {
+        id,
+        segment_indexes,
+        text: format!("{}nm", flight_data::format_nm(distance_nm)),
+        distance_nm,
+        status,
+        required_feature_ids,
+        minimum_path_to_pill_width_ratio: MINIMUM_ROUTE_PATH_TO_DISTANCE_PILL_WIDTH_RATIO,
+    });
+}
+
+pub(crate) fn flight_plan_waypoint_feature_id(nav_ref: &NavRef) -> Option<String> {
+    if matches!(nav_ref, NavRef::LatLon(_) | NavRef::Spot(_)) {
+        return None;
+    }
+    Some(format!(
+        "flight-plan:{}",
+        serde_json::to_string(nav_ref).expect("NavRef must always serialize as JSON")
+    ))
 }
 
 pub(crate) fn project_flight_plan_leg_route_with_resolver<E, F>(
@@ -1820,6 +1979,211 @@ mod tests {
         assert_eq!(route.len(), 1);
         assert_eq!(route[0].from, start);
         assert_eq!(route[0].to, end);
+
+        let annotations = project_flight_plan_route_distance_annotations(&plan, &route)
+            .expect("project route distance annotations");
+        assert_eq!(annotations.len(), 1);
+        assert_eq!(annotations[0].id, "procedure-leg");
+        assert_eq!(annotations[0].segment_indexes, vec![0]);
+        assert_eq!(
+            annotations[0].required_feature_ids,
+            vec![
+                flight_plan_waypoint_feature_id(&NavRef::Fix("ISITE".to_string())).unwrap(),
+                flight_plan_waypoint_feature_id(&NavRef::Fix("JEPAL".to_string())).unwrap(),
+            ]
+        );
+        assert!(annotations[0].text.ends_with("nm"));
+        assert_eq!(annotations[0].minimum_path_to_pill_width_ratio, 1.6);
+    }
+
+    #[test]
+    fn route_distance_annotation_aggregates_procedure_geometry_and_omits_holds() {
+        let start = LatLon {
+            lat: 47.0,
+            lon: -122.0,
+        };
+        let middle = LatLon {
+            lat: 47.1,
+            lon: -122.0,
+        };
+        let end = LatLon {
+            lat: 47.1,
+            lon: -121.9,
+        };
+        let mut plan = FlightPlan {
+            resolved_legs: vec![ResolvedLeg {
+                id: "procedure-leg".to_string(),
+                from: NavRef::Fix("START".to_string()),
+                to: NavRef::Fix("END".to_string()),
+                source: ResolvedLegSource::RouteComponent { component_index: 0 },
+                procedure_provenance: Some(ProcedureLegProvenance {
+                    airport_id: "KSEA".to_string(),
+                    procedure_id: "TEST".to_string(),
+                    kind: ProcedureKind::Approach,
+                    role: ProcedureSegmentRole::Common,
+                    path_termination: PathTermination::Other("RF".to_string()),
+                    leg_sequence: 10,
+                    discontinuity_after: None,
+                    display_path: Some(LegDisplayPath {
+                        style: LegDisplayPathStyle::Solid,
+                        elements: vec![
+                            LegDisplayElement::Segment { start, end: middle },
+                            LegDisplayElement::Segment { start: middle, end },
+                        ],
+                        effective_terminal_course_deg: None,
+                        debug_element_sources: Vec::new(),
+                        debug_element_roles: Vec::new(),
+                    }),
+                }),
+            }],
+            ..FlightPlan::default()
+        };
+        let route = project_flight_plan_route_with_resolver(&plan, |_, _| {
+            Err::<LatLon, _>("display geometry must be self-contained")
+        })
+        .expect("project route");
+
+        let annotations = project_flight_plan_route_distance_annotations(&plan, &route)
+            .expect("project annotations");
+        assert_eq!(annotations.len(), 1);
+        assert_eq!(annotations[0].segment_indexes, vec![0, 1]);
+        assert!(
+            (annotations[0].distance_nm - route.iter().map(|item| item.distance_nm).sum::<f64>())
+                .abs()
+                < 1e-9
+        );
+
+        plan.resolved_legs[0]
+            .procedure_provenance
+            .as_mut()
+            .unwrap()
+            .path_termination = PathTermination::Other("HF".to_string());
+        let hold_route = project_flight_plan_route_with_resolver(&plan, |_, _| {
+            Err::<LatLon, _>("display geometry must be self-contained")
+        })
+        .expect("project hold route");
+        assert!(
+            project_flight_plan_route_distance_annotations(&plan, &hold_route)
+                .expect("project hold annotations")
+                .is_empty()
+        );
+
+        plan.resolved_legs[0]
+            .procedure_provenance
+            .as_mut()
+            .unwrap()
+            .path_termination = PathTermination::HeadingToManual;
+        let vector_route = project_flight_plan_route_with_resolver(&plan, |_, _| {
+            Err::<LatLon, _>("display geometry must be self-contained")
+        })
+        .expect("project vector route");
+        assert!(
+            project_flight_plan_route_distance_annotations(&plan, &vector_route)
+                .expect("project vector annotations")
+                .is_empty()
+        );
+    }
+
+    #[test]
+    fn route_distance_annotations_keep_airway_hops_distinct() {
+        let positions = [
+            LatLon {
+                lat: 47.0,
+                lon: -122.0,
+            },
+            LatLon {
+                lat: 47.1,
+                lon: -121.9,
+            },
+            LatLon {
+                lat: 47.2,
+                lon: -121.8,
+            },
+        ];
+        let plan = FlightPlan {
+            resolved_legs: vec![
+                ResolvedLeg {
+                    id: "airway-hop-a-b".to_string(),
+                    from: NavRef::Fix("A".to_string()),
+                    to: NavRef::Fix("B".to_string()),
+                    source: ResolvedLegSource::RouteComponent { component_index: 0 },
+                    procedure_provenance: None,
+                },
+                ResolvedLeg {
+                    id: "airway-hop-b-c".to_string(),
+                    from: NavRef::Fix("B".to_string()),
+                    to: NavRef::Fix("C".to_string()),
+                    source: ResolvedLegSource::RouteComponent { component_index: 0 },
+                    procedure_provenance: None,
+                },
+            ],
+            ..FlightPlan::default()
+        };
+        let route = project_flight_plan_route_with_resolver(&plan, |nav_ref, _| match nav_ref {
+            NavRef::Fix(ident) => match ident.as_str() {
+                "A" => Ok(positions[0]),
+                "B" => Ok(positions[1]),
+                "C" => Ok(positions[2]),
+                _ => Err("unexpected fix"),
+            },
+            _ => Err("unexpected nav ref"),
+        })
+        .expect("project airway route");
+
+        let annotations = project_flight_plan_route_distance_annotations(&plan, &route)
+            .expect("project airway annotations");
+        assert_eq!(annotations.len(), 2);
+        assert_eq!(annotations[0].segment_indexes, vec![0]);
+        assert_eq!(annotations[1].segment_indexes, vec![1]);
+        assert_eq!(annotations[0].required_feature_ids.len(), 2);
+        assert_eq!(annotations[1].required_feature_ids.len(), 2);
+    }
+
+    #[test]
+    fn direct_to_distance_annotation_requires_only_its_labeled_target() {
+        let start_position = LatLon {
+            lat: 47.0,
+            lon: -122.0,
+        };
+        let target_position = LatLon {
+            lat: 47.2,
+            lon: -121.8,
+        };
+        let target = NavRef::Fix("TARGET".to_string());
+        let plan = FlightPlan {
+            guidance: Some(GuidanceState {
+                active_leg_index: 0,
+                active_detail_index: None,
+                display_split_leg_id: None,
+                sequencing_mode: SequencingMode::DirectTo,
+                direct_to: Some(DirectToState {
+                    start: NavRef::Spot(start_position),
+                    target: target.clone(),
+                    target_row: DirectToTargetRow::Temporary {
+                        row_id: FlightPlanRowId("direct-target".to_string()),
+                    },
+                    resume_row_id: None,
+                }),
+                suspend_reason: None,
+            }),
+            ..FlightPlan::default()
+        };
+        let route = project_flight_plan_route_with_resolver(&plan, |nav_ref, _| match nav_ref {
+            NavRef::Spot(position) => Ok(*position),
+            NavRef::Fix(ident) if ident == "TARGET" => Ok(target_position),
+            _ => Err("unexpected nav ref"),
+        })
+        .expect("project direct-to route");
+
+        let annotations = project_flight_plan_route_distance_annotations(&plan, &route)
+            .expect("project direct-to annotation");
+        assert_eq!(annotations.len(), 1);
+        assert_eq!(annotations[0].id, "direct-to");
+        assert_eq!(annotations[0].segment_indexes, vec![0]);
+        assert_eq!(
+            annotations[0].required_feature_ids,
+            vec![flight_plan_waypoint_feature_id(&target).unwrap()]
+        );
     }
 
     #[test]

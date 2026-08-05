@@ -171,9 +171,20 @@ export type FlightPlanRouteSegment = {
   finish_lines?: { start: LatLon; end: LatLon }[];
 };
 
+export type FlightPlanRouteDistanceAnnotation = {
+  id: string;
+  segment_indexes: number[];
+  text: string;
+  distance_nm: number;
+  status: FlightPlanRouteSegment["status"];
+  required_feature_ids: string[];
+  minimum_path_to_pill_width_ratio: number;
+};
+
 export type FlightPlanRouteProjection = {
   flight_plan_route_revision: number;
   segments: FlightPlanRouteSegment[];
+  distance_annotations: FlightPlanRouteDistanceAnnotation[];
 };
 
 export type SequencingMode = "follow_plan" | "suspended" | "direct_to";

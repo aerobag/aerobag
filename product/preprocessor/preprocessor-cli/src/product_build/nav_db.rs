@@ -2871,7 +2871,13 @@ pub(super) fn build_nav_kv_navref_pairs(main_db_path: &Path) -> anyhow::Result<V
     pairs.extend(build_nav_kv_fix_navref_pairs(&connection)?);
     pairs.extend(build_nav_kv_runway_position_pairs(&connection)?);
     pairs.extend(build_nav_kv_waypoint_lookup_pairs(&connection)?);
-    pairs.extend(build_nav_kv_procedure_pairs(&connection, None, None, None)?);
+    pairs.extend(build_nav_kv_procedure_pairs(
+        &connection,
+        None,
+        None,
+        None,
+        None,
+    )?);
     pairs.extend(build_nav_kv_airway_pairs(&connection)?);
     let mut deduped = BTreeMap::<String, Vec<u8>>::new();
     for pair in pairs {
@@ -4169,6 +4175,7 @@ impl ProcedureGeometryAuditFilter {
 pub(super) fn build_nav_kv_procedure_pairs(
     connection: &rusqlite::Connection,
     procedure_geometry_filter: Option<&ProcedureGeometryAuditFilter>,
+    materialization_rejections: Option<&mut Vec<ProcedureGeometryMaterializationRejection>>,
     final_route_rejections: Option<&mut Vec<ProcedureGeometryFinalRouteRejection>>,
     course_join_bypass_candidates: Option<&mut Vec<ProcedureGeometryCourseJoinBypassCandidate>>,
 ) -> anyhow::Result<Vec<NavKvPair>> {
@@ -4255,14 +4262,27 @@ pub(super) fn build_nav_kv_procedure_pairs(
         });
     }
     let procedure_kinds = procedure_kinds_from_lists(approach_lists, sid_lists, star_lists);
-    let audit_requested =
-        final_route_rejections.is_some() || course_join_bypass_candidates.is_some();
+    let audit_requested = materialization_rejections.is_some()
+        || final_route_rejections.is_some()
+        || course_join_bypass_candidates.is_some();
     let mut geometry_records = if audit_requested {
         let audit = audit_procedure_geometry_records(
             procedure_kinds,
             distinct_by_procedure,
             materialization_by_procedure,
         )?;
+        if let Some(rejections) = materialization_rejections {
+            *rejections = audit
+                .materialization_rejections
+                .into_iter()
+                .filter(|rejection| {
+                    audit_transition_matches(
+                        procedure_geometry_filter,
+                        rejection.enroute_transition.as_deref(),
+                    )
+                })
+                .collect();
+        }
         if let Some(rejections) = final_route_rejections {
             *rejections = audit
                 .final_route_rejections
@@ -4423,6 +4443,7 @@ pub struct ProcedureGeometryAuditSummary {
     pub record_count: usize,
     pub records_with_data_quality: usize,
     pub data_quality_messages: BTreeMap<String, usize>,
+    pub materialization_rejections: Vec<ProcedureGeometryMaterializationRejection>,
     pub final_route_rejections: Vec<ProcedureGeometryFinalRouteRejection>,
     pub course_join_bypass_candidates: Vec<ProcedureGeometryCourseJoinBypassCandidate>,
 }
@@ -4433,11 +4454,13 @@ pub fn audit_procedure_geometry_from_sqlite(
 ) -> anyhow::Result<ProcedureGeometryAuditSummary> {
     let connection = rusqlite::Connection::open(main_db_path)
         .with_context(|| format!("failed to open {}", main_db_path.display()))?;
+    let mut materialization_rejections = Vec::new();
     let mut final_route_rejections = Vec::new();
     let mut course_join_bypass_candidates = Vec::new();
     let pairs = build_nav_kv_procedure_pairs(
         &connection,
         Some(&filter),
+        Some(&mut materialization_rejections),
         Some(&mut final_route_rejections),
         Some(&mut course_join_bypass_candidates),
     )?;
@@ -4445,6 +4468,7 @@ pub fn audit_procedure_geometry_from_sqlite(
         record_count: 0,
         records_with_data_quality: 0,
         data_quality_messages: BTreeMap::new(),
+        materialization_rejections,
         final_route_rejections,
         course_join_bypass_candidates,
     };

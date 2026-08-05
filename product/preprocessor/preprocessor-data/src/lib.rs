@@ -1180,6 +1180,85 @@ struct CifpArincNavaid {
     elevation: String,
 }
 
+#[derive(Debug, Clone)]
+struct CifpTerminalWaypoint {
+    id: String,
+    lat: f64,
+    lon: f64,
+    name: String,
+}
+
+fn parse_cifp_terminal_waypoint(line: &str) -> Option<CifpTerminalWaypoint> {
+    if line.len() < 132 || field(line, 4, 1) != "P" || field(line, 12, 1) != "C" {
+        return None;
+    }
+    let id = trim(field(line, 13, 6)).to_ascii_uppercase();
+    if id.is_empty() {
+        return None;
+    }
+    let lat = cifp_compact_coord_lat(field(line, 32, 9))?;
+    let lon = cifp_compact_coord_lon(field(line, 41, 10))?;
+    let name = trim(field(line, 98, 25)).to_string();
+    Some(CifpTerminalWaypoint { id, lat, lon, name })
+}
+
+fn insert_missing_cifp_terminal_waypoints(
+    conn: &Connection,
+    input_dir: &Path,
+) -> anyhow::Result<usize> {
+    let mut existing = BTreeMap::<String, (f64, f64)>::new();
+    {
+        let mut stmt = conn.prepare(
+            "SELECT trim(LocationID), CAST(ARPLatitude AS REAL), CAST(ARPLongitude AS REAL) FROM fix WHERE trim(LocationID) <> ''",
+        )?;
+        let rows = stmt.query_map([], |row| {
+            Ok((
+                row.get::<_, String>(0)?.to_ascii_uppercase(),
+                row.get::<_, f64>(1)?,
+                row.get::<_, f64>(2)?,
+            ))
+        })?;
+        for row in rows {
+            let (id, lat, lon) = row?;
+            if let Some((existing_lat, existing_lon)) = existing.insert(id.clone(), (lat, lon)) {
+                anyhow::ensure!(
+                    (existing_lat - lat).abs() < 1e-5 && (existing_lon - lon).abs() < 1e-5,
+                    "conflicting existing fix records for {id}: ({existing_lat},{existing_lon}) vs ({lat},{lon})",
+                );
+            }
+        }
+    }
+
+    let path = input_dir.join("FAACIFP18");
+    let text = read_text_lossy(&path)?;
+    let mut stmt = conn.prepare("INSERT INTO fix VALUES (?1, ?2, ?3, ?4, ?5)")?;
+    let mut inserted = 0;
+    for line in text.lines() {
+        let Some(record) = parse_cifp_terminal_waypoint(line) else {
+            continue;
+        };
+        if let Some((lat, lon)) = existing.get(&record.id) {
+            anyhow::ensure!(
+                (*lat - record.lat).abs() < 1e-5 && (*lon - record.lon).abs() < 1e-5,
+                "CIFP terminal waypoint {} conflicts with canonical fix: ({lat},{lon}) vs ({},{})",
+                record.id,
+                record.lat,
+                record.lon,
+            );
+            continue;
+        }
+        inserted += stmt.execute(params![
+            record.id,
+            record.lat,
+            record.lon,
+            "CIFP TERMINAL WAYPOINT",
+            record.name,
+        ])?;
+        existing.insert(record.id, (record.lat, record.lon));
+    }
+    Ok(inserted)
+}
+
 fn parse_cifp_arinc_navaid(line: &str) -> Option<CifpArincNavaid> {
     if line.len() < 132 {
         return None;
@@ -1433,6 +1512,10 @@ pub fn build_data_package(request: &DataBuildRequest) -> anyhow::Result<DataBuil
     );
     row_counts.insert("nav".to_string(), insert_nav(&tx, &request.input_dir)?);
     row_counts.insert("fix".to_string(), insert_fix(&tx, &request.input_dir)?);
+    row_counts.insert(
+        "cifp_terminal_waypoint_fixes".to_string(),
+        insert_missing_cifp_terminal_waypoints(&tx, &request.input_dir)?,
+    );
     row_counts.insert(
         "fix_usage".to_string(),
         insert_fix_usage(&tx, &request.input_dir)?,
@@ -1735,6 +1818,31 @@ mod tests {
         String::from_utf8(line).unwrap()
     }
 
+    fn build_cifp_terminal_waypoint_record(
+        airport_id: &str,
+        id: &str,
+        icao_code: &str,
+        lat: &str,
+        lon: &str,
+        name: &str,
+    ) -> String {
+        let mut line = vec![b' '; 132];
+        put_field(&mut line, 0, 4, "SUSA");
+        put_field(&mut line, 4, 1, "P");
+        put_field(&mut line, 6, 4, airport_id);
+        put_field(&mut line, 10, 2, icao_code);
+        put_field(&mut line, 12, 1, "C");
+        put_field(&mut line, 13, 6, id);
+        put_field(&mut line, 19, 2, icao_code);
+        put_field(&mut line, 21, 1, "0");
+        put_field(&mut line, 32, 9, lat);
+        put_field(&mut line, 41, 10, lon);
+        put_field(&mut line, 74, 5, "E0098");
+        put_field(&mut line, 98, 25, name);
+        put_field(&mut line, 123, 9, "226501303");
+        String::from_utf8(line).unwrap()
+    }
+
     fn write_empty(path: &Path) {
         fs::write(path, "").unwrap();
     }
@@ -1919,6 +2027,61 @@ mod tests {
             usages,
             vec!["CONTROLLER LOW".to_string(), "ENROUTE LOW".to_string()]
         );
+    }
+
+    #[test]
+    fn build_data_package_imports_missing_cifp_terminal_waypoint_as_fix() {
+        let dir = tempdir().unwrap();
+        let input_dir = dir.path().join("input");
+        let output_dir = dir.path().join("output");
+        fs::create_dir_all(&input_dir).unwrap();
+
+        for name in [
+            "APT.txt", "TWR.txt", "AWOS.txt", "NAV.txt", "FIX.txt", "DOF.DAT", "AWY.txt",
+        ] {
+            write_empty(&input_dir.join(name));
+        }
+        fs::write(
+            input_dir.join("FAACIFP18"),
+            format!(
+                "{}\n",
+                build_cifp_terminal_waypoint_record(
+                    "PHNL",
+                    "23LIH",
+                    "PH",
+                    "N23395692",
+                    "W160351186",
+                    "(LIH 3150 1230)",
+                )
+            ),
+        )
+        .unwrap();
+
+        let result = build_data_package(&DataBuildRequest {
+            input_dir,
+            output_dir,
+            manifest_version: "2608".to_string(),
+            artifact_stem: None,
+        })
+        .unwrap();
+        let conn = Connection::open(result.main_db).unwrap();
+        let (lat, lon, kind) = conn
+            .query_row(
+                "SELECT CAST(ARPLatitude AS REAL), CAST(ARPLongitude AS REAL), trim(Type) FROM fix WHERE trim(LocationID)='23LIH'",
+                [],
+                |row| {
+                    Ok((
+                        row.get::<_, f64>(0)?,
+                        row.get::<_, f64>(1)?,
+                        row.get::<_, String>(2)?,
+                    ))
+                },
+            )
+            .expect("CIFP terminal waypoint should enrich fixes");
+
+        assert!((lat - 23.6658111111).abs() < 1e-6);
+        assert!((lon - -160.5866277778).abs() < 1e-6);
+        assert_eq!(kind, "CIFP TERMINAL WAYPOINT");
     }
 
     #[test]

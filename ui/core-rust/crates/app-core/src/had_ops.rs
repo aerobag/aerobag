@@ -7162,6 +7162,66 @@ mod tests {
     }
 
     #[test]
+    fn star_match_drives_pilot_label_and_plate_arrival_menu() {
+        let plate_id = "plate:KRNT:STAR-WA-GLASR THREE.png";
+        let match_rows = serde_json::json!([{
+            "airport_id": "KRNT",
+            "cifp_id": "GLASR3",
+            "procedure_kind": "star",
+            "plate_id": plate_id,
+            "plate_label": "GLASR THREE",
+            "package_id": "tpp-nw",
+            "public": 1,
+            "priority": 0,
+            "match_kind": "unique",
+            "is_primary": 1
+        }]);
+        let store = test_nav_kv_store(&[
+            ("plate/cifp/KRNT/GLASR3", match_rows.clone()),
+            (
+                "plate/procedure-candidates/plate%3AKRNT%3ASTAR-WA-GLASR%20THREE.png",
+                match_rows,
+            ),
+            (
+                "procedure/geometry/KRNT/STAR/GLASR3/RW16/GLASR",
+                serde_json::json!({}),
+            ),
+        ]);
+
+        let outcome = run_had_operation(
+            &store,
+            HadOperation::ListProcedures {
+                airport_id: "KRNT".to_string(),
+                procedure_kind: ProcedureKind::Star,
+            },
+        )
+        .expect("list KRNT arrivals");
+        let HadOperationOutcome::Complete { result, .. } = outcome else {
+            panic!("expected complete arrival list");
+        };
+        let procedures =
+            serde_json::from_value::<Vec<ProcedureSummary>>(result).expect("decode arrivals");
+        assert_eq!(procedures[0].procedure_id, "GLASR3");
+        assert_eq!(procedures[0].display_label, "GLASR THREE");
+
+        let plan = FlightPlan {
+            route_components: vec![
+                RouteComponent::Waypoint {
+                    waypoint: NavRef::Airport("KPAE".to_string()),
+                },
+                RouteComponent::Waypoint {
+                    waypoint: NavRef::Airport("KRNT".to_string()),
+                },
+            ],
+            ..FlightPlan::default()
+        };
+        let menu = describe_plate_loads(&store, &plan, plate_id).expect("describe STAR plate");
+        assert_eq!(menu.procedure_kind, Some(ProcedureKind::Star));
+        assert_eq!(menu.launcher_label, "LOAD\nARR");
+        assert_eq!(menu.options[0].label, "from GLASR to RW16");
+    }
+
+    #[test]
     fn list_approaches_disambiguates_procedures_sharing_a_plate_label() {
         let (root, pages) = fixture(
             &[

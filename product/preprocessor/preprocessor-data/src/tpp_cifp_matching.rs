@@ -1651,6 +1651,81 @@ mod tests {
     }
 
     #[test]
+    fn publishes_named_arrival_plate_as_star_match() {
+        let dir = tempdir().unwrap();
+        let db_path = dir.path().join("cifp.db");
+        let connection = Connection::open(&db_path).unwrap();
+        connection
+            .execute_batch(
+                "CREATE TABLE cifp_sid_star_app (
+                    airport_identifier TEXT,
+                    sid_star_approach_identifier TEXT,
+                    route_type TEXT,
+                    subsection_code TEXT
+                );
+                CREATE TABLE airport_aliases (alias_id TEXT, airport_id TEXT);
+                INSERT INTO cifp_sid_star_app VALUES ('KRNT', 'GLASR3', '1', 'E');
+                INSERT INTO cifp_sid_star_app VALUES ('KRNT', 'GLASR3', '3', 'E');",
+            )
+            .unwrap();
+        drop(connection);
+
+        let manifest_path = dir.path().join(PACKAGE_ASSET_MANIFEST_NAME);
+        let manifest = PackageAssetManifest {
+            schema_version: 1,
+            family_id: "tpp".to_string(),
+            package_id: "tpp-nw".to_string(),
+            assets: vec![PackageAssetRecord {
+                id: "plate:KRNT:STAR-WA-GLASR THREE.png".to_string(),
+                airport_id: "KRNT".to_string(),
+                icao_airport_id: Some("KRNT".to_string()),
+                label: "STAR-WA-GLASR THREE".to_string(),
+                asset_kind: "plate".to_string(),
+                document_type: "star".to_string(),
+                asset_path: "plates/KRNT/GLASR3.png".to_string(),
+                thumbnail_path: "thumbnails/KRNT/GLASR3.png".to_string(),
+                procedure_uid: None,
+                georef: None,
+            }],
+        };
+        fs::write(&manifest_path, serde_json::to_vec(&manifest).unwrap()).unwrap();
+        let zip_path = dir.path().join("tpp-nw.zip");
+        write_deterministic_zip(
+            &zip_path,
+            &[ZipSource::new(PACKAGE_ASSET_MANIFEST_NAME, &manifest_path)],
+        )
+        .unwrap();
+
+        let summary = publish_tpp_cifp_matches(&db_path, &[zip_path]).unwrap();
+        assert_eq!(summary.unique_rows, 1);
+        let connection = Connection::open(&db_path).unwrap();
+        let row = connection
+            .query_row(
+                "SELECT airport_id, cifp_id, procedure_kind, plate_label
+                 FROM cifp_tpp_matches",
+                [],
+                |row| {
+                    Ok((
+                        row.get::<_, String>(0)?,
+                        row.get::<_, String>(1)?,
+                        row.get::<_, String>(2)?,
+                        row.get::<_, String>(3)?,
+                    ))
+                },
+            )
+            .unwrap();
+        assert_eq!(
+            row,
+            (
+                "KRNT".to_string(),
+                "GLASR3".to_string(),
+                "star".to_string(),
+                "GLASR THREE".to_string(),
+            )
+        );
+    }
+
+    #[test]
     fn recognizes_vor_or_tacan_circling() {
         assert_eq!(
             heuristic_candidate_groups("IAP-HI-VOR OR TACAN-B"),

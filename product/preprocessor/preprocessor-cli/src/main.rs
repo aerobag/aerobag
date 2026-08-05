@@ -2698,6 +2698,20 @@ fn main() -> anyhow::Result<()> {
                 summary.records_with_data_quality
             );
             println!(
+                "procedure_geometry_materialization_rejections {}",
+                summary.materialization_rejections.len()
+            );
+            for rejection in &summary.materialization_rejections {
+                println!(
+                    "procedure_geometry_materialization_rejection {} {} runway={:?} enroute={:?} {}",
+                    rejection.airport_id,
+                    rejection.procedure_id,
+                    rejection.runway_transition,
+                    rejection.enroute_transition,
+                    rejection.error,
+                );
+            }
+            println!(
                 "procedure_geometry_final_route_rejections {}",
                 summary.final_route_rejections.len()
             );

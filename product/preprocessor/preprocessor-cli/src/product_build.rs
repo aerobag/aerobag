@@ -53,6 +53,7 @@ use preprocessor_fetch::{
 use preprocessor_procedure_geometry::{
     audit_procedure_geometry_records, build_procedure_geometry_records, procedure_kinds_from_lists,
     ProcedureGeometryCourseJoinBypassCandidate, ProcedureGeometryFinalRouteRejection,
+    ProcedureGeometryMaterializationRejection,
 };
 use preprocessor_resource_index::{
     validate_resource_package_catalog, write_resource_index, AssetSource,

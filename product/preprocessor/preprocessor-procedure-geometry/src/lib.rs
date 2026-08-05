@@ -12,7 +12,8 @@ use crate::procedure_geometry_constants::{
     INFERRED_MISSED_TURN_SOURCE_PREFIX, INVENTED_PI_ENTRY_REVERSAL_SOURCE_PREFIX,
     MAX_APPROACH_DISPLAY_ELEMENT_DISTANCE_NM, MAX_ENROUTE_TRANSITION_DISPLAY_ELEMENT_DISTANCE_NM,
     MAX_PUBLISHED_HOLD_OR_MISSED_SEGMENT_DISTANCE_NM,
-    MAX_SID_ENROUTE_TRANSITION_DISPLAY_ELEMENT_DISTANCE_NM, MIN_ARC_SWEEP_DEG,
+    MAX_SID_ENROUTE_TRANSITION_DISPLAY_ELEMENT_DISTANCE_NM,
+    MAX_STAR_ENROUTE_TRANSITION_DISPLAY_ELEMENT_DISTANCE_NM, MIN_ARC_SWEEP_DEG,
     MIN_GEOMETRY_DISTANCE_NM, PLATE_EXCEPTION_MISSED_TURN_SOURCE_PREFIX, POSITION_EPSILON_DEG,
 };
 use app_core::planning::ProcedureLegProvenance;
@@ -765,7 +766,11 @@ fn filter_procedure_records_for_route_types(
             leg.key.airport_id.trim() == airport_id.trim()
                 && leg.key.procedure_id.trim() == procedure_id.trim()
                 && route_types.contains(&leg.key.route_type.trim())
-                && leg.key.transition_id.trim() == transition_id.trim()
+                && if transition_id.trim().is_empty() {
+                    matches!(leg.key.transition_id.trim(), "" | "ALL")
+                } else {
+                    leg.key.transition_id.trim() == transition_id.trim()
+                }
         })
         .cloned()
         .collect::<Vec<_>>();
@@ -1368,10 +1373,10 @@ fn resolve_procedure_materialization_legs_with_provenance(
     mark_unspecified_sid_segment_boundary_course_reversals(&mut resolved, &kind, segments);
 
     if validate_display_geometry {
-        validate_no_zero_length_legs(&resolved, procedure_id, &kind);
+        validate_no_zero_length_legs(&resolved, procedure_id, &kind)?;
         validate_materialized_geometry_rows_have_display_paths(&resolved, procedure_id)?;
         validate_no_absurdly_long_display_elements(&resolved, procedure_id, &kind)?;
-        validate_display_path_geometry_stitches(&resolved, procedure_id);
+        validate_display_path_geometry_stitches(&resolved, procedure_id)?;
         app_core::planning::validate_final_procedure_geometry(&resolved)?;
     }
     if validate_heading_continuity {
@@ -1791,7 +1796,7 @@ fn validate_no_zero_length_legs(
     resolved: &[ResolvedLeg],
     procedure_id: &str,
     kind: &ProcedureKind,
-) {
+) -> AppResult<()> {
     for leg in resolved {
         let path = leg
             .procedure_provenance
@@ -1799,45 +1804,52 @@ fn validate_no_zero_length_legs(
             .and_then(|provenance| provenance.display_path.as_ref());
 
         if leg.from == leg.to && path.is_none() {
-            panic!(
-                "procedure zero-length leg without display path for {}: {} -> {} id={} seq={:?} pt={:?}",
-                procedure_id.trim(),
-                describe_nav_ref(&leg.from),
-                describe_nav_ref(&leg.to),
-                leg.id,
-                leg.procedure_provenance.as_ref().map(|p| p.leg_sequence),
-                leg.procedure_provenance
-                    .as_ref()
-                    .map(|p| &p.path_termination),
-            );
+            return Err(AppError {
+                kind: AppErrorKind::InvalidFlightPlan,
+                message: format!(
+                    "procedure zero-length leg without display path for {}: {} -> {} id={} seq={:?} pt={:?}",
+                    procedure_id.trim(),
+                    describe_nav_ref(&leg.from),
+                    describe_nav_ref(&leg.to),
+                    leg.id,
+                    leg.procedure_provenance.as_ref().map(|p| p.leg_sequence),
+                    leg.procedure_provenance.as_ref().map(|p| &p.path_termination),
+                ),
+            });
         }
 
         let Some(path) = path else {
-            panic!(
-                "procedure leg without display path for {}: {} -> {} id={} seq={:?} pt={:?}",
-                procedure_id.trim(),
-                describe_nav_ref(&leg.from),
-                describe_nav_ref(&leg.to),
-                leg.id,
-                leg.procedure_provenance.as_ref().map(|p| p.leg_sequence),
-                leg.procedure_provenance
-                    .as_ref()
-                    .map(|p| &p.path_termination),
-            );
+            return Err(AppError {
+                kind: AppErrorKind::InvalidFlightPlan,
+                message: format!(
+                    "procedure leg without display path for {}: {} -> {} id={} seq={:?} pt={:?}",
+                    procedure_id.trim(),
+                    describe_nav_ref(&leg.from),
+                    describe_nav_ref(&leg.to),
+                    leg.id,
+                    leg.procedure_provenance.as_ref().map(|p| p.leg_sequence),
+                    leg.procedure_provenance
+                        .as_ref()
+                        .map(|p| &p.path_termination),
+                ),
+            });
         };
 
         if path.elements.is_empty() {
-            panic!(
-                "procedure leg with empty display path for {}: {} -> {} id={} seq={:?} pt={:?}",
-                procedure_id.trim(),
-                describe_nav_ref(&leg.from),
-                describe_nav_ref(&leg.to),
-                leg.id,
-                leg.procedure_provenance.as_ref().map(|p| p.leg_sequence),
-                leg.procedure_provenance
-                    .as_ref()
-                    .map(|p| &p.path_termination),
-            );
+            return Err(AppError {
+                kind: AppErrorKind::InvalidFlightPlan,
+                message: format!(
+                    "procedure leg with empty display path for {}: {} -> {} id={} seq={:?} pt={:?}",
+                    procedure_id.trim(),
+                    describe_nav_ref(&leg.from),
+                    describe_nav_ref(&leg.to),
+                    leg.id,
+                    leg.procedure_provenance.as_ref().map(|p| p.leg_sequence),
+                    leg.procedure_provenance
+                        .as_ref()
+                        .map(|p| &p.path_termination),
+                ),
+            });
         }
 
         let mut has_nonzero_geometry = false;
@@ -1858,14 +1870,17 @@ fn validate_no_zero_length_legs(
             match element {
                 LegDisplayElement::Segment { start, end } => {
                     if positions_nearly_equal(*start, *end) {
-                        panic!(
-                            "procedure zero-length segment for {} leg={} element#{} at ({:.6},{:.6})",
-                            procedure_id.trim(),
-                            leg.id,
-                            index,
-                            start.lat,
-                            start.lon,
-                        );
+                        return Err(AppError {
+                            kind: AppErrorKind::InvalidFlightPlan,
+                            message: format!(
+                                "procedure zero-length segment for {} leg={} element#{} at ({:.6},{:.6})",
+                                procedure_id.trim(),
+                                leg.id,
+                                index,
+                                start.lat,
+                                start.lon,
+                            ),
+                        });
                     }
                     has_nonzero_geometry = true;
                 }
@@ -1881,50 +1896,59 @@ fn validate_no_zero_length_legs(
                         && !(*kind == ProcedureKind::Sid
                             && (is_explicit_published_turn || is_explicit_missed_turn))
                     {
-                        panic!(
-                            "procedure excessive arc sweep for {} leg={} element#{} center=({:.6},{:.6}) radius_nm={:.2} start=({:.6},{:.6}) end=({:.6},{:.6}) clockwise={} sweep_deg={:.1} source={}",
-                            procedure_id.trim(),
-                            leg.id,
-                            index,
-                            center.lat,
-                            center.lon,
-                            radius_nm,
-                            start.lat,
-                            start.lon,
-                            end.lat,
-                            end.lon,
-                            clockwise,
-                            sweep_degrees,
-                            path.debug_element_sources
-                                .get(index)
-                                .map(String::as_str)
-                                .unwrap_or("unknown"),
-                        );
+                        return Err(AppError {
+                            kind: AppErrorKind::InvalidFlightPlan,
+                            message: format!(
+                                "procedure excessive arc sweep for {} leg={} element#{} center=({:.6},{:.6}) radius_nm={:.2} start=({:.6},{:.6}) end=({:.6},{:.6}) clockwise={} sweep_deg={:.1} source={}",
+                                procedure_id.trim(),
+                                leg.id,
+                                index,
+                                center.lat,
+                                center.lon,
+                                radius_nm,
+                                start.lat,
+                                start.lon,
+                                end.lat,
+                                end.lon,
+                                clockwise,
+                                sweep_degrees,
+                                path.debug_element_sources
+                                    .get(index)
+                                    .map(String::as_str)
+                                    .unwrap_or("unknown"),
+                            ),
+                        });
                     }
                     if !is_missed_turn
                         && (*radius_nm <= MIN_GEOMETRY_DISTANCE_NM
                             || sweep_degrees.abs() <= MIN_ARC_SWEEP_DEG)
                     {
-                        panic!(
-                            "procedure degenerate arc for {} leg={} element#{} center=({:.6},{:.6}) radius_nm={:.2} sweep_deg={:.2}",
-                            procedure_id.trim(),
-                            leg.id,
-                            index,
-                            center.lat,
-                            center.lon,
-                            radius_nm,
-                            sweep_degrees,
-                        );
+                        return Err(AppError {
+                            kind: AppErrorKind::InvalidFlightPlan,
+                            message: format!(
+                                "procedure degenerate arc for {} leg={} element#{} center=({:.6},{:.6}) radius_nm={:.2} sweep_deg={:.2}",
+                                procedure_id.trim(),
+                                leg.id,
+                                index,
+                                center.lat,
+                                center.lon,
+                                radius_nm,
+                                sweep_degrees,
+                            ),
+                        });
                     }
                     if !is_missed_turn && positions_nearly_equal(*start, *end) {
-                        panic!(
-                            "procedure zero-length arc endpoints for {} leg={} element#{} at ({:.6},{:.6})",
-                            procedure_id.trim(),
-                            leg.id,
-                            index,
-                            start.lat,
-                            start.lon,
-                        );
+                        return Err(AppError {
+                            kind: AppErrorKind::InvalidFlightPlan,
+                            message: format!(
+                                "procedure zero-length arc endpoints for {} leg={} element#{} at ({:.6},{:.6})",
+                                procedure_id.trim(),
+                                leg.id,
+                                index,
+                                start.lat,
+                                start.lon,
+                            ),
+                        });
                     }
                     has_nonzero_geometry = true;
                 }
@@ -1932,13 +1956,17 @@ fn validate_no_zero_length_legs(
         }
 
         if leg.from == leg.to && !has_nonzero_geometry {
-            panic!(
-                "procedure zero-length self leg without geometry for {}: {}",
-                procedure_id.trim(),
-                leg.id,
-            );
+            return Err(AppError {
+                kind: AppErrorKind::InvalidFlightPlan,
+                message: format!(
+                    "procedure zero-length self leg without geometry for {}: {}",
+                    procedure_id.trim(),
+                    leg.id,
+                ),
+            });
         }
     }
+    Ok(())
 }
 
 fn validate_no_absurdly_long_display_elements(
@@ -1997,6 +2025,14 @@ fn allowed_procedure_display_element_distance_nm(
     {
         return MAX_SID_ENROUTE_TRANSITION_DISPLAY_ELEMENT_DISTANCE_NM;
     }
+    if *kind == ProcedureKind::Star
+        && leg
+            .procedure_provenance
+            .as_ref()
+            .is_some_and(|provenance| provenance.role == ProcedureSegmentRole::EnrouteTransition)
+    {
+        return MAX_STAR_ENROUTE_TRANSITION_DISPLAY_ELEMENT_DISTANCE_NM;
+    }
     if *kind != ProcedureKind::Approach {
         return MAX_ENROUTE_TRANSITION_DISPLAY_ELEMENT_DISTANCE_NM;
     }
@@ -2018,7 +2054,10 @@ fn allowed_procedure_display_element_distance_nm(
     MAX_APPROACH_DISPLAY_ELEMENT_DISTANCE_NM
 }
 
-fn validate_display_path_geometry_stitches(resolved: &[ResolvedLeg], procedure_id: &str) {
+fn validate_display_path_geometry_stitches(
+    resolved: &[ResolvedLeg],
+    procedure_id: &str,
+) -> AppResult<()> {
     let mut previous_leg_end: Option<(&str, LatLon, bool)> = None;
 
     for leg in resolved {
@@ -2034,20 +2073,23 @@ fn validate_display_path_geometry_stitches(resolved: &[ResolvedLeg], procedure_i
             let previous_end = display_element_end_position_for_validation(&window[0]);
             let current_start = display_element_start_position_for_validation(&window[1]);
             if !display_positions_stitch(previous_end, current_start) {
-                panic!(
-                    "procedure display path internal gap for {} leg={} elements={}->{} gap_nm={:.2} end=({:.6},{:.6}) start=({:.6},{:.6}) sources={:?}->{:?}",
-                    procedure_id.trim(),
-                    leg.id,
-                    index,
-                    index + 1,
-                    great_circle_distance_nm(previous_end, current_start),
-                    previous_end.lat,
-                    previous_end.lon,
-                    current_start.lat,
-                    current_start.lon,
-                    path.debug_element_sources.get(index),
-                    path.debug_element_sources.get(index + 1),
-                );
+                return Err(AppError {
+                    kind: AppErrorKind::InvalidFlightPlan,
+                    message: format!(
+                        "procedure display path internal gap for {} leg={} elements={}->{} gap_nm={:.2} end=({:.6},{:.6}) start=({:.6},{:.6}) sources={:?}->{:?}",
+                        procedure_id.trim(),
+                        leg.id,
+                        index,
+                        index + 1,
+                        great_circle_distance_nm(previous_end, current_start),
+                        previous_end.lat,
+                        previous_end.lon,
+                        current_start.lat,
+                        current_start.lon,
+                        path.debug_element_sources.get(index),
+                        path.debug_element_sources.get(index + 1),
+                    ),
+                });
             }
         }
 
@@ -2055,17 +2097,20 @@ fn validate_display_path_geometry_stitches(resolved: &[ResolvedLeg], procedure_i
             let leg_start = display_element_start_position_for_validation(first_element);
             if let Some((previous_leg_id, previous_end, previous_suspends)) = previous_leg_end {
                 if !previous_suspends && !display_positions_stitch(previous_end, leg_start) {
-                    panic!(
-                        "procedure display path gap for {} between legs {} -> {} gap_nm={:.2} end=({:.6},{:.6}) start=({:.6},{:.6})",
-                        procedure_id.trim(),
-                        previous_leg_id,
-                        leg.id,
-                        great_circle_distance_nm(previous_end, leg_start),
-                        previous_end.lat,
-                        previous_end.lon,
-                        leg_start.lat,
-                        leg_start.lon,
-                    );
+                    return Err(AppError {
+                        kind: AppErrorKind::InvalidFlightPlan,
+                        message: format!(
+                            "procedure display path gap for {} between legs {} -> {} gap_nm={:.2} end=({:.6},{:.6}) start=({:.6},{:.6})",
+                            procedure_id.trim(),
+                            previous_leg_id,
+                            leg.id,
+                            great_circle_distance_nm(previous_end, leg_start),
+                            previous_end.lat,
+                            previous_end.lon,
+                            leg_start.lat,
+                            leg_start.lon,
+                        ),
+                    });
                 }
             }
         }
@@ -2080,6 +2125,7 @@ fn validate_display_path_geometry_stitches(resolved: &[ResolvedLeg], procedure_i
             ));
         }
     }
+    Ok(())
 }
 
 fn display_positions_stitch(left: LatLon, right: LatLon) -> bool {
@@ -2600,18 +2646,21 @@ fn validate_heading_continuity_checks(
         } else {
             format!("{} -> {}", previous.end_label, current.start_label)
         };
-        panic!(
-            "procedure path continuity violated for {}: gap_nm={:.2} between steps={:02}->{:02} at {} end=({:.6},{:.6}) start=({:.6},{:.6})",
-            procedure_id.trim(),
-            gap_nm,
-            previous.step_index,
-            current.step_index,
-            fix_description,
-            previous.end_position.lat,
-            previous.end_position.lon,
-            current.start_position.lat,
-            current.start_position.lon,
-        );
+        return Err(AppError {
+            kind: AppErrorKind::InvalidFlightPlan,
+            message: format!(
+                "procedure path continuity violated for {}: gap_nm={:.2} between steps={:02}->{:02} at {} end=({:.6},{:.6}) start=({:.6},{:.6})",
+                procedure_id.trim(),
+                gap_nm,
+                previous.step_index,
+                current.step_index,
+                fix_description,
+                previous.end_position.lat,
+                previous.end_position.lon,
+                current.start_position.lat,
+                current.start_position.lon,
+            ),
+        });
     }
     if let Some((delta, allowed_delta_deg, heading_mode, previous, current)) = worst_violation {
         let fix_description = if previous.end_label == current.start_label {
@@ -2686,9 +2735,13 @@ fn continuity_heading_tolerance_deg(
     {
         return 30.0;
     }
-    if let Some((allowance, allowed_delta_deg)) =
-        named_heading_continuity_allowance_with_context(previous_previous, previous, current, next)
-    {
+    if let Some((allowance, allowed_delta_deg)) = named_heading_continuity_allowance_with_context(
+        previous_previous,
+        previous,
+        current,
+        next,
+        kind,
+    ) {
         if *kind == ProcedureKind::Sid
             && allowance == HeadingContinuityAllowance::GeneratedPathExitToPublishedCourse
         {
@@ -2748,6 +2801,7 @@ fn named_heading_continuity_allowance_with_context(
     previous: &DisplayElementHeadingSignature,
     current: &DisplayElementHeadingSignature,
     next: Option<&DisplayElementHeadingSignature>,
+    kind: &ProcedureKind,
 ) -> Option<(HeadingContinuityAllowance, f64)> {
     if let Some(allowed_delta_deg) = published_acute_turn_heading_tolerance_deg(previous, current) {
         return Some((
@@ -2819,7 +2873,7 @@ fn named_heading_continuity_allowance_with_context(
             180.0,
         ));
     }
-    if is_published_waypoint_turn_with_room(previous, current) {
+    if is_published_waypoint_turn_with_room(previous, current, kind) {
         return Some((
             HeadingContinuityAllowance::PublishedWaypointTurnWithRoom,
             120.0,
@@ -3051,6 +3105,7 @@ fn leaves_generated_path_to_published_course(
 fn is_published_waypoint_turn_with_room(
     previous: &DisplayElementHeadingSignature,
     current: &DisplayElementHeadingSignature,
+    kind: &ProcedureKind,
 ) -> bool {
     if previous.end_label == "synthesized-path" || current.start_label == "synthesized-path" {
         return false;
@@ -3070,7 +3125,13 @@ fn is_published_waypoint_turn_with_room(
     if previous.procedure_role == ProcedureSegmentRole::RunwayTransition
         && current.procedure_role == ProcedureSegmentRole::RunwayTransition
     {
-        return previous_len_nm >= 1.0 && current_len_nm >= 1.5;
+        return previous_len_nm >= 1.0
+            && current_len_nm
+                >= if *kind == ProcedureKind::Star {
+                    1.0
+                } else {
+                    1.5
+                };
     }
     if previous.path_termination == "TF" && current.path_termination == "TF" {
         // Short published TF feeders can still chart a real fly-by waypoint turn
@@ -5369,6 +5430,15 @@ pub struct ProcedureGeometryFinalRouteRejection {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ProcedureGeometryMaterializationRejection {
+    pub airport_id: String,
+    pub procedure_id: String,
+    pub runway_transition: Option<String>,
+    pub enroute_transition: Option<String>,
+    pub error: AppError,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ProcedureGeometryCourseJoinBypassCandidate {
     pub airport_id: String,
     pub procedure_id: String,
@@ -5380,6 +5450,7 @@ pub struct ProcedureGeometryCourseJoinBypassCandidate {
 #[derive(Debug)]
 pub struct ProcedureGeometryRecordAudit {
     pub records: Vec<pgt::ProcedureGeometryRecord>,
+    pub materialization_rejections: Vec<ProcedureGeometryMaterializationRejection>,
     pub final_route_rejections: Vec<ProcedureGeometryFinalRouteRejection>,
     pub course_join_bypass_candidates: Vec<ProcedureGeometryCourseJoinBypassCandidate>,
 }
@@ -5390,6 +5461,7 @@ fn collect_procedure_geometry_records(
     materialization_by_procedure: BTreeMap<(String, String), Vec<serde_json::Value>>,
 ) -> anyhow::Result<ProcedureGeometryRecordAudit> {
     let mut records = Vec::new();
+    let mut materialization_rejections = Vec::new();
     let mut final_route_rejections = Vec::new();
     let mut course_join_bypass_candidates = Vec::new();
     for ((airport_id, procedure_id), distinct_rows_value) in distinct_by_procedure {
@@ -5399,11 +5471,6 @@ fn collect_procedure_geometry_records(
         else {
             continue;
         };
-        if kind == ProcedureKind::Star {
-            // Publish one new procedure class at a time; STAR geometry needs its
-            // own whole-cycle audit before it becomes selectable.
-            continue;
-        }
         let Some(materialization_rows_value) =
             materialization_by_procedure.get(&(airport_id.clone(), procedure_id.clone()))
         else {
@@ -5427,7 +5494,7 @@ fn collect_procedure_geometry_records(
         }
 
         for choice in options.valid_choices {
-            let built = materialize_procedure_from_records(
+            let built = match materialize_procedure_from_records(
                 &airport_id,
                 &procedure_id,
                 kind.clone(),
@@ -5436,17 +5503,19 @@ fn collect_procedure_geometry_records(
                 0,
                 distinct_rows.clone(),
                 materialization_rows.clone(),
-            )
-            .map_err(|error| {
-                anyhow::anyhow!(
-                    "failed to materialize {} {} runway={:?} enroute={:?}: {}",
-                    airport_id,
-                    procedure_id,
-                    choice.runway_transition,
-                    choice.enroute_transition,
-                    error,
-                )
-            })?;
+            ) {
+                Ok(built) => built,
+                Err(error) => {
+                    materialization_rejections.push(ProcedureGeometryMaterializationRejection {
+                        airport_id: airport_id.clone(),
+                        procedure_id: procedure_id.clone(),
+                        runway_transition: choice.runway_transition.clone(),
+                        enroute_transition: choice.enroute_transition.clone(),
+                        error,
+                    });
+                    continue;
+                }
+            };
             if let Err(error) =
                 app_core::planning::validate_materialized_procedure_final_route(&built)
             {
@@ -5479,6 +5548,7 @@ fn collect_procedure_geometry_records(
     }
     Ok(ProcedureGeometryRecordAudit {
         records,
+        materialization_rejections,
         final_route_rejections,
         course_join_bypass_candidates,
     })
@@ -5506,6 +5576,17 @@ pub fn build_procedure_geometry_records(
         distinct_by_procedure,
         materialization_by_procedure,
     )?;
+    if let Some(rejection) = audit.materialization_rejections.first() {
+        anyhow::bail!(
+            "failed to materialize {} {} runway={:?} enroute={:?}: {} ({} total rejections)",
+            rejection.airport_id,
+            rejection.procedure_id,
+            rejection.runway_transition,
+            rejection.enroute_transition,
+            rejection.error,
+            audit.materialization_rejections.len(),
+        );
+    }
     if let Some(rejection) = audit.final_route_rejections.first() {
         anyhow::bail!(
             "final materialized route rejected for {} {} runway={:?} enroute={:?}: {} ({} total rejections)",
@@ -5700,6 +5781,154 @@ mod published_geometry_build_tests {
             continuity_heading_tolerance_deg(None, &previous, &current, None, &ProcedureKind::Sid,),
             150.0,
         );
+    }
+
+    #[test]
+    fn star_published_tf_turn_allows_short_outbound_leg() {
+        let fix = LatLon {
+            lat: 29.7135083333333,
+            lon: -98.5704027777778,
+        };
+        let previous = sid_heading_signature(
+            "TF",
+            LatLon {
+                lat: 29.7090555555556,
+                lon: -98.4309277777778,
+            },
+            fix,
+            268.1,
+            "SALZA",
+            "DOMNK",
+        );
+        let current = sid_heading_signature(
+            "TF",
+            fix,
+            LatLon {
+                lat: 29.7282861111111,
+                lon: -98.589525,
+            },
+            307.7,
+            "DOMNK",
+            "CARNE",
+        );
+
+        assert_eq!(
+            continuity_heading_tolerance_deg(None, &previous, &current, None, &ProcedureKind::Star,),
+            120.0,
+        );
+    }
+
+    #[test]
+    fn star_materialization_includes_all_labeled_common_segment() {
+        let distinct_rows = vec![
+            ProcedureDistinctRow {
+                route_type: "4".to_string(),
+                transition_id: "INYOE".to_string(),
+            },
+            ProcedureDistinctRow {
+                route_type: "5".to_string(),
+                transition_id: "ALL".to_string(),
+            },
+            ProcedureDistinctRow {
+                route_type: "6".to_string(),
+                transition_id: "RW10B".to_string(),
+            },
+        ];
+        let leg = |route_type: &str,
+                   transition_id: &str,
+                   sequence: i32,
+                   fix: &str,
+                   lat: f64,
+                   lon: f64,
+                   path_termination: &str| {
+            serde_json::from_value::<ProcedureLegMaterializationRecord>(serde_json::json!({
+                "key": {
+                    "airport_id": "KSFO",
+                    "procedure_id": "ALWYS3",
+                    "route_type": route_type,
+                    "transition_id": transition_id,
+                },
+                "sequence": sequence,
+                "nav_ref": { "Fix": fix },
+                "nav_position": { "lat": lat, "lon": lon },
+                "path_termination": path_termination,
+            }))
+            .expect("test STAR row should decode")
+        };
+        let rows = vec![
+            leg("4", "INYOE", 10, "INYOE", 37.8, -120.0, "IF"),
+            leg("4", "INYOE", 20, "DYAMD", 37.7, -120.4, "TF"),
+            leg("5", "ALL", 10, "DYAMD", 37.7, -120.4, "IF"),
+            leg("5", "ALL", 20, "ALWYS", 37.6, -120.8, "TF"),
+            leg("6", "RW10B", 10, "ALWYS", 37.6, -120.8, "IF"),
+            leg("6", "RW10B", 20, "HEFLY", 37.5, -121.2, "TF"),
+        ];
+
+        let result = materialize_procedure_from_records(
+            "KSFO",
+            "ALWYS3",
+            ProcedureKind::Star,
+            Some("RW10B".to_string()),
+            Some("INYOE".to_string()),
+            0,
+            distinct_rows,
+            rows,
+        )
+        .expect("ALL-labeled STAR common segment should materialize");
+
+        assert!(result.resolved_legs.iter().any(|leg| {
+            leg.procedure_provenance
+                .as_ref()
+                .is_some_and(|provenance| provenance.role == ProcedureSegmentRole::Common)
+        }));
+    }
+
+    #[test]
+    fn star_allows_published_long_enroute_transition_leg() {
+        let result = build_procedure_geometry_records(
+            BTreeMap::from([(
+                ("KSFO".to_string(), "STINS4".to_string()),
+                ProcedureKind::Star,
+            )]),
+            BTreeMap::from([(
+                ("KSFO".to_string(), "STINS4".to_string()),
+                vec![serde_json::json!({
+                    "route_type": "1",
+                    "transition_id": "RBG",
+                })],
+            )]),
+            BTreeMap::from([(
+                ("KSFO".to_string(), "STINS4".to_string()),
+                vec![
+                    serde_json::json!({
+                        "key": {
+                            "airport_id": "KSFO",
+                            "procedure_id": "STINS4",
+                            "route_type": "1",
+                            "transition_id": "RBG",
+                        },
+                        "sequence": 10,
+                        "nav_ref": { "Navaid": "RBG" },
+                        "nav_position": { "lat": 43.1824166666667, "lon": -123.352241666667 },
+                        "path_termination": "IF",
+                    }),
+                    serde_json::json!({
+                        "key": {
+                            "airport_id": "KSFO",
+                            "procedure_id": "STINS4",
+                            "route_type": "1",
+                            "transition_id": "RBG",
+                        },
+                        "sequence": 20,
+                        "nav_ref": { "Navaid": "ENI" },
+                        "nav_position": { "lat": 39.0532166666667, "lon": -123.274326666667 },
+                        "path_termination": "TF",
+                    }),
+                ],
+            )]),
+        );
+
+        assert!(result.is_ok(), "published 248 NM STAR leg: {result:?}");
     }
 
     #[test]
@@ -5957,10 +6186,8 @@ mod published_geometry_build_tests {
 
     #[test]
     fn build_procedure_geometry_records_anchors_vector_sid_fm_at_runway() {
-        let kinds = BTreeMap::from([(
-            ("KBOI".to_string(), "BOI3".to_string()),
-            ProcedureKind::Sid,
-        )]);
+        let kinds =
+            BTreeMap::from([(("KBOI".to_string(), "BOI3".to_string()), ProcedureKind::Sid)]);
         let distinct_by_procedure = BTreeMap::from([(
             ("KBOI".to_string(), "BOI3".to_string()),
             vec![serde_json::json!({
@@ -6540,6 +6767,84 @@ mod published_geometry_build_tests {
         );
     }
 
+    #[test]
+    fn audit_collects_every_materialization_rejection() {
+        let mut kinds = BTreeMap::new();
+        let mut distinct = BTreeMap::new();
+        let mut materialization = BTreeMap::new();
+        for (airport_id, procedure_id) in [("KZZ1", "BADSID1"), ("KZZ2", "BADSID2")] {
+            kinds.insert(
+                (airport_id.to_string(), procedure_id.to_string()),
+                ProcedureKind::Sid,
+            );
+            distinct.extend(sid_branch_distinct_rows(airport_id, procedure_id));
+            materialization.extend(sid_branch_materialization_rows(
+                airport_id,
+                procedure_id,
+                0.0152,
+                0.1736,
+            ));
+        }
+
+        let audit = audit_procedure_geometry_records(kinds, distinct, materialization)
+            .expect("audit should enumerate invalid choices instead of aborting");
+
+        assert_eq!(audit.materialization_rejections.len(), 2);
+        assert!(audit.records.is_empty());
+    }
+
+    #[test]
+    fn build_procedure_geometry_records_publishes_star() {
+        let airport_id = "KSEA";
+        let procedure_id = "HAWKZ7";
+        let result = build_procedure_geometry_records(
+            BTreeMap::from([(
+                (airport_id.to_string(), procedure_id.to_string()),
+                ProcedureKind::Star,
+            )]),
+            BTreeMap::from([(
+                (airport_id.to_string(), procedure_id.to_string()),
+                vec![serde_json::json!({
+                    "route_type": "2",
+                    "transition_id": "",
+                })],
+            )]),
+            BTreeMap::from([(
+                (airport_id.to_string(), procedure_id.to_string()),
+                vec![
+                    serde_json::json!({
+                        "key": {
+                            "airport_id": airport_id,
+                            "procedure_id": procedure_id,
+                            "route_type": "2",
+                            "transition_id": "",
+                        },
+                        "sequence": 10,
+                        "nav_ref": { "Fix": "HAWKZ" },
+                        "nav_position": { "lat": 47.0, "lon": -122.5 },
+                        "path_termination": "IF",
+                    }),
+                    serde_json::json!({
+                        "key": {
+                            "airport_id": airport_id,
+                            "procedure_id": procedure_id,
+                            "route_type": "2",
+                            "transition_id": "",
+                        },
+                        "sequence": 20,
+                        "nav_ref": { "Fix": "MARNR" },
+                        "nav_position": { "lat": 47.2, "lon": -122.3 },
+                        "path_termination": "TF",
+                    }),
+                ],
+            )]),
+        )
+        .expect("valid STAR geometry should build");
+
+        assert_eq!(result.len(), 1, "valid STAR should be published");
+        assert_eq!(result[0].key.kind, pgt::ProcedureKind::Star);
+    }
+
     fn sid_branch_distinct_rows(
         airport_id: &str,
         procedure_id: &str,
@@ -6736,6 +7041,9 @@ fn procedure_geometry_path_from_display_path(path: LegDisplayPath) -> pgt::Proce
         style: match path.style {
             LegDisplayPathStyle::Solid => pgt::ProcedureGeometryPathStyle::Solid,
             LegDisplayPathStyle::Dashed => pgt::ProcedureGeometryPathStyle::Dashed,
+            LegDisplayPathStyle::Vectors => {
+                panic!("vectors styling is derived from procedure sequencing at render time")
+            }
         },
         elements: path
             .elements

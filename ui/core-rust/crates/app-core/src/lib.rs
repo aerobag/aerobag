@@ -1364,18 +1364,9 @@ fn plate_procedure_load_context(
             kind: AppErrorKind::InvalidFlightPlan,
             message: format!("procedure load target row missing for airport {airport_id}"),
         })?;
-    let has_current_procedure = match destination_index
-        .checked_sub(1)
-        .and_then(|index| plan.route_components.get(index))
-    {
-        Some(RouteComponent::Procedure { procedure })
-            if procedure.kind == *procedure_kind
-                && procedure.airport_id.0.trim() == airport_id.trim() =>
-        {
-            true
-        }
-        _ => false,
-    };
+    let has_current_procedure =
+        attached_procedure_component_index(plan, destination_index, procedure_kind.clone())
+            .is_some();
     Ok((
         if has_current_procedure {
             format!("Replace current {}", procedure_kind_noun(procedure_kind))
@@ -1756,6 +1747,37 @@ mod tests {
         }
     }
 
+    fn koma_sayin_star_candidate() -> PlateProcedureLoadCandidateInput {
+        PlateProcedureLoadCandidateInput {
+            airport_id: "KOMA".to_string(),
+            cifp_id: "SAYIN3".to_string(),
+            match_rows: vec![CifpTppMatchRow {
+                airport_id: "KOMA".to_string(),
+                cifp_id: "SAYIN3".to_string(),
+                procedure_kind: ProcedureKind::Star,
+                plate_id: "plate:KOMA:STAR-NE-SAYIN THREE.png".to_string(),
+                plate_label: "SAYIN THREE".to_string(),
+                package_id: "tpp".to_string(),
+                public: 1,
+                priority: 1,
+                match_kind: "terminal-name".to_string(),
+                is_primary: 1,
+            }],
+            options: ProcedureOptions {
+                airport_id: "KOMA".to_string(),
+                procedure_id: "SAYIN3".to_string(),
+                kind: ProcedureKind::Star,
+                runway_transitions: vec!["RW14R".to_string()],
+                enroute_transitions: vec!["SAYIN".to_string()],
+                has_common_segment: true,
+                valid_choices: vec![ProcedureSpecChoice {
+                    runway_transition: Some("RW14R".to_string()),
+                    enroute_transition: Some("SAYIN".to_string()),
+                }],
+            },
+        }
+    }
+
     #[test]
     fn sid_plate_loads_target_the_origin_and_use_departure_language() {
         let plan = FlightPlan {
@@ -1860,6 +1882,55 @@ mod tests {
         assert_eq!(menu.header, "Replace current approach");
         assert_eq!(menu.header_tone, ProcedureLoadHeaderTone::Destructive);
         assert_eq!(menu.options.len(), 1);
+    }
+
+    #[test]
+    fn star_plate_marks_replacing_arrival_before_attached_approach_as_destructive() {
+        let plan = FlightPlan {
+            route_components: vec![
+                RouteComponent::Waypoint {
+                    waypoint: NavRef::Airport("KSEA".to_string()),
+                },
+                RouteComponent::Procedure {
+                    procedure: ProcedureSegment {
+                        airport_id: AirportId("KOMA".to_string()),
+                        procedure_id: "OMAHA3".to_string(),
+                        display_label: Some("OMAHA THREE".to_string()),
+                        kind: ProcedureKind::Star,
+                        runway_transition: Some("RW14R".to_string()),
+                        enroute_transition: Some("OMAHA".to_string()),
+                        terminal_discontinuity: None,
+                        data_quality: Vec::new(),
+                    },
+                },
+                RouteComponent::Procedure {
+                    procedure: ProcedureSegment {
+                        airport_id: AirportId("KOMA".to_string()),
+                        procedure_id: "I14R".to_string(),
+                        display_label: Some("ILS or LOC 14R".to_string()),
+                        kind: ProcedureKind::Approach,
+                        runway_transition: None,
+                        enroute_transition: None,
+                        terminal_discontinuity: None,
+                        data_quality: Vec::new(),
+                    },
+                },
+                RouteComponent::Waypoint {
+                    waypoint: NavRef::Airport("KOMA".to_string()),
+                },
+            ],
+            destination: Some(AirportId("KOMA".to_string())),
+            ..FlightPlan::default()
+        };
+
+        let menu = describe_plate_procedure_load_menu(&plan, vec![koma_sayin_star_candidate()])
+            .expect("describe STAR replacement menu");
+
+        assert_eq!(menu.procedure_kind, Some(ProcedureKind::Star));
+        assert_eq!(menu.launcher_label, "LOAD\nARR");
+        assert_eq!(menu.header, "Replace current arrival");
+        assert_eq!(menu.header_tone, ProcedureLoadHeaderTone::Destructive);
+        assert_eq!(menu.options[0].label, "from SAYIN to RW14R");
     }
 
     #[test]

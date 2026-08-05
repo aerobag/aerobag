@@ -16,6 +16,10 @@ use chrono_tz::Tz;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
+pub use crate::settings_controller::{
+    DisplayDimTimeout, SettingsPreferences, SettingsStorage, SettingsStorageHandle,
+};
+
 pub use app_ui_contracts::{
     home::{UiHomeDestination, UiHomePageButton, UiHomePageState},
     nexrad::{
@@ -82,10 +86,11 @@ use crate::{
     playback::PlaybackSessionState,
     project_nav_symbol_feature,
     publication::{PublicationResolvedResource, PublicationResolver},
-    query_map_overlay_for_surface_at, query_map_selection_for_surface_in_time_zone, state,
-    AirportNotamIndex, AirportPlateAvailability, AirspaceFeaturePayload, AirspaceLabelTilePayload,
-    AirspaceReferenceTilePayload, AirwayPresentationSelection, AppError, AppErrorKind, AppEvent,
-    AppResult, AppState, AppUiState, FlightPlan, FlightPlanDisplayRowKind,
+    query_map_overlay_for_surface_at, query_map_selection_for_surface_in_time_zone,
+    settings_controller::{default_settings_page_state, SettingsController, SettingsProjection},
+    state, AirportNotamIndex, AirportPlateAvailability, AirspaceFeaturePayload,
+    AirspaceLabelTilePayload, AirspaceReferenceTilePayload, AirwayPresentationSelection, AppError,
+    AppErrorKind, AppEvent, AppResult, AppState, AppUiState, FlightPlan, FlightPlanDisplayRowKind,
     FlightPlanRowActionExecution, FlightPlanRowActionId, FlightPlanUiState, GuidanceState, LatLon,
     LegDisplayElement, MapOverlayConfig, MapOverlayQueryResult, MapSelectionForNavRefResult,
     MapSelectionQueryResult, MapSelectionSessionAction, MapSurfaceMetrics, MapViewport,
@@ -99,110 +104,6 @@ use crate::{
 };
 const WORLD_MERCATOR_MAX_LATITUDE: f64 = 85.051_128_78;
 const SETTINGS_PERSISTENCE_VERSION: u32 = 1;
-const NO_WARRANTY_DISCLAIMER_HTML: &str = include_str!("../../../../shared/no-warranty.html");
-const NO_WARRANTY_DISCLAIMER_AGREEMENT_ID: &str = "no-warranty-v1";
-const DISPLAY_DIM_TIMEOUT_ROW_ID: &str = "display_dim_timeout";
-const DISPLAY_DIM_TIMEOUT_ACTION_ID: &str = "display_dim_timeout";
-const FLIGHT_DATA_VISIBILITY_ROW_ID: &str = "flight_data_visibility";
-const FLIGHT_DATA_VISIBILITY_ACTION_ID: &str = "flight_data_visibility";
-const DISPLAY_DIM_BRIGHTNESS: f32 = 0.05;
-
-impl DisplayDimTimeout {
-    fn id(self) -> &'static str {
-        match self {
-            Self::TenSeconds => "10s",
-            Self::ThirtySeconds => "30s",
-            Self::OneMinute => "1m",
-            Self::TwoMinutes => "2m",
-            Self::FiveMinutes => "5m",
-            Self::Never => "never",
-        }
-    }
-
-    fn label(self) -> &'static str {
-        match self {
-            Self::TenSeconds => "10s",
-            Self::ThirtySeconds => "30s",
-            Self::OneMinute => "1m",
-            Self::TwoMinutes => "2m",
-            Self::FiveMinutes => "5m",
-            Self::Never => "Never",
-        }
-    }
-
-    fn dim_after_ms(self) -> Option<u64> {
-        match self {
-            Self::TenSeconds => Some(10_000),
-            Self::ThirtySeconds => Some(30_000),
-            Self::OneMinute => Some(60_000),
-            Self::TwoMinutes => Some(120_000),
-            Self::FiveMinutes => Some(300_000),
-            Self::Never => None,
-        }
-    }
-
-    fn from_value_id(value_id: &str) -> Option<Self> {
-        match value_id {
-            "10s" => Some(Self::TenSeconds),
-            "30s" => Some(Self::ThirtySeconds),
-            "1m" => Some(Self::OneMinute),
-            "2m" => Some(Self::TwoMinutes),
-            "5m" => Some(Self::FiveMinutes),
-            "never" => Some(Self::Never),
-            _ => None,
-        }
-    }
-
-    fn all_stops() -> [Self; 6] {
-        [
-            Self::TenSeconds,
-            Self::ThirtySeconds,
-            Self::OneMinute,
-            Self::TwoMinutes,
-            Self::FiveMinutes,
-            Self::Never,
-        ]
-    }
-}
-
-pub trait SettingsStorage: Send + Sync {
-    fn read_settings(&self) -> AppResult<Option<Vec<u8>>>;
-    fn write_settings(&self, bytes: &[u8]) -> AppResult<()>;
-}
-
-pub type SettingsStorageHandle = Arc<dyn SettingsStorage>;
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-pub enum DisplayDimTimeout {
-    #[serde(rename = "10s")]
-    TenSeconds,
-    #[serde(rename = "30s")]
-    ThirtySeconds,
-    #[serde(rename = "1m")]
-    OneMinute,
-    #[serde(rename = "2m")]
-    TwoMinutes,
-    #[serde(rename = "5m")]
-    FiveMinutes,
-    #[serde(rename = "never")]
-    Never,
-}
-
-impl Default for DisplayDimTimeout {
-    fn default() -> Self {
-        Self::TwoMinutes
-    }
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
-pub struct SettingsPreferences {
-    #[serde(default)]
-    pub display_dim_timeout: DisplayDimTimeout,
-    #[serde(default)]
-    pub disabled_flight_data_cell_ids: BTreeSet<String>,
-    #[serde(default)]
-    pub accepted_disclaimer_agreement_ids: BTreeSet<String>,
-}
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 struct SettingsPersistenceDocument {
@@ -298,6 +199,7 @@ pub struct UiSessionDiagnostics {
     pub settings_projection_count: u64,
     pub weather_projection_count: u64,
     pub map_projection_count: u64,
+    pub settings_revision: u64,
     pub last_session_payload_serialized_bytes: u64,
     pub transaction_commit_count: u64,
     pub transaction_rollback_count: u64,
@@ -320,7 +222,12 @@ struct SessionDiagnosticsCounters {
 }
 
 impl SessionDiagnosticsCounters {
-    fn snapshot(&self, generation: u64, phase: UiSessionPhase) -> UiSessionDiagnostics {
+    fn snapshot(
+        &self,
+        generation: u64,
+        phase: UiSessionPhase,
+        settings_revision: u64,
+    ) -> UiSessionDiagnostics {
         UiSessionDiagnostics {
             generation,
             phase,
@@ -333,6 +240,7 @@ impl SessionDiagnosticsCounters {
             settings_projection_count: self.settings_projection_count.load(Ordering::Relaxed),
             weather_projection_count: self.weather_projection_count.load(Ordering::Relaxed),
             map_projection_count: self.map_projection_count.load(Ordering::Relaxed),
+            settings_revision,
             last_session_payload_serialized_bytes: self
                 .last_session_payload_serialized_bytes
                 .load(Ordering::Relaxed),
@@ -365,8 +273,8 @@ struct SessionModel {
     hushed_status_ids: BTreeSet<String>,
     data_status_state: UiDataStatusState,
     platform_capabilities: PlatformCapabilities,
-    settings_preferences: SettingsPreferences,
-    settings_storage: Option<SettingsStorageHandle>,
+    settings: SettingsController,
+    persistence_storage: Option<SettingsStorageHandle>,
     cloud: CloudEngine,
     debug_state: UiDebugState,
     resource_policy: CoreResourcePolicy,
@@ -785,7 +693,12 @@ impl SessionSlot {
     }
 
     fn diagnostics(&self) -> UiSessionDiagnostics {
-        self.diagnostics.snapshot(self.generation, self.phase())
+        let session = self
+            .session
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        self.diagnostics
+            .snapshot(self.generation, self.phase(), session.settings.revision())
     }
 }
 
@@ -3743,7 +3656,7 @@ fn create_ui_session_inner(
     let data_status_state = project_data_status_state(&data_status_records, &hushed_status_ids);
     let data_status_page_state = default_data_status_page_state();
     let settings_page_state = default_settings_page_state();
-    let settings_preferences = SettingsPreferences::default();
+    let settings = SettingsController::default();
     let cloud = CloudEngine::new(CloudPersistentState::default());
     let cloud_page_state = cloud.page_state(0);
     let offline_package_preferences_json =
@@ -3775,7 +3688,7 @@ fn create_ui_session_inner(
         offline_package_preferences_json,
         home_page_state,
         display_policy: None,
-        disclaimer_state: project_disclaimer_state(&settings_preferences),
+        disclaimer_state: settings.disclaimer_state(),
         debug_state: debug_state.clone(),
         raster_map: None,
         next_cycle_product_freshness_check_epoch_ms: None,
@@ -3819,8 +3732,8 @@ fn create_ui_session_inner(
             hushed_status_ids,
             data_status_state,
             platform_capabilities,
-            settings_preferences,
-            settings_storage: None,
+            settings,
+            persistence_storage: None,
             cloud,
             debug_state,
             resource_policy: CoreResourcePolicy::InstalledPackage,
@@ -4096,7 +4009,7 @@ pub fn configure_platform_capabilities_in_session(
     let session = &mut *session_guard;
     run_session_model_transaction_without_persistence(session, move |session| {
         session.platform_capabilities = capabilities;
-        session.settings_storage = settings_storage;
+        session.persistence_storage = settings_storage;
         load_session_persistence_from_storage(session)?;
         let acs_default_base_url = session
             .platform_capabilities
@@ -4467,36 +4380,10 @@ pub fn perform_settings_action_in_session(
     let mut session_guard = slot.lock_running()?;
     let session = &mut *session_guard;
     run_session_model_transaction(session, move |session| {
-        match action.action_id.as_str() {
-            DISPLAY_DIM_TIMEOUT_ACTION_ID => {
-                if session.platform_capabilities.display_policy.is_none() {
-                    return Err(invalid_settings_action(&action.action_id).into());
-                }
-                let timeout =
-                    DisplayDimTimeout::from_value_id(&action.value_id).ok_or_else(|| {
-                        invalid_settings_action_value(&action.action_id, &action.value_id)
-                    })?;
-                session.settings_preferences.display_dim_timeout = timeout;
-            }
-            FLIGHT_DATA_VISIBILITY_ACTION_ID => {
-                if !crate::flight_data::is_flight_data_banner_cell_id(&action.value_id) {
-                    return Err(
-                        invalid_settings_action_value(&action.action_id, &action.value_id).into(),
-                    );
-                }
-                if !session
-                    .settings_preferences
-                    .disabled_flight_data_cell_ids
-                    .remove(&action.value_id)
-                {
-                    session
-                        .settings_preferences
-                        .disabled_flight_data_cell_ids
-                        .insert(action.value_id.clone());
-                }
-            }
-            _ => return Err(invalid_settings_action(&action.action_id).into()),
-        }
+        let display_policy_available = session.platform_capabilities.display_policy.is_some();
+        session
+            .settings
+            .perform_action(&action, display_policy_available)?;
         Ok(vec![UiInvalidation::SessionSnapshot])
     })
 }
@@ -4509,17 +4396,7 @@ pub fn accept_disclaimer_in_session(
     let mut session_guard = slot.lock_running()?;
     let session = &mut *session_guard;
     run_session_model_transaction(session, |session| {
-        if agreement_id != NO_WARRANTY_DISCLAIMER_AGREEMENT_ID {
-            return Err(AppError {
-                kind: AppErrorKind::UnsupportedOperation,
-                message: format!("unsupported disclaimer agreement id: {agreement_id}"),
-            }
-            .into());
-        }
-        session
-            .settings_preferences
-            .accepted_disclaimer_agreement_ids
-            .insert(agreement_id.to_string());
+        session.settings.accept_disclaimer(agreement_id)?;
         Ok(vec![UiInvalidation::SessionSnapshot])
     })
 }
@@ -6562,20 +6439,6 @@ fn invalid_status_action(action_id: &str) -> AppError {
     AppError {
         kind: AppErrorKind::UnsupportedOperation,
         message: format!("unknown status action: {action_id}"),
-    }
-}
-
-fn invalid_settings_action(action_id: &str) -> AppError {
-    AppError {
-        kind: AppErrorKind::UnsupportedOperation,
-        message: format!("unknown settings action: {action_id}"),
-    }
-}
-
-fn invalid_settings_action_value(action_id: &str, value_id: &str) -> AppError {
-    AppError {
-        kind: AppErrorKind::UnsupportedOperation,
-        message: format!("unknown settings value for {action_id}: {value_id}"),
     }
 }
 
@@ -10504,10 +10367,9 @@ fn terrain_elevation_from_cache(session: &UiSession, position: LatLon) -> Option
 }
 
 fn enqueue_ownship_agl_terrain_effect(session: &mut UiSession) {
-    if session
-        .settings_preferences
-        .disabled_flight_data_cell_ids
-        .contains(crate::flight_data::FLIGHT_DATA_AGL_CELL_ID)
+    if !session
+        .settings
+        .flight_data_cell_enabled(crate::flight_data::FLIGHT_DATA_AGL_CELL_ID)
     {
         return;
     }
@@ -12126,12 +11988,23 @@ fn try_snapshot_for_session(
     let map_layer_state = session.map_layer_state.clone();
     let data_status_state = session.data_status_state.clone();
     let data_status_page_state = project_data_status_page_state(session);
-    let settings_page_state =
-        project_settings_page_state(session, &app_ui_state.flight_data_banner);
-    session
-        .diagnostics
-        .settings_projection_count
-        .fetch_add(1, Ordering::Relaxed);
+    let display_policy_available = session.platform_capabilities.display_policy.is_some();
+    let settings_projection = session
+        .settings
+        .project(display_policy_available, &app_ui_state.flight_data_banner);
+    if settings_projection.rebuilt {
+        session
+            .diagnostics
+            .settings_projection_count
+            .fetch_add(1, Ordering::Relaxed);
+    }
+    let SettingsProjection {
+        settings_page_state,
+        display_policy,
+        disclaimer_state,
+        flight_data_banner,
+    } = settings_projection.projection;
+    app_ui_state.flight_data_banner = flight_data_banner;
     let cloud_page_state = session.cloud.page_state_with_qr_scanner(
         session.wall_clock_epoch_ms,
         session
@@ -12148,13 +12021,6 @@ fn try_snapshot_for_session(
     )
     .map_err(|error| HadReadError::Fatal(error.to_string()))?;
     let home_page_state = project_home_page_state(&session.platform_capabilities);
-    app_ui_state.flight_data_banner.cells.retain(|cell| {
-        !session
-            .settings_preferences
-            .disabled_flight_data_cell_ids
-            .contains(&cell.id)
-    });
-    let display_policy = project_display_policy(session);
     let clone_ms = elapsed_ms(clone_started_at);
     let raster_started_at = crate::core_clock_ms();
     let raster_map = session
@@ -12206,7 +12072,7 @@ fn try_snapshot_for_session(
         offline_package_preferences_json,
         home_page_state,
         display_policy,
-        disclaimer_state: project_disclaimer_state(&session.settings_preferences),
+        disclaimer_state,
         debug_state,
         raster_map,
         next_cycle_product_freshness_check_epoch_ms: session
@@ -12459,14 +12325,6 @@ fn default_data_status_page_state() -> UiDataStatusPageState {
     }
 }
 
-fn default_settings_page_state() -> UiSettingsPageState {
-    UiSettingsPageState {
-        title: "Settings".to_string(),
-        summary: String::new(),
-        rows: Vec::new(),
-    }
-}
-
 fn project_home_page_state(capabilities: &PlatformCapabilities) -> UiHomePageState {
     let offline_packages_enabled = capabilities.offline_packages.is_some();
     let button = |destination: UiHomeDestination, label: &str| UiHomePageButton {
@@ -12501,106 +12359,15 @@ fn project_home_page_state(capabilities: &PlatformCapabilities) -> UiHomePageSta
     UiHomePageState { buttons }
 }
 
-fn project_settings_page_state(
-    session: &UiSession,
-    flight_data_banner: &crate::FlightDataBannerModel,
-) -> UiSettingsPageState {
-    let mut rows = vec![UiSettingsPageRow {
-        kind: "grid_choices".to_string(),
-        id: FLIGHT_DATA_VISIBILITY_ROW_ID.to_string(),
-        title: "Flight data grid".to_string(),
-        value_id: String::new(),
-        stops: Vec::new(),
-        items: flight_data_banner
-            .cells
-            .iter()
-            .map(|cell| UiSettingsGridItem {
-                cell: cell.clone(),
-                enabled: !session
-                    .settings_preferences
-                    .disabled_flight_data_cell_ids
-                    .contains(&cell.id),
-            })
-            .collect(),
-        action_id: FLIGHT_DATA_VISIBILITY_ACTION_ID.to_string(),
-    }];
-    if session.platform_capabilities.display_policy.is_some() {
-        rows.push(UiSettingsPageRow {
-            kind: "slider".to_string(),
-            id: DISPLAY_DIM_TIMEOUT_ROW_ID.to_string(),
-            title: "\u{1F50B} Display dims after...".to_string(),
-            value_id: session
-                .settings_preferences
-                .display_dim_timeout
-                .id()
-                .to_string(),
-            stops: DisplayDimTimeout::all_stops()
-                .into_iter()
-                .map(|timeout| UiSettingsSliderStop {
-                    id: timeout.id().to_string(),
-                    label: timeout.label().to_string(),
-                })
-                .collect(),
-            items: Vec::new(),
-            action_id: DISPLAY_DIM_TIMEOUT_ACTION_ID.to_string(),
-        });
-    }
-    UiSettingsPageState {
-        title: "Settings".to_string(),
-        summary: if rows.is_empty() {
-            "No platform settings are available.".to_string()
-        } else {
-            String::new()
-        },
-        rows,
-    }
-}
-
-fn project_display_policy(session: &UiSession) -> Option<UiDisplayPolicy> {
-    session
-        .platform_capabilities
-        .display_policy
-        .as_ref()
-        .map(|_| UiDisplayPolicy {
-            keep_screen_on: true,
-            dim_after_ms: session
-                .settings_preferences
-                .display_dim_timeout
-                .dim_after_ms(),
-            dim_brightness: DISPLAY_DIM_BRIGHTNESS,
-        })
-}
-
-fn project_disclaimer_state(preferences: &SettingsPreferences) -> UiDisclaimerState {
-    UiDisclaimerState {
-        agreement_id: NO_WARRANTY_DISCLAIMER_AGREEMENT_ID.to_string(),
-        required: !preferences
-            .accepted_disclaimer_agreement_ids
-            .contains(NO_WARRANTY_DISCLAIMER_AGREEMENT_ID),
-        html: NO_WARRANTY_DISCLAIMER_HTML.to_string(),
-        text: no_warranty_disclaimer_text(),
-        accept_label: "I understand and agree".to_string(),
-    }
-}
-
-fn no_warranty_disclaimer_text() -> String {
-    let stripped = NO_WARRANTY_DISCLAIMER_HTML
-        .replace("<p>", "")
-        .replace("</p>", "")
-        .replace("<strong>", "")
-        .replace("</strong>", "");
-    stripped.split_whitespace().collect::<Vec<_>>().join(" ")
-}
-
 fn load_session_persistence_from_storage(session: &mut UiSession) -> AppResult<()> {
-    let Some(storage) = session.settings_storage.as_ref() else {
+    let Some(storage) = session.persistence_storage.as_ref() else {
         return Ok(());
     };
     let Some(bytes) = storage.read_settings()? else {
         return Ok(());
     };
     let document = decode_session_persistence(&bytes);
-    session.settings_preferences = document.preferences;
+    session.settings.restore_preferences(document.preferences);
     session.cloud = CloudEngine::new(document.cloud);
     if let Some(plan) = session.cloud.cached_flight_plan() {
         replace_session_flight_plan(session, plan)?;
@@ -12609,7 +12376,7 @@ fn load_session_persistence_from_storage(session: &mut UiSession) -> AppResult<(
 }
 
 fn write_session_persistence_to_storage(session: &UiSession) -> AppResult<()> {
-    let Some(storage) = session.settings_storage.as_ref() else {
+    let Some(storage) = session.persistence_storage.as_ref() else {
         return Ok(());
     };
     let bytes = encode_session_persistence(session)?;
@@ -12637,7 +12404,7 @@ fn default_session_persistence() -> SettingsPersistenceDocument {
 fn encode_session_persistence(session: &UiSession) -> AppResult<Vec<u8>> {
     serde_json::to_vec(&SettingsPersistenceDocument {
         version: SETTINGS_PERSISTENCE_VERSION,
-        preferences: session.settings_preferences.clone(),
+        preferences: session.settings.persistent_preferences(),
         cloud: session.cloud.persistent().clone(),
     })
     .map_err(|err| AppError {
@@ -14464,8 +14231,8 @@ mod tests {
                 hushed_status_ids: BTreeSet::new(),
                 data_status_state: default_data_status_state(),
                 platform_capabilities: PlatformCapabilities::default(),
-                settings_preferences: SettingsPreferences::default(),
-                settings_storage: None,
+                settings: SettingsController::default(),
+                persistence_storage: None,
                 cloud: CloudEngine::new(CloudPersistentState::default()),
                 debug_state: default_debug_state(),
                 resource_policy: CoreResourcePolicy::InstalledPackage,
@@ -14914,7 +14681,7 @@ mod tests {
     #[test]
     fn model_transaction_rolls_back_model_and_queued_effects_when_persistence_fails() {
         let mut session = isolated_test_session(None);
-        session.settings_storage = Some(Arc::new(RejectingSettingsStorage));
+        session.persistence_storage = Some(Arc::new(RejectingSettingsStorage));
         let prior_revision = session.session_revision;
 
         let error = run_session_model_transaction(&mut session, |session| {
@@ -15019,11 +14786,56 @@ mod tests {
         assert_eq!(diagnostics.settings_projection_count, 2);
         assert_eq!(diagnostics.weather_projection_count, 2);
         assert_eq!(diagnostics.map_projection_count, 2);
+        assert_eq!(diagnostics.settings_revision, 0);
         assert_eq!(diagnostics.last_session_payload_serialized_bytes, 12_345);
 
         destroy_session(first.handle);
         destroy_session(second.handle);
         assert!(session_diagnostics(first.handle).is_err());
+    }
+
+    #[test]
+    fn unrelated_snapshots_reuse_settings_projection_until_settings_change() {
+        let init =
+            create_ui_session(FlightPlan::default(), &[], None, None).expect("create session");
+        configure_platform_capabilities_in_session(
+            init.handle,
+            PlatformCapabilities {
+                display_policy: Some(PlatformDisplayPolicyCapability::default()),
+                ..PlatformCapabilities::default()
+            },
+            None,
+        )
+        .expect("configure platform");
+        let configured = session_diagnostics(init.handle).expect("configured diagnostics");
+        assert_eq!(configured.settings_revision, 0);
+        assert_eq!(configured.settings_projection_count, 2);
+
+        get_session_snapshot(init.handle).expect("repeat snapshot");
+        set_map_layer_enabled_in_session(init.handle, MapLayerId::WorldBasemap, false)
+            .expect("unrelated map mutation");
+        let unchanged = session_diagnostics(init.handle).expect("unchanged diagnostics");
+        assert_eq!(unchanged.settings_revision, 0);
+        assert_eq!(
+            unchanged.settings_projection_count,
+            configured.settings_projection_count
+        );
+
+        perform_settings_action_in_session(
+            init.handle,
+            UiSettingsAction {
+                action_id: "display_dim_timeout".to_string(),
+                value_id: "30s".to_string(),
+            },
+        )
+        .expect("settings mutation");
+        let changed = session_diagnostics(init.handle).expect("changed diagnostics");
+        assert_eq!(changed.settings_revision, 1);
+        assert_eq!(
+            changed.settings_projection_count,
+            configured.settings_projection_count + 1
+        );
+        destroy_session(init.handle);
     }
 
     #[test]
@@ -15537,7 +15349,7 @@ mod tests {
         let error = super::perform_settings_action_in_session(
             init.handle,
             UiSettingsAction {
-                action_id: DISPLAY_DIM_TIMEOUT_ACTION_ID.to_string(),
+                action_id: "display_dim_timeout".to_string(),
                 value_id: "30s".to_string(),
             },
         )
@@ -15556,6 +15368,7 @@ mod tests {
         );
         let diagnostics = session_diagnostics(init.handle).expect("diagnostics");
         assert_eq!(diagnostics.transaction_rollback_count, 1);
+        assert_eq!(diagnostics.settings_revision, 0);
         destroy_session(init.handle);
     }
 

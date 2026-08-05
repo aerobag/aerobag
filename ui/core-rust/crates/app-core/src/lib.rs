@@ -42,6 +42,7 @@ pub mod publication;
 pub mod raster_tiles;
 mod sequencing;
 pub mod session;
+mod settings_controller;
 pub mod situation;
 pub mod state;
 pub mod terrain;

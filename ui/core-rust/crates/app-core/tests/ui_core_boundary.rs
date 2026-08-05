@@ -394,6 +394,50 @@ fn durable_session_writes_are_owned_by_transaction_helpers() {
 }
 
 #[test]
+fn settings_state_and_projection_are_owned_by_settings_controller() {
+    let session_text = read_repo_file("ui/core-rust/crates/app-core/src/session.rs");
+    let session = strip_rust_tests(&session_text);
+    let model = balanced_block_after_marker(session, "struct SessionModel");
+    assert!(
+        model.contains("settings: SettingsController"),
+        "SessionModel must compose the settings domain through its controller"
+    );
+    assert!(
+        !model.contains("settings_preferences") && !model.contains("settings_storage"),
+        "raw settings preferences and storage must not return to SessionModel"
+    );
+    assert!(
+        !session.contains("settings_preferences")
+            && !session.contains("fn project_settings_page_state")
+            && !session.contains("fn project_display_policy")
+            && !session.contains("fn project_disclaimer_state"),
+        "settings state and projection policy must remain inside SettingsController"
+    );
+    assert_eq!(
+        session_text
+            .match_indices(".persistent_preferences()")
+            .count(),
+        1,
+        "only aggregate persistence may read the controller's persistent preferences"
+    );
+    let action = function_body(session, "perform_settings_action_in_session");
+    assert!(
+        action.contains(".settings") && action.contains(".perform_action"),
+        "session settings actions must delegate to SettingsController"
+    );
+    assert!(
+        function_body(session, "accept_disclaimer_in_session")
+            .contains("session.settings.accept_disclaimer"),
+        "disclaimer acceptance must delegate to SettingsController"
+    );
+    let snapshot = function_body(session, "try_snapshot_for_session");
+    assert!(
+        snapshot.contains(".settings") && snapshot.contains(".project"),
+        "session snapshots must consume the controller projection"
+    );
+}
+
+#[test]
 fn platform_flight_plan_mutations_do_not_resync_guidance_after_core_mutation() {
     let web = read_repo_file("ui/web-app/src/domain/appCoreAdapter.ts");
     let android = read_repo_file(

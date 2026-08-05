@@ -134,7 +134,7 @@ projection boundaries. Render active pages from their domain revisions; avoid
 reconciling hidden pages after unrelated updates. Keep platform lifecycle and
 transport code separate from UI rendering.
 
-## First Slice
+## Completed First Slice
 
 The approved first slice is steps 1 through 3:
 
@@ -146,9 +146,41 @@ The approved first slice is steps 1 through 3:
   mutations to that path.
 
 This slice intentionally retains the full snapshot and synchronous execution.
-The next slice starts controller extraction with `SettingsController`, then adds
-controller revisions and cached projections before changing the platform wire
-model.
+
+## Completed Second Slice
+
+The second slice extracted `SettingsController` as the first narrow domain
+boundary:
+
+- the controller owns settings preferences, action validation, disclaimer
+  acceptance, display policy, settings-page projection, and flight-data banner
+  filtering;
+- settings mutations advance a controller-local monotonic revision and
+  invalidate a cached settings projection;
+- the full session snapshot is unchanged, but repeated snapshots reuse the
+  settings projection until either settings or a declared projection input
+  changes;
+- `UiSession` remains responsible for platform capabilities and for coordinating
+  the aggregate persisted document that contains both settings and cloud state;
+- boundary tests prevent raw settings state and projection policy from migrating
+  back into `session.rs`, and transaction tests cover revision rollback when a
+  durable write fails.
+
+## Next Slice
+
+Extract `WeatherController` without changing the platform wire model or moving
+work to another thread. The controller should first own live-feed product state,
+weather preparation caches, freshness/status policy, animation timing, and a
+revisioned cached weather projection. `UiSession` remains the coordinator for
+map-layer visibility, wall-clock input, resource effects, and assembly of the
+legacy full snapshot.
+
+Before moving fields, define typed weather inputs and outputs and add boundary
+tests for them. Preserve current resource paging and transaction semantics, then
+add deterministic coverage showing that unrelated settings/map changes reuse the
+weather projection. Same-session map-query concurrency remains a later
+acceptance test: this slice creates the ownership boundary needed for selective
+scheduling but does not introduce another lock, thread, or Worker.
 
 ## Relationship To Work Scheduling
 

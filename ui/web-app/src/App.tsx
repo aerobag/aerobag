@@ -1949,6 +1949,7 @@ function defaultUiDebugState(): UiDebugState {
     sequencing_finish_lines: false,
     plate_flight_plan: false,
     bad_autopilot: false,
+    internet_adsb: false,
     gps_capture: false,
     debug_log_to_developer_server: readPersistedDebugLogDeveloperServerUploadEnabled(),
   };
@@ -9510,11 +9511,19 @@ function FlightPlanPage(props: {
                       <button
                         key={procedure.procedure_id}
                         type="button"
-                        className="trayButton airwayChoiceButton procedureChoiceButton"
+                        className={`trayButton airwayChoiceButton procedureChoiceButton${procedure.enabled ? "" : " isDisabled"}`}
                         data-testid={`plan-procedure-${procedure.procedure_id}`}
+                        aria-disabled={procedure.enabled ? undefined : "true"}
+                        title={procedure.disabled_reason ?? undefined}
                         onPointerDown={stopPointer}
                         onPointerUp={stopPointer}
                         onClick={async () => {
+                          if (!procedure.enabled) {
+                            if (procedure.disabled_reason) {
+                              showDisabledAction(procedure.disabled_reason);
+                            }
+                            return;
+                          }
                           const trace = {
                             row_uid: procedurePicker.rowUid,
                             airport_id: procedurePicker.airportId,
@@ -12369,6 +12378,7 @@ function CommonDebugPanel(props: {
     { id: "sequencing_finish_lines", label: "sequencing finish lines" },
     { id: "plate_flight_plan", label: "flight plan on plates" },
     { id: "bad_autopilot", label: "Bad Autopilot" },
+    { id: "internet_adsb", label: "internet ADS-B" },
     { id: "gps_capture", label: "capture GPS samples" },
     { id: "debug_log_to_developer_server", label: "debug log to developer server" },
   ];

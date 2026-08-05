@@ -77,6 +77,8 @@ data class ProcedureSummary(
     val procedureId: String,
     val displayLabel: String,
     val kind: ProcedureKind,
+    val enabled: Boolean,
+    val disabledReason: String?,
 )
 
 data class ProcedureLoadOption(

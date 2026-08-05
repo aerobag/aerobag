@@ -113,13 +113,14 @@ export type UiMapLayerState = {
 
 export type MapLayerId = "world_basemap" | "vectors" | "metars" | "nexrad" | "traffic" | "terrain_warning" | "offline_regions";
 
-export type DebugFlagId = "tile_labels" | "nexrad_tile_labels" | "fast_tiles" | "offline_simulated_clock_buttons" | "sequencing_finish_lines" | "plate_flight_plan" | "bad_autopilot" | "gps_capture" | "debug_log_to_developer_server";
+export type DebugFlagId = "tile_labels" | "nexrad_tile_labels" | "fast_tiles" | "offline_simulated_clock_buttons" | "sequencing_finish_lines" | "plate_flight_plan" | "bad_autopilot" | "internet_adsb" | "gps_capture" | "debug_log_to_developer_server";
 
 export type UiDebugState = {
   bad_autopilot: boolean;
   debug_log_to_developer_server: boolean;
   fast_tiles: boolean;
   gps_capture: boolean;
+  internet_adsb: boolean;
   nexrad_tile_labels: boolean;
   offline_simulated_clock_buttons: boolean;
   plate_flight_plan: boolean;

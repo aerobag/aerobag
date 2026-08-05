@@ -1055,7 +1055,8 @@ internal fun FlightPlanPage(
                                         MenuPanelRow(
                                             label = procedure.displayLabel,
                                             active = false,
-                                            enabled = true,
+                                            enabled = procedure.enabled,
+                                            disabledReason = procedure.disabledReason,
                                             width = procedureChoiceButtonWidth,
                                             maxLines = 1,
                                             onSelect = {

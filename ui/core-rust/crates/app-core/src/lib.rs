@@ -1138,46 +1138,6 @@ pub fn describe_show_plate_for_procedure(rows: Vec<CifpTppMatchRow>) -> Option<C
     select_preferred_cifp_tpp_match(rows)
 }
 
-pub fn list_approach_procedures_from_match_rows(
-    airport_id: &str,
-    rows: Vec<CifpTppMatchRow>,
-) -> AppResult<Vec<ProcedureSummary>> {
-    let mut rows_by_procedure = std::collections::BTreeMap::<String, Vec<CifpTppMatchRow>>::new();
-    for row in rows.into_iter().filter(|row| {
-        row.airport_id.trim() == airport_id.trim() && row.procedure_kind == ProcedureKind::Approach
-    }) {
-        let procedure_id = row.cifp_id.trim();
-        if !procedure_id.is_empty() {
-            rows_by_procedure
-                .entry(procedure_id.to_string())
-                .or_default()
-                .push(row);
-        }
-    }
-    let mut summaries = Vec::new();
-    for (procedure_id, rows) in rows_by_procedure {
-        let matched = select_preferred_cifp_tpp_match(rows).ok_or_else(|| AppError {
-            kind: AppErrorKind::InvalidCatalog,
-            message: format!("approach {airport_id} {procedure_id} has no preferred plate label"),
-        })?;
-        let display_label = matched.plate_label.trim();
-        if display_label.is_empty() {
-            return Err(AppError {
-                kind: AppErrorKind::InvalidCatalog,
-                message: format!("approach {airport_id} {procedure_id} has an empty plate label"),
-            });
-        }
-        summaries.push(ProcedureSummary {
-            airport_id: airport_id.trim().to_string(),
-            procedure_id,
-            display_label: display_label.to_string(),
-            kind: ProcedureKind::Approach,
-        });
-    }
-    disambiguate_duplicate_procedure_display_labels(&mut summaries);
-    Ok(summaries)
-}
-
 pub(crate) fn disambiguate_duplicate_procedure_display_labels(procedures: &mut [ProcedureSummary]) {
     let mut label_counts = std::collections::BTreeMap::<(String, String), usize>::new();
     for procedure in procedures.iter() {
@@ -1986,24 +1946,32 @@ mod tests {
                 procedure_id: "I04".to_string(),
                 display_label: "ILS or LOC 04".to_string(),
                 kind: ProcedureKind::Approach,
+                enabled: true,
+                disabled_reason: None,
             },
             ProcedureSummary {
                 airport_id: "KAMA".to_string(),
                 procedure_id: "L04".to_string(),
                 display_label: "ILS or LOC 04".to_string(),
                 kind: ProcedureKind::Approach,
+                enabled: true,
+                disabled_reason: None,
             },
             ProcedureSummary {
                 airport_id: "KBJC".to_string(),
                 procedure_id: "D30L".to_string(),
                 display_label: "VOR and DME 30L and R".to_string(),
                 kind: ProcedureKind::Approach,
+                enabled: true,
+                disabled_reason: None,
             },
             ProcedureSummary {
                 airport_id: "KBJC".to_string(),
                 procedure_id: "D30R".to_string(),
                 display_label: "VOR and DME 30L and R".to_string(),
                 kind: ProcedureKind::Approach,
+                enabled: true,
+                disabled_reason: None,
             },
         ];
 

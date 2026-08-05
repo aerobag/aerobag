@@ -3394,6 +3394,7 @@ mod tests {
             asset_kind: "plate".to_string(),
             document_type: "approach".to_string(),
             procedure_uid: None,
+            cifp_procedure_id: None,
             georef: None,
         }
     }
@@ -3410,6 +3411,48 @@ mod tests {
             asset_kind: "csup".to_string(),
             document_type: "csup".to_string(),
         }
+    }
+
+    #[test]
+    fn nav_kv_airport_carries_charted_procedures_without_cifp_geometry() {
+        let mut index = minimal_resource_index();
+        index.airports.push(AirportRecord {
+            id: "KSEA".to_string(),
+            facility_name: "Seattle-Tacoma International".to_string(),
+            lat: 47.45,
+            lon: -122.31,
+            airport_type: "AIRPORT".to_string(),
+        });
+        let mut plate = test_plate_record("plate:KSEA:STR-WA-GLASR THREE.png", "KSEA");
+        plate.label = "GLASR THREE".to_string();
+        plate.document_type = "star".to_string();
+        plate.cifp_procedure_id = Some("GLASR3".to_string());
+        index.plates.push(plate);
+        index.airport_resources.push(AirportResourcesRecord {
+            airport_id: "KSEA".to_string(),
+            plate_ids: vec!["plate:KSEA:STR-WA-GLASR THREE.png".to_string()],
+            csup_ids: Vec::new(),
+            package_ids: vec!["NW_TPP".to_string()],
+        });
+
+        let pairs = build_nav_kv_plate_pairs(&index).expect("plate pairs");
+        let airport = pairs
+            .iter()
+            .find(|pair| pair.key == "plate/airport/KSEA")
+            .map(|pair| {
+                serde_json::from_slice::<serde_json::Value>(&pair.value)
+                    .expect("decode KSEA plate airport")
+            })
+            .expect("KSEA plate airport pair");
+        assert_eq!(
+            airport["charted_procedures"],
+            serde_json::json!([{
+                "procedure_id": "GLASR3",
+                "display_label": "GLASR THREE",
+                "kind": "star",
+                "plate_id": "plate:KSEA:STR-WA-GLASR THREE.png"
+            }])
+        );
     }
 
     #[test]

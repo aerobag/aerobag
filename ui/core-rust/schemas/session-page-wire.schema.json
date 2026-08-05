@@ -43,6 +43,7 @@
         "sequencing_finish_lines",
         "plate_flight_plan",
         "bad_autopilot",
+        "internet_adsb",
         "gps_capture",
         "debug_log_to_developer_server"
       ],
@@ -489,6 +490,10 @@
           "type": "boolean"
         },
         "gps_capture": {
+          "default": false,
+          "type": "boolean"
+        },
+        "internet_adsb": {
           "default": false,
           "type": "boolean"
         },

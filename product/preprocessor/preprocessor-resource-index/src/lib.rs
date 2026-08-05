@@ -320,6 +320,8 @@ pub struct PlateRecord {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub procedure_uid: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cifp_procedure_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub georef: Option<PlateGeoref>,
 }
 
@@ -1568,7 +1570,7 @@ fn pretty_tpp_label(raw_label: &str, document_type: &str) -> String {
         ("MIN", _) => pretty_minimums(remainder, "MINIMUMS", "Minimums"),
         ("IAP", _) => pretty_approach_label(remainder),
         ("HOT", "hotspot") => pretty_hotspot_label(remainder),
-        ("DP", _) | ("ODP", _) | ("STAR", _) => remainder.to_string(),
+        ("DP", _) | ("ODP", _) | ("STAR", _) | ("STR", _) => remainder.to_string(),
         _ => label.to_string(),
     }
 }
@@ -1638,6 +1640,7 @@ fn collect_plate_records(
             asset_kind: packaged.asset.asset_kind.clone(),
             document_type: packaged.asset.document_type.clone(),
             procedure_uid: packaged.asset.procedure_uid.clone(),
+            cifp_procedure_id: packaged.asset.cifp_procedure_id.clone(),
             georef: packaged.asset.georef.clone(),
             asset_path: packaged.asset.asset_path.clone(),
             thumbnail_path: packaged.asset.thumbnail_path.clone(),
@@ -3385,6 +3388,14 @@ mod tests {
             "Hot Spot 1"
         );
         assert_eq!(pretty_tpp_label("HOT-WA-HOT SPOT", "hotspot"), "Hot Spot");
+    }
+
+    #[test]
+    fn pretty_tpp_label_trims_star_prefix() {
+        assert_eq!(
+            pretty_tpp_label("STR-WA-GLASR THREE", "star"),
+            "GLASR THREE"
+        );
     }
 
     #[test]

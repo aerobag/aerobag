@@ -2804,9 +2804,30 @@ pub(super) fn build_nav_kv_plate_airports(
         .filter_map(|airport_resources| {
             let airport_id = &airport_resources.airport_id;
             let mut charts = Vec::new();
+            let mut charted_procedures = BTreeMap::new();
             for plate_id in &airport_resources.plate_ids {
                 if let Some(plate) = plate_by_id.get(plate_id.as_str()) {
                     charts.push(nav_kv_plate_asset(airport_id, plate));
+                    let kind = match plate.document_type.as_str() {
+                        "departure" => Some("sid"),
+                        "star" => Some("star"),
+                        "approach" => Some("approach"),
+                        _ => None,
+                    };
+                    if let (Some(kind), Some(procedure_id)) =
+                        (kind, plate.cifp_procedure_id.as_deref())
+                    {
+                        charted_procedures
+                            .entry((kind, procedure_id))
+                            .or_insert_with(|| {
+                                serde_json::json!({
+                                    "procedure_id": procedure_id,
+                                    "display_label": plate.label,
+                                    "kind": kind,
+                                    "plate_id": plate.id,
+                                })
+                            });
+                    }
                 }
             }
             for csup_id in &airport_resources.csup_ids {
@@ -2853,6 +2874,7 @@ pub(super) fn build_nav_kv_plate_airports(
                 "airport_type": airport.map(|airport| airport.airport_type.as_str()),
                 "package_ids": airport_resources.package_ids.clone(),
                 "chart_ids": chart_ids,
+                "charted_procedures": charted_procedures.into_values().collect::<Vec<_>>(),
                 }),
                 charts,
             })
@@ -6124,6 +6146,7 @@ mod tests {
             asset_kind: "plate".to_string(),
             document_type: "airport_diagram".to_string(),
             procedure_uid: None,
+            cifp_procedure_id: None,
             georef: None,
         };
         let value = nav_kv_plate_asset("KRNT", &plate);

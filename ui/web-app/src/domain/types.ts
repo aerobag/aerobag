@@ -102,6 +102,8 @@ export type ProcedureSummary = {
   procedure_id: string;
   display_label: string;
   kind: ProcedureKind;
+  enabled: boolean;
+  disabled_reason?: string | null;
 };
 
 export type CifpTppMatchRow = {

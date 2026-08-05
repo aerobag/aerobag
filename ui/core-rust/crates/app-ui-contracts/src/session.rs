@@ -232,6 +232,7 @@ pub enum DebugFlagId {
     SequencingFinishLines,
     PlateFlightPlan,
     BadAutopilot,
+    InternetAdsb,
     GpsCapture,
     DebugLogToDeveloperServer,
 }
@@ -251,6 +252,8 @@ pub struct UiDebugState {
     pub plate_flight_plan: bool,
     #[serde(default)]
     pub bad_autopilot: bool,
+    #[serde(default)]
+    pub internet_adsb: bool,
     #[serde(default)]
     pub gps_capture: bool,
     #[serde(default)]

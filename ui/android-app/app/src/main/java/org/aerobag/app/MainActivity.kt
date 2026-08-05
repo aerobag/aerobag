@@ -508,6 +508,7 @@ internal fun defaultUiDebugState(gpsCapture: Boolean = false) = UiDebugState(
     offlineSimulatedClockButtons = false,
     plateFlightPlan = false,
     badAutopilot = false,
+    internetAdsb = false,
     gpsCapture = gpsCapture,
     debugLogToDeveloperServer = false,
 )

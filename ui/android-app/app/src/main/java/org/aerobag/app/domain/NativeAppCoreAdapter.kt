@@ -2553,6 +2553,7 @@ data class UiDebugState(
     val offlineSimulatedClockButtons: Boolean,
     val plateFlightPlan: Boolean,
     val badAutopilot: Boolean,
+    val internetAdsb: Boolean,
     val gpsCapture: Boolean,
     val debugLogToDeveloperServer: Boolean,
 )
@@ -2757,6 +2758,7 @@ private fun WireUiDebugState.toUi() = UiDebugState(
     offlineSimulatedClockButtons = offlineSimulatedClockButtons,
     plateFlightPlan = plateFlightPlan,
     badAutopilot = badAutopilot,
+    internetAdsb = internetAdsb,
     gpsCapture = gpsCapture,
     debugLogToDeveloperServer = debugLogToDeveloperServer,
 )
@@ -3335,6 +3337,8 @@ private fun WireProcedureSummary.toUi() = ProcedureSummary(
     procedureId = procedure_id,
     displayLabel = display_label,
     kind = kind.toUi(),
+    enabled = enabled,
+    disabledReason = disabled_reason,
 )
 
 private fun WireProcedureLoadOption.toUi() = ProcedureLoadOption(

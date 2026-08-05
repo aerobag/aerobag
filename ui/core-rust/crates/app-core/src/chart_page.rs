@@ -91,6 +91,15 @@ pub struct PlateAirportRecord {
     #[serde(default)]
     pub package_ids: Vec<String>,
     pub chart_ids: Vec<String>,
+    pub charted_procedures: Vec<ChartedProcedureRecord>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ChartedProcedureRecord {
+    pub procedure_id: String,
+    pub display_label: String,
+    pub kind: crate::ProcedureKind,
+    pub plate_id: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]

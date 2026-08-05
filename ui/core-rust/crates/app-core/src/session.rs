@@ -31,9 +31,8 @@ pub use app_ui_contracts::{
         ClientBuildInfo, DebugFlagId, LiveFeedAcquisitionPolicy, MapLayerId, PlatformCapabilities,
         PlatformCloudCapability, PlatformDisplayPolicyCapability, PlatformLiveFeedsCapability,
         PlatformOfflinePackagesCapability, UiChartPageState, UiDebugState, UiDisclaimerState,
-        UiDisplayPolicy, UiMapLayerState, UiMapLayerToggleState, UiNavDbIdentity,
-        UiPlaybackPanelState, UiSettingsAction, UiSettingsGridItem, UiSettingsPageRow,
-        UiSettingsPageState, UiSettingsSliderStop,
+        UiDisplayPolicy, UiMapLayerState, UiNavDbIdentity, UiPlaybackPanelState, UiSettingsAction,
+        UiSettingsGridItem, UiSettingsPageRow, UiSettingsPageState, UiSettingsSliderStop,
     },
 };
 
@@ -778,7 +777,7 @@ fn clear_data_status_record(session: &mut UiSession, id: &str) -> bool {
 }
 
 fn sync_adsb_ownship_status_record(session: &mut UiSession) {
-    if !adsb_ownship_selected(session) {
+    if !session.debug_state.internet_adsb || !adsb_ownship_selected(session) {
         clear_data_status_record(session, ADSB_OWNSHIP_STATUS_ID);
         return;
     }
@@ -3479,6 +3478,7 @@ fn create_ui_session_inner(
         app_state.last_content_report.as_ref(),
     );
     project_bad_autopilot_availability_for_state(&debug_state, false, &mut app_ui_state);
+    project_internet_adsb_availability_for_state(&debug_state, &mut app_ui_state);
     if let Some(mark) = mark.as_deref_mut() {
         mark("core_project_app_ui_state");
     }
@@ -3521,7 +3521,10 @@ fn create_ui_session_inner(
         map_follow_ui_state,
         map_follow_target_viewport,
         chart_page_state: chart_page_state.clone(),
-        map_layer_state: map_projection.layer_state,
+        map_layer_state: project_map_layer_state_for_debug(
+            &map_projection.layer_state,
+            &debug_state,
+        ),
         data_status_state: data_status_state.clone(),
         data_status_page_state,
         settings_page_state,
@@ -3612,6 +3615,9 @@ pub fn set_map_layer_visibility_in_session(
     let session = &mut *session_guard;
     if let Some(outcome) = preflight_session_snapshot_resources(session)? {
         return Ok(outcome);
+    }
+    if layer == MapLayerId::Traffic && !session.debug_state.internet_adsb {
+        return session_snapshot_outcome(session);
     }
     session.map.set_layer_visibility(layer, visible);
     match layer {
@@ -4867,6 +4873,14 @@ pub fn set_ownship_policy_in_session(
     let slot = session_slot(handle)?;
     let mut session_guard = slot.lock_running()?;
     let session = &mut *session_guard;
+    if matches!(
+        &policy.selection,
+        crate::OwnshipSelectionPolicy::Manual { source_id }
+            if source_id.0 == crate::adsb::INTERNET_ADSB_SOURCE_ID
+    ) && !session.debug_state.internet_adsb
+    {
+        return session_snapshot_outcome(session);
+    }
     session.situation.set_policy(policy);
     sync_adsb_ownship_status_record(session);
     changed_session_snapshot_outcome(session)
@@ -4893,6 +4907,14 @@ pub fn select_ownship_source_in_session(
     };
     if selected_source_kind == Some(crate::OwnshipSourceKind::BadAutopilot)
         && !bad_autopilot_selectable(session)
+    {
+        return session_snapshot_outcome(session);
+    }
+    if matches!(
+        &selection,
+        crate::OwnshipSelectionCommand::Source { source_id }
+            if source_id.0 == crate::adsb::INTERNET_ADSB_SOURCE_ID
+    ) && !session.debug_state.internet_adsb
     {
         return session_snapshot_outcome(session);
     }
@@ -4929,6 +4951,12 @@ pub fn perform_ownship_text_action_in_session(
         return Err(AppError {
             kind: AppErrorKind::InvalidFlightPlan,
             message: format!("unknown ownship action: {action_id}"),
+        });
+    }
+    if !session.debug_state.internet_adsb {
+        return Err(AppError {
+            kind: AppErrorKind::UnsupportedOperation,
+            message: "internet ADS-B is disabled; enable it in DBG to experiment".to_string(),
         });
     }
     let registration = session
@@ -6822,6 +6850,12 @@ pub fn set_debug_flag_in_session(
                 }
             }
         }
+        DebugFlagId::InternetAdsb => {
+            session.debug_state.internet_adsb = enabled;
+            if !enabled {
+                disable_internet_adsb(session)?;
+            }
+        }
     }
     changed_session_snapshot_outcome(session)
 }
@@ -7140,6 +7174,9 @@ pub fn ingest_resource_in_session_at_epoch_ms(
         let slot = session_slot(handle)?;
         let mut session_guard = slot.lock_running()?;
         let session = &mut *session_guard;
+        if !session.debug_state.internet_adsb {
+            return Ok(());
+        }
         advance_session_wall_clock(session, epoch_ms);
         let received_epoch_ms = session.wall_clock_epoch_ms;
         match session
@@ -7857,7 +7894,9 @@ pub fn report_session_resource_failure_in_session_at_epoch_ms(
                 ),
             ),
         );
-    } else if crate::adsb::AdsbSessionState::handles_resource(resource_id) {
+    } else if session.debug_state.internet_adsb
+        && crate::adsb::AdsbSessionState::handles_resource(resource_id)
+    {
         let wall_clock_epoch_ms = session.wall_clock_epoch_ms;
         let ownship_resource = crate::adsb::AdsbSessionState::is_ownship_resource(resource_id);
         session
@@ -9616,7 +9655,9 @@ pub fn get_map_overlay_in_session_with_point_display_scale_at_epoch_ms(
     let advance_ms = elapsed_ms(advance_started_at);
     let freshness_ms = 0;
     let metrics = MapSurfaceMetrics::new(viewport, width_px, height_px, point_display_scale);
-    if session.map.layer_state().traffic.visible {
+    let display_traffic =
+        session.debug_state.internet_adsb && session.map.layer_state().traffic.visible;
+    if display_traffic {
         let wall_clock_epoch_ms = session.wall_clock_epoch_ms;
         if let Some(resource) = session
             .runtime
@@ -9633,7 +9674,7 @@ pub fn get_map_overlay_in_session_with_point_display_scale_at_epoch_ms(
     if !session.map.layer_state().vectors.visible
         && !session.map.layer_state().metars.visible
         && !session.map.layer_state().offline_regions.visible
-        && !session.map.layer_state().traffic.visible
+        && !display_traffic
     {
         return Ok(HadOperationOutcome::complete(
             serde_json::to_value(empty_map_overlay_query()).map_err(internal_json_error)?,
@@ -9719,7 +9760,7 @@ pub fn get_map_overlay_in_session_with_point_display_scale_at_epoch_ms(
     );
     let overlay_ms = elapsed_ms(overlay_started_at);
     overlay.flight_plan_features = flight_plan_features;
-    if session.map.layer_state().traffic.visible {
+    if display_traffic {
         overlay.visible_traffic = session.runtime.adsb.visible_traffic(
             metrics,
             crate::adsb::TrafficOwnshipAltitude {
@@ -10169,7 +10210,7 @@ fn materialize_map_selection_in_session(
     let selection = map_selection_with_ownship_distances(selection, ownship_position);
     let mut selection =
         map_selection_with_session_action_availability(selection, ownship_position.is_some());
-    if session.map.layer_state().traffic.visible {
+    if session.debug_state.internet_adsb && session.map.layer_state().traffic.visible {
         let traffic = session.runtime.adsb.traffic_selection_category(
             *metrics,
             crate::adsb::TrafficOwnshipAltitude {
@@ -11725,7 +11766,10 @@ fn try_snapshot_for_session(
             .map_projection_count
             .fetch_add(1, Ordering::Relaxed);
     }
-    let map_layer_state = map_projection.projection.layer_state;
+    let map_layer_state = project_map_layer_state_for_debug(
+        &map_projection.projection.layer_state,
+        &session.debug_state,
+    );
     let raster_map = map_projection.projection.raster_map;
     let raster_ms = elapsed_ms(raster_started_at);
     let data_status_state = session.data_status_state.clone();
@@ -11902,7 +11946,7 @@ fn apply_adsb_ownship_update(
 }
 
 fn prepare_adsb_ownship_effect(session: &mut UiSession) {
-    if !adsb_ownship_selected(session) {
+    if !session.debug_state.internet_adsb || !adsb_ownship_selected(session) {
         return;
     }
     let wall_clock_epoch_ms = session.wall_clock_epoch_ms;
@@ -12061,9 +12105,44 @@ fn default_debug_state() -> UiDebugState {
         sequencing_finish_lines: false,
         plate_flight_plan: false,
         bad_autopilot: false,
+        internet_adsb: false,
         gps_capture: false,
         debug_log_to_developer_server: false,
     }
+}
+
+fn project_map_layer_state_for_debug(
+    map_layer_state: &UiMapLayerState,
+    debug_state: &UiDebugState,
+) -> UiMapLayerState {
+    let mut projected = map_layer_state.clone();
+    if !debug_state.internet_adsb {
+        projected
+            .options
+            .retain(|option| option.layer_id != MapLayerId::Traffic);
+        projected.traffic.visible = false;
+        projected.traffic.enabled = false;
+        projected.traffic.disabled_reason =
+            Some("Internet ADS-B is experimental; enable it in DBG to use it.".to_string());
+    }
+    projected
+}
+
+fn disable_internet_adsb(session: &mut UiSession) -> AppResult<()> {
+    session.map.set_layer_visibility(MapLayerId::Traffic, false);
+    clear_data_status_record(session, ADSB_TRAFFIC_STATUS_ID);
+    clear_data_status_record(session, ADSB_OWNSHIP_STATUS_ID);
+    session
+        .runtime
+        .pending_resource_effects
+        .retain(|effect| !crate::adsb::AdsbSessionState::handles_resource(&effect.resource.id));
+    session.runtime.adsb = crate::adsb::AdsbSessionState::default();
+    if adsb_ownship_selected(session) {
+        session
+            .situation
+            .select_source(crate::OwnshipSelectionCommand::Auto);
+    }
+    Ok(())
 }
 
 fn empty_map_overlay_query() -> MapOverlayQueryResult {
@@ -12148,6 +12227,7 @@ fn project_session_app_ui_state(
                 .ownship_next_refresh_epoch_ms(session.wall_clock_epoch_ms)
         })
         .flatten();
+    project_internet_adsb_availability(session, &mut app_ui_state);
     if let (Some(active_plan), Some(materialized)) = (
         app_ui_state.active_plan.as_mut(),
         materialized_plan.as_ref(),
@@ -12281,6 +12361,26 @@ fn project_bad_autopilot_availability(session: &UiSession, app_ui_state: &mut Ap
         bad_autopilot_available(session),
         app_ui_state,
     );
+}
+
+fn project_internet_adsb_availability(session: &UiSession, app_ui_state: &mut AppUiState) {
+    project_internet_adsb_availability_for_state(&session.debug_state, app_ui_state);
+}
+
+fn project_internet_adsb_availability_for_state(
+    debug_state: &UiDebugState,
+    app_ui_state: &mut AppUiState,
+) {
+    if debug_state.internet_adsb {
+        return;
+    }
+    app_ui_state
+        .ownship
+        .controls
+        .sources
+        .retain(|source| source.source_id.0 != crate::adsb::INTERNET_ADSB_SOURCE_ID);
+    app_ui_state.ownship.controls.text_action = None;
+    app_ui_state.ownship.controls.next_refresh_epoch_ms = None;
 }
 
 fn project_bad_autopilot_availability_for_state(
@@ -13644,9 +13744,91 @@ mod tests {
     }
 
     #[test]
+    fn internet_adsb_is_hidden_until_debug_enabled_and_disable_cleans_up() {
+        let init = create_ui_session_at_epoch_ms(FlightPlan::default(), &[], None, None, 10_000)
+            .expect("create session");
+        assert!(init
+            .snapshot
+            .app_ui_state
+            .ownship
+            .controls
+            .sources
+            .iter()
+            .all(|source| source.source_id.0 != crate::adsb::INTERNET_ADSB_SOURCE_ID));
+        assert!(init
+            .snapshot
+            .map_layer_state
+            .options
+            .iter()
+            .all(|option| option.layer_id != MapLayerId::Traffic));
+        let disabled_error = perform_ownship_text_action_in_session(
+            init.handle,
+            crate::adsb::FOLLOW_ADSB_TARGET_ACTION_ID,
+            "N9124Y",
+            10_000,
+        )
+        .expect_err("disabled ADS-B action must be rejected");
+        assert_eq!(disabled_error.kind, AppErrorKind::UnsupportedOperation);
+
+        let enabled = set_debug_flag_in_session(init.handle, DebugFlagId::InternetAdsb, true)
+            .expect("enable internet ADS-B");
+        assert!(enabled
+            .app_ui_state
+            .ownship
+            .controls
+            .sources
+            .iter()
+            .any(|source| source.source_id.0 == crate::adsb::INTERNET_ADSB_SOURCE_ID));
+        assert!(enabled
+            .map_layer_state
+            .options
+            .iter()
+            .any(|option| option.layer_id == MapLayerId::Traffic));
+        set_map_layer_visibility_in_session(init.handle, MapLayerId::Traffic, true)
+            .expect("show traffic");
+        perform_ownship_text_action_in_session(
+            init.handle,
+            crate::adsb::FOLLOW_ADSB_TARGET_ACTION_ID,
+            "N9124Y",
+            10_000,
+        )
+        .expect("follow target");
+        assert!(!drain_session_resource_effects(init.handle)
+            .expect("queued ADS-B effect")
+            .is_empty());
+
+        let disabled = set_debug_flag_in_session(init.handle, DebugFlagId::InternetAdsb, false)
+            .expect("disable internet ADS-B");
+        assert!(disabled
+            .app_ui_state
+            .ownship
+            .controls
+            .sources
+            .iter()
+            .all(|source| source.source_id.0 != crate::adsb::INTERNET_ADSB_SOURCE_ID));
+        assert!(disabled
+            .map_layer_state
+            .options
+            .iter()
+            .all(|option| option.layer_id != MapLayerId::Traffic));
+        assert!(!disabled.map_layer_state.traffic.visible);
+        assert!(disabled
+            .data_status_state
+            .boxes
+            .iter()
+            .all(|status| status.id != ADSB_OWNSHIP_STATUS_ID));
+        assert!(drain_session_resource_effects(init.handle)
+            .expect("effects after disable")
+            .is_empty());
+
+        destroy_session(init.handle);
+    }
+
+    #[test]
     fn traffic_layer_uses_session_resource_effect_and_projects_core_normalized_aircraft() {
         let handle = NEXT_HANDLE.fetch_add(1, Ordering::Relaxed);
         let mut session = isolated_test_session(None);
+        session.debug_state.internet_adsb = true;
         session.map.set_layer_visibility(MapLayerId::Vectors, false);
         session.map.set_layer_visibility(MapLayerId::Metars, false);
         session.map.set_layer_visibility(MapLayerId::Traffic, true);
@@ -13746,8 +13928,9 @@ mod tests {
     fn internet_adsb_target_uses_normal_ownship_pipeline_without_replay_controls() {
         let init = create_ui_session_at_epoch_ms(FlightPlan::default(), &[], None, None, 10_000)
             .expect("create session");
-        let initial_adsb_source = init
-            .snapshot
+        let enabled = set_debug_flag_in_session(init.handle, DebugFlagId::InternetAdsb, true)
+            .expect("enable internet ADS-B");
+        let initial_adsb_source = enabled
             .app_ui_state
             .ownship
             .controls
@@ -13756,7 +13939,7 @@ mod tests {
             .find(|source| source.source_id.0 == crate::adsb::INTERNET_ADSB_SOURCE_ID)
             .expect("ADS-B source");
         assert_eq!(
-            init.snapshot
+            enabled
                 .app_state
                 .ownship
                 .sources
@@ -13874,6 +14057,8 @@ mod tests {
     fn adsb_dropout_preserves_follow_intent_and_fresh_observation_resumes_it() {
         let init = create_ui_session_at_epoch_ms(FlightPlan::default(), &[], None, None, 10_000)
             .expect("create session");
+        set_debug_flag_in_session(init.handle, DebugFlagId::InternetAdsb, true)
+            .expect("enable internet ADS-B");
         perform_ownship_text_action_in_session(
             init.handle,
             crate::adsb::FOLLOW_ADSB_TARGET_ACTION_ID,
@@ -13958,6 +14143,8 @@ mod tests {
     fn adsb_inspector_action_uses_the_same_ownship_target_command() {
         let init = create_ui_session_at_epoch_ms(FlightPlan::default(), &[], None, None, 10_000)
             .expect("create session");
+        set_debug_flag_in_session(init.handle, DebugFlagId::InternetAdsb, true)
+            .expect("enable internet ADS-B");
         let action = serde_json::to_string(&MapSelectionSessionAction::FollowAdsbRegistration {
             registration: "N9124Y".to_string(),
         })

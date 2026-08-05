@@ -5,7 +5,7 @@
 use std::{
     borrow::Cow,
     cmp::Ordering,
-    collections::{BTreeMap, HashMap, HashSet},
+    collections::{BTreeMap, BTreeSet, HashMap, HashSet},
 };
 
 use chrono::{DateTime, Utc};
@@ -947,11 +947,7 @@ fn run_had_operation_value(store: &NavKvStore, op: HadOperation) -> Result<Value
         HadOperation::ListProcedures {
             airport_id,
             procedure_kind,
-        } => serde_json::to_value(list_procedures_from_geometry(
-            store,
-            &airport_id,
-            procedure_kind,
-        )?)?,
+        } => serde_json::to_value(list_procedures(store, &airport_id, procedure_kind)?)?,
         HadOperation::DescribeProcedureOptions {
             airport_id,
             procedure_id,
@@ -3436,43 +3432,112 @@ fn expand_procedure_geometry_segments(
     Ok(())
 }
 
-fn list_procedures_from_geometry(
+const NO_PROCEDURE_GEOMETRY_REASON: &str = "No geometry; use Plates page.";
+
+fn list_procedures(
     store: &NavKvStore,
     airport_id: &str,
     kind: ProcedureKind,
 ) -> Result<Vec<ProcedureSummary>, HadReadError> {
-    let prefix = crate::navkv::procedure_geometry_kind_prefix(airport_id, &kind);
-    let mut procedure_ids = nav_kv_prefix_keys(store, &prefix)?
+    let geometry_prefix = crate::navkv::procedure_geometry_kind_prefix(airport_id, &kind);
+    let plate_prefix = format!("plate/cifp/{}/", airport_id.trim().to_ascii_uppercase());
+    let mut missing_pages = HadReadPageCollector::default();
+    let geometry_keys = missing_pages.collect(
+        nav_kv_prefix_keys(store, &geometry_prefix).map(|keys| keys.collect::<Vec<_>>()),
+    )?;
+    let plate_keys = missing_pages
+        .collect(nav_kv_prefix_keys(store, &plate_prefix).map(|keys| keys.collect::<Vec<_>>()))?;
+    let plate_airport = missing_pages.collect(read_optional::<PlateAirportRecord>(
+        store,
+        NavKvQuery::PlateAirport {
+            airport_id: airport_id.to_string(),
+        },
+    ))?;
+    let pages = missing_pages.into_pages();
+    if !pages.is_empty() {
+        return Err(HadReadError::NeedPages(pages));
+    }
+
+    let geometry_ids = geometry_keys
+        .unwrap_or_default()
+        .into_iter()
         .filter_map(|key| {
-            let suffix = key.strip_prefix(&prefix)?;
+            let suffix = key.strip_prefix(&geometry_prefix)?;
             let procedure_id = suffix.split('/').next()?;
             decode_key_component(procedure_id).ok()
         })
-        .collect::<Vec<_>>();
-    procedure_ids.sort();
-    procedure_ids.dedup();
+        .collect::<BTreeSet<_>>();
+
+    let mut plate_rows_by_procedure = BTreeMap::<String, Vec<CifpTppMatchRow>>::new();
     let mut missing_pages = HadReadPageCollector::default();
-    let mut procedures = Vec::new();
-    for procedure_id in procedure_ids {
-        let Some(display_label) = missing_pages.collect(procedure_display_label(
+    for key in plate_keys.unwrap_or_default() {
+        let Some(procedure_id) = key
+            .strip_prefix(&plate_prefix)
+            .and_then(|component| decode_key_component(component).ok())
+        else {
+            continue;
+        };
+        let Some(rows) = missing_pages.collect(read_optional::<Vec<CifpTppMatchRow>>(
             store,
-            airport_id,
-            &procedure_id,
-            &kind,
+            NavKvQuery::PlateCifpMatch {
+                airport_id: airport_id.to_string(),
+                cifp_id: procedure_id,
+            },
         ))?
         else {
             continue;
         };
+        for row in rows.unwrap_or_default().into_iter().filter(|row| {
+            row.airport_id
+                .trim()
+                .eq_ignore_ascii_case(airport_id.trim())
+                && row.procedure_kind == kind
+                && !row.cifp_id.trim().is_empty()
+        }) {
+            plate_rows_by_procedure
+                .entry(row.cifp_id.trim().to_string())
+                .or_default()
+                .push(row);
+        }
+    }
+    let pages = missing_pages.into_pages();
+    if !pages.is_empty() {
+        return Err(HadReadError::NeedPages(pages));
+    }
+
+    let charted_labels_by_procedure = plate_airport
+        .flatten()
+        .into_iter()
+        .flat_map(|airport| airport.charted_procedures)
+        .filter(|procedure| procedure.kind == kind)
+        .map(|procedure| (procedure.procedure_id, procedure.display_label))
+        .collect::<BTreeMap<_, _>>();
+
+    let procedure_ids = geometry_ids
+        .iter()
+        .cloned()
+        .chain(plate_rows_by_procedure.keys().cloned())
+        .chain(charted_labels_by_procedure.keys().cloned())
+        .collect::<BTreeSet<_>>();
+    let mut procedures = Vec::with_capacity(procedure_ids.len());
+    for procedure_id in procedure_ids {
+        let match_rows = plate_rows_by_procedure.remove(&procedure_id);
+        let display_label = if match_rows.is_some() {
+            procedure_display_label_from_match_rows(airport_id, &procedure_id, &kind, match_rows)?
+        } else if let Some(label) = charted_labels_by_procedure.get(&procedure_id) {
+            label.clone()
+        } else {
+            procedure_display_label_from_match_rows(airport_id, &procedure_id, &kind, None)?
+        };
+        let enabled = geometry_ids.contains(&procedure_id);
         procedures.push(ProcedureSummary {
             airport_id: airport_id.trim().to_string(),
             procedure_id,
             display_label,
             kind: kind.clone(),
+            enabled,
+            disabled_reason: (!enabled).then(|| NO_PROCEDURE_GEOMETRY_REASON.to_string()),
         });
-    }
-    let pages = missing_pages.into_pages();
-    if !pages.is_empty() {
-        return Err(HadReadError::NeedPages(pages));
     }
     crate::disambiguate_duplicate_procedure_display_labels(&mut procedures);
     Ok(procedures)
@@ -3491,6 +3556,15 @@ pub(crate) fn procedure_display_label(
             cifp_id: procedure_id.to_string(),
         },
     )?;
+    procedure_display_label_from_match_rows(airport_id, procedure_id, kind, rows)
+}
+
+fn procedure_display_label_from_match_rows(
+    airport_id: &str,
+    procedure_id: &str,
+    kind: &ProcedureKind,
+    rows: Option<Vec<CifpTppMatchRow>>,
+) -> Result<String, HadReadError> {
     let matched = rows.and_then(|rows| {
         crate::select_preferred_cifp_tpp_match(
             rows.into_iter()
@@ -4984,7 +5058,7 @@ mod tests {
 
     #[test]
     fn plate_airport_operation_resolves_chart_ids() {
-        let airport = br#"{"id":"KRNT","label":"RENTON MUNI","airport_type":"AIRPORT","package_ids":["NW_TPP_2604"],"chart_ids":["plate:KRNT:APD-WA-AIRPORT DIAGRAM.png"]}"#;
+        let airport = br#"{"id":"KRNT","label":"RENTON MUNI","airport_type":"AIRPORT","package_ids":["NW_TPP_2604"],"chart_ids":["plate:KRNT:APD-WA-AIRPORT DIAGRAM.png"],"charted_procedures":[]}"#;
         let plate = br#"{"id":"plate:KRNT:APD-WA-AIRPORT DIAGRAM.png","airport_id":"KRNT","package_id":"NW_TPP_2604","label":"Airport Diagram","kind":"plate","folder_category":"airport-diagram","asset_path":"plates/RNT/APD-WA-AIRPORT DIAGRAM.png"}"#;
         let (root, pages) = fixture(
             &[
@@ -7635,6 +7709,8 @@ mod tests {
             serde_json::from_value::<Vec<ProcedureSummary>>(result).expect("decode arrivals");
         assert_eq!(procedures[0].procedure_id, "GLASR3");
         assert_eq!(procedures[0].display_label, "GLASR THREE");
+        assert!(procedures[0].enabled);
+        assert_eq!(procedures[0].disabled_reason, None);
 
         let plan = FlightPlan {
             route_components: vec![
@@ -7651,6 +7727,46 @@ mod tests {
         assert_eq!(menu.procedure_kind, Some(ProcedureKind::Star));
         assert_eq!(menu.launcher_label, "LOAD\nARR");
         assert_eq!(menu.options[0].label, "from GLASR to RW16");
+    }
+
+    #[test]
+    fn charted_procedure_without_geometry_is_listed_but_disabled() {
+        let airport = serde_json::json!({
+            "id": "KSEA",
+            "label": "Seattle-Tacoma International",
+            "package_ids": ["tpp-nw"],
+            "chart_ids": ["plate:KSEA:STR-WA-GLASR THREE.png"],
+            "charted_procedures": [{
+                "procedure_id": "GLASR3",
+                "display_label": "GLASR THREE",
+                "kind": "star",
+                "plate_id": "plate:KSEA:STR-WA-GLASR THREE.png"
+            }]
+        });
+        let store = test_nav_kv_store(&[("plate/airport/KSEA", airport)]);
+
+        let outcome = run_had_operation(
+            &store,
+            HadOperation::ListProcedures {
+                airport_id: "KSEA".to_string(),
+                procedure_kind: ProcedureKind::Star,
+            },
+        )
+        .expect("list KSEA arrivals");
+        let HadOperationOutcome::Complete { result, .. } = outcome else {
+            panic!("expected complete arrival list");
+        };
+        let procedures =
+            serde_json::from_value::<Vec<ProcedureSummary>>(result).expect("decode arrivals");
+
+        assert_eq!(procedures.len(), 1);
+        assert_eq!(procedures[0].procedure_id, "GLASR3");
+        assert_eq!(procedures[0].display_label, "GLASR THREE");
+        assert!(!procedures[0].enabled);
+        assert_eq!(
+            procedures[0].disabled_reason.as_deref(),
+            Some("No geometry; use Plates page.")
+        );
     }
 
     #[test]

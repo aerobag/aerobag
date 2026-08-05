@@ -364,6 +364,9 @@ internal fun CommonDebugPanel(
     DebugCheckbox("Bad Autopilot", debugState.badAutopilot, testTag = "parity:debug-flag:bad_autopilot") {
         onDebugFlagChange(DebugFlagId.BadAutopilot, it)
     }
+    DebugCheckbox("internet ADS-B", debugState.internetAdsb) {
+        onDebugFlagChange(DebugFlagId.InternetAdsb, it)
+    }
     DebugCheckbox("capture GPS samples", debugState.gpsCapture) { onDebugFlagChange(DebugFlagId.GpsCapture, it) }
 }
 

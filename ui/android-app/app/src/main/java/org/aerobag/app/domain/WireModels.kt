@@ -969,6 +969,8 @@ data class WireProcedureSummary(
     val procedure_id: String,
     val display_label: String,
     val kind: WireProcedureKind,
+    val enabled: Boolean,
+    val disabled_reason: String? = null,
 )
 
 @Serializable

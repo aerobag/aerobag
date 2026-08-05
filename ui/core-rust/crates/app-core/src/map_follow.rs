@@ -83,7 +83,6 @@ impl MapFollowSessionState {
             return;
         }
         let Some(position) = ownship.position else {
-            self.following = false;
             return;
         };
         let point = world_to_screen(viewport, lat_lon_to_world(position), width_px, height_px);
@@ -120,7 +119,6 @@ impl MapFollowSessionState {
             return Some(viewport);
         }
         if ownship.position.is_none() {
-            self.following = false;
             return Some(viewport);
         }
         let target = self.resolve_viewport(ownship, viewport);
@@ -303,7 +301,7 @@ mod tests {
     }
 
     #[test]
-    fn sync_for_viewport_keeps_viewport_when_ownship_is_lost() {
+    fn sync_for_viewport_preserves_follow_intent_when_ownship_is_lost() {
         let mut state = MapFollowSessionState::default();
         let viewport = MapViewport {
             center: LatLon {
@@ -317,13 +315,13 @@ mod tests {
         state.engage(viewport);
         state.sync_for_viewport(&no_ownship(), viewport, 800.0, 600.0);
 
-        assert!(!state.following);
+        assert!(state.following);
         assert_eq!(state.target_viewport(&no_ownship()), Some(viewport));
         assert_eq!(
             state.ui_state(&no_ownship()),
             MapFollowUiState {
                 can_center_here: false,
-                following: false,
+                following: true,
                 disabled_reason: Some("Centering requires an ownship position.".to_string()),
             }
         );
@@ -351,10 +349,15 @@ mod tests {
             ui_state,
             MapFollowUiState {
                 can_center_here: false,
-                following: false,
+                following: true,
                 disabled_reason: Some("Centering requires an ownship position.".to_string()),
             }
         );
         assert_eq!(lost_target, Some(centered));
+
+        let (resumed_ui_state, resumed_target) =
+            state.snapshot_projection(&ownship(47.300, -121.350));
+        assert!(resumed_ui_state.following);
+        assert_ne!(resumed_target, Some(centered));
     }
 }

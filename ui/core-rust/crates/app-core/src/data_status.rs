@@ -237,4 +237,61 @@ mod tests {
         assert_eq!(hushed_state.launcher_count, None);
         assert_eq!(hushed_state.launcher_severity, UiStatusSeverity::Info);
     }
+
+    #[test]
+    fn launcher_severity_is_the_worst_unhushed_notification() {
+        let records = BTreeMap::from([
+            (
+                "adsb".to_string(),
+                DataStatusRecord::new(
+                    "adsb",
+                    "ADS-B",
+                    None,
+                    UiStatusSeverity::Info,
+                    false,
+                    "ADS-B ownship is active.",
+                ),
+            ),
+            (
+                "procedure".to_string(),
+                DataStatusRecord::new(
+                    "procedure",
+                    "Procedure",
+                    None,
+                    UiStatusSeverity::Caution,
+                    true,
+                    "Procedure caution.",
+                ),
+            ),
+            (
+                "terrain".to_string(),
+                DataStatusRecord::new(
+                    "terrain",
+                    "Terrain",
+                    None,
+                    UiStatusSeverity::Warning,
+                    true,
+                    "Terrain warning.",
+                ),
+            ),
+        ]);
+
+        assert_eq!(
+            project_data_status_state(&records, &BTreeSet::new()).launcher_severity,
+            UiStatusSeverity::Warning
+        );
+        assert_eq!(
+            project_data_status_state(&records, &BTreeSet::from(["terrain".to_string()]))
+                .launcher_severity,
+            UiStatusSeverity::Caution
+        );
+        assert_eq!(
+            project_data_status_state(
+                &records,
+                &BTreeSet::from(["terrain".to_string(), "procedure".to_string()]),
+            )
+            .launcher_severity,
+            UiStatusSeverity::Info
+        );
+    }
 }

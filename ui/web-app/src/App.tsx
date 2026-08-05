@@ -895,8 +895,16 @@ type UiThemeJson = {
     situation_status_bg: string;
     situation_status_fg: string;
     situation_status_unavailable_fg: string;
+    data_status_ok_bg: string;
+    data_status_ok_stroke: string;
+    data_status_info_bg: string;
+    data_status_info_stroke: string;
+    data_status_caution_bg: string;
+    data_status_caution_stroke: string;
     data_status_warning_bg: string;
     data_status_warning_stroke: string;
+    data_status_unavailable_bg: string;
+    data_status_unavailable_stroke: string;
     data_status_quiet_bg: string;
     data_status_quiet_stroke: string;
     chart_surface_bg: string;
@@ -3597,8 +3605,16 @@ export default function App() {
         "--theme-situation-status-bg": controlTheme.situation_status_bg,
         "--theme-situation-status-fg": controlTheme.situation_status_fg,
         "--theme-situation-status-unavailable-fg": controlTheme.situation_status_unavailable_fg,
+        "--theme-data-status-ok-bg": controlTheme.data_status_ok_bg,
+        "--theme-data-status-ok-stroke": controlTheme.data_status_ok_stroke,
+        "--theme-data-status-info-bg": controlTheme.data_status_info_bg,
+        "--theme-data-status-info-stroke": controlTheme.data_status_info_stroke,
+        "--theme-data-status-caution-bg": controlTheme.data_status_caution_bg,
+        "--theme-data-status-caution-stroke": controlTheme.data_status_caution_stroke,
         "--theme-data-status-warning-bg": controlTheme.data_status_warning_bg,
         "--theme-data-status-warning-stroke": controlTheme.data_status_warning_stroke,
+        "--theme-data-status-unavailable-bg": controlTheme.data_status_unavailable_bg,
+        "--theme-data-status-unavailable-stroke": controlTheme.data_status_unavailable_stroke,
         "--theme-data-status-quiet-bg": controlTheme.data_status_quiet_bg,
         "--theme-data-status-quiet-stroke": controlTheme.data_status_quiet_stroke,
         "--theme-chart-surface-bg": controlTheme.chart_surface_bg,

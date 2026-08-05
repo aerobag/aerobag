@@ -18,6 +18,7 @@ pub(crate) const INTERNET_ADSB_SOURCE_ID: &str = "internet-adsb";
 pub(crate) const FOLLOW_ADSB_TARGET_ACTION_ID: &str = "ownship:follow_adsb_target";
 const TRAFFIC_POLL_INTERVAL_MS: i64 = 60_000;
 const OWNSHIP_POLL_INTERVAL_MS: i64 = 60_000;
+pub(crate) const OWNSHIP_STALE_AFTER_MS: i64 = OWNSHIP_POLL_INTERVAL_MS * 2;
 const REQUEST_MIN_INTERVAL_MS: i64 = 1_100;
 const FAILURE_BACKOFF_MAX_MS: i64 = 65_000;
 const MIN_QUERY_RADIUS_NM: f64 = 10.0;
@@ -84,6 +85,19 @@ struct PendingOwnshipRequest {
 enum AdsbOwnshipLastResult {
     Observed,
     NoReport,
+    NoPosition,
+    StalePosition,
+}
+
+impl AdsbOwnshipLastResult {
+    fn label(self) -> &'static str {
+        match self {
+            Self::Observed => "observed",
+            Self::NoReport => "no report",
+            Self::NoPosition => "no current position",
+            Self::StalePosition => "stale position",
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -211,10 +225,10 @@ impl AdsbSessionState {
             },
         ];
         if let Some(registration) = self.ownship_registration.as_deref() {
-            let result = match self.ownship_last_result {
-                Some(AdsbOwnshipLastResult::Observed) => "observed",
-                Some(AdsbOwnshipLastResult::NoReport) | None => "no report",
-            };
+            let result = self
+                .ownship_last_result
+                .map(AdsbOwnshipLastResult::label)
+                .unwrap_or("no report");
             lines.push(format!("{registration}: {result}"));
         }
         if let Some(error) = self.ownship_last_error.as_deref() {
@@ -397,59 +411,76 @@ impl AdsbSessionState {
                     .as_deref()
                     .is_some_and(|candidate| normalize_registration(candidate) == registration)
             });
+        let (result, update) = match aircraft {
+            None => (
+                AdsbOwnshipLastResult::NoReport,
+                AdsbOwnshipUpdate {
+                    connection_state: SourceConnectionState::Searching,
+                    status_label: format!("{registration} is not currently visible"),
+                    sample: None,
+                },
+            ),
+            Some(aircraft) => match aircraft.position {
+                None => (
+                    AdsbOwnshipLastResult::NoPosition,
+                    AdsbOwnshipUpdate {
+                        connection_state: SourceConnectionState::Searching,
+                        status_label: format!("{registration} has no current position"),
+                        sample: None,
+                    },
+                ),
+                Some(position) => {
+                    let event_time_epoch_ms = aircraft.position_epoch_ms.unwrap_or(source_epoch_ms);
+                    if received_epoch_ms.saturating_sub(event_time_epoch_ms)
+                        > MAX_VISIBLE_POSITION_AGE_MS
+                    {
+                        (
+                            AdsbOwnshipLastResult::StalePosition,
+                            AdsbOwnshipUpdate {
+                                connection_state: SourceConnectionState::Stale,
+                                status_label: format!("{registration} position is stale"),
+                                sample: None,
+                            },
+                        )
+                    } else {
+                        (
+                            AdsbOwnshipLastResult::Observed,
+                            AdsbOwnshipUpdate {
+                                connection_state: SourceConnectionState::Connected,
+                                status_label: format!("Following {registration}"),
+                                sample: Some(SituationSample {
+                                    source_id: OwnshipSourceId(INTERNET_ADSB_SOURCE_ID.to_string()),
+                                    source_kind: OwnshipSourceKind::LiveNetworkTrack,
+                                    event_time_epoch_ms,
+                                    received_time_epoch_ms: received_epoch_ms,
+                                    position: Some(position),
+                                    horizontal_accuracy_m: None,
+                                    vertical_accuracy_m: None,
+                                    track_deg_true: aircraft.track_deg_true,
+                                    heading_deg_true: None,
+                                    ground_speed_kt: aircraft.ground_speed_kt,
+                                    altitude_msl_ft: aircraft.altitude_msl_ft,
+                                    pressure_altitude_ft: aircraft.pressure_altitude_ft,
+                                    vertical_speed_fpm: aircraft.vertical_speed_fpm,
+                                }),
+                            },
+                        )
+                    }
+                }
+            },
+        };
+        self.complete_ownship_poll(received_epoch_ms, result);
+        Ok(AdsbIngestOutcome::Ownship(update))
+    }
+
+    fn complete_ownship_poll(&mut self, received_epoch_ms: i64, result: AdsbOwnshipLastResult) {
         self.ownship_pending = None;
         self.ownship_next_poll_epoch_ms =
             Some(received_epoch_ms.saturating_add(OWNSHIP_POLL_INTERVAL_MS));
         self.ownship_consecutive_failures = 0;
         self.ownship_last_result_epoch_ms = Some(received_epoch_ms);
-        self.ownship_last_result = Some(if aircraft.is_some() {
-            AdsbOwnshipLastResult::Observed
-        } else {
-            AdsbOwnshipLastResult::NoReport
-        });
+        self.ownship_last_result = Some(result);
         self.ownship_last_error = None;
-
-        let Some(aircraft) = aircraft else {
-            return Ok(AdsbIngestOutcome::Ownship(AdsbOwnshipUpdate {
-                connection_state: SourceConnectionState::Searching,
-                status_label: format!("{registration} is not currently visible"),
-                sample: None,
-            }));
-        };
-        let Some(position) = aircraft.position else {
-            return Ok(AdsbIngestOutcome::Ownship(AdsbOwnshipUpdate {
-                connection_state: SourceConnectionState::Searching,
-                status_label: format!("{registration} has no current position"),
-                sample: None,
-            }));
-        };
-        let event_time_epoch_ms = aircraft.position_epoch_ms.unwrap_or(source_epoch_ms);
-        if received_epoch_ms.saturating_sub(event_time_epoch_ms) > MAX_VISIBLE_POSITION_AGE_MS {
-            return Ok(AdsbIngestOutcome::Ownship(AdsbOwnshipUpdate {
-                connection_state: SourceConnectionState::Stale,
-                status_label: format!("{registration} position is stale"),
-                sample: None,
-            }));
-        }
-        Ok(AdsbIngestOutcome::Ownship(AdsbOwnshipUpdate {
-            connection_state: SourceConnectionState::Connected,
-            status_label: format!("Following {registration}"),
-            sample: Some(SituationSample {
-                source_id: OwnshipSourceId(INTERNET_ADSB_SOURCE_ID.to_string()),
-                source_kind: OwnshipSourceKind::LiveNetworkTrack,
-                event_time_epoch_ms,
-                received_time_epoch_ms: received_epoch_ms,
-                position: Some(position),
-                horizontal_accuracy_m: None,
-                vertical_accuracy_m: None,
-                track_deg_true: aircraft.track_deg_true,
-                heading_deg_true: None,
-                ground_speed_kt: aircraft.ground_speed_kt,
-                altitude_msl_ft: aircraft.altitude_msl_ft,
-                pressure_altitude_ft: aircraft.pressure_altitude_ft,
-                vertical_speed_fpm: aircraft.vertical_speed_fpm,
-            }),
-        }))
     }
 
     pub(crate) fn record_failure(&mut self, resource_id: &str, message: &str, epoch_ms: i64) {
@@ -991,6 +1022,52 @@ mod tests {
         assert_eq!(
             state.ownship_status_detail(12_600),
             "source: Airplanes.live\npolling every 60s\nlast result 2s ago\nN1234: no report"
+        );
+    }
+
+    #[test]
+    fn matching_aircraft_without_usable_position_is_not_reported_as_observed() {
+        let mut state = AdsbSessionState::default();
+        state.set_ownship_registration("N9124Y").expect("target");
+        let request = state.prepare_ownship_request(10_000).expect("request");
+        let outcome = state
+            .ingest(
+                &request.id,
+                br#"{"now":10500,"ac":[{"hex":"abc123","r":"N9124Y","alt_baro":4200}]}"#,
+                10_600,
+            )
+            .expect("ingest");
+        let AdsbIngestOutcome::Ownship(update) = outcome else {
+            panic!("expected ownship update");
+        };
+        assert_eq!(update.connection_state, SourceConnectionState::Searching);
+        assert!(update.sample.is_none());
+        assert_eq!(
+            state.ownship_status_detail(10_600),
+            "source: Airplanes.live\npolling every 60s\nlast result 0s ago\nN9124Y: no current position"
+        );
+    }
+
+    #[test]
+    fn matching_aircraft_with_stale_position_is_not_reported_as_observed() {
+        let mut state = AdsbSessionState::default();
+        state.set_ownship_registration("N9124Y").expect("target");
+        let request = state.prepare_ownship_request(10_000).expect("request");
+        let outcome = state
+            .ingest(
+                &request.id,
+                br#"{"now":10500,"ac":[{"hex":"abc123","r":"N9124Y","lat":47.45,"lon":-122.31,"seen_pos":16}]}"#,
+                10_600,
+            )
+            .expect("ingest");
+        let AdsbIngestOutcome::Ownship(update) = outcome else {
+            panic!("expected ownship update");
+        };
+        assert_eq!(update.connection_state, SourceConnectionState::Stale);
+        assert!(update.sample.is_none());
+        assert_eq!(
+            state.ownship_status_detail(10_600),
+            "source: Airplanes.live\npolling every 60s\nlast result 0s ago\nN9124Y: stale position"
         );
     }
 

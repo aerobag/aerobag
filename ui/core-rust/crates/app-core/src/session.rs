@@ -11737,6 +11737,7 @@ fn register_default_situation_sources(app_state: AppState) -> AppResult<AppState
             display_name: "Plan Preview".to_string(),
             selectable: true,
             auto_eligible: false,
+            stale_after_ms: None,
         }),
     )?;
     let app_state = state::reduce(
@@ -11747,6 +11748,7 @@ fn register_default_situation_sources(app_state: AppState) -> AppResult<AppState
             display_name: "Replay".to_string(),
             selectable: true,
             auto_eligible: false,
+            stale_after_ms: None,
         }),
     )?;
     let app_state = state::reduce(
@@ -11757,6 +11759,7 @@ fn register_default_situation_sources(app_state: AppState) -> AppResult<AppState
             display_name: "Internet ADS-B".to_string(),
             selectable: true,
             auto_eligible: false,
+            stale_after_ms: Some(crate::adsb::OWNSHIP_STALE_AFTER_MS),
         }),
     )?;
     state::reduce(
@@ -11839,6 +11842,7 @@ fn register_bad_autopilot_source(app_state: AppState) -> AppResult<AppState> {
             display_name: "Bad AP".to_string(),
             selectable: true,
             auto_eligible: true,
+            stale_after_ms: None,
         }),
     )?;
     state::reduce(
@@ -13274,6 +13278,7 @@ fn register_manual_ownship_source(
             display_name: display_name.to_string(),
             selectable: true,
             auto_eligible: true,
+            stale_after_ms: None,
         }),
     )?;
     session.app_state = state::reduce(
@@ -14058,6 +14063,16 @@ mod tests {
             .iter()
             .find(|source| source.source_id.0 == crate::adsb::INTERNET_ADSB_SOURCE_ID)
             .expect("ADS-B source");
+        assert_eq!(
+            init.snapshot
+                .app_state
+                .ownship
+                .sources
+                .iter()
+                .find(|source| source.source_id.0 == crate::adsb::INTERNET_ADSB_SOURCE_ID)
+                .map(|source| source.stale_after_ms),
+            Some(crate::adsb::OWNSHIP_STALE_AFTER_MS)
+        );
         assert!(initial_adsb_source.keep_tray_open_on_select);
         let selected = perform_ownship_text_action_in_session(
             init.handle,
@@ -14159,6 +14174,90 @@ mod tests {
             data_status_box(&aged_snapshot, ADSB_OWNSHIP_STATUS_ID).detail,
             "source: Airplanes.live\npolling every 60s\nlast result 43s ago\nN9124Y: observed"
         );
+
+        destroy_session(init.handle);
+    }
+
+    #[test]
+    fn adsb_dropout_preserves_follow_intent_and_fresh_observation_resumes_it() {
+        let init = create_ui_session_at_epoch_ms(FlightPlan::default(), &[], None, None, 10_000)
+            .expect("create session");
+        perform_ownship_text_action_in_session(
+            init.handle,
+            crate::adsb::FOLLOW_ADSB_TARGET_ACTION_ID,
+            "N9124Y",
+            10_000,
+        )
+        .expect("follow target");
+        let first_request = drain_session_resource_effects(init.handle)
+            .expect("ownship effects")
+            .pop()
+            .expect("ownship request");
+        ingest_resource_in_session_at_epoch_ms(
+            init.handle,
+            &first_request.resource.id,
+            br#"{"now":10500,"ac":[{"hex":"abc123","r":"N9124Y","lat":47.45,"lon":-122.31,"seen_pos":0.2}]}"#,
+            10_600,
+        )
+        .expect("ingest observed ownship");
+        let viewport = MapViewport {
+            center: LatLon {
+                lat: 47.45,
+                lon: -122.31,
+            },
+            zoom: 9.0,
+            rotation_deg: 0.0,
+            pitch_deg: 0.0,
+        };
+        engage_map_follow_in_session(init.handle, viewport).expect("engage follow");
+
+        get_session_snapshot_at_epoch_ms(init.handle, 70_600).expect("request next poll");
+        let missing_request = drain_session_resource_effects(init.handle)
+            .expect("ownship effects")
+            .pop()
+            .expect("ownship request");
+        ingest_resource_in_session_at_epoch_ms(
+            init.handle,
+            &missing_request.resource.id,
+            br#"{"now":70700,"ac":[]}"#,
+            70_700,
+        )
+        .expect("ingest missing ownship");
+        let missing = sync_map_follow_in_session(init.handle, viewport, 800.0, 600.0)
+            .expect("sync missing ownship");
+        assert_eq!(missing.app_ui_state.ownship.render.position, None);
+        assert!(missing.map_follow_ui_state.following);
+        assert!(matches!(
+            missing.app_state.ownship.policy.selection,
+            crate::OwnshipSelectionPolicy::Manual { ref source_id }
+                if source_id.0 == crate::adsb::INTERNET_ADSB_SOURCE_ID
+        ));
+        assert!(data_status_box(&missing, ADSB_OWNSHIP_STATUS_ID)
+            .detail
+            .ends_with("N9124Y: no report"));
+
+        get_session_snapshot_at_epoch_ms(init.handle, 130_700).expect("request resumed poll");
+        let resumed_request = drain_session_resource_effects(init.handle)
+            .expect("ownship effects")
+            .pop()
+            .expect("ownship request");
+        ingest_resource_in_session_at_epoch_ms(
+            init.handle,
+            &resumed_request.resource.id,
+            br#"{"now":130700,"ac":[{"hex":"abc123","r":"N9124Y","lat":47.50,"lon":-122.25,"seen_pos":0.1}]}"#,
+            130_800,
+        )
+        .expect("ingest resumed ownship");
+        let resumed = get_session_snapshot_at_epoch_ms(init.handle, 130_800).expect("snapshot");
+        assert_eq!(
+            resumed.app_ui_state.ownship.render.position,
+            Some(LatLon {
+                lat: 47.50,
+                lon: -122.25,
+            })
+        );
+        assert!(resumed.map_follow_ui_state.following);
+        assert!(resumed.map_follow_target_viewport.is_some());
 
         destroy_session(init.handle);
     }

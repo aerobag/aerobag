@@ -805,36 +805,73 @@ button {
 }
 
 .dataStatusLauncher {
-  --data-status-symbol-ink: var(--theme-data-status-warning-stroke);
+  --data-status-launcher-bg: var(--theme-data-status-info-bg);
+  --data-status-symbol-ink: var(--theme-data-status-info-stroke);
 
   width: calc(var(--thumb) * 0.5);
   min-width: calc(var(--thumb) * 0.5);
   height: calc(var(--thumb) * 0.5);
   padding: 0;
-  border: 1px solid var(--theme-data-status-warning-stroke);
+  border: 1px solid var(--theme-data-status-info-stroke);
   border-radius: calc(var(--thumb-radius) * 0.78);
-  background: var(--theme-data-status-warning-bg);
+  background: var(--theme-data-status-info-bg);
   box-shadow: var(--shadow);
   color: #111;
   font-weight: 900;
   position: relative;
 }
 
-.dataStatusLauncher.isOpen {
-  background: color-mix(in srgb, var(--theme-data-status-warning-bg) 82%, white);
+.dataStatusLauncher.statusSeverity-ok {
+  --data-status-launcher-bg: var(--theme-data-status-ok-bg);
+  --data-status-symbol-ink: var(--theme-data-status-ok-stroke);
+
+  border-color: var(--theme-data-status-ok-stroke);
+  background: var(--data-status-launcher-bg);
 }
 
-.dataStatusLauncher.isQuiet {
-  --data-status-symbol-ink: var(--theme-data-status-quiet-stroke);
+.dataStatusLauncher.statusSeverity-info {
+  --data-status-launcher-bg: var(--theme-data-status-info-bg);
+  --data-status-symbol-ink: var(--theme-data-status-info-stroke);
 
-  border-color: var(--theme-data-status-quiet-stroke);
-  background: var(--theme-data-status-quiet-bg);
-  color: #111;
+  border-color: var(--theme-data-status-info-stroke);
+  background: var(--data-status-launcher-bg);
+}
+
+.dataStatusLauncher.statusSeverity-caution {
+  --data-status-launcher-bg: var(--theme-data-status-caution-bg);
+  --data-status-symbol-ink: var(--theme-data-status-caution-stroke);
+
+  border-color: var(--theme-data-status-caution-stroke);
+  background: var(--data-status-launcher-bg);
 }
 
 .dataStatusLauncher.statusSeverity-warning {
+  --data-status-launcher-bg: var(--theme-data-status-warning-bg);
+  --data-status-symbol-ink: var(--theme-data-status-warning-stroke);
+
   border-color: var(--theme-data-status-warning-stroke);
-  background: color-mix(in srgb, var(--theme-data-status-warning-bg) 78%, #d55b18);
+  background: var(--data-status-launcher-bg);
+}
+
+.dataStatusLauncher.statusSeverity-unavailable {
+  --data-status-launcher-bg: var(--theme-data-status-unavailable-bg);
+  --data-status-symbol-ink: var(--theme-data-status-unavailable-stroke);
+
+  border-color: var(--theme-data-status-unavailable-stroke);
+  background: var(--data-status-launcher-bg);
+}
+
+.dataStatusLauncher.isQuiet {
+  --data-status-launcher-bg: var(--theme-data-status-quiet-bg);
+  --data-status-symbol-ink: var(--theme-data-status-quiet-stroke);
+
+  border-color: var(--theme-data-status-quiet-stroke);
+  background: var(--data-status-launcher-bg);
+  color: #111;
+}
+
+.dataStatusLauncher.isOpen {
+  background: color-mix(in srgb, var(--data-status-launcher-bg) 82%, white);
 }
 
 .dataStatusLauncherSymbol {
@@ -885,12 +922,12 @@ button {
 
 .dataStatusBox.statusSeverity-caution,
 .dataStatusCaution.statusSeverity-caution {
-  box-shadow: inset 0 0 0 2px rgba(210, 146, 16, 0.72);
+  box-shadow: inset 0 0 0 2px color-mix(in srgb, var(--theme-data-status-caution-stroke) 72%, transparent);
 }
 
 .dataStatusBox.statusSeverity-warning,
 .dataStatusCaution.statusSeverity-warning {
-  box-shadow: inset 0 0 0 2px rgba(179, 38, 30, 0.74);
+  box-shadow: inset 0 0 0 2px color-mix(in srgb, var(--theme-data-status-warning-stroke) 74%, transparent);
 }
 
 .dataStatusBox.isHushed,
@@ -3736,20 +3773,23 @@ button {
 }
 
 .dataStatusPageRow.statusSeverity-ok {
-  box-shadow: inset 0 0 0 2px rgba(92, 166, 106, 0.78);
+  box-shadow: inset 0 0 0 2px color-mix(in srgb, var(--theme-data-status-ok-stroke) 78%, transparent);
 }
 
 .dataStatusPageRow.statusSeverity-info {
-  box-shadow: inset 0 0 0 2px rgba(79, 142, 189, 0.75);
+  box-shadow: inset 0 0 0 2px color-mix(in srgb, var(--theme-data-status-info-stroke) 75%, transparent);
 }
 
 .dataStatusPageRow.statusSeverity-caution {
-  box-shadow: inset 0 0 0 3px rgba(210, 146, 16, 0.82);
+  box-shadow: inset 0 0 0 3px color-mix(in srgb, var(--theme-data-status-caution-stroke) 82%, transparent);
 }
 
-.dataStatusPageRow.statusSeverity-warning,
+.dataStatusPageRow.statusSeverity-warning {
+  box-shadow: inset 0 0 0 3px color-mix(in srgb, var(--theme-data-status-warning-stroke) 84%, transparent);
+}
+
 .dataStatusPageRow.statusSeverity-unavailable {
-  box-shadow: inset 0 0 0 3px rgba(179, 38, 30, 0.84);
+  box-shadow: inset 0 0 0 3px color-mix(in srgb, var(--theme-data-status-unavailable-stroke) 84%, transparent);
 }
 
 .dataStatusPageRowHeader {

@@ -63,6 +63,7 @@ import androidx.compose.ui.window.Popup
 import androidx.compose.ui.window.PopupProperties
 import androidx.compose.ui.zIndex
 import kotlinx.coroutines.delay
+import org.aerobag.app.domain.ControlsTheme
 import org.aerobag.app.domain.NavElementUiView
 import org.aerobag.app.domain.UiDataStatusPageFact
 import org.aerobag.app.domain.UiDataStatusPageRow
@@ -161,16 +162,10 @@ internal fun DataStatusBadgeFace(
 ) {
     val uiTheme = LocalAerobagUiTheme.current
     val hasCount = count != null
-    val background = when {
-        !hasCount -> uiTheme.controls.dataStatusQuietBg
-        severity == UiStatusSeverity.Warning ->
-            lerp(uiTheme.controls.dataStatusWarningBg, Color(0xFFD55B18), 0.22f)
-        else -> uiTheme.controls.dataStatusWarningBg
-    }
-    val stroke = if (hasCount) {
-        uiTheme.controls.dataStatusWarningStroke
+    val (background, stroke) = if (hasCount) {
+        statusSeverityColors(severity, uiTheme.controls)
     } else {
-        uiTheme.controls.dataStatusQuietStroke
+        uiTheme.controls.dataStatusQuietBg to uiTheme.controls.dataStatusQuietStroke
     }
     val resolvedBackground = if (open) lerp(background, Color.White, 0.18f) else background
     Box(
@@ -231,7 +226,7 @@ private fun DataStatusBoxRow(
     onAction: (String) -> Unit,
 ) {
     val uiTheme = LocalAerobagUiTheme.current
-    val accentColor = statusSeverityColor(severity)
+    val accentColor = statusSeverityColors(severity, uiTheme.controls).second
     val background = Color.White.copy(alpha = if (hushed) 0.48f else 0.78f)
     val strokeWidth = if (severity == UiStatusSeverity.Caution || severity == UiStatusSeverity.Warning) 2.dp else 1.dp
     Column(
@@ -337,12 +332,15 @@ private fun DataStatusBoxRow(
     }
 }
 
-private fun statusSeverityColor(severity: UiStatusSeverity): Color = when (severity) {
-    UiStatusSeverity.Ok -> Color(0xFF7ED6A7)
-    UiStatusSeverity.Info -> Color(0xFF8FB7FF)
-    UiStatusSeverity.Caution -> Color(0xFFFFD35A)
-    UiStatusSeverity.Warning -> Color(0xFFFF8B5A)
-    UiStatusSeverity.Unavailable -> Color(0xFFB7BDC7)
+private fun statusSeverityColors(
+    severity: UiStatusSeverity,
+    theme: ControlsTheme,
+): Pair<Color, Color> = when (severity) {
+    UiStatusSeverity.Ok -> theme.dataStatusOkBg to theme.dataStatusOkStroke
+    UiStatusSeverity.Info -> theme.dataStatusInfoBg to theme.dataStatusInfoStroke
+    UiStatusSeverity.Caution -> theme.dataStatusCautionBg to theme.dataStatusCautionStroke
+    UiStatusSeverity.Warning -> theme.dataStatusWarningBg to theme.dataStatusWarningStroke
+    UiStatusSeverity.Unavailable -> theme.dataStatusUnavailableBg to theme.dataStatusUnavailableStroke
 }
 
 private val DataStatusPageTitleTextSize = 15.sp
@@ -451,7 +449,8 @@ private fun DataStatusPageRowCard(
     row: UiDataStatusPageRow,
     nowMs: Long,
 ) {
-    val accentColor = statusSeverityColor(row.severity)
+    val uiTheme = LocalAerobagUiTheme.current
+    val accentColor = statusSeverityColors(row.severity, uiTheme.controls).second
     Column(
         modifier = Modifier
             .fillMaxWidth()

@@ -350,6 +350,8 @@ pub struct OwnshipSourceRegistration {
     pub display_name: String,
     pub selectable: bool,
     pub auto_eligible: bool,
+    #[serde(default)]
+    pub stale_after_ms: Option<i64>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -374,6 +376,16 @@ pub fn register_source(
     registration: OwnshipSourceRegistration,
 ) -> OwnshipState {
     let mut next = state.clone();
+    let stale_after_ms = registration
+        .stale_after_ms
+        .filter(|value| *value > 0)
+        .unwrap_or_else(|| {
+            if registration.source_kind == OwnshipSourceKind::LiveNetworkTrack {
+                LIVE_NETWORK_STALE_AFTER_MS
+            } else {
+                DEFAULT_STALE_AFTER_MS
+            }
+        });
     match next
         .sources
         .iter_mut()
@@ -384,6 +396,7 @@ pub fn register_source(
             existing.display_name = registration.display_name;
             existing.selectable = registration.selectable;
             existing.auto_eligible = registration.auto_eligible;
+            existing.stale_after_ms = stale_after_ms;
         }
         None => next.sources.push(OwnshipSourceStatus {
             source_id: registration.source_id,
@@ -392,11 +405,7 @@ pub fn register_source(
             connection_state: SourceConnectionState::Unavailable,
             last_event_time_epoch_ms: None,
             last_received_time_epoch_ms: None,
-            stale_after_ms: if registration.source_kind == OwnshipSourceKind::LiveNetworkTrack {
-                LIVE_NETWORK_STALE_AFTER_MS
-            } else {
-                DEFAULT_STALE_AFTER_MS
-            },
+            stale_after_ms,
             selectable: registration.selectable,
             enabled: true,
             auto_eligible: registration.auto_eligible,
@@ -1218,6 +1227,7 @@ mod tests {
                 display_name: "GPS".to_string(),
                 selectable: true,
                 auto_eligible: true,
+                stale_after_ms: None,
             },
         );
         let state = update_source_status(
@@ -1241,6 +1251,23 @@ mod tests {
             state.controls.launcher_text_tone,
             OwnshipLauncherTextTone::Unavailable
         );
+    }
+
+    #[test]
+    fn source_registration_can_align_freshness_with_its_polling_policy() {
+        let state = register_source(
+            &OwnshipState::default(),
+            OwnshipSourceRegistration {
+                source_id: OwnshipSourceId("network".to_string()),
+                source_kind: OwnshipSourceKind::LiveNetworkTrack,
+                display_name: "Network".to_string(),
+                selectable: true,
+                auto_eligible: false,
+                stale_after_ms: Some(120_000),
+            },
+        );
+
+        assert_eq!(state.sources[0].stale_after_ms, 120_000);
     }
 
     #[test]
@@ -1413,6 +1440,7 @@ mod tests {
                 display_name: "Sim".to_string(),
                 selectable: true,
                 auto_eligible: false,
+                stale_after_ms: None,
             },
         );
         let state = push_sample(

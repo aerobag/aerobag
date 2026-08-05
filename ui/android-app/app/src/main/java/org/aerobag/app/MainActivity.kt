@@ -1206,19 +1206,19 @@ internal fun chartFamilyIconResId(chartFamilyId: String): Int = when (chartFamil
     "enr-l" -> R.drawable.ifr_l_icon
     "enr-h" -> R.drawable.ifr_h_icon
     "shaded-relief" -> R.drawable.shaded_relief_icon
-    "world-basemap" -> R.drawable.shaded_relief_icon
+    "world-basemap" -> R.drawable.layer_world_basemap_icon
     else -> R.drawable.page_chart_icon
 }
 
 @DrawableRes
 internal fun mapLayerIconResId(layerId: MapLayerId): Int = when (layerId) {
-    MapLayerId.WorldBasemap -> R.drawable.shaded_relief_icon
+    MapLayerId.WorldBasemap -> R.drawable.layer_world_basemap_icon
     MapLayerId.Vectors -> R.drawable.layer_vectors_icon
-    MapLayerId.Metars -> R.drawable.layer_nexrad_icon
+    MapLayerId.Metars -> R.drawable.layer_observations_icon
     MapLayerId.Nexrad -> R.drawable.layer_nexrad_icon
-    MapLayerId.Traffic -> R.drawable.layer_vectors_icon
+    MapLayerId.Traffic -> R.drawable.layer_adsb_icon
     MapLayerId.TerrainWarning -> R.drawable.layer_terrain_warning_icon
-    MapLayerId.OfflineRegions -> R.drawable.layer_vectors_icon
+    MapLayerId.OfflineRegions -> R.drawable.layer_offline_regions_icon
 }
 
 internal fun moveAirportToFront(

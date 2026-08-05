@@ -967,6 +967,10 @@ const HOME_PAGE_BACKDROP_SRC = "/icons/backdrops/home-page-backdrop.jpg?v=202606
 const LAYER_VECTORS_ICON_SRC = "/icons/icons/layer-vectors-icon.png?v=20260424b";
 const LAYER_NEXRAD_ICON_SRC = "/icons/icons/layer-nexrad-icon.png?v=20260424b";
 const LAYER_TERRAIN_WARNING_ICON_SRC = "/icons/icons/layer-terrain-warning-icon.png?v=20260424b";
+const LAYER_OBSERVATIONS_ICON_SRC = "/icons/icons/layer-observations-icon.png?v=20260805a";
+const LAYER_ADSB_ICON_SRC = "/icons/icons/layer-adsb-icon.png?v=20260805a";
+const LAYER_OFFLINE_REGIONS_ICON_SRC = "/icons/icons/layer-offline-regions-icon.png?v=20260805a";
+const LAYER_WORLD_BASEMAP_ICON_SRC = "/icons/icons/layer-world-basemap-icon.png?v=20260805a";
 const CHART_REFERENCE_ICON_SRC = "/icons/icons/chart-reference-icon.png?v=20260713a";
 const NEXRAD_VIEWPORT_REFRESH_THROTTLE_MS = 1_000;
 const HOME_GRID_COLUMN_COUNT = 3;
@@ -1009,7 +1013,7 @@ function chartFamilyIconSrc(familyId: ChartFamilyId | null | undefined): string 
     case "shaded-relief":
       return "/icons/icons/shaded-relief-icon.png?v=20260424b";
     case "world-basemap":
-      return "/icons/icons/shaded-relief-icon.png?v=20260424b";
+      return LAYER_WORLD_BASEMAP_ICON_SRC;
     default:
       return undefined;
   }
@@ -1018,19 +1022,19 @@ function chartFamilyIconSrc(familyId: ChartFamilyId | null | undefined): string 
 function layerIconSrc(layerId: MapLayerId): string {
   switch (layerId) {
     case "world_basemap":
-      return "/icons/icons/shaded-relief-icon.png?v=20260424b";
+      return LAYER_WORLD_BASEMAP_ICON_SRC;
     case "vectors":
       return LAYER_VECTORS_ICON_SRC;
     case "metars":
-      return LAYER_VECTORS_ICON_SRC;
+      return LAYER_OBSERVATIONS_ICON_SRC;
     case "nexrad":
       return LAYER_NEXRAD_ICON_SRC;
     case "traffic":
-      return LAYER_VECTORS_ICON_SRC;
+      return LAYER_ADSB_ICON_SRC;
     case "terrain_warning":
       return LAYER_TERRAIN_WARNING_ICON_SRC;
     case "offline_regions":
-      return LAYER_VECTORS_ICON_SRC;
+      return LAYER_OFFLINE_REGIONS_ICON_SRC;
   }
 }
 

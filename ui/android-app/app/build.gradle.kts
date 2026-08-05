@@ -215,6 +215,8 @@ val uiThemeFile = file("../../shared-fixtures/ui-theme.json")
 val devBootstrapFile = file("../../shared/dev-bootstrap.json")
 val generatedSymbolSourceDir = layout.buildDirectory.dir("generated/aerobagSymbols/kotlin")
 val generatedWireSourceDir = layout.buildDirectory.dir("generated/aerobagWire/kotlin")
+val generatedCanonicalResourcesDir = layout.buildDirectory.dir("generated/aerobagCanonicalResources/res")
+val canonicalIconsDir = repoRoot.resolve("ui/icons/icons")
 
 fun linkOrCopy(source: File, target: File) {
     target.parentFile.mkdirs()
@@ -272,6 +274,22 @@ val stageCanonicalAndroidAssets by tasks.registering {
         fixturesDir.resolve("android-package-source-base-url.txt").writeText(androidPackageSourceBaseUrl)
         fixturesDir.resolve("android-live-feed-source-base-url.txt").writeText(androidLiveFeedSourceBaseUrl)
         fixturesDir.resolve("android-cloud-server-base-url.txt").writeText(androidCloudServerBaseUrl)
+    }
+}
+
+val stageCanonicalAndroidResources by tasks.registering {
+    inputs.dir(canonicalIconsDir)
+    outputs.dir(generatedCanonicalResourcesDir)
+    doFirst {
+        delete(generatedCanonicalResourcesDir.get().asFile)
+    }
+    doLast {
+        val drawableDir = generatedCanonicalResourcesDir.get().asFile.resolve("drawable-nodpi")
+        canonicalIconsDir.listFiles { file -> file.isFile && file.extension == "png" }
+            .orEmpty()
+            .forEach { icon ->
+                linkOrCopy(icon, drawableDir.resolve(icon.name.replace('-', '_')))
+            }
     }
 }
 
@@ -398,6 +416,7 @@ android {
     }
     sourceSets.getByName("main").jniLibs.setSrcDirs(listOf(rustJniLibsDir))
     sourceSets.getByName("main").assets.setSrcDirs(listOf(generatedPrototypeAssetsDir))
+    sourceSets.getByName("main").res.srcDir(generatedCanonicalResourcesDir)
     sourceSets.getByName("main").java.srcDir(generatedSymbolSourceDir)
     sourceSets.getByName("main").java.srcDir(generatedWireSourceDir)
     packaging {
@@ -410,6 +429,7 @@ android {
 tasks.named("preBuild") {
     dependsOn(copyRustLibraries)
     dependsOn(stageCanonicalAndroidAssets)
+    dependsOn(stageCanonicalAndroidResources)
     dependsOn(generateSharedNavSymbols)
     dependsOn(generateSharedWireTypes)
 }

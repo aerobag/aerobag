@@ -620,11 +620,26 @@ function findMapFollowProbe(xml) {
 
 async function waitForMapFollowProbe(serial, predicate, timeoutMs, message) {
   let probe = null;
-  await waitFor(() => {
-    probe = findMapFollowProbe(dumpAndroid(serial));
-    return probe !== null && predicate(probe);
-  }, timeoutMs, message, 250);
-  return probe;
+  let lastError = null;
+  let deadline = Date.now() + timeoutMs;
+  let adbTimeoutRetryAvailable = true;
+  while (Date.now() < deadline) {
+    const attemptStarted = Date.now();
+    try {
+      probe = findMapFollowProbe(dumpAndroid(serial));
+      if (probe !== null && predicate(probe)) return probe;
+    } catch (error) {
+      lastError = error;
+      if (adbTimeoutRetryAvailable && /spawnSync adb ETIMEDOUT/.test(error.message)) {
+        // A single uiautomator dump can consume adb's entire 20-second timeout.
+        // Preserve the caller's probe budget after that hosted-runner stall.
+        deadline += Date.now() - attemptStarted;
+        adbTimeoutRetryAvailable = false;
+      }
+    }
+    await delay(250);
+  }
+  throw new Error(`${message}${lastError ? `: ${lastError.message}` : ""}`);
 }
 
 async function ensureBadAutopilotDebugFlag(serial, result) {

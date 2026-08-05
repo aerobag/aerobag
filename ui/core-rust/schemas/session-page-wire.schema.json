@@ -142,7 +142,6 @@
         "terrain_warning",
         "offline_regions"
       ],
-      "title": "MapLayerId",
       "type": "string"
     },
     "PlatformCapabilities": {
@@ -572,6 +571,22 @@
       ],
       "type": "object"
     },
+    "UiMapLayerOption": {
+      "additionalProperties": false,
+      "properties": {
+        "label": {
+          "type": "string"
+        },
+        "layer_id": {
+          "$ref": "#/$defs/MapLayerId"
+        }
+      },
+      "required": [
+        "layer_id",
+        "label"
+      ],
+      "type": "object"
+    },
     "UiMapLayerState": {
       "additionalProperties": false,
       "properties": {
@@ -583,6 +598,12 @@
         },
         "offline_regions": {
           "$ref": "#/$defs/UiMapLayerToggleState"
+        },
+        "options": {
+          "items": {
+            "$ref": "#/$defs/UiMapLayerOption"
+          },
+          "type": "array"
         },
         "terrain_warning": {
           "$ref": "#/$defs/UiMapLayerToggleState"
@@ -598,6 +619,7 @@
         }
       },
       "required": [
+        "options",
         "world_basemap",
         "vectors",
         "metars",
@@ -907,6 +929,7 @@
     "UiDataStatusPageState",
     "UiChartPageState",
     "UiMapLayerToggleState",
+    "UiMapLayerOption",
     "UiMapLayerState",
     "MapLayerId",
     "DebugFlagId",

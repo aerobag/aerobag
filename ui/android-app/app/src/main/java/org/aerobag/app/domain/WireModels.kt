@@ -89,6 +89,19 @@ data class WireOwnshipControlModel(
     val launcher_text_tone: WireOwnshipLauncherTextTone = WireOwnshipLauncherTextTone.Unavailable,
     val sources: List<WireOwnshipSourceMenuItem> = emptyList(),
     val situation_controls: List<WireSituationControlMenuItem> = emptyList(),
+    val text_action: WireOwnshipTextAction? = null,
+    val next_refresh_epoch_ms: Long? = null,
+)
+
+@Serializable
+data class WireOwnshipTextAction(
+    val action_id: String,
+    val label: String,
+    val value: String,
+    val placeholder: String,
+    val submit_label: String,
+    val enabled: Boolean,
+    val disabled_reason: String? = null,
 )
 
 @Serializable
@@ -147,6 +160,7 @@ data class WireOwnshipSourceMenuItem(
     val disabled_reason: String? = null,
     val active: Boolean,
     val status_label: String,
+    val keep_tray_open_on_select: Boolean = false,
 )
 
 @Serializable
@@ -535,9 +549,7 @@ data class WireVisibleAdsbTraffic(
     val screen_y: Double,
     val track_deg_true: Double? = null,
     val label: String,
-    val altitude_label: String,
-    val relative_altitude_label: String? = null,
-    val on_ground: Boolean,
+    val detail_label: String,
 )
 
 @Serializable
@@ -678,6 +690,7 @@ sealed interface WireMapSelectionHighlight {
     data class FeatureRef(val id: String) : WireMapSelectionHighlight
     data class Metar(val station_id: String) : WireMapSelectionHighlight
     data class Pirep(val id: String) : WireMapSelectionHighlight
+    data class AdsbTraffic(val id: String) : WireMapSelectionHighlight
     data class OfflineRegion(val id: String) : WireMapSelectionHighlight
     data class Spot(val lat: Double, val lon: Double) : WireMapSelectionHighlight
 }
@@ -688,6 +701,7 @@ object WireMapSelectionHighlightSerializer : JsonContentPolymorphicSerializer<Wi
             "feature_ref" -> WireMapSelectionHighlightFeatureRef.serializer()
             "metar" -> WireMapSelectionHighlightMetar.serializer()
             "pirep" -> WireMapSelectionHighlightPirep.serializer()
+            "adsb_traffic" -> WireMapSelectionHighlightAdsbTraffic.serializer()
             "offline_region" -> WireMapSelectionHighlightOfflineRegion.serializer()
             "spot" -> WireMapSelectionHighlightSpot.serializer()
             else -> WireMapSelectionHighlightSpot.serializer()
@@ -713,6 +727,13 @@ data class WireMapSelectionHighlightMetar(
 @SerialName("pirep")
 data class WireMapSelectionHighlightPirep(
     val kind: String = "pirep",
+    val id: String,
+) : WireMapSelectionHighlight
+
+@Serializable
+@SerialName("adsb_traffic")
+data class WireMapSelectionHighlightAdsbTraffic(
+    val kind: String = "adsb_traffic",
     val id: String,
 ) : WireMapSelectionHighlight
 

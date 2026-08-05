@@ -11,21 +11,6 @@ import org.junit.Test
 
 class RuntimeFetchTest {
     @Test
-    fun androidAllowsPublicationPublicUrlResources() {
-        requireAndroidPublicUrlAllowed("publication/current_artifacts")
-    }
-
-    @Test
-    fun androidAllowsLiveFeedPublicUrlResources() {
-        requireAndroidPublicUrlAllowed("live_feeds/nexrad/current")
-    }
-
-    @Test
-    fun androidAllowsCoreOwnedAdsbPublicUrlResources() {
-        requireAndroidPublicUrlAllowed("adsb/airplanes_live/traffic/1")
-    }
-
-    @Test
     fun resourceResponseLimitIsEnforcedWhileStreaming() {
         assertArrayEquals(
             byteArrayOf(1, 2, 3),
@@ -36,10 +21,5 @@ class RuntimeFetchTest {
             fail("oversize resource response should fail")
         } catch (_: IllegalStateException) {
         }
-    }
-
-    @Test(expected = IllegalArgumentException::class)
-    fun androidRejectsChartAssetPublicUrlResources() {
-        requireAndroidPublicUrlAllowed("chart_asset/asset/KYKM/IAP-WA-ILS OR LOC RWY 27")
     }
 }

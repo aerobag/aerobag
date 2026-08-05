@@ -160,7 +160,7 @@ impl MapSurfaceMetrics {
         logical_px * self.display_scale
     }
 
-    fn inspector_hit_radius_px(self) -> f64 {
+    pub(crate) fn inspector_hit_radius_px(self) -> f64 {
         self.logical_px_to_surface_px(UI_THUMB_SIZE_LOGICAL_PX * INSPECTOR_HIT_RADIUS_THUMBS)
     }
 
@@ -1313,6 +1313,7 @@ pub enum MapSelectionHighlight {
     FeatureRef { id: String },
     Metar { station_id: String },
     Pirep { id: String },
+    AdsbTraffic { id: String },
     OfflineRegion { id: String },
     Spot { lat: f64, lon: f64 },
 }
@@ -1372,6 +1373,7 @@ pub enum MapSelectionNavigationAction {
 pub enum MapSelectionSessionAction {
     InsertWaypointBestPosition { nav_ref: NavRef },
     ActivateDirectToNavRef { nav_ref: NavRef },
+    FollowAdsbRegistration { registration: String },
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]

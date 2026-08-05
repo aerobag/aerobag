@@ -225,6 +225,13 @@ interface NativeBridge {
         selectionJson: String,
     ): String
 
+    fun performOwnshipTextActionInSessionJson(
+        handle: Long,
+        actionId: String,
+        value: String,
+        nowEpochMs: Long,
+    ): String
+
     fun applySituationControlInputInSessionJson(
         handle: Long,
         inputJson: String,
@@ -799,6 +806,13 @@ object NativeBindings : NativeBridge {
     external override fun selectOwnshipSourceInSessionPagedJson(
         handle: Long,
         selectionJson: String,
+    ): String
+
+    external override fun performOwnshipTextActionInSessionJson(
+        handle: Long,
+        actionId: String,
+        value: String,
+        nowEpochMs: Long,
     ): String
 
     external override fun applySituationControlInputInSessionJson(

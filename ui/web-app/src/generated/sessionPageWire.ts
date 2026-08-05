@@ -95,10 +95,16 @@ export type UiMapLayerToggleState = {
   visible: boolean;
 };
 
+export type UiMapLayerOption = {
+  label: string;
+  layer_id: MapLayerId;
+};
+
 export type UiMapLayerState = {
   metars: UiMapLayerToggleState;
   nexrad: UiMapLayerToggleState;
   offline_regions: UiMapLayerToggleState;
+  options: UiMapLayerOption[];
   terrain_warning: UiMapLayerToggleState;
   traffic: UiMapLayerToggleState;
   vectors: UiMapLayerToggleState;

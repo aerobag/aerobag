@@ -7,6 +7,7 @@ use serde::{Deserialize, Serialize};
 use crate::geometry::LatLon;
 
 const DEFAULT_STALE_AFTER_MS: i64 = 5_000;
+const LIVE_NETWORK_STALE_AFTER_MS: i64 = 15_000;
 const FEET_PER_NAUTICAL_MILE: f64 = 6076.12;
 const FEET_PER_METER: f64 = 3.280_839_895_013_123;
 const VERTICAL_SPEED_HISTORY_RETENTION_MS: i64 = 20_000;
@@ -263,12 +264,26 @@ pub struct OwnshipSourceMenuItem {
     pub disabled_reason: Option<String>,
     pub active: bool,
     pub status_label: String,
+    #[serde(default)]
+    pub keep_tray_open_on_select: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct SituationControlMenuItem {
     pub input: SituationControlInput,
     pub label: String,
+    pub enabled: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub disabled_reason: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct OwnshipTextAction {
+    pub action_id: String,
+    pub label: String,
+    pub value: String,
+    pub placeholder: String,
+    pub submit_label: String,
     pub enabled: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub disabled_reason: Option<String>,
@@ -283,6 +298,10 @@ pub struct OwnshipControlModel {
     pub launcher_text_tone: OwnshipLauncherTextTone,
     pub sources: Vec<OwnshipSourceMenuItem>,
     pub situation_controls: Vec<SituationControlMenuItem>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub text_action: Option<OwnshipTextAction>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub next_refresh_epoch_ms: Option<i64>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -315,6 +334,8 @@ impl Default for OwnshipState {
                 sources: Vec::new(),
                 situation_controls: situation_control_handler_for_mode(OwnshipMode::None)
                     .menu_items(),
+                text_action: None,
+                next_refresh_epoch_ms: None,
             },
             resolved,
             sources: Vec::new(),
@@ -371,7 +392,11 @@ pub fn register_source(
             connection_state: SourceConnectionState::Unavailable,
             last_event_time_epoch_ms: None,
             last_received_time_epoch_ms: None,
-            stale_after_ms: DEFAULT_STALE_AFTER_MS,
+            stale_after_ms: if registration.source_kind == OwnshipSourceKind::LiveNetworkTrack {
+                LIVE_NETWORK_STALE_AFTER_MS
+            } else {
+                DEFAULT_STALE_AFTER_MS
+            },
             selectable: registration.selectable,
             enabled: true,
             auto_eligible: registration.auto_eligible,
@@ -656,9 +681,10 @@ fn mode_for_kind(kind: OwnshipSourceKind) -> OwnshipMode {
         OwnshipSourceKind::DeviceGps
         | OwnshipSourceKind::ExternalGps
         | OwnshipSourceKind::ExternalAhrs => OwnshipMode::Live,
-        OwnshipSourceKind::GpxPlayback
-        | OwnshipSourceKind::AdsbTrackPlayback
-        | OwnshipSourceKind::LiveNetworkTrack => OwnshipMode::Replay,
+        OwnshipSourceKind::GpxPlayback | OwnshipSourceKind::AdsbTrackPlayback => {
+            OwnshipMode::Replay
+        }
+        OwnshipSourceKind::LiveNetworkTrack => OwnshipMode::Live,
         OwnshipSourceKind::FlightPlanSimulator | OwnshipSourceKind::BadAutopilot => {
             OwnshipMode::Simulated
         }
@@ -899,6 +925,8 @@ fn project_controls(
         launcher_text_tone,
         sources: menu_sources,
         situation_controls: situation_control_handler_for_mode(selected_mode).menu_items(),
+        text_action: None,
+        next_refresh_epoch_ms: None,
     }
 }
 
@@ -918,6 +946,8 @@ fn project_source_menu_item(
         disabled_reason: (!enabled).then(|| source_disabled_reason(source)),
         active: source.active || source_selected_by_policy(source, policy),
         status_label: source.status_label.clone(),
+        keep_tray_open_on_select: source.source_kind == OwnshipSourceKind::LiveNetworkTrack
+            && source.connection_state == SourceConnectionState::Unavailable,
     }
 }
 
@@ -944,9 +974,10 @@ fn source_menu_label(source: &OwnshipSourceStatus) -> String {
     match source.source_kind {
         OwnshipSourceKind::DeviceGps | OwnshipSourceKind::ExternalGps => "GPS".to_string(),
         OwnshipSourceKind::ExternalAhrs => "AHARS".to_string(),
-        OwnshipSourceKind::GpxPlayback
-        | OwnshipSourceKind::AdsbTrackPlayback
-        | OwnshipSourceKind::LiveNetworkTrack => "Replay".to_string(),
+        OwnshipSourceKind::GpxPlayback | OwnshipSourceKind::AdsbTrackPlayback => {
+            "Replay".to_string()
+        }
+        OwnshipSourceKind::LiveNetworkTrack => "ADS-B".to_string(),
         OwnshipSourceKind::FlightPlanSimulator => "Plan\nPreview".to_string(),
         OwnshipSourceKind::BadAutopilot => "Bad AP".to_string(),
     }
@@ -956,11 +987,10 @@ fn source_menu_rank(kind: OwnshipSourceKind) -> u8 {
     match kind {
         OwnshipSourceKind::DeviceGps | OwnshipSourceKind::ExternalGps => 0,
         OwnshipSourceKind::FlightPlanSimulator => 1,
-        OwnshipSourceKind::GpxPlayback
-        | OwnshipSourceKind::AdsbTrackPlayback
-        | OwnshipSourceKind::LiveNetworkTrack => 2,
+        OwnshipSourceKind::GpxPlayback | OwnshipSourceKind::AdsbTrackPlayback => 2,
         OwnshipSourceKind::BadAutopilot => 3,
-        OwnshipSourceKind::ExternalAhrs => 4,
+        OwnshipSourceKind::LiveNetworkTrack => 4,
+        OwnshipSourceKind::ExternalAhrs => 5,
     }
 }
 
@@ -1043,9 +1073,8 @@ fn source_launcher_label(source: &OwnshipSourceStatus) -> String {
         }
         OwnshipSourceKind::ExternalAhrs => "AHARS".to_string(),
         OwnshipSourceKind::GpxPlayback => format!("Replay: {}", gps_launcher_label(source)),
-        OwnshipSourceKind::AdsbTrackPlayback | OwnshipSourceKind::LiveNetworkTrack => {
-            "Replay".to_string()
-        }
+        OwnshipSourceKind::AdsbTrackPlayback => "Replay".to_string(),
+        OwnshipSourceKind::LiveNetworkTrack => "ADS-B".to_string(),
         OwnshipSourceKind::FlightPlanSimulator => "Plan Preview".to_string(),
         OwnshipSourceKind::BadAutopilot => "Bad AP".to_string(),
     }

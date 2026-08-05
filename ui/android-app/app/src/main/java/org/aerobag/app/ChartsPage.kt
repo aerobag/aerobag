@@ -843,13 +843,18 @@ internal fun ChartsPage(
                 dataStatusTrayOpen = false
                 procedureWarningTrayOpen = false
             },
-            onSelectSource = { sourceId ->
-                situationTrayOpen = false
-                onSelectOwnshipSource(sourceId)
+            onSelectSource = { source ->
+                if (!source.keepTrayOpenOnSelect) situationTrayOpen = false
+                onSelectOwnshipSource(source.sourceId)
             },
             onSituationControlInput = { input ->
                 applySessionCommand {
                     uiSession.applySituationControlInput(input, System.currentTimeMillis().toDouble())
+                }
+            },
+            onTextAction = { actionId, value ->
+                applySessionCommand {
+                    uiSession.performOwnshipTextAction(actionId, value)
                 }
             },
         )

@@ -41,6 +41,7 @@ import org.aerobag.app.generated.UiDebugState as WireUiDebugState
 import org.aerobag.app.generated.UiDisclaimerState as WireUiDisclaimerState
 import org.aerobag.app.generated.UiDisplayPolicy as WireUiDisplayPolicy
 import org.aerobag.app.generated.UiMapLayerState as WireUiMapLayerState
+import org.aerobag.app.generated.UiMapLayerOption as WireUiMapLayerOption
 import org.aerobag.app.generated.UiMapLayerToggleState as WireUiMapLayerToggleState
 import org.aerobag.app.generated.UiNavDbIdentity as WireUiNavDbIdentity
 import org.aerobag.app.generated.UiPlaybackPanelState as WireUiPlaybackPanelState
@@ -237,7 +238,13 @@ data class UiMapLayerToggleState(
     val disabledReason: String? = null,
 )
 
+data class UiMapLayerOption(
+    val layerId: MapLayerId,
+    val label: String,
+)
+
 data class UiMapLayerState(
+    val options: List<UiMapLayerOption>,
     val worldBasemap: UiMapLayerToggleState,
     val vectors: UiMapLayerToggleState,
     val metars: UiMapLayerToggleState,
@@ -245,7 +252,17 @@ data class UiMapLayerState(
     val traffic: UiMapLayerToggleState,
     val terrainWarning: UiMapLayerToggleState,
     val offlineRegions: UiMapLayerToggleState,
-)
+) {
+    fun toggleState(layerId: MapLayerId): UiMapLayerToggleState = when (layerId) {
+        MapLayerId.WorldBasemap -> worldBasemap
+        MapLayerId.Vectors -> vectors
+        MapLayerId.Metars -> metars
+        MapLayerId.Nexrad -> nexrad
+        MapLayerId.Traffic -> traffic
+        MapLayerId.TerrainWarning -> terrainWarning
+        MapLayerId.OfflineRegions -> offlineRegions
+    }
+}
 
 data class RasterMapUiState(
     val selectedMapId: String,
@@ -288,9 +305,7 @@ data class VisibleAdsbTraffic(
     val screenY: Double,
     val trackDegTrue: Double?,
     val label: String,
-    val altitudeLabel: String,
-    val relativeAltitudeLabel: String?,
-    val onGround: Boolean,
+    val detailLabel: String,
 )
 
 data class MapSelectionQueryResult(
@@ -333,6 +348,7 @@ sealed interface MapSelectionHighlight {
     data class FeatureRef(val id: String) : MapSelectionHighlight
     data class Metar(val stationId: String) : MapSelectionHighlight
     data class Pirep(val id: String) : MapSelectionHighlight
+    data class AdsbTraffic(val id: String) : MapSelectionHighlight
     data class OfflineRegion(val id: String) : MapSelectionHighlight
     data class Spot(val lat: Double, val lon: Double) : MapSelectionHighlight
 }
@@ -1093,6 +1109,16 @@ class NativeUiSession internal constructor(
         }
     }
 
+    fun performOwnshipTextAction(
+        actionId: String,
+        value: String,
+        nowEpochMs: Long = System.currentTimeMillis(),
+    ): UiSessionSnapshot {
+        return runPagedSnapshot("performOwnshipTextAction") {
+            bridge.performOwnshipTextActionInSessionJson(handle, actionId, value, nowEpochMs)
+        }
+    }
+
     fun applySituationControlInput(input: SituationControlInput, nowEpochMs: Double): UiSessionSnapshot {
         return runPagedSnapshot("applySituationControlInput") {
             bridge.applySituationControlInputInSessionJson(
@@ -1796,6 +1822,18 @@ private fun OwnshipControlModel.toWire() = WireOwnshipControlModel(
     launcher_text_tone = launcherTextTone.toWire(),
     sources = sources.map { it.toWire() },
     situation_controls = situationControls.map { it.toWire() },
+    text_action = textAction?.toWire(),
+    next_refresh_epoch_ms = nextRefreshEpochMs,
+)
+
+private fun OwnshipTextAction.toWire() = WireOwnshipTextAction(
+    action_id = actionId,
+    label = label,
+    value = value,
+    placeholder = placeholder,
+    submit_label = submitLabel,
+    enabled = enabled,
+    disabled_reason = disabledReason,
 )
 
 private fun OwnshipSourceMenuItem.toWire() = WireOwnshipSourceMenuItem(
@@ -1808,6 +1846,7 @@ private fun OwnshipSourceMenuItem.toWire() = WireOwnshipSourceMenuItem(
     disabled_reason = disabledReason,
     active = active,
     status_label = statusLabel,
+    keep_tray_open_on_select = keepTrayOpenOnSelect,
 )
 
 private fun SituationControlMenuItem.toWire() = WireSituationControlMenuItem(
@@ -1858,6 +1897,18 @@ private fun WireOwnshipControlModel.toUi() = OwnshipControlModel(
     launcherTextTone = launcher_text_tone.toUi(),
     sources = sources.map { it.toUi() },
     situationControls = situation_controls.map { it.toUi() },
+    textAction = text_action?.toUi(),
+    nextRefreshEpochMs = next_refresh_epoch_ms,
+)
+
+private fun WireOwnshipTextAction.toUi() = OwnshipTextAction(
+    actionId = action_id,
+    label = label,
+    value = value,
+    placeholder = placeholder,
+    submitLabel = submit_label,
+    enabled = enabled,
+    disabledReason = disabled_reason,
 )
 
 private fun WireOwnshipUiState.toUi() = OwnshipUiState(
@@ -1905,6 +1956,7 @@ private fun WireOwnshipSourceMenuItem.toUi() = OwnshipSourceMenuItem(
     disabledReason = disabled_reason,
     active = active,
     statusLabel = status_label,
+    keepTrayOpenOnSelect = keep_tray_open_on_select,
 )
 
 private fun WireSituationControlMenuItem.toUi() = SituationControlMenuItem(
@@ -2558,7 +2610,13 @@ private fun WireUiMapLayerToggleState.toUi() = UiMapLayerToggleState(
     disabledReason = disabledReason,
 )
 
+private fun WireUiMapLayerOption.toUi() = UiMapLayerOption(
+    layerId = layerId,
+    label = label,
+)
+
 private fun WireUiMapLayerState.toUi() = UiMapLayerState(
+    options = options.map { it.toUi() },
     worldBasemap = worldBasemap.toUi(),
     vectors = vectors.toUi(),
     metars = metars.toUi(),
@@ -2837,9 +2895,7 @@ private fun WireMapOverlayQueryResult.toUi() = MapOverlayQueryResult(
             screenY = it.screen_y,
             trackDegTrue = it.track_deg_true,
             label = it.label,
-            altitudeLabel = it.altitude_label,
-            relativeAltitudeLabel = it.relative_altitude_label,
-            onGround = it.on_ground,
+            detailLabel = it.detail_label,
         )
     },
     trafficNextRefreshEpochMs = traffic_next_refresh_epoch_ms,
@@ -3067,11 +3123,13 @@ private fun WireMapSelectionHighlight.toUi(): MapSelectionHighlight = when (this
     is WireMapSelectionHighlightFeatureRef -> MapSelectionHighlight.FeatureRef(id)
     is WireMapSelectionHighlightMetar -> MapSelectionHighlight.Metar(station_id)
     is WireMapSelectionHighlightPirep -> MapSelectionHighlight.Pirep(id)
+    is WireMapSelectionHighlightAdsbTraffic -> MapSelectionHighlight.AdsbTraffic(id)
     is WireMapSelectionHighlightOfflineRegion -> MapSelectionHighlight.OfflineRegion(id)
     is WireMapSelectionHighlightSpot -> MapSelectionHighlight.Spot(lat, lon)
     is WireMapSelectionHighlight.FeatureRef -> MapSelectionHighlight.FeatureRef(id)
     is WireMapSelectionHighlight.Metar -> MapSelectionHighlight.Metar(station_id)
     is WireMapSelectionHighlight.Pirep -> MapSelectionHighlight.Pirep(id)
+    is WireMapSelectionHighlight.AdsbTraffic -> MapSelectionHighlight.AdsbTraffic(id)
     is WireMapSelectionHighlight.OfflineRegion -> MapSelectionHighlight.OfflineRegion(id)
     is WireMapSelectionHighlight.Spot -> MapSelectionHighlight.Spot(lat, lon)
 }

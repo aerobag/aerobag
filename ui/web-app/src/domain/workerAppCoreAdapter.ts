@@ -390,6 +390,7 @@ function workerBackedSession(client: AppCoreWorkerClient, sessionId: number, ini
     updateOwnshipSourceStatus: (...args) => updateSnapshot(call("updateOwnshipSourceStatus", args)),
     pushSituationSample: (...args) => updateSnapshot(call("pushSituationSample", args)),
     selectOwnshipSource: (...args) => updateSnapshot(call("selectOwnshipSource", args)),
+    performOwnshipTextAction: (...args) => updateSnapshot(call("performOwnshipTextAction", args)),
     applySituationControlInput: (...args) => updateSnapshot(call("applySituationControlInput", args)),
     setMapLayerVisibility: (...args) => updateSnapshot(call("setMapLayerVisibility", args)),
     setMapLayerEnabled: (...args) => updateSnapshot(call("setMapLayerEnabled", args)),

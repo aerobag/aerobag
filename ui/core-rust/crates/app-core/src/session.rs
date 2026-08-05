@@ -27,7 +27,7 @@ pub use app_ui_contracts::{
         ClientBuildInfo, DebugFlagId, LiveFeedAcquisitionPolicy, MapLayerId, PlatformCapabilities,
         PlatformCloudCapability, PlatformDisplayPolicyCapability, PlatformLiveFeedsCapability,
         PlatformOfflinePackagesCapability, UiChartPageState, UiDebugState, UiDisclaimerState,
-        UiDisplayPolicy, UiMapLayerState, UiMapLayerToggleState, UiNavDbIdentity,
+        UiDisplayPolicy, UiMapLayerOption, UiMapLayerState, UiMapLayerToggleState, UiNavDbIdentity,
         UiPlaybackPanelState, UiSettingsAction, UiSettingsGridItem, UiSettingsPageRow,
         UiSettingsPageState, UiSettingsSliderStop,
     },
@@ -639,6 +639,7 @@ const NEXRAD_ANIMATION_BLANK_DWELL_MS: i64 = 500;
 const LIVE_FEED_TFRS_STATUS_ID: &str = "live_feed:tfrs_unavailable";
 const LIVE_FEED_OBSTACLES_STATUS_ID: &str = "live_feed:obstacles_unavailable";
 const ADSB_TRAFFIC_STATUS_ID: &str = "adsb:traffic_unavailable";
+const ADSB_OWNSHIP_STATUS_ID: &str = "adsb:ownship";
 const CYCLE_DISPLAYED_CHART_STATUS_ID: &str = "cycle:displayed_chart_invalid";
 const CYCLE_NAV_DB_STATUS_ID: &str = "cycle:nav_db_expired";
 const VECTOR_INPUTS_STATUS_ID: &str = "map_overlay:vector_inputs_loading";
@@ -761,6 +762,32 @@ fn clear_data_status_record(session: &mut UiSession, id: &str) -> bool {
         sync_data_status_projection(session);
     }
     changed
+}
+
+fn sync_adsb_ownship_status_record(session: &mut UiSession) {
+    if !adsb_ownship_selected(session) {
+        clear_data_status_record(session, ADSB_OWNSHIP_STATUS_ID);
+        return;
+    }
+    let failed = session.runtime.adsb.ownship_last_error().is_some();
+    upsert_data_status_record(
+        session,
+        DataStatusRecord::new(
+            ADSB_OWNSHIP_STATUS_ID,
+            "ADS-B",
+            Some(if failed { "UNAVAILABLE" } else { "ACTIVE" }.to_string()),
+            if failed {
+                UiStatusSeverity::Warning
+            } else {
+                UiStatusSeverity::Info
+            },
+            failed,
+            session
+                .runtime
+                .adsb
+                .ownship_status_detail(session.wall_clock_epoch_ms),
+        ),
+    );
 }
 
 fn sync_cloud_status_record(session: &mut UiSession) {
@@ -4802,6 +4829,7 @@ pub fn set_ownship_policy_in_session(
     let mut sessions = lock_sessions();
     let session = session_mut(&mut sessions, handle)?;
     session.app_state = state::reduce(&session.app_state, AppEvent::SetOwnshipPolicy(policy))?;
+    sync_adsb_ownship_status_record(session);
     changed_session_snapshot_outcome(session)
 }
 
@@ -4841,18 +4869,59 @@ pub fn select_ownship_source_in_session(
         }
         _ => {}
     }
+    sync_adsb_ownship_status_record(session);
     changed_session_snapshot_outcome_with_invalidations(
         session,
         ownship_motion_invalidations_from(session, terrain_key_before, sequenced_guidance),
     )
 }
 
+pub fn perform_ownship_text_action_in_session(
+    handle: u32,
+    action_id: &str,
+    value: &str,
+    epoch_ms: i64,
+) -> AppResult<HadOperationOutcome> {
+    let mut sessions = lock_sessions();
+    let session = session_mut(&mut sessions, handle)?;
+    advance_session_wall_clock(session, epoch_ms);
+    if action_id != crate::adsb::FOLLOW_ADSB_TARGET_ACTION_ID {
+        return Err(AppError {
+            kind: AppErrorKind::InvalidFlightPlan,
+            message: format!("unknown ownship action: {action_id}"),
+        });
+    }
+    let registration = session
+        .runtime
+        .adsb
+        .set_ownship_registration(value)
+        .map_err(|message| AppError {
+            kind: AppErrorKind::InvalidFlightPlan,
+            message,
+        })?;
+    set_adsb_ownship_status(
+        session,
+        crate::SourceConnectionState::Searching,
+        format!("Searching for {registration}"),
+    )?;
+    session.app_state = state::reduce(
+        &session.app_state,
+        AppEvent::SelectOwnshipSource(crate::OwnshipSelectionCommand::Source {
+            source_id: crate::OwnshipSourceId(crate::adsb::INTERNET_ADSB_SOURCE_ID.to_string()),
+        }),
+    )?;
+    sync_adsb_ownship_status_record(session);
+    prepare_adsb_ownship_effect(session);
+    changed_session_snapshot_outcome_with_invalidations(
+        session,
+        vec![UiInvalidation::SessionSnapshot],
+    )
+}
+
 fn is_replay_ownship_source(kind: crate::OwnshipSourceKind) -> bool {
     matches!(
         kind,
-        crate::OwnshipSourceKind::GpxPlayback
-            | crate::OwnshipSourceKind::AdsbTrackPlayback
-            | crate::OwnshipSourceKind::LiveNetworkTrack
+        crate::OwnshipSourceKind::GpxPlayback | crate::OwnshipSourceKind::AdsbTrackPlayback
     )
 }
 
@@ -5346,6 +5415,14 @@ pub fn perform_map_selection_action_in_session(
         }
         MapSelectionSessionAction::ActivateDirectToNavRef { nav_ref } => {
             activate_direct_to_nav_ref_in_session_outcome(handle, nav_ref)
+        }
+        MapSelectionSessionAction::FollowAdsbRegistration { registration } => {
+            perform_ownship_text_action_in_session(
+                handle,
+                crate::adsb::FOLLOW_ADSB_TARGET_ACTION_ID,
+                &registration,
+                now_epoch_ms,
+            )
         }
     }
 }
@@ -6691,6 +6768,8 @@ pub fn get_session_snapshot_at_epoch_ms(
     let lookup_started_at = crate::core_clock_ms();
     let session = session_mut(&mut sessions, handle)?;
     advance_session_wall_clock(session, epoch_ms);
+    sync_adsb_ownship_status_record(session);
+    prepare_adsb_ownship_effect(session);
     mark_cycle_product_freshness_dirty_if_deadline_due(session);
     let lookup_ms = elapsed_ms(lookup_started_at);
     let cycle_freshness_started_at = crate::core_clock_ms();
@@ -6967,25 +7046,39 @@ pub fn ingest_resource_in_session_at_epoch_ms(
             .adsb
             .ingest(resource_id, bytes, received_epoch_ms)
         {
-            Ok(()) => {
+            Ok(crate::adsb::AdsbIngestOutcome::Traffic) => {
                 clear_data_status_record(session, ADSB_TRAFFIC_STATUS_ID);
             }
+            Ok(crate::adsb::AdsbIngestOutcome::Ownship(update)) => {
+                apply_adsb_ownship_update(session, update)?;
+            }
             Err(message) => {
+                let ownship_resource =
+                    crate::adsb::AdsbSessionState::is_ownship_resource(resource_id);
                 session
                     .runtime
                     .adsb
                     .record_failure(resource_id, &message, received_epoch_ms);
-                upsert_data_status_record(
-                    session,
-                    DataStatusRecord::new(
-                        ADSB_TRAFFIC_STATUS_ID,
-                        "TRAFFIC UNAVAIL",
-                        None,
-                        UiStatusSeverity::Warning,
-                        true,
-                        format!("ADS-B traffic unavailable: {message}"),
-                    ),
-                );
+                if ownship_resource {
+                    set_adsb_ownship_status(
+                        session,
+                        crate::SourceConnectionState::Failed,
+                        format!("ADS-B ownship unavailable: {message}"),
+                    )?;
+                    sync_adsb_ownship_status_record(session);
+                } else {
+                    upsert_data_status_record(
+                        session,
+                        DataStatusRecord::new(
+                            ADSB_TRAFFIC_STATUS_ID,
+                            "TRAFFIC UNAVAIL",
+                            None,
+                            UiStatusSeverity::Warning,
+                            true,
+                            format!("ADS-B traffic unavailable: {message}"),
+                        ),
+                    );
+                }
             }
         }
         return Ok(());
@@ -7667,11 +7760,25 @@ pub fn report_session_resource_failure_in_session_at_epoch_ms(
         );
     } else if crate::adsb::AdsbSessionState::handles_resource(resource_id) {
         let wall_clock_epoch_ms = session.wall_clock_epoch_ms;
+        let ownship_resource = crate::adsb::AdsbSessionState::is_ownship_resource(resource_id);
         session
             .runtime
             .adsb
             .record_failure(resource_id, message, wall_clock_epoch_ms);
-        if session.map_layer_state.traffic.visible {
+        if ownship_resource {
+            let registration = session
+                .runtime
+                .adsb
+                .ownship_registration()
+                .unwrap_or("aircraft")
+                .to_string();
+            set_adsb_ownship_status(
+                session,
+                crate::SourceConnectionState::Failed,
+                format!("Failed to update {registration}: {message}"),
+            )?;
+            sync_adsb_ownship_status_record(session);
+        } else if session.map_layer_state.traffic.visible {
             upsert_data_status_record(
                 session,
                 DataStatusRecord::new(
@@ -9832,8 +9939,23 @@ fn materialize_map_selection_in_session(
     });
     let ownship_position = session.app_state.ownship.render.position;
     let selection = map_selection_with_ownship_distances(selection, ownship_position);
-    let selection =
+    let mut selection =
         map_selection_with_session_action_availability(selection, ownship_position.is_some());
+    if session.map_layer_state.traffic.visible {
+        let traffic = session.runtime.adsb.traffic_selection_category(
+            *metrics,
+            crate::adsb::TrafficOwnshipAltitude {
+                altitude_msl_ft: session.app_state.ownship.render.altitude_msl_ft,
+                pressure_altitude_ft: session.app_state.ownship.render.pressure_altitude_ft,
+            },
+            click,
+            session.wall_clock_epoch_ms,
+        );
+        if let Some(item) = traffic.items.first() {
+            selection.initial_selected_item_id = Some(item.id.clone());
+        }
+        selection.categories.push(traffic);
+    }
     Ok(MapSelectionMaterialization::Complete(selection))
 }
 
@@ -11617,7 +11739,7 @@ fn register_default_situation_sources(app_state: AppState) -> AppResult<AppState
             auto_eligible: false,
         }),
     )?;
-    state::reduce(
+    let app_state = state::reduce(
         &app_state,
         AppEvent::RegisterOwnshipSource(crate::OwnshipSourceRegistration {
             source_id: crate::OwnshipSourceId(PLAYBACK_SOURCE_ID.to_string()),
@@ -11626,7 +11748,86 @@ fn register_default_situation_sources(app_state: AppState) -> AppResult<AppState
             selectable: true,
             auto_eligible: false,
         }),
+    )?;
+    let app_state = state::reduce(
+        &app_state,
+        AppEvent::RegisterOwnshipSource(crate::OwnshipSourceRegistration {
+            source_id: crate::OwnshipSourceId(crate::adsb::INTERNET_ADSB_SOURCE_ID.to_string()),
+            source_kind: crate::OwnshipSourceKind::LiveNetworkTrack,
+            display_name: "Internet ADS-B".to_string(),
+            selectable: true,
+            auto_eligible: false,
+        }),
+    )?;
+    state::reduce(
+        &app_state,
+        AppEvent::UpdateOwnshipSourceStatus(crate::OwnshipSourceStatusUpdate {
+            source_id: crate::OwnshipSourceId(crate::adsb::INTERNET_ADSB_SOURCE_ID.to_string()),
+            connection_state: crate::SourceConnectionState::Unavailable,
+            enabled: true,
+            status_label: "Enter an aircraft registration".to_string(),
+        }),
     )
+}
+
+fn adsb_ownship_selected(session: &UiSession) -> bool {
+    matches!(
+        &session.app_state.ownship.policy.selection,
+        crate::OwnshipSelectionPolicy::Manual { source_id }
+            if source_id.0 == crate::adsb::INTERNET_ADSB_SOURCE_ID
+    )
+}
+
+fn set_adsb_ownship_status(
+    session: &mut UiSession,
+    connection_state: crate::SourceConnectionState,
+    status_label: String,
+) -> AppResult<()> {
+    session.app_state = state::reduce(
+        &session.app_state,
+        AppEvent::UpdateOwnshipSourceStatus(crate::OwnshipSourceStatusUpdate {
+            source_id: crate::OwnshipSourceId(crate::adsb::INTERNET_ADSB_SOURCE_ID.to_string()),
+            connection_state,
+            enabled: true,
+            status_label,
+        }),
+    )?;
+    Ok(())
+}
+
+fn apply_adsb_ownship_update(
+    session: &mut UiSession,
+    update: crate::adsb::AdsbOwnshipUpdate,
+) -> AppResult<()> {
+    set_adsb_ownship_status(session, update.connection_state, update.status_label)?;
+    if let Some(sample) = update.sample {
+        apply_ownship_sample(session, sample)?;
+    }
+    sync_adsb_ownship_status_record(session);
+    Ok(())
+}
+
+fn prepare_adsb_ownship_effect(session: &mut UiSession) {
+    if !adsb_ownship_selected(session) {
+        return;
+    }
+    let wall_clock_epoch_ms = session.wall_clock_epoch_ms;
+    if let Some(resource) = session
+        .runtime
+        .adsb
+        .prepare_ownship_request(wall_clock_epoch_ms)
+    {
+        enqueue_session_resource_effect(
+            session,
+            resource,
+            [
+                UiInvalidation::SessionSnapshot,
+                UiInvalidation::MapOverlay,
+                UiInvalidation::TerrainOverlay,
+                UiInvalidation::FlightPlanRoute,
+            ],
+        );
+    }
 }
 
 fn register_bad_autopilot_source(app_state: AppState) -> AppResult<AppState> {
@@ -11653,6 +11854,36 @@ fn register_bad_autopilot_source(app_state: AppState) -> AppResult<AppState> {
 
 fn default_map_layer_state() -> UiMapLayerState {
     UiMapLayerState {
+        options: vec![
+            UiMapLayerOption {
+                layer_id: MapLayerId::Metars,
+                label: "Observations".to_string(),
+            },
+            UiMapLayerOption {
+                layer_id: MapLayerId::Vectors,
+                label: "Vectors".to_string(),
+            },
+            UiMapLayerOption {
+                layer_id: MapLayerId::Nexrad,
+                label: "NEXRAD".to_string(),
+            },
+            UiMapLayerOption {
+                layer_id: MapLayerId::Traffic,
+                label: "ADS-B Traffic".to_string(),
+            },
+            UiMapLayerOption {
+                layer_id: MapLayerId::TerrainWarning,
+                label: "Terrain Warning".to_string(),
+            },
+            UiMapLayerOption {
+                layer_id: MapLayerId::WorldBasemap,
+                label: "World Map".to_string(),
+            },
+            UiMapLayerOption {
+                layer_id: MapLayerId::OfflineRegions,
+                label: "Offline Regions".to_string(),
+            },
+        ],
         world_basemap: UiMapLayerToggleState {
             visible: true,
             enabled: true,
@@ -11969,6 +12200,17 @@ fn project_session_app_ui_state(session: &UiSession) -> Result<AppUiState, HadRe
             crate::had_ops::magnetic_variation_degrees_optional(store, position)?;
     }
     app_ui_state.ownship.controls.situation_controls = project_situation_controls(session);
+    let adsb_selected = adsb_ownship_selected(session);
+    app_ui_state.ownship.controls.text_action =
+        session.runtime.adsb.ownship_text_action(adsb_selected);
+    app_ui_state.ownship.controls.next_refresh_epoch_ms = adsb_selected
+        .then(|| {
+            session
+                .runtime
+                .adsb
+                .ownship_next_refresh_epoch_ms(session.wall_clock_epoch_ms)
+        })
+        .flatten();
     if let (Some(store), Some(plan), Some(active_plan)) = (
         session.nav_kv_store.as_ref(),
         session.app_state.active_plan.clone(),
@@ -13797,10 +14039,159 @@ mod tests {
         assert_eq!(second_overlay.visible_traffic[0].label, "AAL727");
         assert_eq!(
             second_overlay.traffic_next_refresh_epoch_ms,
-            Some(1_785_900_892_100)
+            Some(1_785_900_942_100)
         );
 
         destroy_session(handle);
+    }
+
+    #[test]
+    fn internet_adsb_target_uses_normal_ownship_pipeline_without_replay_controls() {
+        let init = create_ui_session_at_epoch_ms(FlightPlan::default(), &[], None, None, 10_000)
+            .expect("create session");
+        let initial_adsb_source = init
+            .snapshot
+            .app_ui_state
+            .ownship
+            .controls
+            .sources
+            .iter()
+            .find(|source| source.source_id.0 == crate::adsb::INTERNET_ADSB_SOURCE_ID)
+            .expect("ADS-B source");
+        assert!(initial_adsb_source.keep_tray_open_on_select);
+        let selected = perform_ownship_text_action_in_session(
+            init.handle,
+            crate::adsb::FOLLOW_ADSB_TARGET_ACTION_ID,
+            "n9124y",
+            10_000,
+        )
+        .expect("follow target");
+        assert_eq!(
+            selected.app_ui_state.ownship.controls.launcher_label,
+            "ADS-B"
+        );
+        assert_eq!(
+            selected
+                .app_ui_state
+                .ownship
+                .controls
+                .text_action
+                .as_ref()
+                .map(|control| control.value.as_str()),
+            Some("N9124Y")
+        );
+        assert!(!selected.playback_panel_state.visible);
+        let selected_adsb_source = selected
+            .app_ui_state
+            .ownship
+            .controls
+            .sources
+            .iter()
+            .find(|source| source.source_id.0 == crate::adsb::INTERNET_ADSB_SOURCE_ID)
+            .expect("ADS-B source");
+        assert!(!selected_adsb_source.keep_tray_open_on_select);
+        let active_status = data_status_box(&selected, ADSB_OWNSHIP_STATUS_ID);
+        assert_eq!(active_status.label, "ADS-B");
+        assert_eq!(active_status.value.as_deref(), Some("ACTIVE"));
+        assert_eq!(active_status.severity, UiStatusSeverity::Info);
+        assert!(!active_status.drives_caution);
+        assert_eq!(
+            active_status.detail,
+            "source: Airplanes.live\npolling every 60s\nlast result never\nN9124Y: no report"
+        );
+        assert!(selected
+            .app_ui_state
+            .ownship
+            .controls
+            .situation_controls
+            .iter()
+            .all(|control| !control.enabled));
+
+        let effects = drain_session_resource_effects(init.handle).expect("ownship effect");
+        assert_eq!(effects.len(), 1);
+        let effect = &effects[0];
+        assert!(effect
+            .resource
+            .id
+            .starts_with("adsb/airplanes_live/ownship/"));
+        assert_eq!(effect.resource.max_response_bytes, Some(512 * 1024));
+        assert_eq!(
+            effect.resource.source,
+            CoreResourceSource::PublicUrl {
+                url: "https://api.airplanes.live/v2/reg/N9124Y".to_string(),
+            }
+        );
+
+        ingest_resource_in_session_at_epoch_ms(
+            init.handle,
+            &effect.resource.id,
+            br#"{"now":10500,"ac":[{"hex":"abc123","r":"N9124Y","alt_baro":4200,"alt_geom":4300,"gs":131,"track":87,"lat":47.45,"lon":-122.31,"seen_pos":0.2}]}"#,
+            10_600,
+        )
+        .expect("ingest ownship");
+        let snapshot = get_session_snapshot_at_epoch_ms(init.handle, 10_600).expect("snapshot");
+        assert_eq!(
+            snapshot.app_ui_state.ownship.render.mode,
+            crate::OwnshipMode::Live
+        );
+        assert_eq!(
+            snapshot.app_ui_state.ownship.render.position,
+            Some(LatLon {
+                lat: 47.45,
+                lon: -122.31
+            })
+        );
+        assert_eq!(snapshot.app_ui_state.ownship.render.speed_kt, Some(131.0));
+        assert_eq!(
+            snapshot.app_ui_state.ownship.controls.next_refresh_epoch_ms,
+            Some(70_600)
+        );
+        let observed_status = data_status_box(&snapshot, ADSB_OWNSHIP_STATUS_ID);
+        assert_eq!(observed_status.severity, UiStatusSeverity::Info);
+        assert_eq!(
+            observed_status.detail,
+            "source: Airplanes.live\npolling every 60s\nlast result 0s ago\nN9124Y: observed"
+        );
+
+        let aged_snapshot =
+            get_session_snapshot_at_epoch_ms(init.handle, 53_600).expect("aged snapshot");
+        assert_eq!(
+            data_status_box(&aged_snapshot, ADSB_OWNSHIP_STATUS_ID).detail,
+            "source: Airplanes.live\npolling every 60s\nlast result 43s ago\nN9124Y: observed"
+        );
+
+        destroy_session(init.handle);
+    }
+
+    #[test]
+    fn adsb_inspector_action_uses_the_same_ownship_target_command() {
+        let init = create_ui_session_at_epoch_ms(FlightPlan::default(), &[], None, None, 10_000)
+            .expect("create session");
+        let action = serde_json::to_string(&MapSelectionSessionAction::FollowAdsbRegistration {
+            registration: "N9124Y".to_string(),
+        })
+        .expect("serialize action");
+
+        let selected = snapshot_from_outcome(
+            perform_map_selection_action_in_session(init.handle, action, 10_000)
+                .expect("follow traffic"),
+        );
+        assert_eq!(
+            selected
+                .app_ui_state
+                .ownship
+                .controls
+                .text_action
+                .as_ref()
+                .map(|control| control.value.as_str()),
+            Some("N9124Y")
+        );
+        assert_eq!(
+            selected.app_ui_state.ownship.controls.launcher_label,
+            "ADS-B"
+        );
+
+        destroy_session(init.handle);
     }
 
     #[test]
@@ -14054,6 +14445,12 @@ mod tests {
     snapshot_wrapper!(select_ownship_source_in_session(
         handle: u32,
         selection: crate::OwnshipSelectionCommand,
+    ));
+    snapshot_wrapper!(perform_ownship_text_action_in_session(
+        handle: u32,
+        action_id: &str,
+        value: &str,
+        epoch_ms: i64,
     ));
     snapshot_wrapper!(apply_situation_control_input_in_session(
         handle: u32,

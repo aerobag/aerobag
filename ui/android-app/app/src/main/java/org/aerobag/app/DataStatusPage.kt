@@ -279,7 +279,7 @@ private fun DataStatusBoxRow(
                 lineHeight = 12.sp,
                 fontWeight = FontWeight.SemiBold,
             ),
-            maxLines = 3,
+            maxLines = 5,
             overflow = TextOverflow.Ellipsis,
             color = uiTheme.controls.panelFg.copy(alpha = if (hushed) 0.68f else 0.9f),
         )

@@ -162,6 +162,7 @@ fn main() {
                 "UiDataStatusPageState",
                 "UiChartPageState",
                 "UiMapLayerToggleState",
+                "UiMapLayerOption",
                 "UiMapLayerState",
                 "MapLayerId",
                 "DebugFlagId",

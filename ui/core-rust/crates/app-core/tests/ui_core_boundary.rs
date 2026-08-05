@@ -146,6 +146,46 @@ fn cloud_ui_actions_and_wire_contract_are_core_owned() {
 }
 
 #[test]
+fn map_layer_choices_and_labels_are_core_owned() {
+    let web = read_repo_file("ui/web-app/src/App.tsx");
+    let android =
+        read_repo_file("ui/android-app/app/src/main/java/org/aerobag/app/MapExplorerPage.kt");
+
+    assert!(
+        web.contains("mapLayerState.options.map((option)")
+            && android.contains("mapLayerState.options.map { option ->"),
+        "platform layer trays must render the ordered choices and labels exported by core"
+    );
+    for label in [
+        "Observations",
+        "Vectors",
+        "NEXRAD",
+        "ADS-B Traffic",
+        "Terrain Warning",
+        "World Map",
+        "Offline Regions",
+    ] {
+        assert!(
+            !web.contains(&format!("label: \"{label}\""))
+                && !android.contains(&format!("label = \"{label}\"")),
+            "platform layer tray redeclares core label {label}"
+        );
+    }
+}
+
+#[test]
+fn android_public_resource_adapter_does_not_classify_application_resources() {
+    let android =
+        read_repo_file("ui/android-app/app/src/main/java/org/aerobag/app/RuntimeFetch.kt");
+    assert!(
+        !android.contains("resource.id.startsWith(")
+            && !android.contains("resourceId.startsWith(")
+            && !android.contains("requireAndroidPublicUrlAllowed"),
+        "Android must execute core's typed resource source without knowing application resource families"
+    );
+}
+
+#[test]
 fn platform_route_editors_promote_letters_without_filtering_search_syntax() {
     let web = read_repo_file("ui/web-app/src/App.tsx");
     let android_map =

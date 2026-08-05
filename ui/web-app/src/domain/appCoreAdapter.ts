@@ -429,9 +429,7 @@ export type MapOverlayQueryResult = {
     screen_y: number;
     track_deg_true?: number | null;
     label: string;
-    altitude_label: string;
-    relative_altitude_label?: string | null;
-    on_ground: boolean;
+    detail_label: string;
   }>;
   traffic_next_refresh_epoch_ms?: number | null;
   airspace_paths: AirspaceDisplayPath[];
@@ -497,6 +495,7 @@ export type MapSelectionHighlight =
   | { kind: "feature_ref"; id: string }
   | { kind: "metar"; station_id: string }
   | { kind: "pirep"; id: string }
+  | { kind: "adsb_traffic"; id: string }
   | { kind: "offline_region"; id: string }
   | { kind: "spot"; lat: number; lon: number };
 
@@ -748,6 +747,7 @@ export interface UiSession {
   updateOwnshipSourceStatus(update: OwnshipSourceStatusUpdate): Promise<UiSessionSnapshot>;
   pushSituationSample(sample: SituationSample): Promise<UiSessionSnapshot>;
   selectOwnshipSource(selection: OwnshipSelectionCommand): Promise<UiSessionSnapshot>;
+  performOwnshipTextAction(actionId: string, value: string, nowEpochMs: number): Promise<UiSessionSnapshot>;
   applySituationControlInput(input: SituationControlInput, nowEpochMs: number): Promise<UiSessionSnapshot>;
   setMapLayerVisibility(layerId: MapLayerId, visible: boolean): Promise<UiSessionSnapshot>;
   setMapLayerEnabled(layerId: MapLayerId, enabled: boolean): Promise<UiSessionSnapshot>;
@@ -881,6 +881,7 @@ type WasmModule = {
   update_ownship_source_status_in_session_paged(handle: number, updateJson: string): Promise<string> | string;
   push_situation_sample_in_session_paged(handle: number, sampleJson: string): Promise<string> | string;
   select_ownship_source_in_session_paged(handle: number, selectionJson: string): Promise<string> | string;
+  perform_ownship_text_action_in_session(handle: number, actionId: string, value: string, nowEpochMs: bigint): Promise<string> | string;
   apply_situation_control_input_in_session(handle: number, inputJson: string, nowEpochMs: number): Promise<string> | string;
   set_map_layer_visibility_in_session_paged(handle: number, layerIdJson: string, visible: boolean): Promise<string> | string;
   set_map_layer_enabled_in_session_paged(handle: number, layerIdJson: string, enabled: boolean): Promise<string> | string;
@@ -1439,6 +1440,17 @@ export class WasmAppCoreAdapter implements AppCoreAdapter {
         );
         return snapshot;
       },
+      performOwnshipTextAction: async (actionId, value, nowEpochMs) => {
+        snapshot = await runSessionOperation<UiSessionSnapshot>(
+          () => this.module.perform_ownship_text_action_in_session(
+            handle,
+            actionId,
+            value,
+            BigInt(Math.trunc(nowEpochMs)),
+          ),
+        );
+        return snapshot;
+      },
       applySituationControlInput: async (input, nowEpochMs) => {
         snapshot = await runSessionOperation<UiSessionSnapshot>(
           () => this.module.apply_situation_control_input_in_session(
@@ -1989,6 +2001,7 @@ async function loadBestAvailableAdapterUncached(
     "update_ownship_source_status_in_session_paged",
     "push_situation_sample_in_session_paged",
     "select_ownship_source_in_session_paged",
+    "perform_ownship_text_action_in_session",
     "apply_situation_control_input_in_session",
     "set_map_layer_visibility_in_session_paged",
     "set_map_layer_enabled_in_session_paged",

@@ -658,6 +658,7 @@ export type OwnshipControlModel = {
     disabled_reason?: string | null;
     active: boolean;
     status_label: string;
+    keep_tray_open_on_select?: boolean;
   }>;
   situation_controls: Array<{
     input: SituationControlInput;
@@ -665,6 +666,16 @@ export type OwnshipControlModel = {
     enabled: boolean;
     disabled_reason?: string | null;
   }>;
+  text_action?: {
+    action_id: string;
+    label: string;
+    value: string;
+    placeholder: string;
+    submit_label: string;
+    enabled: boolean;
+    disabled_reason?: string | null;
+  } | null;
+  next_refresh_epoch_ms?: number | null;
 };
 
 export type OwnshipUiState = {

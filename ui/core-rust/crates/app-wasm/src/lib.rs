@@ -686,6 +686,23 @@ pub fn perform_status_action_in_session(
 }
 
 #[wasm_bindgen]
+pub fn perform_ownship_text_action_in_session(
+    session_handle: u32,
+    action_id: &str,
+    value: &str,
+    now_epoch_ms: i64,
+) -> Result<String, JsValue> {
+    let outcome = app_core::perform_ownship_text_action_in_session(
+        session_handle,
+        action_id,
+        value,
+        now_epoch_ms,
+    )
+    .map_err(|err| JsValue::from_str(&err.to_string()))?;
+    serde_json::to_string(&outcome).map_err(|err| JsValue::from_str(&err.to_string()))
+}
+
+#[wasm_bindgen]
 pub fn perform_settings_action_in_session(
     session_handle: u32,
     action_json: &str,

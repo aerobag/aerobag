@@ -128,6 +128,7 @@ import androidx.compose.ui.graphics.StrokeCap
 import androidx.compose.ui.graphics.StrokeJoin
 import androidx.compose.ui.graphics.toArgb
 import androidx.compose.ui.graphics.drawscope.clipRect
+import androidx.compose.ui.graphics.drawscope.DrawScope
 import androidx.compose.ui.graphics.drawscope.rotate
 import androidx.compose.ui.graphics.drawscope.scale
 import androidx.compose.ui.graphics.drawscope.Stroke
@@ -278,6 +279,7 @@ import org.aerobag.app.domain.TerrainOverlayTileRequest
 import org.aerobag.app.domain.UiDebugState
 import org.aerobag.app.domain.UiMapLayerToggleState
 import org.aerobag.app.domain.UiPlaybackPanelState
+import org.aerobag.app.domain.VisibleAdsbTraffic
 import org.aerobag.app.domain.UiTheme
 import org.aerobag.app.domain.UiThemeLoader
 import org.aerobag.app.domain.UiSessionSnapshot
@@ -939,136 +941,28 @@ internal fun MapExplorerPage(
         }
     }
     val layerTrayOptions = remember(mapLayerState) {
-        listOf(
+        mapLayerState.options.map { option ->
+            val toggleState = mapLayerState.toggleState(option.layerId)
             MenuDockOption(
-                key = "metars",
-                label = "Observations",
-                enabled = mapLayerState.metars.enabled,
-                disabledReason = mapLayerState.metars.disabledReason,
-                toggleState = mapLayerState.metars,
-                iconResId = mapLayerIconResId(MapLayerId.Metars),
+                key = option.layerId.name,
+                label = option.label,
+                enabled = toggleState.enabled,
+                disabledReason = toggleState.disabledReason,
+                toggleState = toggleState,
+                iconResId = mapLayerIconResId(option.layerId),
             ) {
-                val visible = !mapLayerState.metars.visible
-                val startMs = SystemClock.elapsedRealtime()
-                if (applySessionCommand("setMapLayerVisibility") {
-                        uiSession.setMapLayerVisibility(MapLayerId.Metars, visible)
-                    } != null) {
-                    diagnosticLogInfo(MapLayerLogTag) {
-                        "toggle layer=metars visible=$visible coreMs=${SystemClock.elapsedRealtime() - startMs}"
-                    }
-                }
-            },
-            MenuDockOption(
-                key = "vectors",
-                label = "Vectors",
-                enabled = mapLayerState.vectors.enabled,
-                disabledReason = mapLayerState.vectors.disabledReason,
-                toggleState = mapLayerState.vectors,
-                iconResId = mapLayerIconResId(MapLayerId.Vectors),
-            ) {
-                val visible = !mapLayerState.vectors.visible
-                val startMs = SystemClock.elapsedRealtime()
-                if (applySessionCommand("setMapLayerVisibility") {
-                        uiSession.setMapLayerVisibility(MapLayerId.Vectors, visible)
-                    } != null) {
-                    diagnosticLogInfo(MapLayerLogTag) {
-                        "toggle layer=vectors visible=$visible coreMs=${SystemClock.elapsedRealtime() - startMs}"
-                    }
-                }
-            },
-            MenuDockOption(
-                key = "nexrad",
-                label = "NEXRAD",
-                enabled = mapLayerState.nexrad.enabled,
-                disabledReason = mapLayerState.nexrad.disabledReason,
-                toggleState = mapLayerState.nexrad,
-                iconResId = mapLayerIconResId(MapLayerId.Nexrad),
-            ) {
-                val visible = !mapLayerState.nexrad.visible
+                val visible = !toggleState.visible
                 val startMs = SystemClock.elapsedRealtime()
                 onBeforeMapLayerCommand()
                 if (applySessionCommand("setMapLayerVisibility") {
-                        uiSession.setMapLayerVisibility(MapLayerId.Nexrad, visible)
+                        uiSession.setMapLayerVisibility(option.layerId, visible)
                     } != null) {
                     diagnosticLogInfo(MapLayerLogTag) {
-                        "toggle layer=nexrad visible=$visible coreMs=${SystemClock.elapsedRealtime() - startMs}"
+                        "toggle layer=${option.layerId.name} visible=$visible coreMs=${SystemClock.elapsedRealtime() - startMs}"
                     }
                 }
-            },
-            MenuDockOption(
-                key = "traffic",
-                label = "ADS-B Traffic",
-                enabled = mapLayerState.traffic.enabled,
-                disabledReason = mapLayerState.traffic.disabledReason,
-                toggleState = mapLayerState.traffic,
-                iconResId = mapLayerIconResId(MapLayerId.Traffic),
-            ) {
-                val visible = !mapLayerState.traffic.visible
-                val startMs = SystemClock.elapsedRealtime()
-                if (applySessionCommand("setMapLayerVisibility") {
-                        uiSession.setMapLayerVisibility(MapLayerId.Traffic, visible)
-                    } != null) {
-                    diagnosticLogInfo(MapLayerLogTag) {
-                        "toggle layer=traffic visible=$visible coreMs=${SystemClock.elapsedRealtime() - startMs}"
-                    }
-                }
-            },
-            MenuDockOption(
-                key = "terrain_warning",
-                label = "Terrain Warning",
-                enabled = mapLayerState.terrainWarning.enabled,
-                disabledReason = mapLayerState.terrainWarning.disabledReason,
-                toggleState = mapLayerState.terrainWarning,
-                iconResId = mapLayerIconResId(MapLayerId.TerrainWarning),
-            ) {
-                val visible = !mapLayerState.terrainWarning.visible
-                val startMs = SystemClock.elapsedRealtime()
-                onBeforeMapLayerCommand()
-                if (applySessionCommand("setMapLayerVisibility") {
-                        uiSession.setMapLayerVisibility(MapLayerId.TerrainWarning, visible)
-                    } != null) {
-                    diagnosticLogInfo(MapLayerLogTag) {
-                        "toggle layer=terrain_warning visible=$visible coreMs=${SystemClock.elapsedRealtime() - startMs}"
-                    }
-                }
-            },
-            MenuDockOption(
-                key = "world_basemap",
-                label = "World Map",
-                enabled = mapLayerState.worldBasemap.enabled,
-                disabledReason = mapLayerState.worldBasemap.disabledReason,
-                toggleState = mapLayerState.worldBasemap,
-                iconResId = mapLayerIconResId(MapLayerId.WorldBasemap),
-            ) {
-                val visible = !mapLayerState.worldBasemap.visible
-                val startMs = SystemClock.elapsedRealtime()
-                if (applySessionCommand("setMapLayerVisibility") {
-                        uiSession.setMapLayerVisibility(MapLayerId.WorldBasemap, visible)
-                    } != null) {
-                    diagnosticLogInfo(MapLayerLogTag) {
-                        "toggle layer=world_basemap visible=$visible coreMs=${SystemClock.elapsedRealtime() - startMs}"
-                    }
-                }
-            },
-            MenuDockOption(
-                key = "offline_regions",
-                label = "Offline Regions",
-                enabled = mapLayerState.offlineRegions.enabled,
-                disabledReason = mapLayerState.offlineRegions.disabledReason,
-                toggleState = mapLayerState.offlineRegions,
-                iconResId = mapLayerIconResId(MapLayerId.OfflineRegions),
-            ) {
-                val visible = !mapLayerState.offlineRegions.visible
-                val startMs = SystemClock.elapsedRealtime()
-                if (applySessionCommand("setMapLayerVisibility") {
-                        uiSession.setMapLayerVisibility(MapLayerId.OfflineRegions, visible)
-                    } != null) {
-                    diagnosticLogInfo(MapLayerLogTag) {
-                        "toggle layer=offline_regions visible=$visible coreMs=${SystemClock.elapsedRealtime() - startMs}"
-                    }
-                }
-            },
-        )
+            }
+        }
     }
     val selectedLauncher = trayOptions.firstOrNull { option -> option.id == selectedFamilyId } ?: trayOptions.first()
     val tileRects = remember(tiles) {
@@ -2728,11 +2622,16 @@ internal fun MapExplorerPage(
                 chartTrayOpen = false
                 layerTrayOpen = false
             },
-            onSelectSource = { sourceId ->
-                situationTrayOpen = false
-                onSelectOwnshipSource(sourceId)
+            onSelectSource = { source ->
+                if (!source.keepTrayOpenOnSelect) situationTrayOpen = false
+                onSelectOwnshipSource(source.sourceId)
             },
             onSituationControlInput = onSituationControlInput,
+            onTextAction = { actionId, value ->
+                applySessionCommand("performOwnshipTextAction") {
+                    uiSession.performOwnshipTextAction(actionId, value)
+                }
+            },
         )
 
         MapTopLeftControls(
@@ -3588,50 +3487,72 @@ private fun TrafficOverlayLayer(
 ) {
     if (displayedMapOverlay.visibleTraffic.isEmpty()) return
     Canvas(modifier = Modifier.fillMaxSize()) {
-        val labelStroke = Paint(Paint.ANTI_ALIAS_FLAG).apply {
-            color = uiTheme.aviation.trafficContrast.toArgb()
-            textSize = 12f * densityScale
-            typeface = Typeface.create(Typeface.DEFAULT, Typeface.BOLD)
-            style = Paint.Style.STROKE
-            strokeWidth = 3f * densityScale
-        }
-        val labelFill = Paint(labelStroke).apply {
-            color = uiTheme.aviation.trafficLabel.toArgb()
-            style = Paint.Style.FILL
-        }
         displayedMapOverlay.visibleTraffic.forEach { feature ->
-            val center = Offset(feature.screenX.toFloat(), feature.screenY.toFloat())
-            val symbol = Path().apply {
-                moveTo(center.x, center.y - 11f * densityScale)
-                lineTo(center.x + 8f * densityScale, center.y + 9f * densityScale)
-                lineTo(center.x, center.y + 5f * densityScale)
-                lineTo(center.x - 8f * densityScale, center.y + 9f * densityScale)
-                close()
-            }
-            rotate(((feature.trackDegTrue ?: 0.0) - mapUpDeg).toFloat(), center) {
-                drawPath(
-                    symbol,
-                    uiTheme.aviation.trafficContrast,
-                    style = Stroke(width = 5f * densityScale, join = StrokeJoin.Round),
-                )
-                drawPath(symbol, uiTheme.aviation.traffic)
-                drawPath(
-                    symbol,
-                    uiTheme.aviation.trafficContrast,
-                    style = Stroke(width = 1.25f * densityScale, join = StrokeJoin.Round),
-                )
-            }
-            val x = center.x + 13f * densityScale
-            val firstBaseline = center.y - 2f * densityScale
-            val detail = feature.relativeAltitudeLabel ?: feature.altitudeLabel
-            drawContext.canvas.nativeCanvas.apply {
-                drawText(feature.label, x, firstBaseline, labelStroke)
-                drawText(feature.label, x, firstBaseline, labelFill)
-                val secondBaseline = firstBaseline + 13.2f * densityScale
-                drawText(detail, x, secondBaseline, labelStroke)
-                drawText(detail, x, secondBaseline, labelFill)
-            }
+            drawAdsbTraffic(feature, densityScale, uiTheme, mapUpDeg, selected = false)
         }
+    }
+}
+
+private fun DrawScope.drawAdsbTraffic(
+    feature: VisibleAdsbTraffic,
+    densityScale: Float,
+    uiTheme: UiTheme,
+    mapUpDeg: Double,
+    selected: Boolean,
+) {
+    val center = Offset(feature.screenX.toFloat(), feature.screenY.toFloat())
+    val symbol = Path().apply {
+        moveTo(center.x, center.y - 11f * densityScale)
+        lineTo(center.x + 8f * densityScale, center.y + 9f * densityScale)
+        lineTo(center.x, center.y + 5f * densityScale)
+        lineTo(center.x - 8f * densityScale, center.y + 9f * densityScale)
+        close()
+    }
+    rotate(((feature.trackDegTrue ?: 0.0) - mapUpDeg).toFloat(), center) {
+        if (selected) {
+            drawPath(
+                symbol,
+                Color.White,
+                style = Stroke(width = 10f * densityScale, join = StrokeJoin.Round),
+            )
+        }
+        drawPath(
+            symbol,
+            uiTheme.aviation.trafficContrast,
+            style = Stroke(width = 5f * densityScale, join = StrokeJoin.Round),
+        )
+        drawPath(symbol, uiTheme.aviation.traffic)
+        drawPath(
+            symbol,
+            uiTheme.aviation.trafficContrast,
+            style = Stroke(width = 1.25f * densityScale, join = StrokeJoin.Round),
+        )
+    }
+    val labelStroke = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+        color = if (selected) android.graphics.Color.WHITE else uiTheme.aviation.trafficContrast.toArgb()
+        textSize = 12f * densityScale
+        typeface = Typeface.create(Typeface.DEFAULT, Typeface.BOLD)
+        style = Paint.Style.STROKE
+        strokeWidth = (if (selected) 7f else 3f) * densityScale
+    }
+    val regularLabelStroke = Paint(labelStroke).apply {
+        color = uiTheme.aviation.trafficContrast.toArgb()
+        strokeWidth = 3f * densityScale
+    }
+    val labelFill = Paint(labelStroke).apply {
+        color = uiTheme.aviation.trafficLabel.toArgb()
+        style = Paint.Style.FILL
+    }
+    val x = center.x + 13f * densityScale
+    val firstBaseline = center.y - 2f * densityScale
+    drawContext.canvas.nativeCanvas.apply {
+        if (selected) drawText(feature.label, x, firstBaseline, labelStroke)
+        drawText(feature.label, x, firstBaseline, regularLabelStroke)
+        drawText(feature.label, x, firstBaseline, labelFill)
+        val secondBaseline = firstBaseline + 13.2f * densityScale
+        if (selected) drawText(feature.detailLabel, x, secondBaseline, labelStroke)
+        drawText(feature.detailLabel, x, secondBaseline, regularLabelStroke)
+        drawText(feature.detailLabel, x, secondBaseline, labelFill)
     }
 }
 
@@ -3956,6 +3877,11 @@ private fun MapSelectionHighlightLayer(
                     val center = Offset(feature.screenX.toFloat(), feature.screenY.toFloat())
                     drawCircle(Color.White, radius = 25f * densityScale, center = center, style = Stroke(width = 4f * densityScale))
                     drawPirepSymbol(feature, center, densityScale, uiTheme, symbolScale = 0.32f)
+                }
+            }
+            is MapSelectionHighlight.AdsbTraffic -> {
+                displayedMapOverlay.visibleTraffic.firstOrNull { it.id == highlight.id }?.let { traffic ->
+                    drawAdsbTraffic(traffic, densityScale, uiTheme, mapUpDeg, selected = true)
                 }
             }
             is MapSelectionHighlight.OfflineRegion -> {

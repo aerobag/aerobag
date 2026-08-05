@@ -566,6 +566,18 @@ data class OwnshipControlModel(
     val launcherTextTone: OwnshipLauncherTextTone = OwnshipLauncherTextTone.Unavailable,
     val sources: List<OwnshipSourceMenuItem> = emptyList(),
     val situationControls: List<SituationControlMenuItem> = emptyList(),
+    val textAction: OwnshipTextAction? = null,
+    val nextRefreshEpochMs: Long? = null,
+)
+
+data class OwnshipTextAction(
+    val actionId: String,
+    val label: String,
+    val value: String,
+    val placeholder: String,
+    val submitLabel: String,
+    val enabled: Boolean,
+    val disabledReason: String? = null,
 )
 
 data class OwnshipUiState(
@@ -588,6 +600,7 @@ data class OwnshipSourceMenuItem(
     val disabledReason: String? = null,
     val active: Boolean,
     val statusLabel: String,
+    val keepTrayOpenOnSelect: Boolean = false,
 )
 
 data class SituationControlMenuItem(

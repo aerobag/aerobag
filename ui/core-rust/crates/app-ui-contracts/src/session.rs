@@ -189,7 +189,16 @@ pub struct UiMapLayerToggleState {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[serde(deny_unknown_fields)]
+pub struct UiMapLayerOption {
+    pub layer_id: MapLayerId,
+    pub label: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
+#[serde(deny_unknown_fields)]
 pub struct UiMapLayerState {
+    pub options: Vec<UiMapLayerOption>,
     pub world_basemap: UiMapLayerToggleState,
     pub vectors: UiMapLayerToggleState,
     pub metars: UiMapLayerToggleState,

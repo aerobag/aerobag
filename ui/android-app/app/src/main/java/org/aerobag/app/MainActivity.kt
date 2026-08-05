@@ -1257,8 +1257,9 @@ internal fun SituationStatusBadge(
     modifier: Modifier = Modifier,
     open: Boolean,
     onToggle: () -> Unit,
-    onSelectSource: (String) -> Unit = {},
+    onSelectSource: (org.aerobag.app.domain.OwnshipSourceMenuItem) -> Unit = {},
     onSituationControlInput: (SituationControlInput) -> Unit = {},
+    onTextAction: (String, String) -> Unit = { _, _ -> },
 ) {
     val trayColumnCount = max(controls.sources.size, controls.situationControls.size).coerceAtLeast(1)
     val trayWidth = (ThumbSize * trayColumnCount.toFloat()) + (3.dp * (trayColumnCount - 1).toFloat()) + 6.dp
@@ -1280,25 +1281,107 @@ internal fun SituationStatusBadge(
             body = {
                 SituationSourceRow(
                     sources = controls.sources,
-                    onSelectSource = { sourceId ->
-                        onSelectSource(sourceId)
+                    onSelectSource = { source ->
+                        onSelectSource(source)
                     },
                 )
             },
             footer = {
-                SituationTransportRow(
-                    controls = controls.situationControls,
-                    onInput = onSituationControlInput,
-                )
+                Column(verticalArrangement = Arrangement.spacedBy(3.dp)) {
+                    controls.textAction?.let { control ->
+                        OwnshipTextActionControl(control, onTextAction)
+                    }
+                    SituationTransportRow(
+                        controls = controls.situationControls,
+                        onInput = onSituationControlInput,
+                    )
+                }
             },
         )
     }
 }
 
 @Composable
+internal fun OwnshipTextActionControl(
+    control: org.aerobag.app.domain.OwnshipTextAction,
+    onSubmit: (String, String) -> Unit,
+) {
+    var value by remember(control.actionId) { mutableStateOf(control.value) }
+    val context = androidx.compose.ui.platform.LocalContext.current
+    LaunchedEffect(control.actionId, control.value) {
+        value = control.value
+    }
+    val uiTheme = LocalAerobagUiTheme.current
+    Column(
+        verticalArrangement = Arrangement.spacedBy(2.dp),
+        modifier = Modifier.fillMaxWidth(),
+    ) {
+        Text(
+            text = control.label.uppercase(),
+            fontSize = 11.sp,
+            fontWeight = FontWeight.Bold,
+            color = uiTheme.controls.buttonFg,
+        )
+        Row(
+            horizontalArrangement = Arrangement.spacedBy(3.dp),
+            verticalAlignment = Alignment.CenterVertically,
+            modifier = Modifier.fillMaxWidth(),
+        ) {
+            BasicTextField(
+                value = value,
+                onValueChange = { value = it.uppercase() },
+                singleLine = true,
+                textStyle = MaterialTheme.typography.bodyLarge.copy(
+                    color = uiTheme.controls.buttonFg,
+                    fontWeight = FontWeight.Bold,
+                ),
+                keyboardOptions = KeyboardOptions(
+                    capitalization = KeyboardCapitalization.Characters,
+                    imeAction = ImeAction.Go,
+                ),
+                keyboardActions = KeyboardActions(
+                    onGo = { if (control.enabled) onSubmit(control.actionId, value) },
+                ),
+                decorationBox = { innerTextField ->
+                    Box(
+                        contentAlignment = Alignment.CenterStart,
+                        modifier = Modifier
+                            .background(uiTheme.controls.buttonUnchecked, RoundedCornerShape(3.dp))
+                            .border(1.dp, uiTheme.controls.buttonFg.copy(alpha = 0.45f), RoundedCornerShape(3.dp))
+                            .padding(horizontal = 6.dp),
+                    ) {
+                        if (value.isEmpty()) {
+                            Text(
+                                text = control.placeholder,
+                                color = uiTheme.controls.buttonFg.copy(alpha = 0.55f),
+                                fontSize = 15.sp,
+                            )
+                        }
+                        innerTextField()
+                    }
+                },
+                modifier = Modifier
+                    .weight(1f)
+                    .height(ThumbSize * 0.58f),
+            )
+            CompactSquareButton(
+                label = control.submitLabel,
+                enabled = control.enabled,
+                wide = false,
+                modifier = Modifier.size(ThumbSize, ThumbSize * 0.58f),
+                onDisabledClick = control.disabledReason?.let { reason ->
+                    { showDisabledActionToast(context, reason) }
+                },
+                onClick = { onSubmit(control.actionId, value) },
+            )
+        }
+    }
+}
+
+@Composable
 internal fun SituationSourceRow(
     sources: List<org.aerobag.app.domain.OwnshipSourceMenuItem>,
-    onSelectSource: (String) -> Unit,
+    onSelectSource: (org.aerobag.app.domain.OwnshipSourceMenuItem) -> Unit,
 ) {
     val context = LocalContext.current
     Row(
@@ -1317,7 +1400,7 @@ internal fun SituationSourceRow(
                 onDisabledClick = source.disabledReason?.let { reason ->
                     { showDisabledActionToast(context, reason) }
                 },
-                onClick = { onSelectSource(source.sourceId) },
+                onClick = { onSelectSource(source) },
             )
         }
     }
@@ -2557,6 +2640,14 @@ internal fun AerobagApp(
             .coerceAtLeast(0L)
         delay(delayMs)
         applySessionCommand("refreshSnapshot", notifyUser = false) {
+            uiSession.refreshSnapshot()
+        }
+    }
+    LaunchedEffect(uiSession, sessionSnapshot.appUiState.ownship.controls.nextRefreshEpochMs) {
+        val deadlineEpochMs = sessionSnapshot.appUiState.ownship.controls.nextRefreshEpochMs
+            ?: return@LaunchedEffect
+        delay((deadlineEpochMs - System.currentTimeMillis()).coerceAtLeast(0L))
+        applySessionCommand("refreshOwnshipSource", notifyUser = false) {
             uiSession.refreshSnapshot()
         }
     }

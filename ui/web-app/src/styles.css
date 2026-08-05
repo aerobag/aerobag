@@ -925,6 +925,7 @@ button {
   line-height: 1.18;
   font-weight: 650;
   letter-spacing: 0.01em;
+  white-space: pre-line;
 }
 
 .dataStatusActions {
@@ -2300,6 +2301,46 @@ button {
   display: grid;
   grid-template-columns: repeat(4, var(--thumb));
   gap: calc(var(--thumb) * 0.05);
+}
+
+.situationControlFooter {
+  display: grid;
+  gap: calc(var(--thumb) * 0.08);
+}
+
+.situationTextAction {
+  display: grid;
+  grid-template-columns: minmax(0, 3fr) var(--thumb);
+  gap: calc(var(--thumb) * 0.05);
+  width: calc(var(--thumb) * 4.15);
+}
+
+.situationTextAction label {
+  display: grid;
+  grid-template-rows: auto 1fr;
+  gap: calc(var(--thumb) * 0.03);
+  min-width: 0;
+  font-size: calc(var(--thumb) * 0.16);
+  font-weight: 700;
+  text-transform: uppercase;
+}
+
+.situationTextAction input {
+  min-width: 0;
+  height: calc(var(--thumb) * 0.55);
+  border: 1px solid color-mix(in srgb, var(--theme-button-unchecked) 78%, black);
+  border-radius: calc(var(--thumb) * 0.05);
+  padding: 0 calc(var(--thumb) * 0.08);
+  background: var(--theme-button-unchecked);
+  color: var(--theme-button-fg);
+  font: inherit;
+  font-size: calc(var(--thumb) * 0.24);
+  text-transform: uppercase;
+}
+
+.chartTraySituation .situationTextActionSubmit {
+  align-self: end;
+  height: calc(var(--thumb) * 0.55);
 }
 
 .chartTraySituation .situationTransportButton {

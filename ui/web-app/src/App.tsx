@@ -1772,7 +1772,6 @@ function PirepSymbol(props: { feature: VisiblePirepFeature; scale?: number }) {
 
 function AdsbTrafficSymbol(props: { feature: MapOverlayQueryResult["visible_traffic"][number] }) {
   const { feature } = props;
-  const detail = feature.relative_altitude_label ?? feature.altitude_label;
   return (
     <g aria-hidden="true">
       <g transform={`rotate(${feature.track_deg_true ?? 0})`}>
@@ -1805,7 +1804,7 @@ function AdsbTrafficSymbol(props: { feature: MapOverlayQueryResult["visible_traf
             fontWeight="800"
           >
             <tspan x="0">{feature.label}</tspan>
-            <tspan x="0" dy="1.1em">{detail}</tspan>
+            <tspan x="0" dy="1.1em">{feature.detail_label}</tspan>
           </text>
         </g>
       </g>
@@ -1898,6 +1897,7 @@ function emptyMapFollowUiState(): MapFollowUiState {
 
 function defaultUiMapLayerState(): UiMapLayerState {
   return {
+    options: [],
     world_basemap: { visible: true, enabled: true },
     vectors: { visible: true, enabled: true },
     metars: { visible: true, enabled: true },
@@ -1906,6 +1906,18 @@ function defaultUiMapLayerState(): UiMapLayerState {
     terrain_warning: { visible: true, enabled: true },
     offline_regions: { visible: false, enabled: true },
   };
+}
+
+function mapLayerToggleState(state: UiMapLayerState, layerId: MapLayerId): UiMapLayerToggleState {
+  switch (layerId) {
+    case "world_basemap": return state.world_basemap;
+    case "vectors": return state.vectors;
+    case "metars": return state.metars;
+    case "nexrad": return state.nexrad;
+    case "traffic": return state.traffic;
+    case "terrain_warning": return state.terrain_warning;
+    case "offline_regions": return state.offline_regions;
+  }
 }
 
 function normalizeUiMapLayerState(state: Partial<UiMapLayerState> | null | undefined): UiMapLayerState {
@@ -2757,6 +2769,21 @@ export default function App() {
       }
     };
   }, [requestSessionSnapshotRefresh, sessionSnapshot.cloud_page_state.next_refresh_epoch_ms]);
+
+  useEffect(() => {
+    const deadline = sessionSnapshot.app_ui_state.ownship.controls.next_refresh_epoch_ms;
+    if (deadline == null) {
+      return;
+    }
+    const timer = window.setTimeout(
+      () => requestSessionSnapshotRefresh("timely", "ownship_source_deadline"),
+      Math.max(0, Math.min(deadline - Date.now(), 2_147_000_000)),
+    );
+    return () => window.clearTimeout(timer);
+  }, [
+    requestSessionSnapshotRefresh,
+    sessionSnapshot.app_ui_state.ownship.controls.next_refresh_epoch_ms,
+  ]);
 
   useEffect(() => {
     if (navDbMaintenanceTimerRef.current !== null) {
@@ -5772,6 +5799,10 @@ function MapPage(props: {
       }
       return null;
     }
+    if (highlight.kind === "adsb_traffic") {
+      const traffic = mapOverlay.visible_traffic.find((feature) => feature.id === highlight.id);
+      return traffic ? { kind: "adsb_traffic" as const, feature: traffic } : null;
+    }
     if (highlight.kind === "offline_region") {
       const region = mapOverlay.offline_regions.find((feature) => feature.id === highlight.id);
       if (region) {
@@ -5792,7 +5823,7 @@ function MapPage(props: {
       return { kind: "path" as const, feature: tfrPath };
     }
     return null;
-  }, [mapOverlay.airspace_paths, mapOverlay.offline_regions, mapOverlay.tfr_paths, mapOverlay.visible_features, mapOverlay.visible_metars, mapOverlay.visible_pireps, mapSelection?.selectedItem, surfaceSize.height, surfaceSize.width, viewport]);
+  }, [mapOverlay.airspace_paths, mapOverlay.offline_regions, mapOverlay.tfr_paths, mapOverlay.visible_features, mapOverlay.visible_metars, mapOverlay.visible_pireps, mapOverlay.visible_traffic, mapSelection?.selectedItem, surfaceSize.height, surfaceSize.width, viewport]);
   useEffect(() => {
     if (!hoverWeather) {
       return;
@@ -6621,71 +6652,18 @@ function MapPage(props: {
       .filter((image) => terrainOverlay.query?.tile_requests.some((request) => request.key === image.key))
       .map((image) => terrainImageForViewport(image, viewport, surfaceSize.width, surfaceSize.height))
     : [];
-  const layerTrayOptions: TrayOption[] = [
-    {
-      id: "metars",
-      label: "Observations",
-      iconSrc: layerIconSrc("metars"),
-      toggleState: mapLayerState.metars,
-      disabled: !mapLayerState.metars.enabled,
-      disabledReason: mapLayerState.metars.disabled_reason ?? null,
-      onSelect: () => void setMapLayerVisible("metars", !mapLayerState.metars.visible),
-    },
-    {
-      id: "vectors",
-      label: "Vectors",
-      iconSrc: layerIconSrc("vectors"),
-      toggleState: mapLayerState.vectors,
-      disabled: !mapLayerState.vectors.enabled,
-      disabledReason: mapLayerState.vectors.disabled_reason ?? null,
-      onSelect: () => void setMapLayerVisible("vectors", !mapLayerState.vectors.visible),
-    },
-    {
-      id: "nexrad",
-      label: "NEXRAD",
-      iconSrc: layerIconSrc("nexrad"),
-      toggleState: mapLayerState.nexrad,
-      disabled: !mapLayerState.nexrad.enabled,
-      disabledReason: mapLayerState.nexrad.disabled_reason ?? null,
-      onSelect: () => void setMapLayerVisible("nexrad", !mapLayerState.nexrad.visible),
-    },
-    {
-      id: "traffic",
-      label: "ADS-B Traffic",
-      iconSrc: layerIconSrc("traffic"),
-      toggleState: mapLayerState.traffic,
-      disabled: !mapLayerState.traffic.enabled,
-      disabledReason: mapLayerState.traffic.disabled_reason ?? null,
-      onSelect: () => void setMapLayerVisible("traffic", !mapLayerState.traffic.visible),
-    },
-    {
-      id: "terrain_warning",
-      label: "Terrain Warning",
-      iconSrc: layerIconSrc("terrain_warning"),
-      toggleState: mapLayerState.terrain_warning,
-      disabled: !mapLayerState.terrain_warning.enabled,
-      disabledReason: mapLayerState.terrain_warning.disabled_reason ?? null,
-      onSelect: () => void setMapLayerVisible("terrain_warning", !mapLayerState.terrain_warning.visible),
-    },
-    {
-      id: "world_basemap",
-      label: "World Map",
-      iconSrc: layerIconSrc("world_basemap"),
-      toggleState: mapLayerState.world_basemap,
-      disabled: !mapLayerState.world_basemap.enabled,
-      disabledReason: mapLayerState.world_basemap.disabled_reason ?? null,
-      onSelect: () => void setMapLayerVisible("world_basemap", !mapLayerState.world_basemap.visible),
-    },
-    {
-      id: "offline_regions",
-      label: "Offline Regions",
-      iconSrc: layerIconSrc("offline_regions"),
-      toggleState: mapLayerState.offline_regions,
-      disabled: !mapLayerState.offline_regions.enabled,
-      disabledReason: mapLayerState.offline_regions.disabled_reason ?? null,
-      onSelect: () => void setMapLayerVisible("offline_regions", !mapLayerState.offline_regions.visible),
-    },
-  ];
+  const layerTrayOptions: TrayOption[] = mapLayerState.options.map((option) => {
+    const toggleState = mapLayerToggleState(mapLayerState, option.layer_id);
+    return {
+      id: option.layer_id,
+      label: option.label,
+      iconSrc: layerIconSrc(option.layer_id),
+      toggleState,
+      disabled: !toggleState.enabled,
+      disabledReason: toggleState.disabled_reason ?? null,
+      onSelect: () => void setMapLayerVisible(option.layer_id, !toggleState.visible),
+    };
+  });
   const ownshipSourceOptions: TrayOption[] = ownshipControls.sources.map((source) => ({
     id: sourceIdString(source.source_id),
     label: source.label,
@@ -6699,7 +6677,9 @@ function MapPage(props: {
       void uiSession
         .selectOwnshipSource({ kind: "source", source_id: sourceIdString(source.source_id) })
         .then(onPlaybackSnapshotChange)
-        .finally(() => trayGroup.close("ownship"));
+        .finally(() => {
+          if (!source.keep_tray_open_on_select) trayGroup.close("ownship");
+        });
     },
   }));
   const centerHereDisabled = !mapFollowUiState.can_center_here && !mapFollowUiState.following;
@@ -7326,6 +7306,13 @@ function MapPage(props: {
                         </g>
                         <PirepSymbol feature={selectedMapHighlight.feature} scale={0.32} />
                       </g>
+                    ) : selectedMapHighlight.kind === "adsb_traffic" ? (
+                      <g transform={`translate(${selectedMapHighlight.feature.screen_x} ${selectedMapHighlight.feature.screen_y})`}>
+                        <g className="mapSelectionFeatureContrast">
+                          <AdsbTrafficSymbol feature={selectedMapHighlight.feature} />
+                        </g>
+                        <AdsbTrafficSymbol feature={selectedMapHighlight.feature} />
+                      </g>
                     ) : selectedMapHighlight.kind === "path" ? (
                       <g>
                         {selectedMapHighlight.feature.paths.map((path, index) => (
@@ -7530,7 +7517,19 @@ function MapPage(props: {
           onAction={onStatusAction}
           options={ownshipSourceOptions}
           onDisabledAction={showDisabledAction}
-          transportControls={<SituationTransportRow controls={ownshipControls.situation_controls} onInput={onSituationControlInput} onDisabledAction={showDisabledAction} />}
+          transportControls={
+            <SituationControlFooter
+              controls={ownshipControls}
+              onInput={onSituationControlInput}
+              onTextAction={(actionId, value) => {
+                if (!uiSession) return;
+                void uiSession.performOwnshipTextAction(actionId, value, Date.now())
+                  .then(onPlaybackSnapshotChange)
+                  .catch((error: unknown) => showDisabledAction(errorMessage(error)));
+              }}
+              onDisabledAction={showDisabledAction}
+            />
+          }
         />
 
         <div className="chartDock mapChartDock">
@@ -11078,7 +11077,9 @@ function ChartsPage(props: {
       void props.uiSession
         .selectOwnshipSource({ kind: "source", source_id: sourceIdString(source.source_id) })
         .then(props.onPlaybackSnapshotChange)
-        .finally(() => trayGroup.close("ownship"));
+        .finally(() => {
+          if (!source.keep_tray_open_on_select) trayGroup.close("ownship");
+        });
     },
   }));
   const loadProcedureEnabled = loadProcedureOptions.length > 0;
@@ -11271,7 +11272,19 @@ function ChartsPage(props: {
           onAction={() => {}}
           options={ownshipSourceOptions}
           onDisabledAction={showDisabledAction}
-          transportControls={<SituationTransportRow controls={ownshipControls.situation_controls} onInput={props.onSituationControlInput} onDisabledAction={showDisabledAction} />}
+          transportControls={
+            <SituationControlFooter
+              controls={ownshipControls}
+              onInput={props.onSituationControlInput}
+              onTextAction={(actionId, value) => {
+                if (!props.uiSession) return;
+                void props.uiSession.performOwnshipTextAction(actionId, value, Date.now())
+                  .then(props.onPlaybackSnapshotChange)
+                  .catch((error: unknown) => showDisabledAction(errorMessage(error)));
+              }}
+              onDisabledAction={showDisabledAction}
+            />
+          }
         />
         {trayOpen ? <TrayScrim ariaLabel="Close chart tray" onClose={trayGroup.closeAll} /> : null}
 
@@ -12638,6 +12651,72 @@ function SituationTransportRow(props: {
         );
       })}
     </div>
+  );
+}
+
+function SituationControlFooter(props: {
+  controls: OwnshipControlModel;
+  onInput: (input: SituationControlInput) => void;
+  onTextAction: (actionId: string, value: string) => void;
+  onDisabledAction?: (message: string) => void;
+}) {
+  return (
+    <div className="situationControlFooter">
+      {props.controls.text_action ? (
+        <OwnshipTextActionControl
+          control={props.controls.text_action}
+          onSubmit={props.onTextAction}
+          onDisabledAction={props.onDisabledAction}
+        />
+      ) : null}
+      <SituationTransportRow
+        controls={props.controls.situation_controls}
+        onInput={props.onInput}
+        onDisabledAction={props.onDisabledAction}
+      />
+    </div>
+  );
+}
+
+function OwnshipTextActionControl(props: {
+  control: NonNullable<OwnshipControlModel["text_action"]>;
+  onSubmit: (actionId: string, value: string) => void;
+  onDisabledAction?: (message: string) => void;
+}) {
+  const [value, setValue] = useState(props.control.value);
+  useEffect(() => setValue(props.control.value), [props.control.action_id, props.control.value]);
+  const disabledReason = disabledReasonText(props.control.disabled_reason);
+  return (
+    <form
+      className="situationTextAction"
+      onPointerDown={stopPointer}
+      onPointerUp={stopPointer}
+      onSubmit={(event) => {
+        event.preventDefault();
+        if (!props.control.enabled) {
+          if (disabledReason && props.onDisabledAction) props.onDisabledAction(disabledReason);
+          return;
+        }
+        props.onSubmit(props.control.action_id, value);
+      }}
+    >
+      <label>
+        <span>{props.control.label}</span>
+        <input
+          value={value}
+          placeholder={props.control.placeholder}
+          aria-label={props.control.label}
+          onChange={(event) => setValue(event.target.value.toUpperCase())}
+        />
+      </label>
+      <button
+        type="submit"
+        className="trayButton situationTextActionSubmit"
+        aria-disabled={!props.control.enabled || undefined}
+      >
+        {props.control.submit_label}
+      </button>
+    </form>
   );
 }
 

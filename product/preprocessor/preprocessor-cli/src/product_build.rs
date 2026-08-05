@@ -1950,6 +1950,12 @@ mod gc;
 use gc::*;
 pub use gc::{gc_build_cache, gc_fetch_cache, gc_publication};
 
+mod artifact_retention;
+pub use artifact_retention::{gc_artifact_retention, ArtifactRetentionGcReport};
+
+mod rust_build_gc;
+pub use rust_build_gc::{gc_rust_build_cache, RustBuildCacheGcReport};
+
 mod config;
 pub(crate) use config::default_artifact_write_path;
 use config::*;

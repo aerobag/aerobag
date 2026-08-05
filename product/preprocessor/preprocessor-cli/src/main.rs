@@ -41,11 +41,12 @@ use preprocessor_vectors::{
 };
 use product_build::{
     audit_procedure_geometry_from_sqlite, build_cycle, build_product, default_artifact_write_path,
-    ensure_nofile_limit, explain_product_build, gc_build_cache, gc_fetch_cache, gc_publication,
-    maybe_reexec_build_under_cgroup, merge_current_artifacts_manifests, publish_discovery_manifest,
+    ensure_nofile_limit, explain_product_build, gc_artifact_retention, gc_build_cache,
+    gc_fetch_cache, gc_publication, gc_rust_build_cache, maybe_reexec_build_under_cgroup,
+    merge_current_artifacts_manifests, publish_discovery_manifest, ArtifactRetentionGcReport,
     BuildCacheGcConfig, BuildCacheGcMode, BuildCacheGcReport, FetchCacheGcCandidateKind,
     FetchCacheGcConfig, FetchCacheGcReport, ProcedureGeometryAuditFilter, ProductBuildConfig,
-    PublicationGcConfig, PublicationGcReport,
+    PublicationGcConfig, PublicationGcReport, RustBuildCacheGcReport,
 };
 use sha2::{Digest, Sha256};
 
@@ -1783,6 +1784,38 @@ fn print_fetch_cache_gc_report(mode: BuildCacheGcMode, report: FetchCacheGcRepor
     }
 }
 
+fn print_artifact_retention_gc_report(mode: BuildCacheGcMode, report: ArtifactRetentionGcReport) {
+    println!("mode {}", gc_mode_name(mode));
+    println!("current_manifest_dirs {}", report.current_manifest_dirs);
+    println!(
+        "retained_history_manifest_dirs {}",
+        report.retained_history_manifest_dirs
+    );
+    println!("evictable_manifest_dirs {}", report.evictable_manifest_dirs);
+    println!(
+        "manifest_reclaimable_bytes {}",
+        report.manifest_reclaimed_bytes
+    );
+    println!("retained_rotated_logs {}", report.retained_rotated_logs);
+    println!("evictable_rotated_logs {}", report.evictable_rotated_logs);
+    println!("log_reclaimable_bytes {}", report.log_reclaimed_bytes);
+}
+
+fn print_rust_build_cache_gc_report(mode: BuildCacheGcMode, report: RustBuildCacheGcReport) {
+    println!("mode {}", gc_mode_name(mode));
+    println!("target_root {}", report.target_root.display());
+    println!("retention_hours {}", report.retention_hours);
+    println!("max_bytes {}", report.max_bytes);
+    println!("profile_roots {}", report.profile_roots);
+    println!("scanned_entries {}", report.scanned_entries);
+    println!("evictable_entries {}", report.evictable_entries);
+    println!("managed_bytes {}", report.managed_bytes);
+    println!("reclaimable_bytes {}", report.reclaimed_bytes);
+    println!("retained_bytes {}", report.retained_bytes);
+    println!("pressure_purge {}", report.pressure_purge);
+    println!("skipped_locked {}", report.skipped_locked);
+}
+
 fn main() -> anyhow::Result<()> {
     let args: Vec<String> = env::args().collect();
     if args.get(1).map(String::as_str) == Some(TOOL_RUNNER_ARG) {
@@ -2807,12 +2840,20 @@ fn main() -> anyhow::Result<()> {
 
             println!("gc step build-cache");
             let build_cache_report = gc_build_cache(&BuildCacheGcConfig {
-                build_root: config.build_root,
+                build_root: config.build_root.clone(),
                 mode: config.mode,
                 grace_hours: config.grace_hours,
                 bootstrap_from_build_manifests: true,
             })?;
             print_build_cache_gc_report(config.mode, build_cache_report);
+
+            println!("gc step artifact-retention");
+            let retention_report = gc_artifact_retention(&config.build_root, config.mode)?;
+            print_artifact_retention_gc_report(config.mode, retention_report);
+
+            println!("gc step rust-build-cache");
+            let rust_report = gc_rust_build_cache(&config.build_root, config.mode)?;
+            print_rust_build_cache_gc_report(config.mode, rust_report);
         }
         Some("gc-build-cache") => {
             let config = build_cache_gc_config_from_args(&args[2..])?;

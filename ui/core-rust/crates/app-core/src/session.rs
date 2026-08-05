@@ -9620,10 +9620,12 @@ fn flight_plan_selection_points(
         let Some(symbol) = nav_symbol_feature(store, &nav_ref)? else {
             continue;
         };
+        let Some(feature_id) = crate::flight_plan_waypoint_feature_id(&nav_ref) else {
+            continue;
+        };
         let position = nav_ref_position(store, &nav_ref, procedure_airport_id.as_deref())?;
         features.push(NavRefSelectionPoint {
-            feature_id: crate::flight_plan_waypoint_feature_id(&nav_ref)
-                .expect("flight-plan selection points exclude spatial NavRefs"),
+            feature_id,
             nav_ref,
             symbol,
             position,
@@ -23081,7 +23083,7 @@ mod tests {
     }
 
     #[test]
-    fn gps_capture_replay_follow_does_not_snap_to_stale_viewport_when_gps_is_lost() {
+    fn gps_capture_replay_follow_preserves_intent_without_snapping_when_gps_is_lost() {
         let init =
             create_ui_session(sample_guided_plan(), &[], None, None).expect("create session");
         let seattle_viewport = MapViewport {
@@ -23126,8 +23128,8 @@ mod tests {
             seek_playback_in_session(init.handle, 10.0, 10_000.0).expect("seek into GPS gap");
         assert!(lost.app_ui_state.ownship.render.position.is_none());
         assert!(
-            !lost.map_follow_ui_state.following,
-            "follow should disengage while the GPS source is unavailable"
+            lost.map_follow_ui_state.following,
+            "follow intent should survive a temporary GPS outage"
         );
         let lost_viewport = lost
             .map_follow_target_viewport

@@ -1,7 +1,7 @@
 {
   "schema_version": 1,
   "repository": "https://github.com/aerobag/test-artifacts.git",
-  "commit": "88afc90ad6f48097a72cbee282525d8608521035",
+  "commit": "e05cc1971cf46ac514523caa0b211aeadddcab7c",
   "fixtures": {
     "android-smoke-publication": {
       "path": "e2e/android-smoke-publication",

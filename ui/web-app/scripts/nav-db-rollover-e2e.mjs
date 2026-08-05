@@ -220,20 +220,14 @@ async function buildRichFlightPlan(page) {
   );
 
   await clickButtonByText(page, '[data-testid^="plan-row-"]', "KPAE");
-  await click(page, '.pageLayer.isActive [data-testid="plan-row-action-select_procedure"]');
+  await click(page, '.pageLayer.isActive [data-testid="plan-row-action-select_approach"]');
   await waitFor(
     () => page.evalValue("document.querySelectorAll('.pageLayer.isActive .procedureChoiceButton').length > 0"),
     30_000,
     "KPAE procedures",
   );
   await clickButtonByText(page, ".pageLayer.isActive .procedureChoiceButton", "VOR-A");
-  await waitFor(
-    () => page.evalValue(`Array.from(document.querySelectorAll(".pageLayer.isActive .airwayChoiceButton"))
-      .some((button) => button.textContent?.trim() === "ECEPO")`),
-    30_000,
-    "ECEPO transition",
-  );
-  await clickButtonByText(page, ".pageLayer.isActive .airwayChoiceButton", "ECEPO");
+  await click(page, '.pageLayer.isActive [data-testid="plan-procedure-transition-ECEPO"]');
   await waitForProbe(
     page,
     (probe) => probe.plan_ui_state?.display_rows?.some((row) => row.procedure_id?.includes("VOR-A")),

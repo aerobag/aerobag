@@ -1188,6 +1188,19 @@ struct CifpTerminalWaypoint {
     name: String,
 }
 
+const MAX_CIFP_CANONICAL_FIX_DISAGREEMENT_NM: f64 = 0.05;
+
+fn coordinate_distance_nm(left: (f64, f64), right: (f64, f64)) -> f64 {
+    let left_lat = left.0.to_radians();
+    let right_lat = right.0.to_radians();
+    let delta_lat = right_lat - left_lat;
+    let delta_lon = (right.1 - left.1).to_radians();
+    let haversine = (delta_lat / 2.0).sin().powi(2)
+        + left_lat.cos() * right_lat.cos() * (delta_lon / 2.0).sin().powi(2);
+    let central_angle = 2.0 * haversine.sqrt().atan2((1.0 - haversine).max(0.0).sqrt());
+    3440.065 * central_angle
+}
+
 fn parse_cifp_terminal_waypoint(line: &str) -> Option<CifpTerminalWaypoint> {
     if line.len() < 132 || field(line, 4, 1) != "P" || field(line, 12, 1) != "C" {
         return None;
@@ -1238,9 +1251,10 @@ fn insert_missing_cifp_terminal_waypoints(
             continue;
         };
         if let Some((lat, lon)) = existing.get(&record.id) {
+            let disagreement_nm = coordinate_distance_nm((*lat, *lon), (record.lat, record.lon));
             anyhow::ensure!(
-                (*lat - record.lat).abs() < 1e-5 && (*lon - record.lon).abs() < 1e-5,
-                "CIFP terminal waypoint {} conflicts with canonical fix: ({lat},{lon}) vs ({},{})",
+                disagreement_nm <= MAX_CIFP_CANONICAL_FIX_DISAGREEMENT_NM,
+                "CIFP terminal waypoint {} conflicts with canonical fix: ({lat},{lon}) vs ({},{}) ({disagreement_nm:.3} NM apart)",
                 record.id,
                 record.lat,
                 record.lon,
@@ -2082,6 +2096,102 @@ mod tests {
         assert!((lat - 23.6658111111).abs() < 1e-6);
         assert!((lon - -160.5866277778).abs() < 1e-6);
         assert_eq!(kind, "CIFP TERMINAL WAYPOINT");
+    }
+
+    #[test]
+    fn build_data_package_keeps_nearby_canonical_fix_for_terminal_waypoint() {
+        let dir = tempdir().unwrap();
+        let input_dir = dir.path().join("input");
+        let output_dir = dir.path().join("output");
+        fs::create_dir_all(&input_dir).unwrap();
+
+        for name in [
+            "APT.txt", "TWR.txt", "AWOS.txt", "NAV.txt", "DOF.DAT", "AWY.txt",
+        ] {
+            write_empty(&input_dir.join(name));
+        }
+        fs::write(
+            input_dir.join("FIX.txt"),
+            format!("{}\n", build_fix1_line("DAWES")),
+        )
+        .unwrap();
+        fs::write(
+            input_dir.join("FAACIFP18"),
+            format!(
+                "{}\n",
+                build_cifp_terminal_waypoint_record(
+                    "KCDR",
+                    "DAWES",
+                    "K3",
+                    "N47333647",
+                    "W122374522",
+                    "DAWES",
+                )
+            ),
+        )
+        .unwrap();
+
+        let result = build_data_package(&DataBuildRequest {
+            input_dir,
+            output_dir,
+            manifest_version: "2607".to_string(),
+            artifact_stem: None,
+        })
+        .expect("nearby cross-source coordinates should retain the canonical fix");
+        let conn = Connection::open(result.main_db).unwrap();
+        let kind: String = conn
+            .query_row(
+                "SELECT trim(Type) FROM fix WHERE trim(LocationID)='DAWES'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(kind, "YWAYPOINT");
+    }
+
+    #[test]
+    fn build_data_package_rejects_distant_terminal_waypoint_name_collision() {
+        let dir = tempdir().unwrap();
+        let input_dir = dir.path().join("input");
+        let output_dir = dir.path().join("output");
+        fs::create_dir_all(&input_dir).unwrap();
+
+        for name in [
+            "APT.txt", "TWR.txt", "AWOS.txt", "NAV.txt", "DOF.DAT", "AWY.txt",
+        ] {
+            write_empty(&input_dir.join(name));
+        }
+        fs::write(
+            input_dir.join("FIX.txt"),
+            format!("{}\n", build_fix1_line("DAWES")),
+        )
+        .unwrap();
+        fs::write(
+            input_dir.join("FAACIFP18"),
+            format!(
+                "{}\n",
+                build_cifp_terminal_waypoint_record(
+                    "KCDR",
+                    "DAWES",
+                    "K3",
+                    "N48333542",
+                    "W122374522",
+                    "DAWES",
+                )
+            ),
+        )
+        .unwrap();
+
+        let error = build_data_package(&DataBuildRequest {
+            input_dir,
+            output_dir,
+            manifest_version: "2607".to_string(),
+            artifact_stem: None,
+        })
+        .expect_err("distant same-name terminal waypoint must remain a hard failure");
+        assert!(error
+            .to_string()
+            .contains("CIFP terminal waypoint DAWES conflicts with canonical fix"));
     }
 
     #[test]

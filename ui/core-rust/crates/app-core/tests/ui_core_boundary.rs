@@ -566,6 +566,71 @@ fn map_state_runtime_and_projection_are_owned_by_map_controller() {
 }
 
 #[test]
+fn situation_state_and_projection_are_owned_by_situation_controller() {
+    let session_text = read_repo_file("ui/core-rust/crates/app-core/src/session.rs");
+    let session = strip_rust_tests(&session_text);
+    let controller = read_repo_file("ui/core-rust/crates/app-core/src/situation_controller.rs");
+    let state = read_repo_file("ui/core-rust/crates/app-core/src/state.rs");
+    let ui_session = balanced_block_after_marker(session, "struct UiSession {");
+    let model = balanced_block_after_marker(session, "struct SessionModel");
+
+    assert!(
+        ui_session.contains("situation: SituationController"),
+        "UiSession must compose situation behavior through one controller"
+    );
+    for field in [
+        "app_state",
+        "ownship",
+        "playback",
+        "plan_preview",
+        "bad_autopilot",
+        "map_follow",
+    ] {
+        assert!(
+            !model.contains(field),
+            "situation field {field} must not return to SessionModel"
+        );
+    }
+    assert!(
+        controller.contains("struct SituationModel")
+            && controller.contains("pub(crate) struct SituationController")
+            && controller.contains("pub(crate) struct SituationProjection"),
+        "SituationController must own its model and cached UI projection"
+    );
+    assert!(
+        !session.contains("session.app_state")
+            && !session.contains("session.plan_preview")
+            && !session.contains("session.bad_autopilot")
+            && !session.contains("session.map_follow"),
+        "session code must use SituationController APIs rather than raw situation storage"
+    );
+    let checkpoint =
+        balanced_block_after_marker(session, "struct SessionModelTransactionCheckpoint");
+    assert!(
+        checkpoint.contains("situation: SituationModelCheckpoint"),
+        "session transactions must checkpoint the situation model"
+    );
+    assert!(
+        function_body(session, "rollback").contains("session.situation.rollback_model"),
+        "session transaction rollback must restore the situation model"
+    );
+    assert!(
+        function_body(session, "try_snapshot_for_session")
+            .contains("project_situation_for_session"),
+        "full snapshots must consume the cached situation projection"
+    );
+    assert!(
+        function_body(&session_text, "project_session_app_ui_state")
+            .contains("project_app_ui_state_from_projected_parts"),
+        "aggregate UI projection must consume SituationController's ownship projection"
+    );
+    assert!(
+        state.contains("pub struct AppState") && state.contains("pub ownship: OwnshipState"),
+        "AppState remains a public compatibility DTO while session storage is decomposed"
+    );
+}
+
+#[test]
 fn platform_flight_plan_mutations_do_not_resync_guidance_after_core_mutation() {
     let web = read_repo_file("ui/web-app/src/domain/appCoreAdapter.ts");
     let android = read_repo_file(

@@ -45,6 +45,7 @@ mod sequencing;
 pub mod session;
 mod settings_controller;
 pub mod situation;
+mod situation_controller;
 pub mod state;
 pub mod terrain;
 pub mod ui_work_scheduler;

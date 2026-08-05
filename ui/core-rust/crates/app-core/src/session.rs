@@ -47,6 +47,7 @@ use crate::{
         CloudHttpResponse, CloudPersistentState, CloudUiActionId, CloudUiFieldValue,
         UiCloudPageState, CLOUD_STATUS_ID,
     },
+    content::{ContentPolicy, ContentReport},
     data_status::{
         parse_status_action_id, procedure_geometry_warning_presentation, project_data_status_state,
         DataStatusRecord, ProcedureGeometryWarningContext, UiDataStatusPageFact,
@@ -75,7 +76,7 @@ use crate::{
         LiveFeedSseEvent, LiveFeedsState, LIVE_FEEDS_BASE_PATH, NEXRAD_FRAME_WINDOW_SIZE,
     },
     map_controller::{MapController, MapModelCheckpoint},
-    map_follow::{MapFollowSessionState, MapFollowUiState},
+    map_follow::MapFollowUiState,
     map_overlay::{
         obstacle_layer_config_from_live_manifest_value, vector_overlay_input_requests,
         visible_obstacle_tile_window, MetarTileRecord, NavRefSelectionPoint,
@@ -84,11 +85,14 @@ use crate::{
     },
     map_overlay_config_from_vector_manifest_json, nav_kv_key_for_query,
     planning::NavElementUiView,
-    playback::PlaybackSessionState,
     project_nav_symbol_feature,
     publication::{PublicationResolvedResource, PublicationResolver},
     query_map_overlay_for_surface_at, query_map_selection_for_surface_in_time_zone,
     settings_controller::{default_settings_page_state, SettingsController, SettingsProjection},
+    situation_controller::{
+        selected_ownship_source_kind, PlanPreviewPointer, PlanPreviewState, SituationController,
+        SituationModelCheckpoint, SituationProjection,
+    },
     state,
     weather_controller::{
         nexrad_animation_for_frames,
@@ -169,6 +173,7 @@ pub struct UiSessionCreateTiming {
 
 struct UiSession {
     model: SessionModel,
+    situation: SituationController,
     weather: WeatherController,
     map: MapController,
     runtime: SessionRuntime,
@@ -214,6 +219,8 @@ pub struct UiSessionDiagnostics {
     pub settings_revision: u64,
     pub weather_revision: u64,
     pub map_revision: u64,
+    pub situation_revision: u64,
+    pub situation_projection_count: u64,
     pub last_session_payload_serialized_bytes: u64,
     pub transaction_commit_count: u64,
     pub transaction_rollback_count: u64,
@@ -230,6 +237,7 @@ struct SessionDiagnosticsCounters {
     settings_projection_count: AtomicU64,
     weather_projection_count: AtomicU64,
     map_projection_count: AtomicU64,
+    situation_projection_count: AtomicU64,
     last_session_payload_serialized_bytes: AtomicU64,
     transaction_commit_count: AtomicU64,
     transaction_rollback_count: AtomicU64,
@@ -243,6 +251,7 @@ impl SessionDiagnosticsCounters {
         settings_revision: u64,
         weather_revision: u64,
         map_revision: u64,
+        situation_revision: u64,
     ) -> UiSessionDiagnostics {
         UiSessionDiagnostics {
             generation,
@@ -256,9 +265,11 @@ impl SessionDiagnosticsCounters {
             settings_projection_count: self.settings_projection_count.load(Ordering::Relaxed),
             weather_projection_count: self.weather_projection_count.load(Ordering::Relaxed),
             map_projection_count: self.map_projection_count.load(Ordering::Relaxed),
+            situation_projection_count: self.situation_projection_count.load(Ordering::Relaxed),
             settings_revision,
             weather_revision,
             map_revision,
+            situation_revision,
             last_session_payload_serialized_bytes: self
                 .last_session_payload_serialized_bytes
                 .load(Ordering::Relaxed),
@@ -274,11 +285,9 @@ struct SessionModel {
     flight_plan_route_revision: u64,
     nav_data_epoch: u64,
     nav_db_advance_blocked: bool,
-    app_state: AppState,
-    playback: PlaybackSessionState,
-    plan_preview: PlanPreviewState,
-    bad_autopilot: BadAutopilotState,
-    map_follow: MapFollowSessionState,
+    active_plan: Option<FlightPlan>,
+    content_policy: ContentPolicy,
+    last_content_report: Option<ContentReport>,
     guidance_leg_geometry: Arc<HashMap<String, GuidanceLegGeometry>>,
     chart_page_state: UiChartPageState,
     nav_kv_store_id: Option<u32>,
@@ -429,27 +438,6 @@ pub struct UiSessionResourceEffect {
     pub resource: CoreResourceRequest,
     #[serde(default)]
     pub completion_invalidations: Vec<UiInvalidation>,
-}
-
-#[derive(Debug, Clone, PartialEq, Default)]
-struct BadAutopilotState {
-    running: bool,
-    active_detail_id: Option<String>,
-    offset_nm: f64,
-    wander_phase_rad: f64,
-    last_tick_epoch_ms: Option<f64>,
-    last_position: Option<LatLon>,
-}
-
-#[derive(Debug, Clone, PartialEq, Default)]
-struct PlanPreviewState {
-    pointer: Option<PlanPreviewPointer>,
-}
-
-#[derive(Debug, Clone, PartialEq)]
-struct PlanPreviewPointer {
-    row_uid: String,
-    offset_nm: f64,
 }
 
 const DIRECT_SITUATION_SOURCE_ID: &str = "__direct_situation__";
@@ -624,6 +612,7 @@ impl SessionSlot {
             session.settings.revision(),
             session.weather.revision(),
             session.map.revision(),
+            session.situation.revision(),
         )
     }
 }
@@ -1170,8 +1159,8 @@ struct OwnshipTerrainRefreshKey {
 
 fn ownship_terrain_refresh_key(session: &UiSession) -> OwnshipTerrainRefreshKey {
     let has_position = session
-        .app_state
-        .ownship
+        .situation
+        .ownship()
         .resolved
         .kinematics
         .as_ref()
@@ -3351,6 +3340,17 @@ fn project_weather_for_session(session: &mut UiSession) -> WeatherProjection {
     result.projection
 }
 
+fn project_situation_for_session(session: &mut UiSession) -> SituationProjection {
+    let result = session.situation.project();
+    if result.rebuilt {
+        session
+            .diagnostics
+            .situation_projection_count
+            .fetch_add(1, Ordering::Relaxed);
+    }
+    result.projection
+}
+
 fn json_observed_at_utc(value: &serde_json::Value) -> Option<DateTime<Utc>> {
     value
         .get("observed_at_utc")
@@ -3542,11 +3542,11 @@ fn create_ui_session_inner(
     );
     let mut map = MapController::default();
     let map_projection = map.project().projection;
+    let mut situation = SituationController::new(app_state.ownship.clone());
+    let situation_projection = situation.project().projection;
     if let Some(mark) = mark.as_deref_mut() {
         mark("core_derive_chart_page_state");
     }
-    let playback = PlaybackSessionState::default();
-    let mut map_follow = MapFollowSessionState::default();
     if let Some(mark) = mark.as_deref_mut() {
         mark("core_default_session_state");
     }
@@ -3556,10 +3556,10 @@ fn create_ui_session_inner(
     if let Some(mark) = mark.as_deref_mut() {
         mark("core_project_app_ui_state");
     }
-    let playback_ui_state = playback.ui_state();
-    let playback_panel_state = playback_panel_state_for_app_state(&app_state);
-    let (map_follow_ui_state, map_follow_target_viewport) =
-        map_follow.snapshot_projection(&app_state.ownship.render);
+    let playback_ui_state = situation_projection.playback_ui_state;
+    let playback_panel_state = situation_projection.playback_panel_state;
+    let map_follow_ui_state = situation_projection.map_follow_ui_state;
+    let map_follow_target_viewport = situation_projection.map_follow_target_viewport;
     if let Some(mark) = mark.as_deref_mut() {
         mark("core_project_other_ui_state");
     }
@@ -3629,17 +3629,18 @@ fn create_ui_session_inner(
         .weather_projection_count
         .store(1, Ordering::Relaxed);
     diagnostics.map_projection_count.store(1, Ordering::Relaxed);
+    diagnostics
+        .situation_projection_count
+        .store(1, Ordering::Relaxed);
     let session = UiSession {
         model: SessionModel {
             session_revision: 0,
             flight_plan_route_revision: 0,
             nav_data_epoch: 0,
             nav_db_advance_blocked: false,
-            app_state,
-            playback,
-            plan_preview: PlanPreviewState::default(),
-            bad_autopilot: BadAutopilotState::default(),
-            map_follow,
+            active_plan: Some(active_plan),
+            content_policy: app_state.content_policy,
+            last_content_report: app_state.last_content_report,
             guidance_leg_geometry: Arc::new(guidance_leg_geometry),
             chart_page_state,
             nav_kv_store_id: None,
@@ -3666,6 +3667,7 @@ fn create_ui_session_inner(
             wall_clock_epoch_ms,
             altitude_planner_wind_selection: AltitudePlannerWindSelection::NoWind,
         },
+        situation,
         weather: WeatherController::default(),
         map,
         runtime: SessionRuntime::default(),
@@ -3974,7 +3976,6 @@ pub fn perform_cloud_ui_action_in_session(
     run_session_model_transaction(session, |session| {
         advance_session_wall_clock(session, now_epoch_ms);
         let plan = session
-            .app_state
             .active_plan
             .clone()
             .ok_or_else(|| missing_active_plan_error("cloud action"))?;
@@ -4071,7 +4072,6 @@ pub fn complete_cloud_provider_request_in_session(
         let mut invalidations = vec![UiInvalidation::SessionSnapshot];
         if let Some(remote_plan) = completion.remote_flight_plan()? {
             let navigation_active = session
-                .app_state
                 .active_plan
                 .as_ref()
                 .is_some_and(|plan| plan.guidance.is_some());
@@ -4095,6 +4095,7 @@ enum SessionModelTransactionError {
 
 struct SessionModelTransactionCheckpoint {
     model: SessionModel,
+    situation: SituationModelCheckpoint,
     weather: WeatherModelCheckpoint,
     map: MapModelCheckpoint,
     pending_effect_count: usize,
@@ -4104,6 +4105,7 @@ impl SessionModelTransactionCheckpoint {
     fn capture(session: &UiSession) -> Self {
         Self {
             model: session.model.clone(),
+            situation: session.situation.checkpoint_model(),
             weather: session.weather.checkpoint_model(),
             map: session.map.checkpoint_model(),
             pending_effect_count: session.runtime.pending_resource_effects.len(),
@@ -4112,6 +4114,7 @@ impl SessionModelTransactionCheckpoint {
 
     fn rollback(self, session: &mut UiSession) {
         session.model = self.model;
+        session.situation.rollback_model(self.situation);
         session.weather.rollback_model(self.weather);
         session.map.rollback_model(self.map);
         session
@@ -4636,9 +4639,9 @@ fn install_guidance_leg_geometry(
             .map(|geometry| (geometry.leg_id.clone(), geometry))
             .collect(),
     );
-    if selected_ownship_source_kind(&session.app_state.ownship)
+    if selected_ownship_source_kind(session.situation.ownship())
         == Some(crate::OwnshipSourceKind::FlightPlanSimulator)
-        && session.plan_preview.pointer.is_none()
+        && session.situation.plan_preview().pointer.is_none()
     {
         sync_plan_preview_to_active_leg(session)?;
     }
@@ -4715,7 +4718,7 @@ fn sync_guidance_geometry_for_session(
     session: &mut UiSession,
     started: &crate::CoreDebugTimer,
 ) -> Result<(), HadReadError> {
-    let Some(plan) = session.app_state.active_plan.clone() else {
+    let Some(plan) = session.active_plan.clone() else {
         Arc::make_mut(&mut session.guidance_leg_geometry).clear();
         crate::core_debug_log(
             "plan.guidance.sync.core_phase",
@@ -4795,7 +4798,7 @@ pub fn project_flight_plan_route_in_session(handle: u32) -> AppResult<HadOperati
     let slot = session_slot(handle)?;
     let session_guard = slot.lock_running()?;
     let session = &*session_guard;
-    let Some(plan) = session.app_state.active_plan.clone() else {
+    let Some(plan) = session.active_plan.clone() else {
         return Ok(HadOperationOutcome::complete(
             serde_json::to_value(crate::FlightPlanRouteProjection {
                 flight_plan_route_revision: session.flight_plan_route_revision,
@@ -4906,10 +4909,7 @@ pub fn register_ownship_source_in_session(
     let slot = session_slot(handle)?;
     let mut session_guard = slot.lock_running()?;
     let session = &mut *session_guard;
-    session.app_state = state::reduce(
-        &session.app_state,
-        AppEvent::RegisterOwnshipSource(registration),
-    )?;
+    session.situation.register_source(registration);
     changed_session_snapshot_outcome(session)
 }
 
@@ -4921,10 +4921,7 @@ pub fn update_ownship_source_status_in_session(
     let mut session_guard = slot.lock_running()?;
     let session = &mut *session_guard;
     maybe_log_gps_capture_status(session, &update);
-    session.app_state = state::reduce(
-        &session.app_state,
-        AppEvent::UpdateOwnshipSourceStatus(update),
-    )?;
+    session.situation.update_source_status(update);
     changed_session_snapshot_outcome(session)
 }
 
@@ -4944,8 +4941,8 @@ fn maybe_log_gps_capture_status(session: &UiSession, update: &crate::OwnshipSour
         return;
     }
     let source_kind = session
-        .app_state
-        .ownship
+        .situation
+        .ownship()
         .sources
         .iter()
         .find(|source| source.source_id == update.source_id)
@@ -4969,8 +4966,8 @@ fn maybe_log_gps_capture_sample(session: &UiSession, sample: &crate::SituationSa
         return;
     }
     if session
-        .app_state
-        .ownship
+        .situation
+        .ownship()
         .sources
         .iter()
         .find(|source| source.source_id == sample.source_id)
@@ -5004,7 +5001,7 @@ pub fn set_ownship_policy_in_session(
     let slot = session_slot(handle)?;
     let mut session_guard = slot.lock_running()?;
     let session = &mut *session_guard;
-    session.app_state = state::reduce(&session.app_state, AppEvent::SetOwnshipPolicy(policy))?;
+    session.situation.set_policy(policy);
     sync_adsb_ownship_status_record(session);
     changed_session_snapshot_outcome(session)
 }
@@ -5020,8 +5017,8 @@ pub fn select_ownship_source_in_session(
     let mut sequenced_guidance = false;
     let selected_source_kind = match &selection {
         crate::OwnshipSelectionCommand::Source { source_id } => session
-            .app_state
-            .ownship
+            .situation
+            .ownship()
             .sources
             .iter()
             .find(|source| source.source_id == *source_id)
@@ -5033,14 +5030,13 @@ pub fn select_ownship_source_in_session(
     {
         return session_snapshot_outcome(session);
     }
-    session.app_state =
-        state::reduce(&session.app_state, AppEvent::SelectOwnshipSource(selection))?;
+    session.situation.select_source(selection);
     match selected_source_kind {
         Some(crate::OwnshipSourceKind::FlightPlanSimulator) => {
             sync_plan_preview_to_active_leg(session)?;
         }
         Some(crate::OwnshipSourceKind::BadAutopilot) => {
-            session.bad_autopilot = BadAutopilotState::default();
+            session.situation.reset_bad_autopilot();
             sequenced_guidance =
                 tick_bad_autopilot(session, 0.0)?.is_some_and(|motion| motion.sequenced_guidance);
         }
@@ -5082,12 +5078,11 @@ pub fn perform_ownship_text_action_in_session(
         crate::SourceConnectionState::Searching,
         format!("Searching for {registration}"),
     )?;
-    session.app_state = state::reduce(
-        &session.app_state,
-        AppEvent::SelectOwnshipSource(crate::OwnshipSelectionCommand::Source {
+    session
+        .situation
+        .select_source(crate::OwnshipSelectionCommand::Source {
             source_id: crate::OwnshipSourceId(crate::adsb::INTERNET_ADSB_SOURCE_ID.to_string()),
-        }),
-    )?;
+        });
     sync_adsb_ownship_status_record(session);
     prepare_adsb_ownship_effect(session);
     changed_session_snapshot_outcome_with_invalidations(
@@ -5124,7 +5119,8 @@ pub fn load_playback_trace_in_session(
     let mut session_guard = slot.lock_running()?;
     let session = &mut *session_guard;
     let playback_state = session
-        .playback
+        .situation
+        .playback_mut()
         .load_trace_json(source_path.to_string(), trace_json)?;
     let motion = apply_playback_state_to_ownship(session, playback_state, 0)?;
     changed_session_snapshot_outcome_for_ownship_motion(session, Some(motion))
@@ -5134,9 +5130,8 @@ pub fn play_playback_in_session(handle: u32, now_epoch_ms: f64) -> AppResult<Had
     let slot = session_slot(handle)?;
     let mut session_guard = slot.lock_running()?;
     let session = &mut *session_guard;
-    let motion = session
-        .playback
-        .play(now_epoch_ms)
+    let playback_state = session.situation.playback_mut().play(now_epoch_ms);
+    let motion = playback_state
         .map(|playback_state| {
             apply_playback_state_to_ownship(session, playback_state, now_epoch_ms as i64)
         })
@@ -5148,9 +5143,8 @@ pub fn pause_playback_in_session(handle: u32, now_epoch_ms: f64) -> AppResult<Ha
     let slot = session_slot(handle)?;
     let mut session_guard = slot.lock_running()?;
     let session = &mut *session_guard;
-    let motion = session
-        .playback
-        .pause(now_epoch_ms)
+    let playback_state = session.situation.playback_mut().pause(now_epoch_ms);
+    let motion = playback_state
         .map(|playback_state| {
             apply_playback_state_to_ownship(session, playback_state, now_epoch_ms as i64)
         })
@@ -5166,9 +5160,11 @@ pub fn seek_playback_in_session(
     let slot = session_slot(handle)?;
     let mut session_guard = slot.lock_running()?;
     let session = &mut *session_guard;
-    let motion = session
-        .playback
-        .seek(cursor_seconds, now_epoch_ms)
+    let playback_state = session
+        .situation
+        .playback_mut()
+        .seek(cursor_seconds, now_epoch_ms);
+    let motion = playback_state
         .map(|playback_state| {
             apply_playback_state_to_ownship(session, playback_state, now_epoch_ms as i64)
         })
@@ -5184,9 +5180,11 @@ pub fn set_playback_rate_in_session(
     let slot = session_slot(handle)?;
     let mut session_guard = slot.lock_running()?;
     let session = &mut *session_guard;
-    let motion = session
-        .playback
-        .set_rate(rate, now_epoch_ms)
+    let playback_state = session
+        .situation
+        .playback_mut()
+        .set_rate(rate, now_epoch_ms);
+    let motion = playback_state
         .map(|playback_state| {
             apply_playback_state_to_ownship(session, playback_state, now_epoch_ms as i64)
         })
@@ -5198,9 +5196,8 @@ pub fn tick_playback_in_session(handle: u32, now_epoch_ms: f64) -> AppResult<Had
     let slot = session_slot(handle)?;
     let mut session_guard = slot.lock_running()?;
     let session = &mut *session_guard;
-    let motion = session
-        .playback
-        .tick(now_epoch_ms)
+    let playback_state = session.situation.playback_mut().tick(now_epoch_ms);
+    let motion = playback_state
         .map(|playback_state| {
             apply_playback_state_to_ownship(session, playback_state, now_epoch_ms as i64)
         })
@@ -5465,7 +5462,7 @@ fn chart_page_state_in_session(handle: u32) -> AppResult<HadOperationOutcome> {
 }
 
 fn flight_plan_live_data_for_session(session: &UiSession) -> crate::had_ops::FlightPlanLiveData {
-    let ownship = &session.app_state.ownship.render;
+    let ownship = &session.situation.ownship().render;
     crate::had_ops::FlightPlanLiveData {
         ownship_position: ownship.position,
         ownship_altitude_ft: ownship.pressure_altitude_ft.or(ownship.altitude_msl_ft),
@@ -6288,8 +6285,8 @@ fn activate_direct_to_nav_ref_in_session_outcome(
     let session = &mut *session_guard;
     let plan = session_plan(session)?;
     let from_position = session
-        .app_state
-        .ownship
+        .situation
+        .ownship()
         .render
         .position
         .ok_or_else(|| AppError {
@@ -6417,8 +6414,8 @@ pub(crate) fn perform_flight_plan_row_action_in_session(
         FlightPlanRowActionId::DirectTo => {
             let from_position =
                 session
-                    .app_state
-                    .ownship
+                    .situation
+                    .ownship()
                     .render
                     .position
                     .ok_or_else(|| AppError {
@@ -6559,9 +6556,11 @@ pub fn advance_nav_kv_store_in_session_with_open_result(
             .map(|family| family.id.clone())
     });
     let previous_map_model = live.map.checkpoint_model();
+    let previous_situation_model = live.situation.checkpoint_model();
 
     let mut candidate = UiSession {
         model: live.model.clone(),
+        situation: std::mem::take(&mut live.situation),
         weather: std::mem::take(&mut live.weather),
         map: std::mem::take(&mut live.map),
         runtime: std::mem::take(&mut live.runtime),
@@ -6581,7 +6580,7 @@ pub fn advance_nav_kv_store_in_session_with_open_result(
     mark_cycle_product_freshness_dirty(&mut candidate);
 
     let rebuild = (|| -> Result<UiSessionSnapshot, SessionSnapshotProjectionError> {
-        if let Some(plan) = candidate.app_state.active_plan.as_ref() {
+        if let Some(plan) = candidate.active_plan.as_ref() {
             let rebuilt_plan = crate::had_ops::rebuild_flight_plan_from_nav_kv(store, plan)?;
             replace_session_flight_plan(&mut candidate, rebuilt_plan)
                 .map_err(HadReadError::from)?;
@@ -6649,6 +6648,8 @@ pub fn advance_nav_kv_store_in_session_with_open_result(
             ))
         }
         Err(SessionSnapshotProjectionError::NeedResources(resources)) => {
+            candidate.situation.rollback_model(previous_situation_model);
+            live.situation = candidate.situation;
             live.weather = candidate.weather;
             candidate.map.rollback_model(previous_map_model);
             candidate.map.clear_runtime_caches();
@@ -6660,6 +6661,8 @@ pub fn advance_nav_kv_store_in_session_with_open_result(
             Ok(HadOperationOutcome::NeedResources { resources })
         }
         Err(SessionSnapshotProjectionError::Had(HadReadError::NeedPages(pages))) => {
+            candidate.situation.rollback_model(previous_situation_model);
+            live.situation = candidate.situation;
             live.weather = candidate.weather;
             candidate.map.rollback_model(previous_map_model);
             candidate.map.clear_runtime_caches();
@@ -6695,6 +6698,8 @@ pub fn advance_nav_kv_store_in_session_with_open_result(
             });
             warning.hushable = false;
             let candidate_installed_package_ids = candidate.installed_package_ids.clone();
+            candidate.situation.rollback_model(previous_situation_model);
+            live.situation = candidate.situation;
             live.weather = candidate.weather;
             candidate.map.rollback_model(previous_map_model);
             candidate.map.clear_runtime_caches();
@@ -6880,7 +6885,7 @@ pub fn engage_map_follow_in_session(
     let slot = session_slot(handle)?;
     let mut session_guard = slot.lock_running()?;
     let session = &mut *session_guard;
-    session.map_follow.engage(viewport);
+    session.situation.engage_map_follow(viewport);
     changed_session_snapshot_outcome(session)
 }
 
@@ -6891,7 +6896,7 @@ pub fn disengage_map_follow_in_session(
     let slot = session_slot(handle)?;
     let mut session_guard = slot.lock_running()?;
     let session = &mut *session_guard;
-    session.map_follow.disengage(viewport);
+    session.situation.disengage_map_follow(viewport);
     changed_session_snapshot_outcome(session)
 }
 
@@ -6905,8 +6910,8 @@ pub fn set_map_follow_offset_in_session(
     let mut session_guard = slot.lock_running()?;
     let session = &mut *session_guard;
     session
-        .map_follow
-        .set_anchor_offset(viewport, offset_x_px, offset_y_px);
+        .situation
+        .set_map_follow_anchor(viewport, offset_x_px, offset_y_px);
     changed_session_snapshot_outcome(session)
 }
 
@@ -6919,10 +6924,9 @@ pub fn sync_map_follow_in_session(
     let slot = session_slot(handle)?;
     let mut session_guard = slot.lock_running()?;
     let session = &mut *session_guard;
-    let ownship = session.app_state.ownship.render.clone();
     session
-        .map_follow
-        .sync_for_viewport(&ownship, viewport, width_px, height_px);
+        .situation
+        .sync_map_follow_for_viewport(viewport, width_px, height_px);
     changed_session_snapshot_outcome(session)
 }
 
@@ -6975,14 +6979,13 @@ pub fn set_debug_flag_in_session(
         DebugFlagId::BadAutopilot => {
             session.debug_state.bad_autopilot = enabled;
             if !enabled {
-                session.bad_autopilot = BadAutopilotState::default();
-                if selected_ownship_source_kind(&session.app_state.ownship)
+                session.situation.reset_bad_autopilot();
+                if selected_ownship_source_kind(session.situation.ownship())
                     == Some(crate::OwnshipSourceKind::BadAutopilot)
                 {
-                    session.app_state = state::reduce(
-                        &session.app_state,
-                        AppEvent::SelectOwnshipSource(crate::OwnshipSelectionCommand::Auto),
-                    )?;
+                    session
+                        .situation
+                        .select_source(crate::OwnshipSelectionCommand::Auto);
                 }
             }
         }
@@ -9886,8 +9889,8 @@ pub fn get_map_overlay_in_session_with_point_display_scale_at_epoch_ms(
         overlay.visible_traffic = session.runtime.adsb.visible_traffic(
             metrics,
             crate::adsb::TrafficOwnshipAltitude {
-                altitude_msl_ft: session.app_state.ownship.render.altitude_msl_ft,
-                pressure_altitude_ft: session.app_state.ownship.render.pressure_altitude_ft,
+                altitude_msl_ft: session.situation.ownship().render.altitude_msl_ft,
+                pressure_altitude_ft: session.situation.ownship().render.pressure_altitude_ft,
             },
             session.wall_clock_epoch_ms,
         );
@@ -9942,7 +9945,7 @@ fn flight_plan_overlay_features(
     height_px: f64,
 ) -> Result<Vec<crate::VisibleMapFeature>, HadReadError> {
     let points = flight_plan_selection_points(session)?;
-    let Some(plan) = session.app_state.active_plan.as_ref() else {
+    let Some(plan) = session.active_plan.as_ref() else {
         return Ok(Vec::new());
     };
     let plan = crate::build_flight_plan(plan.clone()).map_err(|err| {
@@ -9975,7 +9978,7 @@ fn flight_plan_overlay_features(
 fn flight_plan_selection_points(
     session: &UiSession,
 ) -> Result<Vec<NavRefSelectionPoint>, HadReadError> {
-    let Some(plan) = session.app_state.active_plan.as_ref() else {
+    let Some(plan) = session.active_plan.as_ref() else {
         return Ok(Vec::new());
     };
     let plan = crate::build_flight_plan(plan.clone()).map_err(|err| {
@@ -10239,7 +10242,7 @@ fn materialize_map_selection_in_session(
             kind: AppErrorKind::Internal,
             message: "weather station airport aliases did not load".to_string(),
         })?;
-    let plan = session.app_state.active_plan.as_ref();
+    let plan = session.active_plan.as_ref();
     let store = session_nav_kv_store(session)?;
     let mut missing_pages = Vec::new();
     let mut availability = |airport_id: &str| match airport_plate_availability(store, airport_id) {
@@ -10328,7 +10331,7 @@ fn materialize_map_selection_in_session(
     selection = map_selection_with_point_details(selection, |position| {
         terrain_elevation_from_cache(session, position)
     });
-    let ownship_position = session.app_state.ownship.render.position;
+    let ownship_position = session.situation.ownship().render.position;
     let selection = map_selection_with_ownship_distances(selection, ownship_position);
     let mut selection =
         map_selection_with_session_action_availability(selection, ownship_position.is_some());
@@ -10336,8 +10339,8 @@ fn materialize_map_selection_in_session(
         let traffic = session.runtime.adsb.traffic_selection_category(
             *metrics,
             crate::adsb::TrafficOwnshipAltitude {
-                altitude_msl_ft: session.app_state.ownship.render.altitude_msl_ft,
-                pressure_altitude_ft: session.app_state.ownship.render.pressure_altitude_ft,
+                altitude_msl_ft: session.situation.ownship().render.altitude_msl_ft,
+                pressure_altitude_ft: session.situation.ownship().render.pressure_altitude_ft,
             },
             click,
             session.wall_clock_epoch_ms,
@@ -10418,7 +10421,7 @@ fn enqueue_ownship_agl_terrain_effect(session: &mut UiSession) {
     {
         return;
     }
-    let ownship = &session.app_state.ownship.render;
+    let ownship = &session.situation.ownship().render;
     if !ownship.altitude_msl_ft.is_some_and(f64::is_finite) {
         return;
     }
@@ -10596,7 +10599,7 @@ pub fn get_scheduled_terrain_overlay_in_session_at_epoch_ms(
             freshness_invalidations,
         );
     }
-    let kinematics = session.app_state.ownship.resolved.kinematics.as_ref();
+    let kinematics = session.situation.ownship().resolved.kinematics.as_ref();
     let has_position = kinematics.is_some_and(|kinematics| {
         kinematics.position.lat.is_finite() && kinematics.position.lon.is_finite()
     });
@@ -11576,8 +11579,8 @@ pub fn destroy_session(handle: u32) {
 
 fn ownship_terrain_altitude_ft(session: &UiSession) -> Option<f64> {
     session
-        .app_state
-        .ownship
+        .situation
+        .ownship()
         .resolved
         .kinematics
         .as_ref()
@@ -11589,7 +11592,7 @@ fn ownship_terrain_altitude_ft(session: &UiSession) -> Option<f64> {
 }
 
 fn ownship_overlay_context(session: &UiSession) -> Option<crate::ObstacleOverlayContext> {
-    let kinematics = session.app_state.ownship.resolved.kinematics.as_ref()?;
+    let kinematics = session.situation.ownship().resolved.kinematics.as_ref()?;
     Some(crate::ObstacleOverlayContext {
         position: kinematics.position,
         track_deg_true: kinematics.track_deg_true,
@@ -11601,14 +11604,10 @@ fn ownship_overlay_context(session: &UiSession) -> Option<crate::ObstacleOverlay
 }
 
 fn session_plan(session: &UiSession) -> AppResult<FlightPlan> {
-    session
-        .app_state
-        .active_plan
-        .clone()
-        .ok_or_else(|| AppError {
-            kind: AppErrorKind::Internal,
-            message: "session missing active plan".to_string(),
-        })
+    session.active_plan.clone().ok_or_else(|| AppError {
+        kind: AppErrorKind::Internal,
+        message: "session missing active plan".to_string(),
+    })
 }
 
 fn session_nav_kv_store(session: &UiSession) -> AppResult<&NavKvStore> {
@@ -11667,7 +11666,6 @@ fn airport_plate_availability(
 fn replace_session_flight_plan(session: &mut UiSession, plan: FlightPlan) -> AppResult<()> {
     store_session_flight_plan(session, plan)?;
     let normalized_plan = session
-        .app_state
         .active_plan
         .clone()
         .ok_or_else(|| missing_active_plan_error("replace flight plan"))?;
@@ -11693,7 +11691,8 @@ fn replace_session_flight_plan(session: &mut UiSession, plan: FlightPlan) -> App
 }
 
 fn store_session_flight_plan(session: &mut UiSession, plan: FlightPlan) -> AppResult<()> {
-    session.app_state = state::reduce(&session.app_state, AppEvent::ReplaceFlightPlan(plan))?;
+    session.active_plan = Some(crate::build_flight_plan(plan)?);
+    session.last_content_report = None;
     session.flight_plan_route_revision = session.flight_plan_route_revision.saturating_add(1);
     Ok(())
 }
@@ -11704,14 +11703,12 @@ fn commit_session_flight_plan_with_invalidations_outcome(
 ) -> AppResult<HadOperationOutcome> {
     let started = crate::CoreDebugTimer::start();
     let prior_plan = session
-        .app_state
         .active_plan
         .clone()
         .ok_or_else(|| missing_active_plan_error("flight-plan mutation"))?;
     run_session_model_transaction(session, |session| {
         replace_session_flight_plan(session, plan)?;
         let accepted_plan = session
-            .app_state
             .active_plan
             .clone()
             .ok_or_else(|| missing_active_plan_error("cloud flight-plan publication"))?;
@@ -11876,7 +11873,11 @@ fn try_snapshot_for_session(
     enqueue_ownship_agl_terrain_effect(session);
     let app_ui_started_at = crate::core_clock_ms();
     let weather_projection = project_weather_for_session(session);
-    let mut app_ui_state = project_session_app_ui_state(session, &weather_projection)?;
+    let situation_started_at = crate::core_clock_ms();
+    let situation_projection = project_situation_for_session(session);
+    let situation_ms = elapsed_ms(situation_started_at);
+    let mut app_ui_state =
+        project_session_app_ui_state(session, &weather_projection, &situation_projection)?;
     session
         .diagnostics
         .app_ui_projection_count
@@ -11885,17 +11886,10 @@ fn try_snapshot_for_session(
     let debug_started_at = crate::core_clock_ms();
     let debug_state = session.debug_state.clone();
     let debug_ms = elapsed_ms(debug_started_at);
-    let playback_panel_started_at = crate::core_clock_ms();
-    let playback_panel_state = playback_panel_state_for_app_state(&session.app_state);
-    let playback_panel_ms = elapsed_ms(playback_panel_started_at);
-    let playback_started_at = crate::core_clock_ms();
-    let playback_ui_state = session.playback.ui_state();
-    let playback_ms = elapsed_ms(playback_started_at);
-    let map_follow_started_at = crate::core_clock_ms();
-    let ownship = session.app_state.ownship.render.clone();
-    let (map_follow_ui_state, map_follow_target_viewport) =
-        session.map_follow.snapshot_projection(&ownship);
-    let map_follow_ms = elapsed_ms(map_follow_started_at);
+    let playback_panel_state = situation_projection.playback_panel_state;
+    let playback_ui_state = situation_projection.playback_ui_state;
+    let map_follow_ui_state = situation_projection.map_follow_ui_state;
+    let map_follow_target_viewport = situation_projection.map_follow_target_viewport;
     let clone_started_at = crate::core_clock_ms();
     let chart_page_state = session.chart_page_state.clone();
     let raster_started_at = crate::core_clock_ms();
@@ -11951,12 +11945,10 @@ fn try_snapshot_for_session(
             "total_ms": total_ms,
             "app_ui_ms": app_ui_ms,
             "debug_ms": debug_ms,
-            "playback_panel_ms": playback_panel_ms,
-            "playback_ms": playback_ms,
-            "map_follow_ms": map_follow_ms,
+            "situation_ms": situation_ms,
             "clone_ms": clone_ms,
             "raster_ms": raster_ms,
-            "projections": ["app_ui", "weather", "settings", "map"],
+            "projections": ["app_ui", "situation", "weather", "settings", "map"],
             "status_boxes": data_status_state.boxes.len(),
             "status_page_rows": data_status_page_state.rows.len(),
             "settings_page_rows": settings_page_state.rows.len(),
@@ -11970,7 +11962,7 @@ fn try_snapshot_for_session(
         nav_data_epoch: session.nav_data_epoch,
         active_nav_db: session.nav_db_artifact.as_ref().map(UiNavDbIdentity::from),
         next_nav_db_maintenance_epoch_ms: next_nav_db_maintenance_epoch_ms(session),
-        app_state: session.app_state.clone(),
+        app_state: app_state_for_session(session),
         app_ui_state,
         playback_ui_state,
         playback_panel_state,
@@ -11994,20 +11986,12 @@ fn try_snapshot_for_session(
     })
 }
 
-fn playback_panel_state_for_app_state(app_state: &AppState) -> UiPlaybackPanelState {
-    UiPlaybackPanelState {
-        visible: situation_source_handler_for_ownship(&app_state.ownship).is_replay(),
-    }
-}
-
-fn selected_ownship_source_kind(ownship: &crate::OwnshipState) -> Option<crate::OwnshipSourceKind> {
-    match &ownship.policy.selection {
-        crate::OwnshipSelectionPolicy::Manual { source_id } => ownship
-            .sources
-            .iter()
-            .find(|source| source.source_id == *source_id)
-            .map(|source| source.source_kind),
-        crate::OwnshipSelectionPolicy::Auto => ownship.resolved.active_source_kind,
+fn app_state_for_session(session: &UiSession) -> AppState {
+    AppState {
+        active_plan: session.active_plan.clone(),
+        ownship: session.situation.ownship().clone(),
+        content_policy: session.content_policy,
+        last_content_report: session.last_content_report.clone(),
     }
 }
 
@@ -12058,7 +12042,7 @@ fn register_default_situation_sources(app_state: AppState) -> AppResult<AppState
 
 fn adsb_ownship_selected(session: &UiSession) -> bool {
     matches!(
-        &session.app_state.ownship.policy.selection,
+        &session.situation.ownship().policy.selection,
         crate::OwnshipSelectionPolicy::Manual { source_id }
             if source_id.0 == crate::adsb::INTERNET_ADSB_SOURCE_ID
     )
@@ -12069,15 +12053,14 @@ fn set_adsb_ownship_status(
     connection_state: crate::SourceConnectionState,
     status_label: String,
 ) -> AppResult<()> {
-    session.app_state = state::reduce(
-        &session.app_state,
-        AppEvent::UpdateOwnshipSourceStatus(crate::OwnshipSourceStatusUpdate {
+    session
+        .situation
+        .update_source_status(crate::OwnshipSourceStatusUpdate {
             source_id: crate::OwnshipSourceId(crate::adsb::INTERNET_ADSB_SOURCE_ID.to_string()),
             connection_state,
             enabled: true,
             status_label,
-        }),
-    )?;
+        });
     Ok(())
 }
 
@@ -12282,8 +12265,14 @@ fn empty_map_overlay_query() -> MapOverlayQueryResult {
 fn project_session_app_ui_state(
     session: &UiSession,
     weather_projection: &WeatherProjection,
+    situation_projection: &SituationProjection,
 ) -> Result<AppUiState, HadReadError> {
-    let mut app_ui_state = state::project_app_ui_state(&session.app_state);
+    let mut app_ui_state = state::project_app_ui_state_from_projected_parts(
+        session.active_plan.as_ref(),
+        situation_projection.ownship.clone(),
+        session.content_policy,
+        session.last_content_report.as_ref(),
+    );
     let mut materialized_plan = None;
     project_bad_autopilot_availability(session, &mut app_ui_state);
     if let (Some(store), Some(position)) = (
@@ -12307,7 +12296,7 @@ fn project_session_app_ui_state(
         .flatten();
     if let (Some(store), Some(plan), Some(active_plan)) = (
         session.nav_kv_store.as_ref(),
-        session.app_state.active_plan.clone(),
+        session.active_plan.clone(),
         app_ui_state.active_plan.as_ref(),
     ) {
         let projection = crate::had_ops::flight_plan_ui_projection(
@@ -12323,7 +12312,7 @@ fn project_session_app_ui_state(
         )?;
         app_ui_state.active_plan = Some(projection.ui_state);
         materialized_plan = Some(projection.materialized);
-    } else if let Some(plan) = session.app_state.active_plan.as_ref() {
+    } else if let Some(plan) = session.active_plan.as_ref() {
         materialized_plan = Some(
             crate::flight_plan_materialization::MaterializedFlightPlan::build(
                 plan,
@@ -12445,8 +12434,8 @@ fn project_flight_data_banner(
         altitude_ft,
         agl_ft,
         vertical_speed_fpm: session
-            .app_state
-            .ownship
+            .situation
+            .ownship()
             .resolved
             .kinematics
             .as_ref()
@@ -12506,10 +12495,6 @@ fn project_situation_controls(session: &UiSession) -> Vec<SituationControlMenuIt
 }
 
 trait SessionSituationSourceHandler {
-    fn is_replay(&self) -> bool {
-        false
-    }
-
     fn apply_input(
         &self,
         _session: &mut UiSession,
@@ -12566,10 +12551,6 @@ impl SessionSituationSourceHandler for NullSituationSourceHandler {}
 impl SessionSituationSourceHandler for LiveSituationSourceHandler {}
 
 impl SessionSituationSourceHandler for ReplaySituationSourceHandler {
-    fn is_replay(&self) -> bool {
-        true
-    }
-
     fn apply_input(
         &self,
         session: &mut UiSession,
@@ -12582,14 +12563,18 @@ impl SessionSituationSourceHandler for ReplaySituationSourceHandler {
             SituationControlInput::FastForward => 30.0,
             SituationControlInput::SkipForward => 600.0,
         };
-        if let Some(playback_state) = session.playback.jog(delta_seconds, now_epoch_ms) {
+        if let Some(playback_state) = session
+            .situation
+            .playback_mut()
+            .jog(delta_seconds, now_epoch_ms)
+        {
             apply_playback_state_to_ownship(session, playback_state, now_epoch_ms as i64)?;
         }
         Ok(())
     }
 
     fn input_enabled(&self, session: &UiSession, input: SituationControlInput) -> bool {
-        let ui_state = session.playback.ui_state();
+        let ui_state = session.situation.playback().ui_state();
         match input {
             SituationControlInput::SkipBackward | SituationControlInput::FastRewind => {
                 ui_state.cursor_seconds > 1e-6
@@ -12605,7 +12590,7 @@ impl SessionSituationSourceHandler for ReplaySituationSourceHandler {
         session: &UiSession,
         input: SituationControlInput,
     ) -> Option<String> {
-        let ui_state = session.playback.ui_state();
+        let ui_state = session.situation.playback().ui_state();
         if ui_state.duration_seconds <= 1e-6 {
             return Some("Load a trace before replaying.".to_string());
         }
@@ -12644,7 +12629,6 @@ impl SessionSituationSourceHandler for PlanPreviewSituationSourceHandler {
         input: SituationControlInput,
     ) -> Option<String> {
         let records = session
-            .app_state
             .active_plan
             .as_ref()
             .map(|plan| plan_preview_legs(plan, &session.guidance_leg_geometry))
@@ -12672,7 +12656,7 @@ static PLAN_PREVIEW_SITUATION_SOURCE_HANDLER: PlanPreviewSituationSourceHandler 
 fn situation_source_handler_for_session(
     session: &UiSession,
 ) -> &'static dyn SessionSituationSourceHandler {
-    situation_source_handler_for_ownship(&session.app_state.ownship)
+    situation_source_handler_for_ownship(session.situation.ownship())
 }
 
 fn situation_source_handler_for_ownship(
@@ -12693,18 +12677,18 @@ fn project_active_leg_nav_element(
     session: &UiSession,
     store: Option<&NavKvStore>,
 ) -> Result<NavElementUiView, HadReadError> {
-    let Some(plan) = session.app_state.active_plan.as_ref() else {
+    let Some(plan) = session.active_plan.as_ref() else {
         return Ok(NavElementUiView::default());
     };
     let materialized = crate::flight_plan_materialization::MaterializedFlightPlan::build(
         plan,
         &session.guidance_leg_geometry,
-        session.app_state.ownship.render.position,
+        session.situation.ownship().render.position,
     )
     .map_err(|err| HadReadError::Fatal(err.message))?;
     project_materialized_nav_element(
         &materialized,
-        session.app_state.ownship.render.position,
+        session.situation.ownship().render.position,
         store,
     )
 }
@@ -12786,7 +12770,7 @@ struct PlanPreviewLeg {
 }
 
 fn sync_plan_preview_to_active_leg(session: &mut UiSession) -> AppResult<()> {
-    let Some(plan) = session.app_state.active_plan.as_ref() else {
+    let Some(plan) = session.active_plan.as_ref() else {
         return Ok(());
     };
     let leg_index = plan
@@ -12800,7 +12784,7 @@ fn sync_plan_preview_to_active_leg(session: &mut UiSession) -> AppResult<()> {
     else {
         return Ok(());
     };
-    session.plan_preview.pointer = Some(PlanPreviewPointer {
+    session.situation.plan_preview_mut().pointer = Some(PlanPreviewPointer {
         row_uid: record.pointer_key.clone(),
         offset_nm: 0.0,
     });
@@ -12812,7 +12796,6 @@ fn apply_plan_preview_input(
     input: SituationControlInput,
 ) -> AppResult<()> {
     let records = session
-        .app_state
         .active_plan
         .as_ref()
         .map(|plan| plan_preview_legs(plan, &session.guidance_leg_geometry))
@@ -12821,7 +12804,8 @@ fn apply_plan_preview_input(
         return Ok(());
     }
     let pointer_on_plan = session
-        .plan_preview
+        .situation
+        .plan_preview()
         .pointer
         .as_ref()
         .is_some_and(|pointer| {
@@ -12836,14 +12820,14 @@ fn apply_plan_preview_input(
         )
     {
         let record = records[0].clone();
-        session.plan_preview.pointer = Some(PlanPreviewPointer {
+        session.situation.plan_preview_mut().pointer = Some(PlanPreviewPointer {
             row_uid: record.pointer_key.clone(),
             offset_nm: 0.0,
         });
         return apply_plan_preview_pointer(session, record, 0.0);
     }
     let (record_index, mut offset_nm) =
-        resolve_plan_preview_pointer(&session.plan_preview, &records);
+        resolve_plan_preview_pointer(session.situation.plan_preview(), &records);
     let mut next_index = record_index;
     let distance_nm = records[record_index].distance_nm;
     match input {
@@ -12881,7 +12865,7 @@ fn apply_plan_preview_input(
         }
     }
     let record = records[next_index].clone();
-    session.plan_preview.pointer = Some(PlanPreviewPointer {
+    session.situation.plan_preview_mut().pointer = Some(PlanPreviewPointer {
         row_uid: record.pointer_key.clone(),
         offset_nm,
     });
@@ -12892,7 +12876,6 @@ const PLAN_PREVIEW_FAST_STEP_NM: f64 = 20.0;
 
 fn plan_preview_control_bounds(session: &UiSession) -> (bool, bool) {
     let records = session
-        .app_state
         .active_plan
         .as_ref()
         .map(|plan| plan_preview_legs(plan, &session.guidance_leg_geometry))
@@ -12900,7 +12883,7 @@ fn plan_preview_control_bounds(session: &UiSession) -> (bool, bool) {
     if records.is_empty() {
         return (false, false);
     }
-    let Some(pointer) = session.plan_preview.pointer.as_ref() else {
+    let Some(pointer) = session.situation.plan_preview().pointer.as_ref() else {
         return (false, true);
     };
     let Some(record_index) = records
@@ -12971,55 +12954,64 @@ fn tick_bad_autopilot(
     if !session.debug_state.bad_autopilot {
         return Ok(None);
     }
-    if selected_ownship_source_kind(&session.app_state.ownship)
+    if selected_ownship_source_kind(session.situation.ownship())
         != Some(crate::OwnshipSourceKind::BadAutopilot)
     {
         return Ok(None);
     }
-    session.bad_autopilot.running = true;
+    session.situation.bad_autopilot_mut().running = true;
 
     let Some((detail_id, geometry)) = active_guidance_detail_geometry(session) else {
-        session.bad_autopilot.last_tick_epoch_ms = Some(now_epoch_ms);
+        session.situation.bad_autopilot_mut().last_tick_epoch_ms = Some(now_epoch_ms);
         return Ok(None);
     };
     let distance_nm = crate::flight_plan_materialization::geometry_distance_nm(&geometry);
     if distance_nm <= f64::EPSILON {
-        session.bad_autopilot.last_tick_epoch_ms = Some(now_epoch_ms);
+        session.situation.bad_autopilot_mut().last_tick_epoch_ms = Some(now_epoch_ms);
         return Ok(None);
     }
 
     let dt_seconds = session
-        .bad_autopilot
+        .situation
+        .bad_autopilot()
         .last_tick_epoch_ms
         .map(|last_tick| {
             ((now_epoch_ms - last_tick) / 1000.0).clamp(0.0, BAD_AUTOPILOT_MAX_DT_SECONDS)
         })
         .unwrap_or(0.0);
-    session.bad_autopilot.last_tick_epoch_ms = Some(now_epoch_ms);
+    session.situation.bad_autopilot_mut().last_tick_epoch_ms = Some(now_epoch_ms);
 
-    if session.bad_autopilot.active_detail_id.as_deref() != Some(detail_id.as_str()) {
-        session.bad_autopilot.active_detail_id = Some(detail_id);
-        session.bad_autopilot.offset_nm = 0.0;
+    if session
+        .situation
+        .bad_autopilot()
+        .active_detail_id
+        .as_deref()
+        != Some(detail_id.as_str())
+    {
+        session.situation.bad_autopilot_mut().active_detail_id = Some(detail_id);
+        session.situation.bad_autopilot_mut().offset_nm = 0.0;
     }
 
-    session.bad_autopilot.offset_nm = (session.bad_autopilot.offset_nm
+    let offset_nm = (session.situation.bad_autopilot().offset_nm
         + dt_seconds * BAD_AUTOPILOT_NM_PER_SECOND)
         .min(distance_nm + BAD_AUTOPILOT_OVERRUN_NM);
-    session.bad_autopilot.wander_phase_rad += dt_seconds * 0.7;
+    session.situation.bad_autopilot_mut().offset_nm = offset_nm;
+    let wander_phase_rad = session.situation.bad_autopilot().wander_phase_rad + dt_seconds * 0.7;
+    session.situation.bad_autopilot_mut().wander_phase_rad = wander_phase_rad;
 
-    let offset_nm = session.bad_autopilot.offset_nm;
     let heading = heading_along_geometry(&geometry, offset_nm)
         .unwrap_or_else(|| bearing_degrees(geometry.from, geometry.to));
     let base_position = position_along_geometry_with_overrun(&geometry, offset_nm);
-    let wander_nm = BAD_AUTOPILOT_WANDER_NM * session.bad_autopilot.wander_phase_rad.sin();
+    let wander_nm = BAD_AUTOPILOT_WANDER_NM * wander_phase_rad.sin();
     let position = project_nm_from(base_position, heading + 90.0, wander_nm);
     let motion_heading = session
-        .bad_autopilot
+        .situation
+        .bad_autopilot()
         .last_position
         .filter(|last_position| crate::great_circle_distance_nm(*last_position, position) > 1e-4)
         .map(|last_position| bearing_degrees(last_position, position))
         .unwrap_or(heading);
-    session.bad_autopilot.last_position = Some(position);
+    session.situation.bad_autopilot_mut().last_position = Some(position);
 
     apply_situation_to_ownship(
         session,
@@ -13043,7 +13035,7 @@ fn tick_bad_autopilot(
 }
 
 fn active_guidance_detail_geometry(session: &UiSession) -> Option<(String, GuidanceLegGeometry)> {
-    let plan = session.app_state.active_plan.as_ref()?;
+    let plan = session.active_plan.as_ref()?;
     let guidance = plan.guidance.as_ref()?;
     if guidance.sequencing_mode == SequencingMode::DirectTo {
         let geometry = active_guidance_projection_geometry(plan, &session.guidance_leg_geometry)?;
@@ -13366,28 +13358,24 @@ fn register_manual_ownship_source(
     source_kind: crate::OwnshipSourceKind,
     display_name: &str,
 ) -> AppResult<crate::OwnshipSourceId> {
-    session.app_state = state::reduce(
-        &session.app_state,
-        AppEvent::RegisterOwnshipSource(crate::OwnshipSourceRegistration {
+    session
+        .situation
+        .register_source(crate::OwnshipSourceRegistration {
             source_id: source_id.clone(),
             source_kind,
             display_name: display_name.to_string(),
             selectable: true,
             auto_eligible: true,
             stale_after_ms: None,
-        }),
-    )?;
-    session.app_state = state::reduce(
-        &session.app_state,
-        AppEvent::SetOwnshipPolicy(crate::OwnshipPolicy {
-            selection: crate::OwnshipSelectionPolicy::Manual {
-                source_id: source_id.clone(),
-            },
-            source_priority: vec![source_id.clone()],
-            allow_auto_replay: true,
-            allow_auto_simulated: true,
-        }),
-    )?;
+        });
+    session.situation.set_policy(crate::OwnshipPolicy {
+        selection: crate::OwnshipSelectionPolicy::Manual {
+            source_id: source_id.clone(),
+        },
+        source_priority: vec![source_id.clone()],
+        allow_auto_replay: true,
+        allow_auto_simulated: true,
+    });
     Ok(source_id)
 }
 
@@ -13396,13 +13384,23 @@ fn apply_ownship_sample(
     sample: crate::SituationSample,
 ) -> AppResult<OwnshipMotionResult> {
     let terrain_key_before = ownship_terrain_refresh_key(session);
-    let previous_source_id = session.app_state.ownship.resolved.active_source_id.clone();
-    let previous_position = session.app_state.ownship.render.position;
+    let previous_source_id = session
+        .situation
+        .ownship()
+        .resolved
+        .active_source_id
+        .clone();
+    let previous_position = session.situation.ownship().render.position;
     maybe_log_gps_capture_sample(session, &sample);
     advance_session_wall_clock(session, sample.received_time_epoch_ms);
-    session.app_state = state::reduce(&session.app_state, AppEvent::PushSituationSample(sample))?;
-    let current_source_id = session.app_state.ownship.resolved.active_source_id.clone();
-    let current_position = session.app_state.ownship.render.position;
+    session.situation.push_sample(sample);
+    let current_source_id = session
+        .situation
+        .ownship()
+        .resolved
+        .active_source_id
+        .clone();
+    let current_position = session.situation.ownship().render.position;
     let sequenced_guidance = match (
         previous_source_id,
         previous_position,
@@ -13534,15 +13532,14 @@ fn apply_playback_state_to_ownship(
             vertical_speed_fpm: None,
         },
     )?;
-    session.app_state = state::reduce(
-        &session.app_state,
-        AppEvent::UpdateOwnshipSourceStatus(crate::OwnshipSourceStatusUpdate {
+    session
+        .situation
+        .update_source_status(crate::OwnshipSourceStatusUpdate {
             source_id,
             connection_state: playback_state.connection_state,
             enabled: true,
             status_label: playback_state.status_label,
-        }),
-    )?;
+        });
     Ok(motion)
 }
 
@@ -13553,7 +13550,7 @@ fn sequence_guidance_by_ownship_motion(
 ) -> AppResult<bool> {
     let mut sequenced = false;
     for _ in 0..16 {
-        let Some(plan) = session.app_state.active_plan.as_ref() else {
+        let Some(plan) = session.active_plan.as_ref() else {
             return Ok(sequenced);
         };
         let Some(guidance) = plan.guidance.as_ref() else {
@@ -14027,6 +14024,8 @@ mod tests {
 
     fn isolated_test_session(nav_kv_store: Option<NavKvStore>) -> UiSession {
         let nav_kv_store_id = nav_kv_store.as_ref().map(|_| next_test_nav_kv_store_id());
+        let app_state = register_default_situation_sources(AppState::default()).expect("app state");
+        let situation = SituationController::new(app_state.ownship);
         let mut map = MapController::default();
         map.replace_overlay_config(
             map_overlay_config_from_vector_manifest_json(minimal_vector_manifest_json())
@@ -14039,12 +14038,9 @@ mod tests {
                 flight_plan_route_revision: 0,
                 nav_data_epoch: 0,
                 nav_db_advance_blocked: false,
-                app_state: register_default_situation_sources(AppState::default())
-                    .expect("app state"),
-                playback: PlaybackSessionState::default(),
-                plan_preview: PlanPreviewState::default(),
-                bad_autopilot: BadAutopilotState::default(),
-                map_follow: MapFollowSessionState::default(),
+                active_plan: app_state.active_plan,
+                content_policy: app_state.content_policy,
+                last_content_report: app_state.last_content_report,
                 guidance_leg_geometry: Arc::new(HashMap::new()),
                 chart_page_state: derive_compact_chart_page_state(
                     &FlightPlan::default(),
@@ -14074,6 +14070,7 @@ mod tests {
                 wall_clock_epoch_ms: 0,
                 altitude_planner_wind_selection: AltitudePlannerWindSelection::NoWind,
             },
+            situation,
             weather: WeatherController::default(),
             map,
             runtime: SessionRuntime::default(),
@@ -14479,6 +14476,10 @@ mod tests {
             session
                 .weather
                 .set_current_refresh(LiveFeedCurrentRefreshState::Requested);
+            session.situation.plan_preview_mut().pointer = Some(PlanPreviewPointer {
+                row_uid: "must-roll-back".to_string(),
+                offset_nm: 4.0,
+            });
             Err(HadReadError::NeedPages(vec![42]).into())
         })
         .expect("paging outcome");
@@ -14490,6 +14491,8 @@ mod tests {
             LiveFeedCurrentRefreshState::Idle
         );
         assert_eq!(session.weather.revision(), 0);
+        assert_eq!(session.situation.revision(), 0);
+        assert!(session.situation.plan_preview().pointer.is_none());
         assert_eq!(
             session.map.runtime().terrain_source_tile_cache["seed"].as_ptr(),
             terrain_bytes_address
@@ -14634,9 +14637,11 @@ mod tests {
         assert_eq!(diagnostics.settings_projection_count, 2);
         assert_eq!(diagnostics.weather_projection_count, 2);
         assert_eq!(diagnostics.map_projection_count, 1);
+        assert_eq!(diagnostics.situation_projection_count, 1);
         assert_eq!(diagnostics.settings_revision, 0);
         assert_eq!(diagnostics.weather_revision, 0);
         assert_eq!(diagnostics.map_revision, 0);
+        assert_eq!(diagnostics.situation_revision, 0);
         assert_eq!(diagnostics.last_session_payload_serialized_bytes, 12_345);
 
         destroy_session(first.handle);
@@ -14664,6 +14669,8 @@ mod tests {
         assert_eq!(configured.weather_projection_count, 2);
         assert_eq!(configured.map_revision, 0);
         assert_eq!(configured.map_projection_count, 1);
+        assert_eq!(configured.situation_revision, 0);
+        assert_eq!(configured.situation_projection_count, 1);
 
         get_session_snapshot(init.handle).expect("repeat snapshot");
         set_map_layer_enabled_in_session(init.handle, MapLayerId::WorldBasemap, false)
@@ -14673,6 +14680,8 @@ mod tests {
         assert_eq!(unchanged.weather_revision, 0);
         assert_eq!(unchanged.map_revision, 1);
         assert_eq!(unchanged.map_projection_count, 2);
+        assert_eq!(unchanged.situation_revision, 0);
+        assert_eq!(unchanged.situation_projection_count, 1);
         assert_eq!(
             unchanged.settings_projection_count,
             configured.settings_projection_count
@@ -14695,6 +14704,11 @@ mod tests {
         assert_eq!(changed.weather_revision, 0);
         assert_eq!(changed.map_revision, unchanged.map_revision);
         assert_eq!(changed.map_projection_count, unchanged.map_projection_count);
+        assert_eq!(changed.situation_revision, unchanged.situation_revision);
+        assert_eq!(
+            changed.situation_projection_count,
+            unchanged.situation_projection_count
+        );
         assert_eq!(
             changed.settings_projection_count,
             configured.settings_projection_count + 1
@@ -14702,6 +14716,45 @@ mod tests {
         assert_eq!(
             changed.weather_projection_count,
             configured.weather_projection_count
+        );
+        destroy_session(init.handle);
+    }
+
+    #[test]
+    fn situation_projection_rebuilds_only_after_situation_changes() {
+        let init =
+            create_ui_session(FlightPlan::default(), &[], None, None).expect("create session");
+        let initial = session_diagnostics(init.handle).expect("initial diagnostics");
+
+        engage_map_follow_in_session(
+            init.handle,
+            MapViewport {
+                center: LatLon {
+                    lat: 47.5,
+                    lon: -122.3,
+                },
+                zoom: 9.0,
+                rotation_deg: 0.0,
+                pitch_deg: 0.0,
+            },
+        )
+        .expect("engage map follow");
+        let changed = session_diagnostics(init.handle).expect("changed diagnostics");
+        assert!(changed.situation_revision > initial.situation_revision);
+        assert_eq!(
+            changed.situation_projection_count,
+            initial.situation_projection_count + 1
+        );
+        assert_eq!(changed.settings_revision, initial.settings_revision);
+        assert_eq!(changed.weather_revision, initial.weather_revision);
+        assert_eq!(changed.map_revision, initial.map_revision);
+
+        get_session_snapshot(init.handle).expect("repeat snapshot");
+        let repeated = session_diagnostics(init.handle).expect("repeated diagnostics");
+        assert_eq!(repeated.situation_revision, changed.situation_revision);
+        assert_eq!(
+            repeated.situation_projection_count,
+            changed.situation_projection_count
         );
         destroy_session(init.handle);
     }
@@ -15715,7 +15768,6 @@ mod tests {
             assert_eq!(
                 session_ref(&sessions, init.handle)
                     .expect("session")
-                    .app_state
                     .active_plan
                     .as_ref()
                     .and_then(|plan| plan.cruise_altitude_ft),
@@ -15736,7 +15788,6 @@ mod tests {
         assert_eq!(
             session_ref(&sessions, init.handle)
                 .expect("session")
-                .app_state
                 .active_plan
                 .as_ref()
                 .and_then(|plan| plan.cruise_altitude_ft),
@@ -16338,7 +16389,7 @@ mod tests {
         let slot = session_slot(init.handle).expect("session slot");
         let session = slot.lock_running().expect("retained session");
         assert_eq!(session.nav_kv_store_id, Some(31));
-        assert_eq!(session.app_state.active_plan.as_ref(), Some(&plan));
+        assert_eq!(session.active_plan.as_ref(), Some(&plan));
     }
 
     fn load_nav_db_fixture_zip(path: &std::path::Path) -> NavKvStore {
@@ -16558,12 +16609,12 @@ mod tests {
         );
         let slot = session_slot(init.handle).expect("session slot");
         let session = slot.lock_running().expect("committed 2608 session");
-        assert_eq!(session.app_state.active_plan.as_ref(), Some(&expected_plan));
+        assert_eq!(session.active_plan.as_ref(), Some(&expected_plan));
         assert_eq!(session.nav_kv_store_id, Some(2608));
         assert!(!session.guidance_leg_geometry.is_empty());
         let route = crate::had_ops::project_flight_plan_route(
             session.nav_kv_store.as_ref().expect("committed NAVDB"),
-            session.app_state.active_plan.as_ref().expect("active plan"),
+            session.active_plan.as_ref().expect("active plan"),
         )
         .expect("project committed 2608 route");
         assert!(route
@@ -19635,7 +19686,7 @@ mod tests {
             let sessions = lock_sessions();
             let session = session_ref(&sessions, init.handle).expect("session");
             assert_eq!(session.session_revision, 1);
-            assert_eq!(session.app_state.ownship.render.position, Some(position));
+            assert_eq!(session.situation.ownship().render.position, Some(position));
         }
 
         for (page_index, page) in pages.iter().enumerate() {
@@ -24923,7 +24974,6 @@ mod tests {
         let sessions = lock_sessions();
         let session = session_ref(&sessions, init.handle).expect("session");
         let core_guidance = session
-            .app_state
             .active_plan
             .as_ref()
             .and_then(|plan| plan.guidance.as_ref())
@@ -25915,7 +25965,8 @@ mod tests {
             let mut sessions = lock_sessions();
             session_mut(&mut sessions, init.handle)
                 .expect("session")
-                .plan_preview
+                .situation
+                .plan_preview_mut()
                 .pointer = Some(PlanPreviewPointer {
                 row_uid: "missing-row".to_string(),
                 offset_nm: 12.0,

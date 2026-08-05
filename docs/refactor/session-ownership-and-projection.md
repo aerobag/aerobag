@@ -205,14 +205,33 @@ measurement-driven follow-up rather than part of extraction.
 
 This slice did not add a lock, thread, Worker, or platform wire change.
 
+## Completed Fifth Slice
+
+The fifth slice extracted `SituationController` around ownship source
+registration and selection, live samples, replay, plan preview, bad-autopilot
+simulation, and map-follow state. The controller owns a revisioned, cached
+situation projection consumed by the aggregate session snapshot.
+
+`AppState` remains a public compatibility DTO for existing reducer callers and
+core-only snapshot diagnostics, but it is no longer the session's internal
+storage. `UiSession` assembles that DTO only at the compatibility boundary and
+projects the UI from controller-owned ownship output plus the remaining
+flight-plan and content fields. Session and NAVDB-candidate transactions
+checkpoint and roll back the situation model with the other controllers.
+
+Flight-plan guidance, sequencing, and route projection remain in the session
+coordinator. Situation operations invoke those responsibilities through the
+coordinator rather than making `SituationController` own flight-plan state.
+
+This slice did not add a lock, thread, Worker, or platform wire change.
+
 ## Next Slice
 
-Extract `SituationController` around ownship source registration and selection,
-live samples, replay, plan preview, bad-autopilot simulation, and map-follow
-state. Preserve one typed situation projection consumed by the legacy snapshot.
-Keep flight-plan guidance and sequencing in the session coordinator until their
-controller slice; situation updates may invoke those operations through narrow
-coordinator callbacks rather than owning flight-plan state.
+Extract `FlightPlanController` around the active plan, guidance geometry,
+sequencing, route projection, and flight-plan UI projection. Keep NAVDB access,
+page-fault retry coordination, and cross-controller orchestration in the
+session coordinator; expose narrow controller operations for applying rebuilt
+plans and navigation updates.
 
 ## Relationship To Work Scheduling
 

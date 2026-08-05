@@ -98,15 +98,43 @@ pub fn reduce(state: &AppState, event: AppEvent) -> AppResult<AppState> {
 }
 
 pub fn project_app_ui_state(state: &AppState) -> AppUiState {
-    AppUiState {
-        active_plan: state.active_plan.as_ref().map(project_ui_state),
-        ownship: OwnshipUiState {
-            render: state.ownship.render.clone(),
-            controls: state.ownship.controls.clone(),
+    project_app_ui_state_from_parts(
+        state.active_plan.as_ref(),
+        &state.ownship,
+        state.content_policy,
+        state.last_content_report.as_ref(),
+    )
+}
+
+pub(crate) fn project_app_ui_state_from_parts(
+    active_plan: Option<&FlightPlan>,
+    ownship: &OwnshipState,
+    content_policy: ContentPolicy,
+    last_content_report: Option<&ContentReport>,
+) -> AppUiState {
+    project_app_ui_state_from_projected_parts(
+        active_plan,
+        OwnshipUiState {
+            render: ownship.render.clone(),
+            controls: ownship.controls.clone(),
         },
+        content_policy,
+        last_content_report,
+    )
+}
+
+pub(crate) fn project_app_ui_state_from_projected_parts(
+    active_plan: Option<&FlightPlan>,
+    ownship: OwnshipUiState,
+    content_policy: ContentPolicy,
+    last_content_report: Option<&ContentReport>,
+) -> AppUiState {
+    AppUiState {
+        active_plan: active_plan.map(project_ui_state),
+        ownship,
         flight_data_banner: FlightDataBannerModel::default(),
-        content_policy: state.content_policy,
-        last_content_report: state.last_content_report.clone(),
+        content_policy,
+        last_content_report: last_content_report.cloned(),
     }
 }
 
@@ -215,6 +243,29 @@ mod tests {
 
         assert!(cleared.active_plan.is_none());
         assert!(cleared.last_content_report.is_none());
+    }
+
+    #[test]
+    fn parts_projection_matches_compatibility_app_state_projection() {
+        let state = AppState {
+            active_plan: Some(crate::build_flight_plan(sample_plan()).expect("plan")),
+            content_policy: ContentPolicy::OfflineRequired,
+            last_content_report: Some(ContentReport {
+                fully_satisfied: false,
+                items: Vec::new(),
+            }),
+            ..AppState::default()
+        };
+
+        assert_eq!(
+            project_app_ui_state(&state),
+            project_app_ui_state_from_parts(
+                state.active_plan.as_ref(),
+                &state.ownship,
+                state.content_policy,
+                state.last_content_report.as_ref(),
+            )
+        );
     }
 
     #[test]

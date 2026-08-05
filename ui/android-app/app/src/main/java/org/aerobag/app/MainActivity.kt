@@ -520,6 +520,7 @@ internal val PackageManagementJson = Json {
 internal enum class AppPage {
     Map,
     Plan,
+    AltitudePlanner,
     Charts,
     Home,
     DataStatus,
@@ -1157,6 +1158,7 @@ internal val PageOptions = listOf(
     PageTrayOption(AppPage.Map, "CHART", "CHART", R.drawable.page_chart_icon),
     PageTrayOption(AppPage.Charts, "PLATE", "PLATE", R.drawable.page_plate_icon),
     PageTrayOption(AppPage.Plan, "FLIGHT PLAN", "PLAN", R.drawable.page_plan1_icon),
+    PageTrayOption(AppPage.AltitudePlanner, "ALTITUDE PLANNER", "ALT"),
     PageTrayOption(AppPage.Home, "HOME", "HOME", R.drawable.page_home_icon),
     PageTrayOption(AppPage.DataStatus, "STATUS", "STATUS"),
     PageTrayOption(AppPage.Settings, "SETTINGS", "SET"),
@@ -3096,6 +3098,21 @@ internal fun AerobagApp(
                             applySessionSnapshot(snapshot)
                         },
                         onSessionCommandFailure = { recoverSessionCommandFailure(it) },
+                    )
+                }
+                AppPage.AltitudePlanner -> {
+                    AltitudePlannerPage(
+                        page = page,
+                        planner = sessionPlanUiState.altitudePlanner,
+                        planVersion = sessionPlanUiState.planVersion,
+                        uiSession = uiSession,
+                        navElement = navElement,
+                        mostRecentChartOrPlatePage = mostRecentChartOrPlatePageFromHistory(pageHistory),
+                        onOpenPlan = { navigateToPage(AppPage.Plan) },
+                        onOpenRecentChartOrPlate = ::navigateToMostRecentChartOrPlate,
+                        onSelectPage = ::navigateToPage,
+                        onApplySessionSnapshot = ::applySessionSnapshot,
+                        onSessionCommandFailure = ::recoverSessionCommandFailure,
                     )
                 }
                 AppPage.Charts -> {

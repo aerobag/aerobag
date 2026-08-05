@@ -254,9 +254,16 @@ data class AltitudeComparisonPanelUiView(
 )
 
 data class AltitudePlannerUiView(
+    val title: String,
     val estimateKind: String,
+    val estimateSummary: FlightPlanEstimateModeUiView,
     val controls: List<AltitudePlannerControlUiView>,
     val unavailableReasons: List<AltitudePlannerUnavailableReason>,
+)
+
+data class FlightPlanEstimateModeUiView(
+    val label: String,
+    val estimateKind: String,
 )
 
 enum class FlightPlanDisplayRowKind {

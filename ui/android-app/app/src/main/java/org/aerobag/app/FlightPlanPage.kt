@@ -191,7 +191,6 @@ import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
 import org.aerobag.app.domain.ChartAirport
 import org.aerobag.app.domain.ChartAsset
-import org.aerobag.app.domain.AltitudeComparisonPanelUiView
 import org.aerobag.app.domain.AirwayPresentationPlan
 import org.aerobag.app.domain.AirwaySuggestion
 import org.aerobag.app.domain.WaypointIdentifierSuggestion
@@ -362,11 +361,6 @@ internal fun FlightPlanPage(
     var routeEntryError by remember { mutableStateOf<String?>(null) }
     var routeEntrySubmitting by remember { mutableStateOf(false) }
     var routeEntryFocused by remember { mutableStateOf(false) }
-    var altitudePlannerStatusOpen by remember { mutableStateOf(false) }
-    var altitudeComparisonOpen by remember { mutableStateOf(false) }
-    var altitudeComparisonLoading by remember { mutableStateOf(false) }
-    var altitudeComparisonError by remember { mutableStateOf<String?>(null) }
-    var altitudeComparisonPanel by remember { mutableStateOf<AltitudeComparisonPanelUiView?>(null) }
     val routeEntryPreviewController = remember { RouteEntryPreviewController() }
     var routeEntrySuppressNavigationUntilMs by remember { mutableLongStateOf(0L) }
     var trayOpenedAtMs by remember { mutableStateOf(0L) }
@@ -754,54 +748,6 @@ internal fun FlightPlanPage(
                 ),
             verticalArrangement = Arrangement.spacedBy(PlanGridGap),
         ) {
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.spacedBy(ThumbGap, Alignment.CenterHorizontally),
-            ) {
-                altitudePlanner.controls.forEach { control ->
-                    CompactSquareButton(
-                        label = control.label,
-                        modifier = Modifier.size(ThumbSize),
-                        maxLines = 2,
-                        enabled = control.enabled,
-                        selected = (control.id == "status" && altitudePlannerStatusOpen) ||
-                            (control.id == "cruise_altitude" && altitudeComparisonOpen),
-                        testTag = "parity:altitude-planner-control:${control.id}",
-                        onDisabledClick = control.disabledReason?.let { reason ->
-                            { showDisabledActionToast(context, reason) }
-                        },
-                        onClick = {
-                            if (control.id == "status") {
-                                altitudeComparisonOpen = false
-                                altitudePlannerStatusOpen = !altitudePlannerStatusOpen
-                            } else if (control.id == "cruise_altitude") {
-                                if (altitudeComparisonOpen) {
-                                    altitudeComparisonOpen = false
-                                } else {
-                                    altitudePlannerStatusOpen = false
-                                    altitudeComparisonOpen = true
-                                    altitudeComparisonLoading = true
-                                    altitudeComparisonError = null
-                                    airportInfoScope.launch {
-                                        try {
-                                            altitudeComparisonPanel = uiSession.altitudeComparisons()
-                                        } catch (error: Throwable) {
-                                            altitudeComparisonPanel = null
-                                            altitudeComparisonError = error.message ?: "Altitude comparison failed"
-                                        } finally {
-                                            altitudeComparisonLoading = false
-                                        }
-                                    }
-                                }
-                            } else if (control.actionUid != null) {
-                                applySessionCommand("performAltitudePlannerAction") {
-                                    uiSession.performAltitudePlannerAction(control.actionUid)
-                                }
-                            }
-                        },
-                    )
-                }
-            }
             Box(
                 modifier = Modifier
                     .weight(1f)
@@ -955,123 +901,6 @@ internal fun FlightPlanPage(
             }
         }
 
-        if (altitudePlannerStatusOpen) {
-            Column(
-                modifier = Modifier
-                    .align(Alignment.TopCenter)
-                    .padding(top = ThumbSize + ThumbGap * 2f)
-                    .widthIn(max = ThumbSize * 6f)
-                    .background(uiTheme.controls.panelBg, RoundedCornerShape(ThumbRadius))
-                    .border(1.dp, uiTheme.controls.panelBorder, RoundedCornerShape(ThumbRadius))
-                    .padding(ThumbSize * 0.22f),
-                verticalArrangement = Arrangement.spacedBy(ThumbGap),
-            ) {
-                Text(
-                    if (altitudePlanner.estimateKind == "modeled") "MODELED ESTIMATE" else "BASIC ESTIMATE",
-                    color = uiTheme.controls.panelFg,
-                    style = MaterialTheme.typography.labelLarge,
-                    fontWeight = FontWeight.Bold,
-                )
-                altitudePlanner.unavailableReasons.forEach { reason ->
-                    Text(
-                        reason.message,
-                        color = uiTheme.controls.panelFg,
-                        style = MaterialTheme.typography.bodyMedium,
-                    )
-                }
-            }
-        }
-
-        if (altitudeComparisonOpen) {
-            Column(
-                modifier = Modifier
-                    .align(Alignment.TopCenter)
-                    .padding(top = ThumbSize + ThumbGap * 2f)
-                    .widthIn(max = ThumbSize * 6f)
-                    .heightIn(max = ThumbSize * 9f)
-                    .background(uiTheme.controls.panelBg, RoundedCornerShape(ThumbRadius))
-                    .border(1.dp, uiTheme.controls.panelBorder, RoundedCornerShape(ThumbRadius))
-                    .padding(ThumbSize * 0.22f),
-                verticalArrangement = Arrangement.spacedBy(ThumbGap),
-            ) {
-                Text(
-                    "MODELED ALTITUDE COMPARISON",
-                    color = uiTheme.controls.panelFg,
-                    style = MaterialTheme.typography.labelLarge,
-                    fontWeight = FontWeight.Bold,
-                )
-                if (altitudeComparisonLoading) {
-                    Text("Calculating…", color = uiTheme.controls.panelFg)
-                }
-                altitudeComparisonError?.let { error ->
-                    Text(error, color = uiTheme.controls.panelFg)
-                }
-                altitudeComparisonPanel?.let { panel ->
-                    Row(modifier = Modifier.fillMaxWidth()) {
-                        panel.columns.forEach { column ->
-                            Text(
-                                column.label,
-                                modifier = Modifier.weight(1f),
-                                color = uiTheme.controls.panelFg,
-                                style = MaterialTheme.typography.labelMedium,
-                                fontWeight = FontWeight.Bold,
-                                textAlign = TextAlign.Center,
-                            )
-                        }
-                    }
-                    LazyColumn(
-                        modifier = Modifier.fillMaxWidth(),
-                        verticalArrangement = Arrangement.spacedBy(ThumbGap),
-                    ) {
-                        items(panel.rows.size) { index ->
-                            val row = panel.rows[index]
-                            val rowColor = when {
-                                !row.enabled -> uiTheme.controls.buttonDisabled
-                                row.selected -> uiTheme.controls.buttonChecked
-                                else -> uiTheme.controls.buttonUnchecked
-                            }
-                            Surface(
-                                modifier = Modifier
-                                    .fillMaxWidth()
-                                    .height(ThumbSize * 0.58f)
-                                    .clickable {
-                                        val actionUid = row.actionUid
-                                        if (!row.enabled || actionUid == null) {
-                                            row.disabledReason?.let {
-                                                showDisabledActionToast(context, it)
-                                            }
-                                        } else if (applySessionCommand("performAltitudePlannerAction") {
-                                                uiSession.performAltitudePlannerAction(actionUid)
-                                            } != null
-                                        ) {
-                                            altitudeComparisonOpen = false
-                                        }
-                                    },
-                                color = rowColor,
-                                shape = RoundedCornerShape(ThumbRadius * 0.7f),
-                                border = BorderStroke(1.dp, uiTheme.controls.panelBorder),
-                            ) {
-                                Row(
-                                    modifier = Modifier.fillMaxSize(),
-                                    verticalAlignment = Alignment.CenterVertically,
-                                ) {
-                                    row.cells.forEach { cell ->
-                                        Text(
-                                            cell.value ?: "—",
-                                            modifier = Modifier.weight(1f),
-                                            color = uiTheme.controls.buttonFg,
-                                            style = MaterialTheme.typography.bodyMedium,
-                                            textAlign = TextAlign.Center,
-                                        )
-                                    }
-                                }
-                            }
-                        }
-                    }
-                }
-            }
-        }
-
         Box(
             modifier = Modifier
                 .align(Alignment.BottomCenter)
@@ -1095,6 +924,34 @@ internal fun FlightPlanPage(
                         },
                         onClick = { performFlightPlanControl(control.id) },
                     )
+                }
+                Surface(
+                    modifier = Modifier
+                        .width(ThumbSize * 3.2f)
+                        .height(ThumbSize)
+                        .testTag("parity:plan-estimate-mode")
+                        .clickable { onSelectPage(AppPage.AltitudePlanner) },
+                    color = uiTheme.controls.panelBg,
+                    shape = RoundedCornerShape(ThumbRadius),
+                    border = BorderStroke(1.dp, uiTheme.controls.panelBorder),
+                ) {
+                    Box(contentAlignment = Alignment.Center) {
+                        Text(
+                            text = altitudePlanner.estimateSummary.label,
+                            modifier = Modifier.padding(ThumbSize * 0.12f),
+                            color = if (altitudePlanner.estimateSummary.estimateKind == "modeled") {
+                                uiTheme.controls.flightDataModeledValue
+                            } else {
+                                uiTheme.controls.panelFg
+                            },
+                            style = MaterialTheme.typography.labelMedium,
+                            fontWeight = FontWeight.Bold,
+                            lineHeight = 13.sp,
+                            textAlign = TextAlign.Center,
+                            maxLines = 3,
+                            overflow = TextOverflow.Ellipsis,
+                        )
+                    }
                 }
             }
             PrimaryNavigationDock(

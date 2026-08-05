@@ -356,6 +356,11 @@ private fun UiHomePageButton.toHomeGridButton(): HomeGridButton {
             externalUrl = null
             iconResId = R.drawable.home_flight_plan_icon
         }
+        UiHomeDestination.AltitudePlanner -> {
+            targetPage = AppPage.AltitudePlanner
+            externalUrl = null
+            iconResId = null
+        }
         UiHomeDestination.DataStatus -> {
             targetPage = AppPage.DataStatus
             externalUrl = null

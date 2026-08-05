@@ -5,7 +5,7 @@
 
 export const UI_HOME_PAGE_STATE_WIRE_VERSION = 1 as const;
 
-export type UiHomeDestination = "chart" | "plate" | "flight_plan" | "data_status" | "settings" | "cloud" | "offline_packages" | "about";
+export type UiHomeDestination = "chart" | "plate" | "flight_plan" | "altitude_planner" | "data_status" | "settings" | "cloud" | "offline_packages" | "about";
 
 export type UiHomePageButton = {
   destination: UiHomeDestination;

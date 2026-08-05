@@ -3420,7 +3420,12 @@ private fun FlightPlanUiState.toWire() = WireFlightPlanUiState(
 )
 
 private fun WireAltitudePlannerUiView.toUi() = AltitudePlannerUiView(
+    title = title,
     estimateKind = estimate_kind,
+    estimateSummary = FlightPlanEstimateModeUiView(
+        label = estimate_summary.label,
+        estimateKind = estimate_summary.estimate_kind,
+    ),
     controls = controls.map {
         AltitudePlannerControlUiView(
             id = it.id,
@@ -3449,7 +3454,12 @@ private fun WireAltitudeComparisonPanelUiView.toUi() = AltitudeComparisonPanelUi
 )
 
 private fun AltitudePlannerUiView.toWire() = WireAltitudePlannerUiView(
+    title = title,
     estimate_kind = estimateKind,
+    estimate_summary = WireFlightPlanEstimateModeUiView(
+        label = estimateSummary.label,
+        estimate_kind = estimateSummary.estimateKind,
+    ),
     controls = controls.map {
         WireAltitudePlannerControlUiView(
             id = it.id,

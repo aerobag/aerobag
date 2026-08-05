@@ -5,6 +5,7 @@
         "chart",
         "plate",
         "flight_plan",
+        "altitude_planner",
         "data_status",
         "settings",
         "cloud",

@@ -41,4 +41,31 @@ describe("flight plan layout CSS", () => {
     expect(flightPlanWaypointUsesFullWidthLabel(true, true)).toBe(true);
     expect(flightPlanWaypointUsesFullWidthLabel(false, true)).toBe(false);
   });
+
+  it("moves altitude planning to a standalone core-driven page", () => {
+    const plannerPage = appSource.slice(
+      appSource.indexOf("function AltitudePlannerPage("),
+      appSource.indexOf("function FlightPlanPage("),
+    );
+    expect(appSource).toContain('onClick={() => props.onSelectPage("altitude")}');
+    expect(plannerPage).toContain("props.onQueryAltitudeComparisons()");
+    expect(plannerPage).toContain("props.onPerformAltitudePlannerAction(actionUid)");
+    expect(plannerPage).not.toMatch(/onPerformAltitudePlannerAction\(actionUid\)[\s\S]*?\.then\(reload\)/);
+    expect(plannerPage).toContain("panel.columns.map");
+    expect(plannerPage).toContain("row.cells.map");
+    expect(plannerPage).toContain('className="altitudeComparisonRegion"');
+    expect(plannerPage).toContain('className="altitudeComparisonLoading"');
+    expect(plannerPage).not.toContain('{loading ? <p>Calculating…</p> : null}');
+    expect(plannerPage).not.toMatch(/tailwind|headwind|average_wind|toFixed/);
+
+    const comparisonRegion = [...styles.matchAll(/\.altitudeComparisonRegion\s*\{([^}]*)\}/g)]
+      .map((match) => match[1] ?? "")
+      .join("\n");
+    expect(comparisonRegion).toContain("position: relative");
+    const loadingOverlay = [...styles.matchAll(/\.altitudeComparisonLoading\s*\{([^}]*)\}/g)]
+      .map((match) => match[1] ?? "")
+      .join("\n");
+    expect(loadingOverlay).toContain("position: absolute");
+    expect(loadingOverlay).toContain("inset: 0");
+  });
 });

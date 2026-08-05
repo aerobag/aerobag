@@ -38,9 +38,7 @@ pub struct AltitudePlannerUnavailableReason {
 #[serde(rename_all = "snake_case")]
 pub enum AltitudePlannerControlId {
     AircraftProfile,
-    CruiseAltitude,
     WindModel,
-    Status,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -73,10 +71,18 @@ pub struct AltitudeComparisonPanelUiView {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct AltitudePlannerUiView {
+    pub title: String,
     pub estimate_kind: FlightEstimateKind,
+    pub estimate_summary: FlightPlanEstimateModeUiView,
     pub controls: Vec<AltitudePlannerControlUiView>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub unavailable_reasons: Vec<AltitudePlannerUnavailableReason>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct FlightPlanEstimateModeUiView {
+    pub label: String,
+    pub estimate_kind: FlightEstimateKind,
 }
 
 impl Default for AltitudePlannerUiView {
@@ -101,7 +107,6 @@ pub struct AltitudePlannerUiInput {
     pub wind_model_action_uid: Option<String>,
     pub performance_regime_available: bool,
     pub live_ground_speed_estimate_active: bool,
-    pub altitude_comparison_available: bool,
 }
 
 impl Default for AltitudePlannerUiInput {
@@ -121,7 +126,6 @@ impl Default for AltitudePlannerUiInput {
             wind_model_action_uid: None,
             performance_regime_available: true,
             live_ground_speed_estimate_active: false,
-            altitude_comparison_available: false,
         }
     }
 }
@@ -181,16 +185,32 @@ pub fn project_altitude_planner_ui(input: AltitudePlannerUiInput) -> AltitudePla
     let aircraft_label = input
         .aircraft_profile_label
         .unwrap_or_else(|| "BASIC".to_string());
-    let status_label = if input.live_ground_speed_estimate_active {
-        "MODE\nGS".to_string()
+    let estimate_summary_label = if input.live_ground_speed_estimate_active {
+        "Estimate basis:\nGS extrapolated".to_string()
+    } else if estimate_kind == FlightEstimateKind::Modeled {
+        let wind_basis = match input.wind_model_label.as_str() {
+            "FORECAST" => "Forecast winds",
+            "NO WIND" => "No wind",
+            label => label,
+        };
+        format!(
+            "Estimate basis:\n{}\n{} cruise",
+            wind_basis,
+            input
+                .cruise_altitude_ft
+                .map(format_altitude_ft)
+                .unwrap_or_else(|| "—".to_string())
+        )
     } else {
-        match estimate_kind {
-            FlightEstimateKind::Basic => format!("WHY?\n{}", reasons.len()),
-            FlightEstimateKind::Modeled => "MODE\nMODELED".to_string(),
-        }
+        "Estimate basis:\nBasic estimate".to_string()
     };
     AltitudePlannerUiView {
+        title: "Altitude Planner".to_string(),
         estimate_kind,
+        estimate_summary: FlightPlanEstimateModeUiView {
+            label: estimate_summary_label,
+            estimate_kind,
+        },
         controls: vec![
             AltitudePlannerControlUiView {
                 id: AltitudePlannerControlId::AircraftProfile,
@@ -201,19 +221,6 @@ pub fn project_altitude_planner_ui(input: AltitudePlannerUiInput) -> AltitudePla
                     .then(|| "Aircraft profile selection is not available yet.".to_string()),
             },
             AltitudePlannerControlUiView {
-                id: AltitudePlannerControlId::CruiseAltitude,
-                label: input
-                    .cruise_altitude_ft
-                    .map(|altitude| format!("ALT\n{altitude}"))
-                    .unwrap_or_else(|| "ALT\n—".to_string()),
-                enabled: input.altitude_comparison_available,
-                action_uid: None,
-                disabled_reason: (!input.altitude_comparison_available).then(|| {
-                    "Altitude comparison needs a flyable route and known start and destination altitudes."
-                        .to_string()
-                }),
-            },
-            AltitudePlannerControlUiView {
                 id: AltitudePlannerControlId::WindModel,
                 label: format!("WIND\n{}", input.wind_model_label),
                 enabled: input.wind_model_selectable,
@@ -221,22 +228,24 @@ pub fn project_altitude_planner_ui(input: AltitudePlannerUiInput) -> AltitudePla
                 disabled_reason: (!input.wind_model_selectable)
                     .then(|| "No alternate wind models are available.".to_string()),
             },
-            AltitudePlannerControlUiView {
-                id: AltitudePlannerControlId::Status,
-                label: status_label,
-                enabled: !reasons.is_empty(),
-                action_uid: None,
-                disabled_reason: if input.live_ground_speed_estimate_active {
-                    Some("ETE uses live groundspeed while navigation is active.".to_string())
-                } else {
-                    reasons
-                        .is_empty()
-                        .then(|| "The modeled estimate has all required inputs.".to_string())
-                },
-            },
         ],
         unavailable_reasons: reasons,
     }
+}
+
+fn format_altitude_ft(altitude_ft: i32) -> String {
+    let digits = altitude_ft.abs().to_string();
+    let mut grouped = String::with_capacity(digits.len() + digits.len() / 3);
+    for (index, digit) in digits.chars().enumerate() {
+        if index > 0 && (digits.len() - index) % 3 == 0 {
+            grouped.push(',');
+        }
+        grouped.push(digit);
+    }
+    if altitude_ft < 0 {
+        grouped.insert(0, '-');
+    }
+    grouped
 }
 
 fn reason(
@@ -354,6 +363,36 @@ pub struct TrajectoryPrediction {
     pub total_ete_seconds: f64,
     pub total_fuel_gal: f64,
     pub maximum_pressure_altitude_ft: f64,
+    pub average_wind_east_kt: f64,
+    pub average_wind_north_kt: f64,
+    pub average_along_course_wind_kt: f64,
+}
+
+pub fn format_trajectory_wind(prediction: &TrajectoryPrediction) -> String {
+    let speed_kt = prediction
+        .average_wind_east_kt
+        .hypot(prediction.average_wind_north_kt);
+    let arrow = if speed_kt < 0.5 {
+        "·"
+    } else {
+        const ARROWS: [&str; 8] = ["↑", "↗", "→", "↘", "↓", "↙", "←", "↖"];
+        let toward_deg = prediction
+            .average_wind_east_kt
+            .atan2(prediction.average_wind_north_kt)
+            .to_degrees()
+            .rem_euclid(360.0);
+        ARROWS[((toward_deg + 22.5) / 45.0).floor() as usize % ARROWS.len()]
+    };
+    let component_kt = prediction.average_along_course_wind_kt.round() as i32;
+    if speed_kt < 0.5 {
+        arrow.to_string()
+    } else if component_kt == 0 {
+        format!("{arrow} 0")
+    } else if component_kt > 0 {
+        format!("{arrow} +{component_kt}")
+    } else {
+        format!("{arrow} −{}", component_kt.abs())
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Error)]
@@ -425,6 +464,9 @@ impl<'a, A: AtmosphereModel + ?Sized> TrajectoryPlanner<'a, A> {
         let mut elapsed_seconds: f64 = 0.0;
         let mut fuel_gal: f64 = 0.0;
         let mut remaining_route_nm = route_distance_nm;
+        let mut wind_east_nm_kt = 0.0;
+        let mut wind_north_nm_kt = 0.0;
+        let mut along_course_wind_nm_kt = 0.0;
         let mut terminal_descent_started = false;
         let mut predictions = Vec::with_capacity(input.legs.len());
 
@@ -481,9 +523,15 @@ impl<'a, A: AtmosphereModel + ?Sized> TrajectoryPlanner<'a, A> {
                         .min(MAX_INTEGRATION_STEP_NM)
                         .min(time_limited_nm);
                     let step_seconds = step_nm / ground_speed_kt * 3600.0;
+                    let course_rad = course_deg.to_radians();
+                    let along_course_wind_kt = atmosphere.wind_east_kt * course_rad.sin()
+                        + atmosphere.wind_north_kt * course_rad.cos();
 
                     elapsed_seconds += step_seconds;
                     fuel_gal += performance.fuel_flow_gph * step_seconds / 3600.0;
+                    wind_east_nm_kt += atmosphere.wind_east_kt * step_nm;
+                    wind_north_nm_kt += atmosphere.wind_north_kt * step_nm;
+                    along_course_wind_nm_kt += along_course_wind_kt * step_nm;
                     altitude_ft = advance_altitude(
                         altitude_ft,
                         performance.vertical_speed_fpm,
@@ -514,6 +562,9 @@ impl<'a, A: AtmosphereModel + ?Sized> TrajectoryPlanner<'a, A> {
             total_ete_seconds: elapsed_seconds,
             total_fuel_gal: fuel_gal,
             maximum_pressure_altitude_ft: maximum_altitude_ft,
+            average_wind_east_kt: wind_east_nm_kt / route_distance_nm,
+            average_wind_north_kt: wind_north_nm_kt / route_distance_nm,
+            average_along_course_wind_kt: along_course_wind_nm_kt / route_distance_nm,
         })
     }
 
@@ -937,6 +988,7 @@ mod tests {
         assert!((prediction.total_ete_seconds - 1_801.2).abs() < 2.0);
         assert!((prediction.total_fuel_gal - 5.003).abs() < 0.02);
         assert_eq!(prediction.legs[0].row_id.0, "row-destination");
+        assert_eq!(format_trajectory_wind(&prediction), "·");
     }
 
     #[test]
@@ -961,6 +1013,29 @@ mod tests {
 
         assert!(windy.total_ete_seconds > still_air.total_ete_seconds);
         assert!(windy.total_fuel_gal > still_air.total_fuel_gal);
+        assert!((windy.average_wind_east_kt + 20.0).abs() < 1.0e-9);
+        assert!((windy.average_along_course_wind_kt + 20.0).abs() < 0.01);
+        assert_eq!(format_trajectory_wind(&windy), "← −20");
+    }
+
+    #[test]
+    fn wind_summary_arrow_points_toward_flow_and_signs_tailwind_positive() {
+        let profile = synthetic_profile();
+        let tailwind = ConstantAtmosphere {
+            wind_east_kt: 8.0,
+            wind_north_kt: 0.0,
+        };
+        let prediction = TrajectoryPlanner::new(&profile, &tailwind)
+            .predict(&TrajectoryPlanInput {
+                legs: vec![eastbound_leg(1.0)],
+                start_pressure_altitude_ft: 0.0,
+                cruise_pressure_altitude_ft: 0.0,
+                destination_pressure_altitude_ft: 0.0,
+                departure_epoch_ms: 0,
+            })
+            .unwrap();
+
+        assert_eq!(format_trajectory_wind(&prediction), "→ +8");
     }
 
     #[test]
@@ -1030,9 +1105,36 @@ mod tests {
 
         assert_eq!(view.estimate_kind, FlightEstimateKind::Basic);
         assert!(view.unavailable_reasons.is_empty());
-        assert!(view.controls.iter().any(|control| {
-            control.id == AltitudePlannerControlId::Status && control.label == "MODE\nGS"
-        }));
+        assert_eq!(
+            view.estimate_summary.label,
+            "Estimate basis:\nGS extrapolated"
+        );
+        assert_eq!(
+            view.estimate_summary.estimate_kind,
+            FlightEstimateKind::Basic
+        );
+    }
+
+    #[test]
+    fn modeled_summary_names_wind_model_and_selected_cruise_altitude() {
+        let view = project_altitude_planner_ui(AltitudePlannerUiInput {
+            aircraft_profile_label: Some("65% ECONOMY".to_string()),
+            cruise_altitude_ft: Some(12_000),
+            plan_origin_altitude_available: true,
+            plan_destination_altitude_available: true,
+            wind_model_label: "FORECAST".to_string(),
+            wind_model_selected: true,
+            ..AltitudePlannerUiInput::default()
+        });
+
+        assert_eq!(
+            view.estimate_summary.label,
+            "Estimate basis:\nForecast winds\n12,000 cruise"
+        );
+        assert_eq!(
+            view.estimate_summary.estimate_kind,
+            FlightEstimateKind::Modeled
+        );
     }
 
     #[test]

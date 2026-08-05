@@ -1316,8 +1316,12 @@ impl<'a> PlannerAtmosphereSelection<'a> {
 }
 
 fn prototype_pa46_cruise_altitudes() -> impl Iterator<Item = i32> {
-    (PROTOTYPE_PA46_MIN_CRUISE_ALTITUDE_FT..=PROTOTYPE_PA46_MAX_CRUISE_ALTITUDE_FT)
-        .step_by(PROTOTYPE_PA46_CRUISE_ALTITUDE_STEP_FT as usize)
+    let step_count = (PROTOTYPE_PA46_MAX_CRUISE_ALTITUDE_FT
+        - PROTOTYPE_PA46_MIN_CRUISE_ALTITUDE_FT)
+        / PROTOTYPE_PA46_CRUISE_ALTITUDE_STEP_FT;
+    (0..=step_count).rev().map(|step| {
+        PROTOTYPE_PA46_MIN_CRUISE_ALTITUDE_FT + step * PROTOTYPE_PA46_CRUISE_ALTITUDE_STEP_FT
+    })
 }
 
 pub(crate) fn prototype_pa46_altitude_action_uid(altitude_ft: i32) -> Option<String> {
@@ -1487,6 +1491,7 @@ fn prototype_pa46_altitude_comparisons(
                     cumulative_fuel_gal: Some(prediction.total_fuel_gal),
                     estimate_kind: crate::FlightEstimateKind::Modeled,
                 });
+            let wind = prediction.as_ref().map(crate::format_trajectory_wind);
             crate::AltitudeComparisonUiView {
                 action_uid: enabled
                     .then(|| prototype_pa46_altitude_action_uid(altitude_ft))
@@ -1494,7 +1499,7 @@ fn prototype_pa46_altitude_comparisons(
                 selected,
                 enabled,
                 disabled_reason,
-                cells: crate::altitude_comparison_cells(altitude_ft, estimate),
+                cells: crate::altitude_comparison_cells(altitude_ft, estimate, wind),
             }
         })
         .collect()
@@ -1580,14 +1585,6 @@ pub(crate) fn flight_plan_ui_projection(
     } else {
         None
     };
-    let altitude_comparison_available = destination_altitude_ft.is_some()
-        && if materialized.active.is_some() {
-            live_data.ownship_position.is_some()
-                && live_data.ownship_altitude_ft.is_some()
-                && !prototype_pa46_route_legs(&materialized, live_data.ownship_position).is_empty()
-        } else {
-            origin_altitude_ft.is_some() && !full_route_legs.is_empty()
-        };
     ui_state.altitude_planner = crate::project_altitude_planner_ui(crate::AltitudePlannerUiInput {
         aircraft_profile_label: Some(PROTOTYPE_PA46_CONFIGURATION.label().to_string()),
         cruise_altitude_ft: Some(cruise_altitude_ft),
@@ -1602,7 +1599,6 @@ pub(crate) fn flight_plan_ui_projection(
         wind_model_action_uid: atmosphere.action_uid.map(str::to_string),
         performance_regime_available,
         live_ground_speed_estimate_active: use_live_eta,
-        altitude_comparison_available,
         ..crate::AltitudePlannerUiInput::default()
     });
     let modeled_by_row_id = modeled_prediction
@@ -5170,15 +5166,10 @@ mod tests {
                 |control| control.id == crate::AltitudePlannerControlId::AircraftProfile
                     && control.label.contains("65% ECONOMY")
             ));
-        assert!(ui_state
-            .altitude_planner
-            .controls
-            .iter()
-            .any(
-                |control| control.id == crate::AltitudePlannerControlId::CruiseAltitude
-                    && control.label == "ALT\n12000"
-                    && control.enabled
-            ));
+        assert_eq!(
+            ui_state.altitude_planner.estimate_summary.label,
+            "Estimate basis:\nNo wind\n12,000 cruise"
+        );
 
         for label in ["KBBB", "KCCC", "TOTAL"] {
             let row = ui_state
@@ -5211,6 +5202,22 @@ mod tests {
         .expect("altitude comparison panel");
         assert_eq!(panel.columns, crate::altitude_comparison_columns());
         assert_eq!(panel.rows.len(), 12);
+        assert_eq!(
+            panel
+                .rows
+                .first()
+                .and_then(|row| row.cells.first())
+                .and_then(|cell| cell.value.as_deref()),
+            Some("24000")
+        );
+        assert_eq!(
+            panel
+                .rows
+                .last()
+                .and_then(|row| row.cells.first())
+                .and_then(|cell| cell.value.as_deref()),
+            Some("2000")
+        );
         let selected = panel
             .rows
             .iter()
@@ -5221,7 +5228,7 @@ mod tests {
             selected.action_uid.as_deref(),
             Some("altitude-planner:select:12000")
         );
-        for cell_id in ["cruise_altitude", "waypoint_ete", "fuel"] {
+        for cell_id in ["cruise_altitude", "waypoint_ete", "fuel", "wind"] {
             let cell = selected
                 .cells
                 .iter()
@@ -5233,14 +5240,10 @@ mod tests {
         let mut higher_plan = plan;
         higher_plan.cruise_altitude_ft = Some(16_000);
         let higher_ui_state = default_flight_plan_ui_state_for_test(&store, &higher_plan);
-        assert!(higher_ui_state
-            .altitude_planner
-            .controls
-            .iter()
-            .any(
-                |control| control.id == crate::AltitudePlannerControlId::CruiseAltitude
-                    && control.label == "ALT\n16000"
-            ));
+        assert_eq!(
+            higher_ui_state.altitude_planner.estimate_summary.label,
+            "Estimate basis:\nNo wind\n16,000 cruise"
+        );
         let higher_total = higher_ui_state
             .display_rows
             .iter()

@@ -346,6 +346,7 @@ pub fn possible_columns() -> Vec<FlightDataColumn> {
 pub fn altitude_comparison_cells(
     altitude_ft: i32,
     estimate: Option<FlightTimeFuelEstimate>,
+    wind: Option<String>,
 ) -> Vec<FlightDataCell> {
     let estimate_kind = estimate
         .map(|estimate| estimate.estimate_kind)
@@ -372,6 +373,7 @@ pub fn altitude_comparison_cells(
                 .map(format_fuel_gal),
             estimate_kind,
         ),
+        cell_with_estimate("wind", "WIND kt", wind, estimate_kind),
     ]
 }
 
@@ -380,6 +382,7 @@ pub fn altitude_comparison_columns() -> Vec<FlightDataColumn> {
         column("cruise_altitude", "ALT ft"),
         column("waypoint_ete", "ETE"),
         column("fuel", "FUEL gal"),
+        column("wind", "WIND kt"),
     ]
 }
 
@@ -530,6 +533,30 @@ mod tests {
     #[test]
     fn flight_plan_distance_column_is_named_dist() {
         assert_eq!(flight_plan_columns()[0].label, "DIST nm");
+    }
+
+    #[test]
+    fn altitude_comparison_includes_core_formatted_wind_column() {
+        assert_eq!(
+            altitude_comparison_columns()
+                .iter()
+                .map(|column| (column.id.as_str(), column.label.as_str()))
+                .collect::<Vec<_>>(),
+            vec![
+                ("cruise_altitude", "ALT ft"),
+                ("waypoint_ete", "ETE"),
+                ("fuel", "FUEL gal"),
+                ("wind", "WIND kt"),
+            ]
+        );
+        let cells = altitude_comparison_cells(12_000, None, Some("→ +8".to_string()));
+        assert_eq!(
+            cells
+                .iter()
+                .find(|cell| cell.id == "wind")
+                .and_then(|cell| cell.value.as_deref()),
+            Some("→ +8")
+        );
     }
 
     #[test]

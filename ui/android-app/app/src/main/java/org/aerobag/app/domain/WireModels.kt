@@ -1143,9 +1143,17 @@ data class WireAltitudeComparisonPanelUiView(
 
 @Serializable
 data class WireAltitudePlannerUiView(
+    val title: String,
     val estimate_kind: String,
+    val estimate_summary: WireFlightPlanEstimateModeUiView,
     val controls: List<WireAltitudePlannerControlUiView>,
     val unavailable_reasons: List<WireAltitudePlannerUnavailableReason> = emptyList(),
+)
+
+@Serializable
+data class WireFlightPlanEstimateModeUiView(
+    val label: String,
+    val estimate_kind: String,
 )
 
 @Serializable

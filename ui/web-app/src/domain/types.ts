@@ -240,7 +240,7 @@ export type FlightPlanUiState = {
 };
 
 export type AltitudePlannerControlUiView = {
-  id: "aircraft_profile" | "cruise_altitude" | "wind_model" | "status";
+  id: "aircraft_profile" | "wind_model";
   label: string;
   enabled: boolean;
   action_uid?: string | null;
@@ -273,7 +273,12 @@ export type AltitudeComparisonPanelUiView = {
 };
 
 export type AltitudePlannerUiView = {
+  title: string;
   estimate_kind: FlightEstimateKind;
+  estimate_summary: {
+    label: string;
+    estimate_kind: FlightEstimateKind;
+  };
   controls: AltitudePlannerControlUiView[];
   unavailable_reasons?: AltitudePlannerUnavailableReason[];
 };

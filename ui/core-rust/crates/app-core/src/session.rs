@@ -3950,6 +3950,7 @@ pub fn complete_cloud_provider_request_in_session(
 enum SessionModelTransactionError {
     App(AppError),
     Had(HadReadError),
+    Snapshot(SessionSnapshotProjectionError),
 }
 
 impl From<AppError> for SessionModelTransactionError {
@@ -3961,6 +3962,12 @@ impl From<AppError> for SessionModelTransactionError {
 impl From<HadReadError> for SessionModelTransactionError {
     fn from(error: HadReadError) -> Self {
         Self::Had(error)
+    }
+}
+
+impl From<SessionSnapshotProjectionError> for SessionModelTransactionError {
+    fn from(error: SessionSnapshotProjectionError) -> Self {
+        Self::Snapshot(error)
     }
 }
 
@@ -4020,6 +4027,20 @@ fn run_session_model_transaction_projecting(
                     })
                 }
                 SessionModelTransactionError::Had(HadReadError::Fatal(message)) => Err(AppError {
+                    kind: AppErrorKind::InvalidFlightPlan,
+                    message,
+                }),
+                SessionModelTransactionError::Snapshot(
+                    SessionSnapshotProjectionError::NeedResources(resources),
+                ) => Ok(HadOperationOutcome::NeedResources { resources }),
+                SessionModelTransactionError::Snapshot(SessionSnapshotProjectionError::Had(
+                    HadReadError::NeedPages(pages),
+                )) => Ok(HadOperationOutcome::NeedResources {
+                    resources: nav_kv_page_resources(pages),
+                }),
+                SessionModelTransactionError::Snapshot(SessionSnapshotProjectionError::Had(
+                    HadReadError::Fatal(message),
+                )) => Err(AppError {
                     kind: AppErrorKind::InvalidFlightPlan,
                     message,
                 }),
@@ -6275,7 +6296,7 @@ pub fn advance_nav_kv_store_in_session_with_open_result(
     rebuild_metar_tile_cache(&mut candidate);
     mark_cycle_product_freshness_dirty(&mut candidate);
 
-    let rebuild = (|| -> Result<UiSessionSnapshot, HadReadError> {
+    let rebuild = (|| -> Result<UiSessionSnapshot, SessionSnapshotProjectionError> {
         if let Some(plan) = candidate.app_state.active_plan.as_ref() {
             let rebuilt_plan = crate::had_ops::rebuild_flight_plan_from_nav_kv(store, plan)?;
             replace_session_flight_plan(&mut candidate, rebuilt_plan)
@@ -6342,7 +6363,13 @@ pub fn advance_nav_kv_store_in_session_with_open_result(
                 invalidations,
             ))
         }
-        Err(HadReadError::NeedPages(pages)) => {
+        Err(SessionSnapshotProjectionError::NeedResources(resources)) => {
+            live.runtime = candidate.runtime;
+            live.runtime.invalidate_nav_data();
+            rebuild_metar_tile_cache(live);
+            Ok(HadOperationOutcome::NeedResources { resources })
+        }
+        Err(SessionSnapshotProjectionError::Had(HadReadError::NeedPages(pages))) => {
             live.runtime = candidate.runtime;
             live.runtime.invalidate_nav_data();
             rebuild_metar_tile_cache(live);
@@ -6350,7 +6377,7 @@ pub fn advance_nav_kv_store_in_session_with_open_result(
                 resources: nav_kv_page_resources(pages),
             })
         }
-        Err(HadReadError::Fatal(message)) => {
+        Err(SessionSnapshotProjectionError::Had(HadReadError::Fatal(message))) => {
             let candidate_label = open_result
                 .selected_cycle
                 .as_deref()
@@ -6390,10 +6417,13 @@ pub fn advance_nav_kv_store_in_session_with_open_result(
             let snapshot = try_snapshot_for_session(live).map_err(|error| AppError {
                 kind: AppErrorKind::InvalidFlightPlan,
                 message: match error {
-                    HadReadError::NeedPages(pages) => format!(
+                    SessionSnapshotProjectionError::NeedResources(resources) => format!(
+                        "NAVDB advance failed and the retained session needs resources {resources:?}: {message}"
+                    ),
+                    SessionSnapshotProjectionError::Had(HadReadError::NeedPages(pages)) => format!(
                         "NAVDB advance failed and the retained session needs pages {pages:?}: {message}"
                     ),
-                    HadReadError::Fatal(snapshot_message) => format!(
+                    SessionSnapshotProjectionError::Had(HadReadError::Fatal(snapshot_message)) => format!(
                         "NAVDB advance failed ({message}); retained snapshot failed: {snapshot_message}"
                     ),
                 },
@@ -9065,28 +9095,22 @@ fn ensure_live_obstacle_inputs_loaded(
     Vec::new()
 }
 
-fn ensure_forecast_atmosphere_inputs_loaded(session: &mut UiSession) {
+fn forecast_atmosphere_bootstrap_resources(session: &mut UiSession) -> Vec<CoreResourceRequest> {
     if session.runtime.forecast_atmosphere_state.is_none() {
         if !session.live_feeds.current_loaded()
             || !session
                 .live_feeds
                 .has_product_current_version("winds-aloft")
         {
-            return;
+            return Vec::new();
         }
         if let HadOperationOutcome::NeedResources { resources } = session
             .live_feeds
             .sync_product_outcome_at_epoch_ms("winds-aloft", session.wall_clock_epoch_ms)
         {
-            for resource in resources {
-                enqueue_session_resource_effect(
-                    session,
-                    resource,
-                    [UiInvalidation::SessionSnapshot],
-                );
-            }
+            return resources;
         }
-        return;
+        return Vec::new();
     }
 
     let Some(source) = session
@@ -9095,18 +9119,24 @@ fn ensure_forecast_atmosphere_inputs_loaded(session: &mut UiSession) {
         .as_ref()
         .map(|state| state.source.clone())
     else {
-        return;
+        return Vec::new();
     };
     if session.runtime.forecast_atmosphere.is_none() {
-        enqueue_session_resource_effect(
-            session,
-            live_nav_kv_root_resource(&source),
-            [UiInvalidation::SessionSnapshot],
-        );
-        return;
+        return vec![live_nav_kv_root_resource(&source)];
     }
+    Vec::new()
+}
+
+fn forecast_atmosphere_snapshot_resources(session: &mut UiSession) -> Vec<CoreResourceRequest> {
+    let bootstrap_resources = forecast_atmosphere_bootstrap_resources(session);
     if session.altitude_planner_wind_selection != AltitudePlannerWindSelection::Gfs {
-        return;
+        for resource in bootstrap_resources {
+            enqueue_session_resource_effect(session, resource, [UiInvalidation::SessionSnapshot]);
+        }
+        return Vec::new();
+    }
+    if !bootstrap_resources.is_empty() {
+        return bootstrap_resources;
     }
 
     let paths = session
@@ -9115,8 +9145,11 @@ fn ensure_forecast_atmosphere_inputs_loaded(session: &mut UiSession) {
         .map(crate::flight_plan_materialization::geometry_points)
         .filter(|path| path.len() >= 2)
         .collect::<Vec<_>>();
+    let Some(state) = session.runtime.forecast_atmosphere_state.as_ref() else {
+        return Vec::new();
+    };
     let Some(atmosphere) = session.runtime.forecast_atmosphere.as_ref() else {
-        return;
+        return Vec::new();
     };
     let missing_pages = match atmosphere.missing_pages_for_paths(&paths) {
         Ok(pages) => pages,
@@ -9128,17 +9161,15 @@ fn ensure_forecast_atmosphere_inputs_loaded(session: &mut UiSession) {
                     format!("Winds-aloft forecast unavailable for this route: {message}"),
                 ),
             );
-            return;
+            return Vec::new();
         }
     };
     if missing_pages.is_empty() {
         let status_id = live_feed_unavailable_status_record("winds-aloft", String::new()).id;
         clear_data_status_record(session, &status_id);
-        return;
+        return Vec::new();
     }
-    for resource in live_nav_kv_page_resources(&source, missing_pages) {
-        enqueue_session_resource_effect(session, resource, [UiInvalidation::SessionSnapshot]);
-    }
+    live_nav_kv_page_resources(&state.source, missing_pages)
 }
 
 pub fn get_map_overlay_in_session(
@@ -11242,6 +11273,18 @@ fn advance_session_revision(session: &mut UiSession) {
     session.session_revision = session.session_revision.saturating_add(1);
 }
 
+#[derive(Debug)]
+enum SessionSnapshotProjectionError {
+    NeedResources(Vec<CoreResourceRequest>),
+    Had(HadReadError),
+}
+
+impl From<HadReadError> for SessionSnapshotProjectionError {
+    fn from(error: HadReadError) -> Self {
+        Self::Had(error)
+    }
+}
+
 fn session_snapshot_outcome(session: &mut UiSession) -> AppResult<HadOperationOutcome> {
     session_snapshot_outcome_with_invalidations(session, Vec::new())
 }
@@ -11253,10 +11296,15 @@ fn preflight_session_snapshot_resources(
 ) -> AppResult<Option<HadOperationOutcome>> {
     match try_snapshot_for_session(session) {
         Ok(_) => Ok(None),
-        Err(HadReadError::NeedPages(pages)) => Ok(Some(HadOperationOutcome::NeedResources {
-            resources: nav_kv_page_resources(pages),
-        })),
-        Err(HadReadError::Fatal(message)) => Err(AppError {
+        Err(SessionSnapshotProjectionError::NeedResources(resources)) => {
+            Ok(Some(HadOperationOutcome::NeedResources { resources }))
+        }
+        Err(SessionSnapshotProjectionError::Had(HadReadError::NeedPages(pages))) => {
+            Ok(Some(HadOperationOutcome::NeedResources {
+                resources: nav_kv_page_resources(pages),
+            }))
+        }
+        Err(SessionSnapshotProjectionError::Had(HadReadError::Fatal(message))) => Err(AppError {
             kind: AppErrorKind::InvalidFlightPlan,
             message,
         }),
@@ -11286,11 +11334,19 @@ fn changed_session_snapshot_outcome_with_invalidations(
                 kind: AppErrorKind::Internal,
                 message: err.to_string(),
             }),
-        Err(HadReadError::NeedPages(pages)) => Ok(HadOperationOutcome::NeedSnapshotResources {
-            resources: nav_kv_page_resources(pages),
-            invalidations,
-        }),
-        Err(HadReadError::Fatal(message)) => Err(AppError {
+        Err(SessionSnapshotProjectionError::NeedResources(resources)) => {
+            Ok(HadOperationOutcome::NeedSnapshotResources {
+                resources,
+                invalidations,
+            })
+        }
+        Err(SessionSnapshotProjectionError::Had(HadReadError::NeedPages(pages))) => {
+            Ok(HadOperationOutcome::NeedSnapshotResources {
+                resources: nav_kv_page_resources(pages),
+                invalidations,
+            })
+        }
+        Err(SessionSnapshotProjectionError::Had(HadReadError::Fatal(message))) => Err(AppError {
             kind: AppErrorKind::InvalidFlightPlan,
             message,
         }),
@@ -11315,24 +11371,34 @@ fn session_snapshot_outcome_with_invalidations(
                 kind: AppErrorKind::Internal,
                 message: err.to_string(),
             }),
-        Err(HadReadError::NeedPages(pages)) => Ok(HadOperationOutcome::NeedResources {
-            resources: nav_kv_page_resources(pages),
-        }),
-        Err(HadReadError::Fatal(message)) => Err(AppError {
+        Err(SessionSnapshotProjectionError::NeedResources(resources)) => {
+            Ok(HadOperationOutcome::NeedResources { resources })
+        }
+        Err(SessionSnapshotProjectionError::Had(HadReadError::NeedPages(pages))) => {
+            Ok(HadOperationOutcome::NeedResources {
+                resources: nav_kv_page_resources(pages),
+            })
+        }
+        Err(SessionSnapshotProjectionError::Had(HadReadError::Fatal(message))) => Err(AppError {
             kind: AppErrorKind::InvalidFlightPlan,
             message,
         }),
     }
 }
 
-fn try_snapshot_for_session(session: &mut UiSession) -> Result<UiSessionSnapshot, HadReadError> {
+fn try_snapshot_for_session(
+    session: &mut UiSession,
+) -> Result<UiSessionSnapshot, SessionSnapshotProjectionError> {
+    let resources = forecast_atmosphere_snapshot_resources(session);
+    if !resources.is_empty() {
+        return Err(SessionSnapshotProjectionError::NeedResources(resources));
+    }
     let total_started_at = crate::core_clock_ms();
     sync_cloud_status_record(session);
     if session.runtime.metar_payload.is_some() || session.runtime.taf_payload.is_some() {
         ensure_weather_station_airport_aliases_loaded(session)?;
     }
     enqueue_ownship_agl_terrain_effect(session);
-    ensure_forecast_atmosphere_inputs_loaded(session);
     let app_ui_started_at = crate::core_clock_ms();
     let mut app_ui_state = project_session_app_ui_state(session)?;
     let app_ui_ms = elapsed_ms(app_ui_started_at);
@@ -11580,6 +11646,7 @@ fn project_home_page_state(capabilities: &PlatformCapabilities) -> UiHomePageSta
         button(UiHomeDestination::Chart, "CHART"),
         button(UiHomeDestination::Plate, "PLATE"),
         button(UiHomeDestination::FlightPlan, "FLIGHT\nPLAN"),
+        button(UiHomeDestination::AltitudePlanner, "ALTITUDE\nPLANNER"),
         button(UiHomeDestination::DataStatus, "STATUS"),
         button(UiHomeDestination::Settings, "SETTINGS"),
     ];
@@ -13944,6 +14011,7 @@ mod tests {
                 (UiHomeDestination::Chart, "CHART"),
                 (UiHomeDestination::Plate, "PLATE"),
                 (UiHomeDestination::FlightPlan, "FLIGHT\nPLAN"),
+                (UiHomeDestination::AltitudePlanner, "ALTITUDE\nPLANNER"),
                 (UiHomeDestination::DataStatus, "STATUS"),
                 (UiHomeDestination::Settings, "SETTINGS"),
                 (UiHomeDestination::OfflinePackages, "OFFLINE\nPACKAGES"),
@@ -17893,8 +17961,8 @@ mod tests {
     }
 
     #[test]
-    fn jit_winds_aloft_faults_nav_kv_root_and_enables_forecast_selection() {
-        let (manifest, root, _pages, state_sha256) =
+    fn jit_winds_aloft_resolves_selected_snapshot_dependencies_without_background_effects() {
+        let (manifest, root, pages, state_sha256) =
             crate::forecast_atmosphere::tests::test_forecast_payload();
         let version = manifest.version_label.clone();
         let state_url = format!("states/winds-aloft/{version}/manifest.json");
@@ -17938,6 +18006,35 @@ mod tests {
         )
         .expect("state manifest");
 
+        {
+            let mut sessions = lock_sessions();
+            let session = session_mut(&mut sessions, init.handle).expect("session");
+            session.guidance_leg_geometry = Arc::new(HashMap::from([(
+                "test-leg".to_string(),
+                GuidanceLegGeometry {
+                    leg_id: "test-leg".to_string(),
+                    from: LatLon {
+                        lat: 1.0,
+                        lon: 10.0,
+                    },
+                    to: LatLon {
+                        lat: 0.0,
+                        lon: 11.0,
+                    },
+                    path: vec![
+                        LatLon {
+                            lat: 1.0,
+                            lon: 10.0,
+                        },
+                        LatLon {
+                            lat: 0.0,
+                            lon: 11.0,
+                        },
+                    ],
+                },
+            )]));
+        }
+
         get_session_snapshot(init.handle).expect("snapshot before atmosphere root");
         let effects = drain_session_resource_effects(init.handle).expect("root resource effects");
         let root_effect = effects
@@ -17961,11 +18058,54 @@ mod tests {
             .find(|row| row.id == "live_feed:winds-aloft")
             .expect("winds-aloft status row");
         assert_eq!(winds_status.value, "OK");
-        perform_altitude_planner_action_in_session(
+        let revision_before = {
+            let sessions = lock_sessions();
+            session_ref(&sessions, init.handle)
+                .expect("session")
+                .session_revision
+        };
+        let mut outcome = perform_altitude_planner_action_in_session(
             init.handle,
             crate::had_ops::SELECT_GFS_WIND_ACTION_UID.to_string(),
         )
         .expect("select JIT forecast");
+        assert!(matches!(
+            outcome,
+            HadOperationOutcome::NeedSnapshotResources { .. }
+        ));
+
+        let mut resource_rounds = 0;
+        loop {
+            let resources = match outcome {
+                HadOperationOutcome::NeedResources { resources }
+                | HadOperationOutcome::NeedSnapshotResources { resources, .. } => resources,
+                HadOperationOutcome::Complete { .. } => break,
+            };
+            resource_rounds += 1;
+            assert!(resource_rounds <= 3, "forecast page faults must converge");
+            assert!(drain_session_resource_effects(init.handle)
+                .expect("resource effects")
+                .is_empty());
+            for resource in resources {
+                let page_index = resource
+                    .id
+                    .rsplit('/')
+                    .next()
+                    .and_then(|component| component.parse::<usize>().ok())
+                    .expect("forecast page resource index");
+                ingest_resource_in_session(init.handle, &resource.id, &pages[page_index])
+                    .expect("forecast page");
+            }
+            outcome = super::get_session_snapshot(init.handle).expect("resume snapshot");
+        }
+        assert!(resource_rounds > 0);
+        let sessions = lock_sessions();
+        let session = session_ref(&sessions, init.handle).expect("session");
+        assert_eq!(
+            session.altitude_planner_wind_selection,
+            AltitudePlannerWindSelection::Gfs
+        );
+        assert_eq!(session.session_revision, revision_before + 1);
     }
 
     #[test]

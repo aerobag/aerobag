@@ -11,6 +11,7 @@ pub enum UiHomeDestination {
     Chart,
     Plate,
     FlightPlan,
+    AltitudePlanner,
     DataStatus,
     Settings,
     Cloud,

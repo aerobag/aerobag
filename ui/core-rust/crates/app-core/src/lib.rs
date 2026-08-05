@@ -34,6 +34,7 @@ pub mod live_feeds;
 mod map_controller;
 pub mod map_follow;
 pub mod map_overlay;
+mod nav_data_controller;
 pub mod navdb_types;
 pub mod navkv;
 pub mod ownship;

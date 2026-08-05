@@ -85,7 +85,12 @@ use crate::{
         VectorOverlayInputRequests, WeatherStationAirportAliases,
         MAP_SELECTION_NAV_REF_MIN_FOCUS_ZOOM,
     },
-    map_overlay_config_from_vector_manifest_json, nav_kv_key_for_query,
+    map_overlay_config_from_vector_manifest_json,
+    nav_data_controller::{
+        AttachedNavDbArtifact, NavDataController, NavDataMaintenanceDecision,
+        NavDataModelCheckpoint,
+    },
+    nav_kv_key_for_query,
     planning::NavElementUiView,
     project_nav_symbol_feature,
     publication::{PublicationResolvedResource, PublicationResolver},
@@ -109,13 +114,12 @@ use crate::{
     AppResult, AppState, AppUiState, FlightPlan, FlightPlanRowActionId, FlightPlanUiState,
     GuidanceLegGeometry, LatLon, MapOverlayQueryResult, MapSelectionForNavRefResult,
     MapSelectionQueryResult, MapSelectionSessionAction, MapSurfaceMetrics, MapViewport,
-    MetarProductPayload, MetarTilePayload, NavDbArtifactCandidate, NavDbOpenResult, NavKvLookup,
-    NavKvPageProbeStats, NavKvQuery, NavKvRoot, NavKvStore, NavRef, OfflinePackagesLibraryCache,
-    PlaybackUiState, PointTilePayload, ProcedureKind, ProcedureLoadCommand,
-    ProcedureLoadPlanTarget, RasterMapCatalog, RasterResourceMode, RasterTilePlan, ResolvedLeg,
-    ResolvedLegSource, SituationControlInput, SituationControlMenuItem, TafProductPayload,
-    TerrainOverlayQueryResult, TfrProductPayload, VectorAggregateTilePayload,
-    VectorIdentLabelStyle,
+    MetarProductPayload, MetarTilePayload, NavDbOpenResult, NavKvLookup, NavKvPageProbeStats,
+    NavKvQuery, NavKvRoot, NavKvStore, NavRef, OfflinePackagesLibraryCache, PlaybackUiState,
+    PointTilePayload, ProcedureKind, ProcedureLoadCommand, ProcedureLoadPlanTarget,
+    RasterMapCatalog, RasterResourceMode, RasterTilePlan, ResolvedLeg, ResolvedLegSource,
+    SituationControlInput, SituationControlMenuItem, TafProductPayload, TerrainOverlayQueryResult,
+    TfrProductPayload, VectorAggregateTilePayload, VectorIdentLabelStyle,
 };
 const WORLD_MERCATOR_MAX_LATITUDE: f64 = 85.051_128_78;
 const SETTINGS_PERSISTENCE_VERSION: u32 = 1;
@@ -175,6 +179,7 @@ pub struct UiSessionCreateTiming {
 struct UiSession {
     model: SessionModel,
     flight_plan: FlightPlanController,
+    nav_data: NavDataController,
     situation: SituationController,
     weather: WeatherController,
     map: MapController,
@@ -225,6 +230,7 @@ pub struct UiSessionDiagnostics {
     pub situation_projection_count: u64,
     pub flight_plan_revision: u64,
     pub flight_plan_projection_count: u64,
+    pub nav_data_revision: u64,
     pub last_session_payload_serialized_bytes: u64,
     pub transaction_commit_count: u64,
     pub transaction_rollback_count: u64,
@@ -258,6 +264,7 @@ impl SessionDiagnosticsCounters {
         map_revision: u64,
         situation_revision: u64,
         flight_plan_revision: u64,
+        nav_data_revision: u64,
     ) -> UiSessionDiagnostics {
         UiSessionDiagnostics {
             generation,
@@ -278,6 +285,7 @@ impl SessionDiagnosticsCounters {
             map_revision,
             situation_revision,
             flight_plan_revision,
+            nav_data_revision,
             last_session_payload_serialized_bytes: self
                 .last_session_payload_serialized_bytes
                 .load(Ordering::Relaxed),
@@ -290,14 +298,9 @@ impl SessionDiagnosticsCounters {
 #[derive(Clone)]
 struct SessionModel {
     session_revision: u64,
-    nav_data_epoch: u64,
-    nav_db_advance_blocked: bool,
     content_policy: ContentPolicy,
     last_content_report: Option<ContentReport>,
     chart_page_state: UiChartPageState,
-    nav_kv_store_id: Option<u32>,
-    nav_kv_store: Option<Arc<NavKvStore>>,
-    nav_db_artifact: Option<AttachedNavDbArtifact>,
     data_status_records: BTreeMap<String, DataStatusRecord>,
     hushed_status_ids: BTreeSet<String>,
     data_status_state: UiDataStatusState,
@@ -315,7 +318,6 @@ struct SessionModel {
 }
 
 struct SessionRuntime {
-    nav_data_generation: u64,
     pending_resource_effects: Vec<UiSessionResourceEffect>,
     adsb: crate::adsb::AdsbSessionState,
 }
@@ -323,7 +325,6 @@ struct SessionRuntime {
 impl Default for SessionRuntime {
     fn default() -> Self {
         Self {
-            nav_data_generation: 0,
             pending_resource_effects: Vec::new(),
             adsb: crate::adsb::AdsbSessionState::default(),
         }
@@ -336,14 +337,6 @@ enum AltitudePlannerWindSelection {
     NoWind,
     Gfs,
 }
-
-impl SessionRuntime {
-    fn invalidate_nav_data(&mut self) {
-        self.nav_data_generation = self.nav_data_generation.saturating_add(1);
-        self.pending_resource_effects.clear();
-    }
-}
-
 impl Deref for UiSession {
     type Target = SessionModel;
 
@@ -355,30 +348,6 @@ impl Deref for UiSession {
 impl DerefMut for UiSession {
     fn deref_mut(&mut self) -> &mut Self::Target {
         &mut self.model
-    }
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-struct AttachedNavDbArtifact {
-    package_id: String,
-    filename: String,
-    contract_id: Option<String>,
-    cycle: Option<String>,
-    cycle_version: Option<String>,
-    effective_date: Option<String>,
-    expiration_date: Option<String>,
-    warning_text: Option<String>,
-}
-
-impl From<&AttachedNavDbArtifact> for UiNavDbIdentity {
-    fn from(artifact: &AttachedNavDbArtifact) -> Self {
-        Self {
-            package_id: artifact.package_id.clone(),
-            filename: artifact.filename.clone(),
-            contract_id: artifact.contract_id.clone(),
-            cycle: artifact.cycle.clone(),
-            cycle_version: artifact.cycle_version.clone(),
-        }
     }
 }
 
@@ -412,23 +381,6 @@ pub enum NavDbMaintenanceAction {
 pub struct NavDbMaintenanceResult {
     pub action: NavDbMaintenanceAction,
     pub snapshot: UiSessionSnapshot,
-}
-
-const NAV_DB_PUBLICATION_POLL_INTERVAL_MS: i64 = 4 * 60 * 60 * 1000;
-
-impl From<&NavDbOpenResult> for AttachedNavDbArtifact {
-    fn from(result: &NavDbOpenResult) -> Self {
-        Self {
-            package_id: result.selected_package_id.clone(),
-            filename: result.selected_filename.clone(),
-            contract_id: result.selected_contract_id.clone(),
-            cycle: result.selected_cycle.clone(),
-            cycle_version: result.selected_cycle_version.clone(),
-            effective_date: result.selected_effective_date.clone(),
-            expiration_date: result.selected_expiration_date.clone(),
-            warning_text: result.selected_warning_text.clone(),
-        }
-    }
 }
 
 #[derive(Clone, Default)]
@@ -610,6 +562,7 @@ impl SessionSlot {
             session.map.revision(),
             session.situation.revision(),
             session.flight_plan.revision(),
+            session.nav_data.revision(),
         )
     }
 }
@@ -1453,75 +1406,13 @@ fn advance_session_wall_clock(session: &mut UiSession, epoch_ms: i64) {
     session.wall_clock_epoch_ms = session.wall_clock_epoch_ms.max(epoch_ms);
 }
 
-fn nav_db_candidates_for_session(
-    session: &UiSession,
-) -> Result<Result<Vec<NavDbArtifactCandidate>, Vec<CoreResourceRequest>>, String> {
-    let candidates = match session.publication_resolver.nav_db_artifact_candidates()? {
-        Ok(candidates) => candidates,
-        Err(resources) => return Ok(Err(resources)),
-    };
-    if session.resource_policy == CoreResourcePolicy::PublicUnpacked {
-        return Ok(Ok(candidates));
-    }
-    Ok(Ok(candidates
-        .into_iter()
-        .filter(|candidate| {
-            session
-                .installed_package_ids
-                .contains(&candidate.package_id)
-        })
-        .collect()))
-}
-
-fn nav_db_candidate_effective_epoch_ms(candidate: &NavDbArtifactCandidate) -> Option<i64> {
-    candidate
-        .effective_date
-        .as_deref()
-        .and_then(parse_utc_instant)
-        .map(|instant| instant.timestamp_millis())
-}
-
 fn next_nav_db_maintenance_epoch_ms(session: &UiSession) -> Option<i64> {
-    if session.nav_db_advance_blocked {
-        return None;
-    }
-    let now_epoch_ms = session.wall_clock_epoch_ms;
-    let mut next = if session.resource_policy == CoreResourcePolicy::PublicUnpacked {
-        Some(
-            session
-                .publication_resolver
-                .current_artifacts_checked_epoch_ms()
-                .map(|checked| checked.saturating_add(NAV_DB_PUBLICATION_POLL_INTERVAL_MS))
-                .unwrap_or(now_epoch_ms),
-        )
-    } else {
-        None
-    };
-    let candidates = match nav_db_candidates_for_session(session) {
-        Ok(Ok(candidates)) => candidates,
-        Ok(Err(_)) | Err(_) => {
-            return if session.resource_policy == CoreResourcePolicy::PublicUnpacked {
-                min_optional_epoch_ms(next, Some(now_epoch_ms))
-            } else {
-                None
-            };
-        }
-    };
-    let preferred = crate::had_ops::select_preferred_nav_db_candidate(&candidates, now_epoch_ms);
-    if preferred.is_some_and(|candidate| {
-        session
-            .nav_db_artifact
-            .as_ref()
-            .is_none_or(|active| active.filename != candidate.filename)
-    }) {
-        next = min_optional_epoch_ms(next, Some(now_epoch_ms));
-    }
-    let next_effective = candidates
-        .iter()
-        .filter_map(nav_db_candidate_effective_epoch_ms)
-        .filter(|effective| *effective > now_epoch_ms)
-        .min();
-    min_optional_epoch_ms(next, next_effective)
+    session.nav_data.next_maintenance_epoch_ms(
+        &session.publication_resolver,
+        session.resource_policy,
+        &session.installed_package_ids,
+        session.wall_clock_epoch_ms,
+    )
 }
 
 fn min_epoch_ms(current: Option<i64>, candidate: i64) -> Option<i64> {
@@ -1781,7 +1672,7 @@ fn chart_validity_condition(violations: &[ChartValidityViolation]) -> &'static s
 
 fn sync_nav_db_expiration_freshness(session: &mut UiSession) -> CycleProductFreshnessSync {
     let mut sync = CycleProductFreshnessSync::default();
-    let Some(artifact) = session.nav_db_artifact.as_ref() else {
+    let Some(artifact) = session.nav_data.active_artifact() else {
         sync.changed = clear_data_status_record(session, CYCLE_NAV_DB_STATUS_ID);
         return sync;
     };
@@ -1971,7 +1862,7 @@ fn package_warning_label(family_id: &str) -> String {
 }
 
 fn nav_db_package_records(session: &UiSession) -> Vec<NavDbPackageRecord> {
-    let Some(store) = session.nav_kv_store.as_ref() else {
+    let Some(store) = session.nav_data.store() else {
         return Vec::new();
     };
     let mut records = store
@@ -1990,7 +1881,7 @@ fn nav_db_package_records(session: &UiSession) -> Vec<NavDbPackageRecord> {
 }
 
 fn nav_db_family_records(session: &UiSession) -> Vec<NavDbFamilyRecord> {
-    let Some(store) = session.nav_kv_store.as_ref() else {
+    let Some(store) = session.nav_data.store() else {
         return Vec::new();
     };
     let Ok(NavKvLookup::Hit(bytes)) = store.get_bytes("resource/families") else {
@@ -2007,8 +1898,8 @@ fn package_warning_status_records(session: &UiSession) -> Vec<DataStatusRecord> 
         }
     }
     if let Some(record) = session
-        .nav_db_artifact
-        .as_ref()
+        .nav_data
+        .active_artifact()
         .and_then(attached_nav_db_warning_status_record)
     {
         records.insert(record.id.clone(), record);
@@ -2315,7 +2206,7 @@ fn cycle_package_group_status_page_row(
 ) -> UiDataStatusPageRow {
     let packages = package_group_packages(session, families);
     if packages.is_empty() {
-        let severity = if session.nav_kv_store.is_none() {
+        let severity = if session.nav_data.store().is_none() {
             UiStatusSeverity::Unavailable
         } else {
             UiStatusSeverity::Info
@@ -2624,7 +2515,7 @@ fn static_package_group_status_page_row(
 ) -> UiDataStatusPageRow {
     let packages = package_group_packages(session, families);
     if packages.is_empty() {
-        let severity = if session.nav_kv_store.is_none() {
+        let severity = if session.nav_data.store().is_none() {
             UiStatusSeverity::Unavailable
         } else {
             UiStatusSeverity::Info
@@ -2736,7 +2627,7 @@ fn package_validity_detail(
 }
 
 fn nav_db_status_page_row(session: &UiSession) -> UiDataStatusPageRow {
-    let Some(artifact) = session.nav_db_artifact.as_ref() else {
+    let Some(artifact) = session.nav_data.active_artifact() else {
         return status_page_row(
             "nav_db",
             "NAV DB",
@@ -3665,14 +3556,9 @@ fn create_ui_session_inner(
     let session = UiSession {
         model: SessionModel {
             session_revision: 0,
-            nav_data_epoch: 0,
-            nav_db_advance_blocked: false,
             content_policy: app_state.content_policy,
             last_content_report: app_state.last_content_report,
             chart_page_state,
-            nav_kv_store_id: None,
-            nav_kv_store: None,
-            nav_db_artifact: None,
             data_status_records,
             hushed_status_ids,
             data_status_state,
@@ -3695,6 +3581,7 @@ fn create_ui_session_inner(
             altitude_planner_wind_selection: AltitudePlannerWindSelection::NoWind,
         },
         flight_plan,
+        nav_data: NavDataController::default(),
         situation,
         weather: WeatherController::default(),
         map,
@@ -4126,6 +4013,7 @@ enum SessionModelTransactionError {
 struct SessionModelTransactionCheckpoint {
     model: SessionModel,
     flight_plan: FlightPlanModelCheckpoint,
+    nav_data: NavDataModelCheckpoint,
     situation: SituationModelCheckpoint,
     weather: WeatherModelCheckpoint,
     map: MapModelCheckpoint,
@@ -4137,6 +4025,7 @@ impl SessionModelTransactionCheckpoint {
         Self {
             model: session.model.clone(),
             flight_plan: session.flight_plan.checkpoint_model(),
+            nav_data: session.nav_data.checkpoint_model(),
             situation: session.situation.checkpoint_model(),
             weather: session.weather.checkpoint_model(),
             map: session.map.checkpoint_model(),
@@ -4147,6 +4036,7 @@ impl SessionModelTransactionCheckpoint {
     fn rollback(self, session: &mut UiSession) {
         session.model = self.model;
         session.flight_plan.rollback_model(self.flight_plan);
+        session.nav_data.rollback_model(self.nav_data);
         session.situation.rollback_model(self.situation);
         session.weather.rollback_model(self.weather);
         session.map.rollback_model(self.map);
@@ -4728,7 +4618,7 @@ fn sync_guidance_geometry_for_session(
         }),
     );
     let route_started = crate::CoreDebugTimer::start();
-    let Some(store) = session.nav_kv_store.as_ref() else {
+    let Some(store) = session.nav_data.store() else {
         if let Some(geometries) =
             self_contained_guidance_leg_geometry_for_plan(&plan).map_err(|err| {
                 HadReadError::Fatal(format!(
@@ -4791,7 +4681,7 @@ pub fn project_flight_plan_route_in_session(handle: u32) -> AppResult<HadOperati
     let store = session_nav_kv_store(session)?.clone();
     match session
         .flight_plan
-        .project_route(&store, session.runtime.nav_data_generation)
+        .project_route(&store, session.nav_data.generation())
     {
         Ok((projection, _rebuilt)) => Ok(HadOperationOutcome::complete(
             serde_json::to_value(projection).map_err(|err| AppError {
@@ -6369,9 +6259,7 @@ pub fn attach_nav_kv_store_to_session_with_open_result(
     let slot = session_slot(handle)?;
     let mut session_guard = slot.lock_running()?;
     let session = &mut *session_guard;
-    session.nav_kv_store_id = Some(store_id);
-    session.nav_kv_store = Some(Arc::new(store.clone()));
-    session.nav_db_artifact = open_result.map(AttachedNavDbArtifact::from);
+    session.nav_data.attach(store_id, store, open_result);
     session.flight_plan.invalidate_nav_data();
     session.weather.invalidate_nav_data();
     rebuild_metar_tile_cache(session);
@@ -6389,10 +6277,10 @@ pub fn advance_nav_kv_store_in_session_with_open_result(
     let slot = session_slot(handle)?;
     let mut session_guard = slot.lock_running()?;
     let live = &mut *session_guard;
-    if live.nav_db_advance_blocked {
+    if live.nav_data.advance_blocked() {
         let active_artifact_filename = live
-            .nav_db_artifact
-            .as_ref()
+            .nav_data
+            .active_artifact()
             .map(|artifact| artifact.filename.clone());
         let result = NavDbAdvanceResult {
             disposition: NavDbAdvanceDisposition::Rejected,
@@ -6416,8 +6304,8 @@ pub fn advance_nav_kv_store_in_session_with_open_result(
         ));
     }
     let previous_filename = live
-        .nav_db_artifact
-        .as_ref()
+        .nav_data
+        .active_artifact()
         .map(|artifact| artifact.filename.clone());
     let nav_db_changed = previous_filename.as_deref() != Some(&open_result.selected_filename);
     let selected_map_id = live
@@ -6438,20 +6326,17 @@ pub fn advance_nav_kv_store_in_session_with_open_result(
     let mut candidate = UiSession {
         model: live.model.clone(),
         flight_plan: std::mem::take(&mut live.flight_plan),
+        nav_data: live.nav_data.candidate(store_id, store, open_result),
         situation: std::mem::take(&mut live.situation),
         weather: std::mem::take(&mut live.weather),
         map: std::mem::take(&mut live.map),
         runtime: std::mem::take(&mut live.runtime),
         diagnostics: Arc::clone(&live.diagnostics),
     };
-    candidate.nav_kv_store_id = Some(store_id);
-    candidate.nav_kv_store = Some(Arc::new(store.clone()));
-    candidate.nav_db_artifact = Some(AttachedNavDbArtifact::from(open_result));
     candidate.installed_package_ids = installed_package_ids.into_iter().collect();
     candidate
         .installed_package_ids
         .insert(open_result.selected_package_id.clone());
-    candidate.runtime.invalidate_nav_data();
     candidate.map.invalidate_nav_data();
     candidate.weather.invalidate_nav_data();
     rebuild_metar_tile_cache(&mut candidate);
@@ -6489,9 +6374,6 @@ pub fn advance_nav_kv_store_in_session_with_open_result(
         sync_guidance_geometry_for_session(&mut candidate, &crate::CoreDebugTimer::start())?;
         sync_cycle_product_freshness_status_records(&mut candidate);
         clear_data_status_record(&mut candidate, NAV_DB_ADVANCE_STATUS_ID);
-        if nav_db_changed {
-            candidate.nav_data_epoch = candidate.nav_data_epoch.saturating_add(1);
-        }
         advance_session_revision(&mut candidate);
         try_snapshot_for_session(&mut candidate)
     })();
@@ -6537,7 +6419,7 @@ pub fn advance_nav_kv_store_in_session_with_open_result(
             candidate.map.clear_runtime_caches();
             live.map = candidate.map;
             live.runtime = candidate.runtime;
-            live.runtime.invalidate_nav_data();
+            live.runtime.pending_resource_effects.clear();
             live.weather.invalidate_nav_data();
             rebuild_metar_tile_cache(live);
             Ok(HadOperationOutcome::NeedResources { resources })
@@ -6554,7 +6436,7 @@ pub fn advance_nav_kv_store_in_session_with_open_result(
             candidate.map.clear_runtime_caches();
             live.map = candidate.map;
             live.runtime = candidate.runtime;
-            live.runtime.invalidate_nav_data();
+            live.runtime.pending_resource_effects.clear();
             live.weather.invalidate_nav_data();
             rebuild_metar_tile_cache(live);
             Ok(HadOperationOutcome::NeedResources {
@@ -6595,14 +6477,14 @@ pub fn advance_nav_kv_store_in_session_with_open_result(
             candidate.map.clear_runtime_caches();
             live.map = candidate.map;
             live.runtime = candidate.runtime;
-            live.runtime.invalidate_nav_data();
+            live.runtime.pending_resource_effects.clear();
             live.weather.invalidate_nav_data();
             rebuild_metar_tile_cache(live);
-            live.nav_db_advance_blocked = true;
+            live.nav_data.block_advance();
             live.installed_package_ids = candidate_installed_package_ids;
             let active_package_id = live
-                .nav_db_artifact
-                .as_ref()
+                .nav_data
+                .active_artifact()
                 .map(|artifact| artifact.package_id.clone());
             if let Some(active_package_id) = active_package_id {
                 live.installed_package_ids.insert(active_package_id);
@@ -6653,57 +6535,29 @@ pub fn maintain_nav_db_in_session_at_epoch_ms(
     mark_cycle_product_freshness_dirty_if_deadline_due(session);
     sync_cycle_product_freshness_status_records_if_needed(session);
 
-    if session.nav_db_advance_blocked {
-        return nav_db_maintenance_outcome(session, NavDbMaintenanceAction::None);
-    }
-
-    if session.resource_policy == CoreResourcePolicy::PublicUnpacked {
-        let refresh_due = session
-            .publication_resolver
-            .current_artifacts_checked_epoch_ms()
-            .is_none_or(|checked| {
-                checked.saturating_add(NAV_DB_PUBLICATION_POLL_INTERVAL_MS)
-                    <= session.wall_clock_epoch_ms
-            });
-        if refresh_due {
-            let resource = session
-                .publication_resolver
-                .current_artifacts_refresh_request()
-                .map_err(|message| AppError {
-                    kind: AppErrorKind::InvalidManifest,
-                    message,
-                })?;
-            return Ok(HadOperationOutcome::NeedResources {
-                resources: vec![resource],
-            });
+    let decision = session
+        .nav_data
+        .maintenance_decision(
+            &session.publication_resolver,
+            session.resource_policy,
+            &session.installed_package_ids,
+            session.wall_clock_epoch_ms,
+        )
+        .map_err(|message| AppError {
+            kind: AppErrorKind::InvalidManifest,
+            message,
+        })?;
+    match decision {
+        NavDataMaintenanceDecision::None => {
+            nav_db_maintenance_outcome(session, NavDbMaintenanceAction::None)
+        }
+        NavDataMaintenanceDecision::AttemptAdvance => {
+            nav_db_maintenance_outcome(session, NavDbMaintenanceAction::AttemptAdvance)
+        }
+        NavDataMaintenanceDecision::NeedResources(resources) => {
+            Ok(HadOperationOutcome::NeedResources { resources })
         }
     }
-
-    let candidates = match nav_db_candidates_for_session(session).map_err(|message| AppError {
-        kind: AppErrorKind::InvalidManifest,
-        message,
-    })? {
-        Ok(candidates) => candidates,
-        Err(resources) => {
-            if session.resource_policy == CoreResourcePolicy::PublicUnpacked {
-                return Ok(HadOperationOutcome::NeedResources { resources });
-            }
-            return nav_db_maintenance_outcome(session, NavDbMaintenanceAction::None);
-        }
-    };
-    let preferred =
-        crate::had_ops::select_preferred_nav_db_candidate(&candidates, session.wall_clock_epoch_ms);
-    let action = if preferred.is_some_and(|candidate| {
-        session
-            .nav_db_artifact
-            .as_ref()
-            .is_none_or(|active| active.filename != candidate.filename)
-    }) {
-        NavDbMaintenanceAction::AttemptAdvance
-    } else {
-        NavDbMaintenanceAction::None
-    };
-    nav_db_maintenance_outcome(session, action)
 }
 
 fn nav_db_maintenance_outcome(
@@ -6735,10 +6589,10 @@ pub fn insert_nav_kv_page_for_attached_sessions(store_id: u32, page_index: u32, 
             continue;
         };
         let session = &mut *session_guard;
-        if session.nav_kv_store_id == Some(store_id) {
-            if let Some(store) = session.nav_kv_store.as_mut() {
-                Arc::make_mut(store).insert_page(page_index, page_bytes.to_vec());
-            }
+        if session
+            .nav_data
+            .insert_page_if_attached(store_id, page_index, page_bytes)
+        {
             if session
                 .cycle_product_freshness
                 .missing_nav_kv_pages
@@ -6760,11 +6614,7 @@ pub fn debug_drop_nav_kv_pages_for_attached_sessions(store_id: u32) {
             continue;
         };
         let session = &mut *session_guard;
-        if session.nav_kv_store_id == Some(store_id) {
-            if let Some(store) = session.nav_kv_store.as_mut() {
-                Arc::make_mut(store).clear_pages();
-            }
-        }
+        session.nav_data.clear_pages_if_attached(store_id);
     }
 }
 
@@ -8780,7 +8630,7 @@ fn ensure_metar_station_importance_loaded(session: &mut UiSession) -> Result<(),
     {
         return Ok(());
     }
-    let Some(store) = session.nav_kv_store.as_ref() else {
+    let Some(store) = session.nav_data.store() else {
         session.weather.runtime_mut().important_metar_station_ids = Some(HashSet::new());
         session
             .weather
@@ -8839,7 +8689,7 @@ fn ensure_weather_station_airport_aliases_loaded(
     {
         return Ok(());
     }
-    let Some(store) = session.nav_kv_store.as_ref() else {
+    let Some(store) = session.nav_data.store() else {
         session
             .weather
             .runtime_mut()
@@ -9125,7 +8975,7 @@ fn ensure_vector_manifest_loaded(session: &mut UiSession) -> Result<(), HadReadE
         return Ok(());
     }
     let manifest_json = {
-        let store = session.nav_kv_store.as_ref().ok_or_else(|| {
+        let store = session.nav_data.store().ok_or_else(|| {
             HadReadError::Fatal("session missing nav kv store for vector overlay".to_string())
         })?;
         read_attached_json_required::<serde_json::Value>(
@@ -9257,7 +9107,7 @@ fn ensure_vector_inputs_loaded_impl(
         }
 
         let mut loaded_any = false;
-        let store = session.nav_kv_store.as_ref().ok_or_else(|| {
+        let store = session.nav_data.store().ok_or_else(|| {
             HadReadError::Fatal("session missing nav kv store for vector overlay".to_string())
         })?;
         let keys_started_at = crate::core_clock_ms();
@@ -9721,7 +9571,7 @@ pub fn get_map_overlay_in_session_with_point_display_scale_at_epoch_ms(
     let metar_importance_ms = elapsed_ms(metar_importance_started_at);
     let offline_started_at = crate::core_clock_ms();
     let offline_region_records = if session.map.layer_state().offline_regions.visible {
-        let store = session.nav_kv_store.as_ref().ok_or_else(|| AppError {
+        let store = session.nav_data.store().ok_or_else(|| AppError {
             kind: AppErrorKind::Internal,
             message: "session missing nav kv store for offline regions overlay".to_string(),
         })?;
@@ -9875,7 +9725,7 @@ fn flight_plan_selection_points(
     let plan = crate::build_flight_plan(plan.clone()).map_err(|err| {
         HadReadError::Fatal(format!("failed to build flight plan overlay plan: {err}"))
     })?;
-    let Some(store) = session.nav_kv_store.as_ref() else {
+    let Some(store) = session.nav_data.store() else {
         return Ok(Vec::new());
     };
     let mut nav_refs = Vec::<(NavRef, Option<String>)>::new();
@@ -11506,7 +11356,7 @@ fn session_plan(session: &UiSession) -> AppResult<FlightPlan> {
 }
 
 fn session_nav_kv_store(session: &UiSession) -> AppResult<&NavKvStore> {
-    session.nav_kv_store.as_deref().ok_or_else(|| AppError {
+    session.nav_data.store().ok_or_else(|| AppError {
         kind: AppErrorKind::Internal,
         message: "session missing nav kv store".to_string(),
     })
@@ -11841,8 +11691,8 @@ fn try_snapshot_for_session(
         ui_contract_version: app_ui_contracts::UI_WIRE_CONTRACT_VERSION,
         session_revision: session.session_revision,
         flight_plan_route_revision: session.flight_plan.route_revision(),
-        nav_data_epoch: session.nav_data_epoch,
-        active_nav_db: session.nav_db_artifact.as_ref().map(UiNavDbIdentity::from),
+        nav_data_epoch: session.nav_data.epoch(),
+        active_nav_db: session.nav_data.active_identity(),
         next_nav_db_maintenance_epoch_ms: next_nav_db_maintenance_epoch_ms(session),
         app_state: app_state_for_session(session),
         app_ui_state,
@@ -12149,7 +11999,7 @@ fn project_session_app_ui_state(
     weather_projection: &WeatherProjection,
     situation_projection: &SituationProjection,
 ) -> Result<AppUiState, HadReadError> {
-    let nav_kv_store = session.nav_kv_store.clone();
+    let nav_kv_store = session.nav_data.store_arc();
     let weather_revision = session.weather.revision();
     let atmosphere =
         planner_atmosphere_for_selection(session.altitude_planner_wind_selection, &session.weather);
@@ -12164,7 +12014,7 @@ fn project_session_app_ui_state(
                 .pressure_altitude_ft
                 .or(situation_projection.ownship.render.altitude_msl_ft),
             now_epoch_ms: session.wall_clock_epoch_ms,
-            nav_data_generation: session.runtime.nav_data_generation,
+            nav_data_generation: session.nav_data.generation(),
             weather_revision,
         },
         atmosphere,
@@ -12184,7 +12034,7 @@ fn project_session_app_ui_state(
     let materialized_plan = flight_plan_projection.projection.materialized;
     project_bad_autopilot_availability(session, &mut app_ui_state);
     if let (Some(store), Some(position)) = (
-        session.nav_kv_store.as_ref(),
+        session.nav_data.store(),
         app_ui_state.ownship.render.position,
     ) {
         app_ui_state.ownship.render.magnetic_variation_deg =
@@ -12210,7 +12060,7 @@ fn project_session_app_ui_state(
             guidance.nav_element = project_materialized_nav_element(
                 materialized,
                 app_ui_state.ownship.render.position,
-                session.nav_kv_store.as_deref(),
+                session.nav_data.store(),
             )?;
         }
     }
@@ -12277,7 +12127,7 @@ fn project_flight_data_banner(
 ) -> Result<crate::FlightDataBannerModel, HadReadError> {
     let ownship = &app_ui_state.ownship.render;
     let position = ownship.position;
-    let store = session.nav_kv_store.as_deref();
+    let store = session.nav_data.store();
     let flight_data_computer =
         crate::FlightDataComputer::with_clock(ownship.speed_kt, Some(session.wall_clock_epoch_ms));
 
@@ -13540,6 +13390,7 @@ fn replace_flight_plan_in_session(handle: u32, plan: FlightPlan) -> AppResult<Ha
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::nav_data_controller::NAV_DB_PUBLICATION_POLL_INTERVAL_MS;
     use crate::{
         guidance_detail_id_for_leg_element,
         map_overlay::NotamProductPayload,
@@ -13638,6 +13489,10 @@ mod tests {
 
     fn isolated_test_session(nav_kv_store: Option<NavKvStore>) -> UiSession {
         let nav_kv_store_id = nav_kv_store.as_ref().map(|_| next_test_nav_kv_store_id());
+        let mut nav_data = NavDataController::default();
+        if let (Some(store_id), Some(store)) = (nav_kv_store_id, nav_kv_store.as_ref()) {
+            nav_data.attach(store_id, store, None);
+        }
         let app_state = register_default_situation_sources(AppState::default()).expect("app state");
         let situation = SituationController::new(app_state.ownship);
         let flight_plan = app_state
@@ -13653,8 +13508,6 @@ mod tests {
         UiSession {
             model: SessionModel {
                 session_revision: 0,
-                nav_data_epoch: 0,
-                nav_db_advance_blocked: false,
                 content_policy: app_state.content_policy,
                 last_content_report: app_state.last_content_report,
                 chart_page_state: derive_compact_chart_page_state(
@@ -13664,9 +13517,6 @@ mod tests {
                     None,
                     None,
                 ),
-                nav_kv_store_id,
-                nav_kv_store: nav_kv_store.map(Arc::new),
-                nav_db_artifact: None,
                 data_status_records: BTreeMap::new(),
                 hushed_status_ids: BTreeSet::new(),
                 data_status_state: default_data_status_state(),
@@ -13686,6 +13536,7 @@ mod tests {
                 altitude_planner_wind_selection: AltitudePlannerWindSelection::NoWind,
             },
             flight_plan,
+            nav_data,
             situation,
             weather: WeatherController::default(),
             map,
@@ -14268,6 +14119,7 @@ mod tests {
         assert_eq!(diagnostics.map_revision, 0);
         assert_eq!(diagnostics.situation_revision, 0);
         assert_eq!(diagnostics.flight_plan_revision, 0);
+        assert_eq!(diagnostics.nav_data_revision, 0);
         assert_eq!(diagnostics.last_session_payload_serialized_bytes, 12_345);
 
         destroy_session(first.handle);
@@ -14299,6 +14151,7 @@ mod tests {
         assert_eq!(configured.situation_projection_count, 1);
         assert_eq!(configured.flight_plan_revision, 0);
         assert_eq!(configured.flight_plan_projection_count, 1);
+        assert_eq!(configured.nav_data_revision, 0);
 
         get_session_snapshot(init.handle).expect("repeat snapshot");
         set_map_layer_enabled_in_session(init.handle, MapLayerId::WorldBasemap, false)
@@ -14312,6 +14165,7 @@ mod tests {
         assert_eq!(unchanged.situation_projection_count, 1);
         assert_eq!(unchanged.flight_plan_revision, 0);
         assert_eq!(unchanged.flight_plan_projection_count, 1);
+        assert_eq!(unchanged.nav_data_revision, configured.nav_data_revision);
         assert_eq!(
             unchanged.settings_projection_count,
             configured.settings_projection_count
@@ -14336,6 +14190,7 @@ mod tests {
         assert_eq!(changed.map_projection_count, unchanged.map_projection_count);
         assert_eq!(changed.situation_revision, unchanged.situation_revision);
         assert_eq!(changed.flight_plan_revision, unchanged.flight_plan_revision);
+        assert_eq!(changed.nav_data_revision, unchanged.nav_data_revision);
         assert_eq!(
             changed.flight_plan_projection_count,
             unchanged.flight_plan_projection_count
@@ -14352,6 +14207,24 @@ mod tests {
             changed.weather_projection_count,
             configured.weather_projection_count
         );
+        destroy_session(init.handle);
+    }
+
+    #[test]
+    fn nav_data_revision_changes_only_when_attached_state_changes() {
+        let init =
+            create_ui_session(FlightPlan::default(), &[], None, None).expect("create session");
+        let initial = session_diagnostics(init.handle).expect("initial diagnostics");
+        let store = crate::navkv::nav_kv_store_for_test(&[], 256);
+
+        attach_nav_kv_store_to_session(init.handle, 41, &store).expect("attach NAVDB");
+        let attached = session_diagnostics(init.handle).expect("attached diagnostics");
+        assert_eq!(attached.nav_data_revision, initial.nav_data_revision + 1);
+
+        get_session_snapshot(init.handle).expect("snapshot attached NAVDB");
+        let projected = session_diagnostics(init.handle).expect("projected diagnostics");
+        assert_eq!(projected.nav_data_revision, attached.nav_data_revision);
+
         destroy_session(init.handle);
     }
 
@@ -14431,7 +14304,7 @@ mod tests {
 
     #[test]
     fn nav_data_invalidation_is_generation_scoped_and_centralized() {
-        let mut runtime = SessionRuntime::default();
+        let mut nav_data = NavDataController::default();
         let mut map = MapController::default();
         let mut weather = WeatherController::default();
         map.runtime_mut()
@@ -14445,11 +14318,12 @@ mod tests {
         weather.runtime_mut().weather_station_airport_aliases =
             Some(WeatherStationAirportAliases::default());
 
-        runtime.invalidate_nav_data();
+        let store = crate::navkv::nav_kv_store_for_test(&[], 256);
+        nav_data.attach(1, &store, None);
         map.invalidate_nav_data();
         weather.invalidate_nav_data();
 
-        assert_eq!(runtime.nav_data_generation, 1);
+        assert_eq!(nav_data.generation(), 1);
         assert!(map.runtime().terrain_source_tile_cache.is_empty());
         assert!(map.runtime().agl_terrain_resource_ids_in_flight.is_empty());
         assert!(weather.runtime().important_metar_station_ids.is_none());
@@ -15687,6 +15561,20 @@ mod tests {
                 .map(|identity| identity.package_id.as_str()),
             Some("NAV_DB_2607")
         );
+
+        let just_after = nav_db_maintenance_result(
+            maintain_nav_db_in_session_at_epoch_ms(init.handle, rollover + 1)
+                .expect("maintenance immediately after rollover"),
+        );
+        assert_eq!(just_after.action, NavDbMaintenanceAction::AttemptAdvance);
+        assert_eq!(
+            just_after
+                .snapshot
+                .active_nav_db
+                .as_ref()
+                .map(|identity| identity.package_id.as_str()),
+            Some("NAV_DB_2607")
+        );
     }
 
     #[test]
@@ -15869,12 +15757,12 @@ mod tests {
         assert!(invalidations.contains(&UiInvalidation::NavData));
         let slot = session_slot(init.handle).expect("session slot");
         let session = slot.lock_running().expect("live session");
-        assert_eq!(session.nav_data_epoch, 1);
-        assert_eq!(session.nav_kv_store_id, Some(2));
+        assert_eq!(session.nav_data.epoch(), 1);
+        assert_eq!(session.nav_data.store_id(), Some(2));
         assert_eq!(
             session
-                .nav_db_artifact
-                .as_ref()
+                .nav_data
+                .active_artifact()
                 .map(|artifact| artifact.filename.as_str()),
             Some("NAV_DB_2608.zip")
         );
@@ -15892,6 +15780,11 @@ mod tests {
             Some(&old_open),
         )
         .expect("attach old NAVDB");
+        let (live_generation_before, live_revision_before) = {
+            let slot = session_slot(init.handle).expect("session slot");
+            let session = slot.lock_running().expect("live session");
+            (session.nav_data.generation(), session.nav_data.revision())
+        };
         let entries = [
             ("chart/catalog", br#"[]"#.as_slice()),
             ("vector/manifest", minimal_vector_manifest_json().as_bytes()),
@@ -15912,12 +15805,14 @@ mod tests {
         {
             let slot = session_slot(init.handle).expect("session slot");
             let session = slot.lock_running().expect("live session");
-            assert_eq!(session.nav_data_epoch, 0);
-            assert_eq!(session.nav_kv_store_id, Some(11));
+            assert_eq!(session.nav_data.epoch(), 0);
+            assert_eq!(session.nav_data.store_id(), Some(11));
+            assert_eq!(session.nav_data.generation(), live_generation_before);
+            assert_eq!(session.nav_data.revision(), live_revision_before);
             assert_eq!(
                 session
-                    .nav_db_artifact
-                    .as_ref()
+                    .nav_data
+                    .active_artifact()
                     .map(|artifact| artifact.filename.as_str()),
                 Some("NAV_DB_2607.zip")
             );
@@ -15984,8 +15879,8 @@ mod tests {
             .any(|action| action.id == RELOAD_APPLICATION_ACTION_ID));
         let slot = session_slot(init.handle).expect("session slot");
         let session = slot.lock_running().expect("live session");
-        assert_eq!(session.nav_kv_store_id, Some(21));
-        assert!(session.nav_db_advance_blocked);
+        assert_eq!(session.nav_data.store_id(), Some(21));
+        assert!(session.nav_data.advance_blocked());
         drop(session);
 
         let maintenance = nav_db_maintenance_result(
@@ -16058,7 +15953,7 @@ mod tests {
             .is_some_and(|reason| reason.contains("KBBB")));
         let slot = session_slot(init.handle).expect("session slot");
         let session = slot.lock_running().expect("retained session");
-        assert_eq!(session.nav_kv_store_id, Some(31));
+        assert_eq!(session.nav_data.store_id(), Some(31));
         assert_eq!(session.flight_plan.active_plan(), Some(&plan));
     }
 
@@ -16280,10 +16175,10 @@ mod tests {
         let slot = session_slot(init.handle).expect("session slot");
         let session = slot.lock_running().expect("committed 2608 session");
         assert_eq!(session.flight_plan.active_plan(), Some(&expected_plan));
-        assert_eq!(session.nav_kv_store_id, Some(2608));
+        assert_eq!(session.nav_data.store_id(), Some(2608));
         assert!(!session.flight_plan.guidance_leg_geometry().is_empty());
         let route = crate::had_ops::project_flight_plan_route(
-            session.nav_kv_store.as_ref().expect("committed NAVDB"),
+            session.nav_data.store().expect("committed NAVDB"),
             session.flight_plan.active_plan().expect("active plan"),
         )
         .expect("project committed 2608 route");

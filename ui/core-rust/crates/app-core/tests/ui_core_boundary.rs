@@ -696,6 +696,85 @@ fn flight_plan_state_and_projection_are_owned_by_flight_plan_controller() {
 }
 
 #[test]
+fn nav_data_state_runtime_and_maintenance_are_owned_by_nav_data_controller() {
+    let session_text = read_repo_file("ui/core-rust/crates/app-core/src/session.rs");
+    let session = strip_rust_tests(&session_text);
+    let controller = read_repo_file("ui/core-rust/crates/app-core/src/nav_data_controller.rs");
+    let ui_session = balanced_block_after_marker(session, "struct UiSession {");
+    let model = balanced_block_after_marker(session, "struct SessionModel");
+    let runtime = balanced_block_after_marker(session, "struct SessionRuntime");
+
+    assert!(
+        ui_session.contains("nav_data: NavDataController"),
+        "UiSession must compose NAVDB behavior through one controller"
+    );
+    for field in [
+        "nav_data_epoch",
+        "nav_db_advance_blocked",
+        "nav_kv_store_id",
+        "nav_kv_store",
+        "nav_db_artifact",
+        "nav_data_generation",
+    ] {
+        assert!(
+            !model.contains(field) && !runtime.contains(field),
+            "NAVDB field {field} must not return to SessionModel or SessionRuntime"
+        );
+    }
+    assert!(
+        controller.contains("struct NavDataModel")
+            && controller.contains("struct NavDataRuntime")
+            && controller.contains("pub(crate) struct NavDataController")
+            && controller.contains("enum NavDataMaintenanceDecision"),
+        "NavDataController must own its model, heavy runtime, and maintenance policy"
+    );
+    for access in [
+        "session.nav_kv_store",
+        "session.nav_db_artifact",
+        "session.nav_data_epoch",
+        "session.nav_kv_store_id",
+        "session.nav_db_advance_blocked",
+        "runtime.nav_data_generation",
+    ] {
+        assert!(
+            !session.contains(access),
+            "session code must not regain raw NAVDB access through {access}"
+        );
+    }
+    let checkpoint =
+        balanced_block_after_marker(session, "struct SessionModelTransactionCheckpoint");
+    assert!(
+        checkpoint.contains("nav_data: NavDataModelCheckpoint"),
+        "session transactions must checkpoint the lightweight NAVDB model"
+    );
+    assert!(
+        function_body(session, "rollback").contains("session.nav_data.rollback_model"),
+        "session transaction rollback must restore the NAVDB model"
+    );
+    assert!(
+        function_body(session, "attach_nav_kv_store_to_session_with_open_result")
+            .contains("session.nav_data.attach"),
+        "NAVDB attachment must delegate to NavDataController"
+    );
+    let page_delivery = function_body(session, "insert_nav_kv_page_for_attached_sessions");
+    assert!(
+        page_delivery.contains(".nav_data") && page_delivery.contains(".insert_page_if_attached"),
+        "NAVDB page delivery must delegate to NavDataController"
+    );
+    let maintenance = function_body(session, "maintain_nav_db_in_session_at_epoch_ms");
+    assert!(
+        maintenance.contains(".nav_data") && maintenance.contains(".maintenance_decision"),
+        "NAVDB maintenance decisions must be owned by NavDataController"
+    );
+    let advance = function_body(session, "advance_nav_kv_store_in_session_with_open_result");
+    assert!(
+        advance.contains("nav_data: live.nav_data.candidate")
+            && advance.contains("*live = candidate"),
+        "NAVDB rollover must stage a controller candidate and publish it through the final session swap"
+    );
+}
+
+#[test]
 fn platform_flight_plan_mutations_do_not_resync_guidance_after_core_mutation() {
     let web = read_repo_file("ui/web-app/src/domain/appCoreAdapter.ts");
     let android = read_repo_file(

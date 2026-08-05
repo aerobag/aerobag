@@ -244,15 +244,36 @@ existing transactional invalidation path.
 The public snapshot and route wire contracts remain unchanged. This slice did
 not add a lock, thread, Worker, or platform wire change.
 
+## Completed Seventh Slice
+
+The seventh slice extracted `NavDataController` around the attached NAVDB
+artifact identity, byte-store handle, public epoch, internal cache generation,
+advance-blocked state, candidate filtering, and maintenance timing policy. The
+controller separates its checkpointed model from its reference-counted store
+runtime and exposes a monotonic revision for diagnostics.
+
+Cycle rollover remains transactional across domains. Core constructs a separate
+candidate controller, rebuilds the flight-plan, map, weather, and chart
+projections against it, and publishes the candidate only through the final
+aggregate `UiSession` swap. A page fault or rejected candidate leaves the live
+store, identity, epoch, and generation unchanged. Page faults also leave the
+live revision unchanged; a fatal rejection changes only the lightweight model
+revision when it marks the controller advance-blocked to prevent repeated
+attempts. Boundary-time tests cover immediately before, exactly at, and
+immediately after the effective instant.
+
+The public snapshot and platform wire contracts remain unchanged. This slice
+did not add a lock, thread, Worker, or platform wire change.
+
 ## Next Slice
 
-Split roadmap item 4.6 into reviewable boundaries, starting with nav-data and
-offline-package state. Extract one controller around attached NAVDB identity,
-generation, installed-package policy, cycle-product freshness, and package UI
-projection. Keep byte stores, publication fetch plumbing, and cross-controller
-candidate adoption in the session coordinator during the first pass. Cloud and
-data-status ownership should follow as separate slices rather than becoming one
-catch-all controller.
+Continue roadmap item 4.6 with a `PackageController` around resource policy,
+installed package IDs, publication resolution, offline-library state, and
+package preferences/projection. Keep NAVDB candidate adoption coordinated by
+`UiSession`, with `NavDataController` remaining the sole owner of active NAVDB
+identity and runtime. Resolve the remaining cloud/package ownership boundary
+before implementation; cloud and data-status should remain separate slices
+rather than becoming one catch-all controller.
 
 ## Relationship To Work Scheduling
 

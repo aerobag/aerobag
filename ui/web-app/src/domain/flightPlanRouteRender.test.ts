@@ -124,4 +124,38 @@ describe("flight plan route rendering", () => {
     expect(layout.center).toEqual({ x: 0, y: 60 });
     expect(layout.rotationDegrees).toBe(90);
   });
+
+  it("chooses the upright equivalent after applying map rotation", () => {
+    const annotation: FlightPlanRouteDistanceAnnotation = {
+      id: "northeast-leg",
+      segment_indexes: [0],
+      text: "730nm",
+      distance_nm: 730,
+      status: "remaining",
+      required_feature_ids: [],
+      minimum_path_to_pill_width_ratio: 1.6,
+    };
+    const segment = {
+      status: "remaining" as const,
+      path: [{ x: 0, y: 20 }, { x: 200, y: 0 }],
+    };
+    const [northUp] = layoutFlightPlanRouteDistancePills(
+      [annotation],
+      [segment],
+      new Set(),
+      () => 50,
+      0,
+    );
+    const [southUp] = layoutFlightPlanRouteDistancePills(
+      [annotation],
+      [segment],
+      new Set(),
+      () => 50,
+      180,
+    );
+
+    expect(northUp.rotationDegrees).toBeCloseTo(-5.7106, 3);
+    expect(southUp.rotationDegrees).toBeCloseTo(174.2894, 3);
+    expect(southUp.rotationDegrees - 180).toBeCloseTo(northUp.rotationDegrees, 8);
+  });
 });

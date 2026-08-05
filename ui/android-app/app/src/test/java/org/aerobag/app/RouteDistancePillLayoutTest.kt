@@ -64,4 +64,15 @@ class RouteDistancePillLayoutTest {
         assertEquals(Offset(0f, 60f), layout.center)
         assertEquals(90f, layout.rotationDegrees)
     }
+
+    @Test
+    fun `keeps a northeast route label upright`() {
+        val layout = layoutRouteDistancePills(
+            listOf(annotation.copy(segmentIndexes = listOf(0), requiredFeatureIds = emptyList())),
+            listOf(listOf(Offset(0f, 20f), Offset(200f, 0f))),
+            emptySet(),
+        ) { 50f }.single()
+
+        assertEquals(-5.7106f, layout.rotationDegrees, 0.001f)
+    }
 }

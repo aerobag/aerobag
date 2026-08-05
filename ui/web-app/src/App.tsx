@@ -4247,9 +4247,10 @@ function MapPage(props: {
   const [followSyncPendingSerial, setFollowSyncPendingSerial] = useState(0);
   const [followTargetRetryToken, setFollowTargetRetryToken] = useState(0);
   const [surfaceSize, setSurfaceSize] = useState<SurfaceSize>({ width: 0, height: 0 });
+  const [debugMapUpDeg, setDebugMapUpDeg] = useState<number | null>(null);
   const mapUpDegRef = useRef(0);
   const previousMapOrientationModeRef = useRef(mapOrientationMode);
-  const plannedMapUpDeg = resolveMapUpDegrees(
+  const plannedMapUpDeg = debugMapUpDeg ?? resolveMapUpDegrees(
     mapOrientationMode,
     ownship.track_deg_true,
     previousMapOrientationModeRef.current === "track" ? mapUpDegRef.current : 0,
@@ -5310,7 +5311,8 @@ function MapPage(props: {
     routeScreenSegments,
     new Set((mapOverlay.flight_plan_features ?? []).map((feature) => feature.id)),
     measureFlightPlanRouteDistancePillWidth,
-  ), [flightPlanRouteDistanceAnnotations, mapOverlay.flight_plan_features, routeScreenSegments]);
+    plannedMapUpDeg,
+  ), [flightPlanRouteDistanceAnnotations, mapOverlay.flight_plan_features, plannedMapUpDeg, routeScreenSegments]);
 
   useEffect(() => {
     terrainRendererRef.current = new TerrainOverlayRenderer();
@@ -7519,9 +7521,10 @@ function MapPage(props: {
             mode={mapOrientationMode}
             mapUpDeg={plannedMapUpDeg}
             magneticVariationDeg={ownship.magnetic_variation_deg}
-            onToggle={() => onMapOrientationModeChange(
-              mapOrientationMode === "north" ? "track" : "north",
-            )}
+            onToggle={() => {
+              setDebugMapUpDeg(null);
+              onMapOrientationModeChange(mapOrientationMode === "north" ? "track" : "north");
+            }}
           />
         </div>
 
@@ -7564,6 +7567,8 @@ function MapPage(props: {
                 onRunDragPerf={runLiveDragPerf}
                 dragPerfRunning={liveDragPerfRunning}
                 lastDragPerfRunId={lastLiveDragPerfRunId}
+                mapUpDeg={plannedMapUpDeg}
+                onMapUpDegChange={setDebugMapUpDeg}
               />
             </DebugDock>
           </div>
@@ -12085,6 +12090,8 @@ function CommonDebugPanel(props: {
   onRunDragPerf?: () => void;
   dragPerfRunning?: boolean;
   lastDragPerfRunId?: string | null;
+  mapUpDeg?: number;
+  onMapUpDegChange?: (mapUpDeg: number) => void;
 }) {
   const flags: Array<{ id: DebugFlagId; label: string }> = [
     { id: "tile_labels", label: "tile labels" },
@@ -12120,6 +12127,9 @@ function CommonDebugPanel(props: {
           {props.dragPerfRunning ? "drag perf running" : "run drag perf"}
         </button>
       ) : null}
+      {props.mapUpDeg != null && props.onMapUpDegChange ? (
+        <DebugMapUpSlider mapUpDeg={props.mapUpDeg} onChange={props.onMapUpDegChange} />
+      ) : null}
       {flags.map((flag) => (
         <label key={flag.id} className="debugToggle">
           <input
@@ -12131,6 +12141,24 @@ function CommonDebugPanel(props: {
         </label>
       ))}
     </>
+  );
+}
+
+function DebugMapUpSlider(props: { mapUpDeg: number; onChange: (mapUpDeg: number) => void }) {
+  const mapUpDeg = Math.round(props.mapUpDeg);
+  return (
+    <label className="debugRange">
+      <span>UP {mapUpDeg > 0 ? "+" : ""}{mapUpDeg}°</span>
+      <input
+        type="range"
+        min="-180"
+        max="180"
+        step="1"
+        value={mapUpDeg}
+        aria-label="Debug map-up rotation"
+        onChange={(event) => props.onChange(Number(event.currentTarget.value))}
+      />
+    </label>
   );
 }
 

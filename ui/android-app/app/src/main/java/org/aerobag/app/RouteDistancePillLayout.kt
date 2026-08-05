@@ -6,7 +6,6 @@ package org.aerobag.app
 
 import androidx.compose.ui.geometry.Offset
 import org.aerobag.app.domain.FlightPlanRouteDistanceAnnotation
-import kotlin.math.abs
 import kotlin.math.atan2
 import kotlin.math.hypot
 
@@ -51,17 +50,27 @@ internal fun layoutRouteDistancePills(
                     x = path[index].x + (path[index + 1].x - path[index].x) * fraction,
                     y = path[index].y + (path[index + 1].y - path[index].y) * fraction,
                 )
-                var deltaX = path[index + 1].x - path[index].x
-                var deltaY = path[index + 1].y - path[index].y
-                if (deltaY < 0f || (abs(deltaY) < 1e-6f && deltaX < 0f)) {
-                    deltaX = -deltaX
-                    deltaY = -deltaY
-                }
-                rotationDegrees = Math.toDegrees(atan2(deltaY.toDouble(), deltaX.toDouble())).toFloat()
+                val deltaX = path[index + 1].x - path[index].x
+                val deltaY = path[index + 1].y - path[index].y
+                rotationDegrees = uprightScreenRotationDegrees(deltaX, deltaY)
                 break
             }
             traversed += length
         }
         add(RouteDistancePillLayout(annotation, center, widthPx, rotationDegrees))
     }
+}
+
+private fun uprightScreenRotationDegrees(deltaX: Float, deltaY: Float): Float {
+    val routeRotationDeg = Math.toDegrees(atan2(deltaY.toDouble(), deltaX.toDouble())).toFloat()
+    return if (routeRotationDeg <= -90f || routeRotationDeg > 90f) {
+        normalizeSignedDegrees(routeRotationDeg + 180f)
+    } else {
+        routeRotationDeg
+    }
+}
+
+private fun normalizeSignedDegrees(degrees: Float): Float {
+    val wrapped = (degrees + 180f) % 360f
+    return (if (wrapped < 0f) wrapped + 360f else wrapped) - 180f
 }

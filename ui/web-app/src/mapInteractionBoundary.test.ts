@@ -25,6 +25,13 @@ function functionSource(name: string): string {
 }
 
 describe("map interaction boundaries", () => {
+  it("routes debug rotation through the planned map-up value", () => {
+    expect(appSource).toContain("const plannedMapUpDeg = debugMapUpDeg ?? resolveMapUpDegrees(");
+    expect(appSource).toContain("mapUpDeg={plannedMapUpDeg}");
+    expect(appSource).toContain("onMapUpDegChange={setDebugMapUpDeg}");
+    expect(appSource).toContain('aria-label="Debug map-up rotation"');
+  });
+
   it("clips rotated rasters at the map surface rather than before rotation", () => {
     const mapSurfaceBlocks = [...styles.matchAll(/\.mapSurface\s*\{([^}]*)\}/g)]
       .map((match) => match[1] ?? "")

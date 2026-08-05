@@ -103,6 +103,7 @@ export function layoutFlightPlanRouteDistancePills(
   screenSegments: FlightPlanRouteScreenSegment[],
   visibleFeatureIds: ReadonlySet<string>,
   measurePillWidth: (text: string) => number,
+  mapUpDeg = 0,
 ): FlightPlanRouteDistancePillLayout[] {
   const layouts: FlightPlanRouteDistancePillLayout[] = [];
   for (const annotation of annotations) {
@@ -136,13 +137,9 @@ export function layoutFlightPlanRouteDistancePills(
           x: path[index].x + (path[index + 1].x - path[index].x) * fraction,
           y: path[index].y + (path[index + 1].y - path[index].y) * fraction,
         };
-        let deltaX = path[index + 1].x - path[index].x;
-        let deltaY = path[index + 1].y - path[index].y;
-        if (deltaY < 0 || (Math.abs(deltaY) < 1e-6 && deltaX < 0)) {
-          deltaX = -deltaX;
-          deltaY = -deltaY;
-        }
-        rotationDegrees = Math.atan2(deltaY, deltaX) * 180 / Math.PI;
+        const deltaX = path[index + 1].x - path[index].x;
+        const deltaY = path[index + 1].y - path[index].y;
+        rotationDegrees = uprightLocalRotationDegrees(deltaX, deltaY, mapUpDeg);
         break;
       }
       traversed += length;
@@ -150,4 +147,16 @@ export function layoutFlightPlanRouteDistancePills(
     layouts.push({ annotation, center, width, rotationDegrees });
   }
   return layouts;
+}
+
+function uprightLocalRotationDegrees(deltaX: number, deltaY: number, mapUpDeg: number): number {
+  const routeRotationDeg = Math.atan2(deltaY, deltaX) * 180 / Math.PI;
+  const displayedRotationDeg = normalizeSignedDegrees(routeRotationDeg - mapUpDeg);
+  return displayedRotationDeg <= -90 || displayedRotationDeg > 90
+    ? normalizeSignedDegrees(routeRotationDeg + 180)
+    : routeRotationDeg;
+}
+
+function normalizeSignedDegrees(degrees: number): number {
+  return ((degrees + 180) % 360 + 360) % 360 - 180;
 }

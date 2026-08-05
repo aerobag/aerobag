@@ -194,6 +194,7 @@ pub struct UiMapLayerState {
     pub vectors: UiMapLayerToggleState,
     pub metars: UiMapLayerToggleState,
     pub nexrad: UiMapLayerToggleState,
+    pub traffic: UiMapLayerToggleState,
     pub terrain_warning: UiMapLayerToggleState,
     pub offline_regions: UiMapLayerToggleState,
 }
@@ -206,6 +207,7 @@ pub enum MapLayerId {
     Vectors,
     Metars,
     Nexrad,
+    Traffic,
     TerrainWarning,
     OfflineRegions,
 }

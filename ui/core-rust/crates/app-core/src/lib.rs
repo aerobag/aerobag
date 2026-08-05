@@ -4,6 +4,7 @@
 
 use serde::{Deserialize, Serialize};
 
+mod adsb;
 pub mod aircraft_profiles;
 pub mod airport_info;
 pub mod altitude_planner;
@@ -46,6 +47,7 @@ pub mod state;
 pub mod terrain;
 pub mod ui_work_scheduler;
 
+pub use adsb::VisibleAdsbTraffic;
 pub use aircraft_profiles::{
     pa46_310p_climb_points, pa46_310p_profile, Pa46CruiseConfiguration, PA46_310P_AIRCRAFT_LABEL,
     PA46_310P_AIRCRAFT_MODEL_ID, PA46_310P_PERFORMANCE_SOURCE,

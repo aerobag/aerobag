@@ -918,6 +918,9 @@ type UiThemeJson = {
     tfr_active: string;
     tfr_upcoming: string;
     intersection_cyan: string;
+    traffic: string;
+    traffic_contrast: string;
+    traffic_label: string;
     dark_gray: string;
     obstacle_danger: string;
     obstacle_caution: string;
@@ -1022,6 +1025,8 @@ function layerIconSrc(layerId: MapLayerId): string {
       return LAYER_VECTORS_ICON_SRC;
     case "nexrad":
       return LAYER_NEXRAD_ICON_SRC;
+    case "traffic":
+      return LAYER_VECTORS_ICON_SRC;
     case "terrain_warning":
       return LAYER_TERRAIN_WARNING_ICON_SRC;
     case "offline_regions":
@@ -1765,6 +1770,49 @@ function PirepSymbol(props: { feature: VisiblePirepFeature; scale?: number }) {
   );
 }
 
+function AdsbTrafficSymbol(props: { feature: MapOverlayQueryResult["visible_traffic"][number] }) {
+  const { feature } = props;
+  const detail = feature.relative_altitude_label ?? feature.altitude_label;
+  return (
+    <g aria-hidden="true">
+      <g transform={`rotate(${feature.track_deg_true ?? 0})`}>
+        <path
+          d="M 0 -11 L 8 9 L 0 5 L -8 9 Z"
+          fill="none"
+          stroke={loadedUiTheme.aviation.traffic_contrast}
+          strokeWidth="5"
+          strokeLinejoin="round"
+        />
+        <path
+          d="M 0 -11 L 8 9 L 0 5 L -8 9 Z"
+          fill={loadedUiTheme.aviation.traffic}
+          stroke={loadedUiTheme.aviation.traffic_contrast}
+          strokeWidth="1.25"
+          strokeLinejoin="round"
+        />
+      </g>
+      <g transform="translate(13 0)">
+        <g className="mapUpright">
+          <text
+            x="0"
+            y="-2"
+            dominantBaseline="auto"
+            fill={loadedUiTheme.aviation.traffic_label}
+            stroke={loadedUiTheme.aviation.traffic_contrast}
+            strokeWidth="3"
+            paintOrder="stroke"
+            fontSize="12"
+            fontWeight="800"
+          >
+            <tspan x="0">{feature.label}</tspan>
+            <tspan x="0" dy="1.1em">{detail}</tspan>
+          </text>
+        </g>
+      </g>
+    </g>
+  );
+}
+
 function PlanWaypointSymbol(props: { feature: NavSymbolFeature | null }) {
   const { feature } = props;
   if (!feature) {
@@ -1854,6 +1902,7 @@ function defaultUiMapLayerState(): UiMapLayerState {
     vectors: { visible: true, enabled: true },
     metars: { visible: true, enabled: true },
     nexrad: { visible: false, enabled: true },
+    traffic: { visible: false, enabled: true },
     terrain_warning: { visible: true, enabled: true },
     offline_regions: { visible: false, enabled: true },
   };
@@ -4143,11 +4192,14 @@ function MapPage(props: {
     visible_features: [],
     visible_metars: [],
     visible_pireps: [],
+    visible_traffic: [],
+    traffic_next_refresh_epoch_ms: null,
     airspace_paths: [],
     tfr_paths: [],
     airspace_labels: [],
     offline_regions: [],
   });
+  const [trafficRefreshTick, setTrafficRefreshTick] = useState(0);
   const [nexradOverlay, setNexradOverlay] = useState<NexradOverlayQueryResult>({
     status: { state: "hidden" },
     tiles: [],
@@ -4665,6 +4717,8 @@ function MapPage(props: {
               visible_features: [],
               visible_metars: [],
               visible_pireps: [],
+              visible_traffic: [],
+              traffic_next_refresh_epoch_ms: null,
               airspace_paths: [],
               tfr_paths: [],
               airspace_labels: [],
@@ -5277,6 +5331,7 @@ function MapPage(props: {
   const mapOverlayLayersVisible =
     mapLayerState.vectors.visible
     || mapLayerState.metars.visible
+    || mapLayerState.traffic.visible
     || mapLayerState.offline_regions.visible;
   const setMapLayerVisible = useCallback(async (layerId: MapLayerId, visible: boolean) => {
     if (!uiSession || layerToggleBusyId !== null) {
@@ -5588,6 +5643,18 @@ function MapPage(props: {
   ]);
 
   useEffect(() => {
+    const deadline = mapOverlay.traffic_next_refresh_epoch_ms;
+    if (!mapLayerState.traffic.visible || deadline == null) {
+      return;
+    }
+    const timer = window.setTimeout(
+      () => setTrafficRefreshTick((tick) => tick + 1),
+      Math.max(0, deadline - Date.now()),
+    );
+    return () => window.clearTimeout(timer);
+  }, [mapLayerState.traffic.visible, mapOverlay.traffic_next_refresh_epoch_ms]);
+
+  useEffect(() => {
     if (!mapIsVisible || !mapOverlayLayersVisible) {
       mapOverlayQueryRequestRef.current = null;
       mapOverlayQueryPendingRef.current = false;
@@ -5595,6 +5662,8 @@ function MapPage(props: {
         visible_features: [],
         visible_metars: [],
         visible_pireps: [],
+        visible_traffic: [],
+        traffic_next_refresh_epoch_ms: null,
         airspace_paths: [],
         tfr_paths: [],
         airspace_labels: [],
@@ -5610,6 +5679,8 @@ function MapPage(props: {
         visible_features: [],
         visible_metars: [],
         visible_pireps: [],
+        visible_traffic: [],
+        traffic_next_refresh_epoch_ms: null,
         airspace_paths: [],
         tfr_paths: [],
         airspace_labels: [],
@@ -5631,6 +5702,7 @@ function MapPage(props: {
         mapOverlayLayersVisible,
         mapLayerState.metars.visible,
         mapLayerState.offline_regions.visible,
+        mapLayerState.traffic.visible,
         mapLayerState.vectors.visible,
       ].join("|"),
       navDataEpoch,
@@ -5640,6 +5712,7 @@ function MapPage(props: {
   }, [
     mapLayerState.metars.visible,
     mapLayerState.offline_regions.visible,
+    mapLayerState.traffic.visible,
     mapLayerState.vectors.visible,
     mapOverlayLayersVisible,
     mapIsVisible,
@@ -5651,6 +5724,7 @@ function MapPage(props: {
     uiInvalidationRevisions.map_overlay,
     navDataEpoch,
     uiSession,
+    trafficRefreshTick,
     viewport,
   ]);
 
@@ -6576,6 +6650,15 @@ function MapPage(props: {
       onSelect: () => void setMapLayerVisible("nexrad", !mapLayerState.nexrad.visible),
     },
     {
+      id: "traffic",
+      label: "ADS-B Traffic",
+      iconSrc: layerIconSrc("traffic"),
+      toggleState: mapLayerState.traffic,
+      disabled: !mapLayerState.traffic.enabled,
+      disabledReason: mapLayerState.traffic.disabled_reason ?? null,
+      onSelect: () => void setMapLayerVisible("traffic", !mapLayerState.traffic.visible),
+    },
+    {
       id: "terrain_warning",
       label: "Terrain Warning",
       iconSrc: layerIconSrc("terrain_warning"),
@@ -7192,6 +7275,25 @@ function MapPage(props: {
                         </g>
                       );
                     })}
+                  </svg>
+                ) : null}
+              </>
+              <>
+                {mapIsVisible && mapOverlay.visible_traffic.length > 0 ? (
+                  <svg
+                    className="trafficOverlay"
+                    viewBox={`0 0 ${surfaceSize.width} ${surfaceSize.height}`}
+                    preserveAspectRatio="none"
+                    style={overlayTransform ? { transform: overlayTransform, transformOrigin: "0 0" } : undefined}
+                  >
+                    {mapOverlay.visible_traffic.map((feature) => (
+                      <g
+                        key={feature.id}
+                        transform={`translate(${feature.screen_x} ${feature.screen_y})`}
+                      >
+                        <AdsbTrafficSymbol feature={feature} />
+                      </g>
+                    ))}
                   </svg>
                 ) : null}
               </>

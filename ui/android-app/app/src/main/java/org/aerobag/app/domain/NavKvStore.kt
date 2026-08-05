@@ -28,6 +28,7 @@ data class CoreResourceRequest(
     val id: String,
     val source: CoreResourceSource,
     val optional: Boolean,
+    val maxResponseBytes: Long? = null,
 )
 
 sealed class CoreResourceSource {
@@ -58,7 +59,7 @@ data class PagedSessionOperationResult(
 
 private data class CoreSessionResourceEffect(
     val resource: CoreResourceRequest,
-    val afterSuccessInvalidations: List<String>,
+    val completionInvalidations: List<String>,
 )
 
 fun parseCoreResourceRequests(outcome: JsonObject): List<CoreResourceRequest> =
@@ -71,6 +72,7 @@ fun parseCoreResourceRequest(resource: JsonObject): CoreResourceRequest =
         id = resource.getValue("id").jsonPrimitive.content,
         source = parseCoreResourceSource(resource.getValue("source").jsonObject),
         optional = resource["optional"]?.jsonPrimitive?.content?.toBooleanStrictOrNull() ?: false,
+        maxResponseBytes = resource["max_response_bytes"]?.jsonPrimitive?.content?.toLongOrNull(),
     )
 
 fun parseCoreResourceSource(source: JsonObject): CoreResourceSource =
@@ -472,6 +474,7 @@ class NavKvStore private constructor(
         drainSessionResourceEffects: () -> String,
         fetchSessionResource: ((CoreResourceRequest) -> ByteArray)? = null,
         ingestSessionResource: ((CoreResourceRequest, ByteArray) -> Unit)? = null,
+        reportSessionResourceFailure: ((CoreResourceRequest, Throwable) -> Unit)? = null,
     ): List<String> = backendLock.read {
         check(!closed) { "nav_kv store is closed" }
         pumpSessionResourceEffects(
@@ -479,6 +482,7 @@ class NavKvStore private constructor(
             drainSessionResourceEffects = drainSessionResourceEffects,
             fetchSessionResource = fetchSessionResource,
             ingestSessionResource = ingestSessionResource,
+            reportSessionResourceFailure = reportSessionResourceFailure,
         )
     }
 
@@ -487,6 +491,7 @@ class NavKvStore private constructor(
         drainSessionResourceEffects: () -> String,
         fetchSessionResource: ((CoreResourceRequest) -> ByteArray)?,
         ingestSessionResource: ((CoreResourceRequest, ByteArray) -> Unit)?,
+        reportSessionResourceFailure: ((CoreResourceRequest, Throwable) -> Unit)?,
     ): List<String> {
         val invalidations = linkedSetOf<String>()
         while (true) {
@@ -502,8 +507,10 @@ class NavKvStore private constructor(
                         fetchSessionResource = fetchSessionResource,
                         ingestSessionResource = ingestSessionResource,
                     )
-                    invalidations.addAll(effect.afterSuccessInvalidations)
+                    invalidations.addAll(effect.completionInvalidations)
                 } catch (error: Throwable) {
+                    reportSessionResourceFailure?.invoke(effect.resource, error)
+                    invalidations.addAll(effect.completionInvalidations)
                     diagnosticLogInfo(TAG) {
                         "session resource effect failed resource=${effect.resource.id}: ${error.message}"
                     }
@@ -517,7 +524,7 @@ class NavKvStore private constructor(
             val effect = element.jsonObject
             CoreSessionResourceEffect(
                 resource = parseCoreResourceRequest(effect.getValue("resource").jsonObject),
-                afterSuccessInvalidations = effect["after_success_invalidations"]
+                completionInvalidations = effect["completion_invalidations"]
                     ?.jsonArray
                     ?.map { it.jsonPrimitive.content }
                     ?: emptyList(),

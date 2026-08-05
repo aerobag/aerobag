@@ -22,6 +22,7 @@ import org.aerobag.app.domain.SituationRingCandidate
 import org.aerobag.app.domain.VisibleMapFeature
 import org.aerobag.app.domain.VisibleMetarFeature
 import org.aerobag.app.domain.VisiblePirepFeature
+import org.aerobag.app.domain.VisibleAdsbTraffic
 import org.aerobag.app.domain.displayScaleZoomDelta
 import org.aerobag.app.domain.dragViewport
 import org.aerobag.app.domain.latLonToWorld
@@ -122,6 +123,18 @@ class MapOverlayTransformTest {
                     symbol = "generic",
                     icing = "none",
                     turbulence = "none",
+                ),
+            ),
+            visibleTraffic = listOf(
+                VisibleAdsbTraffic(
+                    id = "traffic",
+                    screenX = 175.0,
+                    screenY = 176.0,
+                    trackDegTrue = 90.0,
+                    label = "N12345",
+                    altitudeLabel = "45",
+                    relativeAltitudeLabel = "+02",
+                    onGround = false,
                 ),
             ),
             airspacePaths = listOf(airspacePath("airspace", 180.0)),

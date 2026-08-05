@@ -21,6 +21,44 @@ import org.junit.Test
 
 class NavKvStoreReplacementTest {
     @Test
+    fun failedSessionResourceEffectIsReportedAndInvalidatesItsConsumers() {
+        val directory = Files.createTempDirectory("nav-kv-resource-effect-failure-test").toFile()
+        val artifact = createArtifact(directory, "nav.zip", "page")
+        val bridge = FakeNavKvBridge()
+        val store = NavKvStore.openInstalledArtifacts(listOf(artifact), "", bridge.nativeBridge)
+        var drains = 0
+        var reported: Pair<String, String>? = null
+
+        try {
+            val invalidations = store.pumpSessionResourceEffects(
+                drainSessionResourceEffects = {
+                    drains += 1
+                    if (drains == 1) {
+                        """[{"resource":{"id":"adsb/airplanes_live/traffic/1","source":{"kind":"public_url","url":"https://api.airplanes.live/v2/point/47/-122/50"},"max_response_bytes":4194304},"completion_invalidations":["map_overlay","session_snapshot"]}]"""
+                    } else {
+                        "[]"
+                    }
+                },
+                fetchSessionResource = { error("provider unavailable") },
+                ingestSessionResource = { _, _ -> error("failed fetch must not be ingested") },
+                reportSessionResourceFailure = { resource, error ->
+                    reported = resource.id to error.message.orEmpty()
+                },
+            )
+
+            assertEquals(
+                "adsb/airplanes_live/traffic/1" to "provider unavailable",
+                reported,
+            )
+            assertEquals(listOf("map_overlay", "session_snapshot"), invalidations)
+        } finally {
+            store.close()
+            PackageZipStore.invalidate(artifact.file)
+            directory.deleteRecursively()
+        }
+    }
+
+    @Test
     fun failedOptionalSessionResourceResumesWithEmptyPayload() {
         val directory = Files.createTempDirectory("nav-kv-optional-resource-test").toFile()
         val artifact = createArtifact(directory, "nav.zip", "page")

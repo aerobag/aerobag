@@ -138,6 +138,7 @@
         "vectors",
         "metars",
         "nexrad",
+        "traffic",
         "terrain_warning",
         "offline_regions"
       ],
@@ -586,6 +587,9 @@
         "terrain_warning": {
           "$ref": "#/$defs/UiMapLayerToggleState"
         },
+        "traffic": {
+          "$ref": "#/$defs/UiMapLayerToggleState"
+        },
         "vectors": {
           "$ref": "#/$defs/UiMapLayerToggleState"
         },
@@ -598,6 +602,7 @@
         "vectors",
         "metars",
         "nexrad",
+        "traffic",
         "terrain_warning",
         "offline_regions"
       ],

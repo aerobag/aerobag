@@ -242,6 +242,7 @@ data class UiMapLayerState(
     val vectors: UiMapLayerToggleState,
     val metars: UiMapLayerToggleState,
     val nexrad: UiMapLayerToggleState,
+    val traffic: UiMapLayerToggleState,
     val terrainWarning: UiMapLayerToggleState,
     val offlineRegions: UiMapLayerToggleState,
 )
@@ -273,10 +274,23 @@ data class MapOverlayQueryResult(
     val flightPlanFeatures: List<VisibleMapFeature> = emptyList(),
     val visibleMetars: List<VisibleMetarFeature>,
     val visiblePireps: List<VisiblePirepFeature>,
+    val visibleTraffic: List<VisibleAdsbTraffic> = emptyList(),
+    val trafficNextRefreshEpochMs: Long? = null,
     val airspacePaths: List<AirspaceDisplayPath>,
     val tfrPaths: List<AirspaceDisplayPath>,
     val airspaceLabels: List<AirspaceDisplayLabel>,
     val offlineRegions: List<OfflineRegionDisplay>,
+)
+
+data class VisibleAdsbTraffic(
+    val id: String,
+    val screenX: Double,
+    val screenY: Double,
+    val trackDegTrue: Double?,
+    val label: String,
+    val altitudeLabel: String,
+    val relativeAltitudeLabel: String?,
+    val onGround: Boolean,
 )
 
 data class MapSelectionQueryResult(
@@ -633,6 +647,13 @@ class NativeUiSession internal constructor(
                     fetchSessionResource = sessionResourceFetcher,
                     ingestSessionResource = { resource, bytes ->
                         bridge.ingestResourceInSession(handle, resource.id, bytes)
+                    },
+                    reportSessionResourceFailure = { resource, error ->
+                        bridge.reportSessionResourceFailureInSessionJson(
+                            handle,
+                            resource.id,
+                            error.message ?: error::class.java.simpleName,
+                        )
                     },
                 )
             },
@@ -2542,6 +2563,7 @@ private fun WireUiMapLayerState.toUi() = UiMapLayerState(
     vectors = vectors.toUi(),
     metars = metars.toUi(),
     nexrad = nexrad.toUi(),
+    traffic = traffic.toUi(),
     terrainWarning = terrainWarning.toUi(),
     offlineRegions = offlineRegions.toUi(),
 )
@@ -2808,6 +2830,19 @@ private fun WireMapOverlayQueryResult.toUi() = MapOverlayQueryResult(
     flightPlanFeatures = flight_plan_features.map { it.toUi() },
     visibleMetars = visible_metars.map { it.toUi() },
     visiblePireps = visible_pireps.map { it.toUi() },
+    visibleTraffic = visible_traffic.map {
+        VisibleAdsbTraffic(
+            id = it.id,
+            screenX = it.screen_x,
+            screenY = it.screen_y,
+            trackDegTrue = it.track_deg_true,
+            label = it.label,
+            altitudeLabel = it.altitude_label,
+            relativeAltitudeLabel = it.relative_altitude_label,
+            onGround = it.on_ground,
+        )
+    },
+    trafficNextRefreshEpochMs = traffic_next_refresh_epoch_ms,
     airspacePaths = airspace_paths.map { it.toUi() },
     tfrPaths = tfr_paths.map { it.toUi() },
     airspaceLabels = airspace_labels.map { it.toUi() },
@@ -2868,6 +2903,7 @@ private fun WireCoreResourceRequest.toUi() = CoreResourceRequest(
     id = id,
     source = parseCoreResourceSource(source),
     optional = optional,
+    maxResponseBytes = max_response_bytes,
 )
 
 private fun WireVectorTileRequest.toUi() = VectorTileRequest(

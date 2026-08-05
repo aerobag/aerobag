@@ -425,6 +425,12 @@ interface NativeBridge {
         resourceBytes: ByteArray,
     ): String
 
+    fun reportSessionResourceFailureInSessionJson(
+        handle: Long,
+        resourceId: String,
+        message: String,
+    ): String
+
     fun syncLiveFeedsInSessionJson(handle: Long): String
 
     fun refreshLiveFeedCurrentInSessionJson(handle: Long): String
@@ -993,6 +999,12 @@ object NativeBindings : NativeBridge {
         handle: Long,
         resourceId: String,
         resourceBytes: ByteArray,
+    ): String
+
+    external override fun reportSessionResourceFailureInSessionJson(
+        handle: Long,
+        resourceId: String,
+        message: String,
     ): String
 
     external override fun syncLiveFeedsInSessionJson(handle: Long): String

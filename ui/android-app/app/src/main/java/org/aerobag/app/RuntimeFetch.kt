@@ -18,6 +18,8 @@ import android.os.SystemClock
 import android.util.Log
 import android.view.KeyEvent as AndroidKeyEvent
 import android.view.MotionEvent
+import java.io.ByteArrayOutputStream
+import java.io.InputStream
 import java.util.LinkedHashMap
 import java.net.HttpURLConnection
 import androidx.annotation.DrawableRes
@@ -411,11 +413,32 @@ internal fun fetchJsonOrNull(url: String): String? =
         connection.inputStream.bufferedReader().use { it.readText() }
     }.getOrNull()
 
-internal fun fetchResourceBytes(url: String): ByteArray {
+internal fun readResourceBytes(input: InputStream, maxResponseBytes: Long?): ByteArray {
+    val limit = maxResponseBytes?.also { require(it > 0) { "resource response limit must be positive" } }
+    val output = ByteArrayOutputStream()
+    val buffer = ByteArray(DEFAULT_BUFFER_SIZE)
+    var total = 0L
+    while (true) {
+        val count = input.read(buffer)
+        if (count < 0) break
+        total += count
+        check(limit == null || total <= limit) {
+            "resource response exceeds ${limit} byte limit"
+        }
+        output.write(buffer, 0, count)
+    }
+    return output.toByteArray()
+}
+
+internal fun fetchResourceBytes(url: String, maxResponseBytes: Long? = null): ByteArray {
     val connection = URL(url).openConnection() as HttpURLConnection
     connection.connectTimeout = 1500
     connection.readTimeout = 2500
-    return connection.inputStream.buffered().use { it.readBytes() }
+    val contentLength = connection.contentLengthLong
+    check(maxResponseBytes == null || contentLength < 0 || contentLength <= maxResponseBytes) {
+        "resource response declares $contentLength bytes, exceeding $maxResponseBytes byte limit"
+    }
+    return connection.inputStream.buffered().use { readResourceBytes(it, maxResponseBytes) }
 }
 
 internal fun fetchCoreResource(
@@ -448,7 +471,7 @@ internal fun fetchCoreResource(
                 }
                 source.url
             }
-            fetchResourceBytes(url)
+            fetchResourceBytes(url, resource.maxResponseBytes)
         }
         is CoreResourceSource.Unavailable ->
             error("core resource ${resource.id} is unavailable: ${source.message}")
@@ -460,7 +483,8 @@ internal fun fetchCoreResource(
 internal fun requireAndroidPublicUrlAllowed(resourceId: String) {
     require(
         resourceId.startsWith("publication/") ||
-            resourceId.startsWith("live_feeds/"),
+            resourceId.startsWith("live_feeds/") ||
+            resourceId.startsWith("adsb/"),
     ) {
         "Android received public_url for package-backed resource $resourceId"
     }

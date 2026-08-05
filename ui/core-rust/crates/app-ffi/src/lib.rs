@@ -746,6 +746,21 @@ pub fn ingest_resource_in_session_bytes(
     Ok("null".to_string())
 }
 
+pub fn report_session_resource_failure_in_session_json(
+    handle: u64,
+    resource_id: &str,
+    message: &str,
+) -> Result<String, String> {
+    let outcome = app_core::report_session_resource_failure_in_session_at_epoch_ms(
+        handle as u32,
+        resource_id,
+        message,
+        now_epoch_ms(),
+    )
+    .map_err(|err| err.to_string())?;
+    serde_json::to_string(&outcome).map_err(|err| err.to_string())
+}
+
 pub fn drain_session_resource_effects_json(handle: u64) -> Result<String, String> {
     let effects =
         app_core::drain_session_resource_effects(handle as u32).map_err(|err| err.to_string())?;
@@ -3809,6 +3824,22 @@ pub extern "system" fn Java_org_aerobag_app_domain_NativeBindings_ingestResource
         let resource_id = get_java_string(&mut env, resource_id)?;
         let bytes = get_java_byte_array(&mut env, resource_bytes)?;
         ingest_resource_in_session_bytes(handle as u64, &resource_id, &bytes)
+    })();
+    return_string(&mut env, result)
+}
+
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_org_aerobag_app_domain_NativeBindings_reportSessionResourceFailureInSessionJson(
+    mut env: JNIEnv,
+    _class: JClass,
+    handle: i64,
+    resource_id: JString,
+    message: JString,
+) -> jstring {
+    let result = (|| {
+        let resource_id = get_java_string(&mut env, resource_id)?;
+        let message = get_java_string(&mut env, message)?;
+        report_session_resource_failure_in_session_json(handle as u64, &resource_id, &message)
     })();
     return_string(&mut env, result)
 }

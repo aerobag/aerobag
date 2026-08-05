@@ -423,6 +423,17 @@ export type MapOverlayQueryResult = {
   flight_plan_features?: VisibleMapFeature[];
   visible_metars: VisibleMetarFeature[];
   visible_pireps: VisiblePirepFeature[];
+  visible_traffic: Array<{
+    id: string;
+    screen_x: number;
+    screen_y: number;
+    track_deg_true?: number | null;
+    label: string;
+    altitude_label: string;
+    relative_altitude_label?: string | null;
+    on_ground: boolean;
+  }>;
+  traffic_next_refresh_epoch_ms?: number | null;
   airspace_paths: AirspaceDisplayPath[];
   tfr_paths: AirspaceDisplayPath[];
   airspace_labels: AirspaceDisplayLabel[];

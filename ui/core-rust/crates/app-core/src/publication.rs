@@ -279,6 +279,7 @@ impl PublicationResolver {
             id: target_resource_id.to_string(),
             source: self.package_member_source(package, member_path)?,
             optional,
+            max_response_bytes: None,
         }])
     }
 

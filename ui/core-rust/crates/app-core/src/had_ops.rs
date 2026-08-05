@@ -103,6 +103,8 @@ pub struct CoreResourceRequest {
     pub source: CoreResourceSource,
     #[serde(default)]
     pub optional: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_response_bytes: Option<u64>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -140,6 +142,7 @@ impl CoreResourceRequest {
             id: id.into(),
             source: CoreResourceSource::PublicUrl { url: url.into() },
             optional,
+            max_response_bytes: None,
         }
     }
 
@@ -158,6 +161,7 @@ impl CoreResourceRequest {
                 member_path: member_path.into(),
             },
             optional,
+            max_response_bytes: None,
         }
     }
 
@@ -174,6 +178,7 @@ impl CoreResourceRequest {
                 member_path: member_path.into(),
             },
             optional,
+            max_response_bytes: None,
         }
     }
 
@@ -194,6 +199,7 @@ impl CoreResourceRequest {
                 member_path: member_path.into(),
             },
             optional,
+            max_response_bytes: None,
         }
     }
 
@@ -208,6 +214,7 @@ impl CoreResourceRequest {
                 member_path: member_path.into(),
             },
             optional,
+            max_response_bytes: None,
         }
     }
 
@@ -218,6 +225,7 @@ impl CoreResourceRequest {
                 message: message.into(),
             },
             optional,
+            max_response_bytes: None,
         }
     }
 }
@@ -561,6 +569,7 @@ fn nav_db_artifact_root_resource(
             id,
             source,
             optional: true,
+            max_response_bytes: None,
         }
     } else {
         CoreResourceRequest::installed_artifact_member(
@@ -587,6 +596,7 @@ fn nav_db_artifact_page_resources(
                 id,
                 source: nav_db_artifact_page_source(candidate, page),
                 optional: true,
+                max_response_bytes: None,
             }
         })
         .collect()

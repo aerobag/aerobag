@@ -677,6 +677,8 @@ internal fun MapExplorerPage(
                 visibleFeatures = emptyList(),
                 visibleMetars = emptyList(),
                 visiblePireps = emptyList(),
+                visibleTraffic = emptyList(),
+                trafficNextRefreshEpochMs = null,
                 airspacePaths = emptyList(),
                 tfrPaths = emptyList(),
                 airspaceLabels = emptyList(),
@@ -687,6 +689,7 @@ internal fun MapExplorerPage(
     var committedOverlayViewport by remember(uiSession, navDataEpoch) { mutableStateOf<MapViewportState?>(null) }
     var committedOverlaySurfaceUnits by remember(uiSession, navDataEpoch) { mutableStateOf<OverlaySurfaceUnits?>(null) }
     var mapOverlayError by remember(uiSession, navDataEpoch) { mutableStateOf<String?>(null) }
+    var trafficRefreshTick by remember(uiSession) { mutableIntStateOf(0) }
     var nexradFrame by remember(uiSession) { mutableStateOf<NexradOverlayFrame?>(null) }
     var terrainOverlay by remember(uiSession) { mutableStateOf<List<TerrainOverlayImage>>(emptyList()) }
     var terrainOverlayError by remember(uiSession) { mutableStateOf<String?>(null) }
@@ -989,6 +992,24 @@ internal fun MapExplorerPage(
                     } != null) {
                     diagnosticLogInfo(MapLayerLogTag) {
                         "toggle layer=nexrad visible=$visible coreMs=${SystemClock.elapsedRealtime() - startMs}"
+                    }
+                }
+            },
+            MenuDockOption(
+                key = "traffic",
+                label = "ADS-B Traffic",
+                enabled = mapLayerState.traffic.enabled,
+                disabledReason = mapLayerState.traffic.disabledReason,
+                toggleState = mapLayerState.traffic,
+                iconResId = mapLayerIconResId(MapLayerId.Traffic),
+            ) {
+                val visible = !mapLayerState.traffic.visible
+                val startMs = SystemClock.elapsedRealtime()
+                if (applySessionCommand("setMapLayerVisibility") {
+                        uiSession.setMapLayerVisibility(MapLayerId.Traffic, visible)
+                    } != null) {
+                    diagnosticLogInfo(MapLayerLogTag) {
+                        "toggle layer=traffic visible=$visible coreMs=${SystemClock.elapsedRealtime() - startMs}"
                     }
                 }
             },
@@ -1914,7 +1935,7 @@ internal fun MapExplorerPage(
             updateViewport(nextViewport, syncFollow = false)
         }
     }
-    LaunchedEffect(uiSession, navDataEpoch, liveFeedGeneration, uiInvalidationRevisions.mapOverlay, currentViewport, surfaceSize, density.density, mapLayerState.vectors.visible, mapLayerState.metars.visible, mapLayerState.offlineRegions.visible, devServerBaseUrl) {
+    LaunchedEffect(uiSession, navDataEpoch, liveFeedGeneration, uiInvalidationRevisions.mapOverlay, trafficRefreshTick, currentViewport, surfaceSize, density.density, mapLayerState.vectors.visible, mapLayerState.metars.visible, mapLayerState.traffic.visible, mapLayerState.offlineRegions.visible, devServerBaseUrl) {
         if (surfaceSize.width <= 0 || surfaceSize.height <= 0) {
             mapOverlayError = null
             return@LaunchedEffect
@@ -1950,6 +1971,14 @@ internal fun MapExplorerPage(
                 Log.e(MapLayerLogTag, "overlay failed: $mapOverlayError", error)
             }
         )
+    }
+    LaunchedEffect(mapLayerState.traffic.visible, committedMapOverlay.trafficNextRefreshEpochMs) {
+        val deadlineEpochMs = committedMapOverlay.trafficNextRefreshEpochMs
+        if (!mapLayerState.traffic.visible || deadlineEpochMs == null) {
+            return@LaunchedEffect
+        }
+        delay((deadlineEpochMs - System.currentTimeMillis()).coerceAtLeast(0L))
+        trafficRefreshTick += 1
     }
     LaunchedEffect(uiSession, nexradRenderRequests) {
         var nexradAnimationJob: Job? = null
@@ -2622,6 +2651,12 @@ internal fun MapExplorerPage(
             airportToweredLabelFillPaint = airportToweredLabelFillPaint,
             airportUntoweredLabelFillPaint = airportUntoweredLabelFillPaint,
             flightPlanOnly = true,
+            mapUpDeg = plannedMapUpDeg,
+        )
+        TrafficOverlayLayer(
+            displayedMapOverlay = displayedMapOverlay,
+            densityScale = density.density,
+            uiTheme = uiTheme,
             mapUpDeg = plannedMapUpDeg,
         )
         MapSelectionHighlightLayer(
@@ -3539,6 +3574,62 @@ private fun ObservationOverlayLayer(
         Canvas(modifier = Modifier.fillMaxSize()) {
             displayedMapOverlay.visiblePireps.forEach { feature ->
                 drawPirepSymbol(feature, Offset(feature.screenX.toFloat(), feature.screenY.toFloat()), densityScale, uiTheme, symbolScale = 0.32f)
+            }
+        }
+    }
+}
+
+@Composable
+private fun TrafficOverlayLayer(
+    displayedMapOverlay: MapOverlayQueryResult,
+    densityScale: Float,
+    uiTheme: UiTheme,
+    mapUpDeg: Double,
+) {
+    if (displayedMapOverlay.visibleTraffic.isEmpty()) return
+    Canvas(modifier = Modifier.fillMaxSize()) {
+        val labelStroke = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+            color = uiTheme.aviation.trafficContrast.toArgb()
+            textSize = 12f * densityScale
+            typeface = Typeface.create(Typeface.DEFAULT, Typeface.BOLD)
+            style = Paint.Style.STROKE
+            strokeWidth = 3f * densityScale
+        }
+        val labelFill = Paint(labelStroke).apply {
+            color = uiTheme.aviation.trafficLabel.toArgb()
+            style = Paint.Style.FILL
+        }
+        displayedMapOverlay.visibleTraffic.forEach { feature ->
+            val center = Offset(feature.screenX.toFloat(), feature.screenY.toFloat())
+            val symbol = Path().apply {
+                moveTo(center.x, center.y - 11f * densityScale)
+                lineTo(center.x + 8f * densityScale, center.y + 9f * densityScale)
+                lineTo(center.x, center.y + 5f * densityScale)
+                lineTo(center.x - 8f * densityScale, center.y + 9f * densityScale)
+                close()
+            }
+            rotate(((feature.trackDegTrue ?: 0.0) - mapUpDeg).toFloat(), center) {
+                drawPath(
+                    symbol,
+                    uiTheme.aviation.trafficContrast,
+                    style = Stroke(width = 5f * densityScale, join = StrokeJoin.Round),
+                )
+                drawPath(symbol, uiTheme.aviation.traffic)
+                drawPath(
+                    symbol,
+                    uiTheme.aviation.trafficContrast,
+                    style = Stroke(width = 1.25f * densityScale, join = StrokeJoin.Round),
+                )
+            }
+            val x = center.x + 13f * densityScale
+            val firstBaseline = center.y - 2f * densityScale
+            val detail = feature.relativeAltitudeLabel ?: feature.altitudeLabel
+            drawContext.canvas.nativeCanvas.apply {
+                drawText(feature.label, x, firstBaseline, labelStroke)
+                drawText(feature.label, x, firstBaseline, labelFill)
+                val secondBaseline = firstBaseline + 13.2f * densityScale
+                drawText(detail, x, secondBaseline, labelStroke)
+                drawText(detail, x, secondBaseline, labelFill)
             }
         }
     }

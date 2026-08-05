@@ -100,11 +100,12 @@ export type UiMapLayerState = {
   nexrad: UiMapLayerToggleState;
   offline_regions: UiMapLayerToggleState;
   terrain_warning: UiMapLayerToggleState;
+  traffic: UiMapLayerToggleState;
   vectors: UiMapLayerToggleState;
   world_basemap: UiMapLayerToggleState;
 };
 
-export type MapLayerId = "world_basemap" | "vectors" | "metars" | "nexrad" | "terrain_warning" | "offline_regions";
+export type MapLayerId = "world_basemap" | "vectors" | "metars" | "nexrad" | "traffic" | "terrain_warning" | "offline_regions";
 
 export type DebugFlagId = "tile_labels" | "nexrad_tile_labels" | "fast_tiles" | "offline_simulated_clock_buttons" | "sequencing_finish_lines" | "plate_flight_plan" | "bad_autopilot" | "gps_capture" | "debug_log_to_developer_server";
 

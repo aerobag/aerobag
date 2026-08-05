@@ -1216,6 +1216,7 @@ internal fun mapLayerIconResId(layerId: MapLayerId): Int = when (layerId) {
     MapLayerId.Vectors -> R.drawable.layer_vectors_icon
     MapLayerId.Metars -> R.drawable.layer_nexrad_icon
     MapLayerId.Nexrad -> R.drawable.layer_nexrad_icon
+    MapLayerId.Traffic -> R.drawable.layer_vectors_icon
     MapLayerId.TerrainWarning -> R.drawable.layer_terrain_warning_icon
     MapLayerId.OfflineRegions -> R.drawable.layer_vectors_icon
 }
@@ -1628,6 +1629,17 @@ internal fun transformMapOverlayForDisplay(
         },
         visiblePireps = overlay.visiblePireps.map { feature ->
             transformVisiblePirepFeature(feature, fromViewport, fromSurface, toViewport, toSurface)
+        },
+        visibleTraffic = overlay.visibleTraffic.map { feature ->
+            val transformed = transformScreenPoint(
+                x = feature.screenX,
+                y = feature.screenY,
+                fromViewport = fromViewport,
+                fromSurface = fromSurface,
+                toViewport = toViewport,
+                toSurface = toSurface,
+            )
+            feature.copy(screenX = transformed.x, screenY = transformed.y)
         },
         airspacePaths = overlay.airspacePaths.map { feature ->
             transformAirspaceDisplayPath(feature, fromViewport, fromSurface, toViewport, toSurface)

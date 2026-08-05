@@ -227,8 +227,8 @@ class NativeUiSessionBoundaryTest {
         assertTrue(
             "Android NavKvStore must expose an explicit session-effect pump and preserve after-success invalidations.",
             navKvStore.contains("pumpSessionResourceEffects(") &&
-                navKvStore.contains("after_success_invalidations") &&
-                navKvStore.contains("afterSuccessInvalidations"),
+                navKvStore.contains("completion_invalidations") &&
+                navKvStore.contains("completionInvalidations"),
         )
         assertTrue(
             "NativeUiSession must run effects on its asynchronous pump and publish their invalidations.",

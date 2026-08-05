@@ -426,11 +426,13 @@ export class NavKvStore {
       const settled = await Promise.allSettled(
         effects.map(async (effect) => {
           await this.ensureResource(effect.resource, ingestSessionResource, reportResourceFailure);
-          for (const invalidation of effect.after_success_invalidations ?? []) {
-            invalidations.add(invalidation);
-          }
         }),
       );
+      for (const effect of effects) {
+        for (const invalidation of effect.completion_invalidations ?? []) {
+          invalidations.add(invalidation);
+        }
+      }
       const failures = settled
         .map((result, index) => ({ result, effect: effects[index] }))
         .filter((entry): entry is { result: PromiseRejectedResult; effect: CoreSessionResourceEffect } =>
@@ -451,7 +453,7 @@ export class NavKvStore {
           resources: effects.map((effect) => effect.resource.id),
           effect_invalidations: effects.map((effect) => ({
             resource: effect.resource.id,
-            invalidations: effect.after_success_invalidations ?? [],
+            invalidations: effect.completion_invalidations ?? [],
           })),
         });
         onInvalidations?.([...invalidations]);
@@ -612,11 +614,12 @@ export type CoreResourceRequest = {
   id: string;
   source: CoreResourceSource;
   optional?: boolean;
+  max_response_bytes?: number;
 };
 
 type CoreSessionResourceEffect = {
   resource: CoreResourceRequest;
-  after_success_invalidations?: UiInvalidation[];
+  completion_invalidations?: UiInvalidation[];
 };
 
 type CoreResourceSource =
@@ -679,35 +682,83 @@ async function fetchAndIngestResource(
   reportResourceFailure?: ResourceFailureReporter,
 ): Promise<void> {
   const url = publicResourceUrl(resource);
-  const response = await debugTiming(timingLabel, () => fetch(
-    withNavKvCacheKey(url),
-    resource.id === "publication/current_artifacts" ? { cache: "no-cache" } : undefined,
-  ), {
-    id: resource.id,
-    url,
-  });
-  if (!response.ok) {
-    const message = `failed to fetch core resource ${resource.id} at ${url}: ${response.status}`;
-    if (resource.optional) {
-      await ingestResource(resource.id, new Uint8Array());
-      return;
+  try {
+    const response = await debugTiming(timingLabel, () => fetch(
+      withNavKvCacheKey(url),
+      resource.id === "publication/current_artifacts" ? { cache: "no-cache" } : undefined,
+    ), {
+      id: resource.id,
+      url,
+    });
+    if (!response.ok) {
+      const message = `failed to fetch core resource ${resource.id} at ${url}: ${response.status}`;
+      if (resource.optional) {
+        await ingestResource(resource.id, new Uint8Array());
+        return;
+      }
+      throw new Error(message);
     }
-    await reportResourceFailure?.(resource.id, message);
-    throw new Error(message);
+    const bytes = await debugTiming(`${timingLabel}.response_bytes`, () => readResponseBytes(
+      response,
+      resource.max_response_bytes,
+    ), {
+      id: resource.id,
+      url,
+    });
+    await debugTiming(`${timingLabel}.ingest`, () => ingestResource(resource.id, bytes), {
+      id: resource.id,
+      byte_length: bytes.byteLength,
+      encoded_byte_length: bytes.byteLength,
+    });
+  } catch (error) {
+    if (!resource.optional) {
+      const message = error instanceof Error ? error.message : String(error);
+      await reportResourceFailure?.(resource.id, message);
+    }
+    throw error;
   }
-  const buffer = await debugTiming(`${timingLabel}.array_buffer`, () => response.arrayBuffer(), {
-    id: resource.id,
-    url,
-  });
-  const bytes = debugTiming(`${timingLabel}.uint8_array`, () => new Uint8Array(buffer), {
-    id: resource.id,
-    byte_length: buffer.byteLength,
-  });
-  await debugTiming(`${timingLabel}.ingest`, () => ingestResource(resource.id, bytes), {
-    id: resource.id,
-    byte_length: bytes.byteLength,
-    encoded_byte_length: bytes.byteLength,
-  });
+}
+
+async function readResponseBytes(response: Response, maxResponseBytes?: number): Promise<Uint8Array> {
+  if (maxResponseBytes === undefined) {
+    return new Uint8Array(await response.arrayBuffer());
+  }
+  if (!Number.isSafeInteger(maxResponseBytes) || maxResponseBytes <= 0) {
+    throw new Error(`invalid core resource response limit: ${maxResponseBytes}`);
+  }
+  const declaredLength = Number(response.headers.get("content-length"));
+  if (Number.isFinite(declaredLength) && declaredLength > maxResponseBytes) {
+    throw new Error(
+      `resource response declares ${declaredLength} bytes, exceeding ${maxResponseBytes} byte limit`,
+    );
+  }
+  if (!response.body) {
+    const bytes = new Uint8Array(await response.arrayBuffer());
+    if (bytes.byteLength > maxResponseBytes) {
+      throw new Error(`resource response exceeds ${maxResponseBytes} byte limit`);
+    }
+    return bytes;
+  }
+  const reader = response.body.getReader();
+  const chunks: Uint8Array[] = [];
+  let total = 0;
+  for (;;) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    total += value.byteLength;
+    if (total > maxResponseBytes) {
+      await reader.cancel();
+      throw new Error(`resource response exceeds ${maxResponseBytes} byte limit`);
+    }
+    chunks.push(value);
+  }
+  const bytes = new Uint8Array(total);
+  let offset = 0;
+  for (const chunk of chunks) {
+    bytes.set(chunk, offset);
+    offset += chunk.byteLength;
+  }
+  return bytes;
 }
 
 function publicResourceUrl(resource: CoreResourceRequest): string {

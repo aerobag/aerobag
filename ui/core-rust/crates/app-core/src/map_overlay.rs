@@ -163,6 +163,27 @@ impl MapSurfaceMetrics {
     fn inspector_hit_radius_px(self) -> f64 {
         self.logical_px_to_surface_px(UI_THUMB_SIZE_LOGICAL_PX * INSPECTOR_HIT_RADIUS_THUMBS)
     }
+
+    pub(crate) fn visible_radius_nm(self) -> f64 {
+        let center_world = lat_lon_to_world(self.viewport.center);
+        let scale = 2.0_f64.powf(self.viewport.zoom);
+        let corner = world_to_lat_lon(WorldPoint {
+            x: center_world.x + self.width_px / 2.0 / scale,
+            y: center_world.y + self.height_px / 2.0 / scale,
+        });
+        great_circle_distance_nm(self.viewport.center, corner)
+    }
+
+    pub(crate) fn project_position(self, position: LatLon) -> (f64, f64) {
+        let point = world_to_screen(
+            lat_lon_to_world(self.viewport.center),
+            2.0_f64.powf(self.viewport.zoom),
+            self.width_px,
+            self.height_px,
+            position,
+        );
+        (point.x, point.y)
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -1215,6 +1236,10 @@ pub struct MapOverlayQueryResult {
     pub flight_plan_features: Vec<VisibleMapFeature>,
     pub visible_metars: Vec<VisibleMetarFeature>,
     pub visible_pireps: Vec<VisiblePirepFeature>,
+    #[serde(default)]
+    pub visible_traffic: Vec<crate::VisibleAdsbTraffic>,
+    #[serde(default)]
+    pub traffic_next_refresh_epoch_ms: Option<i64>,
     pub airspace_paths: Vec<AirspaceDisplayPath>,
     pub tfr_paths: Vec<AirspaceDisplayPath>,
     pub airspace_labels: Vec<AirspaceDisplayLabel>,
@@ -2432,6 +2457,8 @@ pub(crate) fn query_map_overlay_for_surface_at(
         flight_plan_features: Vec::new(),
         visible_metars: metars.visible_metars,
         visible_pireps: metars.visible_pireps,
+        visible_traffic: Vec::new(),
+        traffic_next_refresh_epoch_ms: None,
         airspace_paths: airspace.paths,
         tfr_paths: tfrs.paths,
         airspace_labels,

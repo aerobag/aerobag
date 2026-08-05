@@ -322,6 +322,7 @@ struct SessionRuntime {
     terrain_source_tile_cache: HashMap<String, Vec<u8>>,
     agl_terrain_resource_ids_in_flight: HashSet<String>,
     pending_resource_effects: Vec<UiSessionResourceEffect>,
+    adsb: crate::adsb::AdsbSessionState,
 }
 
 impl Default for SessionRuntime {
@@ -348,6 +349,7 @@ impl Default for SessionRuntime {
             terrain_source_tile_cache: HashMap::new(),
             agl_terrain_resource_ids_in_flight: HashSet::new(),
             pending_resource_effects: Vec::new(),
+            adsb: crate::adsb::AdsbSessionState::default(),
         }
     }
 }
@@ -516,7 +518,7 @@ struct LiveNexradInstalledState {
 pub struct UiSessionResourceEffect {
     pub resource: CoreResourceRequest,
     #[serde(default)]
-    pub after_success_invalidations: Vec<UiInvalidation>,
+    pub completion_invalidations: Vec<UiInvalidation>,
 }
 
 #[derive(Debug, Clone, PartialEq, Default)]
@@ -636,6 +638,7 @@ const NEXRAD_ANIMATION_CURRENT_FRAME_DWELL_MS: i64 = 2_500;
 const NEXRAD_ANIMATION_BLANK_DWELL_MS: i64 = 500;
 const LIVE_FEED_TFRS_STATUS_ID: &str = "live_feed:tfrs_unavailable";
 const LIVE_FEED_OBSTACLES_STATUS_ID: &str = "live_feed:obstacles_unavailable";
+const ADSB_TRAFFIC_STATUS_ID: &str = "adsb:traffic_unavailable";
 const CYCLE_DISPLAYED_CHART_STATUS_ID: &str = "cycle:displayed_chart_invalid";
 const CYCLE_NAV_DB_STATUS_ID: &str = "cycle:nav_db_expired";
 const VECTOR_INPUTS_STATUS_ID: &str = "map_overlay:vector_inputs_loading";
@@ -771,9 +774,9 @@ fn sync_cloud_status_record(session: &mut UiSession) {
 fn enqueue_session_resource_effect(
     session: &mut UiSession,
     resource: CoreResourceRequest,
-    after_success_invalidations: impl IntoIterator<Item = UiInvalidation>,
+    completion_invalidations: impl IntoIterator<Item = UiInvalidation>,
 ) {
-    let mut invalidations = after_success_invalidations.into_iter().collect::<Vec<_>>();
+    let mut invalidations = completion_invalidations.into_iter().collect::<Vec<_>>();
     if let Some(existing) = session
         .runtime
         .pending_resource_effects
@@ -781,8 +784,8 @@ fn enqueue_session_resource_effect(
         .find(|effect| effect.resource.id == resource.id)
     {
         for invalidation in invalidations.drain(..) {
-            if !existing.after_success_invalidations.contains(&invalidation) {
-                existing.after_success_invalidations.push(invalidation);
+            if !existing.completion_invalidations.contains(&invalidation) {
+                existing.completion_invalidations.push(invalidation);
             }
         }
         return;
@@ -792,7 +795,7 @@ fn enqueue_session_resource_effect(
         .pending_resource_effects
         .push(UiSessionResourceEffect {
             resource,
-            after_success_invalidations: invalidations,
+            completion_invalidations: invalidations,
         });
 }
 
@@ -3583,10 +3586,14 @@ pub fn set_map_layer_visibility_in_session(
         MapLayerId::Nexrad if !visible => {
             clear_data_status_record(session, LIVE_FEED_NEXRAD_STATUS_ID);
         }
+        MapLayerId::Traffic if !visible => {
+            clear_data_status_record(session, ADSB_TRAFFIC_STATUS_ID);
+        }
         MapLayerId::TerrainWarning if !visible => {
             clear_data_status_record(session, TERRAIN_STATUS_ID);
         }
         MapLayerId::Nexrad
+        | MapLayerId::Traffic
         | MapLayerId::TerrainWarning
         | MapLayerId::WorldBasemap
         | MapLayerId::OfflineRegions => {}
@@ -6950,6 +6957,39 @@ pub fn ingest_resource_in_session_at_epoch_ms(
     bytes: &[u8],
     epoch_ms: i64,
 ) -> AppResult<()> {
+    if crate::adsb::AdsbSessionState::handles_resource(resource_id) {
+        let mut sessions = lock_sessions();
+        let session = session_mut(&mut sessions, handle)?;
+        advance_session_wall_clock(session, epoch_ms);
+        let received_epoch_ms = session.wall_clock_epoch_ms;
+        match session
+            .runtime
+            .adsb
+            .ingest(resource_id, bytes, received_epoch_ms)
+        {
+            Ok(()) => {
+                clear_data_status_record(session, ADSB_TRAFFIC_STATUS_ID);
+            }
+            Err(message) => {
+                session
+                    .runtime
+                    .adsb
+                    .record_failure(resource_id, &message, received_epoch_ms);
+                upsert_data_status_record(
+                    session,
+                    DataStatusRecord::new(
+                        ADSB_TRAFFIC_STATUS_ID,
+                        "TRAFFIC UNAVAIL",
+                        None,
+                        UiStatusSeverity::Warning,
+                        true,
+                        format!("ADS-B traffic unavailable: {message}"),
+                    ),
+                );
+            }
+        }
+        return Ok(());
+    }
     if let Some(src) = nexrad_tile_src_from_resource_id(resource_id) {
         let mut sessions = lock_sessions();
         let session = session_mut(&mut sessions, handle)?;
@@ -7625,6 +7665,25 @@ pub fn report_session_resource_failure_in_session_at_epoch_ms(
                 ),
             ),
         );
+    } else if crate::adsb::AdsbSessionState::handles_resource(resource_id) {
+        let wall_clock_epoch_ms = session.wall_clock_epoch_ms;
+        session
+            .runtime
+            .adsb
+            .record_failure(resource_id, message, wall_clock_epoch_ms);
+        if session.map_layer_state.traffic.visible {
+            upsert_data_status_record(
+                session,
+                DataStatusRecord::new(
+                    ADSB_TRAFFIC_STATUS_ID,
+                    "TRAFFIC UNAVAIL",
+                    None,
+                    UiStatusSeverity::Warning,
+                    true,
+                    format!("ADS-B traffic unavailable: {message}"),
+                ),
+            );
+        }
     } else if resource_id.starts_with(LIVE_OBSTACLE_HAD_RESOURCE_PREFIX) {
         upsert_data_status_record(
             session,
@@ -9228,9 +9287,24 @@ pub fn get_map_overlay_in_session_with_point_display_scale_at_epoch_ms(
     let advance_ms = elapsed_ms(advance_started_at);
     let freshness_ms = 0;
     let metrics = MapSurfaceMetrics::new(viewport, width_px, height_px, point_display_scale);
+    if session.map_layer_state.traffic.visible {
+        let wall_clock_epoch_ms = session.wall_clock_epoch_ms;
+        if let Some(resource) = session
+            .runtime
+            .adsb
+            .prepare_traffic_request(metrics, wall_clock_epoch_ms)
+        {
+            enqueue_session_resource_effect(
+                session,
+                resource,
+                [UiInvalidation::MapOverlay, UiInvalidation::SessionSnapshot],
+            );
+        }
+    }
     if !session.map_layer_state.vectors.visible
         && !session.map_layer_state.metars.visible
         && !session.map_layer_state.offline_regions.visible
+        && !session.map_layer_state.traffic.visible
     {
         return Ok(HadOperationOutcome::complete(
             serde_json::to_value(empty_map_overlay_query()).map_err(internal_json_error)?,
@@ -9315,6 +9389,20 @@ pub fn get_map_overlay_in_session_with_point_display_scale_at_epoch_ms(
     );
     let overlay_ms = elapsed_ms(overlay_started_at);
     overlay.flight_plan_features = flight_plan_features;
+    if session.map_layer_state.traffic.visible {
+        overlay.visible_traffic = session.runtime.adsb.visible_traffic(
+            metrics,
+            crate::adsb::TrafficOwnshipAltitude {
+                altitude_msl_ft: session.app_state.ownship.render.altitude_msl_ft,
+                pressure_altitude_ft: session.app_state.ownship.render.pressure_altitude_ft,
+            },
+            session.wall_clock_epoch_ms,
+        );
+        overlay.traffic_next_refresh_epoch_ms = session
+            .runtime
+            .adsb
+            .next_refresh_epoch_ms(metrics, session.wall_clock_epoch_ms);
+    }
     let supplemental_started_at = crate::core_clock_ms();
     overlay
         .data_status_records
@@ -11585,6 +11673,11 @@ fn default_map_layer_state() -> UiMapLayerState {
             enabled: true,
             disabled_reason: None,
         },
+        traffic: UiMapLayerToggleState {
+            visible: false,
+            enabled: true,
+            disabled_reason: None,
+        },
         terrain_warning: UiMapLayerToggleState {
             visible: true,
             enabled: true,
@@ -11604,6 +11697,7 @@ fn map_layer_disabled_reason(layer_id: MapLayerId) -> &'static str {
         MapLayerId::Vectors => "The vector layer is unavailable.",
         MapLayerId::Metars => "Weather observations are unavailable.",
         MapLayerId::Nexrad => "NEXRAD is unavailable.",
+        MapLayerId::Traffic => "ADS-B traffic is unavailable.",
         MapLayerId::TerrainWarning => "Terrain warning is unavailable.",
         MapLayerId::OfflineRegions => "Offline package regions are unavailable.",
     }
@@ -11836,6 +11930,7 @@ fn map_layer_toggle_mut(
         MapLayerId::Vectors => &mut map_layer_state.vectors,
         MapLayerId::Metars => &mut map_layer_state.metars,
         MapLayerId::Nexrad => &mut map_layer_state.nexrad,
+        MapLayerId::Traffic => &mut map_layer_state.traffic,
         MapLayerId::TerrainWarning => &mut map_layer_state.terrain_warning,
         MapLayerId::OfflineRegions => &mut map_layer_state.offline_regions,
     }
@@ -11853,6 +11948,8 @@ fn empty_map_overlay_query() -> MapOverlayQueryResult {
         flight_plan_features: Vec::new(),
         visible_metars: Vec::new(),
         visible_pireps: Vec::new(),
+        visible_traffic: Vec::new(),
+        traffic_next_refresh_epoch_ms: None,
         airspace_paths: Vec::new(),
         tfr_paths: Vec::new(),
         airspace_labels: Vec::new(),
@@ -13611,6 +13708,99 @@ mod tests {
             },
             runtime: SessionRuntime::default(),
         }
+    }
+
+    #[test]
+    fn traffic_layer_uses_session_resource_effect_and_projects_core_normalized_aircraft() {
+        let handle = NEXT_HANDLE.fetch_add(1, Ordering::Relaxed);
+        let mut session = isolated_test_session(None);
+        session.map_layer_state.vectors.visible = false;
+        session.map_layer_state.metars.visible = false;
+        session.map_layer_state.traffic.visible = true;
+        session.map_layer_state.offline_regions.visible = false;
+        session.wall_clock_epoch_ms = 1_785_900_880_000;
+        lock_sessions().insert(handle, session);
+        let viewport = MapViewport {
+            center: LatLon {
+                lat: 47.45,
+                lon: -122.31,
+            },
+            zoom: 9.0,
+            rotation_deg: 0.0,
+            pitch_deg: 0.0,
+        };
+
+        let first = get_map_overlay_in_session_at_epoch_ms(
+            handle,
+            viewport,
+            800.0,
+            600.0,
+            1_785_900_880_000,
+        )
+        .expect("first overlay");
+        let HadOperationOutcome::Complete { result, .. } = first else {
+            panic!("traffic overlay unexpectedly requested paging: {first:?}");
+        };
+        let first_overlay: MapOverlayQueryResult =
+            serde_json::from_value(result).expect("first overlay result");
+        assert!(first_overlay.visible_traffic.is_empty());
+        assert_eq!(first_overlay.traffic_next_refresh_epoch_ms, None);
+
+        let effects = drain_session_resource_effects(handle).expect("traffic effect");
+        assert_eq!(effects.len(), 1);
+        assert_eq!(
+            effects[0].completion_invalidations,
+            vec![UiInvalidation::MapOverlay, UiInvalidation::SessionSnapshot]
+        );
+        assert!(effects[0]
+            .resource
+            .id
+            .starts_with("adsb/airplanes_live/traffic/"));
+        assert_eq!(
+            effects[0].resource.max_response_bytes,
+            Some(4 * 1024 * 1024)
+        );
+        let CoreResourceSource::PublicUrl { url } = &effects[0].resource.source else {
+            panic!("traffic source was not a public URL");
+        };
+        assert!(url.starts_with("https://api.airplanes.live/v2/point/47.45000/-122.31000/"));
+
+        ingest_resource_in_session_at_epoch_ms(
+            handle,
+            &effects[0].resource.id,
+            br#"{
+              "now": 1785900882001,
+              "ac": [{
+                "hex": "a757ae", "flight": "AAL727  ", "r": "N572UW",
+                "alt_baro": 2250, "alt_geom": 2300, "track": 0.75,
+                "lat": 47.451, "lon": -122.309, "seen_pos": 0.25
+              }]
+            }"#,
+            1_785_900_882_100,
+        )
+        .expect("ingest traffic");
+
+        let second = get_map_overlay_in_session_at_epoch_ms(
+            handle,
+            viewport,
+            800.0,
+            600.0,
+            1_785_900_882_100,
+        )
+        .expect("second overlay");
+        let HadOperationOutcome::Complete { result, .. } = second else {
+            panic!("traffic overlay unexpectedly requested paging: {second:?}");
+        };
+        let second_overlay: MapOverlayQueryResult =
+            serde_json::from_value(result).expect("second overlay result");
+        assert_eq!(second_overlay.visible_traffic.len(), 1);
+        assert_eq!(second_overlay.visible_traffic[0].label, "AAL727");
+        assert_eq!(
+            second_overlay.traffic_next_refresh_epoch_ms,
+            Some(1_785_900_892_100)
+        );
+
+        destroy_session(handle);
     }
 
     #[test]
@@ -17582,7 +17772,7 @@ mod tests {
             );
             for effect in effects {
                 assert_eq!(
-                    effect.after_success_invalidations,
+                    effect.completion_invalidations,
                     vec![UiInvalidation::MapOverlay]
                 );
                 let page_index = crate::nav_kv_page_index_from_resource_id(&effect.resource.id)
@@ -23160,7 +23350,7 @@ mod tests {
             .expect("ownship terrain resource effect");
         assert!(terrain_effect.resource.optional);
         assert!(terrain_effect
-            .after_success_invalidations
+            .completion_invalidations
             .contains(&UiInvalidation::SessionSnapshot));
         assert!(matches!(
             terrain_effect.resource.source,

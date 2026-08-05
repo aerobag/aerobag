@@ -520,10 +520,24 @@ data class WireMapOverlayQueryResult(
     val flight_plan_features: List<WireVisibleMapFeature> = emptyList(),
     val visible_metars: List<WireVisibleMetarFeature> = emptyList(),
     val visible_pireps: List<WireVisiblePirepFeature> = emptyList(),
+    val visible_traffic: List<WireVisibleAdsbTraffic> = emptyList(),
+    val traffic_next_refresh_epoch_ms: Long? = null,
     val airspace_paths: List<WireAirspaceDisplayPath> = emptyList(),
     val tfr_paths: List<WireAirspaceDisplayPath> = emptyList(),
     val airspace_labels: List<WireAirspaceDisplayLabel> = emptyList(),
     val offline_regions: List<WireOfflineRegionDisplay> = emptyList(),
+)
+
+@Serializable
+data class WireVisibleAdsbTraffic(
+    val id: String,
+    val screen_x: Double,
+    val screen_y: Double,
+    val track_deg_true: Double? = null,
+    val label: String,
+    val altitude_label: String,
+    val relative_altitude_label: String? = null,
+    val on_ground: Boolean,
 )
 
 @Serializable
@@ -846,6 +860,7 @@ data class WireCoreResourceRequest(
     val id: String,
     val source: JsonObject,
     val optional: Boolean = false,
+    val max_response_bytes: Long? = null,
 )
 
 @Serializable

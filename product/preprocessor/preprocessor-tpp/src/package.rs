@@ -435,6 +435,25 @@ struct TppAssetMetadata {
     chart_code: String,
     icao_airport_id: Option<String>,
     procedure_uid: Option<String>,
+    cifp_procedure_id: Option<String>,
+}
+
+fn cifp_procedure_id_from_faanfd18(chart_code: &str, faanfd18: &str) -> Option<String> {
+    let fields = faanfd18
+        .trim()
+        .split('.')
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .collect::<Vec<_>>();
+    let value = match chart_code.trim().to_ascii_uppercase().as_str() {
+        "DP" | "ODP" => fields.first(),
+        "STR" => fields.last(),
+        _ => None,
+    }?;
+    value
+        .chars()
+        .all(|ch| ch.is_ascii_alphanumeric() || ch == '-')
+        .then(|| value.to_ascii_uppercase())
 }
 
 fn load_tpp_asset_metadata(
@@ -507,6 +526,11 @@ fn load_tpp_asset_metadata(
                         .map(str::trim)
                         .filter(|value| !value.is_empty())
                         .map(str::to_string);
+                    let faanfd18 = record
+                        .children()
+                        .find(|node| node.has_tag_name("faanfd18"))
+                        .and_then(|node| node.text())
+                        .unwrap_or_default();
                     let label = rendered_plate_label(&chart_code, &state_id, &chart_name);
                     metadata.insert(
                         (apt_id.clone(), label),
@@ -514,6 +538,10 @@ fn load_tpp_asset_metadata(
                             chart_code: chart_code.trim().to_uppercase(),
                             icao_airport_id: icao_airport_id.clone(),
                             procedure_uid,
+                            cifp_procedure_id: cifp_procedure_id_from_faanfd18(
+                                &chart_code,
+                                faanfd18,
+                            ),
                         },
                     );
                 }
@@ -596,6 +624,7 @@ fn build_package_asset_records_for_member(
                     asset_path: member.to_string(),
                     thumbnail_path: thumbnail_path.clone(),
                     procedure_uid: metadata.procedure_uid.clone(),
+                    cifp_procedure_id: metadata.cifp_procedure_id.clone(),
                     georef: georef.clone(),
                 }
             })
@@ -620,6 +649,7 @@ fn build_package_asset_records_for_member(
         asset_path: member.to_string(),
         thumbnail_path,
         procedure_uid: metadata.and_then(|value| value.procedure_uid.clone()),
+        cifp_procedure_id: metadata.and_then(|value| value.cifp_procedure_id.clone()),
         georef,
     }])
 }
@@ -717,7 +747,7 @@ fn infer_plate_document_type(chart_code: Option<&str>, label: &str) -> &'static 
         Some(code) if code == "APD" => "airport_diagram",
         Some(code) if code == "IAP" => "approach",
         Some(code) if code == "DP" || code == "ODP" => "departure",
-        Some(code) if code == "STAR" => "star",
+        Some(code) if code == "STR" => "star",
         Some(code) if code == "HOT" => "hotspot",
         Some(code) if code == "MIN" => {
             if label.contains("TAKEOFF MINIMUMS") {
@@ -744,7 +774,7 @@ fn infer_plate_document_type(chart_code: Option<&str>, label: &str) -> &'static 
                 "approach"
             } else if label.starts_with("DP-") || label.starts_with("ODP-") {
                 "departure"
-            } else if label.starts_with("STAR-") {
+            } else if label.starts_with("STR-") {
                 "star"
             } else {
                 "other"
@@ -792,7 +822,7 @@ mod tests {
         fs::create_dir_all(&provenance_dir).unwrap();
         let airport_dir = asset_root.join("plates/RNT");
         fs::create_dir_all(&airport_dir).unwrap();
-        fs::write(airport_dir.join("STAR-WA-GLASR THREE.png"), ONE_BY_ONE_PNG).unwrap();
+        fs::write(airport_dir.join("STR-WA-GLASR THREE.png"), ONE_BY_ONE_PNG).unwrap();
 
         package_region_versioned(
             &asset_root,
@@ -814,24 +844,24 @@ mod tests {
         assert_eq!(manifest.assets.len(), 1);
         assert_eq!(
             manifest.assets[0].asset_path,
-            "plates/RNT/STAR-WA-GLASR THREE.png"
+            "plates/RNT/STR-WA-GLASR THREE.png"
         );
         assert_eq!(
             manifest.assets[0].thumbnail_path,
-            "thumbnails/plates/RNT/STAR-WA-GLASR THREE.png"
+            "thumbnails/plates/RNT/STR-WA-GLASR THREE.png"
         );
         assert_eq!(manifest.assets[0].document_type, "star");
         assert_eq!(manifest.assets[0].georef, None);
         assert_eq!(
             archive
-                .by_name("plates/RNT/STAR-WA-GLASR THREE.png")
+                .by_name("plates/RNT/STR-WA-GLASR THREE.png")
                 .unwrap()
                 .compression(),
             CompressionMethod::Stored
         );
         assert_eq!(
             archive
-                .by_name("thumbnails/plates/RNT/STAR-WA-GLASR THREE.png")
+                .by_name("thumbnails/plates/RNT/STR-WA-GLASR THREE.png")
                 .unwrap()
                 .compression(),
             CompressionMethod::Stored
@@ -1020,6 +1050,51 @@ mod tests {
             infer_plate_document_type(None, "HOT-WA-HOT SPOT-1"),
             "hotspot"
         );
+    }
+
+    #[test]
+    fn extracts_cifp_ids_from_faa_departure_and_arrival_metadata() {
+        assert_eq!(
+            cifp_procedure_id_from_faanfd18("ODP", "LGD1.LGD"),
+            Some("LGD1".to_string())
+        );
+        assert_eq!(
+            cifp_procedure_id_from_faanfd18("STR", "CHINS.CHINS5"),
+            Some("CHINS5".to_string())
+        );
+    }
+
+    #[test]
+    fn loads_faa_cifp_ids_into_tpp_asset_metadata() {
+        let temp = tempdir().unwrap();
+        fs::write(
+            temp.path().join("d-TPP_Metafile.xml"),
+            r#"<digital_tpp>
+                <state_code ID="OR">
+                  <city_name>
+                    <airport_name apt_ident="LGD" icao_ident="KLGD">
+                      <record>
+                        <chart_code>ODP</chart_code>
+                        <chart_name>LA GRANDE ONE (OBSTACLE)</chart_name>
+                        <procuid>40571</procuid>
+                        <faanfd18>LGD1.LGD</faanfd18>
+                      </record>
+                    </airport_name>
+                  </city_name>
+                </state_code>
+              </digital_tpp>"#,
+        )
+        .unwrap();
+
+        let metadata = load_tpp_asset_metadata(temp.path()).unwrap();
+        let record = metadata
+            .get(&(
+                "LGD".to_string(),
+                "ODP-OR-LA GRANDE ONE (OBSTACLE)".to_string(),
+            ))
+            .expect("LGD1 plate metadata");
+        assert_eq!(record.procedure_uid.as_deref(), Some("40571"));
+        assert_eq!(record.cifp_procedure_id.as_deref(), Some("LGD1"));
     }
 
     #[test]

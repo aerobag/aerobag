@@ -11914,6 +11914,7 @@ fn project_session_app_ui_state(session: &UiSession) -> Result<AppUiState, HadRe
     }
     if let Some(active_plan) = app_ui_state.active_plan.as_mut() {
         enrich_flight_plan_weather_actions(session, active_plan);
+        crate::planning::normalize_flight_plan_action_availability(active_plan);
     }
     app_ui_state.flight_data_banner =
         project_flight_data_banner(session, &app_ui_state, materialized_plan.as_ref())?;
@@ -11948,13 +11949,13 @@ fn enrich_flight_plan_weather_actions(session: &UiSession, active_plan: &mut Fli
         });
         for action in crate::planning::flight_plan_row_actions_mut(row) {
             if action.id == FlightPlanRowActionId::Weather {
-                action.enabled = weather_detail.is_some();
+                crate::planning::set_flight_plan_row_action_enabled(
+                    action,
+                    weather_detail.is_some(),
+                );
                 action.weather_detail = weather_detail.clone();
             } else if action.id == FlightPlanRowActionId::WaypointInfo {
-                action.enabled = airport_id.is_some();
-                action.disabled_reason = airport_id
-                    .is_none()
-                    .then(|| "Airport info is available for airport waypoints only.".to_string());
+                crate::planning::set_flight_plan_row_action_enabled(action, airport_id.is_some());
                 action.airport_info_airport_id = airport_id.clone();
             }
         }

@@ -242,6 +242,7 @@ fn write_package_asset_manifest(
                     .to_string_lossy()
                     .replace('\\', "/"),
                 procedure_uid: None,
+                cifp_procedure_id: None,
                 georef: None,
             }
         })

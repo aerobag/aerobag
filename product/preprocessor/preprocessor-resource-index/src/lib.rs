@@ -2911,6 +2911,7 @@ mod tests {
                     thumbnail_path: "thumbnails/plates/BOS/IAP-MA-ILS OR LOC RWY 04R.png"
                         .to_string(),
                     procedure_uid: None,
+                    cifp_procedure_id: None,
                     georef: None,
                 }],
             };
@@ -2979,6 +2980,7 @@ mod tests {
                     asset_path: "afd/BOS/CSUP-NE_0-0.png".to_string(),
                     thumbnail_path: "thumbnails/afd/BOS/CSUP-NE_0-0.png".to_string(),
                     procedure_uid: None,
+                    cifp_procedure_id: None,
                     georef: None,
                 }],
             };

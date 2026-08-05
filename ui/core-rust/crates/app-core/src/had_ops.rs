@@ -1702,7 +1702,10 @@ pub(crate) fn flight_plan_ui_projection(
             row.show_plate_target_id = plate_match.as_ref().map(|matched| matched.plate_id.clone());
             for action in crate::planning::flight_plan_row_actions_mut(row) {
                 if action.id == FlightPlanRowActionId::ShowPlate {
-                    action.enabled = plate_match.is_some();
+                    crate::planning::set_flight_plan_row_action_enabled(
+                        action,
+                        plate_match.is_some(),
+                    );
                 }
             }
             crate::planning::refresh_flight_plan_row_action_navigation(row);

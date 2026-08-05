@@ -26,6 +26,7 @@ pub struct PlateRecord {
     pub airport_id: String,
     pub package_id: String,
     pub label: String,
+    pub cifp_procedure_id: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -360,6 +361,14 @@ fn expand_runway_pair(text: &str) -> Vec<String> {
 
 fn singleton_group(candidate: String) -> Vec<BTreeSet<String>> {
     vec![BTreeSet::from([candidate])]
+}
+
+fn candidate_groups_for_plate(plate: &PlateRecord) -> Vec<BTreeSet<String>> {
+    plate
+        .cifp_procedure_id
+        .as_ref()
+        .map(|id| singleton_group(id.trim().to_ascii_uppercase()))
+        .unwrap_or_else(|| heuristic_candidate_groups(&plate.label))
 }
 
 fn runway_pair_groups(
@@ -722,7 +731,7 @@ fn heuristic_candidate_groups(label: &str) -> Vec<BTreeSet<String>> {
 fn named_terminal_procedure_candidate(label: &str) -> Option<String> {
     let uppercase = label.trim().to_ascii_uppercase();
     let (prefix, remainder) = split_non_iap_tpp_prefix(&uppercase)?;
-    if !matches!(prefix, "DP" | "ODP" | "STAR") {
+    if !matches!(prefix, "DP" | "ODP" | "STR") {
         return None;
     }
     let body = TERMINAL_QUALIFIER_RE.replace_all(remainder, "");
@@ -928,6 +937,7 @@ fn load_tpp_plates_matching(
                 airport_id: canonical_airport_id,
                 package_id: manifest.package_id.clone(),
                 label: asset.label.trim().to_string(),
+                cifp_procedure_id: asset.cifp_procedure_id,
             });
         }
     }
@@ -1079,7 +1089,7 @@ fn analyze_matches(
     for plate in plates {
         let airport_id = canonical_airport_id(&plate.airport_id, aliases);
         let procedure_ids = cifp.get(&airport_id).cloned().unwrap_or_default();
-        let candidate_groups = heuristic_candidate_groups(&plate.label);
+        let candidate_groups = candidate_groups_for_plate(plate);
         let matched_groups = candidate_groups
             .iter()
             .map(|group| {
@@ -1191,7 +1201,7 @@ fn classify_relation(
                 }
             }
 
-            let groups = heuristic_candidate_groups(&plate.label);
+            let groups = candidate_groups_for_plate(plate);
             if groups.is_empty() {
                 ignored_noheur += 1;
                 continue;
@@ -1371,7 +1381,7 @@ fn pretty_match_plate_label(label: &str) -> String {
             )
         }
         "MIN" if remainder == "TAKEOFF MINIMUMS" => "Takeoff Minimums".to_string(),
-        "DP" | "ODP" | "STAR" => remainder.to_string(),
+        "DP" | "ODP" | "STR" => remainder.to_string(),
         _ => trimmed.to_string(),
     }
 }
@@ -1610,6 +1620,7 @@ mod tests {
                 asset_path: "plates/KSEA/BANGR9.png".to_string(),
                 thumbnail_path: "thumbnails/KSEA/BANGR9.png".to_string(),
                 procedure_uid: None,
+                cifp_procedure_id: None,
                 georef: None,
             }],
         };
@@ -1651,7 +1662,7 @@ mod tests {
     }
 
     #[test]
-    fn publishes_named_arrival_plate_as_star_match() {
+    fn publishes_chins_five_arrival_plate_as_star_match() {
         let dir = tempdir().unwrap();
         let db_path = dir.path().join("cifp.db");
         let connection = Connection::open(&db_path).unwrap();
@@ -1664,8 +1675,8 @@ mod tests {
                     subsection_code TEXT
                 );
                 CREATE TABLE airport_aliases (alias_id TEXT, airport_id TEXT);
-                INSERT INTO cifp_sid_star_app VALUES ('KRNT', 'GLASR3', '1', 'E');
-                INSERT INTO cifp_sid_star_app VALUES ('KRNT', 'GLASR3', '3', 'E');",
+                INSERT INTO cifp_sid_star_app VALUES ('KPAE', 'CHINS5', '1', 'E');
+                INSERT INTO cifp_sid_star_app VALUES ('KPAE', 'CHINS5', '3', 'E');",
             )
             .unwrap();
         drop(connection);
@@ -1676,15 +1687,16 @@ mod tests {
             family_id: "tpp".to_string(),
             package_id: "tpp-nw".to_string(),
             assets: vec![PackageAssetRecord {
-                id: "plate:KRNT:STAR-WA-GLASR THREE.png".to_string(),
-                airport_id: "KRNT".to_string(),
-                icao_airport_id: Some("KRNT".to_string()),
-                label: "STAR-WA-GLASR THREE".to_string(),
+                id: "plate:KPAE:STR-WA-CHINS FIVE.png".to_string(),
+                airport_id: "KPAE".to_string(),
+                icao_airport_id: Some("KPAE".to_string()),
+                label: "STR-WA-CHINS FIVE".to_string(),
                 asset_kind: "plate".to_string(),
                 document_type: "star".to_string(),
-                asset_path: "plates/KRNT/GLASR3.png".to_string(),
-                thumbnail_path: "thumbnails/KRNT/GLASR3.png".to_string(),
+                asset_path: "plates/PAE/STR-WA-CHINS FIVE.png".to_string(),
+                thumbnail_path: "thumbnails/PAE/STR-WA-CHINS FIVE.png".to_string(),
                 procedure_uid: None,
+                cifp_procedure_id: Some("CHINS5".to_string()),
                 georef: None,
             }],
         };
@@ -1717,10 +1729,86 @@ mod tests {
         assert_eq!(
             row,
             (
-                "KRNT".to_string(),
-                "GLASR3".to_string(),
+                "KPAE".to_string(),
+                "CHINS5".to_string(),
                 "star".to_string(),
-                "GLASR THREE".to_string(),
+                "CHINS FIVE".to_string(),
+            )
+        );
+    }
+
+    #[test]
+    fn publishes_abbreviated_obstacle_departure_from_faa_cifp_metadata() {
+        let dir = tempdir().unwrap();
+        let db_path = dir.path().join("cifp.db");
+        let connection = Connection::open(&db_path).unwrap();
+        connection
+            .execute_batch(
+                "CREATE TABLE cifp_sid_star_app (
+                    airport_identifier TEXT,
+                    sid_star_approach_identifier TEXT,
+                    route_type TEXT,
+                    subsection_code TEXT
+                );
+                CREATE TABLE airport_aliases (alias_id TEXT, airport_id TEXT);
+                INSERT INTO cifp_sid_star_app VALUES ('KLGD', 'LGD1', '1', 'D');",
+            )
+            .unwrap();
+        drop(connection);
+
+        let manifest_path = dir.path().join(PACKAGE_ASSET_MANIFEST_NAME);
+        let manifest = PackageAssetManifest {
+            schema_version: 2,
+            family_id: "tpp".to_string(),
+            package_id: "tpp-nw".to_string(),
+            assets: vec![PackageAssetRecord {
+                id: "plate:KLGD:ODP-OR-LA GRANDE ONE (OBSTACLE).png".to_string(),
+                airport_id: "KLGD".to_string(),
+                icao_airport_id: Some("KLGD".to_string()),
+                label: "ODP-OR-LA GRANDE ONE (OBSTACLE)".to_string(),
+                asset_kind: "png".to_string(),
+                document_type: "departure".to_string(),
+                asset_path: "plates/LGD/ODP-OR-LA GRANDE ONE (OBSTACLE).png".to_string(),
+                thumbnail_path: "thumbnails/plates/LGD/ODP-OR-LA GRANDE ONE (OBSTACLE).png"
+                    .to_string(),
+                procedure_uid: Some("40571".to_string()),
+                cifp_procedure_id: Some("LGD1".to_string()),
+                georef: None,
+            }],
+        };
+        fs::write(&manifest_path, serde_json::to_vec(&manifest).unwrap()).unwrap();
+        let zip_path = dir.path().join("tpp-nw.zip");
+        write_deterministic_zip(
+            &zip_path,
+            &[ZipSource::new(PACKAGE_ASSET_MANIFEST_NAME, &manifest_path)],
+        )
+        .unwrap();
+
+        let summary = publish_tpp_cifp_matches(&db_path, &[zip_path]).unwrap();
+        assert_eq!(summary.unique_rows, 1);
+        let connection = Connection::open(&db_path).unwrap();
+        let row = connection
+            .query_row(
+                "SELECT airport_id, cifp_id, procedure_kind, plate_label
+                 FROM cifp_tpp_matches",
+                [],
+                |row| {
+                    Ok((
+                        row.get::<_, String>(0)?,
+                        row.get::<_, String>(1)?,
+                        row.get::<_, String>(2)?,
+                        row.get::<_, String>(3)?,
+                    ))
+                },
+            )
+            .unwrap();
+        assert_eq!(
+            row,
+            (
+                "KLGD".to_string(),
+                "LGD1".to_string(),
+                "sid".to_string(),
+                "LA GRANDE ONE (OBSTACLE)".to_string(),
             )
         );
     }

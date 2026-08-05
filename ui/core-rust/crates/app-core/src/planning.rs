@@ -3468,10 +3468,31 @@ pub(crate) fn flight_plan_row_actions_mut(
     row.action_matrix.iter_mut().flatten()
 }
 
+pub(crate) fn set_flight_plan_row_action_enabled(
+    action: &mut FlightPlanRowActionUiView,
+    enabled: bool,
+) {
+    action.enabled = enabled;
+    if enabled {
+        action.disabled_reason = None;
+    } else if action.disabled_reason.is_none() {
+        action.disabled_reason = row_action_disabled_reason(&action.id, false);
+    }
+}
+
+pub(crate) fn normalize_flight_plan_action_availability(state: &mut FlightPlanUiState) {
+    for row in &mut state.display_rows {
+        for action in flight_plan_row_actions_mut(row) {
+            set_flight_plan_row_action_enabled(action, action.enabled);
+        }
+    }
+}
+
 pub(crate) fn refresh_flight_plan_row_action_navigation(row: &mut FlightPlanDisplayRowUiView) {
     let chart_airport_id = row.chart_airport_id.clone();
     let show_plate_target_id = row.show_plate_target_id.clone();
     for action in flight_plan_row_actions_mut(row) {
+        set_flight_plan_row_action_enabled(action, action.enabled);
         action.navigation = match action.id {
             FlightPlanRowActionId::Plates => chart_airport_id.as_ref().map(|airport_id| {
                 FlightPlanRowNavigationAction::OpenAirportCharts {
@@ -9466,11 +9487,30 @@ mod tests {
             .expect("Show Plate action");
         assert_eq!(show_plate.navigation, None);
 
-        row.show_plate_target_id = Some("Plate:KPAE:KPAE-VOR-A".to_string());
+        let show_plate = flight_plan_row_actions_mut(&mut row)
+            .find(|action| action.id == FlightPlanRowActionId::ShowPlate)
+            .expect("Show Plate action");
+        show_plate.enabled = false;
+        show_plate.disabled_reason = None;
         refresh_flight_plan_row_action_navigation(&mut row);
         let show_plate = flight_plan_row_actions(&row)
             .find(|action| action.id == FlightPlanRowActionId::ShowPlate)
             .expect("Show Plate action");
+        assert_eq!(
+            show_plate.disabled_reason.as_deref(),
+            Some("This procedure has no plate to show.")
+        );
+
+        row.show_plate_target_id = Some("Plate:KPAE:KPAE-VOR-A".to_string());
+        let show_plate = flight_plan_row_actions_mut(&mut row)
+            .find(|action| action.id == FlightPlanRowActionId::ShowPlate)
+            .expect("Show Plate action");
+        show_plate.enabled = true;
+        refresh_flight_plan_row_action_navigation(&mut row);
+        let show_plate = flight_plan_row_actions(&row)
+            .find(|action| action.id == FlightPlanRowActionId::ShowPlate)
+            .expect("Show Plate action");
+        assert_eq!(show_plate.disabled_reason, None);
         assert_eq!(
             show_plate.navigation,
             Some(FlightPlanRowNavigationAction::OpenPlateTarget {
@@ -9478,6 +9518,45 @@ mod tests {
                 target: "Plate:KPAE:KPAE-VOR-A".to_string(),
             })
         );
+    }
+
+    #[test]
+    fn every_disabled_row_action_has_a_helpful_reason() {
+        for id in [
+            FlightPlanRowActionId::ActivateLeg,
+            FlightPlanRowActionId::DirectTo,
+            FlightPlanRowActionId::Remove,
+            FlightPlanRowActionId::RemoveAllAbove,
+            FlightPlanRowActionId::InsertBefore,
+            FlightPlanRowActionId::InsertAfter,
+            FlightPlanRowActionId::MoveUp,
+            FlightPlanRowActionId::MoveDown,
+            FlightPlanRowActionId::WaypointInfo,
+            FlightPlanRowActionId::Weather,
+            FlightPlanRowActionId::AddAirway,
+            FlightPlanRowActionId::SelectDeparture,
+            FlightPlanRowActionId::SelectArrival,
+            FlightPlanRowActionId::SelectApproach,
+            FlightPlanRowActionId::Plates,
+            FlightPlanRowActionId::ShowPlate,
+            FlightPlanRowActionId::RemoveAirway,
+            FlightPlanRowActionId::RemoveProcedure,
+        ] {
+            let mut projected = action(id.clone(), true);
+            set_flight_plan_row_action_enabled(&mut projected, false);
+            assert!(
+                projected
+                    .disabled_reason
+                    .as_deref()
+                    .is_some_and(|reason| !reason.trim().is_empty()),
+                "disabled {id:?} action should explain why"
+            );
+            set_flight_plan_row_action_enabled(&mut projected, true);
+            assert_eq!(
+                projected.disabled_reason, None,
+                "enabled {id:?} action should not retain a stale reason"
+            );
+        }
     }
 
     #[test]

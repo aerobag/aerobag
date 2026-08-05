@@ -94,6 +94,8 @@ pub struct PackageAssetRecord {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub procedure_uid: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cifp_procedure_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub georef: Option<PlateGeoref>,
 }
 

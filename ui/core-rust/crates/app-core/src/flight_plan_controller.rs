@@ -51,6 +51,8 @@ pub(crate) struct FlightPlanProjectionInputs {
     pub now_epoch_ms: i64,
     pub nav_data_generation: u64,
     pub weather_revision: u64,
+    pub local_time_zone: chrono_tz::Tz,
+    pub departure_time_basis: crate::AltitudePlannerDepartureTimeBasis,
 }
 
 #[derive(Debug, Clone)]
@@ -456,6 +458,8 @@ impl FlightPlanController {
                             ownship_position: inputs.ownship_position,
                             ownship_altitude_ft: inputs.ownship_altitude_ft,
                             now_epoch_ms: Some(inputs.now_epoch_ms),
+                            local_time_zone: inputs.local_time_zone,
+                            departure_time_basis: inputs.departure_time_basis,
                         },
                         atmosphere,
                     )?;
@@ -836,6 +840,8 @@ mod tests {
             now_epoch_ms: 0,
             nav_data_generation: 0,
             weather_revision: 0,
+            local_time_zone: chrono_tz::UTC,
+            departure_time_basis: crate::AltitudePlannerDepartureTimeBasis::Local,
         }
     }
 

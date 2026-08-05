@@ -3450,6 +3450,8 @@ fn create_ui_session_inner(
                 now_epoch_ms: wall_clock_epoch_ms,
                 nav_data_generation: 0,
                 weather_revision: 0,
+                local_time_zone: chrono_tz::UTC,
+                departure_time_basis: crate::AltitudePlannerDepartureTimeBasis::Local,
             },
             crate::had_ops::PlannerAtmosphereSelection::no_wind(false),
         )
@@ -12092,6 +12094,7 @@ fn project_session_app_ui_state(
 ) -> Result<AppUiState, HadReadError> {
     let nav_kv_store = session.nav_data.store_arc();
     let weather_revision = session.weather.revision();
+    let local_time_zone = session_local_time_zone(session).unwrap_or(chrono_tz::UTC);
     let atmosphere =
         planner_atmosphere_for_selection(session.altitude_planner_wind_selection, &session.weather);
     let flight_plan_projection = session.flight_plan.project(
@@ -12107,6 +12110,8 @@ fn project_session_app_ui_state(
             now_epoch_ms: session.wall_clock_epoch_ms,
             nav_data_generation: session.nav_data.generation(),
             weather_revision,
+            local_time_zone,
+            departure_time_basis: session.altitude_planner_departure_time_basis,
         },
         atmosphere,
     )?;
@@ -15451,9 +15456,8 @@ mod tests {
             let session = session_ref(&sessions, init.handle).expect("session");
             assert_eq!(
                 session
-                    .app_state
-                    .active_plan
-                    .as_ref()
+                    .flight_plan
+                    .active_plan()
                     .and_then(|plan| plan.planned_departure_time_epoch_ms),
                 Some(departure),
             );
@@ -15478,9 +15482,8 @@ mod tests {
             );
             assert_eq!(
                 session
-                    .app_state
-                    .active_plan
-                    .as_ref()
+                    .flight_plan
+                    .active_plan()
                     .and_then(|plan| plan.planned_departure_time_epoch_ms),
                 Some(departure),
             );
@@ -15499,9 +15502,8 @@ mod tests {
         assert_eq!(
             session_ref(&sessions, init.handle)
                 .expect("session")
-                .app_state
-                .active_plan
-                .as_ref()
+                .flight_plan
+                .active_plan()
                 .and_then(|plan| plan.planned_departure_time_epoch_ms),
             None
         );

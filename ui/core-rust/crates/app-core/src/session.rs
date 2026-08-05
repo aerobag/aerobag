@@ -69,7 +69,7 @@ use crate::{
     },
     live_feed_runtime::{
         LiveFeedConnectionEvent, LiveFeedConnectionEventKind, LiveFeedNetworkStatus,
-        LiveFeedRuntimeDecision, LiveFeedRuntimeInput, LiveFeedRuntimeState,
+        LiveFeedRuntimeDecision, LiveFeedRuntimeInput,
     },
     live_feeds::{
         LiveFeedSseEvent, LiveFeedsState, LIVE_FEEDS_BASE_PATH, NEXRAD_FRAME_WINDOW_SIZE,
@@ -88,9 +88,18 @@ use crate::{
     publication::{PublicationResolvedResource, PublicationResolver},
     query_map_overlay_for_surface_at, query_map_selection_for_surface_in_time_zone,
     settings_controller::{default_settings_page_state, SettingsController, SettingsProjection},
-    state, AirportNotamIndex, AirportPlateAvailability, AirspaceFeaturePayload,
-    AirspaceLabelTilePayload, AirspaceReferenceTilePayload, AirwayPresentationSelection, AppError,
-    AppErrorKind, AppEvent, AppResult, AppState, AppUiState, FlightPlan, FlightPlanDisplayRowKind,
+    state,
+    weather_controller::{
+        nexrad_animation_for_frames,
+        nexrad_frame_age_summary as controller_nexrad_frame_age_summary, nexrad_frame_candidates,
+        nexrad_freshest_frame_observed_at_utc as controller_nexrad_freshest_frame_observed_at_utc,
+        LiveFeedConnectionMode, LiveFeedCurrentRefreshState, LiveForecastAtmosphereState,
+        LiveNavKvSource, LiveNexradInstalledState, LiveObstacleHadState, WeatherController,
+        WeatherModelCheckpoint, WeatherProjection, WeatherProjectionInput,
+    },
+    AirportNotamIndex, AirportPlateAvailability, AirspaceFeaturePayload, AirspaceLabelTilePayload,
+    AirspaceReferenceTilePayload, AirwayPresentationSelection, AppError, AppErrorKind, AppEvent,
+    AppResult, AppState, AppUiState, FlightPlan, FlightPlanDisplayRowKind,
     FlightPlanRowActionExecution, FlightPlanRowActionId, FlightPlanUiState, GuidanceState, LatLon,
     LegDisplayElement, MapOverlayConfig, MapOverlayQueryResult, MapSelectionForNavRefResult,
     MapSelectionQueryResult, MapSelectionSessionAction, MapSurfaceMetrics, MapViewport,
@@ -159,6 +168,7 @@ pub struct UiSessionCreateTiming {
 
 struct UiSession {
     model: SessionModel,
+    weather: WeatherController,
     runtime: SessionRuntime,
     diagnostics: Arc<SessionDiagnosticsCounters>,
 }
@@ -200,6 +210,7 @@ pub struct UiSessionDiagnostics {
     pub weather_projection_count: u64,
     pub map_projection_count: u64,
     pub settings_revision: u64,
+    pub weather_revision: u64,
     pub last_session_payload_serialized_bytes: u64,
     pub transaction_commit_count: u64,
     pub transaction_rollback_count: u64,
@@ -227,6 +238,7 @@ impl SessionDiagnosticsCounters {
         generation: u64,
         phase: UiSessionPhase,
         settings_revision: u64,
+        weather_revision: u64,
     ) -> UiSessionDiagnostics {
         UiSessionDiagnostics {
             generation,
@@ -241,6 +253,7 @@ impl SessionDiagnosticsCounters {
             weather_projection_count: self.weather_projection_count.load(Ordering::Relaxed),
             map_projection_count: self.map_projection_count.load(Ordering::Relaxed),
             settings_revision,
+            weather_revision,
             last_session_payload_serialized_bytes: self
                 .last_session_payload_serialized_bytes
                 .load(Ordering::Relaxed),
@@ -281,33 +294,15 @@ struct SessionModel {
     installed_package_ids: BTreeSet<String>,
     publication_resolver: Arc<PublicationResolver>,
     cycle_product_freshness: CycleProductFreshnessState,
-    live_feeds: Arc<LiveFeedsState>,
-    live_feed_connection: LiveFeedConnectionSessionState,
     raster_map_catalog: Option<Arc<RasterMapCatalog>>,
     wall_clock_epoch_ms: i64,
-    live_feed_current_refresh: LiveFeedCurrentRefreshState,
     altitude_planner_wind_selection: AltitudePlannerWindSelection,
 }
 
 struct SessionRuntime {
     nav_data_generation: u64,
     vector_tile_cache: HashMap<String, VectorAggregateTilePayload>,
-    metar_tile_cache: HashMap<String, MetarTilePayload>,
-    metar_payload: Option<MetarProductPayload>,
-    prepared_metar_tiles: Option<Vec<crate::PreparedMetarTile>>,
-    important_metar_station_ids: Option<HashSet<String>>,
-    metar_station_importance_status: Option<DataStatusRecord>,
-    weather_station_airport_aliases: Option<WeatherStationAirportAliases>,
-    obstacle_had: Option<LiveObstacleHadState>,
-    forecast_atmosphere_state: Option<LiveForecastAtmosphereState>,
-    forecast_atmosphere: Option<crate::InstalledForecastAtmosphere>,
-    obstacle_tile_cache: HashMap<String, PointTilePayload>,
-    taf_payload: Option<TafProductPayload>,
-    airport_notam_index: Option<AirportNotamIndex>,
     airspace_feature_cache: HashMap<String, AirspaceFeaturePayload>,
-    tfr_payload: Option<TfrProductPayload>,
-    nexrad_installed: BTreeMap<String, LiveNexradInstalledState>,
-    nexrad_tile_cache: HashMap<String, Vec<u8>>,
     terrain_source_tile_cache: HashMap<String, Vec<u8>>,
     agl_terrain_resource_ids_in_flight: HashSet<String>,
     pending_resource_effects: Vec<UiSessionResourceEffect>,
@@ -319,22 +314,7 @@ impl Default for SessionRuntime {
         Self {
             nav_data_generation: 0,
             vector_tile_cache: HashMap::new(),
-            metar_tile_cache: HashMap::new(),
-            metar_payload: None,
-            prepared_metar_tiles: None,
-            important_metar_station_ids: None,
-            metar_station_importance_status: None,
-            weather_station_airport_aliases: None,
-            obstacle_had: None,
-            forecast_atmosphere_state: None,
-            forecast_atmosphere: None,
-            obstacle_tile_cache: HashMap::new(),
-            taf_payload: None,
-            airport_notam_index: None,
             airspace_feature_cache: HashMap::new(),
-            tfr_payload: None,
-            nexrad_installed: BTreeMap::new(),
-            nexrad_tile_cache: HashMap::new(),
             terrain_source_tile_cache: HashMap::new(),
             agl_terrain_resource_ids_in_flight: HashSet::new(),
             pending_resource_effects: Vec::new(),
@@ -355,9 +335,6 @@ impl SessionRuntime {
         self.nav_data_generation = self.nav_data_generation.saturating_add(1);
         self.vector_tile_cache.clear();
         self.airspace_feature_cache.clear();
-        self.important_metar_station_ids = None;
-        self.metar_station_importance_status = None;
-        self.weather_station_airport_aliases = None;
         self.terrain_source_tile_cache.clear();
         self.agl_terrain_resource_ids_in_flight.clear();
         self.pending_resource_effects.clear();
@@ -376,14 +353,6 @@ impl DerefMut for UiSession {
     fn deref_mut(&mut self) -> &mut Self::Target {
         &mut self.model
     }
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
-enum LiveFeedCurrentRefreshState {
-    #[default]
-    Idle,
-    Requested,
-    Ingested,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -459,48 +428,11 @@ impl From<&NavDbOpenResult> for AttachedNavDbArtifact {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum LiveFeedConnectionMode {
-    Unknown,
-    Connecting,
-    Connected,
-    Error,
-    Closed,
-}
-
-impl Default for LiveFeedConnectionMode {
-    fn default() -> Self {
-        Self::Unknown
-    }
-}
-
-#[derive(Debug, Clone, PartialEq, Default)]
-struct LiveFeedConnectionSessionState {
-    mode: LiveFeedConnectionMode,
-    runtime: LiveFeedRuntimeState,
-    source_url: Option<String>,
-    status_url: Option<String>,
-    last_state_change_epoch_ms: Option<i64>,
-    last_heard_epoch_ms: Option<i64>,
-    last_error_epoch_ms: Option<i64>,
-    last_error_message: Option<String>,
-    last_resource_error_epoch_ms: Option<i64>,
-    last_resource_error_message: Option<String>,
-    network_status: Option<LiveFeedNetworkStatus>,
-}
-
 #[derive(Clone, Default)]
 struct CycleProductFreshnessState {
     dirty: bool,
     missing_nav_kv_pages: BTreeSet<u32>,
     next_check_epoch_ms: Option<i64>,
-}
-
-#[derive(Clone)]
-struct LiveNexradInstalledState {
-    version: String,
-    package_blob_sha256: String,
-    manifest: serde_json::Value,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -697,8 +629,12 @@ impl SessionSlot {
             .session
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
-        self.diagnostics
-            .snapshot(self.generation, self.phase(), session.settings.revision())
+        self.diagnostics.snapshot(
+            self.generation,
+            self.phase(),
+            session.settings.revision(),
+            session.weather.revision(),
+        )
     }
 }
 
@@ -806,9 +742,6 @@ const PROCEDURE_GEOMETRY_STATUS_PREFIX: &str = "procedure_geometry:";
 const LIVE_FEED_METARS_STATUS_ID: &str = "live_feed:metars_unavailable";
 const LIVE_FEED_TAFS_STATUS_ID: &str = "live_feed:tafs_unavailable";
 const LIVE_FEED_NEXRAD_STATUS_ID: &str = "live_feed:nexrad_unavailable";
-const NEXRAD_ANIMATION_PRECEDING_FRAME_DWELL_MS: i64 = 1_000;
-const NEXRAD_ANIMATION_CURRENT_FRAME_DWELL_MS: i64 = 2_500;
-const NEXRAD_ANIMATION_BLANK_DWELL_MS: i64 = 500;
 const LIVE_FEED_TFRS_STATUS_ID: &str = "live_feed:tfrs_unavailable";
 const LIVE_FEED_OBSTACLES_STATUS_ID: &str = "live_feed:obstacles_unavailable";
 const ADSB_TRAFFIC_STATUS_ID: &str = "adsb:traffic_unavailable";
@@ -873,29 +806,6 @@ struct PackageUiWarningRecord {
 struct CycleWindow {
     effective: Option<DateTime<Utc>>,
     expiration: Option<DateTime<Utc>>,
-}
-
-#[derive(Debug, Clone)]
-struct LiveNavKvSource {
-    product: String,
-    version: String,
-    state_url: String,
-    root_member_path: String,
-    page_path_template: String,
-    page_count: u32,
-    state_sha256: String,
-}
-
-#[derive(Debug, Clone)]
-struct LiveObstacleHadState {
-    source: LiveNavKvSource,
-    store: Option<NavKvStore>,
-}
-
-#[derive(Debug, Clone)]
-struct LiveForecastAtmosphereState {
-    source: LiveNavKvSource,
-    manifest: product_contracts::AtmosphereManifest,
 }
 
 #[derive(Debug, Deserialize)]
@@ -1089,12 +999,13 @@ fn sync_live_feed_overlay_status_records(session: &mut UiSession) -> Vec<UiInval
     let tfrs_visible = session.map_layer_state.vectors.visible;
     let tfrs_collected_utc = live_feed_status_timestamp(session, "tfrs").or_else(|| {
         session
-            .runtime
+            .weather
+            .runtime()
             .tfr_payload
             .as_ref()
             .and_then(|payload| payload.generated_at_utc)
     });
-    let tfrs_loaded = session.runtime.tfr_payload.is_some();
+    let tfrs_loaded = session.weather.runtime().tfr_payload.is_some();
     invalidations.extend(sync_live_feed_product_status_record(
         session,
         tfrs_visible,
@@ -1108,11 +1019,12 @@ fn sync_live_feed_overlay_status_records(session: &mut UiSession) -> Vec<UiInval
     let obstacles_visible = session.map_layer_state.vectors.visible;
     let obstacles_collected_utc = live_feed_status_timestamp(session, "obstacles").or_else(|| {
         session
-            .live_feeds
+            .weather
+            .live_feeds()
             .product_state_manifest("obstacles")
             .and_then(json_generated_at_utc)
     });
-    let obstacles_loaded = session.runtime.obstacle_had.is_some();
+    let obstacles_loaded = session.weather.runtime().obstacle_had.is_some();
     invalidations.extend(sync_live_feed_product_status_record(
         session,
         obstacles_visible,
@@ -1142,7 +1054,7 @@ struct LiveFeedProductStatusSource {
 }
 
 fn metar_live_feed_status_source(session: &UiSession) -> LiveFeedProductStatusSource {
-    if let Some(payload) = session.runtime.metar_payload.as_ref() {
+    if let Some(payload) = session.weather.runtime().metar_payload.as_ref() {
         return LiveFeedProductStatusSource {
             loaded: true,
             collected_utc: live_feed_status_timestamp(session, "metars")
@@ -1154,14 +1066,15 @@ fn metar_live_feed_status_source(session: &UiSession) -> LiveFeedProductStatusSo
         loaded: false,
         collected_utc: None,
         loaded_version: session
-            .live_feeds
+            .weather
+            .live_feeds()
             .product_loaded_version("metars")
             .map(str::to_string),
     }
 }
 
 fn taf_live_feed_status_source(session: &UiSession) -> LiveFeedProductStatusSource {
-    if let Some(payload) = session.runtime.taf_payload.as_ref() {
+    if let Some(payload) = session.weather.runtime().taf_payload.as_ref() {
         return LiveFeedProductStatusSource {
             loaded: true,
             collected_utc: live_feed_status_timestamp(session, "tafs").or(payload.generated_at_utc),
@@ -1172,7 +1085,8 @@ fn taf_live_feed_status_source(session: &UiSession) -> LiveFeedProductStatusSour
         loaded: false,
         collected_utc: None,
         loaded_version: session
-            .live_feeds
+            .weather
+            .live_feeds()
             .product_loaded_version("tafs")
             .map(str::to_string),
     }
@@ -1180,9 +1094,15 @@ fn taf_live_feed_status_source(session: &UiSession) -> LiveFeedProductStatusSour
 
 fn live_feed_status_timestamp(session: &UiSession, product: &str) -> Option<DateTime<Utc>> {
     session
-        .live_feeds
+        .weather
+        .live_feeds()
         .product_published_at_utc(product)
-        .or_else(|| session.live_feeds.product_collected_at_utc(product))
+        .or_else(|| {
+            session
+                .weather
+                .live_feeds()
+                .product_collected_at_utc(product)
+        })
         .and_then(parse_utc_instant)
 }
 
@@ -1444,13 +1364,13 @@ fn live_feed_resource_failure_detail(resource_id: &str, message: &str) -> String
 }
 
 fn record_live_feed_resource_error(session: &mut UiSession, message: String) {
-    session.live_feed_connection.last_resource_error_epoch_ms = Some(session.wall_clock_epoch_ms);
-    session.live_feed_connection.last_resource_error_message = Some(message);
+    session
+        .weather
+        .record_resource_error(session.wall_clock_epoch_ms, message);
 }
 
 fn clear_live_feed_resource_error(session: &mut UiSession) {
-    session.live_feed_connection.last_resource_error_epoch_ms = None;
-    session.live_feed_connection.last_resource_error_message = None;
+    session.weather.clear_resource_error();
 }
 
 fn record_live_feed_fetch_failure(
@@ -2194,17 +2114,19 @@ fn project_data_status_page_state(session: &UiSession) -> UiDataStatusPageState 
             session,
             "tfrs",
             "TFRs",
-            session.runtime.tfr_payload.is_some(),
+            session.weather.runtime().tfr_payload.is_some(),
             live_feed_status_timestamp(session, "tfrs").or_else(|| {
                 session
-                    .runtime
+                    .weather
+                    .runtime()
                     .tfr_payload
                     .as_ref()
                     .and_then(|payload| payload.generated_at_utc)
             }),
             DATA_FRESHNESS_POLICIES.live_feeds.tfrs,
             session
-                .live_feeds
+                .weather
+                .live_feeds()
                 .product_loaded_version("tfrs")
                 .map(str::to_string),
         ),
@@ -2212,11 +2134,12 @@ fn project_data_status_page_state(session: &UiSession) -> UiDataStatusPageState 
             session,
             "notams",
             "NOTAMs",
-            session.runtime.airport_notam_index.is_some(),
+            session.weather.runtime().airport_notam_index.is_some(),
             live_feed_status_timestamp(session, "notams"),
             DATA_FRESHNESS_POLICIES.live_feeds.notams,
             session
-                .live_feeds
+                .weather
+                .live_feeds()
                 .product_loaded_version("notams")
                 .map(str::to_string),
         ),
@@ -2243,26 +2166,30 @@ fn project_data_status_page_state(session: &UiSession) -> UiDataStatusPageState 
             session,
             "obstacles",
             "Obstacles",
-            session.runtime.obstacle_had.is_some()
+            session.weather.runtime().obstacle_had.is_some()
                 || session
-                    .live_feeds
+                    .weather
+                    .live_feeds()
                     .product_state_manifest("obstacles")
                     .is_some(),
             live_feed_status_timestamp(session, "obstacles").or_else(|| {
                 session
-                    .live_feeds
+                    .weather
+                    .live_feeds()
                     .product_state_manifest("obstacles")
                     .and_then(json_generated_at_utc)
             }),
             DATA_FRESHNESS_POLICIES.live_feeds.obstacles,
             session
-                .runtime
+                .weather
+                .runtime()
                 .obstacle_had
                 .as_ref()
                 .map(|had| had.source.version.clone())
                 .or_else(|| {
                     session
-                        .live_feeds
+                        .weather
+                        .live_feeds()
                         .product_loaded_version("obstacles")
                         .map(str::to_string)
                 }),
@@ -3057,7 +2984,7 @@ fn publication_status_page_row(session: &UiSession) -> UiDataStatusPageRow {
 }
 
 fn live_feed_connection_status_page_row(session: &UiSession) -> UiDataStatusPageRow {
-    let connection = &session.live_feed_connection;
+    let connection = session.weather.connection();
     let mut facts = Vec::new();
     if let Some(source_url) = connection.source_url.as_deref() {
         facts.push(status_link_fact(
@@ -3236,8 +3163,12 @@ fn live_feed_product_status_page_row(
         ));
     }
     if !loaded {
-        let detail = if session.live_feeds.current_loaded() {
-            if session.live_feeds.has_product_current_version(product) {
+        let detail = if session.weather.live_feeds().current_loaded() {
+            if session
+                .weather
+                .live_feeds()
+                .has_product_current_version(product)
+            {
                 format!("{label} is listed in the live-feed index but no current state is loaded.")
             } else {
                 format!("{label} is not listed in the live-feed index.")
@@ -3286,13 +3217,15 @@ fn live_feed_product_status_page_row(
 
 fn winds_aloft_status_page_row(session: &UiSession) -> UiDataStatusPageRow {
     let manifest = session
-        .runtime
+        .weather
+        .runtime()
         .forecast_atmosphere
         .as_ref()
         .map(crate::InstalledForecastAtmosphere::manifest)
         .or_else(|| {
             session
-                .runtime
+                .weather
+                .runtime()
                 .forecast_atmosphere_state
                 .as_ref()
                 .map(|state| &state.manifest)
@@ -3320,7 +3253,7 @@ fn winds_aloft_status_page_row(session: &UiSession) -> UiDataStatusPageRow {
             ));
         }
     }
-    if session.runtime.forecast_atmosphere.is_some() {
+    if session.weather.runtime().forecast_atmosphere.is_some() {
         return status_page_row(
             "live_feed:winds-aloft",
             "Winds aloft",
@@ -3330,9 +3263,10 @@ fn winds_aloft_status_page_row(session: &UiSession) -> UiDataStatusPageRow {
             facts,
         );
     }
-    let detail = if session.live_feeds.current_loaded() {
+    let detail = if session.weather.live_feeds().current_loaded() {
         if session
-            .live_feeds
+            .weather
+            .live_feeds()
             .has_product_current_version("winds-aloft")
         {
             "Winds aloft is listed in the live-feed index but its current NavKv state is not loaded."
@@ -3355,12 +3289,18 @@ fn winds_aloft_status_page_row(session: &UiSession) -> UiDataStatusPageRow {
 fn nexrad_status_manifest(session: &UiSession) -> Option<&serde_json::Value> {
     latest_installed_nexrad(session)
         .map(|installed| &installed.manifest)
-        .or_else(|| session.live_feeds.product_state_manifest("nexrad"))
+        .or_else(|| {
+            session
+                .weather
+                .live_feeds()
+                .product_state_manifest("nexrad")
+        })
 }
 
 fn latest_installed_nexrad(session: &UiSession) -> Option<&LiveNexradInstalledState> {
     session
-        .runtime
+        .weather
+        .runtime()
         .nexrad_installed
         .values()
         .max_by(|left, right| {
@@ -3383,7 +3323,8 @@ fn nexrad_live_feed_status_page_row(session: &UiSession) -> UiDataStatusPageRow 
             .map(|installed| installed.version.clone())
             .or_else(|| {
                 session
-                    .live_feeds
+                    .weather
+                    .live_feeds()
                     .product_loaded_version("nexrad")
                     .map(str::to_string)
             }),
@@ -3394,41 +3335,30 @@ fn nexrad_live_feed_status_page_row(session: &UiSession) -> UiDataStatusPageRow 
 }
 
 fn nexrad_frame_age_summary(session: &UiSession) -> String {
-    if !session.map_layer_state.nexrad.visible {
-        return "off".to_string();
-    }
-    let frames = nexrad_frame_candidates(session);
-    let labels = nexrad_frame_age_labels(&frames, session.wall_clock_epoch_ms);
-    if labels.is_empty() {
-        "inop".to_string()
-    } else {
-        labels.join(", ")
-    }
-}
-
-fn nexrad_frame_age_banner_value(session: &UiSession) -> String {
-    if !session.map_layer_state.nexrad.visible {
-        return "off".to_string();
-    }
-    let frames = nexrad_frame_candidates(session);
-    if frames.is_empty() {
-        return "inop".to_string();
-    }
-    let animation = nexrad_animation_for_frames(&frames, session.wall_clock_epoch_ms);
-    let Some(index) = animation.selected_frame_index else {
-        return "---".to_string();
-    };
-    nexrad_frame_age_values(&frames, session.wall_clock_epoch_ms)
-        .get(index)
-        .cloned()
-        .unwrap_or_else(|| "inop".to_string())
+    controller_nexrad_frame_age_summary(&session.weather, weather_projection_input(session))
 }
 
 fn nexrad_freshest_frame_observed_at_utc(session: &UiSession) -> Option<DateTime<Utc>> {
-    nexrad_frame_candidates(session)
-        .into_iter()
-        .filter_map(|frame| frame.observed_at_utc)
-        .max()
+    controller_nexrad_freshest_frame_observed_at_utc(&session.weather)
+}
+
+fn weather_projection_input(session: &UiSession) -> WeatherProjectionInput {
+    WeatherProjectionInput {
+        nexrad_visible: session.map_layer_state.nexrad.visible,
+        wall_clock_epoch_ms: session.wall_clock_epoch_ms,
+    }
+}
+
+fn project_weather_for_session(session: &mut UiSession) -> WeatherProjection {
+    let input = weather_projection_input(session);
+    let result = session.weather.project(input);
+    if result.rebuilt {
+        session
+            .diagnostics
+            .weather_projection_count
+            .fetch_add(1, Ordering::Relaxed);
+    }
+    result.projection
 }
 
 fn json_observed_at_utc(value: &serde_json::Value) -> Option<DateTime<Utc>> {
@@ -3746,13 +3676,11 @@ fn create_ui_session_inner(
                 dirty: true,
                 ..CycleProductFreshnessState::default()
             },
-            live_feeds: Arc::new(LiveFeedsState::default()),
-            live_feed_connection: LiveFeedConnectionSessionState::default(),
             raster_map_catalog: None,
             wall_clock_epoch_ms,
-            live_feed_current_refresh: LiveFeedCurrentRefreshState::Idle,
             altitude_planner_wind_selection: AltitudePlannerWindSelection::NoWind,
         },
+        weather: WeatherController::default(),
         runtime: SessionRuntime::default(),
         diagnostics,
     };
@@ -4200,6 +4128,7 @@ enum SessionModelTransactionError {
 
 struct SessionModelTransactionCheckpoint {
     model: SessionModel,
+    weather: WeatherModelCheckpoint,
     pending_effect_count: usize,
 }
 
@@ -4207,12 +4136,14 @@ impl SessionModelTransactionCheckpoint {
     fn capture(session: &UiSession) -> Self {
         Self {
             model: session.model.clone(),
+            weather: session.weather.checkpoint_model(),
             pending_effect_count: session.runtime.pending_resource_effects.len(),
         }
     }
 
     fn rollback(self, session: &mut UiSession) {
         session.model = self.model;
+        session.weather.rollback_model(self.weather);
         session
             .runtime
             .pending_resource_effects
@@ -5577,12 +5508,13 @@ fn planner_atmosphere_for_session(
     match session.altitude_planner_wind_selection {
         AltitudePlannerWindSelection::NoWind => {
             crate::had_ops::PlannerAtmosphereSelection::no_wind(
-                session.runtime.forecast_atmosphere.is_some(),
+                session.weather.runtime().forecast_atmosphere.is_some(),
             )
         }
         AltitudePlannerWindSelection::Gfs => crate::had_ops::PlannerAtmosphereSelection::gfs(
             session
-                .runtime
+                .weather
+                .runtime()
                 .forecast_atmosphere
                 .as_ref()
                 .map(|forecast| forecast as &dyn crate::AtmosphereModel),
@@ -5640,7 +5572,7 @@ fn perform_altitude_planner_action_in_session(
     session.altitude_planner_wind_selection = match action_uid.as_str() {
         crate::had_ops::SELECT_NO_WIND_ACTION_UID => AltitudePlannerWindSelection::NoWind,
         crate::had_ops::SELECT_GFS_WIND_ACTION_UID
-            if session.runtime.forecast_atmosphere.is_some() =>
+            if session.weather.runtime().forecast_atmosphere.is_some() =>
         {
             AltitudePlannerWindSelection::Gfs
         }
@@ -6597,9 +6529,7 @@ pub fn attach_nav_kv_store_to_session_with_open_result(
     session.nav_kv_store_id = Some(store_id);
     session.nav_kv_store = Some(Arc::new(store.clone()));
     session.nav_db_artifact = open_result.map(AttachedNavDbArtifact::from);
-    session.runtime.important_metar_station_ids = None;
-    session.runtime.metar_station_importance_status = None;
-    session.runtime.weather_station_airport_aliases = None;
+    session.weather.invalidate_nav_data();
     rebuild_metar_tile_cache(session);
     sync_cycle_product_freshness_status_records(session);
     Ok(())
@@ -6660,6 +6590,7 @@ pub fn advance_nav_kv_store_in_session_with_open_result(
 
     let mut candidate = UiSession {
         model: live.model.clone(),
+        weather: std::mem::take(&mut live.weather),
         runtime: std::mem::take(&mut live.runtime),
         diagnostics: Arc::clone(&live.diagnostics),
     };
@@ -6672,6 +6603,7 @@ pub fn advance_nav_kv_store_in_session_with_open_result(
         .insert(open_result.selected_package_id.clone());
     candidate.vector_manifest_loaded = false;
     candidate.runtime.invalidate_nav_data();
+    candidate.weather.invalidate_nav_data();
     rebuild_metar_tile_cache(&mut candidate);
     mark_cycle_product_freshness_dirty(&mut candidate);
 
@@ -6743,14 +6675,18 @@ pub fn advance_nav_kv_store_in_session_with_open_result(
             ))
         }
         Err(SessionSnapshotProjectionError::NeedResources(resources)) => {
+            live.weather = candidate.weather;
             live.runtime = candidate.runtime;
             live.runtime.invalidate_nav_data();
+            live.weather.invalidate_nav_data();
             rebuild_metar_tile_cache(live);
             Ok(HadOperationOutcome::NeedResources { resources })
         }
         Err(SessionSnapshotProjectionError::Had(HadReadError::NeedPages(pages))) => {
+            live.weather = candidate.weather;
             live.runtime = candidate.runtime;
             live.runtime.invalidate_nav_data();
+            live.weather.invalidate_nav_data();
             rebuild_metar_tile_cache(live);
             Ok(HadOperationOutcome::NeedResources {
                 resources: nav_kv_page_resources(pages),
@@ -6779,8 +6715,10 @@ pub fn advance_nav_kv_store_in_session_with_open_result(
             });
             warning.hushable = false;
             let candidate_installed_package_ids = candidate.installed_package_ids.clone();
+            live.weather = candidate.weather;
             live.runtime = candidate.runtime;
             live.runtime.invalidate_nav_data();
+            live.weather.invalidate_nav_data();
             rebuild_metar_tile_cache(live);
             live.nav_db_advance_blocked = true;
             live.installed_package_ids = candidate_installed_package_ids;
@@ -7213,7 +7151,7 @@ pub fn ingest_tfrs_in_session(handle: u32, payload: &TfrProductPayload) -> AppRe
     let slot = session_slot(handle)?;
     let mut session_guard = slot.lock_running()?;
     let session = &mut *session_guard;
-    session.runtime.tfr_payload = Some(payload.clone());
+    session.weather.runtime_mut().tfr_payload = Some(payload.clone());
     sync_live_feed_overlay_status_records(session);
     Ok(())
 }
@@ -7222,7 +7160,7 @@ pub fn ingest_tafs_in_session(handle: u32, payload: &TafProductPayload) -> AppRe
     let slot = session_slot(handle)?;
     let mut session_guard = slot.lock_running()?;
     let session = &mut *session_guard;
-    session.runtime.taf_payload = Some(payload.clone());
+    session.weather.runtime_mut().taf_payload = Some(payload.clone());
     Ok(())
 }
 
@@ -7231,7 +7169,8 @@ pub fn sync_live_feeds_in_session(handle: u32) -> AppResult<HadOperationOutcome>
     let session_guard = slot.lock_running()?;
     let session = &*session_guard;
     Ok(session
-        .live_feeds
+        .weather
+        .live_feeds()
         .sync_outcome_with_invalidations_at_epoch_ms(session.wall_clock_epoch_ms))
 }
 
@@ -7239,13 +7178,21 @@ pub fn refresh_live_feed_current_in_session(handle: u32) -> AppResult<HadOperati
     let slot = session_slot(handle)?;
     let mut session_guard = slot.lock_running()?;
     let session = &mut *session_guard;
-    if session.live_feed_current_refresh == LiveFeedCurrentRefreshState::Ingested {
-        session.live_feed_current_refresh = LiveFeedCurrentRefreshState::Idle;
-        return Ok(session.live_feeds.complete_outcome_with_invalidations());
+    if session.weather.current_refresh() == LiveFeedCurrentRefreshState::Ingested {
+        session
+            .weather
+            .set_current_refresh(LiveFeedCurrentRefreshState::Idle);
+        return Ok(session
+            .weather
+            .live_feeds()
+            .complete_outcome_with_invalidations());
     }
-    session.live_feed_current_refresh = LiveFeedCurrentRefreshState::Requested;
+    session
+        .weather
+        .set_current_refresh(LiveFeedCurrentRefreshState::Requested);
     Ok(session
-        .live_feeds
+        .weather
+        .live_feeds()
         .refresh_current_outcome_with_invalidations_at_epoch_ms(session.wall_clock_epoch_ms))
 }
 
@@ -7253,9 +7200,7 @@ pub fn configure_live_feed_source_in_session(handle: u32, source_root_url: &str)
     let slot = session_slot(handle)?;
     let mut session_guard = slot.lock_running()?;
     let session = &mut *session_guard;
-    let normalized = Arc::make_mut(&mut session.live_feeds).set_source_root_url(source_root_url)?;
-    session.live_feed_connection.source_url = Some(normalized.clone());
-    session.live_feed_connection.status_url = Some(crate::live_feed_status_url(&normalized)?);
+    session.weather.set_source_root_url(source_root_url)?;
     Ok(())
 }
 
@@ -7266,10 +7211,7 @@ pub fn live_feed_runtime_decision_in_session(
     let slot = session_slot(handle)?;
     let mut session_guard = slot.lock_running()?;
     let session = &mut *session_guard;
-    Ok(crate::live_feed_runtime_decision(
-        &mut session.live_feed_connection.runtime,
-        input,
-    ))
+    Ok(session.weather.runtime_decision(input))
 }
 
 pub fn ingest_live_feed_sse_event_in_session(
@@ -7298,7 +7240,10 @@ pub fn ingest_live_feed_sse_event_in_session_at_epoch_ms(
         },
         epoch_ms,
     );
-    Arc::make_mut(&mut session.live_feeds).ingest_sse_event(event.clone())
+    session
+        .weather
+        .live_feeds_mut()
+        .ingest_sse_event(event.clone())
 }
 
 pub fn ingest_live_feed_sse_events_in_session(
@@ -7329,29 +7274,36 @@ pub fn ingest_live_feed_sse_events_in_session_at_epoch_ms(
             epoch_ms,
         );
     }
-    let affected =
-        match Arc::make_mut(&mut session.live_feeds).ingest_sse_events(events.iter().cloned()) {
-            Ok(affected) => affected,
-            Err(err) => {
-                record_live_feed_resource_error(
-                    session,
-                    format!("Failed to ingest live-feed server event: {}", err.message),
-                );
-                return Ok(session
-                    .live_feeds
-                    .sync_outcome_with_invalidations_at_epoch_ms(session.wall_clock_epoch_ms));
-            }
-        };
+    let affected = match session
+        .weather
+        .live_feeds_mut()
+        .ingest_sse_events(events.iter().cloned())
+    {
+        Ok(affected) => affected,
+        Err(err) => {
+            record_live_feed_resource_error(
+                session,
+                format!("Failed to ingest live-feed server event: {}", err.message),
+            );
+            return Ok(session
+                .weather
+                .live_feeds()
+                .sync_outcome_with_invalidations_at_epoch_ms(session.wall_clock_epoch_ms));
+        }
+    };
     Ok(session
-        .live_feeds
+        .weather
+        .live_feeds()
         .sync_products_outcome_with_invalidations(affected.iter().map(String::as_str)))
 }
 
 fn mark_live_feed_current_refresh_ingested(session: &mut UiSession, resource_id: &str) {
     if resource_id == "live_feeds/current"
-        && session.live_feed_current_refresh == LiveFeedCurrentRefreshState::Requested
+        && session.weather.current_refresh() == LiveFeedCurrentRefreshState::Requested
     {
-        session.live_feed_current_refresh = LiveFeedCurrentRefreshState::Ingested;
+        session
+            .weather
+            .set_current_refresh(LiveFeedCurrentRefreshState::Ingested);
     }
 }
 
@@ -7418,7 +7370,8 @@ pub fn ingest_resource_in_session_at_epoch_ms(
         let mut session_guard = slot.lock_running()?;
         let session = &mut *session_guard;
         session
-            .runtime
+            .weather
+            .runtime_mut()
             .nexrad_tile_cache
             .insert(src, bytes.to_vec());
         return Ok(());
@@ -7440,11 +7393,16 @@ pub fn ingest_resource_in_session_at_epoch_ms(
                 epoch_ms,
             );
         }
-        if let Err(err) = Arc::make_mut(&mut session.live_feeds).ingest_resource(resource_id, bytes)
+        if let Err(err) = session
+            .weather
+            .live_feeds_mut()
+            .ingest_resource(resource_id, bytes)
         {
             mark_live_feed_current_refresh_ingested(session, resource_id);
             let wall_clock_epoch_ms = session.wall_clock_epoch_ms;
-            Arc::make_mut(&mut session.live_feeds)
+            session
+                .weather
+                .live_feeds_mut()
                 .record_resource_failure(resource_id, wall_clock_epoch_ms);
             let detail = live_feed_resource_failure_detail(resource_id, &err.message);
             record_live_feed_resource_error(session, detail);
@@ -7455,7 +7413,9 @@ pub fn ingest_resource_in_session_at_epoch_ms(
         if let Err(err) = install_live_feed_payloads(session) {
             mark_live_feed_current_refresh_ingested(session, resource_id);
             let wall_clock_epoch_ms = session.wall_clock_epoch_ms;
-            Arc::make_mut(&mut session.live_feeds)
+            session
+                .weather
+                .live_feeds_mut()
                 .record_resource_failure(resource_id, wall_clock_epoch_ms);
             let detail = live_feed_resource_failure_detail(resource_id, &err.message);
             record_live_feed_resource_error(session, detail);
@@ -7556,56 +7516,9 @@ fn record_live_feed_connection_event(
     epoch_ms: i64,
 ) {
     advance_session_wall_clock(session, epoch_ms);
-    let at = session.wall_clock_epoch_ms;
-    if let Some(source_url) = event.source_url {
-        match Arc::make_mut(&mut session.live_feeds).set_source_root_url(&source_url) {
-            Ok(normalized) => {
-                session.live_feed_connection.source_url = Some(normalized);
-            }
-            Err(err) => {
-                session.live_feed_connection.source_url = Some(source_url);
-                session.live_feed_connection.last_resource_error_epoch_ms = Some(at);
-                session.live_feed_connection.last_resource_error_message = Some(err.to_string());
-            }
-        }
-    }
-    if event.status_url.is_some() {
-        session.live_feed_connection.status_url = event.status_url;
-    }
-    if event.network_status.is_some() {
-        session.live_feed_connection.network_status = event.network_status;
-    }
-    match event.kind {
-        LiveFeedConnectionEventKind::Connecting => {
-            session.live_feed_connection.mode = LiveFeedConnectionMode::Connecting;
-            session.live_feed_connection.last_state_change_epoch_ms = Some(at);
-        }
-        LiveFeedConnectionEventKind::Connected => {
-            session.live_feed_connection.mode = LiveFeedConnectionMode::Connected;
-            session.live_feed_connection.last_state_change_epoch_ms = Some(at);
-            session.live_feed_connection.last_error_message = None;
-        }
-        LiveFeedConnectionEventKind::Message => {
-            session.live_feed_connection.mode = LiveFeedConnectionMode::Connected;
-            session.live_feed_connection.last_state_change_epoch_ms = session
-                .live_feed_connection
-                .last_state_change_epoch_ms
-                .or(Some(at));
-            session.live_feed_connection.last_heard_epoch_ms = Some(at);
-            session.live_feed_connection.last_error_message = None;
-        }
-        LiveFeedConnectionEventKind::Error => {
-            session.live_feed_connection.mode = LiveFeedConnectionMode::Error;
-            session.live_feed_connection.last_state_change_epoch_ms = Some(at);
-            session.live_feed_connection.last_error_epoch_ms = Some(at);
-            session.live_feed_connection.last_error_message = event.message;
-        }
-        LiveFeedConnectionEventKind::Closed => {
-            session.live_feed_connection.mode = LiveFeedConnectionMode::Closed;
-            session.live_feed_connection.last_state_change_epoch_ms = Some(at);
-        }
-        LiveFeedConnectionEventKind::NetworkStatus => {}
-    }
+    session
+        .weather
+        .record_connection_event(event, session.wall_clock_epoch_ms);
 }
 
 pub fn ingest_prepared_live_feed_resource_in_session(
@@ -7628,7 +7541,7 @@ pub fn ingest_prepared_live_feed_resource_in_session(
     let slot = session_slot(handle)?;
     let mut session_guard = slot.lock_running()?;
     let session = &mut *session_guard;
-    let mut next_live_feeds = (*session.live_feeds).clone();
+    let mut next_live_feeds = session.weather.live_feeds().clone();
     next_live_feeds.ingest_prepared_live_feed(resource_id, &envelope)?;
     if next_live_feeds.product_staged_version(&envelope_product) != Some(envelope_version.as_str())
     {
@@ -7646,7 +7559,7 @@ pub fn ingest_prepared_live_feed_resource_in_session(
                     "expected_from_state_id": envelope.from_state_sha256,
                     "expected_to_state_id": envelope.state_sha256,
                     "actual_state_id": session
-                        .runtime.airport_notam_index
+                        .weather.runtime().airport_notam_index
                         .as_ref()
                         .map(AirportNotamIndex::state_id),
                     "mutation_count": notam_mutation_count,
@@ -7654,12 +7567,15 @@ pub fn ingest_prepared_live_feed_resource_in_session(
                 }),
             );
         }
-        if envelope_product == "notams" && session.runtime.airport_notam_index.is_none() {
-            Arc::make_mut(&mut session.live_feeds).mark_product_no_state("notams");
+        if envelope_product == "notams" && session.weather.runtime().airport_notam_index.is_none() {
+            session
+                .weather
+                .live_feeds_mut()
+                .mark_product_no_state("notams");
         }
         return Err(error);
     }
-    session.live_feeds = Arc::new(next_live_feeds);
+    session.weather.replace_live_feeds(next_live_feeds);
     clear_live_feed_resource_error(session);
     sync_live_feed_overlay_status_records(session);
     Ok(())
@@ -7719,13 +7635,16 @@ pub fn install_prepared_live_feed_cache_product_in_session(
     let mut session_guard = slot.lock_running()?;
     let session = &mut *session_guard;
     install_prepared_live_feed(session, envelope.payload)?;
-    Arc::make_mut(&mut session.live_feeds).mark_durable_product_loaded(
-        installed.product.clone(),
-        installed.version.clone(),
-        installed.state_sha256.clone(),
-        installed.collected_at_utc.clone(),
-        installed_live_feed_state_manifest(installed),
-    );
+    session
+        .weather
+        .live_feeds_mut()
+        .mark_durable_product_loaded(
+            installed.product.clone(),
+            installed.version.clone(),
+            installed.state_sha256.clone(),
+            installed.collected_at_utc.clone(),
+            installed_live_feed_state_manifest(installed),
+        );
     sync_live_feed_overlay_status_records(session);
     changed_session_snapshot_outcome(session)
 }
@@ -7741,8 +7660,8 @@ fn install_live_feed_installed_state(
                     kind: AppErrorKind::InvalidManifest,
                     message: format!("failed to parse installed METAR live feed: {err}"),
                 })?;
-            session.runtime.metar_payload = Some(payload);
-            session.runtime.prepared_metar_tiles = None;
+            session.weather.runtime_mut().metar_payload = Some(payload);
+            session.weather.runtime_mut().prepared_metar_tiles = None;
             rebuild_metar_tile_cache(session);
             clear_data_status_record(session, LIVE_FEED_METARS_STATUS_ID);
         }
@@ -7752,7 +7671,7 @@ fn install_live_feed_installed_state(
                     kind: AppErrorKind::InvalidManifest,
                     message: format!("failed to parse installed TAF live feed: {err}"),
                 })?;
-            session.runtime.taf_payload = Some(payload);
+            session.weather.runtime_mut().taf_payload = Some(payload);
             let status_id = live_feed_unavailable_status_record("tafs", String::new()).id;
             clear_data_status_record(session, &status_id);
         }
@@ -7762,7 +7681,7 @@ fn install_live_feed_installed_state(
                     kind: AppErrorKind::InvalidManifest,
                     message: format!("failed to parse installed TFR live feed: {err}"),
                 })?;
-            session.runtime.tfr_payload = Some(payload);
+            session.weather.runtime_mut().tfr_payload = Some(payload);
             clear_data_status_record(session, LIVE_FEED_TFRS_STATUS_ID);
         }
         ("notams", crate::LiveFeedInstalledPayload::NotamResources { .. }) => {
@@ -7818,12 +7737,14 @@ fn install_live_feed_installed_state(
                 package_blob_sha256,
             )?;
             session
-                .runtime
+                .weather
+                .runtime_mut()
                 .nexrad_installed
                 .insert(installed.version.clone(), installed);
-            while session.runtime.nexrad_installed.len() > NEXRAD_FRAME_WINDOW_SIZE {
+            while session.weather.runtime().nexrad_installed.len() > NEXRAD_FRAME_WINDOW_SIZE {
                 let Some(oldest) = session
-                    .runtime
+                    .weather
+                    .runtime()
                     .nexrad_installed
                     .values()
                     .min_by(|left, right| {
@@ -7835,18 +7756,27 @@ fn install_live_feed_installed_state(
                 else {
                     break;
                 };
-                session.runtime.nexrad_installed.remove(&oldest);
+                session
+                    .weather
+                    .runtime_mut()
+                    .nexrad_installed
+                    .remove(&oldest);
             }
             let retained_versions = session
-                .runtime
+                .weather
+                .runtime()
                 .nexrad_installed
                 .keys()
                 .cloned()
                 .collect::<HashSet<_>>();
-            session.runtime.nexrad_tile_cache.retain(|src, _| {
-                nexrad_installed_member(src)
-                    .is_some_and(|(version, _)| retained_versions.contains(&version))
-            });
+            session
+                .weather
+                .runtime_mut()
+                .nexrad_tile_cache
+                .retain(|src, _| {
+                    nexrad_installed_member(src)
+                        .is_some_and(|(version, _)| retained_versions.contains(&version))
+                });
             clear_data_status_record(session, LIVE_FEED_NEXRAD_STATUS_ID);
         }
         (
@@ -7883,7 +7813,7 @@ fn install_live_feed_installed_state(
                 root,
                 pages,
             )?;
-            session.runtime.forecast_atmosphere = Some(
+            session.weather.runtime_mut().forecast_atmosphere = Some(
                 crate::InstalledForecastAtmosphere::new(manifest, store).map_err(|message| {
                     AppError {
                         kind: AppErrorKind::InvalidManifest,
@@ -7891,7 +7821,7 @@ fn install_live_feed_installed_state(
                     }
                 })?,
             );
-            session.runtime.forecast_atmosphere_state = None;
+            session.weather.runtime_mut().forecast_atmosphere_state = None;
         }
         (product, payload) => {
             return Err(AppError {
@@ -7903,13 +7833,16 @@ fn install_live_feed_installed_state(
             });
         }
     }
-    Arc::make_mut(&mut session.live_feeds).mark_durable_product_loaded(
-        installed.product.clone(),
-        installed.version.clone(),
-        installed.state_sha256.clone(),
-        installed.collected_at_utc.clone(),
-        installed_live_feed_state_manifest(installed),
-    );
+    session
+        .weather
+        .live_feeds_mut()
+        .mark_durable_product_loaded(
+            installed.product.clone(),
+            installed.version.clone(),
+            installed.state_sha256.clone(),
+            installed.collected_at_utc.clone(),
+            installed_live_feed_state_manifest(installed),
+        );
     sync_live_feed_overlay_status_records(session);
     Ok(())
 }
@@ -7921,7 +7854,10 @@ pub fn sync_live_feed_catalog_in_session(
     let slot = session_slot(handle)?;
     let mut session_guard = slot.lock_running()?;
     let session = &mut *session_guard;
-    Arc::make_mut(&mut session.live_feeds).merge_catalog_from(live_feeds);
+    session
+        .weather
+        .live_feeds_mut()
+        .merge_catalog_from(live_feeds);
     sync_live_feed_overlay_status_records(session);
     changed_session_snapshot_outcome(session)
 }
@@ -7953,18 +7889,18 @@ fn install_prepared_live_feed(
                     message: format!("unsupported prepared METAR schema {}", feed.schema_version),
                 });
             }
-            session.runtime.metar_payload = Some(feed.payload);
-            session.runtime.prepared_metar_tiles = Some(feed.tiles);
+            session.weather.runtime_mut().metar_payload = Some(feed.payload);
+            session.weather.runtime_mut().prepared_metar_tiles = Some(feed.tiles);
             rebuild_metar_tile_cache(session);
             clear_data_status_record(session, LIVE_FEED_METARS_STATUS_ID);
         }
         crate::PreparedLiveFeedPayload::Tafs(payload) => {
-            session.runtime.taf_payload = Some(payload);
+            session.weather.runtime_mut().taf_payload = Some(payload);
             let status_id = live_feed_unavailable_status_record("tafs", String::new()).id;
             clear_data_status_record(session, &status_id);
         }
         crate::PreparedLiveFeedPayload::Tfrs(payload) => {
-            session.runtime.tfr_payload = Some(payload);
+            session.weather.runtime_mut().tfr_payload = Some(payload);
             clear_data_status_record(session, LIVE_FEED_TFRS_STATUS_ID);
         }
         crate::PreparedLiveFeedPayload::Notams(message) => {
@@ -7976,11 +7912,12 @@ fn install_prepared_live_feed(
                             message: format!("failed to install airport NOTAM projection: {error}"),
                         },
                     )?;
-                    session.runtime.airport_notam_index = Some(index);
+                    session.weather.runtime_mut().airport_notam_index = Some(index);
                 }
                 crate::PreparedNotamPayload::ApplyAirportDelta(delta) => {
                     let index = session
-                        .runtime
+                        .weather
+                        .runtime_mut()
                         .airport_notam_index
                         .as_mut()
                         .ok_or_else(|| AppError {
@@ -7995,7 +7932,7 @@ fn install_prepared_live_feed(
                                 | notam_state::NotamStateError::BaseStateMismatch { .. }
                         );
                         if !preserve {
-                            session.runtime.airport_notam_index = None;
+                            session.weather.runtime_mut().airport_notam_index = None;
                         }
                         return Err(AppError {
                             kind: AppErrorKind::InvalidManifest,
@@ -8070,7 +8007,9 @@ pub fn report_session_resource_failure_in_session_at_epoch_ms(
     advance_session_wall_clock(session, epoch_ms);
     if LiveFeedsState::handles_resource(resource_id) {
         let wall_clock_epoch_ms = session.wall_clock_epoch_ms;
-        Arc::make_mut(&mut session.live_feeds)
+        session
+            .weather
+            .live_feeds_mut()
             .record_resource_failure(resource_id, wall_clock_epoch_ms);
         record_live_feed_resource_error(
             session,
@@ -8156,7 +8095,7 @@ fn ingest_live_obstacle_had_resource(
             message: format!("invalid obstacle HAD resource id: {resource_id}"),
         });
     };
-    let Some(had) = session.runtime.obstacle_had.as_mut() else {
+    let Some(had) = session.weather.runtime_mut().obstacle_had.as_mut() else {
         return Ok(());
     };
     if had.source.version != version {
@@ -8178,7 +8117,7 @@ fn ingest_live_obstacle_had_resource(
             });
         }
         had.store = Some(NavKvStore::new(root));
-        session.runtime.obstacle_tile_cache.clear();
+        session.weather.runtime_mut().obstacle_tile_cache.clear();
         clear_data_status_record(session, LIVE_FEED_OBSTACLES_STATUS_ID);
         return Ok(());
     }
@@ -8233,7 +8172,7 @@ fn ingest_live_forecast_atmosphere_resource(
             message: format!("unsupported live NavKv product: {product}"),
         });
     }
-    let Some(state) = session.runtime.forecast_atmosphere_state.as_ref() else {
+    let Some(state) = session.weather.runtime().forecast_atmosphere_state.clone() else {
         return Ok(());
     };
     if state.source.version != version {
@@ -8254,7 +8193,7 @@ fn ingest_live_forecast_atmosphere_resource(
                 ),
             });
         }
-        session.runtime.forecast_atmosphere = Some(
+        session.weather.runtime_mut().forecast_atmosphere = Some(
             crate::InstalledForecastAtmosphere::new(state.manifest.clone(), NavKvStore::new(root))
                 .map_err(|message| AppError {
                     kind: AppErrorKind::InvalidManifest,
@@ -8284,7 +8223,7 @@ fn ingest_live_forecast_atmosphere_resource(
             ),
         });
     }
-    let Some(atmosphere) = session.runtime.forecast_atmosphere.as_mut() else {
+    let Some(atmosphere) = session.weather.runtime_mut().forecast_atmosphere.as_mut() else {
         return Err(AppError {
             kind: AppErrorKind::InvalidManifest,
             message: format!("winds-aloft NavKv page arrived before root: {resource_id}"),
@@ -8301,63 +8240,93 @@ fn ingest_live_forecast_atmosphere_resource(
 }
 
 fn install_live_feed_payloads(session: &mut UiSession) -> AppResult<()> {
-    if session.live_feeds.current_loaded() {
-        if !session.live_feeds.has_product_current_version("metars") {
-            session.runtime.metar_tile_cache.clear();
-            session.runtime.metar_payload = None;
-            session.runtime.prepared_metar_tiles = None;
+    if session.weather.live_feeds().current_loaded() {
+        if !session
+            .weather
+            .live_feeds()
+            .has_product_current_version("metars")
+        {
+            session.weather.runtime_mut().metar_tile_cache.clear();
+            session.weather.runtime_mut().metar_payload = None;
+            session.weather.runtime_mut().prepared_metar_tiles = None;
             clear_data_status_record(session, LIVE_FEED_METARS_STATUS_ID);
         }
-        if !session.live_feeds.has_product_current_version("tafs") {
-            session.runtime.taf_payload = None;
+        if !session
+            .weather
+            .live_feeds()
+            .has_product_current_version("tafs")
+        {
+            session.weather.runtime_mut().taf_payload = None;
             let status_id = live_feed_unavailable_status_record("tafs", String::new()).id;
             clear_data_status_record(session, &status_id);
         }
-        if !session.live_feeds.has_product_current_version("notams") {
-            session.runtime.airport_notam_index = None;
+        if !session
+            .weather
+            .live_feeds()
+            .has_product_current_version("notams")
+        {
+            session.weather.runtime_mut().airport_notam_index = None;
             let status_id = live_feed_unavailable_status_record("notams", String::new()).id;
             clear_data_status_record(session, &status_id);
         }
-        if !session.live_feeds.has_product_current_version("tfrs") {
-            session.runtime.tfr_payload = None;
+        if !session
+            .weather
+            .live_feeds()
+            .has_product_current_version("tfrs")
+        {
+            session.weather.runtime_mut().tfr_payload = None;
             clear_data_status_record(session, LIVE_FEED_TFRS_STATUS_ID);
         }
-        if !session.live_feeds.has_product_current_version("obstacles") {
-            session.runtime.obstacle_had = None;
-            session.runtime.obstacle_tile_cache.clear();
+        if !session
+            .weather
+            .live_feeds()
+            .has_product_current_version("obstacles")
+        {
+            session.weather.runtime_mut().obstacle_had = None;
+            session.weather.runtime_mut().obstacle_tile_cache.clear();
             Arc::make_mut(&mut session.map_overlay_config).obstacle_layer = None;
             clear_data_status_record(session, LIVE_FEED_OBSTACLES_STATUS_ID);
         }
         if !session
-            .live_feeds
+            .weather
+            .live_feeds()
             .has_product_current_version("winds-aloft")
         {
-            session.runtime.forecast_atmosphere_state = None;
-            session.runtime.forecast_atmosphere = None;
+            session.weather.runtime_mut().forecast_atmosphere_state = None;
+            session.weather.runtime_mut().forecast_atmosphere = None;
             let status_id = live_feed_unavailable_status_record("winds-aloft", String::new()).id;
             clear_data_status_record(session, &status_id);
         }
     }
-    let loaded_metars_version = session.live_feeds.product_loaded_version("metars");
+    let loaded_metars_version = session
+        .weather
+        .live_feeds()
+        .product_loaded_version("metars");
     let metars_installed = session
-        .runtime
+        .weather
+        .runtime()
         .metar_payload
         .as_ref()
         .and_then(|payload| loaded_metars_version.map(|version| payload.version_label == version))
         .unwrap_or(false);
     if !metars_installed {
-        if let Some(metars_value) = session.live_feeds.product_state_manifest("metars").cloned() {
+        if let Some(metars_value) = session
+            .weather
+            .live_feeds()
+            .product_state_manifest("metars")
+            .cloned()
+        {
             match serde_json::from_value::<MetarProductPayload>(metars_value) {
                 Ok(payload) => {
-                    session.runtime.metar_payload = Some(payload);
-                    session.runtime.prepared_metar_tiles = None;
+                    session.weather.runtime_mut().metar_payload = Some(payload);
+                    session.weather.runtime_mut().prepared_metar_tiles = None;
                     rebuild_metar_tile_cache(session);
                     clear_data_status_record(session, LIVE_FEED_METARS_STATUS_ID);
                 }
                 Err(err) => {
-                    session.runtime.metar_tile_cache.clear();
-                    session.runtime.metar_payload = None;
-                    session.runtime.prepared_metar_tiles = None;
+                    session.weather.runtime_mut().metar_tile_cache.clear();
+                    session.weather.runtime_mut().metar_payload = None;
+                    session.weather.runtime_mut().prepared_metar_tiles = None;
                     upsert_data_status_record(
                         session,
                         live_feed_unavailable_status_record(
@@ -8369,23 +8338,29 @@ fn install_live_feed_payloads(session: &mut UiSession) -> AppResult<()> {
             }
         }
     }
-    let loaded_tafs_version = session.live_feeds.product_loaded_version("tafs");
+    let loaded_tafs_version = session.weather.live_feeds().product_loaded_version("tafs");
     let tafs_installed = session
-        .runtime
+        .weather
+        .runtime()
         .taf_payload
         .as_ref()
         .and_then(|payload| loaded_tafs_version.map(|version| payload.version_label == version))
         .unwrap_or(false);
     if !tafs_installed {
-        if let Some(tafs_value) = session.live_feeds.product_state_manifest("tafs").cloned() {
+        if let Some(tafs_value) = session
+            .weather
+            .live_feeds()
+            .product_state_manifest("tafs")
+            .cloned()
+        {
             match serde_json::from_value::<TafProductPayload>(tafs_value) {
                 Ok(payload) => {
-                    session.runtime.taf_payload = Some(payload);
+                    session.weather.runtime_mut().taf_payload = Some(payload);
                     let status_id = live_feed_unavailable_status_record("tafs", String::new()).id;
                     clear_data_status_record(session, &status_id);
                 }
                 Err(err) => {
-                    session.runtime.taf_payload = None;
+                    session.weather.runtime_mut().taf_payload = None;
                     upsert_data_status_record(
                         session,
                         live_feed_unavailable_status_record(
@@ -8397,22 +8372,28 @@ fn install_live_feed_payloads(session: &mut UiSession) -> AppResult<()> {
             }
         }
     }
-    let loaded_tfrs_version = session.live_feeds.product_loaded_version("tfrs");
+    let loaded_tfrs_version = session.weather.live_feeds().product_loaded_version("tfrs");
     let tfrs_installed = session
-        .runtime
+        .weather
+        .runtime()
         .tfr_payload
         .as_ref()
         .and_then(|payload| loaded_tfrs_version.map(|version| payload.version_label == version))
         .unwrap_or(false);
     if !tfrs_installed {
-        if let Some(tfrs_value) = session.live_feeds.product_state_manifest("tfrs").cloned() {
+        if let Some(tfrs_value) = session
+            .weather
+            .live_feeds()
+            .product_state_manifest("tfrs")
+            .cloned()
+        {
             match serde_json::from_value::<TfrProductPayload>(tfrs_value) {
                 Ok(payload) => {
-                    session.runtime.tfr_payload = Some(payload);
+                    session.weather.runtime_mut().tfr_payload = Some(payload);
                     clear_data_status_record(session, LIVE_FEED_TFRS_STATUS_ID);
                 }
                 Err(err) => {
-                    session.runtime.tfr_payload = None;
+                    session.weather.runtime_mut().tfr_payload = None;
                     upsert_data_status_record(
                         session,
                         live_feed_unavailable_status_record(
@@ -8425,24 +8406,30 @@ fn install_live_feed_payloads(session: &mut UiSession) -> AppResult<()> {
         }
     }
     let loaded_obstacles_version = session
-        .live_feeds
+        .weather
+        .live_feeds()
         .product_loaded_version("obstacles")
         .map(str::to_string);
-    if let Some(current_obstacles_version) = session.live_feeds.current_product_version("obstacles")
+    if let Some(current_obstacles_version) = session
+        .weather
+        .live_feeds()
+        .current_product_version("obstacles")
     {
         if session
-            .runtime
+            .weather
+            .runtime()
             .obstacle_had
             .as_ref()
             .is_some_and(|had| had.source.version != current_obstacles_version)
         {
-            session.runtime.obstacle_had = None;
-            session.runtime.obstacle_tile_cache.clear();
+            session.weather.runtime_mut().obstacle_had = None;
+            session.weather.runtime_mut().obstacle_tile_cache.clear();
             Arc::make_mut(&mut session.map_overlay_config).obstacle_layer = None;
         }
     }
     let obstacles_installed = session
-        .runtime
+        .weather
+        .runtime()
         .obstacle_had
         .as_ref()
         .and_then(|had| {
@@ -8453,13 +8440,14 @@ fn install_live_feed_payloads(session: &mut UiSession) -> AppResult<()> {
         .unwrap_or(false);
     if !obstacles_installed {
         if let Some(obstacles_value) = session
-            .live_feeds
+            .weather
+            .live_feeds()
             .product_state_manifest("obstacles")
             .cloned()
         {
             if let Err(err) = install_live_obstacle_had(session, obstacles_value) {
-                session.runtime.obstacle_had = None;
-                session.runtime.obstacle_tile_cache.clear();
+                session.weather.runtime_mut().obstacle_had = None;
+                session.weather.runtime_mut().obstacle_tile_cache.clear();
                 Arc::make_mut(&mut session.map_overlay_config).obstacle_layer = None;
                 upsert_data_status_record(
                     session,
@@ -8472,29 +8460,35 @@ fn install_live_feed_payloads(session: &mut UiSession) -> AppResult<()> {
         }
     }
     let loaded_forecast_version = session
-        .live_feeds
+        .weather
+        .live_feeds()
         .product_loaded_version("winds-aloft")
         .map(str::to_string);
-    if let Some(current_forecast_version) =
-        session.live_feeds.current_product_version("winds-aloft")
+    if let Some(current_forecast_version) = session
+        .weather
+        .live_feeds()
+        .current_product_version("winds-aloft")
     {
         let pending_is_stale = session
-            .runtime
+            .weather
+            .runtime()
             .forecast_atmosphere_state
             .as_ref()
             .is_some_and(|state| state.source.version != current_forecast_version);
         let installed_is_stale = session
-            .runtime
+            .weather
+            .runtime()
             .forecast_atmosphere
             .as_ref()
             .is_some_and(|atmosphere| atmosphere.version_label() != current_forecast_version);
         if pending_is_stale || installed_is_stale {
-            session.runtime.forecast_atmosphere_state = None;
-            session.runtime.forecast_atmosphere = None;
+            session.weather.runtime_mut().forecast_atmosphere_state = None;
+            session.weather.runtime_mut().forecast_atmosphere = None;
         }
     }
     let forecast_installed = session
-        .runtime
+        .weather
+        .runtime()
         .forecast_atmosphere
         .as_ref()
         .and_then(|atmosphere| {
@@ -8504,7 +8498,8 @@ fn install_live_feed_payloads(session: &mut UiSession) -> AppResult<()> {
         })
         .unwrap_or(false);
     let forecast_pending = session
-        .runtime
+        .weather
+        .runtime()
         .forecast_atmosphere_state
         .as_ref()
         .and_then(|state| {
@@ -8515,7 +8510,8 @@ fn install_live_feed_payloads(session: &mut UiSession) -> AppResult<()> {
         .unwrap_or(false);
     if !forecast_installed && !forecast_pending {
         if let Some(forecast_value) = session
-            .live_feeds
+            .weather
+            .live_feeds()
             .product_state_manifest("winds-aloft")
             .cloned()
         {
@@ -8543,7 +8539,8 @@ fn install_live_forecast_atmosphere_state(
             message: format!("invalid winds-aloft live feed manifest: {message}"),
         })?;
     let version = session
-        .live_feeds
+        .weather
+        .live_feeds()
         .product_loaded_version("winds-aloft")
         .ok_or_else(|| AppError {
             kind: AppErrorKind::InvalidManifest,
@@ -8551,7 +8548,8 @@ fn install_live_forecast_atmosphere_state(
         })?
         .to_string();
     let state_url = session
-        .live_feeds
+        .weather
+        .live_feeds()
         .product_state_url("winds-aloft")
         .ok_or_else(|| AppError {
             kind: AppErrorKind::InvalidManifest,
@@ -8576,9 +8574,9 @@ fn install_live_forecast_atmosphere_state(
         page_count: manifest.page_count,
         state_sha256: manifest.state_sha256.clone(),
     };
-    session.runtime.forecast_atmosphere_state =
+    session.weather.runtime_mut().forecast_atmosphere_state =
         Some(LiveForecastAtmosphereState { source, manifest });
-    session.runtime.forecast_atmosphere = None;
+    session.weather.runtime_mut().forecast_atmosphere = None;
     Ok(())
 }
 
@@ -8592,14 +8590,16 @@ fn install_live_obstacle_had(
             message: format!("failed to parse obstacle live feed HAD manifest: {err}"),
         })?;
     let Some(version) = session
-        .live_feeds
+        .weather
+        .live_feeds()
         .product_loaded_version("obstacles")
         .map(str::to_string)
     else {
         return Ok(());
     };
     let Some(state_url) = session
-        .live_feeds
+        .weather
+        .live_feeds()
         .product_state_url("obstacles")
         .map(str::to_string)
     else {
@@ -8692,7 +8692,8 @@ fn install_live_obstacle_had_with_parsed_manifest(
         state_sha256: manifest.state_sha256,
     };
     let same_state = session
-        .runtime
+        .weather
+        .runtime()
         .obstacle_had
         .as_ref()
         .is_some_and(|existing| {
@@ -8707,7 +8708,8 @@ fn install_live_obstacle_had_with_parsed_manifest(
     let preserve_store = store.or_else(|| {
         if same_state {
             session
-                .runtime
+                .weather
+                .runtime()
                 .obstacle_had
                 .as_ref()
                 .and_then(|existing| existing.store.clone())
@@ -8716,12 +8718,12 @@ fn install_live_obstacle_had_with_parsed_manifest(
         }
     });
     Arc::make_mut(&mut session.map_overlay_config).obstacle_layer = Some(obstacle_layer);
-    session.runtime.obstacle_had = Some(LiveObstacleHadState {
+    session.weather.runtime_mut().obstacle_had = Some(LiveObstacleHadState {
         source,
         store: preserve_store,
     });
     if !same_state {
-        session.runtime.obstacle_tile_cache.clear();
+        session.weather.runtime_mut().obstacle_tile_cache.clear();
     }
     clear_data_status_record(session, LIVE_FEED_OBSTACLES_STATUS_ID);
     Ok(())
@@ -8859,10 +8861,11 @@ fn metar_tile_cache_for_prepared_live_feed(
 }
 
 fn rebuild_metar_tile_cache(session: &mut UiSession) {
-    if let Some(tiles) = session.runtime.prepared_metar_tiles.as_ref() {
+    if let Some(tiles) = session.weather.runtime().prepared_metar_tiles.as_ref() {
         let empty = HashSet::new();
         let important_station_ids = session
-            .runtime
+            .weather
+            .runtime()
             .important_metar_station_ids
             .as_ref()
             .unwrap_or(&empty);
@@ -8871,34 +8874,43 @@ fn rebuild_metar_tile_cache(session: &mut UiSession) {
             session.map_overlay_config.metar_layer.as_ref(),
             important_station_ids,
         ) {
-            session.runtime.metar_tile_cache = cache;
+            session.weather.runtime_mut().metar_tile_cache = cache;
             return;
         }
     }
-    if let Some(payload) = session.runtime.metar_payload.as_ref() {
+    if let Some(payload) = session.weather.runtime().metar_payload.as_ref() {
         let empty = HashSet::new();
         let important_station_ids = session
-            .runtime
+            .weather
+            .runtime()
             .important_metar_station_ids
             .as_ref()
             .unwrap_or(&empty);
-        session.runtime.metar_tile_cache = metar_tile_cache_for_live_feed(
+        session.weather.runtime_mut().metar_tile_cache = metar_tile_cache_for_live_feed(
             payload,
             session.map_overlay_config.metar_layer.as_ref(),
             important_station_ids,
         );
     } else {
-        session.runtime.metar_tile_cache.clear();
+        session.weather.runtime_mut().metar_tile_cache.clear();
     }
 }
 
 fn ensure_metar_station_importance_loaded(session: &mut UiSession) -> Result<(), HadReadError> {
-    if session.runtime.important_metar_station_ids.is_some() {
+    if session
+        .weather
+        .runtime()
+        .important_metar_station_ids
+        .is_some()
+    {
         return Ok(());
     }
     let Some(store) = session.nav_kv_store.as_ref() else {
-        session.runtime.important_metar_station_ids = Some(HashSet::new());
-        session.runtime.metar_station_importance_status = Some(metar_station_importance_status_record(
+        session.weather.runtime_mut().important_metar_station_ids = Some(HashSet::new());
+        session
+            .weather
+            .runtime_mut()
+            .metar_station_importance_status = Some(metar_station_importance_status_record(
             "Station importance unavailable",
             UiStatusSeverity::Caution,
             "METAR low-zoom station filtering could not load because no nav-db store is attached.",
@@ -8911,8 +8923,8 @@ fn ensure_metar_station_importance_loaded(session: &mut UiSession) -> Result<(),
         NavKvQuery::MetarImportantStations,
     )?
     else {
-        session.runtime.important_metar_station_ids = Some(HashSet::new());
-        session.runtime.metar_station_importance_status = Some(metar_station_importance_status_record(
+        session.weather.runtime_mut().important_metar_station_ids = Some(HashSet::new());
+        session.weather.runtime_mut().metar_station_importance_status = Some(metar_station_importance_status_record(
             "Station importance missing",
             UiStatusSeverity::Caution,
             "METAR low-zoom station filtering could not find weather/metar-important-stations in nav-db. Low-zoom METARs are hidden until the current nav-db provides that record.",
@@ -8932,8 +8944,11 @@ fn ensure_metar_station_importance_loaded(session: &mut UiSession) -> Result<(),
         .map(|station_id| station_id.trim().to_ascii_uppercase())
         .filter(|station_id| !station_id.is_empty())
         .collect::<HashSet<_>>();
-    session.runtime.important_metar_station_ids = Some(station_ids);
-    session.runtime.metar_station_importance_status = None;
+    session.weather.runtime_mut().important_metar_station_ids = Some(station_ids);
+    session
+        .weather
+        .runtime_mut()
+        .metar_station_importance_status = None;
     rebuild_metar_tile_cache(session);
     Ok(())
 }
@@ -8941,12 +8956,19 @@ fn ensure_metar_station_importance_loaded(session: &mut UiSession) -> Result<(),
 fn ensure_weather_station_airport_aliases_loaded(
     session: &mut UiSession,
 ) -> Result<(), HadReadError> {
-    if session.runtime.weather_station_airport_aliases.is_some() {
+    if session
+        .weather
+        .runtime()
+        .weather_station_airport_aliases
+        .is_some()
+    {
         return Ok(());
     }
     let Some(store) = session.nav_kv_store.as_ref() else {
-        session.runtime.weather_station_airport_aliases =
-            Some(WeatherStationAirportAliases::default());
+        session
+            .weather
+            .runtime_mut()
+            .weather_station_airport_aliases = Some(WeatherStationAirportAliases::default());
         return Ok(());
     };
     let Some(payload) = read_attached_json_optional::<WeatherStationAirportAliasesPayload>(
@@ -8954,8 +8976,10 @@ fn ensure_weather_station_airport_aliases_loaded(
         NavKvQuery::WeatherStationAirportAliases,
     )?
     else {
-        session.runtime.weather_station_airport_aliases =
-            Some(WeatherStationAirportAliases::default());
+        session
+            .weather
+            .runtime_mut()
+            .weather_station_airport_aliases = Some(WeatherStationAirportAliases::default());
         return Ok(());
     };
     if payload.schema_version != 1 {
@@ -8964,7 +8988,10 @@ fn ensure_weather_station_airport_aliases_loaded(
             payload.schema_version
         )));
     }
-    session.runtime.weather_station_airport_aliases =
+    session
+        .weather
+        .runtime_mut()
+        .weather_station_airport_aliases =
         Some(WeatherStationAirportAliases::from_station_to_airport(
             payload
                 .aliases
@@ -8975,7 +9002,8 @@ fn ensure_weather_station_airport_aliases_loaded(
 }
 
 fn metar_importance_required_for_surface(session: &UiSession, metrics: &MapSurfaceMetrics) -> bool {
-    if !session.map_layer_state.metars.visible || session.runtime.metar_payload.is_none() {
+    if !session.map_layer_state.metars.visible || session.weather.runtime().metar_payload.is_none()
+    {
         return false;
     }
     let Some(layer) = session.map_overlay_config.metar_layer.as_ref() else {
@@ -9001,11 +9029,24 @@ fn metar_station_importance_status_record(
 }
 
 fn try_ensure_metar_station_importance_loaded(session: &mut UiSession) -> Option<DataStatusRecord> {
-    if session.runtime.important_metar_station_ids.is_some() {
-        return session.runtime.metar_station_importance_status.clone();
+    if session
+        .weather
+        .runtime()
+        .important_metar_station_ids
+        .is_some()
+    {
+        return session
+            .weather
+            .runtime()
+            .metar_station_importance_status
+            .clone();
     }
     match ensure_metar_station_importance_loaded(session) {
-        Ok(()) => session.runtime.metar_station_importance_status.clone(),
+        Ok(()) => session
+            .weather
+            .runtime()
+            .metar_station_importance_status
+            .clone(),
         Err(HadReadError::NeedPages(pages)) => {
             for resource in nav_kv_page_resources(pages) {
                 enqueue_session_resource_effect(session, resource, [UiInvalidation::MapOverlay]);
@@ -9018,15 +9059,21 @@ fn try_ensure_metar_station_importance_loaded(session: &mut UiSession) -> Option
             ))
         }
         Err(HadReadError::Fatal(message)) => {
-            session.runtime.important_metar_station_ids = Some(HashSet::new());
-            session.runtime.metar_station_importance_status =
-                Some(metar_station_importance_status_record(
-                    "Station importance failed",
-                    UiStatusSeverity::Caution,
-                    format!("METAR low-zoom station filtering failed: {message}"),
-                ));
+            session.weather.runtime_mut().important_metar_station_ids = Some(HashSet::new());
+            session
+                .weather
+                .runtime_mut()
+                .metar_station_importance_status = Some(metar_station_importance_status_record(
+                "Station importance failed",
+                UiStatusSeverity::Caution,
+                format!("METAR low-zoom station filtering failed: {message}"),
+            ));
             rebuild_metar_tile_cache(session);
-            session.runtime.metar_station_importance_status.clone()
+            session
+                .weather
+                .runtime()
+                .metar_station_importance_status
+                .clone()
         }
     }
 }
@@ -9477,9 +9524,10 @@ fn ensure_live_obstacle_inputs_loaded(
     session: &mut UiSession,
     metrics: &MapSurfaceMetrics,
 ) -> Vec<DataStatusRecord> {
-    if session.runtime.obstacle_had.is_none() {
+    if session.weather.runtime().obstacle_had.is_none() {
         if let HadOperationOutcome::NeedResources { resources } = session
-            .live_feeds
+            .weather
+            .live_feeds()
             .sync_product_outcome_at_epoch_ms("obstacles", session.wall_clock_epoch_ms)
         {
             for resource in resources {
@@ -9491,7 +9539,7 @@ fn ensure_live_obstacle_inputs_loaded(
     let Some(layer) = session.map_overlay_config.obstacle_layer.clone() else {
         return Vec::new();
     };
-    let Some(had) = session.runtime.obstacle_had.clone() else {
+    let Some(had) = session.weather.runtime().obstacle_had.clone() else {
         return Vec::new();
     };
     if had.store.is_none() {
@@ -9552,7 +9600,12 @@ fn ensure_live_obstacle_inputs_loaded(
     let mut loaded_any = false;
     for tile in tiles {
         let cache_key = crate::tile_key("obstacle", tile.z, tile.x, tile.y);
-        if session.runtime.obstacle_tile_cache.contains_key(&cache_key) {
+        if session
+            .weather
+            .runtime()
+            .obstacle_tile_cache
+            .contains_key(&cache_key)
+        {
             continue;
         }
         let Some(key) = nav_kv_key_for_query(&NavKvQuery::ObstacleTile {
@@ -9567,7 +9620,8 @@ fn ensure_live_obstacle_inputs_loaded(
             {
                 Ok(payload) => {
                     session
-                        .runtime
+                        .weather
+                        .runtime_mut()
                         .obstacle_tile_cache
                         .insert(cache_key, payload);
                     loaded_any = true;
@@ -9604,16 +9658,23 @@ fn ensure_live_obstacle_inputs_loaded(
 }
 
 fn forecast_atmosphere_bootstrap_resources(session: &mut UiSession) -> Vec<CoreResourceRequest> {
-    if session.runtime.forecast_atmosphere_state.is_none() {
-        if !session.live_feeds.current_loaded()
+    if session
+        .weather
+        .runtime()
+        .forecast_atmosphere_state
+        .is_none()
+    {
+        if !session.weather.live_feeds().current_loaded()
             || !session
-                .live_feeds
+                .weather
+                .live_feeds()
                 .has_product_current_version("winds-aloft")
         {
             return Vec::new();
         }
         if let HadOperationOutcome::NeedResources { resources } = session
-            .live_feeds
+            .weather
+            .live_feeds()
             .sync_product_outcome_at_epoch_ms("winds-aloft", session.wall_clock_epoch_ms)
         {
             return resources;
@@ -9622,14 +9683,15 @@ fn forecast_atmosphere_bootstrap_resources(session: &mut UiSession) -> Vec<CoreR
     }
 
     let Some(source) = session
-        .runtime
+        .weather
+        .runtime()
         .forecast_atmosphere_state
         .as_ref()
         .map(|state| state.source.clone())
     else {
         return Vec::new();
     };
-    if session.runtime.forecast_atmosphere.is_none() {
+    if session.weather.runtime().forecast_atmosphere.is_none() {
         return vec![live_nav_kv_root_resource(&source)];
     }
     Vec::new()
@@ -9653,10 +9715,10 @@ fn forecast_atmosphere_snapshot_resources(session: &mut UiSession) -> Vec<CoreRe
         .map(crate::flight_plan_materialization::geometry_points)
         .filter(|path| path.len() >= 2)
         .collect::<Vec<_>>();
-    let Some(state) = session.runtime.forecast_atmosphere_state.as_ref() else {
+    let Some(state) = session.weather.runtime().forecast_atmosphere_state.as_ref() else {
         return Vec::new();
     };
-    let Some(atmosphere) = session.runtime.forecast_atmosphere.as_ref() else {
+    let Some(atmosphere) = session.weather.runtime().forecast_atmosphere.as_ref() else {
         return Vec::new();
     };
     let missing_pages = match atmosphere.missing_pages_for_paths(&paths) {
@@ -9829,11 +9891,11 @@ pub fn get_map_overlay_in_session_with_point_display_scale_at_epoch_ms(
         &offline_region_records,
         ownship_overlay_context(session).as_ref(),
         &session.runtime.vector_tile_cache,
-        &session.runtime.obstacle_tile_cache,
-        &session.runtime.metar_tile_cache,
-        session.runtime.metar_payload.as_ref(),
+        &session.weather.runtime().obstacle_tile_cache,
+        &session.weather.runtime().metar_tile_cache,
+        session.weather.runtime().metar_payload.as_ref(),
         &session.runtime.airspace_feature_cache,
-        session.runtime.tfr_payload.as_ref(),
+        session.weather.runtime().tfr_payload.as_ref(),
         &flight_plan_features,
         Some(session_wall_clock_utc(session)),
     );
@@ -10188,7 +10250,8 @@ fn materialize_map_selection_in_session(
         return had_read_error_to_map_selection_materialization(err);
     }
     let weather_station_airport_aliases = session
-        .runtime
+        .weather
+        .runtime()
         .weather_station_airport_aliases
         .as_ref()
         .ok_or_else(|| AppError {
@@ -10250,14 +10313,14 @@ fn materialize_map_selection_in_session(
         plan,
         click,
         &session.runtime.vector_tile_cache,
-        &session.runtime.metar_tile_cache,
-        session.runtime.metar_payload.as_ref(),
-        session.runtime.taf_payload.as_ref(),
-        session.runtime.airport_notam_index.as_ref(),
+        &session.weather.runtime().metar_tile_cache,
+        session.weather.runtime().metar_payload.as_ref(),
+        session.weather.runtime().taf_payload.as_ref(),
+        session.weather.runtime().airport_notam_index.as_ref(),
         weather_station_airport_aliases,
         &offline_region_records,
         &session.runtime.airspace_feature_cache,
-        session.runtime.tfr_payload.as_ref(),
+        session.weather.runtime().tfr_payload.as_ref(),
         &supplemental_nav_ref_points,
         &mut availability,
         Some(session_wall_clock_utc(session)),
@@ -10715,10 +10778,11 @@ pub fn get_nexrad_overlay_in_session_at_epoch_ms(
     let slot = session_slot(handle)?;
     let mut session_guard = slot.lock_running()?;
     let session = &mut *session_guard;
-    let previous_nexrad_banner_value = nexrad_frame_age_banner_value(session);
+    let previous_nexrad_banner_value = project_weather_for_session(session).nexrad_age_banner_value;
     advance_session_wall_clock(session, epoch_ms);
     let mut freshness_invalidations = Vec::new();
-    if previous_nexrad_banner_value != nexrad_frame_age_banner_value(session) {
+    if previous_nexrad_banner_value != project_weather_for_session(session).nexrad_age_banner_value
+    {
         freshness_invalidations.push(UiInvalidation::SessionSnapshot);
     }
     if !session.map_layer_state.nexrad.visible {
@@ -10741,13 +10805,15 @@ pub fn get_nexrad_overlay_in_session_at_epoch_ms(
     {
         Some(LiveFeedAcquisitionPolicy::JitPublicResources) => {
             if let HadOperationOutcome::NeedResources { resources } = session
-                .live_feeds
+                .weather
+                .live_feeds()
                 .sync_product_outcome_at_epoch_ms("nexrad", session.wall_clock_epoch_ms)
             {
                 return Ok(HadOperationOutcome::NeedResources { resources });
             }
             let history_resources = session
-                .live_feeds
+                .weather
+                .live_feeds()
                 .missing_history_resources_for_product_at_epoch_ms(
                     "nexrad",
                     session.wall_clock_epoch_ms,
@@ -10772,7 +10838,7 @@ pub fn get_nexrad_overlay_in_session_at_epoch_ms(
             });
         }
     }
-    let frames = nexrad_frame_candidates(session);
+    let frames = nexrad_frame_candidates(&session.weather);
     if frames.is_empty() {
         return complete_nexrad_overlay_outcome_with_invalidations(
             session,
@@ -10820,158 +10886,13 @@ pub fn get_nexrad_overlay_in_session_at_epoch_ms(
     complete_nexrad_overlay_outcome_with_invalidations(session, query, freshness_invalidations)
 }
 
-#[derive(Clone)]
-struct NexradFrameCandidate {
-    version: String,
-    manifest: serde_json::Value,
-    observed_at_utc: Option<DateTime<Utc>>,
-}
-
-fn nexrad_frame_candidates(session: &UiSession) -> Vec<NexradFrameCandidate> {
-    let mut frames = Vec::new();
-    let mut identities = HashSet::new();
-    for installed in session.runtime.nexrad_installed.values() {
-        let identity = nexrad_manifest_identity(&installed.version, &installed.manifest);
-        if !identities.insert(identity) {
-            continue;
-        }
-        frames.push(NexradFrameCandidate {
-            version: installed.version.clone(),
-            observed_at_utc: json_observed_at_utc(&installed.manifest),
-            manifest: installed.manifest.clone(),
-        });
-    }
-    for loaded in session.live_feeds.product_loaded_state_manifests("nexrad") {
-        let identity = nexrad_manifest_identity(loaded.version, loaded.manifest);
-        if identities.insert(identity) {
-            frames.push(NexradFrameCandidate {
-                version: loaded.version.to_string(),
-                observed_at_utc: json_observed_at_utc(loaded.manifest),
-                manifest: loaded.manifest.clone(),
-            });
-        }
-    }
-    frames.sort_by(|left, right| {
-        left.observed_at_utc
-            .cmp(&right.observed_at_utc)
-            .then_with(|| left.version.cmp(&right.version))
-    });
-    if frames.len() > NEXRAD_FRAME_WINDOW_SIZE {
-        frames.drain(0..frames.len() - NEXRAD_FRAME_WINDOW_SIZE);
-    }
-    frames
-}
-
-fn nexrad_manifest_identity(version: &str, manifest: &serde_json::Value) -> String {
-    manifest
-        .get("state_id")
-        .and_then(serde_json::Value::as_str)
-        .unwrap_or(version)
-        .to_string()
-}
-
-fn nexrad_animation_for_frames(
-    frames: &[NexradFrameCandidate],
-    epoch_ms: i64,
-) -> NexradOverlayAnimation {
-    if frames.is_empty() {
-        return NexradOverlayAnimation::idle();
-    }
-    let age_labels = nexrad_frame_age_labels(frames, epoch_ms);
-    let age_summary = if age_labels.is_empty() {
-        "---".to_string()
-    } else {
-        age_labels.join(", ")
-    };
-    if frames.len() == 1 {
-        return NexradOverlayAnimation {
-            phase: NexradOverlayAnimationPhase::Frame,
-            selected_frame_index: Some(0),
-            frame_count: 1,
-            age_labels,
-            age_summary,
-            next_update_delay_ms: None,
-            next_update_epoch_ms: None,
-        };
-    }
-    let cycle_ms = nexrad_animation_cycle_ms(frames.len());
-    let offset_ms = epoch_ms.rem_euclid(cycle_ms);
-    let mut phase_start_ms = 0;
-    for index in 0..frames.len() {
-        let dwell_ms = nexrad_animation_frame_dwell_ms(index, frames.len());
-        let phase_end_ms = phase_start_ms + dwell_ms;
-        if offset_ms < phase_end_ms {
-            return NexradOverlayAnimation {
-                phase: NexradOverlayAnimationPhase::Frame,
-                selected_frame_index: Some(index),
-                frame_count: frames.len(),
-                age_labels,
-                age_summary,
-                next_update_delay_ms: Some((phase_end_ms - offset_ms) as u32),
-                next_update_epoch_ms: Some(epoch_ms + (phase_end_ms - offset_ms)),
-            };
-        }
-        phase_start_ms = phase_end_ms;
-    }
-    NexradOverlayAnimation {
-        phase: NexradOverlayAnimationPhase::Blank,
-        selected_frame_index: None,
-        frame_count: frames.len(),
-        age_labels,
-        age_summary,
-        next_update_delay_ms: Some((cycle_ms - offset_ms) as u32),
-        next_update_epoch_ms: Some(epoch_ms + (cycle_ms - offset_ms)),
-    }
-}
-
-fn nexrad_animation_cycle_ms(frame_count: usize) -> i64 {
-    if frame_count <= 1 {
-        return 0;
-    }
-    (frame_count.saturating_sub(1) as i64 * NEXRAD_ANIMATION_PRECEDING_FRAME_DWELL_MS)
-        + NEXRAD_ANIMATION_CURRENT_FRAME_DWELL_MS
-        + NEXRAD_ANIMATION_BLANK_DWELL_MS
-}
-
-fn nexrad_animation_frame_dwell_ms(index: usize, frame_count: usize) -> i64 {
-    if index + 1 == frame_count {
-        NEXRAD_ANIMATION_CURRENT_FRAME_DWELL_MS
-    } else {
-        NEXRAD_ANIMATION_PRECEDING_FRAME_DWELL_MS
-    }
-}
-
-fn nexrad_frame_age_labels(frames: &[NexradFrameCandidate], epoch_ms: i64) -> Vec<String> {
-    nexrad_frame_age_values(frames, epoch_ms)
-        .into_iter()
-        .map(|value| {
-            if value == "unknown" {
-                value
-            } else {
-                format!("{value} ago")
-            }
-        })
-        .collect()
-}
-
-fn nexrad_frame_age_values(frames: &[NexradFrameCandidate], epoch_ms: i64) -> Vec<String> {
-    frames
-        .iter()
-        .map(|frame| match frame.observed_at_utc {
-            Some(observed_at_utc) => {
-                format_age(epoch_ms.saturating_sub(observed_at_utc.timestamp_millis()))
-            }
-            None => "unknown".to_string(),
-        })
-        .collect()
-}
-
 pub fn nexrad_tile_bytes_in_session(handle: u32, src: &str) -> AppResult<Vec<u8>> {
     let slot = session_slot(handle)?;
     let session_guard = slot.lock_running()?;
     let session = &*session_guard;
     session
-        .runtime
+        .weather
+        .runtime()
         .nexrad_tile_cache
         .get(src)
         .cloned()
@@ -11013,7 +10934,11 @@ pub fn prepare_nexrad_tile_in_session(handle: u32, src: &str) -> AppResult<HadOp
 }
 
 fn nexrad_tile_bytes_loaded(session: &UiSession, src: &str) -> AppResult<bool> {
-    Ok(session.runtime.nexrad_tile_cache.contains_key(src))
+    Ok(session
+        .weather
+        .runtime()
+        .nexrad_tile_cache
+        .contains_key(src))
 }
 
 fn nexrad_tile_resource_request(session: &UiSession, src: &str) -> AppResult<CoreResourceRequest> {
@@ -11033,7 +10958,8 @@ fn nexrad_tile_resource_request(session: &UiSession, src: &str) -> AppResult<Cor
                 message: format!("NEXRAD tile URL {src} does not identify a package member"),
             })?;
             let installed = session
-                .runtime
+                .weather
+                .runtime()
                 .nexrad_installed
                 .get(&version)
                 .ok_or_else(|| AppError {
@@ -11954,19 +11880,18 @@ fn try_snapshot_for_session(
         .snapshot_projection_count
         .fetch_add(1, Ordering::Relaxed);
     sync_cloud_status_record(session);
-    if session.runtime.metar_payload.is_some() || session.runtime.taf_payload.is_some() {
+    if session.weather.runtime().metar_payload.is_some()
+        || session.weather.runtime().taf_payload.is_some()
+    {
         ensure_weather_station_airport_aliases_loaded(session)?;
     }
     enqueue_ownship_agl_terrain_effect(session);
     let app_ui_started_at = crate::core_clock_ms();
-    let mut app_ui_state = project_session_app_ui_state(session)?;
+    let weather_projection = project_weather_for_session(session);
+    let mut app_ui_state = project_session_app_ui_state(session, &weather_projection)?;
     session
         .diagnostics
         .app_ui_projection_count
-        .fetch_add(1, Ordering::Relaxed);
-    session
-        .diagnostics
-        .weather_projection_count
         .fetch_add(1, Ordering::Relaxed);
     let app_ui_ms = elapsed_ms(app_ui_started_at);
     let debug_started_at = crate::core_clock_ms();
@@ -12463,7 +12388,10 @@ fn empty_map_overlay_query() -> MapOverlayQueryResult {
     }
 }
 
-fn project_session_app_ui_state(session: &UiSession) -> Result<AppUiState, HadReadError> {
+fn project_session_app_ui_state(
+    session: &UiSession,
+    weather_projection: &WeatherProjection,
+) -> Result<AppUiState, HadReadError> {
     let mut app_ui_state = state::project_app_ui_state(&session.app_state);
     let mut materialized_plan = None;
     project_bad_autopilot_availability(session, &mut app_ui_state);
@@ -12530,15 +12458,20 @@ fn project_session_app_ui_state(session: &UiSession) -> Result<AppUiState, HadRe
         enrich_flight_plan_weather_actions(session, active_plan);
         crate::planning::normalize_flight_plan_action_availability(active_plan);
     }
-    app_ui_state.flight_data_banner =
-        project_flight_data_banner(session, &app_ui_state, materialized_plan.as_ref())?;
+    app_ui_state.flight_data_banner = project_flight_data_banner(
+        session,
+        &app_ui_state,
+        materialized_plan.as_ref(),
+        &weather_projection.nexrad_age_banner_value,
+    )?;
     Ok(app_ui_state)
 }
 
 fn enrich_flight_plan_weather_actions(session: &UiSession, active_plan: &mut FlightPlanUiState) {
     let empty_aliases = WeatherStationAirportAliases::default();
     let aliases = session
-        .runtime
+        .weather
+        .runtime()
         .weather_station_airport_aliases
         .as_ref()
         .unwrap_or(&empty_aliases);
@@ -12555,9 +12488,9 @@ fn enrich_flight_plan_weather_actions(session: &UiSession, active_plan: &mut Fli
             crate::map_overlay::weather_detail_for_airport(
                 airport_id,
                 aliases,
-                session.runtime.metar_payload.as_ref(),
-                session.runtime.taf_payload.as_ref(),
-                session.runtime.airport_notam_index.as_ref(),
+                session.weather.runtime().metar_payload.as_ref(),
+                session.weather.runtime().taf_payload.as_ref(),
+                session.weather.runtime().airport_notam_index.as_ref(),
                 Some(session_wall_clock_utc(session)),
             )
         });
@@ -12580,6 +12513,7 @@ fn project_flight_data_banner(
     session: &UiSession,
     app_ui_state: &AppUiState,
     materialized_plan: Option<&crate::flight_plan_materialization::MaterializedFlightPlan>,
+    nexrad_age_banner_value: &str,
 ) -> Result<crate::FlightDataBannerModel, HadReadError> {
     let ownship = &app_ui_state.ownship.render;
     let position = ownship.position;
@@ -12630,7 +12564,7 @@ fn project_flight_data_banner(
         desired_track_magnetic_deg,
         waypoint_distance_nm,
         final_distance_nm,
-        nexrad_age: Some(nexrad_frame_age_banner_value(session)),
+        nexrad_age: Some(nexrad_age_banner_value.to_string()),
     });
     Ok(banner)
 }
@@ -14107,13 +14041,17 @@ fn replace_flight_plan_in_session(handle: u32, plan: FlightPlan) -> AppResult<Ha
 mod tests {
     use super::*;
     use crate::{
-        map_overlay::NotamProductPayload, AirportId, CloudProviderPrincipal, FlightPlan,
-        GuidanceState, LegDisplayElement, LegDisplayPath, LegDisplayPathStyle, MapSelectionAction,
-        MapSelectionCategory, MapSelectionHighlight, MapSelectionItem, NavRef, OwnshipSourceId,
-        OwnshipSourceKind, PathTermination, PointVectorRecord, ProcedureLegProvenance,
-        ProcedureSegmentRole, ResolvedLeg, ResolvedLegSource, RouteComponent, SequencingMode,
-        Situation, SituationPosition, SituationSample, UiCloudPanelControl,
-        REQUIRED_NAV_DB_CONTRACT_ID,
+        map_overlay::NotamProductPayload,
+        weather_controller::{
+            nexrad_animation_cycle_ms, NEXRAD_ANIMATION_BLANK_DWELL_MS,
+            NEXRAD_ANIMATION_CURRENT_FRAME_DWELL_MS, NEXRAD_ANIMATION_PRECEDING_FRAME_DWELL_MS,
+        },
+        AirportId, CloudProviderPrincipal, FlightPlan, GuidanceState, LegDisplayElement,
+        LegDisplayPath, LegDisplayPathStyle, MapSelectionAction, MapSelectionCategory,
+        MapSelectionHighlight, MapSelectionItem, NavRef, OwnshipSourceId, OwnshipSourceKind,
+        PathTermination, PointVectorRecord, ProcedureLegProvenance, ProcedureSegmentRole,
+        ResolvedLeg, ResolvedLegSource, RouteComponent, SequencingMode, Situation,
+        SituationPosition, SituationSample, UiCloudPanelControl, REQUIRED_NAV_DB_CONTRACT_ID,
     };
     use std::io::Read;
 
@@ -14242,13 +14180,11 @@ mod tests {
                     CoreResourcePolicy::InstalledPackage,
                 )),
                 cycle_product_freshness: CycleProductFreshnessState::default(),
-                live_feeds: Arc::new(LiveFeedsState::default()),
-                live_feed_connection: LiveFeedConnectionSessionState::default(),
                 raster_map_catalog: None,
                 wall_clock_epoch_ms: 0,
-                live_feed_current_refresh: LiveFeedCurrentRefreshState::Idle,
                 altitude_planner_wind_selection: AltitudePlannerWindSelection::NoWind,
             },
+            weather: WeatherController::default(),
             runtime: SessionRuntime::default(),
             diagnostics: Arc::new(SessionDiagnosticsCounters::default()),
         }
@@ -14263,7 +14199,11 @@ mod tests {
         session.map_layer_state.traffic.visible = true;
         session.map_layer_state.offline_regions.visible = false;
         session.wall_clock_epoch_ms = 1_785_900_880_000;
-        lock_sessions().insert(handle, session);
+        let generation = NEXT_SESSION_GENERATION.fetch_add(1, Ordering::Relaxed);
+        lock_sessions().insert(
+            handle,
+            Arc::new(SessionSlot::new(handle, generation, session)),
+        );
         let viewport = MapViewport {
             center: LatLon {
                 lat: 47.45,
@@ -14600,7 +14540,7 @@ mod tests {
         let runtime_address = std::ptr::addr_of!(session.runtime);
         let terrain_bytes_address = session.runtime.terrain_source_tile_cache["seed"].as_ptr();
         let publication_address = Arc::as_ptr(&session.publication_resolver);
-        let live_feeds_address = Arc::as_ptr(&session.live_feeds);
+        let live_feeds_address = Arc::as_ptr(session.weather.live_feeds_arc());
 
         let outcome = run_session_model_transaction(&mut session, |session| {
             session
@@ -14620,7 +14560,10 @@ mod tests {
             Arc::as_ptr(&session.publication_resolver),
             publication_address
         );
-        assert_eq!(Arc::as_ptr(&session.live_feeds), live_feeds_address);
+        assert_eq!(
+            Arc::as_ptr(session.weather.live_feeds_arc()),
+            live_feeds_address
+        );
     }
 
     #[test]
@@ -14636,12 +14579,20 @@ mod tests {
             session
                 .installed_package_ids
                 .insert("must-roll-back".to_string());
+            session
+                .weather
+                .set_current_refresh(LiveFeedCurrentRefreshState::Requested);
             Err(HadReadError::NeedPages(vec![42]).into())
         })
         .expect("paging outcome");
 
         assert!(matches!(outcome, HadOperationOutcome::NeedResources { .. }));
         assert!(!session.installed_package_ids.contains("must-roll-back"));
+        assert_eq!(
+            session.weather.current_refresh(),
+            LiveFeedCurrentRefreshState::Idle
+        );
+        assert_eq!(session.weather.revision(), 0);
         assert_eq!(
             session.runtime.terrain_source_tile_cache["seed"].as_ptr(),
             terrain_bytes_address
@@ -14787,6 +14738,7 @@ mod tests {
         assert_eq!(diagnostics.weather_projection_count, 2);
         assert_eq!(diagnostics.map_projection_count, 2);
         assert_eq!(diagnostics.settings_revision, 0);
+        assert_eq!(diagnostics.weather_revision, 0);
         assert_eq!(diagnostics.last_session_payload_serialized_bytes, 12_345);
 
         destroy_session(first.handle);
@@ -14810,15 +14762,22 @@ mod tests {
         let configured = session_diagnostics(init.handle).expect("configured diagnostics");
         assert_eq!(configured.settings_revision, 0);
         assert_eq!(configured.settings_projection_count, 2);
+        assert_eq!(configured.weather_revision, 0);
+        assert_eq!(configured.weather_projection_count, 2);
 
         get_session_snapshot(init.handle).expect("repeat snapshot");
         set_map_layer_enabled_in_session(init.handle, MapLayerId::WorldBasemap, false)
             .expect("unrelated map mutation");
         let unchanged = session_diagnostics(init.handle).expect("unchanged diagnostics");
         assert_eq!(unchanged.settings_revision, 0);
+        assert_eq!(unchanged.weather_revision, 0);
         assert_eq!(
             unchanged.settings_projection_count,
             configured.settings_projection_count
+        );
+        assert_eq!(
+            unchanged.weather_projection_count,
+            configured.weather_projection_count
         );
 
         perform_settings_action_in_session(
@@ -14831,9 +14790,14 @@ mod tests {
         .expect("settings mutation");
         let changed = session_diagnostics(init.handle).expect("changed diagnostics");
         assert_eq!(changed.settings_revision, 1);
+        assert_eq!(changed.weather_revision, 0);
         assert_eq!(
             changed.settings_projection_count,
             configured.settings_projection_count + 1
+        );
+        assert_eq!(
+            changed.weather_projection_count,
+            configured.weather_projection_count
         );
         destroy_session(init.handle);
     }
@@ -14841,22 +14805,26 @@ mod tests {
     #[test]
     fn nav_data_invalidation_is_generation_scoped_and_centralized() {
         let mut runtime = SessionRuntime::default();
+        let mut weather = WeatherController::default();
         runtime
             .terrain_source_tile_cache
             .insert("terrain".to_string(), vec![1, 2, 3]);
         runtime
             .agl_terrain_resource_ids_in_flight
             .insert("terrain/source/1".to_string());
-        runtime.important_metar_station_ids = Some(HashSet::from(["KSEA".to_string()]));
-        runtime.weather_station_airport_aliases = Some(WeatherStationAirportAliases::default());
+        weather.runtime_mut().important_metar_station_ids =
+            Some(HashSet::from(["KSEA".to_string()]));
+        weather.runtime_mut().weather_station_airport_aliases =
+            Some(WeatherStationAirportAliases::default());
 
         runtime.invalidate_nav_data();
+        weather.invalidate_nav_data();
 
         assert_eq!(runtime.nav_data_generation, 1);
         assert!(runtime.terrain_source_tile_cache.is_empty());
         assert!(runtime.agl_terrain_resource_ids_in_flight.is_empty());
-        assert!(runtime.important_metar_station_ids.is_none());
-        assert!(runtime.weather_station_airport_aliases.is_none());
+        assert!(weather.runtime().important_metar_station_ids.is_none());
+        assert!(weather.runtime().weather_station_airport_aliases.is_none());
     }
 
     #[test]
@@ -15775,7 +15743,7 @@ mod tests {
             assert!(statuses.is_empty());
             (
                 session.map_overlay_config.clone(),
-                session.runtime.obstacle_tile_cache.clone(),
+                session.weather.runtime().obstacle_tile_cache.clone(),
             )
         };
         let overlay = crate::query_map_overlay_for_surface(
@@ -17031,7 +16999,9 @@ mod tests {
         {
             let mut sessions = lock_sessions();
             let mut session = session_mut(&mut sessions, init.handle).expect("session");
-            Arc::make_mut(&mut session.live_feeds)
+            session
+                .weather
+                .live_feeds_mut()
                 .ingest_resource(
                     "live_feeds/current",
                     br#"{
@@ -17255,8 +17225,11 @@ mod tests {
             )
             .expect("metar layer config")
             .into();
-            session.runtime.important_metar_station_ids = Some(HashSet::from(["KAAA".to_string()]));
-            Arc::make_mut(&mut session.live_feeds)
+            session.weather.runtime_mut().important_metar_station_ids =
+                Some(HashSet::from(["KAAA".to_string()]));
+            session
+                .weather
+                .live_feeds_mut()
                 .ingest_resource(
                     "live_feeds/current",
                     format!(
@@ -17283,8 +17256,8 @@ mod tests {
         {
             let mut sessions = lock_sessions();
             let session = session_mut(&mut sessions, init.handle).expect("session");
-            assert!(session.runtime.prepared_metar_tiles.is_some());
-            assert!(!session.runtime.metar_tile_cache.is_empty());
+            assert!(session.weather.runtime().prepared_metar_tiles.is_some());
+            assert!(!session.weather.runtime().metar_tile_cache.is_empty());
         }
 
         let outcome = get_map_overlay_in_session(
@@ -17383,7 +17356,8 @@ mod tests {
             match product {
                 "tafs" => assert_eq!(
                     session
-                        .runtime
+                        .weather
+                        .runtime()
                         .taf_payload
                         .as_ref()
                         .and_then(|payload| payload.tafs_by_station.get("KSEA"))
@@ -17392,7 +17366,8 @@ mod tests {
                 ),
                 "tfrs" => assert_eq!(
                     session
-                        .runtime
+                        .weather
+                        .runtime()
                         .tfr_payload
                         .as_ref()
                         .map(|payload| payload.areas.len()),
@@ -17400,7 +17375,8 @@ mod tests {
                 ),
                 "notams" => assert_eq!(
                     session
-                        .runtime
+                        .weather
+                        .runtime()
                         .airport_notam_index
                         .as_ref()
                         .map(|index| index.version_label.as_str()),
@@ -17481,7 +17457,12 @@ mod tests {
 
         let slot = session_slot(init.handle).expect("session slot");
         let session = slot.lock_running().expect("session");
-        let taf_payload = session.runtime.taf_payload.as_ref().expect("TAF payload");
+        let taf_payload = session
+            .weather
+            .runtime()
+            .taf_payload
+            .as_ref()
+            .expect("TAF payload");
         assert_eq!(taf_payload.version_label, "v1");
         assert_eq!(
             taf_payload.tafs_by_station["KAAA"].raw_text,
@@ -17575,7 +17556,8 @@ mod tests {
         .is_err());
         assert_eq!(
             session
-                .runtime
+                .weather
+                .runtime()
                 .airport_notam_index
                 .as_ref()
                 .map(AirportNotamIndex::state_id),
@@ -17610,7 +17592,7 @@ mod tests {
             ),),
         )
         .is_err());
-        assert!(session.runtime.airport_notam_index.is_none());
+        assert!(session.weather.runtime().airport_notam_index.is_none());
     }
 
     #[test]
@@ -17697,7 +17679,9 @@ mod tests {
         {
             let mut sessions = lock_sessions();
             let mut session = session_mut(&mut sessions, init.handle).unwrap();
-            Arc::make_mut(&mut session.live_feeds)
+            session
+                .weather
+                .live_feeds_mut()
                 .ingest_resource(
                     "live_feeds/current",
                     &serde_json::to_vec(&serde_json::json!({
@@ -17719,7 +17703,9 @@ mod tests {
                     .unwrap(),
                 )
                 .unwrap();
-            Arc::make_mut(&mut session.live_feeds)
+            session
+                .weather
+                .live_feeds_mut()
                 .ingest_resource(
                     &format!("live_feeds/version/notams/{head_id}"),
                     &serde_json::to_vec(&serde_json::json!({
@@ -17752,19 +17738,29 @@ mod tests {
             let session = slot.lock_running().unwrap();
             assert_eq!(
                 session
-                    .runtime
+                    .weather
+                    .runtime()
                     .airport_notam_index
                     .as_ref()
                     .map(AirportNotamIndex::state_id),
                 Some(checkpoint_id.as_str())
             );
             assert_eq!(
-                session.live_feeds.product_staged_version("notams"),
+                session
+                    .weather
+                    .live_feeds()
+                    .product_staged_version("notams"),
                 Some(checkpoint_id.as_str())
             );
-            assert_eq!(session.live_feeds.product_loaded_version("notams"), None);
+            assert_eq!(
+                session
+                    .weather
+                    .live_feeds()
+                    .product_loaded_version("notams"),
+                None
+            );
             let crate::HadOperationOutcome::NeedResources { resources } =
-                session.live_feeds.sync_outcome()
+                session.weather.live_feeds().sync_outcome()
             else {
                 panic!("checkpoint should be followed by retained delta");
             };
@@ -17781,14 +17777,18 @@ mod tests {
         let session = slot.lock_running().unwrap();
         assert_eq!(
             session
-                .runtime
+                .weather
+                .runtime()
                 .airport_notam_index
                 .as_ref()
                 .map(AirportNotamIndex::state_id),
             Some(head_id.as_str())
         );
         assert_eq!(
-            session.live_feeds.product_loaded_version("notams"),
+            session
+                .weather
+                .live_feeds()
+                .product_loaded_version("notams"),
             Some(head_id.as_str())
         );
     }
@@ -17872,7 +17872,9 @@ mod tests {
         {
             let slot = session_slot(init.handle).expect("session slot");
             let mut session = slot.lock_running().expect("session");
-            Arc::make_mut(&mut session.live_feeds)
+            session
+                .weather
+                .live_feeds_mut()
                 .ingest_resource(
                     "live_feeds/current",
                     serde_json::to_string(&serde_json::json!({
@@ -17891,7 +17893,9 @@ mod tests {
                     .as_bytes(),
                 )
                 .expect("install NOTAM current");
-            Arc::make_mut(&mut session.live_feeds)
+            session
+                .weather
+                .live_feeds_mut()
                 .ingest_resource(
                     &format!("live_feeds/version/notams/{state_id}"),
                     serde_json::to_string(&serde_json::json!({
@@ -17917,7 +17921,8 @@ mod tests {
             let slot = session_slot(init.handle).expect("session slot");
             let session = slot.lock_running().expect("session");
             let index = session
-                .runtime
+                .weather
+                .runtime()
                 .airport_notam_index
                 .as_ref()
                 .unwrap_or_else(|| {
@@ -17979,7 +17984,7 @@ mod tests {
                     latitude: 0.0,
                 },
             );
-            session.runtime.metar_payload = Some(MetarProductPayload {
+            session.weather.runtime_mut().metar_payload = Some(MetarProductPayload {
                 schema_version: 3,
                 version_label: "v1".to_string(),
                 generated_at_utc: None,
@@ -17999,14 +18004,14 @@ mod tests {
                     latitude: 0.0,
                 },
             );
-            session.runtime.taf_payload = Some(TafProductPayload {
+            session.weather.runtime_mut().taf_payload = Some(TafProductPayload {
                 schema_version: 1,
                 version_label: "v1".to_string(),
                 generated_at_utc: None,
                 taf_count: Some(1),
                 tafs_by_station,
             });
-            session.runtime.airport_notam_index = Some(
+            session.weather.runtime_mut().airport_notam_index = Some(
                 AirportNotamIndex::from_payload(NotamProductPayload {
                     schema_version: product_contracts::NOTAM_LIVE_FEED_CONTRACT_VERSION,
                     version_label: "v1".to_string(),
@@ -18330,7 +18335,7 @@ mod tests {
                 latitude: 0.0,
             },
         );
-        session.runtime.metar_payload = Some(MetarProductPayload {
+        session.weather.runtime_mut().metar_payload = Some(MetarProductPayload {
             schema_version: 3,
             version_label: "v1".to_string(),
             generated_at_utc: None,
@@ -18339,7 +18344,8 @@ mod tests {
             metars_by_station,
             pireps: Vec::new(),
         });
-        session.runtime.important_metar_station_ids = Some(HashSet::from(["KAAA".to_string()]));
+        session.weather.runtime_mut().important_metar_station_ids =
+            Some(HashSet::from(["KAAA".to_string()]));
         let manifest = serde_json::json!({
             "point_layers": {
                 "airport": {
@@ -18363,7 +18369,7 @@ mod tests {
             .expect("load vector manifest");
 
         assert!(session.map_overlay_config.metar_layer.is_some());
-        assert!(!session.runtime.metar_tile_cache.is_empty());
+        assert!(!session.weather.runtime().metar_tile_cache.is_empty());
     }
 
     #[test]
@@ -18459,7 +18465,7 @@ mod tests {
         ensure_weather_station_airport_aliases_loaded(&mut session).expect("airport aliases");
 
         assert_eq!(
-            session.runtime.important_metar_station_ids,
+            session.weather.runtime().important_metar_station_ids,
             Some(HashSet::from(["KAAA".to_string(), "KBBB".to_string()]))
         );
         let metar = crate::MetarRecord {
@@ -18483,7 +18489,8 @@ mod tests {
         let detail = crate::map_overlay::weather_detail_for_airport(
             "1S5",
             session
-                .runtime
+                .weather
+                .runtime()
                 .weather_station_airport_aliases
                 .as_ref()
                 .expect("loaded aliases"),
@@ -18582,7 +18589,7 @@ mod tests {
                 crate::aggregate_vector_tile_cache_key(0, 0, 0),
                 empty_vector_aggregate_tile(0, 0, 0),
             );
-            session.runtime.metar_payload = Some(MetarProductPayload {
+            session.weather.runtime_mut().metar_payload = Some(MetarProductPayload {
                 schema_version: 3,
                 version_label: "v1".to_string(),
                 generated_at_utc: None,
@@ -18630,10 +18637,18 @@ mod tests {
             let slot = session_slot(init.handle).expect("session slot");
             let session = slot.lock_running().expect("session");
             assert!(
-                session.runtime.important_metar_station_ids.is_none(),
+                session
+                    .weather
+                    .runtime()
+                    .important_metar_station_ids
+                    .is_none(),
                 "high-zoom METAR rendering must not request the low-zoom importance table"
             );
-            assert!(session.runtime.metar_station_importance_status.is_none());
+            assert!(session
+                .weather
+                .runtime()
+                .metar_station_importance_status
+                .is_none());
         }
     }
 
@@ -18747,7 +18762,7 @@ mod tests {
             session.vector_manifest_loaded = true;
             session.map_layer_state.vectors.visible = false;
             session.map_layer_state.metars.visible = true;
-            session.runtime.metar_payload = Some(MetarProductPayload {
+            session.weather.runtime_mut().metar_payload = Some(MetarProductPayload {
                 schema_version: 3,
                 version_label: "v1".to_string(),
                 generated_at_utc: None,
@@ -18802,7 +18817,11 @@ mod tests {
         {
             let slot = session_slot(init.handle).expect("session slot");
             let session = slot.lock_running().expect("session");
-            assert!(session.runtime.important_metar_station_ids.is_none());
+            assert!(session
+                .weather
+                .runtime()
+                .important_metar_station_ids
+                .is_none());
             assert!(
                 !session
                     .data_status_records
@@ -18858,7 +18877,7 @@ mod tests {
             let slot = session_slot(init.handle).expect("session slot");
             let session = slot.lock_running().expect("session");
             assert_eq!(
-                session.runtime.important_metar_station_ids,
+                session.weather.runtime().important_metar_station_ids,
                 Some(HashSet::from(["KAAA".to_string()]))
             );
             assert!(!session
@@ -18898,7 +18917,9 @@ mod tests {
             );
             format!("{:x}", hasher.finalize())
         };
-        Arc::make_mut(&mut session.live_feeds)
+        session
+            .weather
+            .live_feeds_mut()
             .ingest_resource(
                 "live_feeds/current",
                 &live_current_manifest_for_test(BTreeMap::from([(
@@ -18913,7 +18934,9 @@ mod tests {
                 )])),
             )
             .expect("current manifest");
-        Arc::make_mut(&mut session.live_feeds)
+        session
+            .weather
+            .live_feeds_mut()
             .ingest_resource(
                 "live_feeds/version/tfrs/bad",
                 &live_version_manifest_for_test(
@@ -18925,7 +18948,9 @@ mod tests {
                 ),
             )
             .expect("version manifest");
-        Arc::make_mut(&mut session.live_feeds)
+        session
+            .weather
+            .live_feeds_mut()
             .ingest_resource(
                 "live_feeds/state/tfrs/bad",
                 &serde_json::to_vec(&bad_tfr_state).expect("state json"),
@@ -18934,7 +18959,7 @@ mod tests {
 
         install_live_feed_payloads(&mut session).expect("install should degrade");
 
-        assert!(session.runtime.tfr_payload.is_none());
+        assert!(session.weather.runtime().tfr_payload.is_none());
         assert!(session
             .data_status_records
             .values()
@@ -19114,7 +19139,7 @@ mod tests {
             assert!(statuses.is_empty());
             (
                 session.map_overlay_config.clone(),
-                session.runtime.obstacle_tile_cache.clone(),
+                session.weather.runtime().obstacle_tile_cache.clone(),
             )
         };
         let overlay = crate::query_map_overlay_for_surface(
@@ -19185,8 +19210,8 @@ mod tests {
         {
             let mut sessions = lock_sessions();
             let session = session_mut(&mut sessions, init.handle).expect("session");
-            assert!(session.runtime.obstacle_had.is_none());
-            assert!(session.runtime.obstacle_tile_cache.is_empty());
+            assert!(session.weather.runtime().obstacle_had.is_none());
+            assert!(session.weather.runtime().obstacle_tile_cache.is_empty());
             assert!(session.map_overlay_config.obstacle_layer.is_none());
         }
         let feature_ids = query_obstacle_feature_ids(init.handle, &metrics);
@@ -19247,7 +19272,7 @@ mod tests {
 
         {
             let mut sessions = lock_sessions();
-            let session = session_mut(&mut sessions, init.handle).expect("session");
+            let mut session = session_mut(&mut sessions, init.handle).expect("session");
             session.guidance_leg_geometry = Arc::new(HashMap::from([(
                 "test-leg".to_string(),
                 GuidanceLegGeometry {
@@ -19299,9 +19324,10 @@ mod tests {
         assert_eq!(winds_status.value, "OK");
         let revision_before = {
             let sessions = lock_sessions();
-            session_ref(&sessions, init.handle)
+            let revision = session_ref(&sessions, init.handle)
                 .expect("session")
-                .session_revision
+                .session_revision;
+            revision
         };
         let mut outcome = perform_altitude_planner_action_in_session(
             init.handle,
@@ -19371,9 +19397,10 @@ mod tests {
         .expect("install winds aloft");
 
         let sessions = lock_sessions();
-        let forecast = session_ref(&sessions, init.handle)
-            .expect("session")
-            .runtime
+        let session = session_ref(&sessions, init.handle).expect("session");
+        let forecast = session
+            .weather
+            .runtime()
             .forecast_atmosphere
             .as_ref()
             .expect("installed forecast atmosphere");
@@ -19388,6 +19415,7 @@ mod tests {
         )
         .expect("sample installed forecast");
         assert!(sample.wind_east_kt > 100.0);
+        drop(session);
         drop(sessions);
 
         perform_altitude_planner_action_in_session(
@@ -19537,7 +19565,7 @@ mod tests {
                 statuses,
                 std::mem::take(&mut session.runtime.pending_resource_effects),
                 session.map_overlay_config.clone(),
-                session.runtime.obstacle_tile_cache.clone(),
+                session.weather.runtime().obstacle_tile_cache.clone(),
             )
         };
         assert!(statuses.is_empty());
@@ -20592,7 +20620,7 @@ mod tests {
         {
             let mut sessions = lock_sessions();
             let mut session = session_mut(&mut sessions, init.handle).expect("session");
-            session.runtime.metar_payload = Some(MetarProductPayload {
+            session.weather.runtime_mut().metar_payload = Some(MetarProductPayload {
                 schema_version: 3,
                 version_label: "old-metars".to_string(),
                 generated_at_utc: Some(utc("2020-01-01T00:00:00Z")),
@@ -20619,7 +20647,7 @@ mod tests {
         {
             let mut sessions = lock_sessions();
             let mut session = session_mut(&mut sessions, init.handle).expect("session");
-            session.runtime.metar_payload = Some(MetarProductPayload {
+            session.weather.runtime_mut().metar_payload = Some(MetarProductPayload {
                 schema_version: 3,
                 version_label: "loaded-metars".to_string(),
                 generated_at_utc: Some(utc("2026-05-20T11:55:00Z")),
@@ -20666,7 +20694,7 @@ mod tests {
         {
             let mut sessions = lock_sessions();
             let mut session = session_mut(&mut sessions, init.handle).expect("session");
-            session.runtime.metar_payload = Some(MetarProductPayload {
+            session.weather.runtime_mut().metar_payload = Some(MetarProductPayload {
                 schema_version: 3,
                 version_label: "fresh-metars".to_string(),
                 generated_at_utc: Some(utc("2026-05-20T11:55:00Z")),
@@ -20710,7 +20738,7 @@ mod tests {
         {
             let mut sessions = lock_sessions();
             let mut session = session_mut(&mut sessions, init.handle).expect("session");
-            session.runtime.metar_payload = Some(MetarProductPayload {
+            session.weather.runtime_mut().metar_payload = Some(MetarProductPayload {
                 schema_version: 3,
                 version_label: "fresh-then-old-metars".to_string(),
                 generated_at_utc: Some(utc("2026-05-20T11:45:00Z")),
@@ -20768,7 +20796,7 @@ mod tests {
         {
             let mut sessions = lock_sessions();
             let mut session = session_mut(&mut sessions, init.handle).expect("session");
-            session.runtime.tfr_payload = Some(TfrProductPayload {
+            session.weather.runtime_mut().tfr_payload = Some(TfrProductPayload {
                 schema_version: 1,
                 version_label: "old-tfrs".to_string(),
                 generated_at_utc: Some(utc("2020-01-01T00:00:00Z")),

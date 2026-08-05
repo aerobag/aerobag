@@ -166,21 +166,37 @@ boundary:
   back into `session.rs`, and transaction tests cover revision rollback when a
   durable write fails.
 
+## Completed Third Slice
+
+The third slice extracted one `WeatherController` with two private storage
+classes: a lightweight, cloneable `WeatherModel` and a non-cloned
+`WeatherRuntime` containing decoded products, indexes, and tile caches. Session
+transactions checkpoint and roll back only the model while preserving runtime
+allocations.
+
+The controller now owns live-feed protocol and connection state, materialized
+weather products, nav-derived weather caches, NEXRAD frame selection and
+animation timing, and a revisioned weather projection. `UiSession` supplies
+map-layer visibility and wall-clock inputs and continues to coordinate shared
+status records, map configuration, resource effects, and assembly of the legacy
+full snapshot. Mutable runtime access advances the weather revision and
+invalidates the projection cache. Boundary and transaction tests preserve these
+ownership and rollback rules.
+
+This slice did not add a lock, thread, Worker, or platform wire change.
+
 ## Next Slice
 
-Extract `WeatherController` without changing the platform wire model or moving
-work to another thread. The controller should first own live-feed product state,
-weather preparation caches, freshness/status policy, animation timing, and a
-revisioned cached weather projection. `UiSession` remains the coordinator for
-map-layer visibility, wall-clock input, resource effects, and assembly of the
-legacy full snapshot.
+Extract `MapController` around map-layer state, raster selection, overlay
+configuration, viewport-independent map projection, and map-owned caches. Define
+typed weather and nav inputs instead of allowing the map controller to reach
+into those domains. Keep viewport queries and resource preparation synchronous
+initially, preserve existing invalidation behavior, and continue assembling the
+legacy full snapshot from cached controller projections.
 
-Before moving fields, define typed weather inputs and outputs and add boundary
-tests for them. Preserve current resource paging and transaction semantics, then
-add deterministic coverage showing that unrelated settings/map changes reuse the
-weather projection. Same-session map-query concurrency remains a later
-acceptance test: this slice creates the ownership boundary needed for selective
-scheduling but does not introduce another lock, thread, or Worker.
+The map slice should establish the boundary required for a later same-session
+map-query concurrency test, but separate locking or scheduling remains a
+measurement-driven follow-up rather than part of extraction.
 
 ## Relationship To Work Scheduling
 

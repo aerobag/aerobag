@@ -47,6 +47,7 @@ pub mod situation;
 pub mod state;
 pub mod terrain;
 pub mod ui_work_scheduler;
+mod weather_controller;
 
 pub use adsb::VisibleAdsbTraffic;
 pub use aircraft_profiles::{

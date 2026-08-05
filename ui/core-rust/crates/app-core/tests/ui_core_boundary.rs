@@ -438,6 +438,70 @@ fn settings_state_and_projection_are_owned_by_settings_controller() {
 }
 
 #[test]
+fn weather_state_runtime_and_projection_are_owned_by_weather_controller() {
+    let session_text = read_repo_file("ui/core-rust/crates/app-core/src/session.rs");
+    let session = strip_rust_tests(&session_text);
+    let controller = read_repo_file("ui/core-rust/crates/app-core/src/weather_controller.rs");
+    let ui_session = balanced_block_after_marker(session, "struct UiSession {");
+    let model = balanced_block_after_marker(session, "struct SessionModel");
+    let runtime = balanced_block_after_marker(session, "struct SessionRuntime");
+
+    assert!(
+        ui_session.contains("weather: WeatherController"),
+        "UiSession must compose weather through one controller"
+    );
+    for field in [
+        "live_feeds",
+        "live_feed_connection",
+        "live_feed_current_refresh",
+        "metar_payload",
+        "taf_payload",
+        "airport_notam_index",
+        "tfr_payload",
+        "nexrad_installed",
+        "obstacle_had",
+        "forecast_atmosphere_state",
+        "forecast_atmosphere",
+    ] {
+        assert!(
+            !model.contains(field) && !runtime.contains(field),
+            "weather field {field} must not return to SessionModel or SessionRuntime"
+        );
+    }
+    assert!(
+        controller.contains("struct WeatherModel")
+            && controller.contains("struct WeatherRuntime")
+            && controller.contains("pub(crate) struct WeatherController"),
+        "WeatherController must own its lightweight model and heavy runtime"
+    );
+    assert!(
+        !session.contains("struct NexradFrameCandidate")
+            && !session.contains("fn nexrad_animation_for_frames")
+            && !session.contains("fn nexrad_frame_age_values"),
+        "NEXRAD timeline and projection policy must remain in WeatherController"
+    );
+    assert!(
+        !session.contains("session.live_feeds") && !session.contains(".weather.runtime."),
+        "session code must use WeatherController APIs rather than raw weather storage"
+    );
+    let checkpoint =
+        balanced_block_after_marker(session, "struct SessionModelTransactionCheckpoint");
+    assert!(
+        checkpoint.contains("weather: WeatherModelCheckpoint"),
+        "session transactions must checkpoint the lightweight weather model"
+    );
+    let rollback = function_body(session, "rollback");
+    assert!(
+        rollback.contains("session.weather.rollback_model"),
+        "session transaction rollback must restore the weather model"
+    );
+    assert!(
+        function_body(session, "try_snapshot_for_session").contains("project_weather_for_session"),
+        "full snapshots must consume the cached weather projection"
+    );
+}
+
+#[test]
 fn platform_flight_plan_mutations_do_not_resync_guidance_after_core_mutation() {
     let web = read_repo_file("ui/web-app/src/domain/appCoreAdapter.ts");
     let android = read_repo_file(

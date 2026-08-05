@@ -1001,6 +1001,8 @@ def build_dashboard_html(refresh_seconds: float) -> str:
       --yellow: #f0c85a;
       --red: #ff6b6b;
       --cyan: #66d9e8;
+      --font-sans: "IBM Plex Sans", Inter, "Avenir Next", "Segoe UI", Roboto, "Noto Sans", "DejaVu Sans", "Liberation Sans", Arial, Helvetica, sans-serif;
+      --font-mono: ui-monospace, "Cascadia Mono", "SFMono-Regular", "Roboto Mono", "DejaVu Sans Mono", "Liberation Mono", Menlo, Consolas, monospace;
     }}
     * {{ box-sizing: border-box; }}
     body {{
@@ -1008,7 +1010,9 @@ def build_dashboard_html(refresh_seconds: float) -> str:
       min-height: 100vh;
       background: var(--bg);
       color: var(--text);
-      font: 14px/1.45 ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      font-family: var(--font-sans);
+      font-size: 14px;
+      line-height: 1.45;
       letter-spacing: 0;
     }}
     main {{
@@ -1029,7 +1033,7 @@ def build_dashboard_html(refresh_seconds: float) -> str:
       font-weight: 700;
     }}
     .subtle {{ color: var(--muted); }}
-    .mono {{ font-family: ui-monospace, "SFMono-Regular", Consolas, monospace; }}
+    .mono {{ font-family: var(--font-mono); }}
     .pill {{
       display: inline-flex;
       align-items: center;

@@ -274,6 +274,15 @@ class WatchBuildLogTests(unittest.TestCase):
             self.assertEqual(len(second["tasks"]["completed"]), 1)
             self.assertEqual(second["tasks"]["completed"][0]["task"], "b")
 
+    def test_dashboard_uses_cross_platform_font_fallbacks(self) -> None:
+        html = watch_build_log.build_dashboard_html(2)
+
+        self.assertIn('--font-sans: "IBM Plex Sans", Inter,', html)
+        self.assertIn('"DejaVu Sans", "Liberation Sans", Arial, Helvetica', html)
+        self.assertIn('--font-mono: ui-monospace, "Cascadia Mono",', html)
+        self.assertIn("font-family: var(--font-sans);", html)
+        self.assertIn("font-family: var(--font-mono);", html)
+
 
 if __name__ == "__main__":
     unittest.main()

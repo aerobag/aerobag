@@ -775,6 +775,74 @@ fn nav_data_state_runtime_and_maintenance_are_owned_by_nav_data_controller() {
 }
 
 #[test]
+fn package_state_resolution_and_projection_are_owned_by_package_controller() {
+    let session_text = read_repo_file("ui/core-rust/crates/app-core/src/session.rs");
+    let session = strip_rust_tests(&session_text);
+    let controller = read_repo_file("ui/core-rust/crates/app-core/src/package_controller.rs");
+    let ui_session = balanced_block_after_marker(session, "struct UiSession {");
+    let model = balanced_block_after_marker(session, "struct SessionModel");
+
+    assert!(
+        ui_session.contains("packages: PackageController"),
+        "UiSession must compose package behavior through one controller"
+    );
+    for field in [
+        "resource_policy",
+        "installed_package_ids",
+        "publication_resolver",
+        "offline_package_preferences",
+    ] {
+        assert!(
+            !model.contains(field),
+            "package field {field} must not return to SessionModel"
+        );
+    }
+    assert!(
+        controller.contains("struct PackageModel")
+            && controller.contains("pub(crate) struct PackageController")
+            && controller.contains("struct PackageProjectionCache"),
+        "PackageController must own package policy, resolution, and cached projection"
+    );
+    for access in [
+        "session.resource_policy",
+        "session.installed_package_ids",
+        "session.publication_resolver",
+    ] {
+        assert!(
+            !session.contains(access),
+            "session code must not regain raw package access through {access}"
+        );
+    }
+    let checkpoint =
+        balanced_block_after_marker(session, "struct SessionModelTransactionCheckpoint");
+    assert!(
+        checkpoint.contains("packages: PackageModelCheckpoint"),
+        "session transactions must checkpoint package state and publication resolution"
+    );
+    assert!(
+        function_body(session, "rollback").contains("session.packages.rollback_model"),
+        "session transaction rollback must restore package state"
+    );
+    let snapshot = function_body(session, "try_snapshot_for_session");
+    assert!(
+        snapshot.contains(".packages") && snapshot.contains(".project()"),
+        "full snapshots must consume PackageController's cached projection"
+    );
+    let preference_update = function_body(session, "record_offline_package_preferences_in_session");
+    assert!(
+        preference_update.contains("session.packages.replace_preferences")
+            && preference_update.contains("record_local_offline_package_preferences"),
+        "package preferences must update controller state and cloud persistence transactionally"
+    );
+    assert!(
+        controller.contains("fn nav_db_artifact_candidates")
+            && !read_repo_file("ui/core-rust/crates/app-core/src/nav_data_controller.rs")
+                .contains("installed_package_ids.contains"),
+        "package availability filtering must have one owner"
+    );
+}
+
+#[test]
 fn platform_flight_plan_mutations_do_not_resync_guidance_after_core_mutation() {
     let web = read_repo_file("ui/web-app/src/domain/appCoreAdapter.ts");
     let android = read_repo_file(

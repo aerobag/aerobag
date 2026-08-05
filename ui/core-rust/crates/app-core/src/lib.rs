@@ -38,6 +38,7 @@ mod nav_data_controller;
 pub mod navdb_types;
 pub mod navkv;
 pub mod ownship;
+mod package_controller;
 pub mod package_management;
 pub mod planning;
 pub mod playback;

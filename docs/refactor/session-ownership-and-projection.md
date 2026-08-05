@@ -265,15 +265,40 @@ immediately after the effective instant.
 The public snapshot and platform wire contracts remain unchanged. This slice
 did not add a lock, thread, Worker, or platform wire change.
 
+## Completed Eighth Slice
+
+The eighth slice extracted `PackageController` around effective resource policy,
+installed package IDs, publication resolution and offline-library metadata,
+offline-package preferences, and the cached package projection. Package
+availability filtering now has one owner: `NavDataController` consumes the
+package controller's typed NAVDB candidate view instead of reimplementing
+installed-package filtering.
+
+Cloud retains the durable synchronized records, but it is no longer the source
+used to project effective package preferences. `UiSession` transactionally
+coordinates local package preference changes across `PackageController` and
+`CloudEngine`, and applies remotely reconciled cloud preferences back through
+the package controller. Failed persistence rolls both representations back.
+
+Android's standalone offline-package planner remains a pre-runtime editor so a
+user can install a first NAVDB before an application session exists. It remains
+core-owned and exchanges typed preferences and library updates with the running
+session; it is not a second source of effective runtime package policy.
+
+NAVDB candidate adoption remains coordinated by `UiSession`, with
+`NavDataController` the sole owner of active NAVDB identity and runtime. Package
+state participates in session transactions and candidate rollback without
+changing the public snapshot or platform wire contracts. This slice did not add
+a lock, thread, Worker, or platform-specific domain policy.
+
 ## Next Slice
 
-Continue roadmap item 4.6 with a `PackageController` around resource policy,
-installed package IDs, publication resolution, offline-library state, and
-package preferences/projection. Keep NAVDB candidate adoption coordinated by
-`UiSession`, with `NavDataController` remaining the sole owner of active NAVDB
-identity and runtime. Resolve the remaining cloud/package ownership boundary
-before implementation; cloud and data-status should remain separate slices
-rather than becoming one catch-all controller.
+Continue roadmap item 4.6 with `CloudController` around cloud persistent model,
+provider workflow runtime, request/effect scheduling, synchronization status,
+and cloud-page projection. Keep flight-plan and package application of remote
+records coordinated by `UiSession`; cloud should expose typed reconciled domain
+updates rather than mutating those controllers. Data status remains a later,
+separate controller slice.
 
 ## Relationship To Work Scheduling
 

@@ -91,9 +91,10 @@ use crate::{
         NavDataModelCheckpoint,
     },
     nav_kv_key_for_query,
+    package_controller::{PackageController, PackageModelCheckpoint},
     planning::NavElementUiView,
     project_nav_symbol_feature,
-    publication::{PublicationResolvedResource, PublicationResolver},
+    publication::PublicationResolvedResource,
     query_map_overlay_for_surface_at, query_map_selection_for_surface_in_time_zone,
     settings_controller::{default_settings_page_state, SettingsController, SettingsProjection},
     situation_controller::{
@@ -180,6 +181,7 @@ struct UiSession {
     model: SessionModel,
     flight_plan: FlightPlanController,
     nav_data: NavDataController,
+    packages: PackageController,
     situation: SituationController,
     weather: WeatherController,
     map: MapController,
@@ -231,6 +233,8 @@ pub struct UiSessionDiagnostics {
     pub flight_plan_revision: u64,
     pub flight_plan_projection_count: u64,
     pub nav_data_revision: u64,
+    pub package_revision: u64,
+    pub package_projection_count: u64,
     pub last_session_payload_serialized_bytes: u64,
     pub transaction_commit_count: u64,
     pub transaction_rollback_count: u64,
@@ -249,6 +253,7 @@ struct SessionDiagnosticsCounters {
     map_projection_count: AtomicU64,
     situation_projection_count: AtomicU64,
     flight_plan_projection_count: AtomicU64,
+    package_projection_count: AtomicU64,
     last_session_payload_serialized_bytes: AtomicU64,
     transaction_commit_count: AtomicU64,
     transaction_rollback_count: AtomicU64,
@@ -265,6 +270,7 @@ impl SessionDiagnosticsCounters {
         situation_revision: u64,
         flight_plan_revision: u64,
         nav_data_revision: u64,
+        package_revision: u64,
     ) -> UiSessionDiagnostics {
         UiSessionDiagnostics {
             generation,
@@ -286,6 +292,8 @@ impl SessionDiagnosticsCounters {
             situation_revision,
             flight_plan_revision,
             nav_data_revision,
+            package_revision,
+            package_projection_count: self.package_projection_count.load(Ordering::Relaxed),
             last_session_payload_serialized_bytes: self
                 .last_session_payload_serialized_bytes
                 .load(Ordering::Relaxed),
@@ -309,9 +317,6 @@ struct SessionModel {
     persistence_storage: Option<SettingsStorageHandle>,
     cloud: CloudEngine,
     debug_state: UiDebugState,
-    resource_policy: CoreResourcePolicy,
-    installed_package_ids: BTreeSet<String>,
-    publication_resolver: Arc<PublicationResolver>,
     cycle_product_freshness: CycleProductFreshnessState,
     wall_clock_epoch_ms: i64,
     altitude_planner_wind_selection: AltitudePlannerWindSelection,
@@ -564,6 +569,7 @@ impl SessionSlot {
             session.situation.revision(),
             session.flight_plan.revision(),
             session.nav_data.revision(),
+            session.packages.revision(),
         )
     }
 }
@@ -1408,12 +1414,9 @@ fn advance_session_wall_clock(session: &mut UiSession, epoch_ms: i64) {
 }
 
 fn next_nav_db_maintenance_epoch_ms(session: &UiSession) -> Option<i64> {
-    session.nav_data.next_maintenance_epoch_ms(
-        &session.publication_resolver,
-        session.resource_policy,
-        &session.installed_package_ids,
-        session.wall_clock_epoch_ms,
-    )
+    session
+        .nav_data
+        .next_maintenance_epoch_ms(&session.packages, session.wall_clock_epoch_ms)
 }
 
 fn min_epoch_ms(current: Option<i64>, candidate: i64) -> Option<i64> {
@@ -1502,8 +1505,8 @@ fn sync_displayed_chart_validity_freshness(session: &mut UiSession) -> CycleProd
     let catalog = raster_catalog_for_layer_state(
         catalog,
         session.map.layer_state(),
-        session.resource_policy,
-        &session.installed_package_ids,
+        session.packages.resource_policy(),
+        session.packages.installed_package_ids(),
     );
     let now_utc = session_wall_clock_utc(session);
     let mut seen = BTreeSet::new();
@@ -2367,7 +2370,7 @@ fn next_published_cycle_window_for_families(
     let mut earliest_expiration: Option<DateTime<Utc>> = None;
     for (family_id, _, _) in families {
         let Some((package, effective)) = session
-            .publication_resolver
+            .packages
             .loaded_bundle_packages()
             .filter(|package| {
                 package.family_id == *family_id
@@ -2734,7 +2737,7 @@ fn nav_db_status_page_row(session: &UiSession) -> UiDataStatusPageRow {
 
 fn next_nav_db_cycle_window(session: &UiSession, now_utc: DateTime<Utc>) -> Option<CycleWindow> {
     let mut candidates = session
-        .publication_resolver
+        .packages
         .loaded_bundle_packages()
         .filter(|package| {
             package.family_id == "nav-db"
@@ -2786,7 +2789,7 @@ fn expected_contract_versions_status_page_row() -> UiDataStatusPageRow {
 }
 
 fn publication_status_page_row(session: &UiSession) -> UiDataStatusPageRow {
-    let Some(current_artifacts) = session.publication_resolver.current_artifacts() else {
+    let Some(current_artifacts) = session.packages.current_artifacts() else {
         return status_page_row(
             "publication:current_artifacts",
             "Package library",
@@ -2803,10 +2806,7 @@ fn publication_status_page_row(session: &UiSession) -> UiDataStatusPageRow {
     ));
     facts.push(status_fact(
         "Loaded manifests",
-        session
-            .publication_resolver
-            .loaded_bundle_manifest_count()
-            .to_string(),
+        session.packages.loaded_bundle_manifest_count().to_string(),
     ));
     if let Some(as_of) = current_artifacts
         .as_of_utc
@@ -2819,10 +2819,7 @@ fn publication_status_page_row(session: &UiSession) -> UiDataStatusPageRow {
             UiDataStatusPageTimeDisplay::Ago,
         ));
     }
-    if let Some(checked_at) = session
-        .publication_resolver
-        .current_artifacts_checked_epoch_ms()
-    {
+    if let Some(checked_at) = session.packages.current_artifacts_checked_epoch_ms() {
         let checked_utc = utc_from_epoch_ms(checked_at);
         facts.push(status_time_fact(
             "Checked",
@@ -3501,11 +3498,8 @@ fn create_ui_session_inner(
     let settings = SettingsController::default();
     let cloud = CloudEngine::new(CloudPersistentState::default());
     let cloud_page_state = cloud.page_state(0);
-    let offline_package_preferences_json =
-        serde_json::to_string(&cloud.offline_package_preferences()?).map_err(|error| AppError {
-            kind: AppErrorKind::Internal,
-            message: error.to_string(),
-        })?;
+    let mut packages = PackageController::default();
+    let offline_package_preferences_json = packages.project()?.offline_package_preferences_json;
     let platform_capabilities = PlatformCapabilities::default();
     let home_page_state = project_home_page_state(&platform_capabilities);
     let snapshot = UiSessionSnapshot {
@@ -3560,6 +3554,9 @@ fn create_ui_session_inner(
     diagnostics
         .flight_plan_projection_count
         .store(1, Ordering::Relaxed);
+    diagnostics
+        .package_projection_count
+        .store(1, Ordering::Relaxed);
     let session = UiSession {
         model: SessionModel {
             session_revision: 0,
@@ -3574,12 +3571,6 @@ fn create_ui_session_inner(
             persistence_storage: None,
             cloud,
             debug_state,
-            resource_policy: CoreResourcePolicy::InstalledPackage,
-            installed_package_ids: BTreeSet::new(),
-            publication_resolver: Arc::new(PublicationResolver::with_resource_policy(
-                "/packages",
-                CoreResourcePolicy::InstalledPackage,
-            )),
             cycle_product_freshness: CycleProductFreshnessState {
                 dirty: true,
                 ..CycleProductFreshnessState::default()
@@ -3590,6 +3581,7 @@ fn create_ui_session_inner(
         },
         flight_plan,
         nav_data: NavDataController::default(),
+        packages,
         situation,
         weather: WeatherController::default(),
         map,
@@ -3671,7 +3663,7 @@ pub fn resolve_nav_db_artifact_candidates_in_session(
     let session_guard = slot.lock_running()?;
     let session = &*session_guard;
     session
-        .publication_resolver
+        .packages
         .resolve_nav_db_artifact_candidates()
         .map_err(|message| AppError {
             kind: AppErrorKind::InvalidManifest,
@@ -3737,7 +3729,12 @@ pub fn resolve_chart_asset_resource_in_session(
     }
     if let Some(installed_package_id) = package_ids
         .iter()
-        .find(|package_id| session.installed_package_ids.contains(*package_id))
+        .find(|package_id| {
+            session
+                .packages
+                .installed_package_ids()
+                .contains(*package_id)
+        })
         .cloned()
     {
         package_ids.retain(|package_id| package_id != &installed_package_id);
@@ -3748,7 +3745,7 @@ pub fn resolve_chart_asset_resource_in_session(
         message: format!("chart {chart_id} has no package source"),
     })?;
     let resources = session
-        .publication_resolver
+        .packages
         .package_resource_requests(&target_resource_id, package_id, member_path, false)
         .map_err(|message| AppError {
             kind: AppErrorKind::InvalidManifest,
@@ -3775,7 +3772,7 @@ pub fn resolve_metar_manifest_in_session(handle: u32) -> AppResult<HadOperationO
     let session_guard = slot.lock_running()?;
     let session = &*session_guard;
     session
-        .publication_resolver
+        .packages
         .resolve_family_resource("metars", "manifest.json")
         .map_err(|message| AppError {
             kind: AppErrorKind::InvalidManifest,
@@ -3790,9 +3787,7 @@ pub fn set_resource_policy_in_session(
     let slot = session_slot(handle)?;
     let mut session_guard = slot.lock_running()?;
     let session = &mut *session_guard;
-    if session.resource_policy != policy {
-        session.resource_policy = policy;
-        Arc::make_mut(&mut session.publication_resolver).set_resource_policy(policy);
+    if session.packages.set_resource_policy(policy) {
         session.map.replace_raster_catalog(None);
     }
     changed_session_snapshot_outcome(session)
@@ -3806,7 +3801,8 @@ pub fn load_offline_package_library_cache_in_session(
     let mut session_guard = slot.lock_running()?;
     let session = &mut *session_guard;
     advance_session_wall_clock(session, cache.fetched_at_epoch_ms);
-    Arc::make_mut(&mut session.publication_resolver)
+    session
+        .packages
         .load_offline_library_cache(&cache)
         .map_err(|message| AppError {
             kind: AppErrorKind::InvalidManifest,
@@ -3866,6 +3862,7 @@ pub fn complete_cloud_authorization_in_session(
         session
             .cloud
             .complete_authorization(request_id, response, now_epoch_ms)?;
+        sync_package_preferences_from_cloud(session)?;
         Ok(vec![UiInvalidation::SessionSnapshot])
     })
 }
@@ -3909,6 +3906,7 @@ pub fn perform_cloud_ui_action_in_session(
         session
             .cloud
             .perform_ui_action(action_id, &fields, &plan, now_epoch_ms)?;
+        sync_package_preferences_from_cloud(session)?;
         Ok(vec![UiInvalidation::SessionSnapshot])
     })
 }
@@ -3928,11 +3926,17 @@ pub fn record_offline_package_preferences_in_session(
     let session = &mut *session_guard;
     run_session_model_update(session, |session| {
         advance_session_wall_clock(session, now_epoch_ms);
+        session.packages.replace_preferences(preferences.clone());
         session
             .cloud
             .record_local_offline_package_preferences(&preferences, now_epoch_ms)?;
         Ok(vec![UiInvalidation::SessionSnapshot])
     })
+}
+
+fn sync_package_preferences_from_cloud(session: &mut UiSession) -> AppResult<bool> {
+    let preferences = session.cloud.offline_package_preferences()?;
+    Ok(session.packages.replace_preferences(preferences))
 }
 
 pub fn take_cloud_provider_request_in_session(
@@ -3977,6 +3981,7 @@ pub fn report_cloud_event_stream_event_in_session(
         session
             .cloud
             .report_event_stream_event(event, now_epoch_ms)?;
+        sync_package_preferences_from_cloud(session)?;
         Ok(vec![UiInvalidation::SessionSnapshot])
     })
 }
@@ -3996,6 +4001,7 @@ pub fn complete_cloud_provider_request_in_session(
             session
                 .cloud
                 .complete_provider_request(request_id, response, now_epoch_ms)?;
+        sync_package_preferences_from_cloud(session)?;
         let mut invalidations = vec![UiInvalidation::SessionSnapshot];
         if let Some(remote_plan) = completion.remote_flight_plan()? {
             let navigation_active = session
@@ -4025,6 +4031,7 @@ struct SessionModelTransactionCheckpoint {
     model: SessionModel,
     flight_plan: FlightPlanModelCheckpoint,
     nav_data: NavDataModelCheckpoint,
+    packages: PackageModelCheckpoint,
     situation: SituationModelCheckpoint,
     weather: WeatherModelCheckpoint,
     map: MapModelCheckpoint,
@@ -4037,6 +4044,7 @@ impl SessionModelTransactionCheckpoint {
             model: session.model.clone(),
             flight_plan: session.flight_plan.checkpoint_model(),
             nav_data: session.nav_data.checkpoint_model(),
+            packages: session.packages.checkpoint_model(),
             situation: session.situation.checkpoint_model(),
             weather: session.weather.checkpoint_model(),
             map: session.map.checkpoint_model(),
@@ -4048,6 +4056,7 @@ impl SessionModelTransactionCheckpoint {
         session.model = self.model;
         session.flight_plan.rollback_model(self.flight_plan);
         session.nav_data.rollback_model(self.nav_data);
+        session.packages.rollback_model(self.packages);
         session.situation.rollback_model(self.situation);
         session.weather.rollback_model(self.weather);
         session.map.rollback_model(self.map);
@@ -4246,7 +4255,7 @@ pub fn set_installed_package_ids_in_session(
     let slot = session_slot(handle)?;
     let mut session_guard = slot.lock_running()?;
     let session = &mut *session_guard;
-    session.installed_package_ids = package_ids.into_iter().collect();
+    session.packages.set_installed_package_ids(package_ids);
     changed_session_snapshot_outcome(session)
 }
 
@@ -4338,14 +4347,14 @@ pub fn get_raster_tile_plan_in_session_at_epoch_ms(
         } else {
             1.0
         },
-        resource_mode: raster_resource_mode_for_policy(session.resource_policy),
+        resource_mode: raster_resource_mode_for_policy(session.packages.resource_policy()),
         device_pixel_ratio: 1.0,
     };
     let catalog = raster_catalog_for_layer_state(
         catalog,
         session.map.layer_state(),
-        session.resource_policy,
-        &session.installed_package_ids,
+        session.packages.resource_policy(),
+        session.packages.installed_package_ids(),
     );
     let mut plan =
         crate::raster_tile_plan_with_options(&catalog, &viewport, width_px, height_px, options);
@@ -4386,8 +4395,8 @@ pub fn get_raster_tile_plan_in_session_with_options_at_epoch_ms(
     let catalog = raster_catalog_for_layer_state(
         catalog,
         session.map.layer_state(),
-        session.resource_policy,
-        &session.installed_package_ids,
+        session.packages.resource_policy(),
+        session.packages.installed_package_ids(),
     );
     let mut plan =
         crate::raster_tile_plan_with_options(&catalog, &viewport, width_px, height_px, options);
@@ -4445,14 +4454,14 @@ pub fn get_raster_tile_plan_in_session_with_display_scale_at_epoch_ms(
             1.0
         },
         device_pixel_ratio,
-        resource_mode: raster_resource_mode_for_policy(session.resource_policy),
+        resource_mode: raster_resource_mode_for_policy(session.packages.resource_policy()),
     };
     let catalog_started_at = crate::core_clock_ms();
     let catalog = raster_catalog_for_layer_state(
         catalog,
         session.map.layer_state(),
-        session.resource_policy,
-        &session.installed_package_ids,
+        session.packages.resource_policy(),
+        session.packages.installed_package_ids(),
     );
     let catalog_filter_ms = elapsed_ms(catalog_started_at);
     let displayed_maps = catalog.displayed_maps.len();
@@ -4477,7 +4486,7 @@ fn resolve_raster_tile_plan_public_urls(
     session: &UiSession,
     plan: &mut RasterTilePlan,
 ) -> AppResult<()> {
-    if session.resource_policy != CoreResourcePolicy::PublicUnpacked {
+    if session.packages.resource_policy() != CoreResourcePolicy::PublicUnpacked {
         return Ok(());
     }
     let mut resolved_urls = HashMap::<(String, String), String>::new();
@@ -4513,7 +4522,7 @@ fn resolve_raster_tile_source_public_url(
         url.clone()
     } else {
         let url = session
-            .publication_resolver
+            .packages
             .package_member_public_url(package_name, member_path)
             .map_err(|message| AppError {
                 kind: AppErrorKind::InvalidManifest,
@@ -6444,21 +6453,25 @@ pub fn advance_nav_kv_store_in_session_with_open_result(
     let previous_map_model = live.map.checkpoint_model();
     let previous_situation_model = live.situation.checkpoint_model();
     let previous_flight_plan_model = live.flight_plan.checkpoint_model();
+    let previous_package_model = live.packages.checkpoint_model();
 
     let mut candidate = UiSession {
         model: live.model.clone(),
         flight_plan: std::mem::take(&mut live.flight_plan),
         nav_data: live.nav_data.candidate(store_id, store, open_result),
+        packages: std::mem::take(&mut live.packages),
         situation: std::mem::take(&mut live.situation),
         weather: std::mem::take(&mut live.weather),
         map: std::mem::take(&mut live.map),
         runtime: std::mem::take(&mut live.runtime),
         diagnostics: Arc::clone(&live.diagnostics),
     };
-    candidate.installed_package_ids = installed_package_ids.into_iter().collect();
     candidate
-        .installed_package_ids
-        .insert(open_result.selected_package_id.clone());
+        .packages
+        .set_installed_package_ids(installed_package_ids);
+    candidate
+        .packages
+        .insert_installed_package_id(open_result.selected_package_id.clone());
     candidate.map.invalidate_nav_data();
     candidate.weather.invalidate_nav_data();
     rebuild_metar_tile_cache(&mut candidate);
@@ -6531,6 +6544,10 @@ pub fn advance_nav_kv_store_in_session_with_open_result(
         }
         Err(SessionSnapshotProjectionError::NeedResources(resources)) => {
             candidate
+                .packages
+                .rollback_model(previous_package_model.clone());
+            live.packages = candidate.packages;
+            candidate
                 .flight_plan
                 .rollback_model(previous_flight_plan_model);
             live.flight_plan = candidate.flight_plan;
@@ -6547,6 +6564,8 @@ pub fn advance_nav_kv_store_in_session_with_open_result(
             Ok(HadOperationOutcome::NeedResources { resources })
         }
         Err(SessionSnapshotProjectionError::Had(HadReadError::NeedPages(pages))) => {
+            candidate.packages.rollback_model(previous_package_model);
+            live.packages = candidate.packages;
             candidate
                 .flight_plan
                 .rollback_model(previous_flight_plan_model);
@@ -6587,7 +6606,7 @@ pub fn advance_nav_kv_store_in_session_with_open_result(
                 style: UiStatusActionStyle::Normal,
             });
             warning.hushable = false;
-            let candidate_installed_package_ids = candidate.installed_package_ids.clone();
+            live.packages = candidate.packages;
             candidate
                 .flight_plan
                 .rollback_model(previous_flight_plan_model);
@@ -6603,13 +6622,12 @@ pub fn advance_nav_kv_store_in_session_with_open_result(
             live.weather.invalidate_nav_data();
             rebuild_metar_tile_cache(live);
             live.nav_data.block_advance();
-            live.installed_package_ids = candidate_installed_package_ids;
             let active_package_id = live
                 .nav_data
                 .active_artifact()
                 .map(|artifact| artifact.package_id.clone());
             if let Some(active_package_id) = active_package_id {
-                live.installed_package_ids.insert(active_package_id);
+                live.packages.insert_installed_package_id(active_package_id);
             }
             upsert_data_status_record(live, warning);
             advance_session_revision(live);
@@ -6659,12 +6677,7 @@ pub fn maintain_nav_db_in_session_at_epoch_ms(
 
     let decision = session
         .nav_data
-        .maintenance_decision(
-            &session.publication_resolver,
-            session.resource_policy,
-            &session.installed_package_ids,
-            session.wall_clock_epoch_ms,
-        )
+        .maintenance_decision(&session.packages, session.wall_clock_epoch_ms)
         .map_err(|message| AppError {
             kind: AppErrorKind::InvalidManifest,
             message,
@@ -7305,7 +7318,8 @@ pub fn ingest_resource_in_session_at_epoch_ms(
         if resource_id == "publication/current_artifacts" {
             advance_session_wall_clock(session, epoch_ms);
             let wall_clock_epoch_ms = session.wall_clock_epoch_ms;
-            Arc::make_mut(&mut session.publication_resolver)
+            session
+                .packages
                 .ingest_resource_at_epoch_ms(resource_id, bytes, wall_clock_epoch_ms)
                 .map_err(|message| AppError {
                     kind: AppErrorKind::InvalidManifest,
@@ -7314,7 +7328,8 @@ pub fn ingest_resource_in_session_at_epoch_ms(
             mark_cycle_product_freshness_dirty(session);
             return Ok(());
         }
-        Arc::make_mut(&mut session.publication_resolver)
+        session
+            .packages
             .ingest_resource(resource_id, bytes)
             .map_err(|message| AppError {
                 kind: AppErrorKind::InvalidManifest,
@@ -10233,11 +10248,11 @@ fn terrain_elevation_request_for_session(
     session: &UiSession,
     position: LatLon,
 ) -> Option<crate::terrain::TerrainElevationRequest> {
-    match session.resource_policy {
+    match session.packages.resource_policy() {
         CoreResourcePolicy::InstalledPackage => {
             crate::terrain::terrain_elevation_request_with_available_packages(
                 position,
-                &session.installed_package_ids,
+                session.packages.installed_package_ids(),
             )
         }
         CoreResourcePolicy::PublicUnpacked => crate::terrain::terrain_elevation_request(position),
@@ -10482,7 +10497,7 @@ pub fn get_scheduled_terrain_overlay_in_session_at_epoch_ms(
     let has_altitude = ownship_terrain_altitude_ft(session).is_some();
     let ownship_position = kinematics.map(|kinematics| kinematics.position);
     let terrain_altitude_ft = ownship_terrain_altitude_ft(session);
-    let mut query = match session.resource_policy {
+    let mut query = match session.packages.resource_policy() {
         CoreResourcePolicy::InstalledPackage => {
             crate::query_terrain_overlay_with_available_packages(
                 &viewport,
@@ -10490,7 +10505,7 @@ pub fn get_scheduled_terrain_overlay_in_session_at_epoch_ms(
                 height_px,
                 has_position,
                 has_altitude,
-                &session.installed_package_ids,
+                session.packages.installed_package_ids(),
             )
         }
         CoreResourcePolicy::PublicUnpacked => {
@@ -10574,7 +10589,7 @@ fn resolve_terrain_source_resources<'a>(
     for source_tile in source_tiles {
         let key = terrain_source_tile_cache_key(&source_tile.product_id, &source_tile.path);
         let target_resource_id = format!("terrain/source/{key}");
-        let requested = match session.publication_resolver.package_resource_requests(
+        let requested = match session.packages.package_resource_requests(
             &target_resource_id,
             &source_tile.product_id,
             &source_tile.path,
@@ -11800,13 +11815,17 @@ fn try_snapshot_for_session(
             .as_ref()
             .is_some_and(|cloud| cloud.qr_scan),
     );
-    let offline_package_preferences_json = serde_json::to_string(
-        &session
-            .cloud
-            .offline_package_preferences()
-            .map_err(|error| HadReadError::Fatal(error.message))?,
-    )
-    .map_err(|error| HadReadError::Fatal(error.to_string()))?;
+    let package_projection = session
+        .packages
+        .project()
+        .map_err(|error| HadReadError::Fatal(error.message))?;
+    if package_projection.rebuilt {
+        session
+            .diagnostics
+            .package_projection_count
+            .fetch_add(1, Ordering::Relaxed);
+    }
+    let offline_package_preferences_json = package_projection.offline_package_preferences_json;
     let home_page_state = project_home_page_state(&session.platform_capabilities);
     let clone_ms = elapsed_ms(clone_started_at);
     let total_ms = elapsed_ms(total_started_at);
@@ -11818,7 +11837,7 @@ fn try_snapshot_for_session(
             "situation_ms": situation_ms,
             "clone_ms": clone_ms,
             "raster_ms": raster_ms,
-            "projections": ["app_ui", "flight_plan", "situation", "weather", "settings", "map"],
+            "projections": ["app_ui", "flight_plan", "situation", "weather", "settings", "map", "packages"],
             "status_boxes": data_status_state.boxes.len(),
             "status_page_rows": data_status_page_state.rows.len(),
             "settings_page_rows": settings_page_state.rows.len(),
@@ -12053,6 +12072,7 @@ fn load_session_persistence_from_storage(session: &mut UiSession) -> AppResult<(
     let document = decode_session_persistence(&bytes);
     session.settings.restore_preferences(document.preferences);
     session.cloud = CloudEngine::new(document.cloud);
+    sync_package_preferences_from_cloud(session)?;
     if let Some(plan) = session.cloud.cached_flight_plan() {
         replace_session_flight_plan(session, plan)?;
     }
@@ -13722,12 +13742,6 @@ mod tests {
                 persistence_storage: None,
                 cloud: CloudEngine::new(CloudPersistentState::default()),
                 debug_state: default_debug_state(),
-                resource_policy: CoreResourcePolicy::InstalledPackage,
-                installed_package_ids: BTreeSet::new(),
-                publication_resolver: Arc::new(PublicationResolver::with_resource_policy(
-                    "/packages",
-                    CoreResourcePolicy::InstalledPackage,
-                )),
                 cycle_product_freshness: CycleProductFreshnessState::default(),
                 wall_clock_epoch_ms: 0,
                 altitude_planner_wind_selection: AltitudePlannerWindSelection::NoWind,
@@ -13736,6 +13750,7 @@ mod tests {
             },
             flight_plan,
             nav_data,
+            packages: PackageController::default(),
             situation,
             weather: WeatherController::default(),
             map,
@@ -14184,13 +14199,13 @@ mod tests {
         let runtime_address = std::ptr::addr_of!(session.runtime);
         let terrain_bytes_address =
             session.map.runtime().terrain_source_tile_cache["seed"].as_ptr();
-        let publication_address = Arc::as_ptr(&session.publication_resolver);
+        let publication_address = std::ptr::from_ref(session.packages.resolver());
         let live_feeds_address = Arc::as_ptr(session.weather.live_feeds_arc());
 
         let outcome = run_session_model_transaction(&mut session, |session| {
             session
-                .installed_package_ids
-                .insert("test-package".to_string());
+                .packages
+                .insert_installed_package_id("test-package".to_string());
             Ok(vec![UiInvalidation::SessionSnapshot])
         })
         .expect("model transaction");
@@ -14202,7 +14217,7 @@ mod tests {
             terrain_bytes_address
         );
         assert_eq!(
-            Arc::as_ptr(&session.publication_resolver),
+            std::ptr::from_ref(session.packages.resolver()),
             publication_address
         );
         assert_eq!(
@@ -14224,8 +14239,8 @@ mod tests {
 
         let outcome = run_session_model_transaction(&mut session, |session| {
             session
-                .installed_package_ids
-                .insert("must-roll-back".to_string());
+                .packages
+                .insert_installed_package_id("must-roll-back".to_string());
             session
                 .weather
                 .set_current_refresh(LiveFeedCurrentRefreshState::Requested);
@@ -14244,7 +14259,10 @@ mod tests {
         .expect("paging outcome");
 
         assert!(matches!(outcome, HadOperationOutcome::NeedResources { .. }));
-        assert!(!session.installed_package_ids.contains("must-roll-back"));
+        assert!(!session
+            .packages
+            .installed_package_ids()
+            .contains("must-roll-back"));
         assert_eq!(
             session.weather.current_refresh(),
             LiveFeedCurrentRefreshState::Idle
@@ -14298,8 +14316,8 @@ mod tests {
 
         let error = run_session_model_transaction(&mut session, |session| {
             session
-                .installed_package_ids
-                .insert("must-roll-back".to_string());
+                .packages
+                .insert_installed_package_id("must-roll-back".to_string());
             enqueue_session_resource_effect(
                 session,
                 CoreResourceRequest::public_url("test", "/test", false),
@@ -14311,7 +14329,10 @@ mod tests {
 
         assert!(error.message.contains("injected settings write failure"));
         assert_eq!(session.session_revision, prior_revision);
-        assert!(!session.installed_package_ids.contains("must-roll-back"));
+        assert!(!session
+            .packages
+            .installed_package_ids()
+            .contains("must-roll-back"));
         assert!(session.runtime.pending_resource_effects.is_empty());
         assert_eq!(
             session
@@ -15203,6 +15224,63 @@ mod tests {
                 .unwrap(),
             serde_json::from_str::<serde_json::Value>(&preferences).unwrap()
         );
+        let sessions = lock_sessions();
+        let session = session_ref(&sessions, restarted.handle).expect("restored session");
+        assert_eq!(
+            session.packages.preferences(),
+            &session
+                .cloud
+                .offline_package_preferences()
+                .expect("cloud package preferences")
+        );
+        drop(session);
+        drop(sessions);
+        destroy_session(restarted.handle);
+    }
+
+    #[test]
+    fn offline_package_profile_rolls_back_controller_and_cloud_when_persistence_fails() {
+        let init =
+            create_ui_session(FlightPlan::default(), &[], None, None).expect("create session");
+        configure_platform_capabilities_in_session(
+            init.handle,
+            PlatformCapabilities::default(),
+            Some(Arc::new(RejectingSettingsStorage)),
+        )
+        .expect("configure rejecting storage");
+        let before = get_session_snapshot(init.handle).expect("initial snapshot");
+        let preferences = serde_json::json!({
+            "regions": {"nw": "pause"},
+            "products": {"terrain": "unselected"}
+        })
+        .to_string();
+
+        let error = record_offline_package_preferences_in_session(init.handle, &preferences, 100)
+            .expect_err("persistence failure must reject package preferences");
+
+        assert!(error.message.contains("injected settings write failure"));
+        let after = get_session_snapshot(init.handle).expect("rolled-back snapshot");
+        assert_eq!(after.session_revision, before.session_revision);
+        assert_eq!(
+            after.offline_package_preferences_json,
+            before.offline_package_preferences_json
+        );
+        let sessions = lock_sessions();
+        let session = session_ref(&sessions, init.handle).expect("session");
+        assert_eq!(
+            session.packages.preferences(),
+            &crate::OfflinePackagePreferences::default()
+        );
+        assert_eq!(
+            session
+                .cloud
+                .offline_package_preferences()
+                .expect("cloud package preferences"),
+            crate::OfflinePackagePreferences::default()
+        );
+        drop(session);
+        drop(sessions);
+        destroy_session(init.handle);
     }
 
     #[test]
@@ -16601,7 +16679,8 @@ mod tests {
         let bytes = serde_json::to_vec(&bundle).expect("bundle json");
         let mut sessions = lock_sessions();
         let mut session = session_mut(&mut sessions, handle).expect("session");
-        Arc::make_mut(&mut session.publication_resolver)
+        session
+            .packages
             .ingest_resource("publication/bundle/test.json", &bytes)
             .expect("ingest bundle");
     }
@@ -21238,7 +21317,8 @@ mod tests {
         {
             let mut sessions = lock_sessions();
             let mut session = session_mut(&mut sessions, init.handle).expect("session");
-            Arc::make_mut(&mut session.publication_resolver)
+            session
+                .packages
                 .ingest_resource_at_epoch_ms(
                     "publication/current_artifacts",
                     format!(

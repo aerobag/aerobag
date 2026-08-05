@@ -2,12 +2,12 @@
 //
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
-use std::{collections::BTreeSet, sync::Arc};
+use std::sync::Arc;
 
 use app_ui_contracts::session::UiNavDbIdentity;
 
 use crate::{
-    freshness::parse_utc_instant, publication::PublicationResolver, CoreResourcePolicy,
+    freshness::parse_utc_instant, package_controller::PackageController, CoreResourcePolicy,
     CoreResourceRequest, NavDbArtifactCandidate, NavDbOpenResult, NavKvStore,
 };
 
@@ -207,38 +207,18 @@ impl NavDataController {
         true
     }
 
-    pub fn candidates(
-        &self,
-        resolver: &PublicationResolver,
-        resource_policy: CoreResourcePolicy,
-        installed_package_ids: &BTreeSet<String>,
-    ) -> Result<Result<Vec<NavDbArtifactCandidate>, Vec<CoreResourceRequest>>, String> {
-        let candidates = match resolver.nav_db_artifact_candidates()? {
-            Ok(candidates) => candidates,
-            Err(resources) => return Ok(Err(resources)),
-        };
-        if resource_policy == CoreResourcePolicy::PublicUnpacked {
-            return Ok(Ok(candidates));
-        }
-        Ok(Ok(candidates
-            .into_iter()
-            .filter(|candidate| installed_package_ids.contains(&candidate.package_id))
-            .collect()))
-    }
-
     pub fn next_maintenance_epoch_ms(
         &self,
-        resolver: &PublicationResolver,
-        resource_policy: CoreResourcePolicy,
-        installed_package_ids: &BTreeSet<String>,
+        packages: &PackageController,
         now_epoch_ms: i64,
     ) -> Option<i64> {
         if self.model.advance_blocked {
             return None;
         }
+        let resource_policy = packages.resource_policy();
         let mut next = if resource_policy == CoreResourcePolicy::PublicUnpacked {
             Some(
-                resolver
+                packages
                     .current_artifacts_checked_epoch_ms()
                     .map(|checked| checked.saturating_add(NAV_DB_PUBLICATION_POLL_INTERVAL_MS))
                     .unwrap_or(now_epoch_ms),
@@ -246,7 +226,7 @@ impl NavDataController {
         } else {
             None
         };
-        let candidates = match self.candidates(resolver, resource_policy, installed_package_ids) {
+        let candidates = match packages.nav_db_artifact_candidates() {
             Ok(Ok(candidates)) => candidates,
             Ok(Err(_)) | Err(_) => {
                 return if resource_policy == CoreResourcePolicy::PublicUnpacked {
@@ -271,27 +251,26 @@ impl NavDataController {
 
     pub fn maintenance_decision(
         &self,
-        resolver: &PublicationResolver,
-        resource_policy: CoreResourcePolicy,
-        installed_package_ids: &BTreeSet<String>,
+        packages: &PackageController,
         now_epoch_ms: i64,
     ) -> Result<NavDataMaintenanceDecision, String> {
         if self.model.advance_blocked {
             return Ok(NavDataMaintenanceDecision::None);
         }
+        let resource_policy = packages.resource_policy();
         if resource_policy == CoreResourcePolicy::PublicUnpacked {
-            let refresh_due = resolver
+            let refresh_due = packages
                 .current_artifacts_checked_epoch_ms()
                 .is_none_or(|checked| {
                     checked.saturating_add(NAV_DB_PUBLICATION_POLL_INTERVAL_MS) <= now_epoch_ms
                 });
             if refresh_due {
-                return resolver
+                return packages
                     .current_artifacts_refresh_request()
                     .map(|resource| NavDataMaintenanceDecision::NeedResources(vec![resource]));
             }
         }
-        let candidates = match self.candidates(resolver, resource_policy, installed_package_ids)? {
+        let candidates = match packages.nav_db_artifact_candidates()? {
             Ok(candidates) => candidates,
             Err(resources) if resource_policy == CoreResourcePolicy::PublicUnpacked => {
                 return Ok(NavDataMaintenanceDecision::NeedResources(resources));

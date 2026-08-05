@@ -767,6 +767,7 @@ fn text_orientation_audit_entry(
     pdf_facts: &BTreeMap<String, PdfPlanningFacts>,
 ) -> anyhow::Result<Option<TppTextOrientationAuditEntry>> {
     if plate.rotation == PlateRotation::None
+        || plate.airport_diagram_georef.is_some()
         || !should_apply_text_orientation(&plate.record.chart_code, plate.render_kind)
     {
         return Ok(None);
@@ -2367,6 +2368,9 @@ mod tests {
 
         assert_eq!(planned.rotation, PlateRotation::Clockwise90);
         assert_eq!(planned.airport_diagram_georef, Some(georef));
+        assert!(super::text_orientation_audit_entry(&planned, &facts)
+            .unwrap()
+            .is_none());
     }
 
     #[test]

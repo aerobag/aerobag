@@ -185,18 +185,34 @@ ownership and rollback rules.
 
 This slice did not add a lock, thread, Worker, or platform wire change.
 
-## Next Slice
+## Completed Fourth Slice
 
-Extract `MapController` around map-layer state, raster selection, overlay
-configuration, viewport-independent map projection, and map-owned caches. Define
-typed weather and nav inputs instead of allowing the map controller to reach
-into those domains. Keep viewport queries and resource preparation synchronous
-initially, preserve existing invalidation behavior, and continue assembling the
-legacy full snapshot from cached controller projections.
+The fourth slice extracted `MapController` with a lightweight, checkpointed
+`MapModel` and a non-cloned `MapRuntime`. It owns map-layer availability and
+visibility policy, raster catalog selection, vector-manifest configuration,
+obstacle-layer configuration supplied by weather, vector and terrain caches,
+and a revisioned snapshot projection.
 
-The map slice should establish the boundary required for a later same-session
+NAVDB candidate adoption now moves the map controller without copying its heavy
+caches. Failed or page-faulted candidates roll back the map model and clear the
+moved cache allocations before returning them to the live session. Session code
+continues to coordinate typed weather visibility/status consequences, package
+policy, NAVDB reads, and resource effects.
+
+The map slice establishes the boundary required for a later same-session
 map-query concurrency test, but separate locking or scheduling remains a
 measurement-driven follow-up rather than part of extraction.
+
+This slice did not add a lock, thread, Worker, or platform wire change.
+
+## Next Slice
+
+Extract `SituationController` around ownship source registration and selection,
+live samples, replay, plan preview, bad-autopilot simulation, and map-follow
+state. Preserve one typed situation projection consumed by the legacy snapshot.
+Keep flight-plan guidance and sequencing in the session coordinator until their
+controller slice; situation updates may invoke those operations through narrow
+coordinator callbacks rather than owning flight-plan state.
 
 ## Relationship To Work Scheduling
 

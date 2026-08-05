@@ -30,6 +30,7 @@ pub mod ids;
 pub mod live_feed_cache;
 pub mod live_feed_runtime;
 pub mod live_feeds;
+mod map_controller;
 pub mod map_follow;
 pub mod map_overlay;
 pub mod navdb_types;

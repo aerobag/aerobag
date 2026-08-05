@@ -502,6 +502,70 @@ fn weather_state_runtime_and_projection_are_owned_by_weather_controller() {
 }
 
 #[test]
+fn map_state_runtime_and_projection_are_owned_by_map_controller() {
+    let session_text = read_repo_file("ui/core-rust/crates/app-core/src/session.rs");
+    let session = strip_rust_tests(&session_text);
+    let controller = read_repo_file("ui/core-rust/crates/app-core/src/map_controller.rs");
+    let ui_session = balanced_block_after_marker(session, "struct UiSession {");
+    let model = balanced_block_after_marker(session, "struct SessionModel");
+    let runtime = balanced_block_after_marker(session, "struct SessionRuntime");
+
+    assert!(
+        ui_session.contains("map: MapController"),
+        "UiSession must compose map behavior through one controller"
+    );
+    for field in [
+        "map_layer_state",
+        "map_overlay_config",
+        "vector_manifest_loaded",
+        "raster_map_catalog",
+        "vector_tile_cache",
+        "airspace_feature_cache",
+        "terrain_source_tile_cache",
+        "agl_terrain_resource_ids_in_flight",
+    ] {
+        assert!(
+            !model.contains(field) && !runtime.contains(field),
+            "map field {field} must not return to SessionModel or SessionRuntime"
+        );
+    }
+    assert!(
+        controller.contains("struct MapModel")
+            && controller.contains("struct MapRuntime")
+            && controller.contains("pub(crate) struct MapController"),
+        "MapController must own its lightweight model and heavy runtime"
+    );
+    assert!(
+        controller.contains("fn map_layer_disabled_reason")
+            && !session.contains("fn map_layer_disabled_reason")
+            && !session.contains("fn map_layer_toggle_mut"),
+        "map-layer policy must remain in MapController"
+    );
+    assert!(
+        !session.contains("session.map_layer_state")
+            && !session.contains("session.map_overlay_config")
+            && !session.contains("session.raster_map_catalog")
+            && !session.contains(".map.runtime."),
+        "session code must use MapController APIs rather than raw map storage"
+    );
+    let checkpoint =
+        balanced_block_after_marker(session, "struct SessionModelTransactionCheckpoint");
+    assert!(
+        checkpoint.contains("map: MapModelCheckpoint"),
+        "session transactions must checkpoint the lightweight map model"
+    );
+    let rollback = function_body(session, "rollback");
+    assert!(
+        rollback.contains("session.map.rollback_model"),
+        "session transaction rollback must restore the map model"
+    );
+    assert!(
+        function_body(session, "try_snapshot_for_session").contains("session.map.project"),
+        "full snapshots must consume the cached map projection"
+    );
+}
+
+#[test]
 fn platform_flight_plan_mutations_do_not_resync_guidance_after_core_mutation() {
     let web = read_repo_file("ui/web-app/src/domain/appCoreAdapter.ts");
     let android = read_repo_file(

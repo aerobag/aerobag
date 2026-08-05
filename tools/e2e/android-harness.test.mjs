@@ -11,6 +11,8 @@ import {
   destinationCenterEvidence,
   findAerobagAnrDialog,
   findSystemUiAnrWaitButton,
+  layerToggleNode,
+  layerToggleTag,
   renderedFlightPlanSignature,
 } from "./android-harness.mjs";
 
@@ -117,4 +119,17 @@ test("destination centering rejects stale trays and geographically displaced res
     probeTag: "parity:map-selection-center:KPLU:offset-px:3",
     offsetPx: 3,
   });
+});
+
+test("maps core layer IDs to Android's exported parity tags", () => {
+  const xml = `<hierarchy>
+    <node resource-id="parity:tray-option:TerrainWarning" checked="true" />
+    <node resource-id="parity:tray-option:Nexrad" checked="false" />
+  </hierarchy>`;
+
+  assert.equal(layerToggleTag("terrain_warning"), "parity:tray-option:TerrainWarning");
+  assert.equal(layerToggleTag("nexrad"), "parity:tray-option:Nexrad");
+  assert.equal(layerToggleNode(xml, "terrain_warning")?.checked, "true");
+  assert.equal(layerToggleNode(xml, "nexrad")?.checked, "false");
+  assert.throws(() => layerToggleTag("unknown"), /unsupported E2E map layer/);
 });

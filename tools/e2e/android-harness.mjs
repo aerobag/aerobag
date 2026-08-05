@@ -170,6 +170,22 @@ export function hasAndroidTag(node, tag) {
   );
 }
 
+const MAP_LAYER_PARITY_IDS = Object.freeze({
+  nexrad: "Nexrad",
+  terrain_warning: "TerrainWarning",
+});
+
+export function layerToggleTag(layerId) {
+  const parityId = MAP_LAYER_PARITY_IDS[layerId];
+  if (!parityId) throw new Error(`unsupported E2E map layer: ${layerId}`);
+  return `parity:tray-option:${parityId}`;
+}
+
+export function layerToggleNode(xml, layerId) {
+  const tag = layerToggleTag(layerId);
+  return findNode(xml, (node) => hasAndroidTag(node, tag));
+}
+
 export function destinationCenterEvidence(xml, destination, maxOffsetPx = 8) {
   const tray = findNode(xml, (node) => hasAndroidTag(node, "parity:map-selection-tray"));
   const airportItemTag = `parity:map-selection-item:airport-${destination}`;

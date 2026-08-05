@@ -30,6 +30,8 @@ import {
   hasAndroidText,
   inputText,
   launchFreshAndroidApp,
+  layerToggleNode,
+  layerToggleTag,
   lockAndroidRotation,
   pressKey,
   rectOfBounds,
@@ -818,6 +820,28 @@ async function ensureMapFollowEngaged(serial, result) {
   recordStep(result, "CTR follow engaged");
 }
 
+async function disengageMapFollowForRouteVisibility(serial, result) {
+  const probe = await waitForMapFollowProbe(serial, () => true, 30000, "map-follow probe visible");
+  if (!probe.following) return;
+  await tapTag(serial, "parity:button:CTR", 10000);
+  await waitForMapFollowProbe(
+    serial,
+    (nextProbe) => !nextProbe.following,
+    30000,
+    "CTR follow disengaged",
+  );
+  recordStep(result, "CTR follow disengaged for route visibility");
+}
+
+async function prepareRouteViewportForRotations(serial, result, route, expectedSignature) {
+  await ensureChartPage(serial, result);
+  await disengageMapFollowForRouteVisibility(serial, result);
+  await centerChartOnDestination(serial, result, route);
+  await waitForRouteOverlay(serial, result);
+  await ensurePlanPage(serial, result);
+  await waitForPlanSignature(serial, expectedSignature, 15000);
+}
+
 async function dragMapWhileFollowing(serial, result) {
   const surfaceNode = await waitForNode(
     serial,
@@ -905,10 +929,6 @@ async function zoomMapWhileFollowing(serial, result) {
   recordStep(result, "map zoom preserved CTR offset", `${before.zoomCenti} -> ${settled.zoomCenti}`);
 }
 
-function layerToggleNode(xml, layerId) {
-  return findNode(xml, (node) => hasAndroidTag(node, `parity:tray-option:${layerId}`));
-}
-
 function layerToggleIsOn(xml, layerId) {
   return layerToggleNode(xml, layerId)?.checked === "true";
 }
@@ -969,14 +989,14 @@ async function runLayerToggleNavDbRegression(args) {
   recordCheck(result, "layers.terrainInitiallyOn", layerToggleIsOn(xml, "terrain_warning"));
   recordCheck(result, "layers.nexradInitiallyOff", !layerToggleIsOn(xml, "nexrad"));
 
-  await tapTag(serial, "parity:tray-option:terrain_warning", 10000);
+  await tapTag(serial, layerToggleTag("terrain_warning"), 10000);
   await delay(500);
   recordCheck(result, "layers.terrainCommandAccepted", rejectedLayerCommandCount(serial) === 0);
   recordStep(result, "Terrain disabled without a session-command warning");
 
   xml = await openLayersTray(serial, result);
   recordCheck(result, "layers.terrainTurnedOff", !layerToggleIsOn(xml, "terrain_warning"));
-  await tapTag(serial, "parity:tray-option:nexrad", 10000);
+  await tapTag(serial, layerToggleTag("nexrad"), 10000);
   await delay(500);
   const screenshotPath = captureLayerToggleRegressionScreenshot(serial, result);
   recordCheck(result, "layers.nexradCommandAccepted", rejectedLayerCommandCount(serial) === 0, screenshotPath);
@@ -1170,6 +1190,12 @@ async function runPersistedLiveFeedRotationPhase(args, result, baselineSignature
         !liveFeedBaselineSignature.stateTag.endsWith(":to:none"),
       liveFeedBaselineSignature.stateTag,
     );
+    await prepareRouteViewportForRotations(
+      serial,
+      result,
+      ROTATION_ROUTE,
+      liveFeedBaselineSignature,
+    );
     await exerciseRetainedPlanAcrossRotations(
       serial,
       result,
@@ -1182,6 +1208,12 @@ async function runPersistedLiveFeedRotationPhase(args, result, baselineSignature
     await verifyNotamsLoadedInUi(serial, result);
     await ensurePlanPage(serial, result);
     await waitForPlanSignature(serial, liveFeedBaselineSignature, 15000);
+    await prepareRouteViewportForRotations(
+      serial,
+      result,
+      ROTATION_ROUTE,
+      liveFeedBaselineSignature,
+    );
     await exerciseRetainedPlanAcrossRotations(
       serial,
       result,
@@ -1200,6 +1232,8 @@ async function runPersistedLiveFeedRotationPhase(args, result, baselineSignature
     `marker count=${logcatMarkerCount(serial, LIVE_FEED_PROMOTION_PAUSE_MARKER)}`,
   );
   await ensureChartPage(serial, result);
+  await disengageMapFollowForRouteVisibility(serial, result);
+  await centerChartOnDestination(serial, result, ROTATION_ROUTE);
   await waitForRouteOverlay(serial, result);
   const { logcat, evidence } = scanAerobagLogcat(serial);
   const logcatPath = join(E2E_ARTIFACT_DIR, "android-rotation-live-feed-logcat.txt");

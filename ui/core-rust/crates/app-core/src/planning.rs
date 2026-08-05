@@ -2917,14 +2917,26 @@ fn group_row_actions(component: &RouteComponentUiView) -> Vec<FlightPlanRowActio
             ),
             action(FlightPlanRowActionId::InsertBefore, true),
             action(FlightPlanRowActionId::InsertAfter, true),
-            core_session_action_with_disabled_reason(
-                FlightPlanRowActionId::RemoveProcedure,
-                component.can_remove,
-                PROCEDURE_REMOVE_DISABLED_REASON,
-            ),
+            remove_procedure_action(component),
         ],
         RouteComponentViewKind::Waypoint => Vec::new(),
     }
+}
+
+fn remove_procedure_action(component: &RouteComponentUiView) -> FlightPlanRowActionUiView {
+    let mut action = core_session_action_with_disabled_reason(
+        FlightPlanRowActionId::RemoveProcedure,
+        component.can_remove,
+        PROCEDURE_REMOVE_DISABLED_REASON,
+    );
+    action.label = match component.procedure_kind.as_ref() {
+        Some(ProcedureKind::Sid) => "Remove Departure",
+        Some(ProcedureKind::Star) => "Remove Arrival",
+        Some(ProcedureKind::Approach) => "Remove Approach",
+        None => "Remove Procedure",
+    }
+    .to_string();
+    action
 }
 
 fn apply_component_mutation_action_availability(
@@ -9638,6 +9650,24 @@ mod tests {
             row_action_disabled_reason(&FlightPlanRowActionId::RemoveAllAbove, false).as_deref(),
             Some(REMOVE_ALL_ABOVE_DISABLED_REASON)
         );
+    }
+
+    #[test]
+    fn procedure_removal_labels_use_pilot_facing_procedure_kinds() {
+        let label = |kind| {
+            let mut component = projected_components_for_test(&sample_airway_component_plan())
+                .into_iter()
+                .find(|component| component.kind == RouteComponentViewKind::Airway)
+                .expect("sample component");
+            component.kind = RouteComponentViewKind::Procedure;
+            component.procedure_kind = kind;
+            remove_procedure_action(&component).label
+        };
+
+        assert_eq!(label(Some(ProcedureKind::Sid)), "Remove Departure");
+        assert_eq!(label(Some(ProcedureKind::Star)), "Remove Arrival");
+        assert_eq!(label(Some(ProcedureKind::Approach)), "Remove Approach");
+        assert_eq!(label(None), "Remove Procedure");
     }
 
     #[test]

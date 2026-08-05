@@ -7,8 +7,9 @@ use std::{
     collections::{BTreeMap, BTreeSet, VecDeque},
     fs,
     hash::{Hash, Hasher},
+    io::Write,
     path::{Path, PathBuf},
-    process::Command,
+    process::{Command, Stdio},
     sync::{Arc, Mutex},
     thread,
     time::Instant,
@@ -38,9 +39,9 @@ pub use thumbnail::{write_tpp_thumbnail, write_tpp_thumbnail_from_source};
 
 const TPP_AIRPORT_DIAGRAMS_URL: &str =
     "https://www.outerworldapps.com/WairToNowWork/avare_aptdiags.php";
-const TPP_BASIC_PIPELINE_VERSION: &str = "basic-v5-hotspot-stapled";
-const TPP_AIRPORT_DIAGRAM_PIPELINE_VERSION: &str = "airport-diagram-v3-georef-rotation";
-const TPP_CONTINUED_PIPELINE_VERSION: &str = "continued-v6-hotspot-shared-path";
+const TPP_BASIC_PIPELINE_VERSION: &str = "basic-v6-cardinal-text-orientation";
+const TPP_AIRPORT_DIAGRAM_PIPELINE_VERSION: &str = "airport-diagram-v4-text-orientation-fallback";
+const TPP_CONTINUED_PIPELINE_VERSION: &str = "continued-v7-cardinal-text-orientation";
 const TPP_GEOTAGGED_PIPELINE_VERSION: &str = "geotagged-v2-dstalpha";
 const TPP_MINIMUM_PIPELINE_VERSION: &str = "minimum-v1";
 const TPP_RENDER_DPI: u32 = 225;
@@ -117,6 +118,27 @@ enum PlateRotation {
     Clockwise90,
     HalfTurn,
     CounterClockwise90,
+}
+
+impl PlateRotation {
+    fn from_clockwise_degrees(degrees: u16) -> anyhow::Result<Self> {
+        match degrees {
+            0 => Ok(Self::None),
+            90 => Ok(Self::Clockwise90),
+            180 => Ok(Self::HalfTurn),
+            270 => Ok(Self::CounterClockwise90),
+            _ => bail!("unsupported plate rotation {degrees} degrees"),
+        }
+    }
+
+    fn clockwise_degrees(self) -> u16 {
+        match self {
+            Self::None => 0,
+            Self::Clockwise90 => 90,
+            Self::HalfTurn => 180,
+            Self::CounterClockwise90 => 270,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq)]
@@ -226,12 +248,33 @@ impl AirportDiagramGeoref {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct TppRegionRenderPlan {
     units: Vec<TppRenderUnitPlan>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    text_orientation_rotations: Vec<TppTextOrientationAuditEntry>,
 }
 
 impl TppRegionRenderPlan {
     pub fn units(&self) -> &[TppRenderUnitPlan] {
         &self.units
     }
+
+    pub fn text_orientation_rotations(&self) -> &[TppTextOrientationAuditEntry] {
+        &self.text_orientation_rotations
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct TppTextOrientationAuditEntry {
+    airport_ids: Vec<String>,
+    chart_name: String,
+    chart_code: String,
+    pdf_name: String,
+    clockwise_rotation_deg: u16,
+    dominant_char_weight: u64,
+    cardinal_char_weight: u64,
+    non_cardinal_char_weight: u64,
+    outside_frame_char_weight: u64,
+    dominance_per_mille: u16,
+    cardinal_char_weights: [u64; 4],
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -292,7 +335,26 @@ struct PlannedPlate {
 struct PdfPlanningFacts {
     pdf_hash: String,
     non_special_render_kind: Option<PlateRenderKind>,
-    landscape_rotation: Option<PlateRotation>,
+    text_orientation: Option<TextOrientationAnalysis>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+struct TextOrientationAnalysis {
+    path: PathBuf,
+    rotation_deg: u16,
+    dominant_cardinal_deg: u16,
+    dominant_char_weight: u64,
+    cardinal_char_weight: u64,
+    non_cardinal_char_weight: u64,
+    outside_frame_char_weight: u64,
+    dominance_per_mille: u16,
+    cardinal_char_weights: [u64; 4],
+}
+
+impl TextOrientationAnalysis {
+    fn rotation(&self) -> anyhow::Result<PlateRotation> {
+        PlateRotation::from_clockwise_degrees(self.rotation_deg)
+    }
 }
 
 pub fn run_native_tpp(request: &NativeTppRunRequest) -> anyhow::Result<NativeTppRunResult> {
@@ -469,12 +531,16 @@ pub fn plan_tpp_region_render(
     let tasks = build_plate_tasks(plates);
     let ad_tags = read_airport_diagram_tags(&pdf_root.join("avare_aptdiags.php"))?;
     let minimum_pages = collect_minimum_pages_by_plate(pdf_root, &tasks)?;
-    let pdf_facts = collect_pdf_planning_facts(pdf_root, &tasks)?;
+    let pdf_facts = collect_pdf_planning_facts(pdf_root, &tasks, &ad_tags)?;
     let units = tasks
         .into_iter()
         .map(|task| plan_plate_task(&ad_tags, &minimum_pages, &pdf_facts, task))
         .collect::<anyhow::Result<Vec<_>>>()?;
-    Ok(TppRegionRenderPlan { units })
+    let text_orientation_rotations = collect_text_orientation_audit(&units, &pdf_facts)?;
+    Ok(TppRegionRenderPlan {
+        units,
+        text_orientation_rotations,
+    })
 }
 
 pub fn render_tpp_unit(
@@ -648,14 +714,100 @@ fn plan_plate_task(
     })
 }
 
+fn collect_text_orientation_audit(
+    units: &[TppRenderUnitPlan],
+    pdf_facts: &BTreeMap<String, PdfPlanningFacts>,
+) -> anyhow::Result<Vec<TppTextOrientationAuditEntry>> {
+    let mut entries_by_pdf = BTreeMap::<String, TppTextOrientationAuditEntry>::new();
+    for unit in units {
+        match &unit.task {
+            PlannedPlateTask::Single(plate) => {
+                if let Some(entry) = text_orientation_audit_entry(plate, pdf_facts)? {
+                    merge_text_orientation_audit_entry(&mut entries_by_pdf, entry)?;
+                }
+            }
+            PlannedPlateTask::Continued(group) => {
+                for plate in &group.members {
+                    if let Some(entry) = text_orientation_audit_entry(plate, pdf_facts)? {
+                        merge_text_orientation_audit_entry(&mut entries_by_pdf, entry)?;
+                    }
+                }
+            }
+        }
+    }
+    Ok(entries_by_pdf.into_values().collect())
+}
+
+fn merge_text_orientation_audit_entry(
+    entries_by_pdf: &mut BTreeMap<String, TppTextOrientationAuditEntry>,
+    mut entry: TppTextOrientationAuditEntry,
+) -> anyhow::Result<()> {
+    let Some(existing) = entries_by_pdf.get_mut(&entry.pdf_name) else {
+        entries_by_pdf.insert(entry.pdf_name.clone(), entry);
+        return Ok(());
+    };
+    let mut existing_decision = existing.clone();
+    existing_decision.airport_ids.clear();
+    let mut new_decision = entry.clone();
+    new_decision.airport_ids.clear();
+    if existing_decision != new_decision {
+        bail!(
+            "conflicting text-orientation audit decisions for {}",
+            entry.pdf_name
+        );
+    }
+    existing.airport_ids.append(&mut entry.airport_ids);
+    existing.airport_ids.sort();
+    existing.airport_ids.dedup();
+    Ok(())
+}
+
+fn text_orientation_audit_entry(
+    plate: &PlannedPlate,
+    pdf_facts: &BTreeMap<String, PdfPlanningFacts>,
+) -> anyhow::Result<Option<TppTextOrientationAuditEntry>> {
+    if plate.rotation == PlateRotation::None
+        || !should_apply_text_orientation(&plate.record.chart_code, plate.render_kind)
+    {
+        return Ok(None);
+    }
+    let analysis = pdf_facts
+        .get(&plate.record.pdf_name)
+        .with_context(|| format!("missing planning facts for {}", plate.record.pdf_name))?
+        .text_orientation
+        .as_ref()
+        .with_context(|| {
+            format!(
+                "missing text-orientation facts for {}",
+                plate.record.pdf_name
+            )
+        })?;
+    if analysis.rotation()? != plate.rotation {
+        return Ok(None);
+    }
+    Ok(Some(TppTextOrientationAuditEntry {
+        airport_ids: vec![plate.record.apt_id.clone()],
+        chart_name: plate.record.chart_name.clone(),
+        chart_code: plate.record.chart_code.clone(),
+        pdf_name: plate.record.pdf_name.clone(),
+        clockwise_rotation_deg: plate.rotation.clockwise_degrees(),
+        dominant_char_weight: analysis.dominant_char_weight,
+        cardinal_char_weight: analysis.cardinal_char_weight,
+        non_cardinal_char_weight: analysis.non_cardinal_char_weight,
+        outside_frame_char_weight: analysis.outside_frame_char_weight,
+        dominance_per_mille: analysis.dominance_per_mille,
+        cardinal_char_weights: analysis.cardinal_char_weights,
+    }))
+}
+
 fn collect_pdf_planning_facts(
     pdf_root: &Path,
     tasks: &[PlateTask],
+    ad_tags: &std::collections::HashMap<String, AirportDiagramGeoref>,
 ) -> anyhow::Result<BTreeMap<String, PdfPlanningFacts>> {
     #[derive(Debug, Default)]
     struct NeededFacts {
         geotag_classification: bool,
-        landscape_rotation: bool,
     }
 
     let mut needed_by_pdf = BTreeMap::<String, NeededFacts>::new();
@@ -668,39 +820,80 @@ fn collect_pdf_planning_facts(
         {
             needed.geotag_classification = true;
         }
-        if plate.chart_code != "HOT" && should_detect_landscape_rotation(&output_name) {
-            needed.landscape_rotation = true;
+    }
+
+    let mut facts_by_pdf = BTreeMap::new();
+    for (pdf_name, needed) in needed_by_pdf {
+        let pdf_path = pdf_root.join(&pdf_name);
+        if !pdf_path.is_file() {
+            bail!("file not found {}", pdf_path.display());
+        }
+        let pdf_hash = hash_file(&pdf_path)?;
+        let non_special_render_kind = if needed.geotag_classification {
+            Some(classify_pdf_non_special_render_kind(&pdf_path)?)
+        } else {
+            None
+        };
+        facts_by_pdf.insert(
+            pdf_name,
+            PdfPlanningFacts {
+                pdf_hash,
+                non_special_render_kind,
+                text_orientation: None,
+            },
+        );
+    }
+
+    let mut orientation_pdf_names = BTreeSet::new();
+    for plate in plate_records_for_tasks(tasks) {
+        let output_name = plate_output_name(&plate.chart_code, &plate.state_id, &plate.chart_name);
+        let facts = facts_by_pdf
+            .get(&plate.pdf_name)
+            .with_context(|| format!("missing planning facts for {}", plate.pdf_name))?;
+        let render_kind = if plate.chart_code == "HOT" {
+            PlateRenderKind::Basic
+        } else if output_name.starts_with("MIN-") {
+            PlateRenderKind::Minimum
+        } else if output_name.starts_with("APD-") {
+            PlateRenderKind::AirportDiagram
+        } else {
+            facts
+                .non_special_render_kind
+                .with_context(|| format!("missing render-kind facts for {}", plate.pdf_name))?
+        };
+        let has_airport_diagram_georef =
+            render_kind == PlateRenderKind::AirportDiagram && ad_tags.contains_key(&plate.apt_id);
+        if should_measure_text_orientation(
+            &plate.chart_code,
+            render_kind,
+            has_airport_diagram_georef,
+        ) {
+            orientation_pdf_names.insert(plate.pdf_name.clone());
         }
     }
 
-    needed_by_pdf
-        .into_iter()
-        .map(|(pdf_name, needed)| {
-            let pdf_path = pdf_root.join(&pdf_name);
-            if !pdf_path.is_file() {
-                bail!("file not found {}", pdf_path.display());
-            }
-            let pdf_hash = hash_file(&pdf_path)?;
-            let non_special_render_kind = if needed.geotag_classification {
-                Some(classify_pdf_non_special_render_kind(&pdf_path)?)
-            } else {
-                None
-            };
-            let landscape_rotation = if needed.landscape_rotation {
-                Some(detect_landscape_rotation(&pdf_path)?)
-            } else {
-                None
-            };
-            Ok((
-                pdf_name,
-                PdfPlanningFacts {
-                    pdf_hash,
-                    non_special_render_kind,
-                    landscape_rotation,
-                },
-            ))
-        })
-        .collect()
+    let orientation_paths = orientation_pdf_names
+        .iter()
+        .map(|pdf_name| pdf_root.join(pdf_name))
+        .collect::<Vec<_>>();
+    let mut text_orientations = detect_text_orientations(&orientation_paths)?;
+    for pdf_name in orientation_pdf_names {
+        let pdf_path = pdf_root.join(&pdf_name);
+        let analysis = text_orientations
+            .remove(&pdf_path)
+            .with_context(|| format!("missing text-orientation facts for {pdf_name}"))?;
+        facts_by_pdf
+            .get_mut(&pdf_name)
+            .with_context(|| format!("missing planning facts for {pdf_name}"))?
+            .text_orientation = Some(analysis);
+    }
+    if !text_orientations.is_empty() {
+        bail!(
+            "text-orientation detector returned {} unexpected result(s)",
+            text_orientations.len()
+        );
+    }
+    Ok(facts_by_pdf)
 }
 
 fn resolved_continued_group_should_keep_separate(members: &[PlannedPlate]) -> bool {
@@ -780,22 +973,23 @@ fn plan_plate(
     let airport_diagram_georef = (render_kind == PlateRenderKind::AirportDiagram)
         .then(|| ad_tags.get(&plate.apt_id).copied())
         .flatten();
-    let rotation = if plate.chart_code == "HOT" {
-        PlateRotation::None
-    } else if render_kind == PlateRenderKind::AirportDiagram {
-        // The latitude column of the affine is the image-space direction of north.
-        // FAA airport diagrams delivered sideways therefore identify their own
-        // required reading rotation without a separate page-orientation heuristic.
-        airport_diagram_georef
-            .map(AirportDiagramGeoref::north_up_rotation)
-            .unwrap_or(PlateRotation::None)
-    } else if should_detect_landscape_rotation(&output_name) {
-        facts
-            .landscape_rotation
-            .with_context(|| format!("missing rotation facts for {}", plate.pdf_name))?
-    } else {
-        PlateRotation::None
-    };
+    let rotation =
+        if render_kind == PlateRenderKind::AirportDiagram && airport_diagram_georef.is_some() {
+            // The latitude column of the affine is the image-space direction of north.
+            // FAA airport diagrams delivered sideways therefore identify their own
+            // required reading rotation without a separate page-orientation heuristic.
+            airport_diagram_georef
+                .map(AirportDiagramGeoref::north_up_rotation)
+                .unwrap_or(PlateRotation::None)
+        } else if should_apply_text_orientation(&plate.chart_code, render_kind) {
+            facts
+                .text_orientation
+                .as_ref()
+                .with_context(|| format!("missing text-orientation facts for {}", plate.pdf_name))?
+                .rotation()?
+        } else {
+            PlateRotation::None
+        };
     let minimum_pages = if output_name.starts_with("MIN-") {
         minimum_pages
             .get(&(plate.pdf_name.clone(), plate.apt_id.clone()))
@@ -1352,37 +1546,103 @@ fn render_basic_png(
     Ok(())
 }
 
-fn detect_landscape_rotation(pdf_path: &Path) -> anyhow::Result<PlateRotation> {
+fn detect_text_orientations(
+    pdf_paths: &[PathBuf],
+) -> anyhow::Result<BTreeMap<PathBuf, TextOrientationAnalysis>> {
+    if pdf_paths.is_empty() {
+        return Ok(BTreeMap::new());
+    }
     let script_path = detect_landscape_rotation_script()?;
-    let output = Command::new("python3")
+    let mut child = Command::new("python3")
         .env("PYTHONDONTWRITEBYTECODE", "1")
         .arg(&script_path)
-        .arg(pdf_path)
-        .output()
+        .arg("--batch-json")
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
         .with_context(|| format!("failed to run {}", script_path.display()))?;
+    let mut stdin = child
+        .stdin
+        .take()
+        .context("text-orientation detector stdin was unavailable")?;
+    let detector_input = pdf_paths
+        .iter()
+        .map(|pdf_path| format!("{}\n", pdf_path.display()))
+        .collect::<String>();
+    let stdin_writer = thread::spawn(move || -> anyhow::Result<()> {
+        stdin
+            .write_all(detector_input.as_bytes())
+            .context("failed to submit PDFs for text-orientation analysis")
+    });
+    let output = child
+        .wait_with_output()
+        .context("failed waiting for text-orientation detector")?;
+    let stdin_result = stdin_writer
+        .join()
+        .map_err(|_| anyhow::anyhow!("text-orientation detector stdin writer panicked"))?;
     if !output.status.success() {
         bail!(
-            "detect_landscape_rotation.py failed for {}; command=\"python3 {} {}\" {}",
-            pdf_path.display(),
+            "detect_landscape_rotation.py batch failed; command=\"python3 {} --batch-json\" {}",
             script_path.display(),
-            pdf_path.display(),
             command_output_diagnostic_summary(&output)
         );
     }
+    stdin_result?;
     let stdout =
-        String::from_utf8(output.stdout).context("landscape rotation output was not utf-8")?;
-    let rotation = match stdout.trim() {
-        "90" => PlateRotation::Clockwise90,
-        "270" => PlateRotation::CounterClockwise90,
-        _ => PlateRotation::None,
-    };
-    Ok(rotation)
+        String::from_utf8(output.stdout).context("text-orientation output was not utf-8")?;
+    let mut analyses = BTreeMap::new();
+    for (line_index, line) in stdout.lines().enumerate() {
+        let analysis: TextOrientationAnalysis = serde_json::from_str(line).with_context(|| {
+            format!(
+                "invalid text-orientation JSON on output line {}",
+                line_index + 1
+            )
+        })?;
+        PlateRotation::from_clockwise_degrees(analysis.rotation_deg)?;
+        if !matches!(analysis.dominant_cardinal_deg, 0 | 90 | 180 | 270) {
+            bail!(
+                "unsupported dominant text orientation {} for {}",
+                analysis.dominant_cardinal_deg,
+                analysis.path.display()
+            );
+        }
+        let path = analysis.path.clone();
+        if analyses.insert(path.clone(), analysis).is_some() {
+            bail!(
+                "text-orientation detector returned duplicate result for {}",
+                path.display()
+            );
+        }
+    }
+    if analyses.len() != pdf_paths.len() {
+        bail!(
+            "text-orientation detector returned {} result(s) for {} PDF(s)",
+            analyses.len(),
+            pdf_paths.len()
+        );
+    }
+    Ok(analyses)
 }
 
-fn should_detect_landscape_rotation(output_name: &str) -> bool {
-    output_name.starts_with("STAR-")
-        || output_name.starts_with("DP-")
-        || output_name.starts_with("ODP-")
+fn should_measure_text_orientation(
+    chart_code: &str,
+    render_kind: PlateRenderKind,
+    has_airport_diagram_georef: bool,
+) -> bool {
+    chart_code != "HOT"
+        && render_kind != PlateRenderKind::Minimum
+        && !has_airport_diagram_georef
+        && should_apply_text_orientation(chart_code, render_kind)
+}
+
+fn should_apply_text_orientation(chart_code: &str, render_kind: PlateRenderKind) -> bool {
+    chart_code != "HOT"
+        && (matches!(
+            render_kind,
+            PlateRenderKind::Basic | PlateRenderKind::AirportDiagram
+        ) || (render_kind == PlateRenderKind::Geotagged
+            && matches!(chart_code, "DP" | "ODP" | "STR")))
 }
 
 fn rotate_png_if_needed(
@@ -2093,7 +2353,7 @@ mod tests {
             PdfPlanningFacts {
                 pdf_hash: "hash".to_string(),
                 non_special_render_kind: None,
-                landscape_rotation: None,
+                text_orientation: None,
             },
         )]);
 
@@ -2107,6 +2367,53 @@ mod tests {
 
         assert_eq!(planned.rotation, PlateRotation::Clockwise90);
         assert_eq!(planned.airport_diagram_georef, Some(georef));
+    }
+
+    #[test]
+    fn faa_str_arrival_uses_detected_text_orientation() {
+        let plate = PlateRecord {
+            apt_id: "PAE".to_string(),
+            state_id: "WA".to_string(),
+            chart_name: "CHINS FIVE".to_string(),
+            chart_code: "STR".to_string(),
+            pdf_name: "00582CHINS.PDF".to_string(),
+        };
+        let facts = BTreeMap::from([(
+            plate.pdf_name.clone(),
+            PdfPlanningFacts {
+                pdf_hash: "hash".to_string(),
+                non_special_render_kind: Some(PlateRenderKind::Basic),
+                text_orientation: Some(super::TextOrientationAnalysis {
+                    path: plate.pdf_name.clone().into(),
+                    rotation_deg: 90,
+                    dominant_cardinal_deg: 90,
+                    dominant_char_weight: 860,
+                    cardinal_char_weight: 1060,
+                    non_cardinal_char_weight: 176,
+                    outside_frame_char_weight: 152,
+                    dominance_per_mille: 811,
+                    cardinal_char_weights: [200, 860, 0, 0],
+                }),
+            },
+        )]);
+
+        let planned = plan_plate(&HashMap::new(), &BTreeMap::new(), &facts, plate).unwrap();
+
+        assert_eq!(planned.rotation, PlateRotation::Clockwise90);
+        let audit = super::text_orientation_audit_entry(&planned, &facts)
+            .unwrap()
+            .unwrap();
+        assert_eq!(audit.airport_ids, vec!["PAE"]);
+        assert_eq!(audit.clockwise_rotation_deg, 90);
+        assert_eq!(audit.dominance_per_mille, 811);
+    }
+
+    #[test]
+    fn hotspot_documents_do_not_use_text_orientation() {
+        assert!(!super::should_apply_text_orientation(
+            "HOT",
+            PlateRenderKind::Basic
+        ));
     }
 
     #[test]

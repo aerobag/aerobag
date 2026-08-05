@@ -1073,7 +1073,7 @@ const TPP_FETCH_NODE_VERSION: &str = "v2-source-content-fingerprint";
 // output-affecting helpers it calls; bump them when those output semantics
 // change. Do not add broad helper-crate hashes to TPP node inputs for logging or
 // subprocess-runner changes.
-const TPP_PLAN_NODE_VERSION: &str = "v1-typed-airport-diagram-georef";
+const TPP_PLAN_NODE_VERSION: &str = "v2-cardinal-text-orientation";
 const TPP_RENDER_NODE_VERSION: &str = "v3-per-output-render-nodes";
 const TPP_RENDER_ASSEMBLE_NODE_VERSION: &str = "v2-source-map-assemble";
 const TPP_PACKAGE_NODE_VERSION: &str = "v2-per-thumbnail-nodes";

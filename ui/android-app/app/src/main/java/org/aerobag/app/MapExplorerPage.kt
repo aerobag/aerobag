@@ -416,6 +416,35 @@ internal fun buildMapFollowProbeTag(
         "zoom-centi:${(viewport.zoom * 100.0).roundToInt()}"
 }
 
+internal fun buildMapSelectionCenterProbeTag(
+    targetLabel: String,
+    targetPosition: LatLonPoint,
+    viewport: MapViewportState,
+    surfaceWidthPx: Float,
+    surfaceHeightPx: Float,
+): String {
+    val point = latLonToScreen(
+        targetPosition.lat,
+        targetPosition.lon,
+        viewport,
+        surfaceWidthPx,
+        surfaceHeightPx,
+    )
+    val offsetPx = hypot(
+        point.x - surfaceWidthPx / 2f,
+        point.y - surfaceHeightPx / 2f,
+    ).roundToInt()
+    val tagLabel = targetLabel.filter { character ->
+        character.isLetterOrDigit() || character == '-' || character == '_' || character == '.'
+    }
+    return "parity:map-selection-center:$tagLabel:offset-px:$offsetPx"
+}
+
+internal fun viewportOwnedByCenteredInspection(
+    requestedViewport: MapViewportState,
+    centeredInspectionViewport: MapViewportState?,
+): MapViewportState = centeredInspectionViewport ?: requestedViewport
+
 private fun fetchMapOverlayCoreResource(
     context: Context,
     resource: CoreResourceRequest,
@@ -670,6 +699,7 @@ internal fun MapExplorerPage(
     var chartSearchError by remember { mutableStateOf<String?>(null) }
     var chartSearchSuggestions by remember { mutableStateOf<List<WaypointIdentifierSuggestion>>(emptyList()) }
     var mapSelection by remember { mutableStateOf<MapSelectionUiState?>(null) }
+    val chartSearchInspectionGate = remember(uiSession) { ChartSearchInspectionGate() }
     var mapSurfaceBounds by remember { mutableStateOf<Rect?>(null) }
     var mapSelectionTrayBounds by remember { mutableStateOf<Rect?>(null) }
     var surfaceSize by remember { mutableStateOf(IntSize.Zero) }
@@ -749,7 +779,20 @@ internal fun MapExplorerPage(
     val viewportState = remember(selectedMapId) { mutableStateOf(viewport) }
     val followTargetGate = remember(uiSession) { MapFollowTargetGate() }
     var viewportSyncPending by remember(selectedMapId) { mutableStateOf(false) }
-    LaunchedEffect(viewport, selectedMapId) {
+    LaunchedEffect(viewport, selectedMapId, mapSelection?.centeredViewport) {
+        val ownedViewport = viewportOwnedByCenteredInspection(
+            requestedViewport = viewport,
+            centeredInspectionViewport = mapSelection?.centeredViewport,
+        )
+        if (!sameMapViewport(ownedViewport, viewport)) {
+            // The exact chart-search result owns the viewport until its inspector is
+            // dismissed. Reassert it if a stale parent update arrives after the first
+            // successful parent/local acknowledgement.
+            viewportState.value = ownedViewport
+            viewportSyncPending = true
+            onViewportChange(ownedViewport)
+            return@LaunchedEffect
+        }
         val parentMatchesLocal = sameMapViewport(viewport, viewportState.value)
         perfLogInfo(MapViewportLogTag) {
             "prop-sync map=$selectedMapId parentZoom=${"%.2f".format(viewport.zoom)} localZoom=${"%.2f".format(viewportState.value.zoom)} parentCenter=${"%.3f".format(viewport.centerWorldX)},${"%.3f".format(viewport.centerWorldY)} localCenter=${"%.3f".format(viewportState.value.centerWorldX)},${"%.3f".format(viewportState.value.centerWorldY)} pending=$viewportSyncPending matches=$parentMatchesLocal"
@@ -1009,6 +1052,27 @@ internal fun MapExplorerPage(
             null
         }
     }
+    val mapSelectionCenterProbeTag = remember(
+        mapSelection?.centeredTargetLabel,
+        mapSelection?.centeredTargetPosition,
+        displayViewport,
+        surfaceWidthPx,
+        surfaceHeightPx,
+    ) {
+        val label = mapSelection?.centeredTargetLabel
+        val position = mapSelection?.centeredTargetPosition
+        if (label != null && position != null && surfaceWidthPx > 0f && surfaceHeightPx > 0f) {
+            buildMapSelectionCenterProbeTag(
+                targetLabel = label,
+                targetPosition = position,
+                viewport = displayViewport,
+                surfaceWidthPx = surfaceWidthPx,
+                surfaceHeightPx = surfaceHeightPx,
+            )
+        } else {
+            null
+        }
+    }
     fun syncFollowStateForViewport(nextViewport: MapViewportState) {
         if (!mapFollowUiState.following || surfaceWidthPx <= 0f || surfaceHeightPx <= 0f) {
             return
@@ -1041,6 +1105,19 @@ internal fun MapExplorerPage(
     }
 
     fun updateViewport(nextViewport: MapViewportState, syncFollow: Boolean = true) {
+        val ownedViewport = viewportOwnedByCenteredInspection(
+            requestedViewport = nextViewport,
+            centeredInspectionViewport = mapSelection?.centeredViewport,
+        )
+        if (!sameMapViewport(ownedViewport, nextViewport)) {
+            perfLogInfo(MapViewportLogTag) {
+                "ignored viewport update while chart-search inspection owns center"
+            }
+            return
+        }
+        // A viewport change after a search request transfers ownership back to the
+        // newer user/navigation input. Its old asynchronous result must not recenter.
+        chartSearchInspectionGate.invalidate()
         val northUpViewport = nextViewport.copy(rotationDeg = 0.0)
         perfLogInfo(MapViewportLogTag) {
             "update map=$selectedMapId from=${"%.2f".format(viewportState.value.zoom)} to=${"%.2f".format(northUpViewport.zoom)} fromCenter=${"%.3f".format(viewportState.value.centerWorldX)},${"%.3f".format(viewportState.value.centerWorldY)} toCenter=${"%.3f".format(northUpViewport.centerWorldX)},${"%.3f".format(northUpViewport.centerWorldY)} syncFollow=$syncFollow"
@@ -1372,6 +1449,7 @@ internal fun MapExplorerPage(
             recenterOnNavRef(navRef)
             return
         }
+        val inspectionToken = chartSearchInspectionGate.begin()
         sessionWorkRunner.submitMapSelectionForNavRef(
             viewport = currentViewport,
             widthPx = surfaceWidthPx.toDouble(),
@@ -1381,14 +1459,16 @@ internal fun MapExplorerPage(
             fetchResource = { resource ->
                 fetchMapOverlayCoreResource(context, resource, devServerBaseUrl)
             },
-            onResult = { inspection ->
+            onResult = inspectionResult@ { inspection ->
+                if (!chartSearchInspectionGate.owns(inspectionToken)) {
+                    return@inspectionResult
+                }
                 val center = latLonToWorld(inspection.position.lat, inspection.position.lon)
                 val nextViewport = currentViewport.copy(
                     centerWorldX = center.x,
                     centerWorldY = center.y,
                     zoom = inspection.targetZoom,
                 )
-                updateViewport(nextViewport)
                 val point = worldToScreen(
                     nextViewport,
                     Offset(center.x.toFloat(), center.y.toFloat()),
@@ -1399,7 +1479,11 @@ internal fun MapExplorerPage(
                     point = point,
                     result = inspection.selection,
                     selectedItem = mapSelectionItemById(inspection.selection, inspection.selectedItemId),
+                    centeredTargetLabel = navRefLabel(navRef),
+                    centeredTargetPosition = inspection.position,
+                    centeredViewport = nextViewport,
                 )
+                updateViewport(nextViewport)
                 chartTrayOpen = false
                 layerTrayOpen = false
                 dataStatusTrayOpen = false
@@ -1410,7 +1494,11 @@ internal fun MapExplorerPage(
                 chartSearchError = null
                 chartSearchSuggestions = emptyList()
             },
-            onError = { error ->
+            onError = inspectionError@ { error ->
+                if (!chartSearchInspectionGate.owns(inspectionToken)) {
+                    return@inspectionError
+                }
+                chartSearchInspectionGate.invalidate()
                 chartSearchLoading = false
                 chartSearchError = "Search failed: ${error.message ?: error.toString()}"
             },
@@ -1446,18 +1534,19 @@ internal fun MapExplorerPage(
         chartSearchLoading = true
         chartSearchError = null
         val (centerLat, centerLon) = viewportCenterLatLon(currentViewport)
-        runCatching {
-            withContext(Dispatchers.IO) {
+        try {
+            val suggestions = withContext(Dispatchers.IO) {
                 appCore.suggestWaypointIdentifiersNear(
                     anchor = LatLonPoint(centerLat, centerLon),
                     query = query,
                     limit = 8,
                 )
             }
-        }.onSuccess { suggestions ->
             chartSearchLoading = false
             chartSearchSuggestions = suggestions
-        }.onFailure { error ->
+        } catch (error: CancellationException) {
+            throw error
+        } catch (error: Throwable) {
             chartSearchLoading = false
             chartSearchSuggestions = emptyList()
             chartSearchError = error.message ?: error.toString()
@@ -2665,6 +2754,10 @@ internal fun MapExplorerPage(
             chartSearchError = chartSearchError,
             chartSearchSuggestions = chartSearchSuggestions,
             onChartSearchTextChange = { value ->
+                if (value != chartSearchText) {
+                    chartSearchInspectionGate.invalidate()
+                    mapSelection = null
+                }
                 chartSearchText = value
                 chartSearchOpen = true
             },
@@ -2764,6 +2857,7 @@ internal fun MapExplorerPage(
                     } else {
                         MapSelectionTray(
                             state = selection,
+                            centerProbeTag = mapSelectionCenterProbeTag,
                             onBoundsChange = { mapSelectionTrayBounds = it },
                             modifier = Modifier
                                 .zIndex(OverlayPlaneModal)
@@ -3987,6 +4081,7 @@ private fun SituationOverlayLayer(
 internal fun MapSelectionTray(
     state: MapSelectionUiState,
     modifier: Modifier,
+    centerProbeTag: String? = null,
     onBoundsChange: (Rect?) -> Unit = {},
     onSelectItem: (MapSelectionItem) -> Unit,
     onSelectAction: (MapSelectionItem, MapSelectionAction) -> Unit,
@@ -4011,6 +4106,9 @@ internal fun MapSelectionTray(
         border = BorderStroke(1.dp, uiTheme.controls.panelBorder.copy(alpha = 0.85f)),
     ) {
         Column(modifier = Modifier.padding(ThumbGap * 0.7f), verticalArrangement = Arrangement.spacedBy(ThumbGap * 0.55f)) {
+            centerProbeTag?.let { tag ->
+                Box(modifier = Modifier.size(1.dp).testTag(tag))
+            }
             state.result.categories.forEach { category ->
                 Row(
                     modifier = Modifier.horizontalScroll(rememberScrollState()),

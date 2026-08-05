@@ -59,6 +59,90 @@ class NavKvStoreReplacementTest {
     }
 
     @Test
+    fun interleavedPagedOperationsResumeWhenPeerLoadsRequestedPage() {
+        val directory = Files.createTempDirectory("nav-kv-interleaved-page-test").toFile()
+        val artifact = createArtifact(directory, "nav.zip", "page")
+        val bridge = FakeNavKvBridge()
+        val store = NavKvStore.openInstalledArtifacts(listOf(artifact), "", bridge.nativeBridge)
+        val executor = Executors.newFixedThreadPool(2)
+        val firstOutcomeComputed = CountDownLatch(1)
+        val releaseFirstOutcome = CountDownLatch(1)
+        var firstOperationCalls = 0
+        var peerOperationCalls = 0
+
+        try {
+            val firstOperation = executor.submit<PagedSessionOperationResult> {
+                store.runPagedSessionOperation {
+                    firstOperationCalls += 1
+                    if (firstOperationCalls == 1) {
+                        val outcome = pageResourceRequest()
+                        firstOutcomeComputed.countDown()
+                        assertTrue(releaseFirstOutcome.await(2, TimeUnit.SECONDS))
+                        outcome
+                    } else {
+                        """{"state":"complete","result":"first"}"""
+                    }
+                }
+            }
+            assertTrue(firstOutcomeComputed.await(2, TimeUnit.SECONDS))
+
+            val peerOperation = executor.submit<PagedSessionOperationResult> {
+                store.runPagedSessionOperation {
+                    peerOperationCalls += 1
+                    if (peerOperationCalls == 1) {
+                        pageResourceRequest()
+                    } else {
+                        """{"state":"complete","result":"peer"}"""
+                    }
+                }
+            }
+            assertEquals("peer", peerOperation.get(2, TimeUnit.SECONDS).result.jsonPrimitive.content)
+
+            releaseFirstOutcome.countDown()
+            assertEquals("first", firstOperation.get(2, TimeUnit.SECONDS).result.jsonPrimitive.content)
+            assertEquals(2, firstOperationCalls)
+            assertEquals(2, peerOperationCalls)
+        } finally {
+            releaseFirstOutcome.countDown()
+            executor.shutdownNow()
+            store.close()
+            PackageZipStore.invalidate(artifact.file)
+            directory.deleteRecursively()
+        }
+    }
+
+    @Test
+    fun repeatedAlreadySatisfiedPageRequestStillFailsInsteadOfLooping() {
+        val directory = Files.createTempDirectory("nav-kv-repeated-page-test").toFile()
+        val artifact = createArtifact(directory, "nav.zip", "page")
+        val bridge = FakeNavKvBridge()
+        val store = NavKvStore.openInstalledArtifacts(listOf(artifact), "", bridge.nativeBridge)
+
+        try {
+            var preloadCalls = 0
+            store.runPagedSessionOperation {
+                preloadCalls += 1
+                if (preloadCalls == 1) pageResourceRequest() else """{"state":"complete","result":null}"""
+            }
+
+            var stuckCalls = 0
+            val error = runCatching {
+                store.runPagedSessionOperation {
+                    stuckCalls += 1
+                    pageResourceRequest()
+                }
+            }.exceptionOrNull() ?: error("repeated resource request unexpectedly completed")
+
+            assertTrue(error.message.orEmpty().contains("repeated an already-satisfied resource request"))
+            assertEquals(2, stuckCalls)
+        } finally {
+            store.close()
+            PackageZipStore.invalidate(artifact.file)
+            directory.deleteRecursively()
+        }
+    }
+
+    @Test
     fun failedOptionalSessionResourceResumesWithEmptyPayload() {
         val directory = Files.createTempDirectory("nav-kv-optional-resource-test").toFile()
         val artifact = createArtifact(directory, "nav.zip", "page")
@@ -188,6 +272,9 @@ class NavKvStoreReplacementTest {
 
     private fun readPageValue(store: NavKvStore): String =
         store.runCoreOperationElement(buildJsonObject { put("kind", "test") }).jsonPrimitive.content
+
+    private fun pageResourceRequest(): String =
+        """{"state":"need_resources","resources":[{"id":"nav_kv/page/1","source":{"kind":"nav_kv_member","member_path":"had/pages/1.bin"},"optional":false}]}"""
 
     private fun createArtifact(directory: File, filename: String, page: String): InstalledPackageArtifact {
         val file = File(directory, filename)

@@ -411,6 +411,12 @@ class NavKvStore private constructor(
     ): PagedSessionOperationResult {
         var activeOperation = operation
         val pendingInvalidations = linkedSetOf<String>()
+        // A peer may install a requested NAVKV page after core reports the request but
+        // before this operation reaches ensurePage. An already-present page therefore
+        // means the operation should resume, not that the request is invalid. Track the
+        // full request cycle instead: a request may be observed once regardless of who
+        // satisfied it, but seeing the same request again proves core made no progress.
+        val seenResourceRequests = mutableSetOf<Pair<String, List<String>>>()
         while (true) {
             val outcome = json.parseToJsonElement(activeOperation()).jsonObject
             return when (val state = outcome.getValue("state").jsonPrimitive.content) {
@@ -434,10 +440,18 @@ class NavKvStore private constructor(
                         activeOperation = resumeSnapshot
                             ?: error("committed session mutation requires a snapshot-resume operation")
                     }
-                    var loadedAnyResource = false
-                    for (resource in parseCoreResourceRequests(outcome)) {
+                    val resources = parseCoreResourceRequests(outcome)
+                    check(resources.isNotEmpty()) {
+                        "paged session operation requested no resources"
+                    }
+                    val requestFingerprint = state to resources.map { it.id }.sorted()
+                    check(seenResourceRequests.add(requestFingerprint)) {
+                        "paged session operation repeated an already-satisfied resource request: " +
+                            requestFingerprint.second.joinToString()
+                    }
+                    for (resource in resources) {
                         if (resource.id.startsWith("nav_kv/page/")) {
-                            loadedAnyResource = ensureNavKvResource(activeBackend, resource) || loadedAnyResource
+                            ensureNavKvResource(activeBackend, resource)
                         } else {
                             val fetch = fetchSessionResource
                                 ?: error("session resource requested without fetcher: ${resource.id}")
@@ -451,17 +465,12 @@ class NavKvStore private constructor(
                                         "optional resource ${resource.id} unavailable: ${error.message}"
                                     }
                                     ingest(resource, ByteArray(0))
-                                    loadedAnyResource = true
                                     continue
                                 }
                                 throw error
                             }
                             ingest(resource, bytes)
-                            loadedAnyResource = true
                         }
-                    }
-                    if (!loadedAnyResource) {
-                        error("paged session operation requested only already-loaded resources")
                     }
                     continue
                 }

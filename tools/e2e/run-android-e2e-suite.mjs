@@ -22,6 +22,7 @@ import {
   clearFocusedText,
   currentAerobagPid,
   delay,
+  destinationCenterEvidence,
   dumpAndroid,
   findNode,
   findNodes,
@@ -471,19 +472,19 @@ async function centerChartOnDestination(serial, result, route) {
     const matched = await waitFor(() => {
       const xml = dumpAndroid(serial);
       lastObserved = chartSearchInputText(xml);
-      return lastObserved === destination;
+      return lastObserved === destination &&
+        findNode(xml, (node) => hasAndroidTag(node, `parity:chart-search-suggestion:${destination}`)) !== null;
     }, 3500, `chart search contains ${destination}`).then(
       () => true,
       () => false,
     );
     if (matched) {
-      pressKey(serial, "KEYCODE_ENTER");
-      await waitForNode(
-        serial,
-        (node) => hasAndroidTag(node, "parity:map-selection-tray"),
-        15000,
-        "destination inspector opened from chart search",
-      );
+      await tapTag(serial, `parity:chart-search-suggestion:${destination}`, 10000);
+      let evidence = null;
+      await waitFor(() => {
+        evidence = destinationCenterEvidence(dumpAndroid(serial), destination);
+        return evidence.matched;
+      }, 15000, `destination-specific centered inspector for ${destination}`);
       await dismissMapSelection(serial);
       await waitForNode(
         serial,
@@ -491,7 +492,7 @@ async function centerChartOnDestination(serial, result, route) {
         10000,
         "map semantics visible after destination search",
       );
-      recordStep(result, "chart centered on destination", destination);
+      recordStep(result, "chart centered on destination", `${destination}, ${evidence.probeTag}`);
       return;
     }
   }
@@ -516,13 +517,12 @@ async function inspectAirportFromChartSearch(serial, result, airportId) {
     );
     if (matched) {
       await tapTag(serial, `parity:chart-search-suggestion:${airportId}`, 10000);
-      await waitForNode(
-        serial,
-        (node) => hasAndroidTag(node, "parity:map-selection-tray"),
-        15000,
-        "airport inspector opened from chart search",
-      );
-      recordStep(result, "airport inspector opened", airportId);
+      let evidence = null;
+      await waitFor(() => {
+        evidence = destinationCenterEvidence(dumpAndroid(serial), airportId);
+        return evidence.matched;
+      }, 15000, `destination-specific centered inspector for ${airportId}`);
+      recordStep(result, "airport inspector opened", `${airportId}, ${evidence.probeTag}`);
       return;
     }
   }

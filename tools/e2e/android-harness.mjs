@@ -170,6 +170,27 @@ export function hasAndroidTag(node, tag) {
   );
 }
 
+export function destinationCenterEvidence(xml, destination, maxOffsetPx = 8) {
+  const tray = findNode(xml, (node) => hasAndroidTag(node, "parity:map-selection-tray"));
+  const airportItemTag = `parity:map-selection-item:airport-${destination}`;
+  const selectedTag = `parity:map-selection-selected:${destination}`;
+  const probePrefix = `parity:map-selection-center:${destination}:offset-px:`;
+  const airportItem = findNode(xml, (node) => hasAndroidTag(node, airportItemTag));
+  const selected = findNode(xml, (node) => hasAndroidTag(node, selectedTag));
+  const probe = findNode(xml, (node) => androidTag(node).startsWith(probePrefix));
+  const offsetPx = probe
+    ? Number(androidTag(probe).slice(probePrefix.length))
+    : Number.NaN;
+  return {
+    matched: tray !== null && airportItem !== null && selected !== null &&
+      Number.isFinite(offsetPx) && offsetPx <= maxOffsetPx,
+    airportItemTag,
+    selectedTag,
+    probeTag: probe ? androidTag(probe) : null,
+    offsetPx: Number.isFinite(offsetPx) ? offsetPx : null,
+  };
+}
+
 export function hasAndroidText(xml, text) {
   return findNode(xml, (node) => node.text === text) !== null;
 }

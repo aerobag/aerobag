@@ -555,6 +555,9 @@ internal data class MapSelectionUiState(
     val result: MapSelectionQueryResult,
     val selectedItem: MapSelectionItem?,
     val detailModal: MapSelectionDetailModalState? = null,
+    val centeredTargetLabel: String? = null,
+    val centeredTargetPosition: org.aerobag.app.domain.LatLonPoint? = null,
+    val centeredViewport: MapViewportState? = null,
 )
 
 internal data class MapSelectionDetailModalState(

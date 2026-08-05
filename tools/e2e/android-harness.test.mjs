@@ -8,6 +8,7 @@ import {
   assertNoAerobagAnr,
   classifyAerobagLogcat,
   displayBoundsFromXml,
+  destinationCenterEvidence,
   findAerobagAnrDialog,
   findSystemUiAnrWaitButton,
   renderedFlightPlanSignature,
@@ -96,5 +97,24 @@ test("extracts real bounds and an ordered rendered plan signature", () => {
       { tag: "parity:plan-row:row-a", label: "KRNT" },
       { tag: "parity:plan-row:row-b", label: "KPWT" },
     ],
+  });
+});
+
+test("destination centering rejects stale trays and geographically displaced results", () => {
+  const selectionXml = (airport, selected, offsetPx) => `<hierarchy>
+    <node content-desc="parity:map-selection-tray" />
+    <node content-desc="parity:map-selection-item:airport-${airport}" />
+    <node content-desc="parity:map-selection-selected:${selected}" />
+    <node content-desc="parity:map-selection-center:${selected}:offset-px:${offsetPx}" />
+  </hierarchy>`;
+
+  assert.equal(destinationCenterEvidence(selectionXml("KUKI", "KUKI", 0), "KPLU").matched, false);
+  assert.equal(destinationCenterEvidence(selectionXml("KPLU", "KPLU", 120), "KPLU").matched, false);
+  assert.deepEqual(destinationCenterEvidence(selectionXml("KPLU", "KPLU", 3), "KPLU"), {
+    matched: true,
+    airportItemTag: "parity:map-selection-item:airport-KPLU",
+    selectedTag: "parity:map-selection-selected:KPLU",
+    probeTag: "parity:map-selection-center:KPLU:offset-px:3",
+    offsetPx: 3,
   });
 });
